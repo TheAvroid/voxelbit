@@ -1,0 +1,3 @@
+# Serve the game at the site root, so https://voxelbit.net/ loads engine.html
+# directly with NO redirect and NO /engine.html in the URL.
+DirectoryIndex engine.html index.html

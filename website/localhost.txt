@@ -1,0 +1,1 @@
+1. make the walking over terrain smoother. It is currently very bumpy when going up and down the terrain. smooth it out.

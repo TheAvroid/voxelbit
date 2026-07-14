@@ -1,0 +1,28 @@
+﻿# ── git here is for the CODE, and only the code. ───────────────────────────
+# The art, models, sounds and .vox libraries are hundreds of megabytes, binary,
+# and effectively static. They are irreplaceable, but they do not need per-line
+# history and putting them in git makes every command crawl. Back them up
+# separately (a drive or a cloud folder). Git is for the thing that CHANGES.
+
+# whole trees of assets
+art/
+.vox/
+sound/
+website/assets/
+website/sound/
+website/old/
+website/_snapshots/
+
+# and a belt-and-braces rule by extension, so nothing binary can creep back in
+*.vox
+*.wav
+*.mp3
+*.obj
+*.png
+*.jpg
+*.ico
+*.otf
+*.ttf
+*.bak
+*.log
+node_modules/
