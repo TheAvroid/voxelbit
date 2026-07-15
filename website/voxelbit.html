@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>voxelbit — engine</title>
+<title>voxelbit</title>
 <link rel="icon" href="logo.ico">
 <style>
   @font-face { font-family: 'px3'; src: url('3x3-pixel.otf') format('opentype'); }
@@ -15,9 +15,29 @@
   #cross::before { left: 0; right: 0; top: 6px; height: 2px; }
   #cross::after { top: 0; bottom: 0; left: 6px; width: 2px; }
   #lock { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; background: rgba(8,10,14,0.55); color: #e8edf4; font: 8px/1.8 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; backdrop-filter: blur(2px); }
-  #lock h1 { font: 20px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0; color: #fff; text-shadow: 0 2px 12px #000; }
+  #lock h1 { font: 60px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; }
+  #lock h1 .tv { background: linear-gradient(180deg, #ff7a8a 0%, #8e0e20 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* crimson, light→dark */
+  #lock h1 .tb { background: linear-gradient(180deg, #b8ff6e 0%, #2f8a12 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* lime, light→dark */
   #lock .keys { opacity: 0.75; font-size: 6px; }
   #load { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0b0e12; color: #9fb0c4; font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; z-index: 10; }
+  #kbBtn { margin-top: 18px; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 12px; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, color 0.15s; }
+  #kbBtn svg { width: 22px; height: 22px; }
+  #kbBtn:hover { border-color: #8fb3dd; color: #fff; }
+  #todWrap { position: absolute; top: 24px; right: 28px; display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #todSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
+  #kbPanel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(6,8,12,0.72); z-index: 30; }
+  #kbCard { background: #10151c; border: 1px solid #2b3646; border-radius: 16px; padding: 22px 26px 18px; min-width: 350px; max-height: 82vh; overflow-y: auto; font: 8px/2.1 'px3', Consolas, monospace; letter-spacing: 1px; color: #dfe6ee; box-shadow: 0 12px 48px rgba(0,0,0,0.55); }
+  #kbCard h2 { font: 12px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0 0 12px; color: #fff; }
+  .kbRow { display: flex; justify-content: space-between; align-items: center; gap: 34px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
+  .kbRow:last-child { border-bottom: none; }
+  .kbKey { min-width: 96px; text-align: center; background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 5px 10px; color: #cfe0f4; cursor: pointer; font: inherit; transition: border-color 0.12s; }
+  .kbKey:hover { border-color: #6d8fc0; }
+  .kbKey.listen { border-color: #7fd05a; color: #b8ff6e; }
+  #kbClose { display: block; margin: 14px auto 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; }
+  #kbClose:hover { border-color: #8fb3dd; }
+  #over { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; background: rgba(26,6,2,0.82); color: #ffd9c0; font: 9px/2 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; z-index: 25; }
+  #over h1 { font: 22px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; color: #ff6a3a; }
+  #over .ohint { opacity: 0.75; font-size: 7px; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -26,11 +46,18 @@
 <div id="cross" class="hidden"></div>
 <div id="hud"></div>
 <div id="lock" class="hidden">
-  <h1>VOXELBIT</h1>
+  <h1><span class="tv">voxel</span><span class="tb">bit</span></h1>
   <div>click to enter</div>
-  <div class="keys">WASD move &nbsp;·&nbsp; SHIFT sprint &nbsp;·&nbsp; SPACE jump/swim &nbsp;·&nbsp; C crouch &nbsp;·&nbsp; RIGHT-CLICK pick up twigs+pebbles &nbsp;·&nbsp; F fly &nbsp;·&nbsp; L sun orbit &nbsp;·&nbsp; G god rays &nbsp;·&nbsp; V v-sync &nbsp;·&nbsp; [ ] render scale &nbsp;·&nbsp; R respawn</div>
+  <div id="todWrap"><span id="todLabel">08:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="480"></div>
+  <button id="kbBtn" title="keybinds"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
 </div>
+<div id="kbPanel" class="hidden"><div id="kbCard">
+  <h2>keybinds</h2>
+  <div id="kbRows"></div>
+  <button id="kbClose">done</button>
+</div></div>
 <div id="load">generating forest…</div>
+<div id="over" class="hidden"><h1>game over</h1><div>you fell into the lava</div><div class="ohint">click to respawn</div></div>
 
 <script type="module">
 (async () => {
@@ -43,10 +70,11 @@
   if (!navigator.gpu) fail('WebGPU not available — use Chrome/Edge 113+');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) fail('no WebGPU adapter');
-  const BIG = 768 * 768 * 256;                        // 151 MB world buffer wants a raised binding limit (default is 128 MiB)
-  const canBig = adapter.limits.maxStorageBufferBindingSize >= BIG && adapter.limits.maxBufferSize >= BIG;
-  const device = await adapter.requestDevice(canBig ? { requiredLimits: { maxStorageBufferBindingSize: BIG } } : {});
-  if (!canBig) console.warn('[vb] adapter caps storage bindings at', adapter.limits.maxStorageBufferBindingSize, '— using the shorter 192-voxel world');
+  const SIZE384 = 768 * 768 * 384, SIZE256 = 768 * 768 * 256;   // the deep world wants 226 MB; fall back gracefully
+  const lim = Math.min(adapter.limits.maxStorageBufferBindingSize, adapter.limits.maxBufferSize);
+  const WYpick = lim >= SIZE384 ? 384 : (lim >= SIZE256 ? 256 : 192);
+  const device = await adapter.requestDevice(WYpick > 192 ? { requiredLimits: { maxStorageBufferBindingSize: 768 * 768 * WYpick } } : {});
+  if (WYpick < 384) console.warn('[vb] adapter caps storage bindings at', lim, '— world height reduced to', WYpick);
   device.addEventListener('uncapturederror', (e) => { console.error('[vb] gpu error:', e.error.message); });
   const canvas = $('c');
   const ctx = canvas.getContext('webgpu');
@@ -57,7 +85,8 @@
   // infinite deterministic world. Storage is TOROIDAL: shifting the window regenerates + uploads only the
   // 8-voxel strip that wrapped — never a full-buffer move. All generation is a pure function of WORLD
   // coordinates, so strips re-materialise seamlessly and revisited terrain is always identical.
-  const WX = 768, WY = canBig ? 256 : 192, WZ = 768;  // WY 256: mountains (≤105) + a 117-voxel pine still fit
+  const WX = 768, WY = WYpick, WZ = 768;              // deep world: +128 voxels of stone below the surface for TRUE gorge depth
+  const LIFT = WY >= 384 ? 128 : 0;                    // terrain floats this far above bedrock
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
   const W = new Uint8Array(WX * WY * WZ);             // CPU copy — collision + build (toroidal)
@@ -74,37 +103,67 @@
   const vnoise = (x, z) => { const ix = Math.floor(x), iz = Math.floor(z), fx = sstep(x - ix), fz = sstep(z - iz);
     return (ihash(ix, iz) * (1 - fx) + ihash(ix + 1, iz) * fx) * (1 - fz) + (ihash(ix, iz + 1) * (1 - fx) + ihash(ix + 1, iz + 1) * fx) * fz; };
   const fbm = (x, z) => vnoise(x, z) * 0.55 + vnoise(x * 2.13 + 11.7, z * 2.13 + 5.3) * 0.27 + vnoise(x * 4.41 + 41.2, z * 4.41 + 23.8) * 0.18;
-  const HMAX = Math.min(105, WY - 122);                // terrain ceiling
-  const WL = 31;                                       // lake water level
-  const LCELL = 1024;                                  // CUSTOM RARE LAKES — one candidate per ~102 m cell, 50% roll
-  function lakeAt(cx, cz) {
-    if (ihash(cx * 71 + 13, cz * 73 + 41) > 0.5) return null;
-    return { x: cx * LCELL + 120 + ihash(cx * 3 + 55, cz * 7 + 21) * (LCELL - 240),
-             z: cz * LCELL + 120 + ihash(cx * 9 + 77, cz * 5 + 3) * (LCELL - 240),
-             r: 30 + ihash(cx + 31, cz + 17) * 26 };
-  }
-  const H = (x, z) => {                                // base terrain NEVER dips below WL+2 — water exists ONLY inside carved lake bowls
-    let h = Math.min(HMAX, Math.max(WL + 2,
-      Math.round(8 + 88 * fbm(x * 0.008, z * 0.008) + 9 * fbm(x * 0.04 + 7.3, z * 0.04 + 2.1))));
-    for (let jz = Math.floor((z - 86) / LCELL); jz <= Math.floor((z + 86) / LCELL); jz++)
-      for (let jx = Math.floor((x - 86) / LCELL); jx <= Math.floor((x + 86) / LCELL); jx++) {
-        const L = lakeAt(jx, jz); if (!L) continue;
-        const dx = x - L.x, dz = z - L.z, d = Math.sqrt(dx * dx + dz * dz);
-        if (d >= L.r + 26) continue;
-        h = Math.round(h + (WL + 2 - h) * sstep(Math.min(1, (L.r + 26 - d) / 26)));   // flatten surroundings to beach height
-        if (d < L.r) h = Math.round(WL + 2 - 15 * sstep(1 - d / L.r));                // bowl — down to WL−13 at the centre
-      }
+  const HMAX = Math.min(105 + LIFT, WY - 122);         // terrain ceiling
+  const WL = 24 + LIFT;                                // GLOBAL water level — water is simply terrain below this line
+  const baseH = (x, z) => {
+    const b = 8 + LIFT + 88 * fbm(x * 0.008, z * 0.008);
+    const shoreK = Math.min(1, Math.abs(b - WL) / 12);   // fine detail fades out near the waterline — smooth, beach-like entries into water
+    return Math.min(HMAX, Math.max(4 + LIFT, Math.round(b + 9 * fbm(x * 0.04 + 7.3, z * 0.04 + 2.1) * (0.2 + 0.8 * shoreK))));
+  };
+  const basinM = (x, z) => {                           // huge, rare low-frequency basins pull the land under the waterline
+    const b = vnoise(x * 0.0016 + 313.7, z * 0.0016 + 157.3);
+    if (b >= 0.13) return 0;
+    return sstep(Math.min(1, (0.13 - b) / 0.06));
+  };
+  const H = (x, z) => {
+    let h = baseH(x, z);
+    const m = basinM(x, z) * Math.max(0, Math.min(1, (66 + LIFT - h) / 20));   // basins only form in low country
+    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding, no waterline puddles
+    const rs = riverS(x, z);
+    if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // deep + gently dithered banks
     return h;
   };
-  function nearLake(x, z) {                            // inside a lake's influence ring? (sand only ever appears here)
-    for (let jz = Math.floor((z - 86) / LCELL); jz <= Math.floor((z + 86) / LCELL); jz++)
-      for (let jx = Math.floor((x - 86) / LCELL); jx <= Math.floor((x + 86) / LCELL); jx++) {
-        const L = lakeAt(jx, jz); if (!L) continue;
-        const dx = x - L.x, dz = z - L.z;
-        if (dx * dx + dz * dz < (L.r + 26) * (L.r + 26)) return true;
-      }
-    return false;
+  const RIVCELL = 768, RIVINF = 2100;                  // RIVERS — one candidate per ~77 m cell, 40% roll, LONG sweeping channels
+  const rivCache = new Map();
+  function riverAt(cx, cz) {
+    const key = cx * 100003 + cz;
+    let R = rivCache.get(key);
+    if (R !== undefined) return R;
+    R = null;
+    if (ihash(cx * 83 + 19, cz * 89 + 7) <= 0.20) {
+      R = { sx: cx * RIVCELL + 100 + ihash(cx * 3 + 61, cz * 7 + 23) * (RIVCELL - 200),
+            sz: cz * RIVCELL + 100 + ihash(cx * 9 + 47, cz * 5 + 83) * (RIVCELL - 200),
+            ang: ihash(cx + 15, cz + 92) * Math.PI,
+            len: 1000 + ihash(cx * 11 + 6, cz * 13 + 31) * 800,
+            wb: 72 + ihash(cx * 17 + 8, cz * 19 + 2) * 64,
+            seed: cx * 571 + cz * 769 };
+      const ex = R.sx + Math.cos(R.ang) * R.len, ez = R.sz + Math.sin(R.ang) * R.len;
+      const pad = R.wb * 1.4 + 46;
+      R.x0 = Math.min(R.sx, ex) - pad; R.x1 = Math.max(R.sx, ex) + pad;
+      R.z0 = Math.min(R.sz, ez) - pad; R.z1 = Math.max(R.sz, ez) + pad;
+    }
+    rivCache.set(key, R);
+    return R;
   }
+  function riverS(x, z) {                              // channel strength 0..1 at this column
+    let best = 0;
+    for (let jz = Math.floor((z - RIVINF) / RIVCELL); jz <= Math.floor((z + RIVINF) / RIVCELL); jz++)
+      for (let jx = Math.floor((x - RIVINF) / RIVCELL); jx <= Math.floor((x + RIVINF) / RIVCELL); jx++) {
+        const R = riverAt(jx, jz); if (!R) continue;
+        if (x < R.x0 || x > R.x1 || z < R.z0 || z > R.z1) continue;   // bbox fast reject — rivers are long now
+        const dxr = Math.cos(R.ang), dzr = Math.sin(R.ang);
+        const t = Math.max(0, Math.min(R.len, (x - R.sx) * dxr + (z - R.sz) * dzr));
+        const off = Math.sin(t * 0.015 + R.seed) * 30 + Math.sin(t * 0.04 + R.seed * 1.7) * 10;   // broad meanders
+        const pd = (x - (R.sx + dxr * t)) * (-dzr) + (z - (R.sz + dzr * t)) * dxr;
+        const k = Math.pow(Math.sin(Math.PI * t / R.len), 0.35);
+        const w = R.wb * k * 1.4;
+        const d = Math.abs(pd - off);
+        if (d < w) { const v = sstep(1 - d / w); if (v > best) best = v; }
+      }
+    return best;
+  }
+  const groundMin = (x, z, r) => Math.min(H(x, z), H(x - r, z), H(x + r, z), H(x, z - r), H(x, z + r));   // lowest ground under a footprint — nothing floats on slopes
+  const nearLake = (x, z) => basinM(x, z) > 0.03;
 
   // ── palette ── slot 0 = empty. Ground grain variants + remapped tree palette with per-tree tints.
   const palette = [[0, 0, 0]];
@@ -113,8 +172,14 @@
   const MOSS   = [addCol(74, 96, 48), addCol(66, 88, 44), addCol(82, 104, 54), addCol(58, 79, 40)];      // 5..8
   const DIRT   = [addCol(112, 90, 64), addCol(102, 82, 58), addCol(122, 98, 70)];
   const ROCK   = [addCol(124, 122, 116), addCol(106, 104, 100), addCol(90, 89, 86)];
+  const ROCKX  = [addCol(138, 136, 130), addCol(99, 98, 94), addCol(74, 73, 70)];                        // partner shades — each formation layer is a blended two-tone swatch
   const LOGC   = [addCol(121, 91, 57), addCol(105, 78, 49)];                                             // fallen LOG — pine-trunk browns, solid
-  const SAND   = [addCol(203, 183, 145), addCol(191, 171, 133), addCol(213, 193, 155)];                  // pond beaches + lakebed
+  const SAND   = [addCol(203, 183, 145), addCol(191, 171, 133), addCol(213, 193, 155)];                  // lake beaches + lakebed
+  const REDROCK = [addCol(193, 111, 72), addCol(171, 94, 60), addCol(147, 79, 52), addCol(209, 167, 127)];   // Colorado sandstone strata (last = cream band)
+  const ORECOAL = [addCol(52, 52, 56), addCol(44, 44, 48)];                                                // minerals - seen in cave walls
+  const OREIRON = [addCol(150, 106, 74), addCol(134, 94, 66)];
+  const OREGOLD = [addCol(216, 174, 58), addCol(196, 156, 50)];
+  const ORECRYS = [addCol(88, 196, 202), addCol(70, 176, 184)];
 
   // ── pine5.vox ── MagicaVoxel, Z-up (model z → world y)
   await stage('loading pine5.vox…');
@@ -161,7 +226,8 @@
   const DECOR_MIN = palette.length;
   const GRASS = [addCol(83, 108, 54), addCol(74, 99, 49), addCol(92, 117, 61), addCol(65, 88, 45)];      // = the MOSS palette, only ~12% brighter — strands blend into their patch
   const FERN  = [addCol(52, 104, 58), addCol(62, 118, 66), addCol(44, 92, 50)];
-  const WATER_T = addCol(56, 124, 150), WATER_B = addCol(49, 113, 139);                                  // pond surface / body, close shades (walk-through — you swim)
+  const WATER_T = addCol(58, 128, 154), WATER_B = addCol(43, 106, 134);
+  const LAVA_T = addCol(255, 122, 22), LAVA_B = addCol(198, 44, 6), LAVA_R = addCol(226, 58, 10), LAVA_Y = addCol(255, 206, 46);   // gorge-floor lava — blended red/orange/yellow, emissive, deadly                                  // pond surface / body, close shades (walk-through — you swim)
   const PEBBLE  = [addCol(122, 120, 114), addCol(103, 101, 97)];                                         // SMALL rock — right-click to pick up
   const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);                                    // twig (pickable) / stick — pine-trunk browns
   const BLOOM   = [addCol(198, 62, 54), addCol(226, 192, 62), addCol(230, 228, 220), addCol(152, 94, 192), addCol(224, 122, 162), addCol(228, 142, 56)];   // flower heads
@@ -170,12 +236,63 @@
   for (const f of foliageIds) solidTab[f] = 0;
   console.log('[vb] pine5.vox', MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
 
+  // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
+  // the old engine's buildHeldFrames approach) DDA-raytraced in camera space. Item ids in u.pickX.w:
+  // 0 = empty hand, 1 = stone pick (.vox), 2 = pebble rock, 3 = twig. Add future pickups to `items`.
+  let pickWGSL = 'const ITEMN : i32 = 0; const PICKSTEPS : i32 = 1;\n    const ITEMD : array<vec4<i32>, 1> = array<vec4<i32>, 1>(vec4<i32>(0));\n    var<private> ITEMMAP : array<vec4<f32>, 1> = array<vec4<f32>, 1>(vec4<f32>(0.0));';
+  {
+    const items = [];                                  // {w, d, h, cells: [[r,g,b] | null]} — x = width, y = depth, z = height
+    try {
+      const pv = new Uint8Array(await (await fetch('assets/stone_tools/stone_pick.vox')).arrayBuffer());
+      const pdv = new DataView(pv.buffer);
+      let psx = 0, psy = 0, psz = 0, pvox = null; const ppal = new Uint8Array(1024);
+      const pwalk = (off, end) => { while (off < end) {
+        const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+        const sz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
+        if (id === 'SIZE' && !psx) { psx = pdv.getUint32(off + 12, true); psy = pdv.getUint32(off + 16, true); psz = pdv.getUint32(off + 20, true); }
+        else if (id === 'XYZI' && !pvox) { const n = pdv.getUint32(off + 12, true); pvox = pv.subarray(off + 16, off + 16 + n * 4); }
+        else if (id === 'RGBA') ppal.set(pv.subarray(off + 12, off + 12 + 1024));
+        else if (id === 'MAIN') { pwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+        off += 12 + sz + csz;
+      } };
+      pwalk(8, pv.length);
+      const cells3 = new Array(psx * psy * psz).fill(null);           // FULL 3D grid — model x → width, model y → depth, model z → height; every layer kept
+      for (let i = 0; i < pvox.length; i += 4) {
+        const ci = pvox[i + 3];
+        cells3[pvox[i] + pvox[i + 1] * psx + pvox[i + 2] * psx * psy] = [ppal[(ci - 1) * 4], ppal[(ci - 1) * 4 + 1], ppal[(ci - 1) * 4 + 2]];
+      }
+      items.push({ w: psx, d: psy, h: psz, cells: cells3 });
+      console.log('[vb] stone_pick.vox', psx, psy, psz, 'voxels', pvox.length / 4);
+    } catch (e) { console.warn('[vb] stone_pick.vox missing — held pick disabled', e); items.push({ w: 0, d: 0, h: 0, cells: [] }); }
+    { const dk = [103, 101, 97], lt = [122, 120, 114];                // PEBBLE ROCK — the exact field pebble: 3×3 dark slab + light crown
+      const cells = new Array(3 * 3 * 2).fill(null);
+      for (let y = 0; y < 3; y++) for (let x = 0; x < 3; x++) cells[x + y * 3] = dk;
+      cells[1 + 1 * 3 + 9] = lt;
+      items.push({ w: 3, d: 3, h: 2, cells }); }
+    { const ca = [126, 95, 59], cb = [111, 83, 52];                   // TWIG — 7 voxels with a bent tip, pine-trunk browns
+      const cells = new Array(7 * 1 * 2).fill(null);
+      for (let x = 0; x < 7; x++) { if (x < 5) cells[x] = (x & 1) ? cb : ca; else cells[x + 7] = (x & 1) ? cb : ca; }
+      items.push({ w: 7, d: 1, h: 2, cells }); }
+    const lin = (c) => Math.pow(c / 255, 2.2).toFixed(4);
+    const dims = [], flat = [];
+    for (const it of items) {
+      dims.push(`vec4<i32>(${it.w}, ${it.d}, ${it.h}, ${flat.length})`);
+      for (const c of it.cells) flat.push(c ? `vec4<f32>(${lin(c[0])}, ${lin(c[1])}, ${lin(c[2])}, 1.0)` : 'vec4<f32>(0.0)');
+    }
+    if (!flat.length) flat.push('vec4<f32>(0.0)');
+    const maxSteps = Math.max(...items.map(it => it.w + it.d + it.h + 3));
+    pickWGSL = `const ITEMN : i32 = ${items.length}; const PICKSTEPS : i32 = ${maxSteps};
+    const ITEMD : array<vec4<i32>, ${items.length}> = array<vec4<i32>, ${items.length}>(${dims.join(', ')});
+    var<private> ITEMMAP : array<vec4<f32>, ${flat.length}> = array<vec4<f32>, ${flat.length}>(${flat.join(', ')});`;
+  }
+
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz) {                        // terrain + lakes + twigs + grass; CLEARS the column above (removes stale trees)
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
     const h = H(wx, wz);
     hmap[gx + gz * WX] = h;                            // hmap = the GROUND (lakebeds included — you walk on them, underwater)
-    const lake = h <= WL;
+    const lake = h <= WL - 1 ||                        // ≥ 2 voxels deep, OR a 1-deep rim column joined to real water — crisp voxel shorelines, no isolated dither puddles
+      (h === WL && (H(wx - 1, wz) < WL || H(wx + 1, wz) < WL || H(wx, wz - 1) < WL || H(wx, wz + 1) < WL));
     const mossy = !lake && fbm(wx * 0.031 + 31.7, wz * 0.031 + 17.2) > 0.52;   // 0.56 → 0.52 ≈ +30% moss coverage
     const base = gx + gz * WX * WY;
     let surfMoss = false;                              // grass only grows where a MOSS surface voxel actually landed
@@ -184,9 +301,9 @@
       if (y < h) {
         const d = h - 1 - y;
         if (d === 0) {
-          const shore = h <= WL + 8 && nearLake(wx, wz);             // sand exists ONLY around actual lakes
-          if (shore && h <= WL + 3) c = SAND[(ihash(wx * 3 + 1, wz * 3 + 7) * 3) | 0];                   // beach ring + sandy lakebed
-          else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 3) / 5.5) c = SAND[(ihash(wx * 3 + 1, wz * 3 + 7) * 3) | 0];   // dithered sand→forest-floor blend
+          const shore = h <= WL + 6;                                 // any waterline — lakes AND rivers
+          if (shore && h <= WL + 2) c = SAND[(ihash(wx * 3 + 1, wz * 3 + 7) * 3) | 0];                   // waterline beach + sandy lakebed
+          else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(ihash(wx * 3 + 1, wz * 3 + 7) * 3) | 0];   // dithered sand-to-forest blend
           else { c = (mossy ? MOSS : NEEDLE)[(ihash(wx * 3 + 1, wz * 3 + 7) * 4) | 0]; surfMoss = mossy; }
         }
         else if (d < 3) c = DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
@@ -201,9 +318,8 @@
         for (let k = 0; k < gh; k++) { const ii = base + (h + k) * WX; if (W[ii]) break; W[ii] = gc; }
       }
     }
-    if (!lake && h > WL + 4 && h + 3 < WY) {           // FLOWERS: sparse everywhere, denser in meadow patches; stems match the grass
-      const meadow = fbm(wx * 0.019 + 63.1, wz * 0.019 + 44.9) > 0.60;
-      if (ihash(wx * 9 + 71, wz * 5 + 29) < (meadow ? 0.035 : 0.003)) {
+    if (!lake && h > WL + 4 && h + 3 < WY) {           // FLOWERS: everywhere except beaches/water; stems match the grass
+      if (ihash(wx * 9 + 71, wz * 5 + 29) < 0.005) {   // uniform spread — no clustering
         const s0 = base + h * WX;
         if (!W[s0] && !W[s0 + WX]) {
           W[s0] = GRASS[(ihash(wx + 13, wz * 13) * 4) | 0];
@@ -217,7 +333,7 @@
     if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.5) return null;
     const bx = Math.round(cx * BCELL + 4 + ihash(cx * 3 + 40, cz * 7 + 90) * (BCELL - 8));
     const bz = Math.round(cz * BCELL + 4 + ihash(cx * 13 + 6, cz * 5 + 44) * (BCELL - 8));
-    if (H(bx, bz) <= WL + 1) return null;              // no rocks in ponds
+    if (nearCave(bx, bz)) return null;                 // rocks DO grow underwater — scattered seafloor boulders
     const sr = ihash(cx * 17 + 9, cz * 19 + 2);
     const size = sr < 0.55 ? 0 : (sr < 0.86 ? 1 : 2);  // small pebble (pickable) / medium / large
     const rr = size === 0 ? 1.0 + sr * 0.9 : size === 1 ? 2.0 + sr * 1.2 : 3.4 + sr * 1.4;
@@ -232,72 +348,299 @@
             if (dx * dx + dz * dz + dy * dy * 2.2 > b.rr * b.rr) continue;
             const y = by + dy; if (y < 1 || y >= WY) continue;
             const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
-            if (!W[ii]) W[ii] = PEBBLE[(ihash(x + y, z - y) * 2) | 0];
+            if (!W[ii] || W[ii] === WATER_T || W[ii] === WATER_B) W[ii] = PEBBLE[dy === 0 ? 1 : 0];   // gradient: dark base, light top; pebbles sit on the seafloor too
           } } }
       return;
     }
-    const by = H(b.bx, b.bz) - 1;
+    const by = groundMin(b.bx, b.bz, Math.ceil(b.rr * 0.7)) - 1;
     const R = Math.ceil(b.rr) + 1;
     for (let dz = -R; dz <= R; dz++) { const z = b.bz + dz; if (z < z0 || z >= z1) continue;
       for (let dx = -R; dx <= R; dx++) { const x = b.bx + dx; if (x < x0 || x >= x1) continue;
         for (let dy = -R; dy <= R; dy++) {
-          if (dx * dx + dy * dy * 1.6 + dz * dz > b.rr * b.rr) continue;
+          if (dx * dx + dy * dy * 1.15 + dz * dz > b.rr * b.rr) continue;   // rounder — barely squashed
           const y = by + dy; if (y < 1 || y >= WY) continue;
           const gx = gwrap(x, WX), gz = gwrap(z, WZ);
-          W[gx + y * WX + gz * WX * WY] = ROCK[(ihash(x + y, z - y) * 3) | 0];
+          const tg = (dy + b.rr) / (2 * b.rr) * 3 + (ihash(x + y * 7, z) - 0.5) * 0.8;   // SMOOTH vertical gradient — dark base to light crown
+          W[gx + y * WX + gz * WX * WY] = ROCK[2 - Math.max(0, Math.min(2, tg | 0))];
           if (y >= hmap[gx + gz * WX]) hmap[gx + gz * WX] = y + 1;
         } } }
   }
-  const RCELL = 384, RMARGIN = 56;                     // LARGE ROCK FORMATIONS: occasional craggy outcrops, one candidate per 38 m cell
-  function formationAt(cx, cz) {
-    if (ihash(cx * 41 + 17, cz * 43 + 29) > 0.38) return null;
+  const RCELL = 272, RMARGIN = 150;                    // ROCK FORMATIONS: 3 sizes — small (the old size) / medium / LARGE crag
+  const formCache = new Map();                         // memoized — the LOD horizon bake sweeps thousands of cells
+  function formationAt(cx, cz) {                       // GRANITE DOME CLUSTERS — huge rounded weathered lobes packed side by side (Pikes Peak style)
+    const fkey = cx * 100003 + cz;
+    const hit = formCache.get(fkey);
+    if (hit !== undefined) return hit;
+    if (ihash(cx * 41 + 17, cz * 43 + 29) > 0.095) { formCache.set(fkey, null); return null; }
+    const sr = ihash(cx * 47 + 3, cz * 53 + 8);
+    const sc = sr < 0.55 ? 1.6 : (sr < 0.86 ? 2.6 : 4.0);
     const fx = cx * RCELL + 60 + ihash(cx * 3 + 90, cz * 5 + 12) * (RCELL - 120);
     const fz = cz * RCELL + 60 + ihash(cx * 7 + 33, cz * 11 + 71) * (RCELL - 120);
-    const n = 3 + ((ihash(cx + 5, cz + 9) * 4) | 0);
+    const n = 3 + ((ihash(cx + 5, cz + 9) * 3.99) | 0);
     const baseY = H(Math.round(fx), Math.round(fz));
-    const lumps = [];
-    for (let i = 0; i < n; i++) {                      // stacked, offset ellipsoid lumps → a rising crag
+    if (baseY <= WL + 4) { formCache.set(fkey, null); return null; }   // formations keep OFF the water — shorelines stay smooth
+    const domes = [];
+    for (let i = 0; i < n; i++) {
       const a = ihash(cx * 13 + i * 7, cz * 17 + i * 5) * 6.283;
-      const d = ihash(cx * 19 + i * 3, cz * 23 + i * 11) * 15;
-      lumps.push({ x: Math.round(fx + Math.cos(a) * d), z: Math.round(fz + Math.sin(a) * d), y: baseY - 4 + i * 5,
-        rx: 7 + ihash(cx + i * 29, cz + i * 31) * 9, ry: 8 + ihash(cx + i * 37, cz + i * 41) * 12, rz: 7 + ihash(cx + i * 43, cz + i * 47) * 9 });
+      const d = ihash(cx * 19 + i * 3, cz * 23 + i * 11) * 13 * sc;
+      const rh = Math.min(34, (7 + ihash(cx + i * 29, cz + i * 31) * 9) * sc * 0.8);
+      const dxc = Math.round(fx + Math.cos(a) * d), dzc = Math.round(fz + Math.sin(a) * d);
+      if (H(dxc, dzc) <= WL + 4) continue;             // drop any dome whose own footing is wet
+      if (nearCave(dxc, dzc, 92)) continue;            // …or that would overhang a ravine (gorge half-width ~40 + dome radius ~39)
+      domes.push({
+        x: Math.round(fx + Math.cos(a) * d), z: Math.round(fz + Math.sin(a) * d),
+        rh,
+        ry: Math.min(74, rh * (1.35 + ihash(cx + i * 37, cz + i * 41) * 0.9)),   // taller than wide — bulbous standing lobes
+        y0: baseY - Math.round(rh * 0.35),
+        p1: ihash(cx * 61 + i, cz * 67 + i * 3) * 6.283, p2: ihash(cx * 71 + i * 5, cz * 73 + i * 7) * 6.283,
+        baseY });
     }
-    return lumps;
+    const out = domes.length ? domes : null;
+    formCache.set(fkey, out);
+    return out;
   }
-  function stampFormation(lumps, x0, x1, z0, z1) {
-    for (const L of lumps) {
-      const Rx = Math.ceil(L.rx), Ry = Math.ceil(L.ry), Rz = Math.ceil(L.rz);
-      for (let dz = -Rz; dz <= Rz; dz++) { const z = L.z + dz; if (z < z0 || z >= z1) continue;
-        for (let dx = -Rx; dx <= Rx; dx++) { const x = L.x + dx; if (x < x0 || x >= x1) continue;
-          const jag = 0.8 + ihash(x * 7 + 1, z * 9 + 4) * 0.32;    // per-column radius jitter → vertical fluting, craggy silhouette
-          for (let dy = -Ry; dy <= Ry; dy++) {
-            if ((dx * dx) / (L.rx * L.rx) + (dy * dy) / (L.ry * L.ry) + (dz * dz) / (L.rz * L.rz) > jag) continue;
-            const y = L.y + dy; if (y < 1 || y >= WY) continue;
-            const gx = gwrap(x, WX), gz = gwrap(z, WZ);
-            W[gx + y * WX + gz * WX * WY] = ROCK[(ihash(x + y * 3, z - y) * 3) | 0];
-            if (y >= hmap[gx + gz * WX]) hmap[gx + gz * WX] = y + 1;   // climbable
-          } } }
+  function stampFormation(domes, x0, x1, z0, z1) {
+    for (const D of domes) {
+      const RB = Math.ceil(D.rh * 1.15) + 2;
+      const bx0 = Math.max(x0, D.x - RB), bx1 = Math.min(x1, D.x + RB + 1);
+      const bz0 = Math.max(z0, D.z - RB), bz1 = Math.min(z1, D.z + RB + 1);
+      const topCap = Math.min(WY - 2, D.y0 + Math.ceil(D.ry));
+      for (let z = bz0; z < bz1; z++) for (let x = bx0; x < bx1; x++) {
+        const dx = x - D.x, dz = z - D.z;
+        const ang = Math.atan2(dz, dx);
+        const rmod = D.rh * (1 + 0.10 * Math.sin(2 * ang + D.p1) + 0.07 * Math.sin(3 * ang + D.p2));   // gentle organic warp — still ROUND
+        const rr2 = dx * dx + dz * dz;
+        if (rr2 > rmod * rmod * 1.05) continue;
+        const startY = Math.max(2, Math.min(H(x, z), D.y0) - 2);
+        const gx = gwrap(x, WX), gz = gwrap(z, WZ);
+        for (let y = startY; y <= topCap; y++) {
+          const dy = y - D.y0;
+          const vert = dy > 0 ? (dy / D.ry) : (dy / (D.rh * 0.9));
+          const dd = rr2 / (rmod * rmod) + vert * vert;
+          const jag = 1 + (ihash(dx + ((y + 64) >> 3) * 57, dz * 3 - ((y + 64) >> 3) * 31) - 0.5) * 0.10;   // whisper of weathering
+          if (dd > jag) continue;
+          const lv = Math.max(0, Math.min(2.99, (y - D.baseY) / Math.max(1, D.ry) * 3));
+          const li = Math.max(0, Math.min(2, Math.floor(lv + (ihash(x * 7 + y * 3, z * 5 - y) - 0.5) * 0.6)));   // DITHERED layer boundaries — the sand→grass technique
+          W[gx + y * WX + gz * WX * WY] = (ihash(x + y * 13, z - y * 7) < 0.5 ? ROCK : ROCKX)[2 - li];           // dark base / mid / light crown, two-tone swatches
+          const ch = gx + gz * WX;
+          if (y >= hmap[ch]) hmap[ch] = y + 1;
+        }
+      }
     }
   }
-  function nearFormation(wx, wz) {                     // trees keep off the crags
-    for (let cz = Math.floor((wz - 96) / RCELL); cz <= Math.floor((wz + 96) / RCELL); cz++)
-      for (let cx = Math.floor((wx - 96) / RCELL); cx <= Math.floor((wx + 96) / RCELL); cx++) {
-        const lumps = formationAt(cx, cz); if (!lumps) continue;
-        for (const L of lumps) { const dx = wx - L.x, dz = wz - L.z, r = Math.max(L.rx, L.rz) + 3; if (dx * dx + dz * dz < r * r) return true; }
+  function nearFormation(wx, wz) {                     // trees keep off the domes
+    for (let cz = Math.floor((wz - 220) / RCELL); cz <= Math.floor((wz + 220) / RCELL); cz++)
+      for (let cx = Math.floor((wx - 220) / RCELL); cx <= Math.floor((wx + 220) / RCELL); cx++) {
+        const domes = formationAt(cx, cz); if (!domes) continue;
+        for (const D of domes) { const dx = wx - D.x, dz = wz - D.z, r = D.rh * 1.15 + 5; if (dx * dx + dz * dz < r * r) return true; }
       }
     return false;
   }
+  const CAVE_CELL = 640, CAVE_MARGIN = 900;            // RAVINES -> CAVES: sparser, VAST gorges (1/4 the old frequency)
+  const caveCache = new Map();
+  function caveAt(cx, cz) {
+    const key = cx * 100003 + cz;
+    let c = caveCache.get(key);
+    if (c !== undefined) return c;
+    c = null;
+    if (ihash(cx * 91 + 31, cz * 97 + 57) <= 0.125) {
+      const sx = Math.round(cx * CAVE_CELL + 60 + ihash(cx * 3 + 12, cz * 7 + 44) * (CAVE_CELL - 120));
+      const sz = Math.round(cz * CAVE_CELL + 60 + ihash(cx * 9 + 71, cz * 5 + 13) * (CAVE_CELL - 120));
+      const ang = ihash(cx + 21, cz + 63) * 6.283, len = 450 + ihash(cx * 23, cz * 29) * 350;
+      const wb = 18 + ihash(cx * 27 + 4, cz * 31 + 9) * 16;
+      const nx2 = -Math.sin(ang), nz2 = Math.cos(ang);
+      let dry = true;                                  // the WHOLE path must be dry — centre AND both rims, so a gorge never runs beside a river either
+      for (let q = 0; q <= 8 && dry; q++) {
+        const px2 = sx + Math.cos(ang) * (len * q / 8), pz2 = sz + Math.sin(ang) * (len * q / 8);
+        for (let s = -1; s <= 1; s++) {
+          const lx = Math.round(px2 + nx2 * s * (wb * 1.4 + 34)), lz = Math.round(pz2 + nz2 * s * (wb * 1.4 + 34));
+          if (H(lx, lz) <= WL + 4 || basinM(lx, lz) > 0.1) { dry = false; break; }
+        }
+      }
+      if (dry) c = { sx, sz, ang, len, wb, dep: 280, seed: cx * 733 + cz * 911 };
+    }
+    caveCache.set(key, c);
+    return c;
+  }
+  function carveSphere(px, py, pz, r, x0, x1, z0, z1) {
+    const R = Math.ceil(r);
+    const cxq = Math.round(px), cyq = Math.round(py), czq = Math.round(pz);
+    for (let dz = -R; dz <= R; dz++) { const z = czq + dz; if (z < z0 || z >= z1) continue;
+      for (let dx = -R; dx <= R; dx++) { const x = cxq + dx; if (x < x0 || x >= x1) continue;
+        const gx = gwrap(x, WX), gz = gwrap(z, WZ);
+        let touched = false;
+        for (let dy = -R; dy <= R; dy++) {
+          const y = cyq + dy; if (y < 4 || y >= WY) continue;
+          if (dx * dx + dy * dy + dz * dz > r * r) continue;
+          const ii = gx + y * WX + gz * WX * WY;
+          const v = W[ii];
+          if (v && v !== WATER_T && v !== WATER_B) { W[ii] = 0; touched = true; }
+        }
+        if (touched) {                                  // keep the walkable ground honest where the carve reaches daylight
+          const ci = gx + gz * WX;
+          let t = hmap[ci];
+          while (t > 4 && W[gx + (t - 1) * WX + gz * WX * WY] === 0) t--;
+          hmap[ci] = t;
+        }
+      } }
+  }
+  function stampCave(c, x0, x1, z0, z1) {
+    const dxr = Math.cos(c.ang), dzr = Math.sin(c.ang);
+    const nx = -dzr, nz = dxr;
+    const ex2 = c.sx + dxr * c.len, ez2 = c.sz + dzr * c.len;
+    const WMAX = 52;                                    // vast gorge: pointy ends, near-vertical walls, noisy bedrock floor
+    const bx0 = Math.max(x0, Math.floor(Math.min(c.sx, ex2) - WMAX)), bx1 = Math.min(x1, Math.ceil(Math.max(c.sx, ex2) + WMAX) + 1);
+    const bz0 = Math.max(z0, Math.floor(Math.min(c.sz, ez2) - WMAX)), bz1 = Math.min(z1, Math.ceil(Math.max(c.sz, ez2) + WMAX) + 1);
+    for (let z = bz0; z < bz1; z++) for (let x = bx0; x < bx1; x++) {
+      const t = Math.max(0, Math.min(c.len, (x - c.sx) * dxr + (z - c.sz) * dzr));
+      const k = Math.sin(Math.PI * t / c.len);
+      const off = Math.sin(t * 0.02 + c.seed) * 14 + Math.sin(t * 0.053 + c.seed * 1.7) * 5;   // long lazy snake
+      const pd = (x - (c.sx + dxr * t)) * nx + (z - (c.sz + dzr * t)) * nz;
+      const wEff = c.wb * Math.pow(k, 1.5) + Math.sin(t * 0.05 + c.seed * 2.3) * 1.5;          // pow taper → the gorge ENDS IN A POINT
+      if (wEff < 0.8) continue;
+      const d = Math.abs(pd - off);
+      if (d > wEff + 4.5) continue;                    // generous cull — the per-band wall jag decides the real edge
+      const surfY = H(x, z);
+      if (surfY <= WL + 6 || basinM(x, z) > 0.15) continue;         // belt-and-braces column guard near any water
+      const floorY = 2 + Math.round(fbm(x * 0.05 + 5.1, z * 0.05 + 9.7) * 4);   // noisy bedrock floor
+      const gx = gwrap(x, WX), gz = gwrap(z, WZ);
+      let carvedFloor = false;
+      for (let y = Math.max(1, floorY); y <= Math.min(WY - 1, surfY + 6); y++) {   // JAGGED walls: the wall line wanders per 4-voxel band
+        const band = y >> 2;
+        const wallJ = (ihash(x * 3 + band * 151, z * 7 - band * 57) - 0.5) * 4.2
+                    + Math.sin(y * 0.11 + x * 0.05 + z * 0.07) * 1.4;
+        if (d > wEff + wallJ) continue;
+        const ii = gx + y * WX + gz * WX * WY;
+        if (W[ii] !== WATER_T && W[ii] !== WATER_B) { W[ii] = 0; if (y <= floorY + 1) carvedFloor = true; }
+      }
+      const ci = gx + gz * WX;
+      if (d < wEff - 3) {
+        if (hmap[ci] > floorY) hmap[ci] = floorY;
+        const lt = fbm(x * 0.06 + 21.3, z * 0.06 + 8.7);            // LAVA pool — smooth red/orange/yellow patches that blend
+        const top = lt < 0.40 ? LAVA_R : (lt < 0.62 ? LAVA_T : LAVA_Y);
+        W[gx + Math.max(1, floorY) * WX + gz * WX * WY] = LAVA_B;
+        W[gx + (Math.max(1, floorY) + 1) * WX + gz * WX * WY] = top;
+      } else if (carvedFloor && hmap[ci] > floorY) hmap[ci] = floorY;
+    }
+    for (let t = 4; t < c.len; t += 5) {                // IRON + COAL nodules protruding from the gorge walls
+      const k = Math.sin(Math.PI * t / c.len);
+      const wEff = c.wb * Math.pow(k, 1.5);
+      if (wEff < 3) continue;
+      const off = Math.sin(t * 0.02 + c.seed) * 14 + Math.sin(t * 0.053 + c.seed * 1.7) * 5;
+      for (let side = -1; side <= 1; side += 2) {
+        const r0 = ihash(c.seed + t * 3, side * 11 + 5);
+        if (r0 > 0.55) continue;
+        const wx2 = Math.round(c.sx + dxr * t + nx * (off + side * (wEff - 1)));
+        const wz2 = Math.round(c.sz + dzr * t + nz * (off + side * (wEff - 1)));
+        if (wx2 < x0 + 2 || wx2 >= x1 - 2 || wz2 < z0 + 2 || wz2 >= z1 - 2) continue;
+        const sy = H(wx2, wz2);
+        const oy = Math.max(8, Math.round(sy - 6 - r0 * (c.dep > sy ? sy - 12 : c.dep - 8)));
+        const ORE = ihash(c.seed + t, side) < 0.5 ? OREIRON : ORECOAL;
+        const br = 1.2 + ihash(t, c.seed + side) * 1.1;
+        const BR = Math.ceil(br);
+        for (let dz2 = -BR; dz2 <= BR; dz2++) for (let dy2 = -BR; dy2 <= BR; dy2++) for (let dx2 = -BR; dx2 <= BR; dx2++) {
+          if (dx2 * dx2 + dy2 * dy2 + dz2 * dz2 > br * br) continue;
+          const yy = oy + dy2; if (yy < 5 || yy >= WY) continue;
+          const xx = wx2 + dx2, zz = wz2 + dz2;
+          if (xx < x0 || xx >= x1 || zz < z0 || zz >= z1) continue;
+          const jj = gwrap(xx, WX) + yy * WX + gwrap(zz, WZ) * WX * WY;
+          if (W[jj] !== WATER_T && W[jj] !== WATER_B) W[jj] = ORE[(ihash(xx + yy, zz - yy) * 2) | 0];
+        }
+      }
+    }
+    for (let t = 36; t < c.len - 36; t += 44) {         // CAVE MOUTHS: walk-in tunnels punched through the gorge walls
+      const hcm = ihash(c.seed + t * 7, 313);
+      if (hcm > 0.5) continue;
+      const kk = Math.sin(Math.PI * t / c.len);
+      const wE = c.wb * Math.pow(kk, 1.5);
+      if (wE < 6) continue;
+      const offT = Math.sin(t * 0.02 + c.seed) * 14 + Math.sin(t * 0.053 + c.seed * 1.7) * 5;
+      const side = hcm < 0.25 ? 1 : -1;
+      let cxp = c.sx + dxr * t + nx * (offT + side * (wE + 1));
+      let czp = c.sz + dzr * t + nz * (offT + side * (wE + 1));
+      let cyp = 12 + hcm * 22;                          // well above the lava
+      let yaw2 = Math.atan2(nz * side, nx * side);
+      let pit2 = 0.05 + hcm * 0.2;
+      for (let i2 = 0; i2 < 40; i2++) {
+        carveSphere(cxp, cyp, czp, 3.4 + ihash(c.seed + i2, t) * 1.2, x0, x1, z0, z1);
+        yaw2 += (ihash(c.seed + i2 * 3, t + 5) - 0.5) * 0.4;
+        pit2 = Math.max(-0.2, Math.min(0.35, pit2 + (ihash(c.seed + i2 * 7, t + 9) - 0.5) * 0.2));
+        cxp += Math.cos(yaw2) * Math.cos(pit2) * 2.2;
+        czp += Math.sin(yaw2) * Math.cos(pit2) * 2.2;
+        cyp += Math.sin(pit2) * 2.2;
+        if (cyp > H(Math.round(cxp), Math.round(czp)) - 4) break;   // surfaced — a hillside mouth
+      }
+    }
+    let px = c.sx + dxr * c.len, pz = c.sz + dzr * c.len;   // CAVE WORM: descends from the ravine end, wandering, with chambers
+    let py = 14;                                       // the gorge floor sits at bedrock — caves branch from down there
+    let yaw3 = c.ang + (ihash(c.seed, 5) - 0.5) * 1.2;
+    let pit = -0.30;
+    for (let i = 0; i < 110; i++) {
+      const rr2 = 3.2 + ihash(c.seed + i, 11) * 2.4 + ((i % 34) < 4 ? 3.0 : 0);
+      if (H(Math.round(px), Math.round(pz)) > WL + 2) carveSphere(px, py, pz, rr2, x0, x1, z0, z1);   // never tunnel under water
+      yaw3 += (ihash(c.seed + i, 17) - 0.5) * 0.55;
+      pit = Math.max(-0.5, Math.min(0.12, pit + (ihash(c.seed + i, 23) - 0.5) * 0.24));
+      px += Math.cos(yaw3) * Math.cos(pit) * 2.4;
+      pz += Math.sin(yaw3) * Math.cos(pit) * 2.4;
+      py += Math.sin(pit) * 2.4;
+      if (py < 9) pit = Math.abs(pit) * 0.5;
+      if (i > 30 && py > H(Math.round(px), Math.round(pz)) - 3) break;   // resurfaced - a natural cave mouth
+    }
+  }
+  function nearCave(x, z, r = 56) {                    // surface decor keeps off the ravine line (r widens for big features like domes)
+    for (let cz = Math.floor((z - CAVE_MARGIN) / CAVE_CELL); cz <= Math.floor((z + CAVE_MARGIN) / CAVE_CELL); cz++)
+      for (let cx = Math.floor((x - CAVE_MARGIN) / CAVE_CELL); cx <= Math.floor((x + CAVE_MARGIN) / CAVE_CELL); cx++) {
+        const c = caveAt(cx, cz); if (!c) continue;
+        const dxr = Math.cos(c.ang), dzr = Math.sin(c.ang);
+        const t = Math.max(0, Math.min(c.len, (x - c.sx) * dxr + (z - c.sz) * dzr));
+        const ddx = x - (c.sx + dxr * t), ddz = z - (c.sz + dzr * t);
+        if (ddx * ddx + ddz * ddz < r * r) return true;
+      }
+    return false;
+  }
+  const OCELL = 40;                                    // MINERAL veins: small blobs in the deep stone, type by depth
+  function oreAt(cx, cz) {
+    if (ihash(cx * 101 + 9, cz * 103 + 27) > 0.55) return null;
+    const x = Math.round(cx * OCELL + 4 + ihash(cx * 7 + 2, cz * 3 + 6) * (OCELL - 8));
+    const z = Math.round(cz * OCELL + 4 + ihash(cx * 5 + 9, cz * 11 + 1) * (OCELL - 8));
+    const df = ihash(cx * 13 + 4, cz * 17 + 8);
+    const tr = ihash(cx * 19 + 6, cz * 23 + 2);
+    const type = df < 0.4 ? (tr < 0.6 ? 0 : 1) : (df < 0.75 ? (tr < 0.5 ? 1 : 2) : (tr < 0.55 ? 2 : 3));
+    return { x, z, df, type, rr: 1.4 + ihash(cx + 3, cz + 5) * 1.3 };
+  }
+  function stampOre(o, x0, x1, z0, z1) {
+    const y0 = Math.round(8 + o.df * Math.max(4, H(o.x, o.z) - 20));
+    const ORES = [ORECOAL, OREIRON, OREGOLD, ORECRYS];
+    const R = Math.ceil(o.rr);
+    for (let dz = -R; dz <= R; dz++) { const z = o.z + dz; if (z < z0 || z >= z1) continue;
+      for (let dx = -R; dx <= R; dx++) { const x = o.x + dx; if (x < x0 || x >= x1) continue;
+        for (let dy = -R; dy <= R; dy++) {
+          if (dx * dx + dy * dy + dz * dz > o.rr * o.rr) continue;
+          const y = y0 + dy; if (y < 5 || y >= WY) continue;
+          const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+          const v = W[ii];
+          if (v === ROCK[0] || v === ROCK[1] || v === ROCK[2]) W[ii] = ORES[o.type][(ihash(x + y, z - y) * 2) | 0];
+        } } }
+  }
   const FCELL = 24;                                    // FERNS: one candidate per 2.4 m cell (walk-through decor), 3 sizes
-  const FERN_ARCH = [[0, 1, 2, 2, 1], [0, 1, 2, 3, 3, 2], [0, 1, 2, 3, 4, 4, 3, 2]];   // small = the ORIGINAL fern; medium; large = big + THICK
-  const FERN_STEM = [2, 3, 4];
+  const FERN_ARCH = [[0, 1, 2, 2, 1], [0, 1, 2, 3, 4, 3, 2], [0, 1, 2, 3, 4, 5, 5, 4, 3, 2]];   // BIG size gap: small = the original; large = a huge thick bush
+  const FERN_STEM = [2, 3, 5];
   function fernAt(cx, cz) {
-    if (ihash(cx * 53 + 11, cz * 59 + 23) > 0.30) return null;
+    if (ihash(cx * 53 + 11, cz * 59 + 23) > 0.20) return null;
     const sr = ihash(cx * 23 + 5, cz * 29 + 13);
     const f = { wx: Math.round(cx * FCELL + 3 + ihash(cx * 5 + 1, cz * 3 + 7) * (FCELL - 6)),
                 wz: Math.round(cz * FCELL + 3 + ihash(cx * 11 + 2, cz * 7 + 5) * (FCELL - 6)),
                 n: 5 + ((ihash(cx + 3, cz + 1) * 3) | 0), ph: ihash(cx * 2 + 1, cz * 2 + 3) * 6.283,
-                size: sr < 0.5 ? 0 : (sr < 0.85 ? 1 : 2) };
-    return H(f.wx, f.wz) <= WL + 4 ? null : f;         // no ferns in lakes or on beaches
+                size: sr < 0.55 ? 0 : (sr < 0.87 ? 1 : 2) };
+    if (H(f.wx, f.wz) <= WL + 4) return null;          // no ferns in water or on beaches
+    if (nearCave(f.wx, f.wz)) return null;
+    for (let cz2 = Math.floor((f.wz - 12) / TCELL); cz2 <= Math.floor((f.wz + 12) / TCELL); cz2++)   // keep clear of pine trunks — no clipping through trees
+      for (let cx2 = Math.floor((f.wx - 12) / TCELL); cx2 <= Math.floor((f.wx + 12) / TCELL); cx2++) {
+        const t = treeAt(cx2, cz2); if (!t) continue;
+        const dx = f.wx - t.tx, dz = f.wz - t.tz;
+        if (dx * dx + dz * dz < 12 * 12) return null;
+      }
+    return f;
   }
   function stampFern(f, x0, x1, z0, z1) {
     const gy = H(f.wx, f.wz);
@@ -325,7 +668,8 @@
     if (ihash(cx * 61 + 7, cz * 67 + 19) > 0.42) return null;
     const wx = Math.round(cx * SCELL + 2 + ihash(cx * 3 + 8, cz * 5 + 4) * (SCELL - 4));
     const wz = Math.round(cz * SCELL + 2 + ihash(cx * 7 + 2, cz * 9 + 6) * (SCELL - 4));
-    if (H(wx, wz) <= WL + 4) return null;             // sticks stay off the beach
+    if (H(wx, wz) <= WL + 4) return null;              // sticks stay off the beach
+    if (nearCave(wx, wz)) return null;
     const fr = ihash(cx * 11 + 3, cz * 13 + 5);
     return { wx, wz, form: fr < 0.62 ? 0 : (fr < 0.92 ? 1 : 2), ax: ihash(cx + 4, cz + 7) < 0.5 ? 0 : 1 };
   }
@@ -348,7 +692,7 @@
       }
     } else {                                           // LOG: 14–18 long, IRREGULAR — drifting spine, radius 1–2 by hash, tapered ends
       const len = 14 + ((ihash(s.wx, s.wz) * 4.99) | 0);
-      const y0 = H(s.wx + ((dx * len) >> 1), s.wz + ((dz * len) >> 1));
+      const y0 = groundMin(s.wx + ((dx * len) >> 1), s.wz + ((dz * len) >> 1), 2);
       for (let i = 0; i < len; i++) {
         const drift = Math.round(bend * (i * i) / (len * 3.0));
         const taper = (i < 2 || i >= len - 3) ? 1 : 2;
@@ -370,13 +714,14 @@
     const wz = Math.round(cz * TCELL + 6 + ihash(cx * 9 + 4, cz * 3 + 8) * (TCELL - 12));
     const dxs = wx - SPWX, dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // spawn clearing
-    if (H(wx, wz) <= WL + 4) return null;              // no pines in ponds or on beaches
+    if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
+    if (nearCave(wx, wz)) return null;
     if (nearFormation(wx, wz)) return null;            // don't grow through the crags
     return { tx: wx, tz: wz, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 1 + ((ihash(cx * 13, cz * 17) * 7) | 0) };
   }
   function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
     const R = MROT[tr.rot];
-    const gy = H(tr.tx, tr.tz) - tr.sink;              // random sink (1–7) varies how deep each pine sits
+    const gy = groundMin(tr.tx, tr.tz, 2) - tr.sink;              // random sink (1–7) varies how deep each pine sits
     const bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
     const xa = Math.max(0, x0 - bx), xb = Math.min(R.sx - 1, x1 - 1 - bx);
     const za = Math.max(0, z0 - bz), zb = Math.min(R.sz - 1, z1 - 1 - bz);
@@ -407,6 +752,8 @@
   function genRegion(x0, x1, z0, z1) {
     for (let wz = z0; wz < z1; wz++) for (let wx = x0; wx < x1; wx++) fillColumn(wx, wz);
     stampCells(x0, x1, z0, z1, RCELL, RMARGIN, formationAt, stampFormation);
+    stampCells(x0, x1, z0, z1, OCELL, 6, oreAt, stampOre);
+    stampCells(x0, x1, z0, z1, CAVE_CELL, CAVE_MARGIN, caveAt, stampCave);
     stampCells(x0, x1, z0, z1, BCELL, 6, boulderAt, stampBoulder);
     stampCells(x0, x1, z0, z1, FCELL, 8, fernAt, stampFern);
     stampCells(x0, x1, z0, z1, SCELL, 24, stickAt, stampStick);
@@ -431,7 +778,7 @@
     if (withStages) await stage('baking occupancy…');
     rebuildBricks(0, WX, 0, WZ);
   }
-  while (H(SPWX, SPWZ) <= WL + 1) SPWX += 16;          // never spawn in a lake
+  while (H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ)) SPWX += 16;   // never spawn in a lake or a gorge
   winOX = Math.round(SPWX / 8) * 8 - HALF; winOZ = Math.round(SPWZ / 8) * 8 - HALF;
   await buildWorld(true);
   console.log('[vb] world built at', winOX, winOZ, 'spawn', SPWX, SPWZ);
@@ -446,12 +793,119 @@
   { const f = new Float32Array(palBuf.getMappedRange());           // sRGB → linear; shaders work in linear
     for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); f[i * 4 + 3] = 0; } }
   palBuf.unmap();
-  const UF = new Float32Array(48);
+  const UF = new Float32Array(72);
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);
   const stagBuf = device.createBuffer({ size: stag.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const scatBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  // ── LOD FAR-FIELD ── Distant Horizons-style: an 8-voxel-per-texel height+color map baked on the CPU from
+  // the SAME deterministic terrain functions (H, rivers, basins, sand, moss) plus stamped trees + rock domes.
+  // The tracer raymarches this heightfield wherever the detailed window misses — the horizon grows ~5×
+  // (37 m → 200 m) for a handful of buffer reads per horizon pixel. Texel: RGB565 color | 11-bit height | water flag.
+  const LODN = 768, LODSC = 8, LODSPAN = LODN * LODSC, LODFAR = 2000;   // FAR ring: 6144-voxel (614 m) map, marched to 200 m
+  const NLODN = 1024, NLODSC = 2, NLODSPAN = NLODN * NLODSC;            // NEAR ring: 2-voxel (20 cm) texels over ±102 m — 4× density where the LOD is closest to the eye
+  const lodArr = new Uint32Array(LODN * LODN);
+  const nlodArr = new Uint32Array(NLODN * NLODN);
+  const lodBuf = device.createBuffer({ size: (LODN * LODN + NLODN * NLODN) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });   // [far | near] in one buffer
+  let lodOX = 0, lodOZ = 0, lodReady = false, lodJob = null;
+  let nlodOX = 0, nlodOZ = 0, nlodReady = false, nlodJob = null;
+  const lodPack = (r, g, b, h, wf) => (((r >> 3) | ((g >> 2) << 5) | ((b >> 3) << 11) | (Math.min(2047, Math.max(0, h | 0)) << 16) | (wf << 27)) >>> 0);
+  const FOLI = (() => { let r = 0, g = 0, b = 0; const n = Math.max(1, foliageIds.length);   // mean canopy green for LOD tree cones — ×0.56 ≈ the self-shadowed look of a real pine
+    for (const f of foliageIds) { r += palette[f][0]; g += palette[f][1]; b += palette[f][2]; } return [(r / n * 0.56) | 0, (g / n * 0.56) | 0, (b / n * 0.56) | 0]; })();
+  function* lodBakeGen(arr, N, SC, pcx, pcz, isNear) {   // shared bake — terrain, domes, pine cones; near ring adds field/seafloor boulders
+    const SPAN = N * SC;
+    const ox = Math.round((pcx - SPAN / 2) / SC) * SC, oz = Math.round((pcz - SPAN / 2) / SC) * SC;
+    for (let tz = 0; tz < N; tz++) {                   // base terrain — colors mirror fillColumn's surface rules exactly, so the seam blends
+      const wz = oz + tz * SC + (SC >> 1);
+      for (let tx = 0; tx < N; tx++) {
+        const wx = ox + tx * SC + (SC >> 1);
+        const h = H(wx, wz);
+        let c, hh = h, wf = 0;
+        if (h <= WL - 1) { wf = 1; hh = WL + 1; const d = Math.min(1, (WL - h) / 16); c = [58 - 26 * d, 128 - 52 * d, 154 - 50 * d]; }   // water, depth-darkened
+        else if (h <= WL + 2) c = palette[SAND[(ihash(wx * 3 + 1, wz * 3 + 7) * 3) | 0]];
+        else if (h <= WL + 6 && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = palette[SAND[(ihash(wx * 3 + 1, wz * 3 + 7) * 3) | 0]];
+        else c = palette[(fbm(wx * 0.031 + 31.7, wz * 0.031 + 17.2) > 0.52 ? MOSS : NEEDLE)[(ihash(wx * 3 + 1, wz * 3 + 7) * 4) | 0]];
+        arr[tx + tz * N] = lodPack(c[0], c[1], c[2], hh, wf);
+      }
+      if ((tz & 1) === 1) yield;
+    }
+    for (let cz2 = Math.floor((oz - RMARGIN) / RCELL); cz2 <= Math.floor((oz + SPAN + RMARGIN) / RCELL); cz2++) {   // granite domes
+      for (let cx2 = Math.floor((ox - RMARGIN) / RCELL); cx2 <= Math.floor((ox + SPAN + RMARGIN) / RCELL); cx2++) {
+        const domes = formationAt(cx2, cz2); if (!domes) continue;
+        for (const D of domes) {
+          const R = Math.ceil(D.rh / SC) + 1;
+          const tcx = Math.round((D.x - ox) / SC), tcz = Math.round((D.z - oz) / SC);
+          for (let dz = -R; dz <= R; dz++) { const z2 = tcz + dz; if (z2 < 0 || z2 >= N) continue;
+            for (let dx = -R; dx <= R; dx++) { const x2 = tcx + dx; if (x2 < 0 || x2 >= N) continue;
+              const wdx = x2 * SC + (SC >> 1) + ox - D.x, wdz = z2 * SC + (SC >> 1) + oz - D.z;
+              const rr2 = wdx * wdx + wdz * wdz, rh2 = D.rh * D.rh;
+              if (rr2 > rh2) continue;
+              const ht = Math.min(WY - 2, Math.round(D.y0 + D.ry * Math.sqrt(1 - rr2 / rh2)));
+              const i2 = x2 + z2 * N;
+              if (ht <= ((arr[i2] >> 16) & 2047)) continue;
+              const rc = palette[(ihash(x2 * 7 + 1, z2 * 5 + 3) < 0.5 ? ROCK : ROCKX)[1]];
+              arr[i2] = lodPack(rc[0], rc[1], rc[2], ht, 0);
+            } }
+        }
+      }
+      yield;
+    }
+    if (isNear) {                                      // field + SEAFLOOR boulders — a texel or two each, only worth it at near-ring density
+      for (let cz2 = Math.floor(oz / BCELL); cz2 <= Math.floor((oz + SPAN) / BCELL); cz2++) {
+        for (let cx2 = Math.floor(ox / BCELL); cx2 <= Math.floor((ox + SPAN) / BCELL); cx2++) {
+          const b = boulderAt(cx2, cz2); if (!b || b.size === 0) continue;
+          const gy = groundMin(b.bx, b.bz, Math.ceil(b.rr * 0.7)) - 1;
+          const R2 = Math.max(1, Math.round(b.rr / SC));
+          const bcx = Math.round((b.bx - ox) / SC), bcz = Math.round((b.bz - oz) / SC);
+          for (let dz = -R2; dz <= R2; dz++) { const z2 = bcz + dz; if (z2 < 0 || z2 >= N) continue;
+            for (let dx = -R2; dx <= R2; dx++) { const x2 = bcx + dx; if (x2 < 0 || x2 >= N) continue;
+              const ht = Math.round(gy + b.rr * (1 - 0.4 * Math.hypot(dx, dz) / (R2 + 0.001)));
+              const i2 = x2 + z2 * N;
+              if (ht <= ((arr[i2] >> 16) & 2047)) continue;             // submerged rocks stay under the water plane automatically
+              const rc = palette[ROCK[(dx + dz) & 1 ? 1 : 0]];
+              arr[i2] = lodPack(rc[0], rc[1], rc[2], ht, 0);
+            } }
+        }
+        if ((cz2 & 7) === 7) yield;
+      }
+    }
+    for (let cz2 = Math.floor((oz - TMARGIN) / TCELL); cz2 <= Math.floor((oz + SPAN + TMARGIN) / TCELL); cz2++) {   // pine canopy CONES — apex over the trunk, ~2.6 slope skirts
+      for (let cx2 = Math.floor((ox - TMARGIN) / TCELL); cx2 <= Math.floor((ox + SPAN + TMARGIN) / TCELL); cx2++) {
+        const tr = treeAt(cx2, cz2); if (!tr) continue;
+        const top = H(tr.tx, tr.tz) - tr.sink + Math.round(MSZ * 0.62);
+        const tcx = Math.round((tr.tx - ox) / SC), tcz = Math.round((tr.tz - oz) / SC);
+        const R = Math.max(1, Math.round(15 / SC));
+        for (let dz = -R; dz <= R; dz++) { const z2 = tcz + dz; if (z2 < 0 || z2 >= N) continue;
+          for (let dx = -R; dx <= R; dx++) { const x2 = tcx + dx; if (x2 < 0 || x2 >= N) continue;
+            const ht = Math.round(top - Math.hypot(dx, dz) * SC * 2.6);
+            const i2 = x2 + z2 * N;
+            if (ht <= ((arr[i2] >> 16) & 2047)) continue;
+            const jj = 0.82 + ihash(x2 * 13 + 5, z2 * 17 + 9) * 0.36;
+            arr[i2] = lodPack(Math.min(255, (FOLI[0] * jj) | 0), Math.min(255, (FOLI[1] * jj) | 0), Math.min(255, (FOLI[2] * jj) | 0), ht, 0);
+          } }
+      }
+      yield;
+    }
+    return { ox, oz };
+  }
+  function* lodJobGen(pcx, pcz) {                      // FAR ring wrapper — COMMIT flips buffer + origin together
+    const g = lodBakeGen(lodArr, LODN, LODSC, pcx, pcz, false);
+    let r = g.next(); while (!r.done) { yield; r = g.next(); }
+    device.queue.writeBuffer(lodBuf, 0, lodArr);
+    lodOX = r.value.ox; lodOZ = r.value.oz; lodReady = true;
+  }
+  function* nlodJobGen(pcx, pcz) {                     // NEAR ring wrapper
+    const g = lodBakeGen(nlodArr, NLODN, NLODSC, pcx, pcz, true);
+    let r = g.next(); while (!r.done) { yield; r = g.next(); }
+    device.queue.writeBuffer(lodBuf, LODN * LODN * 4, nlodArr);
+    nlodOX = r.value.ox; nlodOZ = r.value.oz; nlodReady = true;
+  }
+  await stage('baking horizon…');
+  { const jobs = [nlodJobGen(SPWX, SPWZ), lodJobGen(SPWX, SPWZ)]; let n = 0;
+    for (const job of jobs) for (let r = job.next(); !r.done; r = job.next()) { if ((++n & 127) === 0) await stage(`baking horizon… ${Math.min(99, (n * 100 / 1250) | 0)}%`); } }
+  console.log('[vb] lod horizon baked — far', lodOX, lodOZ, 'near', nlodOX, nlodOZ);
 
   // ── WGSL ────────────────────────────────────────────────────────────────────
   const PRE = /* wgsl */`
@@ -468,6 +922,10 @@
       res    : vec2<f32>, jit : vec2<f32>,
       pJit   : vec2<f32>, canvasRes : vec2<f32>,
       winO   : vec2<f32>, off : vec2<f32>,
+      pickA  : vec4<f32>,                                            // held pick: anchor xyz (camera space) + voxel size
+      pickX  : vec4<f32>, pickY : vec4<f32>, pickZ : vec4<f32>,      // item local axes in camera space; pickX.w = show flag
+      lodO   : vec4<f32>,                                            // far LOD ring: xy = origin (world coords), z = ready flag
+      lodN   : vec4<f32>,                                            // near LOD ring: xy = origin, z = ready flag
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -497,19 +955,47 @@
       var FN = array<vec3<f32>, 6>(vec3<f32>(1.0,0.0,0.0), vec3<f32>(-1.0,0.0,0.0), vec3<f32>(0.0,1.0,0.0), vec3<f32>(0.0,-1.0,0.0), vec3<f32>(0.0,0.0,1.0), vec3<f32>(0.0,0.0,-1.0));
       return FN[min(id, 5u)];
     }
+    fn ih3(x : i32, y : i32, z : i32) -> f32 {
+      var h = u32(x) * 374761393u + u32(y) * 3266489917u + u32(z) * 668265263u;
+      h = (h ^ (h >> 13u)) * 1274126177u;
+      return f32(h ^ (h >> 16u)) / 4294967296.0;
+    }
+    fn isMoon() -> bool { return (u32(u.fx) & 8u) != 0u; }          // at night u.sunDir carries the MOON direction
+    fn dayScale() -> f32 {                                           // global light level over the day/night cycle
+      if (isMoon()) { return 0.03; }
+      return 0.025 + 0.975 * smoothstep(-0.10, 0.28, u.sunDir.y);
+    }
+    fn sunTint() -> vec3<f32> {                                      // sun goes amber at the horizon; the moon is cool silver-blue
+      if (isMoon()) { return vec3<f32>(0.40, 0.50, 0.78) * 0.44 * smoothstep(0.0, 0.15, u.sunDir.y); }
+      let warm = mix(vec3<f32>(1.0, 0.42, 0.18), vec3<f32>(1.0, 1.0, 1.0), smoothstep(0.02, 0.38, u.sunDir.y));
+      return SUN_COL * warm * smoothstep(-0.05, 0.10, u.sunDir.y);
+    }
     fn skyBase(rd : vec3<f32>) -> vec3<f32> {
       let y = clamp(rd.y, -1.0, 1.0);
       var c = mix(HORIZON, ZENITH, pow(max(y, 0.0), 0.38));        // fast falloff — blue takes over just above the horizon
       c = mix(c, HORIZON * 0.72, smoothstep(0.0, -0.28, y));
-      let s = max(dot(rd, u.sunDir), 0.0);
-      c += vec3<f32>(1.0, 0.75, 0.48) * pow(s, 7.0) * 0.16;        // warm forward haze kept subtle — the sky reads BLUE
+      c *= dayScale();
+      let sethue = smoothstep(0.30, 0.04, abs(u.sunDir.y)) * smoothstep(-0.22, 0.02, u.sunDir.y) * select(1.0, 0.0, isMoon());
+      let sdh = normalize(vec3<f32>(u.sunDir.x, 1e-4, u.sunDir.z));
+      c += vec3<f32>(0.62, 0.24, 0.08) * sethue * pow(max(dot(rd, sdh), 0.0), 3.0) * clamp(1.0 - abs(rd.y) * 2.2, 0.0, 1.0);   // sunrise/sunset band
       return c;
     }
     fn skyColor(rd : vec3<f32>) -> vec3<f32> {
       var c = skyBase(rd);
       let s = dot(rd, u.sunDir);
-      c += SUN_COL * 6.0 * smoothstep(0.999900, 0.999938, s);       // hard-edged disc — a readable outline, not a blur
-      c += vec3<f32>(1.0, 0.82, 0.55) * pow(max(s, 0.0), 260.0) * 0.5;   // tight rim glow only
+      let up = smoothstep(-0.03, 0.06, u.sunDir.y);
+      if (isMoon()) {
+        c += vec3<f32>(0.82, 0.88, 1.0) * 2.4 * smoothstep(0.999742, 0.999787, s) * up;   // the MOON disc (20% smaller)
+      } else {
+        c += SUN_COL * 6.0 * smoothstep(0.999568, 0.999728, s) * up;  // hard-edged disc, doubled again
+        c += SUN_COL * 0.5 * pow(max(s, 0.0), 700.0) * up;            // GLARE — a warm corona hugging the disc
+      }
+      let night = select(1.0 - smoothstep(-0.14, 0.0, u.sunDir.y), 1.0, isMoon());
+      if (night > 0.02 && rd.y > 0.02) {                             // stars
+        let cc = vec3<i32>(rd * 480.0);
+        let hh = ih3(cc.x, cc.y, cc.z);
+        if (hh > 0.9985) { c += vec3<f32>(0.9, 0.93, 1.0) * (hh - 0.9985) * 500.0 * night; }
+      }
       return c;
     }
     fn aces(x : vec3<f32>) -> vec3<f32> {
@@ -524,6 +1010,33 @@
     @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
     @group(0) @binding(4) var gAlbedo : texture_storage_2d<rgba8unorm, write>;
     @group(0) @binding(5) var gIrr : texture_storage_2d<rgba16float, write>;
+    @group(0) @binding(6) var<storage, read> lodMap : array<u32>;   // far-field height+color texels (RGB565 | h11 | water); [far 768² | near 512²]
+    const LODN : i32 = ${LODN}; const LODSC : f32 = ${LODSC}.0; const LODFARW : f32 = ${LODFAR}.0;
+    const NLODN : i32 = ${NLODN}; const NLODSC : f32 = ${NLODSC}.0;
+    fn lodData(wx : f32, wz : f32) -> u32 {
+      if (u.lodN.z > 0.5) {                                          // the 4-voxel NEAR ring wins wherever it covers
+        let jx = i32(floor((wx - u.lodN.x) / NLODSC));
+        let jz = i32(floor((wz - u.lodN.y) / NLODSC));
+        if (jx >= 0 && jx < NLODN && jz >= 0 && jz < NLODN) { return lodMap[${LODN * LODN} + jx + jz * NLODN]; }
+      }
+      let ix = clamp(i32(floor((wx - u.lodO.x) / LODSC)), 0, LODN - 1);
+      let iz = clamp(i32(floor((wz - u.lodO.y) / LODSC)), 0, LODN - 1);
+      return lodMap[ix + iz * LODN];
+    }
+    fn lodHgt(wx : f32, wz : f32) -> f32 { return f32((lodData(wx, wz) >> 16u) & 2047u); }
+    const WLF : f32 = ${WL}.0;
+    fn vn2(p : vec2<f32>) -> f32 {
+      let f = floor(p); let i = vec2<i32>(f);
+      var w = p - f; w = w * w * (3.0 - 2.0 * w);
+      let a = mix(ih3(i.x, i.y, 7), ih3(i.x + 1, i.y, 7), w.x);
+      let b = mix(ih3(i.x, i.y + 1, 7), ih3(i.x + 1, i.y + 1, 7), w.x);
+      return mix(a, b, w.y);
+    }
+    fn caust(p : vec2<f32>) -> f32 {                                 // CAUSTICS — two drifting noise fields; their coincidence lines are the bright webs
+      let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.55, u.time * 0.34));
+      let n2 = vn2(p * 0.11 + vec2<f32>(-u.time * 0.47, u.time * 0.29));
+      return pow(clamp(1.0 - abs(n1 - n2) * 2.6, 0.0, 1.0), 5.0);
+    }
     struct Hit { t : f32, vox : u32, face : u32, n : vec3<f32>, }
     fn voxAt(c : vec3<i32>) -> u32 {
       var x = c.x + i32(u.off.x); if (x >= WX) { x -= WX; }
@@ -538,6 +1051,7 @@
       return ((bricks[i >> 5u] >> (i & 31u)) & 1u) != 0u;
     }
     const WTv : u32 = ${WATER_T}u; const WBv : u32 = ${WATER_B}u;   // lake surface / body voxel ids
+    const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
     fn trace(ro : vec3<f32>, rdIn : vec3<f32>, maxT : f32, skipW : bool) -> Hit {
       var h : Hit; h.t = -1.0;
       let sgn = select(vec3<f32>(1.0), vec3<f32>(-1.0), rdIn < vec3<f32>(0.0));
@@ -559,7 +1073,7 @@
       var bc = clamp(vec3<i32>(floor(p * 0.125)), vec3<i32>(0), vec3<i32>(BX - 1, BY - 1, BZ - 1));
       var bNext = (vec3<f32>(bc + max(istep, vec3<i32>(0))) * 8.0 - ro) * inv;
       let bDelta = abs(inv) * 8.0;
-      for (var i = 0; i < 240; i++) {
+      for (var i = 0; i < 290; i++) {
         if (brickOcc(bc)) {
           let bmin = bc * 8;
           var tv = t;
@@ -614,27 +1128,124 @@
       let rd = rayDir(px);
       let ro = u.camPos;                                             // window-relative
       let skipW = (u32(u.fx) & 2u) != 0u;                            // camera underwater → water voxels are see-through
-      var h = trace(ro, rd, 4000.0, skipW);                          // beyond the window: sky. Terrain and trees end together — hard cutoff.
+      let tcap = 368.0 / max(length(vec2<f32>(rd.x, rd.z)), 0.05);   // CIRCULAR detail radius — the LOD far-field takes over past it
+      var h = trace(ro, rd, min(4000.0, tcap), skipW);
       var albedo = vec3<f32>(0.0);
       var faceId = 7u; var t = -1.0;
       var sunV = 0.0; var skyV = 0.0;
+      var farHit = false;
+      if (h.t < 0.0 && u.lodO.z > 0.5) {                             // DETAIL MISS → march the LOD heightfield out to the far horizon
+        let roW = vec3<f32>(ro.x + u.winO.x, ro.y, ro.z + u.winO.y);
+        let horiz = max(length(vec2<f32>(rd.x, rd.z)), 0.02);
+        var ft = 350.0 / horiz;
+        let ftMax = min(LODFARW / horiz, 6000.0);
+        if (ft < ftMax && !(rd.y > 0.0 && roW.y > 345.0)) {
+          var pt = ft;
+          for (var fi = 0; fi < 96; fi++) {
+            let p = roW + rd * ft;
+            if (p.y < lodHgt(p.x, p.z)) {                            // crossed under the terrain — bisect the last step for a crisp silhouette
+              var a = pt; var bT = ft;
+              for (var ri = 0; ri < 5; ri++) {
+                let m = 0.5 * (a + bT);
+                let pm = roW + rd * m;
+                if (pm.y < lodHgt(pm.x, pm.z)) { bT = m; } else { a = m; }
+              }
+              ft = bT; farHit = true; break;
+            }
+            if (p.y > 345.0 && rd.y > 0.0) { break; }                // climbed above every possible peak — sky
+            pt = ft;
+            ft += clamp(ft * 0.022, 3.0, 48.0);                      // step grows with distance — fine enough to catch 2-voxel near-ring texels
+            if (ft > ftMax) { break; }
+          }
+        }
+        if (farHit) {
+          let p = roW + rd * ft;
+          let d = lodData(p.x, p.z);
+          var fal = pow(vec3<f32>(f32(d & 31u) / 31.0, f32((d >> 5u) & 63u) / 63.0, f32((d >> 11u) & 31u) / 31.0), vec3<f32>(2.2));
+          let tix = vec3<i32>(i32(floor(p.x / NLODSC)), i32((d >> 16u) & 2047u), i32(floor(p.z / NLODSC)));
+          fal = fal * (0.88 + 0.24 * ivhash(tix));                   // per-texel grain — matches the near-field voxel grain
+          if (((d >> 27u) & 1u) == 1u) { faceId = 6u; }              // distant water keeps the reflective water shading
+          else {
+            let gx2 = lodHgt(p.x + 6.0, p.z) - lodHgt(p.x - 6.0, p.z);   // quantize the slope to a voxel face for lighting
+            let gz2 = lodHgt(p.x, p.z + 6.0) - lodHgt(p.x, p.z - 6.0);
+            faceId = 2u;
+            if (abs(gx2) > 12.0 && abs(gx2) >= abs(gz2)) { faceId = select(0u, 1u, gx2 > 0.0); }
+            else if (abs(gz2) > 12.0) { faceId = select(4u, 5u, gz2 > 0.0); }
+          }
+          t = ft; albedo = fal;
+          sunV = 1.0; skyV = 0.9;
+        }
+      }
       if (h.t >= 0.0) {
         t = h.t; faceId = h.face;
         if ((h.vox == WTv || h.vox == WBv) && h.face == 2u) { faceId = 6u; }   // water top → reflective shading in the composite
+        if (h.vox == LVT || h.vox == LVB || h.vox == LVR || h.vox == LVY) { faceId = 8u; }   // lava → emissive
         let pos = ro + rd * t;
         let vcW = vec3<i32>(floor(pos - h.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));   // WORLD coords — grain must not swim when the window shifts
         albedo = pal[h.vox].rgb * (0.88 + 0.24 * ivhash(vcW));
-        if (faceId == 6u) {                                          // 20% translucency: blend in the lakebed beneath the surface
-          let bh = trace(ro + rd * (t + 0.02), rd, 60.0, true);
+        if (skipW && pos.y < WLF + 1.0) {                            // swimming: caustic webs dance on everything below the surface
+          albedo = albedo * (1.0 + 1.3 * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
+        }
+        var foamK = 0.0;
+        if (faceId == 6u && h.face == 2u && rd.y < -0.01) {          // VOXEL OCEAN WAVES — directional swell trains, sharpened crests, whole-voxel steps
+          let baseTop = pos.y;
+          var tq = max(max(t - 3.8 / max(abs(rd.y), 0.08), t - 34.0), 0.0);
+          let pW = ro + rd * tq;
+          var cw = vec2<i32>(floor(vec2<f32>(pW.x, pW.z)));
+          let sx2 = select(-1.0, 1.0, rd.x >= 0.0);
+          let sz2 = select(-1.0, 1.0, rd.z >= 0.0);
+          let adx = max(abs(rd.x), 1e-5); let adz = max(abs(rd.z), 1e-5);
+          var tmx = ((f32(cw.x) + max(sx2, 0.0)) - pW.x) / (sx2 * adx) + tq;
+          var tmz = ((f32(cw.y) + max(sz2, 0.0)) - pW.z) / (sz2 * adz) + tq;
+          var wSide = false; var wCrest = -9.0; var whF = baseTop;
+          for (var wi = 0; wi < 22; wi++) {
+            let wxw = f32(cw.x) + u.winO.x; let wzw = f32(cw.y) + u.winO.y;
+            let g1 = 2.0 * pow(0.5 + 0.5 * sin(wxw * 0.062 + wzw * 0.041 + u.time * 0.95), 2.4) - 1.0;   // primary swell — long wavelength, peaked crests, flat troughs
+            let g2 = 2.0 * pow(0.5 + 0.5 * sin(wxw * -0.048 + wzw * 0.104 + u.time * 0.80), 2.0) - 1.0;  // crossing secondary swell
+            let wv = g1 * 1.3 + g2 * 0.9 + sin((wxw * 0.9 + wzw * 0.63) * 0.23 - u.time * 1.9) * 0.35;   // + short wind chop
+            let wh = baseTop + floor(wv + 0.5);
+            let tNext = min(tmx, tmz);
+            if (ro.y + rd.y * tq <= wh) { t = tq; wSide = true; wCrest = wv; whF = wh; break; }          // SIDE face of a wave step
+            if (ro.y + rd.y * tNext <= wh) { t = (wh - ro.y) / rd.y; wCrest = wv; whF = wh; break; }     // TOP face within this column
+            if (tmx < tmz) { tq = tmx; tmx += 1.0 / adx; cw.x += i32(sx2); }
+            else { tq = tmz; tmz += 1.0 / adz; cw.y += i32(sz2); }
+            if (tq > t + 38.0) { break; }
+          }
+          if (wCrest > -8.0) {
+            let hp = ro + rd * t;
+            let vcW2 = vec3<i32>(i32(floor(hp.x)), i32(whF - 0.5), i32(floor(hp.z))) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
+            albedo = pal[h.vox].rgb * (0.90 + 0.20 * ivhash(vcW2));                       // grain follows the WAVE voxel, not the flat plane
+            if (wSide) { albedo *= 0.74; }                                                // darker step sides give the swell its silhouette
+            var foam = 0.0;                                                                       // no mid-water whitecaps — foam only rings the shoreline
+            let ci = vec3<i32>(i32(floor(hp.x)), i32(baseTop - 0.5), i32(floor(hp.z)));
+            for (var s2 = 0; s2 < 8; s2++) {                                              // probes at ±2 AND ±4 → a surf band twice as thick
+              var nb = ci;
+              let pr = select(2, 4, s2 >= 4);
+              let a2 = s2 & 3;
+              if (a2 == 0) { nb.x += pr; } else if (a2 == 1) { nb.x -= pr; } else if (a2 == 2) { nb.z += pr; } else { nb.z -= pr; }
+              let nv = voxAt(nb);
+              if (nv != 0u && nv != WTv && nv != WBv) {                                   // churned SURF ring wherever water meets land
+                foam = max(foam, step(0.35, ivhash(ci + vec3<i32>(s2 * 13, 11, 5)) * (0.55 + 0.45 * sin(u.time * 1.6 + f32(ci.x * 7 + ci.z * 5) * 0.7))));
+              }
+            }
+            if (foam > 0.5) { t = min(t, (whF + 1.0 - ro.y) / rd.y); }                    // foam voxels RISE a step above the surface
+            foamK = clamp(foam, 0.0, 1.0) * 0.8;
+            albedo = mix(albedo, vec3<f32>(0.82, 0.87, 0.90), foamK);
+          }
+        }
+        if (faceId == 6u) {                                          // 20% TRANSLUCENT water — the bed shows through, fading with depth
+          let bh = trace(ro + rd * (h.t + 0.01), rd, 48.0, true);    // beyond 48 voxels the mix is <5% of 20% — invisible, so don't pay for it
           if (bh.t >= 0.0) {
-            let bpos = ro + rd * (t + 0.02 + bh.t);
+            let bpos = ro + rd * (h.t + 0.01) + rd * bh.t;
             let bvc = vec3<i32>(floor(bpos - bh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
-            albedo = albedo * 0.8 + pal[bh.vox].rgb * (0.88 + 0.24 * ivhash(bvc)) * 0.2;
+            let ca = caust(floor(vec2<f32>(bpos.x + u.winO.x, bpos.z + u.winO.y)) + vec2<f32>(0.5));   // per-voxel caustic web on the bed
+            let balb = pal[bh.vox].rgb * (0.88 + 0.24 * ivhash(bvc)) * (1.0 + 1.6 * ca * smoothstep(-0.02, 0.12, u.sunDir.y));
+            albedo = mix(albedo, balb, 0.20 * exp(-bh.t * 0.03) * (1.0 - foamK));
           }
         }
         var seed = ((gid.x * 1973u) ^ (gid.y * 9277u) ^ (u32(u.frame) * 26699u)) | 1u;
         let sp = pos + h.n * 0.02;
-        if (dot(h.n, u.sunDir) > 0.0) {                              // cone-jittered sun ray; the window box bounds it
+        if (dot(h.n, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night
           let st = onbT(u.sunDir); let sb = cross(u.sunDir, st);
           let sdir = normalize(u.sunDir + st * ((rand(&seed) * 2.0 - 1.0) * 0.028) + sb * ((rand(&seed) * 2.0 - 1.0) * 0.028));
           let sh = trace(sp, sdir, 1200.0, skipW);
@@ -647,7 +1258,15 @@
         }
         skyV *= 0.5;
       }
-      textureStore(gAlbedo, vec2<i32>(gid.xy), vec4<f32>(sqrt(albedo), f32(faceId) / 255.0));
+      var lavaG = 0u;                                                  // soft light cast by nearby lava — deterministic probe, no flicker
+      if (t >= 0.0 && faceId != 8u && faceId != 7u && !farHit) {
+        let pos2 = ro + rd * t + h.n * 0.02;
+        let dh = trace(pos2, vec3<f32>(0.0, -1.0, 0.0), 18.0, true);
+        if (dh.t >= 0.0 && (dh.vox == LVT || dh.vox == LVB || dh.vox == LVR || dh.vox == LVY)) {
+          lavaG = u32(clamp((1.0 - dh.t / 18.0) * 14.0 + 0.5, 0.0, 14.0));
+        }
+      }
+      textureStore(gAlbedo, vec2<i32>(gid.xy), vec4<f32>(sqrt(albedo), (f32(faceId) + f32(lavaG) * 16.0) / 255.0));
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, 0.0));
     }
   `;
@@ -704,7 +1323,7 @@
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
       let c = textureLoad(hist, vec2<i32>(gid.xy), 0);
       if (c.b < 0.0) { textureStore(irrOut, vec2<i32>(gid.xy), c); return; }
-      let faceC = u32(textureLoad(gAlbedo, vec2<i32>(gid.xy), 0).a * 255.0 + 0.5);
+      let faceC = u32(textureLoad(gAlbedo, vec2<i32>(gid.xy), 0).a * 255.0 + 0.5) & 15u;
       var P = array<vec2<f32>, 12>(
         vec2<f32>(-0.326, -0.406), vec2<f32>(-0.840, -0.074), vec2<f32>(-0.696, 0.457), vec2<f32>(-0.203, 0.621),
         vec2<f32>(0.962, -0.195), vec2<f32>(0.473, -0.480), vec2<f32>(0.519, 0.767), vec2<f32>(0.185, -0.893),
@@ -715,7 +1334,7 @@
         let q = vec2<i32>(vec2<f32>(gid.xy) + P[i] * radius + 0.5);
         if (q.x < 0 || q.y < 0 || q.x >= i32(u.res.x) || q.y >= i32(u.res.y)) { continue; }
         let s = textureLoad(hist, q, 0);
-        let f2 = u32(textureLoad(gAlbedo, q, 0).a * 255.0 + 0.5);
+        let f2 = u32(textureLoad(gAlbedo, q, 0).a * 255.0 + 0.5) & 15u;
         if (s.b <= 0.0 || f2 != faceC || abs(s.b - c.b) > 0.04 * c.b + 2.0) { continue; }
         let w = exp(-2.0 * dot(P[i], P[i]));
         sum += s.rg * w; wsum += w;
@@ -728,11 +1347,7 @@
     @group(0) @binding(1) var gAlbedo : texture_2d<f32>;
     @group(0) @binding(2) var irrF : texture_2d<f32>;
     @group(0) @binding(3) var colorOut : texture_storage_2d<rgba8unorm, write>;
-    fn ih3(x : i32, y : i32, z : i32) -> f32 {
-      var h = u32(x) * 374761393u + u32(y) * 3266489917u + u32(z) * 668265263u;
-      h = (h ^ (h >> 13u)) * 1274126177u;
-      return f32(h ^ (h >> 16u)) / 4294967296.0;
-    }
+    ${pickWGSL}
     fn vn3(p : vec3<f32>) -> f32 {
       let f = floor(p); let i = vec3<i32>(f);
       var w = p - f; w = w * w * (3.0 - 2.0 * w);
@@ -755,11 +1370,12 @@
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let rd = rayDir(px);
       let alb4 = textureLoad(gAlbedo, vec2<i32>(gid.xy), 0);
-      let face = u32(alb4.a * 255.0 + 0.5);
+      let face = u32(alb4.a * 255.0 + 0.5) & 15u;
+      let lavaG = f32(u32(alb4.a * 255.0 + 0.5) >> 4u) / 14.0;
       var col : vec3<f32>;
       if (face == 7u) {
         col = skyColor(rd);
-        if (rd.y > 0.02) {                                           // VOLUMETRIC CLOUDS — raymarched slab, AAA-style beer-lambert with a sun tap
+        if (rd.y > 0.02) {                                           // VOLUMETRIC CLOUDS — raymarched slab, beer-lambert with a sun tap
           let camY = u.camPos.y;
           let t0c = (480.0 - camY) / rd.y;
           let t1c = (800.0 - camY) / rd.y;
@@ -770,13 +1386,14 @@
             let dtc = (tb - ta) / 18.0;
             var T = 1.0;
             var acc = vec3<f32>(0.0);
-            var tcc = ta + dtc * 0.5;
+            var seedC = ((gid.x * 1447u) ^ (gid.y * 8191u) ^ (u32(u.frame) * 2657u)) | 1u;
+            var tcc = ta + dtc * rand(&seedC);                       // jittered start — kills the slab step-banding
             for (var ci = 0; ci < 18; ci++) {
               let p = roW + rd * tcc;
               let d = cloudDen(p);
               if (d > 0.002) {
                 let li = 0.25 + 0.75 * exp(-cloudDen(p + u.sunDir * 60.0) * 2.4);   // one-tap self-shadow toward the sun
-                let cc = SUN_COL * li * 0.55 + mix(HORIZON, ZENITH, 0.4) * 0.55;
+                let cc = sunTint() * li * 0.55 + mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale();
                 let a = 1.0 - exp(-d * dtc * 0.02);
                 acc += T * a * cc;
                 T = T * (1.0 - a);
@@ -788,52 +1405,104 @@
             col = mix(col, acc + col * T, fade);
           }
         }
-      } else if (face == 6u) {                                       // WATER: base color + sky reflection + sun glint
+      } else if (face == 8u) {                                       // LAVA: emissive — burns through the fog
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         let alb = alb4.rgb * alb4.rgb;
-        let refl = reflect(rd, vec3<f32>(0.0, 1.0, 0.0));
-        let spec = pow(max(dot(refl, u.sunDir), 0.0), 48.0) * irr.r;
-        col = alb * (0.48 + 0.42 * irr.g) + skyBase(refl) * 0.20 + SUN_COL * spec * 0.5;
-        let fogA = 1.0 - exp(-irr.b * 0.0006);
+        col = alb * (3.1 + 0.6 * sin(u.time * 2.1)) + vec3<f32>(0.65, 0.13, 0.0);   // molten orange, glowing, gentle pulse
+        var fogA = 1.0 - exp(-irr.b * 0.0004);
+        fogA = max(fogA, smoothstep(1500.0, 1950.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
+        col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
+      } else if (face == 6u) {                                       // WATER — deep solid blue, fresnel sky sheen, tight sun glitter
+        let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
+        let alb = alb4.rgb * alb4.rgb;
+        let pw2 = u.camPos + rd * irr.b;
+        let wx2 = pw2.x + u.winO.x; let wz2 = pw2.z + u.winO.y;
+        let nW = normalize(vec3<f32>(sin(wx2 * 0.33 + u.time * 1.2) * 0.045 + sin(wz2 * 0.19 - u.time * 0.85) * 0.035, 1.0,
+                                     cos(wz2 * 0.31 + u.time * 1.05) * 0.045 + sin(wx2 * 0.17 + u.time * 0.65) * 0.035));
+        let refl = reflect(rd, nW);
+        let fres = 0.04 + 0.55 * pow(1.0 - clamp(-dot(rd, nW), 0.0, 1.0), 4.0);   // grazing angles mirror the sky
+        col = alb * (0.55 + 0.40 * irr.g) * dayScale() + skyBase(refl) * fres * 0.75;
+        {                                                            // VOXEL GLISTEN — discrete 10 cm glints twinkling inside the light column (the engine.html look)
+          let gk = select(smoothstep(-0.02, 0.10, u.sunDir.y), 0.6, isMoon());
+          if (gk > 0.01) {
+            let column = pow(max(dot(refl, u.sunDir), 0.0), 26.0);   // reflection column toward the light — the glisten lives ONLY inside this
+            let shimC = select(vec3<f32>(1.05, 0.92, 0.72), vec3<f32>(0.72, 0.82, 1.05), isMoon());
+            col += shimC * pow(max(dot(refl, u.sunDir), 0.0), 64.0) * (0.5 * gk) * irr.r * dayScale();   // soft shimmer under the sparkles
+            let cell = floor(vec2<f32>(wx2, wz2));                   // one glint cell = one 10 cm voxel
+            let ph = fract(sin(cell.x * 91.7 + cell.y * 47.3) * 4321.7) * 6.2831853;   // per-voxel random phase
+            let tw = sin(u.time * 3.2 + ph) * 0.5 + 0.5;
+            let pick = step(0.5, fract(sin(cell.x * 12.9898 + cell.y * 78.233) * 43758.5453));   // ~half the voxels participate — scattered, not a sheet
+            let spark = smoothstep(0.82, 1.0, tw) * pick;            // sharp on/off flash → a discrete voxel glint
+            let sparkC = select(vec3<f32>(1.35, 1.25, 1.0), vec3<f32>(1.15, 1.18, 1.3), isMoon()) * (0.35 + 0.65 * dayScale());
+            col = mix(col, sparkC, spark * column * gk * 0.85 * irr.r);   // translucent voxel glint (mix, not add — reads as a bright cube on the surface)
+          }
+        }
+        var fogA = 1.0 - exp(-irr.b * 0.0004);
+        fogA = max(fogA, smoothstep(1500.0, 1950.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
         col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
       } else {
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         let alb = alb4.rgb * alb4.rgb;
         let n = faceN(face);
-        let direct = SUN_COL * (irr.r * max(dot(n, u.sunDir), 0.0));
-        let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95;   // rebalance ambient for the deeper-blue sky
-        let bounce = BOUNCE * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2;
-        col = alb * (direct + (skyIrr + bounce) * irr.g);
-        let fogA = 1.0 - exp(-irr.b * 0.0006);                       // in-window depth haze only — the world hard-cuts to sky at the window edge
+        let direct = sunTint() * (irr.r * max(dot(n, u.sunDir), 0.0));
+        let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
+        let bounce = BOUNCE * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
+        col = alb * (direct + (skyIrr + bounce) * irr.g + vec3<f32>(0.012, 0.013, 0.016));   // faint cave ambient
+        col += alb * lavaG * vec3<f32>(1.0, 0.44, 0.13) * 3.6;                                   // lava GLOW on nearby rock
+        var fogA = 1.0 - exp(-irr.b * 0.0004);
+        fogA = max(fogA, smoothstep(1500.0, 1950.0, irr.b * length(vec2<f32>(rd.x, rd.z))));   // soft CIRCULAR horizon
         col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
       }
-      if ((u32(u.fx) & 4u) != 0u) {                                  // HELD PEBBLE — voxelized ellipsoid raytraced in CAMERA space (rigid anchor → no denoiser shimmer)
+      if (u.pickX.w > 0.5 && ITEMN > 0) {                          // HELD ITEM — pick / rock / twig as TRUE 3D voxels, DDA-walked in camera space (tune via __vb.pick)
+        let it = clamp(i32(u.pickX.w + 0.5) - 1, 0, ITEMN - 1);
+        let PICKW = ITEMD[it].x; let PICKD = ITEMD[it].y; let PICKH = ITEMD[it].z; let IOFF = ITEMD[it].w;
         let ndc2 = (px / u.res) * 2.0 - 1.0;
         let dc = normalize(vec3<f32>(ndc2.x * u.tanH * u.aspect, -ndc2.y * u.tanH, 1.0));
-        let C = vec3<f32>(0.66, -0.52, 1.20);                        // right-hand anchor: right / down / forward of the eye
+        let C = u.pickA.xyz;
+        let vs = u.pickA.w;
+        let hw = f32(PICKW) * 0.5; let hd = f32(PICKD) * 0.5; let hh = f32(PICKH) * 0.5;
+        let rad = vs * (sqrt(hw * hw + hd * hd + hh * hh) + 1.0);
         let tc = dot(C, dc);
-        if (tc > 0.0 && length(dc * tc - C) < 0.13) {
-          let vs = 0.05;                                             // one ground voxel — the held pebble IS the ground pebble
-          var tq = tc - 0.13;
-          for (var i = 0; i < 16; i++) {
-            let p = dc * tq - C;
-            let v = vec3<i32>(floor(p / vs));
-            let vu = vec3<f32>(v) + 0.5;                             // voxel-unit coords, same shape law as stampBoulder's pebbles
-            if (vu.x * vu.x + vu.z * vu.z + vu.y * vu.y * 2.2 < 2.9) {
-              var hsh = u32(v.x + 37) * 374761393u + u32(v.y + 41) * 668265263u + u32(v.z + 43) * 2246822519u;
-              hsh = (hsh ^ (hsh >> 13u)) * 1274126177u;
-              let an = abs(vu); var nl = vec3<f32>(0.0, sign(vu.y), 0.0);
-              if (an.x > an.y && an.x > an.z) { nl = vec3<f32>(sign(vu.x), 0.0, 0.0); }
-              else if (an.z > an.y) { nl = vec3<f32>(0.0, 0.0, sign(vu.z)); }
-              let nw = u.right * nl.x + u.up * nl.y + u.fwd * nl.z;
-              var alb = vec3<f32>(0.207, 0.199, 0.176);              // PEBBLE palette, linear — identical to the ground ids
-              if ((hsh & 1u) == 1u) { alb = vec3<f32>(0.144, 0.138, 0.127); }
-              alb = alb * (0.88 + 0.24 * f32((hsh >> 8u) & 255u) / 255.0);
-              col = alb * (SUN_COL * max(dot(nw, u.sunDir), 0.0) + mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95);
-              break;
+        if (PICKW > 0 && tc > 0.0 && length(dc * tc - C) < rad) {
+          // item-local grid space (voxel units): x along pickX (width), y along pickY (depth), z along pickZ (height)
+          let roL = vec3<f32>(-dot(C, u.pickX.xyz), -dot(C, u.pickY.xyz), -dot(C, u.pickZ.xyz)) / vs + vec3<f32>(hw, hd, hh);
+          var rdL = vec3<f32>(dot(dc, u.pickX.xyz), dot(dc, u.pickY.xyz), dot(dc, u.pickZ.xyz));
+          if (abs(rdL.x) < 1e-6) { rdL.x = 1e-6; }
+          if (abs(rdL.y) < 1e-6) { rdL.y = 1e-6; }
+          if (abs(rdL.z) < 1e-6) { rdL.z = 1e-6; }
+          let invL = 1.0 / rdL;
+          let ta2 = -roL * invL;
+          let tb2 = (vec3<f32>(f32(PICKW), f32(PICKD), f32(PICKH)) - roL) * invL;
+          let tn2 = min(ta2, tb2); let tf2 = max(ta2, tb2);
+          let te = max(max(tn2.x, tn2.y), max(tn2.z, 0.0));
+          let tl = min(min(tf2.x, tf2.y), tf2.z);
+          if (te < tl) {
+            var vax = 0;
+            if (tn2.y == te) { vax = 1; } if (tn2.z == te) { vax = 2; }
+            var vc = clamp(vec3<i32>(floor(roL + rdL * (te + 1e-4))), vec3<i32>(0), vec3<i32>(PICKW - 1, PICKD - 1, PICKH - 1));
+            let istep = vec3<i32>(sign(rdL));
+            var vNext = (vec3<f32>(vc + max(istep, vec3<i32>(0))) - roL) * invL;
+            for (var i = 0; i < PICKSTEPS; i++) {
+              let cell = ITEMMAP[IOFF + vc.x + vc.y * PICKW + vc.z * PICKW * PICKD];
+              if (cell.w > 0.5) {
+                var nl = vec3<f32>(0.0);                           // CUBE face normal from the axis the ray entered through — real edges, not a flat card
+                if (vax == 0) { nl.x = -f32(istep.x); } else if (vax == 1) { nl.y = -f32(istep.y); } else { nl.z = -f32(istep.z); }
+                let nc = u.pickX.xyz * nl.x + u.pickY.xyz * nl.y + u.pickZ.xyz * nl.z;
+                let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
+                var hsh = u32(vc.x + 53) * 374761393u + u32(vc.y + 91) * 668265263u + u32(vc.z + 27) * 1274126177u;
+                hsh = (hsh ^ (hsh >> 13u)) * 2246822519u;
+                let alb = cell.rgb * (0.88 + 0.24 * f32((hsh >> 8u) & 255u) / 255.0);
+                let direct = sunTint() * max(dot(nw, u.sunDir), 0.0);
+                let skyIrr2 = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();
+                let bounce2 = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2;
+                col = alb * (direct + skyIrr2 + bounce2);
+                break;
+              }
+              if (vNext.x <= vNext.y && vNext.x <= vNext.z) { vNext.x += abs(invL.x); vc.x += istep.x; vax = 0; }
+              else if (vNext.y <= vNext.z) { vNext.y += abs(invL.y); vc.y += istep.y; vax = 1; }
+              else { vNext.z += abs(invL.z); vc.z += istep.z; vax = 2; }
+              if (any(vc < vec3<i32>(0)) || any(vc >= vec3<i32>(PICKW, PICKD, PICKH))) { break; }
             }
-            tq += vs * 0.4;
-            if (tq > tc + 0.13) { break; }
           }
         }
       }
@@ -908,7 +1577,7 @@
           }
           decay *= 0.96;
         }
-        col += glow * (0.030 * dayK) * vec3<f32>(1.0, 0.93, 0.78);   // warm additive shafts
+        col += glow * (0.030 * dayK) * select(vec3<f32>(1.0, 0.93, 0.78), vec3<f32>(0.55, 0.65, 1.0) * 0.5, isMoon());   // warm sun shafts / cool moon rays
         // ── LENS FLARE: ghosts along the sun→centre axis + streak + bloom, gated by on-screen sun visibility
         var sv = 0.0;
         for (var fy = -1; fy <= 1; fy++) { for (var fxx = -1; fxx <= 1; fxx++) {
@@ -926,9 +1595,6 @@
             let rr = u.canvasRes.y * (0.014 + 0.030 * K[gi]);
             col += TINT[gi] * smoothstep(rr, rr * 0.22, length(fc.xy - gp)) * 0.05 * sv * dayK;
           }
-          let dv = fc.xy - sunPix;
-          col += vec3<f32>(1.0, 0.9, 0.75) * exp(-abs(dv.y) * 0.09) * exp(-abs(dv.x) * (3.0 / u.canvasRes.x)) * 0.10 * sv * dayK;   // horizontal streak
-          col += vec3<f32>(1.0, 0.95, 0.85) * exp(-length(dv) * (2.6 / u.canvasRes.y)) * 0.14 * sv * dayK;                          // bloom around the disc
         }
       }
       return vec4<f32>(col, 1.0);
@@ -962,7 +1628,7 @@
     bgTrace = device.createBindGroup({ layout: pTrace.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: worldBuf } },
       { binding: 2, resource: { buffer: brickBuf } }, { binding: 3, resource: { buffer: palBuf } },
-      { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }] });
+      { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: lodBuf } }] });
     bgTemporal = [0, 1].map(par => device.createBindGroup({ layout: pTemporal.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gIrr) },
       { binding: 2, resource: v(par ? histA : histB) }, { binding: 3, resource: linSamp },
@@ -1002,6 +1668,10 @@
       yield;
     }
     stampCells(x0, x1, z0, z1, RCELL, RMARGIN, formationAt, stampFormation);
+    yield;
+    stampCells(x0, x1, z0, z1, OCELL, 6, oreAt, stampOre);
+    yield;
+    stampCells(x0, x1, z0, z1, CAVE_CELL, CAVE_MARGIN, caveAt, stampCave);
     yield;
     stampCells(x0, x1, z0, z1, BCELL, 6, boulderAt, stampBoulder);
     yield;
@@ -1048,6 +1718,18 @@
       if (shiftJob.next().done) shiftJob = null;
     }
   }
+  function stepLod() {                                 // re-bake the LOD rings as the player drifts; window streaming has priority
+    if (!nlodJob && (Math.abs(P.x - (nlodOX + NLODSPAN / 2)) > 384 || Math.abs(P.z - (nlodOZ + NLODSPAN / 2)) > 384)) nlodJob = nlodJobGen(P.x, P.z);
+    if (!lodJob && (Math.abs(P.x - (lodOX + LODSPAN / 2)) > 768 || Math.abs(P.z - (lodOZ + LODSPAN / 2)) > 768)) lodJob = lodJobGen(P.x, P.z);
+    if (shiftJob) return;
+    const t0 = performance.now();
+    while (nlodJob && performance.now() - t0 < 3) {     // near ring first — small and closest to the eye
+      if (nlodJob.next().done) nlodJob = null;
+    }
+    while (lodJob && performance.now() - t0 < 3) {
+      if (lodJob.next().done) lodJob = null;
+    }
+  }
   function recenter(x, z) {                            // teleport-scale move: rebuild the whole window (blocking, rare)
     loadEl.classList.remove('hidden'); loadEl.textContent = 'regenerating forest…';
     shiftJob = null; xStripPending = -1;
@@ -1056,16 +1738,19 @@
     rebuildBricks(0, WX, 0, WZ);
     device.queue.writeBuffer(worldBuf, 0, W.buffer);
     device.queue.writeBuffer(brickBuf, 0, bricks);
+    lodJob = null; nlodJob = null;                     // teleport-scale move — rebuild both horizon rings in one go under the loading screen
+    { const nj = nlodJobGen(x, z); while (!nj.next().done) {} }
+    { const lj = lodJobGen(x, z); while (!lj.next().done) {} }
     loadEl.classList.add('hidden');
     resetHist = 1;
   }
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
-  const EYE = 16.5, HEIGHT = 18, CR_EYE = 10.5, CR_HEIGHT = 12, HW = 2.6;
-  const WALK = 38, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;
-  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, onGround: true, fly: false, crouch: false, hvx: 0, hvz: 0 };
+  const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
+  const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;   // +20% base speed
+  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0 };
   P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
-  let smoothEye = P.y + EYE, bobPhase = 0, bobAmp = 0;
+  let smoothEye = P.y + EYE;
   const keys = new Set();
   const solid = (x, y, z) => {                         // world coords, toroidal — the window always surrounds the player
     if (y < 0) return true;
@@ -1077,6 +1762,11 @@
     const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
     return v === WATER_T || v === WATER_B;
   };
+  const lavaAt = (x, y, z) => {
+    if (y < 0 || y >= WY) return false;
+    const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+    return v === LAVA_T || v === LAVA_B || v === LAVA_R || v === LAVA_Y;
+  };
   const boxFree = (px, py, pz, hh) => {
     const x0 = Math.floor(px - HW), x1 = Math.floor(px + HW), z0 = Math.floor(pz - HW), z1 = Math.floor(pz + HW);
     const y0 = Math.floor(py + 0.001), y1 = Math.floor(py + hh - 0.001);
@@ -1084,15 +1774,16 @@
     return true;
   };
   function moveAxis(axis, d, hh) {
+    if (d === 0) return false;                         // a zero move must never snap-shove an embedded player sideways
     let hit = false;
     const steps = Math.max(1, Math.ceil(Math.abs(d) / 0.85));
     const dd = d / steps;
     for (let s = 0; s < steps; s++) {
       if (axis === 0) P.x += dd; else if (axis === 1) P.y += dd; else P.z += dd;
       if (boxFree(P.x, P.y, P.z, hh)) continue;
-      if (axis !== 1 && P.onGround) {
+      if (axis !== 1 && (P.onGround || !boxFree(P.x, P.y - 1.4, P.z, hh))) {   // step-up even during downhill micro-air — no brief catches
         let stepped = false;
-        for (let up = 1; up <= 2; up++) if (boxFree(P.x, P.y + up, P.z, hh)) { P.y += up; stepped = true; break; }
+        for (let up = 1; up <= 3; up++) if (boxFree(P.x, P.y + up, P.z, hh)) { P.y += up; stepped = true; break; }
         if (stepped) continue;
       }
       if (axis === 0) { P.x = dd > 0 ? Math.floor(P.x + HW) - HW - 0.001 : Math.floor(P.x - HW) + 1 + HW + 0.001; }
@@ -1110,6 +1801,7 @@
     P.x = SPWX + 0.5; P.z = SPWZ + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0;
     maybeRecenter();
     P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
+    while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
     smoothEye = P.y + EYE;
   }
 
@@ -1125,7 +1817,8 @@
       const ii = gwrap(qx, WX) + qy * WX + gwrap(qz, WZ) * WX * WY;
       if (!ids.has(W[ii])) continue;
       W[ii] = 0; out.push(ii);
-      q.push([qx + 1, qy, qz], [qx - 1, qy, qz], [qx, qy + 1, qz], [qx, qy - 1, qz], [qx, qy, qz + 1], [qx, qy, qz - 1]);
+      for (let nz = -1; nz <= 1; nz++) for (let ny = -1; ny <= 1; ny++) for (let nx = -1; nx <= 1; nx++)   // 26-connectivity — curved sticks step diagonally
+        if (nx || ny || nz) q.push([qx + nx, qy + ny, qz + nz]);
     }
     return out;
   }
@@ -1164,6 +1857,46 @@
   document.addEventListener('contextmenu', (e) => e.preventDefault());
   document.addEventListener('mousedown', (e) => { if (locked && e.button === 2) tryPickup(); });
 
+  // ── keybinds ── rebindable, persisted to localStorage
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'KeyC', fly: 'KeyF', pausetime: 'KeyL', godrays: 'KeyG', vsync: 'KeyV', respawn: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
+  const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', fly: 'toggle fly', pausetime: 'pause time', godrays: 'god rays', vsync: 'v-sync', respawn: 'respawn', scaledown: 'render scale -', scaleup: 'render scale +' };
+  const binds = { ...DEFBINDS };
+  try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
+  const prettyKey = (c) => c.replace(/^Key|^Digit/, '').replace('BracketLeft', '[').replace('BracketRight', ']')
+    .replace('ShiftLeft', 'L-SHIFT').replace('ShiftRight', 'R-SHIFT').replace('ControlLeft', 'L-CTRL').replace('ControlRight', 'R-CTRL')
+    .replace('Space', 'SPACE').replace('Arrow', '').toUpperCase();
+  const kbPanel = $('kbPanel'), kbRows = $('kbRows');
+  let listenAction = null;
+  function kbRefresh() {
+    kbRows.innerHTML = '';
+    for (const a in DEFBINDS) {
+      const row = document.createElement('div'); row.className = 'kbRow';
+      const lbl = document.createElement('span'); lbl.textContent = BINDNAMES[a];
+      const btn = document.createElement('button'); btn.className = 'kbKey' + (listenAction === a ? ' listen' : '');
+      btn.textContent = listenAction === a ? 'press a key…' : prettyKey(binds[a]);
+      btn.addEventListener('click', (e) => { e.stopPropagation(); listenAction = a; kbRefresh(); });
+      row.appendChild(lbl); row.appendChild(btn); kbRows.appendChild(row);
+    }
+  }
+  $('kbBtn').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.remove('hidden'); kbRefresh(); });
+  let todDrag = false;
+  const todSlider = $('todSlider'), todLabel = $('todLabel');
+  todSlider.addEventListener('pointerdown', (e) => { todDrag = true; e.stopPropagation(); });
+  addEventListener('pointerup', () => { todDrag = false; });
+  todSlider.addEventListener('click', (e) => e.stopPropagation());
+  todSlider.addEventListener('input', (e) => { e.stopPropagation(); tday = todSlider.value / 1440; });
+  $('kbClose').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.add('hidden'); listenAction = null; });
+  kbPanel.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('keydown', (e) => {                      // capture phase — rebinding swallows the key
+    if (!listenAction) { if (!kbPanel.classList.contains('hidden') && e.code === 'Escape') { kbPanel.classList.add('hidden'); } return; }
+    e.preventDefault(); e.stopPropagation();
+    if (e.code !== 'Escape') { binds[listenAction] = e.code; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (err) {} }
+    listenAction = null; kbRefresh();
+  }, true);
+
+  while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;   // spawn embedded in a log/pebble → pop up, don't crawl sideways
+  smoothEye = P.y + EYE;
+
   // ── input ──────────────────────────────────────────────────────────────────
   let locked = false;
   lockEl.classList.remove('hidden');
@@ -1172,7 +1905,7 @@
   canvas.addEventListener('click', () => { if (!locked) tryLock(); });
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === canvas;
-    lockEl.classList.toggle('hidden', locked);
+    lockEl.classList.toggle('hidden', locked || dead);
     crossEl.classList.toggle('hidden', !locked);
     keys.clear();
   });
@@ -1181,18 +1914,25 @@
     P.yaw += e.movementX * 0.0022;
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - e.movementY * 0.0022));
   });
-  let sunAnim = false, sunAz = 0.95, godRays = true, vsyncOn = false;   // v-sync off by default — V re-enables
+  let dead = false;
+  $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); respawn(); lockEl.classList.remove('hidden'); });
+  let tday = 0.34, cycleSpeed = 1, cyclePause = false, godRays = true, vsyncOn = false;   // day/night cycle: 20-min day at 1x; v-sync off by default
+  addEventListener('wheel', (e) => {                   // ALT + scroll = cycle speed (sensitive: x1.6 per notch)
+    if (!e.altKey) return;
+    e.preventDefault();
+    cycleSpeed = Math.max(0.25, Math.min(512, cycleSpeed * (e.deltaY < 0 ? 1.6 : 1 / 1.6)));
+  }, { passive: false });
   document.addEventListener('keydown', (e) => {
     if (!locked) return;
     keys.add(e.code);
-    if (e.code === 'KeyF') { P.fly = !P.fly; P.vy = 0; }
-    if (e.code === 'KeyL') { sunAnim = !sunAnim; }
-    if (e.code === 'KeyG') { godRays = !godRays; }
-    if (e.code === 'KeyV') { vsyncOn = !vsyncOn; }
-    if (e.code === 'KeyR') { respawn(); }
-    if (e.code === 'BracketLeft') { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
-    if (e.code === 'BracketRight') { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
-    if (e.code === 'Space') e.preventDefault();
+    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }
+    if (e.code === binds.pausetime) { cyclePause = !cyclePause; }
+    if (e.code === binds.godrays) { godRays = !godRays; }
+    if (e.code === binds.vsync) { vsyncOn = !vsyncOn; }
+    if (e.code === binds.respawn) { respawn(); }
+    if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
+    if (e.code === binds.scaleup) { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
+    if (e.code === binds.jump) e.preventDefault();
   });
   document.addEventListener('keyup', (e) => keys.delete(e.code));
 
@@ -1200,17 +1940,25 @@
   const halton = (i, b) => { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = (i / b) | 0; } return r; };
   const JIT = Array.from({ length: 8 }, (_, i) => [halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5]);
   let frame = 0, prevT = performance.now(), fpsEma = 60, hudT = 0;
+  let gpuPrevDone = Promise.resolve();                 // completion of frame N-1 — pacing on it keeps 2 frames in flight, CPU prep overlaps GPU work
   const prevCam = { pos: [0, 0, 0], right: [1, 0, 0], up: [0, 1, 0], fwd: [0, 0, 1], tanH: 1, aspect: 1, jit: [0, 0] };   // pos in WORLD coords
   const FOV = 72 * Math.PI / 180;
 
   loadEl.classList.add('hidden');
+  const pickCfg = Object.assign({ x: 0.68, y: -0.56, z: 1.02, yaw: 0.0, pitch: -1.45, roll: 0.7, scale: 0.05 },
+    JSON.parse(localStorage.getItem('vb_pick') || 'null') || {});     // __vb.pick({yaw:..}) to tune; saved across refreshes
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
-      while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;   // pop out of solid ground (embedded = collision crawl)
-      P.vy = 0; smoothEye = P.y + EYE; maybeRecenter(); }, fly() { P.fly = true; }, sun(az) { sunAz = az; resetHist = 1; }, give() { rocksInv++; },
-    lake() { let best = null, bd = 1e18; for (let jz = -6; jz <= 6; jz++) for (let jx = -6; jx <= 6; jx++) {
-      const L = lakeAt(Math.floor(P.x / LCELL) + jx, Math.floor(P.z / LCELL) + jz); if (!L) continue;
-      const d = (L.x - P.x) * (L.x - P.x) + (L.z - P.z) * (L.z - P.z); if (d < bd) { bd = d; best = L; } } return best; },
-    water() { for (let r = 8; r < 360; r += 8) for (let a = 0; a < 6.28; a += 0.4) { const x = Math.round(P.x + Math.cos(a) * r), z = Math.round(P.z + Math.sin(a) * r); if (hmap[gwrap(x, WX) + gwrap(z, WZ) * WX] <= WL - 3) return [x, hmap[gwrap(x, WX) + gwrap(z, WZ) * WX], z]; } return null; },
+      maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
+      while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
+      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { rocksInv++; },
+    pick(o) { Object.assign(pickCfg, o || {}); localStorage.setItem('vb_pick', JSON.stringify(pickCfg)); return JSON.stringify(pickCfg); },
+    fin() { let best = null, bd = 1e18; for (let jz = -5; jz <= 5; jz++) for (let jx = -5; jx <= 5; jx++) {
+      const f = formationAt(Math.floor(P.x / RCELL) + jx, Math.floor(P.z / RCELL) + jz); if (!f) continue;
+      if (best === null || f[0].hgt > best.hgt) { best = f[0]; } } return best; },
+    cave() { let best = null, bd = 1e18; for (let jz = -4; jz <= 4; jz++) for (let jx = -4; jx <= 4; jx++) {
+      const c = caveAt(Math.floor(P.x / CAVE_CELL) + jx, Math.floor(P.z / CAVE_CELL) + jz); if (!c) continue;
+      const d = (c.sx - P.x) ** 2 + (c.sz - P.z) ** 2; if (d < bd) { bd = d; best = c; } } return best; },
+    water() { for (let r = 8; r < 360; r += 8) for (let a = 0; a < 6.28; a += 0.4) { const x = Math.round(P.x + Math.cos(a) * r), z = Math.round(P.z + Math.sin(a) * r); const hy = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX]; if (waterAt(x, hy, z) || waterAt(x, hy + 1, z)) return [x, hy, z]; } return null; },
     peaks(minProm) { const out = []; const prom = minProm || 16;   // columns rising sharply above their surroundings = crags
       for (let gz = 32; gz < WZ - 32; gz += 4) for (let gx = 32; gx < WX - 32; gx += 4) {
         const h = hmap[gx + gz * WX];
@@ -1224,29 +1972,30 @@
     fpsEma = fpsEma * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
 
     // ── player physics ──
-    const crouching = keys.has('KeyC') && !P.fly;
+    const crouching = keys.has(binds.crouch) && !P.fly;
     P.crouch = crouching;
     const hh = crouching ? CR_HEIGHT : HEIGHT, eyeH = crouching ? CR_EYE : EYE;
-    const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) && !crouching;
+    const sprint = keys.has(binds.sprint) && !crouching;
     const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
     let mx = 0, mz = 0;
-    if (keys.has('KeyW')) { mx += fx; mz += fz; }
-    if (keys.has('KeyS')) { mx -= fx; mz -= fz; }
-    if (keys.has('KeyA')) { mx -= fz; mz += fx; }
-    if (keys.has('KeyD')) { mx += fz; mz -= fx; }
+    if (keys.has(binds.forward)) { mx += fx; mz += fz; }
+    if (keys.has(binds.back)) { mx -= fx; mz -= fz; }
+    if (keys.has(binds.left)) { mx -= fz; mz += fx; }
+    if (keys.has(binds.right)) { mx += fz; mz -= fx; }
+    if (dead) { mx = 0; mz = 0; }
     const ml = Math.hypot(mx, mz); if (ml > 0) { mx /= ml; mz /= ml; }
     if (P.fly) {
       const spd = sprint ? 170 : 60;
       const k = 1 - Math.exp(-10 * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
-      let vy = 0; if (keys.has('Space')) vy += spd; if (keys.has('ControlLeft') || keys.has('KeyC')) vy -= spd;
+      let vy = 0; if (keys.has(binds.jump)) vy += spd; if (keys.has('ControlLeft') || keys.has(binds.crouch)) vy -= spd;
       P.x += P.hvx * dt; P.z += P.hvz * dt; P.y += vy * dt;
       P.y = Math.max(-40, Math.min(WY + 240, P.y));
       P.onGround = false;
-      smoothEye = P.y + eyeH; bobAmp *= Math.exp(-8 * dt);
+      smoothEye = P.y + eyeH;
     } else {
       const inWater = waterAt(Math.floor(P.x), Math.floor(P.y + 3), Math.floor(P.z));
-      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? 0.55 : 1);
+      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? 0.55 : 1) * (P.sprintJump ? 1.2 : 1);
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
       moveAxis(0, P.hvx * dt, hh);
@@ -1256,41 +2005,47 @@
         else if (!boxFree(P.x, P.y - 0.05, P.z, hh)) { /* already in contact */ }
         else moveAxis(1, -2.6, hh);                    // sub-stepped, stops exactly at contact
       }
-      if (P.onGround && keys.has('Space') && !inWater) { P.vy = JUMP; P.onGround = false; }
+      if (P.onGround && keys.has(binds.jump) && !inWater && !dead) { P.vy = JUMP; P.onGround = false; P.sprintJump = sprint; }   // sprint-jump carries +20% air speed
       if (inWater) {                                   // SWIM: buoyant slow sink, Space paddles up
         P.vy = Math.max(-20, P.vy - GRAVITY * 0.12 * dt);
-        if (keys.has('Space')) P.vy = Math.min(46, P.vy + 320 * dt);
+        if (keys.has(binds.jump)) P.vy = Math.min(46, P.vy + 320 * dt);
       } else P.vy = Math.max(-160, P.vy - GRAVITY * dt);
       const hitY = moveAxis(1, P.vy * dt, hh);
-      if (hitY) { if (P.vy < 0) P.onGround = true; P.vy = 0; }
+      if (hitY) { if (P.vy < 0) { P.onGround = true; P.sprintJump = false; } P.vy = 0; }
+      if (!dead && !P.fly && (lavaAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z)) || lavaAt(Math.floor(P.x), Math.floor(P.y + 1), Math.floor(P.z)))) {
+        dead = true; $('over').classList.remove('hidden');
+        lockEl.classList.add('hidden');                  // never show the ESC menu under the game-over screen
+        try { document.exitPointerLock(); } catch (e) {}
+      }
       if (P.y < -60) respawn();
       // eye smoothing — step-ups AND stick-downs ease over ~80 ms instead of popping; exact tracking while airborne
       const targetEye = P.y + eyeH;
       smoothEye += (targetEye - smoothEye) * (1 - Math.exp(-(P.onGround ? 12 : 60) * dt));
       smoothEye = Math.max(targetEye - 3, Math.min(targetEye + 3, smoothEye));   // never lag more than 3 voxels
-      const gspd = Math.hypot(P.hvx, P.hvz);
-      bobAmp += ((P.onGround ? Math.min(1, gspd / WALK) : 0) - bobAmp) * (1 - Math.exp(-8 * dt));
-      bobPhase += gspd * dt * 0.5;
     }
 
     // ── stream the world window toward the player ──
     stepShifts();
+    stepLod();
 
-    // ── sun ──
-    if (sunAnim) sunAz += dt * (Math.PI * 2 / 120);
-    const sxz = Math.cos(0.72), syy = Math.sin(0.72);
-    const sun = [Math.cos(sunAz) * sxz, syy, Math.sin(sunAz) * sxz];
+    // ── day/night cycle ── 20-minute full cycle at 1x; tday 0 = midnight, 0.5 = noon; ALT+scroll scales speed, L pauses
+    if (!cyclePause) tday = (tday + dt * cycleSpeed / 1200) % 1;
+    const ang = tday * Math.PI * 2 - Math.PI / 2;
+    const el = Math.sin(ang) * 1.05;
+    const ce2 = Math.cos(el);
+    let sun = [Math.cos(ang) * ce2, Math.sin(el), Math.sin(ang) * ce2];
+    let moonMode = false;
+    if (sun[1] < -0.06) {                              // sun has set — the MOON (opposite point) lights the world
+      const moon = [-sun[0], -sun[1], -sun[2]];
+      if (moon[1] > 0.04) { sun = moon; moonMode = true; }
+    }
 
     // ── camera basis ── (positions sent to the GPU are WINDOW-RELATIVE for f32 precision at any distance)
     const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
     const fwd = [Math.sin(P.yaw) * cp, sp, Math.cos(P.yaw) * cp];
     const right = [Math.cos(P.yaw), 0, -Math.sin(P.yaw)];
     const up = [-Math.sin(P.yaw) * sp, cp, -Math.cos(P.yaw) * sp];
-    const bob = bobAmp * 0.14;                         // halved — the bob was reading as jitter
-    const cam = [
-      P.x + right[0] * Math.sin(bobPhase) * bob,
-      smoothEye + Math.sin(bobPhase * 2) * bob,
-      P.z + right[2] * Math.sin(bobPhase) * bob];
+    const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera
     if (!locked) {                                     // ESC menu: the whole CAMERA drifts gently — the entire image sways
       const ts = now * 0.001;
       cam[0] += Math.sin(ts * 0.42) * 0.9;
@@ -1307,11 +2062,19 @@
     set3(16, [prevCam.pos[0] - winOX, prevCam.pos[1], prevCam.pos[2] - winOZ], prevCam.tanH);
     set3(20, prevCam.right, prevCam.aspect);
     const uw = waterAt(Math.floor(cam[0]), Math.floor(cam[1]), Math.floor(cam[2]));
-    set3(24, prevCam.up, sunAnim ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (rocksInv > 0 ? 4 : 0));
+    set3(24, prevCam.up, (cycleSpeed > 4 && !cyclePause) ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0));
     set3(32, sun, resetHist);
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
     UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
+    { const cy = Math.cos(pickCfg.yaw), sy = Math.sin(pickCfg.yaw), cp2 = Math.cos(pickCfg.pitch), sp2 = Math.sin(pickCfg.pitch), cr2 = Math.cos(pickCfg.roll), sr2 = Math.sin(pickCfg.roll);
+      set3(48, [pickCfg.x, pickCfg.y, pickCfg.z], pickCfg.scale);
+      set3(52, [cr2 * cy - sr2 * sp2 * sy, sr2 * cy + cr2 * sp2 * sy, -cp2 * sy], dead ? 0 : (rocksInv > 0 ? 2 : (sticksInv > 0 ? 3 : 1)));   // held item id: 1 pick, 2 rock, 3 twig
+      set3(56, [-sr2 * cp2, cr2 * cp2, sp2], 0);
+      set3(60, [cr2 * sy + sr2 * sp2 * cy, sr2 * sy - cr2 * sp2 * cy, cp2 * cy], 0);
+    }
+    UF[64] = lodOX; UF[65] = lodOZ; UF[66] = lodReady ? 1 : 0; UF[67] = 0;
+    UF[68] = nlodOX; UF[69] = nlodOZ; UF[70] = nlodReady ? 1 : 0; UF[71] = 0;
     device.queue.writeBuffer(uniBuf, 0, UF);
 
     // ── passes ──
@@ -1343,13 +2106,19 @@
     hudT += dt;
     if (hudT > 0.25) {
       hudT = 0;
+      if (!locked) {
+        const mins = Math.floor(tday * 1440);
+        todLabel.textContent = String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
+        if (!todDrag) todSlider.value = mins;
+      }
       hudEl.textContent = `${fpsEma.toFixed(0)} fps${vsyncOn ? '' : ' (uncapped)'}  ${RW}×${RH} (${renderScale.toFixed(2)}×)\n` +
-        `xyz ${(P.x / 10).toFixed(1)} ${(P.y / 10).toFixed(1)} ${(P.z / 10).toFixed(1)} m${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}${sunAnim ? '  sun-orbit' : ''}` +
+        `xyz ${(P.x / 10).toFixed(1)} ${(P.y / 10).toFixed(1)} ${(P.z / 10).toFixed(1)} m${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}  ${String(Math.floor(tday * 24)).padStart(2, '0')}:${String(Math.floor((tday * 24 % 1) * 60)).padStart(2, '0')}${cycleSpeed !== 1 ? ' x' + cycleSpeed.toFixed(1) : ''}${cyclePause ? ' paused' : ''}` +
         (rocksInv || sticksInv ? `\nrocks ${rocksInv} · twigs ${sticksInv}` : '');
     }
-    // V-SYNC OFF: pace frames off actual GPU completion instead of the display — true render rate, no queue flood
+    // V-SYNC OFF: pace frames off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the
+    // CPU's frame prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it
     if (vsyncOn || document.hidden) requestAnimationFrame(tick);   // hidden tab always idles via rAF
-    else device.queue.onSubmittedWorkDone().then(() => tick(performance.now()));
+    else { const wait = gpuPrevDone; gpuPrevDone = device.queue.onSubmittedWorkDone(); wait.then(() => tick(performance.now())); }
   }
   tick(performance.now());
 })();
