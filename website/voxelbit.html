@@ -739,7 +739,7 @@
         if (r0 > 0.55) continue;
         const wx2 = Math.round(c.sx + dxr * t + nx * (off + side * (wEff - 1)));
         const wz2 = Math.round(c.sz + dzr * t + nz * (off + side * (wEff - 1)));
-        if (wx2 < x0 + 2 || wx2 >= x1 - 2 || wz2 < z0 + 2 || wz2 >= z1 - 2) continue;
+        if (wx2 < x0 - 4 || wx2 >= x1 + 4 || wz2 < z0 - 4 || wz2 >= z1 + 4) continue;   // pure reach cull — the per-voxel clip below decides, so region seams can't drop a nodule
         const sy = H(wx2, wz2);
         const oy = Math.max(8, Math.round(sy - 6 - r0 * (c.dep > sy ? sy - 12 : c.dep - 8)));
         const ORE = ihash(c.seed + t, side) < 0.5 ? OREIRON : ORECOAL;
@@ -888,10 +888,11 @@
       for (let i = 0; i < len; i++) {
         const drift = Math.round(bend * (i * i) / (len * 2.2));
         const x = s.wx + dx * i + dz * drift, z = s.wz + dz * i + dx * drift;
-        if (x < x0 || x >= x1 || z < z0 || z >= z1) continue;
-        const y = H(x, z); if (y + 1 >= WY) continue;
-        const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
-        if (!W[ii]) W[ii] = id;
+        const y = H(x, z); if (y + 1 >= WY) continue;  // y comes from the SPINE column even when the spine voxel is clipped —
+        if (x >= x0 && x < x1 && z >= z0 && z < z1) {  // spine and thickening clip INDEPENDENTLY, so region seams can't drop either
+          const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+          if (!W[ii]) W[ii] = id;
+        }
         if (s.form === 1 && i >= 3 && i <= 7) {        // sticks thicken mid-length
           const x2 = x + dz, z2 = z + dx;
           if (x2 >= x0 && x2 < x1 && z2 >= z0 && z2 < z1) { const jj = gwrap(x2, WX) + y * WX + gwrap(z2, WZ) * WX * WY; if (!W[jj]) W[jj] = id; }
@@ -1040,7 +1041,23 @@
     const bh = Math.min(HALF, Math.ceil((rdStored + 96) / 8) * 8);
     const cx = winOX + HALF, cz = winOZ + HALF;
     rect.xlo = cx - bh; rect.xhi = cx + bh; rect.zlo = cz - bh; rect.zhi = cz + bh;
-    for (let s = 0; s < 32; s++) {
+    let built = false;
+    if (poolOk) {                                      // fan the whole build across every core, blit slabs as they land
+      const jobs = [];
+      for (let s = 0; s < 32; s++) jobs.push(...poolChunks(rect.xlo, rect.xhi, rect.zlo + (((bh * 2) * s) >> 5), rect.zlo + (((bh * 2) * (s + 1)) >> 5)));
+      let done = 0, lastPct = -1;
+      for (const j of jobs) {
+        while (poolOk && !j.done) {
+          if (withStages) { const pct = (done * 100 / jobs.length) | 0; if (pct !== lastPct) { lastPct = pct; loadEl.textContent = `growing forest… ${pct}%`; } }
+          await new Promise(r => setTimeout(r, 2));
+        }
+        if (!poolOk) break;
+        blitSlab(j); jobById.delete(j.id); j.msg = null; done++;
+      }
+      built = poolOk;
+      if (!built) { poolQueue.length = 0; jobById.clear(); }
+    }
+    if (!built) for (let s = 0; s < 32; s++) {         // no pool (or it died mid-build) — the inline path regenerates everything identically
       if (withStages) await stage(`growing forest… ${(s * 100 / 32) | 0}%`);
       genRegion(rect.xlo, rect.xhi, rect.zlo + (((bh * 2) * s) >> 5), rect.zlo + (((bh * 2) * (s + 1)) >> 5), true);
     }
@@ -1049,6 +1066,122 @@
   }
   while (H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ)) SPWX += 16;   // never spawn in a lake or a gorge
   winOX = Math.round(SPWX / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
+
+  // ── GEN POOL ── the ENTIRE generator (terrain sweep + every stamp pass) runs on a pool of worker threads.
+  // Each worker is built from THE SAME function sources (fn.toString() — bit-exact by construction, like the row
+  // worker above) and fills a private region slab it transfers back; the main thread's only remaining work is a
+  // straight memcpy into W/hmap. Slabs use ORIGIN-SHIFTED indexing in place of the toroidal wrap (the stride is
+  // padded when sx === sz so gwrap's axis test stays unambiguous). Boot fans all bands across every core;
+  // streaming bands are chunked along their long axis and prefetched one band ahead. If workers are unavailable
+  // or die, every call site falls back to the identical inline path. `?nopool` forces inline for A/B testing.
+  let genPool = null, poolOk = false, poolWait = false, poolSeq = 0;
+  const jobById = new Map(), poolQueue = [], regionJobs = new Map();
+  const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
+  if (!location.search.includes('nopool')) try {
+    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, RCELL, RMARGIN, CAVE_CELL, CAVE_MARGIN, OCELL, BCELL, FCELL, SCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, FERN, PEBBLE, BLOOM, FERN_ARCH, FERN_STEM };
+    const fns = { ihash, sstep, vnoise, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, boulderAt, stampBoulder, formationAt, stampFormation, nearFormation, caveAt, carveSphere, stampCave, nearCave, oreAt, stampOre, fernAt, stampFern, stickAt, stampStick, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
+    let wsrc2 = '';
+    for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
+    for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
+    wsrc2 += 'let WX = 0, WZ = 0, OX = 0, OZ = 0, BX = 0, W = null, hmap = null, touched = null, MROT = null, remap = null, rivScope = null;\n' +
+      'const gwrap = (v, n) => v - (n === WX ? OX : OZ);\n' +
+      'const rivCache = new Map(), formCache = new Map(), caveCache = new Map();\n' +
+      'const takeRows = () => null;\n';
+    for (const k in fns) wsrc2 += 'const ' + k + ' = ' + fns[k].toString() + ';\n';
+    wsrc2 += 'onmessage = (e) => {\n' +
+      '  const d = e.data;\n' +
+      '  if (d.init) { MROT = d.MROT; remap = d.remap; return; }\n' +
+      '  const sx = d.x1 - d.x0, sz = d.z1 - d.z0;\n' +
+      '  WX = sx === sz ? sx + 8 : sx; WZ = sz; OX = d.x0; OZ = d.z0; BX = WX >> 3;\n' +
+      '  W = new Uint8Array(WX * WY * WZ); hmap = new Int16Array(WX * WZ);\n' +
+      '  touched = new Uint8Array(((WX >> 3) + 1) * ((WZ >> 3) + 2));\n' +
+      '  genRegion(d.x0, d.x1, d.z0, d.z1, true);\n' +
+      '  postMessage({ id: d.id, stride: WX, W, hmap }, [W.buffer, hmap.buffer]);\n' +
+      '  W = hmap = touched = null;\n' +
+      '};';
+    const purl = URL.createObjectURL(new Blob([wsrc2], { type: 'text/javascript' }));
+    const NPOOL = Math.max(2, Math.min(8, (navigator.hardwareConcurrency || 4) - 2));
+    genPool = [];
+    for (let i = 0; i < NPOOL; i++) {
+      const w = new Worker(purl);
+      w.busyId = 0;
+      w.onmessage = (e) => { w.busyId = 0; const j = jobById.get(e.data.id); if (j) { j.msg = e.data; j.done = true; } poolPump(); };
+      w.onerror = (e) => { console.warn('[vb] gen pool error — inline generation', e.message || e); poolOk = false; };
+      w.postMessage({ init: 1, MROT, remap });
+      genPool.push(w);
+    }
+    poolOk = true;
+    console.log('[vb] gen pool:', NPOOL, 'workers');
+  } catch (e) { console.warn('[vb] gen pool unavailable — inline generation', e); }
+  function poolPump() {                                // hand queued chunks to idle workers, FIFO
+    if (!poolOk) return;
+    for (const w of genPool) {
+      if (w.busyId) continue;
+      const j = poolQueue.shift(); if (!j) return;
+      w.busyId = j.id;
+      w.postMessage({ id: j.id, x0: j.x0, x1: j.x1, z0: j.z0, z1: j.z1 });
+    }
+  }
+  function poolChunks(x0, x1, z0, z1) {                // fan one region across the pool — 8-aligned splits along the roomier axis
+    const jobs = [];
+    const push = (a, b, c, d) => { const j = { id: ++poolSeq, x0: a, x1: b, z0: c, z1: d, done: false, msg: null }; jobById.set(j.id, j); poolQueue.push(j); jobs.push(j); };
+    if (z1 - z0 >= 16) { const step = Math.max(8, Math.ceil((z1 - z0) / genPool.length / 8) * 8);
+      for (let z = z0; z < z1; z += step) push(x0, x1, z, Math.min(z1, z + step));
+    } else { const step = Math.max(64, Math.ceil((x1 - x0) / genPool.length / 8) * 8);
+      for (let x = x0; x < x1; x += step) push(x, Math.min(x1, x + step), z0, z1);
+    }
+    poolPump();
+    return jobs;
+  }
+  function poolFree(key) {
+    const R = regionJobs.get(key); if (!R) return;
+    regionJobs.delete(key);
+    for (const j of R) { jobById.delete(j.id); j.msg = null; const qi = poolQueue.indexOf(j); if (qi >= 0) poolQueue.splice(qi, 1); }
+  }
+  function poolRegion(x0, x1, z0, z1) {                // idempotent band dispatch — genBandGen prefetches the NEXT band through this
+    const key = rgnKey(x0, x1, z0, z1);
+    let R = regionJobs.get(key);
+    if (!R) {
+      if (regionJobs.size > 3) poolFree(regionJobs.keys().next().value);   // drop stale mispredictions
+      R = poolChunks(x0, x1, z0, z1);
+      regionJobs.set(key, R);
+    }
+    return R;
+  }
+  const W64 = new Float64Array(W.buffer);
+  function blitSlab(j) {                               // memcpy one finished slab into the toroidal window: W + hmap + touched
+    const m = j.msg, S = m.W, HM = m.hmap, st = m.stride, S64 = new Float64Array(S.buffer);
+    const segs = [];                                   // x runs contiguous in BOTH slab and window (all x extents are 8-aligned)
+    for (let a = j.x0; a < j.x1;) { const g = gwrap(a, WX), len = Math.min(j.x1 - a, WX - g); segs.push([a - j.x0, g, len]); a += len; }
+    for (let z = j.z0; z < j.z1; z++) {
+      const gz = gwrap(z, WZ), hs = (z - j.z0) * st, hd = gz * WX;
+      for (const [o, g, len] of segs) hmap.set(HM.subarray(hs + o, hs + o + len), hd + g);
+      const zs = (z - j.z0) * st * WY, zd = gz * WX * WY;
+      for (const [o, g, len] of segs) {
+        if (len >= 128) { for (let y = 0; y < WY; y++) { const s0 = zs + y * st + o; W.set(S.subarray(s0, s0 + len), zd + y * WX + g); } }
+        else { const n = len >> 3;                     // narrow runs (8-wide x-bands): whole-f64 stores skip ~790k subarray allocs per band
+          for (let y = 0; y < WY; y++) { const s8 = (zs + y * st + o) >> 3, d8 = (zd + y * WX + g) >> 3;
+            for (let k = 0; k < n; k++) W64[d8 + k] = S64[s8 + k]; } }
+      }
+    }
+    for (let z = j.z0 & ~7; z < j.z1; z += 8) { const tr = (gwrap(z, WZ) >> 3) * BX;   // blitted memory is no longer virgin
+      for (let x = j.x0; x < j.x1; x += 8) touched[(gwrap(x, WX) >> 3) + tr] = 1;
+    }
+  }
+  function* genRegionThreaded(x0, x1, z0, z1) {        // pool-generated region; falls back to the identical inline sweep if the pool dies or stalls
+    if (poolOk) {
+      const key = rgnKey(x0, x1, z0, z1), jobs = poolRegion(x0, x1, z0, z1);
+      let spin = 0;
+      while (poolOk && spin < 1800 && jobs.some(jb => !jb.done)) { spin++; poolWait = true; yield; }
+      poolWait = false;
+      if (jobs.every(jb => jb.done)) { for (const jb of jobs) { blitSlab(jb); yield; } poolFree(key); return; }
+      poolFree(key);                                   // dead or stalled — regenerate the whole region inline (deterministic, so overlap is harmless)
+    }
+    reqRows(x0, x1, z0, z1);
+    for (let spin = 0; spin < 90 && rowsPending(x0, x1, z0, z1); spin++) { yield; }
+    yield* genRegionGen(x0, x1, z0, z1, false);
+  }
   await buildWorld(true);
   console.log('[vb] world built at', winOX, winOZ, 'spawn', SPWX, SPWZ);
 
@@ -1883,15 +2016,14 @@
   function* genBandGen() {                             // grow rect by ONE band on the most urgent side, then finish
     const s = bandSpec(rect);
     if (!s) return;
-    reqRows(s.x0, s.x1, s.z0, s.z1);                   // usually already prefetched by the previous band
-    for (let spin = 0; spin < 90 && rowsPending(s.x0, s.x1, s.z0, s.z1); spin++) { yield; }
-    { const nr = { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi };   // PREFETCH the next band's rows while this one fills
+    if (poolOk) poolRegion(s.x0, s.x1, s.z0, s.z1);    // queue the CURRENT band ahead of the next-band prefetch below (usually already in flight)
+    { const nr = { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi };   // PREFETCH the next band while this one fills
       if (s.side === 'zlo') nr.zlo -= 8; else if (s.side === 'zhi') nr.zhi += 8; else if (s.side === 'xlo') nr.xlo -= 8; else nr.xhi += 8;
       const ns = bandSpec(nr);
-      if (ns) reqRows(ns.x0, ns.x1, ns.z0, ns.z1);
+      if (ns) { if (poolOk) poolRegion(ns.x0, ns.x1, ns.z0, ns.z1); else reqRows(ns.x0, ns.x1, ns.z0, ns.z1); }
     }
     if (s.side === 'zlo' || s.side === 'zhi') {
-      yield* genRegionGen(s.x0, s.x1, s.z0, s.z1, false);
+      yield* genRegionThreaded(s.x0, s.x1, s.z0, s.z1);
       const g0 = gwrap(s.z0, WZ);
       rebuildBricksW(s.x0, s.x1, s.z0, s.z1);
       yield;
@@ -1899,7 +2031,7 @@
       uploadBricks();
       if (s.side === 'zlo') rect.zlo = s.z0; else rect.zhi = s.z1;
     } else {
-      yield* genRegionGen(s.x0, s.x1, s.z0, s.z1, false);
+      yield* genRegionThreaded(s.x0, s.x1, s.z0, s.z1);
       const g0 = gwrap(s.x0, WX);
       rebuildBricksW(s.x0, s.x1, s.z0, s.z1);
       yield;
@@ -1938,6 +2070,7 @@
     while (performance.now() - t0 < budget) {          // chain bands back-to-back — no budget goes unused
       if (!genJob) { if (!needGen()) break; genJob = genBandGen(); }
       if (genJob.next().done) genJob = null;
+      if (poolWait) break;                             // the band is cooking on the worker pool — don't burn the budget on empty spins
     }
   }
   function recenter(x, z) {                            // teleport-scale move: rebuild a starter square, the rest streams in
@@ -2018,27 +2151,64 @@
   }
 
   // ── right-click pickup: pebbles + twigs ─────────────────────────────────────
-  let rocksInv = 0, sticksInv = 0, pickHeld = true;
+  // ── HAND SLOTS ── 4-slot hotbar; scroll wheel cycles, Q drops from the selected slot. Same-type items stack.
+  const slots = [{ it: 1, n: 1 }, null, null, null];   // slot 0 starts with the stone axe; ids: 1 axe, 2 rock, 3 twig
+  let selSlot = 0;
+  const canAdd = (it) => slots.some((s) => !s || s.it === it);
+  function addItem(it) {                               // prefer stacking, then the SELECTED slot (so a fresh grab lands in the hand), then any empty
+    for (const s of slots) if (s && s.it === it) { s.n++; return true; }
+    if (!slots[selSlot]) { slots[selSlot] = { it, n: 1 }; return true; }
+    for (let i = 0; i < slots.length; i++) if (!slots[i]) { slots[i] = { it, n: 1 }; return true; }
+    return false;
+  }
+  // quaternion helpers — item orientations interpolate as ROTATIONS (slerp), never as three independently
+  // lerped axis vectors (that collapses mid-flight and reads as the item flipping/glitching)
+  const m2q = (X, Y, Z) => { const t = X[0] + Y[1] + Z[2];                      // columns of local→space matrix, [x,y,z,w]
+    if (t > 0) { const s = Math.sqrt(t + 1) * 2; return [(Y[2] - Z[1]) / s, (Z[0] - X[2]) / s, (X[1] - Y[0]) / s, s / 4]; }
+    if (X[0] > Y[1] && X[0] > Z[2]) { const s = Math.sqrt(1 + X[0] - Y[1] - Z[2]) * 2; return [s / 4, (Y[0] + X[1]) / s, (Z[0] + X[2]) / s, (Y[2] - Z[1]) / s]; }
+    if (Y[1] > Z[2]) { const s = Math.sqrt(1 + Y[1] - X[0] - Z[2]) * 2; return [(Y[0] + X[1]) / s, s / 4, (Z[1] + Y[2]) / s, (Z[0] - X[2]) / s]; }
+    { const s = Math.sqrt(1 + Z[2] - X[0] - Y[1]) * 2; return [(Z[0] + X[2]) / s, (Z[1] + Y[2]) / s, s / 4, (X[1] - Y[0]) / s]; } };
+  const q2m = (q) => { const [x, y, z, w] = q; return [
+    [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w)],
+    [2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w)],
+    [2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]]; };
+  const qslerp = (a, b, t) => { let d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3], bb = b;
+    if (d < 0) { d = -d; bb = [-b[0], -b[1], -b[2], -b[3]]; }                   // shortest arc
+    if (d > 0.9995) { const v = [0, 1, 2, 3].map((i) => a[i] + (bb[i] - a[i]) * t); const l = Math.hypot(v[0], v[1], v[2], v[3]) || 1; return [v[0] / l, v[1] / l, v[2] / l, v[3] / l]; }
+    const th = Math.acos(Math.min(1, d)), s = Math.sin(th), ka = Math.sin((1 - t) * th) / s, kb = Math.sin(t * th) / s;
+    return [a[0] * ka + bb[0] * kb, a[1] * ka + bb[1] * kb, a[2] * ka + bb[2] * kb, a[3] * ka + bb[3] * kb]; };
   let grabAnim = null;                                 // {t0, it, x, y, z, aPh} — a grabbed item FLYING from its world spot into the hand
-  const drops = [];                                    // DROPPED ITEMS (Q) — they hover + spin in the world (composite raytrace, depth-tested); right-click to grab
+  const drops = [];                                    // DROPPED ITEMS (Q) — TOSSED on a ballistic arc, then hover + spin; right-click to grab
+  const TOSS_G = -170, TOSS_V = 55, TOSS_UP = 18;      // vox/s² gravity, throw speed along the view ray, extra up-kick
   function dropHeld() {
-    const it = rocksInv > 0 ? 2 : (sticksInv > 0 ? 3 : (pickHeld ? 1 : 0));
-    if (!it || dead) return;
-    if (it === 2) rocksInv--; else if (it === 3) sticksInv--; else pickHeld = false;
-    const dx = Math.round(P.x + Math.sin(P.yaw) * 14), dz = Math.round(P.z + Math.cos(P.yaw) * 14);
-    const gy = hmap[gwrap(dx, WX) + gwrap(dz, WZ) * WX];
+    const sel = slots[selSlot];
+    if (!sel || dead) return;
+    const it = sel.it;
+    if (--sel.n <= 0) slots[selSlot] = null;
     // launch from the held item's true world spot (held units ÷ scale = voxels), with the held orientation — it FLIES out of the hand
-    const s = 1 / pickCfg.scale, pr = prevCam;
-    const cx2 = pickCfg.x * s, cy2 = pickCfg.y * s, cz2 = pickCfg.z * s;
-    const cy = Math.cos(pickCfg.yaw), sy = Math.sin(pickCfg.yaw), cp2 = Math.cos(pickCfg.pitch), sp2 = Math.sin(pickCfg.pitch), cr2 = Math.cos(pickCfg.roll), sr2 = Math.sin(pickCfg.roll);
+    const cfg = heldCfg(it);
+    const s = 1 / cfg.scale, pr = prevCam;
+    const cx2 = cfg.x * s, cy2 = cfg.y * s, cz2 = cfg.z * s;
+    const cy = Math.cos(cfg.yaw), sy = Math.sin(cfg.yaw), cp2 = Math.cos(cfg.pitch), sp2 = Math.sin(cfg.pitch), cr2 = Math.cos(cfg.roll), sr2 = Math.sin(cfg.roll);
     const toW = (v) => [pr.right[0] * v[0] + pr.up[0] * v[1] + pr.fwd[0] * v[2], pr.right[1] * v[0] + pr.up[1] * v[1] + pr.fwd[1] * v[2], pr.right[2] * v[0] + pr.up[2] * v[1] + pr.fwd[2] * v[2]];
-    drops.push({ x: dx, y: gy, z: dz, it, ph: Math.random() * 6.28, born: performance.now(),
-      fx: pr.pos[0] + pr.right[0] * cx2 + pr.up[0] * cy2 + pr.fwd[0] * cz2,
-      fy: pr.pos[1] + pr.right[1] * cx2 + pr.up[1] * cy2 + pr.fwd[1] * cz2,
-      fz: pr.pos[2] + pr.right[2] * cx2 + pr.up[2] * cy2 + pr.fwd[2] * cz2,
-      aX: toW([cr2 * cy, sr2 * cp2 + cr2 * sy * sp2, sr2 * sp2 - cr2 * sy * cp2]),
-      aY: toW([-sr2 * cy, cr2 * cp2 - sr2 * sy * sp2, cr2 * sp2 + sr2 * sy * cp2]),
-      aZ: toW([sy, -cy * sp2, cy * cp2]) });
+    const sx = pr.pos[0] + pr.right[0] * cx2 + pr.up[0] * cy2 + pr.fwd[0] * cz2;
+    const sy2 = pr.pos[1] + pr.right[1] * cx2 + pr.up[1] * cy2 + pr.fwd[1] * cz2;
+    const sz = pr.pos[2] + pr.right[2] * cx2 + pr.up[2] * cy2 + pr.fwd[2] * cz2;
+    const cpv = Math.cos(P.pitch), spv = Math.sin(P.pitch);                     // TOSS along the view ray + an up-kick, integrated against the terrain
+    const vx = Math.sin(P.yaw) * cpv * TOSS_V, vy0 = spv * TOSS_V + TOSS_UP, vz = Math.cos(P.yaw) * cpv * TOSS_V;
+    let px = sx, py = sy2, pz = sz, vy = vy0, T = 0;
+    for (let i = 0; i < 360; i++) {                                             // 1.8 s cap, 5 ms steps (trapezoid = exact for constant g)
+      const nvy = vy + TOSS_G * 0.005;
+      px += vx * 0.005; py += (vy + nvy) * 0.5 * 0.005; pz += vz * 0.005; vy = nvy; T += 0.005;
+      if (T > 0.12 && py <= hmap[gwrap(Math.round(px), WX) + gwrap(Math.round(pz), WZ) * WX] + 5.5) break;
+    }
+    const lx = Math.round(px), lz = Math.round(pz);
+    const aX = toW([cr2 * cy, sr2 * cp2 + cr2 * sy * sp2, sr2 * sp2 - cr2 * sy * cp2]);
+    const hl = Math.hypot(aX[0], aX[2]) || 1, Xh = [aX[0] / hl, 0, aX[2] / hl];  // UPRIGHT at release — keep the hand's heading, level everything else
+    drops.push({ x: lx, y: hmap[gwrap(lx, WX) + gwrap(lz, WZ) * WX], z: lz, it, ph: Math.random() * 6.28, born: performance.now(),
+      T, sx, sy: sy2, sz, vx, vy: vy0, vz,
+      ex: sx + vx * T, ey: sy2 + vy0 * T + 0.5 * TOSS_G * T * T, ez: sz + vz * T,   // exact arc endpoint — the settle blend starts here
+      q0: m2q(Xh, [Xh[2], 0, -Xh[0]], [0, 1, 0]) });
     if (drops.length > 4) drops.shift();               // the composite renders up to 4 at once
   }
   const PICK_ROCK = new Set(PEBBLE), PICK_STICK = new Set([STICK_S]);
@@ -2091,6 +2261,8 @@
     const d = [Math.sin(P.yaw) * cp2, sp2, Math.cos(P.yaw) * cp2];
     for (let i = 0; i < drops.length; i++) {           // DROPPED items grab first — generous ray-sphere test
       const dr = drops[i];
+      if (dr.T && (performance.now() - dr.born) / 1000 < dr.T) continue;        // still mid-toss — let it land first
+      if (!canAdd(dr.it)) continue;                    // no slot free for it
       const ox = dr.x + 0.5 - P.x, oy = dr.y + 5.5 - smoothEye, oz = dr.z + 0.5 - P.z;
       const tq = ox * d[0] + oy * d[1] + oz * d[2];
       if (tq < 0 || tq > 55) continue;
@@ -2108,8 +2280,8 @@
       if (y < 0 || y >= WY) return;
       const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
       if (!v || PASSTHRU.has(v)) continue;
-      if (PICK_ROCK.has(v)) { const c = floodRemove(x, y, z, PICK_ROCK, 24); if (c.length) { rocksInv++; gpuPatch(c); } }
-      else if (PICK_STICK.has(v)) { const c = floodRemove(x, y, z, PICK_STICK, 14); if (c.length) { sticksInv++; gpuPatch(c); } }
+      if (PICK_ROCK.has(v) && canAdd(2)) { const c = floodRemove(x, y, z, PICK_ROCK, 24); if (c.length) { addItem(2); gpuPatch(c); } }
+      else if (PICK_STICK.has(v) && canAdd(3)) { const c = floodRemove(x, y, z, PICK_STICK, 14); if (c.length) { addItem(3); gpuPatch(c); } }
       return;
     }
   }
@@ -2194,10 +2366,15 @@
   let dead = false;
   $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); respawn(); lockEl.classList.remove('hidden'); });
   let tday = 0.34, cycleSpeed = 1, cyclePause = false, godRays = true, vsyncOn = false;   // day/night cycle: 20-min day at 1x; v-sync off by default
-  addEventListener('wheel', (e) => {                   // ALT + scroll = cycle speed (sensitive: x1.6 per notch)
-    if (!e.altKey) return;
+  addEventListener('wheel', (e) => {                   // scroll = cycle hand slots; ALT + scroll = cycle speed (sensitive: x1.6 per notch)
+    if (e.altKey) {
+      e.preventDefault();
+      cycleSpeed = Math.max(0.25, Math.min(512, cycleSpeed * (e.deltaY < 0 ? 1.6 : 1 / 1.6)));
+      return;
+    }
+    if (!locked || dead || !e.deltaY) return;
     e.preventDefault();
-    cycleSpeed = Math.max(0.25, Math.min(512, cycleSpeed * (e.deltaY < 0 ? 1.6 : 1 / 1.6)));
+    selSlot = (selSlot + (e.deltaY > 0 ? 1 : 3)) & 3;
   }, { passive: false });
   document.addEventListener('keydown', (e) => {
     if (!locked) return;
@@ -2224,23 +2401,34 @@
   const FOV = 72 * Math.PI / 180;
 
   loadEl.classList.add('hidden');
-  const PICK_DEF = { x: 0.89, y: -0.01, z: 0.96, yaw: 0.04, pitch: -1.56, roll: 1.55, scale: 0.08 };   // baked from the user's in-game tuning (panel copy-pose export, 2026-07-15, axe)
-  const pickCfg = Object.assign({ ...PICK_DEF },
-    JSON.parse(localStorage.getItem('vb_pick2') || 'null') || {});     // tune via the ESC-menu "held item" panel (or __vb.pick); saved across refreshes
-  {                                                    // ── held-item position panel ── live sliders over pickCfg; the item renders behind the menu as you drag
+  const PICK_DEFS = {                                  // PER-ITEM held poses — tuning one item never moves the others (panel copy-pose exports)
+    1: { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 },   // stone axe (user bake 2026-07-15)
+    2: { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 },   // pebble rock
+    3: { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 },   // twig
+  };
+  const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] } };
+  try { const sv = JSON.parse(localStorage.getItem('vb_pick3') || '{}'); for (const k in sv) if (pickCfgs[k]) Object.assign(pickCfgs[k], sv[k]); } catch (e) {}   // key bumped from vb_pick2 — the old value was one shared pose
+  const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig' };
+  const heldIt = () => (grabAnim ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the hand is currently showing (0 = empty)
+  const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];
+  const pickSave = () => { try { localStorage.setItem('vb_pick3', JSON.stringify(pickCfgs)); } catch (e) {} };
+  {                                                    // ── held-item position panel ── live sliders over the CURRENT item's own pose; the item renders behind the menu as you drag
     const pkPanel = $('pkPanel'), pkRows = $('pkRows');
     const PKDEF = [['x', -1.5, 1.5, 0.01, 'move right'], ['y', -1.5, 0.5, 0.01, 'move up'], ['z', 0.2, 2.5, 0.01, 'move forward'],
                    ['yaw', -3.14, 3.14, 0.01, 'rotate yaw'], ['pitch', -3.14, 3.14, 0.01, 'rotate pitch'], ['roll', -3.14, 3.14, 0.01, 'rotate roll'], ['scale', 0.01, 0.15, 0.002, 'size']];
-    const pkSave = () => { try { localStorage.setItem('vb_pick2', JSON.stringify(pickCfg)); } catch (e) {} };
-    const pkStr = () => JSON.stringify(Object.fromEntries(Object.entries(pickCfg).map(([k, v]) => [k, +(+v).toFixed(3)])));
+    let pkIt = 1;                                      // which item the sliders are bound to — resolved from the hand each time the panel refreshes
+    const pkStr = () => JSON.stringify(Object.fromEntries(Object.entries(pickCfgs[pkIt]).map(([k, v]) => [k, +(+v).toFixed(3)])));
     function pkRefresh() {
+      pkIt = heldIt() || 1;                            // empty hand → tune the axe
+      const cfg = pickCfgs[pkIt];
+      pkPanel.querySelector('h2').textContent = 'held item — ' + ITEM_NAMES[pkIt];
       pkRows.innerHTML = '';
       for (const [k, mn, mx, st, name] of PKDEF) {
         const row = document.createElement('div'); row.className = 'pkRow';
         const lbl = document.createElement('span'); lbl.textContent = name;
-        const inp = document.createElement('input'); inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st; inp.value = pickCfg[k];
-        const val = document.createElement('span'); val.className = 'pkVal'; val.textContent = (+pickCfg[k]).toFixed(k === 'scale' ? 3 : 2);
-        inp.addEventListener('input', (e) => { e.stopPropagation(); pickCfg[k] = parseFloat(inp.value); val.textContent = (+pickCfg[k]).toFixed(k === 'scale' ? 3 : 2); pkSave();
+        const inp = document.createElement('input'); inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st; inp.value = cfg[k];
+        const val = document.createElement('span'); val.className = 'pkVal'; val.textContent = (+cfg[k]).toFixed(k === 'scale' ? 3 : 2);
+        inp.addEventListener('input', (e) => { e.stopPropagation(); cfg[k] = parseFloat(inp.value); val.textContent = (+cfg[k]).toFixed(k === 'scale' ? 3 : 2); pickSave();
           const j = document.getElementById('pkJson'); if (j) j.value = pkStr(); });
         inp.addEventListener('pointerdown', (e) => e.stopPropagation());
         row.appendChild(lbl); row.appendChild(inp); row.appendChild(val); pkRows.appendChild(row);
@@ -2258,18 +2446,43 @@
     }
     $('pkBtn').addEventListener('click', (e) => { e.stopPropagation(); pkPanel.classList.remove('hidden'); pkRefresh(); });
     $('pkClose').addEventListener('click', (e) => { e.stopPropagation(); pkPanel.classList.add('hidden'); });
-    $('pkReset').addEventListener('click', (e) => { e.stopPropagation(); Object.assign(pickCfg, PICK_DEF); pkSave(); pkRefresh(); });
+    $('pkReset').addEventListener('click', (e) => { e.stopPropagation(); Object.assign(pickCfgs[pkIt], PICK_DEFS[pkIt]); pickSave(); pkRefresh(); });
     pkPanel.addEventListener('click', (e) => e.stopPropagation());
   }
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
-      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { rocksInv++; },
+      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); },
     swing() { swingStart = performance.now(); }, drop() { dropHeld(); },
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect,
     htest(n) { let bad = 0; for (let i = 0; i < (n || 1000); i++) { const x = ((Math.random() * 2e6) | 0) - 1e6, z = ((Math.random() * 2e6) | 0) - 1e6;
       const hv = H(x, z); if (hv !== makeHRow(z)(x) || hv !== makeHCol(x)(z)) bad++; } return bad; },
-    pick(o) { Object.assign(pickCfg, o || {}); localStorage.setItem('vb_pick2', JSON.stringify(pickCfg)); return JSON.stringify(pickCfg); },
+    gtest(n) { const s = n || 64, x0 = Math.round(P.x / 8) * 8 - (s >> 1), z0 = Math.round(P.z / 8) * 8 - (s >> 1), x1 = x0 + s, z1 = z0 + s;   // pool-vs-inline: re-run the inline sweep over pool-built terrain — 0 diffs = bit-exact (only valid on unedited ground)
+      const idx = (x, y, z) => gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+      const snap = new Uint8Array(s * WY * s), snapH = new Int16Array(s * s);
+      for (let z = z0; z < z1; z++) for (let y = 0; y < WY; y++) for (let x = x0; x < x1; x++) snap[(x - x0) + y * s + (z - z0) * s * WY] = W[idx(x, y, z)];
+      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) snapH[(x - x0) + (z - z0) * s] = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
+      genRegion(x0, x1, z0, z1, false);
+      let bad = 0; const list = [];
+      for (let z = z0; z < z1; z++) for (let y = 0; y < WY; y++) for (let x = x0; x < x1; x++) if (snap[(x - x0) + y * s + (z - z0) * s * WY] !== W[idx(x, y, z)]) { if (list.length < 12) list.push([x, y, z, snap[(x - x0) + y * s + (z - z0) * s * WY], W[idx(x, y, z)]]); bad++; }
+      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) if (snapH[(x - x0) + (z - z0) * s] !== hmap[gwrap(x, WX) + gwrap(z, WZ) * WX]) { if (list.length < 12) list.push(['h', x, z, snapH[(x - x0) + (z - z0) * s], hmap[gwrap(x, WX) + gwrap(z, WZ) * WX]]); bad++; }
+      for (let z = z0; z < z1; z++) for (let y = 0; y < WY; y++) for (let x = x0; x < x1; x++) W[idx(x, y, z)] = snap[(x - x0) + y * s + (z - z0) * s * WY];   // non-destructive — put the original content back
+      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) hmap[gwrap(x, WX) + gwrap(z, WZ) * WX] = snapH[(x - x0) + (z - z0) * s];
+      return bad ? { bad, list } : 0; },
+    btest(n) { const s = n || 128, x0 = Math.round(P.x / 8) * 8 - (s >> 1), z0 = Math.round(P.z / 8) * 8 - (s >> 1);   // occupancy-vs-W: recompute brick + L2 occupancy from W and compare with the live arrays
+      let bad = 0; const list = [];
+      for (let bz = gwrap(z0, WZ) >> 3, nz = 0; nz < s >> 3; nz++, bz = (bz + 1) % BZ) for (let bx = gwrap(x0, WX) >> 3, nx = 0; nx < s >> 3; nx++, bx = (bx + 1) % BX)
+        for (let by = 0; by < BY; by++) {
+          let occ = 0;
+          scan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) for (let x = bx * 8; x < bx * 8 + 8; x++) if (W[x + y * WX + z * WX * WY]) { occ = 1; break scan; }
+          const b = bx + by * BX + bz * BX * BY;
+          const have = (bricks[b >> 5] >>> (b & 31)) & 1;
+          const c = (bx >> 2) + (by >> 2) * B2X + (bz >> 2) * B2X * B2Y;
+          const have2 = (bricks2[c >> 5] >>> (c & 31)) & 1;
+          if (have !== occ || (occ && !have2)) { bad++; if (list.length < 12) list.push([bx * 8, by * 8, bz * 8, occ, have, have2]); }
+        }
+      return bad ? { bad, list } : 0; },
+    pick(o) { const c = heldCfg(heldIt() || 1); Object.assign(c, o || {}); pickSave(); return JSON.stringify(c); },
     fin() { let best = null, bd = 1e18; for (let jz = -5; jz <= 5; jz++) for (let jx = -5; jx <= 5; jx++) {
       const f = formationAt(Math.floor(P.x / RCELL) + jx, Math.floor(P.z / RCELL) + jz); if (!f) continue;
       if (best === null || f[0].hgt > best.hgt) { best = f[0]; } } return best; },
@@ -2387,9 +2600,10 @@
     { if (mouse0 && locked && !dead && now - swingStart >= 300) swingStart = now;   // hold left click → continuous swinging
       const swK = Math.min(1, (now - swingStart) / 300);
       const sw = swK < 1 ? Math.sin(swK * Math.PI) : 0;              // SWING envelope: chop forward-down, then spring back
-      const cy = Math.cos(pickCfg.yaw + 0.35 * sw), sy = Math.sin(pickCfg.yaw + 0.35 * sw), cp2 = Math.cos(pickCfg.pitch + 1.5 * sw), sp2 = Math.sin(pickCfg.pitch + 1.5 * sw), cr2 = Math.cos(pickCfg.roll), sr2 = Math.sin(pickCfg.roll);
+      const hcfg = heldCfg(heldIt() || 1);             // the shown item's OWN pose (during a grab flight this is the grabbed item's)
+      const cy = Math.cos(hcfg.yaw + 0.35 * sw), sy = Math.sin(hcfg.yaw + 0.35 * sw), cp2 = Math.cos(hcfg.pitch + 1.5 * sw), sp2 = Math.sin(hcfg.pitch + 1.5 * sw), cr2 = Math.cos(hcfg.roll), sr2 = Math.sin(hcfg.roll);
       // R = Rx(pitch)·Ry(yaw)·Rz(roll) — pitch OUTERMOST, so the gimbal singularity sits at yaw ±90°, far from the default pose (all three sliders stay distinct)
-      let hx = pickCfg.x - 0.10 * sw, hy = pickCfg.y - 0.14 * sw, hz = pickCfg.z + 0.16 * sw;
+      let hx = hcfg.x - 0.10 * sw, hy = hcfg.y - 0.14 * sw, hz = hcfg.z + 0.16 * sw;
       const spd2 = Math.hypot(P.hvx, P.hvz);           // view-model BOB — phase tied to distance walked (smooth at any speed), amplitude eased in/out
       bobAmp += ((P.onGround && !P.fly ? Math.min(1, spd2 / WALK) : 0) - bobAmp) * (1 - Math.exp(-8 * dt));
       bobPh += spd2 * dt * 0.225;                      // slower phase + wide sweep = long smooth strides
@@ -2398,24 +2612,25 @@
       let AX = [cr2 * cy, sr2 * cp2 + cr2 * sy * sp2, sr2 * sp2 - cr2 * sy * cp2];
       let AY = [-sr2 * cy, cr2 * cp2 - sr2 * sy * sp2, cr2 * sp2 + sr2 * sy * cp2];
       let AZ = [sy, -cy * sp2, cy * cp2];
-      let showId = dead ? 0 : (rocksInv > 0 ? 2 : (sticksInv > 0 ? 3 : (pickHeld ? 1 : 0)));   // held item id: 1 pick, 2 rock, 3 twig, 0 empty hand
+      let showId = dead ? 0 : (slots[selSlot] ? slots[selSlot].it : 0);          // held item = the SELECTED hand slot (0 = empty hand)
       if (grabAnim) {                                  // FLY-TO-HAND — glide from the world spot into the held pose (angular size matches at k=0, so no pop)
         const k = Math.min(1, (now - grabAnim.t0) / 340);
         const e2 = k * k * (3 - 2 * k);
         const rx = grabAnim.x - cam[0], ry = grabAnim.y - cam[1], rz = grabAnim.z - cam[2];
-        const sxc = (rx * right[0] + ry * right[1] + rz * right[2]) * pickCfg.scale;
-        const syc = (rx * up[0] + ry * up[1] + rz * up[2]) * pickCfg.scale;
-        const szc = (rx * fwd[0] + ry * fwd[1] + rz * fwd[2]) * pickCfg.scale;
+        const sxc = (rx * right[0] + ry * right[1] + rz * right[2]) * hcfg.scale;
+        const syc = (rx * up[0] + ry * up[1] + rz * up[2]) * hcfg.scale;
+        const szc = (rx * fwd[0] + ry * fwd[1] + rz * fwd[2]) * hcfg.scale;
         hx = sxc + (hx - sxc) * e2; hy = syc + (hy - syc) * e2; hz = szc + (hz - szc) * e2;
-        const ca3 = Math.cos(grabAnim.aPh), sa3 = Math.sin(grabAnim.aPh);
-        const mixN = (a3, b3) => { const v = [a3[0] + (b3[0] - a3[0]) * e2, a3[1] + (b3[1] - a3[1]) * e2, a3[2] + (b3[2] - a3[2]) * e2]; const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
-        AX = mixN([ca3 * right[0] + sa3 * right[2], ca3 * up[0] + sa3 * up[2], ca3 * fwd[0] + sa3 * fwd[2]], AX);
-        AY = mixN([-sa3 * right[0] + ca3 * right[2], -sa3 * up[0] + ca3 * up[2], -sa3 * fwd[0] + ca3 * fwd[2]], AY);
-        AZ = mixN([right[1], up[1], fwd[1]], AZ);
+        const ca3 = Math.cos(grabAnim.aPh), sa3 = Math.sin(grabAnim.aPh);       // spin orientation (world) expressed in the camera basis, slerped into the held pose
+        const q = qslerp(m2q([ca3 * right[0] + sa3 * right[2], ca3 * up[0] + sa3 * up[2], ca3 * fwd[0] + sa3 * fwd[2]],
+                             [sa3 * right[0] - ca3 * right[2], sa3 * up[0] - ca3 * up[2], sa3 * fwd[0] - ca3 * fwd[2]],   // Y = Z×X — matches the (right-handed) hover frame
+                             [right[1], up[1], fwd[1]]),
+                         m2q(AX, AY, AZ), e2);
+        const M = q2m(q); AX = M[0]; AY = M[1]; AZ = M[2];
         showId = dead ? 0 : grabAnim.it;
-        if (k >= 1) { if (grabAnim.it === 2) rocksInv++; else if (grabAnim.it === 3) sticksInv++; else pickHeld = true; grabAnim = null; }
+        if (k >= 1) { addItem(grabAnim.it); grabAnim = null; }
       }
-      set3(48, [hx, hy, hz], pickCfg.scale);
+      set3(48, [hx, hy, hz], hcfg.scale);
       set3(52, AX, showId);
       set3(56, AY, 0);
       set3(60, AZ, 0);
@@ -2428,13 +2643,19 @@
       if (!dr) { UF[o2 + 7] = 0; continue; }
       const a2 = now * 0.0012 + dr.ph, ca2 = Math.cos(a2), sa2 = Math.sin(a2);
       let px3 = dr.x + 0.5, py3 = dr.y + 5.5 + Math.sin(now * 0.002 + dr.ph) * 1.3, pz3 = dr.z + 0.5;
-      let Xw = [ca2, 0, sa2], Yw = [-sa2, 0, ca2], Zw = [0, 1, 0];
-      const k = Math.min(1, (now - dr.born) / 340);
-      if (k < 1) {
-        const e2 = k * k * (3 - 2 * k);
-        px3 = dr.fx + (px3 - dr.fx) * e2; py3 = dr.fy + (py3 - dr.fy) * e2; pz3 = dr.fz + (pz3 - dr.fz) * e2;
-        const mixN = (a3, b3) => { const v = [a3[0] + (b3[0] - a3[0]) * e2, a3[1] + (b3[1] - a3[1]) * e2, a3[2] + (b3[2] - a3[2]) * e2]; const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
-        Xw = mixN(dr.aX, Xw); Yw = mixN(dr.aY, Yw); Zw = mixN(dr.aZ, Zw);
+      let Xw = [ca2, 0, sa2], Yw = [sa2, 0, -ca2], Zw = [0, 1, 0];   // RIGHT-handed (Y = Z×X) — an improper frame here turns into a bogus quat mid-flight
+      const tE = (now - dr.born) / 1000;
+      if (dr.T && tE < dr.T + 0.22) {
+        const spinQ = m2q(Xw, Yw, Zw);
+        if (tE < dr.T) {                               // ballistic TOSS: exact parabola from the hand — NO tumble, it keeps its hand
+          const k = tE / dr.T;                         // orientation and eases UPRIGHT into the hover pose (user: no wobbling)
+          px3 = dr.sx + dr.vx * tE; py3 = dr.sy + dr.vy * tE + 0.5 * TOSS_G * tE * tE; pz3 = dr.sz + dr.vz * tE;
+          const M = q2m(qslerp(dr.q0, spinQ, k * k * (3 - 2 * k)));
+          Xw = M[0]; Yw = M[1]; Zw = M[2];
+        } else {                                       // touchdown: ease the arc endpoint into the hover bob
+          const e2 = (tE - dr.T) / 0.22, e3 = e2 * e2 * (3 - 2 * e2);
+          px3 = dr.ex + (px3 - dr.ex) * e3; py3 = dr.ey + (py3 - dr.ey) * e3; pz3 = dr.ez + (pz3 - dr.ez) * e3;
+        }
       }
       const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
       UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = 1.0;
@@ -2480,7 +2701,7 @@
       }
       hudEl.textContent = `${fpsEma.toFixed(0)} fps${vsyncOn ? '' : ' (uncapped)'}  ${RW}×${RH} (${renderScale.toFixed(2)}×)\n` +
         `xyz ${(P.x / 10).toFixed(1)} ${(P.y / 10).toFixed(1)} ${(P.z / 10).toFixed(1)} m${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}  ${String(Math.floor(tday * 24)).padStart(2, '0')}:${String(Math.floor((tday * 24 % 1) * 60)).padStart(2, '0')}${cycleSpeed !== 1 ? ' x' + cycleSpeed.toFixed(1) : ''}${cyclePause ? ' paused' : ''}` +
-        (rocksInv || sticksInv ? `\nrocks ${rocksInv} · twigs ${sticksInv}` : '');
+        `\n${slots.map((s, i) => { const nm = s ? ({ 1: 'axe', 2: 'rock', 3: 'twig' })[s.it] + (s.n > 1 ? '×' + s.n : '') : '·'; return i === selSlot ? `[${nm}]` : ` ${nm} `; }).join(' ')}`;
     }
     // V-SYNC OFF: pace frames off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the
     // CPU's frame prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it.
