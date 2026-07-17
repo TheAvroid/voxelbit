@@ -2138,9 +2138,6 @@
       }
       if (ITEMN > 0) {                                             // HELD ITEMS — RIGHT hand + LEFT hand (dual-wield rocks) as TRUE 3D voxels, DDA-walked in camera space; the nearer hand wins overlaps
         var heldT = 1e18;
-        let irrH = textureLoad(irrF, vec2<i32>(gid.xy), 0);        // the scene's traced sun-shadow (r) + AO (g) at this pixel — the hand sits in the SAME light as the
-        let sunH = select(irrH.r, 1.0, irrH.b < 0.0);              // surface behind it (dark in forest shade, bright in the open), which is what makes it read as
-        let aoH = select(irrH.g, 0.9, irrH.b < 0.0);               // world-rendered; sky-background pixels carry no irr (b < 0) → treat as fully lit open ground
         let ndc2 = (px / u.res) * 2.0 - 1.0;
         let dc = normalize(vec3<f32>(ndc2.x * u.tanH * u.aspect, -ndc2.y * u.tanH, 1.0));
         for (var hand = 0; hand < 2; hand = hand + 1) {
@@ -2183,10 +2180,10 @@
                     if (vax == 0) { nl.x = -f32(istep.x); } else if (vax == 1) { nl.y = -f32(istep.y); } else { nl.z = -f32(istep.z); }
                     let nc = pX.xyz * nl.x + pY.xyz * nl.y + pZ.xyz * nl.z;
                     let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
-                    let direct = sunTint() * max(dot(nw, u.sunDir), 0.0);    // EXACT world-voxel formula: sun·shadow + (sky + bounce)·AO + ambient — shadow/AO borrowed from the
-                    let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();   // scene pixel behind the hand. Still NO per-voxel grain — grain is ±12% per voxel and scrambles
-                    let bounce = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // hand-authored .vox gradients (~5% steps on the axe handle)
-                    col = cell.rgb * (direct * sunH + (skyIrr + bounce) * aoH + vec3<f32>(0.012, 0.013, 0.016));
+                    let direct = sunTint() * max(dot(nw, u.sunDir), 0.0);    // world-matched LIGHTING (sun + sky + ground bounce + ambient) but NO per-voxel grain —
+                    let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();   // grain is ±12% per voxel and scrambles hand-authored .vox gradients (~5% steps on the axe handle)
+                    let bounce = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // warm ground bounce on side/under faces — without it side faces are sky-only (cool + dark), the axe handle read grey-brown
+                    col = cell.rgb * (direct + skyIrr + bounce + vec3<f32>(0.012, 0.013, 0.016));
                   }
                   break;
                 }
