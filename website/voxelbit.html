@@ -14,6 +14,10 @@
   #cross::before, #cross::after { content: ''; position: absolute; background: #fff; }
   #cross::before { left: 0; right: 0; top: 6px; height: 2px; }
   #cross::after { top: 0; bottom: 0; left: 6px; width: 2px; }
+  #clashHint { position: fixed; left: 50%; top: 57%; transform: translateX(-50%); color: #fff; font: 10px/1.6 'px3', Consolas, monospace; letter-spacing: 2px; text-shadow: 0 1px 3px #000; pointer-events: none; opacity: 0.85; }
+  #achv { position: fixed; top: 16px; right: 18px; text-align: right; pointer-events: none; opacity: 0; transition: opacity 0.5s; font-family: 'px3', Consolas, monospace; text-shadow: 0 1px 3px #000; }
+  #achv .a1 { font-size: 7px; letter-spacing: 3px; color: #ffd76a; }
+  #achv .a2 { font-size: 13px; letter-spacing: 2px; color: #fff; margin-top: 5px; }
   #lock { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; background: rgba(8,10,14,0.55); color: #e8edf4; font: 8px/1.8 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; backdrop-filter: blur(2px); }
   #lock h1 { font: 60px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; }
   #lock h1 .tv { background: linear-gradient(180deg, #ff7a8a 0%, #8e0e20 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* crimson, light→dark */
@@ -28,7 +32,9 @@
   #todSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
   #rdWrap { position: absolute; top: 54px; right: 28px; display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #rdSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
-  #snowWrap { position: absolute; top: 84px; right: 28px; display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #volWrap { position: absolute; top: 84px; right: 28px; display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #volSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
+  #snowWrap { position: absolute; top: 114px; right: 28px; display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #snowBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
   #snowBtn:hover { border-color: #6d8fc0; }
   #snowBtn.on { border-color: #7fd05a; color: #b8ff6e; }
@@ -57,12 +63,15 @@
 <body>
 <canvas id="c"></canvas>
 <div id="cross" class="hidden"></div>
+<div id="clashHint" class="hidden">shift + left click</div>
+<div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
 <div id="hud"></div>
 <div id="lock" class="hidden">
   <h1><span class="tv">voxel</span><span class="tb">bit</span></h1>
   <div>click to enter</div>
   <div id="todWrap"><span id="todLabel">08:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="480"></div>
   <div id="rdWrap"><span id="rdLabel">view 37m</span><input type="range" id="rdSlider" min="96" max="368" step="8" value="368"></div>
+  <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="100"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
   <div id="btnRow">
     <button id="kbBtn" title="keybinds"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
@@ -475,7 +484,6 @@
   // walk-through DECOR (grass, ferns) lives at the TOP of the palette — solid() ignores ids >= DECOR_MIN, rays still hit them
   const DECOR_MIN = palette.length;
   const GRASS = [addCol(83, 108, 54), addCol(74, 99, 49), addCol(92, 117, 61), addCol(65, 88, 45)];      // = the MOSS palette, only ~12% brighter — strands blend into their patch
-  const FERN  = [addCol(52, 104, 58), addCol(62, 118, 66), addCol(44, 92, 50)];
   const WATER_T = addCol(58, 128, 154), WATER_B = addCol(43, 106, 134);
   const LAVA_T = addCol(255, 122, 22), LAVA_B = addCol(198, 44, 6), LAVA_R = addCol(226, 58, 10), LAVA_Y = addCol(255, 206, 46);   // gorge-floor lava — blended red/orange/yellow, emissive, deadly                                  // pond surface / body, close shades (walk-through — you swim)
   const PEBBLE  = [addCol(122, 120, 114), addCol(103, 101, 97)];                                         // SMALL rock — right-click to pick up
@@ -487,10 +495,79 @@
   for (const f of foliageIds) solidTab[f] = 0;
   console.log('[vb] pine5.vox', MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
 
+  // ── decoration models ── ONE sparse format everywhere: { sx (width, x), sy (depth, y), sz (height, z),
+  // vox: [x | y<<8 | z<<16 | palId<<24, …] }. MagicaVoxel is z-up so model z maps straight to world y.
+  // Each model gets its OWN palette ids (deduped within the model only) — solid, pickable and walk-through
+  // classes can never collide on a shared id. All ids land above DECOR_MIN → walk-through unless marked solid.
+  await stage('loading decorations…');
+  const parseVoxModel = (pv) => {
+    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+    let sx = 0, sy = 0, sz = 0, pvox = null; const ppal = new Uint8Array(1024);
+    const walk = (off, end) => { while (off < end) {
+      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
+      if (id === 'SIZE' && !sx) { sx = pdv.getUint32(off + 12, true); sy = pdv.getUint32(off + 16, true); sz = pdv.getUint32(off + 20, true); }
+      else if (id === 'XYZI' && !pvox) { const n = pdv.getUint32(off + 12, true); pvox = pv.subarray(off + 16, off + 16 + n * 4); }
+      else if (id === 'RGBA') ppal.set(pv.subarray(off + 12, off + 12 + 1024));
+      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+      off += 12 + bsz + csz;
+    } };
+    walk(8, pv.length);
+    if (!pvox) throw new Error('no XYZI chunk');
+    const cmap = new Map(), mvox = [];
+    for (let i = 0; i < pvox.length; i += 4) {
+      const ci = pvox[i + 3];
+      let cid = cmap.get(ci);
+      if (cid === undefined) { cid = addCol(ppal[(ci - 1) * 4], ppal[(ci - 1) * 4 + 1], ppal[(ci - 1) * 4 + 2]); cmap.set(ci, cid); }
+      mvox.push(pvox[i] | (pvox[i + 1] << 8) | (pvox[i + 2] << 16) | (cid << 24));   // cid<<24 may flip the sign bit — every reader uses bitwise ops, so that's fine
+    }
+    return { sx, sy, sz, vox: mvox };
+  };
+  const fetchVoxModel = async (url) => { try { return parseVoxModel(new Uint8Array(await (await fetch(url)).arrayBuffer())); } catch (e) { console.warn('[vb]', url, 'missing — that decoration is skipped', e); return null; } };
+  const CONEV = await fetchVoxModel('assets/decoration/pinecone.vox');                      // hangs under pine branches
+  const CONEVL = CONEV ? { sx: CONEV.sx, sy: CONEV.sz, sz: CONEV.sy,                        // the same cone tipped 90° onto its side — fallen cones lie on the forest floor
+    vox: CONEV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((CONEV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
+  const LILYV = [await fetchVoxModel('assets/decoration/lillypad_small.vox'),               // floats on lakes + rivers
+                 await fetchVoxModel('assets/decoration/lillypad_medium.vox'),
+                 await fetchVoxModel('assets/decoration/lillypad_large.vox')].filter(Boolean);
+  const STICKV = [await fetchVoxModel('assets/decoration/stick_1.vox'),                     // ground scatter, pickable (replaces the old procedural twigs/sticks)
+                  await fetchVoxModel('assets/decoration/stick_2.vox')].filter(Boolean);
+  const LOGV = await fetchVoxModel('assets/decoration/log.vox');                            // rare fallen log, solid
+  const ROCKV = await fetchVoxModel('assets/decoration/rock.vox');                          // the small stone, pickable (replaces the pebble dome)
+  const ROCKVU = ROCKV ? { sx: ROCKV.sx, sy: ROCKV.sz, sz: ROCKV.sy,                        // the same stone tipped 90° onto its edge — half the field stones stand upright
+    vox: ROCKV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((ROCKV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
+  let ROCK26 = [], R26S = [], R26M = [], R26B = [];                                         // 26 pre-voxelized rocks from rocks.glb (see scratch voxelize_rocks.py) in 3 rarity tiers
+  try {
+    const rj = await (await fetch('assets/decoration/rocks26.json')).json();
+    const rids = rj.pal.map((c) => addCol(c[0], c[1], c[2]));                               // 12 shared quantized shades for all 26 rocks
+    ROCK26 = rj.rocks.map((r) => ({ sx: r.sx, sy: r.sy, sz: r.sz, vox: r.vox.map((p) => (p & 0xffffff) | (rids[p >>> 24] << 24)) }));
+    rj.rocks.forEach((r, i) => { (r.grp === 'big' ? R26B : (r.grp === 'mid' ? R26M : R26S)).push(i); });
+  } catch (e) { console.warn('[vb] rocks26.json missing — GLB rocks skipped', e); }
+  let FERN2V = [];                                                                          // the big fern plant from fern.glb (see voxelize_fern2.py), walk-through decor — the ferns_grass clumps were REMOVED 2026-07-16
+  try {
+    const f2 = await (await fetch('assets/decoration/fern2.json')).json();
+    const f2ids = f2.pal.map((c) => addCol(c[0], c[1], c[2]));
+    FERN2V = f2.ferns.map((r) => ({ sx: r.sx, sy: r.sy, sz: r.sz, vox: r.vox.map((p) => (p & 0xffffff) | (f2ids[p >>> 24] << 24)) }));
+  } catch (e) { console.warn('[vb] fern2.json missing — fern decor skipped', e); }
+  const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
+  { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks are REAL obstacles; everything else stays walk-through decor
+    markSolid(LOGV);
+    for (const r of ROCK26) markSolid(r); }
+  const PINE_ANCH = [];                                // pinecone anchors: canopy foliage voxels with open air below, ≥2 in from the model edge (base rotation)
+  { const fol = new Uint8Array(256); for (const f of foliageIds) fol[f] = 1;
+    for (let z = 30; z < MSZ; z++) for (let y = 2; y < MSY - 2; y++) for (let x = 2; x < MSX - 2; x++) {
+      const i = x + y * MSX + z * MSX * MSY;
+      if (M[i] && fol[remap[M[i]]] && !M[i - MSX * MSY]) PINE_ANCH.push(x | (y << 8) | (z << 16));
+    }
+    PINE_ANCH.sort((a, b) => Math.atan2(((a >> 8) & 255) - MSY * 0.5, (a & 255) - MSX * 0.5) - Math.atan2(((b >> 8) & 255) - MSY * 0.5, (b & 255) - MSX * 0.5)); }   // angle-sorted around the trunk — stampTree slices it into sectors so cones ring the crown evenly
+  if (palette.length > 256) console.error('[vb] PALETTE OVERFLOW', palette.length, '— world ids are u8, decoration colors must be quantized harder');
+  console.log('[vb] decorations: cone', !!CONEV, 'lily', LILYV.length, 'stick', STICKV.length, 'log', !!LOGV, 'rock', !!ROCKV, 'rocks26', ROCK26.length, 'ferns', FERN2V.length, 'anchors', PINE_ANCH.length, 'palette', palette.length);
+
   // ── cardinal ── an OFF-GRID animated flyer. Its 8 wing-flap frames (assets/life/cardinal/flight) are loaded into the held-item voxel
   // table below and DDA-raytraced as a drop-style model — arbitrary (sub-voxel, non-grid-snapped) rotation, depth-tested against the scene,
   // NEVER written into the world grid. Flight (a fixed high orbit near spawn) is driven in the tick loop. Model x→width, y→depth (beak at −y), z→height.
   let BIRD_ITEM0 = 0, BIRD_NFRAMES = 0, BIRD_GLIDE = 0;   // dit (1-based item id) of flap frame 0, frame count, and the widest (wings-spread) frame index used for GLIDING — assigned where the frames are appended to `items`
+  let SPARK_IT = 0, KNIFE_IT = 0;                      // item ids of the 1-voxel clash spark and the stone knife (assigned in the items block)
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
   // the old engine's buildHeldFrames approach) DDA-raytraced in camera space. Item ids in u.pickX.w:
@@ -520,15 +597,43 @@
       items.push({ w: psx, d: psy, h: psz, cells: cells3 });
       console.log('[vb] stone_axe.vox', psx, psy, psz, 'voxels', pvox.length / 4);
     } catch (e) { console.warn('[vb] stone_axe.vox missing — held tool disabled', e); items.push({ w: 0, d: 0, h: 0, cells: [] }); }
-    { const dk = [103, 101, 97], lt = [122, 120, 114];                // PEBBLE ROCK — the exact field pebble: 3×3 dark slab + light crown
+    const modelToItem = (m) => { const cells = new Array(m.sx * m.sy * m.sz).fill(null);   // sparse decoration model → dense item grid (held/drop DDA wants the raw RGB)
+      for (const p of m.vox) cells[(p & 255) + ((p >> 8) & 255) * m.sx + ((p >> 16) & 255) * m.sx * m.sy] = palette[p >>> 24];
+      return { w: m.sx, d: m.sy, h: m.sz, cells }; };
+    if (ROCKV) items.push(modelToItem(ROCKV));                        // ROCK — the exact field stone (rock.vox), held as picked up
+    else { const dk = [103, 101, 97], lt = [122, 120, 114];           // fallback: the old 3×3 pebble slab
       const cells = new Array(3 * 3 * 2).fill(null);
       for (let y = 0; y < 3; y++) for (let x = 0; x < 3; x++) cells[x + y * 3] = dk;
       cells[1 + 1 * 3 + 9] = lt;
       items.push({ w: 3, d: 3, h: 2, cells }); }
-    { const ca = [126, 95, 59], cb = [111, 83, 52];                   // TWIG — 7 voxels with a bent tip, pine-trunk browns
+    if (STICKV.length) items.push(modelToItem(STICKV[0]));            // STICK — stick_1.vox, held as picked up
+    else { const ca = [126, 95, 59], cb = [111, 83, 52];              // fallback: the old 7-voxel twig
       const cells = new Array(7 * 1 * 2).fill(null);
       for (let x = 0; x < 7; x++) { if (x < 5) cells[x] = (x & 1) ? cb : ca; else cells[x + 7] = (x & 1) ? cb : ca; }
       items.push({ w: 7, d: 1, h: 2, cells }); }
+    items.push(CONEV ? modelToItem(CONEV) : { w: 0, d: 0, h: 0, cells: [] });   // PINECONE (item 4) — pickable ground/tree cones; keep the slot even if the .vox is missing so ids stay stable
+    SPARK_IT = items.length + 1;                                      // CLASH SPARK — one bright 10 cm voxel, rendered through the drops path (never in inventory)
+    items.push({ w: 1, d: 1, h: 1, cells: [[255, 208, 112]] });
+    KNIFE_IT = items.length + 1;                                      // STONE KNIFE — born when two rocks are clashed together
+    try {
+      const kv = new Uint8Array(await (await fetch('assets/stone_tools/stone_knife.vox')).arrayBuffer());
+      const kdv = new DataView(kv.buffer);
+      let ksx = 0, ksy = 0, ksz = 0, kvox = null; const kpal = new Uint8Array(1024);
+      const kwalk = (off, end) => { while (off < end) {
+        const id = String.fromCharCode(kv[off], kv[off + 1], kv[off + 2], kv[off + 3]);
+        const sz = kdv.getUint32(off + 4, true), csz = kdv.getUint32(off + 8, true);
+        if (id === 'SIZE' && !ksx) { ksx = kdv.getUint32(off + 12, true); ksy = kdv.getUint32(off + 16, true); ksz = kdv.getUint32(off + 20, true); }
+        else if (id === 'XYZI' && !kvox) { const n = kdv.getUint32(off + 12, true); kvox = kv.subarray(off + 16, off + 16 + n * 4); }
+        else if (id === 'RGBA') kpal.set(kv.subarray(off + 12, off + 12 + 1024));
+        else if (id === 'MAIN') { kwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+        off += 12 + sz + csz;
+      } };
+      kwalk(8, kv.length);
+      const kcells = new Array(ksx * ksy * ksz).fill(null);            // raw .vox palette, full 3D grid — same treatment as the axe
+      for (let i = 0; i < kvox.length; i += 4) { const ci = kvox[i + 3]; kcells[kvox[i] + kvox[i + 1] * ksx + kvox[i + 2] * ksx * ksy] = [kpal[(ci - 1) * 4], kpal[(ci - 1) * 4 + 1], kpal[(ci - 1) * 4 + 2]]; }
+      items.push({ w: ksx, d: ksy, h: ksz, cells: kcells });
+      console.log('[vb] stone_knife.vox', ksx, ksy, ksz, 'voxels', kvox.length / 4);
+    } catch (e) { console.warn('[vb] stone_knife.vox missing — clash still sparks, no knife', e); items.push({ w: 0, d: 0, h: 0, cells: [] }); }
     try {                                                             // CARDINAL flight frames → item table (raw .vox palette); rendered off-grid as a drop-style model
       BIRD_ITEM0 = items.length + 1;                                  // dit is 1-based; frame 0 follows the twig
       for (let f = 0; f < 8; f++) {
@@ -639,109 +744,71 @@
       }
     }
   }
+  function stampModel(m, rot, wx, wy, wz, x0, x1, z0, z1, mode) {   // sparse decoration model stamp, rotated 0-3 about vertical, anchored bottom-center,
+    const fw = (rot & 1) ? m.sy : m.sx, fd = (rot & 1) ? m.sx : m.sy;   // clipped to the region. mode: 0 = empty cells only; 1 = empty + soft decor;
+    const bx = wx - (fw >> 1), bz = wz - (fd >> 1);                     // 2 = OVERWRITE + raise hmap (solid rocks); 3 = empty/water (seafloor pebbles);
+    for (let i = 0; i < m.vox.length; i++) {                            // 4 = empty cells whose column floats on WATER_T (lilypads)
+      const p = m.vox[i];
+      const x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+      let rx, rz;
+      if (rot === 0) { rx = x; rz = y; }
+      else if (rot === 1) { rx = m.sy - 1 - y; rz = x; }
+      else if (rot === 2) { rx = m.sx - 1 - x; rz = m.sy - 1 - y; }
+      else { rx = y; rz = m.sx - 1 - x; }
+      const ax = bx + rx, az = bz + rz;
+      if (ax < x0 || ax >= x1 || az < z0 || az >= z1) continue;
+      const ay = wy + z; if (ay < 1 || ay >= WY) continue;
+      const gx = gwrap(ax, WX), gz = gwrap(az, WZ);
+      const ii = gx + ay * WX + gz * WX * WY;
+      const cur = W[ii];
+      if (mode === 0 && cur !== 0) continue;
+      if (mode === 1 && cur !== 0 && cur < DECOR_MIN) continue;
+      if (mode === 3 && cur !== 0 && cur !== WATER_T && cur !== WATER_B) continue;
+      if (mode === 4 && (cur !== 0 || W[gx + (wy - 1) * WX + gz * WX * WY] !== WATER_T)) continue;
+      W[ii] = p >>> 24;
+      if (mode === 2 && ay >= hmap[gx + gz * WX]) hmap[gx + gz * WX] = ay + 1;
+    }
+  }
   const BCELL = 34;                                    // one rock candidate per 3.4 m cell (2× the 48-cell density, 4× the original)
-  function boulderAt(cx, cz) {
-    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.5) return null;
+  function boulderAt(cx, cz) {                         // FOUR tiers, all real voxelized models now: rock.vox stone / small / mid / BIG rocks26 —
+    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.5) return null;   // the much larger rocks are much rarer
     const bx = Math.round(cx * BCELL + 4 + ihash(cx * 3 + 40, cz * 7 + 90) * (BCELL - 8));
     const bz = Math.round(cz * BCELL + 4 + ihash(cx * 13 + 6, cz * 5 + 44) * (BCELL - 8));
     if (nearCave(bx, bz)) return null;                 // rocks DO grow underwater — scattered seafloor boulders
     if (nearWormMouth(bx, bz)) return null;            // stamped after the cave carve at pristine H — would FLOAT over the mouth pit
     const sr = ihash(cx * 17 + 9, cz * 19 + 2);
-    const size = sr < 0.55 ? 0 : (sr < 0.86 ? 1 : 2);  // small pebble (pickable) / medium / large
-    const rr = size === 0 ? 2.0 + sr * 0.55 : size === 1 ? 2.6 + sr * 1.6 : 3.4 + sr * 1.4;   // THREE sizes, all rounded: small dome ~5 wide (the old rr≈1 slab read as a flat chip), medium, large
-    return { bx, bz, rr, size };
-  }
-  function stampBoulder(b, x0, x1, z0, z1) {           // clipped to a world-coord region — THREE rounded sizes off ONE ellipsoid: small (pickable surface dome), medium (BROCK, pickable), large (ROCK)
-    const small = b.size === 0;
-    const by = small ? H(b.bx, b.bz) : groundMin(b.bx, b.bz, Math.ceil(b.rr * 0.7)) - 1;   // small = half-dome resting ON the surface (no more flat chips); bigger = sphere sunk one voxel
-    const pal = b.size === 1 ? BROCK : ROCK;           // MEDIUM boulders get their own ids → right-click pickup can flood-remove exactly them
-    const R = Math.ceil(b.rr) + 1;
-    for (let dz = -R; dz <= R; dz++) { const z = b.bz + dz; if (z < z0 || z >= z1) continue;
-      for (let dx = -R; dx <= R; dx++) { const x = b.bx + dx; if (x < x0 || x >= x1) continue;
-        for (let dy = small ? 0 : -R; dy <= R; dy++) {
-          if (dx * dx + dy * dy * 1.15 + dz * dz > b.rr * b.rr) continue;   // rounded — barely squashed sphere
-          const y = by + dy; if (y < 1 || y >= WY) continue;
-          const gx = gwrap(x, WX), gz = gwrap(z, WZ);
-          const ii = gx + y * WX + gz * WX * WY;
-          if (small) {                                 // decor ids, EMPTY cells only (never eats grass/terrain), no hmap raise — walk-through, sits on the seafloor too
-            if (!W[ii] || W[ii] === WATER_T || W[ii] === WATER_B) W[ii] = PEBBLE[dy >= 1 ? 0 : 1];   // dark base ring, light crown
-            continue;
-          }
-          const tg = (dy + b.rr) / (2 * b.rr) * 3 + (ihash(x + y * 7, z) - 0.5) * 0.8;   // SMOOTH vertical gradient — dark base to light crown
-          W[ii] = pal[2 - Math.max(0, Math.min(2, tg | 0))];
-          if (y >= hmap[gx + gz * WX]) hmap[gx + gz * WX] = y + 1;
-        } } }
-  }
-  const RCELL = 272, RMARGIN = 150;                    // ROCK FORMATIONS: 3 sizes — small (the old size) / medium / LARGE crag
-  const formCache = new Map();                         // memoized — the LOD horizon bake sweeps thousands of cells
-  function formationAt(cx, cz) {                       // GRANITE DOME CLUSTERS — huge rounded weathered lobes packed side by side (Pikes Peak style)
-    const fkey = cx * 100003 + cz;
-    const hit = formCache.get(fkey);
-    if (hit !== undefined) return hit;
-    if (ihash(cx * 41 + 17, cz * 43 + 29) > 0.095) { formCache.set(fkey, null); return null; }
-    const sr = ihash(cx * 47 + 3, cz * 53 + 8);
-    const sc = sr < 0.55 ? 1.6 : (sr < 0.86 ? 2.6 : 4.0);
-    const fx = cx * RCELL + 60 + ihash(cx * 3 + 90, cz * 5 + 12) * (RCELL - 120);
-    const fz = cz * RCELL + 60 + ihash(cx * 7 + 33, cz * 11 + 71) * (RCELL - 120);
-    const n = 3 + ((ihash(cx + 5, cz + 9) * 3.99) | 0);
-    const baseY = H(Math.round(fx), Math.round(fz));
-    if (baseY <= WL + 4) { formCache.set(fkey, null); return null; }   // formations keep OFF the water — shorelines stay smooth
-    const domes = [];
-    for (let i = 0; i < n; i++) {
-      const a = ihash(cx * 13 + i * 7, cz * 17 + i * 5) * 6.283;
-      const d = ihash(cx * 19 + i * 3, cz * 23 + i * 11) * 13 * sc;
-      const rh = Math.min(34, (7 + ihash(cx + i * 29, cz + i * 31) * 9) * sc * 0.8);
-      const dxc = Math.round(fx + Math.cos(a) * d), dzc = Math.round(fz + Math.sin(a) * d);
-      if (H(dxc, dzc) <= WL + 4) continue;             // drop any dome whose own footing is wet
-      if (nearCave(dxc, dzc, 92)) continue;            // …or that would overhang a ravine (gorge half-width ~40 + dome radius ~39)
-      domes.push({
-        x: Math.round(fx + Math.cos(a) * d), z: Math.round(fz + Math.sin(a) * d),
-        rh,
-        ry: Math.min(74, rh * (1.35 + ihash(cx + i * 37, cz + i * 41) * 0.9)),   // taller than wide — bulbous standing lobes
-        y0: baseY - Math.round(rh * 0.35),
-        p1: ihash(cx * 61 + i, cz * 67 + i * 3) * 6.283, p2: ihash(cx * 71 + i * 5, cz * 73 + i * 7) * 6.283,
-        baseY });
-    }
-    const out = domes.length ? domes : null;
-    formCache.set(fkey, out);
-    return out;
-  }
-  function stampFormation(domes, x0, x1, z0, z1) {
-    for (const D of domes) {
-      const RB = Math.ceil(D.rh * 1.15) + 2;
-      const bx0 = Math.max(x0, D.x - RB), bx1 = Math.min(x1, D.x + RB + 1);
-      const bz0 = Math.max(z0, D.z - RB), bz1 = Math.min(z1, D.z + RB + 1);
-      const topCap = Math.min(WY - 2, D.y0 + Math.ceil(D.ry));
-      for (let z = bz0; z < bz1; z++) for (let x = bx0; x < bx1; x++) {
-        const dx = x - D.x, dz = z - D.z;
-        const ang = Math.atan2(dz, dx);
-        const rmod = D.rh * (1 + 0.10 * Math.sin(2 * ang + D.p1) + 0.07 * Math.sin(3 * ang + D.p2));   // gentle organic warp — still ROUND
-        const rr2 = dx * dx + dz * dz;
-        if (rr2 > rmod * rmod * 1.05) continue;
-        const startY = Math.max(2, Math.min(H(x, z), D.y0) - 2);
-        const gx = gwrap(x, WX), gz = gwrap(z, WZ);
-        for (let y = startY; y <= topCap; y++) {
-          const dy = y - D.y0;
-          const vert = dy > 0 ? (dy / D.ry) : (dy / (D.rh * 0.9));
-          const dd = rr2 / (rmod * rmod) + vert * vert;
-          const jag = 1 + (ihash(dx + ((y + 64) >> 3) * 57, dz * 3 - ((y + 64) >> 3) * 31) - 0.5) * 0.10;   // whisper of weathering
-          if (dd > jag) continue;
-          const lv = Math.max(0, Math.min(2.99, (y - D.baseY) / Math.max(1, D.ry) * 3));
-          const li = Math.max(0, Math.min(2, Math.floor(lv + (ihash(x * 7 + y * 3, z * 5 - y) - 0.5) * 0.6)));   // DITHERED layer boundaries — the sand→grass technique
-          W[gx + y * WX + gz * WX * WY] = (ihash(x + y * 13, z - y * 7) < 0.5 ? ROCK : ROCKX)[2 - li];           // dark base / mid / light crown, two-tone swatches
-          const ch = gx + gz * WX;
-          if (y >= hmap[ch]) hmap[ch] = y + 1;
+    if (sr >= 0.275 && sr < 0.55) return null;         // the dropped half of the old 55% stone share — field stone rate halved
+    const size = sr < 0.275 ? 0 : (sr < 0.93 ? 1 : (sr < 0.985 ? 2 : 3));   // stone 27.5% / small 38% / mid 5.5% / big 1.5%
+    const rot = (ihash(cx * 23 + 2, cz * 7 + 11) * 3.99) | 0;
+    if (size === 0) return ROCKV ? { bx, bz, size, rot, mi: 0, up: ihash(cx * 43 + 12, cz * 47 + 21) < 0.5 ? 1 : 0 } : null;   // half stand upright
+    const list = size === 1 ? R26S : (size === 2 ? R26M : R26B);
+    if (!list.length) return null;
+    const mi = list[(ihash(cx * 37 + 5, cz * 41 + 8) * list.length) | 0];
+    const m = ROCK26[mi];
+    if (size >= 2) {                                   // mid/big rocks are TREE-sized — reject candidates that would swallow a pine (same probe ferns use)
+      const halfw = (Math.max(m.sx, m.sy) >> 1) + 8;
+      for (let cz2 = Math.floor((bz - halfw) / TCELL); cz2 <= Math.floor((bz + halfw) / TCELL); cz2++)
+        for (let cx2 = Math.floor((bx - halfw) / TCELL); cx2 <= Math.floor((bx + halfw) / TCELL); cx2++) {
+          const t = treeAt(cx2, cz2); if (!t) continue;
+          const dx = bx - t.tx, dz = bz - t.tz;
+          if (dx * dx + dz * dz < halfw * halfw) return null;
         }
+      const sink = 1 + ((m.sz * 0.12) | 0) + ((ihash(bx * 3 + 1, bz * 5 + 2) * 3) | 0);   // EXACT copy of stampBoulder's base math —
+      const gy = groundMin(bx, bz, Math.min(10, Math.max(m.sx, m.sy) >> 1)) - sink;       // the poke-through test must see the same gy the stamp will use
+      const rr3 = Math.round((Math.max(m.sx, m.sy) >> 1) * 0.7);                          // ground rising THROUGH the rock top = the "stone cube" tower with a dirt cap — reject the site
+      if (H(bx, bz) > gy + m.sz - 3) return null;
+      for (let a = 0; a < 8; a++) {
+        if (H(bx + Math.round(Math.cos(a * 0.785) * rr3), bz + Math.round(Math.sin(a * 0.785) * rr3)) > gy + m.sz - 3) return null;
       }
     }
+    return { bx, bz, size, rot, mi };
   }
-  function nearFormation(wx, wz) {                     // trees keep off the domes
-    for (let cz = Math.floor((wz - 220) / RCELL); cz <= Math.floor((wz + 220) / RCELL); cz++)
-      for (let cx = Math.floor((wx - 220) / RCELL); cx <= Math.floor((wx + 220) / RCELL); cx++) {
-        const domes = formationAt(cx, cz); if (!domes) continue;
-        for (const D of domes) { const dx = wx - D.x, dz = wz - D.z, r = D.rh * 1.15 + 5; if (dx * dx + dz * dz < r * r) return true; }
-      }
-    return false;
+  function stampBoulder(b, x0, x1, z0, z1) {
+    if (b.size === 0) { stampModel(b.up ? ROCKVU : ROCKV, b.rot, b.bx, H(b.bx, b.bz), b.bz, x0, x1, z0, z1, 3); return; }   // small stone: walk-through decor ids, pickable, sits on the seafloor too; half stand on edge
+    const m = ROCK26[b.mi];
+    const sink = 1 + ((m.sz * 0.12) | 0) + ((ihash(b.bx * 3 + 1, b.bz * 5 + 2) * 3) | 0);   // bigger rocks sit deeper — no floating edges on bumpy ground
+    const gy = groundMin(b.bx, b.bz, Math.min(10, Math.max(m.sx, m.sy) >> 1)) - sink;
+    stampModel(m, b.rot, b.bx, gy, b.bz, x0, x1, z0, z1, 2);   // overwrite + hmap raise — a REAL rock you collide with
   }
   const CAVE_CELL = 640, CAVE_MARGIN = 900;            // RAVINES -> CAVES: sparser, VAST gorges (1/4 the old frequency)
   const caveCache = new Map();
@@ -920,7 +987,7 @@
       const ex = Math.round(cx * WORM_CELL + 40 + ihash(cx * 3 + 77, cz * 7 + 41) * (WORM_CELL - 80));
       const ez = Math.round(cz * WORM_CELL + 40 + ihash(cx * 9 + 13, cz * 5 + 71) * (WORM_CELL - 80));
       const eh = H(ex, ez);
-      if (eh <= WL + 6 || nearCave(ex, ez, 70) || nearFormation(ex, ez)) { wormCache.set(key, null); return c; }   // dry entrance, clear of the gorges AND the granite domes (a crag right on the mouth walls it off)
+      if (eh <= WL + 6 || nearCave(ex, ez, 70)) { wormCache.set(key, null); return c; }   // dry entrance, clear of the gorges
       const sseed = ihash(cx * 41 + 3, cz * 43 + 19) * 640;
       const segs = [];
       const march = (sx0, sy0, sz0, az0, pit0, len, rt, ent) => {  // one worm: a carve station every 8 voxels, sphere radius ~rt
@@ -996,93 +1063,80 @@
           if (v === ROCK[0] || v === ROCK[1] || v === ROCK[2]) W[ii] = ORES[o.type][(ihash(x + y, z - y) * 2) | 0];
         } } }
   }
-  const FCELL = 24;                                    // FERNS: one candidate per 2.4 m cell (walk-through decor), 3 sizes
-  const FERN_ARCH = [[0, 1, 2, 2, 1], [0, 1, 2, 3, 4, 3, 2], [0, 1, 2, 3, 4, 5, 5, 4, 3, 2]];   // BIG size gap: small = the original; large = a huge thick bush
-  const FERN_STEM = [2, 3, 5];
-  function fernAt(cx, cz) {
-    if (ihash(cx * 53 + 11, cz * 59 + 23) > 0.20) return null;
-    const sr = ihash(cx * 23 + 5, cz * 29 + 13);
-    const f = { wx: Math.round(cx * FCELL + 3 + ihash(cx * 5 + 1, cz * 3 + 7) * (FCELL - 6)),
-                wz: Math.round(cz * FCELL + 3 + ihash(cx * 11 + 2, cz * 7 + 5) * (FCELL - 6)),
-                n: 5 + ((ihash(cx + 3, cz + 1) * 3) | 0), ph: ihash(cx * 2 + 1, cz * 2 + 3) * 6.283,
-                size: sr < 0.55 ? 0 : (sr < 0.87 ? 1 : 2) };
-    if (H(f.wx, f.wz) <= WL + 4) return null;          // no ferns in water or on beaches
-    if (nearCave(f.wx, f.wz)) return null;
-    if (nearWormMouth(f.wx, f.wz)) return null;        // stamped after the cave carve — would float over the mouth pit
-    for (let cz2 = Math.floor((f.wz - 12) / TCELL); cz2 <= Math.floor((f.wz + 12) / TCELL); cz2++)   // keep clear of pine trunks — no clipping through trees
-      for (let cx2 = Math.floor((f.wx - 12) / TCELL); cx2 <= Math.floor((f.wx + 12) / TCELL); cx2++) {
+  const F2CELL = 30;                                   // FERNS: the single ~1.1 m fern plant from fern.glb (the ferns_grass clumps were removed)
+  function fern2At(cx, cz) {
+    if (!FERN2V.length) return null;
+    if (ihash(cx * 79 + 7, cz * 83 + 31) > 0.07) return null;   // halved 2026-07-16 (was 0.14)
+    const wx = Math.round(cx * F2CELL + 3 + ihash(cx * 5 + 27, cz * 3 + 41) * (F2CELL - 6));
+    const wz = Math.round(cz * F2CELL + 3 + ihash(cx * 11 + 33, cz * 7 + 15) * (F2CELL - 6));
+    if (H(wx, wz) <= WL + 4) return null;              // no ferns in water or on beaches
+    if (nearCave(wx, wz)) return null;
+    if (nearWormMouth(wx, wz)) return null;
+    for (let cz2 = Math.floor((wz - 14) / TCELL); cz2 <= Math.floor((wz + 14) / TCELL); cz2++)   // keep clear of pine trunks — the plant is 23 wide
+      for (let cx2 = Math.floor((wx - 14) / TCELL); cx2 <= Math.floor((wx + 14) / TCELL); cx2++) {
         const t = treeAt(cx2, cz2); if (!t) continue;
-        const dx = f.wx - t.tx, dz = f.wz - t.tz;
-        if (dx * dx + dz * dz < 12 * 12) return null;
+        const dx = wx - t.tx, dz = wz - t.tz;
+        if (dx * dx + dz * dz < 14 * 14) return null;
       }
-    return f;
+    return { wx, wz, mi: (ihash(cx * 23 + 8, cz * 29 + 19) * FERN2V.length) | 0, rot: (ihash(cx * 2 + 9, cz * 2 + 5) * 3.99) | 0 };
   }
-  function stampFern(f, x0, x1, z0, z1) {
-    const gy = H(f.wx, f.wz);
-    const arch = FERN_ARCH[f.size], rmax = arch.length - 1;
-    const put = (x, y, z) => {
-      if (x < x0 || x >= x1 || z < z0 || z >= z1 || y < 1 || y >= WY) return;
-      const idx = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
-      if (W[idx] === 0) W[idx] = FERN[(ihash(x * 3 + y, z * 5 - y) * 3) | 0];
-    };
-    for (let s = 0; s <= FERN_STEM[f.size]; s++) put(f.wx, gy + s, f.wz);
-    const fronds = f.n + f.size * 3;                   // the large fern is dense with fronds
-    for (let i = 0; i < fronds; i++) {
-      const a = f.ph + i * 6.283 / fronds, ca = Math.cos(a), sa = Math.sin(a);
-      for (let r = 1; r <= rmax; r++) {
-        const fx = f.wx + ca * r, fz = f.wz + sa * r;
-        const y = gy + arch[r] + (f.size === 2 ? 1 : 0);
-        put(Math.round(fx), y, Math.round(fz));
-        if (f.size >= 1 && r >= 2) put(Math.round(fx), y + 1, Math.round(fz));                     // vertical thickness
-        if (f.size === 2 && r >= 2) put(Math.round(fx - sa * 0.9), y, Math.round(fz + ca * 0.9)); // lateral thickness — bushy like the old one
-      }
-    }
+  function stampFern2(f, x0, x1, z0, z1) {
+    stampModel(FERN2V[f.mi], f.rot, f.wx, H(f.wx, f.wz), f.wz, x0, x1, z0, z1, 1);
   }
-  const SCELL = 14;                                    // STICKS: twig (pickable) / stick / 2×2 log, pine-trunk browns (2× the 20-cell density)
+  const PCCELL = 26;                                   // GROUND PINECONES: fallen cones (pinecone.vox on its side), pickable, scattered on the forest floor
+  function pconeAt(cx, cz) {
+    if (!CONEVL) return null;
+    if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.22) return null;
+    const wx = Math.round(cx * PCCELL + 3 + ihash(cx * 7 + 9, cz * 5 + 3) * (PCCELL - 6));
+    const wz = Math.round(cz * PCCELL + 3 + ihash(cx * 3 + 17, cz * 11 + 8) * (PCCELL - 6));
+    if (H(wx, wz) <= WL + 4) return null;              // cones stay off beaches and lakebeds
+    if (nearCave(wx, wz)) return null;
+    if (nearWormMouth(wx, wz)) return null;
+    return { wx, wz, rot: (ihash(cx + 19, cz + 23) * 3.99) | 0 };
+  }
+  function stampPcone(p, x0, x1, z0, z1) {
+    stampModel(CONEVL, p.rot, p.wx, groundMin(p.wx, p.wz, 2), p.wz, x0, x1, z0, z1, 1);   // lying on its side, hugging the ground like the sticks
+  }
+  const SCELL = 14;                                    // STICKS: stick_1 / stick_2 .vox models, pickable, scattered on the forest floor
   function stickAt(cx, cz) {
+    if (!STICKV.length) return null;
     if (ihash(cx * 61 + 7, cz * 67 + 19) > 0.42) return null;
     const wx = Math.round(cx * SCELL + 2 + ihash(cx * 3 + 8, cz * 5 + 4) * (SCELL - 4));
     const wz = Math.round(cz * SCELL + 2 + ihash(cx * 7 + 2, cz * 9 + 6) * (SCELL - 4));
     if (H(wx, wz) <= WL + 4) return null;              // sticks stay off the beach
     if (nearCave(wx, wz)) return null;
     if (nearWormMouth(wx, wz)) return null;            // no floating sticks over the mouth pit
-    const fr = ihash(cx * 11 + 3, cz * 13 + 5);
-    return { wx, wz, form: fr < 0.62 ? 0 : (fr < 0.92 ? 1 : 2), ax: ihash(cx + 4, cz + 7) < 0.5 ? 0 : 1 };
+    return { wx, wz, m: ihash(cx * 11 + 3, cz * 13 + 5) < 0.5 ? 0 : STICKV.length - 1, rot: (ihash(cx + 4, cz + 7) * 3.99) | 0 };
   }
   function stampStick(s, x0, x1, z0, z1) {
-    const dx = s.ax ? 0 : 1, dz = s.ax ? 1 : 0;
-    const bend = ihash(s.wx + 5, s.wz + 9) < 0.5 ? 1 : -1;
-    if (s.form < 2) {                                  // twig (7, pickable) / stick (11) — ground-following with a gentle curve
-      const len = s.form === 0 ? 7 : 11, id = s.form === 0 ? STICK_S : STICK_M;
-      for (let i = 0; i < len; i++) {
-        const drift = Math.round(bend * (i * i) / (len * 2.2));
-        const x = s.wx + dx * i + dz * drift, z = s.wz + dz * i + dx * drift;
-        const y = H(x, z); if (y + 1 >= WY) continue;  // y comes from the SPINE column even when the spine voxel is clipped —
-        if (x >= x0 && x < x1 && z >= z0 && z < z1) {  // spine and thickening clip INDEPENDENTLY, so region seams can't drop either
-          const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
-          if (!W[ii]) W[ii] = id;
-        }
-        if (s.form === 1 && i >= 3 && i <= 7) {        // sticks thicken mid-length
-          const x2 = x + dz, z2 = z + dx;
-          if (x2 >= x0 && x2 < x1 && z2 >= z0 && z2 < z1) { const jj = gwrap(x2, WX) + y * WX + gwrap(z2, WZ) * WX * WY; if (!W[jj]) W[jj] = id; }
-        }
-      }
-    } else {                                           // LOG: 14–18 long, IRREGULAR — drifting spine, radius 1–2 by hash, tapered ends
-      const len = 14 + ((ihash(s.wx, s.wz) * 4.99) | 0);
-      const y0 = groundMin(s.wx + ((dx * len) >> 1), s.wz + ((dz * len) >> 1), 2);
-      for (let i = 0; i < len; i++) {
-        const drift = Math.round(bend * (i * i) / (len * 3.0));
-        const taper = (i < 2 || i >= len - 3) ? 1 : 2;
-        const th = Math.min(taper, 1 + ((ihash(s.wx + i * 7, s.wz + i * 13) * 1.99) | 0));
-        for (let w = 1 - th; w < th; w++) for (let hg = 0; hg < th; hg++) {
-          const x = s.wx + dx * i + dz * (w + drift), z = s.wz + dz * i + dx * (w + drift);
-          if (x < x0 || x >= x1 || z < z0 || z >= z1) continue;
-          const y = y0 + hg; if (y < 1 || y >= WY) continue;
-          const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
-          if (W[ii] === 0 || W[ii] >= DECOR_MIN) W[ii] = LOGC[(ihash(x * 3 + y, z - y * 7) * 2) | 0];
-        }
-      }
-    }
+    stampModel(STICKV[s.m], s.rot, s.wx, groundMin(s.wx, s.wz, 2), s.wz, x0, x1, z0, z1, 1);
+  }
+  const LGCELL = 96;                                   // FALLEN LOG (log.vox): one candidate per 9.6 m cell, 14% kept — rare, solid, walkable
+  function logAt(cx, cz) {
+    if (!LOGV) return null;
+    if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.14) return null;
+    const wx = Math.round(cx * LGCELL + 6 + ihash(cx * 3 + 9, cz * 7 + 1) * (LGCELL - 12));
+    const wz = Math.round(cz * LGCELL + 6 + ihash(cx * 11 + 4, cz * 13 + 2) * (LGCELL - 12));
+    if (H(wx, wz) <= WL + 4) return null;
+    if (nearCave(wx, wz)) return null;
+    if (nearWormMouth(wx, wz)) return null;
+    return { wx, wz, rot: (ihash(cx * 5 + 21, cz * 3 + 33) * 3.99) | 0 };
+  }
+  function stampLog(l, x0, x1, z0, z1) {
+    stampModel(LOGV, l.rot, l.wx, groundMin(l.wx, l.wz, 6) - 1, l.wz, x0, x1, z0, z1, 1);   // sunk one voxel so it hugs the ground line
+  }
+  const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
+  function lilyAt(cx, cz) {
+    if (!LILYV.length) return null;
+    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.085) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085)
+    const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
+    const wz = Math.round(cz * LILYCELL + 3 + ihash(cx * 5 + 12, cz * 11 + 7) * (LILYCELL - 6));
+    if (H(wx, wz) > WL - 1) return null;               // ≥ 2 voxels of water under the pad — real lakes/rivers, never the beach film
+    const sr = ihash(cx * 19 + 8, cz * 23 + 4);
+    return { wx, wz, size: Math.min(LILYV.length - 1, sr < 0.55 ? 0 : (sr < 0.88 ? 1 : 2)), rot: (ihash(cx + 31, cz + 42) * 3.99) | 0 };
+  }
+  function stampLily(f, x0, x1, z0, z1) {
+    stampModel(LILYV[f.size], f.rot, f.wx, WL + 1, f.wz, x0, x1, z0, z1, 4);   // rests ON the water surface; mode 4 clips every column to open water
   }
   const TCELL = 45, TMARGIN = 24;                      // one pine candidate per 4.5 m cell (≈2× the old 64-cell density)
   function treeAt(cx, cz) {
@@ -1094,7 +1148,6 @@
     if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
     if (nearCave(wx, wz)) return null;
     if (nearWormMouth(wx, wz)) return null;           // don't stand a pine over a cave mouth
-    if (nearFormation(wx, wz)) return null;            // don't grow through the crags
     return { tx: wx, tz: wz, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
   }
   function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
@@ -1110,6 +1163,21 @@
       for (let mz = za; mz <= zb; mz++) for (let mx = xa; mx <= xb; mx++) {
         const v = R.A[mx + mz * R.sx + moff]; if (!v) continue;
         W[gwrap(bx + mx, WX) + yrow + gwrap(bz + mz, WZ) * WX * WY] = remap[v];
+      }
+    }
+    if (CONEV && PINE_ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
+      const n = 6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0);   // rotated with the tree so every region stamps them identically
+      const used = new Set();                          // one cone per column — never stacked on top of each other
+      for (let k = 0; k < n; k++) {                    // PINE_ANCH is angle-sorted: pick k-th from the k-th angular sector — cones ring the crown evenly
+        const a = PINE_ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * PINE_ANCH.length) | 0];
+        const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 255;
+        let rx, rz;
+        if (tr.rot === 0) { rx = ax; rz = ay; }
+        else if (tr.rot === 1) { rx = MSY - 1 - ay; rz = ax; }
+        else if (tr.rot === 2) { rx = MSX - 1 - ax; rz = MSY - 1 - ay; }
+        else { rx = ay; rz = MSX - 1 - ax; }
+        const ck = rx | (rz << 8); if (used.has(ck)) continue; used.add(ck);
+        stampModel(CONEV, (ax + az + k) & 3, bx + rx, gy + az - CONEV.sz, bz + rz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
       }
     }
   }
@@ -1170,13 +1238,15 @@
         yield;
       }
     }
-    yield* stampCellsGen(x0, x1, z0, z1, RCELL, RMARGIN, formationAt, stampFormation);
     yield* stampCellsGen(x0, x1, z0, z1, OCELL, 6, oreAt, stampOre);
     yield* stampCellsGen(x0, x1, z0, z1, CAVE_CELL, CAVE_MARGIN, caveAt, stampCave);
     yield* stampCellsGen(x0, x1, z0, z1, WORM_CELL, WORM_MARGIN, wormCaveAt, stampWormCave);
-    yield* stampCellsGen(x0, x1, z0, z1, BCELL, 6, boulderAt, stampBoulder);
-    yield* stampCellsGen(x0, x1, z0, z1, FCELL, 8, fernAt, stampFern);
-    yield* stampCellsGen(x0, x1, z0, z1, SCELL, 24, stickAt, stampStick);
+    yield* stampCellsGen(x0, x1, z0, z1, BCELL, 44, boulderAt, stampBoulder);   // margin covers the widest rocks26 model (74 wide)
+    yield* stampCellsGen(x0, x1, z0, z1, F2CELL, 16, fern2At, stampFern2);   // the fern.glb plant (23 wide)
+    yield* stampCellsGen(x0, x1, z0, z1, PCCELL, 8, pconeAt, stampPcone);
+    yield* stampCellsGen(x0, x1, z0, z1, SCELL, 8, stickAt, stampStick);
+    yield* stampCellsGen(x0, x1, z0, z1, LILYCELL, 8, lilyAt, stampLily);
+    yield* stampCellsGen(x0, x1, z0, z1, LGCELL, 16, logAt, stampLog);
     for (const t of treesInRegion(x0, x1, z0, z1)) { stampTree(t, x0, x1, z0, z1); yield; }   // one tree per slice — the old all-at-once pass spiked 10–25 ms per band
   }
   function genRegion(x0, x1, z0, z1, fresh) { const g = genRegionGen(x0, x1, z0, z1, fresh); for (let r = g.next(); !r.done; r = g.next()) {} }
@@ -1249,15 +1319,15 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, RCELL, RMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, OCELL, BCELL, FCELL, SCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, FERN, PEBBLE, BLOOM, FERN_ARCH, FERN_STEM };
-    const fns = { ihash, sstep, vnoise, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, boulderAt, stampBoulder, formationAt, stampFormation, nearFormation, caveAt, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, nearWormMouth, oreAt, stampOre, fernAt, stampFern, stickAt, stampStick, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
+    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, OCELL, BCELL, F2CELL, PCCELL, SCELL, LGCELL, LILYCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
+    const fns = { ihash, sstep, vnoise, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
     wsrc2 += 'let WX = 0, WZ = 0, OX = 0, OZ = 0, BX = 0, W = null, hmap = null, touched = null, MROT = null, remap = null, rivScope = null;\n' +
       'const gwrap = (v, n) => v - (n === WX ? OX : OZ);\n' +
-      'const rivCache = new Map(), formCache = new Map(), caveCache = new Map(), wormCache = new Map();\n' +
+      'const rivCache = new Map(), caveCache = new Map(), wormCache = new Map();\n' +
       'const takeRows = () => null;\n';
     for (const k in fns) wsrc2 += 'const ' + k + ' = ' + fns[k].toString() + ';\n';
     wsrc2 += 'onmessage = (e) => {\n' +
@@ -1372,7 +1442,7 @@
   { const f = new Float32Array(palBuf.getMappedRange());           // sRGB → linear; shaders work in linear
     for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); f[i * 4 + 3] = 0; } }
   palBuf.unmap();
-  const UF = new Float32Array(148);                    // …+ drops[16] ends at 132; drops[16..19] (slot 4) = the cardinal → 148
+  const UF = new Float32Array(228);                    // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212; pick2 (left hand) 212..227 → 228
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);
@@ -1397,7 +1467,9 @@
       pickA  : vec4<f32>,                                            // held pick: anchor xyz (camera space) + voxel size
       pickX  : vec4<f32>, pickY : vec4<f32>, pickZ : vec4<f32>,      // item local axes in camera space; pickX.w = show flag
       rdist  : vec4<f32>,                                            // x = render distance in voxels (menu slider)
-      drops  : array<vec4<f32>, 20>,                                 // 4 dropped items + 1 cardinal (slot 4) × {anchor.xyz+voxelScale, X.xyz+itemId, Y.xyz, Z.xyz} in camera space, voxel units
+      drops  : array<vec4<f32>, 36>,                                 // 4 dropped items + cardinal (slot 4) + 4 clash sparks (slots 5-8) × {anchor.xyz+voxelScale, X.xyz+itemId, Y.xyz+sparkFade, Z.xyz} in camera space, voxel units
+      pick2A : vec4<f32>,                                            // LEFT hand (dual-wield rock): anchor xyz (camera space) + voxel size
+      pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -1541,11 +1613,16 @@
           voxAt(vec3<i32>(b.x, a.y, a.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, a.z)) != 0u ||
           voxAt(vec3<i32>(a.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(b.x, b.y, a.z)) != 0u ||
           voxAt(vec3<i32>(b.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, b.z)) != 0u) { return true; }
-      var PR = array<f32, 5>(6.0, 16.0, 34.0, 60.0, 96.0);           // (2) and it must have open SKY above — no snowfall inside caves (chambers are ~90 tall) or beneath canopies
-      for (var k = 0; k < 5; k++) {
-        let py = cw.y + PR[k];
-        if (py >= f32(WY - 2)) { break; }
-        if (voxAt(vec3<i32>(floor(vec3<f32>(cw.x, py, cw.z)))) != 0u) { return true; }
+      let ci = vec3<i32>(floor(cw));                                 // (2) and its column must be OPEN SKY. Voxel-exact for the first 16 above — the old
+      for (var k = 1; k <= 16; k++) {                                //     sparse probe ladder slipped BETWEEN thin canopy layers and cave shells, so
+        let py = ci.y + k;                                           //     flakes clipped through trees, the ground and into caves…
+        if (py >= WY - 2) { return false; }
+        if (voxAt(vec3<i32>(ci.x, py, ci.z)) != 0u) { return true; }
+      }
+      let bx = ci.x >> 3; let bz = ci.z >> 3;                        // …then BRICK-level (8³ occupancy — anything solid in the 8×8 column blocks) up to
+      let byTop = min(BY - 1, (ci.y + 128) >> 3);                    //     +128: no gap a cave chamber or a canopy can hide in
+      for (var by = (ci.y + 17) >> 3; by <= byTop; by++) {
+        if (brickOcc(vec3<i32>(bx, by, bz))) { return true; }
       }
       return false;
     }
@@ -1660,7 +1737,7 @@
           var tMax = ((vec3<f32>(c) + max(vec3<f32>(stp), vec3<f32>(0.0))) * 3.0 - roP) * inv;
           for (var it = 0; it < 96; it++) {
             let h1 = ih3(c.x, c.y * 7, c.z);
-            if (h1 > 0.951) {                                        // ~4.9% of cells (reduced 33% per user)
+            if (h1 > 0.9755) {                                       // ~2.45% of cells (halved again per user)
               let ctr = (vec3<f32>(c) + vec3<f32>(0.17 + 0.66 * fract(h1 * 43758.5), 0.17 + 0.66 * fract(h1 * 12345.7), 0.17 + 0.66 * fract(h1 * 7777.3))) * 3.0;
               let cwn = ctr - fall - winOf;
               if (flakeBlocked(cwn)) { }                             // touching solids, or roofed over (cave/canopy) — no flake here
@@ -1997,7 +2074,7 @@
         var bestT = select(1e9, ib, ib > 0.0);
         let ndc3 = (px / u.res) * 2.0 - 1.0;
         let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));
-        for (var di = 0; di < 5; di++) {                             // slots 0..3 = dropped items, slot 4 = the flying cardinal
+        for (var di = 0; di < 9; di++) {                             // slots 0..3 = dropped items, slot 4 = the flying cardinal, slots 5..8 = clash sparks
           let dA = u.drops[di * 4]; let dXv = u.drops[di * 4 + 1]; let dYv = u.drops[di * 4 + 2]; let dZv = u.drops[di * 4 + 3];
           let dit = i32(dXv.w + 0.5);
           if (dit < 1) { continue; }
@@ -2043,6 +2120,8 @@
                   var fogB = 1.0 - exp(-bestT * 0.0006);             // the SAME distance haze + view-edge ring the world gets — a far bird melts into the haze instead of popping crisp
                   fogB = max(fogB, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
                   col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogB);
+                } else if (di >= 5) {                                // clash SPARKS — emissive 10 cm voxels, fading out over their flight (dYv.w = fade)
+                  col = cell.rgb * (0.8 + 2.6 * dYv.w);
                 } else {                                             // dropped items keep the flat raw-palette look
                   let shade = 0.45 + 0.55 * max(dot(nw, u.sunDir), 0.0);
                   col = cell.rgb * shade * (0.12 + 0.88 * dayScale());
@@ -2057,50 +2136,65 @@
           }
         }
       }
-      if (u.pickX.w > 0.5 && ITEMN > 0) {                          // HELD ITEM — pick / rock / twig as TRUE 3D voxels, DDA-walked in camera space (tune via __vb.pick)
-        let it = clamp(i32(u.pickX.w + 0.5) - 1, 0, ITEMN - 1);
-        let PICKW = ITEMD[it].x; let PICKD = ITEMD[it].y; let PICKH = ITEMD[it].z; let IOFF = ITEMD[it].w;
+      if (ITEMN > 0) {                                             // HELD ITEMS — RIGHT hand + LEFT hand (dual-wield rocks) as TRUE 3D voxels, DDA-walked in camera space; the nearer hand wins overlaps
+        var heldT = 1e18;
+        let irrH = textureLoad(irrF, vec2<i32>(gid.xy), 0);        // the scene's traced sun-shadow (r) + AO (g) at this pixel — the hand sits in the SAME light as the
+        let sunH = select(irrH.r, 1.0, irrH.b < 0.0);              // surface behind it (dark in forest shade, bright in the open), which is what makes it read as
+        let aoH = select(irrH.g, 0.9, irrH.b < 0.0);               // world-rendered; sky-background pixels carry no irr (b < 0) → treat as fully lit open ground
         let ndc2 = (px / u.res) * 2.0 - 1.0;
         let dc = normalize(vec3<f32>(ndc2.x * u.tanH * u.aspect, -ndc2.y * u.tanH, 1.0));
-        let C = u.pickA.xyz;
-        let vs = u.pickA.w;
-        let hw = f32(PICKW) * 0.5; let hd = f32(PICKD) * 0.5; let hh = f32(PICKH) * 0.5;
-        let rad = vs * (sqrt(hw * hw + hd * hd + hh * hh) + 1.0);
-        let tc = dot(C, dc);
-        if (PICKW > 0 && tc > 0.0 && length(dc * tc - C) < rad) {
-          // item-local grid space (voxel units): x along pickX (width), y along pickY (depth), z along pickZ (height)
-          let roL = vec3<f32>(-dot(C, u.pickX.xyz), -dot(C, u.pickY.xyz), -dot(C, u.pickZ.xyz)) / vs + vec3<f32>(hw, hd, hh);
-          var rdL = vec3<f32>(dot(dc, u.pickX.xyz), dot(dc, u.pickY.xyz), dot(dc, u.pickZ.xyz));
-          if (abs(rdL.x) < 1e-6) { rdL.x = 1e-6; }
-          if (abs(rdL.y) < 1e-6) { rdL.y = 1e-6; }
-          if (abs(rdL.z) < 1e-6) { rdL.z = 1e-6; }
-          let invL = 1.0 / rdL;
-          let ta2 = -roL * invL;
-          let tb2 = (vec3<f32>(f32(PICKW), f32(PICKD), f32(PICKH)) - roL) * invL;
-          let tn2 = min(ta2, tb2); let tf2 = max(ta2, tb2);
-          let te = max(max(tn2.x, tn2.y), max(tn2.z, 0.0));
-          let tl = min(min(tf2.x, tf2.y), tf2.z);
-          if (te < tl) {
-            var vax = 0;
-            if (tn2.y == te) { vax = 1; } if (tn2.z == te) { vax = 2; }
-            var vc = clamp(vec3<i32>(floor(roL + rdL * (te + 1e-4))), vec3<i32>(0), vec3<i32>(PICKW - 1, PICKD - 1, PICKH - 1));
-            let istep = vec3<i32>(sign(rdL));
-            var vNext = (vec3<f32>(vc + max(istep, vec3<i32>(0))) - roL) * invL;
-            for (var i = 0; i < PICKSTEPS; i++) {
-              let cell = ITEMMAP[IOFF + vc.x + vc.y * PICKW + vc.z * PICKW * PICKD];
-              if (cell.w > 0.5) {
-                var nl = vec3<f32>(0.0);                           // CUBE face normal from the axis the ray entered through — real edges, not a flat card
-                if (vax == 0) { nl.x = -f32(istep.x); } else if (vax == 1) { nl.y = -f32(istep.y); } else { nl.z = -f32(istep.z); }
-                let nc = u.pickX.xyz * nl.x + u.pickY.xyz * nl.y + u.pickZ.xyz * nl.z;
-                let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
-                let shade = 0.45 + 0.55 * max(dot(nw, u.sunDir), 0.0);   // pure directional shading — NO grain, NO color cast: the raw .vox palette, untouched
-                col = cell.rgb * shade * (0.12 + 0.88 * dayScale());
-                break;
+        for (var hand = 0; hand < 2; hand = hand + 1) {
+          var pA = u.pickA; var pX = u.pickX; var pY = u.pickY; var pZ = u.pickZ;
+          if (hand == 1) { pA = u.pick2A; pX = u.pick2X; pY = u.pick2Y; pZ = u.pick2Z; }
+          if (pX.w < 0.5) { continue; }
+          let it = clamp(i32(pX.w + 0.5) - 1, 0, ITEMN - 1);
+          let PICKW = ITEMD[it].x; let PICKD = ITEMD[it].y; let PICKH = ITEMD[it].z; let IOFF = ITEMD[it].w;
+          let C = pA.xyz;
+          let vs = pA.w;
+          let hw = f32(PICKW) * 0.5; let hd = f32(PICKD) * 0.5; let hh = f32(PICKH) * 0.5;
+          let rad = vs * (sqrt(hw * hw + hd * hd + hh * hh) + 1.0);
+          let tc = dot(C, dc);
+          if (PICKW > 0 && tc > 0.0 && length(dc * tc - C) < rad) {
+            // item-local grid space (voxel units): x along pX (width), y along pY (depth), z along pZ (height)
+            let roL = vec3<f32>(-dot(C, pX.xyz), -dot(C, pY.xyz), -dot(C, pZ.xyz)) / vs + vec3<f32>(hw, hd, hh);
+            var rdL = vec3<f32>(dot(dc, pX.xyz), dot(dc, pY.xyz), dot(dc, pZ.xyz));
+            if (abs(rdL.x) < 1e-6) { rdL.x = 1e-6; }
+            if (abs(rdL.y) < 1e-6) { rdL.y = 1e-6; }
+            if (abs(rdL.z) < 1e-6) { rdL.z = 1e-6; }
+            let invL = 1.0 / rdL;
+            let ta2 = -roL * invL;
+            let tb2 = (vec3<f32>(f32(PICKW), f32(PICKD), f32(PICKH)) - roL) * invL;
+            let tn2 = min(ta2, tb2); let tf2 = max(ta2, tb2);
+            let te = max(max(tn2.x, tn2.y), max(tn2.z, 0.0));
+            let tl = min(min(tf2.x, tf2.y), tf2.z);
+            if (te < tl) {
+              var vax = 0;
+              if (tn2.y == te) { vax = 1; } if (tn2.z == te) { vax = 2; }
+              var vc = clamp(vec3<i32>(floor(roL + rdL * (te + 1e-4))), vec3<i32>(0), vec3<i32>(PICKW - 1, PICKD - 1, PICKH - 1));
+              let istep = vec3<i32>(sign(rdL));
+              var vNext = (vec3<f32>(vc + max(istep, vec3<i32>(0))) - roL) * invL;
+              var tCur = te;
+              for (var i = 0; i < PICKSTEPS; i++) {
+                let cell = ITEMMAP[IOFF + vc.x + vc.y * PICKW + vc.z * PICKW * PICKD];
+                if (cell.w > 0.5) {
+                  if (tCur * vs < heldT) {                         // both hands can cover a pixel (the spark clash) — keep the nearer surface
+                    heldT = tCur * vs;
+                    var nl = vec3<f32>(0.0);                       // CUBE face normal from the axis the ray entered through — real edges, not a flat card
+                    if (vax == 0) { nl.x = -f32(istep.x); } else if (vax == 1) { nl.y = -f32(istep.y); } else { nl.z = -f32(istep.z); }
+                    let nc = pX.xyz * nl.x + pY.xyz * nl.y + pZ.xyz * nl.z;
+                    let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
+                    let direct = sunTint() * max(dot(nw, u.sunDir), 0.0);    // EXACT world-voxel formula: sun·shadow + (sky + bounce)·AO + ambient — shadow/AO borrowed from the
+                    let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();   // scene pixel behind the hand. Still NO per-voxel grain — grain is ±12% per voxel and scrambles
+                    let bounce = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // hand-authored .vox gradients (~5% steps on the axe handle)
+                    col = cell.rgb * (direct * sunH + (skyIrr + bounce) * aoH + vec3<f32>(0.012, 0.013, 0.016));
+                  }
+                  break;
+                }
+                if (vNext.x <= vNext.y && vNext.x <= vNext.z) { tCur = vNext.x; vNext.x += abs(invL.x); vc.x += istep.x; vax = 0; }
+                else if (vNext.y <= vNext.z) { tCur = vNext.y; vNext.y += abs(invL.y); vc.y += istep.y; vax = 1; }
+                else { tCur = vNext.z; vNext.z += abs(invL.z); vc.z += istep.z; vax = 2; }
+                if (any(vc < vec3<i32>(0)) || any(vc >= vec3<i32>(PICKW, PICKD, PICKH))) { break; }
               }
-              if (vNext.x <= vNext.y && vNext.x <= vNext.z) { vNext.x += abs(invL.x); vc.x += istep.x; vax = 0; }
-              else if (vNext.y <= vNext.z) { vNext.y += abs(invL.y); vc.y += istep.y; vax = 1; }
-              else { vNext.z += abs(invL.z); vc.z += istep.z; vax = 2; }
-              if (any(vc < vec3<i32>(0)) || any(vc >= vec3<i32>(PICKW, PICKD, PICKH))) { break; }
             }
           }
         }
@@ -2422,7 +2516,7 @@
 
   // ── right-click pickup: pebbles + twigs ─────────────────────────────────────
   // ── HAND SLOTS ── 4-slot hotbar; scroll wheel cycles, Q drops from the selected slot. Same-type items stack.
-  const slots = [{ it: 1, n: 1 }, null, null, null];   // slot 0 starts with the stone axe; ids: 1 axe, 2 rock, 3 twig
+  const slots = [{ it: 1, n: 1 }, null, null, null];   // slot 0 starts with the stone axe; ids: 1 axe, 2 rock, 3 twig, 4 pinecone
   let selSlot = 0;
   const canAdd = (it) => slots.some((s) => !s || s.it === it);
   function addItem(it) {                               // prefer stacking, then the SELECTED slot (so a fresh grab lands in the hand), then any empty
@@ -2482,7 +2576,10 @@
     if (drops.length > 4) drops.shift();               // the composite renders up to 4 at once
   }
   const PICK_ROCK = new Set(PEBBLE), PICK_STICK = new Set([STICK_S]), PICK_BOULDER = new Set(BROCK);
-  const PASSTHRU = new Set([...GRASS, ...FERN, WATER_T, WATER_B]);   // the pick ray sees through soft decor + water
+  const PICK_CONE = new Set(); if (CONEV) for (const p of CONEV.vox) PICK_CONE.add(p >>> 24);   // pinecone ids (ground cones AND tree-hung ones) → pinecone item
+  if (ROCKV) for (const p of ROCKV.vox) PICK_ROCK.add(p >>> 24);                 // the field stone (rock.vox) → rock item
+  for (const sm of STICKV) for (const p of sm.vox) PICK_STICK.add(p >>> 24);     // stick_1/stick_2 → twig item
+  const PASSTHRU = new Set([...GRASS, ...FERNIDS, WATER_T, WATER_B]);   // the pick ray sees through soft decor + water
   function floodRemove(x, y, z, ids, cap) {
     const out = []; const q = [[x, y, z]]; const seen = new Set();
     while (q.length && out.length < cap) {
@@ -2534,7 +2631,12 @@
   const bird = { th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0 };
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
+  const startGrab = (it, wx, wy, wz, aPh) => {         // EVERY pickup flies to the hand — never an instant swap; a 2nd rock flies to the LEFT hand
+    grabAnim = { t0: performance.now(), it, x: wx, y: wy, z: wz, aPh: aPh !== undefined ? aPh : performance.now() * 0.0012,
+      left: it === 2 && !!(slots[selSlot] && slots[selSlot].it === 2) };
+  };
   function tryPickup() {                               // march the view ray; first pickable id wins, first solid stops it
+    if (grabAnim) return;                              // one flight at a time — a second grab mid-flight would overwrite (and lose) the first item
     const cp2 = Math.cos(P.pitch), sp2 = Math.sin(P.pitch);
     const d = [Math.sin(P.yaw) * cp2, sp2, Math.cos(P.yaw) * cp2];
     for (let i = 0; i < drops.length; i++) {           // DROPPED items grab first — generous ray-sphere test
@@ -2546,9 +2648,7 @@
       if (tq < 0 || tq > 55) continue;
       const qx = ox - d[0] * tq, qy = oy - d[1] * tq, qz = oz - d[2] * tq;
       if (qx * qx + qy * qy + qz * qz < 42) {
-        grabAnim = { t0: performance.now(), it: dr.it,  // it FLIES to the hand — inventory lands when the flight does
-          x: dr.x + 0.5, y: dr.y + 9.0 + Math.sin(performance.now() * 0.002 + dr.ph) * 1.3, z: dr.z + 0.5,
-          aPh: performance.now() * 0.0012 + dr.ph };
+        startGrab(dr.it, dr.x + 0.5, dr.y + 9.0 + Math.sin(performance.now() * 0.002 + dr.ph) * 1.3, dr.z + 0.5, performance.now() * 0.0012 + dr.ph);
         drops.splice(i, 1);
         return;
       }
@@ -2558,26 +2658,76 @@
       if (y < 0 || y >= WY) return;
       const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
       if (!v || PASSTHRU.has(v)) continue;
-      if (PICK_ROCK.has(v) && canAdd(2)) { const c = floodRemove(x, y, z, PICK_ROCK, 40); if (c.length) { addItem(2); gpuPatch(c); } }   // cap fits the rounded dome (~23 voxels at rr 2.3)
+      if (PICK_ROCK.has(v) && canAdd(2)) { const c = floodRemove(x, y, z, PICK_ROCK, 40); if (c.length) { startGrab(2, x + 0.5, y + 0.5, z + 0.5); gpuPatch(c); } }   // cap fits the rounded dome (~23 voxels at rr 2.3)
       else if (PICK_BOULDER.has(v) && canAdd(2)) {     // MEDIUM boulder → one rock; it raised hmap when stamped, so re-derive the freed columns or drops/toss hover on phantom ground
         const c = floodRemove(x, y, z, PICK_BOULDER, 300);   // sized for the biggest medium boulder (rr≈4 ≈ 200 voxels) — a too-small cap leaves a half-eaten rock
-        if (c.length) { addItem(2); gpuPatch(c);
+        if (c.length) { startGrab(2, x + 0.5, y + 0.5, z + 0.5); gpuPatch(c);
           const cols = new Set(); for (const ii of c) cols.add(ii % WX + ((ii / (WX * WY)) | 0) * WX);
           for (const ci of cols) { let hy = hmap[ci]; while (hy > 1 && !W[(ci % WX) + (hy - 1) * WX + ((ci / WX) | 0) * WX * WY]) hy--; hmap[ci] = hy; } } }
-      else if (PICK_STICK.has(v) && canAdd(3)) { const c = floodRemove(x, y, z, PICK_STICK, 14); if (c.length) { addItem(3); gpuPatch(c); } }
+      else if (PICK_STICK.has(v) && canAdd(3)) { const c = floodRemove(x, y, z, PICK_STICK, 24); if (c.length) { startGrab(3, x + 0.5, y + 0.5, z + 0.5); gpuPatch(c); } }   // cap fits the biggest stick model (17 voxels)
+      else if (PICK_CONE.has(v) && canAdd(4)) { const c = floodRemove(x, y, z, PICK_CONE, CONEV ? CONEV.vox.length + 8 : 0); if (c.length) { startGrab(4, x + 0.5, y + 0.5, z + 0.5); gpuPatch(c); } }   // one whole pinecone, off the ground or plucked from a branch
       return;
     }
   }
   document.addEventListener('contextmenu', (e) => e.preventDefault());
+  // ── MASTER VOLUME ── every sound registers its BASE volume; the menu slider scales them all (persisted vb_vol)
+  let sndVol = 1; try { const v = parseFloat(localStorage.getItem('vb_vol')); if (v >= 0 && v <= 1) sndVol = v; } catch (e) {}
+  const sndReg = [];
+  const regSnd = (a, base) => { a.volume = base * sndVol; sndReg.push({ a, base }); return a; };
+  const applyVol = () => { for (const s of sndReg) s.a.volume = s.base * sndVol; };
+  // ── forest ambience ── constant background loop from page load. Browsers block autoplay before the first
+  // user gesture, so a blocked play() is retried on the first pointer/key input (the click-to-enter covers it).
+  // Tries forest_ambience.* first and falls back to ambience.mp4 so dropping the new file in just works.
+  {
+    const amb = new Audio();
+    amb.loop = true; regSnd(amb, 0.625);               // +25% 2026-07-16 (was 0.5)
+    const srcs = ['sound/sfx/forest_ambience.mp4', 'sound/sfx/forest_ambience.mp3', 'sound/sfx/forest_ambience.wav', 'sound/sfx/ambience.mp4'];
+    let si = 0;
+    const ambPlay = () => { try { const p = amb.play(); if (p) p.catch(() => {}); } catch (e) {} };
+    amb.addEventListener('error', () => { if (si < srcs.length) { amb.src = srcs[si++]; ambPlay(); } });
+    amb.src = srcs[si++]; ambPlay();
+    const kick = () => { if (amb.paused) ambPlay(); };
+    document.addEventListener('pointerdown', kick);
+    document.addEventListener('keydown', kick);
+  }
   let swingStart = -1e9, mouse0 = false;               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
-  const swishSnd = new Audio('sound/sfx/bow/swish.mp4');   // swing whoosh — volume reduced 40% per user
-  swishSnd.volume = 0.6;
+  const swishSnd = regSnd(new Audio('sound/sfx/bow/swish.mp4'), 0.6);   // swing whoosh — volume reduced 40% per user
   const playSwish = () => { try { swishSnd.currentTime = 0; const pr = swishSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
   let bobPh = 0, bobAmp = 0;                           // walk/sprint view-model bob state
+  // ── DUAL-WIELD rock clash ── shift + left click with a rock in EACH hand: both rocks accelerate to screen centre,
+  // collide with a spark burst, and the first collision unlocks the "sharp edge" discovery achievement.
+  let clashT0 = -1e9, clashSparked = true;
+  let vbAch = {};                                      // achievements RESET on refresh (was localStorage vb_ach — user asked for per-session)
+  const achSnd = regSnd(new Audio('sound/sfx/high_score.mp4'), 0.5);   // achievement jingle at half volume
+  const dualRocks = () => !dead && !grabAnim && !!(slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2);
+  const achEl = $('achv'), clashHintEl = $('clashHint');
+  let achHideT = 0;
+  const sparks3d = [null, null, null, null];           // 4 REAL 10 cm voxel sparks (drops uniform slots 5-8) — world-space ballistic embers from the clash point
+  function unlockSharpEdge() {
+    if (vbAch.sharpEdge) return;
+    vbAch.sharpEdge = true;                            // session-only — refresh resets the discovery (and brings the hint back)
+    try { achSnd.currentTime = 0; const p = achSnd.play(); if (p) p.catch(() => {}); } catch (e) {}
+    achEl.style.opacity = 1; achHideT = performance.now() + 5200;
+  }
+  function spawnSparks() {                             // 4 voxel sparks burst from where the rocks meet (the held anchor ~1.15 m ahead, slightly below eye line)
+    const cpv = Math.cos(P.pitch), spv = Math.sin(P.pitch);
+    const fwd3 = [Math.sin(P.yaw) * cpv, spv, Math.cos(P.yaw) * cpv];
+    const right3 = [Math.cos(P.yaw), 0, -Math.sin(P.yaw)];
+    const up3 = [right3[1] * fwd3[2] - right3[2] * fwd3[1], right3[2] * fwd3[0] - right3[0] * fwd3[2], right3[0] * fwd3[1] - right3[1] * fwd3[0]];
+    const ox = P.x + fwd3[0] * 11.5 - up3[0] * 2.1, oy = smoothEye + fwd3[1] * 11.5 - up3[1] * 2.1, oz = P.z + fwd3[2] * 11.5 - up3[2] * 2.1;
+    for (let i = 0; i < 4; i++) {
+      const a = Math.random() * 6.283, sp3 = 12 + Math.random() * 22;
+      sparks3d[i] = { x: ox, y: oy, z: oz, vx: Math.cos(a) * sp3, vy: 16 + Math.random() * 22, vz: Math.sin(a) * sp3,
+        born: performance.now(), life: 0.45 + Math.random() * 0.3, ph: Math.random() * 6.283 };
+    }
+  }
   document.addEventListener('mousedown', (e) => {
     if (!locked) return;
     if (e.button === 2) tryPickup();
-    if (e.button === 0 && !dead) { mouse0 = true; swingStart = performance.now(); if (heldIt()) playSwish(); }
+    if (e.button === 0 && !dead) {
+      if (e.shiftKey && dualRocks() && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }   // clash instead of swing
+      mouse0 = true; swingStart = performance.now(); if (heldIt()) playSwish();
+    }
   });
   document.addEventListener('mouseup', (e) => { if (e.button === 0) mouse0 = false; });
 
@@ -2610,6 +2760,7 @@
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
   let snowQ = [], snowHead = 0;                        // FIFO of {ii, t} — placement order ≈ melt order; ring-buffer head avoids O(n) shifts
+  let snowSprinkAcc = 0;                               // fractional carry for the uniform-area sprinkle — low fps or thin rings never quantize to zero
   let windAX = 0, windAZ = 0;                          // ── WIND ── integrated wind displacement (vox): direction wanders over minutes, strength GUSTS over seconds; snow flakes advect along it
   let snowFallAcc = 0, snowFallV = 11;                 // integrated flake fall: 11 vox/s while the player moves, eases to 22 when standing still (u.pickY.w)
   const ih3s = (x, y, z) => {                          // bit-exact JS twin of the shader's ih3 — the landing code must see the SAME flakes the GPU draws
@@ -2619,7 +2770,7 @@
   };
   const frac9 = (v) => v - Math.floor(v);
   const SNOW_MAX = 600000, SNOW_MELT = 95000;          // hard cap on live snow voxels (sized for the tripled rate); ms until a layer melts
-  const SNOW_PASS = new Set([...GRASS, ...FERN, BLOOM[0], BLOOM[1], BLOOM[2], BLOOM[3], BLOOM[4], BLOOM[5]]);   // landings fall THROUGH soft decor and bury it
+  const SNOW_PASS = new Set([...GRASS, ...FERNIDS, BLOOM[0], BLOOM[1], BLOOM[2], BLOOM[3], BLOOM[4], BLOOM[5]]);   // landings fall THROUGH soft decor and bury it
   const SNOW_SKIP = new Set([WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y]);                                    // …but never land on lava; surface water is FROZEN while it snows, so flakes settle on the ice
   { const snowBtn = $('snowBtn');
     const snowShow = () => { snowBtn.textContent = snowOn ? 'on' : 'off'; snowBtn.classList.toggle('on', snowOn); };
@@ -2638,6 +2789,14 @@
   rdSlider.addEventListener('click', (e) => e.stopPropagation());
   rdSlider.addEventListener('input', (e) => { e.stopPropagation(); renderDist = parseFloat(rdSlider.value); rdShow();
     try { localStorage.setItem('vb_rd', String(renderDist)); } catch (err) {} resetHist = 1; });
+  const volSlider = $('volSlider'), volLabel = $('volLabel');   // MASTER VOLUME — scales every registered sound's base volume (persisted vb_vol)
+  volSlider.value = Math.round(sndVol * 100);
+  const volShow = () => { volLabel.textContent = 'volume ' + Math.round(sndVol * 100) + '%'; };
+  volShow();
+  volSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
+  volSlider.addEventListener('click', (e) => e.stopPropagation());
+  volSlider.addEventListener('input', (e) => { e.stopPropagation(); sndVol = parseFloat(volSlider.value) / 100; applyVol(); volShow();
+    try { localStorage.setItem('vb_vol', String(sndVol)); } catch (err) {} });
   let todDrag = false;
   const todSlider = $('todSlider'), todLabel = $('todLabel');
   todSlider.addEventListener('pointerdown', (e) => { todDrag = true; e.stopPropagation(); });
@@ -2659,7 +2818,8 @@
   // ── input ──────────────────────────────────────────────────────────────────
   let locked = false;
   lockEl.classList.remove('hidden');
-  const tryLock = () => canvas.requestPointerLock();
+  const CDPTEST = location.search.includes('cdp');   // headless test harness: pointer lock in headless Chrome still ClipCursor-pins the REAL Windows cursor to the hidden window — never request it under test
+  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); return; } canvas.requestPointerLock(); };
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (!locked) tryLock(); });
   document.addEventListener('pointerlockchange', () => {
@@ -2714,13 +2874,17 @@
   loadEl.classList.add('hidden');
   const PICK_DEFS = {                                  // PER-ITEM held poses — tuning one item never moves the others (panel copy-pose exports)
     1: { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 },   // stone axe (user bake 2026-07-15)
-    2: { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 },   // pebble rock
+    2: { x: 0.75, y: -0.24, z: 0.96, yaw: -0.41, pitch: -2.28, roll: 1.52, scale: 0.08 },   // small rock (user bake 2026-07-16)
     3: { x: 0.75, y: -0.1, z: 0.84, yaw: 0.08, pitch: 0.33, roll: 1.64, scale: 0.08 },   // twig (user bake 2026-07-16)
+    4: { x: 0.9, y: -0.24, z: 0.96, yaw: -0.09, pitch: -1.29, roll: 1.52, scale: 0.08 },   // pinecone (user bake 2026-07-16)
   };
-  const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] } };
+  PICK_DEFS[KNIFE_IT] = { x: 0.75, y: -0.1, z: 0.84, yaw: 0.07, pitch: -1.32, roll: 3.13, scale: 0.07 };   // stone knife (user bake 2026-07-16)
+  const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] }, 4: { ...PICK_DEFS[4] } };
+  pickCfgs[KNIFE_IT] = { ...PICK_DEFS[KNIFE_IT] };
   try { const sv = JSON.parse(localStorage.getItem('vb_pick3') || '{}'); for (const k in sv) if (pickCfgs[k]) Object.assign(pickCfgs[k], sv[k]); } catch (e) {}   // key bumped from vb_pick2 — the old value was one shared pose
-  const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig' };
-  const heldIt = () => (grabAnim ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the hand is currently showing (0 = empty)
+  const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
+  ITEM_NAMES[KNIFE_IT] = 'knife';
+  const heldIt = () => (grabAnim && !grabAnim.left ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty; left-hand grab flights don't change it)
   const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];
   const pickSave = () => { try { localStorage.setItem('vb_pick3', JSON.stringify(pickCfgs)); } catch (e) {} };
   {                                                    // ── held-item position panel ── live sliders over the CURRENT item's own pose; the item renders behind the menu as you drag
@@ -2796,9 +2960,6 @@
         }
       return bad ? { bad, list } : 0; },
     pick(o) { const c = heldCfg(heldIt() || 1); Object.assign(c, o || {}); pickSave(); return JSON.stringify(c); },
-    fin() { let best = null, bd = 1e18; for (let jz = -5; jz <= 5; jz++) for (let jx = -5; jx <= 5; jx++) {
-      const f = formationAt(Math.floor(P.x / RCELL) + jx, Math.floor(P.z / RCELL) + jz); if (!f) continue;
-      if (best === null || f[0].hgt > best.hgt) { best = f[0]; } } return best; },
     cave() { let best = null, bd = 1e18; for (let jz = -4; jz <= 4; jz++) for (let jx = -4; jx <= 4; jx++) {
       const c = caveAt(Math.floor(P.x / CAVE_CELL) + jx, Math.floor(P.z / CAVE_CELL) + jz); if (!c) continue;
       const d = (c.sx - P.x) ** 2 + (c.sz - P.z) ** 2; if (d < bd) { bd = d; best = c; } } return best; },
@@ -2936,27 +3097,25 @@
           const cyc = Math.floor((eL + fY) / 3);
           for (let cy = cyc; cy <= cyc + 1; cy++) {
             const h1 = ih3s(px, cy * 7, pz);
-            if (h1 <= 0.926) continue;                 // same occupancy as the shader — this IS the rendered flake
+            if (h1 <= 0.9755) continue;                // same occupancy as the shader — this IS the rendered flake
             const fjy = (cy + 0.17 + 0.66 * frac9(h1 * 12345.7)) * 3 - fY;
             if (fjy > eL + drop + 4 || fjy <= eL - 4) continue;          // nowhere near touchdown — skip the exact test
             const fwx = Math.floor((px + 0.17 + 0.66 * frac9(h1 * 43758.5)) * 3 - fX);
             const fwz = Math.floor((pz + 0.17 + 0.66 * frac9(h1 * 7777.3)) * 3 - fZ);
             const L = scanTop(fwx, fwz, null) + 1;     // exact landing level at the flake's own column
-            if (fjy - drop <= L && fjy > L && Math.random() < 0.5) landSnowAt(fwx, fwz);   // it crosses the surface THIS frame → the falling voxel becomes the buildup (half accepted — fill rate halved)
+            if (fjy - drop <= L && fjy > L) landSnowAt(fwx, fwz);   // it crosses the surface THIS frame → the falling voxel becomes the buildup
           }
         }
-        const R3 = Math.min(300, renderDist);          // ── MID RING (R2..300) ── UNIFORM-AREA sprinkle matched to the near per-column rate, so distance fills at the SAME pace
-        const triesMid = Math.min(60, Math.max(1, Math.round(dt * 2100)));
-        for (let k = 0; k < triesMid; k++) {
-          const ang2 = Math.random() * 6.283, rad2 = Math.sqrt(R2 * R2 + Math.random() * Math.max(0, R3 * R3 - R2 * R2));
-          const wx = Math.floor(P.x + Math.sin(ang2) * rad2), wz = Math.floor(P.z + Math.cos(ang2) * rad2);
-          if (wx <= rect.xlo || wx >= rect.xhi || wz <= rect.zlo || wz >= rect.zhi) continue;
-          landSnowAt(wx, wz);
-        }
-        const R4 = Math.min(1200, renderDist);         // ── FAR RING (300..1200) ── light dusting where individual voxels are sub-pixel anyway
-        const triesFar = Math.min(40, Math.max(1, Math.round(dt * 1500)));
-        for (let k = 0; k < triesFar; k++) {
-          const ang2 = Math.random() * 6.283, rad2 = Math.sqrt(R3 * R3 + Math.random() * Math.max(0, R4 * R4 - R3 * R3));
+        // ── BEYOND R2 ── ONE uniform-area sprinkle out to the FULL render distance, matched EXACTLY to the
+        // near-field per-column landing rate (lattice occupancy × fall speed ÷ cell volume) — the blanket fills
+        // at the SAME pace at every range, no fast disc near the player, no sparse ring past it.
+        const R4 = Math.max(R2, renderDist);
+        const rate = 0.0245 * snowFallV / 27;          // landings per voxel² per second — 0.0245 MUST match the shader's h1 > 0.9755 lattice test
+        snowSprinkAcc += rate * Math.PI * Math.max(0, R4 * R4 - R2 * R2) * dt;
+        let tries = Math.min(Math.max(200, Math.round(dt * 40000)), snowSprinkAcc | 0); snowSprinkAcc -= tries;   // dt-scaled cap (like the melt drain) — the old flat 140/frame starved the far ring at big view radii, so the blanket filled visibly slower with distance
+        if (snowSprinkAcc > 4000) snowSprinkAcc = 4000;   // starvation carry-over stays bounded — a lag spike must not dump minutes of backlog in one frame
+        for (let k = 0; k < tries; k++) {
+          const ang2 = Math.random() * 6.283, rad2 = Math.sqrt(R2 * R2 + Math.random() * Math.max(0, R4 * R4 - R2 * R2));
           const wx = Math.floor(P.x + Math.sin(ang2) * rad2), wz = Math.floor(P.z + Math.cos(ang2) * rad2);
           if (wx <= rect.xlo || wx >= rect.xhi || wz <= rect.zlo || wz >= rect.zhi) continue;
           landSnowAt(wx, wz);
@@ -3028,6 +3187,14 @@
         else if (swT < 0.55) { const k = (swT - 0.35) / 0.2; wind = 1 - k; chop = k * k; }
         else { const k = (swT - 0.55) / 0.45; chop = 1 - k * k * (3 - 2 * k); }
       }
+      const clT = (now - clashT0) / 620;               // ROCK CLASH — 0..0.42 both rocks accelerate to centre, impact (sparks), then ease back
+      let clashK = 0;
+      if (clT >= 0 && clT < 1) clashK = clT < 0.42 ? (clT / 0.42) * (clT / 0.42) : 1 - (() => { const q = (clT - 0.42) / 0.58; return q * q * (3 - 2 * q); })();
+      if (clT >= 0.42 && clT < 1 && !clashSparked) {   // IMPACT — sparks fly and the two rocks become a stone knife
+        clashSparked = true; spawnSparks(); unlockSharpEdge();
+        const cs = slots[selSlot];
+        if (cs && cs.it === 2 && cs.n >= 2 && KNIFE_IT) { cs.n -= 2; if (!cs.n) slots[selSlot] = null; addItem(KNIFE_IT); }
+      }
       const hcfg = heldCfg(heldIt() || 1);             // the shown item's OWN pose (during a grab flight this is the grabbed item's)
       const swPitch = -0.9 * wind + 1.35 * chop;       // windup tips the head back/up, the strike slams it forward-down
       const cy = Math.cos(hcfg.yaw), sy = Math.sin(hcfg.yaw), cp2 = Math.cos(hcfg.pitch + swPitch), sp2 = Math.sin(hcfg.pitch + swPitch), cr2 = Math.cos(hcfg.roll), sr2 = Math.sin(hcfg.roll);
@@ -3044,7 +3211,8 @@
       let AY = [-sr2 * cy, cr2 * cp2 - sr2 * sy * sp2, cr2 * sp2 + sr2 * sy * cp2];
       let AZ = [sy, -cy * sp2, cy * cp2];
       let showId = dead ? 0 : (slots[selSlot] ? slots[selSlot].it : 0);          // held item = the SELECTED hand slot (0 = empty hand)
-      if (grabAnim) {                                  // FLY-TO-HAND — glide from the world spot into the held pose (angular size matches at k=0, so no pop)
+      if (clashK > 0 && (showId === 2 || showId === KNIFE_IT)) { hx += (0.13 - hx) * clashK; hy += (-0.17 - hy) * clashK; hz += (0.92 - hz) * clashK; }   // right rock drives to centre; the newborn knife eases back from there
+      if (grabAnim && !grabAnim.left) {                // FLY-TO-HAND — glide from the world spot into the held pose (angular size matches at k=0, so no pop); left-hand flights are handled below
         const k = Math.min(1, (now - grabAnim.t0) / 340);
         const e2 = k * k * (3 - 2 * k);
         const rx = grabAnim.x - cam[0], ry = grabAnim.y - cam[1], rz = grabAnim.z - cam[2];
@@ -3065,6 +3233,42 @@
       set3(52, AX, showId);
       set3(56, AY, snowFallAcc);                     // u.pickY.w = integrated snow fall
       set3(60, AZ, freezeK);                        // u.pickZ.w = gradual freeze 0..1
+      { // ── LEFT HAND ── shows the second rock when dual-wielding (selected rock stack n ≥ 2); also hosts a 2nd-rock grab flight
+        const lgrab = grabAnim && grabAnim.left && !dead;
+        const lid = lgrab ? grabAnim.it : ((!dead && slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2) ? 2 : 0);
+        if (!lid) UF[215] = 0;                       // pick2X.w = 0 → left hand hidden
+        else {
+          const c2 = heldCfg(2);                     // mirrored rock pose: anchor x negated, yaw/roll negated (still a proper rotation — no handedness flip)
+          const cy4 = Math.cos(-c2.yaw), sy4 = Math.sin(-c2.yaw), cp4 = Math.cos(c2.pitch), sp4 = Math.sin(c2.pitch), cr4 = Math.cos(-c2.roll), sr4 = Math.sin(-c2.roll);
+          let LAX = [cr4 * cy4, sr4 * cp4 + cr4 * sy4 * sp4, sr4 * sp4 - cr4 * sy4 * cp4];
+          let LAY = [-sr4 * cy4, cr4 * cp4 - sr4 * sy4 * sp4, cr4 * sp4 + sr4 * sy4 * cp4];
+          let LAZ = [sy4, -cy4 * sp4, cy4 * cp4];
+          let lx = -c2.x - Math.sin(bobPh) * 0.075 * bobAmp - Math.sin(now * 0.0013 + 0.6) * 0.0069 - Math.sin(now * 0.00073 + 2.3) * 0.0039,
+              ly = c2.y - Math.abs(Math.cos(bobPh)) * 0.028 * bobAmp + Math.sin(now * 0.0017 + 2.1) * 0.0069 + Math.sin(now * 0.00091 + 1.1) * 0.0036,
+              lz = c2.z;
+          if (clashK > 0) { lx += (-0.13 - lx) * clashK; ly += (-0.17 - ly) * clashK; lz += (0.92 - lz) * clashK; }   // left rock mirrors the drive to centre
+          if (lgrab) {                               // fly from the world spot into the LEFT rest pose — same glide as the right hand
+            const k = Math.min(1, (now - grabAnim.t0) / 340);
+            const e2 = k * k * (3 - 2 * k);
+            const rx = grabAnim.x - cam[0], ry = grabAnim.y - cam[1], rz = grabAnim.z - cam[2];
+            const sxc = (rx * right[0] + ry * right[1] + rz * right[2]) * c2.scale;
+            const syc = (rx * up[0] + ry * up[1] + rz * up[2]) * c2.scale;
+            const szc = (rx * fwd[0] + ry * fwd[1] + rz * fwd[2]) * c2.scale;
+            lx = sxc + (lx - sxc) * e2; ly = syc + (ly - syc) * e2; lz = szc + (lz - szc) * e2;
+            const ca3 = Math.cos(grabAnim.aPh), sa3 = Math.sin(grabAnim.aPh);
+            const q = qslerp(m2q([ca3 * right[0] + sa3 * right[2], ca3 * up[0] + sa3 * up[2], ca3 * fwd[0] + sa3 * fwd[2]],
+                                 [sa3 * right[0] - ca3 * right[2], sa3 * up[0] - ca3 * up[2], sa3 * fwd[0] - ca3 * fwd[2]],
+                                 [right[1], up[1], fwd[1]]),
+                             m2q(LAX, LAY, LAZ), e2);
+            const M = q2m(q); LAX = M[0]; LAY = M[1]; LAZ = M[2];
+            if (k >= 1) { addItem(grabAnim.it); grabAnim = null; }
+          }
+          set3(212, [lx, ly, lz], c2.scale);
+          set3(216, LAX, lid);
+          set3(220, LAY, 0);
+          set3(224, LAZ, 0);
+        }
+      }
     }
     UF[64] = Math.max(64, Math.min(renderDist,           // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
@@ -3146,6 +3350,19 @@
         UF[o2 + 12] = Zw[0] * right[0] + Zw[1] * right[1] + Zw[2] * right[2]; UF[o2 + 13] = Zw[0] * up[0] + Zw[1] * up[1] + Zw[2] * up[2]; UF[o2 + 14] = Zw[0] * fwd[0] + Zw[1] * fwd[1] + Zw[2] * fwd[2]; UF[o2 + 15] = 0;
       } else { UF[o2 + 7] = 0; }
     }
+    for (let si2 = 0; si2 < 4; si2++) {                // ── clash sparks → drop slots 5-8 ── 4 real 10 cm voxels on short ballistic arcs, fading out
+      const o3 = 68 + (5 + si2) * 16, sp4 = sparks3d[si2];
+      const tS = sp4 ? (now - sp4.born) / 1000 : 1e9;
+      if (!sp4 || tS > sp4.life) { UF[o3 + 7] = 0; if (sp4) sparks3d[si2] = null; continue; }
+      const px4 = sp4.x + sp4.vx * tS, py4 = sp4.y + sp4.vy * tS - 85 * tS * tS, pz4 = sp4.z + sp4.vz * tS;
+      const a4 = sp4.ph + tS * 7, ca4 = Math.cos(a4), sa4 = Math.sin(a4);
+      const Xs = [ca4, 0, sa4], Ys = [sa4, 0, -ca4], Zs = [0, 1, 0];   // slow spin about vertical, right-handed
+      const rx = px4 - cam[0], ry = py4 - cam[1], rz = pz4 - cam[2];
+      UF[o3] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o3 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o3 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o3 + 3] = 1.0;
+      UF[o3 + 4] = Xs[0] * right[0] + Xs[2] * right[2]; UF[o3 + 5] = Xs[0] * up[0] + Xs[2] * up[2]; UF[o3 + 6] = Xs[0] * fwd[0] + Xs[2] * fwd[2]; UF[o3 + 7] = SPARK_IT;
+      UF[o3 + 8] = Ys[0] * right[0] + Ys[2] * right[2]; UF[o3 + 9] = Ys[0] * up[0] + Ys[2] * up[2]; UF[o3 + 10] = Ys[0] * fwd[0] + Ys[2] * fwd[2]; UF[o3 + 11] = 1 - tS / sp4.life;
+      UF[o3 + 12] = Zs[1] * right[1]; UF[o3 + 13] = Zs[1] * up[1]; UF[o3 + 14] = Zs[1] * fwd[1]; UF[o3 + 15] = 0;
+    }
     device.queue.writeBuffer(uniBuf, 0, UF);
 
     // ── passes ──
@@ -3173,6 +3390,10 @@
     resetHist = 0;
     frame++;
 
+    // ── dual-wield overlays ── the shift+left-click hint shows until the discovery is earned
+    if (achHideT && now > achHideT) { achEl.style.opacity = 0; achHideT = 0; }
+    clashHintEl.classList.toggle('hidden', !(locked && !vbAch.sharpEdge && dualRocks() && now - clashT0 > 620));
+
     // ── hud ──
     hudT += dt;
     if (hudT > 0.25) {
@@ -3184,7 +3405,7 @@
       }
       hudEl.textContent = `${fpsEma.toFixed(0)} fps${vsyncOn ? '' : ' (uncapped)'}  ${RW}×${RH} (${renderScale.toFixed(2)}×)\n` +
         `xyz ${(P.x / 10).toFixed(1)} ${(P.y / 10).toFixed(1)} ${(P.z / 10).toFixed(1)} m${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}  ${String(Math.floor(tday * 24)).padStart(2, '0')}:${String(Math.floor((tday * 24 % 1) * 60)).padStart(2, '0')}${cycleSpeed !== 1 ? ' x' + cycleSpeed.toFixed(1) : ''}${cyclePause ? ' paused' : ''}` +
-        `\n${slots.map((s, i) => { const nm = s ? ({ 1: 'axe', 2: 'rock', 3: 'twig' })[s.it] + (s.n > 1 ? '×' + s.n : '') : '·'; return i === selSlot ? `[${nm}]` : ` ${nm} `; }).join(' ')}`;
+        `\n${slots.map((s, i) => { const nm = s ? (ITEM_NAMES[s.it] || '?') + (s.n > 1 ? '×' + s.n : '') : '·'; return i === selSlot ? `[${nm}]` : ` ${nm} `; }).join(' ')}`;
     }
     // V-SYNC OFF: pace frames off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the
     // CPU's frame prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it.
