@@ -617,6 +617,7 @@
   let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone (the natural ones get AO+grain)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
+  let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
   let LOTUS_BYTES = null;                               // voxelized lotus.glb (10 cm .vox) → auto-loaded as the STATIC editable object on the editor stage (mushroom removed — user)
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
@@ -905,6 +906,10 @@
         for (let z = 0; z < it.h; z++) { let any = false; for (let i = z * it.w * it.d; i < (z + 1) * it.w * it.d; i++) if (it.cells[i]) { any = true; break; } if (any) { CARD_FOOTZ = Math.min(CARD_FOOTZ, z); break; } } }
       console.log('[vb] cardinal rotate', CARD_NFRAMES, 'frames -> items', CARD_ITEM0, '..', items.length, 'h', CARD_H, 'footZ', CARD_FOOTZ);
     } catch (e) { console.warn('[vb] cardinal rotate frames missing - editor bird disabled', e); CARD_NFRAMES = 0; }
+    try {                                                             // BLUE BIRD rotate frames (raw bytes) → editor filmstrip, EXACTLY like the cardinal (same 11 frames, base.vox ignored)
+      for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/blue_bird/rotate/' + String(f).padStart(2, '0') + '.vox'); BLUEBIRD_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      console.log('[vb] blue_bird rotate', BLUEBIRD_ROTATE.length, 'frames (editor filmstrip)');
+    } catch (e) { console.warn('[vb] blue_bird rotate frames missing', e); BLUEBIRD_ROTATE = []; }
     try { LOTUS_BYTES = { name: 'lotus.vox', u8: await abuf('assets/decoration/lotus.vox') }; } catch (e) { console.warn('[vb] lotus.vox missing', e); }   // voxelized lotus for the editor stage
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
@@ -3823,7 +3828,7 @@
     gpuPatch(cells);
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = false;
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && LOTUS_BYTES) edImportBufs([LOTUS_BYTES]);   // auto-load the voxelized LOTUS as the editable object (mushroom removed — user). A manual .vox import replaces it.
+    if (!ED.frames.length && BLUEBIRD_ROTATE.length) edImportBufs(BLUEBIRD_ROTATE);   // auto-load the BLUE BIRD rotate filmstrip as the editable object (lotus removed for now — user). A manual .vox import replaces it.
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
   };
@@ -4453,8 +4458,9 @@
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
     const nCard = CARD_NFRAMES ? Math.min(60, Math.max(32, Math.round(nActD * 16))) : 0;   // PERCHED CARDINALS on pine crowns — HALVED back to 60 (user 2026-07-18); the 120 pool slots stay, only 60 activate
-    const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
+    const rdD = rdV;                                   // ducks live to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring); they stay on their lake so they never clump
     const cardR = Math.min(rdV, 420);                  // CARDINALS keep-radius is CAPPED (not the full rdV) — they're STATIONARY, so at a big render distance an uncapped ring never recycles them and they clump behind a moving player (user: 'only spawning in one area'). Capping keeps a dense disc that RE-distributes as the player moves.
+    const rdW = cardR;                                 // WORMS get the SAME capped follow-radius (user): they crawl slowly, so a fast-flying player at high render distance outruns them and uncapped they'd clump behind exactly like the cardinals did. Capped → they recycle ahead and stay spread around the player.
 
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
