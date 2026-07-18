@@ -2885,6 +2885,16 @@
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
     smoothEye = P.y + EYE;
   }
+  let spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
+  function rerollSpawn() {                              // H — jump to a fresh random patch of the (infinite, DETERMINISTIC) world, then bake the good one into the code
+    SPWX = Math.round((Math.random() - 0.5) * 400000);
+    SPWZ = Math.round((Math.random() - 0.5) * 400000);
+    let g = 0;
+    while ((H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ) || nearWormMouth(SPWX, SPWZ)) && g++ < 6000) SPWX += 16;   // valid land, off water/caves (H, nearCave, nearWormMouth are all deterministic → work anywhere)
+    respawn();                                          // teleport + maybeRecenter regenerates the world at the new spawn
+    spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
+    console.log('[vb] SPAWN RESET [H] → paste this over line ~156 to BAKE it:   ' + spawnBake);
+  }
 
   // ── right-click pickup: pebbles + twigs ─────────────────────────────────────
   // ── HAND SLOTS ── 4-slot hotbar; scroll wheel cycles, Q drops from the selected slot. Same-type items stack.
@@ -3081,9 +3091,9 @@
     palSync();                                          // edParseVox appended the cardinal's colors via edCol
     return CARD_POSES;
   };
-  const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — editor's 24 fps rotation, but a LONG settle between bursts so the SVGF denoiser fully converges (grid-stamp re-stamps break temporal history → the ~0.46 s rotation shimmers; a 3 s hold means it's SETTLED ~87% of the time so the AO reads smooth) — user: 'smooth the AO'
+  const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch. Grid-stamp re-stamps break the SVGF temporal history → the AO shimmers WHILE it re-stamps. Fix: rotate SLOWLY (~6.5 fps) so each frame is held long enough (~150 ms ≈ 9 render frames) for the denoiser to nearly CONVERGE before the next step, then a settle — far fewer, gentler flicker events than the 24 fps burst (user: 'still not fixed, try again')
     const cp = ensureCardPoses(); if (!cp) return;
-    const n = cp.length, frameMs = 1000 / 24, pauseMs = 3000, cyc = n * frameMs + pauseMs;
+    const n = cp.length, frameMs = 150, pauseMs = 1400, cyc = n * frameMs + pauseMs;
     const t = (now + B.phase) % cyc;
     const fiC = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // hold the last frame through the pause
     const q = (-(Math.floor((now + B.phase) / cyc) % 4)) & 3;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
@@ -3377,6 +3387,7 @@
     if (e.code === binds.godrays) { godRays = !godRays; }
     if (e.code === binds.vsync) { vsyncOn = !vsyncOn; }
     if (e.code === binds.respawn && !ED.on) { respawn(); }   // in the editor 'r' rotates the frame, not respawn
+    if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
     if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
     if (e.code === binds.scaleup) { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
     if (e.code === 'KeyC') { document.body.classList.toggle('noui'); }   // C hides / shows all HUD overlays (crosshair, fps, hints) — user
@@ -3719,6 +3730,7 @@
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0; for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } return { voxels: n, worms: live }; },   // Task 2/3 taps
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
     perched() { const o = []; for (let j = 40; j < 55; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0) }); } } return o; },   // perched-cardinal test tap
+    reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
       const CH = 64 << 20, stg = device.createBuffer({ size: CH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -4262,7 +4274,7 @@
       return pool.length ? pool[(Math.random() * pool.length) | 0] : null;
     };
     const findPineCrown = (selfWk) => {                // pick a nearby pine not already holding a cardinal, land on one of its outer branch tips
-      for (let t = 0; t < 16; t++) {
+      for (let t = 0; t < 28; t++) {                   // AREA-uniform radius over many tries → an even, consistent world-wide rate (like the butterflies) even where pines are sparser
         const a = Math.random() * 6.283, d = 45 + Math.sqrt(Math.random()) * (rdV - 45);
         const wx = P.x + Math.sin(a) * d, wz = P.z + Math.cos(a) * d;
         const tr = treeAt(Math.floor(wx / TCELL), Math.floor(wz / TCELL)); if (!tr) continue;
@@ -4281,9 +4293,9 @@
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 1.25));   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(4, Math.min(8, nActD >> 1)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-17 (user; 8 = slot cap 32-39)
-    const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length) : 0;   // MOTHER ducks (slots 16-19) — ONE family PER detected lake (user: 'guarantee a family in every lake'), capped by the 4 mom slots; each leads 3 ducklings (slots 20-31). lakeSpots is last frame's census (persists).
+    const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
-    const nCard = CARD_NFRAMES ? Math.min(15, Math.max(8, Math.round(nActD * 2))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED (user: 'hardly see any'), reuse the freed lily slots 40-54 (cap 15)
+    const nCard = CARD_NFRAMES ? Math.min(15, Math.max(12, Math.round(nActD * 4))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED AGAIN (user), floor 12 so the world stays consistently populated; hard cap 15 (lily slots 40-54)
     const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
