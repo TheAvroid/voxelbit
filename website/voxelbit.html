@@ -63,6 +63,7 @@
   #over h1 { font: 22px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; color: #ff6a3a; }
   #over .ohint { opacity: 0.75; font-size: 7px; }
   .hidden { display: none !important; }
+  body.noui #cross, body.noui #hud, body.noui #clashHint, body.noui #achv, body.noui #edHud { display: none !important; }   /* C toggles all HUD overlays off for clean views */
 </style>
 </head>
 <body>
@@ -1346,7 +1347,7 @@
   const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
   function lilyAt(cx, cz) {                             // STATIC lilies RE-ENABLED for testing (user 2026-07-18) — stamped into the world grid (full static-voxel shading) alongside the LIVE drifting pads, so their render can be compared
     if (!LILYV.length) return null;
-    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.085) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085)
+    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.057) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
     const wz = Math.round(cz * LILYCELL + 3 + ihash(cx * 5 + 12, cz * 11 + 7) * (LILYCELL - 6));
     if (H(wx, wz) > WL - 1) return null;               // ≥ 2 voxels of water under the pad — real lakes/rivers, never the beach film
@@ -2085,7 +2086,7 @@
                 foam = max(foam, step(0.35, ivhash(ci + vec3<i32>(s2 * 13, 11, 5)) * (0.55 + 0.45 * sin(u.time * 1.6 + f32(ci.x * 7 + ci.z * 5) * 0.7))));
               }
             }
-            if (foam > 0.5) { t = min(t, (whF + 1.0 - ro.y) / rd.y); }                    // foam voxels RISE a step above the surface
+            if (foam > 0.5) { t = min(t, (whF + 2.0 - ro.y) / rd.y); }                    // foam voxels RISE 2 steps above the surface (user: +1 voxel higher)
             foamK = clamp(foam, 0.0, 1.0) * 0.8;
             albedo = mix(albedo, vec3<f32>(0.82, 0.87, 0.90), foamK);
           }
@@ -3124,13 +3125,14 @@
   document.addEventListener('mouseup', (e) => { if (e.button === 0) mouse0 = false; });
 
   // ── keybinds ── rebindable, persisted to localStorage
-  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'KeyC', drop: 'KeyQ', fly: 'KeyF', pausetime: 'KeyL', godrays: 'KeyG', vsync: 'KeyV', respawn: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', pausetime: 'KeyL', godrays: 'KeyG', vsync: 'KeyV', respawn: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
   const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', pausetime: 'pause time', godrays: 'god rays', vsync: 'v-sync', respawn: 'respawn', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
   const prettyKey = (c) => c.replace(/^Key|^Digit/, '').replace('BracketLeft', '[').replace('BracketRight', ']')
     .replace('ShiftLeft', 'L-SHIFT').replace('ShiftRight', 'R-SHIFT').replace('ControlLeft', 'L-CTRL').replace('ControlRight', 'R-CTRL')
-    .replace('Space', 'SPACE').replace('Arrow', '').toUpperCase();
+    .replace('AltLeft', 'L-ALT').replace('AltRight', 'R-ALT')
+    .replace('Space', 'SPACE').replace('Arrow', '').toLowerCase();   // keybind menu is all lowercase (user)
   const kbPanel = $('kbPanel'), kbRows = $('kbRows');
   let listenAction = null;
   function kbRefresh() {
@@ -3249,16 +3251,19 @@
     if (e.code === binds.pausetime) { cyclePause = !cyclePause; }
     if (e.code === binds.godrays) { godRays = !godRays; }
     if (e.code === binds.vsync) { vsyncOn = !vsyncOn; }
-    if (e.code === binds.respawn) { respawn(); }
+    if (e.code === binds.respawn && !ED.on) { respawn(); }   // in the editor 'r' rotates the frame, not respawn
     if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
     if (e.code === binds.scaleup) { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
-    if (ED.on) {                                       // asset editor: , / . cycle the selected frame, ← / → move it within the sequence
+    if (e.code === 'KeyC') { document.body.classList.toggle('noui'); }   // C hides / shows all HUD overlays (crosshair, fps, hints) — user
+    if (ED.on) {                                       // asset editor: , / . scrub frames, E move the frame, R rotate it, ← / → reorder
       if (e.code === 'Comma') edSelStep(-1);
       if (e.code === 'Period') edSelStep(1);
       if (e.code === 'ArrowLeft') edMoveStep(-1);
       if (e.code === 'ArrowRight') edMoveStep(1);
+      if (e.code === 'KeyE') edMoveStep(1, true);
+      if (e.code === 'KeyR') edRotate();
     }
-    if (e.code === binds.jump) e.preventDefault();
+    if (e.code === binds.jump || e.code === binds.crouch) e.preventDefault();   // Alt (crouch) — stop the browser stealing it for the menu bar
   });
   document.addEventListener('keyup', (e) => keys.delete(e.code));
 
@@ -3349,7 +3354,7 @@
     return ii; };
   const edPlaneId = (x, z) => ((x - ED.x0) % 10 === 0 || (z - ED.z0) % 10 === 0) ? ED_GREY : ED_WHITE;   // 1 m squares = every 10th voxel is a grey gridline
   const edHudUpd = () => { edHudEl.textContent = ED.frames.length
-    ? 'frame ' + (ED.sel + 1) + '/' + ED.frames.length + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? '  ⏸ SELECTED  [, .] scrub   [← →] reorder' : '  ▶ playing — left-click the model to select')
+    ? 'frame ' + (ED.sel + 1) + '/' + ED.frames.length + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? '  ⏸ selected  [, .] scrub   [e] move   [r] rotate   [← →] reorder' : '  ▶ playing — left-click the model to select')
     : 'asset editor — press ESC, then import a .vox to begin'; };
   const edLayout = () => {                             // stamp ONLY the current frame, CENTRED, as a real static object (world voxels → full lighting) — the animation swaps to the next static frame in place; no filmstrip
     const cells = [];
@@ -3380,8 +3385,18 @@
     edHudUpd();
   };
   const edSelStep = (d) => { const n = ED.frames.length; if (!n) return; ED.paused = true; ED.sel = ((ED.sel + d) % n + n) % n; edLayout(); };   // scrubbing pauses the animation
-  const edMoveStep = (d) => { const n = ED.frames.length; if (n < 2) return; ED.paused = true; const s = ((ED.sel % n) + n) % n, j = s + d; if (j < 0 || j >= n) return;
+  const edMoveStep = (d, wrap) => { const n = ED.frames.length; if (n < 2) return; ED.paused = true; const s = ((ED.sel % n) + n) % n; let j = s + d;
+    if (wrap) j = ((j % n) + n) % n; else if (j < 0 || j >= n) return;
     const t = ED.frames[s]; ED.frames[s] = ED.frames[j]; ED.frames[j] = t; ED.sel = j; edLayout(); };
+  const edRotate = () => {                             // ROTATE the selected frame 90° about the vertical axis (persists to export: rotates raw XYZI + display vox + swaps width/depth)
+    const n = ED.frames.length; if (!n) return; ED.paused = true;
+    const f = ED.frames[((ED.sel % n) + n) % n], osx = f.sx;
+    f.vox = f.vox.map((p) => { const x = p & 255, y = (p >> 8) & 255; return (y) | ((osx - 1 - x) << 8) | (p & 0xffff0000); });   // (x,y)→(y, sx-1-x); z + color unchanged
+    if (f.raw) { const r = new Uint8Array(f.raw.length);
+      for (let i = 0; i < f.raw.length; i += 4) { r[i] = f.raw[i + 1]; r[i + 1] = osx - 1 - f.raw[i]; r[i + 2] = f.raw[i + 2]; r[i + 3] = f.raw[i + 3]; }
+      f.raw = r; }
+    const t = f.sx; f.sx = f.sy; f.sy = t;             // width ↔ depth
+    edLayout(); };
   const edColCache = new Map();                        // runtime color → palette id; nearest-match once the 256-entry palette is full
   const edCol = (r, g, b) => { const key = (r << 16) | (g << 8) | b;
     let cid = edColCache.get(key);
@@ -3507,7 +3522,7 @@
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
-    ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edImport: edImportBufs, edExport: edExportSeq,
+    ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
       const CH = 64 << 20, stg = device.createBuffer({ size: CH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -3582,7 +3597,9 @@
     // ── player physics ──
     const crouching = keys.has(binds.crouch) && !P.fly;
     P.crouch = crouching;
-    const hh = crouching ? CR_HEIGHT : HEIGHT, eyeH = crouching ? CR_EYE : EYE;
+    P.crouchT = (P.crouchT || 0) + ((crouching ? 1 : 0) - (P.crouchT || 0)) * (1 - Math.exp(-13 * dt));   // SMOOTH crouch — the eye eases down over ~150 ms instead of snapping (user); collision height stays instant so tight gaps still fit
+    if (P.crouchT < 0.001) P.crouchT = 0;
+    const hh = crouching ? CR_HEIGHT : HEIGHT, eyeH = EYE + (CR_EYE - EYE) * P.crouchT;   // eyeH interpolates → smoothEye tracks it gently (no more ±3-clamp snap)
     const sprint = keys.has(binds.sprint) && !crouching;
     const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
     let mx = 0, mz = 0;
