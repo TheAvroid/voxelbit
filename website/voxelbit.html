@@ -3558,6 +3558,7 @@
   let snowBtnSync = () => {};
   let snowQI = [], snowQT = [], snowHead = 0;          // FIFO as parallel NUMBER arrays (cell idx / melt time) — object entries at 1.6M live voxels were ~10× the memory; ring-buffer head avoids O(n) shifts
   let snowOffT0 = -1e9;                                // when the last storm ENDED — drives the trailing edge sweep
+  let snowLeadY = -1e9, snowTrailY = 1e9;              // the live storm edges (world y), computed once per frame and used by BOTH the landing pass and the shader
   const SNOW_SWEEP = 45, SNOW_HEAD = 220;              // edge sweep speed (vox/s) and how far above the player an edge starts, i.e. just off the top of the screen
   let snowVis = false;                                 // flakes are DRAWN while the storm runs AND while its tail is still falling
   let snowPrevOn = false, snowOnT0 = 0;                // storm edge tracking — melt timers are FROZEN while it snows and rebased by the storm's length when it ends
@@ -4316,6 +4317,12 @@
         if (snowOn) snowOnT0 = now;
         else { snowOffT0 = now; for (let qi = snowHead; qi < snowQT.length; qi++) snowQT[qi] += now - snowOnT0; }
       }
+      {                                              // ── STORM EDGES ── both sweep DOWN from just off the top of the screen at SNOW_SWEEP.
+        const topY = P.y + SNOW_HEAD;                  // Runs EVERY frame but must sit after the transition block above, which is what sets
+        snowLeadY = snowOn ? topY - ((now - snowOnT0) / 1000) * SNOW_SWEEP : -1e9;   // snowOnT0/snowOffT0. Computing it from a stale start time let the
+        snowTrailY = snowOn ? 1e9 : topY - ((now - snowOffT0) / 1000) * SNOW_SWEEP;  // first frame think the edge had already passed and dump ~200 voxels
+        snowVis = snowOn || snowTrailY > -40;          // of blanket under an empty sky; computing it INSIDE that block froze the sweep entirely.
+      }
       const scanTop = (wx, wz, buried) => {            // topmost landing surface at a column — passes through (and records) soft decor
         const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
         const b2 = gx + gz * WX * WY;
@@ -4325,6 +4332,11 @@
       };
       const landSnowAt = (wx0, wz0) => {
         if (snowQI.length - snowHead >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
+        // ORDER (user): the FLAKES arrive first, the blanket second. The leading edge sweeps down from the sky, so
+        // until it has passed THIS column's surface no flake has reached the ground here yet — laying snow before
+        // then made the blanket appear under a still-empty sky. Tested per column, not globally, so a valley floor
+        // starts collecting after the ridge beside it rather than at the same instant.
+        if (snowLeadY > scanTop(wx0, wz0, null)) return;
         let wx = wx0, wz = wz0;
         const top0 = W[gwrap(wx0, WX) + scanTop(wx0, wz0, null) * WX + gwrap(wz0, WZ) * WX * WY];
         for (let hop = 0; hop < (SNOW_FERN.has(top0) ? 0 : 2); hop++) {   // SMOOTH SETTLING: roll to the lowest 4-neighbour column so the blanket levels instead of spiking — unless a fern catches the flake
@@ -4553,14 +4565,7 @@
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
-    {                                                  // ── SNOW STORM EDGES ── both sweep DOWN from just off the top of the screen at SNOW_SWEEP
-      const topY = P.y + SNOW_HEAD;
-      const lead = snowOn ? topY - ((now - snowOnT0) / 1000) * SNOW_SWEEP : -1e9;   // onset: nothing below the edge yet
-      const trail = snowOn ? 1e9 : topY - ((now - snowOffT0) / 1000) * SNOW_SWEEP;  // end: nothing above the edge any more
-      snowVis = snowOn || trail > -40;                 // keep drawing until the tail has swept past the ground
-      UF[1269] = Math.max(-1e9, lead);
-      UF[1270] = trail;
-    }
+    UF[1269] = snowLeadY; UF[1270] = snowTrailY;   // u.misc.y/z — the storm edges computed in the weather block above
     UF[1268] = cineBlurK * CINE_VIG;                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
     if (!ED.on) autoPickup();                          // AUTO-PICKUP (user): a free hand slot vacuums up nearby floating items — no right-click, no aiming
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
