@@ -4755,9 +4755,9 @@
     // ones are removed, and a placement draws UNIFORMLY from what is left — so bird density is even everywhere the
     // pines are, by construction rather than by luck.
     let cardCandF = -1;
-    const birdsOnPine = (tx, tz) => {                   // 0-3, a deterministic property of the tree: ~0.83 birds per pine
-      const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);
-      return h < 0.42 ? 0 : (h < 0.80 ? 1 : (h < 0.95 ? 2 : 3));
+    const birdsOnPine = (tx, tz) => {                   // 0-3, a deterministic property of the tree. HALVED (user 2026-07-18):
+      const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);   // mean 0.83 -> 0.41 birds per pine (was .42/.80/.95)
+      return h < 0.70 ? 0 : (h < 0.91 ? 1 : (h < 0.98 ? 2 : 3));
     };
     const CARD_PER_TREE = 3;                           // several birds to a pine, but not a roost — unlimited clumped them and the spread measured worse
     const CARD_KEEP = 340;                             // perched-bird recycle radius — see rdK below
