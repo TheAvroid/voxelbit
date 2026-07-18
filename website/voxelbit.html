@@ -576,7 +576,11 @@
   let LILYPAD_GIGV = null;                                                                   // GIGANTIC lilypad on lakes (lillypad_gigantic.json, palette-reduced + laid flat) — solid, 1-2 per lake
   try {
     const gj = await (await fetch('assets/decoration/lillypad_gigantic.json')).json();
-    const gids = gj.pal.map((c) => addCol(c[0], c[1], c[2]));
+    const lilyCols = [...new Set(LILYV.flatMap((m) => m.vox.map((p) => p >>> 24)))].map((id) => palette[id]);   // the REGULAR lilypads' mint-green swatches (user: 'same shade as the other lillypads')
+    const gcache = new Map();                                                                // snap each giant-pad shade to the nearest regular-lily colour, addCol'd to its OWN id so markSolid never makes the small pads solid too
+    const gids = gj.pal.map((c) => { let bd = 1e18, m = c;
+      for (const q of lilyCols) { const d = (q[0] - c[0]) * (q[0] - c[0]) + (q[1] - c[1]) * (q[1] - c[1]) + (q[2] - c[2]) * (q[2] - c[2]); if (d < bd) { bd = d; m = q; } }
+      const k = (m[0] << 16) | (m[1] << 8) | m[2]; if (!gcache.has(k)) gcache.set(k, addCol(m[0], m[1], m[2])); return gcache.get(k); });
     LILYPAD_GIGV = { sx: gj.sx, sy: gj.sy, sz: gj.sz, vox: gj.vox.map((p) => (p & 0xffffff) | (gids[p >>> 24] << 24)) };
   } catch (e) { console.warn('[vb] lillypad_gigantic.json missing — giant pads skipped', e); }
   const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
