@@ -3091,9 +3091,9 @@
     palSync();                                          // edParseVox appended the cardinal's colors via edCol
     return CARD_POSES;
   };
-  const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch. Grid-stamp re-stamps break the SVGF temporal history → the AO shimmers WHILE it re-stamps. Fix: rotate SLOWLY (~6.5 fps) so each frame is held long enough (~150 ms ≈ 9 render frames) for the denoiser to nearly CONVERGE before the next step, then a settle — far fewer, gentler flicker events than the 24 fps burst (user: 'still not fixed, try again')
+  const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
     const cp = ensureCardPoses(); if (!cp) return;
-    const n = cp.length, frameMs = 150, pauseMs = 1400, cyc = n * frameMs + pauseMs;
+    const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
     const t = (now + B.phase) % cyc;
     const fiC = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // hold the last frame through the pause
     const q = (-(Math.floor((now + B.phase) / cyc) % 4)) & 3;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
