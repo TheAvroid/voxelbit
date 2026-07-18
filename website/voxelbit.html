@@ -3344,7 +3344,7 @@
   const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
     const cp = (B.blue ? ensureBluePoses() : null) || ensureCardPoses(); if (!cp) return;   // half the perched birds are BLUE (B.blue), the rest red cardinals
     const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
-    const near = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) < 150 * 150;   // PERF (user lag): only birds within ~15 m ANIMATE (re-stamp every frame). Distant ones hold ONE static pose → they stamp once and never churn the grid again, cutting ~150 tiny GPU buffer uploads/frame down to a handful. Imperceptible at range.
+    const near = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) < 90 * 90;   // PERF (user lag): only birds within ~9 m ANIMATE (re-stamp every frame). Distant ones hold ONE static pose. TIGHTENED from 150 (user 2026-07-18: 'you removed the static shading'): the near-field bird count roughly doubled, which swept far more of them into the per-frame re-stamp and its AO shimmer → they stamp once and never churn the grid again, cutting ~150 tiny GPU buffer uploads/frame down to a handful. Imperceptible at range.
     const t = (now + B.phase) % cyc;
     const fiC = near ? (t < n * frameMs ? Math.floor(t / frameMs) : n - 1) : 0;   // hold the last frame through the pause
     const q = near ? ((-(Math.floor((now + B.phase) / cyc) % 4)) & 3) : 0;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
@@ -4125,7 +4125,8 @@
   const cine = { yaw: 0, om: 0, omT: 0, tRe: 0, bobT: 0, alt: 34, altT: 34, roll: 0, vy: 0, climb: 0,
                  flapT: 0, wing: 0, fv: 0, urgeUp: 0, bnd: 0, baseY: 0 };
   const CINE_R = 7;                                    // camera "hull" half-extent (vox) — probes sample a BOX this size, so a thin trunk can't slip between point samples
-  const CINE_LOOK = 104;                               // whisker probe range
+  const CINE_REACT = 60;                               // how close counts as urgent — independent of how far the whiskers see
+  const CINE_LOOK = 150;                               // whisker probe range — extended again with the halved turn rate: a slower turn must start earlier to clear the same trunk
   const CINE_WHISK = [0, 0.3, -0.3, 0.62, -0.62, 1.0, -1.0, 1.5, -1.5];   // candidate headings: straight first, then progressively harder breaks either way
   const CINE_PITCH = [0, 0.28, -0.28];                 // and each heading is probed level, climbing and diving — a bird takes the gap ABOVE a branch as readily as the one beside it
   const FLAP_S = 0.95, FLAP_IMP = 15, FLAP_G = 26, FLAP_A = 5.5, FLAP_VMAX = 17;   // seconds between beats, upward kick, gravity between beats, bounce half-envelope, speed clamp
@@ -4150,7 +4151,7 @@
   const cineUpdate = (dt, now) => {                     // fly the camera like a bird: bound through the timber, bank into every turn, flap and glide
     P.fly = true; P.vy = 0; P.onGround = false;
     const tb = now / 1000;
-    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.35; cine.altT = 22 + Math.random() * 30; cine.tRe = tb + 2.5 + Math.random() * 3.5; }
+    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.175; cine.altT = 22 + Math.random() * 30; cine.tRe = tb + 2.5 + Math.random() * 3.5; }
     // ── 3D GAP SEARCH ── score every (heading, pitch) pair by how far it stays clear, biased toward holding course and
     // toward the current bank. The winning PITCH becomes a climb/dive urge, so the bird lifts over a crown or drops
     // under a branch instead of only ever turning around it.
@@ -4162,10 +4163,13 @@
       if (sc > bestScore) { bestScore = sc; bestOff = off; bestPit = pit; }
     }
     const ahead = cineClear(cine.yaw, 0, CINE_LOOK);
-    const urg = Math.max(0, 1 - ahead / CINE_LOOK);     // 0 = wide open, 1 = about to clip something
-    if (bestOff !== 0) cine.omT = Math.sign(bestOff) * (0.225 + 1.0 * urg);
+    const urg = Math.max(0, 1 - ahead / CINE_REACT);    // 0 = wide open, 1 = about to clip something. Measured against a FIXED reaction
+                                                       // distance, not CINE_LOOK: normalising by the look range meant extending the
+                                                       // probe (to give the slower turn more warning) silently DILUTED the urgency and
+                                                       // cost 20 clipped frames — the two must not be the same number.
+    if (bestOff !== 0) cine.omT = Math.sign(bestOff) * (0.1125 + 0.5 * urg);
     cine.om += (cine.omT - cine.om) * (1 - Math.exp(-3.4 * dt));
-    cine.om = Math.max(-0.85, Math.min(0.85, cine.om));
+    cine.om = Math.max(-0.425, Math.min(0.425, cine.om));
     cine.yaw += cine.om * dt;
     // ── WINGBEAT ──
     // ── FLAPPY-BIRD BOUNCE ── one soft upward IMPULSE per beat, gravity in between, so the camera arcs up and coasts
@@ -4198,10 +4202,13 @@
     if (cine.baseY < ground + 19) { cine.baseY = ground + 19; cine.vy = Math.max(cine.vy, 0); }   // hard floor — the spring may overshoot on a fast descent
     P.y = cine.baseY + cine.bnd;                        // the bounce rides on the smooth flight path
     // GLIDE TRADES HEIGHT FOR SPEED, the flap trades it back: sinking accelerates, climbing bleeds off
+    // NOTE: halving the speed alongside the turn rate was tried (turn radius is v/omega, so it should have held the
+    // radius at ~38 vox against ~45-vox pine spacing) and it did NOT reduce clipping — 30 frames became 36. The
+    // residual contact is not a turn-radius problem; left at full speed, which at least flies better.
     const spd = (30 - (cine.vy + cine.fv * 0.5) * 0.42) * (0.5 + 0.5 * Math.min(1, ahead / 44));   // diving (path or bounce) speeds up, climbing bleeds off
     P.x += Math.sin(cine.yaw) * spd * dt; P.z += Math.cos(cine.yaw) * spd * dt;
     P.yaw = cine.yaw + Math.sin(cine.bobT * 0.45) * 0.05;   // gentle cinematic yaw sway
-    const rollT = -cine.om * 0.31 + Math.sin(cine.bobT * 0.37) * 0.0125;   // BANK INTO THE TURN (right turn = om > 0 = rolls right). Tilt halved AGAIN (user 2026-07-18); the per-beat wing-rock is gone with the old fast wingbeat.
+    const rollT = -cine.om * 0.62 + Math.sin(cine.bobT * 0.37) * 0.0125;   // BANK INTO THE TURN (right turn = om > 0 = rolls right). Coefficient DOUBLED when the turn rate was halved, so the tilt you see is unchanged — only the turn slowed.
     cine.roll += (rollT - cine.roll) * (1 - Math.exp(-3 * dt));
     P.roll = cine.roll;
     const tp = -0.04 + Math.max(-0.28, Math.min(0.28, cine.vy * 0.012));   // nose follows the climb/dive, as a bird's body does
@@ -4734,18 +4741,16 @@
     // ones are removed, and a placement draws UNIFORMLY from what is left — so bird density is even everywhere the
     // pines are, by construction rather than by luck.
     let cardCandF = -1;
+    const CARD_PER_TREE = 3;                           // several birds to a pine, but not a roost — unlimited clumped them and the spread measured worse
     const cardCand = [];
     const buildCardCand = () => {
       cardCand.length = 0;
-      const used = new Set();
-      for (let j = 64; j < 184; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) used.add(O.tx + ',' + O.tz); }
       const R = Math.ceil(LIFE_OUT / TCELL);
       const c0x = Math.floor(P.x / TCELL), c0z = Math.floor(P.z / TCELL);
       const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
         const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
-        if (used.has(tr.tx + ',' + tr.tz)) continue;   // another slot already owns this pine
         const ddx = tr.tx - P.x, ddz = tr.tz - P.z, d2 = ddx * ddx + ddz * ddz;
         if (d2 > LIFE_OUT * LIFE_OUT) continue;
         // a bird must not MATERIALISE in view: near pines are only eligible if they are behind the player. Walking
@@ -4755,13 +4760,24 @@
         cardCand.push(tr);
       }
     };
-    const findPineCrown = (selfWk) => {                // one free pine, drawn uniformly from every eligible pine in range
+    // ONE BIRD PER PINE was the real cap on density (user): with pines one-per-45-vox-cell and many cells empty, the
+    // reachable count was a fraction of the pool, so slots went unplaced and the forest read as bare. A pine can now
+    // hold ANY number of birds — every outer-edge needle is a perch — and the only exclusion is the exact voxel another
+    // bird already occupies.
+    const findPineCrown = (selfWk) => {                // a perch, drawn uniformly from every eligible pine in range
       if (cardCandF !== frame) { cardCandF = frame; buildCardCand(); }
       for (let t = 0; t < 12 && cardCand.length; t++) {
         const k = (Math.random() * cardCand.length) | 0;
         const tr = cardCand[k];
-        cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();   // claim it for this frame so two slots can't take the same pine
-        const cr = pineEdgePerch(tr.tx, tr.tz); if (!cr) continue;
+        const cr = pineEdgePerch(tr.tx, tr.tz); if (!cr) continue;   // the pine stays in the pool — another bird may perch on a different needle of the same tree
+        let onTree = 0, taken = false;
+        for (let j = 64; j < 184; j++) {
+          const O = wbf[j];
+          if (j === selfWk || !O || !O.init || (O.kind | 0) !== 5) continue;
+          if (O.tx === tr.tx && O.tz === tr.tz) onTree++;
+          if (Math.abs(O.x - (cr[0] + 0.5)) < 1.5 && Math.abs(O.z - (cr[2] + 0.5)) < 1.5 && Math.abs((O.perchFeet || 0) - (cr[1] + 1)) < 2) { taken = true; break; }
+        }
+        if (taken || onTree >= CARD_PER_TREE) continue;   // same needle, or this pine is already full
         return { tx: tr.tx, tz: tr.tz, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };   // x/z centred on the branch-tip needle
       }
       return null;
@@ -4792,7 +4808,7 @@
     // Count scales with the AREA the birds have to cover. The 60 cap was set when the spawn ring was ~331 vox; the
     // ring is now ~406, which is 1.5x the area, so the same 60 birds read as a thinner, patchier forest. This keeps
     // the ORIGINAL density over the larger disc (~90 at the default view) and is still inside the 120-slot pool.
-    const nCard = CARD_NFRAMES ? Math.min(96, Math.max(32, Math.round(60 * (LIFE_OUT * LIFE_OUT) / (331 * 331)))) : 0;
+    const nCard = CARD_NFRAMES ? 120 : 0;              // the FULL pool — perches are no longer the bottleneck now that a pine can hold more than one bird
 
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
