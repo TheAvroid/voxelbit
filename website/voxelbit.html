@@ -573,12 +573,19 @@
     const mids = mj.pal.map((c) => addCol(c[0], c[1], c[2]));                                // its own quantized shades → global ids
     MUSHV = { sx: mj.sx, sy: mj.sy, sz: mj.sz, vox: mj.vox.map((p) => (p & 0xffffff) | (mids[p >>> 24] << 24)) };
   } catch (e) { console.warn('[vb] mushroom.json missing — forest mushrooms skipped', e); }
+  let LILYPAD_GIGV = null;                                                                   // GIGANTIC lilypad on lakes (lillypad_gigantic.json, palette-reduced + laid flat) — solid, 1-2 per lake
+  try {
+    const gj = await (await fetch('assets/decoration/lillypad_gigantic.json')).json();
+    const gids = gj.pal.map((c) => addCol(c[0], c[1], c[2]));
+    LILYPAD_GIGV = { sx: gj.sx, sy: gj.sy, sz: gj.sz, vox: gj.vox.map((p) => (p & 0xffffff) | (gids[p >>> 24] << 24)) };
+  } catch (e) { console.warn('[vb] lillypad_gigantic.json missing — giant pads skipped', e); }
   const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
   const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
     markSolid(MUSHV);                                                                        // mushroom clusters collide (its ids are its own — addCol never dedupes)
     if (MUSHV) for (const p of MUSHV.vox) mushTab[p >>> 24] = 1;                             // …and they're BOUNCY: landing on one trampolines the player (progressively higher)
+    markSolid(LILYPAD_GIGV);                                                                 // GIANT lilypads are solid — the player can stand on them (user: 'give it a hitbox')
     for (const r of ROCK26) markSolid(r); }
   solidTab[ED_WHITE] = solidTab[ED_GREY] = solidTab[ED_HLITE] = 1;                          // the editor stage is walkable floor
   const PINE_ANCH = [];                                // pinecone anchors: canopy foliage voxels with open air below, ≥2 in from the model edge (base rotation)
@@ -607,7 +614,6 @@
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let LOTUS_BYTES = null;                               // voxelized lotus.glb (10 cm .vox) → auto-loaded as the STATIC editable object on the editor stage (mushroom removed — user)
-  let LILYPAD_GIG_BYTES = null, LILYPAD_GIG = null;     // voxelized lillypad_gigantic.glb → parsed lazily, stamped as an editor COMPANION 3 m from the lotus
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
@@ -896,7 +902,6 @@
       console.log('[vb] cardinal rotate', CARD_NFRAMES, 'frames -> items', CARD_ITEM0, '..', items.length, 'h', CARD_H, 'footZ', CARD_FOOTZ);
     } catch (e) { console.warn('[vb] cardinal rotate frames missing - editor bird disabled', e); CARD_NFRAMES = 0; }
     try { LOTUS_BYTES = { name: 'lotus.vox', u8: await abuf('assets/decoration/lotus.vox') }; } catch (e) { console.warn('[vb] lotus.vox missing', e); }   // voxelized lotus for the editor stage
-    try { LILYPAD_GIG_BYTES = { name: 'lillypad_gigantic.vox', u8: await abuf('assets/decoration/lillypad_gigantic.vox') }; } catch (e) { console.warn('[vb] lillypad_gigantic.vox missing', e); }   // voxelized gigantic lilypad — editor companion 3 m from the lotus
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
       const sol = (x, y, z) => x >= 0 && x < w && y >= 0 && y < d && z >= 0 && z < h && !!cells[x + y * w + z * w * d];
@@ -1408,6 +1413,20 @@
   function stampLily(f, x0, x1, z0, z1) {
     stampModel(LILYV[f.size], f.rot, f.wx, WL + 1, f.wz, x0, x1, z0, z1, 4);   // rests ON the water surface; mode 4 clips every column to open water
   }
+  const LGIGCELL = 128;                                // GIGANTIC LILYPADS: 1-2 per lake — one candidate per 12.8 m cell, only on WIDE open lake water
+  function lilyGigAt(cx, cz) {
+    if (!LILYPAD_GIGV) return null;
+    if (ihash(cx * 53 + 11, cz * 59 + 7) > 0.55) return null;
+    const wx = Math.round(cx * LGIGCELL + 22 + ihash(cx * 3 + 5, cz * 7 + 9) * (LGIGCELL - 44));
+    const wz = Math.round(cz * LGIGCELL + 22 + ihash(cx * 11 + 3, cz * 5 + 13) * (LGIGCELL - 44));
+    if (H(wx, wz) > WL - 2) return null;               // ≥ 3 voxels of water under the centre
+    for (let k = 0; k < 8; k++) { const a = k * 0.7854, dx = Math.round(Math.cos(a) * 24), dz = Math.round(Math.sin(a) * 24);
+      if (H(wx + dx, wz + dz) > WL - 1) return null; } // a 24-vox-radius ring must ALL be water → a real LAKE (not a river/puddle) → naturally ~1-2 pads per lake
+    return { wx, wz, rot: (ihash(cx * 2 + 1, cz * 2 + 3) * 3.99) | 0 };
+  }
+  function stampLilyGig(g, x0, x1, z0, z1) {
+    stampModel(LILYPAD_GIGV, g.rot, g.wx, WL + 1, g.wz, x0, x1, z0, z1, 4);   // floats on the lake surface; mode 4 clips each column to open water so it fits the lake outline
+  }
   const TCELL = 45, TMARGIN = 24;                      // one pine candidate per 4.5 m cell (≈2× the old 64-cell density)
   function treeAt(cx, cz) {
     if (ihash(cx * 7 + 13, cz * 11 + 5) > 0.72) return null;
@@ -1517,6 +1536,7 @@
     yield* stampCellsGen(x0, x1, z0, z1, PCCELL, 8, pconeAt, stampPcone);
     yield* stampCellsGen(x0, x1, z0, z1, SCELL, 8, stickAt, stampStick);
     yield* stampCellsGen(x0, x1, z0, z1, LILYCELL, 8, lilyAt, stampLily);
+    yield* stampCellsGen(x0, x1, z0, z1, LGIGCELL, 22, lilyGigAt, stampLilyGig);   // gigantic lake pads (40×35 footprint)
     yield* stampCellsGen(x0, x1, z0, z1, LGCELL, 16, logAt, stampLog);
     for (const t of treesInRegion(x0, x1, z0, z1)) { stampTree(t, x0, x1, z0, z1); yield; }   // one tree per slice — the old all-at-once pass spiked 10–25 ms per band
   }
@@ -1590,9 +1610,9 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
-    const fns = { ihash, sstep, vnoise, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
+    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
+    const fns = { ihash, sstep, vnoise, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
@@ -3675,15 +3695,6 @@
         if (ED.rgiz) edRotGizmos(f, bx2, bz2, cells);  // [r] rotate-gizmo: 2 circular rings (yaw + pitch)
       } else { ED.gizBoxes = []; ED.rgizBoxes = []; }
     }
-    const lg = ensureLilypadGig();                     // COMPANION: gigantic lilypad, flat on the stage floor, centre 30 vox (3 m) in +x from the lotus centre — display only, not part of the editable filmstrip
-    if (lg) {
-      const lbx = ED.x0 + ((ED.pw - lg.sx) >> 1) + 30, lbz = ED.z0 + ((ED.pd - lg.sy) >> 1);
-      for (const p of lg.vox) {
-        const x = lbx + (p & 255), y = ED.y + 1 + ((p >> 16) & 255), z = lbz + ((p >> 8) & 255);
-        if (y <= ED.y || y >= WY - 1 || x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
-        ED.fcells.push(edSet(x, y, z, p >>> 24, cells));
-      }
-    }
     gpuPatch(cells);
     edHudUpd();
   };
@@ -3745,13 +3756,6 @@
         raw: new Uint8Array(m.raw), pal: hasPal ? new Uint8Array(ppal) : null });   // byte-faithful copies — export rebuilds real .vox files from these, not from engine ids
     });
     return out;
-  };
-  const ensureLilypadGig = () => {                     // lazy parse of the companion gigantic lilypad → one static frame {sx,sy,sz,vox}, colors registered via edCol+palSync
-    if (LILYPAD_GIG === null) {
-      LILYPAD_GIG = false;
-      if (LILYPAD_GIG_BYTES) { try { const fr = edParseVox(LILYPAD_GIG_BYTES.u8, LILYPAD_GIG_BYTES.name); if (fr && fr.length) { LILYPAD_GIG = fr[0]; palSync(); } } catch (e) { console.warn('[vb] lilypad parse failed', e); } }
-    }
-    return LILYPAD_GIG || null;
   };
   const edExportSeq = () => {                          // one single-model .vox per frame, numbered in CURRENT sequence order (00.vox, 01.vox, … — the cardinal-flight naming)
     ED.frames.forEach((f, i) => {
@@ -4424,7 +4428,7 @@
     };
     const findPineCrown = (selfWk) => {                // pick a nearby pine not already holding a cardinal, land on one of its outer branch tips
       for (let t = 0; t < 28; t++) {                   // AREA-uniform radius over many tries → an even, consistent world-wide rate (like the butterflies) even where pines are sparser
-        const a = Math.random() * 6.283, d = 45 + Math.sqrt(Math.random()) * (rdV - 45);
+        const a = Math.random() * 6.283, d = 45 + Math.sqrt(Math.random()) * (Math.min(rdV, 420) - 45);   // place within the CAPPED cardinal disc (matches the recycle radius) so cardinals stay evenly spread around the player, not clumped
         const wx = P.x + Math.sin(a) * d, wz = P.z + Math.cos(a) * d;
         const tr = treeAt(Math.floor(wx / TCELL), Math.floor(wz / TCELL)); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
@@ -4446,6 +4450,7 @@
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
     const nCard = CARD_NFRAMES ? Math.min(120, Math.max(64, Math.round(nActD * 32))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED AGAIN to 120 slots (user 2026-07-18), floor 64 so the world stays consistently populated
     const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
+    const cardR = Math.min(rdV, 420);                  // CARDINALS keep-radius is CAPPED (not the full rdV) — they're STATIONARY, so at a big render distance an uncapped ring never recycles them and they clump behind a moving player (user: 'only spawning in one area'). Capping keeps a dense disc that RE-distributes as the player moves.
 
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
@@ -4478,7 +4483,7 @@
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
-      const rdK = wantK === 2 ? rdW : (wantK === 3 ? rdD : rdV);   // each kind's live/recycle radius
+      const rdK = wantK === 5 ? cardR : (wantK === 2 ? rdW : (wantK === 3 ? rdD : rdV));   // each kind's live/recycle radius — cardinals use the CAPPED cardR so they follow the player instead of clumping
       const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
       const far = dp2 > rdK * rdK;
       if (!B.init || far || (B.trap > 12 && (B.kind < 3 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; but a duck/lily wedged ON real water NEVER teleports (the unstick frees it), only if it's off-water
