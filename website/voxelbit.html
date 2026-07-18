@@ -1664,7 +1664,7 @@
     device.queue.writeBuffer(palBuf, 0, f); };
   const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
-  const UF = new Float32Array(1140);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139 → 1140. 64 drop slots = the composite tile-cull's 8×8=64 threads (one slot each)
+  const UF = new Float32Array(1268);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267 → 1268
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);
@@ -1693,6 +1693,7 @@
       pick2A : vec4<f32>,                                            // LEFT hand (dual-wield rock): anchor xyz (camera space) + voxel size
       pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
       fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
+      cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -2104,6 +2105,22 @@
           let sdir = normalize(u.sunDir + st * ((rand(&seed) * 2.0 - 1.0) * 0.028) + sb * ((rand(&seed) * 2.0 - 1.0) * 0.028));
           let sh = trace(sp, sdir, 1200.0, skipW);
           sunV = select(1.0, 0.0, sh.t >= 0.0);
+          if (sunV > 0.0) {                                          // CREATURE CAST SHADOWS — the moving lilies/ducks/worms aren't in the world grid, so the sun ray tests their (AABB) bodies here → they cast shadows on ground/water like static voxels (sp and the boxes are both window-relative)
+            for (var s = 0; s < 16; s++) {
+              let CA = u.cshad[s * 2];
+              if (CA.w < 0.5) { continue; }
+              let d0 = sp - CA.xyz;                                  // both window-relative
+              if (d0.x * d0.x + d0.z * d0.z > 1600.0) { continue; }  // a ground creature's shadow lands within a few metres
+              let CB = u.cshad[s * 2 + 1];
+              let he = vec3<f32>(CB.x, CB.y, CB.x);                  // half-extents (horizontal, vertical, horizontal) — axis-aligned box
+              let inv2 = 1.0 / select(sdir, vec3<f32>(1e-5), abs(sdir) < vec3<f32>(1e-5));
+              let ta2 = (CA.xyz - he - sp) * inv2; let tb2 = (CA.xyz + he - sp) * inv2;
+              let tn2 = min(ta2, tb2); let tf2 = max(ta2, tb2);
+              let teB = max(max(tn2.x, tn2.y), tn2.z);
+              let tlB = min(min(tf2.x, tf2.y), tf2.z);
+              if (teB < tlB && tlB > 0.05 && teB < 60.0) { sunV = 0.0; break; }   // the sun ray enters the creature box ahead → shadowed
+            }
+          }
         }
         if (h.t < 500.0) {
           for (var k = 0; k < 2; k++) {                              // Teardown AO: distance before collision ≈ indirect light
@@ -2339,7 +2356,7 @@
                                      cos(wz2 * 0.31 + u.time * 1.05) * 0.045 + sin(wx2 * 0.17 + u.time * 0.65) * 0.035));
         let refl = reflect(rd, nW);
         let fres = 0.04 + 0.55 * pow(1.0 - clamp(-dot(rd, nW), 0.0, 1.0), 4.0);   // grazing angles mirror the sky
-        col = alb * (0.55 + 0.40 * irr.g) * dayScale() + skyBase(refl) * fres * 0.75;
+        col = alb * (0.55 + 0.40 * irr.g) * (0.68 + 0.32 * irr.r) * dayScale() + skyBase(refl) * fres * 0.75;   // irr.r (sun visibility) darkens the water BODY in shadow — so a lily/duck (or the terrain) casts a clear shadow on the surface, not just a loss of glitter
         if (u.pickZ.w > 0.015) {                                     // FREEZING/FROZEN — the ice look BLENDS in over ~25 s as the lake freezes, and back out as it thaws
           let nI = vec3<f32>(0.0, 1.0, 0.0);
           let fresI = 0.03 + 0.22 * pow(1.0 - clamp(-dot(rd, nI), 0.0, 1.0), 4.0);
@@ -4001,6 +4018,7 @@
     const nLily = LILY_ITEM0 ? 12 : 0;                 // free-floating lily pads (slots 40-54)
     const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
+    const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
     if (DUCK_ITEM0 && !ED.on && now > lakeScanT) {     // ── LAKE CENSUS (every 2.5 s) ── grid-sample the view for wide-open-water spots, cluster them into lakes;
       lakeScanT = now + 2500;                          //    mother ducks below TARGET these so every visible lake gets its own family (pool cap 2 families)
       lakeSpots.length = 0;
@@ -4217,6 +4235,11 @@
       const bobA = B.kind === 2 ? 0 : (B.kind === 4 ? 0.12 : (B.kind === 3 ? (isBaby ? 0.18 : 0.25) : (B.kind === 1 ? 1.1 : 2.2)));   // worms don't bob; water floats keep the cosmetic bob SMALL — the wave riding is the real motion, a deep bob dip re-sank the bottom rows
       const bobF = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? 2.3 : 1.6) : (B.kind === 1 ? 2.6 : 6.8));
       const px3 = B.x, pz3 = B.z, py3 = B.y + Math.sin(tb3 * bobF + wk * 1.9) * bobA;   // (worm grid-snapping was undone at user request — smooth continuous pose)
+      if (B.kind >= 2 && freezeK < 0.4) {              // GROUND/WATER creatures cast a sun shadow (lily/duck/worm) — flyers (0/1) skip; frozen lakes are flat & shadow-free like the water
+        const hxz = B.kind === 4 ? 4.5 : (B.kind === 3 ? (isBaby ? 1.8 : 3.0) : 3.0);
+        const hy = B.kind === 4 ? 0.7 : (B.kind === 3 ? (isBaby ? 1.5 : 2.5) : 1.2);
+        cshadList.push([px3 - winOX, py3, pz3 - winOZ, hxz, hy, dp2]);
+      }
       const HxR = Math.sin(B.th), HzR = Math.cos(B.th);   // RENDER yaw — for lilies this spins freely, independent of drift
       const Xw = [HzR, 0, -HxR], Yw = [-HxR, 0, -HzR]; // level frame — Zw = up, right-handed (Yw×Zw = Xw); model −y (the head end) leads
       const nfr = B.kind >= 3 ? 1 : (B.kind === 2 ? WORM_NFRAMES : (B.kind === 1 ? FFLY_NFRAMES : BFLY_NFRAMES));
@@ -4242,6 +4265,10 @@
     ffLights.sort((a, b) => a[4] - b[4]);              // nearest glowing fireflies win the 8 point-light slots
     for (let li = 0; li < 8; li++) { const o5 = 1108 + li * 4, L = ffLights[li];
       UF[o5] = L ? L[0] : 0; UF[o5 + 1] = L ? L[1] : 0; UF[o5 + 2] = L ? L[2] : 0; UF[o5 + 3] = L ? L[3] : 0; }
+    cshadList.sort((a, b) => a[5] - b[5]);             // nearest 16 ground/water creatures cast shadows (the sun ray tests these boxes)
+    for (let ci = 0; ci < 16; ci++) { const o6 = 1140 + ci * 8, C = cshadList[ci];
+      if (C) { UF[o6] = C[0]; UF[o6 + 1] = C[1]; UF[o6 + 2] = C[2]; UF[o6 + 3] = 1; UF[o6 + 4] = C[3]; UF[o6 + 5] = C[4]; UF[o6 + 6] = 0; UF[o6 + 7] = 0; }
+      else UF[o6 + 3] = 0; }
     for (let si2 = 0; si2 < 4; si2++) {                // ── clash sparks → drop slots 5-8 ── 4 real 10 cm voxels on short ballistic arcs, fading out
       const o3 = 68 + (5 + si2) * 16, sp4 = sparks3d[si2];
       const tS = sp4 ? (now - sp4.born) / 1000 : 1e9;
