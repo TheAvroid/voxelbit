@@ -3499,7 +3499,7 @@
     if (n) {
       const f = ED.frames[((ED.sel % n) + n) % n];
       const vsrc0 = (ED.blink && f.voxBlink) ? f.voxBlink : f.vox;        // eye-blink variant while the blink phase is lit (playing only)
-      const rv = edRotVox(vsrc0, f.sx, f.sy, ED.paused ? 0 : (ED.spin & 3));   // whole-animation spin accrues +90° per completed cycle so the loop continues forward instead of snapping back (no spin while editing/paused)
+      const rv = edRotVox(vsrc0, f.sx, f.sy, ED.paused ? 0 : (-ED.spin & 3));   // whole-animation spin accrues 90° per cycle IN THE SAME DIRECTION the frames rotate, so the loop continues forward (negated — the +90° went the wrong way and read as a 180° flip at the seam). No spin while editing/paused.
       const bx = ED.x0 + ((ED.pw - rv.sx) >> 1), bz = ED.z0 + ((ED.pd - rv.sy) >> 1);   // the ONE animated/scrubbed frame, centred on the stage
       f.bx = bx; f.bz = bz;
       const ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;             // per-frame alignment offset (gizmo-driven; oy is rotation-invariant, ox/oz are 0 on the cardinal)
