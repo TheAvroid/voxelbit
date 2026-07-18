@@ -507,6 +507,7 @@
   for (let i = 1; i < DECOR_MIN; i++) solidTab[i] = 1;
   for (const f of foliageIds) solidTab[f] = 0;
   const mushTab = new Uint8Array(256);                 // per-id BOUNCY flag — mushroom voxels trampoline the player (filled once MUSHV loads)
+  const sandTab = new Uint8Array(256); for (const s of SAND) sandTab[s] = 1;   // per-id SAND flag — walking on beach/lakebed sand slows the player (sand pits)
   console.log('[vb] pine5.vox', MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
 
   // ── decoration models ── ONE sparse format everywhere: { sx (width, x), sy (depth, y), sz (height, z),
@@ -2588,7 +2589,23 @@
                     let direct = sunTint() * max(dot(nw, u.sunDir), 0.0);    // world-matched LIGHTING (sun + sky + ground bounce + ambient) but NO per-voxel grain —
                     let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();   // grain is ±12% per voxel and scrambles hand-authored .vox gradients (~5% steps on the axe handle)
                     let bounce = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // warm ground bounce on side/under faces — without it side faces are sky-only (cool + dark), the axe handle read grey-brown
-                    col = cell.rgb * (direct + skyIrr + bounce + vec3<f32>(0.012, 0.013, 0.016));
+                    var aoF = 1.0;
+                    if (i32(pX.w + 0.5) == 1) {                     // AXE ONLY (user): cheap voxel cavity AO — the exposed face darkens where the 4 in-plane neighbours are solid (head↔handle join + crevices). Geometry-based, so it adds depth WITHOUT scrambling the hand-authored gradient like grain would
+                      var nlo = vec3<i32>(0);
+                      if (vax == 0) { nlo.x = -istep.x; } else if (vax == 1) { nlo.y = -istep.y; } else { nlo.z = -istep.z; }
+                      let oc = vc + nlo;               // the empty cell just outside the hit face
+                      var t1 = vec3<i32>(0); var t2 = vec3<i32>(0);
+                      if (vax == 0) { t1.y = 1; t2.z = 1; } else if (vax == 1) { t1.x = 1; t2.z = 1; } else { t1.x = 1; t2.y = 1; }
+                      let dims = vec3<i32>(PICKW, PICKD, PICKH);
+                      var occ = 0;
+                      for (var s = 0; s < 4; s = s + 1) {
+                        var p = oc + t1;
+                        if (s == 1) { p = oc - t1; } else if (s == 2) { p = oc + t2; } else if (s == 3) { p = oc - t2; }
+                        if (all(p >= vec3<i32>(0)) && all(p < dims) && ITEMMAP[IOFF + p.x + p.y * PICKW + p.z * PICKW * PICKD].w > 0.5) { occ = occ + 1; }
+                      }
+                      aoF = 1.0 - 0.14 * f32(occ);    // up to ~0.44 in a full crevice; ~0.86–0.72 for typical creases
+                    }
+                    col = cell.rgb * (direct + skyIrr + bounce + vec3<f32>(0.012, 0.013, 0.016)) * aoF;
                   }
                   break;
                 }
@@ -2905,6 +2922,12 @@
     const gy = Math.floor(P.y) - 1; if (gy < 0 || gy >= WY) return false;
     const x0 = Math.floor(P.x - HW), x1 = Math.floor(P.x + HW), z0 = Math.floor(P.z - HW), z1 = Math.floor(P.z + HW);
     for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (mushTab[W[gwrap(x, WX) + gy * WX + gwrap(z, WZ) * WX * WY]]) return true;
+    return false;
+  };
+  const onSand = () => {                                // is the player standing on sand? (beach/lakebed) → slow their movement
+    const gy = Math.floor(P.y) - 1; if (gy < 0 || gy >= WY) return false;
+    const x0 = Math.floor(P.x - HW), x1 = Math.floor(P.x + HW), z0 = Math.floor(P.z - HW), z1 = Math.floor(P.z + HW);
+    for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (sandTab[W[gwrap(x, WX) + gy * WX + gwrap(z, WZ) * WX * WY]]) return true;
     return false;
   };
   function moveAxis(axis, d, hh) {
@@ -3874,7 +3897,7 @@
       smoothEye = P.y + eyeH;
     } else {
       const inWater = waterAt(Math.floor(P.x), Math.floor(P.y + 3), Math.floor(P.z));
-      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? 0.55 : 1) * (P.sprintJump ? 1.2 : 1);
+      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? 0.55 : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
       moveAxis(0, P.hvx * dt, hh);
