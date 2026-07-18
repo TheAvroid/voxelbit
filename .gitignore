@@ -1,28 +1,27 @@
-﻿# ── git here is for the CODE, and only the code. ───────────────────────────
-# The art, models, sounds and .vox libraries are hundreds of megabytes, binary,
-# and effectively static. They are irreplaceable, but they do not need per-line
-# history and putting them in git makes every command crawl. Back them up
-# separately (a drive or a cloud folder). Git is for the thing that CHANGES.
+# ── git here is for the CODE, and the RUNTIME assets that make it run. ─────
+# Source art (.glb sculpts, hundreds of megabytes) stays out: it is binary,
+# effectively static, does not need per-line history, and makes every git
+# command crawl. Back it up separately (a drive or a cloud folder).
+#
+# CHANGED 2026-07-18 (user): website/assets and website/sound are now TRACKED.
+# They were ignored, so a GitHub zip download arrived with no models and no
+# sound and the game could not run. The runtime set is ~52 MB over ~690 files
+# (.vox/.json/.mp4/moon.jpg) — fine for git. The .glb source art stays OUT:
+# 369 MB in 9 files, and palm_tree.glb alone is 233 MB, over GitHub's 100 MB
+# per-file hard limit — including it would make the push fail outright.
 
-# whole trees of assets
+# source art trees — not loaded by the game
 art/
 .vox/
-sound/
-website/assets/
-website/sound/
+/sound/
+website_old/
 website/old/
 website/_snapshots/
 
-# and a belt-and-braces rule by extension, so nothing binary can creep back in
-*.vox
-*.wav
-*.mp3
-*.obj
-*.png
-*.jpg
-*.ico
-*.otf
-*.ttf
+# .glb sculpts are the source form; the game loads baked .vox instead
+*.glb
+
+# scratch
 *.bak
 *.log
 node_modules/
