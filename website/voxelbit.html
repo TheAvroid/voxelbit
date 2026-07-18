@@ -1144,7 +1144,7 @@
           f = smin3(f, capsF(x, y, z, P, A), TUBE_K);
           f = smin3(f, capsF(x, y, z, B, N), TUBE_K);
           f += (vnoise3(x * TUBE_FRQ, y * TUBE_FRQ, z * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
-          if (f > 0) {                                  // just OUTSIDE the bore = the cave WALL — line it with rock so tunnels read as stone, not the brown dirt they cut through
+          if (f > 0) {                                  // just OUTSIDE the bore = the cave WALL — line it with rock so tunnels read as stone
             if (f < TUBE_SHELL) {
               const jj = gx + y * WX + gz * WX * WY;
               const vw = W[jj];
@@ -1858,7 +1858,7 @@
     device.queue.writeBuffer(palBuf, 0, f); };
   const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
-  const UF = new Float32Array(1272);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic motion-blur strength) → 1272
+  const UF = new Float32Array(1272);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth) → 1272
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);
@@ -1888,7 +1888,7 @@
       pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
       fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
       cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
-      misc   : vec4<f32>,                                            // x = CINEMATIC motion-blur strength (0 = off, eased so it never pops on at the keypress); y/z/w spare
+      misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth (0 = off, eased so it never pops on at the keypress); y/z/w spare
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -2802,7 +2802,6 @@
   const BLIT = /* wgsl */`
     @group(0) @binding(1) var src : texture_2d<f32>;
     @group(0) @binding(2) var samp : sampler;
-    @group(0) @binding(3) var gIrrB : texture_2d<f32>;   // .b = scene hit distance in voxels (<0 = sky) — drives the per-pixel motion vector
     @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4<f32> {
       var P = array<vec2<f32>, 3>(vec2<f32>(-1.0, -3.0), vec2<f32>(3.0, 1.0), vec2<f32>(-1.0, 1.0));
       return vec4<f32>(P[vi], 0.0, 1.0);
@@ -2810,42 +2809,6 @@
     @fragment fn fs(@builtin(position) fc : vec4<f32>) -> @location(0) vec4<f32> {
       let uv = fc.xy / u.canvasRes;
       var col = textureSampleLevel(src, samp, uv, 0.0).rgb;
-      // ── CINEMATIC MOTION BLUR ── per-pixel camera blur: reproject this pixel's world point through the PREVIOUS
-      // camera basis (the same math the TAA uses) to get a screen-space motion vector, then smear along it. Because it
-      // is reprojection-based it streaks correctly for all three cinematic motions at once — forward glide, the weave
-      // yaw, and the bank roll (roll alone produces the rotational smear a fixed radial/directional blur can't).
-      // Applied to the BASE image only: the god-ray scatter below stays sharp, or the shafts smear into mush.
-      if (u.misc.x > 0.001) {
-        let ndc = uv * 2.0 - 1.0;
-        let rd = normalize(u.fwd + u.right * (ndc.x * u.tanH * u.aspect) - u.up * (ndc.y * u.tanH));
-        let t = textureSampleLevel(gIrrB, samp, uv, 0.0).b;
-        var d = rd;
-        if (t > 0.0) { d = (u.camPos + rd * t) - u.pPos; }   // world point this pixel sees, relative to LAST frame's camera
-        let z = dot(d, u.pFwd);
-        if (z > 0.01) {
-          let px2 = dot(d, u.pRight) / (z * u.pTanH * u.pAspect);
-          let py2 = dot(d, u.pUp) / (z * u.pTanH);
-          let pUV = vec2<f32>(px2 * 0.5 + 0.5, 0.5 - py2 * 0.5);   // NO jitter de-bias here: u.jit/u.pJit are sub-pixel TAA offsets and would add noise to the vector
-          var mv = (uv - pUV) * u.misc.x;
-          let mlen = length(mv);
-          if (mlen > 0.0008) {
-            mv = mv * (min(mlen, 0.055) / mlen);          // clamp the smear — a fast bank near a trunk otherwise streaks across half the screen
-            let jit = fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y));   // reuse the god-ray IGN dither so 9 taps don't band
-            var acc = col;
-            var wsum = 1.0;
-            for (var i = 1; i < 9; i++) {
-              let k = (f32(i) - 0.5 + jit) / 8.0;
-              let suv = uv - mv * k;
-              if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) {
-                let w = 1.0 - k * 0.55;                   // taps fade along the trail — a flat box average reads as a double image
-                acc += textureSampleLevel(src, samp, suv, 0.0).rgb * w;
-                wsum += w;
-              }
-            }
-            col = acc / wsum;
-          }
-        }
-      }
       // ── GOD RAYS: screen-space radial scatter toward the sun (ported from the old engine's blit).
       // Bright near-white SKY pixels scatter (alpha = sky mask from the TAA pass); voxels block → shafts.
       let sf = dot(u.sunDir, u.fwd);
@@ -2888,6 +2851,14 @@
             col += TINT[gi] * smoothstep(rr, rr * 0.22, length(fc.xy - gp)) * 0.10 * sv * dayK;   // doubled — bold flare ghosts
           }
         }
+      }
+      // ── CINEMATIC VIGNETTE ── last thing in the frame, so it darkens the finished image (god rays and flare
+      // ghosts included) rather than being scattered back out by them. Aspect-corrected: measuring the falloff on
+      // raw UV would make it an ellipse stretched to the window, which reads as a letterbox rather than a vignette.
+      if (u.misc.x > 0.001) {
+        let q = (uv - 0.5) * vec2<f32>(max(1.0, u.aspect), max(1.0, 1.0 / u.aspect));
+        let vig = 1.0 - u.misc.x * smoothstep(0.18, 0.78, length(q));
+        col *= max(vig, 0.0);
       }
       return vec4<f32>(col, 1.0);
     }
@@ -2941,7 +2912,7 @@
       { binding: 4, resource: linSamp }, { binding: 5, resource: v(par ? colHistB : colHistA) }] }));
     bgBlit = [0, 1].map(par => device.createBindGroup({ layout: pBlit.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? colHistB : colHistA) },
-      { binding: 2, resource: linSamp }, { binding: 3, resource: v(gIrr) }] }));   // gIrr.b = scene distance, for the motion-blur reprojection
+      { binding: 2, resource: linSamp }] }));
     resetHist = 1;
   }
   makeTargets();
@@ -4037,8 +4008,8 @@
     snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT }; },
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
-    blur(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return cineBlurK * CINE_BLUR; },   // cinematic motion-blur tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
-    blurFree() { blurLock = false; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
+    vig(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return cineBlurK * CINE_VIG; },   // cinematic vignette tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
+    vigFree() { blurLock = false; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
     edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; if (ED.giz) ED.rgiz = false; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
@@ -4118,9 +4089,9 @@
   console.log('[vb] ready — endless window', WX, WY, WZ, 'bricks', BX, BY, BZ);
 
   let cineMode = false;                                // C — CINEMATIC flythrough camera
-  let cineBlurK = 0;                                   // eased 0..1 motion-blur weight — ramped, never hard-toggled, or the blur POPS on at the C keypress
-  let blurLock = false;                                // __vb.blur(v) pins the weight for A/B testing; blurFree() hands it back to the easing
-  const CINE_BLUR = 2.0;                               // motion-vector multiplier at full weight — HALVED (user 2026-07-18). The shader clamps the smear, so this saturates on fast banks (blur stays motion-proportional, never a full wipe). Tune live with __vb.blur(v).
+  let cineBlurK = 0;                                   // eased 0..1 cinematic-vignette weight — ramped, never hard-toggled, or the blur POPS on at the C keypress
+  let blurLock = false;                                // __vb.vig(v) pins the weight for A/B testing; vigFree() hands it back to the easing
+  const CINE_VIG = 0.55;                               // CINEMATIC VIGNETTE depth at full weight (0 = none, 1 = corners to black). Motion blur was removed at user request 2026-07-18; this lane replaced it. The shader clamps the smear, so this saturates on fast banks (blur stays motion-proportional, never a full wipe). Tune live with __vb.blur(v).
   const cine = { yaw: 0, om: 0, omT: 0, tRe: 0, bobT: 0, alt: 42, altT: 42, roll: 0, vy: 0, climb: 0 };
   const CINE_R = 7;                                    // camera "hull" half-extent (vox) — probes sample a BOX this size, so a thin trunk can't slip between point samples
   const CINE_LOOK = 104;                               // whisker probe range — EXTENDED when the turn rate was halved (user): a gentler turn needs to start earlier to clear the same trunk, or it clips what it used to dodge
@@ -4519,7 +4490,7 @@
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
-    UF[1268] = cineBlurK * CINE_BLUR;                  // u.misc.x — cinematic motion blur (written unconditionally; the blit reads it every frame)
+    UF[1268] = cineBlurK * CINE_VIG;                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
     if (!ED.on) autoPickup();                          // AUTO-PICKUP (user): a free hand slot vacuums up nearby floating items — no right-click, no aiming
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
       const dr = drops[i];
@@ -4682,8 +4653,15 @@
     };
     const findPineCrown = (selfWk) => {                // pick a nearby pine not already holding a cardinal, land on one of its outer branch tips
       for (let t = 0; t < 28; t++) {                   // AREA-uniform radius over many tries → an even, consistent world-wide rate (like the butterflies) even where pines are sparser
-        const a = Math.random() * 6.283, d = Math.sqrt(LIFE_IN * LIFE_IN + Math.random() * (LIFE_OUT * LIFE_OUT - LIFE_IN * LIFE_IN));   // AREA-uniform across the shared spawn annulus — perched cardinals were the worst pop-in offender, being re-placed as close as 45 vox in full view
-        const wx = P.x + Math.sin(a) * d, wz = P.z + Math.cos(a) * d;
+        // ── STATIONARY LIFE GATES ON VISIBILITY, NOT DISTANCE ── a perched bird never moves, so the spawn ring is
+        // also where it lives forever. Confining them to the far annulus (like worms/flyers, which wander inward)
+        // emptied the whole near forest — nearest bird sat at ~310 vox and you never saw one up close. So: place
+        // across the WHOLE disc from 45 out, and if the spot is close enough that a pop-in would be visible,
+        // require it to be BEHIND the player. Walking forward keeps seeding birds into the woods behind you.
+        const a = Math.random() * 6.283, d = 45 + Math.sqrt(Math.random()) * (LIFE_OUT - 45);
+        const sa = Math.sin(a), ca = Math.cos(a);
+        if (d < LIFE_IN && (sa * Math.sin(P.yaw) + ca * Math.cos(P.yaw)) > -0.15) continue;   // close AND in front → skip, it would materialise in view
+        const wx = P.x + sa * d, wz = P.z + ca * d;
         const tr = treeAt(Math.floor(wx / TCELL), Math.floor(wz / TCELL)); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
         let occ = false; for (let j = 64; j < 184; j++) { if (j === selfWk) continue; const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) { const ddx = (O.tx || 0) - tr.tx, ddz = (O.tz || 0) - tr.tz; if (ddx * ddx + ddz * ddz < 28 * 28) { occ = true; break; } } }   // keep cardinals ≥28 vox apart (tightened from 39 for the DOUBLED-AGAIN count) → EVENLY SPREAD across the pines, never clustered (user)
