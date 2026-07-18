@@ -1342,8 +1342,7 @@
     stampModel(LOGV, l.rot, l.wx, groundMin(l.wx, l.wz, 6) - 1, l.wz, x0, x1, z0, z1, 1);   // sunk one voxel so it hugs the ground line
   }
   const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
-  function lilyAt(cx, cz) {
-    return null;                                       // STATIC lilies retired 2026-07-17 — lily pads are now LIVE drifting/rotating entities (creature pool kind 4); keep the fn so worker stringification stays in sync
+  function lilyAt(cx, cz) {                             // STATIC lilies RE-ENABLED for testing (user 2026-07-18) — stamped into the world grid (full static-voxel shading) alongside the LIVE drifting pads, so their render can be compared
     if (!LILYV.length) return null;
     if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.085) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085)
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
@@ -3085,7 +3084,8 @@
     if (e.button === 2) tryPickup();
     if (e.button === 0 && !dead) {
       if (e.shiftKey && dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }   // clash instead of swing — only when the knife will have somewhere to go (exactly-2 rocks frees this slot)
-      mouse0 = true; swingStart = performance.now(); if (heldIt()) playSwish();
+      mouse0 = true;
+      if (performance.now() - swingStart >= 570) { swingStart = performance.now(); if (heldIt()) playSwish(); }   // a click is IGNORED until the current swing's full 570 ms animation finishes — no mid-swing restart (user; applies to every held item). Holding still auto-repeats via the tick loop.
     }
   });
   document.addEventListener('mouseup', (e) => { if (e.button === 0) mouse0 = false; });
@@ -3471,7 +3471,7 @@
     KNIFE_IT,
     snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 300000; snowBtnSync(); }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK }; },
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
-    dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },   // test taps
+    dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; }, get swingStart() { return swingStart; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edImport: edImportBufs, edExport: edExportSeq,
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
