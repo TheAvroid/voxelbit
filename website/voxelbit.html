@@ -3682,6 +3682,7 @@
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0; for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } return { voxels: n, worms: live }; },   // Task 2/3 taps
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
+    perched() { const o = []; for (let j = 40; j < 55; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.round(B.x), fz = Math.round(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, below: this.vox(fx, fy - 1, fz), spin: B.spin }); } } return o; },   // perched-cardinal test tap
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
       const CH = 64 << 20, stg = device.createBuffer({ size: CH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -4206,6 +4207,32 @@
       }
       return w9 >= 7 && w18 >= 5; };
     __vb.bfOpenW = bfOpenW; __vb.bfSurf = bfSurf; __vb.bfWater = bfWater;   // test taps — headless checks must use the game's OWN gates (worldgen H is pre-carve, voxel scans count canopy)
+    // ── PERCHED CARDINALS ── the rotate-frame cardinal sits on a pine crown (feet on the green needles) and plays its spin animation. Uses the disabled lily slots (40-54).
+    const foliageSet = new Uint8Array(256); for (const f of foliageIds) foliageSet[f] = 1;   // green canopy palette ids → the perch surface
+    const pineCrownTop = (tx, tz) => {                 // highest GREEN voxel (open air above) in a small area around the trunk → a needle to stand on
+      let bestY = -1, bxr = tx, bzr = tz;
+      for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) {
+        const gx = gwrap(tx + dx, WX), gz = gwrap(tz + dz, WZ), col = gx + gz * WX * WY;
+        const yTop = Math.min(WY - 2, hmap[gx + gz * WX] + 124);
+        for (let y = yTop; y > WL; y--) { const id = W[col + y * WX]; if (!id) continue;   // first solid/foliage from the top → it has open air above by construction
+          if (foliageSet[id] && y > bestY) { bestY = y; bxr = tx + dx; bzr = tz + dz; }
+          break; }
+      }
+      return bestY < 0 ? null : [bxr, bestY, bzr];
+    };
+    const findPineCrown = (selfWk) => {                // pick a nearby pine crown not already holding a cardinal
+      for (let t = 0; t < 16; t++) {
+        const a = Math.random() * 6.283, d = 45 + Math.sqrt(Math.random()) * (rdV - 45);
+        const wx = P.x + Math.sin(a) * d, wz = P.z + Math.cos(a) * d;
+        const tr = treeAt(Math.floor(wx / TCELL), Math.floor(wz / TCELL)); if (!tr) continue;
+        if (tr.tx <= rect.xlo + 6 || tr.tx >= rect.xhi - 6 || tr.tz <= rect.zlo + 6 || tr.tz >= rect.zhi - 6) continue;
+        let occ = false; for (let j = 40; j < 55; j++) { if (j === selfWk) continue; const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5 && Math.abs((O.tx || 0) - tr.tx) < 6 && Math.abs((O.tz || 0) - tr.tz) < 6) { occ = true; break; } }
+        if (occ) continue;
+        const cr = pineCrownTop(tr.tx, tr.tz); if (!cr) continue;
+        return { tx: tr.tx, tz: tr.tz, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };   // x/z centred on the needle voxel
+      }
+      return null;
+    };
     // ── PROCEDURAL POPULATION ── the active butterfly count scales with the visible AREA (density ≈ 1 per (200 vox)²),
     // so the world stays populated at every render distance. Each is recycled to a fresh procedural cell when it leaves
     // the fog ring; color comes from a spatial hash of that cell so orange/red/blue are sprinkled across the world.
@@ -4215,6 +4242,7 @@
     const nWorm = WORM_NFRAMES ? Math.max(4, Math.min(8, nActD >> 1)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-17 (user; 8 = slot cap 32-39)
     const nDuck = DUCK_ITEM0 ? 2 : 0;                  // MOTHER ducks (slots 16-19) — HALVED back to 2 (user 2026-07-17); placement targets lakes, so families appear on up to 2 visible lakes; each leads 3 ducklings (slots 20-31)
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
+    const nCard = CARD_NFRAMES ? Math.min(10, Math.max(4, Math.round(nActD))) : 0;   // PERCHED CARDINALS on pine crowns (user) — reuse the freed lily slots 40-54 (cap 15)
     const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
@@ -4238,12 +4266,12 @@
       const wormSlot = wk >= 32 && wk < 40, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 40;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
       const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
-      const wantK = lilySlot ? 4 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)));   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-39 WORMS, 40-54 LILY PADS
-      const active = lilySlot ? (wk - 40 < nLily)
+      const wantK = lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)));   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-39 WORMS, 40-54 PERCHED CARDINALS (was lilies)
+      const active = lilySlot ? (wk - 40 < nCard)
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
         : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles
-      if (ED.on || dead || !active || (wantK === 4 ? !LILY_ITEM0 : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck) must clear its stamp
+      if (ED.on || dead || !active || (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck) must clear its stamp
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
@@ -4253,10 +4281,14 @@
       if (!B.init || far || (B.trap > 12 && (B.kind < 3 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; but a duck/lily wedged ON real water NEVER teleports (the unstick frees it), only if it's off-water
           B.x <= rect.xlo + 4 || B.x >= rect.xhi - 4 || B.z <= rect.zlo + 4 || B.z >= rect.zhi - 4 ||   // the window recentred/shrank under it — this ground is stale garbage, leave it
           (isBaby && (B.x - mom5.x) * (B.x - mom5.x) + (B.z - mom5.z) * (B.z - mom5.z) > 40 * 40) ||   // a duckling stranded from its (recycled) mother rejoins her
-          (B.kind >= 3 && !isBaby && ((frame + wk) & 63) === 0 && !bfWater(B.x, B.z)) ||   // recycle ONLY if a duck/lily is genuinely OFF real water (dry ravine/land after a recenter) — NOT merely near a shore. The old bfOpenW test teleported ducks that paddled up to the bank ('disappears when stuck against land')
+          ((B.kind === 3 || B.kind === 4) && !isBaby && ((frame + wk) & 63) === 0 && !bfWater(B.x, B.z)) ||   // recycle ONLY a DUCK/LILY genuinely OFF real water (dry ravine/land after a recenter) — NOT a perched cardinal (kind 5, never on water) and NOT one merely near a shore
           (B.trap > 4 && (dp2 > 0.7 * 0.7 * rdK * rdK || (B.kind < 3 && bfObst(B.x, B.y, B.z))))) {   // stuck 4 s: recycle if far in the fog OR body-in-solid (kinds <3 only — a duck's body dips into the WATER voxel in wave troughs, which is not 'stuck')
         if (B.rel) B.rel = false;                      // a released worm that leaves/loses its spot rejoins the normal population rules
         let placed = false;
+        if (wantK === 5) {                             // PERCHED CARDINAL: find a nearby pine crown to sit on (its own search — not the generic open-spot one)
+          const pc = findPineCrown(wk);
+          if (pc) { B.tx = pc.tx; B.tz = pc.tz; B.x = pc.x; B.z = pc.z; B.perchFeet = pc.y + 1; placed = true; }   // feet rest ON TOP of the crown needle
+        }
         if (isBaby) {                                  // ducklings hatch right behind their mother, in line order
           let hx6 = mom5.x - Math.sin(mom5.th) * (4 + sib * 3.5) + (Math.random() - 0.5) * 2;
           let hz6 = mom5.z - Math.cos(mom5.th) * (4 + sib * 3.5) + (Math.random() - 0.5) * 2;
@@ -4269,7 +4301,7 @@
             if (O !== B && O.init && (O.x - sx7) * (O.x - sx7) + (O.z - sz7) * (O.z - sz7) < minD * minD) return true; }
           return false; };
         let sx7 = 0, sz7 = 0;
-        for (let tries = 0; tries < 12 && !placed; tries++) {
+        for (let tries = 0; tries < 12 && !placed && wantK !== 5; tries++) {
           let sx, sz;
           if (wantK === 3 && lakeSpots.length) {       // MOTHER DUCKS TARGET LAKES: prefer a lake NO other mom (16-19) already holds — one family per visible lake
             const free = lakeSpots.filter((L) => {
@@ -4305,11 +4337,30 @@
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
-        if (lilySlot) { B.mth = Math.random() * 6.283; B.spin = (Math.random() < 0.5 ? -1 : 1) * (0.12 + Math.random() * 0.3); }   // drift heading + a slow constant OFF-GRID rotation
+        if (lilySlot) {                                // PERCHED CARDINAL init (lily slots repurposed): stationary, spins via the rotate frames + a per-cycle 90° accrual
+          B.baseYaw = B.th; B.spin = 0; B.pfi = -1; B.animClk = Math.random() * 2;
+          B.y = B.perchFeet + CARD_H * 0.5 - CARD_FOOTZ;   // anchor (model centre) placed so the FEET land on the crown needle
+        }
       }
       const fadeIn = Math.min(1, (now - B.born) / 700);   // grow in over 0.7 s so a recycled creature materialises smoothly instead of popping into view
       const fadeOut = B.dieT ? Math.max(0, 1 - (now - B.dieT) / 700) : 1;   // …and shrinks away at the day/night handover
       const bScale = 0.12 + 0.88 * fadeIn * fadeIn * (3 - 2 * fadeIn) * fadeOut;
+      if (B.kind === 5) {                              // ── PERCHED CARDINAL ── stationary on the pine crown; the 11 rotate frames play at 24 fps, and the whole model steps +90° each completed cycle so the spin loops seamlessly
+        B.animClk += dt;
+        const fiC = Math.floor(B.animClk * 24) % CARD_NFRAMES;
+        if (fiC < B.pfi) B.spin++;                     // a rotation cycle just wrapped → advance the accumulated quarter-turn
+        B.pfi = fiC;
+        const yaw = B.baseYaw - B.spin * (Math.PI / 2);   // per-cycle 90° accrual, SAME direction the frames turn → no snap-back at the loop
+        const HxR = Math.sin(yaw), HzR = Math.cos(yaw), Xw = [HzR, 0, -HxR], Yw = [-HxR, 0, -HzR];
+        const rx = B.x - cam[0], ry = B.y - cam[1], rz = B.z - cam[2];
+        if (dropCursor > 63) continue;
+        const o4 = 68 + dropCursor * 16; dropCursor++;
+        UF[o4] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o4 + 3] = bScale;
+        UF[o4 + 4] = Xw[0] * right[0] + Xw[2] * right[2]; UF[o4 + 5] = Xw[0] * up[0] + Xw[2] * up[2]; UF[o4 + 6] = Xw[0] * fwd[0] + Xw[2] * fwd[2]; UF[o4 + 7] = CARD_ITEM0 + fiC;
+        UF[o4 + 8] = Yw[0] * right[0] + Yw[2] * right[2]; UF[o4 + 9] = Yw[0] * up[0] + Yw[2] * up[2]; UF[o4 + 10] = Yw[0] * fwd[0] + Yw[2] * fwd[2]; UF[o4 + 11] = 0;
+        UF[o4 + 12] = right[1]; UF[o4 + 13] = up[1]; UF[o4 + 14] = fwd[1]; UF[o4 + 15] = 0;
+        continue;
+      }
       let Hx2 = Math.sin(B.th), Hz2 = Math.cos(B.th);
       if (B.kind === 4) {                              // LILY PAD: slow drift on the water + constant free rotation; movement heading (mth) is independent of the visual spin
         if (tb3 > B.tRe) { B.mth += (Math.random() - 0.5) * 1.2; B.tRe = tb3 + 3 + Math.random() * 4; }
