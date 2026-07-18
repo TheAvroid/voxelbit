@@ -2514,6 +2514,11 @@
                   if (${DUCK_ITEM0 > 0 ? 1 : 0} == 1 && dYv.w > 0.5 && (dit == ${DUCK_ITEM0 || 9999} || dit == ${DUCKB_ITEM0 || 9998}) && alb2.r < 0.02 && alb2.g < 0.02 && alb2.b < 0.02) { alb2 = vec3<f32>(${DUCK_GREEN[0].toFixed(4)}, ${DUCK_GREEN[1].toFixed(4)}, ${DUCK_GREEN[2].toFixed(4)}); }
                   let grain = 0.87 + 0.26 * ih3(vcD.x, vcD.y, vcD.z);   // per-voxel texture like the STATIC world (user: lilies 'lack depth/volume') — hashed on the MODEL-local voxel so it's stable as the creature drifts/rotates
                   col = alb2 * (direct + (skyIrr + bounceC) * 0.85 + vec3<f32>(0.012, 0.013, 0.016)) * grain;   // 0.85 ≈ the terrain's typical open-air AO term — same formula as the static world (irr coupling stays banned: it read as translucent)
+                  if (${WORM_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${WORM_ITEM0 || 9999} && dit < ${(WORM_ITEM0 || 9999) + (WORM_NFRAMES || 1)}) {   // WORM fake-AO — the smooth off-grid worm's stand-in for the grid-stamped cardinal's REAL contact AO (user chose 'fake AO, stay smooth'): darken the underside + lower body so it reads GROUNDED, no grid-stamp shimmer
+                    let upN = clamp(0.5 + 0.5 * nw.y, 0.0, 1.0);              // 1 = top-facing, 0 = down-facing (the shaded underside against the ground)
+                    let hN = f32(vcD.z) / max(1.0, f32(eH - 1));             // 0 = ground side of the body, 1 = its top
+                    col = col * mix(0.5, 1.0, 0.65 * upN + 0.35 * smoothstep(0.0, 0.9, hN));   // contact shadow: darkest at the bottom + underside, full-lit on top
+                  }
                   if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} && dYv.w > 0.0 && cell.r > 0.6 && cell.g > 0.4 && cell.b < 0.1) { col = cell.rgb * (0.4 + dYv.w); }   // FIREFLY abdomen — yellow voxel EMISSIVE (FFLY-range-gated so a blinking duckling's yellow doesn't glow)
                   var fogB = 1.0 - exp(-bestT * 0.0006);             // the SAME distance haze + view-edge ring the world gets — a far bird melts into the haze instead of popping crisp
                   fogB = max(fogB, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
