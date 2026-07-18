@@ -84,7 +84,7 @@
     <button id="pkBtn" title="held item position"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H8v-2h2v2Zm8 0h-2v-2h2v2ZM4 18h2v2H2v-4h2v2Zm12 2h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 18H6v-2h2v2Zm6 0h-2v-2h2v2Zm8 0h-2v-2h2v2ZM6 16H4v-2h2v2Zm4 0H8v-2h2v2Zm6 0h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 14H6v-2h2v2Zm4 0h-2v-2h2v2Zm6 0h-2v-2h2v2Zm-8-2H8v-2h2v2Zm4 0h-2v-2h2v2Zm8 0h-2v-2h2v2Zm-10-2h-2V8h2v2Zm8-4h-2v2h-2v2h-2V8h-2V6h2V4h2V2h4v4ZM6 8H4V6h2v2ZM4 6H2V4h2v2Zm4 0H6V4h2v2ZM6 4H4V2h2v2Z"/></svg></button>
     <button id="edBtn" title="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
   </div>
-  <div id="edRow" class="hidden"><button id="edImport">import asset (.vox)</button><button id="edExport">export sequence</button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
+  <div id="edRow" class="hidden"><button id="edCopy" title="copy the per-frame offsets so you can paste them back to be baked into the code">copy changes</button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
 </div>
 <div id="edHud" class="hidden"></div>
 <div id="kbPanel" class="hidden"><div id="kbCard">
@@ -596,6 +596,7 @@
   let SPARK_IT = 0, KNIFE_IT = 0;                      // item ids of the 1-voxel clash spark and the stone knife (assigned in the items block)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
+  let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
   // the old engine's buildHeldFrames approach) DDA-raytraced in camera space. Item ids in u.pickX.w:
@@ -892,6 +893,7 @@
       it.cells = out; };
     const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
     for (let i = creatureStart - 1; i < items.length; i++) if (items[i] && items[i].cells && items[i].cells.length) bakeAO(items[i]);
+    itemsRef = items;                                  // publish the finished table to the tick loop (cardinal hitbox size + worm stamp poses)
     const dims = [], flat = [];
     for (const it of items) {
       dims.push(`vec4<i32>(${it.w}, ${it.d}, ${it.h}, ${flat.length >> 2})`);
@@ -2806,10 +2808,11 @@
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
+    for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every worm to re-stamp fresh next frame (stale grid indices)
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
-  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0 };
+  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [] };   // giz/drag*: [e] move-gizmo state (Task 1)
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
@@ -2836,6 +2839,10 @@
     return v === LAVA_T || v === LAVA_B || v === LAVA_R || v === LAVA_Y;
   };
   const boxFree = (px, py, pz, hh) => {
+    if (birdBox.active                                                     // SOLID cardinal (Task 2): the player's box may not overlap the bird's world-AABB
+      && px + HW > birdBox.cx - birdBox.hx && px - HW < birdBox.cx + birdBox.hx
+      && pz + HW > birdBox.cz - birdBox.hz && pz - HW < birdBox.cz + birdBox.hz
+      && py + hh > birdBox.cy - birdBox.hy && py       < birdBox.cy + birdBox.hy) return false;
     const x0 = Math.floor(px - HW), x1 = Math.floor(px + HW), z0 = Math.floor(pz - HW), z1 = Math.floor(pz + HW);
     const y0 = Math.floor(py + 0.001), y1 = Math.floor(py + hh - 0.001);
     for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (solid(x, y, z)) return false;
@@ -2955,7 +2962,7 @@
     for (const ii of found) W[ii] = 0;
     return found;
   }
-  function gpuPatch(cells) {                           // few voxels: word-level buffer writes + refresh the touched brick bits
+  function gpuPatch(cells, full = true) {              // few voxels: word-level buffer writes + refresh the touched brick bits. full=false uploads ONLY the touched brick words (per-frame worm stamps — the whole-buffer re-upload is far too heavy at 60 fps)
     const words = new Set(), bset = new Set();
     for (const ii of cells) {
       words.add(ii >> 2);
@@ -2963,6 +2970,7 @@
       bset.add((gx >> 3) + (gy >> 3) * BX + (gz >> 3) * BX * BY);
     }
     for (const w of words) device.queue.writeBuffer(worldBuf, w * 4, W.buffer, w * 4, 4);
+    const bWords = full ? null : new Set(), c2Words = full ? null : new Set();
     for (const b of bset) {
       const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
       let occ = 0;
@@ -2971,6 +2979,7 @@
         if (W32[rw] | W32[rw + 1]) { occ = 1; break scan; }
       }
       if (occ) bricks[b >> 5] |= 1 << (b & 31); else bricks[b >> 5] &= ~(1 << (b & 31));
+      if (!full) bWords.add(b >> 5);
     }
     const c2set = new Set();                           // refresh the touched L2 super-cells too
     for (const b of bset) { const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0; c2set.add((bx >> 2) + (by >> 2) * B2X + (bz >> 2) * B2X * B2Y); }
@@ -2982,8 +2991,10 @@
         if ((bricks[b >> 5] >>> (b & 31)) & 1) { occ = 1; break scan2; }
       }
       if (occ) bricks2[c >> 5] |= 1 << (c & 31); else bricks2[c >> 5] &= ~(1 << (c & 31));
+      if (!full) c2Words.add(c >> 5);
     }
-    uploadBricks();
+    if (full) uploadBricks();
+    else { for (const w of bWords) device.queue.writeBuffer(brickBuf, w * 4, bricks.buffer, w * 4, 4); for (const w of c2Words) device.queue.writeBuffer(brick2Buf, w * 4, bricks2.buffer, w * 4, 4); }
   }
 
   // ── flying cardinal ── free WANDERING flight (no home, no leash — it goes where it goes; it does NOT follow the player): the turn rate
@@ -2991,8 +3002,53 @@
   // always clears the canopy. Pose is written into drop slot 4 each frame (see the drops uniform section) and DDA-raytraced off-grid —
   // smooth rotation, depth-tested, no world-grid writes.
   const bird = { th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0 };
+  const birdBox = { active: false, cx: 0, cy: 0, cz: 0, hx: 8, hy: 8, hz: 8 };   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
   const wbf = Array.from({ length: 55 }, () => ({ init: false }));   // WORLD creature pool (drop slots 9-63): 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-39 worms, 40-54 LILY PADS
+  // ── GRID-STAMPED WORMS (Task 3) ── worms are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
+  // A rigid single pose (the fullest crawl frame) is stamped at the nearest of 4 cardinal orientations; it re-stamps ONLY when its cell or facing changes, so a still worm's lighting fully converges.
+  let WORM_STAMP = null;                               // [orient0..3] → array of [dx,dy(up),dz,palId]; built lazily once the frames + palette exist
+  const WORM_IDS = new Set();                          // palette ids the worm body uses — bfObst/creature lookaheads must treat these as PASSABLE (a worm mustn't trip on its own or another worm's stamped voxels)
+  const wormPatch = [];                                // grid indices touched by worm (un)stamps this frame → one light gpuPatch at the loop's end (or when a pickup/editor clears one)
+  const ensureWormStamp = () => {
+    if (WORM_STAMP || !WORM_NFRAMES || !itemsRef) return WORM_STAMP;
+    let best = 0, bestN = -1;                           // the fullest frame = the most solid-looking rigid body
+    for (let f = 0; f < WORM_NFRAMES; f++) { const it = itemsRef[WORM_ITEM0 - 1 + f]; if (!it) return null; let c = 0; for (const cc of it.cells) if (cc) c++; if (c > bestN) { bestN = c; best = f; } }
+    const it = itemsRef[WORM_ITEM0 - 1 + best], w = it.w, d = it.d, h = it.h, cells = it.cells;
+    const cx = (w - 1) >> 1, cy = (d - 1) >> 1;         // centre the horizontal footprint (long axis = model y); height sits ON the ground (dy = model z)
+    const idOf = (rgb) => { for (let i = 1; i < palette.length; i++) { const p = palette[i]; if (p[0] === rgb[0] && p[1] === rgb[1] && p[2] === rgb[2]) return i; }
+      if (palette.length < 256) return addCol(rgb[0], rgb[1], rgb[2]);     // palette full → nearest existing color (never overflow the 256-entry GPU palette)
+      let bd = 1e9, bi = 1; for (let i = 1; i < palette.length; i++) { const p = palette[i], dd = (p[0] - rgb[0]) ** 2 + (p[1] - rgb[1]) ** 2 + (p[2] - rgb[2]) ** 2; if (dd < bd) { bd = dd; bi = i; } } return bi; };
+    const base = [];                                    // orient 0 = heading +z: model −y (head) → +z
+    for (let mz = 0; mz < h; mz++) for (let my = 0; my < d; my++) for (let mx = 0; mx < w; mx++) {
+      const c = cells[mx + my * w + mz * w * d]; if (!c) continue;
+      base.push([mx - cx, mz, -(my - cy), idOf(c)]);
+    }
+    const rot = (list, k) => list.map(([dx, dy, dz, id]) => { let X = dx, Z = dz; for (let r = 0; r < k; r++) { const nX = Z, nZ = -X; X = nX; Z = nZ; } return [X, dy, Z, id]; });   // k×90°: k1 puts the +z head at +x, k2 −z, k3 −x
+    for (const p of base) WORM_IDS.add(p[3]);           // register the worm's palette ids as passable for the creature lookaheads
+    WORM_STAMP = [base, rot(base, 1), rot(base, 2), rot(base, 3)];
+    palSync();                                          // the worm colors were just appended to the world palette
+    return WORM_STAMP;
+  };
+  const unstampWorm = (B) => { if (!B.sCells) return; for (const ii of B.sCells) if (W[ii] !== 0) { W[ii] = 0; wormPatch.push(ii); } B.sCells = null; B.sKey = null; };
+  const stampWorm = (B) => {
+    const st = ensureWormStamp(); if (!st) return;
+    const Hx = Math.sin(B.th), Hz = Math.cos(B.th);
+    const k = Math.abs(Hz) >= Math.abs(Hx) ? (Hz >= 0 ? 0 : 2) : (Hx >= 0 ? 1 : 3);   // nearest cardinal orientation
+    const gx = Math.round(B.x), gz = Math.round(B.z), gTop = hmap[gwrap(gx, WX) + gwrap(gz, WZ) * WX];
+    const gy = gTop + 1;                                // sit ON the ground surface
+    const key = gx + ',' + gy + ',' + gz + ',' + k;
+    if (B.sKey === key && B.sCells) return;             // unchanged → leave the static stamp in place (this is what lets SVGF settle)
+    unstampWorm(B);
+    const pose = st[k], nc = [];
+    for (const p of pose) { const wy = gy + p[1]; if (wy < 1 || wy >= WY - 1) continue;
+      const ii = gwrap(gx + p[0], WX) + wy * WX + gwrap(gz + p[2], WZ) * WX * WY;
+      if (W[ii] !== 0) continue;                        // only into EMPTY AIR — never overwrite terrain/décor (so un-stamp is a safe →0)
+      W[ii] = p[3]; nc.push(ii); wormPatch.push(ii);
+    }
+    B.sCells = nc; B.sKey = key;
+  };
+  const unstampAllWorms = () => { for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
@@ -3028,6 +3084,7 @@
         const qx = ox - d[0] * tq, qy = oy - d[1] * tq, qz = oz - d[2] * tq;
         if (qx * qx + qy * qy + qz * qz < 24) {
           startGrab(WORM_ITEM0, B.x, B.y, B.z);
+          unstampWorm(B);                              // clear its grid stamp (flushed at the next creature-loop end)
           B.init = false;                              // the creature slot frees — a fresh worm respawns elsewhere in the ring later
           return;
         }
@@ -3108,9 +3165,19 @@
     if (e.button === 0 && ED.on) {                     // ASSET EDITOR: left-click the stamped cardinal to SELECT it (pause) / click again to resume; then , . scrub the frames
       const n = ED.frames.length;
       if (n) {                                         // AABB slab test against the model's bounding box — forgiving for a small SPARSE model (an exact-voxel ray slips through the gaps)
-        const f = ED.frames[((ED.sel % n) + n) % n];
         const cp2 = Math.cos(P.pitch), sp2 = Math.sin(P.pitch), dd = [Math.sin(P.yaw) * cp2, sp2, Math.cos(P.yaw) * cp2];
-        const eo = [P.x, smoothEye, P.z], bmin = [f.bx, ED.y + 1, f.bz], bmax = [f.bx + f.sx, ED.y + 1 + f.sz, f.bz + f.sy];
+        const eo = [P.x, smoothEye, P.z];
+        if (ED.giz && ED.paused && ED.gizBoxes.length) {   // grab a gizmo arrow first — the nearest one the crosshair passes through starts a drag
+          let bestA = -1, bestT = 1e9;
+          for (const g of ED.gizBoxes) { let tmin = 0.1, tmax = 300, ok = true;
+            for (let a = 0; a < 3; a++) { const iv = 1 / (Math.abs(dd[a]) < 1e-9 ? 1e-9 : dd[a]);
+              let ta = (g.min[a] - eo[a]) * iv, tb = (g.max[a] - eo[a]) * iv; if (ta > tb) { const s = ta; ta = tb; tb = s; }
+              tmin = Math.max(tmin, ta); tmax = Math.min(tmax, tb); if (tmin > tmax) { ok = false; break; } }
+            if (ok && tmin < bestT) { bestT = tmin; bestA = g.axis; } }
+          if (bestA >= 0) { ED.dragAxis = bestA; ED.dragAcc = 0; return; }   // dragging this axis now — mousemove nudges the frame
+        }
+        const f = ED.frames[((ED.sel % n) + n) % n], ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;
+        const bmin = [f.bx + ox, ED.y + 1 + oy, f.bz + oz], bmax = [f.bx + ox + f.sx, ED.y + 1 + oy + f.sz, f.bz + oz + f.sy];
         let tmin = 0.1, tmax = 300;
         for (let a = 0; a < 3; a++) { const iv = 1 / (Math.abs(dd[a]) < 1e-9 ? 1e-9 : dd[a]);
           let ta = (bmin[a] - eo[a]) * iv, tb = (bmax[a] - eo[a]) * iv; if (ta > tb) { const s = ta; ta = tb; tb = s; }
@@ -3125,7 +3192,8 @@
       if (performance.now() - swingStart >= 570) { swingStart = performance.now(); if (heldIt()) playSwish(); }   // a click is IGNORED until the current swing's full 570 ms animation finishes — no mid-swing restart (user; applies to every held item). Holding still auto-repeats via the tick loop.
     }
   });
-  document.addEventListener('mouseup', (e) => { if (e.button === 0) mouse0 = false; });
+  document.addEventListener('mouseup', (e) => { if (e.button === 0) { mouse0 = false;
+    if (ED.dragAxis >= 0) { ED.dragAxis = -1; edSaveOffsets(); edHudUpd(); } } });   // let go of a gizmo arrow → AUTOSAVE the new offset
 
   // ── keybinds ── rebindable, persisted to localStorage
   const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', pausetime: 'KeyL', godrays: 'KeyG', vsync: 'KeyV', respawn: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
@@ -3230,6 +3298,17 @@
   });
   document.addEventListener('mousemove', (e) => {
     if (!locked) return;
+    if (ED.on && ED.dragAxis >= 0) {                    // dragging a move-gizmo arrow: map mouse motion onto the axis' on-screen direction, not the camera
+      const A = ED.dragAxis, cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
+      const fwd = [Math.sin(P.yaw) * cp, sp, Math.cos(P.yaw) * cp], rgt = [Math.cos(P.yaw), 0, -Math.sin(P.yaw)];
+      const up = [fwd[1] * rgt[2] - fwd[2] * rgt[1], fwd[2] * rgt[0] - fwd[0] * rgt[2], fwd[0] * rgt[1] - fwd[1] * rgt[0]];
+      const axS = A === 0 ? rgt[0] : A === 1 ? rgt[1] : rgt[2];   // this axis' screen-right + screen-up components
+      const ayS = A === 0 ? up[0] : A === 1 ? up[1] : up[2];
+      ED.dragAcc += (e.movementX * axS - e.movementY * ayS) * 0.05;
+      while (ED.dragAcc >= 1) { edOffset(A, 1); ED.dragAcc -= 1; }
+      while (ED.dragAcc <= -1) { edOffset(A, -1); ED.dragAcc += 1; }
+      return;                                           // suppress camera look while dragging
+    }
     P.yaw += e.movementX * 0.0022;
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - e.movementY * 0.0022));
   });
@@ -3264,7 +3343,7 @@
       if (e.code === 'Period') edSelStep(1);
       if (e.code === 'ArrowLeft') edMoveStep(-1);
       if (e.code === 'ArrowRight') edMoveStep(1);
-      if (e.code === 'KeyE') edMoveStep(1, true);
+      if (e.code === 'KeyE') { ED.paused = true; ED.giz = !ED.giz; edEnsureGizCols(); edLayout(); }   // toggle the XYZ move-gizmo on the selected frame
       if (e.code === 'KeyR') edRotate();
     }
     if (e.code === binds.jump || e.code === binds.crouch) e.preventDefault();   // Alt (crouch) — stop the browser stealing it for the menu bar
@@ -3358,8 +3437,36 @@
     return ii; };
   const edPlaneId = (x, z) => ((x - ED.x0) % 10 === 0 || (z - ED.z0) % 10 === 0) ? ED_GREY : ED_WHITE;   // 1 m squares = every 10th voxel is a grey gridline
   const edHudUpd = () => { edHudEl.textContent = ED.frames.length
-    ? 'frame ' + (ED.sel + 1) + '/' + ED.frames.length + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? '  ⏸ selected  [, .] scrub   [e] move   [r] rotate   [← →] reorder' : '  ▶ playing — left-click the model to select')
+    ? 'frame ' + (ED.sel + 1) + '/' + ED.frames.length + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? ('  ⏸ selected  [, .] scrub   [e] ' + (ED.giz ? 'move: drag an arrow (autosaves)' : 'move gizmo') + '   [r] rotate   [← →] reorder') : '  ▶ playing — left-click the model to select')
     : 'asset editor — press ESC, then import a .vox to begin'; };
+  let gizCol = null;                                   // [e] MOVE-GIZMO (Task 1): 3 stubby arrows (X red / Y green-up / Z blue) you aim at + drag to nudge the frame into alignment
+  const edEnsureGizCols = () => { if (!gizCol) { gizCol = [edCol(240, 60, 55), edCol(70, 210, 70), edCol(80, 130, 255)]; palSync(); } };
+  const GIZ_LEN = 13, GIZ_GAP = 2, GIZ_HEAD = 3;
+  const edGizmos = (f, bx2, bz2, cells) => {           // stamp the 3 arrows out of the frame's + faces and record their pick-AABBs
+    edEnsureGizCols(); ED.gizBoxes = [];
+    const ax0 = bx2, ay0 = ED.y + 1 + (f.oy || 0), az0 = bz2;
+    const cx = ax0 + (f.sx >> 1), cy = ay0 + (f.sz >> 1), cz = az0 + (f.sy >> 1);
+    const put = (x, y, z, id) => { if (x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd || y <= ED.y || y >= WY - 1) return; ED.fcells.push(edSet(x, y, z, id, cells)); };
+    const arrow = (axis) => {                           // axis 0=X(+x) 1=Y(+y up) 2=Z(+z)
+      const s = axis === 0 ? ax0 + f.sx + GIZ_GAP : axis === 1 ? ay0 + f.sz + GIZ_GAP : az0 + f.sy + GIZ_GAP;
+      const id = gizCol[axis];
+      for (let i = 0; i < GIZ_LEN; i++) {               // thin 1-voxel shaft; a pyramidal arrowhead over the last GIZ_HEAD voxels (widest at the head's base, a point at the tip)
+        const tipDist = GIZ_LEN - 1 - i, r = tipDist < GIZ_HEAD ? tipDist : 0;
+        for (let a = -r; a <= r; a++) for (let b = -r; b <= r; b++) {
+          if (axis === 0) put(s + i, cy + a, cz + b, id); else if (axis === 1) put(cx + a, s + i, cz + b, id); else put(cx + a, cy + b, s + i, id);
+        }
+      }
+      const lo = s - 1, hi = s + GIZ_LEN + 1, t = GIZ_HEAD;   // pick-AABB: full length along the axis, ±(head) thick on the other two
+      ED.gizBoxes.push({ axis, min: axis === 0 ? [lo, cy - t, cz - t] : axis === 1 ? [cx - t, lo, cz - t] : [cx - t, cy - t, lo],
+                                max: axis === 0 ? [hi, cy + t, cz + t] : axis === 1 ? [cx + t, hi, cz + t] : [cx + t, cy + t, hi] });
+    };
+    arrow(0); arrow(1); arrow(2);
+  };
+  const edOffset = (axis, d) => { const n = ED.frames.length; if (!n) return; const f = ED.frames[((ED.sel % n) + n) % n];   // nudge the selected frame one voxel along an axis + restamp
+    f.ox = (f.ox || 0) + (axis === 0 ? d : 0); f.oy = (f.oy || 0) + (axis === 1 ? d : 0); f.oz = (f.oz || 0) + (axis === 2 ? d : 0); edLayout(); };
+  const edSaveOffsets = () => { try { const m = {}; for (const f of ED.frames) if (f.ox || f.oy || f.oz) m[f.name] = [f.ox, f.oy, f.oz]; localStorage.setItem('vb_edoffsets', JSON.stringify(m)); } catch (e) {} };   // AUTOSAVE on release
+  const edCopyOffsets = () => { const arr = ED.frames.map((f, i) => ({ frame: i, name: f.name, ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0 }));
+    const txt = JSON.stringify(arr); try { navigator.clipboard.writeText(txt); } catch (e) {} return txt; };
   const edLayout = () => {                             // stamp ONLY the current frame, CENTRED, as a real static object (world voxels → full lighting) — the animation swaps to the next static frame in place; no filmstrip
     const cells = [];
     for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
@@ -3378,19 +3485,23 @@
         const y = ED.y + 1 + ((p >> 16) & 255); if (y >= WY - 1) continue;
         ED.fcells.push(edSet(rbx + (p & 255), y, rbz + ((p >> 8) & 255), p >>> 24, cells));
       }
-      for (const p of f.vox) {                                          // 2) the animated / scrubbed frame
-        const y = ED.y + 1 + ((p >> 16) & 255); if (y >= WY - 1) continue;
-        ED.fcells.push(edSet(bx + (p & 255), y, bz + ((p >> 8) & 255), p >>> 24, cells));
+      const ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;             // per-frame alignment offset (gizmo-driven)
+      for (const p of f.vox) {                                          // 2) the animated / scrubbed frame, shifted by its offset
+        const x = bx + ox + (p & 255), y = ED.y + 1 + oy + ((p >> 16) & 255), z = bz + oz + ((p >> 8) & 255);
+        if (y <= ED.y || y >= WY - 1 || x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
+        ED.fcells.push(edSet(x, y, z, p >>> 24, cells));
       }
-      if (ED.paused) {                                 // amber ring only while SELECTED (scrubbing)
-        const rx0 = bx - 2, rx1 = bx + f.sx + 1, rz0 = bz - 2, rz1 = bz + f.sy + 1;
+      const bx2 = bx + ox, bz2 = bz + oz;
+      if (ED.paused) {                                 // amber ring only while SELECTED (scrubbing) — follows the offset frame
+        const rx0 = bx2 - 2, rx1 = bx2 + f.sx + 1, rz0 = bz2 - 2, rz1 = bz2 + f.sy + 1;
         for (let x = rx0; x <= rx1; x++) for (let z = rz0; z <= rz1; z++) {
           if (x !== rx0 && x !== rx1 && z !== rz0 && z !== rz1) continue;
           if (x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
           const ii = edSet(x, ED.y, z, ED_HLITE, cells);
           ED.ring.push({ ii, x, z });
         }
-      }
+        if (ED.giz) edGizmos(f, bx2, bz2, cells);      // [e] move-gizmo: 3 axis arrows on the selected frame
+      } else { ED.gizBoxes = []; }
     }
     gpuPatch(cells);
     edHudUpd();
@@ -3440,6 +3551,7 @@
         mvox.push(m.raw[i] | (m.raw[i + 1] << 8) | (m.raw[i + 2] << 16) | (cid << 24));   // model z-up → world y at stamp time
       }
       out.push({ sx: m.sx, sy: m.sy, sz: m.sz, vox: mvox, name: name + (models.length > 1 ? ' #' + (k + 1) : ''),
+        ox: 0, oy: 0, oz: 0,                              // per-frame gizmo offsets (voxels) — nudge a frame into alignment with [e] arrows; persisted + copied for baking (Task 1)
         raw: new Uint8Array(m.raw), pal: hasPal ? new Uint8Array(ppal) : null });   // byte-faithful copies — export rebuilds real .vox files from these, not from engine ids
     });
     return out;
@@ -3469,6 +3581,7 @@
     const frames = [];
     for (const f of list) { try { frames.push(...edParseVox(f.u8, f.name)); } catch (e) { console.warn('[vb] editor: bad .vox', f.name, e); } }
     if (!frames.length) return 0;
+    try { const m = JSON.parse(localStorage.getItem('vb_edoffsets') || '{}'); for (const f of frames) { const o = m[f.name]; if (o) { f.ox = o[0] | 0; f.oy = o[1] | 0; f.oz = o[2] | 0; } } } catch (e) {}   // restore autosaved alignment offsets
     ED.frames = frames; ED.sel = 0; ED.paused = false;
     palSync(); edLayout();
     return frames.length; };
@@ -3485,6 +3598,7 @@
       if (y > topMax) topMax = y;
     }
     ED.y = Math.min(WY - 24, Math.max((topMax + 15) & ~7, WY - 80));   // 8-aligned with ≥8 clearance, high in the sky
+    unstampAllWorms();                                 // clear live worms out of W before the editor freezes the world (else edExit's rebuildBricks would resurrect them)
     bricks.fill(0); bricks2.fill(0);                   // SEPARATE LEVEL: empty occupancy = the whole world vanishes from the tracer (W is untouched — exit rebuilds)
     const cells = [];
     for (let z = ED.z0; z < ED.z0 + ED.pd; z++) for (let x = ED.x0; x < ED.x0 + ED.pw; x++) edSet(x, ED.y, z, edPlaneId(x, z), cells);
@@ -3507,11 +3621,9 @@
     edBtnEl.classList.remove('on'); edRowEl.classList.add('hidden'); edHudEl.classList.add('hidden');
   };
   edBtnEl.addEventListener('click', (e) => { e.stopPropagation(); ED.on ? edExit() : edEnter(); });
-  $('edImport').addEventListener('click', (e) => { e.stopPropagation(); edFileEl.click(); });
-  $('edExport').addEventListener('click', (e) => { e.stopPropagation();
-    const btn2 = e.currentTarget, n = ED.frames.length ? edExportSeq() : 0;
-    btn2.textContent = n ? ('exported ' + n + ' file' + (n > 1 ? 's' : '') + ' ↓') : 'import something first';
-    setTimeout(() => { btn2.textContent = 'export sequence'; }, 1800); });
+  $('edCopy').addEventListener('click', (e) => { e.stopPropagation();   // copy the per-frame offsets → paste back to be baked into the code (replaces the .vox exporter)
+    const btn2 = e.currentTarget; if (!ED.frames.length) { btn2.textContent = 'nothing to copy'; setTimeout(() => { btn2.textContent = 'copy changes'; }, 1500); return; }
+    edCopyOffsets(); btn2.textContent = 'copied ✓ — paste it to me'; setTimeout(() => { btn2.textContent = 'copy changes'; }, 2000); });
   edFileEl.addEventListener('click', (e) => e.stopPropagation());
   edFileEl.addEventListener('change', async () => {
     const list = [];
@@ -3534,6 +3646,9 @@
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
+    edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
+    edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
+    birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0; for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } return { voxels: n, worms: live }; },   // Task 2/3 taps
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
       const CH = 64 << 20, stg = device.createBuffer({ size: CH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -3965,7 +4080,7 @@
     }
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
       if (ED.on) {                                       // ── EDITOR STAGE ── the cardinal is a STAMPED static object (world voxels → full lighting), NOT a drop: hide slot 4, and advance the animation by swapping to the next static frame in place
-        UF[o2 + 7] = 0;                                  // item id 0 hides the drop slot
+        UF[o2 + 7] = 0; birdBox.active = false;          // item id 0 hides the drop slot; no bird hitbox in the editor
         if (ED.frames.length && !ED.paused) {            // playing → step to the next frame at ~11 fps (edLayout re-stamps; the denoiser relights each static frame)
           const n = ED.frames.length, fi = Math.floor(now / 90) % n;
           if (fi !== (((ED.sel % n) + n) % n)) { ED.sel = fi; edLayout(); }
@@ -4019,12 +4134,19 @@
         UF[o2 + 4] = Xw[0] * right[0] + Xw[1] * right[1] + Xw[2] * right[2]; UF[o2 + 5] = Xw[0] * up[0] + Xw[1] * up[1] + Xw[2] * up[2]; UF[o2 + 6] = Xw[0] * fwd[0] + Xw[1] * fwd[1] + Xw[2] * fwd[2]; UF[o2 + 7] = BIRD_ITEM0 + fi;
         UF[o2 + 8] = Yw[0] * right[0] + Yw[1] * right[1] + Yw[2] * right[2]; UF[o2 + 9] = Yw[0] * up[0] + Yw[1] * up[1] + Yw[2] * up[2]; UF[o2 + 10] = Yw[0] * fwd[0] + Yw[1] * fwd[1] + Yw[2] * fwd[2]; UF[o2 + 11] = 0;
         UF[o2 + 12] = Zw[0] * right[0] + Zw[1] * right[1] + Zw[2] * right[2]; UF[o2 + 13] = Zw[0] * up[0] + Zw[1] * up[1] + Zw[2] * up[2]; UF[o2 + 14] = Zw[0] * fwd[0] + Zw[1] * fwd[1] + Zw[2] * fwd[2]; UF[o2 + 15] = 0;
-      } else { UF[o2 + 7] = 0; }
+        const bdi = (itemsRef && itemsRef[BIRD_ITEM0 - 1 + BIRD_GLIDE]) || { w: 14, d: 6, h: 10 };   // SOLID hitbox: project the widest-frame extents onto the world axes for a snug, stable AABB (Task 2)
+        const ew2 = bdi.w * 0.5 * BIRD_VS, ed2 = bdi.d * 0.5 * BIRD_VS, eh2 = bdi.h * 0.5 * BIRD_VS;
+        birdBox.cx = px3; birdBox.cy = py3; birdBox.cz = pz3;
+        birdBox.hx = ew2 * Math.abs(Xw[0]) + ed2 * Math.abs(Yw[0]) + eh2 * Math.abs(Zw[0]);
+        birdBox.hy = ew2 * Math.abs(Xw[1]) + ed2 * Math.abs(Yw[1]) + eh2 * Math.abs(Zw[1]);
+        birdBox.hz = ew2 * Math.abs(Xw[2]) + ed2 * Math.abs(Yw[2]) + eh2 * Math.abs(Zw[2]);
+        birdBox.active = true;
+      } else { UF[o2 + 7] = 0; birdBox.active = false; }
     }
-    const bfObst = (x, y, z) => {                      // butterfly obstacle test — trunks, canopy, rocks, snow all block; soft grass/bloom/fern strands don't
+    const bfObst = (x, y, z) => {                      // butterfly obstacle test — trunks, canopy, rocks, snow all block; soft grass/bloom/fern strands + grid-stamped worms don't
       const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
       const id = W[gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY];
-      return id !== 0 && !SNOW_PASS.has(id) && !SNOW_FERN.has(id); };
+      return id !== 0 && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !WORM_IDS.has(id); };
     const bfSurf = (x, z) => Math.max(hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], WL);
     const bfGlide = (x, z) => {                        // MAX terrain over a wide stencil → the flight height RIDES THE RIMS, gliding over ravines/gorges instead of diving in
       let m = bfSurf(x, z);
@@ -4085,7 +4207,7 @@
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
         : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles
-      if (ED.on || dead || !active || (wantK === 4 ? !LILY_ITEM0 : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))) { B.init = false; continue; }
+      if (ED.on || dead || !active || (wantK === 4 ? !LILY_ITEM0 : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))) { if (wormSlot) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden worm must clear its grid stamp
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
@@ -4141,7 +4263,7 @@
             B.col = ((Math.imul(cx, 374761393) ^ Math.imul(cz, 668265263)) >>> 0) % Math.max(1, BFLY_COLS.length);
           }
         }
-        if (!placed) { B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
+        if (!placed) { if (wormSlot) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
@@ -4269,6 +4391,7 @@
       }
       if (B.kind < 2 && B.y < gLoc + 6) B.y = Math.min(gLoc + 6, B.y + 34 * dt);   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline)
       B.y = Math.max(yPrev5 - 30 * dt, Math.min(yPrev5 + 34 * dt, B.y));   // GLOBAL vertical budget: whatever the branches above did, the frame's total climb/descent stays at flutter speed — teleports impossible
+      if (B.kind === 2) { stampWorm(B); continue; }     // GRID-STAMPED worm (Task 3): rigid pose in the world grid → real static lighting; no UF drop slot, no cshad box (the voxels render + cast shadows themselves)
       if (B.kind < 2 && (bfObst(B.x, B.y, B.z) || bfRoofed(B.x, B.y, B.z))) {   // under a roof (cave/overhang) — steer OUT horizontally (eased, never climb into it); count toward a recycle. Worms/ducks don't care about roofs.
         B.omT = (B.om >= 0 ? 5.0 : -5.0); B.trap = (B.trap || 0) + dt;
       }
@@ -4302,6 +4425,7 @@
       UF[o4 + 8] = Yw[0] * right[0] + Yw[2] * right[2]; UF[o4 + 9] = Yw[0] * up[0] + Yw[2] * up[2]; UF[o4 + 10] = Yw[0] * fwd[0] + Yw[2] * fwd[2]; UF[o4 + 11] = glow;
       UF[o4 + 12] = right[1]; UF[o4 + 13] = up[1]; UF[o4 + 14] = fwd[1]; UF[o4 + 15] = 0;
     }
+    if (wormPatch.length) { gpuPatch(wormPatch, false); wormPatch.length = 0; }   // one light brick-word patch for all worm (un)stamps this frame (incl. any queued by a pickup/toss)
     UF[1103] = dropCursor;                             // pick2Y.w = live slot count — the composite loop's bound (always ≥ 9 so drops/cardinal/sparks are covered)
     ffLights.sort((a, b) => a[4] - b[4]);              // nearest glowing fireflies win the 8 point-light slots
     for (let li = 0; li < 8; li++) { const o5 = 1108 + li * 4, L = ffLights[li];
