@@ -573,8 +573,9 @@
   } catch (e) { console.warn('[vb] mushroom.json missing — forest mushrooms skipped', e); }
   const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
   const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
-  { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks are REAL obstacles; everything else stays walk-through decor
+  { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
+    markSolid(MUSHV);                                                                        // mushroom clusters collide (its ids are its own — addCol never dedupes)
     for (const r of ROCK26) markSolid(r); }
   solidTab[ED_WHITE] = solidTab[ED_GREY] = solidTab[ED_HLITE] = 1;                          // the editor stage is walkable floor
   const PINE_ANCH = [];                                // pinecone anchors: canopy foliage voxels with open air below, ≥2 in from the model edge (base rotation)
@@ -1318,7 +1319,7 @@
   const MUCELL = 52;                                   // MUSHROOMS: a rare cluster, ONLY in the pine forest (a pine must be within crown reach), one candidate per 5.2 m cell
   function mushAt(cx, cz) {
     if (!MUSHV) return null;
-    if (ihash(cx * 89 + 17, cz * 97 + 5) > 0.05) return null;   // somewhat rare — only ~5% of candidate cells even before the pine-forest gate below
+    if (ihash(cx * 89 + 17, cz * 97 + 5) > 0.08) return null;   // somewhat rare — ~8% of candidate cells before the pine-forest + rock-clearance gates below (bumped from 5% to offset the sites the new rock check rejects)
     const wx = Math.round(cx * MUCELL + 5 + ihash(cx * 5 + 23, cz * 3 + 9) * (MUCELL - 10));
     const wz = Math.round(cz * MUCELL + 5 + ihash(cx * 11 + 7, cz * 7 + 19) * (MUCELL - 10));
     if (H(wx, wz) <= WL + 4) return null;              // no mushrooms in water or on beaches
@@ -1333,6 +1334,15 @@
         if (d2 < 46 * 46) nearPine = true;
       }
     if (!nearPine) return null;                        // no pine nearby → not the forest → no mushrooms
+    for (let bz2 = Math.floor((wz - 60) / BCELL); bz2 <= Math.floor((wz + 60) / BCELL); bz2++)   // KEEP CLEAR OF ROCKS — both are decor-range ids so a mode-1 stamp would overwrite/interpenetrate the boulder (visible clipping); boulderAt is deterministic so probe the same candidates it places
+      for (let bx2 = Math.floor((wx - 60) / BCELL); bx2 <= Math.floor((wx + 60) / BCELL); bx2++) {
+        const b = boulderAt(bx2, bz2); if (!b) continue;
+        const rm = b.size === 0 ? (ROCKV ? ROCKV : null) : ROCK26[b.mi];
+        const rhalf = rm ? (Math.max(rm.sx, rm.sy) >> 1) : 4;
+        const clr = rhalf + 16;                        // rock half-width + mushroom half-width (27 wide → 13.5) + a small gap → footprints never touch
+        const dx = wx - b.bx, dz = wz - b.bz;
+        if (dx * dx + dz * dz < clr * clr) return null;
+      }
     return { wx, wz, rot: (ihash(cx * 2 + 13, cz * 2 + 7) * 3.99) | 0 };
   }
   function stampMush(m, x0, x1, z0, z1) {
