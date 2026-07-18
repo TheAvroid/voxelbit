@@ -4371,8 +4371,10 @@
       if (B.kind === 2) {                              // STEP-AWARE crawl: accept the move if the destination surface is land, within a 2-voxel step, and clear at ITS height AND above the body
         const gN = bfSurf(nx5, nz5);
         stepOK = gN > WL + 0.5 && Math.abs(gN - bfSurf(B.x, B.z)) <= 2 && !bfObst(nx5, gN + 2, nz5) && !bfObst(nx5, gN + 3, nz5);
-      } else if (B.kind >= 3) stepOK = bfWater(nx5, nz5) && bfSky(nx5, WL + 2, nz5)   // ducks + lilies only ever move onto OPEN-SKY REAL water — never onto a dry ravine floor or under a cave roof…
-        && (bfOpenW(nx5, nz5) || !bfOpenW(B.x, B.z));  // …and never INTO a narrow gorge/ravine arm (escape moves out of one are always allowed so nothing gets pinned)
+      } else if (B.kind >= 3) { stepOK = bfWater(nx5, nz5) && bfSky(nx5, WL + 2, nz5)   // ducks + lilies only ever move onto OPEN-SKY REAL water — never onto a dry ravine floor or under a cave roof…
+          && (bfOpenW(nx5, nz5) || !bfOpenW(B.x, B.z));  // …and never INTO a narrow gorge/ravine arm (escape moves out of one are always allowed so nothing gets pinned)
+        if (B.kind === 3 && stepOK) { const hl = isBaby ? 3.5 : 4.5; stepOK = bfWater(nx5 + Hx2 * hl, nz5 + Hz2 * hl); }   // DUCK HEAD BUFFER (user: 'ramming into terrain'): require water a body-half-length AHEAD so the head stops SHORT of the bank instead of clipping into it; the repulsion + recovery then peel it away
+      }
       else stepOK = !bfObst(nx5, B.y, nz5) && !bfObst(nx5, B.y + 2, nz5);
       if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; }   // fast trap decay: only SUSTAINED blockage accumulates toward a recycle
       else {
@@ -4388,8 +4390,9 @@
           }
           if (bestReach > 0) {                         // MOVE toward that water at normal paddle speed + face it + clear trap → never pins, never mercy-recycles
             const mv = spd5 * dt;
-            B.x += Math.sin(bestA) * mv; B.z += Math.cos(bestA) * mv;
-            B.th = bestA; B.om = 0; B.omT = 0; B.trap = 0; B.stuck = 0;
+            B.x += Math.sin(bestA) * mv; B.z += Math.cos(bestA) * mv;   // physically peel off toward the open water
+            const dthr = Math.atan2(Math.sin(bestA - B.th), Math.cos(bestA - B.th));   // EASE the heading toward the escape instead of a HARD snap (the snap read as a glitchy instant model spin — user: 'glitching out') — the om ease smooths it over a few frames
+            B.omT = Math.max(-3.4, Math.min(3.4, dthr * 4.5)); B.trap = 0; B.stuck = 0;
           }
         }
       }
