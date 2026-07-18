@@ -3185,23 +3185,24 @@
     stampApply(B, pose4[0][k], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + k + ',d' + (isBaby ? 1 : 0));
   };
   // ── GRID-STAMPED PERCHED CARDINAL (matches the editor exactly) ── built from the SAME rotate .vox via edParseVox + edRotVox + the same baked offsets, so its grid lighting/rotation/alignment are identical to the asset-editor cardinal (user)
-  let CARD_POSES = null;
+  let CARD_POSES = null, BLUE_POSES = null;
   const CARD_OFF = { '04.vox': [0, 1, 0], '05.vox': [0, 1, 0] };   // baked per-frame alignment (user's copy-changes) — same table the editor uses
-  const ensureCardPoses = () => {
-    if (CARD_POSES || !CARDINAL_ROTATE.length) return CARD_POSES;
+  const buildBirdPoses = (rotate) => {                  // [frame][orient0..3] pose lists from raw rotate .vox bytes — cardinal OR its BLUE reskin (identical geometry, so same offsets/FOOTZ)
     const frames = [];
-    for (const f of CARDINAL_ROTATE) { try { frames.push(...edParseVox(f.u8, f.name)); } catch (e) {} }
+    for (const f of rotate) { try { frames.push(...edParseVox(f.u8, f.name)); } catch (e) {} }
     if (!frames.length) return null;
-    CARD_POSES = frames.map((f) => { const o = CARD_OFF[f.name] || [0, 0, 0], orients = [];
+    const poses = frames.map((f) => { const o = CARD_OFF[f.name] || [0, 0, 0], orients = [];
       for (let q = 0; q < 4; q++) { const rv = edRotVox(f.vox, f.sx, f.sy, q), cx = rv.sx >> 1, cy = rv.sy >> 1, list = [];
-        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx, ((p >> 16) & 255) + o[1], ((p >> 8) & 255) - cy, id]); CREATURE_IDS.add(id); }   // dx centred, dy = model-z (height) + oy, dz centred (ox/oz are 0 on the cardinal)
+        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx, ((p >> 16) & 255) + o[1], ((p >> 8) & 255) - cy, id]); CREATURE_IDS.add(id); }   // dx centred, dy = model-z (height) + oy, dz centred (ox/oz are 0)
         orients.push(list); }
       return orients; });
-    palSync();                                          // edParseVox appended the cardinal's colors via edCol
-    return CARD_POSES;
+    palSync();                                          // edParseVox appended the bird's colors via edCol
+    return poses;
   };
+  const ensureCardPoses = () => { if (!CARD_POSES && CARDINAL_ROTATE.length) CARD_POSES = buildBirdPoses(CARDINAL_ROTATE); return CARD_POSES; };
+  const ensureBluePoses = () => { if (!BLUE_POSES && BLUEBIRD_ROTATE.length) BLUE_POSES = buildBirdPoses(BLUEBIRD_ROTATE); return BLUE_POSES; };   // blue bird = the cardinal reskinned, scattered the SAME way (user)
   const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
-    const cp = ensureCardPoses(); if (!cp) return;
+    const cp = (B.blue ? ensureBluePoses() : null) || ensureCardPoses(); if (!cp) return;   // half the perched birds are BLUE (B.blue), the rest red cardinals
     const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
     const t = (now + B.phase) % cyc;
     const fiC = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // hold the last frame through the pause
@@ -3516,7 +3517,9 @@
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
     if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
     if (e.code === binds.scaleup) { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
-    if (e.code === 'KeyC') { document.body.classList.toggle('noui'); }   // C hides / shows all HUD overlays (crosshair, fps, hints) — user
+    if (e.code === 'KeyC' && !ED.on) { cineMode = !cineMode; document.body.classList.toggle('noui', cineMode);   // C — CINEMATIC flythrough (auto-hides the HUD for a clean view); press again to exit + regain control
+      if (cineMode) { cine.yaw = P.yaw; cine.om = 0; cine.omT = 0; cine.tRe = 0; cine.bobT = 0; const g = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL); cine.alt = cine.altT = Math.max(42, Math.min(100, P.y - g)); P.fly = true; P.vy = 0; } }
+    else if (e.code === 'KeyC' && ED.on) { document.body.classList.toggle('noui'); }   // in the editor, C still just toggles the HUD
     if (ED.on) {                                       // asset editor: , / . scrub frames, E move the frame, R rotate it, ← / → reorder
       if (e.code === 'Comma') edSelStep(-1);
       if (e.code === 'Period') edSelStep(1);
@@ -3945,6 +3948,31 @@
       } return out.slice(0, 12); } };
   console.log('[vb] ready — endless window', WX, WY, WZ, 'bricks', BX, BY, BZ);
 
+  let cineMode = false;                                // C — CINEMATIC flythrough camera
+  const cine = { yaw: 0, om: 0, omT: 0, tRe: 0, bobT: 0, alt: 60, altT: 60 };
+  const cineUpdate = (dt, now) => {                     // glide forward, weave around tree trunks / terrain, terrain-follow with a weaving altitude + gentle bob & sway
+    P.fly = true; P.vy = 0; P.onGround = false;
+    const tb = now / 1000;
+    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.8; cine.altT = 42 + Math.random() * 58; cine.tRe = tb + 2.5 + Math.random() * 3.5; }   // every few s: a new gentle turn + a weaving altitude target (42..100 above ground = through/over the crowns)
+    const blocked = (yaw2, dist) => { const sx = Math.floor(P.x + Math.sin(yaw2) * dist), sz = Math.floor(P.z + Math.cos(yaw2) * dist); return solid(sx, Math.floor(P.y), sz) || solid(sx, Math.floor(P.y - 5), sz) || solid(sx, Math.floor(P.y + 5), sz); };
+    if (blocked(cine.yaw, 22) || blocked(cine.yaw, 11)) {   // a trunk / hill / rock ahead → bank toward the clearer side
+      const pF = !blocked(cine.yaw + 0.9, 22), nF = !blocked(cine.yaw - 0.9, 22);
+      cine.omT = pF && !nF ? 1.8 : (nF && !pF ? -1.8 : (cine.om >= 0 ? 1.8 : -1.8));
+    }
+    cine.om += (cine.omT - cine.om) * (1 - Math.exp(-2.6 * dt));
+    cine.om = Math.max(-1.4, Math.min(1.4, cine.om));
+    cine.yaw += cine.om * dt;
+    const spd = 32;                                     // smooth cruise glide
+    P.x += Math.sin(cine.yaw) * spd * dt; P.z += Math.cos(cine.yaw) * spd * dt;
+    cine.alt += (cine.altT - cine.alt) * (1 - Math.exp(-0.5 * dt));
+    cine.bobT += dt;
+    const ground = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL);
+    const targetY = ground + cine.alt + Math.sin(cine.bobT * 1.05) * 3.2;   // weaving altitude + bob
+    P.y += (targetY - P.y) * (1 - Math.exp(-2.2 * dt));
+    P.yaw = cine.yaw + Math.sin(cine.bobT * 0.45) * 0.07;   // gentle cinematic yaw sway
+    const tp = -0.05 + Math.sin(cine.bobT * 0.6) * 0.06;    // gentle pitch drift
+    P.pitch += (tp - P.pitch) * (1 - Math.exp(-2 * dt));
+  };
   function tick(now) {
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
     fpsEma = fpsEma * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
@@ -3955,6 +3983,8 @@
     P.crouchT = (P.crouchT || 0) + ((crouching ? 1 : 0) - (P.crouchT || 0)) * (1 - Math.exp(-13 * dt));   // SMOOTH crouch — the eye eases down over ~150 ms instead of snapping (user); collision height stays instant so tight gaps still fit
     if (P.crouchT < 0.001) P.crouchT = 0;
     const hh = crouching ? CR_HEIGHT : HEIGHT, eyeH = EYE + (CR_EYE - EYE) * P.crouchT;   // eyeH interpolates → smoothEye tracks it gently (no more ±3-clamp snap)
+    if (cineMode && !ED.on && !dead) { cineUpdate(dt, now); smoothEye += (P.y + eyeH - smoothEye) * (1 - Math.exp(-6 * dt)); }
+    else {
     const sprint = keys.has(binds.sprint) && !crouching;
     const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
     let mx = 0, mz = 0;
@@ -4013,6 +4043,7 @@
       const targetEye = P.y + eyeH;
       smoothEye += (targetEye - smoothEye) * (1 - Math.exp(-(P.onGround ? 12 : 60) * dt));
       smoothEye = Math.max(targetEye - 3, Math.min(targetEye + 3, smoothEye));   // never lag more than 3 voxels
+    }
     }
 
     // ── stream the world window toward the player ──
@@ -4555,7 +4586,7 @@
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
-        if (lilySlot) B.phase = Math.random() * 100000;   // PERCHED CARDINAL init (lily slots repurposed): a random animation phase so the birds are DESYNCED (each at a different frame/spin), then grid-stamped by stampCardinal
+        if (lilySlot) { B.phase = Math.random() * 100000; B.blue = BLUEBIRD_ROTATE.length > 0 && Math.random() < 0.5; }   // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + ~half are BLUE BIRDS (the reskin), rest red cardinals — both grid-stamped by stampCardinal
       }
       const fadeIn = Math.min(1, (now - B.born) / 700);   // grow in over 0.7 s so a recycled creature materialises smoothly instead of popping into view
       const fadeOut = B.dieT ? Math.max(0, 1 - (now - B.dieT) / 700) : 1;   // …and shrinks away at the day/night handover
