@@ -596,6 +596,7 @@
   let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone (the natural ones get AO+grain)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
+  let MUSHROOM_BYTES = null;                            // voxelized mushrooms.glb (10 cm .vox) → shown as a STATIC object on the editor stage, ~2 m beside the cardinal
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
@@ -883,6 +884,7 @@
         for (let z = 0; z < it.h; z++) { let any = false; for (let i = z * it.w * it.d; i < (z + 1) * it.w * it.d; i++) if (it.cells[i]) { any = true; break; } if (any) { CARD_FOOTZ = Math.min(CARD_FOOTZ, z); break; } } }
       console.log('[vb] cardinal rotate', CARD_NFRAMES, 'frames -> items', CARD_ITEM0, '..', items.length, 'h', CARD_H, 'footZ', CARD_FOOTZ);
     } catch (e) { console.warn('[vb] cardinal rotate frames missing - editor bird disabled', e); CARD_NFRAMES = 0; }
+    try { MUSHROOM_BYTES = { name: 'mushrooms.vox', u8: await abuf('assets/decoration/mushrooms.vox') }; } catch (e) { console.warn('[vb] mushrooms.vox missing', e); }   // voxelized mushroom cluster for the editor stage
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
       const sol = (x, y, z) => x >= 0 && x < w && y >= 0 && y < d && z >= 0 && z < h && !!cells[x + y * w + z * w * d];
@@ -3079,9 +3081,9 @@
     palSync();                                          // edParseVox appended the cardinal's colors via edCol
     return CARD_POSES;
   };
-  const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — EXACT editor timing (24 fps, 600 ms hold, +90°/cycle) desynced per bird by B.phase
+  const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — editor's 24 fps rotation, but a LONG settle between bursts so the SVGF denoiser fully converges (grid-stamp re-stamps break temporal history → the ~0.46 s rotation shimmers; a 3 s hold means it's SETTLED ~87% of the time so the AO reads smooth) — user: 'smooth the AO'
     const cp = ensureCardPoses(); if (!cp) return;
-    const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
+    const n = cp.length, frameMs = 1000 / 24, pauseMs = 3000, cyc = n * frameMs + pauseMs;
     const t = (now + B.phase) % cyc;
     const fiC = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // hold the last frame through the pause
     const q = (-(Math.floor((now + B.phase) / cyc) % 4)) & 3;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
@@ -3508,6 +3510,7 @@
   const edSaveOffsets = () => { try { const m = {}; for (const f of ED.frames) if (f.ox || f.oy || f.oz) m[f.name] = [f.ox, f.oy, f.oz]; localStorage.setItem('vb_edoffsets', JSON.stringify(m)); } catch (e) {} };   // AUTOSAVE on release
   const edCopyOffsets = () => { const arr = ED.frames.map((f, i) => ({ frame: i, name: f.name, ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0 }));
     const txt = JSON.stringify(arr); try { navigator.clipboard.writeText(txt); } catch (e) {} return txt; };
+  let MUSHROOM_PARSED = null;                           // parsed mushrooms.vox (lazy) → stamped beside the editor cardinal; false once parsed-but-empty/failed
   const edRotVox = (vox, sx, sy, q) => {               // rotate a frame's voxels q×90° about the vertical axis (non-destructive display rotation); dims swap on odd turns
     q = ((q % 4) + 4) % 4;
     let cur = vox, cx = sx, cy = sy;
@@ -3534,6 +3537,14 @@
         ED.fcells.push(edSet(x, y, z, p >>> 24, cells));
       }
       f.sxR = rv.sx; f.syR = rv.sy;                                     // rotated footprint (for the ring)
+      if (MUSHROOM_BYTES) {                                            // ── STATIC MUSHROOM ── voxelized mushrooms.glb, stamped ~2 m (20 vox) LEFT of the cardinal for reference (user)
+        if (MUSHROOM_PARSED === null) { try { MUSHROOM_PARSED = edParseVox(MUSHROOM_BYTES.u8, 'mushrooms.vox')[0] || false; palSync(); } catch (e) { MUSHROOM_PARSED = false; } }
+        const m = MUSHROOM_PARSED;
+        if (m) { const mbx = bx - 20 - m.sx, mbz = ED.z0 + ((ED.pd - m.sy) >> 1);
+          for (const p of m.vox) { const x = mbx + (p & 255), y = ED.y + 1 + ((p >> 16) & 255), z = mbz + ((p >> 8) & 255);
+            if (y <= ED.y || y >= WY - 1 || x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
+            ED.fcells.push(edSet(x, y, z, p >>> 24, cells)); } }
+      }
       const bx2 = bx + ox, bz2 = bz + oz;
       if (ED.paused) {                                 // amber ring only while SELECTED (scrubbing) — follows the offset frame
         const rx0 = bx2 - 2, rx1 = bx2 + f.sx + 1, rz0 = bz2 - 2, rz1 = bz2 + f.sy + 1;
@@ -4270,7 +4281,7 @@
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 1.25));   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(4, Math.min(8, nActD >> 1)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-17 (user; 8 = slot cap 32-39)
-    const nDuck = DUCK_ITEM0 ? 2 : 0;                  // MOTHER ducks (slots 16-19) — HALVED back to 2 (user 2026-07-17); placement targets lakes, so families appear on up to 2 visible lakes; each leads 3 ducklings (slots 20-31)
+    const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length) : 0;   // MOTHER ducks (slots 16-19) — ONE family PER detected lake (user: 'guarantee a family in every lake'), capped by the 4 mom slots; each leads 3 ducklings (slots 20-31). lakeSpots is last frame's census (persists).
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
     const nCard = CARD_NFRAMES ? Math.min(15, Math.max(8, Math.round(nActD * 2))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED (user: 'hardly see any'), reuse the freed lily slots 40-54 (cap 15)
     const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
