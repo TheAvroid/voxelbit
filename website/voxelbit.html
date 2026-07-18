@@ -506,6 +506,7 @@
   const solidTab = new Uint8Array(256);                // per-id collision: terrain/trunks/logs solid; decor + FOLIAGE walk-through
   for (let i = 1; i < DECOR_MIN; i++) solidTab[i] = 1;
   for (const f of foliageIds) solidTab[f] = 0;
+  const mushTab = new Uint8Array(256);                 // per-id BOUNCY flag — mushroom voxels trampoline the player (filled once MUSHV loads)
   console.log('[vb] pine5.vox', MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
 
   // ── decoration models ── ONE sparse format everywhere: { sx (width, x), sy (depth, y), sz (height, z),
@@ -576,6 +577,7 @@
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
     markSolid(MUSHV);                                                                        // mushroom clusters collide (its ids are its own — addCol never dedupes)
+    if (MUSHV) for (const p of MUSHV.vox) mushTab[p >>> 24] = 1;                             // …and they're BOUNCY: landing on one trampolines the player (progressively higher)
     for (const r of ROCK26) markSolid(r); }
   solidTab[ED_WHITE] = solidTab[ED_GREY] = solidTab[ED_HLITE] = 1;                          // the editor stage is walkable floor
   const PINE_ANCH = [];                                // pinecone anchors: canopy foliage voxels with open air below, ≥2 in from the model edge (base rotation)
@@ -2862,7 +2864,8 @@
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
   const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;   // +20% base speed
-  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0 };
+  const BOUNCE_V0 = 95, BOUNCE_DV = 22, BOUNCE_MAX = 195;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped (≈9 m up)
+  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0 };
   P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
   const keys = new Set();
@@ -2892,6 +2895,12 @@
     const y0 = Math.floor(py + 0.001), y1 = Math.floor(py + hh - 0.001);
     for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (solid(x, y, z)) return false;
     return true;
+  };
+  const onMushroom = () => {                            // is the player's box resting on a bouncy mushroom voxel? (feet sit at floor(P.y); the surface is the voxel below)
+    const gy = Math.floor(P.y) - 1; if (gy < 0 || gy >= WY) return false;
+    const x0 = Math.floor(P.x - HW), x1 = Math.floor(P.x + HW), z0 = Math.floor(P.z - HW), z1 = Math.floor(P.z + HW);
+    for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (mushTab[W[gwrap(x, WX) + gy * WX + gwrap(z, WZ) * WX * WY]]) return true;
+    return false;
   };
   function moveAxis(axis, d, hh) {
     if (d === 0) return false;                         // a zero move must never snap-shove an embedded player sideways
@@ -3875,8 +3884,19 @@
         P.vy = Math.max(-20, P.vy - GRAVITY * 0.12 * dt);
         if (keys.has(binds.jump)) P.vy = Math.min(46, P.vy + 320 * dt);
       } else P.vy = Math.max(-160, P.vy - GRAVITY * dt);
+      const impV = P.vy;                              // impact velocity before the collision zeroes it
       const hitY = moveAxis(1, P.vy * dt, hh);
-      if (hitY) { if (P.vy < 0) { P.onGround = true; P.sprintJump = false; } P.vy = 0; }
+      if (hitY) {
+        if (impV < 0 && !inWater && !dead && onMushroom()) {   // BOUNCY MUSHROOM — relaunch UP instead of sticking, higher each consecutive bounce
+          P.bounceN = Math.min(P.bounceN + 1, 10);
+          P.vy = Math.min(BOUNCE_MAX, BOUNCE_V0 + BOUNCE_DV * (P.bounceN - 1));
+          P.onGround = false; P.sprintJump = false;
+        } else {
+          if (P.vy < 0) { P.onGround = true; P.sprintJump = false; }
+          P.bounceN = 0;                              // landed on normal ground / hit a ceiling → reset the bounce streak
+          P.vy = 0;
+        }
+      }
       if (!dead && !P.fly && (lavaAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z)) || lavaAt(Math.floor(P.x), Math.floor(P.y + 1), Math.floor(P.z)))) {
         dead = true; $('over').classList.remove('hidden');
         lockEl.classList.add('hidden');                  // never show the ESC menu under the game-over screen
