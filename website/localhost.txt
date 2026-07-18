@@ -1,0 +1,9 @@
+1. the camera is clipping trees in cinematic mode. prevent this. have the camera "bob and weave" between the trees. have the camera angled right when going right and angles left when going left. (like a spaceship would do). also make the camera smoother when going up and down as well.
+
+2. can you make the cardinals and worms pop in further away? I can see cardinals just appear out of no where when walking. make every life form obey the spawning mechanics of the cardinal/worm.
+
+3. push to github.
+
+4. if the hand slots are empty, automatically pick up floating items.
+
+5. revert the cave changes. redesign the caves. make them smoothed out. not just run a sphere through it like you did before.

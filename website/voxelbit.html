@@ -3213,9 +3213,10 @@
   const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
     const cp = (B.blue ? ensureBluePoses() : null) || ensureCardPoses(); if (!cp) return;   // half the perched birds are BLUE (B.blue), the rest red cardinals
     const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
+    const near = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) < 150 * 150;   // PERF (user lag): only birds within ~15 m ANIMATE (re-stamp every frame). Distant ones hold ONE static pose → they stamp once and never churn the grid again, cutting ~150 tiny GPU buffer uploads/frame down to a handful. Imperceptible at range.
     const t = (now + B.phase) % cyc;
-    const fiC = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // hold the last frame through the pause
-    const q = (-(Math.floor((now + B.phase) / cyc) % 4)) & 3;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
+    const fiC = near ? (t < n * frameMs ? Math.floor(t / frameMs) : n - 1) : 0;   // hold the last frame through the pause
+    const q = near ? ((-(Math.floor((now + B.phase) / cyc) % 4)) & 3) : 0;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
