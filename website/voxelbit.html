@@ -602,11 +602,11 @@
   let DUCK_ITEM0 = 0;                                  // duck (assets/life/duck/base.vox) — floats on lakes with its orange feet below the waterline (pool slots 16-19 = moms)
   let DUCK_GREEN = [0.03, 0.22, 0.07];                 // the mallard HEAD green (linear) — extracted at load; the black eye voxel blinks to THIS (user)
   let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
-  let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads as LIVE entities (pool slots 32-47) — they drift and rotate OFF-grid on the water; static worldgen stamping retired
+  let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads (kind 4) drift and rotate OFF-grid on the water; static worldgen stamping retired
   let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone (the natural ones get AO+grain)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
-  let MUSHROOM_BYTES = null;                            // voxelized mushrooms.glb (10 cm .vox) → auto-loaded as the STATIC editable object on the editor stage (cardinal removed — user)
+  let LOTUS_BYTES = null;                               // voxelized lotus.glb (10 cm .vox) → auto-loaded as the STATIC editable object on the editor stage (mushroom removed — user)
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
@@ -894,7 +894,7 @@
         for (let z = 0; z < it.h; z++) { let any = false; for (let i = z * it.w * it.d; i < (z + 1) * it.w * it.d; i++) if (it.cells[i]) { any = true; break; } if (any) { CARD_FOOTZ = Math.min(CARD_FOOTZ, z); break; } } }
       console.log('[vb] cardinal rotate', CARD_NFRAMES, 'frames -> items', CARD_ITEM0, '..', items.length, 'h', CARD_H, 'footZ', CARD_FOOTZ);
     } catch (e) { console.warn('[vb] cardinal rotate frames missing - editor bird disabled', e); CARD_NFRAMES = 0; }
-    try { MUSHROOM_BYTES = { name: 'mushrooms.vox', u8: await abuf('assets/decoration/mushrooms.vox') }; } catch (e) { console.warn('[vb] mushrooms.vox missing', e); }   // voxelized mushroom cluster for the editor stage
+    try { LOTUS_BYTES = { name: 'lotus.vox', u8: await abuf('assets/decoration/lotus.vox') }; } catch (e) { console.warn('[vb] lotus.vox missing', e); }   // voxelized lotus for the editor stage
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
       const sol = (x, y, z) => x >= 0 && x < w && y >= 0 && y < d && z >= 0 && z < h && !!cells[x + y * w + z * w * d];
@@ -2877,7 +2877,7 @@
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
-    for (let j = 16; j < 108; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-47 + cardinals 48-107) to re-stamp fresh next frame (stale grid indices)
+    for (let j = 16; j < 184; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-63 + cardinals 64-183) to re-stamp fresh next frame (stale grid indices)
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
@@ -3038,6 +3038,7 @@
   const PICK_CONE = new Set(); if (CONEV) for (const p of CONEV.vox) PICK_CONE.add(p >>> 24);   // pinecone ids (ground cones AND tree-hung ones) → pinecone item
   if (ROCKV) for (const p of ROCKV.vox) PICK_ROCK.add(p >>> 24);                 // the field stone (rock.vox) → rock item
   for (const sm of STICKV) for (const p of sm.vox) PICK_STICK.add(p >>> 24);     // stick_1/stick_2 → twig item
+  const WORM_PASS = new Set([...PICK_CONE, ...PICK_STICK, ...PICK_ROCK]);        // worms crawl OVER small ground clutter (pinecones/sticks/field stones) instead of tripping on it → getting stuck → teleporting (user)
   const PASSTHRU = new Set([...GRASS, ...FERNIDS, WATER_T, WATER_B]);   // the pick ray sees through soft decor + water
   function floodRemove(x, y, z, ids, cap) {            // TWO-PASS: collect first, remove only if the whole region fits the cap —
     const found = []; const q = [[x, y, z]]; const seen = new Set();   // truncating mid-flood left half-eaten rocks (flat-faced grey "stone cube" stumps, e.g. two touching boulders > cap)
@@ -3096,7 +3097,7 @@
   const bird = { th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0 };
   const birdBox = { active: false, cx: 0, cy: 0, cz: 0, hx: 8, hy: 8, hz: 8 };   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
-  const wbf = Array.from({ length: 108 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-47 worms (16 — DOUBLED 2026-07-18), 48-107 PERCHED CARDINALS (60 slots — DOUBLED 2026-07-18 — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget)
+  const wbf = Array.from({ length: 184 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-183 PERCHED CARDINALS (120 slots — DOUBLED AGAIN 2026-07-18 — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget)
   // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
   // Worms animate their crawl (re-stamping the current frame) while moving + freeze on a pause; ducks are a single rigid pose floating at a fixed waterline. A creature re-stamps only when its cell / facing / frame changes, so a still one fully converges to crisp static lighting.
   let WORM_STAMP = null, DUCK_STAMP = null, DUCKB_STAMP = null;   // [frame][orient0..3] → array of [dx,dy(up),dz,palId]; built lazily once the frames + palette exist
@@ -3177,7 +3178,7 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
-  const unstampAllWorms = () => { for (let j = 16; j < 108; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-47 + cardinals 48-107; caller re-uploads occupancy
+  const unstampAllWorms = () => { for (let j = 16; j < 184; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-63 + cardinals 64-183; caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
@@ -3204,7 +3205,7 @@
       }
     }
     if (WORM_NFRAMES && canAdd(WORM_ITEM0)) {          // LIVE WORMS — same generous ray-sphere grab as drops; the caught worm keeps wriggling in the hand
-      for (let wi = 32; wi < 48; wi++) {               // worm pool slots (32-47, 16 worms — DOUBLED 2026-07-18)
+      for (let wi = 32; wi < 64; wi++) {               // worm pool slots (32-63, 32 worms — DOUBLED AGAIN 2026-07-18)
         const B = wbf[wi];
         if (!B || !B.init || (B.kind | 0) !== 2) continue;
         const ox = B.x - P.x, oy = B.y - smoothEye, oz = B.z - P.z;
@@ -3598,7 +3599,6 @@
   const edSaveOffsets = () => { try { const m = {}; for (const f of ED.frames) if (f.ox || f.oy || f.oz) m[f.name] = [f.ox, f.oy, f.oz]; localStorage.setItem('vb_edoffsets', JSON.stringify(m)); } catch (e) {} };   // AUTOSAVE on release
   const edCopyOffsets = () => { const arr = ED.frames.map((f, i) => ({ frame: i, name: f.name, ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0 }));
     const txt = JSON.stringify(arr); try { navigator.clipboard.writeText(txt); } catch (e) {} return txt; };
-  let MUSHROOM_PARSED = null;                           // parsed mushrooms.vox (lazy) → stamped beside the editor cardinal; false once parsed-but-empty/failed
   const edRotVox = (vox, sx, sy, q) => {               // rotate a frame's voxels q×90° about the vertical axis (non-destructive display rotation); dims swap on odd turns
     q = ((q % 4) + 4) % 4;
     let cur = vox, cx = sx, cy = sy;
@@ -3752,7 +3752,7 @@
     gpuPatch(cells);
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = false;
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && MUSHROOM_BYTES) edImportBufs([MUSHROOM_BYTES]);   // auto-load the voxelized MUSHROOM as the editable object (cardinal removed — user). A manual .vox import replaces it.
+    if (!ED.frames.length && LOTUS_BYTES) edImportBufs([LOTUS_BYTES]);   // auto-load the voxelized LOTUS as the editable object (mushroom removed — user). A manual .vox import replaces it.
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
   };
@@ -3796,9 +3796,9 @@
     edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
     edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
-    birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 48; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
-    duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 48; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
-    perched() { const o = []; for (let j = 48; j < 108; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0) }); } } return o; },   // perched-cardinal test tap
+    birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
+    duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
+    perched() { const o = []; for (let j = 64; j < 184; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0) }); } } return o; },   // perched-cardinal test tap
     reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
@@ -4202,7 +4202,7 @@
       const dr = drops[i];
       if (!(WORM_NFRAMES && dr.it === WORM_ITEM0 && dr.T && (now - dr.born) / 1000 > dr.T + 0.24)) continue;
       let wi = 32, fd = -1;
-      for (let j = 32; j < 48; j++) { const B2 = wbf[j];   // worm pool slots (32-47, 16 worms — DOUBLED 2026-07-18)
+      for (let j = 32; j < 64; j++) { const B2 = wbf[j];   // worm pool slots (32-63, 32 worms — DOUBLED AGAIN 2026-07-18)
         if (!B2.init) { wi = j; fd = -2; break; }
         const d2w = (B2.x - P.x) * (B2.x - P.x) + (B2.z - P.z) * (B2.z - P.z);
         if (d2w > fd) { fd = d2w; wi = j; }            // all live → reuse the farthest (least visible) slot
@@ -4312,6 +4312,10 @@
       const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
       const id = W[gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY];
       return id !== 0 && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !CREATURE_IDS.has(id); };
+    const bfObstW = (x, y, z) => {                     // WORM obstacle test — same as bfObst but also passes small ground clutter (cones/sticks/field stones) so a crawling worm never pins on them
+      const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
+      const id = W[gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY];
+      return id !== 0 && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !CREATURE_IDS.has(id) && !WORM_PASS.has(id); };
     const bfSurf = (x, z) => Math.max(hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], WL);
     const bfGlide = (x, z) => {                        // MAX terrain over a wide stencil → the flight height RIDES THE RIMS, gliding over ravines/gorges instead of diving in
       let m = bfSurf(x, z);
@@ -4359,7 +4363,7 @@
         const wx = P.x + Math.sin(a) * d, wz = P.z + Math.cos(a) * d;
         const tr = treeAt(Math.floor(wx / TCELL), Math.floor(wz / TCELL)); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
-        let occ = false; for (let j = 48; j < 108; j++) { if (j === selfWk) continue; const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) { const ddx = (O.tx || 0) - tr.tx, ddz = (O.tz || 0) - tr.tz; if (ddx * ddx + ddz * ddz < 39 * 39) { occ = true; break; } } }   // keep cardinals ≥39 vox apart (tightened from 55 for the DOUBLED count) → EVENLY SPREAD across the pines, never clustered (user)
+        let occ = false; for (let j = 64; j < 184; j++) { if (j === selfWk) continue; const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) { const ddx = (O.tx || 0) - tr.tx, ddz = (O.tz || 0) - tr.tz; if (ddx * ddx + ddz * ddz < 28 * 28) { occ = true; break; } } }   // keep cardinals ≥28 vox apart (tightened from 39 for the DOUBLED-AGAIN count) → EVENLY SPREAD across the pines, never clustered (user)
         if (occ) continue;
         const cr = pineEdgePerch(tr.tx, tr.tz); if (!cr) continue;
         return { tx: tr.tx, tz: tr.tz, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };   // x/z centred on the branch-tip needle
@@ -4372,10 +4376,10 @@
     const rdV = Math.max(140, renderDist);
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 1.25));   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
-    const nWorm = WORM_NFRAMES ? Math.max(8, Math.min(16, nActD)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-18 (user; 16 = slot cap 32-47)
+    const nWorm = WORM_NFRAMES ? Math.max(16, Math.min(32, nActD * 2)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-18 (user; 32 = slot cap 32-63)
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
-    const nCard = CARD_NFRAMES ? Math.min(60, Math.max(32, Math.round(nActD * 16))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED AGAIN to 60 slots (user 2026-07-18), floor 32 so the world stays consistently populated
+    const nCard = CARD_NFRAMES ? Math.min(120, Math.max(64, Math.round(nActD * 32))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED AGAIN to 120 slots (user 2026-07-18), floor 64 so the world stays consistently populated
     const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
 
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
@@ -4395,13 +4399,13 @@
       }
     }
     let dropCursor = 9;                                // COMPACTION: live creatures emit to consecutive slots from 9; the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists
-    for (let wk = 0; wk < 108; wk++) {
+    for (let wk = 0; wk < 184; wk++) {
       const B = wbf[wk];
-      const wormSlot = wk >= 32 && wk < 48, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 48;
+      const wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
       const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
-      const wantK = lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)));   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-47 WORMS (16), 48-107 PERCHED CARDINALS (60)
-      const active = lilySlot ? (wk - 48 < nCard)
+      const wantK = lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)));   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-183 PERCHED CARDINALS (120)
+      const active = lilySlot ? (wk - 64 < nCard)
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
         : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles
@@ -4456,7 +4460,7 @@
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
           if (wantK >= 3 && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
           if (wantK < 2 && tooClose(0, 16, 40)) continue;             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
-          if (wantK === 2 && tooClose(32, 48, 60)) continue;          // worms spread WIDE — never bunched (user, doubled with the population)
+          if (wantK === 2 && tooClose(32, 64, 60)) continue;          // worms spread WIDE — never bunched (user, doubled with the population)
           if (wantK === 3 && tooClose(16, 20, 200)) continue;         // mother ducks spawn ≥200 vox apart → at most ~2 families fit on a typical lake (user: 'only 1-2 per lake')
           if (wantK === 4 && tooClose(40, 55, 12)) continue;          // lilies scatter
           const sy = wantK === 2 ? gS + 2 : (wantK === 3 ? WL + 4 : (wantK === 4 ? WL + 1.4 : bfGlide(sx, sz) + (wantK ? 9 : 14)));   // ducks/lilies float; duck FEET sit inside the water voxel layer
@@ -4484,7 +4488,7 @@
       } else if (B.kind === 2) {                       // WORM: smooth continuous meandering crawl (the random pause was removed — user)
         B.animClk = (B.animClk || 0) + dt;
         const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
-          return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObst(ax, gA + 2, az) && !bfObst(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance
+          return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObstW(ax, gA + 2, az) && !bfObstW(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance (bfObstW passes small ground clutter)
         if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }
         if (!wormOK(B.th, 5) || !wormOK(B.th, 2.5)) {  // unclimbable ahead (rock face / shoreline / cliff) — commit to a firm turn toward the open side
           const pF = wormOK(B.th + 1.1, 5), nF = wormOK(B.th - 1.1, 5);
@@ -4533,7 +4537,7 @@
       let stepOK;
       if (B.kind === 2) {                              // STEP-AWARE crawl: accept the move if the destination surface is land, within a 2-voxel step, and clear at ITS height AND above the body
         const gN = bfSurf(nx5, nz5);
-        stepOK = gN > WL + 0.5 && Math.abs(gN - bfSurf(B.x, B.z)) <= 2 && !bfObst(nx5, gN + 2, nz5) && !bfObst(nx5, gN + 3, nz5);
+        stepOK = gN > WL + 0.5 && Math.abs(gN - bfSurf(B.x, B.z)) <= 2 && !bfObstW(nx5, gN + 2, nz5) && !bfObstW(nx5, gN + 3, nz5);
       } else if (B.kind >= 3) { stepOK = bfWater(nx5, nz5) && bfSky(nx5, WL + 2, nz5)   // ducks + lilies only ever move onto OPEN-SKY REAL water — never onto a dry ravine floor or under a cave roof…
           && (bfOpenW(nx5, nz5) || !bfOpenW(B.x, B.z));  // …and never INTO a narrow gorge/ravine arm (escape moves out of one are always allowed so nothing gets pinned)
         if (B.kind === 3 && stepOK) { const hl = isBaby ? 5.0 : 7.0; stepOK = bfWater(nx5 + Hx2 * hl, nz5 + Hz2 * hl); }   // DUCK HEAD BUFFER (user: 'keep further away, still running into it'): require water WELL ahead (7 vox mom / 5 baby) so it stops with a clear margin, never touching the bank
