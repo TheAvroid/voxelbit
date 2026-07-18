@@ -2811,7 +2811,7 @@
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
-    for (let j = 16; j < 40; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-39) to re-stamp fresh next frame (stale grid indices)
+    for (let j = 16; j < 55; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-39 + cardinals 40-54) to re-stamp fresh next frame (stale grid indices)
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
@@ -3063,7 +3063,32 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(WL + (isBaby ? 2.9 : 4.4)) - (it.h >> 1);   // model CENTRE at the still-water float height (matches the off-grid base9); bottom rows landing on water voxels are auto-skipped
     stampApply(B, pose4[0][k], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + k + ',d' + (isBaby ? 1 : 0));
   };
-  const unstampAllWorms = () => { for (let j = 16; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-39; caller re-uploads occupancy
+  // ── GRID-STAMPED PERCHED CARDINAL (matches the editor exactly) ── built from the SAME rotate .vox via edParseVox + edRotVox + the same baked offsets, so its grid lighting/rotation/alignment are identical to the asset-editor cardinal (user)
+  let CARD_POSES = null;
+  const CARD_OFF = { '04.vox': [0, 1, 0], '05.vox': [0, 1, 0] };   // baked per-frame alignment (user's copy-changes) — same table the editor uses
+  const ensureCardPoses = () => {
+    if (CARD_POSES || !CARDINAL_ROTATE.length) return CARD_POSES;
+    const frames = [];
+    for (const f of CARDINAL_ROTATE) { try { frames.push(...edParseVox(f.u8, f.name)); } catch (e) {} }
+    if (!frames.length) return null;
+    CARD_POSES = frames.map((f) => { const o = CARD_OFF[f.name] || [0, 0, 0], orients = [];
+      for (let q = 0; q < 4; q++) { const rv = edRotVox(f.vox, f.sx, f.sy, q), cx = rv.sx >> 1, cy = rv.sy >> 1, list = [];
+        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx, ((p >> 16) & 255) + o[1], ((p >> 8) & 255) - cy, id]); CREATURE_IDS.add(id); }   // dx centred, dy = model-z (height) + oy, dz centred (ox/oz are 0 on the cardinal)
+        orients.push(list); }
+      return orients; });
+    palSync();                                          // edParseVox appended the cardinal's colors via edCol
+    return CARD_POSES;
+  };
+  const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — EXACT editor timing (24 fps, 600 ms hold, +90°/cycle) desynced per bird by B.phase
+    const cp = ensureCardPoses(); if (!cp) return;
+    const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
+    const t = (now + B.phase) % cyc;
+    const fiC = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // hold the last frame through the pause
+    const q = (-(Math.floor((now + B.phase) / cyc) % 4)) & 3;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
+    const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
+    stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
+  };
+  const unstampAllWorms = () => { for (let j = 16; j < 55; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-39 + cardinals 40-54; caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
@@ -3682,7 +3707,7 @@
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0; for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } return { voxels: n, worms: live }; },   // Task 2/3 taps
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
-    perched() { const o = []; for (let j = 40; j < 55; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, below: this.vox(fx, fy - 1, fz), spin: B.spin }); } } return o; },   // perched-cardinal test tap
+    perched() { const o = []; for (let j = 40; j < 55; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0) }); } } return o; },   // perched-cardinal test tap
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
       const CH = 64 << 20, stg = device.createBuffer({ size: CH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -4247,7 +4272,7 @@
     const nWorm = WORM_NFRAMES ? Math.max(4, Math.min(8, nActD >> 1)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-17 (user; 8 = slot cap 32-39)
     const nDuck = DUCK_ITEM0 ? 2 : 0;                  // MOTHER ducks (slots 16-19) — HALVED back to 2 (user 2026-07-17); placement targets lakes, so families appear on up to 2 visible lakes; each leads 3 ducklings (slots 20-31)
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
-    const nCard = CARD_NFRAMES ? Math.min(10, Math.max(4, Math.round(nActD))) : 0;   // PERCHED CARDINALS on pine crowns (user) — reuse the freed lily slots 40-54 (cap 15)
+    const nCard = CARD_NFRAMES ? Math.min(15, Math.max(8, Math.round(nActD * 2))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED (user: 'hardly see any'), reuse the freed lily slots 40-54 (cap 15)
     const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
@@ -4317,8 +4342,8 @@
             sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
           } else {
             const a5 = Math.random() * 6.283;
-            const d5 = wantK === 2 ? Math.max(25, Math.sqrt(Math.random()) * rdW * 0.55)   // worms: AREA-uniform radius (plain random bunches them near the player)
-              : (wantK >= 3 ? (30 + Math.random() * (rdD * 0.8 - 30)) : Math.sqrt(50 * 50 + Math.random() * (rdV * rdV - 50 * 50)));   // flyers now AREA-uniform across the whole disc from 50 vox out (user: even spread) — was a far-fog ring; ducks/lilies anywhere a lake might be
+            const d5 = wantK === 2 ? Math.sqrt(40 * 40 + Math.random() * (rdW * rdW - 40 * 40))   // worms: AREA-uniform across the WHOLE disc (40..rdW) — the old ·0.55 bunched them in the inner half and left the outer world empty (user)
+              : (wantK >= 3 ? Math.sqrt(50 * 50 + Math.random() * (rdD * rdD - 50 * 50)) : Math.sqrt(50 * 50 + Math.random() * (rdV * rdV - 50 * 50)));   // ducks (fallback, no lake in view) + flyers: AREA-uniform across the whole disc, even spread
             sx = P.x + Math.sin(a5) * d5; sz = P.z + Math.cos(a5) * d5;
           }
           if (sx <= rect.xlo + 4 || sx >= rect.xhi - 4 || sz <= rect.zlo + 4 || sz >= rect.zhi - 4) continue;   // NEVER spawn outside the GENERATED rect — hmap there is garbage (the snow-landing guard; embedded 'cave' creatures after recenters)
@@ -4342,47 +4367,25 @@
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
-        if (lilySlot) {                                // PERCHED CARDINAL init (lily slots repurposed): stationary, spins via the rotate frames + a per-cycle 90° accrual
-          B.baseYaw = B.th; B.spin = 0; B.pfi = -1; B.animClk = Math.random() * 2;
-          B.y = B.perchFeet + CARD_H * 0.5 - CARD_FOOTZ;   // anchor (model centre) placed so the FEET land on the crown needle
-        }
+        if (lilySlot) B.phase = Math.random() * 100000;   // PERCHED CARDINAL init (lily slots repurposed): a random animation phase so the birds are DESYNCED (each at a different frame/spin), then grid-stamped by stampCardinal
       }
       const fadeIn = Math.min(1, (now - B.born) / 700);   // grow in over 0.7 s so a recycled creature materialises smoothly instead of popping into view
       const fadeOut = B.dieT ? Math.max(0, 1 - (now - B.dieT) / 700) : 1;   // …and shrinks away at the day/night handover
       const bScale = 0.12 + 0.88 * fadeIn * fadeIn * (3 - 2 * fadeIn) * fadeOut;
-      if (B.kind === 5) {                              // ── PERCHED CARDINAL ── stationary on the pine crown; the 11 rotate frames play at 24 fps, and the whole model steps +90° each completed cycle so the spin loops seamlessly
-        B.animClk += dt;
-        const fiC = Math.floor(B.animClk * 24) % CARD_NFRAMES;
-        if (fiC < B.pfi) B.spin++;                     // a rotation cycle just wrapped → advance the accumulated quarter-turn
-        B.pfi = fiC;
-        const yaw = B.baseYaw + B.spin * (Math.PI / 2);   // per-cycle 90° accrual IN THE FRAMES' turn direction → the spin continues past 90° into a full seamless 360° (−spin jumped 180° and read as 'stuck')
-        const HxR = Math.sin(yaw), HzR = Math.cos(yaw), Xw = [HzR, 0, -HxR], Yw = [-HxR, 0, -HzR];
-        const rx = B.x - cam[0], ry = B.y - cam[1], rz = B.z - cam[2];
-        if (dropCursor > 63) continue;
-        const o4 = 68 + dropCursor * 16; dropCursor++;
-        UF[o4] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o4 + 3] = bScale;
-        UF[o4 + 4] = Xw[0] * right[0] + Xw[2] * right[2]; UF[o4 + 5] = Xw[0] * up[0] + Xw[2] * up[2]; UF[o4 + 6] = Xw[0] * fwd[0] + Xw[2] * fwd[2]; UF[o4 + 7] = CARD_ITEM0 + fiC;
-        UF[o4 + 8] = Yw[0] * right[0] + Yw[2] * right[2]; UF[o4 + 9] = Yw[0] * up[0] + Yw[2] * up[2]; UF[o4 + 10] = Yw[0] * fwd[0] + Yw[2] * fwd[2]; UF[o4 + 11] = 0;
-        UF[o4 + 12] = right[1]; UF[o4 + 13] = up[1]; UF[o4 + 14] = fwd[1]; UF[o4 + 15] = 0;
-        continue;
-      }
+      if (B.kind === 5) { stampCardinal(B, now); continue; }   // ── PERCHED CARDINAL ── GRID-STAMPED (aligned to grid, identical grid lighting + rotation + offsets to the asset-editor cardinal); stationary, so no shimmer beyond the editor's
       let Hx2 = Math.sin(B.th), Hz2 = Math.cos(B.th);
       if (B.kind === 4) {                              // LILY PAD: slow drift on the water + constant free rotation; movement heading (mth) is independent of the visual spin
         if (tb3 > B.tRe) { B.mth += (Math.random() - 0.5) * 1.2; B.tRe = tb3 + 3 + Math.random() * 4; }
         if (!bfWater(B.x + Math.sin(B.mth) * 5, B.z + Math.cos(B.mth) * 5)) B.mth += 2.6 * dt;   // shore/dry ahead — curl the drift away
-      } else if (B.kind === 2) {                       // WORM: meandering crawl with RANDOM PAUSES (user) — a pause freezes BOTH the motion and the crawl animation frame
-        if (B.wUntil === undefined) { B.wUntil = tb3 + 2 + Math.random() * 3; B.wpause = false; B.animClk = Math.random() * 2; }
-        if (tb3 > B.wUntil) { B.wpause = !B.wpause; B.wUntil = tb3 + (B.wpause ? 0.7 + Math.random() * 2.3 : 2.5 + Math.random() * 4.5); }   // ~1-3 s frozen, then ~2.5-7 s crawling
-        if (!B.wpause) {                               // only steer + advance the crawl clock while MOVING
-          B.animClk += dt;
-          const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
-            return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObst(ax, gA + 2, az) && !bfObst(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance
-          if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }
-          if (!wormOK(B.th, 5) || !wormOK(B.th, 2.5)) {  // unclimbable ahead (rock face / shoreline / cliff) — commit to a firm turn toward the open side
-            const pF = wormOK(B.th + 1.1, 5), nF = wormOK(B.th - 1.1, 5);
-            B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : (B.om >= 0 ? 2.6 : -2.6));
-          }
-        } else { B.omT = 0; B.om = 0; }                // hold still + straight while paused
+      } else if (B.kind === 2) {                       // WORM: smooth continuous meandering crawl (the random pause was removed — user)
+        B.animClk = (B.animClk || 0) + dt;
+        const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
+          return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObst(ax, gA + 2, az) && !bfObst(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance
+        if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }
+        if (!wormOK(B.th, 5) || !wormOK(B.th, 2.5)) {  // unclimbable ahead (rock face / shoreline / cliff) — commit to a firm turn toward the open side
+          const pF = wormOK(B.th + 1.1, 5), nF = wormOK(B.th - 1.1, 5);
+          B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : (B.om >= 0 ? 2.6 : -2.6));
+        }
       } else if (B.kind === 3) {                       // DUCK: paddles its lake — veer away from the shore, gentle drifting turns
         if (isBaby) {                                  // DUCKLING: steer for a spot just behind its leader — mom for the first, the sibling ahead for the rest (a follow line)
           const lead = (sib === 0 || !wbf[wk - 1].init) ? mom5 : wbf[wk - 1];
@@ -4393,15 +4396,15 @@
         } else {
           const duckOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist;
             return bfWater(ax, az) && bfSky(ax, WL + 2, az); };   // lookahead matches the MOVE rule (real water + open sky)
-          let rx = 0, rz = 0;                          // PROACTIVE EDGE AVOIDANCE (user: 'avoid the edges of the terrain/rocks'): sum a repulsion away from every nearby bank/rock so the duck keeps a BUFFER and steers off before touching
+          let rx = 0, rz = 0;                          // PROACTIVE EDGE AVOIDANCE (user: 'keep the ducks further away from the terrain'): a stronger, WIDER repulsion so the duck banks off well before it can touch a shore/rock
           for (let k = 0; k < 8; k++) { const a = k * 0.785398, sa = Math.sin(a), ca = Math.cos(a);
-            for (let d = 3; d <= 9; d += 3) { if (!bfWater(B.x + sa * d, B.z + ca * d)) { rx -= sa * (11 - d); rz -= ca * (11 - d); break; } } }   // closer edge → stronger push
-          if (rx * rx + rz * rz > 0.02) {              // a bank is within ~9 vox — ease the heading toward the resultant OPEN-water direction
+            for (let d = 4; d <= 15; d += 3) { if (!bfWater(B.x + sa * d, B.z + ca * d)) { rx -= sa * (17 - d); rz -= ca * (17 - d); break; } } }   // sees banks out to 15 vox; closer edge → stronger push
+          if (rx * rx + rz * rz > 0.02) {              // a bank is within ~15 vox — ease the heading toward the resultant OPEN-water direction
             let dth = Math.atan2(rx, rz) - B.th; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
-            B.omT = Math.max(-2.6, Math.min(2.6, dth * 2.6));
+            B.omT = Math.max(-2.8, Math.min(2.8, dth * 2.8));
           } else if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.0; B.tRe = tb3 + 2 + Math.random() * 3; }   // open water — gentle wander
-          if (!duckOK(B.th, 8) || !duckOK(B.th, 4)) {  // imminent bank straight ahead — HARD turn toward the open side (backs up the soft repulsion)
-            const pF = duckOK(B.th + 1.1, 7), nF = duckOK(B.th - 1.1, 7);
+          if (!duckOK(B.th, 13) || !duckOK(B.th, 7)) {  // imminent bank ahead — HARD turn toward the open side (backs up the soft repulsion; earlier lookahead so it never reaches the shore)
+            const pF = duckOK(B.th + 1.1, 11), nF = duckOK(B.th - 1.1, 11);
             B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : ((pF && nF) ? (B.om >= 0 ? 2.6 : -2.6) : (B.om >= 0 ? 3.4 : -3.4)));
           }
         }
@@ -4421,7 +4424,7 @@
       if (B.kind === 4) { B.th += B.spin * dt; Hx2 = Math.sin(B.mth); Hz2 = Math.cos(B.mth); }   // lily: spin the MODEL (th) freely while drifting along mth
       else { Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }
       const spd5 = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? (B.chase > 9 ? 10 : (B.chase > 3.5 ? 7 : 1.5)) : 7)   // lilies drift; ducklings hustle when behind, dawdle at heel
-        : (B.kind === 2 ? (B.wpause ? 0 : 16) : (B.kind === 1 ? 26 : 56)));   // worm 1.6 m/s (0 while paused), firefly 2.6, butterfly 5.6
+        : (B.kind === 2 ? 16 : (B.kind === 1 ? 26 : 56)));   // worm 1.6 m/s (continuous), firefly 2.6, butterfly 5.6
       const nx5 = B.x + Hx2 * spd5 * dt, nz5 = B.z + Hz2 * spd5 * dt;
       let stepOK;
       if (B.kind === 2) {                              // STEP-AWARE crawl: accept the move if the destination surface is land, within a 2-voxel step, and clear at ITS height AND above the body
@@ -4429,7 +4432,7 @@
         stepOK = gN > WL + 0.5 && Math.abs(gN - bfSurf(B.x, B.z)) <= 2 && !bfObst(nx5, gN + 2, nz5) && !bfObst(nx5, gN + 3, nz5);
       } else if (B.kind >= 3) { stepOK = bfWater(nx5, nz5) && bfSky(nx5, WL + 2, nz5)   // ducks + lilies only ever move onto OPEN-SKY REAL water — never onto a dry ravine floor or under a cave roof…
           && (bfOpenW(nx5, nz5) || !bfOpenW(B.x, B.z));  // …and never INTO a narrow gorge/ravine arm (escape moves out of one are always allowed so nothing gets pinned)
-        if (B.kind === 3 && stepOK) { const hl = isBaby ? 3.5 : 4.5; stepOK = bfWater(nx5 + Hx2 * hl, nz5 + Hz2 * hl); }   // DUCK HEAD BUFFER (user: 'ramming into terrain'): require water a body-half-length AHEAD so the head stops SHORT of the bank instead of clipping into it; the repulsion + recovery then peel it away
+        if (B.kind === 3 && stepOK) { const hl = isBaby ? 5.0 : 7.0; stepOK = bfWater(nx5 + Hx2 * hl, nz5 + Hz2 * hl); }   // DUCK HEAD BUFFER (user: 'keep further away, still running into it'): require water WELL ahead (7 vox mom / 5 baby) so it stops with a clear margin, never touching the bank
       }
       else stepOK = !bfObst(nx5, B.y, nz5) && !bfObst(nx5, B.y + 2, nz5);
       if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; }   // fast trap decay: only SUSTAINED blockage accumulates toward a recycle
