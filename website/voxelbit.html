@@ -607,6 +607,7 @@
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let LOTUS_BYTES = null;                               // voxelized lotus.glb (10 cm .vox) → auto-loaded as the STATIC editable object on the editor stage (mushroom removed — user)
+  let LILYPAD_GIG_BYTES = null, LILYPAD_GIG = null;     // voxelized lillypad_gigantic.glb → parsed lazily, stamped as an editor COMPANION 3 m from the lotus
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
@@ -895,6 +896,7 @@
       console.log('[vb] cardinal rotate', CARD_NFRAMES, 'frames -> items', CARD_ITEM0, '..', items.length, 'h', CARD_H, 'footZ', CARD_FOOTZ);
     } catch (e) { console.warn('[vb] cardinal rotate frames missing - editor bird disabled', e); CARD_NFRAMES = 0; }
     try { LOTUS_BYTES = { name: 'lotus.vox', u8: await abuf('assets/decoration/lotus.vox') }; } catch (e) { console.warn('[vb] lotus.vox missing', e); }   // voxelized lotus for the editor stage
+    try { LILYPAD_GIG_BYTES = { name: 'lillypad_gigantic.vox', u8: await abuf('assets/decoration/lillypad_gigantic.vox') }; } catch (e) { console.warn('[vb] lillypad_gigantic.vox missing', e); }   // voxelized gigantic lilypad — editor companion 3 m from the lotus
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
       const sol = (x, y, z) => x >= 0 && x < w && y >= 0 && y < d && z >= 0 && z < h && !!cells[x + y * w + z * w * d];
@@ -3637,6 +3639,15 @@
         if (ED.giz) edGizmos(f, bx2, bz2, cells);      // [e] move-gizmo: 3 axis arrows on the selected frame
       } else { ED.gizBoxes = []; }
     }
+    const lg = ensureLilypadGig();                     // COMPANION: gigantic lilypad, flat on the stage floor, centre 30 vox (3 m) in +x from the lotus centre — display only, not part of the editable filmstrip
+    if (lg) {
+      const lbx = ED.x0 + ((ED.pw - lg.sx) >> 1) + 30, lbz = ED.z0 + ((ED.pd - lg.sy) >> 1);
+      for (const p of lg.vox) {
+        const x = lbx + (p & 255), y = ED.y + 1 + ((p >> 16) & 255), z = lbz + ((p >> 8) & 255);
+        if (y <= ED.y || y >= WY - 1 || x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
+        ED.fcells.push(edSet(x, y, z, p >>> 24, cells));
+      }
+    }
     gpuPatch(cells);
     edHudUpd();
   };
@@ -3689,6 +3700,13 @@
         raw: new Uint8Array(m.raw), pal: hasPal ? new Uint8Array(ppal) : null });   // byte-faithful copies — export rebuilds real .vox files from these, not from engine ids
     });
     return out;
+  };
+  const ensureLilypadGig = () => {                     // lazy parse of the companion gigantic lilypad → one static frame {sx,sy,sz,vox}, colors registered via edCol+palSync
+    if (LILYPAD_GIG === null) {
+      LILYPAD_GIG = false;
+      if (LILYPAD_GIG_BYTES) { try { const fr = edParseVox(LILYPAD_GIG_BYTES.u8, LILYPAD_GIG_BYTES.name); if (fr && fr.length) { LILYPAD_GIG = fr[0]; palSync(); } } catch (e) { console.warn('[vb] lilypad parse failed', e); } }
+    }
+    return LILYPAD_GIG || null;
   };
   const edExportSeq = () => {                          // one single-model .vox per frame, numbered in CURRENT sequence order (00.vox, 01.vox, … — the cardinal-flight naming)
     ED.frames.forEach((f, i) => {
