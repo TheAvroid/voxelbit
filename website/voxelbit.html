@@ -593,7 +593,7 @@
   let DUCK_GREEN = [0.03, 0.22, 0.07];                 // the mallard HEAD green (linear) — extracted at load; the black eye voxel blinks to THIS (user)
   let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
   let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads as LIVE entities (pool slots 32-47) — they drift and rotate OFF-grid on the water; static worldgen stamping retired
-  let SPARK_IT = 0, KNIFE_IT = 0;                      // item ids of the 1-voxel clash spark and the stone knife (assigned in the items block)
+  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0;         // item ids of the 1-voxel clash spark, the stone knife, and the held field-stone (rock.vox)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
@@ -641,6 +641,7 @@
     const modelToItem = (m) => { const cells = new Array(m.sx * m.sy * m.sz).fill(null);   // sparse decoration model → dense item grid (held/drop DDA wants the raw RGB)
       for (const p of m.vox) cells[(p & 255) + ((p >> 8) & 255) * m.sx + ((p >> 16) & 255) * m.sx * m.sy] = palette[p >>> 24];
       return { w: m.sx, d: m.sy, h: m.sz, cells }; };
+    ROCK_IT = items.length + 1;                                       // held field-stone id (1-based) — used to bake AO + gate its stony grain so it reads like a static world rock
     if (ROCKV) items.push(modelToItem(ROCKV));                        // ROCK — the exact field stone (rock.vox), held as picked up
     else { const dk = [103, 101, 97], lt = [122, 120, 114];           // fallback: the old 3×3 pebble slab
       const cells = new Array(3 * 3 * 2).fill(null);
@@ -893,6 +894,7 @@
       it.cells = out; };
     const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
     for (let i = creatureStart - 1; i < items.length; i++) if (items[i] && items[i].cells && items[i].cells.length) bakeAO(items[i]);
+    if (ROCK_IT && items[ROCK_IT - 1] && items[ROCK_IT - 1].cells.length) bakeAO(items[ROCK_IT - 1]);   // the held field-stone is a NATURAL rock (no hand-authored gradient to protect) → bake AO so it reads with depth like a static world stone (user: "not rendered correctly")
     itemsRef = items;                                  // publish the finished table to the tick loop (cardinal hitbox size + worm stamp poses)
     const dims = [], flat = [];
     for (const it of items) {
@@ -1760,13 +1762,16 @@
     }
     fn skyColor(rd : vec3<f32>) -> vec3<f32> {
       var c = skyBase(rd);
-      let s = dot(rd, u.sunDir);
-      let up = smoothstep(-0.03, 0.06, u.sunDir.y);
-      if (isMoon()) {
-        let md = smoothstep(0.999742, 0.999787, s);                  // the MOON — a real NASA photograph on the disc, 25% dimmer overall
+      let realSun = select(u.sunDir, -u.sunDir, isMoon());            // the ACTUAL sun (u.sunDir carries the up-body; −it is the down-body). Both are continuous across the dusk/dawn swap.
+      let realMoon = -realSun;                                         // the moon is the opposite point — so as the sun sets in the west, the moon RISES in the east, both drawn from their OWN elevation
+      { let s = dot(rd, realSun); let up = smoothstep(-0.03, 0.06, realSun.y);   // ── SUN disc: only while the sun is above the horizon; it sinks below the map at dusk and rises at dawn (no pop) ──
+        c += SUN_COL * 6.0 * smoothstep(0.999939, 0.999962, s) * up;  // hard-edged disc, halved
+        c += SUN_COL * 0.5 * pow(max(s, 0.0), 2600.0) * up; }         // GLARE — a tight corona hugging the disc
+      { let s = dot(rd, realMoon); let up = smoothstep(-0.03, 0.06, realMoon.y);   // ── MOON disc: a real NASA photograph, only while the moon is above the horizon — rises as the sun sets ──
+        let md = smoothstep(0.999742, 0.999787, s);
         if (md > 0.001) {
-          let T = normalize(cross(u.sunDir, vec3<f32>(0.0, 1.0, 0.0)));
-          let B = cross(u.sunDir, T);
+          let T = normalize(cross(realMoon, vec3<f32>(0.0, 1.0, 0.0)));
+          let B = cross(realMoon, T);
           let uv = vec2<f32>(dot(rd, T), dot(rd, B)) * (0.5 / 0.0217) + vec2<f32>(0.5);
           let mt = textureSampleLevel(moonTex, moonSamp, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
           let du = uv * 2.0 - vec2<f32>(1.0);                        // disc-local coords → sphere normal for the PHASE terminator
@@ -1775,11 +1780,8 @@
           let lam = max(dot(vec3<f32>(du.x, du.y, nz), vec3<f32>(sin(ph), 0.0, -cos(ph))), 0.0);
           c += mt * 4.5 * md * up * (0.035 + 0.965 * lam);           // lambert-lit lunar sphere + a whisper of earthshine on the dark side
         }
-      } else {
-        c += SUN_COL * 6.0 * smoothstep(0.999939, 0.999962, s) * up;  // hard-edged disc, halved
-        c += SUN_COL * 0.5 * pow(max(s, 0.0), 2600.0) * up;           // GLARE — a tight corona that actually hugs the (now smaller) disc
       }
-      let night = 1.0 - smoothstep(-0.16, 0.02, select(u.sunDir.y, -u.sunDir.y, isMoon()));   // stars fade in on the TRUE sun elevation — continuous across the moon swap (no pop)
+      let night = 1.0 - smoothstep(-0.16, 0.02, realSun.y);          // stars fade in on the real sun elevation — continuous across the swap (no pop)
       if (night > 0.02 && rd.y > 0.02) {                             // stars
         let cc = vec3<i32>(rd * 480.0);
         let hh = ih3(cc.x, cc.y, cc.z);
@@ -2536,7 +2538,9 @@
                     let direct = sunTint() * max(dot(nw, u.sunDir), 0.0);    // world-matched LIGHTING (sun + sky + ground bounce + ambient) but NO per-voxel grain —
                     let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();   // grain is ±12% per voxel and scrambles hand-authored .vox gradients (~5% steps on the axe handle)
                     let bounce = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // warm ground bounce on side/under faces — without it side faces are sky-only (cool + dark), the axe handle read grey-brown
-                    col = cell.rgb * (direct + skyIrr + bounce + vec3<f32>(0.012, 0.013, 0.016));
+                    var grn = 1.0;
+                    if (${ROCK_IT || 0} > 0 && it == ${(ROCK_IT || 1) - 1}) { grn = 0.82 + 0.36 * ih3(vc.x, vc.y, vc.z); }   // the HELD ROCK gets the same stony per-voxel grain the static world stones have (grain stays OFF the axe/twig whose authored gradients it would scramble) — Task 4
+                    col = cell.rgb * (direct + skyIrr + bounce + vec3<f32>(0.012, 0.013, 0.016)) * grn;
                   }
                   break;
                 }
@@ -2808,7 +2812,7 @@
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
-    for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every worm to re-stamp fresh next frame (stale grid indices)
+    for (let j = 16; j < 40; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-39) to re-stamp fresh next frame (stale grid indices)
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
@@ -3005,50 +3009,62 @@
   const birdBox = { active: false, cx: 0, cy: 0, cz: 0, hx: 8, hy: 8, hz: 8 };   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
   const wbf = Array.from({ length: 55 }, () => ({ init: false }));   // WORLD creature pool (drop slots 9-63): 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-39 worms, 40-54 LILY PADS
-  // ── GRID-STAMPED WORMS (Task 3) ── worms are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
-  // A rigid single pose (the fullest crawl frame) is stamped at the nearest of 4 cardinal orientations; it re-stamps ONLY when its cell or facing changes, so a still worm's lighting fully converges.
-  let WORM_STAMP = null;                               // [orient0..3] → array of [dx,dy(up),dz,palId]; built lazily once the frames + palette exist
-  const WORM_IDS = new Set();                          // palette ids the worm body uses — bfObst/creature lookaheads must treat these as PASSABLE (a worm mustn't trip on its own or another worm's stamped voxels)
-  const wormPatch = [];                                // grid indices touched by worm (un)stamps this frame → one light gpuPatch at the loop's end (or when a pickup/editor clears one)
-  const ensureWormStamp = () => {
-    if (WORM_STAMP || !WORM_NFRAMES || !itemsRef) return WORM_STAMP;
-    let best = 0, bestN = -1;                           // the fullest frame = the most solid-looking rigid body
-    for (let f = 0; f < WORM_NFRAMES; f++) { const it = itemsRef[WORM_ITEM0 - 1 + f]; if (!it) return null; let c = 0; for (const cc of it.cells) if (cc) c++; if (c > bestN) { bestN = c; best = f; } }
-    const it = itemsRef[WORM_ITEM0 - 1 + best], w = it.w, d = it.d, h = it.h, cells = it.cells;
-    const cx = (w - 1) >> 1, cy = (d - 1) >> 1;         // centre the horizontal footprint (long axis = model y); height sits ON the ground (dy = model z)
-    const idOf = (rgb) => { for (let i = 1; i < palette.length; i++) { const p = palette[i]; if (p[0] === rgb[0] && p[1] === rgb[1] && p[2] === rgb[2]) return i; }
-      if (palette.length < 256) return addCol(rgb[0], rgb[1], rgb[2]);     // palette full → nearest existing color (never overflow the 256-entry GPU palette)
-      let bd = 1e9, bi = 1; for (let i = 1; i < palette.length; i++) { const p = palette[i], dd = (p[0] - rgb[0]) ** 2 + (p[1] - rgb[1]) ** 2 + (p[2] - rgb[2]) ** 2; if (dd < bd) { bd = dd; bi = i; } } return bi; };
-    const base = [];                                    // orient 0 = heading +z: model −y (head) → +z
-    for (let mz = 0; mz < h; mz++) for (let my = 0; my < d; my++) for (let mx = 0; mx < w; mx++) {
-      const c = cells[mx + my * w + mz * w * d]; if (!c) continue;
-      base.push([mx - cx, mz, -(my - cy), idOf(c)]);
+  // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
+  // Worms animate their crawl (re-stamping the current frame) while moving + freeze on a pause; ducks are a single rigid pose floating at a fixed waterline. A creature re-stamps only when its cell / facing / frame changes, so a still one fully converges to crisp static lighting.
+  let WORM_STAMP = null, DUCK_STAMP = null, DUCKB_STAMP = null;   // [frame][orient0..3] → array of [dx,dy(up),dz,palId]; built lazily once the frames + palette exist
+  const CREATURE_IDS = new Set();                      // palette ids stamped creatures use — bfObst/lookaheads must treat these as PASSABLE (a creature mustn't trip on its own or another's stamped voxels)
+  const wormPatch = [];                                // grid indices touched by creature (un)stamps this frame → one light gpuPatch at the loop's end (or when a pickup/editor clears one)
+  const stampIdOf = (rgb) => { for (let i = 1; i < palette.length; i++) { const p = palette[i]; if (p[0] === rgb[0] && p[1] === rgb[1] && p[2] === rgb[2]) return i; }
+    if (palette.length < 256) return addCol(rgb[0], rgb[1], rgb[2]);       // palette full → nearest existing color (never overflow the 256-entry GPU palette)
+    let bd = 1e9, bi = 1; for (let i = 1; i < palette.length; i++) { const p = palette[i], dd = (p[0] - rgb[0]) ** 2 + (p[1] - rgb[1]) ** 2 + (p[2] - rgb[2]) ** 2; if (dd < bd) { bd = dd; bi = i; } } return bi; };
+  const stampRot = (list, k) => list.map(([dx, dy, dz, id]) => { let X = dx, Z = dz; for (let r = 0; r < k; r++) { const nX = Z, nZ = -X; X = nX; Z = nZ; } return [X, dy, Z, id]; });   // k×90°: k1 puts the +z head at +x, k2 −z, k3 −x
+  const buildStampPoses = (item0, nframes) => {        // [frame][orient0..3] pose lists for an item range (head at model −y → +z at orient 0)
+    if (!item0 || !itemsRef || !itemsRef[item0 - 1]) return null;
+    const out = [];
+    for (let f = 0; f < nframes; f++) {
+      const it = itemsRef[item0 - 1 + f]; if (!it) return null;
+      const w = it.w, d = it.d, h = it.h, cells = it.cells, cx = (w - 1) >> 1, cy = (d - 1) >> 1, base = [];
+      for (let mz = 0; mz < h; mz++) for (let my = 0; my < d; my++) for (let mx = 0; mx < w; mx++) {
+        const c = cells[mx + my * w + mz * w * d]; if (!c) continue;
+        base.push([mx - cx, mz, -(my - cy), stampIdOf(c)]);
+      }
+      out.push([base, stampRot(base, 1), stampRot(base, 2), stampRot(base, 3)]);
     }
-    const rot = (list, k) => list.map(([dx, dy, dz, id]) => { let X = dx, Z = dz; for (let r = 0; r < k; r++) { const nX = Z, nZ = -X; X = nX; Z = nZ; } return [X, dy, Z, id]; });   // k×90°: k1 puts the +z head at +x, k2 −z, k3 −x
-    for (const p of base) WORM_IDS.add(p[3]);           // register the worm's palette ids as passable for the creature lookaheads
-    WORM_STAMP = [base, rot(base, 1), rot(base, 2), rot(base, 3)];
-    palSync();                                          // the worm colors were just appended to the world palette
-    return WORM_STAMP;
+    for (const fr of out) for (const p of fr[0]) CREATURE_IDS.add(p[3]);    // register these palette ids as passable for the creature lookaheads
+    return out;
   };
+  const ensureWormStamp = () => { if (!WORM_STAMP && WORM_NFRAMES) { WORM_STAMP = buildStampPoses(WORM_ITEM0, WORM_NFRAMES); if (WORM_STAMP) palSync(); } return WORM_STAMP; };
+  const ensureDuckStamp = () => { if (!DUCK_STAMP && DUCK_ITEM0) { DUCK_STAMP = buildStampPoses(DUCK_ITEM0, 1); DUCKB_STAMP = DUCKB_ITEM0 ? buildStampPoses(DUCKB_ITEM0, 1) : DUCK_STAMP; if (DUCK_STAMP) palSync(); } return DUCK_STAMP; };
   const unstampWorm = (B) => { if (!B.sCells) return; for (const ii of B.sCells) if (W[ii] !== 0) { W[ii] = 0; wormPatch.push(ii); } B.sCells = null; B.sKey = null; };
-  const stampWorm = (B) => {
-    const st = ensureWormStamp(); if (!st) return;
-    const Hx = Math.sin(B.th), Hz = Math.cos(B.th);
-    const k = Math.abs(Hz) >= Math.abs(Hx) ? (Hz >= 0 ? 0 : 2) : (Hx >= 0 ? 1 : 3);   // nearest cardinal orientation
-    const gx = Math.round(B.x), gz = Math.round(B.z), gTop = hmap[gwrap(gx, WX) + gwrap(gz, WZ) * WX];
-    const gy = gTop + 1;                                // sit ON the ground surface
-    const key = gx + ',' + gy + ',' + gz + ',' + k;
-    if (B.sKey === key && B.sCells) return;             // unchanged → leave the static stamp in place (this is what lets SVGF settle)
+  const stampApply = (B, pose, gx, gy, gz, key) => {   // shared: re-stamp only on change; only into EMPTY AIR so un-stamp is a safe →0
+    if (B.sKey === key && B.sCells) return;
     unstampWorm(B);
-    const pose = st[k], nc = [];
+    const nc = [];
     for (const p of pose) { const wy = gy + p[1]; if (wy < 1 || wy >= WY - 1) continue;
       const ii = gwrap(gx + p[0], WX) + wy * WX + gwrap(gz + p[2], WZ) * WX * WY;
-      if (W[ii] !== 0) continue;                        // only into EMPTY AIR — never overwrite terrain/décor (so un-stamp is a safe →0)
+      if (W[ii] !== 0) continue;
       W[ii] = p[3]; nc.push(ii); wormPatch.push(ii);
     }
     B.sCells = nc; B.sKey = key;
   };
-  const unstampAllWorms = () => { for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — caller re-uploads occupancy
+  const stampOrient = (th) => { const Hx = Math.sin(th), Hz = Math.cos(th); return Math.abs(Hz) >= Math.abs(Hx) ? (Hz >= 0 ? 0 : 2) : (Hx >= 0 ? 1 : 3); };   // nearest cardinal
+  const stampWorm = (B, fi) => {
+    const st = ensureWormStamp(); if (!st) return;
+    fi = ((fi % st.length) + st.length) % st.length;
+    const k = stampOrient(B.th);
+    const gx = Math.round(B.x), gz = Math.round(B.z), gy = hmap[gwrap(gx, WX) + gwrap(gz, WZ) * WX] + 1;   // sit ON the ground surface
+    stampApply(B, st[fi][k], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + k + ',' + fi);
+  };
+  const stampDuck = (B, isBaby) => {                   // DUCK: a single rigid pose floating at a FIXED waterline (no wave-bob) so it converges to static lighting; submerged rows fall on water voxels and are skipped
+    if (!ensureDuckStamp()) return;
+    const pose4 = (isBaby && DUCKB_STAMP) ? DUCKB_STAMP : DUCK_STAMP; if (!pose4) return;
+    const item0 = (isBaby && DUCKB_ITEM0) ? DUCKB_ITEM0 : DUCK_ITEM0;
+    const it = itemsRef[item0 - 1]; if (!it) return;
+    const k = stampOrient(B.th);
+    const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(WL + (isBaby ? 2.9 : 4.4)) - (it.h >> 1);   // model CENTRE at the still-water float height (matches the off-grid base9); bottom rows landing on water voxels are auto-skipped
+    stampApply(B, pose4[0][k], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + k + ',d' + (isBaby ? 1 : 0));
+  };
+  const unstampAllWorms = () => { for (let j = 16; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-39; caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
@@ -3476,17 +3492,10 @@
     const n = ED.frames.length;
     if (n) {
       const f = ED.frames[((ED.sel % n) + n) % n];
-      const ref = ED.frames[0], gap = 8, totalW = ref.sx + gap + f.sx;   // the ANIMATED frame + a STATIC reference (frame 0) beside it → compare their lighting (user); the pair is centred on the stage
-      const sx0 = ED.x0 + ((ED.pw - totalW) >> 1);
-      const rbx = sx0, rbz = ED.z0 + ((ED.pd - ref.sy) >> 1);            // static reference on the LEFT
-      const bx = sx0 + ref.sx + gap, bz = ED.z0 + ((ED.pd - f.sy) >> 1); // animated frame on the RIGHT (this is the one you select/scrub)
+      const bx = ED.x0 + ((ED.pw - f.sx) >> 1), bz = ED.z0 + ((ED.pd - f.sy) >> 1);   // the ONE animated/scrubbed frame, centred on the stage (the static reference beside it was removed — user)
       f.bx = bx; f.bz = bz;
-      for (const p of ref.vox) {                                        // 1) static reference (frame 0), never animates
-        const y = ED.y + 1 + ((p >> 16) & 255); if (y >= WY - 1) continue;
-        ED.fcells.push(edSet(rbx + (p & 255), y, rbz + ((p >> 8) & 255), p >>> 24, cells));
-      }
       const ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;             // per-frame alignment offset (gizmo-driven)
-      for (const p of f.vox) {                                          // 2) the animated / scrubbed frame, shifted by its offset
+      for (const p of f.vox) {                                          // the animated / scrubbed frame, shifted by its offset
         const x = bx + ox + (p & 255), y = ED.y + 1 + oy + ((p >> 16) & 255), z = bz + oz + ((p >> 8) & 255);
         if (y <= ED.y || y >= WY - 1 || x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
         ED.fcells.push(edSet(x, y, z, p >>> 24, cells));
@@ -3649,6 +3658,7 @@
     edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
     edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0; for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } return { voxels: n, worms: live }; },   // Task 2/3 taps
+    duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
       const CH = 64 << 20, stg = device.createBuffer({ size: CH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -4146,7 +4156,7 @@
     const bfObst = (x, y, z) => {                      // butterfly obstacle test — trunks, canopy, rocks, snow all block; soft grass/bloom/fern strands + grid-stamped worms don't
       const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
       const id = W[gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY];
-      return id !== 0 && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !WORM_IDS.has(id); };
+      return id !== 0 && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !CREATURE_IDS.has(id); };
     const bfSurf = (x, z) => Math.max(hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], WL);
     const bfGlide = (x, z) => {                        // MAX terrain over a wide stencil → the flight height RIDES THE RIMS, gliding over ravines/gorges instead of diving in
       let m = bfSurf(x, z);
@@ -4175,7 +4185,7 @@
     // the fog ring; color comes from a spatial hash of that cell so orange/red/blue are sprinkled across the world.
     const rdV = Math.max(140, renderDist);
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
-    const nAct = moonMode ? Math.max(2, nActD >> 1) : nActD;   // and FIREFLIES are half as frequent again (user 2026-07-17)
+    const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 1.25));   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(4, Math.min(8, nActD >> 1)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-17 (user; 8 = slot cap 32-39)
     const nDuck = DUCK_ITEM0 ? 2 : 0;                  // MOTHER ducks (slots 16-19) — HALVED back to 2 (user 2026-07-17); placement targets lakes, so families appear on up to 2 visible lakes; each leads 3 ducklings (slots 20-31)
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
@@ -4207,7 +4217,7 @@
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
         : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles
-      if (ED.on || dead || !active || (wantK === 4 ? !LILY_ITEM0 : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))) { if (wormSlot) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden worm must clear its grid stamp
+      if (ED.on || dead || !active || (wantK === 4 ? !LILY_ITEM0 : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck) must clear its stamp
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
@@ -4245,7 +4255,7 @@
           } else {
             const a5 = Math.random() * 6.283;
             const d5 = wantK === 2 ? Math.max(25, Math.sqrt(Math.random()) * rdW * 0.55)   // worms: AREA-uniform radius (plain random bunches them near the player)
-              : (wantK >= 3 ? (30 + Math.random() * (rdD * 0.8 - 30)) : rdV * (0.55 + Math.random() * 0.3));   // flyers spawn in the far fog band; ducks/lilies anywhere a lake might be
+              : (wantK >= 3 ? (30 + Math.random() * (rdD * 0.8 - 30)) : Math.sqrt(50 * 50 + Math.random() * (rdV * rdV - 50 * 50)));   // flyers now AREA-uniform across the whole disc from 50 vox out (user: even spread) — was a far-fog ring; ducks/lilies anywhere a lake might be
             sx = P.x + Math.sin(a5) * d5; sz = P.z + Math.cos(a5) * d5;
           }
           if (sx <= rect.xlo + 4 || sx >= rect.xhi - 4 || sz <= rect.zlo + 4 || sz >= rect.zhi - 4) continue;   // NEVER spawn outside the GENERATED rect — hmap there is garbage (the snow-landing guard; embedded 'cave' creatures after recenters)
@@ -4253,6 +4263,7 @@
           const gS = bfSurf(sx, sz);
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
           if (wantK >= 3 && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
+          if (wantK < 2 && tooClose(0, 16, 40)) continue;             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
           if (wantK === 2 && tooClose(32, 40, 60)) continue;          // worms spread WIDE — never bunched (user, doubled with the population)
           if (wantK === 3 && tooClose(16, 20, 130)) continue;         // mother ducks NEVER spawn beside another family (user; wider guard — 130 vox apart)
           if (wantK === 4 && tooClose(40, 55, 12)) continue;          // lilies scatter
@@ -4263,7 +4274,7 @@
             B.col = ((Math.imul(cx, 374761393) ^ Math.imul(cz, 668265263)) >>> 0) % Math.max(1, BFLY_COLS.length);
           }
         }
-        if (!placed) { if (wormSlot) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
+        if (!placed) { if (B.sCells) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
@@ -4277,14 +4288,19 @@
       if (B.kind === 4) {                              // LILY PAD: slow drift on the water + constant free rotation; movement heading (mth) is independent of the visual spin
         if (tb3 > B.tRe) { B.mth += (Math.random() - 0.5) * 1.2; B.tRe = tb3 + 3 + Math.random() * 4; }
         if (!bfWater(B.x + Math.sin(B.mth) * 5, B.z + Math.cos(B.mth) * 5)) B.mth += 2.6 * dt;   // shore/dry ahead — curl the drift away
-      } else if (B.kind === 2) {                       // WORM: smooth meandering crawl (grid alignment undone at user request)
-        const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
-          return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObst(ax, gA + 2, az) && !bfObst(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance (low branches no longer clip through the worm)
-        if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }
-        if (!wormOK(B.th, 5) || !wormOK(B.th, 2.5)) {  // unclimbable ahead (rock face / shoreline / cliff) — commit to a firm turn toward the open side
-          const pF = wormOK(B.th + 1.1, 5), nF = wormOK(B.th - 1.1, 5);
-          B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : (B.om >= 0 ? 2.6 : -2.6));
-        }
+      } else if (B.kind === 2) {                       // WORM: meandering crawl with RANDOM PAUSES (user) — a pause freezes BOTH the motion and the crawl animation frame
+        if (B.wUntil === undefined) { B.wUntil = tb3 + 2 + Math.random() * 3; B.wpause = false; B.animClk = Math.random() * 2; }
+        if (tb3 > B.wUntil) { B.wpause = !B.wpause; B.wUntil = tb3 + (B.wpause ? 0.7 + Math.random() * 2.3 : 2.5 + Math.random() * 4.5); }   // ~1-3 s frozen, then ~2.5-7 s crawling
+        if (!B.wpause) {                               // only steer + advance the crawl clock while MOVING
+          B.animClk += dt;
+          const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
+            return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObst(ax, gA + 2, az) && !bfObst(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance
+          if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }
+          if (!wormOK(B.th, 5) || !wormOK(B.th, 2.5)) {  // unclimbable ahead (rock face / shoreline / cliff) — commit to a firm turn toward the open side
+            const pF = wormOK(B.th + 1.1, 5), nF = wormOK(B.th - 1.1, 5);
+            B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : (B.om >= 0 ? 2.6 : -2.6));
+          }
+        } else { B.omT = 0; B.om = 0; }                // hold still + straight while paused
       } else if (B.kind === 3) {                       // DUCK: paddles its lake — veer away from the shore, gentle drifting turns
         if (isBaby) {                                  // DUCKLING: steer for a spot just behind its leader — mom for the first, the sibling ahead for the rest (a follow line)
           const lead = (sib === 0 || !wbf[wk - 1].init) ? mom5 : wbf[wk - 1];
@@ -4323,7 +4339,7 @@
       if (B.kind === 4) { B.th += B.spin * dt; Hx2 = Math.sin(B.mth); Hz2 = Math.cos(B.mth); }   // lily: spin the MODEL (th) freely while drifting along mth
       else { Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }
       const spd5 = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? (B.chase > 9 ? 10 : (B.chase > 3.5 ? 7 : 1.5)) : 7)   // lilies drift; ducklings hustle when behind, dawdle at heel
-        : (B.kind === 2 ? 16 : (B.kind === 1 ? 26 : 56)));   // worm 1.6 m/s, firefly 2.6, butterfly 5.6
+        : (B.kind === 2 ? (B.wpause ? 0 : 16) : (B.kind === 1 ? 26 : 56)));   // worm 1.6 m/s (0 while paused), firefly 2.6, butterfly 5.6
       const nx5 = B.x + Hx2 * spd5 * dt, nz5 = B.z + Hz2 * spd5 * dt;
       let stepOK;
       if (B.kind === 2) {                              // STEP-AWARE crawl: accept the move if the destination surface is land, within a 2-voxel step, and clear at ITS height AND above the body
@@ -4391,7 +4407,8 @@
       }
       if (B.kind < 2 && B.y < gLoc + 6) B.y = Math.min(gLoc + 6, B.y + 34 * dt);   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline)
       B.y = Math.max(yPrev5 - 30 * dt, Math.min(yPrev5 + 34 * dt, B.y));   // GLOBAL vertical budget: whatever the branches above did, the frame's total climb/descent stays at flutter speed — teleports impossible
-      if (B.kind === 2) { stampWorm(B); continue; }     // GRID-STAMPED worm (Task 3): rigid pose in the world grid → real static lighting; no UF drop slot, no cshad box (the voxels render + cast shadows themselves)
+      if (B.kind === 2) { stampWorm(B, Math.floor((B.animClk || 0) * 24)); continue; }   // GRID-STAMPED worm (Task 3): crawl frame at 24 fps (frozen while paused) → real static lighting; no UF drop slot, no cshad box (the voxels render + cast shadows themselves)
+      if (B.kind === 3) { stampDuck(B, isBaby); continue; }   // GRID-STAMPED duck (Task 6): a rigid pose at a fixed waterline → real static lighting + shadows; no UF slot, no cshad (loses the wave-bob + eye-blink, which are off-grid shader tricks)
       if (B.kind < 2 && (bfObst(B.x, B.y, B.z) || bfRoofed(B.x, B.y, B.z))) {   // under a roof (cave/overhang) — steer OUT horizontally (eased, never climb into it); count toward a recycle. Worms/ducks don't care about roofs.
         B.omT = (B.om >= 0 ? 5.0 : -5.0); B.trap = (B.trap || 0) + dt;
       }
