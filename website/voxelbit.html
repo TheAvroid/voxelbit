@@ -593,10 +593,7 @@
   let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
   let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads as LIVE entities (pool slots 32-47) — they drift and rotate OFF-grid on the water; static worldgen stamping retired
   let SPARK_IT = 0, KNIFE_IT = 0;                      // item ids of the 1-voxel clash spark and the stone knife (assigned in the items block)
-  let CARDINAL_ROTATE = [];                            // raw .vox bytes of assets/life/cardinal/rotate/00..10 — auto-imported onto the ASSET EDITOR stage on entry (base.vox ignored). Fire-and-forget: populated well before the editor is opened.
-  Promise.all(Array.from({ length: 11 }, (_, f) => fetch('assets/life/cardinal/rotate/' + String(f).padStart(2, '0') + '.vox').then((r) => r.ok ? r.arrayBuffer() : null).catch(() => null)))
-    .then((bufs) => { CARDINAL_ROTATE = bufs.map((b, f) => b ? { name: String(f).padStart(2, '0') + '.vox', u8: new Uint8Array(b) } : null).filter(Boolean);
-      console.log('[vb] cardinal rotate frames for editor:', CARDINAL_ROTATE.length); });
+  let CARD_ITEM0 = 0, CARD_NFRAMES = 0;                // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; shown as ONE animated (spinning) model on the asset-editor stage
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
   // the old engine's buildHeldFrames approach) DDA-raytraced in camera space. Item ids in u.pickX.w:
@@ -614,6 +611,7 @@
     for (const c of ['orange', 'red', 'blue']) for (let f = 0; f < 8; f++) pf('assets/life/butterfly/' + c + '/0' + f + '.vox');
     for (let f = 0; f < 4; f++) pf('assets/life/firefly/0' + f + '.vox');
     for (let f = 0; f < 12; f++) pf('assets/life/worm/' + String(f).padStart(2, '0') + '.vox');
+    for (let f = 0; f < 11; f++) pf('assets/life/cardinal/rotate/' + String(f).padStart(2, '0') + '.vox');
     pf('assets/life/duck/base.vox'); pf('assets/life/duck/baby.vox');
     try {
       const pv = await abuf('assets/stone_tools/stone_axe.vox');
@@ -850,6 +848,32 @@
       for (const m of LILYV) { items.push(modelToItem(m)); LILY_SZ.push(m.sz); }
       console.log('[vb] lily pads x', LILYV.length, '-> items', LILY_ITEM0, '..', items.length);
     }
+    try {                                                             // CARDINAL ROTATE frames → item table (raw .vox palette); shown as ONE spinning model on the asset-editor stage (base.vox ignored)
+      const loaded = [];
+      for (let f = 0; f < 11; f++) {
+        const bv = await abuf('assets/life/cardinal/rotate/' + String(f).padStart(2, '0') + '.vox');
+        const bdv = new DataView(bv.buffer, bv.byteOffset, bv.byteLength);
+        let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
+        const bwalk = (off, end) => { while (off < end) {
+          const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+          const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+          if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
+          else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
+          else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
+          else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+          off += 12 + sz + csz;
+        } };
+        bwalk(8, bv.length);
+        if (!bvox) throw new Error('cardinal rotate frame ' + f + ' has no voxels');
+        const cells = new Array(bsx * bsy * bsz).fill(null);
+        for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+        loaded.push({ w: bsx, d: bsy, h: bsz, cells });
+      }
+      CARD_ITEM0 = items.length + 1;
+      for (const it of loaded) items.push(it);
+      CARD_NFRAMES = loaded.length;
+      console.log('[vb] cardinal rotate', CARD_NFRAMES, 'frames -> items', CARD_ITEM0, '..', items.length);
+    } catch (e) { console.warn('[vb] cardinal rotate frames missing - editor bird disabled', e); CARD_NFRAMES = 0; }
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
       const sol = (x, y, z) => x >= 0 && x < w && y >= 0 && y < d && z >= 0 && z < h && !!cells[x + y * w + z * w * d];
@@ -861,7 +885,7 @@
         out[x + y * w + z * w * d] = [c[0] * ao, c[1] * ao, c[2] * ao];
       }
       it.cells = out; };
-    const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
+    const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
     for (let i = creatureStart - 1; i < items.length; i++) if (items[i] && items[i].cells && items[i].cells.length) bakeAO(items[i]);
     const dims = [], flat = [];
     for (const it of items) {
@@ -3406,7 +3430,6 @@
     gpuPatch(cells);
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = false;
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && CARDINAL_ROTATE.length) edImportBufs(CARDINAL_ROTATE);   // AUTO-IMPORT the cardinal rotate animation onto the stage (user); a manual import replaces it
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
   };
@@ -3877,25 +3900,14 @@
       UF[o2 + 12] = Zw[0] * right[0] + Zw[1] * right[1] + Zw[2] * right[2]; UF[o2 + 13] = Zw[0] * up[0] + Zw[1] * up[1] + Zw[2] * up[2]; UF[o2 + 14] = Zw[0] * fwd[0] + Zw[1] * fwd[1] + Zw[2] * fwd[2]; UF[o2 + 15] = 0;
     }
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
-      if (ED.on && BFLY_NFRAMES > 0) {                  // ── EDITOR WORLD: the orange butterfly ── wandering flight over the stage; slot 4 is free here (cardinal gated below)
-        const tb2 = now / 1000, ecx = ED.x0 + ED.pw / 2, ecz = ED.z0 + ED.pd / 2, baseY = ED.y + 26;
-        if (!bfly.init) { bfly.init = true; bfly.x = ecx; bfly.z = ecz; bfly.th = Math.random() * 6.28; bfly.om = 0; bfly.omT = 0; bfly.tRe = 0; }
-        if (tb2 > bfly.tRe) { bfly.omT = (Math.random() - 0.5) * 6.4; bfly.tRe = tb2 + 0.25 + Math.random() * 0.5; }   // 4× the original motion rates (user doubled the speed twice; flap stays 24 fps)
-        const dxc = bfly.x - ecx, dzc = bfly.z - ecz;
-        if (dxc * dxc + dzc * dzc > 45 * 45) {          // drifting off the stage — steer the wander target back toward centre
-          let dth = Math.atan2(-dxc, -dzc) - bfly.th; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
-          bfly.omT = Math.max(-6.4, Math.min(6.4, dth * 4.8));
-        }
-        bfly.om += (bfly.omT - bfly.om) * (1 - Math.exp(-12 * dt));
-        bfly.th += bfly.om * dt;
-        const Hx2 = Math.sin(bfly.th), Hz2 = Math.cos(bfly.th);
-        bfly.x += Hx2 * 56 * dt; bfly.z += Hz2 * 56 * dt;   // 5.6 m/s flutter
-        const px3 = bfly.x, pz3 = bfly.z, py3 = baseY + Math.sin(tb2 * 6.8) * 2.2;
-        const Xw = [Hz2, 0, -Hx2], Yw = [-Hx2, 0, -Hz2];   // level flight frame — Zw = up, right-handed (Yw×Zw = Xw)
-        const fi2 = Math.floor(tb2 * 24) % BFLY_NFRAMES;   // 24 fps flap — the animation standard
+      if (ED.on && CARD_NFRAMES > 0) {                  // ── EDITOR STAGE: ONE animated CARDINAL ── hovers in the centre and plays its rotate cycle as a single animation (user: no butterfly, no separate frames)
+        const tb2 = now / 1000, ecx = ED.x0 + ED.pw / 2, ecz = ED.z0 + ED.pd / 2;
+        const px3 = ecx, pz3 = ecz, py3 = ED.y + 20 + Math.sin(tb2 * 1.6) * 1.4;   // centred over the stage, gentle bob
+        const Xw = [1, 0, 0], Yw = [0, 0, -1];           // upright level frame (model x→world x, y→world −z, z→up) — the ROTATE FRAMES carry the spin. Yw MUST be horizontal (only [0]/[2] are read; [0,1,0] would zero it out)
+        const fi2 = Math.floor(tb2 * 11) % CARD_NFRAMES; // ~1 rotation/sec through the 11 rotate frames
         const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
         UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = 1.0;
-        UF[o2 + 4] = Xw[0] * right[0] + Xw[2] * right[2]; UF[o2 + 5] = Xw[0] * up[0] + Xw[2] * up[2]; UF[o2 + 6] = Xw[0] * fwd[0] + Xw[2] * fwd[2]; UF[o2 + 7] = BFLY_ITEM0 + fi2;
+        UF[o2 + 4] = Xw[0] * right[0] + Xw[2] * right[2]; UF[o2 + 5] = Xw[0] * up[0] + Xw[2] * up[2]; UF[o2 + 6] = Xw[0] * fwd[0] + Xw[2] * fwd[2]; UF[o2 + 7] = CARD_ITEM0 + fi2;
         UF[o2 + 8] = Yw[0] * right[0] + Yw[2] * right[2]; UF[o2 + 9] = Yw[0] * up[0] + Yw[2] * up[2]; UF[o2 + 10] = Yw[0] * fwd[0] + Yw[2] * fwd[2]; UF[o2 + 11] = 0;
         UF[o2 + 12] = right[1]; UF[o2 + 13] = up[1]; UF[o2 + 14] = fwd[1]; UF[o2 + 15] = 0;
       } else if (BIRD_NFRAMES > 0 && !ED.on) {          // the editor void has no wildlife (else-branch hides the slot)
