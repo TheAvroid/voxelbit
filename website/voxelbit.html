@@ -15,9 +15,9 @@
   #cross::before { left: 0; right: 0; top: 6px; height: 2px; }
   #cross::after { top: 0; bottom: 0; left: 6px; width: 2px; }
   #clashHint { position: fixed; left: 50%; top: 57%; transform: translateX(-50%); color: #fff; font: 10px/1.6 'px3', Consolas, monospace; letter-spacing: 2px; text-shadow: 0 1px 3px #000; pointer-events: none; opacity: 0.85; }
-  #achv { position: fixed; top: 16px; right: 18px; text-align: right; pointer-events: none; opacity: 0; transition: opacity 0.5s; font-family: 'px3', Consolas, monospace; text-shadow: 0 1px 3px #000; }
-  #achv .a1 { font-size: 7px; letter-spacing: 3px; color: #ffd76a; }
-  #achv .a2 { font-size: 13px; letter-spacing: 2px; color: #fff; margin-top: 5px; }
+  #achv { position: fixed; left: 50%; top: calc(50% - 350px); transform: translate(-50%, -50%); text-align: center; pointer-events: none; opacity: 0; transition: opacity 0.9s ease; font-family: 'px3', Consolas, monospace; text-shadow: 0 1px 3px #000; }
+  #achv .a1 { font-size: 14px; letter-spacing: 6px; color: #ffd76a; }
+  #achv .a2 { font-size: 26px; letter-spacing: 4px; color: #fff; margin-top: 10px; }
   #lock { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; background: rgba(8,10,14,0.55); color: #e8edf4; font: 8px/1.8 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; backdrop-filter: blur(2px); }
   #lock h1 { font: 60px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; }
   #lock h1 .tv { background: linear-gradient(180deg, #ff7a8a 0%, #8e0e20 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* crimson, light→dark */
@@ -25,9 +25,14 @@
   #lock .keys { opacity: 0.75; font-size: 6px; }
   #load { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0b0e12; color: #9fb0c4; font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; z-index: 10; }
   #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; }
-  #kbBtn, #pkBtn { width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 12px; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, color 0.15s; }
-  #kbBtn svg, #pkBtn svg { width: 22px; height: 22px; }
-  #kbBtn:hover, #pkBtn:hover { border-color: #8fb3dd; color: #fff; }
+  #kbBtn, #pkBtn, #edBtn { width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 12px; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, color 0.15s; }
+  #kbBtn svg, #pkBtn svg, #edBtn svg { width: 22px; height: 22px; }
+  #kbBtn:hover, #pkBtn:hover, #edBtn:hover { border-color: #8fb3dd; color: #fff; }
+  #edBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  #edRow { display: flex; flex-direction: column; gap: 10px; align-items: center; }   /* stacked under the button row, centred on it; #lock's own 10px gap matches the square-button spacing */
+  #edRow button { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
+  #edRow button:hover { border-color: #6d8fc0; }
+  #edHud { position: fixed; left: 50%; top: 18px; transform: translateX(-50%); color: #cfe0f4; font: 9px/1.8 'px3', Consolas, monospace; letter-spacing: 1px; text-shadow: 0 1px 3px #000; pointer-events: none; text-align: center; }
   #todWrap { position: absolute; top: 24px; right: 28px; display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #todSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
   #rdWrap { position: absolute; top: 54px; right: 28px; display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
@@ -76,8 +81,11 @@
   <div id="btnRow">
     <button id="kbBtn" title="keybinds"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
     <button id="pkBtn" title="held item position"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H8v-2h2v2Zm8 0h-2v-2h2v2ZM4 18h2v2H2v-4h2v2Zm12 2h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 18H6v-2h2v2Zm6 0h-2v-2h2v2Zm8 0h-2v-2h2v2ZM6 16H4v-2h2v2Zm4 0H8v-2h2v2Zm6 0h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 14H6v-2h2v2Zm4 0h-2v-2h2v2Zm6 0h-2v-2h2v2Zm-8-2H8v-2h2v2Zm4 0h-2v-2h2v2Zm8 0h-2v-2h2v2Zm-10-2h-2V8h2v2Zm8-4h-2v2h-2v2h-2V8h-2V6h2V4h2V2h4v4ZM6 8H4V6h2v2ZM4 6H2V4h2v2Zm4 0H6V4h2v2ZM6 4H4V2h2v2Z"/></svg></button>
+    <button id="edBtn" title="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
   </div>
+  <div id="edRow" class="hidden"><button id="edImport">import asset (.vox)</button><button id="edExport">export sequence</button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
 </div>
+<div id="edHud" class="hidden"></div>
 <div id="kbPanel" class="hidden"><div id="kbCard">
   <h2>keybinds</h2>
   <div id="kbRows"></div>
@@ -108,7 +116,10 @@
   let WXZ = 768;                                       // widest window the adapter can bind: 2048 (1.5 GB) → a TRUE 100 m view radius
   if (WYpick === 384) for (const c of [2048, 1536, 1280, 1024]) if (lim >= c * c * 384) { WXZ = c; break; }
   const WBYTES = WXZ * WXZ * WYpick;
-  const device = await adapter.requestDevice(WBYTES > (1 << 27) ? { requiredLimits: { maxStorageBufferBindingSize: WBYTES, maxBufferSize: Math.max(WBYTES, 268435456) } } : {});
+  const PROF = adapter.features.has('timestamp-query');   // per-pass GPU timing (dev __vb.prof(); harmless when unread)
+  const device = await adapter.requestDevice({
+    ...(WBYTES > (1 << 27) ? { requiredLimits: { maxStorageBufferBindingSize: WBYTES, maxBufferSize: Math.max(WBYTES, 268435456) } } : {}),
+    ...(PROF ? { requiredFeatures: ['timestamp-query'] } : {}) });
   if (WYpick < 384 || WXZ < 2048) console.warn('[vb] adapter caps buffers at', lim, '— window', WXZ, '×', WYpick);
   device.addEventListener('uncapturederror', (e) => { console.error('[vb] gpu error:', e.error.message); });
   const canvas = $('c');
@@ -488,6 +499,7 @@
   const LAVA_T = addCol(255, 122, 22), LAVA_B = addCol(198, 44, 6), LAVA_R = addCol(226, 58, 10), LAVA_Y = addCol(255, 206, 46);   // gorge-floor lava — blended red/orange/yellow, emissive, deadly                                  // pond surface / body, close shades (walk-through — you swim)
   const PEBBLE  = [addCol(122, 120, 114), addCol(103, 101, 97)];                                         // SMALL rock — right-click to pick up
   const SNOW = [addCol(234, 238, 246), addCol(221, 227, 239)];                                           // fallen snow — strictly 1-voxel (10 cm) layers, walk-through decor
+  const ED_WHITE = addCol(250, 250, 252), ED_GREY = addCol(202, 207, 216), ED_HLITE = addCol(255, 186, 64);   // asset-editor stage: white plane, 1 m gridline grey, amber selection ring (all marked solid below)
   const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);                                    // twig (pickable) / stick — pine-trunk browns
   const BLOOM   = [addCol(198, 62, 54), addCol(226, 192, 62), addCol(230, 228, 220), addCol(152, 94, 192), addCol(224, 122, 162), addCol(228, 142, 56)];   // flower heads
   const solidTab = new Uint8Array(256);                // per-id collision: terrain/trunks/logs solid; decor + FOLIAGE walk-through
@@ -524,16 +536,19 @@
     return { sx, sy, sz, vox: mvox };
   };
   const fetchVoxModel = async (url) => { try { return parseVoxModel(new Uint8Array(await (await fetch(url)).arrayBuffer())); } catch (e) { console.warn('[vb]', url, 'missing — that decoration is skipped', e); return null; } };
-  const CONEV = await fetchVoxModel('assets/decoration/pinecone.vox');                      // hangs under pine branches
+  const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV] = await Promise.all([        // fetched IN PARALLEL — decoration models no longer block one another on boot
+    fetchVoxModel('assets/decoration/pinecone.vox'),                                        // hangs under pine branches
+    fetchVoxModel('assets/decoration/lillypad_small.vox'),                                  // floats on lakes + rivers
+    fetchVoxModel('assets/decoration/lillypad_medium.vox'),
+    fetchVoxModel('assets/decoration/lillypad_large.vox'),
+    fetchVoxModel('assets/decoration/stick_1.vox'),                                         // ground scatter, pickable
+    fetchVoxModel('assets/decoration/stick_2.vox'),
+    fetchVoxModel('assets/decoration/log.vox'),                                             // rare fallen log, solid
+    fetchVoxModel('assets/decoration/rock.vox')]);                                          // the small stone, pickable
   const CONEVL = CONEV ? { sx: CONEV.sx, sy: CONEV.sz, sz: CONEV.sy,                        // the same cone tipped 90° onto its side — fallen cones lie on the forest floor
     vox: CONEV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((CONEV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
-  const LILYV = [await fetchVoxModel('assets/decoration/lillypad_small.vox'),               // floats on lakes + rivers
-                 await fetchVoxModel('assets/decoration/lillypad_medium.vox'),
-                 await fetchVoxModel('assets/decoration/lillypad_large.vox')].filter(Boolean);
-  const STICKV = [await fetchVoxModel('assets/decoration/stick_1.vox'),                     // ground scatter, pickable (replaces the old procedural twigs/sticks)
-                  await fetchVoxModel('assets/decoration/stick_2.vox')].filter(Boolean);
-  const LOGV = await fetchVoxModel('assets/decoration/log.vox');                            // rare fallen log, solid
-  const ROCKV = await fetchVoxModel('assets/decoration/rock.vox');                          // the small stone, pickable (replaces the pebble dome)
+  const LILYV = [lilyS, lilyM, lilyL].filter(Boolean);
+  const STICKV = [stk1, stk2].filter(Boolean);
   const ROCKVU = ROCKV ? { sx: ROCKV.sx, sy: ROCKV.sz, sz: ROCKV.sy,                        // the same stone tipped 90° onto its edge — half the field stones stand upright
     vox: ROCKV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((ROCKV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
   let ROCK26 = [], R26S = [], R26M = [], R26B = [];                                         // 26 pre-voxelized rocks from rocks.glb (see scratch voxelize_rocks.py) in 3 rarity tiers
@@ -550,9 +565,11 @@
     FERN2V = f2.ferns.map((r) => ({ sx: r.sx, sy: r.sy, sz: r.sz, vox: r.vox.map((p) => (p & 0xffffff) | (f2ids[p >>> 24] << 24)) }));
   } catch (e) { console.warn('[vb] fern2.json missing — fern decor skipped', e); }
   const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
+  const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
     for (const r of ROCK26) markSolid(r); }
+  solidTab[ED_WHITE] = solidTab[ED_GREY] = solidTab[ED_HLITE] = 1;                          // the editor stage is walkable floor
   const PINE_ANCH = [];                                // pinecone anchors: canopy foliage voxels with open air below, ≥2 in from the model edge (base rotation)
   { const fol = new Uint8Array(256); for (const f of foliageIds) fol[f] = 1;
     for (let z = 30; z < MSZ; z++) for (let y = 2; y < MSY - 2; y++) for (let x = 2; x < MSX - 2; x++) {
@@ -567,16 +584,39 @@
   // table below and DDA-raytraced as a drop-style model — arbitrary (sub-voxel, non-grid-snapped) rotation, depth-tested against the scene,
   // NEVER written into the world grid. Flight (a fixed high orbit near spawn) is driven in the tick loop. Model x→width, y→depth (beak at −y), z→height.
   let BIRD_ITEM0 = 0, BIRD_NFRAMES = 0, BIRD_GLIDE = 0;   // dit (1-based item id) of flap frame 0, frame count, and the widest (wings-spread) frame index used for GLIDING — assigned where the frames are appended to `items`
+  let BFLY_ITEM0 = 0, BFLY_NFRAMES = 0;                // butterfly flap frames (assets/life/butterfly/<color>) — orange flies over the editor stage; ALL colors fly the forest BY DAY
+  let BFLY_COLS = [];                                  // first item id of each loaded color's 8 frames, in folder order: orange, red, blue
+  let FFLY_ITEM0 = 0, FFLY_NFRAMES = 0;                // firefly frames (assets/life/firefly) — replaces the butterflies AT NIGHT; the yellow abdomen voxel glows via the drops dYv.w lane
+  let WORM_ITEM0 = 0, WORM_NFRAMES = 0;                // inchworm crawl frames (assets/life/worm) — a GROUND crawler, active day and night (pool slots 24+)
+  let DUCK_ITEM0 = 0;                                  // duck (assets/life/duck/base.vox) — floats on lakes with its orange feet below the waterline (pool slots 16-19 = moms)
+  let DUCK_GREEN = [0.03, 0.22, 0.07];                 // the mallard HEAD green (linear) — extracted at load; the black eye voxel blinks to THIS (user)
+  let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
+  let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads as LIVE entities (pool slots 32-47) — they drift and rotate OFF-grid on the water; static worldgen stamping retired
   let SPARK_IT = 0, KNIFE_IT = 0;                      // item ids of the 1-voxel clash spark and the stone knife (assigned in the items block)
+  let CARDINAL_ROTATE = [];                            // raw .vox bytes of assets/life/cardinal/rotate/00..10 — auto-imported onto the ASSET EDITOR stage on entry (base.vox ignored). Fire-and-forget: populated well before the editor is opened.
+  Promise.all(Array.from({ length: 11 }, (_, f) => fetch('assets/life/cardinal/rotate/' + String(f).padStart(2, '0') + '.vox').then((r) => r.ok ? r.arrayBuffer() : null).catch(() => null)))
+    .then((bufs) => { CARDINAL_ROTATE = bufs.map((b, f) => b ? { name: String(f).padStart(2, '0') + '.vox', u8: new Uint8Array(b) } : null).filter(Boolean);
+      console.log('[vb] cardinal rotate frames for editor:', CARDINAL_ROTATE.length); });
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
   // the old engine's buildHeldFrames approach) DDA-raytraced in camera space. Item ids in u.pickX.w:
   // 0 = empty hand, 1 = stone axe (.vox), 2 = pebble rock, 3 = twig. Add future pickups to `items`.
-  let pickWGSL = 'const ITEMN : i32 = 0; const PICKSTEPS : i32 = 1;\n    const ITEMD : array<vec4<i32>, 1> = array<vec4<i32>, 1>(vec4<i32>(0));\n    var<private> ITEMMAP : array<vec4<f32>, 1> = array<vec4<f32>, 1>(vec4<f32>(0.0));';
+  let pickWGSL = 'const ITEMN : i32 = 0; const PICKSTEPS : i32 = 1;\n    const ITEMD : array<vec4<i32>, 1> = array<vec4<i32>, 1>(vec4<i32>(0));\n    @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;';
+  let itemMapF32 = new Float32Array(4);                // ITEMMAP lives in a STORAGE BUFFER (binding 13) — as a var<private> constant array it silently broke past ~2.6k entries (the butterfly frames pushed it over; FXC-side limit, no compile error)
   {
     const items = [];                                  // {w, d, h, cells: [[r,g,b] | null]} — x = width, y = depth, z = height
+    // ── PARALLEL PREFETCH ── kick EVERY creature/tool .vox fetch off at once so the network runs concurrently (was ~50 serial round-trips, one await per frame — the slow part of boot).
+    const AB = {};                                     // url → Promise<ArrayBuffer|null>; the parse loops below just `await AB[url]` (already in flight) and still append in deterministic item-id order.
+    const pf = (u) => { AB[u] = fetch(u).then((r) => r.ok ? r.arrayBuffer() : null).catch(() => null); return u; };
+    const abuf = async (u) => new Uint8Array((AB[u] ? await AB[u] : await (await fetch(u).catch(() => ({ arrayBuffer: () => null }))).arrayBuffer()) || new ArrayBuffer(0));
+    pf('assets/stone_tools/stone_axe.vox'); pf('assets/stone_tools/stone_knife.vox');
+    for (let f = 0; f < 8; f++) pf('assets/life/cardinal/flight/0' + f + '.vox');
+    for (const c of ['orange', 'red', 'blue']) for (let f = 0; f < 8; f++) pf('assets/life/butterfly/' + c + '/0' + f + '.vox');
+    for (let f = 0; f < 4; f++) pf('assets/life/firefly/0' + f + '.vox');
+    for (let f = 0; f < 12; f++) pf('assets/life/worm/' + String(f).padStart(2, '0') + '.vox');
+    pf('assets/life/duck/base.vox'); pf('assets/life/duck/baby.vox');
     try {
-      const pv = new Uint8Array(await (await fetch('assets/stone_tools/stone_axe.vox')).arrayBuffer());
+      const pv = await abuf('assets/stone_tools/stone_axe.vox');
       const pdv = new DataView(pv.buffer);
       let psx = 0, psy = 0, psz = 0, pvox = null; const ppal = new Uint8Array(1024);
       const pwalk = (off, end) => { while (off < end) {
@@ -616,7 +656,7 @@
     items.push({ w: 1, d: 1, h: 1, cells: [[255, 208, 112]] });
     KNIFE_IT = items.length + 1;                                      // STONE KNIFE — born when two rocks are clashed together
     try {
-      const kv = new Uint8Array(await (await fetch('assets/stone_tools/stone_knife.vox')).arrayBuffer());
+      const kv = await abuf('assets/stone_tools/stone_knife.vox');
       const kdv = new DataView(kv.buffer);
       let ksx = 0, ksy = 0, ksz = 0, kvox = null; const kpal = new Uint8Array(1024);
       const kwalk = (off, end) => { while (off < end) {
@@ -637,7 +677,7 @@
     try {                                                             // CARDINAL flight frames → item table (raw .vox palette); rendered off-grid as a drop-style model
       BIRD_ITEM0 = items.length + 1;                                  // dit is 1-based; frame 0 follows the twig
       for (let f = 0; f < 8; f++) {
-        const bv = new Uint8Array(await (await fetch('assets/life/cardinal/flight/0' + f + '.vox')).arrayBuffer());
+        const bv = await abuf('assets/life/cardinal/flight/0' + f + '.vox');
         const bdv = new DataView(bv.buffer);
         let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
         const bwalk = (off, end) => { while (off < end) {
@@ -677,17 +717,163 @@
       }
       console.log('[vb] cardinal flight', BIRD_NFRAMES, 'frames + blink -> items', BIRD_ITEM0, '..', BIRD_ITEM0 + 2 * BIRD_NFRAMES - 1);
     } catch (e) { console.warn('[vb] cardinal flight frames missing - no bird', e); BIRD_NFRAMES = 0; }
-    const lin = (c) => Math.pow(c / 255, 2.2).toFixed(4);
+    if (!location.search.includes('nobfly'))                          // BUTTERFLY flap frames → item table, same treatment as the cardinal (raw .vox palette, full 3D grids)
+      for (const cname of ['orange', 'red', 'blue']) {                // one 8-frame set per user-authored color subfolder; a missing color just skips
+        try {
+          const loaded = [];
+          for (let f = 0; f < 8; f++) {
+            const bv = await abuf('assets/life/butterfly/' + cname + '/0' + f + '.vox');
+            const bdv = new DataView(bv.buffer);
+            let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
+            const bwalk = (off, end) => { while (off < end) {
+              const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+              const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+              if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
+              else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
+              else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
+              else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+              off += 12 + sz + csz;
+            } };
+            bwalk(8, bv.length);
+            if (!bvox) throw new Error('butterfly ' + cname + ' frame 0' + f + ' has no voxels');
+            const cells = new Array(bsx * bsy * bsz).fill(null);
+            for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+            loaded.push({ w: bsx, d: bsy, h: bsz, cells });
+          }
+          BFLY_COLS.push(items.length + 1);                           // all 8 frames parsed OK — commit the whole color at once (no orphan half-sets)
+          for (const it of loaded) items.push(it);
+        } catch (e) { console.warn('[vb] butterfly color', cname, 'missing - skipped', e); }
+      }
+    if (BFLY_COLS.length) { BFLY_ITEM0 = BFLY_COLS[0]; BFLY_NFRAMES = 8;
+      console.log('[vb] butterfly 8 frames x', BFLY_COLS.length, 'colors -> items', BFLY_ITEM0, '..', items.length); }
+    try {                                                             // FIREFLY wing frames — same treatment; 3×3×3, 4 voxels (dark body, YELLOW abdomen, 2 white wings)
+      if (location.search.includes('nobfly')) throw new Error('disabled by ?nobfly flag');
+      const loaded = [];
+      for (let f = 0; f < 4; f++) {
+        const bv = await abuf('assets/life/firefly/0' + f + '.vox');
+        const bdv = new DataView(bv.buffer);
+        let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
+        const bwalk = (off, end) => { while (off < end) {
+          const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+          const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+          if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
+          else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
+          else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
+          else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+          off += 12 + sz + csz;
+        } };
+        bwalk(8, bv.length);
+        if (!bvox) throw new Error('firefly frame 0' + f + ' has no voxels');
+        const cells = new Array(bsx * bsy * bsz).fill(null);
+        for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+        loaded.push({ w: bsx, d: bsy, h: bsz, cells });
+      }
+      FFLY_ITEM0 = items.length + 1;
+      for (const it of loaded) items.push(it);
+      FFLY_NFRAMES = 4;
+      console.log('[vb] firefly', FFLY_NFRAMES, 'frames -> items', FFLY_ITEM0, '..', items.length);
+    } catch (e) { console.warn('[vb] firefly frames missing - nights stay dark', e); FFLY_NFRAMES = 0; }
+    try {                                                             // WORM crawl frames — a 6-voxel pink inchworm, 12-frame crawl cycle, long axis = model y (head at −y, like the cardinal's beak)
+      if (location.search.includes('nobfly')) throw new Error('disabled by ?nobfly flag');
+      const loaded = [];
+      for (let f = 0; f < 12; f++) {
+        const bv = await abuf('assets/life/worm/' + String(f).padStart(2, '0') + '.vox');
+        const bdv = new DataView(bv.buffer);
+        let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
+        const bwalk = (off, end) => { while (off < end) {
+          const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+          const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+          if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
+          else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
+          else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
+          else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+          off += 12 + sz + csz;
+        } };
+        bwalk(8, bv.length);
+        if (!bvox) throw new Error('worm frame ' + f + ' has no voxels');
+        const cells = new Array(bsx * bsy * bsz).fill(null);
+        for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+        loaded.push({ w: bsx, d: bsy, h: bsz, cells });
+      }
+      WORM_ITEM0 = items.length + 1;
+      for (const it of loaded) items.push(it);
+      WORM_NFRAMES = 12;
+      console.log('[vb] worm', WORM_NFRAMES, 'frames -> items', WORM_ITEM0, '..', items.length);
+    } catch (e) { console.warn('[vb] worm frames missing - forest floor stays still', e); WORM_NFRAMES = 0; }
+    try {                                                             // DUCK — one static model (5×8×8): orange feet z0, brown body, white ring, green head; floats on lakes
+      if (location.search.includes('nobfly')) throw new Error('disabled by ?nobfly flag');
+      const bv = await abuf('assets/life/duck/base.vox');
+      const bdv = new DataView(bv.buffer);
+      let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
+      const bwalk = (off, end) => { while (off < end) {
+        const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+        const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+        if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
+        else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
+        else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
+        else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+        off += 12 + sz + csz;
+      } };
+      bwalk(8, bv.length);
+      if (!bvox) throw new Error('duck has no voxels');
+      const cells = new Array(bsx * bsy * bsz).fill(null);
+      for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+      DUCK_ITEM0 = items.length + 1;
+      items.push({ w: bsx, d: bsy, h: bsz, cells });
+      { let bestG = -1; for (const c of cells) { if (!c) continue; const [r, g, b] = c;   // HEAD GREEN = the brightest strongly-green voxel (for the eye blink)
+        if (g > r + 18 && g > b + 18 && g > bestG) { bestG = g; DUCK_GREEN = [Math.pow(r / 255, 2.2), Math.pow(g / 255, 2.2), Math.pow(b / 255, 2.2)]; } } }
+      console.log('[vb] duck -> item', DUCK_ITEM0, 'head green', DUCK_GREEN.map((v) => Math.round(Math.pow(v, 1 / 2.2) * 255)));
+      try {                                                           // BABY duck — same parse; missing baby just means mothers swim alone
+        const v2 = await abuf('assets/life/duck/baby.vox');
+        const d2v = new DataView(v2.buffer);
+        let cx2 = 0, cy2 = 0, cz2 = 0, cvox = null; const cpal = new Uint8Array(1024);
+        const cwalk = (off, end) => { while (off < end) {
+          const id = String.fromCharCode(v2[off], v2[off + 1], v2[off + 2], v2[off + 3]);
+          const sz = d2v.getUint32(off + 4, true), csz = d2v.getUint32(off + 8, true);
+          if (id === 'SIZE' && !cx2) { cx2 = d2v.getUint32(off + 12, true); cy2 = d2v.getUint32(off + 16, true); cz2 = d2v.getUint32(off + 20, true); }
+          else if (id === 'XYZI' && !cvox) { const n = d2v.getUint32(off + 12, true); cvox = v2.subarray(off + 16, off + 16 + n * 4); }
+          else if (id === 'RGBA') cpal.set(v2.subarray(off + 12, off + 12 + 1024));
+          else if (id === 'MAIN') { cwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+          off += 12 + sz + csz;
+        } };
+        cwalk(8, v2.length);
+        if (!cvox) throw new Error('baby duck has no voxels');
+        const cc = new Array(cx2 * cy2 * cz2).fill(null);
+        for (let i = 0; i < cvox.length; i += 4) { const ci = cvox[i + 3]; cc[cvox[i] + cvox[i + 1] * cx2 + cvox[i + 2] * cx2 * cy2] = [cpal[(ci - 1) * 4], cpal[(ci - 1) * 4 + 1], cpal[(ci - 1) * 4 + 2]]; }
+        DUCKB_ITEM0 = items.length + 1;
+        items.push({ w: cx2, d: cy2, h: cz2, cells: cc });
+        console.log('[vb] baby duck -> item', DUCKB_ITEM0);
+      } catch (e) { console.warn('[vb] baby duck missing - mothers swim alone', e); DUCKB_ITEM0 = 0; }
+    } catch (e) { console.warn('[vb] duck missing - lakes stay empty', e); DUCK_ITEM0 = 0; }
+    if (LILYV.length) {                                               // LILY PADS → item table: the same lake decor models, now free-floating entities
+      LILY_ITEM0 = items.length + 1;
+      for (const m of LILYV) { items.push(modelToItem(m)); LILY_SZ.push(m.sz); }
+      console.log('[vb] lily pads x', LILYV.length, '-> items', LILY_ITEM0, '..', items.length);
+    }
+    const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
+      const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
+      const sol = (x, y, z) => x >= 0 && x < w && y >= 0 && y < d && z >= 0 && z < h && !!cells[x + y * w + z * w * d];
+      for (let z = 0; z < h; z++) for (let y = 0; y < d; y++) for (let x = 0; x < w; x++) {
+        const c = cells[x + y * w + z * w * d]; if (!c) continue;
+        let occ = 0;                                                  // count filled neighbours in the UPPER hemisphere + same level (17 cells) — these block ambient sky; the support voxels BELOW don't darken a lit top
+        for (let dz = 0; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { if ((dx || dy || dz) && sol(x + dx, y + dy, z + dz)) occ++; }
+        const ao = 1 - 0.5 * (occ / 17);                              // exposed tip ~1.0, tucked crease ~0.7
+        out[x + y * w + z * w * d] = [c[0] * ao, c[1] * ao, c[2] * ao];
+      }
+      it.cells = out; };
+    const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
+    for (let i = creatureStart - 1; i < items.length; i++) if (items[i] && items[i].cells && items[i].cells.length) bakeAO(items[i]);
     const dims = [], flat = [];
     for (const it of items) {
-      dims.push(`vec4<i32>(${it.w}, ${it.d}, ${it.h}, ${flat.length})`);
-      for (const c of it.cells) flat.push(c ? `vec4<f32>(${lin(c[0])}, ${lin(c[1])}, ${lin(c[2])}, 1.0)` : 'vec4<f32>(0.0)');
+      dims.push(`vec4<i32>(${it.w}, ${it.d}, ${it.h}, ${flat.length >> 2})`);
+      for (const c of it.cells) { if (c) flat.push(Math.pow(c[0] / 255, 2.2), Math.pow(c[1] / 255, 2.2), Math.pow(c[2] / 255, 2.2), 1.0); else flat.push(0, 0, 0, 0); }
     }
-    if (!flat.length) flat.push('vec4<f32>(0.0)');
+    if (!flat.length) flat.push(0, 0, 0, 0);
+    itemMapF32 = new Float32Array(flat);               // → storage buffer at binding 13 (created with the other GPU buffers)
     const maxSteps = Math.max(...items.map(it => it.w + it.d + it.h + 3));
     pickWGSL = `const ITEMN : i32 = ${items.length}; const PICKSTEPS : i32 = ${maxSteps};
     const ITEMD : array<vec4<i32>, ${items.length}> = array<vec4<i32>, ${items.length}>(${dims.join(', ')});
-    var<private> ITEMMAP : array<vec4<f32>, ${flat.length}> = array<vec4<f32>, ${flat.length}>(${flat.join(', ')});`;
+    @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;`;
   }
 
   // ── deterministic world-coordinate generation ──────────────────────────────
@@ -855,6 +1041,10 @@
           let t = hmap[ci];
           while (t > 4 && W[gx + (t - 1) * WX + gz * WX * WY] === 0) t--;
           hmap[ci] = t;
+          for (let ty = t + 1; ty < Math.min(WY, t + 14); ty++) {   // drop any surface decor (grass/flowers/ferns) left hanging over the carve — bottom-up, so a strand cascades once its base loses support
+            const jj = gx + ty * WX + gz * WX * WY;
+            if (W[jj] !== 0 && FLOATDECOR.has(W[jj]) && W[gx + (ty - 1) * WX + gz * WX * WY] === 0) W[jj] = 0;
+          }
         }
       } }
   }
@@ -1127,6 +1317,7 @@
   }
   const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
   function lilyAt(cx, cz) {
+    return null;                                       // STATIC lilies retired 2026-07-17 — lily pads are now LIVE drifting/rotating entities (creature pool kind 4); keep the fn so worker stringification stays in sync
     if (!LILYV.length) return null;
     if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.085) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085)
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
@@ -1325,6 +1516,7 @@
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
+    wsrc2 += 'const FLOATDECOR = new Set(' + JSON.stringify([...FLOATDECOR]) + ');\n';   // carveSphere's floating-decor sweep needs this in the worker scope (a Set can't cross via JSON tables)
     wsrc2 += 'let WX = 0, WZ = 0, OX = 0, OZ = 0, BX = 0, W = null, hmap = null, touched = null, MROT = null, remap = null, rivScope = null;\n' +
       'const gwrap = (v, n) => v - (n === WX ? OX : OZ);\n' +
       'const rivCache = new Map(), caveCache = new Map(), wormCache = new Map();\n' +
@@ -1429,7 +1621,7 @@
 
   // ── GPU buffers ─────────────────────────────────────────────────────────────
   await stage('uploading world…');
-  const worldBuf = device.createBuffer({ size: W.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const worldBuf = device.createBuffer({ size: W.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the GPU world back to verify it matches W
   const uploadWorld = () => { const CH = 128 << 20;    // chunked — a single 1.5 GB writeBuffer would need a same-sized staging allocation
     for (let o = 0; o < W.byteLength; o += CH) device.queue.writeBuffer(worldBuf, o, W.buffer, o, Math.min(CH, W.byteLength - o)); };
   uploadWorld();
@@ -1438,11 +1630,16 @@
   const brick2Buf = device.createBuffer({ size: bricks2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
   new Uint32Array(brick2Buf.getMappedRange()).set(bricks2); brick2Buf.unmap();
   const uploadBricks = () => { device.queue.writeBuffer(brickBuf, 0, bricks); device.queue.writeBuffer(brick2Buf, 0, bricks2); };
-  const palBuf = device.createBuffer({ size: 256 * 16, usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });
+  const palBuf = device.createBuffer({ size: 256 * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
   { const f = new Float32Array(palBuf.getMappedRange());           // sRGB → linear; shaders work in linear
     for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); f[i * 4 + 3] = 0; } }
   palBuf.unmap();
-  const UF = new Float32Array(228);                    // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212; pick2 (left hand) 212..227 → 228
+  const palSync = () => { const f = new Float32Array(256 * 4);     // asset-editor imports addCol at RUNTIME — re-upload the whole palette (COPY_DST above exists for this)
+    for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); }
+    device.queue.writeBuffer(palBuf, 0, f); };
+  const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });   // held/drop item voxel colors — see pickWGSL
+  new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
+  const UF = new Float32Array(1140);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139 → 1140. 64 drop slots = the composite tile-cull's 8×8=64 threads (one slot each)
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);
@@ -1467,9 +1664,10 @@
       pickA  : vec4<f32>,                                            // held pick: anchor xyz (camera space) + voxel size
       pickX  : vec4<f32>, pickY : vec4<f32>, pickZ : vec4<f32>,      // item local axes in camera space; pickX.w = show flag
       rdist  : vec4<f32>,                                            // x = render distance in voxels (menu slider)
-      drops  : array<vec4<f32>, 36>,                                 // 4 dropped items + cardinal (slot 4) + 4 clash sparks (slots 5-8) × {anchor.xyz+voxelScale, X.xyz+itemId, Y.xyz+sparkFade, Z.xyz} in camera space, voxel units
+      drops  : array<vec4<f32>, 256>,                                // 4 dropped items + cardinal (slot 4) + 4 clash sparks (slots 5-8) + 55 creatures (slots 9-63: flyers, ducks 25-40, worms 41-48, lilies 49-63) × {anchor.xyz+voxelScale, X.xyz+itemId, Y.xyz+glow, Z.xyz} in camera space, voxel units
       pick2A : vec4<f32>,                                            // LEFT hand (dual-wield rock): anchor xyz (camera space) + voxel size
       pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
+      fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -1506,11 +1704,11 @@
     }
     fn isMoon() -> bool { return (u32(u.fx) & 8u) != 0u; }          // at night u.sunDir carries the MOON direction
     fn dayScale() -> f32 {                                           // global light level over the day/night cycle
-      if (isMoon()) { return 0.03; }
+      if (isMoon()) { return 0.0135; }                               // night: 0.03 → 0.024 → 0.018 → 0.0135 (three user darkening passes, 2026-07-17)
       return 0.025 + 0.975 * smoothstep(-0.10, 0.28, u.sunDir.y);
     }
     fn sunTint() -> vec3<f32> {                                      // sun goes amber at the horizon; the moon is cool silver-blue
-      if (isMoon()) { return vec3<f32>(0.40, 0.50, 0.78) * 0.44 * smoothstep(0.0, 0.15, u.sunDir.y); }
+      if (isMoon()) { return vec3<f32>(0.40, 0.50, 0.78) * 0.198 * smoothstep(0.0, 0.15, u.sunDir.y); }   // moonlight follows the darker nights: 0.44 → 0.352 → 0.264 → 0.198
       let warm = mix(vec3<f32>(1.0, 0.42, 0.18), vec3<f32>(1.0, 1.0, 1.0), smoothstep(0.02, 0.38, u.sunDir.y));
       return SUN_COL * warm * smoothstep(-0.05, 0.10, u.sunDir.y);
     }
@@ -1560,26 +1758,12 @@
     }
   `;
 
-  // hierarchical DDA in window space with toroidal lookups (one conditional subtract per axis — no modulo)
-  const TRACE = /* wgsl */`
-    @group(0) @binding(1) var<storage, read> world : array<u32>;
-    @group(0) @binding(2) var<storage, read> bricks : array<u32>;
-    @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
-    @group(0) @binding(4) var gAlbedo : texture_storage_2d<rgba8unorm, write>;
-    @group(0) @binding(5) var gIrr : texture_storage_2d<rgba16float, write>;
-    const WLF : f32 = ${WL}.0;
-    fn vn2(p : vec2<f32>) -> f32 {
-      let f = floor(p); let i = vec2<i32>(f);
-      var w = p - f; w = w * w * (3.0 - 2.0 * w);
-      let a = mix(ih3(i.x, i.y, 7), ih3(i.x + 1, i.y, 7), w.x);
-      let b = mix(ih3(i.x, i.y + 1, 7), ih3(i.x + 1, i.y + 1, 7), w.x);
-      return mix(a, b, w.y);
-    }
-    fn caust(p : vec2<f32>) -> f32 {                                 // CAUSTICS — two drifting noise fields; their coincidence lines are the bright webs
-      let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.55, u.time * 0.34));
-      let n2 = vn2(p * 0.11 + vec2<f32>(-u.time * 0.47, u.time * 0.29));
-      return pow(clamp(1.0 - abs(n1 - n2) * 2.6, 0.0, 1.0), 5.0);
-    }
+  // ── shared hierarchical DDA ── (window space, toroidal lookups — one conditional subtract per axis, no modulo). Included by TRACE
+  // and by COMPOSITE (creature pixels trace a REAL sun-occlusion ray so moving things sit in tree shade exactly like the terrain).
+  // The including module must declare storage buffers named `world`, `bricks`, `bricks2` (any binding slots — WGSL module scope is order-free).
+  const DDAW = /* wgsl */`
+    const B2X : i32 = ${BX >> 2}; const B2Y : i32 = ${BY >> 2}; const B2Z : i32 = ${BZ >> 2};
+    const WTv : u32 = ${WATER_T}u; const WBv : u32 = ${WATER_B}u;   // lake surface / body voxel ids
     struct Hit { t : f32, vox : u32, face : u32, n : vec3<f32>, }
     fn voxAt(c : vec3<i32>) -> u32 {
       var x = c.x + i32(u.off.x); if (x >= WX) { x -= WX; }
@@ -1593,38 +1777,11 @@
       let i = u32(x + c.y * BX + z * BX * BY);
       return ((bricks[i >> 5u] >> (i & 31u)) & 1u) != 0u;
     }
-    @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;   // 32-voxel SUPER-brick occupancy (window origin is 32-aligned, so off>>5 is exact)
-    const B2X : i32 = ${BX >> 2}; const B2Y : i32 = ${BY >> 2}; const B2Z : i32 = ${BZ >> 2};
     fn brickOcc2(c : vec3<i32>) -> bool {
       var x = c.x + (i32(u.off.x) >> 5); if (x >= B2X) { x -= B2X; }
       var z = c.z + (i32(u.off.y) >> 5); if (z >= B2Z) { z -= B2Z; }
       let i = u32(x + c.y * B2X + z * B2X * B2Y);
       return ((bricks2[i >> 5u] >> (i & 31u)) & 1u) != 0u;
-    }
-    const WTv : u32 = ${WATER_T}u; const WBv : u32 = ${WATER_B}u;   // lake surface / body voxel ids
-    const SNV : u32 = ${SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits
-    const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
-    fn flakeBlocked(cw : vec3<f32>) -> bool {                       // a falling flake may exist ONLY in truly open air:
-      if (cw.y >= f32(WY - 2)) { return false; }                     // above the world — open sky
-      if (cw.y <= 2.0) { return true; }
-      let a = vec3<i32>(floor(cw - vec3<f32>(0.5)));                 // (1) its full 10 cm cube must not touch ANY solid — all 8 corners tested, so it
-      let b = vec3<i32>(floor(cw + vec3<f32>(0.5)));                 //     can never poke into a trunk, a leaf cluster or the ground
-      if (voxAt(a) != 0u || voxAt(b) != 0u ||
-          voxAt(vec3<i32>(b.x, a.y, a.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, a.z)) != 0u ||
-          voxAt(vec3<i32>(a.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(b.x, b.y, a.z)) != 0u ||
-          voxAt(vec3<i32>(b.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, b.z)) != 0u) { return true; }
-      let ci = vec3<i32>(floor(cw));                                 // (2) and its column must be OPEN SKY. Voxel-exact for the first 16 above — the old
-      for (var k = 1; k <= 16; k++) {                                //     sparse probe ladder slipped BETWEEN thin canopy layers and cave shells, so
-        let py = ci.y + k;                                           //     flakes clipped through trees, the ground and into caves…
-        if (py >= WY - 2) { return false; }
-        if (voxAt(vec3<i32>(ci.x, py, ci.z)) != 0u) { return true; }
-      }
-      let bx = ci.x >> 3; let bz = ci.z >> 3;                        // …then BRICK-level (8³ occupancy — anything solid in the 8×8 column blocks) up to
-      let byTop = min(BY - 1, (ci.y + 128) >> 3);                    //     +128: no gap a cave chamber or a canopy can hide in
-      for (var by = (ci.y + 17) >> 3; by <= byTop; by++) {
-        if (brickOcc(vec3<i32>(bx, by, bz))) { return true; }
-      }
-      return false;
     }
     fn trace(ro : vec3<f32>, rdIn : vec3<f32>, maxT : f32, skipW : bool) -> Hit {
       var h : Hit; h.t = -1.0;
@@ -1651,21 +1808,26 @@
       for (var ci = 0; ci < ${(WX >> 5) + (WY >> 5) + (WZ >> 5) + 8}; ci++) {   // L2: 32-voxel leaps through open air — long rays cross the window in ~1/4 the steps
         if (brickOcc2(cc)) {
           let bmin2 = cc * 4;
-          var tb = t;
+          var tb2 = t;
           var bax = ax;
-          let pb = ro + rd * (tb + 1e-4);
+          let pb = ro + rd * (tb2 + 1e-4);
           var bc = clamp(vec3<i32>(floor(pb * 0.125)), bmin2, bmin2 + 3);
           var bNext = (vec3<f32>(bc + max(istep, vec3<i32>(0))) * 8.0 - ro) * inv;
+          var bxw = bmin2.x + (i32(u.off.x) >> 3); if (bxw >= BX) { bxw -= BX; }   // wrapped L1 base — off is 32-aligned so a super-cell's 4³ brick block never straddles the toroidal seam,
+          var bzw = bmin2.z + (i32(u.off.y) >> 3); if (bzw >= BZ) { bzw -= BZ; }   // letting both inner loops keep a RUNNING flat index (one add per step) instead of re-wrapping per sample
+          var bIdx = bxw + (bc.x - bmin2.x) + bc.y * BX + (bzw + (bc.z - bmin2.z)) * BX * BY;
           for (var bi = 0; bi < 16; bi++) {                          // L1: the 4³ bricks inside this super-cell
-            if (brickOcc(bc)) {
+            if (((bricks[u32(bIdx) >> 5u] >> (u32(bIdx) & 31u)) & 1u) != 0u) {
               let bmin = bc * 8;
-              var tv = tb;
+              var tv = tb2;
               let pv = ro + rd * (tv + 1e-4);
               var vc = clamp(vec3<i32>(floor(pv)), bmin, bmin + 7);
               var vNext = (vec3<f32>(vc + max(istep, vec3<i32>(0))) - ro) * inv;
               var vax = bax;
+              var vIdx = ((bxw + (bc.x - bmin2.x)) << 3) + (vc.x - bmin.x) + vc.y * WX + (((bzw + (bc.z - bmin2.z)) << 3) + (vc.z - bmin.z)) * WX * WY;
               for (var j = 0; j < 32; j++) {
-                var v = voxAt(vc);
+                let ii = u32(vIdx);
+                var v = (world[ii >> 2u] >> ((ii & 3u) * 8u)) & 255u;
                 if (skipW && (v == WTv || v == WBv)) { v = 0u; }      // water: invisible to an underwater camera
                 if (v != 0u) {
                   h.t = tv; h.vox = v;
@@ -1675,17 +1837,17 @@
                   h.face = u32(vax) * 2u + select(0u, 1u, (n.x + n.y + n.z) < 0.0);
                   return h;
                 }
-                if (vNext.x <= vNext.y && vNext.x <= vNext.z) { tv = vNext.x; vNext.x += abs(inv.x); vc.x += istep.x; vax = 0; }
-                else if (vNext.y <= vNext.z) { tv = vNext.y; vNext.y += abs(inv.y); vc.y += istep.y; vax = 1; }
-                else { tv = vNext.z; vNext.z += abs(inv.z); vc.z += istep.z; vax = 2; }
+                if (vNext.x <= vNext.y && vNext.x <= vNext.z) { tv = vNext.x; vNext.x += abs(inv.x); vc.x += istep.x; vIdx += istep.x; vax = 0; }
+                else if (vNext.y <= vNext.z) { tv = vNext.y; vNext.y += abs(inv.y); vc.y += istep.y; vIdx += istep.y * WX; vax = 1; }
+                else { tv = vNext.z; vNext.z += abs(inv.z); vc.z += istep.z; vIdx += istep.z * WX * WY; vax = 2; }
                 if (tv > t1) { return h; }
                 if (any(vc < bmin) || any(vc > bmin + 7)) { break; }
               }
             }
-            if (bNext.x <= bNext.y && bNext.x <= bNext.z) { tb = bNext.x; bNext.x += bDelta.x; bc.x += istep.x; bax = 0; }
-            else if (bNext.y <= bNext.z) { tb = bNext.y; bNext.y += bDelta.y; bc.y += istep.y; bax = 1; }
-            else { tb = bNext.z; bNext.z += bDelta.z; bc.z += istep.z; bax = 2; }
-            if (tb > t1) { return h; }
+            if (bNext.x <= bNext.y && bNext.x <= bNext.z) { tb2 = bNext.x; bNext.x += bDelta.x; bc.x += istep.x; bIdx += istep.x; bax = 0; }
+            else if (bNext.y <= bNext.z) { tb2 = bNext.y; bNext.y += bDelta.y; bc.y += istep.y; bIdx += istep.y * BX; bax = 1; }
+            else { tb2 = bNext.z; bNext.z += bDelta.z; bc.z += istep.z; bIdx += istep.z * BX * BY; bax = 2; }
+            if (tb2 > t1) { return h; }
             if (any(bc < bmin2) || any(bc > bmin2 + 3)) { break; }
           }
         }
@@ -1696,6 +1858,52 @@
         if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(B2X, B2Y, B2Z))) { return h; }
       }
       return h;
+    }
+  `;
+  const TRACE = /* wgsl */`
+    @group(0) @binding(1) var<storage, read> world : array<u32>;
+    @group(0) @binding(2) var<storage, read> bricks : array<u32>;
+    @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
+    @group(0) @binding(4) var gAlbedo : texture_storage_2d<rgba8unorm, write>;
+    @group(0) @binding(5) var gIrr : texture_storage_2d<rgba16float, write>;
+    ${DDAW}
+    const WLF : f32 = ${WL}.0;
+    fn vn2(p : vec2<f32>) -> f32 {
+      let f = floor(p); let i = vec2<i32>(f);
+      var w = p - f; w = w * w * (3.0 - 2.0 * w);
+      let a = mix(ih3(i.x, i.y, 7), ih3(i.x + 1, i.y, 7), w.x);
+      let b = mix(ih3(i.x, i.y + 1, 7), ih3(i.x + 1, i.y + 1, 7), w.x);
+      return mix(a, b, w.y);
+    }
+    fn caust(p : vec2<f32>) -> f32 {                                 // CAUSTICS — two drifting noise fields; their coincidence lines are the bright webs
+      let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.55, u.time * 0.34));
+      let n2 = vn2(p * 0.11 + vec2<f32>(-u.time * 0.47, u.time * 0.29));
+      return pow(clamp(1.0 - abs(n1 - n2) * 2.6, 0.0, 1.0), 5.0);
+    }
+    @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;   // 32-voxel SUPER-brick occupancy (window origin is 32-aligned, so off>>5 is exact)
+    const SNV : u32 = ${SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits
+    const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
+    fn flakeBlocked(cw : vec3<f32>) -> bool {                       // a falling flake may exist ONLY in truly open air:
+      if (cw.y >= f32(WY - 2)) { return false; }                     // above the world — open sky
+      if (cw.y <= 2.0) { return true; }
+      let a = vec3<i32>(floor(cw - vec3<f32>(0.5)));                 // (1) its full 10 cm cube must not touch ANY solid — all 8 corners tested, so it
+      let b = vec3<i32>(floor(cw + vec3<f32>(0.5)));                 //     can never poke into a trunk, a leaf cluster or the ground
+      if (voxAt(a) != 0u || voxAt(b) != 0u ||
+          voxAt(vec3<i32>(b.x, a.y, a.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, a.z)) != 0u ||
+          voxAt(vec3<i32>(a.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(b.x, b.y, a.z)) != 0u ||
+          voxAt(vec3<i32>(b.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, b.z)) != 0u) { return true; }
+      let ci = vec3<i32>(floor(cw));                                 // (2) and its column must be OPEN SKY. Voxel-exact for the first 16 above — the old
+      for (var k = 1; k <= 16; k++) {                                //     sparse probe ladder slipped BETWEEN thin canopy layers and cave shells, so
+        let py = ci.y + k;                                           //     flakes clipped through trees, the ground and into caves…
+        if (py >= WY - 2) { return false; }
+        if (voxAt(vec3<i32>(ci.x, py, ci.z)) != 0u) { return true; }
+      }
+      let bx = ci.x >> 3; let bz = ci.z >> 3;                        // …then BRICK-level (8³ occupancy — anything solid in the 8×8 column blocks) up to
+      let byTop = min(BY - 1, (ci.y + 128) >> 3);                    //     +128: no gap a cave chamber or a canopy can hide in
+      for (var by = (ci.y + 17) >> 3; by <= byTop; by++) {
+        if (brickOcc(vec3<i32>(bx, by, bz))) { return true; }
+      }
+      return false;
     }
     fn onbT(n : vec3<f32>) -> vec3<f32> {
       return normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
@@ -1719,7 +1927,22 @@
       let ro = u.camPos;                                             // window-relative
       let skipW = (u32(u.fx) & 2u) != 0u;                            // camera underwater → water voxels are see-through
       let tcap = u.rdist.x / max(length(vec2<f32>(rd.x, rd.z)), 0.05);   // CIRCULAR render distance (slider) — the world ends at a radius, not a square edge
-      var h = trace(ro, rd, min(4000.0, tcap), skipW);
+      var tEye = 0.0;                                                // CLIP-THROUGH FIX: the eye poking into canopy/terrain voxels made every ray hit unlit solid at t=0 — a full BLACK frame.
+      {                                                              // Slide this ray's start past up to 3 voxels of solid; deeper stays dark (no x-ray through real walls). Water is
+        let ec0 = vec3<i32>(floor(ro));                              // exempt on both ends — swimming already handles it via skipW.
+        let v0 = voxAt(clamp(ec0, vec3<i32>(0), vec3<i32>(WX - 1, WY - 1, WZ - 1)));
+        if (ec0.y > 0 && ec0.y < WY - 1 && v0 != 0u && v0 != WTv && v0 != WBv) {
+          for (var q = 1; q <= 12; q++) {
+            let tq = f32(q) * 0.25;
+            let pq = vec3<i32>(floor(ro + rd * tq));
+            if (pq.y <= 0 || pq.y >= WY - 1) { tEye = tq; break; }
+            let vq = voxAt(clamp(pq, vec3<i32>(0), vec3<i32>(WX - 1, WY - 1, WZ - 1)));
+            if (vq == 0u || vq == WTv || vq == WBv) { tEye = tq; break; }
+          }
+        }
+      }
+      var h = trace(ro + rd * tEye, rd, min(4000.0, tcap) - tEye, skipW);
+      if (h.t >= 0.0) { h.t += tEye; }
       if ((u32(u.fx) & 16u) != 0u) {                               // FALLING SNOW — flakes are REAL VOXELS in the primary trace: grain, the jittered sun ray, AO, fog and the denoiser treat them exactly like the static world
         var rdS = rd;
         if (abs(rdS.x) < 1e-6) { rdS.x = 1e-6; } if (abs(rdS.y) < 1e-6) { rdS.y = 1e-6; } if (abs(rdS.z) < 1e-6) { rdS.z = 1e-6; }
@@ -1874,6 +2097,30 @@
         if (dh.t >= 0.0 && (dh.vox == LVT || dh.vox == LVB || dh.vox == LVR || dh.vox == LVY)) {
           lavaG = u32(clamp((1.0 - dh.t / 18.0) * 14.0 + 0.5, 0.0, 14.0));
         }
+      } else if (t >= 0.0 && faceId != 8u && faceId != 7u) {           // FIREFLY LIGHT — same 4-bit glow field (lava lives below y 28, fireflies above: never both).
+        let pos2 = ro + rd * t;                                        // Teardown-style AREA light (juandiegomontoya breakdown): jittered target on the glow sphere,
+        var best = 0.0; var bi = -1;                                   // sphere-light falloff window (inner full → outer ZERO), temporal dither — TAA resolves the noise.
+        for (var f = 0; f < 8; f++) {
+          let F = u.fflies[f];
+          if (F.w <= 0.0) { continue; }
+          let dv = F.xyz - pos2;
+          let d2 = dot(dv, dv);
+          if (d2 > 484.0) { continue; }                                // 2.2 m reach
+          let win = 1.0 - smoothstep(220.0, 484.0, d2);                // "outer radius where the intensity falls off to zero" — kills the hard circle edge
+          let k = F.w * max(dot(h.n, normalize(dv)), 0.0) * win / (1.0 + d2 * 0.06);
+          if (k > best) { best = k; bi = f; }
+        }
+        if (bi >= 0 && best > 0.015) {
+          var s2 = ((gid.x * 2467u) ^ (gid.y * 8837u) ^ (u32(u.frame) * 15013u)) | 1u;
+          let jit3 = vec3<f32>(rand(&s2), rand(&s2), rand(&s2)) * 1.8 - vec3<f32>(0.9);   // "a ray to a RANDOM POINT on the light's surface" — soft area-light penumbra via TAA
+          let dv = u.fflies[bi].xyz + jit3 - (pos2 + h.n * 0.02);
+          let dist = length(dv);
+          let sh = trace(pos2 + h.n * 0.02, dv / max(dist, 1e-4), max(dist - 0.6, 0.0), true);
+          if (sh.t < 0.0) {
+            let ign = fract(52.9829189 * fract(0.06711056 * f32(gid.x) + 0.00583715 * f32(gid.y)) + f32(u32(u.frame) & 63u) * 0.618034);   // temporal IGN dither — TAA melts the 14 quantization steps into a smooth gradient
+            lavaG = u32(clamp(sqrt(best) * 5.2 + ign, 0.0, 14.0));     // sqrt-encoded: extra levels in the dim tail, where banding rings were most visible
+          }
+        }
       }
       textureStore(gAlbedo, vec2<i32>(gid.xy), vec4<f32>(sqrt(albedo), (f32(faceId) + f32(lavaG) * 16.0) / 255.0));
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, 0.0));
@@ -1956,6 +2203,10 @@
     @group(0) @binding(1) var gAlbedo : texture_2d<f32>;
     @group(0) @binding(2) var irrF : texture_2d<f32>;
     @group(0) @binding(3) var colorOut : texture_storage_2d<rgba8unorm, write>;
+    @group(0) @binding(16) var<storage, read> world : array<u32>;   // world + occupancy for the shared DDA — creature pixels trace a REAL sun ray
+    @group(0) @binding(17) var<storage, read> bricks : array<u32>;  // so moving things sit in tree shade exactly like the static terrain
+    @group(0) @binding(18) var<storage, read> bricks2 : array<u32>;
+    ${DDAW}
     ${pickWGSL}
     fn vn3(p : vec3<f32>) -> f32 {
       let f = floor(p); let i = vec3<i32>(f);
@@ -1973,8 +2224,41 @@
       n = n * smoothstep(0.0, 0.16, hf) * smoothstep(1.0, 0.70, hf);
       return clamp((n - 0.565) * 3.4, 0.0, 1.0);                     // ~35% coverage — scattered cumulus, plenty of blue
     }
+    var<workgroup> wgVis : array<u32, 64>;               // per-8×8-tile drop-slot visibility — one thread tests one slot's bounding sphere against the tile's view cone (64 threads = 64 slots)
     @compute @workgroup_size(8, 8)
-    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocation_index) lidx : u32, @builtin(workgroup_id) wgid : vec3<u32>) {
+      if (ITEMN > 0 && lidx < 64u) {                     // TILE CULL (before ANY return — the barrier below must be uniform): most tiles see 0-2 drops, the
+        var vis = 0u;                                    // per-pixel loop over ~20 live creature slots was pure waste on busy water
+        let diC = i32(lidx);
+        if (diC < clamp(i32(u.pick2Y.w + 0.5), 9, 64)) {
+          let dXv = u.drops[diC * 4 + 1];
+          let dit = i32(dXv.w + 0.5);
+          if (dit >= 1) {
+            let dA = u.drops[diC * 4];
+            let it3 = clamp(dit - 1, 0, ITEMN - 1);
+            if (ITEMD[it3].x >= 1) {
+              let ex2 = vec3<f32>(f32(ITEMD[it3].x), f32(ITEMD[it3].y), f32(ITEMD[it3].z)) * 0.5;
+              let radD = dA.w * (length(ex2) + 1.0);
+              let dlen = length(dA.xyz);
+              if (dlen <= radD + 1.0) { vis = 1u; }      // camera inside the sphere — always visible to this tile
+              else {
+                let tc = vec2<f32>(wgid.xy) * 8.0 + vec2<f32>(4.0);
+                let cdir = normalize(vec3<f32>((tc.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(tc.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
+                var cosT = 1.0;                          // tile half-angle = worst corner (±0.6 jitter margin baked into the ±4.6)
+                for (var k = 0u; k < 4u; k++) {
+                  let co = tc + vec2<f32>(select(-4.6, 4.6, (k & 1u) != 0u), select(-4.6, 4.6, (k & 2u) != 0u));
+                  let cd = normalize(vec3<f32>((co.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(co.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
+                  cosT = min(cosT, dot(cd, cdir));
+                }
+                let cAng = acos(clamp(dot(dA.xyz / dlen, cdir), -1.0, 1.0));
+                if (cAng <= acos(clamp(cosT, -1.0, 1.0)) + asin(clamp(radD / dlen, 0.0, 1.0)) + 0.01) { vis = 1u; }
+              }
+            }
+          }
+        }
+        wgVis[lidx] = vis;
+      }
+      workgroupBarrier();
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let rd = rayDir(px);
@@ -2064,7 +2348,9 @@
         let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
         let bounce = BOUNCE * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
         col = alb * (direct + (skyIrr + bounce) * irr.g + vec3<f32>(0.012, 0.013, 0.016));   // faint cave ambient
-        col += alb * lavaG * vec3<f32>(1.0, 0.44, 0.13) * 3.6;                                   // lava GLOW on nearby rock
+        let glowY = u.camPos.y + rd.y * irr.b;                                                   // the shared 4-bit glow field: bedrock hits = LAVA orange, surface hits = FIREFLY warm yellow
+        if (glowY < 28.0) { col += alb * lavaG * vec3<f32>(1.0, 0.44, 0.13) * 3.6; }             // lava: linear decode, unchanged
+        else { col += alb * lavaG * lavaG * vec3<f32>(1.0, 0.82, 0.30) * 4.6; }                  // firefly: sqrt-encoded in TRACE → SQUARED decode restores the physical falloff curve
         var fogA = 1.0 - exp(-irr.b * 0.0006);
         fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));   // soft CIRCULAR horizon
         col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
@@ -2074,10 +2360,13 @@
         var bestT = select(1e9, ib, ib > 0.0);
         let ndc3 = (px / u.res) * 2.0 - 1.0;
         let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));
-        for (var di = 0; di < 9; di++) {                             // slots 0..3 = dropped items, slot 4 = the flying cardinal, slots 5..8 = clash sparks
-          let dA = u.drops[di * 4]; let dXv = u.drops[di * 4 + 1]; let dYv = u.drops[di * 4 + 2]; let dZv = u.drops[di * 4 + 3];
+        let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, 64);             // JS COMPACTS live creatures into consecutive slots from 9 and passes the count — the loop never wastes pixels on empty slots (the fixed 64 loop tanked fps over busy water)
+        for (var di = 0; di < dropN; di++) {                         // slots 0..3 = dropped items, slot 4 = the flying cardinal, slots 5..8 = clash sparks, 9+ = live creatures (compacted)
+          if (wgVis[di] == 0u) { continue; }                         // tile cull (top of main): this slot's sphere can't touch this 8×8 tile — skip before ANY uniform load
+          let dXv = u.drops[di * 4 + 1];
           let dit = i32(dXv.w + 0.5);
-          if (dit < 1) { continue; }
+          if (dit < 1) { continue; }                                 // itemId checked FIRST — an empty slot costs one uniform load, not four
+          let dA = u.drops[di * 4]; let dYv = u.drops[di * 4 + 2]; let dZv = u.drops[di * 4 + 3];
           let it3 = clamp(dit - 1, 0, ITEMN - 1);
           let eW = ITEMD[it3].x; let eD = ITEMD[it3].y; let eH = ITEMD[it3].z; let eOff = ITEMD[it3].w;
           if (eW < 1) { continue; }
@@ -2104,8 +2393,9 @@
           let istD = vec3<i32>(sign(rdD));
           var vNxD = (vec3<f32>(vcD + max(istD, vec3<i32>(0))) - roD) * invD;
           var tHit = teD;
+          var iMapD = eOff + vcD.x + vcD.y * eW + vcD.z * eW * eD;   // running flat index — one add per DDA step
           for (var i = 0; i < PICKSTEPS; i++) {
-            let cell = ITEMMAP[eOff + vcD.x + vcD.y * eW + vcD.z * eW * eD];
+            let cell = ITEMMAP[u32(iMapD)];
             if (cell.w > 0.5) {
               if (tHit * vsD < bestT) {                              // scene + nearer-drop occlusion
                 bestT = tHit * vsD;
@@ -2113,14 +2403,27 @@
                 if (vaxD == 0) { nl.x = -f32(istD.x); } else if (vaxD == 1) { nl.y = -f32(istD.y); } else { nl.z = -f32(istD.z); }
                 let nc = dXv.xyz * nl.x + dYv.xyz * nl.y + dZv.xyz * nl.z;
                 let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
-                if (di == 4) {                                       // the CARDINAL — shade with the WORLD surface model (open-sky: full sun + sky visibility) so it matches the trees, not the flat held-item look
-                  let direct = sunTint() * max(dot(nw, u.sunDir), 0.0);
+                if (di == 4 || di >= 9) {                            // the CARDINAL + ALL WORLD CREATURES incl. worms + lily pads — the EXACT world surface model (shadowed sun + sky + bounce + fog)
+                  let behind = col;                                  // scene color behind this creature — the translucent wing blend needs it
+                  var sunC = 0.0;                                    // REAL sun occlusion: a creature under the canopy sits in tree shade exactly like the ground below it
+                  if (${location.search.includes('noshadow') ? 0 : 1} == 1 && dot(nw, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {   // (deterministic un-jittered ray, no denoiser in the path — none of the irr-coupling translucency/shimmer; ?noshadow disables for A/B)
+                    let shC = trace(u.camPos + rd * bestT + nw * 0.6, u.sunDir, 900.0, false);
+                    sunC = select(1.0, 0.0, shC.t >= 0.0);
+                  } else if (${location.search.includes('noshadow') ? 1 : 0} == 1) { sunC = 1.0; }
+                  let direct = sunTint() * (sunC * max(dot(nw, u.sunDir), 0.0));
                   let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();
-                  col = cell.rgb * (direct + skyIrr + vec3<f32>(0.012, 0.013, 0.016));
+                  let bounceC = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
+                  var alb2 = cell.rgb;                                 // DUCK EYE BLINK: the black eye voxel flashes the head-GREEN when the slot's blink lane (dYv.w) is lit (user)
+                  if (${DUCK_ITEM0 > 0 ? 1 : 0} == 1 && dYv.w > 0.5 && (dit == ${DUCK_ITEM0 || 9999} || dit == ${DUCKB_ITEM0 || 9998}) && alb2.r < 0.02 && alb2.g < 0.02 && alb2.b < 0.02) { alb2 = vec3<f32>(${DUCK_GREEN[0].toFixed(4)}, ${DUCK_GREEN[1].toFixed(4)}, ${DUCK_GREEN[2].toFixed(4)}); }
+                  let grain = 0.87 + 0.26 * ih3(vcD.x, vcD.y, vcD.z);   // per-voxel texture like the STATIC world (user: lilies 'lack depth/volume') — hashed on the MODEL-local voxel so it's stable as the creature drifts/rotates
+                  col = alb2 * (direct + (skyIrr + bounceC) * 0.85 + vec3<f32>(0.012, 0.013, 0.016)) * grain;   // 0.85 ≈ the terrain's typical open-air AO term — same formula as the static world (irr coupling stays banned: it read as translucent)
+                  if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} && dYv.w > 0.0 && cell.r > 0.6 && cell.g > 0.4 && cell.b < 0.1) { col = cell.rgb * (0.4 + dYv.w); }   // FIREFLY abdomen — yellow voxel EMISSIVE (FFLY-range-gated so a blinking duckling's yellow doesn't glow)
                   var fogB = 1.0 - exp(-bestT * 0.0006);             // the SAME distance haze + view-edge ring the world gets — a far bird melts into the haze instead of popping crisp
                   fogB = max(fogB, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
                   col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogB);
-                } else if (di >= 5) {                                // clash SPARKS — emissive 10 cm voxels, fading out over their flight (dYv.w = fade)
+                  if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} &&
+                      cell.r > 0.88 && cell.g > 0.88 && cell.b > 0.88) { col = mix(behind, col, 0.6); }   // FIREFLY WINGS (the white voxels) — 40% translucent
+                } else if (di >= 5) {                                // clash SPARKS (slots 5-8 only reach here) — emissive 10 cm voxels, fading out over their flight (dYv.w = fade)
                   col = cell.rgb * (0.8 + 2.6 * dYv.w);
                 } else {                                             // dropped items keep the flat raw-palette look
                   let shade = 0.45 + 0.55 * max(dot(nw, u.sunDir), 0.0);
@@ -2129,9 +2432,9 @@
               }
               break;
             }
-            if (vNxD.x <= vNxD.y && vNxD.x <= vNxD.z) { tHit = vNxD.x; vNxD.x += abs(invD.x); vcD.x += istD.x; vaxD = 0; }
-            else if (vNxD.y <= vNxD.z) { tHit = vNxD.y; vNxD.y += abs(invD.y); vcD.y += istD.y; vaxD = 1; }
-            else { tHit = vNxD.z; vNxD.z += abs(invD.z); vcD.z += istD.z; vaxD = 2; }
+            if (vNxD.x <= vNxD.y && vNxD.x <= vNxD.z) { tHit = vNxD.x; vNxD.x += abs(invD.x); vcD.x += istD.x; iMapD += istD.x; vaxD = 0; }
+            else if (vNxD.y <= vNxD.z) { tHit = vNxD.y; vNxD.y += abs(invD.y); vcD.y += istD.y; iMapD += istD.y * eW; vaxD = 1; }
+            else { tHit = vNxD.z; vNxD.z += abs(invD.z); vcD.z += istD.z; iMapD += istD.z * eW * eD; vaxD = 2; }
             if (any(vcD < vec3<i32>(0)) || any(vcD >= vec3<i32>(eW, eD, eH))) { break; }
           }
         }
@@ -2302,7 +2605,7 @@
   const linSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
-  let renderScale = 1.0;
+  let renderScale = 0.88;                              // default resolution scale (user 2026-07-17); [ ] keys still step it 0.375..1.5
   let RW = 0, RH = 0, CW = 0, CH = 0;
   let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit;
   let resetHist = 1;
@@ -2330,7 +2633,10 @@
     bgComposite = device.createBindGroup({ layout: pComposite.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gAlbedo) },
       { binding: 2, resource: v(irrF) }, { binding: 3, resource: v(colorCur) },
-      { binding: 14, resource: moonTex.createView() }, { binding: 15, resource: linSamp }] });
+      { binding: 13, resource: { buffer: itemMapBuf } },
+      { binding: 14, resource: moonTex.createView() }, { binding: 15, resource: linSamp },
+      { binding: 16, resource: { buffer: worldBuf } }, { binding: 17, resource: { buffer: brickBuf } },
+      { binding: 18, resource: { buffer: brick2Buf } }] });
     bgTaa = [0, 1].map(par => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(colorCur) },
       { binding: 2, resource: v(gIrr) }, { binding: 3, resource: v(par ? colHistA : colHistB) },
@@ -2388,6 +2694,9 @@
       const g0 = gwrap(s.z0, WZ);
       rebuildBricksW(s.x0, s.x1, s.z0, s.z1);
       yield;
+      while (xStripPending >= 0) { yield; }            // ⚠ ORDERING: a pending x-strip scatter holds a PRE-band snapshot of these very rows (its "stale, outside rect" corner).
+      // Uploading now would queue BEFORE that scatter executes — the scatter then stomps this fresh corner with stale wrapped
+      // terrain (underground stone rendered as floating grey boxes; CPU W stays correct, so only F5 cured it). Wait it out first.
       device.queue.writeBuffer(worldBuf, g0 * WX * WY, W.buffer, g0 * WX * WY, 8 * WX * WY);   // z-bands are contiguous grid rows
       uploadBricks();
       if (s.side === 'zlo') rect.zlo = s.z0; else rect.zhi = s.z1;
@@ -2412,6 +2721,7 @@
     }
   }
   function stepShifts() {
+    if (ED.on) return;                                 // the asset-editor world is FROZEN — no window shifts, no worldgen, nothing to relight the hidden forest
     let moved = false;                                 // the origin slides INSTANTLY (32-aligned for L2 wrap) — wrapped rows simply leave the rect
     while (P.x - (winOX + HALF) >= 32) { winOX += 32; moved = true; }
     while (P.x - (winOX + HALF) <= -32) { winOX -= 32; moved = true; }
@@ -2450,6 +2760,9 @@
     resetHist = 1;
   }
 
+  // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
+  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: -1, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [] };
+
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
   const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;   // +20% base speed
@@ -2460,7 +2773,9 @@
   const solid = (x, y, z) => {                         // world coords, toroidal — the window always surrounds the player
     if (y < 0) return true;
     if (y >= WY) return false;
-    return solidTab[W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]] === 1;
+    const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+    if (ED.on) return id === ED_WHITE || id === ED_GREY || id === ED_HLITE;   // editor world: ONLY the stage collides — the hidden forest must not be an invisible wall
+    return solidTab[id] === 1;
   };
   const waterAt = (x, y, z) => {
     if (y < 0 || y >= WY) return false;
@@ -2545,7 +2860,7 @@
     const sel = slots[selSlot];
     if (!sel || dead) return;
     const it = sel.it;
-    if (--sel.n <= 0) slots[selSlot] = null;
+    if (--sel.n <= 0) slots[selSlot] = null;           // (a Q-tossed WORM flies the normal ballistic arc like the axe — it converts to a LIVE worm when it LANDS, see the drops update)
     // launch from the held item's true world spot (held units ÷ scale = voxels), with the held orientation — it FLIES out of the hand
     const cfg = heldCfg(it);
     const s = 1 / cfg.scale, pr = prevCam;
@@ -2577,18 +2892,20 @@
   if (ROCKV) for (const p of ROCKV.vox) PICK_ROCK.add(p >>> 24);                 // the field stone (rock.vox) → rock item
   for (const sm of STICKV) for (const p of sm.vox) PICK_STICK.add(p >>> 24);     // stick_1/stick_2 → twig item
   const PASSTHRU = new Set([...GRASS, ...FERNIDS, WATER_T, WATER_B]);   // the pick ray sees through soft decor + water
-  function floodRemove(x, y, z, ids, cap) {
-    const out = []; const q = [[x, y, z]]; const seen = new Set();
-    while (q.length && out.length < cap) {
+  function floodRemove(x, y, z, ids, cap) {            // TWO-PASS: collect first, remove only if the whole region fits the cap —
+    const found = []; const q = [[x, y, z]]; const seen = new Set();   // truncating mid-flood left half-eaten rocks (flat-faced grey "stone cube" stumps, e.g. two touching boulders > cap)
+    while (q.length && found.length <= cap) {
       const [qx, qy, qz] = q.pop(); const key = qx + '|' + qy + '|' + qz;
       if (seen.has(key) || qy < 0 || qy >= WY) continue; seen.add(key);
       const ii = gwrap(qx, WX) + qy * WX + gwrap(qz, WZ) * WX * WY;
       if (!ids.has(W[ii])) continue;
-      W[ii] = 0; out.push(ii);
+      found.push(ii);
       for (let nz = -1; nz <= 1; nz++) for (let ny = -1; ny <= 1; ny++) for (let nx = -1; nx <= 1; nx++)   // 26-connectivity — curved sticks step diagonally
         if (nx || ny || nz) q.push([qx + nx, qy + ny, qz + nz]);
     }
-    return out;
+    if (found.length > cap) return [];                 // region bigger than one pickable rock (merged boulders) — refuse the pickup entirely, never leave a stump
+    for (const ii of found) W[ii] = 0;
+    return found;
   }
   function gpuPatch(cells) {                           // few voxels: word-level buffer writes + refresh the touched brick bits
     const words = new Set(), bset = new Set();
@@ -2626,6 +2943,9 @@
   // always clears the canopy. Pose is written into drop slot 4 each frame (see the drops uniform section) and DDA-raytraced off-grid —
   // smooth rotation, depth-tested, no world-grid writes.
   const bird = { th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0 };
+  const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
+  const wbf = Array.from({ length: 55 }, () => ({ init: false }));   // WORLD creature pool (drop slots 9-63): 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-39 worms, 40-54 LILY PADS
+  let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
   const startGrab = (it, wx, wy, wz, aPh) => {         // EVERY pickup flies to the hand — never an instant swap; a 2nd rock flies to the LEFT hand
@@ -2650,6 +2970,21 @@
         return;
       }
     }
+    if (WORM_NFRAMES && canAdd(WORM_ITEM0)) {          // LIVE WORMS — same generous ray-sphere grab as drops; the caught worm keeps wriggling in the hand
+      for (let wi = 32; wi < 40; wi++) {               // worm pool slots (moved from 24-31 → 32-39 in the 2026-07-17 pool expansion)
+        const B = wbf[wi];
+        if (!B || !B.init || (B.kind | 0) !== 2) continue;
+        const ox = B.x - P.x, oy = B.y - smoothEye, oz = B.z - P.z;
+        const tq = ox * d[0] + oy * d[1] + oz * d[2];
+        if (tq < 0 || tq > 50) continue;
+        const qx = ox - d[0] * tq, qy = oy - d[1] * tq, qz = oz - d[2] * tq;
+        if (qx * qx + qy * qy + qz * qz < 24) {
+          startGrab(WORM_ITEM0, B.x, B.y, B.z);
+          B.init = false;                              // the creature slot frees — a fresh worm respawns elsewhere in the ring later
+          return;
+        }
+      }
+    }
     for (let t = 0.6; t < 45; t += 0.3) {
       const x = Math.floor(P.x + d[0] * t), y = Math.floor(smoothEye + d[1] * t), z = Math.floor(P.z + d[2] * t);
       if (y < 0 || y >= WY) return;
@@ -2670,8 +3005,9 @@
   // ── MASTER VOLUME ── every sound registers its BASE volume; the menu slider scales them all (persisted vb_vol)
   let sndVol = 1; try { const v = parseFloat(localStorage.getItem('vb_vol')); if (v >= 0 && v <= 1) sndVol = v; } catch (e) {}
   const sndReg = [];
-  const regSnd = (a, base) => { a.volume = base * sndVol; sndReg.push({ a, base }); return a; };
-  const applyVol = () => { for (const s of sndReg) s.a.volume = s.base * sndVol; };
+  const SND_GAIN = 1.25;                               // master loudness trim — every registered sound, +25% overall (user 2026-07-17); clamp keeps HTMLAudio's 0..1 legal
+  const regSnd = (a, base) => { a.volume = Math.min(1, base * SND_GAIN * sndVol); sndReg.push({ a, base }); return a; };
+  const applyVol = () => { for (const s of sndReg) s.a.volume = Math.min(1, s.base * SND_GAIN * sndVol); };
   // ── forest ambience ── constant background loop from page load. Browsers block autoplay before the first
   // user gesture, so a blocked play() is retried on the first pointer/key input (the click-to-enter covers it).
   // Tries forest_ambience.* first and falls back to ambience.mp4 so dropping the new file in just works.
@@ -2695,7 +3031,7 @@
   // collide with a spark burst, and the first collision unlocks the "sharp edge" discovery achievement.
   let clashT0 = -1e9, clashSparked = true;
   let vbAch = {};                                      // achievements RESET on refresh (was localStorage vb_ach — user asked for per-session)
-  const achSnd = regSnd(new Audio('sound/sfx/high_score.mp4'), 0.5);   // achievement jingle at half volume
+  const achSnd = regSnd(new Audio('sound/sfx/high_score.mp4'), 0.25);   // achievement jingle — halved again 2026-07-16 (0.5 → 0.25)
   const dualRocks = () => !dead && !grabAnim && !!(slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2);
   const achEl = $('achv'), clashHintEl = $('clashHint');
   let achHideT = 0;
@@ -2722,7 +3058,7 @@
     if (!locked) return;
     if (e.button === 2) tryPickup();
     if (e.button === 0 && !dead) {
-      if (e.shiftKey && dualRocks() && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }   // clash instead of swing
+      if (e.shiftKey && dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }   // clash instead of swing — only when the knife will have somewhere to go (exactly-2 rocks frees this slot)
       mouse0 = true; swingStart = performance.now(); if (heldIt()) playSwish();
     }
   });
@@ -2756,7 +3092,8 @@
   let snowEndT = 0, snowNextT = performance.now() + 3600000;   // snow arrives once an hour, each event lasting 5 minutes
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
-  let snowQ = [], snowHead = 0;                        // FIFO of {ii, t} — placement order ≈ melt order; ring-buffer head avoids O(n) shifts
+  let snowQI = [], snowQT = [], snowHead = 0;          // FIFO as parallel NUMBER arrays (cell idx / melt time) — object entries at 1.6M live voxels were ~10× the memory; ring-buffer head avoids O(n) shifts
+  let snowPrevOn = false, snowOnT0 = 0;                // storm edge tracking — melt timers are FROZEN while it snows and rebased by the storm's length when it ends
   let snowSprinkAcc = 0;                               // fractional carry for the uniform-area sprinkle — low fps or thin rings never quantize to zero
   let windAX = 0, windAZ = 0;                          // ── WIND ── integrated wind displacement (vox): direction wanders over minutes, strength GUSTS over seconds; snow flakes advect along it
   let snowFallAcc = 0, snowFallV = 11;                 // integrated flake fall: 11 vox/s while the player moves, eases to 22 when standing still (u.pickY.w)
@@ -2766,8 +3103,9 @@
     return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
   };
   const frac9 = (v) => v - Math.floor(v);
-  const SNOW_MAX = 600000, SNOW_MELT = 95000;          // hard cap on live snow voxels (sized for the tripled rate); ms until a layer melts
-  const SNOW_PASS = new Set([...GRASS, ...FERNIDS, BLOOM[0], BLOOM[1], BLOOM[2], BLOOM[3], BLOOM[4], BLOOM[5]]);   // landings fall THROUGH soft decor and bury it
+  const SNOW_MAX = 1600000, SNOW_MELT = 95000;         // cap on live snow voxels — at the cap NEW landings are DROPPED (the blanket must never be deleted mid-storm; the old force-melt-oldest WAS the 'snow deletes while snowing' bug); ms until a layer melts
+  const SNOW_PASS = new Set([...GRASS, BLOOM[0], BLOOM[1], BLOOM[2], BLOOM[3], BLOOM[4], BLOOM[5]]);   // landings fall THROUGH grass/blooms and bury them — ferns are OUT: snow settles ON their fronds
+  const SNOW_FERN = new Set(FERNIDS);                  // fern-topped columns skip the settle-roll (fronds sit above the ground beside them, so rolling would always shed the flake)
   const SNOW_SKIP = new Set([WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y]);                                    // …but never land on lava; surface water is FROZEN while it snows, so flakes settle on the ice
   { const snowBtn = $('snowBtn');
     const snowShow = () => { snowBtn.textContent = snowOn ? 'on' : 'off'; snowBtn.classList.toggle('on', snowOn); };
@@ -2855,6 +3193,12 @@
     if (e.code === binds.respawn) { respawn(); }
     if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
     if (e.code === binds.scaleup) { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
+    if (ED.on) {                                       // asset editor: , / . cycle the selected frame, ← / → move it within the sequence
+      if (e.code === 'Comma') edSelStep(-1);
+      if (e.code === 'Period') edSelStep(1);
+      if (e.code === 'ArrowLeft') edMoveStep(-1);
+      if (e.code === 'ArrowRight') edMoveStep(1);
+    }
     if (e.code === binds.jump) e.preventDefault();
   });
   document.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -2863,6 +3207,15 @@
   const halton = (i, b) => { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = (i / b) | 0; } return r; };
   const JIT = Array.from({ length: 8 }, (_, i) => [halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5]);
   let frame = 0, prevT = performance.now(), fpsEma = 60, hudT = 0;
+  let profQS = null, profRes = null, profStg = null, profBusy = false, profNew = false;   // per-pass GPU timing — armed via __vb.prof(true)
+  const profEma = [0, 0, 0, 0, 0], PROF_NAMES = ['trace', 'temporal', 'spatial', 'composite', 'taa'];
+  function profArm(on) {
+    if (on && PROF && !profQS) {
+      profQS = device.createQuerySet({ type: 'timestamp', count: 10 });
+      profRes = device.createBuffer({ size: 80, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+      profStg = device.createBuffer({ size: 80, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    } else if (!on && profQS) { profQS.destroy(); profRes.destroy(); profStg.destroy(); profQS = profRes = profStg = null; }
+  }
   let waitEma = 4, paceWaited = true;                  // measured pipeline-wait (CPU idle) — sizes the worldgen budget precisely
   let gpuPrevDone = Promise.resolve();                 // completion of frame N-1 — pacing on it keeps 2 frames in flight, CPU prep overlaps GPU work
   const prevCam = { pos: [0, 0, 0], right: [1, 0, 0], up: [0, 1, 0], fwd: [0, 0, 1], tanH: 1, aspect: 1, jit: [0, 0] };   // pos in WORLD coords
@@ -2876,11 +3229,14 @@
     4: { x: 0.9, y: -0.24, z: 0.96, yaw: -0.09, pitch: -1.29, roll: 1.52, scale: 0.08 },   // pinecone (user bake 2026-07-16)
   };
   PICK_DEFS[KNIFE_IT] = { x: 0.75, y: -0.1, z: 0.84, yaw: 0.07, pitch: -1.32, roll: 3.13, scale: 0.07 };   // stone knife (user bake 2026-07-16)
+  if (WORM_ITEM0) PICK_DEFS[WORM_ITEM0] = { x: 0.81, y: -0.22, z: 1.13, yaw: 0.3, pitch: -0.14, roll: -3.14, scale: 0.08 };   // live worm (user bake 2026-07-17)
   const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] }, 4: { ...PICK_DEFS[4] } };
   pickCfgs[KNIFE_IT] = { ...PICK_DEFS[KNIFE_IT] };
+  if (WORM_ITEM0) pickCfgs[WORM_ITEM0] = { ...PICK_DEFS[WORM_ITEM0] };
   try { const sv = JSON.parse(localStorage.getItem('vb_pick3') || '{}'); for (const k in sv) if (pickCfgs[k]) Object.assign(pickCfgs[k], sv[k]); } catch (e) {}   // key bumped from vb_pick2 — the old value was one shared pose
   const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
   ITEM_NAMES[KNIFE_IT] = 'knife';
+  if (WORM_ITEM0) ITEM_NAMES[WORM_ITEM0] = 'worm';
   const heldIt = () => (grabAnim && !grabAnim.left ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty; left-hand grab flights don't change it)
   const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];
   const pickSave = () => { try { localStorage.setItem('vb_pick3', JSON.stringify(pickCfgs)); } catch (e) {} };
@@ -2921,13 +3277,204 @@
     $('pkReset').addEventListener('click', (e) => { e.stopPropagation(); Object.assign(pickCfgs[pkIt], PICK_DEFS[pkIt]); pickSave(); pkRefresh(); });
     pkPanel.addEventListener('click', (e) => e.stopPropagation());
   }
+
+  // ── ASSET EDITOR PLATFORM ── a floating white stage (1-voxel-thick plane, 1 m grid in light grey) stamped just above
+  // the tallest content near the player. Import .vox frames (multi-file or multi-model), they line up left→right in
+  // sequence order; , / . cycle the selected frame (amber ring), ←/→ move it within the sequence. Every voxel write goes
+  // through edSet which records the ORIGINAL world content once — exiting restores the world exactly and returns the player.
+  const edHudEl = $('edHud'), edRowEl = $('edRow'), edBtnEl = $('edBtn'), edFileEl = $('edFile');   // ED state itself is declared up by the player block
+  const edIdx = (x, y, z) => gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+  const edSet = (x, y, z, id, cells) => { const ii = edIdx(x, y, z);
+    if (!ED.prev.has(ii)) ED.prev.set(ii, W[ii]);
+    if (W[ii] !== id) { W[ii] = id; cells.push(ii); }
+    return ii; };
+  const edPlaneId = (x, z) => ((x - ED.x0) % 10 === 0 || (z - ED.z0) % 10 === 0) ? ED_GREY : ED_WHITE;   // 1 m squares = every 10th voxel is a grey gridline
+  const edHudUpd = () => { edHudEl.textContent = ED.frames.length
+    ? 'frame ' + (ED.sel + 1) + '/' + ED.frames.length + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + '   [, .] select   [← →] move in sequence'
+    : 'asset editor — press ESC, then import a .vox to begin'; };
+  const edLayout = () => {                             // (re)stamp every frame in current sequence order + the selection ring
+    const cells = [];
+    for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
+    ED.fcells = [];
+    for (const r of ED.ring) { const id = edPlaneId(r.x, r.z); if (W[r.ii] !== id) { W[r.ii] = id; cells.push(r.ii); } }
+    ED.ring = [];
+    let cx = ED.x0 + 6, rowZ = ED.z0 + 8, rowH = 0;
+    for (const f of ED.frames) {
+      if (cx + f.sx > ED.x0 + ED.pw - 6 && cx > ED.x0 + 6) { cx = ED.x0 + 6; rowZ += rowH + 8; rowH = 0; }
+      f.bx = cx; f.bz = rowZ; rowH = Math.max(rowH, f.sy);
+      for (const p of f.vox) {
+        const y = ED.y + 1 + ((p >> 16) & 255); if (y >= WY - 1) continue;
+        ED.fcells.push(edSet(cx + (p & 255), y, rowZ + ((p >> 8) & 255), p >>> 24, cells));
+      }
+      cx += f.sx + 6;
+    }
+    if (ED.sel >= 0 && ED.sel < ED.frames.length) {    // amber ring on the plane around the selected frame's footprint
+      const f = ED.frames[ED.sel], rx0 = f.bx - 2, rx1 = f.bx + f.sx + 1, rz0 = f.bz - 2, rz1 = f.bz + f.sy + 1;
+      for (let x = rx0; x <= rx1; x++) for (let z = rz0; z <= rz1; z++) {
+        if (x !== rx0 && x !== rx1 && z !== rz0 && z !== rz1) continue;
+        if (x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
+        const ii = edSet(x, ED.y, z, ED_HLITE, cells);
+        ED.ring.push({ ii, x, z });
+      }
+    }
+    gpuPatch(cells);
+    edHudUpd();
+  };
+  const edSelStep = (d) => { const n = ED.frames.length; if (!n) return; ED.sel = ((ED.sel + d) % n + n) % n; edLayout(); };
+  const edMoveStep = (d) => { const n = ED.frames.length; if (ED.sel < 0 || n < 2) return; const j = ED.sel + d; if (j < 0 || j >= n) return;
+    const t = ED.frames[ED.sel]; ED.frames[ED.sel] = ED.frames[j]; ED.frames[j] = t; ED.sel = j; edLayout(); };
+  const edColCache = new Map();                        // runtime color → palette id; nearest-match once the 256-entry palette is full
+  const edCol = (r, g, b) => { const key = (r << 16) | (g << 8) | b;
+    let cid = edColCache.get(key);
+    if (cid === undefined) {
+      if (palette.length < 256) cid = addCol(r, g, b);
+      else { let bd = 1e9; cid = 1; for (let i = 1; i < palette.length; i++) { const p = palette[i], d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b); if (d < bd) { bd = d; cid = i; } } }
+      edColCache.set(key, cid);
+    }
+    return cid; };
+  const edParseVox = (pv, name) => {                   // ALL SIZE/XYZI pairs — a multi-model .vox is an animation, each model one frame
+    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+    const models = []; const ppal = new Uint8Array(1024); let hasPal = false;
+    const walk = (off, end) => { while (off + 12 <= end) {
+      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
+      if (id === 'SIZE') models.push({ sx: pdv.getUint32(off + 12, true), sy: pdv.getUint32(off + 16, true), sz: pdv.getUint32(off + 20, true), raw: null });
+      else if (id === 'XYZI') { const m = models.find((mm) => !mm.raw); if (m) { const n = pdv.getUint32(off + 12, true); m.raw = pv.subarray(off + 16, off + 16 + n * 4); } }
+      else if (id === 'RGBA') { ppal.set(pv.subarray(off + 12, off + 12 + 1024)); hasPal = true; }
+      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+      off += 12 + bsz + csz;
+    } };
+    walk(8, pv.length);
+    const out = [];
+    models.forEach((m, k) => { if (!m.raw) return;
+      const cmap = new Map(), mvox = [];
+      for (let i = 0; i < m.raw.length; i += 4) {
+        const ci = m.raw[i + 3];
+        let cid = cmap.get(ci);
+        if (cid === undefined) { cid = edCol(ppal[(ci - 1) * 4], ppal[(ci - 1) * 4 + 1], ppal[(ci - 1) * 4 + 2]); cmap.set(ci, cid); }
+        mvox.push(m.raw[i] | (m.raw[i + 1] << 8) | (m.raw[i + 2] << 16) | (cid << 24));   // model z-up → world y at stamp time
+      }
+      out.push({ sx: m.sx, sy: m.sy, sz: m.sz, vox: mvox, name: name + (models.length > 1 ? ' #' + (k + 1) : ''),
+        raw: new Uint8Array(m.raw), pal: hasPal ? new Uint8Array(ppal) : null });   // byte-faithful copies — export rebuilds real .vox files from these, not from engine ids
+    });
+    return out;
+  };
+  const edExportSeq = () => {                          // one single-model .vox per frame, numbered in CURRENT sequence order (00.vox, 01.vox, … — the cardinal-flight naming)
+    ED.frames.forEach((f, i) => {
+      const n = f.raw.length / 4, hasPal = !!f.pal;
+      const total = 20 + 24 + (16 + n * 4) + (hasPal ? 12 + 1024 : 0);
+      const buf = new Uint8Array(total), dv2 = new DataView(buf.buffer);
+      const wid = (off, s) => { for (let k = 0; k < 4; k++) buf[off + k] = s.charCodeAt(k); };
+      wid(0, 'VOX '); dv2.setUint32(4, 150, true);
+      wid(8, 'MAIN'); dv2.setUint32(12, 0, true); dv2.setUint32(16, total - 20, true);
+      let o = 20;
+      wid(o, 'SIZE'); dv2.setUint32(o + 4, 12, true); dv2.setUint32(o + 8, 0, true);
+      dv2.setUint32(o + 12, f.sx, true); dv2.setUint32(o + 16, f.sy, true); dv2.setUint32(o + 20, f.sz, true); o += 24;
+      wid(o, 'XYZI'); dv2.setUint32(o + 4, 4 + n * 4, true); dv2.setUint32(o + 8, 0, true);
+      dv2.setUint32(o + 12, n, true); buf.set(f.raw, o + 16); o += 16 + n * 4;
+      if (hasPal) { wid(o, 'RGBA'); dv2.setUint32(o + 4, 1024, true); dv2.setUint32(o + 8, 0, true); buf.set(f.pal, o + 12); }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([buf], { type: 'application/octet-stream' }));
+      a.download = String(i).padStart(2, '0') + '.vox';
+      setTimeout(() => { a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }, i * 160);   // staggered — burst clicks can drop downloads
+    });
+    return ED.frames.length;
+  };
+  const edImportBufs = (list) => {                     // [{name, u8}] in sequence order — replaces any previous import
+    const frames = [];
+    for (const f of list) { try { frames.push(...edParseVox(f.u8, f.name)); } catch (e) { console.warn('[vb] editor: bad .vox', f.name, e); } }
+    if (!frames.length) return 0;
+    ED.frames = frames; ED.sel = 0;
+    palSync(); edLayout();
+    return frames.length; };
+  const edEnter = () => {
+    if (ED.on) return;
+    ED.on = true; ED.ret = { x: P.x, y: P.y, z: P.z, yaw: P.yaw, pitch: P.pitch };
+    ED.x0 = Math.max(rect.xlo + 4, Math.min(rect.xhi - 4 - ED.pw, Math.round(P.x / 10) * 10 - (ED.pw >> 1)));
+    ED.z0 = Math.max(rect.zlo + 4, Math.min(rect.zhi - 4 - ED.pd, Math.round(P.z / 10) * 10 - (ED.pd >> 1)));
+    let topMax = WL;                                   // stage must sit above all content on its footprint (its bricks stay PURE — no terrain sharing an 8³ brick with the plane)
+    for (let z = ED.z0; z < ED.z0 + ED.pd; z += 2) for (let x = ED.x0; x < ED.x0 + ED.pw; x += 2) {
+      const gx = gwrap(x, WX), gz = gwrap(z, WZ), b2 = gx + gz * WX * WY;
+      let y = Math.min(WY - 2, hmap[gx + gz * WX] + 118);
+      while (y > WL && !W[b2 + y * WX]) y--;
+      if (y > topMax) topMax = y;
+    }
+    ED.y = Math.min(WY - 24, Math.max((topMax + 15) & ~7, WY - 80));   // 8-aligned with ≥8 clearance, high in the sky
+    bricks.fill(0); bricks2.fill(0);                   // SEPARATE LEVEL: empty occupancy = the whole world vanishes from the tracer (W is untouched — exit rebuilds)
+    const cells = [];
+    for (let z = ED.z0; z < ED.z0 + ED.pd; z++) for (let x = ED.x0; x < ED.x0 + ED.pw; x++) edSet(x, ED.y, z, edPlaneId(x, z), cells);
+    gpuPatch(cells);
+    P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = false;
+    smoothEye = P.y + EYE; resetHist = 1;
+    if (!ED.frames.length && CARDINAL_ROTATE.length) edImportBufs(CARDINAL_ROTATE);   // AUTO-IMPORT the cardinal rotate animation onto the stage (user); a manual import replaces it
+    edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
+    edHudUpd();
+  };
+  const edExit = () => {
+    if (!ED.on) return;
+    ED.on = false;
+    const cells = [];
+    for (const [ii, pv] of ED.prev) if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); }
+    ED.prev.clear(); ED.frames = []; ED.sel = -1; ED.fcells = []; ED.ring = []; bfly.init = false;
+    gpuPatch(cells);
+    rebuildBricks(0, WX, 0, WZ); uploadBricks();       // bring the whole world back from the void (occupancy was zeroed on enter)
+    const r = ED.ret; if (r) { P.x = r.x; P.y = r.y; P.z = r.z; P.yaw = r.yaw; P.pitch = r.pitch; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
+    edBtnEl.classList.remove('on'); edRowEl.classList.add('hidden'); edHudEl.classList.add('hidden');
+  };
+  edBtnEl.addEventListener('click', (e) => { e.stopPropagation(); ED.on ? edExit() : edEnter(); });
+  $('edImport').addEventListener('click', (e) => { e.stopPropagation(); edFileEl.click(); });
+  $('edExport').addEventListener('click', (e) => { e.stopPropagation();
+    const btn2 = e.currentTarget, n = ED.frames.length ? edExportSeq() : 0;
+    btn2.textContent = n ? ('exported ' + n + ' file' + (n > 1 ? 's' : '') + ' ↓') : 'import something first';
+    setTimeout(() => { btn2.textContent = 'export sequence'; }, 1800); });
+  edFileEl.addEventListener('click', (e) => e.stopPropagation());
+  edFileEl.addEventListener('change', async () => {
+    const list = [];
+    for (const f of [...edFileEl.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
+      list.push({ name: f.name, u8: new Uint8Array(await f.arrayBuffer()) });
+    if (list.length) edImportBufs(list);
+    edFileEl.value = '';
+  });
+
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); },
     swing(offMs) { swingStart = performance.now() - (offMs || 0); }, drop() { dropHeld(); },
-    snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 300000; snowBtnSync(); }, snowStats() { return { on: snowOn, live: snowQ.length - snowHead, freezeK: freezeK }; },
-    vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots,
+    sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
+    clash() { if (dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return true; } return false; },   // same guard as shift+click — headless knife-craft testing
+    KNIFE_IT,
+    snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 300000; snowBtnSync(); }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK }; },
+    vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
+    dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },   // test taps
+    solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
+    ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edImport: edImportBufs, edExport: edExportSeq,
+    prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
+    async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
+      const CH = 64 << 20, stg = device.createBuffer({ size: CH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const WXW = WX >> 2, mx = new Uint8Array(WXW), mz = new Uint8Array(WZ);   // per-word x-mask and per-row z-mask; boundary words count as outside (no false positives)
+      const gx0 = gwrap(rect.xlo, WX), xw = rect.xhi - rect.xlo, gz0 = gwrap(rect.zlo, WZ), zw = rect.zhi - rect.zlo;
+      for (let wq = 0; wq < WXW; wq++) { let ok = 1; for (let k = 0; k < 4; k++) if (((wq * 4 + k - gx0 + WX) % WX) >= xw) ok = 0; mx[wq] = ok; }
+      for (let z = 0; z < WZ; z++) mz[z] = ((z - gz0 + WZ) % WZ) < zw ? 1 : 0;
+      let diffs = 0; const spots = [];
+      for (let off = 0; off < W.byteLength; off += CH) {
+        const len = Math.min(CH, W.byteLength - off);
+        const enc2 = device.createCommandEncoder(); enc2.copyBufferToBuffer(worldBuf, off, stg, 0, len); device.queue.submit([enc2.finish()]);
+        await stg.mapAsync(GPUMapMode.READ, 0, len);
+        const g = new Uint32Array(stg.getMappedRange(0, len)), w0 = off >> 2;
+        for (let i = 0; i < g.length; i++) {
+          if (g[i] === W32[w0 + i]) continue;
+          const wAbs = w0 + i, gz = (wAbs / (WX * WY >> 2)) | 0, rem = wAbs % (WX * WY >> 2), gy = (rem / WXW) | 0, wq = rem % WXW;
+          if (!mz[gz] || !mx[wq]) continue;            // stale-by-design territory
+          diffs++;
+          if (spots.length < 12) spots.push([wq * 4, gy, gz, g[i] >>> 0, W32[wAbs] >>> 0]);
+        }
+        stg.unmap();
+      }
+      stg.destroy();
+      return { diffs, spots };
+    },
+    edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pal: palette.length }; },
     dbg() { return { smoothEye, pickRock: [...PICK_ROCK], passthru: [...PASSTHRU] }; },
     htest(n) { let bad = 0; for (let i = 0; i < (n || 1000); i++) { const x = ((Math.random() * 2e6) | 0) - 1e6, z = ((Math.random() * 2e6) | 0) - 1e6;
       const hv = H(x, z); if (hv !== makeHRow(z)(x) || hv !== makeHCol(x)(z)) bad++; } return bad; },
@@ -3046,7 +3593,16 @@
     // deterministic flake lattice (same ih3 hash, same jitter, same integrated fall/wind) and places a voxel at the very
     // column and moment a flake reaches the surface. Beyond flake-visibility range a statistical sprinkle fills the distance.
     // Placement SETTLES SMOOTHLY (a flake rolls to the lowest neighbouring column, ≤2 hops) and melt is TOP-FIRST per column.
+    if (ED.on && (P.y < ED.y - 40 ||                   // fell off the stage (the void has no floor) …
+        Math.abs(P.x - (ED.x0 + ED.pw / 2)) > 700 || Math.abs(P.z - (ED.z0 + ED.pd / 2)) > 700)) {   // … or flew far enough that the toroidal window would wrap — pop back onto the centre
+      P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0;
+      smoothEye = P.y + EYE; resetHist = 1;
+    }
     { const cells = [];
+      if (snowOn !== snowPrevOn) { snowPrevOn = snowOn;   // storm edges: no time-melt DURING a storm (the blanket must not thin while flakes still fall)
+        if (snowOn) snowOnT0 = now;
+        else for (let qi = snowHead; qi < snowQT.length; qi++) snowQT[qi] += now - snowOnT0;   // shift pending timers by the storm's length — thaw replays the landing stagger, first-fallen melts 95 s after the storm ends
+      }
       const scanTop = (wx, wz, buried) => {            // topmost landing surface at a column — passes through (and records) soft decor
         const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
         const b2 = gx + gz * WX * WY;
@@ -3055,8 +3611,10 @@
         return y;
       };
       const landSnowAt = (wx0, wz0) => {
+        if (snowQI.length - snowHead >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
         let wx = wx0, wz = wz0;
-        for (let hop = 0; hop < 2; hop++) {            // SMOOTH SETTLING: roll to the lowest 4-neighbour column so the blanket levels instead of spiking
+        const top0 = W[gwrap(wx0, WX) + scanTop(wx0, wz0, null) * WX + gwrap(wz0, WZ) * WX * WY];
+        for (let hop = 0; hop < (SNOW_FERN.has(top0) ? 0 : 2); hop++) {   // SMOOTH SETTLING: roll to the lowest 4-neighbour column so the blanket levels instead of spiking — unless a fern catches the flake
           const t0 = scanTop(wx, wz, null);
           let bx = wx, bz = wz, bt = t0;
           const n1 = scanTop(wx + 1, wz, null); if (n1 < bt) { bt = n1; bx = wx + 1; bz = wz; }
@@ -3073,14 +3631,15 @@
         if (!top || y < WL || y >= WY - 2 || SNOW_SKIP.has(top)) return;   // y == WL allowed — ice and waterline beach sand collect snow; lava never does
         if (top === WATER_T && freezeK < 0.6) return;    // liquid water sheds snow — it only settles once the surface has properly frozen
         if ((top === SNOW[0] || top === SNOW[1]) &&
-            (W[b2 + (y - 1) * WX] === SNOW[0] || W[b2 + (y - 1) * WX] === SNOW[1])) return;   // 2 layers max
+            (W[b2 + (y - 1) * WX] === SNOW[0] || W[b2 + (y - 1) * WX] === SNOW[1]) &&
+            (W[b2 + (y - 2) * WX] === SNOW[0] || W[b2 + (y - 2) * WX] === SNOW[1])) return;   // 3 layers max — the settle-roll keeps neighbouring stacks within 1 layer, so deeper stacks stay smooth
         for (const bi of buried) { W[bi] = 0; cells.push(bi); }
         const ii = b2 + (y + 1) * WX;
         W[ii] = SNOW[(wx ^ wz) & 1];
         cells.push(ii);
-        snowQ.push({ ii, t: now + SNOW_MELT });
+        snowQI.push(ii); snowQT.push(now + SNOW_MELT);
       };
-      if (snowOn && !dead) {
+      if (snowOn && !dead && !ED.on) {                 // no weather inside the asset-editor void
         const t3 = now / 1000;                         // ── EXACT LANDINGS ── mirror of the shader flake field (u.time = now/1000)
         const fX = -windAX + Math.sin(t3 * 0.6) * 0.8, fZ = -windAZ + Math.cos(t3 * 0.5) * 0.8, fY = snowFallAcc;
         const drop = snowFallV * dt + 0.002;
@@ -3118,18 +3677,17 @@
           landSnowAt(wx, wz);
         }
       }
-      let melted = 0;                                  // drain expired snow — dt-scaled so melt pace is fps-independent too
+      let melted = 0;                                  // drain expired snow — dt-scaled so melt pace is fps-independent too; ONLY time-based and ONLY between storms (the cap drops landings instead)
       const meltCap = Math.max(8, Math.round(dt * 24000));
-      while (snowHead < snowQ.length && (snowQ[snowHead].t < now || snowQ.length - snowHead > SNOW_MAX) && melted < meltCap) {
-        const s2 = snowQ[snowHead++];
-        let jj = s2.ii;
+      while (snowHead < snowQI.length && !snowOn && snowQT[snowHead] < now && melted < meltCap) {
+        let jj = snowQI[snowHead++];
         if (W[jj] === SNOW[0] || W[jj] === SNOW[1]) {
           for (let up = 0; up < 4 && jj + WX < W.length && (W[jj + WX] === SNOW[0] || W[jj + WX] === SNOW[1]); up++) jj += WX;   // climb to the column's TOP snow voxel
           W[jj] = 0; cells.push(jj);                   // melt TOP-DOWN — a lower layer never vanishes under an upper one, so no floating snow
         }
         melted++;
       }
-      if (snowHead > 8192) { snowQ = snowQ.slice(snowHead); snowHead = 0; }
+      if (snowHead > 8192) { snowQI = snowQI.slice(snowHead); snowQT = snowQT.slice(snowHead); snowHead = 0; }
       if (cells.length) gpuPatch(cells);
     }
 
@@ -3169,7 +3727,7 @@
     set3(16, [prevCam.pos[0] - winOX, prevCam.pos[1], prevCam.pos[2] - winOZ], prevCam.tanH);
     set3(20, prevCam.right, prevCam.aspect);
     const uw = waterAt(Math.floor(cam[0]), Math.floor(cam[1]), Math.floor(cam[2]));
-    set3(24, prevCam.up, (cycleSpeed > 4 && !cyclePause) ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowOn ? 16 : 0));
+    set3(24, prevCam.up, (cycleSpeed > 4 && !cyclePause) ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowOn && !ED.on ? 16 : 0));
     set3(32, sun, resetHist);
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
@@ -3190,7 +3748,11 @@
       if (clT >= 0.42 && clT < 1 && !clashSparked) {   // IMPACT — sparks fly and the two rocks become a stone knife
         clashSparked = true; spawnSparks(); unlockSharpEdge();
         const cs = slots[selSlot];
-        if (cs && cs.it === 2 && cs.n >= 2 && KNIFE_IT) { cs.n -= 2; if (!cs.n) slots[selSlot] = null; addItem(KNIFE_IT); }
+        if (cs && cs.it === 2 && cs.n >= 2 && KNIFE_IT) {
+          cs.n -= 2; if (!cs.n) slots[selSlot] = null;
+          if (!slots[selSlot]) slots[selSlot] = { it: KNIFE_IT, n: 1 };   // the newborn knife lands IN THE HAND every craft — addItem's stack-first rule silently merged repeat crafts into an existing knife stack ("the knife never spawns")
+          else if (!addItem(KNIFE_IT)) cs.n += 2;      // nowhere to hold it (guarded at clash start, but never eat rocks for nothing)
+        }
       }
       const hcfg = heldCfg(heldIt() || 1);             // the shown item's OWN pose (during a grab flight this is the grabbed item's)
       const swPitch = -0.9 * wind + 1.35 * chop;       // windup tips the head back/up, the strike slams it forward-down
@@ -3227,13 +3789,14 @@
         if (k >= 1) { addItem(grabAnim.it); grabAnim = null; }
       }
       set3(48, [hx, hy, hz], hcfg.scale);
+      if (WORM_NFRAMES && showId >= WORM_ITEM0 && showId < WORM_ITEM0 + WORM_NFRAMES) showId = WORM_ITEM0 + Math.floor(now * 0.024) % WORM_NFRAMES;   // the caught worm SQUIGGLES — its 24 fps crawl cycle keeps playing in the hand (and through the grab flight)
       set3(52, AX, showId);
       set3(56, AY, snowFallAcc);                     // u.pickY.w = integrated snow fall
       set3(60, AZ, freezeK);                        // u.pickZ.w = gradual freeze 0..1
       { // ── LEFT HAND ── shows the second rock when dual-wielding (selected rock stack n ≥ 2); also hosts a 2nd-rock grab flight
         const lgrab = grabAnim && grabAnim.left && !dead;
         const lid = lgrab ? grabAnim.it : ((!dead && slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2) ? 2 : 0);
-        if (!lid) UF[215] = 0;                       // pick2X.w = 0 → left hand hidden
+        if (!lid) UF[1095] = 0;                      // pick2A.w = 0 → zero bounding radius hides the left hand (pick2 sits after the 64 drop slots: 1092..1107)
         else {
           const c2 = heldCfg(2);                     // mirrored rock pose: anchor x negated, yaw/roll negated (still a proper rotation — no handedness flip)
           const cy4 = Math.cos(-c2.yaw), sy4 = Math.sin(-c2.yaw), cp4 = Math.cos(c2.pitch), sp4 = Math.sin(c2.pitch), cr4 = Math.cos(-c2.roll), sr4 = Math.sin(-c2.roll);
@@ -3260,16 +3823,33 @@
             const M = q2m(q); LAX = M[0]; LAY = M[1]; LAZ = M[2];
             if (k >= 1) { addItem(grabAnim.it); grabAnim = null; }
           }
-          set3(212, [lx, ly, lz], c2.scale);
-          set3(216, LAX, lid);
-          set3(220, LAY, 0);
-          set3(224, LAZ, 0);
+          set3(1092, [lx, ly, lz], c2.scale);
+          set3(1096, LAX, lid);
+          set3(1100, LAY, 0);
+          set3(1104, LAZ, 0);
         }
       }
     }
-    UF[64] = Math.max(64, Math.min(renderDist,           // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
+    UF[64] = ED.on ? Math.max(64, renderDist)            // editor world: nothing stale exists (occupancy is empty beyond the stage) — no rect clamp
+      : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
+    for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
+      const dr = drops[i];
+      if (!(WORM_NFRAMES && dr.it === WORM_ITEM0 && dr.T && (now - dr.born) / 1000 > dr.T + 0.24)) continue;
+      let wi = 32, fd = -1;
+      for (let j = 32; j < 40; j++) { const B2 = wbf[j];   // worm pool slots (moved 24-31 → 32-39 in the pool expansion)
+        if (!B2.init) { wi = j; fd = -2; break; }
+        const d2w = (B2.x - P.x) * (B2.x - P.x) + (B2.z - P.z) * (B2.z - P.z);
+        if (d2w > fd) { fd = d2w; wi = j; }            // all live → reuse the farthest (least visible) slot
+      }
+      const B = wbf[wi];
+      B.x = dr.ex + 0.5; B.z = dr.ez + 0.5;
+      B.gRef = Math.max(hmap[gwrap(Math.floor(B.x), WX) + gwrap(Math.floor(B.z), WZ) * WX], WL);
+      B.y = B.gRef + 2; B.th = Math.random() * 6.283; B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0;
+      B.born = now; B.kind = 2; B.dieT = 0; B.glow = false; B.glowT = 0; B.rel = true; B.init = true;
+      drops.splice(i, 1);
+    }
     for (let di = 0; di < 4; di++) {                   // dropped items → camera space (voxel units), hovering + spinning (+ launch flight out of the hand)
       const o2 = 68 + di * 16, dr = drops[di];
       if (!dr) { UF[o2 + 7] = 0; continue; }
@@ -3291,12 +3871,34 @@
       }
       const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
       UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = 1.0;
-      UF[o2 + 4] = Xw[0] * right[0] + Xw[1] * right[1] + Xw[2] * right[2]; UF[o2 + 5] = Xw[0] * up[0] + Xw[1] * up[1] + Xw[2] * up[2]; UF[o2 + 6] = Xw[0] * fwd[0] + Xw[1] * fwd[1] + Xw[2] * fwd[2]; UF[o2 + 7] = dr.it;
+      UF[o2 + 4] = Xw[0] * right[0] + Xw[1] * right[1] + Xw[2] * right[2]; UF[o2 + 5] = Xw[0] * up[0] + Xw[1] * up[1] + Xw[2] * up[2]; UF[o2 + 6] = Xw[0] * fwd[0] + Xw[1] * fwd[1] + Xw[2] * fwd[2];
+      UF[o2 + 7] = (WORM_NFRAMES && dr.it >= WORM_ITEM0 && dr.it < WORM_ITEM0 + WORM_NFRAMES) ? WORM_ITEM0 + Math.floor(now * 0.024) % WORM_NFRAMES : dr.it;   // a tossed worm keeps squiggling on the ground too
       UF[o2 + 8] = Yw[0] * right[0] + Yw[1] * right[1] + Yw[2] * right[2]; UF[o2 + 9] = Yw[0] * up[0] + Yw[1] * up[1] + Yw[2] * up[2]; UF[o2 + 10] = Yw[0] * fwd[0] + Yw[1] * fwd[1] + Yw[2] * fwd[2]; UF[o2 + 11] = 0;
       UF[o2 + 12] = Zw[0] * right[0] + Zw[1] * right[1] + Zw[2] * right[2]; UF[o2 + 13] = Zw[0] * up[0] + Zw[1] * up[1] + Zw[2] * up[2]; UF[o2 + 14] = Zw[0] * fwd[0] + Zw[1] * fwd[1] + Zw[2] * fwd[2]; UF[o2 + 15] = 0;
     }
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
-      if (BIRD_NFRAMES > 0) {
+      if (ED.on && BFLY_NFRAMES > 0) {                  // ── EDITOR WORLD: the orange butterfly ── wandering flight over the stage; slot 4 is free here (cardinal gated below)
+        const tb2 = now / 1000, ecx = ED.x0 + ED.pw / 2, ecz = ED.z0 + ED.pd / 2, baseY = ED.y + 26;
+        if (!bfly.init) { bfly.init = true; bfly.x = ecx; bfly.z = ecz; bfly.th = Math.random() * 6.28; bfly.om = 0; bfly.omT = 0; bfly.tRe = 0; }
+        if (tb2 > bfly.tRe) { bfly.omT = (Math.random() - 0.5) * 6.4; bfly.tRe = tb2 + 0.25 + Math.random() * 0.5; }   // 4× the original motion rates (user doubled the speed twice; flap stays 24 fps)
+        const dxc = bfly.x - ecx, dzc = bfly.z - ecz;
+        if (dxc * dxc + dzc * dzc > 45 * 45) {          // drifting off the stage — steer the wander target back toward centre
+          let dth = Math.atan2(-dxc, -dzc) - bfly.th; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
+          bfly.omT = Math.max(-6.4, Math.min(6.4, dth * 4.8));
+        }
+        bfly.om += (bfly.omT - bfly.om) * (1 - Math.exp(-12 * dt));
+        bfly.th += bfly.om * dt;
+        const Hx2 = Math.sin(bfly.th), Hz2 = Math.cos(bfly.th);
+        bfly.x += Hx2 * 56 * dt; bfly.z += Hz2 * 56 * dt;   // 5.6 m/s flutter
+        const px3 = bfly.x, pz3 = bfly.z, py3 = baseY + Math.sin(tb2 * 6.8) * 2.2;
+        const Xw = [Hz2, 0, -Hx2], Yw = [-Hx2, 0, -Hz2];   // level flight frame — Zw = up, right-handed (Yw×Zw = Xw)
+        const fi2 = Math.floor(tb2 * 24) % BFLY_NFRAMES;   // 24 fps flap — the animation standard
+        const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
+        UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = 1.0;
+        UF[o2 + 4] = Xw[0] * right[0] + Xw[2] * right[2]; UF[o2 + 5] = Xw[0] * up[0] + Xw[2] * up[2]; UF[o2 + 6] = Xw[0] * fwd[0] + Xw[2] * fwd[2]; UF[o2 + 7] = BFLY_ITEM0 + fi2;
+        UF[o2 + 8] = Yw[0] * right[0] + Yw[2] * right[2]; UF[o2 + 9] = Yw[0] * up[0] + Yw[2] * up[2]; UF[o2 + 10] = Yw[0] * fwd[0] + Yw[2] * fwd[2]; UF[o2 + 11] = 0;
+        UF[o2 + 12] = right[1]; UF[o2 + 13] = up[1]; UF[o2 + 14] = fwd[1]; UF[o2 + 15] = 0;
+      } else if (BIRD_NFRAMES > 0 && !ED.on) {          // the editor void has no wildlife (else-branch hides the slot)
         const tb = now / 1000;
         if (!bird.init) {                                // it STARTS at the spawn position, then goes wherever its wandering takes it
           bird.x = P.x; bird.z = P.z; bird.g = P.y;
@@ -3347,6 +3949,285 @@
         UF[o2 + 12] = Zw[0] * right[0] + Zw[1] * right[1] + Zw[2] * right[2]; UF[o2 + 13] = Zw[0] * up[0] + Zw[1] * up[1] + Zw[2] * up[2]; UF[o2 + 14] = Zw[0] * fwd[0] + Zw[1] * fwd[1] + Zw[2] * fwd[2]; UF[o2 + 15] = 0;
       } else { UF[o2 + 7] = 0; }
     }
+    const bfObst = (x, y, z) => {                      // butterfly obstacle test — trunks, canopy, rocks, snow all block; soft grass/bloom/fern strands don't
+      const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
+      const id = W[gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY];
+      return id !== 0 && !SNOW_PASS.has(id) && !SNOW_FERN.has(id); };
+    const bfSurf = (x, z) => Math.max(hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], WL);
+    const bfGlide = (x, z) => {                        // MAX terrain over a wide stencil → the flight height RIDES THE RIMS, gliding over ravines/gorges instead of diving in
+      let m = bfSurf(x, z);
+      m = Math.max(m, bfSurf(x + 22, z), bfSurf(x - 22, z), bfSurf(x, z + 22), bfSurf(x, z - 22));
+      m = Math.max(m, bfSurf(x + 48, z), bfSurf(x - 48, z), bfSurf(x, z + 48), bfSurf(x, z - 48));
+      return m; };
+    const bfRoofed = (x, y, z) => bfObst(x, y + 7, z) || bfObst(x, y + 13, z);   // solid within ~1.3 m overhead → under canopy/overhang or inside a cave
+    const bfSky = (x, y, z) => {                       // truly OPEN TO THE SKY: no SOLID voxel (rock/dirt — cave roofs) anywhere in ~10 m overhead. Foliage doesn't count — lakeside trees may lean over the water.
+      const gx = gwrap(Math.floor(x), WX), gz = gwrap(Math.floor(z), WZ), b2 = gx + gz * WX * WY;
+      const yTop = Math.min(WY - 1, Math.floor(y) + 104);
+      for (let yy = Math.floor(y) + 5; yy <= yTop; yy += 3) { const id = W[b2 + yy * WX]; if (id !== 0 && solidTab[id]) return false; }
+      return true; };
+    const bfWater = (x, z) => waterAt(Math.floor(x), WL, Math.floor(z));   // REAL water surface voxel present — NOT just "ground below WL". A dry ravine/gorge (rock + lava, carved deep) has hmap < WL so bfSurf lies (returns WL), but has NO WATER_T here → this is the truth.
+    const bfOpenW = (x, z) => {                        // LAKE water only (user: no ducks/lilies in gorge/ravine/cave water): the spot must sit in WIDE OPEN, REAL water.
+      if (!bfWater(x, z)) return false;                // (1) actually ON water — kills dry sub-WL ravines outright; (2) WIDE — a water gorge strip is narrow, a lake is broad.
+      let w9 = 0, w18 = 0;
+      for (let k = 0; k < 8; k++) {
+        const a = k * 0.785398, sa = Math.sin(a), ca = Math.cos(a);
+        if (bfWater(x + sa * 9, z + ca * 9)) w9++;
+        if (bfWater(x + sa * 18, z + ca * 18)) w18++;
+      }
+      return w9 >= 7 && w18 >= 5; };
+    __vb.bfOpenW = bfOpenW; __vb.bfSurf = bfSurf; __vb.bfWater = bfWater;   // test taps — headless checks must use the game's OWN gates (worldgen H is pre-carve, voxel scans count canopy)
+    // ── PROCEDURAL POPULATION ── the active butterfly count scales with the visible AREA (density ≈ 1 per (200 vox)²),
+    // so the world stays populated at every render distance. Each is recycled to a fresh procedural cell when it leaves
+    // the fog ring; color comes from a spatial hash of that cell so orange/red/blue are sprinkled across the world.
+    const rdV = Math.max(140, renderDist);
+    const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
+    const nAct = moonMode ? Math.max(2, nActD >> 1) : nActD;   // and FIREFLIES are half as frequent again (user 2026-07-17)
+    const nWorm = WORM_NFRAMES ? Math.max(4, Math.min(8, nActD >> 1)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-17 (user; 8 = slot cap 32-39)
+    const nDuck = DUCK_ITEM0 ? 2 : 0;                  // MOTHER ducks (slots 16-19) — HALVED back to 2 (user 2026-07-17); placement targets lakes, so families appear on up to 2 visible lakes; each leads 3 ducklings (slots 20-31)
+    const nLily = LILY_ITEM0 ? 12 : 0;                 // free-floating lily pads (slots 40-54)
+    const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
+    const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
+    if (DUCK_ITEM0 && !ED.on && now > lakeScanT) {     // ── LAKE CENSUS (every 2.5 s) ── grid-sample the view for wide-open-water spots, cluster them into lakes;
+      lakeScanT = now + 2500;                          //    mother ducks below TARGET these so every visible lake gets its own family (pool cap 2 families)
+      lakeSpots.length = 0;
+      const R7 = rdV * 0.8;
+      for (let gx7 = -R7; gx7 <= R7; gx7 += 20) for (let gz7 = -R7; gz7 <= R7; gz7 += 20) {
+        if (gx7 * gx7 + gz7 * gz7 > R7 * R7) continue;
+        const sx8 = P.x + gx7, sz8 = P.z + gz7;
+        if (sx8 <= rect.xlo + 4 || sx8 >= rect.xhi - 4 || sz8 <= rect.zlo + 4 || sz8 >= rect.zhi - 4) continue;
+        if (!bfOpenW(sx8, sz8) || !bfSky(sx8, WL + 2, sz8)) continue;   // bfOpenW now requires real water voxels + width — dry ravines/cave pools never seed a lake spot
+        const cl7 = lakeSpots.find((c) => (c.x - sx8) * (c.x - sx8) + (c.z - sz8) * (c.z - sz8) < 110 * 110);
+        if (cl7) { cl7.n++; cl7.x += (sx8 - cl7.x) / cl7.n; cl7.z += (sz8 - cl7.z) / cl7.n; }   // centroid = lake identity; ax/az stays a KNOWN-GOOD water sample (the centroid of an L-shaped lake can be ashore)
+        else lakeSpots.push({ x: sx8, z: sz8, ax: sx8, az: sz8, n: 1 });
+      }
+    }
+    let dropCursor = 9;                                // COMPACTION: live creatures emit to consecutive slots from 9; the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists
+    for (let wk = 0; wk < 55; wk++) {
+      const B = wbf[wk];
+      const wormSlot = wk >= 32 && wk < 40, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 40;
+      const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
+      const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
+      const wantK = lilySlot ? 4 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)));   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-39 WORMS, 40-54 LILY PADS
+      const active = lilySlot ? (wk - 40 < nLily)
+        : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
+        : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
+        : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles
+      if (ED.on || dead || !active || (wantK === 4 ? !LILY_ITEM0 : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))) { B.init = false; continue; }
+      const tb3 = now / 1000;
+      if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
+      if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
+      const rdK = wantK === 2 ? rdW : (wantK === 3 ? rdD : rdV);   // each kind's live/recycle radius
+      const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
+      const far = dp2 > rdK * rdK;
+      if (!B.init || far || (B.trap > 12 && (B.kind < 3 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; but a duck/lily wedged ON real water NEVER teleports (the unstick frees it), only if it's off-water
+          B.x <= rect.xlo + 4 || B.x >= rect.xhi - 4 || B.z <= rect.zlo + 4 || B.z >= rect.zhi - 4 ||   // the window recentred/shrank under it — this ground is stale garbage, leave it
+          (isBaby && (B.x - mom5.x) * (B.x - mom5.x) + (B.z - mom5.z) * (B.z - mom5.z) > 40 * 40) ||   // a duckling stranded from its (recycled) mother rejoins her
+          (B.kind >= 3 && !isBaby && ((frame + wk) & 63) === 0 && !bfWater(B.x, B.z)) ||   // recycle ONLY if a duck/lily is genuinely OFF real water (dry ravine/land after a recenter) — NOT merely near a shore. The old bfOpenW test teleported ducks that paddled up to the bank ('disappears when stuck against land')
+          (B.trap > 4 && (dp2 > 0.7 * 0.7 * rdK * rdK || (B.kind < 3 && bfObst(B.x, B.y, B.z))))) {   // stuck 4 s: recycle if far in the fog OR body-in-solid (kinds <3 only — a duck's body dips into the WATER voxel in wave troughs, which is not 'stuck')
+        if (B.rel) B.rel = false;                      // a released worm that leaves/loses its spot rejoins the normal population rules
+        let placed = false;
+        if (isBaby) {                                  // ducklings hatch right behind their mother, in line order
+          let hx6 = mom5.x - Math.sin(mom5.th) * (4 + sib * 3.5) + (Math.random() - 0.5) * 2;
+          let hz6 = mom5.z - Math.cos(mom5.th) * (4 + sib * 3.5) + (Math.random() - 0.5) * 2;
+          if (!bfWater(hx6, hz6) || !bfSky(hx6, WL + 2, hz6)) { hx6 = mom5.x; hz6 = mom5.z; }   // the trail spot is ashore/dry-ravine/inside the bank (mom hugging the shore) — hatch AT mom instead; she's on valid water by construction
+          B.x = hx6; B.z = hz6;
+          B.y = WL + 2.5; placed = true;
+        }
+        const tooClose = (j0, j1, minD) => {           // EVEN DISTRIBUTION — reject spawns bunched against a live same-kind neighbour
+          for (let j = j0; j < j1; j++) { const O = wbf[j];
+            if (O !== B && O.init && (O.x - sx7) * (O.x - sx7) + (O.z - sz7) * (O.z - sz7) < minD * minD) return true; }
+          return false; };
+        let sx7 = 0, sz7 = 0;
+        for (let tries = 0; tries < 12 && !placed; tries++) {
+          let sx, sz;
+          if (wantK === 3 && lakeSpots.length) {       // MOTHER DUCKS TARGET LAKES: prefer a lake NO other mom (16-19) already holds — one family per visible lake
+            const free = lakeSpots.filter((L) => {
+              for (let m = 16; m < 20; m++) { const O = wbf[m]; if (O !== B && O.init && (O.x - L.x) * (O.x - L.x) + (O.z - L.z) * (O.z - L.z) < 150 * 150) return false; }
+              return true; });
+            const pool7 = free.length ? free : lakeSpots;
+            const L7 = pool7[tries % pool7.length];
+            sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
+          } else {
+            const a5 = Math.random() * 6.283;
+            const d5 = wantK === 2 ? Math.max(25, Math.sqrt(Math.random()) * rdW * 0.55)   // worms: AREA-uniform radius (plain random bunches them near the player)
+              : (wantK >= 3 ? (30 + Math.random() * (rdD * 0.8 - 30)) : rdV * (0.55 + Math.random() * 0.3));   // flyers spawn in the far fog band; ducks/lilies anywhere a lake might be
+            sx = P.x + Math.sin(a5) * d5; sz = P.z + Math.cos(a5) * d5;
+          }
+          if (sx <= rect.xlo + 4 || sx >= rect.xhi - 4 || sz <= rect.zlo + 4 || sz >= rect.zhi - 4) continue;   // NEVER spawn outside the GENERATED rect — hmap there is garbage (the snow-landing guard; embedded 'cave' creatures after recenters)
+          sx7 = sx; sz7 = sz;
+          const gS = bfSurf(sx, sz);
+          if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
+          if (wantK >= 3 && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
+          if (wantK === 2 && tooClose(32, 40, 60)) continue;          // worms spread WIDE — never bunched (user, doubled with the population)
+          if (wantK === 3 && tooClose(16, 20, 130)) continue;         // mother ducks NEVER spawn beside another family (user; wider guard — 130 vox apart)
+          if (wantK === 4 && tooClose(40, 55, 12)) continue;          // lilies scatter
+          const sy = wantK === 2 ? gS + 2 : (wantK === 3 ? WL + 4 : (wantK === 4 ? WL + 1.4 : bfGlide(sx, sz) + (wantK ? 9 : 14)));   // ducks/lilies float; duck FEET sit inside the water voxel layer
+          if ((wantK === 2 || !bfRoofed(sx, sy, sz)) && !bfObst(sx, sy, sz)) {   // worms live happily UNDER the canopy — the roof test starved dense-forest placement ('worms only near spawn')
+            B.x = sx; B.z = sz; B.y = sy; placed = true;
+            const cx = Math.floor(sx / 64), cz = Math.floor(sz / 64);   // color = spatial hash of the 64-vox cell → world-anchored variety, all 3 colors present
+            B.col = ((Math.imul(cx, 374761393) ^ Math.imul(cz, 668265263)) >>> 0) % Math.max(1, BFLY_COLS.length);
+          }
+        }
+        if (!placed) { B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
+        B.th = isBaby ? mom5.th : Math.random() * 6.283;
+        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
+        B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
+        if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
+        if (lilySlot) { B.mth = Math.random() * 6.283; B.spin = (Math.random() < 0.5 ? -1 : 1) * (0.12 + Math.random() * 0.3); }   // drift heading + a slow constant OFF-GRID rotation
+      }
+      const fadeIn = Math.min(1, (now - B.born) / 700);   // grow in over 0.7 s so a recycled creature materialises smoothly instead of popping into view
+      const fadeOut = B.dieT ? Math.max(0, 1 - (now - B.dieT) / 700) : 1;   // …and shrinks away at the day/night handover
+      const bScale = 0.12 + 0.88 * fadeIn * fadeIn * (3 - 2 * fadeIn) * fadeOut;
+      let Hx2 = Math.sin(B.th), Hz2 = Math.cos(B.th);
+      if (B.kind === 4) {                              // LILY PAD: slow drift on the water + constant free rotation; movement heading (mth) is independent of the visual spin
+        if (tb3 > B.tRe) { B.mth += (Math.random() - 0.5) * 1.2; B.tRe = tb3 + 3 + Math.random() * 4; }
+        if (!bfWater(B.x + Math.sin(B.mth) * 5, B.z + Math.cos(B.mth) * 5)) B.mth += 2.6 * dt;   // shore/dry ahead — curl the drift away
+      } else if (B.kind === 2) {                       // WORM: smooth meandering crawl (grid alignment undone at user request)
+        const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
+          return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObst(ax, gA + 2, az) && !bfObst(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance (low branches no longer clip through the worm)
+        if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }
+        if (!wormOK(B.th, 5) || !wormOK(B.th, 2.5)) {  // unclimbable ahead (rock face / shoreline / cliff) — commit to a firm turn toward the open side
+          const pF = wormOK(B.th + 1.1, 5), nF = wormOK(B.th - 1.1, 5);
+          B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : (B.om >= 0 ? 2.6 : -2.6));
+        }
+      } else if (B.kind === 3) {                       // DUCK: paddles its lake — veer away from the shore, gentle drifting turns
+        if (isBaby) {                                  // DUCKLING: steer for a spot just behind its leader — mom for the first, the sibling ahead for the rest (a follow line)
+          const lead = (sib === 0 || !wbf[wk - 1].init) ? mom5 : wbf[wk - 1];
+          const tx = lead.x - Math.sin(lead.th) * 4.5, tz = lead.z - Math.cos(lead.th) * 4.5;
+          let dth = Math.atan2(tx - B.x, tz - B.z) - B.th; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
+          B.omT = Math.max(-2.8, Math.min(2.8, dth * 2.2));
+          B.chase = Math.hypot(tx - B.x, tz - B.z);    // distance to heel — drives the paddle speed
+        } else {
+          const duckOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist;
+            return bfWater(ax, az) && bfSky(ax, WL + 2, az); };   // lookahead matches the MOVE rule (real water + open sky)
+          let rx = 0, rz = 0;                          // PROACTIVE EDGE AVOIDANCE (user: 'avoid the edges of the terrain/rocks'): sum a repulsion away from every nearby bank/rock so the duck keeps a BUFFER and steers off before touching
+          for (let k = 0; k < 8; k++) { const a = k * 0.785398, sa = Math.sin(a), ca = Math.cos(a);
+            for (let d = 3; d <= 9; d += 3) { if (!bfWater(B.x + sa * d, B.z + ca * d)) { rx -= sa * (11 - d); rz -= ca * (11 - d); break; } } }   // closer edge → stronger push
+          if (rx * rx + rz * rz > 0.02) {              // a bank is within ~9 vox — ease the heading toward the resultant OPEN-water direction
+            let dth = Math.atan2(rx, rz) - B.th; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
+            B.omT = Math.max(-2.6, Math.min(2.6, dth * 2.6));
+          } else if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.0; B.tRe = tb3 + 2 + Math.random() * 3; }   // open water — gentle wander
+          if (!duckOK(B.th, 8) || !duckOK(B.th, 4)) {  // imminent bank straight ahead — HARD turn toward the open side (backs up the soft repulsion)
+            const pF = duckOK(B.th + 1.1, 7), nF = duckOK(B.th - 1.1, 7);
+            B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : ((pF && nF) ? (B.om >= 0 ? 2.6 : -2.6) : (B.om >= 0 ? 3.4 : -3.4)));
+          }
+        }
+      } else {
+        if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 4.0; B.tRe = tb3 + 0.4 + Math.random() * 0.8; }
+        const la5 = 13;
+        if (bfObst(B.x + Hx2 * la5, B.y, B.z + Hz2 * la5) || bfObst(B.x + Hx2 * 7, B.y + 1, B.z + Hz2 * 7)) {   // flyers see obstacles EARLY so the EASED turn has room — no last-moment snap
+          const pFree = !bfObst(B.x + Math.sin(B.th + 1.0) * la5, B.y, B.z + Math.cos(B.th + 1.0) * la5);
+          const nFree = !bfObst(B.x + Math.sin(B.th - 1.0) * la5, B.y, B.z + Math.cos(B.th - 1.0) * la5);
+          B.omT = pFree && !nFree ? 5.0 : (nFree && !pFree ? -5.0
+            : (!pFree && !nFree ? (!bfObst(B.x + Math.sin(B.th + 2.4) * 9, B.y, B.z + Math.cos(B.th + 2.4) * 9) ? 6.4 : -6.4)   // fully cornered (dense canopy pocket) — swing back toward the way it came
+            : (B.om >= 0 ? 5.0 : -5.0)));              // steer toward the open side; the ease below smooths the heading — no discontinuous snap
+        }
+      }
+      B.om += (B.omT - B.om) * (1 - Math.exp(-9 * dt));
+      B.th += B.om * dt;
+      if (B.kind === 4) { B.th += B.spin * dt; Hx2 = Math.sin(B.mth); Hz2 = Math.cos(B.mth); }   // lily: spin the MODEL (th) freely while drifting along mth
+      else { Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }
+      const spd5 = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? (B.chase > 9 ? 10 : (B.chase > 3.5 ? 7 : 1.5)) : 7)   // lilies drift; ducklings hustle when behind, dawdle at heel
+        : (B.kind === 2 ? 16 : (B.kind === 1 ? 26 : 56)));   // worm 1.6 m/s, firefly 2.6, butterfly 5.6
+      const nx5 = B.x + Hx2 * spd5 * dt, nz5 = B.z + Hz2 * spd5 * dt;
+      let stepOK;
+      if (B.kind === 2) {                              // STEP-AWARE crawl: accept the move if the destination surface is land, within a 2-voxel step, and clear at ITS height AND above the body
+        const gN = bfSurf(nx5, nz5);
+        stepOK = gN > WL + 0.5 && Math.abs(gN - bfSurf(B.x, B.z)) <= 2 && !bfObst(nx5, gN + 2, nz5) && !bfObst(nx5, gN + 3, nz5);
+      } else if (B.kind >= 3) stepOK = bfWater(nx5, nz5) && bfSky(nx5, WL + 2, nz5)   // ducks + lilies only ever move onto OPEN-SKY REAL water — never onto a dry ravine floor or under a cave roof…
+        && (bfOpenW(nx5, nz5) || !bfOpenW(B.x, B.z));  // …and never INTO a narrow gorge/ravine arm (escape moves out of one are always allowed so nothing gets pinned)
+      else stepOK = !bfObst(nx5, B.y, nz5) && !bfObst(nx5, B.y + 2, nz5);
+      if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; }   // fast trap decay: only SUSTAINED blockage accumulates toward a recycle
+      else {
+        B.trap = (B.trap || 0) + dt;                   // blocked (cornered) — count it
+        if (B.kind >= 3) {                             // WATER creature blocked at a bank/rock (user: 'still getting stuck against shore/rocks'): don't just TURN — TURNING alone left it grazing corners.
+          let bestA = -1, bestReach = -1;              // Actively STEP toward the clearest open water EVERY blocked frame so it physically peels off the bank and can never pin.
+          for (let k9 = 0; k9 < 16; k9++) { const th9 = k9 * 0.3927;
+            const sx9 = B.x + Math.sin(th9) * 1.5, sz9 = B.z + Math.cos(th9) * 1.5;
+            if (!bfWater(sx9, sz9) || !bfSky(sx9, WL + 2, sz9)) continue;   // this heading's immediate step must land on OPEN-SKY water
+            let reach = 1.5;
+            for (let d9 = 3.5; d9 <= 16; d9 += 2.0) { if (bfWater(B.x + Math.sin(th9) * d9, B.z + Math.cos(th9) * d9)) reach = d9; else break; }
+            if (reach > bestReach) { bestReach = reach; bestA = th9; }   // widest contiguous water wins → steer toward the OPEN lake, away from the bank
+          }
+          if (bestReach > 0) {                         // MOVE toward that water at normal paddle speed + face it + clear trap → never pins, never mercy-recycles
+            const mv = spd5 * dt;
+            B.x += Math.sin(bestA) * mv; B.z += Math.cos(bestA) * mv;
+            B.th = bestA; B.om = 0; B.omT = 0; B.trap = 0; B.stuck = 0;
+          }
+        }
+      }
+      const gLoc = bfSurf(B.x, B.z);                   // the actual ground right here
+      const yPrev5 = B.y;                              // total vertical motion this frame is budget-capped below — branches must never STACK into a visible jump
+      if (B.kind === 2) {                              // WORM: rides the terrain SMOOTHLY — target blends the ground AHEAD (starts the ramp before a step) and eases at a gentle rate
+        const gFwd = bfSurf(B.x + Hx2 * 3, B.z + Hz2 * 3);
+        const gT7 = (gLoc * 2 + gFwd) / 3 + 2;
+        B.y += Math.max(-12 * dt, Math.min(12 * dt, (gT7 - B.y) * (1 - Math.exp(-7 * dt)) + Math.sign(gT7 - B.y) * 2 * dt));
+        if (B.y < gLoc + 1.6) B.y = gLoc + 1.6;        // hard body floor — the ease could lag uphill and sink the worm INTO the slope ('clips through the ground')
+        if (bfObst(B.x, B.y, B.z)) B.y = gLoc + 2;     // body ended up inside something (streamed terrain/step edge) — re-seat on the local surface instead of hiding+vanishing
+      } else if (B.kind >= 3) {                        // DUCK / LILY: ride the CONTINUOUS swell (JS mirror of the TRACE wave field) — smooth by construction, no quantized ratcheting
+        let wvMax = 0;
+        if (freezeK < 0.4) {                           // waves are gated exactly like the renderer — a frozen lake is flat
+          const wvAt = (wx, wz) => {
+            const cx9 = Math.floor(wx), cz9 = Math.floor(wz);
+            const g1 = 2 * Math.pow(0.5 + 0.5 * Math.sin(cx9 * 0.062 + cz9 * 0.041 + tb3 * 0.95), 2.4) - 1;
+            const g2 = 2 * Math.pow(0.5 + 0.5 * Math.sin(cx9 * -0.048 + cz9 * 0.104 + tb3 * 0.80), 2.0) - 1;
+            return g1 * 1.3 + g2 * 0.9 + Math.sin((cx9 * 0.9 + cz9 * 0.63) * 0.23 - tb3 * 1.9) * 0.35;
+          };                                           // MAX over the body FOOTPRINT — the waves are per-column, and a crest under an edge column must lift the whole float
+          const fr9 = B.kind === 4 ? 4 : 2.5;          // lily pads are WIDE and 1 voxel thin — the footprint must reach the pad edge or an edge-column crest swallows the whole pad
+          wvMax = Math.max(wvAt(B.x, B.z), wvAt(B.x + fr9, B.z), wvAt(B.x - fr9, B.z), wvAt(B.x, B.z + fr9), wvAt(B.x, B.z - fr9));
+          if (B.kind === 4) { const fd9 = 2.8; wvMax = Math.max(wvMax, wvAt(B.x + fd9, B.z + fd9), wvAt(B.x - fd9, B.z + fd9), wvAt(B.x + fd9, B.z - fd9), wvAt(B.x - fd9, B.z - fd9)); }
+          wvMax += 0.5;                                // +0.5 = the renderer's floor(wv + 0.5) worst case — the float stays AT or ABOVE the drawn surface at all times
+        }
+        const base9 = B.kind === 4 ? WL + 1.6 + 0.5 * (LILY_SZ[B.col % Math.max(1, LILY_SZ.length)] || 1)   // lily rests ON the surface with clearance — a 1-voxel-thin pad has NO sacrificial bottom row
+          : (isBaby ? WL + 2.9 : WL + 4.4);            // ducks: ride high — only (part of) the BOTTOM voxel row ever dips
+        const tgt9 = base9 + wvMax;
+        const ek9 = B.kind === 4 ? 14 : 5, ec9 = B.kind === 4 ? 10 : 7;   // lily tracks TIGHT (lag ~0.2 vox — it has no draft to hide lag in); ducks keep the lazy bob-along ease
+        B.y += Math.max(-ec9 * dt, Math.min(ec9 * dt, (tgt9 - B.y) * (1 - Math.exp(-ek9 * dt))));   // ONE symmetric ease — the swell moves ≤ ~2.5 vox/s, so this tracks it closely and SMOOTHLY
+      } else if (B.trap > 0.5) {                       // STUCK: dive for the open understory when there's air below, else flutter up if the sky above is clear
+        if (!bfObst(B.x, B.y - 2, B.z) && B.y - 2 > gLoc + 6) B.y -= 34 * dt;
+        else if (!bfRoofed(B.x, B.y, B.z)) B.y += 40 * dt;
+      } else {
+        B.gRef = Math.max(gLoc, (B.gRef || gLoc) - 9 * dt);   // GROUND MEMORY: rises instantly with terrain, sinks slowly — stays HIGH crossing gorges (no diving in) but settles to the
+        const cruise = B.gRef + (B.kind ? 8 : 12);            // local ground on flats/slopes, so the cruise line sits in the open UNDERSTORY below the canopy ('caught on trees' fix —
+        let stepY = (cruise - B.y) * (1 - Math.exp(-4 * dt)); // the old terrain-max stencil pinned cruise AT canopy height on any slope)
+        stepY = Math.max(-26 * dt, Math.min(30 * dt, stepY)); // RATE-CAPPED — a reference jump must never become a visible teleport
+        if (!(stepY > 0 && (bfObst(B.x, B.y + 3, B.z) || bfObst(B.x, B.y + 6, B.z)))) B.y += stepY;   // never ease UP into foliage overhead (two probes — gappy pine crowns fooled one)
+        if (B.y < B.gRef + 7) B.y = Math.min(B.gRef + 7, B.y + 34 * dt);   // floors are APPROACHED at climb speed, never snapped
+      }
+      if (B.kind < 2 && B.y < gLoc + 6) B.y = Math.min(gLoc + 6, B.y + 34 * dt);   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline)
+      B.y = Math.max(yPrev5 - 30 * dt, Math.min(yPrev5 + 34 * dt, B.y));   // GLOBAL vertical budget: whatever the branches above did, the frame's total climb/descent stays at flutter speed — teleports impossible
+      if (B.kind < 2 && (bfObst(B.x, B.y, B.z) || bfRoofed(B.x, B.y, B.z))) {   // under a roof (cave/overhang) — steer OUT horizontally (eased, never climb into it); count toward a recycle. Worms/ducks don't care about roofs.
+        B.omT = (B.om >= 0 ? 5.0 : -5.0); B.trap = (B.trap || 0) + dt;
+      }
+      if (B.kind < 3 && bfObst(B.x, B.y, B.z)) continue;   // body-in-solid hide (skip emission) — LAND/AIR creatures only: a duck/lily bobbing into the water voxel layer is normal
+      const bobA = B.kind === 2 ? 0 : (B.kind === 4 ? 0.12 : (B.kind === 3 ? (isBaby ? 0.18 : 0.25) : (B.kind === 1 ? 1.1 : 2.2)));   // worms don't bob; water floats keep the cosmetic bob SMALL — the wave riding is the real motion, a deep bob dip re-sank the bottom rows
+      const bobF = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? 2.3 : 1.6) : (B.kind === 1 ? 2.6 : 6.8));
+      const px3 = B.x, pz3 = B.z, py3 = B.y + Math.sin(tb3 * bobF + wk * 1.9) * bobA;   // (worm grid-snapping was undone at user request — smooth continuous pose)
+      const HxR = Math.sin(B.th), HzR = Math.cos(B.th);   // RENDER yaw — for lilies this spins freely, independent of drift
+      const Xw = [HzR, 0, -HxR], Yw = [-HxR, 0, -HzR]; // level frame — Zw = up, right-handed (Yw×Zw = Xw); model −y (the head end) leads
+      const nfr = B.kind >= 3 ? 1 : (B.kind === 2 ? WORM_NFRAMES : (B.kind === 1 ? FFLY_NFRAMES : BFLY_NFRAMES));
+      const fi3 = Math.floor((tb3 + wk * 0.37) * 24) % nfr;          // 24 fps cycle, desynced per creature (duck/lily are single static models)
+      let glow = 0;
+      if (B.kind === 1) {                              // GLOW (fireflies only): random dark spell, then the yellow abdomen holds BRIGHT for a full 2 s
+        if (!B.glowT || now > B.glowT) { B.glow = !B.glow; B.glowT = now + (B.glow ? 2000 : 1500 + Math.random() * 3500); }
+        glow = B.glow ? 2.8 : 0;
+        if (glow > 0) ffLights.push([B.x - winOX, py3, B.z - winOZ, glow * fadeIn * fadeOut, dp2]);   // this one casts LIGHT — window coords for the tracer
+      } else if (B.kind === 3) {                       // DUCK EYE BLINK (user): the black eye voxel flashes green ~every 2.5-5 s for a beat; glow lane carries 0/1 to the shader
+        if (!B.blinkT || now > B.blinkT) { B.blink = !B.blink; B.blinkT = now + (B.blink ? 150 : 2200 + Math.random() * 2600); }
+        glow = B.blink ? 1 : 0;
+      }
+      const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
+      if (dropCursor > 63) continue;                   // SAFETY: drop slots run 9..63 (64 total) — never write past into pick2/fflies (would corrupt the left hand); extreme scenes just drop a few far creatures
+      const o4 = 68 + dropCursor * 16; dropCursor++;   // emit into the next COMPACT slot
+      UF[o4] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o4 + 3] = bScale;
+      UF[o4 + 4] = Xw[0] * right[0] + Xw[2] * right[2]; UF[o4 + 5] = Xw[0] * up[0] + Xw[2] * up[2]; UF[o4 + 6] = Xw[0] * fwd[0] + Xw[2] * fwd[2]; UF[o4 + 7] = (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? WORM_ITEM0 : (B.kind === 1 ? FFLY_ITEM0 : BFLY_COLS[B.col])))) + fi3;
+      UF[o4 + 8] = Yw[0] * right[0] + Yw[2] * right[2]; UF[o4 + 9] = Yw[0] * up[0] + Yw[2] * up[2]; UF[o4 + 10] = Yw[0] * fwd[0] + Yw[2] * fwd[2]; UF[o4 + 11] = glow;
+      UF[o4 + 12] = right[1]; UF[o4 + 13] = up[1]; UF[o4 + 14] = fwd[1]; UF[o4 + 15] = 0;
+    }
+    UF[1103] = dropCursor;                             // pick2Y.w = live slot count — the composite loop's bound (always ≥ 9 so drops/cardinal/sparks are covered)
+    ffLights.sort((a, b) => a[4] - b[4]);              // nearest glowing fireflies win the 8 point-light slots
+    for (let li = 0; li < 8; li++) { const o5 = 1108 + li * 4, L = ffLights[li];
+      UF[o5] = L ? L[0] : 0; UF[o5 + 1] = L ? L[1] : 0; UF[o5 + 2] = L ? L[2] : 0; UF[o5 + 3] = L ? L[3] : 0; }
     for (let si2 = 0; si2 < 4; si2++) {                // ── clash sparks → drop slots 5-8 ── 4 real 10 cm voxels on short ballistic arcs, fading out
       const o3 = 68 + (5 + si2) * 16, sp4 = sparks3d[si2];
       const tS = sp4 ? (now - sp4.born) / 1000 : 1e9;
@@ -3371,15 +4252,30 @@
       xStripPending = -1;
     }
     const gw = Math.ceil(RW / 8), gh = Math.ceil(RH / 8);
-    const run = (pipe, bg) => { const p = enc.beginComputePass(); p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(gw, gh); p.end(); };
+    let qi = 0;
+    const run = (pipe, bg) => {
+      const p = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: qi++, endOfPassWriteIndex: qi++ } } : {});
+      p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(gw, gh); p.end(); };
     run(pTrace, bgTrace);
     run(pTemporal, bgTemporal[par]);
     run(pSpatial, bgSpatial[par]);
     run(pComposite, bgComposite);
     run(pTaa, bgTaa[par]);
+    if (profQS) {                                      // resolve + read back pass timings (only while __vb.prof polling has it armed)
+      enc.resolveQuerySet(profQS, 0, 10, profRes, 0);
+      if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 80); profNew = true; }
+    }
     const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
     rp.setPipeline(pBlit); rp.setBindGroup(0, bgBlit[par]); rp.draw(3); rp.end();
     device.queue.submit([enc.finish()]);
+    if (profNew && !profBusy) {
+      profNew = false; profBusy = true;
+      profStg.mapAsync(GPUMapMode.READ).then(() => {
+        const q = new BigInt64Array(profStg.getMappedRange());
+        for (let i = 0; i < 5; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) profEma[i] = profEma[i] * 0.92 + ms * 0.08; }
+        profStg.unmap(); profBusy = false;
+      }).catch(() => { profBusy = false; });
+    }
 
     // ── save prev cam (world coords) ──
     prevCam.pos = cam; prevCam.right = right; prevCam.up = up; prevCam.fwd = fwd;
