@@ -1903,7 +1903,7 @@
       pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
       fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
       cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
-      misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth (0 = off, eased so it never pops on at the keypress); y/z/w spare
+      misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w spare
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -2123,6 +2123,11 @@
     const SNV : u32 = ${SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits
     const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
     fn flakeBlocked(cw : vec3<f32>) -> bool {                       // a falling flake may exist ONLY in truly open air:
+      // ── STORM EDGES ── snow ARRIVES from the sky and LEAVES from the sky. u.misc.y is the leading edge, sweeping
+      // down at the storm's onset so flakes enter from the top of the screen instead of the whole column switching on
+      // at once; u.misc.z is the trailing edge, sweeping down as it ends so the sky clears first and the last flakes
+      // finish their fall. Between storms the two sit wide open and this costs one compare.
+      if (cw.y < u.misc.y || cw.y > u.misc.z) { return true; }
       if (cw.y >= f32(WY - 2)) { return false; }                     // above the world — open sky
       if (cw.y <= 2.0) { return true; }
       let a = vec3<i32>(floor(cw - vec3<f32>(0.5)));                 // (1) its full 10 cm cube must not touch ANY solid — all 8 corners tested, so it
@@ -3120,19 +3125,13 @@
     if (Math.abs(P.x - (winOX + HALF)) > thr || Math.abs(P.z - (winOZ + HALF)) > thr) recenter(P.x, P.z);
     else resetHist = 1;
   }
-  const DEATH_RISE = 90;                               // vox/s the camera climbs away once you die — the drop-in played backwards
-  const SPAWN_DROP = 300;                              // how far above the landing spot a spawn starts (user: fall in from the top of the screen, don't just appear)
   function respawn() {
     P.x = SPWX + 0.5; P.z = SPWZ + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0;
     maybeRecenter();
     P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
-    // DROP IN: start high and let the normal fall physics bring us down, so the arrival is the same accelerating
-    // fall as any other (clamped under the world roof so we never spawn outside the voxel window)
-    P.y = Math.min(WY - 24, P.y + SPAWN_DROP);
-    P.onGround = false; P.fly = false; P.fallT = 0;
-    smoothEye = P.y + EYE;                             // no eye lerp from the old position — that would streak across the sky
-    resetHist = 1;
+    P.fallT = 0;
+    smoothEye = P.y + EYE;
   }
   let spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
   function rerollSpawn() {                              // H — jump to a fresh random patch of the (infinite, DETERMINISTIC) world, then bake the good one into the code
@@ -3558,6 +3557,9 @@
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
   let snowQI = [], snowQT = [], snowHead = 0;          // FIFO as parallel NUMBER arrays (cell idx / melt time) — object entries at 1.6M live voxels were ~10× the memory; ring-buffer head avoids O(n) shifts
+  let snowOffT0 = -1e9;                                // when the last storm ENDED — drives the trailing edge sweep
+  const SNOW_SWEEP = 45, SNOW_HEAD = 220;              // edge sweep speed (vox/s) and how far above the player an edge starts, i.e. just off the top of the screen
+  let snowVis = false;                                 // flakes are DRAWN while the storm runs AND while its tail is still falling
   let snowPrevOn = false, snowOnT0 = 0;                // storm edge tracking — melt timers are FROZEN while it snows and rebased by the storm's length when it ends
   let snowSprinkAcc = 0;                               // fractional carry for the uniform-area sprinkle — low fps or thin rings never quantize to zero
   let windAX = 0, windAZ = 0;                          // ── WIND ── integrated wind displacement (vox): direction wanders over minutes, strength GUSTS over seconds; snow flakes advect along it
@@ -3678,7 +3680,7 @@
     if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
     if (e.code === binds.scaleup) { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
     if (e.code === 'KeyC' && !ED.on) { cineMode = !cineMode; document.body.classList.toggle('noui', cineMode);   // C — CINEMATIC flythrough (auto-hides the HUD for a clean view); press again to exit + regain control
-      if (cineMode) { cine.yaw = P.yaw; cine.om = 0; cine.omT = 0; cine.tRe = 0; cine.bobT = 0; const g = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL); cine.alt = cine.altT = Math.max(42, Math.min(100, P.y - g)); cine.roll = 0; cine.vy = 0; cine.climb = 0; cine.baseY = P.y; cine.bnd = 0; cine.flapT = 0; cine.glide = false; cine.urgeUp = 0; P.fly = true; P.vy = 0; } }
+      if (cineMode) { cine.yaw = P.yaw; cine.om = 0; cine.omT = 0; cine.tRe = 0; cine.bobT = 0; const g = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL); cine.alt = cine.altT = Math.max(42, Math.min(100, P.y - g)); cine.roll = 0; cine.vy = 0; cine.climb = 0; cine.baseY = P.y; cine.bnd = 0; cine.fv = 0; cine.flapT = 0; cine.urgeUp = 0; P.fly = true; P.vy = 0; } }
     else if (e.code === 'KeyC' && ED.on) { document.body.classList.toggle('noui'); }   // in the editor, C still just toggles the HUD
     if (ED.on) {                                       // asset editor: , / . scrub frames, E move the frame, R rotate it, ← / → reorder
       if (e.code === 'Comma') edSelStep(-1);
@@ -4027,7 +4029,7 @@
     sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
     clash() { if (dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return true; } return false; },   // same guard as shift+click — headless knife-craft testing
     KNIFE_IT,
-    snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT }; },
+    snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); }, snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT }; },
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
     vig(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return cineBlurK * CINE_VIG; },   // cinematic vignette tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
@@ -4120,12 +4122,12 @@
   // glide trades height for speed, the flap trades speed for height. Navigation is a 3D gap search, because a bird
   // going through a wood picks the hole it can already see, and climbs over the canopy when there is no hole at all.
   const cine = { yaw: 0, om: 0, omT: 0, tRe: 0, bobT: 0, alt: 34, altT: 34, roll: 0, vy: 0, climb: 0,
-                 flapT: 0, wing: 0, glide: false, urgeUp: 0, bnd: 0, baseY: 0 };
+                 flapT: 0, wing: 0, fv: 0, urgeUp: 0, bnd: 0, baseY: 0 };
   const CINE_R = 7;                                    // camera "hull" half-extent (vox) — probes sample a BOX this size, so a thin trunk can't slip between point samples
   const CINE_LOOK = 104;                               // whisker probe range
   const CINE_WHISK = [0, 0.3, -0.3, 0.62, -0.62, 1.0, -1.0, 1.5, -1.5];   // candidate headings: straight first, then progressively harder breaks either way
   const CINE_PITCH = [0, 0.28, -0.28];                 // and each heading is probed level, climbing and diving — a bird takes the gap ABOVE a branch as readily as the one beside it
-  const WING_HZ = 5.2, BURST_N = 3, GLIDE_S = 0.62;    // wingbeats per second, beats per burst, glide length — a bounding-flight cycle of roughly 3 beats then a ~0.6 s coast
+  const FLAP_S = 0.95, FLAP_IMP = 15, FLAP_G = 26, FLAP_A = 5.5, FLAP_VMAX = 17;   // seconds between beats, upward kick, gravity between beats, bounce half-envelope, speed clamp
   const cineBlock = (x, y, z) => {                     // "can the camera be here" — SOLID **or CANOPY**. Foliage carries no player hitbox (solidTab zeroes it), which is why a naive probe flies straight through pine crowns
     const yi = Math.floor(y);
     if (yi < 0) return true;
@@ -4133,7 +4135,7 @@
     const v = W[gwrap(Math.floor(x), WX) + yi * WX + gwrap(Math.floor(z), WZ) * WX * WY];
     return !!v && (solidTab[v] === 1 || foliaTab[v] === 1);
   };
-  const CINE_V = CINE_R + 6.5;                         // VERTICAL probe half-extent — must cover the whole flap envelope, not just the hull: the bound moves the
+  const CINE_V = CINE_R + FLAP_A + 2.5;                // VERTICAL probe half-extent — DERIVED from the bounce envelope so the two can't drift apart: the flap moves the
                                                        // camera +-5 vox AFTER a path was judged clear, which put the down-stroke through foliage 48 frames in 26 s
   const cineClear = (yaw2, pit2, maxD) => {            // distance along (yaw2, pit2) before the hull would touch anything
     const cp = Math.cos(pit2), sx = Math.sin(yaw2) * cp, cz = Math.cos(yaw2) * cp, sy = Math.sin(pit2);
@@ -4164,13 +4166,18 @@
     cine.om += (cine.omT - cine.om) * (1 - Math.exp(-3.4 * dt));
     cine.om = Math.max(-0.85, Math.min(0.85, cine.om));
     cine.yaw += cine.om * dt;
-    // ── BOUNDING FLIGHT ── BURST_N wingbeats that climb, then a folded-wing glide that sinks.
+    // ── WINGBEAT ──
+    // ── FLAPPY-BIRD BOUNCE ── one soft upward IMPULSE per beat, gravity in between, so the camera arcs up and coasts
+    // back down instead of buzzing. The old model layered a 5.2 Hz ripple on a trapezoid, which read as vibration; a
+    // single smooth impulse at ~1 Hz gives the same "flap" reading with none of the chatter.
     cine.flapT += dt;
-    const beat = 1 / WING_HZ;
-    if (cine.glide) { if (cine.flapT > GLIDE_S) { cine.glide = false; cine.flapT = 0; } }
-    else if (cine.flapT > beat * BURST_N) { cine.glide = true; cine.flapT = 0; }
-    cine.wing = cine.glide ? 0 : Math.sin((cine.flapT / beat) * 6.283);   // -1..1 within each wingbeat, 0 while gliding
-    const stroke = cine.glide ? -1 : 1;                 // climb on the burst, sink on the glide — the undulation itself
+    if (cine.flapT >= FLAP_S) { cine.flapT -= FLAP_S; cine.fv += FLAP_IMP; }   // the beat
+    cine.fv -= FLAP_G * dt;                             // ...and the fall between beats
+    cine.fv = Math.max(-FLAP_VMAX, Math.min(FLAP_VMAX, cine.fv));
+    cine.bnd += cine.fv * dt;
+    cine.bnd = Math.max(-FLAP_A, Math.min(FLAP_A, cine.bnd));   // keep the bounce inside a fixed envelope, so the probe margin below always covers it
+    if (cine.bnd <= -FLAP_A && cine.fv < 0) cine.fv = 0;   // rest on the bottom of the arc rather than pressing into the clamp
+    cine.wing = cine.fv / FLAP_VMAX;                    // -1..1, used for the nose attitude
     cine.bobT += dt;
     const ground = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL);
     // a bird that cannot find a hole climbs out over the canopy; the urge eases so the pull-up is a smooth arc
@@ -4188,13 +4195,12 @@
     cine.vy = Math.max(-26, Math.min(26, cine.vy));
     cine.baseY += cine.vy * dt;
     if (cine.baseY < ground + 19) { cine.baseY = ground + 19; cine.vy = Math.max(cine.vy, 0); }   // hard floor — the spring may overshoot on a fast descent
-    cine.bnd += (stroke * 5.0 - cine.bnd) * (1 - Math.exp(-7 * dt));   // climb through the burst, sink through the glide — eased, so it reads as a trapezoid rather than a square step
-    P.y = cine.baseY + cine.bnd + cine.wing * 1.1;
+    P.y = cine.baseY + cine.bnd;                        // the bounce rides on the smooth flight path
     // GLIDE TRADES HEIGHT FOR SPEED, the flap trades it back: sinking accelerates, climbing bleeds off
-    const spd = (30 - cine.vy * 0.42) * (0.5 + 0.5 * Math.min(1, ahead / 44));
+    const spd = (30 - (cine.vy + cine.fv * 0.5) * 0.42) * (0.5 + 0.5 * Math.min(1, ahead / 44));   // diving (path or bounce) speeds up, climbing bleeds off
     P.x += Math.sin(cine.yaw) * spd * dt; P.z += Math.cos(cine.yaw) * spd * dt;
     P.yaw = cine.yaw + Math.sin(cine.bobT * 0.45) * 0.05;   // gentle cinematic yaw sway
-    const rollT = -cine.om * 0.62 + cine.wing * 0.035 + Math.sin(cine.bobT * 0.37) * 0.0125;   // BANK INTO THE TURN (right turn = om > 0 = rolls right), plus a small wing-rock on each beat
+    const rollT = -cine.om * 0.31 + Math.sin(cine.bobT * 0.37) * 0.0125;   // BANK INTO THE TURN (right turn = om > 0 = rolls right). Tilt halved AGAIN (user 2026-07-18); the per-beat wing-rock is gone with the old fast wingbeat.
     cine.roll += (rollT - cine.roll) * (1 - Math.exp(-3 * dt));
     P.roll = cine.roll;
     const tp = -0.04 + Math.max(-0.28, Math.min(0.28, cine.vy * 0.012));   // nose follows the climb/dive, as a bird's body does
@@ -4251,8 +4257,8 @@
         if (keys.has(binds.jump)) P.vy = Math.min(46, P.vy + 320 * dt);
       } else {                                       // ── FALLING GAINS MOMENTUM ── (user) a flat GRAVITY into a -160 terminal hit its cap in 0.8 s, so anything
         P.fallT = P.vy < 0 ? P.fallT + dt : 0;         // past a short drop fell at a CONSTANT speed and read as floating. Gravity now ramps with time spent
-        const gK = 1 + Math.min(1.5, P.fallT * 0.55);  // falling and the terminal is far higher, so a long drop keeps visibly winding up until it lands.
-        P.vy = Math.max(-460, P.vy - GRAVITY * gK * dt);   // the ramp starts at 1.0, so jump arcs are unchanged — only sustained falls diverge
+        const gK = 1 + Math.min(1.125, P.fallT * 0.41); // falling and the terminal is higher, so a long drop keeps visibly winding up until it lands.
+        P.vy = Math.max(-345, P.vy - GRAVITY * gK * dt);   // ramp starts at 1.0 so jump arcs are unchanged. Boost and terminal both CUT 25% (user 2026-07-18): was 1.5 / -460.
       }
       const impV = P.vy;                              // impact velocity before the collision zeroes it
       const hitY = moveAxis(1, P.vy * dt, hh);
@@ -4266,10 +4272,6 @@
           P.bounceN = 0;                              // landed on normal ground / hit a ceiling → reset the bounce streak
           P.vy = 0;
         }
-      }
-      if (dead) {                                    // ── AND THE REVERSE ON DEATH ── the camera lifts away off the top of the screen, mirroring the drop-in
-        P.vy = 0; P.fallT = 0;
-        P.y = Math.min(WY - 6, P.y + DEATH_RISE * dt);
       }
       if (!dead && !P.fly && (lavaAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z)) || lavaAt(Math.floor(P.x), Math.floor(P.y + 1), Math.floor(P.z)))) {
         dead = true; $('over').classList.remove('hidden');
@@ -4312,7 +4314,7 @@
     { const cells = [];
       if (snowOn !== snowPrevOn) { snowPrevOn = snowOn;   // storm edges: no time-melt DURING a storm (the blanket must not thin while flakes still fall)
         if (snowOn) snowOnT0 = now;
-        else for (let qi = snowHead; qi < snowQT.length; qi++) snowQT[qi] += now - snowOnT0;   // shift pending timers by the storm's length — thaw replays the landing stagger, first-fallen melts 95 s after the storm ends
+        else { snowOffT0 = now; for (let qi = snowHead; qi < snowQT.length; qi++) snowQT[qi] += now - snowOnT0; }
       }
       const scanTop = (wx, wz, buried) => {            // topmost landing surface at a column — passes through (and records) soft decor
         const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -4444,7 +4446,7 @@
     set3(16, [prevCam.pos[0] - winOX, prevCam.pos[1], prevCam.pos[2] - winOZ], prevCam.tanH);
     set3(20, prevCam.right, prevCam.aspect);
     const uw = waterAt(Math.floor(cam[0]), Math.floor(cam[1]), Math.floor(cam[2]));
-    set3(24, prevCam.up, (cycleSpeed > 4 && !cyclePause) ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowOn && !ED.on ? 16 : 0));
+    set3(24, prevCam.up, (cycleSpeed > 4 && !cyclePause) ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0));
     set3(32, sun, resetHist);
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
@@ -4551,6 +4553,14 @@
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
+    {                                                  // ── SNOW STORM EDGES ── both sweep DOWN from just off the top of the screen at SNOW_SWEEP
+      const topY = P.y + SNOW_HEAD;
+      const lead = snowOn ? topY - ((now - snowOnT0) / 1000) * SNOW_SWEEP : -1e9;   // onset: nothing below the edge yet
+      const trail = snowOn ? 1e9 : topY - ((now - snowOffT0) / 1000) * SNOW_SWEEP;  // end: nothing above the edge any more
+      snowVis = snowOn || trail > -40;                 // keep drawing until the tail has swept past the ground
+      UF[1269] = Math.max(-1e9, lead);
+      UF[1270] = trail;
+    }
     UF[1268] = cineBlurK * CINE_VIG;                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
     if (!ED.on) autoPickup();                          // AUTO-PICKUP (user): a free hand slot vacuums up nearby floating items — no right-click, no aiming
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
