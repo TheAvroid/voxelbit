@@ -1038,7 +1038,7 @@
     return { bx, bz, size, rot, mi };
   }
   function stampBoulder(b, x0, x1, z0, z1) {
-    if (b.size === 0) { stampModel(b.up ? ROCKVU : ROCKV, b.rot, b.bx, H(b.bx, b.bz), b.bz, x0, x1, z0, z1, 3); return; }   // small stone: walk-through decor ids, pickable, sits on the seafloor too; half stand on edge
+    if (b.size === 0) { stampModel(b.up ? ROCKVU : ROCKV, b.rot, b.bx, H(b.bx, b.bz) - 1, b.bz, x0, x1, z0, z1, 3); return; }   // small stone: SUNK 1 vox into the ground (user — its base row lands in solid, mode-3 skips it, so it never floats), walk-through decor, pickable, sits on the seafloor too; half stand on edge
     const m = ROCK26[b.mi];
     const sink = 1 + ((m.sz * 0.12) | 0) + ((ihash(b.bx * 3 + 1, b.bz * 5 + 2) * 3) | 0);   // bigger rocks sit deeper — no floating edges on bumpy ground
     const gy = groundMin(b.bx, b.bz, Math.min(10, Math.max(m.sx, m.sy) >> 1)) - sink;
@@ -2883,7 +2883,7 @@
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
-  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0 };   // giz/drag*: [e] move-gizmo state; blink: eye-blink phase; spin: +90° per completed rotation cycle
+  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0, rgiz: false, dragRing: -1, dragRAcc: 0, rgizBoxes: [] };   // giz/drag*: [e] move-gizmo; rgiz/dragRing*: [r] ROTATE-gizmo (2 voxel rings, yaw + pitch); blink: eye-blink phase; spin: +90° per completed rotation cycle
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
@@ -3308,6 +3308,15 @@
             if (ok && tmin < bestT) { bestT = tmin; bestA = g.axis; } }
           if (bestA >= 0) { ED.dragAxis = bestA; ED.dragAcc = 0; return; }   // dragging this axis now — mousemove nudges the frame
         }
+        if (ED.rgiz && ED.paused && ED.rgizBoxes.length) {   // grab a rotation RING — the nearest ring-slab the crosshair passes through starts a rotate-drag
+          let bestK = null, bestT = 1e9;
+          for (const g of ED.rgizBoxes) { let tmin = 0.1, tmax = 300, ok = true;
+            for (let a = 0; a < 3; a++) { const iv = 1 / (Math.abs(dd[a]) < 1e-9 ? 1e-9 : dd[a]);
+              let ta = (g.min[a] - eo[a]) * iv, tb = (g.max[a] - eo[a]) * iv; if (ta > tb) { const s = ta; ta = tb; tb = s; }
+              tmin = Math.max(tmin, ta); tmax = Math.min(tmax, tb); if (tmin > tmax) { ok = false; break; } }
+            if (ok && tmin < bestT) { bestT = tmin; bestK = g.kind; } }
+          if (bestK) { ED.dragRing = bestK === 'yaw' ? 0 : 1; ED.dragRAcc = 0; return; }   // dragging this ring — mousemove rotates in 90° steps, both directions
+        }
         const f = ED.frames[((ED.sel % n) + n) % n], ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;
         const bmin = [f.bx + ox, ED.y + 1 + oy, f.bz + oz], bmax = [f.bx + ox + f.sx, ED.y + 1 + oy + f.sz, f.bz + oz + f.sy];
         let tmin = 0.1, tmax = 300;
@@ -3325,7 +3334,8 @@
     }
   });
   document.addEventListener('mouseup', (e) => { if (e.button === 0) { mouse0 = false;
-    if (ED.dragAxis >= 0) { ED.dragAxis = -1; edSaveOffsets(); edHudUpd(); } } });   // let go of a gizmo arrow → AUTOSAVE the new offset
+    if (ED.dragAxis >= 0) { ED.dragAxis = -1; edSaveOffsets(); edHudUpd(); }   // let go of a gizmo arrow → AUTOSAVE the new offset
+    if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
   // ── keybinds ── rebindable, persisted to localStorage
   const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', pausetime: 'KeyL', godrays: 'KeyG', vsync: 'KeyV', respawn: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
@@ -3441,6 +3451,13 @@
       while (ED.dragAcc <= -1) { edOffset(A, -1); ED.dragAcc += 1; }
       return;                                           // suppress camera look while dragging
     }
+    if (ED.on && ED.dragRing >= 0) {                    // dragging a rotation RING: yaw = drag left/right, pitch = drag up/down → 90° steps, direction from the drag sign
+      const RSTEP = 55;
+      ED.dragRAcc += ED.dragRing === 0 ? e.movementX : -e.movementY;
+      while (ED.dragRAcc >= RSTEP) { edApplyRot(ED.dragRing === 0 ? 'yaw' : 'pitch', 1); ED.dragRAcc -= RSTEP; }
+      while (ED.dragRAcc <= -RSTEP) { edApplyRot(ED.dragRing === 0 ? 'yaw' : 'pitch', -1); ED.dragRAcc += RSTEP; }
+      return;                                           // suppress camera look while rotating
+    }
     P.yaw += e.movementX * 0.0022;
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - e.movementY * 0.0022));
   });
@@ -3476,8 +3493,8 @@
       if (e.code === 'Period') edSelStep(1);
       if (e.code === 'ArrowLeft') edMoveStep(-1);
       if (e.code === 'ArrowRight') edMoveStep(1);
-      if (e.code === 'KeyE') { ED.paused = true; ED.giz = !ED.giz; edEnsureGizCols(); edLayout(); }   // toggle the XYZ move-gizmo on the selected frame
-      if (e.code === 'KeyR') edRotate();
+      if (e.code === 'KeyE') { ED.paused = true; ED.giz = !ED.giz; if (ED.giz) ED.rgiz = false; edEnsureGizCols(); edLayout(); }   // toggle the XYZ move-gizmo on the selected frame
+      if (e.code === 'KeyR') { ED.paused = true; ED.rgiz = !ED.rgiz; if (ED.rgiz) ED.giz = false; edEnsureRgizCols(); edLayout(); }   // toggle the ROTATE-gizmo (2 rings: drag the flat ring to spin, the upright ring to tumble — both directions)
     }
     if (e.code === binds.jump || e.code === binds.crouch) e.preventDefault();   // Alt (crouch) — stop the browser stealing it for the menu bar
   });
@@ -3570,7 +3587,7 @@
     return ii; };
   const edPlaneId = (x, z) => ((x - ED.x0) % 10 === 0 || (z - ED.z0) % 10 === 0) ? ED_GREY : ED_WHITE;   // 1 m squares = every 10th voxel is a grey gridline
   const edHudUpd = () => { edHudEl.textContent = ED.frames.length
-    ? 'frame ' + ED.sel + '/' + (ED.frames.length - 1) + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? ('  ⏸ selected  [, .] scrub   [e] ' + (ED.giz ? 'move: drag an arrow (autosaves)' : 'move gizmo') + '   [r] rotate   [← →] reorder') : '  ▶ playing — left-click the model to select')
+    ? 'frame ' + ED.sel + '/' + (ED.frames.length - 1) + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? ('  ⏸ selected  [, .] scrub   [e] ' + (ED.giz ? 'move: drag an arrow (autosaves)' : 'move gizmo') + '   [r] ' + (ED.rgiz ? 'rotate: drag amber ring = spin, violet ring = tumble' : 'rotate gizmo') + '   [← →] reorder') : '  ▶ playing — left-click the model to select')
     : 'asset editor — press ESC, then import a .vox to begin'; };
   let gizCol = null;                                   // [e] MOVE-GIZMO (Task 1): 3 stubby arrows (X red / Y green-up / Z blue) you aim at + drag to nudge the frame into alignment
   const edEnsureGizCols = () => { if (!gizCol) { gizCol = [edCol(240, 60, 55), edCol(70, 210, 70), edCol(80, 130, 255)]; palSync(); } };
@@ -3595,6 +3612,24 @@
                                 max: axis === 0 ? [hi, cy + t, cz + t] : axis === 1 ? [cx + t, hi, cz + t] : [cx + t, cy + t, hi] });
     };
     arrow(0); arrow(1); arrow(2);
+  };
+  let rgizCol = null;
+  const edEnsureRgizCols = () => { if (!rgizCol) { rgizCol = [edCol(255, 190, 40), edCol(180, 90, 255)]; palSync(); } };   // yaw ring = amber, pitch ring = violet
+  const edRotGizmos = (f, bx2, bz2, cells) => {         // ROTATE gizmo: 2 circular voxel rings around the model — a FLAT ring (yaw / horizontal spin) + an UPRIGHT ring (pitch / vertical tumble)
+    edEnsureRgizCols(); ED.rgizBoxes = [];
+    const oy = f.oy || 0;
+    const cx = bx2 + (f.sx >> 1), cy = ED.y + 1 + oy + (f.sz >> 1), cz = bz2 + (f.sy >> 1);   // model centre (world voxels)
+    const Rr = (Math.max(f.sx, f.sy, f.sz) >> 1) + 4;   // ring radius — just outside the model
+    const put = (x, y, z, id) => { if (x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd || y <= ED.y || y >= WY - 1) return; ED.fcells.push(edSet(x, y, z, id, cells)); };
+    const seen = new Set();
+    const ringPt = (x, y, z, id) => { const k = x + ',' + y + ',' + z; if (seen.has(k)) return; seen.add(k); put(x, y, z, id); };
+    const STEPS = 96;
+    for (let i = 0; i < STEPS; i++) { const a = i / STEPS * 6.28318, c = Math.round(Math.cos(a) * Rr), s = Math.round(Math.sin(a) * Rr);
+      ringPt(cx + c, cy, cz + s, rgizCol[0]);           // YAW ring — flat (world XZ) around the waist → drag to spin about vertical
+      ringPt(cx, cy + c, cz + s, rgizCol[1]); }         // PITCH ring — upright (world YZ, ⟂ X) → drag to tumble about the horizontal X axis
+    const t = 3;
+    ED.rgizBoxes.push({ kind: 'yaw',   min: [cx - Rr - 1, cy - t, cz - Rr - 1], max: [cx + Rr + 1, cy + t, cz + Rr + 1] });   // flat pick-slab, thin in Y
+    ED.rgizBoxes.push({ kind: 'pitch', min: [cx - t, cy - Rr - 1, cz - Rr - 1], max: [cx + t, cy + Rr + 1, cz + Rr + 1] });   // upright pick-slab, thin in X
   };
   const edOffset = (axis, d) => { const n = ED.frames.length; if (!n) return; const f = ED.frames[((ED.sel % n) + n) % n];   // nudge the selected frame one voxel along an axis + restamp
     f.ox = (f.ox || 0) + (axis === 0 ? d : 0); f.oy = (f.oy || 0) + (axis === 1 ? d : 0); f.oz = (f.oz || 0) + (axis === 2 ? d : 0); edLayout(); };
@@ -3637,7 +3672,8 @@
           ED.ring.push({ ii, x, z });
         }
         if (ED.giz) edGizmos(f, bx2, bz2, cells);      // [e] move-gizmo: 3 axis arrows on the selected frame
-      } else { ED.gizBoxes = []; }
+        if (ED.rgiz) edRotGizmos(f, bx2, bz2, cells);  // [r] rotate-gizmo: 2 circular rings (yaw + pitch)
+      } else { ED.gizBoxes = []; ED.rgizBoxes = []; }
     }
     const lg = ensureLilypadGig();                     // COMPANION: gigantic lilypad, flat on the stage floor, centre 30 vox (3 m) in +x from the lotus centre — display only, not part of the editable filmstrip
     if (lg) {
@@ -3655,15 +3691,24 @@
   const edMoveStep = (d, wrap) => { const n = ED.frames.length; if (n < 2) return; ED.paused = true; const s = ((ED.sel % n) + n) % n; let j = s + d;
     if (wrap) j = ((j % n) + n) % n; else if (j < 0 || j >= n) return;
     const t = ED.frames[s]; ED.frames[s] = ED.frames[j]; ED.frames[j] = t; ED.sel = j; edLayout(); };
-  const edRotate = () => {                             // ROTATE the selected frame 90° about the vertical axis (persists to export: rotates raw XYZI + display vox + swaps width/depth)
+  const edApplyRot = (kind, dir) => {                  // ROTATE the selected frame 90° — kind 'yaw' (about vertical, horizontal spin) or 'pitch' (about the width/X axis, vertical tumble); dir ±1. Persists to raw XYZI + display vox + dims.
     const n = ED.frames.length; if (!n) return; ED.paused = true;
-    const f = ED.frames[((ED.sel % n) + n) % n], osx = f.sx;
-    f.vox = f.vox.map((p) => { const x = p & 255, y = (p >> 8) & 255; return (y) | ((osx - 1 - x) << 8) | (p & 0xffff0000); });   // (x,y)→(y, sx-1-x); z + color unchanged
-    if (f.raw) { const r = new Uint8Array(f.raw.length);
-      for (let i = 0; i < f.raw.length; i += 4) { r[i] = f.raw[i + 1]; r[i + 1] = osx - 1 - f.raw[i]; r[i + 2] = f.raw[i + 2]; r[i + 3] = f.raw[i + 3]; }
-      f.raw = r; }
-    const t = f.sx; f.sx = f.sy; f.sy = t;             // width ↔ depth
+    const f = ED.frames[((ED.sel % n) + n) % n], osx = f.sx, osy = f.sy, osz = f.sz;
+    if (kind === 'yaw') {                              // rotate the (x,y) plane, keep z(height) + color
+      f.vox = dir > 0 ? f.vox.map((p) => (((p >> 8) & 255)) | ((osx - 1 - (p & 255)) << 8) | (p & 0xffff0000))    // (x,y)→(y, sx-1-x)
+                      : f.vox.map((p) => ((osy - 1 - ((p >> 8) & 255))) | ((p & 255) << 8) | (p & 0xffff0000));   // (x,y)→(sy-1-y, x)
+      if (f.raw) { const r = new Uint8Array(f.raw.length);
+        for (let i = 0; i < f.raw.length; i += 4) { const x = f.raw[i], y = f.raw[i + 1]; r[i] = dir > 0 ? y : osy - 1 - y; r[i + 1] = dir > 0 ? osx - 1 - x : x; r[i + 2] = f.raw[i + 2]; r[i + 3] = f.raw[i + 3]; } f.raw = r; }
+      const t = f.sx; f.sx = f.sy; f.sy = t;           // width ↔ depth
+    } else {                                           // 'pitch' — rotate the (y,z) plane about X, keep x(width) + color
+      f.vox = dir > 0 ? f.vox.map((p) => (p & 0xff0000ff) | ((osz - 1 - ((p >> 16) & 255)) << 8) | (((p >> 8) & 255) << 16))    // (y,z)→(sz-1-z, y)
+                      : f.vox.map((p) => (p & 0xff0000ff) | (((p >> 16) & 255) << 8) | ((osy - 1 - ((p >> 8) & 255)) << 16));   // (y,z)→(z, sy-1-y)
+      if (f.raw) { const r = new Uint8Array(f.raw.length);
+        for (let i = 0; i < f.raw.length; i += 4) { const y = f.raw[i + 1], z = f.raw[i + 2]; r[i] = f.raw[i]; r[i + 1] = dir > 0 ? osz - 1 - z : z; r[i + 2] = dir > 0 ? y : osy - 1 - y; r[i + 3] = f.raw[i + 3]; } f.raw = r; }
+      const t = f.sy; f.sy = f.sz; f.sz = t;           // depth ↔ height
+    }
     edLayout(); };
+  const edRotate = () => edApplyRot('yaw', 1);         // legacy tap: one 90° yaw step
   const edColCache = new Map();                        // runtime color → palette id; nearest-match once the 256-entry palette is full
   const edCol = (r, g, b) => { const key = (r << 16) | (g << 8) | b;
     let cid = edColCache.get(key);
@@ -3811,7 +3856,9 @@
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
-    edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
+    edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; if (ED.giz) ED.rgiz = false; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
+    edRgiz(v) { ED.paused = true; ED.rgiz = v === undefined ? !ED.rgiz : !!v; if (ED.rgiz) ED.giz = false; edEnsureRgizCols(); edLayout(); return { rgiz: ED.rgiz, rings: ED.rgizBoxes.map((g) => g.kind) }; },   // rotate-gizmo test tap
+    edRot(kind, dir) { edApplyRot(kind, dir); const n = ED.frames.length, f = n ? ED.frames[((ED.sel % n) + n) % n] : null; return f ? { sx: f.sx, sy: f.sy, sz: f.sz, nvox: f.vox.length } : null; },   // rotate + report dims (test)
     edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
@@ -4508,7 +4555,15 @@
         const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
           return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObstW(ax, gA + 2, az) && !bfObstW(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance (bfObstW passes small ground clutter)
         if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }
-        if (!wormOK(B.th, 5) || !wormOK(B.th, 2.5)) {  // unclimbable ahead (rock face / shoreline / cliff) — commit to a firm turn toward the open side
+        let wrx = 0, wrz = 0;                           // SPREAD OUT — steer away from any nearby worm so they never bunch up (user); placement is already ≥60 apart, this stops runtime clumping
+        for (let j = 32; j < 64; j++) { const O = wbf[j]; if (O === B || !O.init || (O.kind | 0) !== 2) continue;
+          const dxw = B.x - O.x, dzw = B.z - O.z, d2w = dxw * dxw + dzw * dzw;
+          if (d2w < 26 * 26 && d2w > 0.01) { const w = 26 - Math.sqrt(d2w); wrx += dxw * w; wrz += dzw * w; } }
+        if (wrx * wrx + wrz * wrz > 1) {                // a worm is within ~2.6 m — bias the heading toward the away direction
+          let dthw = Math.atan2(wrx, wrz) - B.th; dthw = Math.atan2(Math.sin(dthw), Math.cos(dthw));
+          B.omT = Math.max(-2.6, Math.min(2.6, dthw * 2.4));
+        }
+        if (!wormOK(B.th, 5) || !wormOK(B.th, 2.5)) {  // unclimbable ahead (rock face / shoreline / cliff) — commit to a firm turn toward the open side (obstacle avoidance wins over the spread bias)
           const pF = wormOK(B.th + 1.1, 5), nF = wormOK(B.th - 1.1, 5);
           B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : (B.om >= 0 ? 2.6 : -2.6));
         }
