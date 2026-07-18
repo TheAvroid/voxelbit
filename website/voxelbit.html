@@ -4728,7 +4728,7 @@
     // ── PERCHED CARDINALS ── the rotate-frame cardinal sits on a pine crown (feet on the green needles) and plays its spin animation. Uses the disabled lily slots (40-54).
     const foliageSet = new Uint8Array(256); for (const f of foliageIds) foliageSet[f] = 1;   // green canopy palette ids → the perch surface
     const isAir = (x, y, z) => !W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
-    const pineEdgePerch = (tx, tz) => {                // green voxels on the OUTER EDGE of the crown (air above + air to a side, ≥3 from the trunk), BELOW the crown tip → perch on the branch tips, NOT the very top (user)
+    const pineEdgePerch = (tx, tz, bi) => {                // green voxels on the OUTER EDGE of the crown (air above + air to a side, ≥3 from the trunk), BELOW the crown tip → perch on the branch tips, NOT the very top (user)
       const cands = []; let crownTop = -1;
       for (let dx = -9; dx <= 9; dx++) for (let dz = -9; dz <= 9; dz++) {
         if (Math.abs(dx) + Math.abs(dz) < 3) continue;   // skip the trunk core
@@ -4741,7 +4741,12 @@
       }
       const low = cands.filter((c) => c[1] <= crownTop - 4);   // keep clear of the narrow crown TIP → the wider side branches
       const pool = low.length ? low : cands;
-      return pool.length ? pool[(Math.random() * pool.length) | 0] : null;
+      if (!pool.length) return null;
+      // PROCEDURAL: the candidate list is already in deterministic scan order over deterministic world voxels, so
+      // hashing the tree + bird index picks the SAME needle every time. Birds are now a property of the forest, not
+      // of when you happened to walk past. The stride keeps the birds on one pine off each other's perch.
+      const k0 = (ihash(tx * 7 + 3, tz * 11 + 5) * pool.length) | 0;
+      return pool[(k0 + bi * Math.max(1, (pool.length / 3) | 0)) % pool.length];
     };
     // ── PERCHED BIRD PLACEMENT ── This used to throw 28 random darts at the disc and keep the first that hit a pine.
     // Random darts give a random DENSITY: some stretches of forest end up thick with birds and others bare, which is
@@ -4750,44 +4755,37 @@
     // ones are removed, and a placement draws UNIFORMLY from what is left — so bird density is even everywhere the
     // pines are, by construction rather than by luck.
     let cardCandF = -1;
+    const birdsOnPine = (tx, tz) => {                   // 0-3, a deterministic property of the tree: ~0.83 birds per pine
+      const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);
+      return h < 0.42 ? 0 : (h < 0.80 ? 1 : (h < 0.95 ? 2 : 3));
+    };
     const CARD_PER_TREE = 3;                           // several birds to a pine, but not a roost — unlimited clumped them and the spread measured worse
+    const CARD_KEEP = 340;                             // perched-bird recycle radius — see rdK below
     const cardCand = [];
     const buildCardCand = () => {
       cardCand.length = 0;
-      const R = Math.ceil(LIFE_OUT / TCELL);
+      const owned = new Set();                         // (tree, index) pairs a slot already holds
+      for (let j = 64; j < 184; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) owned.add(O.tx + ',' + O.tz + ',' + O.bi); }
+      const R = Math.ceil(CARD_KEEP / TCELL);
       const c0x = Math.floor(P.x / TCELL), c0z = Math.floor(P.z / TCELL);
-      const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
         const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
         const ddx = tr.tx - P.x, ddz = tr.tz - P.z, d2 = ddx * ddx + ddz * ddz;
-        if (d2 > LIFE_OUT * LIFE_OUT) continue;
-        // a bird must not MATERIALISE in view: near pines are only eligible if they are behind the player. Walking
-        // forward, a pine ahead is stocked while it is still far off and is simply there by the time you reach it.
-        const dl = Math.sqrt(d2) || 1;
-        if (d2 < LIFE_IN * LIFE_IN && (ddx / dl * fx + ddz / dl * fz) > -0.15) continue;
-        cardCand.push(tr);
+        if (d2 > CARD_KEEP * CARD_KEEP) continue;
+        const n = birdsOnPine(tr.tx, tr.tz);
+        for (let i = 0; i < n; i++) if (!owned.has(tr.tx + ',' + tr.tz + ',' + i)) cardCand.push({ tr, bi: i, d2 });
       }
     };
-    // ONE BIRD PER PINE was the real cap on density (user): with pines one-per-45-vox-cell and many cells empty, the
-    // reachable count was a fraction of the pool, so slots went unplaced and the forest read as bare. A pine can now
-    // hold ANY number of birds — every outer-edge needle is a perch — and the only exclusion is the exact voxel another
-    // bird already occupies.
-    const findPineCrown = (selfWk) => {                // a perch, drawn uniformly from every eligible pine in range
+    const findPineCrown = (selfWk) => {                // the NEAREST procedural bird that no slot holds yet
       if (cardCandF !== frame) { cardCandF = frame; buildCardCand(); }
       for (let t = 0; t < 12 && cardCand.length; t++) {
-        const k = (Math.random() * cardCand.length) | 0;
-        const tr = cardCand[k];
-        const cr = pineEdgePerch(tr.tx, tr.tz); if (!cr) continue;   // the pine stays in the pool — another bird may perch on a different needle of the same tree
-        let onTree = 0, taken = false;
-        for (let j = 64; j < 184; j++) {
-          const O = wbf[j];
-          if (j === selfWk || !O || !O.init || (O.kind | 0) !== 5) continue;
-          if (O.tx === tr.tx && O.tz === tr.tz) onTree++;
-          if (Math.abs(O.x - (cr[0] + 0.5)) < 1.5 && Math.abs(O.z - (cr[2] + 0.5)) < 1.5 && Math.abs((O.perchFeet || 0) - (cr[1] + 1)) < 2) { taken = true; break; }
-        }
-        if (taken || onTree >= CARD_PER_TREE) continue;   // same needle, or this pine is already full
-        return { tx: tr.tx, tz: tr.tz, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };   // x/z centred on the branch-tip needle
+        let k = 0;                                     // nearest first, so the pool is always spent on the forest around you.
+        for (let q = 1; q < cardCand.length; q++) if (cardCand[q].d2 < cardCand[k].d2) k = q;
+        const c = cardCand[k];
+        cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();
+        const cr = pineEdgePerch(c.tr.tx, c.tr.tz, c.bi); if (!cr) continue;
+        return { tx: c.tr.tx, tz: c.tr.tz, bi: c.bi, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };
       }
       return null;
     };
@@ -4850,7 +4848,10 @@
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
-      const rdK = LIFE_KEEP;                           // ONE live/recycle radius for every kind (user: 'make every life form obey the spawning mechanics of the cardinal/worm')
+      // Perched birds recycle at CARD_KEEP, just past where the 120-slot pool runs out at this density (~305 vox).
+      // Because the frontier sits far beyond anything you can pick out, a bird activating there is invisible — which
+      // is why this no longer needs the "only spawn behind the player" rule the random placement depended on.
+      const rdK = wantK === 5 ? CARD_KEEP : LIFE_KEEP;
       const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
       const far = dp2 > rdK * rdK;
       if (!B.init || far || (B.trap > 12 && (B.kind < 3 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; but a duck/lily wedged ON real water NEVER teleports (the unstick frees it), only if it's off-water
@@ -4862,7 +4863,7 @@
         let placed = false;
         if (wantK === 5) {                             // PERCHED CARDINAL: find a nearby pine crown to sit on (its own search — not the generic open-spot one)
           const pc = findPineCrown(wk);
-          if (pc) { B.tx = pc.tx; B.tz = pc.tz; B.x = pc.x; B.z = pc.z; B.perchFeet = pc.y + 1; placed = true; }   // feet rest ON TOP of the crown needle
+          if (pc) { B.tx = pc.tx; B.tz = pc.tz; B.bi = pc.bi; B.x = pc.x; B.z = pc.z; B.perchFeet = pc.y + 1; placed = true; }   // feet rest ON TOP of the crown needle
         }
         if (isBaby) {                                  // ducklings hatch right behind their mother, in line order
           let hx6 = mom5.x - Math.sin(mom5.th) * (4 + sib * 3.5) + (Math.random() - 0.5) * 2;
@@ -4922,7 +4923,7 @@
           // of trees flipped so it never reads as a literal grid. Deterministic per tree, so the same pine is always
           // the same colour and the mix cannot drift or clump as birds recycle.
           B.blue = BLUEBIRD_ROTATE.length > 0 &&
-            ((((Math.floor(B.tx / 40) + Math.floor(B.tz / 40)) & 1) === 0) !== (ihash(B.tx * 5 + 3, B.tz * 9 + 7) < 0.3));
+            ((((Math.floor(B.tx / 40) + Math.floor(B.tz / 40)) & 1) === 0) !== (ihash(B.tx * 5 + 3 + B.bi * 97, B.tz * 9 + 7 + B.bi * 31) < 0.3));
         }
       }
       const fadeIn = Math.min(1, (now - B.born) / 700);   // grow in over 0.7 s so a recycled creature materialises smoothly instead of popping into view
