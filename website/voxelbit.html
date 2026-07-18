@@ -1732,9 +1732,10 @@
       return f32(h ^ (h >> 16u)) / 4294967296.0;
     }
     fn isMoon() -> bool { return (u32(u.fx) & 8u) != 0u; }          // at night u.sunDir carries the MOON direction
-    fn dayScale() -> f32 {                                           // global light level over the day/night cycle
-      if (isMoon()) { return 0.0135; }                               // night: 0.03 → 0.024 → 0.018 → 0.0135 (three user darkening passes, 2026-07-17)
-      return 0.025 + 0.975 * smoothstep(-0.10, 0.28, u.sunDir.y);
+    fn dayScale() -> f32 {                                           // global light level — SMOOTH through the sun↔moon swap (user: no abrupt jump at dusk 18:13 / dawn 5:46)
+      let sy = select(u.sunDir.y, -u.sunDir.y, isMoon());            // TRUE sun elevation: in moon mode u.sunDir is the moon (opposite point), so −u.sunDir.y is the real sun — continuous across the swap
+      let dayVal = 0.025 + 0.975 * smoothstep(-0.10, 0.28, sy);      // daytime curve
+      return mix(0.0135, dayVal, smoothstep(-0.25, -0.05, sy));      // ease from the moon floor (0.0135) up to the day curve across twilight — no step where moonMode flips
     }
     fn sunTint() -> vec3<f32> {                                      // sun goes amber at the horizon; the moon is cool silver-blue
       if (isMoon()) { return vec3<f32>(0.40, 0.50, 0.78) * 0.198 * smoothstep(0.0, 0.15, u.sunDir.y); }   // moonlight follows the darker nights: 0.44 → 0.352 → 0.264 → 0.198
@@ -1748,8 +1749,10 @@
       var c = mix(HORIZON, ZENITH, pow(max(y, 0.0), 0.38));        // fast falloff — blue takes over just above the horizon
       c = mix(c, HORIZON * 0.72, smoothstep(0.0, -0.28, y));
       c *= dayScale();
-      let sethue = smoothstep(0.30, 0.04, abs(u.sunDir.y)) * smoothstep(-0.22, 0.02, u.sunDir.y) * select(1.0, 0.0, isMoon());
-      let sdh = normalize(vec3<f32>(u.sunDir.x, 1e-4, u.sunDir.z));
+      let sy = select(u.sunDir.y, -u.sunDir.y, isMoon());                       // TRUE sun elevation + direction (moon = opposite point) — the sunset band stays in the WEST and fades smoothly instead of vanishing when moonMode flips
+      let sdir = select(u.sunDir, -u.sunDir, isMoon());
+      let sethue = smoothstep(0.30, 0.04, abs(sy)) * smoothstep(-0.22, 0.02, sy);
+      let sdh = normalize(vec3<f32>(sdir.x, 1e-4, sdir.z));
       c += vec3<f32>(0.62, 0.24, 0.08) * sethue * pow(max(dot(rd, sdh), 0.0), 3.0) * clamp(1.0 - abs(rd.y) * 2.2, 0.0, 1.0);   // sunrise/sunset band
       return c;
     }
@@ -1774,7 +1777,7 @@
         c += SUN_COL * 6.0 * smoothstep(0.999939, 0.999962, s) * up;  // hard-edged disc, halved
         c += SUN_COL * 0.5 * pow(max(s, 0.0), 2600.0) * up;           // GLARE — a tight corona that actually hugs the (now smaller) disc
       }
-      let night = select(1.0 - smoothstep(-0.14, 0.0, u.sunDir.y), 1.0, isMoon());
+      let night = 1.0 - smoothstep(-0.16, 0.02, select(u.sunDir.y, -u.sunDir.y, isMoon()));   // stars fade in on the TRUE sun elevation — continuous across the moon swap (no pop)
       if (night > 0.02 && rd.y > 0.02) {                             // stars
         let cc = vec3<i32>(rd * 480.0);
         let hh = ih3(cc.x, cc.y, cc.z);
@@ -3129,6 +3132,7 @@
   const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', pausetime: 'pause time', godrays: 'god rays', vsync: 'v-sync', respawn: 'respawn', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
+  if (binds.crouch === 'KeyC') { binds.crouch = 'AltLeft'; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE the old default: crouch moved off C (C now hides UI) → left Alt, even for players with a saved keybind
   const prettyKey = (c) => c.replace(/^Key|^Digit/, '').replace('BracketLeft', '[').replace('BracketRight', ']')
     .replace('ShiftLeft', 'L-SHIFT').replace('ShiftRight', 'R-SHIFT').replace('ControlLeft', 'L-CTRL').replace('ControlRight', 'R-CTRL')
     .replace('AltLeft', 'L-ALT').replace('AltRight', 'R-ALT')
@@ -3365,9 +3369,16 @@
     const n = ED.frames.length;
     if (n) {
       const f = ED.frames[((ED.sel % n) + n) % n];
-      const bx = ED.x0 + ((ED.pw - f.sx) >> 1), bz = ED.z0 + ((ED.pd - f.sy) >> 1);   // one frame, centred on the stage
+      const ref = ED.frames[0], gap = 8, totalW = ref.sx + gap + f.sx;   // the ANIMATED frame + a STATIC reference (frame 0) beside it → compare their lighting (user); the pair is centred on the stage
+      const sx0 = ED.x0 + ((ED.pw - totalW) >> 1);
+      const rbx = sx0, rbz = ED.z0 + ((ED.pd - ref.sy) >> 1);            // static reference on the LEFT
+      const bx = sx0 + ref.sx + gap, bz = ED.z0 + ((ED.pd - f.sy) >> 1); // animated frame on the RIGHT (this is the one you select/scrub)
       f.bx = bx; f.bz = bz;
-      for (const p of f.vox) {
+      for (const p of ref.vox) {                                        // 1) static reference (frame 0), never animates
+        const y = ED.y + 1 + ((p >> 16) & 255); if (y >= WY - 1) continue;
+        ED.fcells.push(edSet(rbx + (p & 255), y, rbz + ((p >> 8) & 255), p >>> 24, cells));
+      }
+      for (const p of f.vox) {                                          // 2) the animated / scrubbed frame
         const y = ED.y + 1 + ((p >> 16) & 255); if (y >= WY - 1) continue;
         ED.fcells.push(edSet(bx + (p & 255), y, bz + ((p >> 8) & 255), p >>> 24, cells));
       }
