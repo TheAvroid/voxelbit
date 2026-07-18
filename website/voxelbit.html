@@ -3037,7 +3037,7 @@
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
   const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;   // +20% base speed
   const BOUNCE_V0 = 95, BOUNCE_DV = 22, BOUNCE_MAX = 195;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped (≈9 m up)
-  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0 };
+  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0 };
   P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
   const keys = new Set();
@@ -3105,12 +3105,19 @@
     if (Math.abs(P.x - (winOX + HALF)) > thr || Math.abs(P.z - (winOZ + HALF)) > thr) recenter(P.x, P.z);
     else resetHist = 1;
   }
+  const DEATH_RISE = 90;                               // vox/s the camera climbs away once you die — the drop-in played backwards
+  const SPAWN_DROP = 300;                              // how far above the landing spot a spawn starts (user: fall in from the top of the screen, don't just appear)
   function respawn() {
     P.x = SPWX + 0.5; P.z = SPWZ + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0;
     maybeRecenter();
     P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
-    smoothEye = P.y + EYE;
+    // DROP IN: start high and let the normal fall physics bring us down, so the arrival is the same accelerating
+    // fall as any other (clamped under the world roof so we never spawn outside the voxel window)
+    P.y = Math.min(WY - 24, P.y + SPAWN_DROP);
+    P.onGround = false; P.fly = false; P.fallT = 0;
+    smoothEye = P.y + EYE;                             // no eye lerp from the old position — that would streak across the sky
+    resetHist = 1;
   }
   let spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
   function rerollSpawn() {                              // H — jump to a fresh random patch of the (infinite, DETERMINISTIC) world, then bake the good one into the code
@@ -3656,7 +3663,7 @@
     if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
     if (e.code === binds.scaleup) { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
     if (e.code === 'KeyC' && !ED.on) { cineMode = !cineMode; document.body.classList.toggle('noui', cineMode);   // C — CINEMATIC flythrough (auto-hides the HUD for a clean view); press again to exit + regain control
-      if (cineMode) { cine.yaw = P.yaw; cine.om = 0; cine.omT = 0; cine.tRe = 0; cine.bobT = 0; const g = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL); cine.alt = cine.altT = Math.max(42, Math.min(100, P.y - g)); cine.roll = 0; cine.vy = 0; cine.climb = 0; P.fly = true; P.vy = 0; } }
+      if (cineMode) { cine.yaw = P.yaw; cine.om = 0; cine.omT = 0; cine.tRe = 0; cine.bobT = 0; const g = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL); cine.alt = cine.altT = Math.max(42, Math.min(100, P.y - g)); cine.roll = 0; cine.vy = 0; cine.climb = 0; cine.baseY = P.y; cine.bnd = 0; cine.flapT = 0; cine.glide = false; cine.urgeUp = 0; P.fly = true; P.vy = 0; } }
     else if (e.code === 'KeyC' && ED.on) { document.body.classList.toggle('noui'); }   // in the editor, C still just toggles the HUD
     if (ED.on) {                                       // asset editor: , / . scrub frames, E move the frame, R rotate it, ← / → reorder
       if (e.code === 'Comma') edSelStep(-1);
@@ -4092,59 +4099,90 @@
   let cineBlurK = 0;                                   // eased 0..1 cinematic-vignette weight — ramped, never hard-toggled, or the blur POPS on at the C keypress
   let blurLock = false;                                // __vb.vig(v) pins the weight for A/B testing; vigFree() hands it back to the easing
   const CINE_VIG = 0.55;                               // CINEMATIC VIGNETTE depth at full weight (0 = none, 1 = corners to black). Motion blur was removed at user request 2026-07-18; this lane replaced it. The shader clamps the smear, so this saturates on fast banks (blur stays motion-proportional, never a full wipe). Tune live with __vb.blur(v).
-  const cine = { yaw: 0, om: 0, omT: 0, tRe: 0, bobT: 0, alt: 42, altT: 42, roll: 0, vy: 0, climb: 0 };
+  // ── CINEMATIC CAMERA = A BIRD ── (user 2026-07-18 rework) Real small birds do not cruise on a flat line: they fly
+  // in BOUNDING flight — a burst of wingbeats that climbs, then a folded-wing glide that falls — so the path is a long
+  // undulation with a fast wingbeat riding on top. Speed and altitude are coupled the way they physically are: the
+  // glide trades height for speed, the flap trades speed for height. Navigation is a 3D gap search, because a bird
+  // going through a wood picks the hole it can already see, and climbs over the canopy when there is no hole at all.
+  const cine = { yaw: 0, om: 0, omT: 0, tRe: 0, bobT: 0, alt: 34, altT: 34, roll: 0, vy: 0, climb: 0,
+                 flapT: 0, wing: 0, glide: false, urgeUp: 0, bnd: 0, baseY: 0 };
   const CINE_R = 7;                                    // camera "hull" half-extent (vox) — probes sample a BOX this size, so a thin trunk can't slip between point samples
-  const CINE_LOOK = 104;                               // whisker probe range — EXTENDED when the turn rate was halved (user): a gentler turn needs to start earlier to clear the same trunk, or it clips what it used to dodge
-  const CINE_WHISK = [0, 0.3, -0.3, 0.62, -0.62, 1.0, -1.0, 1.5, -1.5];   // candidate headings, tried in order: straight first, then progressively harder breaks either way
-  const cineBlock = (x, y, z) => {                     // "can the camera be here" — SOLID **or CANOPY**. Foliage carries no player hitbox (solidTab zeroes it), which is precisely why the old probe flew straight through pine crowns
+  const CINE_LOOK = 104;                               // whisker probe range
+  const CINE_WHISK = [0, 0.3, -0.3, 0.62, -0.62, 1.0, -1.0, 1.5, -1.5];   // candidate headings: straight first, then progressively harder breaks either way
+  const CINE_PITCH = [0, 0.28, -0.28];                 // and each heading is probed level, climbing and diving — a bird takes the gap ABOVE a branch as readily as the one beside it
+  const WING_HZ = 5.2, BURST_N = 3, GLIDE_S = 0.62;    // wingbeats per second, beats per burst, glide length — a bounding-flight cycle of roughly 3 beats then a ~0.6 s coast
+  const cineBlock = (x, y, z) => {                     // "can the camera be here" — SOLID **or CANOPY**. Foliage carries no player hitbox (solidTab zeroes it), which is why a naive probe flies straight through pine crowns
     const yi = Math.floor(y);
     if (yi < 0) return true;
     if (yi >= WY) return false;
     const v = W[gwrap(Math.floor(x), WX) + yi * WX + gwrap(Math.floor(z), WZ) * WX * WY];
     return !!v && (solidTab[v] === 1 || foliaTab[v] === 1);
   };
-  const cineClear = (yaw2, maxD) => {                  // distance ahead along yaw2 before the hull would touch anything
-    const sx = Math.sin(yaw2), cz = Math.cos(yaw2);
+  const CINE_V = CINE_R + 6.5;                         // VERTICAL probe half-extent — must cover the whole flap envelope, not just the hull: the bound moves the
+                                                       // camera +-5 vox AFTER a path was judged clear, which put the down-stroke through foliage 48 frames in 26 s
+  const cineClear = (yaw2, pit2, maxD) => {            // distance along (yaw2, pit2) before the hull would touch anything
+    const cp = Math.cos(pit2), sx = Math.sin(yaw2) * cp, cz = Math.cos(yaw2) * cp, sy = Math.sin(pit2);
     for (let d = CINE_R; d <= maxD; d += 4) {
-      const x = P.x + sx * d, z = P.z + cz * d;
-      if (cineBlock(x, P.y, z) || cineBlock(x, P.y + CINE_R, z) || cineBlock(x, P.y - CINE_R, z) ||
-          cineBlock(x + cz * CINE_R, P.y, z - sx * CINE_R) || cineBlock(x - cz * CINE_R, P.y, z + sx * CINE_R)) return d;
+      const x = P.x + sx * d, y = P.y + sy * d, z = P.z + cz * d;
+      if (cineBlock(x, y, z) || cineBlock(x, y + CINE_V, z) || cineBlock(x, y - CINE_V, z) ||
+          cineBlock(x + cz * CINE_R, y, z - sx * CINE_R) || cineBlock(x - cz * CINE_R, y, z + sx * CINE_R)) return d;
     }
     return maxD;
   };
-  const cineUpdate = (dt, now) => {                     // glide forward, BOB AND WEAVE between the trunks, banking into every turn like a spaceship
+  const cineUpdate = (dt, now) => {                     // fly the camera like a bird: bound through the timber, bank into every turn, flap and glide
     P.fly = true; P.vy = 0; P.onGround = false;
     const tb = now / 1000;
-    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.35; cine.altT = 26 + Math.random() * 34; cine.tRe = tb + 2.5 + Math.random() * 3.5; }   // every few s: a new gentle turn + altitude target. 26..60 above ground keeps it DOWN IN THE TIMBER (pines are ~116 tall) so it threads between trunks instead of ploughing the crowns
-    let bestOff = 0, bestScore = -1e9;                  // ── WEAVE ── score a fan of headings by clear distance, biased toward straight ahead and toward holding the current bank
-    for (const off of CINE_WHISK) {
-      const s = cineClear(cine.yaw + off, CINE_LOOK) - Math.abs(off) * 24 - (off * cine.om < 0 ? 9 : 0);
-      if (s > bestScore) { bestScore = s; bestOff = off; }
+    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.35; cine.altT = 22 + Math.random() * 30; cine.tRe = tb + 2.5 + Math.random() * 3.5; }
+    // ── 3D GAP SEARCH ── score every (heading, pitch) pair by how far it stays clear, biased toward holding course and
+    // toward the current bank. The winning PITCH becomes a climb/dive urge, so the bird lifts over a crown or drops
+    // under a branch instead of only ever turning around it.
+    let bestOff = 0, bestPit = 0, bestScore = -1e9;
+    for (const off of CINE_WHISK) for (const pit of CINE_PITCH) {
+      const sc = cineClear(cine.yaw + off, pit, CINE_LOOK)
+               - Math.abs(off) * 24 - Math.abs(pit) * 26          // straight and level is preferred, all else equal
+               - (off * cine.om < 0 ? 9 : 0);                     // and so is continuing the bank it is already in
+      if (sc > bestScore) { bestScore = sc; bestOff = off; bestPit = pit; }
     }
-    const ahead = cineClear(cine.yaw, CINE_LOOK);
+    const ahead = cineClear(cine.yaw, 0, CINE_LOOK);
     const urg = Math.max(0, 1 - ahead / CINE_LOOK);     // 0 = wide open, 1 = about to clip something
-    if (bestOff !== 0) cine.omT = Math.sign(bestOff) * (0.225 + 1.0 * urg);   // the tighter it is, the harder the break — HALVED (user 2026-07-18), so it drifts around trees instead of snapping
+    if (bestOff !== 0) cine.omT = Math.sign(bestOff) * (0.225 + 1.0 * urg);
     cine.om += (cine.omT - cine.om) * (1 - Math.exp(-3.4 * dt));
-    cine.om = Math.max(-0.85, Math.min(0.85, cine.om));   // halved with the targets, or the clamp would no longer bind
+    cine.om = Math.max(-0.85, Math.min(0.85, cine.om));
     cine.yaw += cine.om * dt;
-    const spd = 32 * (0.5 + 0.5 * Math.min(1, ahead / 44));   // ease off the throttle in tight timber, open up in the clear
-    P.x += Math.sin(cine.yaw) * spd * dt; P.z += Math.cos(cine.yaw) * spd * dt;
-    cine.alt += (cine.altT - cine.alt) * (1 - Math.exp(-0.5 * dt));
+    // ── BOUNDING FLIGHT ── BURST_N wingbeats that climb, then a folded-wing glide that sinks.
+    cine.flapT += dt;
+    const beat = 1 / WING_HZ;
+    if (cine.glide) { if (cine.flapT > GLIDE_S) { cine.glide = false; cine.flapT = 0; } }
+    else if (cine.flapT > beat * BURST_N) { cine.glide = true; cine.flapT = 0; }
+    cine.wing = cine.glide ? 0 : Math.sin((cine.flapT / beat) * 6.283);   // -1..1 within each wingbeat, 0 while gliding
+    const stroke = cine.glide ? -1 : 1;                 // climb on the burst, sink on the glide — the undulation itself
     cine.bobT += dt;
     const ground = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL);
+    // a bird that cannot find a hole climbs out over the canopy; the urge eases so the pull-up is a smooth arc
     const climbT = (urg > 0.3 && !cineBlock(P.x + Math.sin(cine.yaw) * 26, P.y + 26, P.z + Math.cos(cine.yaw) * 26)) ? 30 * urg : 0;
-    cine.climb += (climbT - cine.climb) * (1 - Math.exp(-1.6 * dt));   // hop obstacles turning won't clear — eased as a smoothed OFFSET, not a step change in the target (a hard max() here put a corner in the trajectory every time urg crossed the threshold)
-    const targetY = ground + cine.alt + cine.climb + Math.sin(cine.bobT * 0.85) * 2.4;   // weaving altitude + climb + a slow bob
-    const OMG = 1.5;                                    // ── VERTICAL ── critically-damped spring, not a first-order lerp: the camera eases INTO and OUT of every climb, so no snap at the start or stop of a rise
-    cine.vy += ((targetY - P.y) * OMG * OMG - 2 * OMG * cine.vy) * dt;
-    cine.vy = Math.max(-20, Math.min(20, cine.vy));
-    P.y += cine.vy * dt;
-    if (P.y < ground + 12) { P.y = ground + 12; cine.vy = Math.max(cine.vy, 0); }   // hard floor — the spring may overshoot on a fast descent
+    cine.climb += (climbT - cine.climb) * (1 - Math.exp(-1.6 * dt));
+    cine.urgeUp += (bestPit * 34 - cine.urgeUp) * (1 - Math.exp(-2.2 * dt));   // the chosen gap's height, eased into an altitude offset
+    cine.alt += (cine.altT - cine.alt) * (1 - Math.exp(-0.5 * dt));
+    // The PATH and the WINGBEAT are separate, and must stay separate: feeding the bound into the spring target let the
+    // spring filter it straight back out (a 0.83 Hz bound against a ~2 rad/s spring came out as 6 reversals in 26 s
+    // instead of ~20 — a slow drift, not a bird). So the spring tracks only the smooth flight PATH, and the bound and
+    // wingbeat ride on top as a direct offset.
+    const targetY = ground + cine.alt + cine.climb + cine.urgeUp;
+    const OMG = 1.8;
+    cine.vy += ((targetY - cine.baseY) * OMG * OMG - 2 * OMG * cine.vy) * dt;
+    cine.vy = Math.max(-26, Math.min(26, cine.vy));
+    cine.baseY += cine.vy * dt;
+    if (cine.baseY < ground + 19) { cine.baseY = ground + 19; cine.vy = Math.max(cine.vy, 0); }   // hard floor — the spring may overshoot on a fast descent
+    cine.bnd += (stroke * 5.0 - cine.bnd) * (1 - Math.exp(-7 * dt));   // climb through the burst, sink through the glide — eased, so it reads as a trapezoid rather than a square step
+    P.y = cine.baseY + cine.bnd + cine.wing * 1.1;
+    // GLIDE TRADES HEIGHT FOR SPEED, the flap trades it back: sinking accelerates, climbing bleeds off
+    const spd = (30 - cine.vy * 0.42) * (0.5 + 0.5 * Math.min(1, ahead / 44));
+    P.x += Math.sin(cine.yaw) * spd * dt; P.z += Math.cos(cine.yaw) * spd * dt;
     P.yaw = cine.yaw + Math.sin(cine.bobT * 0.45) * 0.05;   // gentle cinematic yaw sway
-    const rollT = -cine.om * 0.62 + Math.sin(cine.bobT * 0.37) * 0.0125;   // BANK INTO THE TURN — right turn (om > 0) rolls right; the sine is a slow idle wallow so it's never dead level. Tilt HALVED (user 2026-07-18).
+    const rollT = -cine.om * 0.62 + cine.wing * 0.035 + Math.sin(cine.bobT * 0.37) * 0.0125;   // BANK INTO THE TURN (right turn = om > 0 = rolls right), plus a small wing-rock on each beat
     cine.roll += (rollT - cine.roll) * (1 - Math.exp(-3 * dt));
     P.roll = cine.roll;
-    const tp = -0.04 + Math.sin(cine.bobT * 0.5) * 0.05 + Math.max(-0.28, Math.min(0.28, cine.vy * 0.012));   // nose follows the climb/dive a little
+    const tp = -0.04 + Math.max(-0.28, Math.min(0.28, cine.vy * 0.012));   // nose follows the climb/dive, as a bird's body does
     P.pitch += (tp - P.pitch) * (1 - Math.exp(-2.4 * dt));
   };
   function tick(now) {
@@ -4196,7 +4234,11 @@
       if (inWater) {                                   // SWIM: buoyant slow sink, Space paddles up
         P.vy = Math.max(-20, P.vy - GRAVITY * 0.12 * dt);
         if (keys.has(binds.jump)) P.vy = Math.min(46, P.vy + 320 * dt);
-      } else P.vy = Math.max(-160, P.vy - GRAVITY * dt);
+      } else {                                       // ── FALLING GAINS MOMENTUM ── (user) a flat GRAVITY into a -160 terminal hit its cap in 0.8 s, so anything
+        P.fallT = P.vy < 0 ? P.fallT + dt : 0;         // past a short drop fell at a CONSTANT speed and read as floating. Gravity now ramps with time spent
+        const gK = 1 + Math.min(1.5, P.fallT * 0.55);  // falling and the terminal is far higher, so a long drop keeps visibly winding up until it lands.
+        P.vy = Math.max(-460, P.vy - GRAVITY * gK * dt);   // the ramp starts at 1.0, so jump arcs are unchanged — only sustained falls diverge
+      }
       const impV = P.vy;                              // impact velocity before the collision zeroes it
       const hitY = moveAxis(1, P.vy * dt, hh);
       if (hitY) {
@@ -4205,10 +4247,14 @@
           P.vy = Math.min(BOUNCE_MAX, BOUNCE_V0 + BOUNCE_DV * (P.bounceN - 1));
           P.onGround = false; P.sprintJump = false;
         } else {
-          if (P.vy < 0) { P.onGround = true; P.sprintJump = false; }
+          if (P.vy < 0) { P.onGround = true; P.sprintJump = false; P.fallT = 0; }   // landed — the next fall winds up from zero again
           P.bounceN = 0;                              // landed on normal ground / hit a ceiling → reset the bounce streak
           P.vy = 0;
         }
+      }
+      if (dead) {                                    // ── AND THE REVERSE ON DEATH ── the camera lifts away off the top of the screen, mirroring the drop-in
+        P.vy = 0; P.fallT = 0;
+        P.y = Math.min(WY - 6, P.y + DEATH_RISE * dt);
       }
       if (!dead && !P.fly && (lavaAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z)) || lavaAt(Math.floor(P.x), Math.floor(P.y + 1), Math.floor(P.z)))) {
         dead = true; $('over').classList.remove('hidden');
