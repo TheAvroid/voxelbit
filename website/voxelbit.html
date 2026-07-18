@@ -565,6 +565,12 @@
     const f2ids = f2.pal.map((c) => addCol(c[0], c[1], c[2]));
     FERN2V = f2.ferns.map((r) => ({ sx: r.sx, sy: r.sy, sz: r.sz, vox: r.vox.map((p) => (p & 0xffffff) | (f2ids[p >>> 24] << 24)) }));
   } catch (e) { console.warn('[vb] fern2.json missing — fern decor skipped', e); }
+  let MUSHV = null;                                                                          // RARE pine-forest mushroom cluster (mushroom.json from mushrooms.glb, palette-reduced to ≤24 shades — the editor's full-colour mushrooms.vox would blow the shared 256 palette)
+  try {
+    const mj = await (await fetch('assets/decoration/mushroom.json')).json();
+    const mids = mj.pal.map((c) => addCol(c[0], c[1], c[2]));                                // its own quantized shades → global ids
+    MUSHV = { sx: mj.sx, sy: mj.sy, sz: mj.sz, vox: mj.vox.map((p) => (p & 0xffffff) | (mids[p >>> 24] << 24)) };
+  } catch (e) { console.warn('[vb] mushroom.json missing — forest mushrooms skipped', e); }
   const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
   const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks are REAL obstacles; everything else stays walk-through decor
@@ -1309,6 +1315,29 @@
   function stampFern2(f, x0, x1, z0, z1) {
     stampModel(FERN2V[f.mi], f.rot, f.wx, H(f.wx, f.wz), f.wz, x0, x1, z0, z1, 1);
   }
+  const MUCELL = 52;                                   // MUSHROOMS: a rare cluster, ONLY in the pine forest (a pine must be within crown reach), one candidate per 5.2 m cell
+  function mushAt(cx, cz) {
+    if (!MUSHV) return null;
+    if (ihash(cx * 89 + 17, cz * 97 + 5) > 0.05) return null;   // somewhat rare — only ~5% of candidate cells even before the pine-forest gate below
+    const wx = Math.round(cx * MUCELL + 5 + ihash(cx * 5 + 23, cz * 3 + 9) * (MUCELL - 10));
+    const wz = Math.round(cz * MUCELL + 5 + ihash(cx * 11 + 7, cz * 7 + 19) * (MUCELL - 10));
+    if (H(wx, wz) <= WL + 4) return null;              // no mushrooms in water or on beaches
+    if (nearCave(wx, wz)) return null;
+    if (nearWormMouth(wx, wz)) return null;
+    let nearPine = false;                              // PINE-FOREST GATE: a pine within ~46 vox (crown reach) but ≥16 away so the 23-wide cluster never swallows a trunk
+    for (let cz2 = Math.floor((wz - 46) / TCELL); cz2 <= Math.floor((wz + 46) / TCELL); cz2++)
+      for (let cx2 = Math.floor((wx - 46) / TCELL); cx2 <= Math.floor((wx + 46) / TCELL); cx2++) {
+        const t = treeAt(cx2, cz2); if (!t) continue;
+        const dx = wx - t.tx, dz = wz - t.tz, d2 = dx * dx + dz * dz;
+        if (d2 < 16 * 16) return null;                 // too close to a trunk — reject the whole site
+        if (d2 < 46 * 46) nearPine = true;
+      }
+    if (!nearPine) return null;                        // no pine nearby → not the forest → no mushrooms
+    return { wx, wz, rot: (ihash(cx * 2 + 13, cz * 2 + 7) * 3.99) | 0 };
+  }
+  function stampMush(m, x0, x1, z0, z1) {
+    stampModel(MUSHV, m.rot, m.wx, groundMin(m.wx, m.wz, 3), m.wz, x0, x1, z0, z1, 1);   // base sunk to the min nearby ground so the wide cluster never floats on a bump
+  }
   const PCCELL = 26;                                   // GROUND PINECONES: fallen cones (pinecone.vox on its side), pickable, scattered on the forest floor
   function pconeAt(cx, cz) {
     if (!CONEVL) return null;
@@ -1469,6 +1498,7 @@
     yield* stampCellsGen(x0, x1, z0, z1, WORM_CELL, WORM_MARGIN, wormCaveAt, stampWormCave);
     yield* stampCellsGen(x0, x1, z0, z1, BCELL, 44, boulderAt, stampBoulder);   // margin covers the widest rocks26 model (74 wide)
     yield* stampCellsGen(x0, x1, z0, z1, F2CELL, 16, fern2At, stampFern2);   // the fern.glb plant (23 wide)
+    yield* stampCellsGen(x0, x1, z0, z1, MUCELL, 18, mushAt, stampMush);      // rare pine-forest mushroom cluster (23×27 footprint)
     yield* stampCellsGen(x0, x1, z0, z1, PCCELL, 8, pconeAt, stampPcone);
     yield* stampCellsGen(x0, x1, z0, z1, SCELL, 8, stickAt, stampStick);
     yield* stampCellsGen(x0, x1, z0, z1, LILYCELL, 8, lilyAt, stampLily);
@@ -1545,9 +1575,9 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, OCELL, BCELL, F2CELL, PCCELL, SCELL, LGCELL, LILYCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
-    const fns = { ihash, sstep, vnoise, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
+    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
+    const fns = { ihash, sstep, vnoise, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
