@@ -162,6 +162,14 @@
   const vnoise = (x, z) => { const ix = Math.floor(x), iz = Math.floor(z), fx = sstep(x - ix), fz = sstep(z - iz);
     return (ihash(ix, iz) * (1 - fx) + ihash(ix + 1, iz) * fx) * (1 - fz) + (ihash(ix, iz + 1) * (1 - fx) + ihash(ix + 1, iz + 1) * fx) * fz; };
   const fbm = (x, z) => vnoise(x, z) * 0.55 + vnoise(x * 2.13 + 11.7, z * 2.13 + 5.3) * 0.27 + vnoise(x * 4.41 + 41.2, z * 4.41 + 23.8) * 0.18;
+  const vnoise3 = (x, y, z) => {                       // 3D value noise — trilinear smoothstep over the ihash lattice. COHERENT (unlike a raw per-voxel ihash), so cave walls get organic bulges instead of grit
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    const fx = sstep(x - ix), fy = sstep(y - iy), fz = sstep(z - iz);
+    const h3 = (a, b, c) => ihash(a + Math.imul(c, 92837111), b + Math.imul(c, 689287499));   // fold the 3rd axis into the 2D hash — distinct large primes keep the lattice planes decorrelated
+    const c00 = h3(ix, iy, iz) * (1 - fx) + h3(ix + 1, iy, iz) * fx, c10 = h3(ix, iy + 1, iz) * (1 - fx) + h3(ix + 1, iy + 1, iz) * fx;
+    const c01 = h3(ix, iy, iz + 1) * (1 - fx) + h3(ix + 1, iy, iz + 1) * fx, c11 = h3(ix, iy + 1, iz + 1) * (1 - fx) + h3(ix + 1, iy + 1, iz + 1) * fx;
+    return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
+  };
   const HMAX = Math.min(105 + LIFT, WY - 122);         // terrain ceiling
   const WL = 24 + LIFT;                                // GLOBAL water level — water is simply terrain below this line
   const baseH = (x, z) => {
@@ -503,9 +511,19 @@
   const ED_WHITE = addCol(250, 250, 252), ED_GREY = addCol(202, 207, 216), ED_HLITE = addCol(255, 186, 64);   // asset-editor stage: white plane, 1 m gridline grey, amber selection ring (all marked solid below)
   const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);                                    // twig (pickable) / stick — pine-trunk browns
   const BLOOM   = [addCol(198, 62, 54), addCol(226, 192, 62), addCol(230, 228, 220), addCol(152, 94, 192), addCol(224, 122, 162), addCol(228, 142, 56)];   // flower heads
+  // ── CAVE WALL LINING ── the stone a tunnel cuts through is mostly DIRT, which reads as flat brown mud underground.
+  // The carve repaints the shell just outside the bore in ROCK/ROCKX shades so caves look like rock, not soil.
+  const CAVEROCK = ROCK.concat(ROCKX);                 // wall shades (plain Arrays — they cross to the gen workers via the JSON `tables`)
+  const CAVEKEEP = (() => {                            // ids the lining must NOT paint over: ore veins (stamped BEFORE caves, so they'd be erased) and water/lava
+    const a = new Array(256).fill(0);
+    for (const id of [WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y].concat(ORECOAL, OREIRON, OREGOLD, ORECRYS)) a[id] = 1;
+    return a;
+  })();
   const solidTab = new Uint8Array(256);                // per-id collision: terrain/trunks/logs solid; decor + FOLIAGE walk-through
   for (let i = 1; i < DECOR_MIN; i++) solidTab[i] = 1;
   for (const f of foliageIds) solidTab[f] = 0;
+  const foliaTab = new Uint8Array(256);                // per-id CANOPY flag — foliage is walk-through for the player, but the cinematic camera must still steer around it or it flies straight through pine crowns
+  for (const f of foliageIds) foliaTab[f] = 1;
   const mushTab = new Uint8Array(256);                 // per-id BOUNCY flag — mushroom voxels trampoline the player (filled once MUSHV loads)
   const sandTab = new Uint8Array(256); for (const s of SAND) sandTab[s] = 1;   // per-id SAND flag — walking on beach/lakebed sand slows the player (sand pits)
   console.log('[vb] pine5.vox', MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
@@ -1084,6 +1102,64 @@
     caveCache.set(key, c);
     return c;
   }
+  const fixCarveCol = (gx, gz) => {                     // keep the walkable ground honest where a carve reaches daylight — shared by every carver
+    const ci = gx + gz * WX;
+    let t = hmap[ci];
+    while (t > 4 && W[gx + (t - 1) * WX + gz * WX * WY] === 0) t--;
+    hmap[ci] = t;
+    for (let ty = t + 1; ty < Math.min(WY, t + 14); ty++) {   // drop any surface decor (grass/flowers/ferns) left hanging over the carve — bottom-up, so a strand cascades once its base loses support
+      const jj = gx + ty * WX + gz * WX * WY;
+      if (W[jj] !== 0 && FLOATDECOR.has(W[jj]) && W[gx + (ty - 1) * WX + gz * WX * WY] === 0) W[jj] = 0;
+    }
+  };
+  // ── SMOOTH TUBE CARVER ── the worm caves are NOT a string of independent spheres (that beads/lumps at every station).
+  // Consecutive stations become TAPERED CAPSULES, adjacent capsules are joined with a polynomial smooth-min (a true
+  // fillet, so joints are concave-blended rather than butted), and the whole isosurface is displaced by low-frequency
+  // COHERENT 3D noise — organic swelling and pinching along the bore instead of a perfectly round pipe.
+  const TUBE_K = 7, TUBE_WOB = 5.5, TUBE_FRQ = 0.019;   // fillet width / wall displacement amplitude / noise wavelength (~53 vox — long, rolling)
+  const TUBE_SHELL = 2.6, CAVE_ROCKS = 5;               // rock-lining thickness outside the bore / small-rock scatter tries per station
+  const smin3 = (a, b, k) => { const h = Math.max(0, Math.min(1, 0.5 + 0.5 * (b - a) / k)); return b + (a - b) * h - k * h * (1 - h); };
+  const capsF = (px, py, pz, A, B) => {                 // signed distance to the tapered capsule A→B (radius lerps along it)
+    const bax = B.x - A.x, bay = B.y - A.y, baz = B.z - A.z;
+    const pax = px - A.x, pay = py - A.y, paz = pz - A.z;
+    const bb = bax * bax + bay * bay + baz * baz;
+    const t = bb > 0 ? Math.max(0, Math.min(1, (pax * bax + pay * bay + paz * baz) / bb)) : 0;
+    const dx = pax - bax * t, dy = pay - bay * t, dz = paz - baz * t;
+    return Math.sqrt(dx * dx + dy * dy + dz * dz) - (A.r + (B.r - A.r) * t);
+  };
+  function carveTube(run, x0, x1, z0, z1) {             // `run` = one continuous chain of stations (a march); separate runs must NOT be chained or a straight ghost tunnel links them
+    for (let s = 0; s < run.length; s++) {
+      const A = run[s], B = run[Math.min(s + 1, run.length - 1)];
+      const P = run[Math.max(s - 1, 0)], N = run[Math.min(s + 2, run.length - 1)];   // the capsules on either side, for the fillet
+      const pad = Math.ceil(Math.max(A.r, B.r) + TUBE_WOB + TUBE_K + 2);
+      const bx0 = Math.max(x0, Math.min(A.x, B.x) - pad), bx1 = Math.min(x1, Math.max(A.x, B.x) + pad + 1);
+      const bz0 = Math.max(z0, Math.min(A.z, B.z) - pad), bz1 = Math.min(z1, Math.max(A.z, B.z) + pad + 1);
+      const by0 = Math.max(4, Math.min(A.y, B.y) - pad), by1 = Math.min(WY, Math.max(A.y, B.y) + pad + 1);
+      for (let z = bz0; z < bz1; z++) for (let x = bx0; x < bx1; x++) {
+        const gx = gwrap(x, WX), gz = gwrap(z, WZ);
+        let touched = false;
+        for (let y = by0; y < by1; y++) {
+          let f = capsF(x, y, z, A, B);
+          if (f > TUBE_K + TUBE_WOB) continue;          // well outside the blend band — skip the neighbour + noise work (the adjacent capsule covers its own side symmetrically)
+          f = smin3(f, capsF(x, y, z, P, A), TUBE_K);
+          f = smin3(f, capsF(x, y, z, B, N), TUBE_K);
+          f += (vnoise3(x * TUBE_FRQ, y * TUBE_FRQ, z * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
+          if (f > 0) {                                  // just OUTSIDE the bore = the cave WALL — line it with rock so tunnels read as stone, not the brown dirt they cut through
+            if (f < TUBE_SHELL) {
+              const jj = gx + y * WX + gz * WX * WY;
+              const vw = W[jj];
+              if (vw && !CAVEKEEP[vw]) W[jj] = CAVEROCK[(ihash(x * 3 + y, z * 5 + y * 7) * CAVEROCK.length) | 0];   // mottled, hashed on WORLD coords so the pattern can't swim on a window shift
+            }
+            continue;
+          }
+          const ii = gx + y * WX + gz * WX * WY;
+          const v = W[ii];
+          if (v && v !== WATER_T && v !== WATER_B) { W[ii] = 0; touched = true; }
+        }
+        if (touched) fixCarveCol(gx, gz);
+      }
+    }
+  }
   function carveSphere(px, py, pz, r, x0, x1, z0, z1) {
     const R = Math.ceil(r);
     const cxq = Math.round(px), cyq = Math.round(py), czq = Math.round(pz);
@@ -1093,21 +1169,12 @@
         let touched = false;
         for (let dy = -R; dy <= R; dy++) {
           const y = cyq + dy; if (y < 4 || y >= WY) continue;
-          if (dx * dx + dy * dy + dz * dz > r * r * (0.6 + 0.85 * ihash(x + y * 137, z + y * 59))) continue;   // JAGGED walls (user) — the carve radius wobbles per WORLD voxel (0.77r..1.2r), so overlapping spheres leave a rough, rocky boundary instead of a smooth tube; the inner 0.77r stays open so tunnels never pinch
+          if (dx * dx + dy * dy + dz * dz > r * r) continue;   // plain round falloff — the per-voxel white-noise wobble that used to live here made gritty speckled walls, not rock
           const ii = gx + y * WX + gz * WX * WY;
           const v = W[ii];
           if (v && v !== WATER_T && v !== WATER_B) { W[ii] = 0; touched = true; }
         }
-        if (touched) {                                  // keep the walkable ground honest where the carve reaches daylight
-          const ci = gx + gz * WX;
-          let t = hmap[ci];
-          while (t > 4 && W[gx + (t - 1) * WX + gz * WX * WY] === 0) t--;
-          hmap[ci] = t;
-          for (let ty = t + 1; ty < Math.min(WY, t + 14); ty++) {   // drop any surface decor (grass/flowers/ferns) left hanging over the carve — bottom-up, so a strand cascades once its base loses support
-            const jj = gx + ty * WX + gz * WX * WY;
-            if (W[jj] !== 0 && FLOATDECOR.has(W[jj]) && W[gx + (ty - 1) * WX + gz * WX * WY] === 0) W[jj] = 0;
-          }
-        }
+        if (touched) fixCarveCol(gx, gz);
       } }
   }
   function stampCave(c, x0, x1, z0, z1) {
@@ -1242,7 +1309,9 @@
       if (eh <= WL + 6 || nearCave(ex, ez, 70)) { wormCache.set(key, null); return c; }   // dry entrance, clear of the gorges
       const sseed = ihash(cx * 41 + 3, cz * 43 + 19) * 640;
       const segs = [];
+      let runId = 0;                                   // each march is its own CHAIN — the tube carver only links stations sharing a run, else the branch start would be joined to the main tunnel's end by a straight ghost bore
       const march = (sx0, sy0, sz0, az0, pit0, len, rt, ent) => {  // one worm: a carve station every 8 voxels, sphere radius ~rt
+        const rid = runId++;
         let px = sx0, py = sy0, pz = sz0, az = az0, pit = pit0;
         for (let t = 0, i = 0; t < len; t += 4, i++) {
           az += (vnoise(sseed + t * 0.012, 7.3) - 0.5) * 0.5 + (vnoise(sseed * 1.7 + t * 0.04, 19.1) - 0.5) * 0.26;   // smooth noise steering
@@ -1255,7 +1324,7 @@
             const r = rt + (vnoise(sseed + t * 0.05, 91.3) - 0.5) * 5;
             const hs = H(Math.round(px), Math.round(pz));
             if ((!ent || i >= 12) && py + r > hs - 5) py = hs - 5 - r;   // past the mouth the tunnel never surfaces (dips under valleys and riverbeds)
-            segs.push({ x: Math.round(px), y: Math.round(py), z: Math.round(pz), r });
+            segs.push({ x: Math.round(px), y: Math.round(py), z: Math.round(pz), r, k: rid });
           }
         }
         return [px, py, pz];
@@ -1268,7 +1337,7 @@
         march(bs.x, bs.y, bs.z, az0 + (ihash(cx * 31 + 2, cz * 37 + 6) < 0.5 ? 1.4 : -1.4), 0, len * 0.4, 21, false);
       const cr = 34 + ihash(cx * 47 + 9, cz * 53 + 25) * 10;      // terminal CHAMBER (doubled), clamped safely under its own surface
       const cy = Math.min(Math.round(end[1]), H(Math.round(end[0]), Math.round(end[2])) - 6 - Math.ceil(cr));
-      segs.push({ x: Math.round(end[0]), y: Math.max(14 + Math.ceil(cr), cy), z: Math.round(end[2]), r: cr });
+      segs.push({ x: Math.round(end[0]), y: Math.max(14 + Math.ceil(cr), cy), z: Math.round(end[2]), r: cr, k: runId++ });   // the chamber is its own run — a lone blob that the noise rounds out, overlapping the tunnel end it sits on
       let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
       for (const sg of segs) { x0 = Math.min(x0, sg.x - sg.r); x1 = Math.max(x1, sg.x + sg.r); z0 = Math.min(z0, sg.z - sg.r); z1 = Math.max(z1, sg.z + sg.r); }
       c = { segs, mx: ex, mz: ez, x0, x1, z0, z1 };
@@ -1276,10 +1345,42 @@
     wormCache.set(key, c);
     return c;
   }
-  function stampWormCave(c, x0, x1, z0, z1) {          // carveSphere does the region clip, water-skip and hmap fix per column
+  function stampWormCave(c, x0, x1, z0, z1) {          // carveTube does the region clip, water-skip and hmap fix per column
+    const runs = [];                                   // regroup the flat station list into its marches (stations are pushed in run order, so a simple split works)
     for (const sg of c.segs) {
-      if (sg.x + sg.r < x0 || sg.x - sg.r >= x1 || sg.z + sg.r < z0 || sg.z - sg.r >= z1) continue;
-      carveSphere(sg.x, sg.y, sg.z, sg.r, x0, x1, z0, z1);
+      const last = runs[runs.length - 1];
+      if (last && last[0].k === sg.k) last.push(sg); else runs.push([sg]);
+    }
+    for (const run of runs) carveTube(run, x0, x1, z0, z1);
+    for (const run of runs) stampCaveRocks(run, x0, x1, z0, z1);   // litter AFTER every bore is cut, so a later capsule can't carve a rock back out
+  }
+  function stampCaveRocks(run, x0, x1, z0, z1) {       // LITTER the tunnel floor with the SMALL rocks from the 26-rock pack (user: small ones only)
+    if (!R26S.length) return;
+    for (let s = 0; s < run.length; s++) {
+      const A = run[s], B = run[Math.min(s + 1, run.length - 1)];
+      const Pv = run[Math.max(s - 1, 0)], N = run[Math.min(s + 2, run.length - 1)];
+      for (let k = 0; k < CAVE_ROCKS; k++) {
+        if (ihash(A.x * 31 + s * 7 + k, A.z * 37 + k * 13) > 0.55) continue;   // not every try lands one — scattered, not paved
+        const ang = ihash(A.x * 17 + k * 5, A.z * 19 + s * 3 + k) * 6.283;
+        const rad = Math.sqrt(ihash(A.x * 11 + k, A.z * 23 + k * 9)) * A.r * 0.7;
+        const rx = Math.round(A.x + Math.cos(ang) * rad), rz = Math.round(A.z + Math.sin(ang) * rad);
+        if (rx + 40 < x0 || rx - 40 >= x1 || rz + 40 < z0 || rz - 40 >= z1) continue;   // reach cull only — stampModel does the real per-voxel clip
+        // Find the floor by walking the ANALYTIC field down, never by reading W: W is a region-local slab in the gen
+        // workers, so a read outside this region returns another part of the world and the rock would move with the
+        // region tiling. The field is a pure function of world coords, so every region agrees on the same floor.
+        let fy = -1;
+        const lo = Math.round(A.y - A.r - TUBE_WOB - 6);
+        for (let y = Math.round(A.y + 2); y > lo; y--) {
+          let f0 = capsF(rx, y, rz, A, B);
+          f0 = smin3(f0, capsF(rx, y, rz, Pv, A), TUBE_K);
+          f0 = smin3(f0, capsF(rx, y, rz, B, N), TUBE_K);
+          f0 += (vnoise3(rx * TUBE_FRQ, y * TUBE_FRQ, rz * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
+          if (f0 >= 0) { fy = y + 1; break; }           // first solid going down → the rock rests on the voxel above it
+        }
+        if (fy < 6 || fy >= WY) continue;
+        const mi = R26S[(ihash(rx * 7 + 3, rz * 11 + 5) * R26S.length) | 0];
+        stampModel(ROCK26[mi], (ihash(rx + 5, rz + 9) * 4) | 0, rx, fy, rz, x0, x1, z0, z1, 0);   // mode 0 = empty cells only, so a rock never plugs the bore
+      }
     }
   }
   function nearWormMouth(x, z, r = 52) {               // trees + spawn keep off the cave mouths (the entrance pit would swallow them)
@@ -1628,9 +1729,9 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
-    const fns = { ihash, sstep, vnoise, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
+    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, TUBE_K, TUBE_WOB, TUBE_FRQ, TUBE_SHELL, CAVE_ROCKS, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH, CAVEROCK, CAVEKEEP };
+    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, fixCarveCol, smin3, capsF, carveTube, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, stampCaveRocks, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
@@ -1757,7 +1858,7 @@
     device.queue.writeBuffer(palBuf, 0, f); };
   const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
-  const UF = new Float32Array(1268);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267 → 1268
+  const UF = new Float32Array(1272);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic motion-blur strength) → 1272
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);
@@ -1787,6 +1888,7 @@
       pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
       fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
       cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
+      misc   : vec4<f32>,                                            // x = CINEMATIC motion-blur strength (0 = off, eased so it never pops on at the keypress); y/z/w spare
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -2700,6 +2802,7 @@
   const BLIT = /* wgsl */`
     @group(0) @binding(1) var src : texture_2d<f32>;
     @group(0) @binding(2) var samp : sampler;
+    @group(0) @binding(3) var gIrrB : texture_2d<f32>;   // .b = scene hit distance in voxels (<0 = sky) — drives the per-pixel motion vector
     @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4<f32> {
       var P = array<vec2<f32>, 3>(vec2<f32>(-1.0, -3.0), vec2<f32>(3.0, 1.0), vec2<f32>(-1.0, 1.0));
       return vec4<f32>(P[vi], 0.0, 1.0);
@@ -2707,6 +2810,42 @@
     @fragment fn fs(@builtin(position) fc : vec4<f32>) -> @location(0) vec4<f32> {
       let uv = fc.xy / u.canvasRes;
       var col = textureSampleLevel(src, samp, uv, 0.0).rgb;
+      // ── CINEMATIC MOTION BLUR ── per-pixel camera blur: reproject this pixel's world point through the PREVIOUS
+      // camera basis (the same math the TAA uses) to get a screen-space motion vector, then smear along it. Because it
+      // is reprojection-based it streaks correctly for all three cinematic motions at once — forward glide, the weave
+      // yaw, and the bank roll (roll alone produces the rotational smear a fixed radial/directional blur can't).
+      // Applied to the BASE image only: the god-ray scatter below stays sharp, or the shafts smear into mush.
+      if (u.misc.x > 0.001) {
+        let ndc = uv * 2.0 - 1.0;
+        let rd = normalize(u.fwd + u.right * (ndc.x * u.tanH * u.aspect) - u.up * (ndc.y * u.tanH));
+        let t = textureSampleLevel(gIrrB, samp, uv, 0.0).b;
+        var d = rd;
+        if (t > 0.0) { d = (u.camPos + rd * t) - u.pPos; }   // world point this pixel sees, relative to LAST frame's camera
+        let z = dot(d, u.pFwd);
+        if (z > 0.01) {
+          let px2 = dot(d, u.pRight) / (z * u.pTanH * u.pAspect);
+          let py2 = dot(d, u.pUp) / (z * u.pTanH);
+          let pUV = vec2<f32>(px2 * 0.5 + 0.5, 0.5 - py2 * 0.5);   // NO jitter de-bias here: u.jit/u.pJit are sub-pixel TAA offsets and would add noise to the vector
+          var mv = (uv - pUV) * u.misc.x;
+          let mlen = length(mv);
+          if (mlen > 0.0008) {
+            mv = mv * (min(mlen, 0.055) / mlen);          // clamp the smear — a fast bank near a trunk otherwise streaks across half the screen
+            let jit = fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y));   // reuse the god-ray IGN dither so 9 taps don't band
+            var acc = col;
+            var wsum = 1.0;
+            for (var i = 1; i < 9; i++) {
+              let k = (f32(i) - 0.5 + jit) / 8.0;
+              let suv = uv - mv * k;
+              if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) {
+                let w = 1.0 - k * 0.55;                   // taps fade along the trail — a flat box average reads as a double image
+                acc += textureSampleLevel(src, samp, suv, 0.0).rgb * w;
+                wsum += w;
+              }
+            }
+            col = acc / wsum;
+          }
+        }
+      }
       // ── GOD RAYS: screen-space radial scatter toward the sun (ported from the old engine's blit).
       // Bright near-white SKY pixels scatter (alpha = sky mask from the TAA pass); voxels block → shafts.
       let sf = dot(u.sunDir, u.fwd);
@@ -2802,7 +2941,7 @@
       { binding: 4, resource: linSamp }, { binding: 5, resource: v(par ? colHistB : colHistA) }] }));
     bgBlit = [0, 1].map(par => device.createBindGroup({ layout: pBlit.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? colHistB : colHistA) },
-      { binding: 2, resource: linSamp }] }));
+      { binding: 2, resource: linSamp }, { binding: 3, resource: v(gIrr) }] }));   // gIrr.b = scene distance, for the motion-blur reprojection
     resetHist = 1;
   }
   makeTargets();
@@ -2927,7 +3066,7 @@
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
   const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;   // +20% base speed
   const BOUNCE_V0 = 95, BOUNCE_DV = 22, BOUNCE_MAX = 195;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped (≈9 m up)
-  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0 };
+  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0 };
   P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
   const keys = new Set();
@@ -3278,6 +3417,24 @@
       return;
     }
   }
+  const AUTO_PICK_R = 16;                              // AUTO-PICKUP radius (vox) — walk this close and a FREE hand slot vacuums the item up
+  function autoPickup() {                              // proximity grab: RADIAL, not the view-ray march tryPickup() uses — you never have to aim at it
+    if (grabAnim || dead) return;                      // one flight at a time — startGrab would clobber the item already in the air
+    if (!slots.some((s) => !s)) return;                // only an EMPTY slot auto-grabs; topping up an existing stack stays a deliberate right-click
+    const tNow = performance.now();
+    let bi = -1, bd = AUTO_PICK_R * AUTO_PICK_R;       // nearest wins, so a pile drains one item per flight instead of grabbing at random
+    for (let i = 0; i < drops.length; i++) {
+      const dr = drops[i];
+      if (dr.T && (tNow - dr.born) / 1000 < dr.T) continue;   // still mid-toss — let it land before it can be re-grabbed (else a Q-toss boomerangs straight back)
+      const ox = dr.x + 0.5 - P.x, oy = dr.y + 9.0 - smoothEye, oz = dr.z + 0.5 - P.z;
+      const d2 = ox * ox + oy * oy + oz * oz;
+      if (d2 < bd) { bd = d2; bi = i; }
+    }
+    if (bi < 0) return;
+    const dr = drops[bi];
+    startGrab(dr.it, dr.x + 0.5, dr.y + 9.0 + Math.sin(tNow * 0.002 + dr.ph) * 1.3, dr.z + 0.5, tNow * 0.0012 + dr.ph);
+    drops.splice(bi, 1);
+  }
   document.addEventListener('contextmenu', (e) => e.preventDefault());
   // ── MASTER VOLUME ── every sound registers its BASE volume; the menu slider scales them all (persisted vb_vol)
   let sndVol = 1; try { const v = parseFloat(localStorage.getItem('vb_vol')); if (v >= 0 && v <= 1) sndVol = v; } catch (e) {}
@@ -3528,7 +3685,7 @@
     if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
     if (e.code === binds.scaleup) { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
     if (e.code === 'KeyC' && !ED.on) { cineMode = !cineMode; document.body.classList.toggle('noui', cineMode);   // C — CINEMATIC flythrough (auto-hides the HUD for a clean view); press again to exit + regain control
-      if (cineMode) { cine.yaw = P.yaw; cine.om = 0; cine.omT = 0; cine.tRe = 0; cine.bobT = 0; const g = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL); cine.alt = cine.altT = Math.max(42, Math.min(100, P.y - g)); P.fly = true; P.vy = 0; } }
+      if (cineMode) { cine.yaw = P.yaw; cine.om = 0; cine.omT = 0; cine.tRe = 0; cine.bobT = 0; const g = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL); cine.alt = cine.altT = Math.max(42, Math.min(100, P.y - g)); cine.roll = 0; cine.vy = 0; cine.climb = 0; P.fly = true; P.vy = 0; } }
     else if (e.code === 'KeyC' && ED.on) { document.body.classList.toggle('noui'); }   // in the editor, C still just toggles the HUD
     if (ED.on) {                                       // asset editor: , / . scrub frames, E move the frame, R rotate it, ← / → reorder
       if (e.code === 'Comma') edSelStep(-1);
@@ -3879,7 +4036,9 @@
     KNIFE_IT,
     snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT }; },
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
-    dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
+    dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
+    blur(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return cineBlurK * CINE_BLUR; },   // cinematic motion-blur tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
+    blurFree() { blurLock = false; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
     edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; if (ED.giz) ED.rgiz = false; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
@@ -3959,29 +4118,63 @@
   console.log('[vb] ready — endless window', WX, WY, WZ, 'bricks', BX, BY, BZ);
 
   let cineMode = false;                                // C — CINEMATIC flythrough camera
-  const cine = { yaw: 0, om: 0, omT: 0, tRe: 0, bobT: 0, alt: 60, altT: 60 };
-  const cineUpdate = (dt, now) => {                     // glide forward, weave around tree trunks / terrain, terrain-follow with a weaving altitude + gentle bob & sway
+  let cineBlurK = 0;                                   // eased 0..1 motion-blur weight — ramped, never hard-toggled, or the blur POPS on at the C keypress
+  let blurLock = false;                                // __vb.blur(v) pins the weight for A/B testing; blurFree() hands it back to the easing
+  const CINE_BLUR = 4.0;                               // motion-vector multiplier at full weight. The shader clamps the smear, so this saturates on fast banks (blur stays motion-proportional, never a full wipe). Tune live with __vb.blur(v).
+  const cine = { yaw: 0, om: 0, omT: 0, tRe: 0, bobT: 0, alt: 42, altT: 42, roll: 0, vy: 0, climb: 0 };
+  const CINE_R = 7;                                    // camera "hull" half-extent (vox) — probes sample a BOX this size, so a thin trunk can't slip between point samples
+  const CINE_LOOK = 64;                                // whisker probe range
+  const CINE_WHISK = [0, 0.3, -0.3, 0.62, -0.62, 1.0, -1.0, 1.5, -1.5];   // candidate headings, tried in order: straight first, then progressively harder breaks either way
+  const cineBlock = (x, y, z) => {                     // "can the camera be here" — SOLID **or CANOPY**. Foliage carries no player hitbox (solidTab zeroes it), which is precisely why the old probe flew straight through pine crowns
+    const yi = Math.floor(y);
+    if (yi < 0) return true;
+    if (yi >= WY) return false;
+    const v = W[gwrap(Math.floor(x), WX) + yi * WX + gwrap(Math.floor(z), WZ) * WX * WY];
+    return !!v && (solidTab[v] === 1 || foliaTab[v] === 1);
+  };
+  const cineClear = (yaw2, maxD) => {                  // distance ahead along yaw2 before the hull would touch anything
+    const sx = Math.sin(yaw2), cz = Math.cos(yaw2);
+    for (let d = CINE_R; d <= maxD; d += 4) {
+      const x = P.x + sx * d, z = P.z + cz * d;
+      if (cineBlock(x, P.y, z) || cineBlock(x, P.y + CINE_R, z) || cineBlock(x, P.y - CINE_R, z) ||
+          cineBlock(x + cz * CINE_R, P.y, z - sx * CINE_R) || cineBlock(x - cz * CINE_R, P.y, z + sx * CINE_R)) return d;
+    }
+    return maxD;
+  };
+  const cineUpdate = (dt, now) => {                     // glide forward, BOB AND WEAVE between the trunks, banking into every turn like a spaceship
     P.fly = true; P.vy = 0; P.onGround = false;
     const tb = now / 1000;
-    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.8; cine.altT = 42 + Math.random() * 58; cine.tRe = tb + 2.5 + Math.random() * 3.5; }   // every few s: a new gentle turn + a weaving altitude target (42..100 above ground = through/over the crowns)
-    const blocked = (yaw2, dist) => { const sx = Math.floor(P.x + Math.sin(yaw2) * dist), sz = Math.floor(P.z + Math.cos(yaw2) * dist); return solid(sx, Math.floor(P.y), sz) || solid(sx, Math.floor(P.y - 5), sz) || solid(sx, Math.floor(P.y + 5), sz); };
-    if (blocked(cine.yaw, 22) || blocked(cine.yaw, 11)) {   // a trunk / hill / rock ahead → bank toward the clearer side
-      const pF = !blocked(cine.yaw + 0.9, 22), nF = !blocked(cine.yaw - 0.9, 22);
-      cine.omT = pF && !nF ? 1.8 : (nF && !pF ? -1.8 : (cine.om >= 0 ? 1.8 : -1.8));
+    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.7; cine.altT = 26 + Math.random() * 34; cine.tRe = tb + 2.5 + Math.random() * 3.5; }   // every few s: a new gentle turn + altitude target. 26..60 above ground keeps it DOWN IN THE TIMBER (pines are ~116 tall) so it threads between trunks instead of ploughing the crowns
+    let bestOff = 0, bestScore = -1e9;                  // ── WEAVE ── score a fan of headings by clear distance, biased toward straight ahead and toward holding the current bank
+    for (const off of CINE_WHISK) {
+      const s = cineClear(cine.yaw + off, CINE_LOOK) - Math.abs(off) * 24 - (off * cine.om < 0 ? 9 : 0);
+      if (s > bestScore) { bestScore = s; bestOff = off; }
     }
-    cine.om += (cine.omT - cine.om) * (1 - Math.exp(-2.6 * dt));
-    cine.om = Math.max(-1.4, Math.min(1.4, cine.om));
+    const ahead = cineClear(cine.yaw, CINE_LOOK);
+    const urg = Math.max(0, 1 - ahead / CINE_LOOK);     // 0 = wide open, 1 = about to clip something
+    if (bestOff !== 0) cine.omT = Math.sign(bestOff) * (0.45 + 2.0 * urg);   // the tighter it is, the harder the break
+    cine.om += (cine.omT - cine.om) * (1 - Math.exp(-3.4 * dt));
+    cine.om = Math.max(-1.7, Math.min(1.7, cine.om));
     cine.yaw += cine.om * dt;
-    const spd = 32;                                     // smooth cruise glide
+    const spd = 32 * (0.5 + 0.5 * Math.min(1, ahead / 44));   // ease off the throttle in tight timber, open up in the clear
     P.x += Math.sin(cine.yaw) * spd * dt; P.z += Math.cos(cine.yaw) * spd * dt;
     cine.alt += (cine.altT - cine.alt) * (1 - Math.exp(-0.5 * dt));
     cine.bobT += dt;
     const ground = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL);
-    const targetY = ground + cine.alt + Math.sin(cine.bobT * 1.05) * 3.2;   // weaving altitude + bob
-    P.y += (targetY - P.y) * (1 - Math.exp(-2.2 * dt));
-    P.yaw = cine.yaw + Math.sin(cine.bobT * 0.45) * 0.07;   // gentle cinematic yaw sway
-    const tp = -0.05 + Math.sin(cine.bobT * 0.6) * 0.06;    // gentle pitch drift
-    P.pitch += (tp - P.pitch) * (1 - Math.exp(-2 * dt));
+    const climbT = (urg > 0.3 && !cineBlock(P.x + Math.sin(cine.yaw) * 26, P.y + 26, P.z + Math.cos(cine.yaw) * 26)) ? 30 * urg : 0;
+    cine.climb += (climbT - cine.climb) * (1 - Math.exp(-1.6 * dt));   // hop obstacles turning won't clear — eased as a smoothed OFFSET, not a step change in the target (a hard max() here put a corner in the trajectory every time urg crossed the threshold)
+    const targetY = ground + cine.alt + cine.climb + Math.sin(cine.bobT * 0.85) * 2.4;   // weaving altitude + climb + a slow bob
+    const OMG = 1.5;                                    // ── VERTICAL ── critically-damped spring, not a first-order lerp: the camera eases INTO and OUT of every climb, so no snap at the start or stop of a rise
+    cine.vy += ((targetY - P.y) * OMG * OMG - 2 * OMG * cine.vy) * dt;
+    cine.vy = Math.max(-20, Math.min(20, cine.vy));
+    P.y += cine.vy * dt;
+    if (P.y < ground + 12) { P.y = ground + 12; cine.vy = Math.max(cine.vy, 0); }   // hard floor — the spring may overshoot on a fast descent
+    P.yaw = cine.yaw + Math.sin(cine.bobT * 0.45) * 0.05;   // gentle cinematic yaw sway
+    const rollT = -cine.om * 0.62 + Math.sin(cine.bobT * 0.37) * 0.025;   // BANK INTO THE TURN — right turn (om > 0) rolls right; the sine is a slow idle wallow so it's never dead level
+    cine.roll += (rollT - cine.roll) * (1 - Math.exp(-3 * dt));
+    P.roll = cine.roll;
+    const tp = -0.04 + Math.sin(cine.bobT * 0.5) * 0.05 + Math.max(-0.28, Math.min(0.28, cine.vy * 0.012));   // nose follows the climb/dive a little
+    P.pitch += (tp - P.pitch) * (1 - Math.exp(-2.4 * dt));
   };
   function tick(now) {
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
@@ -3993,8 +4186,11 @@
     P.crouchT = (P.crouchT || 0) + ((crouching ? 1 : 0) - (P.crouchT || 0)) * (1 - Math.exp(-13 * dt));   // SMOOTH crouch — the eye eases down over ~150 ms instead of snapping (user); collision height stays instant so tight gaps still fit
     if (P.crouchT < 0.001) P.crouchT = 0;
     const hh = crouching ? CR_HEIGHT : HEIGHT, eyeH = EYE + (CR_EYE - EYE) * P.crouchT;   // eyeH interpolates → smoothEye tracks it gently (no more ±3-clamp snap)
-    if (cineMode && !ED.on && !dead) { cineUpdate(dt, now); smoothEye += (P.y + eyeH - smoothEye) * (1 - Math.exp(-6 * dt)); }
+    if (cineMode && !ED.on && !dead) { cineUpdate(dt, now); smoothEye += (P.y + eyeH - smoothEye) * (1 - Math.exp(-6 * dt));
+      if (!blurLock) cineBlurK += (1 - cineBlurK) * (1 - Math.exp(-2.5 * dt)); }
     else {
+      if (!blurLock) cineBlurK = cineBlurK < 0.002 ? 0 : cineBlurK * Math.exp(-5 * dt);   // fade the blur out with the roll — an instant cut back to a sharp image is as jarring as popping it on
+      if (P.roll) P.roll = Math.abs(P.roll) < 0.002 ? 0 : P.roll * Math.exp(-7 * dt);   // leaving cine mode (or dying in it) levels the horizon out smoothly instead of snapping upright
     const sprint = keys.has(binds.sprint) && !crouching;
     const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
     let mx = 0, mz = 0;
@@ -4191,8 +4387,14 @@
     // ── camera basis ── (positions sent to the GPU are WINDOW-RELATIVE for f32 precision at any distance)
     const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
     const fwd = [Math.sin(P.yaw) * cp, sp, Math.cos(P.yaw) * cp];
-    const right = [Math.cos(P.yaw), 0, -Math.sin(P.yaw)];
-    const up = [-Math.sin(P.yaw) * sp, cp, -Math.cos(P.yaw) * sp];
+    let right = [Math.cos(P.yaw), 0, -Math.sin(P.yaw)];
+    let up = [-Math.sin(P.yaw) * sp, cp, -Math.cos(P.yaw) * sp];
+    if (P.roll) {                                      // BANK: spin the basis about fwd (fwd itself is untouched, so aim is unchanged and temporal reprojection — which stores full basis vectors — follows for free)
+      const cr = Math.cos(P.roll), sr = Math.sin(P.roll);
+      const r2 = [right[0] * cr + up[0] * sr, right[1] * cr + up[1] * sr, right[2] * cr + up[2] * sr];
+      up = [up[0] * cr - right[0] * sr, up[1] * cr - right[1] * sr, up[2] * cr - right[2] * sr];
+      right = r2;
+    }
     const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera
     if (!locked) {                                     // ESC menu: the whole CAMERA drifts gently — the entire image sways
       const ts = now * 0.001;
@@ -4317,6 +4519,8 @@
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
+    UF[1268] = cineBlurK * CINE_BLUR;                  // u.misc.x — cinematic motion blur (written unconditionally; the blit reads it every frame)
+    if (!ED.on) autoPickup();                          // AUTO-PICKUP (user): a free hand slot vacuums up nearby floating items — no right-click, no aiming
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
       const dr = drops[i];
       if (!(WORM_NFRAMES && dr.it === WORM_ITEM0 && dr.T && (now - dr.born) / 1000 > dr.T + 0.24)) continue;
@@ -4478,7 +4682,7 @@
     };
     const findPineCrown = (selfWk) => {                // pick a nearby pine not already holding a cardinal, land on one of its outer branch tips
       for (let t = 0; t < 28; t++) {                   // AREA-uniform radius over many tries → an even, consistent world-wide rate (like the butterflies) even where pines are sparser
-        const a = Math.random() * 6.283, d = 45 + Math.sqrt(Math.random()) * (Math.min(rdV, 420) - 45);   // place within the CAPPED cardinal disc (matches the recycle radius) so cardinals stay evenly spread around the player, not clumped
+        const a = Math.random() * 6.283, d = Math.sqrt(LIFE_IN * LIFE_IN + Math.random() * (LIFE_OUT * LIFE_OUT - LIFE_IN * LIFE_IN));   // AREA-uniform across the shared spawn annulus — perched cardinals were the worst pop-in offender, being re-placed as close as 45 vox in full view
         const wx = P.x + Math.sin(a) * d, wz = P.z + Math.cos(a) * d;
         const tr = treeAt(Math.floor(wx / TCELL), Math.floor(wz / TCELL)); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
@@ -4493,22 +4697,33 @@
     // so the world stays populated at every render distance. Each is recycled to a fresh procedural cell when it leaves
     // the fog ring; color comes from a spatial hash of that cell so orange/red/blue are sprinkled across the world.
     const rdV = Math.max(140, renderDist);
+    // ── ONE SPAWN RULE FOR ALL LIFE ── (user) every creature now follows the cardinal/worm mechanic. Two things fix the
+    // "it appeared out of nowhere beside me" pop-in: (a) LIFE_IN — nothing is EVER placed closer than this, so life fades
+    // in through the far fog and you walk up on it, instead of being re-placed 45 vox away in plain view; (b) hysteresis —
+    // the spawn ring (LIFE_OUT) sits strictly inside the despawn ring (LIFE_KEEP), so a creature dropped at the rim can't
+    // immediately recycle and thrash. LIFE_KEEP stays CAPPED because stationary life (cardinals) and slow life (worms)
+    // clump behind a fast player when the ring never recycles.
+    // DOUBLED 2026-07-18 (user). The hard ceiling is the GENERATED RECT, not the cap: rect reaches renderDist+96 and a
+    // spawn outside it is rejected outright, so LIFE_KEEP can only reach a little past the view. At the default view
+    // (368) that lands the inner ring at ~337 instead of ~202 — the most the built world allows. Raising the view
+    // slider is what actually unlocks the full doubling: at a 1000 view the inner ring goes 286 -> 811.
+    const LIFE_CAP = 1040;                             // was 520 — doubled, so a long view distance is no longer clamped by the cap
+    const LIFE_KEEP = Math.min(rdV + 64, LIFE_CAP);    // DESPAWN radius (every kind) — slightly PAST the view, still safely inside the generated rect
+    const LIFE_OUT = LIFE_KEEP * 0.94;                 // outermost SPAWN radius — the gap to LIFE_KEEP is the hysteresis band
+    const LIFE_IN = Math.min(LIFE_KEEP * 0.78, LIFE_OUT - 24);   // innermost SPAWN radius — out past the fog, never in clear view
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 1.25));   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
     const nCard = CARD_NFRAMES ? Math.min(60, Math.max(32, Math.round(nActD * 16))) : 0;   // PERCHED CARDINALS on pine crowns — HALVED back to 60 (user 2026-07-18); the 120 pool slots stay, only 60 activate
-    const rdD = rdV;                                   // ducks live to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring); they stay on their lake so they never clump
-    const cardR = Math.min(rdV, 420);                  // CARDINALS keep-radius is CAPPED (not the full rdV) — they're STATIONARY, so at a big render distance an uncapped ring never recycles them and they clump behind a moving player (user: 'only spawning in one area'). Capping keeps a dense disc that RE-distributes as the player moves.
-    const rdW = cardR;                                 // WORMS get the SAME capped follow-radius (user): they crawl slowly, so a fast-flying player at high render distance outruns them and uncapped they'd clump behind exactly like the cardinals did. Capped → they recycle ahead and stay spread around the player.
 
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
     if (DUCK_ITEM0 && !ED.on && now > lakeScanT) {     // ── LAKE CENSUS (every 2.5 s) ── grid-sample the view for wide-open-water spots, cluster them into lakes;
       lakeScanT = now + 2500;                          //    mother ducks below TARGET these so every visible lake gets its own family (pool cap 2 families)
       lakeSpots.length = 0;
-      const R7 = rdV * 0.8;
+      const R7 = LIFE_OUT;                             // lake census reaches the full spawn ring — at 0.8·rdV no lake was ever detected out where ducks now spawn, so they could never appear there
       for (let gx7 = -R7; gx7 <= R7; gx7 += 20) for (let gz7 = -R7; gz7 <= R7; gz7 += 20) {
         if (gx7 * gx7 + gz7 * gz7 > R7 * R7) continue;
         const sx8 = P.x + gx7, sz8 = P.z + gz7;
@@ -4534,7 +4749,7 @@
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
-      const rdK = wantK === 5 ? cardR : (wantK === 2 ? rdW : (wantK === 3 ? rdD : rdV));   // each kind's live/recycle radius — cardinals use the CAPPED cardR so they follow the player instead of clumping
+      const rdK = LIFE_KEEP;                           // ONE live/recycle radius for every kind (user: 'make every life form obey the spawning mechanics of the cardinal/worm')
       const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
       const far = dp2 > rdK * rdK;
       if (!B.init || far || (B.trap > 12 && (B.kind < 3 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; but a duck/lily wedged ON real water NEVER teleports (the unstick frees it), only if it's off-water
@@ -4571,8 +4786,7 @@
             sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
           } else {
             const a5 = Math.random() * 6.283;
-            const d5 = wantK === 2 ? Math.sqrt(40 * 40 + Math.random() * (rdW * rdW - 40 * 40))   // worms: AREA-uniform across the WHOLE disc (40..rdW) — the old ·0.55 bunched them in the inner half and left the outer world empty (user)
-              : (wantK >= 3 ? Math.sqrt(50 * 50 + Math.random() * (rdD * rdD - 50 * 50)) : Math.sqrt(50 * 50 + Math.random() * (rdV * rdV - 50 * 50)));   // ducks (fallback, no lake in view) + flyers: AREA-uniform across the whole disc, even spread
+            const d5 = Math.sqrt(LIFE_IN * LIFE_IN + Math.random() * (LIFE_OUT * LIFE_OUT - LIFE_IN * LIFE_IN));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
             sx = P.x + Math.sin(a5) * d5; sz = P.z + Math.cos(a5) * d5;
           }
           if (sx <= rect.xlo + 4 || sx >= rect.xhi - 4 || sz <= rect.zlo + 4 || sz >= rect.zhi - 4) continue;   // NEVER spawn outside the GENERATED rect — hmap there is garbage (the snow-landing guard; embedded 'cave' creatures after recenters)
