@@ -2805,7 +2805,7 @@
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
-  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: -1, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [] };
+  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0 };
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
@@ -3101,6 +3101,20 @@
   document.addEventListener('mousedown', (e) => {
     if (!locked) return;
     if (e.button === 2) tryPickup();
+    if (e.button === 0 && ED.on) {                     // ASSET EDITOR: left-click the stamped cardinal to SELECT it (pause) / click again to resume; then , . scrub the frames
+      const n = ED.frames.length;
+      if (n) {                                         // AABB slab test against the model's bounding box — forgiving for a small SPARSE model (an exact-voxel ray slips through the gaps)
+        const f = ED.frames[((ED.sel % n) + n) % n];
+        const cp2 = Math.cos(P.pitch), sp2 = Math.sin(P.pitch), dd = [Math.sin(P.yaw) * cp2, sp2, Math.cos(P.yaw) * cp2];
+        const eo = [P.x, smoothEye, P.z], bmin = [f.bx, ED.y + 1, f.bz], bmax = [f.bx + f.sx, ED.y + 1 + f.sz, f.bz + f.sy];
+        let tmin = 0.1, tmax = 300;
+        for (let a = 0; a < 3; a++) { const iv = 1 / (Math.abs(dd[a]) < 1e-9 ? 1e-9 : dd[a]);
+          let ta = (bmin[a] - eo[a]) * iv, tb = (bmax[a] - eo[a]) * iv; if (ta > tb) { const s = ta; ta = tb; tb = s; }
+          tmin = Math.max(tmin, ta); tmax = Math.min(tmax, tb); }
+        if (tmin <= tmax) { ED.paused = !ED.paused; edLayout(); }   // the view ray passes through the model → toggle select
+      }
+      return;
+    }
     if (e.button === 0 && !dead) {
       if (e.shiftKey && dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }   // clash instead of swing — only when the knife will have somewhere to go (exactly-2 rocks frees this slot)
       mouse0 = true;
@@ -3335,39 +3349,39 @@
     return ii; };
   const edPlaneId = (x, z) => ((x - ED.x0) % 10 === 0 || (z - ED.z0) % 10 === 0) ? ED_GREY : ED_WHITE;   // 1 m squares = every 10th voxel is a grey gridline
   const edHudUpd = () => { edHudEl.textContent = ED.frames.length
-    ? 'frame ' + (ED.sel + 1) + '/' + ED.frames.length + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + '   [, .] select   [← →] move in sequence'
+    ? 'frame ' + (ED.sel + 1) + '/' + ED.frames.length + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? '  ⏸ SELECTED  [, .] scrub   [← →] reorder' : '  ▶ playing — left-click the model to select')
     : 'asset editor — press ESC, then import a .vox to begin'; };
-  const edLayout = () => {                             // (re)stamp every frame in current sequence order + the selection ring
+  const edLayout = () => {                             // stamp ONLY the current frame, CENTRED, as a real static object (world voxels → full lighting) — the animation swaps to the next static frame in place; no filmstrip
     const cells = [];
     for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
     ED.fcells = [];
     for (const r of ED.ring) { const id = edPlaneId(r.x, r.z); if (W[r.ii] !== id) { W[r.ii] = id; cells.push(r.ii); } }
     ED.ring = [];
-    let cx = ED.x0 + 6, rowZ = ED.z0 + 8, rowH = 0;
-    for (const f of ED.frames) {
-      if (cx + f.sx > ED.x0 + ED.pw - 6 && cx > ED.x0 + 6) { cx = ED.x0 + 6; rowZ += rowH + 8; rowH = 0; }
-      f.bx = cx; f.bz = rowZ; rowH = Math.max(rowH, f.sy);
+    const n = ED.frames.length;
+    if (n) {
+      const f = ED.frames[((ED.sel % n) + n) % n];
+      const bx = ED.x0 + ((ED.pw - f.sx) >> 1), bz = ED.z0 + ((ED.pd - f.sy) >> 1);   // one frame, centred on the stage
+      f.bx = bx; f.bz = bz;
       for (const p of f.vox) {
         const y = ED.y + 1 + ((p >> 16) & 255); if (y >= WY - 1) continue;
-        ED.fcells.push(edSet(cx + (p & 255), y, rowZ + ((p >> 8) & 255), p >>> 24, cells));
+        ED.fcells.push(edSet(bx + (p & 255), y, bz + ((p >> 8) & 255), p >>> 24, cells));
       }
-      cx += f.sx + 6;
-    }
-    if (ED.sel >= 0 && ED.sel < ED.frames.length) {    // amber ring on the plane around the selected frame's footprint
-      const f = ED.frames[ED.sel], rx0 = f.bx - 2, rx1 = f.bx + f.sx + 1, rz0 = f.bz - 2, rz1 = f.bz + f.sy + 1;
-      for (let x = rx0; x <= rx1; x++) for (let z = rz0; z <= rz1; z++) {
-        if (x !== rx0 && x !== rx1 && z !== rz0 && z !== rz1) continue;
-        if (x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
-        const ii = edSet(x, ED.y, z, ED_HLITE, cells);
-        ED.ring.push({ ii, x, z });
+      if (ED.paused) {                                 // amber ring only while SELECTED (scrubbing)
+        const rx0 = bx - 2, rx1 = bx + f.sx + 1, rz0 = bz - 2, rz1 = bz + f.sy + 1;
+        for (let x = rx0; x <= rx1; x++) for (let z = rz0; z <= rz1; z++) {
+          if (x !== rx0 && x !== rx1 && z !== rz0 && z !== rz1) continue;
+          if (x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
+          const ii = edSet(x, ED.y, z, ED_HLITE, cells);
+          ED.ring.push({ ii, x, z });
+        }
       }
     }
     gpuPatch(cells);
     edHudUpd();
   };
-  const edSelStep = (d) => { const n = ED.frames.length; if (!n) return; ED.sel = ((ED.sel + d) % n + n) % n; edLayout(); };
-  const edMoveStep = (d) => { const n = ED.frames.length; if (ED.sel < 0 || n < 2) return; const j = ED.sel + d; if (j < 0 || j >= n) return;
-    const t = ED.frames[ED.sel]; ED.frames[ED.sel] = ED.frames[j]; ED.frames[j] = t; ED.sel = j; edLayout(); };
+  const edSelStep = (d) => { const n = ED.frames.length; if (!n) return; ED.paused = true; ED.sel = ((ED.sel + d) % n + n) % n; edLayout(); };   // scrubbing pauses the animation
+  const edMoveStep = (d) => { const n = ED.frames.length; if (n < 2) return; ED.paused = true; const s = ((ED.sel % n) + n) % n, j = s + d; if (j < 0 || j >= n) return;
+    const t = ED.frames[s]; ED.frames[s] = ED.frames[j]; ED.frames[j] = t; ED.sel = j; edLayout(); };
   const edColCache = new Map();                        // runtime color → palette id; nearest-match once the 256-entry palette is full
   const edCol = (r, g, b) => { const key = (r << 16) | (g << 8) | b;
     let cid = edColCache.get(key);
@@ -3429,7 +3443,7 @@
     const frames = [];
     for (const f of list) { try { frames.push(...edParseVox(f.u8, f.name)); } catch (e) { console.warn('[vb] editor: bad .vox', f.name, e); } }
     if (!frames.length) return 0;
-    ED.frames = frames; ED.sel = 0;
+    ED.frames = frames; ED.sel = 0; ED.paused = false;
     palSync(); edLayout();
     return frames.length; };
   const edEnter = () => {
@@ -3491,7 +3505,7 @@
     KNIFE_IT,
     snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 300000; snowBtnSync(); }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK }; },
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
-    dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; }, get swingStart() { return swingStart; },   // test taps
+    dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edImport: edImportBufs, edExport: edExportSeq,
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
@@ -3519,7 +3533,7 @@
       stg.destroy();
       return { diffs, spots };
     },
-    edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pal: palette.length }; },
+    edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, paused: ED.paused, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pw: ED.pw, pd: ED.pd, pal: palette.length }; },
     dbg() { return { smoothEye, pickRock: [...PICK_ROCK], passthru: [...PASSTHRU] }; },
     htest(n) { let bad = 0; for (let i = 0; i < (n || 1000); i++) { const x = ((Math.random() * 2e6) | 0) - 1e6, z = ((Math.random() * 2e6) | 0) - 1e6;
       const hv = H(x, z); if (hv !== makeHRow(z)(x) || hv !== makeHCol(x)(z)) bad++; } return bad; },
@@ -3922,17 +3936,13 @@
       UF[o2 + 12] = Zw[0] * right[0] + Zw[1] * right[1] + Zw[2] * right[2]; UF[o2 + 13] = Zw[0] * up[0] + Zw[1] * up[1] + Zw[2] * up[2]; UF[o2 + 14] = Zw[0] * fwd[0] + Zw[1] * fwd[1] + Zw[2] * fwd[2]; UF[o2 + 15] = 0;
     }
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
-      if (ED.on && CARD_NFRAMES > 0) {                  // ── EDITOR STAGE: ONE animated CARDINAL ── STANDS on the plane (feet on the ground, NO hover — user) and plays its rotate cycle as a single animation
-        const tb2 = now / 1000, ecx = ED.x0 + ED.pw / 2, ecz = ED.z0 + ED.pd / 2;
-        const px3 = ecx, pz3 = ecz, py3 = ED.y + 1 + CARD_H / 2 - CARD_FOOTZ;   // anchor is the model CENTRE; put the lowest occupied voxel row on top of the plane (ED.y voxel top = ED.y+1)
-        const Xw = [1, 0, 0], Yw = [0, 0, -1];           // upright level frame (model x→world x, y→world −z, z→up) — the ROTATE FRAMES carry the spin. Yw MUST be horizontal (only [0]/[2] are read; [0,1,0] would zero it out)
-        const fi2 = Math.floor(tb2 * 11) % CARD_NFRAMES; // ~1 rotation/sec through the 11 rotate frames
-        const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
-        UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = 1.0;
-        UF[o2 + 4] = Xw[0] * right[0] + Xw[2] * right[2]; UF[o2 + 5] = Xw[0] * up[0] + Xw[2] * up[2]; UF[o2 + 6] = Xw[0] * fwd[0] + Xw[2] * fwd[2]; UF[o2 + 7] = CARD_ITEM0 + fi2;
-        UF[o2 + 8] = Yw[0] * right[0] + Yw[2] * right[2]; UF[o2 + 9] = Yw[0] * up[0] + Yw[2] * up[2]; UF[o2 + 10] = Yw[0] * fwd[0] + Yw[2] * fwd[2]; UF[o2 + 11] = 0;
-        UF[o2 + 12] = right[1]; UF[o2 + 13] = up[1]; UF[o2 + 14] = fwd[1]; UF[o2 + 15] = 0;
-      } else if (BIRD_NFRAMES > 0 && !ED.on) {          // the editor void has no wildlife (else-branch hides the slot)
+      if (ED.on) {                                       // ── EDITOR STAGE ── the cardinal is a STAMPED static object (world voxels → full lighting), NOT a drop: hide slot 4, and advance the animation by swapping to the next static frame in place
+        UF[o2 + 7] = 0;                                  // item id 0 hides the drop slot
+        if (ED.frames.length && !ED.paused) {            // playing → step to the next frame at ~11 fps (edLayout re-stamps; the denoiser relights each static frame)
+          const n = ED.frames.length, fi = Math.floor(now / 90) % n;
+          if (fi !== (((ED.sel % n) + n) % n)) { ED.sel = fi; edLayout(); }
+        }
+      } else if (BIRD_NFRAMES > 0) {                     // the WORLD bird (only when NOT in the editor)
         const tb = now / 1000;
         if (!bird.init) {                                // it STARTS at the spawn position, then goes wherever its wandering takes it
           bird.x = P.x; bird.z = P.z; bird.g = P.y;
