@@ -594,6 +594,7 @@
   let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads as LIVE entities (pool slots 32-47) — they drift and rotate OFF-grid on the water; static worldgen stamping retired
   let SPARK_IT = 0, KNIFE_IT = 0;                      // item ids of the 1-voxel clash spark and the stone knife (assigned in the items block)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
+  let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
   // the old engine's buildHeldFrames approach) DDA-raytraced in camera space. Item ids in u.pickX.w:
@@ -868,6 +869,7 @@
         const cells = new Array(bsx * bsy * bsz).fill(null);
         for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
         loaded.push({ w: bsx, d: bsy, h: bsz, cells });
+        CARDINAL_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv });   // keep raw bytes for the editor filmstrip
       }
       CARD_ITEM0 = items.length + 1;
       for (const it of loaded) items.push(it);
@@ -2105,7 +2107,7 @@
           let sdir = normalize(u.sunDir + st * ((rand(&seed) * 2.0 - 1.0) * 0.028) + sb * ((rand(&seed) * 2.0 - 1.0) * 0.028));
           let sh = trace(sp, sdir, 1200.0, skipW);
           sunV = select(1.0, 0.0, sh.t >= 0.0);
-          if (sunV > 0.0) {                                          // CREATURE CAST SHADOWS — the moving lilies/ducks/worms aren't in the world grid, so the sun ray tests their (AABB) bodies here → they cast shadows on ground/water like static voxels (sp and the boxes are both window-relative)
+          if (${location.search.includes('nocshad') ? 0 : 1} == 1 && sunV > 0.0) {   // CREATURE CAST SHADOWS — the moving lilies/ducks/worms aren't in the world grid, so the sun ray tests their (AABB) bodies here → they cast shadows on ground/water like static voxels (sp and the boxes are both window-relative; ?nocshad disables for A/B)
             for (var s = 0; s < 16; s++) {
               let CA = u.cshad[s * 2];
               if (CA.w < 0.5) { continue; }
@@ -3449,6 +3451,7 @@
     gpuPatch(cells);
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = false;
     smoothEye = P.y + EYE; resetHist = 1;
+    if (!ED.frames.length && CARDINAL_ROTATE.length) edImportBufs(CARDINAL_ROTATE);   // auto-load the cardinal frames as the EDITABLE FILMSTRIP (,/. selects each frame) — the standing model above previews the animation. A manual .vox import replaces it.
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
   };
@@ -4236,8 +4239,8 @@
       const bobF = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? 2.3 : 1.6) : (B.kind === 1 ? 2.6 : 6.8));
       const px3 = B.x, pz3 = B.z, py3 = B.y + Math.sin(tb3 * bobF + wk * 1.9) * bobA;   // (worm grid-snapping was undone at user request — smooth continuous pose)
       if (B.kind >= 2 && freezeK < 0.4) {              // GROUND/WATER creatures cast a sun shadow (lily/duck/worm) — flyers (0/1) skip; frozen lakes are flat & shadow-free like the water
-        const hxz = B.kind === 4 ? 4.5 : (B.kind === 3 ? (isBaby ? 1.8 : 3.0) : 3.0);
-        const hy = B.kind === 4 ? 0.7 : (B.kind === 3 ? (isBaby ? 1.5 : 2.5) : 1.2);
+        const hxz = B.kind === 4 ? 5.0 : (B.kind === 3 ? (isBaby ? 1.8 : 3.0) : 3.0);
+        const hy = B.kind === 4 ? 1.3 : (B.kind === 3 ? (isBaby ? 1.5 : 2.5) : 1.2);   // lily box a touch taller so the pad's shadow projects clear of the pad (not tucked underneath)
         cshadList.push([px3 - winOX, py3, pz3 - winOZ, hxz, hy, dp2]);
       }
       const HxR = Math.sin(B.th), HzR = Math.cos(B.th);   // RENDER yaw — for lilies this spins freely, independent of drift
