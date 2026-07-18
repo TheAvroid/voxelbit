@@ -1119,7 +1119,7 @@
   // fillet, so joints are concave-blended rather than butted), and the whole isosurface is displaced by low-frequency
   // COHERENT 3D noise — organic swelling and pinching along the bore instead of a perfectly round pipe.
   const TUBE_K = 7, TUBE_WOB = 5.5, TUBE_FRQ = 0.019;   // fillet width / wall displacement amplitude / noise wavelength (~53 vox — long, rolling)
-  const TUBE_SHELL = 2.6, CAVE_ROCKS = 5;               // rock-lining thickness outside the bore / small-rock scatter tries per station
+  const TUBE_SHELL = 3.0, CAVE_ROCKS = 5;               // PRESCREEN reach for the 1-voxel cave skin (the field is roughly a distance, so a face voxel always lands well inside 3) / small-rock scatter tries per station
   const smin3 = (a, b, k) => { const h = Math.max(0, Math.min(1, 0.5 + 0.5 * (b - a) / k)); return b + (a - b) * h - k * h * (1 - h); };
   const capsF = (px, py, pz, A, B) => {                 // signed distance to the tapered capsule A→B (radius lerps along it)
     const bax = B.x - A.x, bay = B.y - A.y, baz = B.z - A.z;
@@ -1146,11 +1146,24 @@
           f = smin3(f, capsF(x, y, z, P, A), TUBE_K);
           f = smin3(f, capsF(x, y, z, B, N), TUBE_K);
           f += (vnoise3(x * TUBE_FRQ, y * TUBE_FRQ, z * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
-          if (f > 0) {                                  // just OUTSIDE the bore = the cave WALL — line it with rock so tunnels read as stone
-            if (f < TUBE_SHELL) {
-              const jj = gx + y * WX + gz * WX * WY;
-              const vw = W[jj];
-              if (vw && !CAVEKEEP[vw]) W[jj] = CAVEROCK[(ihash(x * 3 + y, z * 5 + y * 7) * CAVEROCK.length) | 0];   // mottled, hashed on WORLD coords so the pattern can't swim on a window shift
+          if (f > 0) {                                  // ── CAVE SKIN ── EXACTLY the solid voxels that touch the bore: ONE layer thick, no gaps, so the whole
+            if (f < TUBE_SHELL) {                       // inner surface of the cave is rock and nothing else is left showing.
+              let skin = false;                         // Membership is decided on the analytic FIELD, never on W's neighbours: in the gen workers W is a
+              for (let n = 0; n < 6 && !skin; n++) {    // region-local slab, so a read one voxel outside the region hits a different part of the world and
+                const nx = x + (n === 0 ? 1 : (n === 1 ? -1 : 0));   // would leave bare voxels along every region seam.
+                const ny = y + (n === 2 ? 1 : (n === 3 ? -1 : 0));
+                const nz = z + (n === 4 ? 1 : (n === 5 ? -1 : 0));
+                let g = capsF(nx, ny, nz, A, B);
+                g = smin3(g, capsF(nx, ny, nz, P, A), TUBE_K);
+                g = smin3(g, capsF(nx, ny, nz, B, N), TUBE_K);
+                g += (vnoise3(nx * TUBE_FRQ, ny * TUBE_FRQ, nz * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
+                if (g <= 0) skin = true;                // a neighbour is open bore → this voxel is an exposed face
+              }
+              if (skin) {
+                const jj = gx + y * WX + gz * WX * WY;
+                const vw = W[jj];
+                if (vw && !CAVEKEEP[vw]) W[jj] = CAVEROCK[(ihash(x * 3 + y, z * 5 + y * 7) * CAVEROCK.length) | 0];   // mottled, hashed on WORLD coords so the pattern can't swim on a window shift
+              }
             }
             continue;
           }
