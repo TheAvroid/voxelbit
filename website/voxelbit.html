@@ -1416,7 +1416,7 @@
   const LGIGCELL = 128;                                // GIGANTIC LILYPADS: 1-2 per lake — one candidate per 12.8 m cell, only on WIDE open lake water
   function lilyGigAt(cx, cz) {
     if (!LILYPAD_GIGV) return null;
-    if (ihash(cx * 53 + 11, cz * 59 + 7) > 0.55) return null;
+    if (ihash(cx * 53 + 11, cz * 59 + 7) > 0.275) return null;   // twice as rare (was 0.55, user)
     const wx = Math.round(cx * LGIGCELL + 22 + ihash(cx * 3 + 5, cz * 7 + 9) * (LGIGCELL - 44));
     const wz = Math.round(cz * LGIGCELL + 22 + ihash(cx * 11 + 3, cz * 5 + 13) * (LGIGCELL - 44));
     if (H(wx, wz) > WL - 2) return null;               // ≥ 3 voxels of water under the centre
@@ -4448,7 +4448,7 @@
     const nWorm = WORM_NFRAMES ? Math.max(16, Math.min(32, nActD * 2)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-18 (user; 32 = slot cap 32-63)
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
-    const nCard = CARD_NFRAMES ? Math.min(120, Math.max(64, Math.round(nActD * 32))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED AGAIN to 120 slots (user 2026-07-18), floor 64 so the world stays consistently populated
+    const nCard = CARD_NFRAMES ? Math.min(60, Math.max(32, Math.round(nActD * 16))) : 0;   // PERCHED CARDINALS on pine crowns — HALVED back to 60 (user 2026-07-18); the 120 pool slots stay, only 60 activate
     const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
     const cardR = Math.min(rdV, 420);                  // CARDINALS keep-radius is CAPPED (not the full rdV) — they're STATIONARY, so at a big render distance an uncapped ring never recycles them and they clump behind a moving player (user: 'only spawning in one area'). Capping keeps a dense disc that RE-distributes as the player moves.
 
