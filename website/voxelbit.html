@@ -2813,7 +2813,7 @@
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
-    for (let j = 16; j < 55; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-39 + cardinals 40-54) to re-stamp fresh next frame (stale grid indices)
+    for (let j = 16; j < 70; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-39 + cardinals 40-54) to re-stamp fresh next frame (stale grid indices)
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
@@ -3019,7 +3019,7 @@
   const bird = { th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0 };
   const birdBox = { active: false, cx: 0, cy: 0, cz: 0, hx: 8, hy: 8, hz: 8 };   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
-  const wbf = Array.from({ length: 55 }, () => ({ init: false }));   // WORLD creature pool (drop slots 9-63): 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-39 worms, 40-54 LILY PADS
+  const wbf = Array.from({ length: 70 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-39 worms, 40-69 PERCHED CARDINALS (30 slots — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget)
   // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
   // Worms animate their crawl (re-stamping the current frame) while moving + freeze on a pause; ducks are a single rigid pose floating at a fixed waterline. A creature re-stamps only when its cell / facing / frame changes, so a still one fully converges to crisp static lighting.
   let WORM_STAMP = null, DUCK_STAMP = null, DUCKB_STAMP = null;   // [frame][orient0..3] → array of [dx,dy(up),dz,palId]; built lazily once the frames + palette exist
@@ -3100,7 +3100,7 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
-  const unstampAllWorms = () => { for (let j = 16; j < 55; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-39 + cardinals 40-54; caller re-uploads occupancy
+  const unstampAllWorms = () => { for (let j = 16; j < 70; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-39 + cardinals 40-54; caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
@@ -3729,7 +3729,7 @@
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0; for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } return { voxels: n, worms: live }; },   // Task 2/3 taps
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
-    perched() { const o = []; for (let j = 40; j < 55; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0) }); } } return o; },   // perched-cardinal test tap
+    perched() { const o = []; for (let j = 40; j < 70; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0) }); } } return o; },   // perched-cardinal test tap
     reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
@@ -4279,7 +4279,7 @@
         const wx = P.x + Math.sin(a) * d, wz = P.z + Math.cos(a) * d;
         const tr = treeAt(Math.floor(wx / TCELL), Math.floor(wz / TCELL)); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
-        let occ = false; for (let j = 40; j < 55; j++) { if (j === selfWk) continue; const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5 && Math.abs((O.tx || 0) - tr.tx) < 6 && Math.abs((O.tz || 0) - tr.tz) < 6) { occ = true; break; } }
+        let occ = false; for (let j = 40; j < 70; j++) { if (j === selfWk) continue; const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) { const ddx = (O.tx || 0) - tr.tx, ddz = (O.tz || 0) - tr.tz; if (ddx * ddx + ddz * ddz < 55 * 55) { occ = true; break; } } }   // keep cardinals ≥55 vox apart → EVENLY SPREAD across the pines, never clustered (user)
         if (occ) continue;
         const cr = pineEdgePerch(tr.tx, tr.tz); if (!cr) continue;
         return { tx: tr.tx, tz: tr.tz, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };   // x/z centred on the branch-tip needle
@@ -4295,7 +4295,7 @@
     const nWorm = WORM_NFRAMES ? Math.max(4, Math.min(8, nActD >> 1)) : 0;   // ground worms, day AND night — DOUBLED AGAIN 2026-07-17 (user; 8 = slot cap 32-39)
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
-    const nCard = CARD_NFRAMES ? Math.min(15, Math.max(12, Math.round(nActD * 4))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED AGAIN (user), floor 12 so the world stays consistently populated; hard cap 15 (lily slots 40-54)
+    const nCard = CARD_NFRAMES ? Math.min(30, Math.max(16, Math.round(nActD * 8))) : 0;   // PERCHED CARDINALS on pine crowns — DOUBLED AGAIN to 30 slots (user), floor 16 so the world stays consistently populated
     const rdW = rdV, rdD = rdV;                        // EVERY kind lives to the full terrain render distance (user: 'apply this logic to everything' — ducks were visibly despawning at their old shorter ring)
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
@@ -4308,13 +4308,13 @@
         const sx8 = P.x + gx7, sz8 = P.z + gz7;
         if (sx8 <= rect.xlo + 4 || sx8 >= rect.xhi - 4 || sz8 <= rect.zlo + 4 || sz8 >= rect.zhi - 4) continue;
         if (!bfOpenW(sx8, sz8) || !bfSky(sx8, WL + 2, sz8)) continue;   // bfOpenW now requires real water voxels + width — dry ravines/cave pools never seed a lake spot
-        const cl7 = lakeSpots.find((c) => (c.x - sx8) * (c.x - sx8) + (c.z - sz8) * (c.z - sz8) < 110 * 110);
+        const cl7 = lakeSpots.find((c) => (c.x - sx8) * (c.x - sx8) + (c.z - sz8) * (c.z - sz8) < 260 * 260);   // MERGE a whole lake into ONE spot (was 110 → a big lake split into 3-4 spots → 4 families on it, user); 260 covers a typical lake, still separates distinct ones
         if (cl7) { cl7.n++; cl7.x += (sx8 - cl7.x) / cl7.n; cl7.z += (sz8 - cl7.z) / cl7.n; }   // centroid = lake identity; ax/az stays a KNOWN-GOOD water sample (the centroid of an L-shaped lake can be ashore)
         else lakeSpots.push({ x: sx8, z: sz8, ax: sx8, az: sz8, n: 1 });
       }
     }
     let dropCursor = 9;                                // COMPACTION: live creatures emit to consecutive slots from 9; the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists
-    for (let wk = 0; wk < 55; wk++) {
+    for (let wk = 0; wk < 70; wk++) {
       const B = wbf[wk];
       const wormSlot = wk >= 32 && wk < 40, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 40;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
@@ -4376,7 +4376,7 @@
           if (wantK >= 3 && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
           if (wantK < 2 && tooClose(0, 16, 40)) continue;             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
           if (wantK === 2 && tooClose(32, 40, 60)) continue;          // worms spread WIDE — never bunched (user, doubled with the population)
-          if (wantK === 3 && tooClose(16, 20, 130)) continue;         // mother ducks NEVER spawn beside another family (user; wider guard — 130 vox apart)
+          if (wantK === 3 && tooClose(16, 20, 200)) continue;         // mother ducks spawn ≥200 vox apart → at most ~2 families fit on a typical lake (user: 'only 1-2 per lake')
           if (wantK === 4 && tooClose(40, 55, 12)) continue;          // lilies scatter
           const sy = wantK === 2 ? gS + 2 : (wantK === 3 ? WL + 4 : (wantK === 4 ? WL + 1.4 : bfGlide(sx, sz) + (wantK ? 9 : 14)));   // ducks/lilies float; duck FEET sit inside the water voxel layer
           if ((wantK === 2 || !bfRoofed(sx, sy, sz)) && !bfObst(sx, sy, sz)) {   // worms live happily UNDER the canopy — the roof test starved dense-forest placement ('worms only near spawn')
