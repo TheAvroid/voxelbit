@@ -25,9 +25,10 @@
   #lock .keys { opacity: 0.75; font-size: 6px; }
   #load { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0b0e12; color: #9fb0c4; font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; z-index: 10; }
   #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; }
-  #kbBtn, #pkBtn, #edBtn { width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 12px; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, color 0.15s; }
-  #kbBtn svg, #pkBtn svg, #edBtn svg { width: 22px; height: 22px; }
-  #kbBtn:hover, #pkBtn:hover, #edBtn:hover { border-color: #8fb3dd; color: #fff; }
+  #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
+  #kbBtn, #pkBtn, #edBtn, #dcBtn { width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 12px; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, color 0.15s; }
+  #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg { width: 22px; height: 22px; }
+  #kbBtn:hover, #pkBtn:hover, #edBtn:hover, #dcBtn:hover { border-color: #8fb3dd; color: #fff; }
   #edBtn.on { border-color: #7fd05a; color: #b8ff6e; }
   #edRow { display: flex; flex-direction: column; gap: 10px; align-items: center; }   /* stacked under the button row, centred on it; #lock's own 10px gap matches the square-button spacing */
   #edRow button { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
@@ -83,6 +84,7 @@
     <button id="kbBtn" title="keybinds"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
     <button id="pkBtn" title="held item position"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H8v-2h2v2Zm8 0h-2v-2h2v2ZM4 18h2v2H2v-4h2v2Zm12 2h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 18H6v-2h2v2Zm6 0h-2v-2h2v2Zm8 0h-2v-2h2v2ZM6 16H4v-2h2v2Zm4 0H8v-2h2v2Zm6 0h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 14H6v-2h2v2Zm4 0h-2v-2h2v2Zm6 0h-2v-2h2v2Zm-8-2H8v-2h2v2Zm4 0h-2v-2h2v2Zm8 0h-2v-2h2v2Zm-10-2h-2V8h2v2Zm8-4h-2v2h-2v2h-2V8h-2V6h2V4h2V2h4v4ZM6 8H4V6h2v2ZM4 6H2V4h2v2Zm4 0H6V4h2v2ZM6 4H4V2h2v2Z"/></svg></button>
     <button id="edBtn" title="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
+    <a id="dcBtn" href="https://discord.gg/AtW5fWZtSG" target="_blank" rel="noopener noreferrer" title="discord"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M21 22h-9v-2h9v2Zm-9-2h-2v-2h2v2Zm11 0h-2v-5h2v5Zm-13-2H8v-2h2v2Zm7-1h-4v-2h4v2Zm-9-1H6v-2h2v2Zm5-1h-2v-2h2v2Zm8 0h-4v-2h4v2ZM6 14H4v-2h2v2Zm5-1H9v-2h2v2Zm-7-1H2V3h2v9Zm5-1H7V7h2v4Zm9 0h-2V8h2v3Zm4 0h-2V6h2v5Zm-6-3h-3V6h3v2Zm-5-1H9V3h2v4Zm9-1h-2V4h2v2Zm-2-2h-5V2h5v2ZM9 3H4V1h5v2Z"/></svg></a>
   </div>
   <div id="edRow" class="hidden"><button id="edCopy" title="copy the per-frame offsets so you can paste them back to be baked into the code">copy changes</button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
 </div>
@@ -4697,21 +4699,40 @@
       const pool = low.length ? low : cands;
       return pool.length ? pool[(Math.random() * pool.length) | 0] : null;
     };
-    const findPineCrown = (selfWk) => {                // pick a nearby pine not already holding a cardinal, land on one of its outer branch tips
-      for (let t = 0; t < 28; t++) {                   // AREA-uniform radius over many tries → an even, consistent world-wide rate (like the butterflies) even where pines are sparser
-        // ── STATIONARY LIFE GATES ON VISIBILITY, NOT DISTANCE ── a perched bird never moves, so the spawn ring is
-        // also where it lives forever. Confining them to the far annulus (like worms/flyers, which wander inward)
-        // emptied the whole near forest — nearest bird sat at ~310 vox and you never saw one up close. So: place
-        // across the WHOLE disc from 45 out, and if the spot is close enough that a pop-in would be visible,
-        // require it to be BEHIND the player. Walking forward keeps seeding birds into the woods behind you.
-        const a = Math.random() * 6.283, d = 45 + Math.sqrt(Math.random()) * (LIFE_OUT - 45);
-        const sa = Math.sin(a), ca = Math.cos(a);
-        if (d < LIFE_IN && (sa * Math.sin(P.yaw) + ca * Math.cos(P.yaw)) > -0.15) continue;   // close AND in front → skip, it would materialise in view
-        const wx = P.x + sa * d, wz = P.z + ca * d;
-        const tr = treeAt(Math.floor(wx / TCELL), Math.floor(wz / TCELL)); if (!tr) continue;
+    // ── PERCHED BIRD PLACEMENT ── This used to throw 28 random darts at the disc and keep the first that hit a pine.
+    // Random darts give a random DENSITY: some stretches of forest end up thick with birds and others bare, which is
+    // the "not consistent throughout the forest" complaint. It also could not see which pines were free, so it wasted
+    // most of its tries re-drawing occupied ones. Now every pine in range is enumerated once per frame, the occupied
+    // ones are removed, and a placement draws UNIFORMLY from what is left — so bird density is even everywhere the
+    // pines are, by construction rather than by luck.
+    let cardCandF = -1;
+    const cardCand = [];
+    const buildCardCand = () => {
+      cardCand.length = 0;
+      const used = new Set();
+      for (let j = 64; j < 184; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) used.add(O.tx + ',' + O.tz); }
+      const R = Math.ceil(LIFE_OUT / TCELL);
+      const c0x = Math.floor(P.x / TCELL), c0z = Math.floor(P.z / TCELL);
+      const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
+      for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+        const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
-        let occ = false; for (let j = 64; j < 184; j++) { if (j === selfWk) continue; const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) { const ddx = (O.tx || 0) - tr.tx, ddz = (O.tz || 0) - tr.tz; if (ddx * ddx + ddz * ddz < 28 * 28) { occ = true; break; } } }   // keep cardinals ≥28 vox apart (tightened from 39 for the DOUBLED-AGAIN count) → EVENLY SPREAD across the pines, never clustered (user)
-        if (occ) continue;
+        if (used.has(tr.tx + ',' + tr.tz)) continue;   // another slot already owns this pine
+        const ddx = tr.tx - P.x, ddz = tr.tz - P.z, d2 = ddx * ddx + ddz * ddz;
+        if (d2 > LIFE_OUT * LIFE_OUT) continue;
+        // a bird must not MATERIALISE in view: near pines are only eligible if they are behind the player. Walking
+        // forward, a pine ahead is stocked while it is still far off and is simply there by the time you reach it.
+        const dl = Math.sqrt(d2) || 1;
+        if (d2 < LIFE_IN * LIFE_IN && (ddx / dl * fx + ddz / dl * fz) > -0.15) continue;
+        cardCand.push(tr);
+      }
+    };
+    const findPineCrown = (selfWk) => {                // one free pine, drawn uniformly from every eligible pine in range
+      if (cardCandF !== frame) { cardCandF = frame; buildCardCand(); }
+      for (let t = 0; t < 12 && cardCand.length; t++) {
+        const k = (Math.random() * cardCand.length) | 0;
+        const tr = cardCand[k];
+        cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();   // claim it for this frame so two slots can't take the same pine
         const cr = pineEdgePerch(tr.tx, tr.tz); if (!cr) continue;
         return { tx: tr.tx, tz: tr.tz, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };   // x/z centred on the branch-tip needle
       }
@@ -4740,7 +4761,10 @@
     const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
-    const nCard = CARD_NFRAMES ? Math.min(60, Math.max(32, Math.round(nActD * 16))) : 0;   // PERCHED CARDINALS on pine crowns — HALVED back to 60 (user 2026-07-18); the 120 pool slots stay, only 60 activate
+    // Count scales with the AREA the birds have to cover. The 60 cap was set when the spawn ring was ~331 vox; the
+    // ring is now ~406, which is 1.5x the area, so the same 60 birds read as a thinner, patchier forest. This keeps
+    // the ORIGINAL density over the larger disc (~90 at the default view) and is still inside the 120-slot pool.
+    const nCard = CARD_NFRAMES ? Math.min(96, Math.max(32, Math.round(60 * (LIFE_OUT * LIFE_OUT) / (331 * 331)))) : 0;
 
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
@@ -4841,17 +4865,11 @@
           // and read as deliberate grouping. Instead take the colour that is UNDER-represented among the perched
           // birds ALREADY nearby, so every neighbourhood self-balances; ties still flip a coin so it never
           // degenerates into a rigid checkerboard. Population stays ~50/50 globally.
-          if (!BLUEBIRD_ROTATE.length) B.blue = false;
-          else {
-            let nb = 0, nr = 0;
-            for (let j = 64; j < 184; j++) {
-              const O = wbf[j];
-              if (j === wk || !O || !O.init || (O.kind | 0) !== 5) continue;
-              const ddx = O.x - B.x, ddz = O.z - B.z;
-              if (ddx * ddx + ddz * ddz < 170 * 170) { if (O.blue) nb++; else nr++; }
-            }
-            B.blue = nb === nr ? Math.random() < 0.5 : nb < nr;
-          }
+          // COLOUR COMES FROM THE PINE, not from a coin flip at spawn: a checkerboard over 40-vox blocks, with ~30%
+          // of trees flipped so it never reads as a literal grid. Deterministic per tree, so the same pine is always
+          // the same colour and the mix cannot drift or clump as birds recycle.
+          B.blue = BLUEBIRD_ROTATE.length > 0 &&
+            ((((Math.floor(B.tx / 40) + Math.floor(B.tz / 40)) & 1) === 0) !== (ihash(B.tx * 5 + 3, B.tz * 9 + 7) < 0.3));
         }
       }
       const fadeIn = Math.min(1, (now - B.born) / 700);   // grow in over 0.7 s so a recycled creature materialises smoothly instead of popping into view
