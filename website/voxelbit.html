@@ -4048,7 +4048,7 @@
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
-    perched() { const o = []; for (let j = 64; j < 184; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0) }); } } return o; },   // perched-cardinal test tap
+    perched() { const o = []; for (let j = 64; j < 184; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, blue: !!B.blue, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0) }); } } return o; },   // perched-cardinal test tap
     reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
@@ -4120,10 +4120,10 @@
   let cineMode = false;                                // C — CINEMATIC flythrough camera
   let cineBlurK = 0;                                   // eased 0..1 motion-blur weight — ramped, never hard-toggled, or the blur POPS on at the C keypress
   let blurLock = false;                                // __vb.blur(v) pins the weight for A/B testing; blurFree() hands it back to the easing
-  const CINE_BLUR = 4.0;                               // motion-vector multiplier at full weight. The shader clamps the smear, so this saturates on fast banks (blur stays motion-proportional, never a full wipe). Tune live with __vb.blur(v).
+  const CINE_BLUR = 2.0;                               // motion-vector multiplier at full weight — HALVED (user 2026-07-18). The shader clamps the smear, so this saturates on fast banks (blur stays motion-proportional, never a full wipe). Tune live with __vb.blur(v).
   const cine = { yaw: 0, om: 0, omT: 0, tRe: 0, bobT: 0, alt: 42, altT: 42, roll: 0, vy: 0, climb: 0 };
   const CINE_R = 7;                                    // camera "hull" half-extent (vox) — probes sample a BOX this size, so a thin trunk can't slip between point samples
-  const CINE_LOOK = 64;                                // whisker probe range
+  const CINE_LOOK = 104;                               // whisker probe range — EXTENDED when the turn rate was halved (user): a gentler turn needs to start earlier to clear the same trunk, or it clips what it used to dodge
   const CINE_WHISK = [0, 0.3, -0.3, 0.62, -0.62, 1.0, -1.0, 1.5, -1.5];   // candidate headings, tried in order: straight first, then progressively harder breaks either way
   const cineBlock = (x, y, z) => {                     // "can the camera be here" — SOLID **or CANOPY**. Foliage carries no player hitbox (solidTab zeroes it), which is precisely why the old probe flew straight through pine crowns
     const yi = Math.floor(y);
@@ -4144,7 +4144,7 @@
   const cineUpdate = (dt, now) => {                     // glide forward, BOB AND WEAVE between the trunks, banking into every turn like a spaceship
     P.fly = true; P.vy = 0; P.onGround = false;
     const tb = now / 1000;
-    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.7; cine.altT = 26 + Math.random() * 34; cine.tRe = tb + 2.5 + Math.random() * 3.5; }   // every few s: a new gentle turn + altitude target. 26..60 above ground keeps it DOWN IN THE TIMBER (pines are ~116 tall) so it threads between trunks instead of ploughing the crowns
+    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.35; cine.altT = 26 + Math.random() * 34; cine.tRe = tb + 2.5 + Math.random() * 3.5; }   // every few s: a new gentle turn + altitude target. 26..60 above ground keeps it DOWN IN THE TIMBER (pines are ~116 tall) so it threads between trunks instead of ploughing the crowns
     let bestOff = 0, bestScore = -1e9;                  // ── WEAVE ── score a fan of headings by clear distance, biased toward straight ahead and toward holding the current bank
     for (const off of CINE_WHISK) {
       const s = cineClear(cine.yaw + off, CINE_LOOK) - Math.abs(off) * 24 - (off * cine.om < 0 ? 9 : 0);
@@ -4152,9 +4152,9 @@
     }
     const ahead = cineClear(cine.yaw, CINE_LOOK);
     const urg = Math.max(0, 1 - ahead / CINE_LOOK);     // 0 = wide open, 1 = about to clip something
-    if (bestOff !== 0) cine.omT = Math.sign(bestOff) * (0.45 + 2.0 * urg);   // the tighter it is, the harder the break
+    if (bestOff !== 0) cine.omT = Math.sign(bestOff) * (0.225 + 1.0 * urg);   // the tighter it is, the harder the break — HALVED (user 2026-07-18), so it drifts around trees instead of snapping
     cine.om += (cine.omT - cine.om) * (1 - Math.exp(-3.4 * dt));
-    cine.om = Math.max(-1.7, Math.min(1.7, cine.om));
+    cine.om = Math.max(-0.85, Math.min(0.85, cine.om));   // halved with the targets, or the clamp would no longer bind
     cine.yaw += cine.om * dt;
     const spd = 32 * (0.5 + 0.5 * Math.min(1, ahead / 44));   // ease off the throttle in tight timber, open up in the clear
     P.x += Math.sin(cine.yaw) * spd * dt; P.z += Math.cos(cine.yaw) * spd * dt;
@@ -4170,7 +4170,7 @@
     P.y += cine.vy * dt;
     if (P.y < ground + 12) { P.y = ground + 12; cine.vy = Math.max(cine.vy, 0); }   // hard floor — the spring may overshoot on a fast descent
     P.yaw = cine.yaw + Math.sin(cine.bobT * 0.45) * 0.05;   // gentle cinematic yaw sway
-    const rollT = -cine.om * 0.62 + Math.sin(cine.bobT * 0.37) * 0.025;   // BANK INTO THE TURN — right turn (om > 0) rolls right; the sine is a slow idle wallow so it's never dead level
+    const rollT = -cine.om * 0.62 + Math.sin(cine.bobT * 0.37) * 0.0125;   // BANK INTO THE TURN — right turn (om > 0) rolls right; the sine is a slow idle wallow so it's never dead level. Tilt HALVED (user 2026-07-18).
     cine.roll += (rollT - cine.roll) * (1 - Math.exp(-3 * dt));
     P.roll = cine.roll;
     const tp = -0.04 + Math.sin(cine.bobT * 0.5) * 0.05 + Math.max(-0.28, Math.min(0.28, cine.vy * 0.012));   // nose follows the climb/dive a little
@@ -4810,7 +4810,25 @@
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
-        if (lilySlot) { B.phase = Math.random() * 100000; B.blue = BLUEBIRD_ROTATE.length > 0 && Math.random() < 0.5; }   // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + ~half are BLUE BIRDS (the reskin), rest red cardinals — both grid-stamped by stampCardinal
+        if (lilySlot) {                                // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + red cardinals / BLUE BIRDS (the reskin) — both grid-stamped by stampCardinal
+          B.phase = Math.random() * 100000;
+          // INTERMIX THE SONGBIRDS (user: "you're clustering the colored ones with each other"). An independent
+          // 50/50 flip per bird is what produced the clumps — random runs of one colour are normal in a coin flip
+          // and read as deliberate grouping. Instead take the colour that is UNDER-represented among the perched
+          // birds ALREADY nearby, so every neighbourhood self-balances; ties still flip a coin so it never
+          // degenerates into a rigid checkerboard. Population stays ~50/50 globally.
+          if (!BLUEBIRD_ROTATE.length) B.blue = false;
+          else {
+            let nb = 0, nr = 0;
+            for (let j = 64; j < 184; j++) {
+              const O = wbf[j];
+              if (j === wk || !O || !O.init || (O.kind | 0) !== 5) continue;
+              const ddx = O.x - B.x, ddz = O.z - B.z;
+              if (ddx * ddx + ddz * ddz < 170 * 170) { if (O.blue) nb++; else nr++; }
+            }
+            B.blue = nb === nr ? Math.random() < 0.5 : nb < nr;
+          }
+        }
       }
       const fadeIn = Math.min(1, (now - B.born) / 700);   // grow in over 0.7 s so a recycled creature materialises smoothly instead of popping into view
       const fadeOut = B.dieT ? Math.max(0, 1 - (now - B.dieT) / 700) : 1;   // …and shrinks away at the day/night handover
