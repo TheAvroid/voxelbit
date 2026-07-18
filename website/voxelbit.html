@@ -1319,7 +1319,7 @@
   const MUCELL = 52;                                   // MUSHROOMS: a rare cluster, ONLY in the pine forest (a pine must be within crown reach), one candidate per 5.2 m cell
   function mushAt(cx, cz) {
     if (!MUSHV) return null;
-    if (ihash(cx * 89 + 17, cz * 97 + 5) > 0.08) return null;   // somewhat rare — ~8% of candidate cells before the pine-forest + rock-clearance gates below (bumped from 5% to offset the sites the new rock check rejects)
+    if (ihash(cx * 89 + 17, cz * 97 + 5) > 0.053) return null;   // rare — ~5.3% of candidate cells before the pine-forest + rock-clearance gates below (cut by a third from 0.08, user)
     const wx = Math.round(cx * MUCELL + 5 + ihash(cx * 5 + 23, cz * 3 + 9) * (MUCELL - 10));
     const wz = Math.round(cz * MUCELL + 5 + ihash(cx * 11 + 7, cz * 7 + 19) * (MUCELL - 10));
     if (H(wx, wz) <= WL + 4) return null;              // no mushrooms in water or on beaches
