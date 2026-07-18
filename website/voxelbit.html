@@ -593,7 +593,7 @@
   let DUCK_GREEN = [0.03, 0.22, 0.07];                 // the mallard HEAD green (linear) — extracted at load; the black eye voxel blinks to THIS (user)
   let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
   let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads as LIVE entities (pool slots 32-47) — they drift and rotate OFF-grid on the water; static worldgen stamping retired
-  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0;         // item ids of the 1-voxel clash spark, the stone knife, and the held field-stone (rock.vox)
+  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone (the natural ones get AO+grain)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
@@ -648,11 +648,13 @@
       for (let y = 0; y < 3; y++) for (let x = 0; x < 3; x++) cells[x + y * 3] = dk;
       cells[1 + 1 * 3 + 9] = lt;
       items.push({ w: 3, d: 3, h: 2, cells }); }
+    STICK_IT = items.length + 1;                                      // held stick id — AO + grain so it reads like a static twig
     if (STICKV.length) items.push(modelToItem(STICKV[0]));            // STICK — stick_1.vox, held as picked up
     else { const ca = [126, 95, 59], cb = [111, 83, 52];              // fallback: the old 7-voxel twig
       const cells = new Array(7 * 1 * 2).fill(null);
       for (let x = 0; x < 7; x++) { if (x < 5) cells[x] = (x & 1) ? cb : ca; else cells[x + 7] = (x & 1) ? cb : ca; }
       items.push({ w: 7, d: 1, h: 2, cells }); }
+    CONE_IT = items.length + 1;                                       // held pinecone id — AO + grain so it reads like a static cone
     items.push(CONEV ? modelToItem(CONEV) : { w: 0, d: 0, h: 0, cells: [] });   // PINECONE (item 4) — pickable ground/tree cones; keep the slot even if the .vox is missing so ids stay stable
     SPARK_IT = items.length + 1;                                      // CLASH SPARK — one bright 10 cm voxel, rendered through the drops path (never in inventory)
     items.push({ w: 1, d: 1, h: 1, cells: [[255, 208, 112]] });
@@ -894,7 +896,7 @@
       it.cells = out; };
     const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
     for (let i = creatureStart - 1; i < items.length; i++) if (items[i] && items[i].cells && items[i].cells.length) bakeAO(items[i]);
-    if (ROCK_IT && items[ROCK_IT - 1] && items[ROCK_IT - 1].cells.length) bakeAO(items[ROCK_IT - 1]);   // the held field-stone is a NATURAL rock (no hand-authored gradient to protect) → bake AO so it reads with depth like a static world stone (user: "not rendered correctly")
+    for (const nid of [ROCK_IT, STICK_IT, CONE_IT]) if (nid && items[nid - 1] && items[nid - 1].cells.length) bakeAO(items[nid - 1]);   // the held NATURAL objects (stone/stick/pinecone — no hand-authored gradient to protect) bake AO so they read with depth like static world objects (user)
     itemsRef = items;                                  // publish the finished table to the tick loop (cardinal hitbox size + worm stamp poses)
     const dims = [], flat = [];
     for (const it of items) {
@@ -2539,7 +2541,7 @@
                     let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();   // grain is ±12% per voxel and scrambles hand-authored .vox gradients (~5% steps on the axe handle)
                     let bounce = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // warm ground bounce on side/under faces — without it side faces are sky-only (cool + dark), the axe handle read grey-brown
                     var grn = 1.0;
-                    if (${ROCK_IT || 0} > 0 && it == ${(ROCK_IT || 1) - 1}) { grn = 0.82 + 0.36 * ih3(vc.x, vc.y, vc.z); }   // the HELD ROCK gets the same stony per-voxel grain the static world stones have (grain stays OFF the axe/twig whose authored gradients it would scramble) — Task 4
+                    if (it == ${(ROCK_IT || -1) - 1} || it == ${(STICK_IT || -1) - 1} || it == ${(CONE_IT || -1) - 1}) { grn = 0.82 + 0.36 * ih3(vc.x, vc.y, vc.z); }   // the held NATURAL objects (rock/stick/pinecone) get the same per-voxel grain the static world objects have (grain stays OFF the axe/knife whose authored gradients it would scramble) — Tasks 4 + 7
                     col = cell.rgb * (direct + skyIrr + bounce + vec3<f32>(0.012, 0.013, 0.016)) * grn;
                   }
                   break;
@@ -2816,7 +2818,7 @@
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
-  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [] };   // giz/drag*: [e] move-gizmo state (Task 1)
+  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false };   // giz/drag*: [e] move-gizmo state; blink: eye-blink phase
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
@@ -3453,7 +3455,7 @@
     return ii; };
   const edPlaneId = (x, z) => ((x - ED.x0) % 10 === 0 || (z - ED.z0) % 10 === 0) ? ED_GREY : ED_WHITE;   // 1 m squares = every 10th voxel is a grey gridline
   const edHudUpd = () => { edHudEl.textContent = ED.frames.length
-    ? 'frame ' + (ED.sel + 1) + '/' + ED.frames.length + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? ('  ⏸ selected  [, .] scrub   [e] ' + (ED.giz ? 'move: drag an arrow (autosaves)' : 'move gizmo') + '   [r] rotate   [← →] reorder') : '  ▶ playing — left-click the model to select')
+    ? 'frame ' + ED.sel + '/' + (ED.frames.length - 1) + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? ('  ⏸ selected  [, .] scrub   [e] ' + (ED.giz ? 'move: drag an arrow (autosaves)' : 'move gizmo') + '   [r] rotate   [← →] reorder') : '  ▶ playing — left-click the model to select')
     : 'asset editor — press ESC, then import a .vox to begin'; };
   let gizCol = null;                                   // [e] MOVE-GIZMO (Task 1): 3 stubby arrows (X red / Y green-up / Z blue) you aim at + drag to nudge the frame into alignment
   const edEnsureGizCols = () => { if (!gizCol) { gizCol = [edCol(240, 60, 55), edCol(70, 210, 70), edCol(80, 130, 255)]; palSync(); } };
@@ -3469,6 +3471,7 @@
       for (let i = 0; i < GIZ_LEN; i++) {               // thin 1-voxel shaft; a pyramidal arrowhead over the last GIZ_HEAD voxels (widest at the head's base, a point at the tip)
         const tipDist = GIZ_LEN - 1 - i, r = tipDist < GIZ_HEAD ? tipDist : 0;
         for (let a = -r; a <= r; a++) for (let b = -r; b <= r; b++) {
+          if (Math.abs(a) + Math.abs(b) > r) continue;   // DIAMOND head — corners of each square slice cut out (user)
           if (axis === 0) put(s + i, cy + a, cz + b, id); else if (axis === 1) put(cx + a, s + i, cz + b, id); else put(cx + a, cy + b, s + i, id);
         }
       }
@@ -3495,7 +3498,8 @@
       const bx = ED.x0 + ((ED.pw - f.sx) >> 1), bz = ED.z0 + ((ED.pd - f.sy) >> 1);   // the ONE animated/scrubbed frame, centred on the stage (the static reference beside it was removed — user)
       f.bx = bx; f.bz = bz;
       const ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;             // per-frame alignment offset (gizmo-driven)
-      for (const p of f.vox) {                                          // the animated / scrubbed frame, shifted by its offset
+      const vsrc = (ED.blink && f.voxBlink) ? f.voxBlink : f.vox;        // eye-blink variant while the blink phase is lit (playing only)
+      for (const p of vsrc) {                                           // the animated / scrubbed frame, shifted by its offset
         const x = bx + ox + (p & 255), y = ED.y + 1 + oy + ((p >> 16) & 255), z = bz + oz + ((p >> 8) & 255);
         if (y <= ED.y || y >= WY - 1 || x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
         ED.fcells.push(edSet(x, y, z, p >>> 24, cells));
@@ -3590,7 +3594,20 @@
     const frames = [];
     for (const f of list) { try { frames.push(...edParseVox(f.u8, f.name)); } catch (e) { console.warn('[vb] editor: bad .vox', f.name, e); } }
     if (!frames.length) return 0;
-    try { const m = JSON.parse(localStorage.getItem('vb_edoffsets') || '{}'); for (const f of frames) { const o = m[f.name]; if (o) { f.ox = o[0] | 0; f.oy = o[1] | 0; f.oz = o[2] | 0; } } } catch (e) {}   // restore autosaved alignment offsets
+    const CARD_BAKED_OFF = { '04.vox': [0, 1, 0], '05.vox': [0, 1, 0] };   // BAKED cardinal-rotate alignment (user's copy-changes 2026-07-18) — the committed default, applied even with no saved edits
+    for (const f of frames) { const b = CARD_BAKED_OFF[f.name]; if (b) { f.ox = b[0]; f.oy = b[1]; f.oz = b[2]; } }
+    try { const m = JSON.parse(localStorage.getItem('vb_edoffsets') || '{}'); for (const f of frames) { const o = m[f.name]; if (o) { f.ox = o[0] | 0; f.oy = o[1] | 0; f.oz = o[2] | 0; } } } catch (e) {}   // a live saved edit still overrides the bake
+    for (const f of frames) {                            // EYE BLINK: build a variant where each pitch-black voxel (the eye) is recolored to its NEAREST red-plumage voxel (user)
+      const reds = [], blacks = [];
+      for (let i = 0; i < f.vox.length; i++) { const c = palette[f.vox[i] >>> 24]; if (!c) continue;
+        if (c[0] < 30 && c[1] < 30 && c[2] < 30) blacks.push(i);
+        else if (c[0] > 130 && c[0] > c[1] * 1.7 && c[0] > c[2] * 1.7) reds.push(f.vox[i]); }
+      if (blacks.length && reds.length) { const vb = f.vox.slice();
+        for (const bi of blacks) { const p = f.vox[bi], ex = p & 255, ey = (p >> 8) & 255, ez = (p >> 16) & 255;
+          let best = reds[0], bd = 1e9; for (const r of reds) { const dx = (r & 255) - ex, dy = ((r >> 8) & 255) - ey, dz = ((r >> 16) & 255) - ez, d2 = dx * dx + dy * dy + dz * dz; if (d2 < bd) { bd = d2; best = r; } }
+          vb[bi] = (p & 0x00ffffff) | ((best >>> 24) << 24); }
+        f.voxBlink = vb; }
+    }
     ED.frames = frames; ED.sel = 0; ED.paused = false;
     palSync(); edLayout();
     return frames.length; };
@@ -3657,6 +3674,7 @@
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
     edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
     edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
+    cardDbg() { return { sel: ED.sel, blink: ED.blink, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0; for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } return { voxels: n, worms: live }; },   // Task 2/3 taps
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 40; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
@@ -4091,9 +4109,11 @@
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
       if (ED.on) {                                       // ── EDITOR STAGE ── the cardinal is a STAMPED static object (world voxels → full lighting), NOT a drop: hide slot 4, and advance the animation by swapping to the next static frame in place
         UF[o2 + 7] = 0; birdBox.active = false;          // item id 0 hides the drop slot; no bird hitbox in the editor
-        if (ED.frames.length && !ED.paused) {            // playing → step to the next frame at ~11 fps (edLayout re-stamps; the denoiser relights each static frame)
-          const n = ED.frames.length, fi = Math.floor(now / 90) % n;
-          if (fi !== (((ED.sel % n) + n) % n)) { ED.sel = fi; edLayout(); }
+        if (ED.frames.length && !ED.paused) {            // playing → 24 fps through all frames, then a brief HOLD on frame 0 before the rotation spins again (user)
+          const n = ED.frames.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
+          const t = now % cyc, fi = t < n * frameMs ? Math.floor(t / frameMs) : 0;   // 0..n-1, then hold frame 0 for the pause (the rotation completes to its home orientation and rests, then loops)
+          const blink = (now % 3400) < 160;              // EYE BLINK — the black eye voxel flashes red for 0.16 s every 3.4 s (same cadence as the ducks)
+          if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink) { ED.sel = fi; ED.blink = blink; edLayout(); }
         }
       } else if (BIRD_NFRAMES > 0) {                     // the WORLD bird (only when NOT in the editor)
         const tb = now / 1000;
