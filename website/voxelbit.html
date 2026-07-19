@@ -46,8 +46,9 @@
   #rdSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
   #volWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #volSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
+  #vigWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #snowWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #snowBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
+  #vigBtn, #snowBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
   #snowBtn:hover { border-color: #6d8fc0; }
   #snowBtn.on { border-color: #7fd05a; color: #b8ff6e; }
   #kbPanel, #pkPanel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(6,8,12,0.72); z-index: 30; }
@@ -98,6 +99,7 @@
   <div id="rdWrap"><span id="rdLabel">view 37m</span><input type="range" id="rdSlider" min="96" max="368" step="8" value="368"></div>
   <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="100"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
+  <div id="vigWrap"><span>vignette</span><button id="vigBtn">on</button></div>
   </div>
   <h3 class="kbSub">keybinds</h3>
   <div id="kbRows"></div>
@@ -3604,6 +3606,8 @@
   $('kbBtn').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.remove('hidden'); kbRefresh(); });
   const RDMAX = HALF - 24;                             // the window supports a view radius up to half its width (2048 window → 100 m)
   let renderDist = Math.max(96, Math.min(RDMAX, parseFloat(localStorage.getItem('vb_rd') || '368')));   // view-distance slider, persisted
+  const BASE_VIG = 0.26;                               // always-on vignette in normal play — well under the cinematic 0.55 so it frames the view without reading as an effect
+  let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}   // persisted, default ON. MUST be declared here, above the settings-panel wiring below — declaring it beside CINE_VIG put it after its own use and the TDZ error killed boot.
   let snowOn = false;                                  // ── VOXEL SNOW ── weather-driven: RARE 5-minute snow events; the button forces one on/off
   let snowEndT = 0, snowNextT = performance.now() + 300000;   // FIRST snow 5 min after refresh, then 60 s events with a 10 min gap (user); performance.now() resets on refresh
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
@@ -3628,6 +3632,13 @@
   const SNOW_FERN = new Set(FERNIDS);                  // fern-topped columns skip the settle-roll (fronds sit above the ground beside them, so rolling would always shed the flake)
   const SNOW_SKIP = new Set([WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y]);                                    // …but never land on lava; surface water is FROZEN while it snows, so flakes settle on the ice
   { const snowBtn = $('snowBtn');
+    const vigBtn = $('vigBtn');
+    const vigShow = () => { vigBtn.textContent = vigOn ? 'on' : 'off'; vigBtn.classList.toggle('on', vigOn); };
+    vigBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    vigBtn.addEventListener('click', (e) => { e.stopPropagation(); vigOn = !vigOn;
+      try { localStorage.setItem('vb_vig', vigOn ? '1' : '0'); } catch (e2) {}
+      vigShow(); });
+    vigShow();
     const snowShow = () => { snowBtn.textContent = snowOn ? 'on' : 'off'; snowBtn.classList.toggle('on', snowOn); };
     snowBtnSync = snowShow;
     snowShow();
@@ -4091,7 +4102,7 @@
     snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT }; },
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
-    vig(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return cineBlurK * CINE_VIG; },   // cinematic vignette tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
+    vig(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return { uniform: UF[1268], on: vigOn, cineWeight: cineBlurK }; },   // cinematic vignette tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
     vigFree() { blurLock = false; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
@@ -4635,7 +4646,7 @@
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
     UF[1269] = snowLeadY; UF[1270] = snowTrailY;   // u.misc.y/z — the storm edges computed in the weather block above
-    UF[1268] = cineBlurK * CINE_VIG;                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
+    UF[1268] = vigOn ? Math.max(BASE_VIG, cineBlurK * CINE_VIG) : 0;   // u.misc.x — BASE vignette in normal play, deepening to the cinematic value while the camera flies; max() so leaving cinema eases back to base instead of snapping to zero                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
     if (!ED.on) autoPickup();                          // AUTO-PICKUP (user): a free hand slot vacuums up nearby floating items — no right-click, no aiming
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
       const dr = drops[i];
