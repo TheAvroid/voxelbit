@@ -601,6 +601,39 @@
     const mj = await (await fetch('assets/decoration/mushroom.json')).json();
     const mids = mj.pal.map((c) => addCol(c[0], c[1], c[2]));                                // its own quantized shades → global ids
     MUSHV = { sx: mj.sx, sy: mj.sy, sz: mj.sz, vox: mj.vox.map((p) => (p & 0xffffff) | (mids[p >>> 24] << 24)) };
+    // ── PLANT THE SMALL MUSHROOMS ── the cluster is one model, so sinking it sank the big cap too. Split it into
+    // connected components instead: the LARGEST is the big mushroom and keeps its height, every other component is a
+    // small mushroom and drops 2 voxels so it is planted in the ground rather than perched on it. Component-based
+    // rather than red-cap-colour based, because a cap colour is shared with the big mushroom's own cap — the thing
+    // that actually distinguishes them is being a separate body. Model z is world HEIGHT (MagicaVoxel is z-up).
+    {
+      const key = (x, y, z) => x | (y << 8) | (z << 16);
+      const occ = new Map();
+      for (let i = 0; i < MUSHV.vox.length; i++) { const p = MUSHV.vox[i]; occ.set(p & 0xffffff, i); }
+      const comp = new Int32Array(MUSHV.vox.length).fill(-1);
+      const sizes = [];
+      for (let i = 0; i < MUSHV.vox.length; i++) {
+        if (comp[i] >= 0) continue;
+        const id = sizes.length; let n = 0; const stack = [i];
+        comp[i] = id;
+        while (stack.length) {
+          const j = stack.pop(); n++;
+          const p = MUSHV.vox[j], x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+          const nb = [key(x + 1, y, z), key(x - 1, y, z), key(x, y + 1, z), key(x, y - 1, z), key(x, y, z + 1), key(x, y, z - 1)];
+          for (const nk of nb) { const m = occ.get(nk); if (m !== undefined && comp[m] < 0) { comp[m] = id; stack.push(m); } }
+        }
+        sizes.push(n);
+      }
+      let big = 0; for (let c = 1; c < sizes.length; c++) if (sizes[c] > sizes[big]) big = c;
+      let moved = 0;
+      for (let i = 0; i < MUSHV.vox.length; i++) {
+        if (comp[i] === big) continue;
+        const p = MUSHV.vox[i], z = (p >> 16) & 255;
+        MUSHV.vox[i] = (p & ~0xff0000) | (Math.max(0, z - 2) << 16);   // clamp: a cap already at the base just stays
+        moved++;
+      }
+      console.log('[vb] mushroom cluster:', sizes.length, 'bodies, biggest', sizes[big], 'vox; sank', moved, 'small-mushroom voxels by 2');
+    }
   } catch (e) { console.warn('[vb] mushroom.json missing — forest mushrooms skipped', e); }
   let LILYPAD_GIGV = null;                                                                   // GIGANTIC lilypad on lakes (lillypad_gigantic.json, palette-reduced + laid flat) — solid, 1-2 per lake
   try {
@@ -4171,7 +4204,7 @@
     const tb = now / 1000;
     if (tb > cine.swT) {                            // ── SWOOP ── alternate a high lazy cruise with a dive down into the trees
       cine.swoop = !cine.swoop;
-      cine.swT = tb + (cine.swoop ? 5 + Math.random() * 4 : 9 + Math.random() * 6);
+      cine.swT = tb + (cine.swoop ? 3.5 + Math.random() * 2.5 : 18 + Math.random() * 10);   // OCCASIONAL dive (3.5-6 s) against a long fast cruise (18-28 s): at 5-9 vs 9-15 the camera spent nearly half its time slowed to swoop speed, which read as losing the 2x
     }
     if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * (cine.swoop ? 0.45 : 0.175); cine.altT = cine.swoop ? 20 + Math.random() * 26 : 128 + Math.random() * 46; cine.tRe = tb + (cine.swoop ? 1.4 : 2.5) + Math.random() * 3.5; }
     // ── 3D GAP SEARCH ── score every (heading, pitch) pair by how far it stays clear, biased toward holding course and
@@ -4227,7 +4260,7 @@
     // DOUBLED to 60 (user 2026-07-18). Note this widens the turn radius (v/omega) to ~140 vox against ~45-vox pine
     // spacing, so it cannot thread gaps at all any more — see the altitude lift below, which keeps it over the crowns
     // where there is nothing to thread.
-    const spd = ((cine.swoop ? 26 : 60) - (cine.vy + cine.fv * 0.5) * 0.42) * (0.5 + 0.5 * Math.min(1, ahead / 44));   // diving (path or bounce) speeds up, climbing bleeds off
+    const spd = ((cine.swoop ? 32 : 60) - (cine.vy + cine.fv * 0.5) * 0.42) * (0.5 + 0.5 * Math.min(1, ahead / 44));   // diving (path or bounce) speeds up, climbing bleeds off
     P.x += Math.sin(cine.yaw) * spd * dt; P.z += Math.cos(cine.yaw) * spd * dt;
     P.yaw = cine.yaw + Math.sin(cine.bobT * 0.45) * 0.05;   // gentle cinematic yaw sway
     const rollT = -cine.om * 0.62 + Math.sin(cine.bobT * 0.37) * 0.0125;   // BANK INTO THE TURN (right turn = om > 0 = rolls right). Coefficient DOUBLED when the turn rate was halved, so the tilt you see is unchanged — only the turn slowed.
