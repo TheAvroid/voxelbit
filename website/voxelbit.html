@@ -4043,7 +4043,9 @@
     sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
     clash() { if (dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return true; } return false; },   // same guard as shift+click — headless knife-craft testing
     KNIFE_IT,
-    snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); }, snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT }; },
+    snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); }, flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
+      if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
+    snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT }; },
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
     vig(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return cineBlurK * CINE_VIG; },   // cinematic vignette tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
@@ -4759,6 +4761,42 @@
     // ones are removed, and a placement draws UNIFORMLY from what is left — so bird density is even everywhere the
     // pines are, by construction rather than by luck.
     let cardCandF = -1;
+    // ── PROCEDURAL BUTTERFLIES ── a butterfly WANDERS, so unlike a perched bird it cannot be pinned to a voxel.
+    // What is procedural is its HOME: a deterministic point per 128-vox cell, ~half of cells occupied. Slots activate
+    // the nearest free homes, the butterfly is leashed loosely to its home, and it recycles when the HOME leaves
+    // range rather than when the insect does — so the meadow you walked through has the same butterflies in it when
+    // you come back, and density is a property of the world instead of of when you happened to look.
+    const FLY_CELL = 128, FLY_LEASH = 84;              // home cell size / how far a butterfly may drift from its home
+    const flyHome = (cx, cz) => {
+      if (ihash(cx * 0x27D4 + 91, cz * 0x1656 + 37) >= 0.5) return null;
+      return { x: cx * FLY_CELL + 16 + ihash(cx * 13 + 5, cz * 17 + 9) * (FLY_CELL - 32),
+               z: cz * FLY_CELL + 16 + ihash(cx * 19 + 3, cz * 23 + 7) * (FLY_CELL - 32), cx, cz };
+    };
+    let flyCandF = -1;
+    const flyCand = [];
+    const findFlyHome = (selfWk) => {                  // nearest home no flyer slot holds yet
+      if (flyCandF !== frame) {
+        flyCandF = frame; flyCand.length = 0;
+        const owned = new Set();
+        for (let j = 0; j < 16; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 0 && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        const R = Math.ceil(LIFE_OUT / FLY_CELL);
+        const c0x = Math.floor(P.x / FLY_CELL), c0z = Math.floor(P.z / FLY_CELL);
+        for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+          const h = flyHome(c0x + dx, c0z + dz); if (!h) continue;
+          if (owned.has(h.cx + ',' + h.cz)) continue;
+          if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
+          const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
+          if (d2 > LIFE_OUT * LIFE_OUT) continue;
+          h.d2 = d2; flyCand.push(h);
+        }
+      }
+      if (!flyCand.length) return null;
+      let k = 0;
+      for (let q = 1; q < flyCand.length; q++) if (flyCand[q].d2 < flyCand[k].d2) k = q;
+      const h = flyCand[k];
+      flyCand[k] = flyCand[flyCand.length - 1]; flyCand.pop();
+      return h;
+    };
     const birdsOnPine = (tx, tz) => {                   // 0-3, a deterministic property of the tree. HALVED (user 2026-07-18):
       const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);   // mean 0.83 -> 0.41 birds per pine (was .42/.80/.95)
       return h < 0.70 ? 0 : (h < 0.91 ? 1 : (h < 0.98 ? 2 : 3));
@@ -4856,7 +4894,8 @@
       // is why this no longer needs the "only spawn behind the player" rule the random placement depended on.
       const rdK = wantK === 5 ? CARD_KEEP : LIFE_KEEP;
       const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
-      const far = dp2 > rdK * rdK;
+      const hd2 = (B.kind | 0) === 0 && B.hcx !== undefined ? (B.hx - P.x) * (B.hx - P.x) + (B.hz - P.z) * (B.hz - P.z) : dp2;
+      const far = hd2 > rdK * rdK;                     // butterflies judge by their HOME, everything else by where it is
       if (!B.init || far || (B.trap > 12 && (B.kind < 3 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; but a duck/lily wedged ON real water NEVER teleports (the unstick frees it), only if it's off-water
           B.x <= rect.xlo + 4 || B.x >= rect.xhi - 4 || B.z <= rect.zlo + 4 || B.z >= rect.zhi - 4 ||   // the window recentred/shrank under it — this ground is stale garbage, leave it
           (isBaby && (B.x - mom5.x) * (B.x - mom5.x) + (B.z - mom5.z) * (B.z - mom5.z) > 40 * 40) ||   // a duckling stranded from its (recycled) mother rejoins her
@@ -4879,7 +4918,7 @@
           for (let j = j0; j < j1; j++) { const O = wbf[j];
             if (O !== B && O.init && (O.x - sx7) * (O.x - sx7) + (O.z - sz7) * (O.z - sz7) < minD * minD) return true; }
           return false; };
-        let sx7 = 0, sz7 = 0;
+        let sx7 = 0, sz7 = 0, hcx, hcz;
         for (let tries = 0; tries < 12 && !placed && wantK !== 5; tries++) {
           let sx, sz;
           if (wantK === 3 && lakeSpots.length) {       // MOTHER DUCKS TARGET LAKES: prefer a lake NO other mom (16-19) already holds — one family per visible lake
@@ -4889,6 +4928,9 @@
             const pool7 = free.length ? free : lakeSpots;
             const L7 = pool7[tries % pool7.length];
             sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
+          } else if (wantK === 0) {                    // BUTTERFLY: take a procedural home rather than a random point on the ring
+            const h = findFlyHome(wk); if (!h) break;
+            sx = h.x; sz = h.z; hcx = h.cx; hcz = h.cz;
           } else {
             const a5 = Math.random() * 6.283;
             const d5 = Math.sqrt(LIFE_IN * LIFE_IN + Math.random() * (LIFE_OUT * LIFE_OUT - LIFE_IN * LIFE_IN));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
@@ -4899,7 +4941,7 @@
           const gS = bfSurf(sx, sz);
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
           if (wantK >= 3 && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
-          if (wantK < 2 && tooClose(0, 16, 40)) continue;             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
+          if (wantK === 1 && tooClose(0, 16, 40)) continue;   // FIREFLIES still spread by proximity. BUTTERFLIES must NOT: their homes are already 128 vox apart by the cell grid, and testing against other butterflies' WANDERING positions made placement depend on where they happened to be — which is exactly what stopped the set being reproducible.             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
           if (wantK === 2 && tooClose(32, 64, 60)) continue;          // worms spread WIDE — never bunched (user, doubled with the population)
           if (wantK === 3 && tooClose(16, 20, 200)) continue;         // mother ducks spawn ≥200 vox apart → at most ~2 families fit on a typical lake (user: 'only 1-2 per lake')
           if (wantK === 4 && tooClose(40, 55, 12)) continue;          // lilies scatter
@@ -4911,6 +4953,7 @@
           }
         }
         if (!placed) { if (B.sCells) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
+        if (wantK === 0) { B.hx = sx7; B.hz = sz7; B.hcx = hcx; B.hcz = hcz; } else { B.hcx = undefined; }
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
@@ -5003,6 +5046,15 @@
         if (B.kind === 3 && stepOK) { const hl = isBaby ? 5.0 : 7.0; stepOK = bfWater(nx5 + Hx2 * hl, nz5 + Hz2 * hl); }   // DUCK HEAD BUFFER (user: 'keep further away, still running into it'): require water WELL ahead (7 vox mom / 5 baby) so it stops with a clear margin, never touching the bank
       }
       else stepOK = !bfObst(nx5, B.y, nz5) && !bfObst(nx5, B.y + 2, nz5);
+      if ((B.kind | 0) === 0 && B.hcx !== undefined) {   // LEASH: a butterfly drifts around its home rather than away from it
+        const lx = B.x - B.hx, lz = B.z - B.hz, l2 = lx * lx + lz * lz;
+        if (l2 > FLY_LEASH * FLY_LEASH) {              // ease the heading back toward home — a hard clamp would make it skid along an invisible wall
+          let want = Math.atan2(lx, lz) + Math.PI, d7 = want - B.th;
+          while (d7 > Math.PI) d7 -= 6.283; while (d7 < -Math.PI) d7 += 6.283;
+          B.th += d7 * Math.min(1, dt * 1.6);
+          Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
+        }
+      }
       if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; }   // fast trap decay: only SUSTAINED blockage accumulates toward a recycle
       else {
         B.trap = (B.trap || 0) + dt;                   // blocked (cornered) — count it
