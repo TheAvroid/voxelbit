@@ -4084,7 +4084,9 @@
     sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
     clash() { if (dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return true; } return false; },   // same guard as shift+click — headless knife-craft testing
     KNIFE_IT,
-    snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); }, flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
+    snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); }, wormPos() { const o = []; for (let j = 32; j < 64; j++) { const B = wbf[j];
+      if (B && B.init) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), trap: +(B.trap || 0).toFixed(2) }); } return o; },   // worm stuck-test tap
+    flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
     snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT }; },
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
@@ -5018,6 +5020,10 @@
             sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
           } else if (wantK === 0 || wantK === 2) {     // BUTTERFLY / WORM: take a procedural home rather than a random point on the ring
             const h = wantK === 0 ? findFlyHome(wk) : findWormHome(wk); if (!h) break;
+          if (wantK === 2) {                           // a home inside a trunk is unreachable, and the leash below would grind the worm against it forever
+            const tc = treeAt(Math.floor(h.x / TCELL), Math.floor(h.z / TCELL));
+            if (tc && (tc.tx - h.x) * (tc.tx - h.x) + (tc.tz - h.z) * (tc.tz - h.z) < 14 * 14) continue;
+          }
             sx = h.x; sz = h.z; hcx = h.cx; hcz = h.cz;
           } else {
             const a5 = Math.random() * 6.283;
@@ -5135,8 +5141,9 @@
       }
       else stepOK = !bfObst(nx5, B.y, nz5) && !bfObst(nx5, B.y + 2, nz5);
       if (((B.kind | 0) === 0 || (B.kind | 0) === 2) && B.hcx !== undefined) {   // LEASH: a butterfly/worm drifts around its home rather than away from it
-        const lx = B.x - B.hx, lz = B.z - B.hz, l2 = lx * lx + lz * lz;
+        const lx = B.x - B.hx, lz = B.z - B.hz; let l2 = lx * lx + lz * lz;
         const leash = (B.kind | 0) === 2 ? WORM_LEASH : FLY_LEASH;
+        if ((B.kind | 0) === 2 && (B.trap || 0) > 0.35) l2 = 0;   // STUCK: stop pulling toward home so the normal avoidance can steer it around the trunk instead of into it
         if (l2 > leash * leash) {              // ease the heading back toward home — a hard clamp would make it skid along an invisible wall
           let want = Math.atan2(lx, lz) + Math.PI, d7 = want - B.th;
           while (d7 > Math.PI) d7 -= 6.283; while (d7 < -Math.PI) d7 += 6.283;
