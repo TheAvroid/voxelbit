@@ -3354,6 +3354,7 @@
   // would hold ~300 birds against 120 slots, so the activation frontier lands near 432 vox rather than 680, and the
   // generated rect (renderDist + 96) caps it from there. Declared at module scope because stampCardinal below needs it.
   const CARD_KEEP = 680;
+  const CARD_SEP = 8;                                  // minimum gap between two perched birds, in voxels — must exceed the model footprint or their grid stamps collide
   const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
     const cp = (B.blue ? ensureBluePoses() : null) || ensureCardPoses(); if (!cp) return;   // half the perched birds are BLUE (B.blue), the rest red cardinals
     const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
@@ -4007,7 +4008,8 @@
     gpuPatch(cells);
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = false;
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && BLUEBIRD_ROTATE.length) edImportBufs(BLUEBIRD_ROTATE);   // auto-load the BLUE BIRD rotate filmstrip as the editable object (lotus removed for now — user). A manual .vox import replaces it.
+    if (!ED.frames.length && LOTUS_BYTES) edImportBufs([LOTUS_BYTES]);   // auto-load the LOTUS as the editable object (user 2026-07-18 — back again); it was already being fetched into LOTUS_BYTES, just never imported
+    else if (!ED.frames.length && BLUEBIRD_ROTATE.length) edImportBufs(BLUEBIRD_ROTATE);   // auto-load the BLUE BIRD rotate filmstrip as the editable object (lotus removed for now — user). A manual .vox import replaces it.
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
   };
@@ -4826,6 +4828,14 @@
         const c = cardCand[k];
         cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();
         const cr = pineEdgePerch(c.tr.tx, c.tr.tz, c.bi); if (!cr) continue;
+        let clash = false;                             // the cardinal model is ~7 vox across; two stamps closer than that corrupt each other
+        for (let j = 64; j < 184; j++) {
+          const O = wbf[j];
+          if (j === selfWk || !O || !O.init || (O.kind | 0) !== 5) continue;
+          if (Math.abs(O.x - (cr[0] + 0.5)) < CARD_SEP && Math.abs(O.z - (cr[2] + 0.5)) < CARD_SEP &&
+              Math.abs((O.perchFeet || 0) - (cr[1] + 1)) < CARD_SEP) { clash = true; break; }
+        }
+        if (clash) continue;
         return { tx: c.tr.tx, tz: c.tr.tz, bi: c.bi, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };
       }
       return null;
