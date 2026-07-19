@@ -674,7 +674,7 @@
   // NEVER written into the world grid. Flight (a fixed high orbit near spawn) is driven in the tick loop. Model x→width, y→depth (beak at −y), z→height.
   let BIRD_ITEM0 = 0, BIRD_NFRAMES = 0, BIRD_GLIDE = 0;   // dit (1-based item id) of flap frame 0, frame count, and the widest (wings-spread) frame index used for GLIDING — assigned where the frames are appended to `items`
   let BFLY_ITEM0 = 0, BFLY_NFRAMES = 0;                // butterfly flap frames (assets/life/butterfly/<color>) — orange flies over the editor stage; ALL colors fly the forest BY DAY
-  let BFLY_COLS = [];                                  // first item id of each loaded color's 8 frames, in folder order: orange, red, blue
+  let BFLY_COLS = [];                                  // first item id of each loaded color's 8 frames, in folder order: orange, red, blue, lime, pink, purple. Colour is picked by a spatial hash of the creature's cell (B.col), so adding colours scatters them evenly and procedurally with no other change
   let FFLY_ITEM0 = 0, FFLY_NFRAMES = 0;                // firefly frames (assets/life/firefly) — replaces the butterflies AT NIGHT; the yellow abdomen voxel glows via the drops dYv.w lane
   let WORM_ITEM0 = 0, WORM_NFRAMES = 0;                // inchworm crawl frames (assets/life/worm) — a GROUND crawler, active day and night (pool slots 24+)
   let DUCK_ITEM0 = 0;                                  // duck (assets/life/duck/base.vox) — floats on lakes with its orange feet below the waterline (pool slots 16-19 = moms)
@@ -701,7 +701,7 @@
     const abuf = async (u) => new Uint8Array((AB[u] ? await AB[u] : await (await fetch(u).catch(() => ({ arrayBuffer: () => null }))).arrayBuffer()) || new ArrayBuffer(0));
     pf('assets/stone_tools/stone_axe.vox'); pf('assets/stone_tools/stone_knife.vox');
     for (let f = 0; f < 8; f++) pf('assets/life/cardinal/flight/0' + f + '.vox');
-    for (const c of ['orange', 'red', 'blue']) for (let f = 0; f < 8; f++) pf('assets/life/butterfly/' + c + '/0' + f + '.vox');
+    for (const c of ['orange', 'red', 'blue', 'lime', 'pink', 'purple']) for (let f = 0; f < 8; f++) pf('assets/life/butterfly/' + c + '/0' + f + '.vox');   // prefetch must list the SAME colours as the loader below or the new ones stall on a cold fetch
     for (let f = 0; f < 4; f++) pf('assets/life/firefly/0' + f + '.vox');
     for (let f = 0; f < 12; f++) pf('assets/life/worm/' + String(f).padStart(2, '0') + '.vox');
     for (let f = 0; f < 11; f++) pf('assets/life/cardinal/rotate/' + String(f).padStart(2, '0') + '.vox');
@@ -812,7 +812,7 @@
       console.log('[vb] cardinal flight', BIRD_NFRAMES, 'frames + blink -> items', BIRD_ITEM0, '..', BIRD_ITEM0 + 2 * BIRD_NFRAMES - 1);
     } catch (e) { console.warn('[vb] cardinal flight frames missing - no bird', e); BIRD_NFRAMES = 0; }
     if (!location.search.includes('nobfly'))                          // BUTTERFLY flap frames → item table, same treatment as the cardinal (raw .vox palette, full 3D grids)
-      for (const cname of ['orange', 'red', 'blue']) {                // one 8-frame set per user-authored color subfolder; a missing color just skips
+      for (const cname of ['orange', 'red', 'blue', 'lime', 'pink', 'purple']) {   // one 8-frame set per user-authored color subfolder; a missing color just skips
         try {
           const loaded = [];
           for (let f = 0; f < 8; f++) {
