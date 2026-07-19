@@ -37,8 +37,8 @@
     text-shadow: 0 1px 3px rgba(0,0,0,0.9); opacity: 0; transition: opacity 0.18s ease-out; pointer-events: none; }
   #kbBtn:hover::after, #pkBtn:hover::after, #edBtn:hover::after, #dcBtn:hover::after { opacity: 1; }   /* HOVER (user): the tile lifts and the icon goes green — same green as the settings toggles' on-state (svg fill is currentColor, so the colour carries) */
   #edBtn.on { border-color: #7fd05a; color: #b8ff6e; }
-  #edRow { display: flex; flex-direction: column; gap: 10px; align-items: center; }   /* stacked under the button row, centred on it; #lock's own 10px gap matches the square-button spacing */
-  #edRow button { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
+  #edRow { display: flex; flex-direction: column; gap: 10px; align-items: center; margin-top: 10px; }   /* stacked under the button row, centred on it; #lock's own 10px gap matches the button spacing, +10px drop (user) */
+  #edRow button { background: #1a2331; border: 1px solid #33405a; border-radius: 999px; padding: 6px 22px; color: #cfe0f4; cursor: pointer; font: inherit; }   /* PILL (user) — the huge radius always resolves to a half-height cap whatever the text length */
   #edRow button:hover { border-color: #6d8fc0; }
   #edHud { position: fixed; left: 50%; top: 18px; transform: translateX(-50%); color: #cfe0f4; font: 9px/1.8 'px3', Consolas, monospace; letter-spacing: 1px; text-shadow: 0 1px 3px #000; pointer-events: none; text-align: center; }
   /* the four option rows used to be pinned to the top-right of the ESC menu; they now live inside the settings
@@ -106,7 +106,7 @@
     <button id="edBtn" aria-label="asset editor" data-lbl="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
     <a id="dcBtn" href="https://discord.gg/AtW5fWZtSG" target="_blank" rel="noopener noreferrer" aria-label="discord" data-lbl="discord"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M21 22h-9v-2h9v2Zm-9-2h-2v-2h2v2Zm11 0h-2v-5h2v5Zm-13-2H8v-2h2v2Zm7-1h-4v-2h4v2Zm-9-1H6v-2h2v2Zm5-1h-2v-2h2v2Zm8 0h-4v-2h4v2ZM6 14H4v-2h2v2Zm5-1H9v-2h2v2Zm-7-1H2V3h2v9Zm5-1H7V7h2v4Zm9 0h-2V8h2v3Zm4 0h-2V6h2v5Zm-6-3h-3V6h3v2Zm-5-1H9V3h2v4Zm9-1h-2V4h2v2Zm-2-2h-5V2h5v2ZM9 3H4V1h5v2Z"/></svg></a>
   </div>
-  <div id="edRow" class="hidden"><button id="edCopy" title="copy the per-frame offsets so you can paste them back to be baked into the code">copy changes</button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
+  <div id="edRow" class="hidden"><button id="edCopy" title="copy the per-frame offsets so you can paste them back to be baked into the code">export</button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
 </div>
 <div id="edHud" class="hidden"></div>
 <div id="kbPanel" class="hidden"><div id="kbCard">
@@ -696,6 +696,7 @@
   let BLUEF_ITEM0 = 0, BLUEF_NFRAMES = 0, BLUEF_GLIDE = 1;   // the even split, the rig and the render path all key off this table, so nothing is per-species
   let BIRD_ITEM0 = 0, BIRD_NFRAMES = 0, BIRD_GLIDE = 1;   // dit (1-based item id) of flap frame 0, frame count, and the frame held while GLIDING — FRAME 01 (user), not the auto-picked widest one, which landed on 00
   let BFLY_ITEM0 = 0, BFLY_NFRAMES = 0;                // butterfly flap frames (assets/life/butterfly/<color>) — orange flies over the editor stage; ALL colors fly the forest BY DAY
+  let DFLY_ITEM0 = 0, DFLY_NFRAMES = 0;                // DRAGONFLY flap frames (assets/life/dragonfly) — one colour, 6 frames. Flies the butterfly's kind-0 code path verbatim; only its HOME differs (water, not meadow)
   let BFLY_COLS = [];                                  // first item id of each loaded color's 8 frames, in folder order: orange, red, blue, lime, pink, purple. Colour is picked by a spatial hash of the creature's cell (B.col), so adding colours scatters them evenly and procedurally with no other change
   let FFLY_ITEM0 = 0, FFLY_NFRAMES = 0;                // firefly frames (assets/life/firefly) — replaces the butterflies AT NIGHT; the yellow abdomen voxel glows via the drops dYv.w lane
   let WORM_ITEM0 = 0, WORM_NFRAMES = 0;                // inchworm crawl frames (assets/life/worm) — a GROUND crawler, active day and night (pool slots 24+)
@@ -708,7 +709,6 @@
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
   let ROBIN_ROTATE = [];                               // ROBIN = the SAME bird recoloured again (assets/life/robin/rotate/00-10, base.vox ignored) — same layout as the cardinal and blue bird
-  let LOTUS_BYTES = null;                               // voxelized lotus.glb (10 cm .vox) → auto-loaded as the STATIC editable object on the editor stage (mushroom removed — user)
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
@@ -725,6 +725,7 @@
     pf('assets/stone_tools/stone_axe.vox'); pf('assets/stone_tools/stone_knife.vox');
     for (let f = 0; f < 8; f++) pf('assets/life/cardinal/flight/0' + f + '.vox');
     for (const c of ['orange', 'red', 'blue', 'lime', 'pink', 'purple']) for (let f = 0; f < 8; f++) pf('assets/life/butterfly/' + c + '/0' + f + '.vox');   // prefetch must list the SAME colours as the loader below or the new ones stall on a cold fetch
+    for (let f = 0; f < 6; f++) pf('assets/life/dragonfly/0' + f + '.vox');   // dragonfly ships 6 frames (base.vox is the source art, not a frame — skipped)
     for (let f = 0; f < 4; f++) pf('assets/life/firefly/0' + f + '.vox');
     for (let f = 0; f < 12; f++) pf('assets/life/worm/' + String(f).padStart(2, '0') + '.vox');
     for (let f = 0; f < 11; f++) pf('assets/life/cardinal/rotate/' + String(f).padStart(2, '0') + '.vox');
@@ -878,6 +879,32 @@
       }
     if (BFLY_COLS.length) { BFLY_ITEM0 = BFLY_COLS[0]; BFLY_NFRAMES = 8;
       console.log('[vb] butterfly 8 frames x', BFLY_COLS.length, 'colors -> items', BFLY_ITEM0, '..', items.length); }
+    try {                                                             // ── DRAGONFLY ── one 6-frame strip, parsed exactly like a butterfly colour (raw .vox palette, full 3D grid).
+      const dloaded = [];                                             // base.vox is the source art and is deliberately NOT loaded, same as the songbird flight packs.
+      for (let f = 0; f < 6; f++) {
+        const bv = await abuf('assets/life/dragonfly/0' + f + '.vox');
+        const bdv = new DataView(bv.buffer);
+        let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
+        const bwalk = (off, end) => { while (off < end) {
+          const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+          const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+          if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
+          else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
+          else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
+          else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+          off += 12 + sz + csz;
+        } };
+        bwalk(8, bv.length);
+        if (!bvox) throw new Error('dragonfly frame 0' + f + ' has no voxels');
+        const cells = new Array(bsx * bsy * bsz).fill(null);
+        for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+        dloaded.push({ w: bsx, d: bsy, h: bsz, cells });
+      }
+      DFLY_ITEM0 = items.length + 1;                                  // commit all 6 at once — no orphan half-set
+      for (const it of dloaded) items.push(it);
+      DFLY_NFRAMES = dloaded.length;
+      console.log('[vb] dragonfly', DFLY_NFRAMES, 'frames -> items', DFLY_ITEM0, '..', items.length);
+    } catch (e) { console.warn('[vb] dragonfly frames missing - skipped', e); DFLY_NFRAMES = 0; }
     try {                                                             // FIREFLY wing frames — same treatment; 3×3×3, 4 voxels (dark body, YELLOW abdomen, 2 white wings)
       if (location.search.includes('nobfly')) throw new Error('disabled by ?nobfly flag');
       const loaded = [];
@@ -1019,7 +1046,6 @@
       for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/robin/rotate/' + String(f).padStart(2, '0') + '.vox'); ROBIN_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       console.log('[vb] robin rotate', ROBIN_ROTATE.length, 'frames (3rd perched songbird)');
     } catch (e) { console.warn('[vb] robin rotate frames missing', e); ROBIN_ROTATE = []; }
-    try { LOTUS_BYTES = { name: 'lotus.vox', u8: await abuf('assets/decoration/lotus.vox') }; } catch (e) { console.warn('[vb] lotus.vox missing', e); }   // voxelized lotus for the editor stage
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
       const sol = (x, y, z) => x >= 0 && x < w && y >= 0 && y < d && z >= 0 && z < h && !!cells[x + y * w + z * w * d];
@@ -3631,17 +3657,25 @@
   };
   const ensureWormStamp = () => { if (!WORM_STAMP && WORM_NFRAMES) { WORM_STAMP = buildStampPoses(WORM_ITEM0, WORM_NFRAMES); if (WORM_STAMP) palSync(); } return WORM_STAMP; };
   const ensureDuckStamp = () => { if (!DUCK_STAMP && DUCK_ITEM0) { DUCK_STAMP = buildStampPoses(DUCK_ITEM0, 1); DUCKB_STAMP = DUCKB_ITEM0 ? buildStampPoses(DUCKB_ITEM0, 1) : DUCK_STAMP; if (DUCK_STAMP) palSync(); } return DUCK_STAMP; };
-  const unstampWorm = (B) => { if (!B.sCells) return; for (const ii of B.sCells) if (W[ii] !== 0) { W[ii] = 0; wormPatch.push(ii); } B.sCells = null; B.sKey = null; };
+  const unstampWorm = (B) => { if (!B.sCells) return; for (let i = 0; i < B.sCells.length; i++) { const ii = B.sCells[i];
+      if (W[ii] !== 0) { W[ii] = B.sPrev ? B.sPrev[i] : 0; wormPatch.push(ii); } }   // restore the overwritten foliage, not 0 — else the bird leaves a hole in the canopy
+    B.sCells = null; B.sPrev = null; B.sKey = null; };
   const stampApply = (B, pose, gx, gy, gz, key) => {   // shared: re-stamp only on change; only into EMPTY AIR so un-stamp is a safe →0
     if (B.sKey === key && B.sCells) return;
     unstampWorm(B);
-    const nc = [];
+    // A perched bird sits INSIDE the pine crown, so much of its body lands on needles. Writing only into empty air
+    // dropped every one of those voxels and left birds with holes punched through them (42% of them, worst cases
+    // losing a third of the model). Foliage is now overwritten and the PREVIOUS id is remembered per cell, so the
+    // un-stamp restores the needles instead of leaving a bird-shaped hole in the tree. Anything else — trunks, rocks,
+    // another bird's stamp — still blocks, so nothing structural is ever eaten.
+    const nc = [], pv = [];
     for (const p of pose) { const wy = gy + p[1]; if (wy < 1 || wy >= WY - 1) continue;
       const ii = gwrap(gx + p[0], WX) + wy * WX + gwrap(gz + p[2], WZ) * WX * WY;
-      if (W[ii] !== 0) continue;
-      W[ii] = p[3]; nc.push(ii); wormPatch.push(ii);
+      const cur = W[ii];
+      if (cur !== 0 && !foliaTab[cur]) continue;   // trunks, rocks and other stamps still block; a voxel lost inside the branch is hidden by it anyway
+      pv.push(cur); W[ii] = p[3]; nc.push(ii); wormPatch.push(ii);
     }
-    B.sCells = nc; B.sKey = key;
+    B.sCells = nc; B.sPrev = pv; B.sKey = key; B.sWant = pose.length;
   };
   const stampOrient = (th) => { const Hx = Math.sin(th), Hz = Math.cos(th); return Math.abs(Hz) >= Math.abs(Hx) ? (Hz >= 0 ? 0 : 2) : (Hx >= 0 ? 1 : 3); };   // nearest cardinal
   const stampWorm = (B, fi) => {
@@ -3725,8 +3759,11 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
-  const unstampAllWorms = () => { for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-63 + songbirds 64-243; caller re-uploads occupancy
+  const unstampAllWorms = () => { for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B && B.sCells) {
+    for (let i = 0; i < B.sCells.length; i++) { const ii = B.sCells[i]; if (W[ii] !== 0) W[ii] = B.sPrev ? B.sPrev[i] : 0; }   // restore, same reason as unstampWorm
+    B.sCells = null; B.sPrev = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-63 + songbirds 64-243; caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
+  const waterSpots = [];                              // detected WATER of any width — lakes AND rivers. Dragonflies home here; ducks still use lakeSpots (a river is too narrow for a family)
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
   const startGrab = (it, wx, wy, wz, aPh) => {         // EVERY pickup flies to the hand — never an instant swap; a 2nd rock flies to the LEFT hand
@@ -4410,8 +4447,7 @@
     gpuPatch(cells);
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = false;
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && LOTUS_BYTES) edImportBufs([LOTUS_BYTES]);   // auto-load the LOTUS as the editable object (user 2026-07-18 — back again); it was already being fetched into LOTUS_BYTES, just never imported
-    else if (!ED.frames.length && BLUEBIRD_ROTATE.length) edImportBufs(BLUEBIRD_ROTATE);   // auto-load the BLUE BIRD rotate filmstrip as the editable object (lotus removed for now — user). A manual .vox import replaces it.
+    if (!ED.frames.length && BLUEBIRD_ROTATE.length) edImportBufs(BLUEBIRD_ROTATE);   // auto-load the BLUE BIRD rotate filmstrip as the editable object (the lotus that used to sit here was removed — user). A manual .vox import replaces it.
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
   };
@@ -4429,7 +4465,7 @@
   edBtnEl.addEventListener('click', (e) => { e.stopPropagation(); ED.on ? edExit() : edEnter(); });
   $('edCopy').addEventListener('click', (e) => { e.stopPropagation();   // copy the per-frame offsets → paste back to be baked into the code (replaces the .vox exporter)
     const btn2 = e.currentTarget; if (!ED.frames.length) { btn2.textContent = 'nothing to copy'; setTimeout(() => { btn2.textContent = 'copy changes'; }, 1500); return; }
-    edCopyOffsets(); btn2.textContent = 'copied ✓ — paste it to me'; setTimeout(() => { btn2.textContent = 'copy changes'; }, 2000); });
+    edCopyOffsets(); btn2.textContent = 'copied ✓ — paste it to me'; setTimeout(() => { btn2.textContent = 'export'; }, 2000); });
   edFileEl.addEventListener('click', (e) => e.stopPropagation());
   edFileEl.addEventListener('change', async () => {
     const list = [];
@@ -4624,7 +4660,7 @@
         d: Math.round(Math.hypot(b.x - P.x, b.z - P.z)) })) }; },   // flyer tap
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
-    perched() { const o = []; for (let j = 64; j < 244; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0), ids: B.sCells ? [...new Set(B.sCells.map((ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
+    perched() { const o = []; for (let j = 64; j < 244; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0), want: B.sWant | 0, ids: B.sCells ? [...new Set(B.sCells.map((ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
     reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
@@ -5310,7 +5346,7 @@
       if (flyCandF !== frame) {
         flyCandF = frame; flyCand.length = 0;
         const owned = new Set();
-        for (let j = 0; j < 16; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 0 && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        for (let j = 0; j < 16; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 0 && !O.dfly && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // a dragonfly's water cell must NOT block a butterfly's meadow home
         const R = Math.ceil(LIFE_OUT / FLY_CELL);
         const c0x = Math.floor(P.x / FLY_CELL), c0z = Math.floor(P.z / FLY_CELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -5422,6 +5458,7 @@
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 2.5));   // BUTTERFLIES doubled (user 2026-07-18): 1.25 -> 2.5, still bounded by the 16 flyer slots   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
+    const nDfly = (DFLY_NFRAMES && waterSpots.length) ? Math.min(6, 1 + (waterSpots.length >> 1)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
     // Count scales with the AREA the birds have to cover. The 60 cap was set when the spawn ring was ~331 vox; the
@@ -5431,15 +5468,18 @@
 
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
-    if (DUCK_ITEM0 && !ED.on && now > lakeScanT) {     // ── LAKE CENSUS (every 2.5 s) ── grid-sample the view for wide-open-water spots, cluster them into lakes;
+    if ((DUCK_ITEM0 || DFLY_NFRAMES) && !ED.on && now > lakeScanT) {   // ── LAKE + WATER CENSUS (every 2.5 s) ── grid-sample the view for wide-open-water spots, cluster them into lakes;
       lakeScanT = now + 2500;                          //    mother ducks below TARGET these so every visible lake gets its own family (pool cap 2 families)
-      lakeSpots.length = 0;
+      lakeSpots.length = 0; waterSpots.length = 0;
       const R7 = LIFE_OUT;                             // lake census reaches the full spawn ring — at 0.8·rdV no lake was ever detected out where ducks now spawn, so they could never appear there
       for (let gx7 = -R7; gx7 <= R7; gx7 += 20) for (let gz7 = -R7; gz7 <= R7; gz7 += 20) {
         if (gx7 * gx7 + gz7 * gz7 > R7 * R7) continue;
         const sx8 = P.x + gx7, sz8 = P.z + gz7;
         if (sx8 <= rect.xlo + 4 || sx8 >= rect.xhi - 4 || sz8 <= rect.zlo + 4 || sz8 >= rect.zhi - 4) continue;
-        if (!bfOpenW(sx8, sz8) || !bfSky(sx8, WL + 2, sz8)) continue;   // bfOpenW now requires real water voxels + width — dry ravines/cave pools never seed a lake spot
+        if (!bfWater(sx8, sz8) || !bfSky(sx8, WL + 2, sz8)) continue;   // REAL open-sky water of any width — this is the dragonfly's pool (rivers included)
+        { const cw = waterSpots.find((c) => (c.x - sx8) * (c.x - sx8) + (c.z - sz8) * (c.z - sz8) < 90 * 90);   // loose 90-vox merge: a river stays several spots along its length rather than collapsing to one
+          if (cw) cw.n++; else waterSpots.push({ x: sx8, z: sz8, n: 1 }); }
+        if (!bfOpenW(sx8, sz8)) continue;              // …and from here on, LAKES only (width test) — dry ravines/cave pools never seed a lake spot
         const cl7 = lakeSpots.find((c) => (c.x - sx8) * (c.x - sx8) + (c.z - sz8) * (c.z - sz8) < 260 * 260);   // MERGE a whole lake into ONE spot (was 110 → a big lake split into 3-4 spots → 4 families on it, user); 260 covers a typical lake, still separates distinct ones
         if (cl7) { cl7.n++; cl7.x += (sx8 - cl7.x) / cl7.n; cl7.z += (sz8 - cl7.z) / cl7.n; }   // centroid = lake identity; ax/az stays a KNOWN-GOOD water sample (the centroid of an L-shaped lake can be ashore)
         else lakeSpots.push({ x: sx8, z: sz8, ax: sx8, az: sz8, n: 1 });
@@ -5461,7 +5501,8 @@
       const wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
       const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
-      const wantK = lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)));   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-243 PERCHED SONGBIRDS (180)
+      const wantK = lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)));
+      const isDfly = wantK === 0 && nDfly > 0 && waterSpots.length > 0 && wk >= nAct - nDfly;   // DRAGONFLIES take the TOP of the active flyer band — butterflies only give up slots when there is water in view   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-243 PERCHED SONGBIRDS (180)
       const active = lilySlot ? (wk - 64 < nCard)
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
@@ -5509,6 +5550,10 @@
             const pool7 = free.length ? free : lakeSpots;
             const L7 = pool7[tries % pool7.length];
             sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
+          } else if (wantK === 0 && isDfly) {          // DRAGONFLY: same kind-0 creature, but its home is WATER (user: only over lakes and rivers).
+            const L8 = waterSpots[(wk + tries) % waterSpots.length];   // walk the spots as tries advance so one crowded pool can't monopolise every slot
+            sx = L8.x + (Math.random() - 0.5) * 30; sz = L8.z + (Math.random() - 0.5) * 30;
+            hcx = Math.floor(sx / FLY_CELL); hcz = Math.floor(sz / FLY_CELL);   // give it a home cell so the butterfly LEASH applies and it stays over its water
           } else if (wantK === 0 || wantK === 2) {     // BUTTERFLY / WORM: take a procedural home rather than a random point on the ring
             const h = wantK === 0 ? findFlyHome(wk) : findWormHome(wk); if (!h) break;
           if (wantK === 2) {                           // a home inside a trunk is unreachable, and the leash below would grind the worm against it forever
@@ -5525,6 +5570,8 @@
           sx7 = sx; sz7 = sz;
           const gS = bfSurf(sx, sz);
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
+          if (wantK === 0 && isDfly && !bfWater(sx, sz)) continue;    // the jitter may have thrown it ashore — a dragonfly only ever starts over real water
+          if (wantK === 0 && !isDfly && bfWater(sx, sz)) continue;    // …and a BUTTERFLY never starts over water (user: limit butterflies over lakes); it may still drift out over one
           if (wantK >= 3 && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
           if (wantK === 1 && tooClose(0, 16, 40)) continue;   // FIREFLIES still spread by proximity. BUTTERFLIES must NOT: their homes are already 128 vox apart by the cell grid, and testing against other butterflies' WANDERING positions made placement depend on where they happened to be — which is exactly what stopped the set being reproducible.             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
           // (worms no longer use tooClose: their homes are already 160 vox apart by the cell grid, and testing against other worms' CRAWLING positions made placement depend on where they had got to)          // worms spread WIDE — never bunched (user, doubled with the population)
@@ -5539,6 +5586,7 @@
         }
         if (!placed) { if (B.sCells) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
         if (wantK === 0 || wantK === 2) { B.hx = sx7; B.hz = sz7; B.hcx = hcx; B.hcz = hcz; } else { B.hcx = undefined; }
+        B.dfly = (wantK === 0 && isDfly);              // the strip + frame count key off this; everything else about the creature is butterfly
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
@@ -5717,7 +5765,7 @@
       }
       const HxR = Math.sin(B.th), HzR = Math.cos(B.th);   // RENDER yaw — for lilies this spins freely, independent of drift
       const Xw = [HzR, 0, -HxR], Yw = [-HxR, 0, -HzR]; // level frame — Zw = up, right-handed (Yw×Zw = Xw); model −y (the head end) leads
-      const nfr = B.kind >= 3 ? 1 : (B.kind === 2 ? WORM_NFRAMES : (B.kind === 1 ? FFLY_NFRAMES : BFLY_NFRAMES));
+      const nfr = B.kind >= 3 ? 1 : (B.kind === 2 ? WORM_NFRAMES : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES)));
       const fi3 = B.kind === 2 ? (Math.floor((B.animClk || 0) * 24) % nfr)   // WORM: crawl frame runs off its own clock which FREEZES while the worm is paused (user: pause stops motion AND animation); rendered OFF-GRID → smooth position + rotation
         : Math.floor((tb3 + wk * 0.37) * 24) % nfr;                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
       let glow = 0;
@@ -5733,7 +5781,7 @@
       if (dropCursor > 63) continue;                   // SAFETY: drop slots run 9..63 (64 total) — never write past into pick2/fflies (would corrupt the left hand); extreme scenes just drop a few far creatures
       const o4 = 68 + dropCursor * 16; dropCursor++;   // emit into the next COMPACT slot
       UF[o4] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o4 + 3] = bScale;
-      UF[o4 + 4] = Xw[0] * right[0] + Xw[2] * right[2]; UF[o4 + 5] = Xw[0] * up[0] + Xw[2] * up[2]; UF[o4 + 6] = Xw[0] * fwd[0] + Xw[2] * fwd[2]; UF[o4 + 7] = (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? WORM_ITEM0 : (B.kind === 1 ? FFLY_ITEM0 : BFLY_COLS[B.col])))) + fi3;
+      UF[o4 + 4] = Xw[0] * right[0] + Xw[2] * right[2]; UF[o4 + 5] = Xw[0] * up[0] + Xw[2] * up[2]; UF[o4 + 6] = Xw[0] * fwd[0] + Xw[2] * fwd[2]; UF[o4 + 7] = (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? WORM_ITEM0 : (B.kind === 1 ? FFLY_ITEM0 : (B.dfly ? DFLY_ITEM0 : BFLY_COLS[B.col]))))) + fi3;
       UF[o4 + 8] = Yw[0] * right[0] + Yw[2] * right[2]; UF[o4 + 9] = Yw[0] * up[0] + Yw[2] * up[2]; UF[o4 + 10] = Yw[0] * fwd[0] + Yw[2] * fwd[2]; UF[o4 + 11] = glow;
       UF[o4 + 12] = right[1]; UF[o4 + 13] = up[1]; UF[o4 + 14] = fwd[1]; UF[o4 + 15] = 0;
     }
