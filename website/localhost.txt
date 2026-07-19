@@ -1,7 +1,5 @@
 PROMPTS FOR FABLE
 
-1. rework the entire cave system. give the caves a rocky look. maybe take the rocks from the 26 rock collection, and scatter them tightly together to form a rocky cave entrance/interior.
-
 2. Pursue a deep optimization. Try to create consistencies across the code base. especially when it comes to rendering life, make it consistent. optimize the architecture and coordination of the game as a whole. optimize the architecture of the life.
 
 3. apply denoising to the static objects when they move. there is some noise on movement. the noise is in the objects shadows. There's also noise in the shadows on player movement. Here's a link to doing this correctly: https://juandiegomontoya.github.io/teardown_breakdown.html
@@ -15,3 +13,5 @@ PROMPTS FOR FABLE
 7. make the pinecones swing from the pine trees. keep the grid stamped lighting while keeping the smooth swinging.
 
 8. Analyze the complete repository and create an ARCHITECTURE.md documenting the engine as it currently exists. Cover each major system, important files, data flow, rendering pipeline, world representation, performance-sensitive areas, architectural decisions, and invariants that future developers must preserve. Do not modify any code. Clearly distinguish what is implemented, what is planned, and what you are uncertain about. Base everything on the repository rather than assumptions.
+
+9. make the caves have proper ray traced darkness without sacrificing fps.

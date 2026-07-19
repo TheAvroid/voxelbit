@@ -26,9 +26,16 @@
   #load { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0b0e12; color: #9fb0c4; font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; z-index: 10; }
   #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; }
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
-  #kbBtn, #pkBtn, #edBtn, #dcBtn { width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 12px; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, color 0.15s; }
+  #kbBtn, #pkBtn, #edBtn, #dcBtn { position: relative; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, color 0.15s, transform 0.15s ease-out, box-shadow 0.15s; }
   #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg { width: 22px; height: 22px; }
-  #kbBtn:hover, #pkBtn:hover, #edBtn:hover, #dcBtn:hover { border-color: #8fb3dd; color: #fff; }
+  #kbBtn:hover, #pkBtn:hover, #edBtn:hover, #dcBtn:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-4px); box-shadow: 0 7px 16px rgba(0,0,0,0.5); }
+  /* HOVER LABEL (user): the icon's name, centred under the tile, fading both ways. Absolutely positioned so it never
+     becomes a flex item and shoves the glyph off-centre; pointer-events off so it can't steal the hover from the tile. */
+  #kbBtn::after, #pkBtn::after, #edBtn::after, #dcBtn::after {
+    content: attr(data-lbl); position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 9px;
+    font: 7px/1 'px3', Consolas, monospace; letter-spacing: 1px; color: #b8ff6e; white-space: nowrap;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9); opacity: 0; transition: opacity 0.18s ease-out; pointer-events: none; }
+  #kbBtn:hover::after, #pkBtn:hover::after, #edBtn:hover::after, #dcBtn:hover::after { opacity: 1; }   /* HOVER (user): the tile lifts and the icon goes green — same green as the settings toggles' on-state (svg fill is currentColor, so the colour carries) */
   #edBtn.on { border-color: #7fd05a; color: #b8ff6e; }
   #edRow { display: flex; flex-direction: column; gap: 10px; align-items: center; }   /* stacked under the button row, centred on it; #lock's own 10px gap matches the square-button spacing */
   #edRow button { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
@@ -94,10 +101,10 @@
   <h1><span class="tv">voxel</span><span class="tb">bit</span></h1>
   <div>click to enter</div>
   <div id="btnRow">
-    <button id="kbBtn" title="settings"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
-    <button id="pkBtn" title="held item position"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H8v-2h2v2Zm8 0h-2v-2h2v2ZM4 18h2v2H2v-4h2v2Zm12 2h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 18H6v-2h2v2Zm6 0h-2v-2h2v2Zm8 0h-2v-2h2v2ZM6 16H4v-2h2v2Zm4 0H8v-2h2v2Zm6 0h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 14H6v-2h2v2Zm4 0h-2v-2h2v2Zm6 0h-2v-2h2v2Zm-8-2H8v-2h2v2Zm4 0h-2v-2h2v2Zm8 0h-2v-2h2v2Zm-10-2h-2V8h2v2Zm8-4h-2v2h-2v2h-2V8h-2V6h2V4h2V2h4v4ZM6 8H4V6h2v2ZM4 6H2V4h2v2Zm4 0H6V4h2v2ZM6 4H4V2h2v2Z"/></svg></button>
-    <button id="edBtn" title="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
-    <a id="dcBtn" href="https://discord.gg/AtW5fWZtSG" target="_blank" rel="noopener noreferrer" title="discord"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M21 22h-9v-2h9v2Zm-9-2h-2v-2h2v2Zm11 0h-2v-5h2v5Zm-13-2H8v-2h2v2Zm7-1h-4v-2h4v2Zm-9-1H6v-2h2v2Zm5-1h-2v-2h2v2Zm8 0h-4v-2h4v2ZM6 14H4v-2h2v2Zm5-1H9v-2h2v2Zm-7-1H2V3h2v9Zm5-1H7V7h2v4Zm9 0h-2V8h2v3Zm4 0h-2V6h2v5Zm-6-3h-3V6h3v2Zm-5-1H9V3h2v4Zm9-1h-2V4h2v2Zm-2-2h-5V2h5v2ZM9 3H4V1h5v2Z"/></svg></a>
+    <button id="kbBtn" aria-label="settings" data-lbl="settings"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
+    <button id="pkBtn" aria-label="item position" data-lbl="item position"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H8v-2h2v2Zm8 0h-2v-2h2v2ZM4 18h2v2H2v-4h2v2Zm12 2h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 18H6v-2h2v2Zm6 0h-2v-2h2v2Zm8 0h-2v-2h2v2ZM6 16H4v-2h2v2Zm4 0H8v-2h2v2Zm6 0h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 14H6v-2h2v2Zm4 0h-2v-2h2v2Zm6 0h-2v-2h2v2Zm-8-2H8v-2h2v2Zm4 0h-2v-2h2v2Zm8 0h-2v-2h2v2Zm-10-2h-2V8h2v2Zm8-4h-2v2h-2v2h-2V8h-2V6h2V4h2V2h4v4ZM6 8H4V6h2v2ZM4 6H2V4h2v2Zm4 0H6V4h2v2ZM6 4H4V2h2v2Z"/></svg></button>
+    <button id="edBtn" aria-label="asset editor" data-lbl="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
+    <a id="dcBtn" href="https://discord.gg/AtW5fWZtSG" target="_blank" rel="noopener noreferrer" aria-label="discord" data-lbl="discord"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M21 22h-9v-2h9v2Zm-9-2h-2v-2h2v2Zm11 0h-2v-5h2v5Zm-13-2H8v-2h2v2Zm7-1h-4v-2h4v2Zm-9-1H6v-2h2v2Zm5-1h-2v-2h2v2Zm8 0h-4v-2h4v2ZM6 14H4v-2h2v2Zm5-1H9v-2h2v2Zm-7-1H2V3h2v9Zm5-1H7V7h2v4Zm9 0h-2V8h2v3Zm4 0h-2V6h2v5Zm-6-3h-3V6h3v2Zm-5-1H9V3h2v4Zm9-1h-2V4h2v2Zm-2-2h-5V2h5v2ZM9 3H4V1h5v2Z"/></svg></a>
   </div>
   <div id="edRow" class="hidden"><button id="edCopy" title="copy the per-frame offsets so you can paste them back to be baked into the code">copy changes</button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
 </div>
@@ -685,7 +692,9 @@
   // ── cardinal ── an OFF-GRID animated flyer. Its 8 wing-flap frames (assets/life/cardinal/flight) are loaded into the held-item voxel
   // table below and DDA-raytraced as a drop-style model — arbitrary (sub-voxel, non-grid-snapped) rotation, depth-tested against the scene,
   // NEVER written into the world grid. Flight (a fixed high orbit near spawn) is driven in the tick loop. Model x→width, y→depth (beak at −y), z→height.
-  let BIRD_ITEM0 = 0, BIRD_NFRAMES = 0, BIRD_GLIDE = 0;   // dit (1-based item id) of flap frame 0, frame count, and the widest (wings-spread) frame index used for GLIDING — assigned where the frames are appended to `items`
+  const FLYERS = [];                                   // every loaded flight strip: { name, item0, n, glide }. Adding a species is a directory name — the flock,
+  let BLUEF_ITEM0 = 0, BLUEF_NFRAMES = 0, BLUEF_GLIDE = 1;   // the even split, the rig and the render path all key off this table, so nothing is per-species
+  let BIRD_ITEM0 = 0, BIRD_NFRAMES = 0, BIRD_GLIDE = 1;   // dit (1-based item id) of flap frame 0, frame count, and the frame held while GLIDING — FRAME 01 (user), not the auto-picked widest one, which landed on 00
   let BFLY_ITEM0 = 0, BFLY_NFRAMES = 0;                // butterfly flap frames (assets/life/butterfly/<color>) — orange flies over the editor stage; ALL colors fly the forest BY DAY
   let BFLY_COLS = [];                                  // first item id of each loaded color's 8 frames, in folder order: orange, red, blue, lime, pink, purple. Colour is picked by a spatial hash of the creature's cell (B.col), so adding colours scatters them evenly and procedurally with no other change
   let FFLY_ITEM0 = 0, FFLY_NFRAMES = 0;                // firefly frames (assets/life/firefly) — replaces the butterflies AT NIGHT; the yellow abdomen voxel glows via the drops dYv.w lane
@@ -698,7 +707,7 @@
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
-  let ROBIN_ROTATE = [];                               // ROBIN = the SAME bird recoloured again (assets/life/robin/00-10 — frames sit at the folder root, no rotate/ subdir; base.vox ignored)
+  let ROBIN_ROTATE = [];                               // ROBIN = the SAME bird recoloured again (assets/life/robin/rotate/00-10, base.vox ignored) — same layout as the cardinal and blue bird
   let LOTUS_BYTES = null;                               // voxelized lotus.glb (10 cm .vox) → auto-loaded as the STATIC editable object on the editor stage (mushroom removed — user)
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
@@ -782,10 +791,15 @@
       items.push({ w: ksx, d: ksy, h: ksz, cells: kcells });
       console.log('[vb] stone_knife.vox', ksx, ksy, ksz, 'voxels', kvox.length / 4);
     } catch (e) { console.warn('[vb] stone_knife.vox missing — clash still sparks, no knife', e); items.push({ w: 0, d: 0, h: 0, cells: [] }); }
-    try {                                                             // CARDINAL flight frames → item table (raw .vox palette); rendered off-grid as a drop-style model
-      BIRD_ITEM0 = items.length + 1;                                  // dit is 1-based; frame 0 follows the twig
-      for (let f = 0; f < 8; f++) {
-        const bv = await abuf('assets/life/cardinal/flight/0' + f + '.vox');
+    // ONE loader for every flying songbird strip — the cardinal and the blue bird ship identical 7-frame packs,
+    // so the parse, the widest-frame scan and the eye-blink variants are all shared rather than copy-pasted.
+    const loadFlight = async (dir, label) => {
+      const it0 = items.length + 1;                                  // dit is 1-based; frame 0 follows the twig
+      let bloaded = 0;
+      for (let f = 0; f < 16; f++) {                   // every CONSECUTIVE frame that exists — the old fixed count of 8 threw on the first gap and disabled the bird (the pack ships 7)
+        let bv = null;
+        try { bv = await abuf('assets/life/' + dir + '/flight/' + String(f).padStart(2, '0') + '.vox'); } catch (e2) { bv = null; }
+        if (!bv) { if (f === 0) throw new Error('flight frame 00 missing'); break; }
         const bdv = new DataView(bv.buffer);
         let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
         const bwalk = (off, end) => { while (off < end) {
@@ -798,15 +812,16 @@
           off += 12 + sz + csz;
         } };
         bwalk(8, bv.length);
-        if (!bvox) throw new Error('flight frame 0' + f + ' has no voxels');
+        if (!bvox) { if (f === 0) throw new Error('flight frame 00 has no voxels'); break; }   // a 404 page parses to no XYZI — treat it as the end of the strip, not a fatal error
         const cells = new Array(bsx * bsy * bsz).fill(null);         // model x → width, y → depth, z → height (matches ITEMD axes)
         for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
-        if (bsx > (items[BIRD_ITEM0 - 1 + BIRD_GLIDE] || { w: 0 }).w) BIRD_GLIDE = f;   // widest frame = wings fully spread → the glide pose
         items.push({ w: bsx, d: bsy, h: bsz, cells });
+        bloaded++;
       }
-      BIRD_NFRAMES = 8;
-      for (let f = 0; f < 8; f++) {                    // BLINK variants (items BIRD_ITEM0+8 .. +15): the black EYE voxel (directly above the pink cheek) turns the plumage red — shown for a beat every few seconds
-        const src = items[BIRD_ITEM0 - 1 + f], n = src.w * src.d;
+      const nf = bloaded;
+      const gl = Math.min(1, nf - 1);   // hold frame 01 while gliding (user); clamped so a one-frame strip still resolves
+      for (let f = 0; f < nf; f++) {         // BLINK variants (items it0+N .. +2N-1): the black EYE voxel (directly above the pink cheek) turns the plumage red — shown for a beat every few seconds
+        const src = items[it0 - 1 + f], n = src.w * src.d;
         const cells = src.cells.slice();
         let pink = -1;
         for (let i = 0; i < cells.length; i++) { const c = cells[i]; if (c && c[0] > 225 && c[1] > 140 && c[1] < 195 && c[2] > 160 && c[2] < 210) { pink = i; break; } }
@@ -823,8 +838,17 @@
         }
         items.push({ w: src.w, d: src.d, h: src.h, cells });
       }
-      console.log('[vb] cardinal flight', BIRD_NFRAMES, 'frames + blink -> items', BIRD_ITEM0, '..', BIRD_ITEM0 + 2 * BIRD_NFRAMES - 1);
-    } catch (e) { console.warn('[vb] cardinal flight frames missing - no bird', e); BIRD_NFRAMES = 0; }
+      console.log('[vb] ' + label + ' flight', nf, 'frames + blink -> items', it0, '..', it0 + 2 * nf - 1);
+      console.log('[vb] ' + label + ' flight', nf, 'frames -> items', it0, '.. glide pose', gl);
+      return { item0: it0, n: nf, glide: gl };
+    };
+    for (const sp of ['cardinal', 'blue_bird', 'robin']) {   // every songbird that ships a flight/ strip joins the flock automatically
+      try { const r0 = await loadFlight(sp, sp); FLYERS.push({ name: sp, item0: r0.item0, n: r0.n, glide: r0.glide }); }
+      catch (e) { console.warn('[vb] ' + sp + ' flight frames missing - species skipped', e); }
+    }
+    if (FLYERS.length) { BIRD_ITEM0 = FLYERS[0].item0; BIRD_NFRAMES = FLYERS[0].n; BIRD_GLIDE = FLYERS[0].glide; }   // legacy handles = the first species
+    if (FLYERS.length > 1) { BLUEF_ITEM0 = FLYERS[1].item0; BLUEF_NFRAMES = FLYERS[1].n; BLUEF_GLIDE = FLYERS[1].glide; }
+    console.log('[vb] flying songbirds:', FLYERS.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');
     if (!location.search.includes('nobfly'))                          // BUTTERFLY flap frames → item table, same treatment as the cardinal (raw .vox palette, full 3D grids)
       for (const cname of ['orange', 'red', 'blue', 'lime', 'pink', 'purple']) {   // one 8-frame set per user-authored color subfolder; a missing color just skips
         try {
@@ -992,7 +1016,7 @@
       console.log('[vb] blue_bird rotate', BLUEBIRD_ROTATE.length, 'frames (editor filmstrip)');
     } catch (e) { console.warn('[vb] blue_bird rotate frames missing', e); BLUEBIRD_ROTATE = []; }
     try {                                                             // ROBIN rotate frames — identical geometry to the cardinal, so it reuses CARD_OFF/CARD_FOOTZ untouched
-      for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/robin/' + String(f).padStart(2, '0') + '.vox'); ROBIN_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/robin/rotate/' + String(f).padStart(2, '0') + '.vox'); ROBIN_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       console.log('[vb] robin rotate', ROBIN_ROTATE.length, 'frames (3rd perched songbird)');
     } catch (e) { console.warn('[vb] robin rotate frames missing', e); ROBIN_ROTATE = []; }
     try { LOTUS_BYTES = { name: 'lotus.vox', u8: await abuf('assets/decoration/lotus.vox') }; } catch (e) { console.warn('[vb] lotus.vox missing', e); }   // voxelized lotus for the editor stage
@@ -1108,16 +1132,21 @@
     const bx = Math.round(cx * BCELL + 4 + ihash(cx * 3 + 40, cz * 7 + 90) * (BCELL - 8));
     const bz = Math.round(cz * BCELL + 4 + ihash(cx * 13 + 6, cz * 5 + 44) * (BCELL - 8));
     if (nearCave(bx, bz)) return null;                 // rocks DO grow underwater — scattered seafloor boulders
-    if (nearWormMouth(bx, bz)) return null;            // stamped after the cave carve at pristine H — would FLOAT over the mouth pit
     const sr = ihash(cx * 17 + 9, cz * 19 + 2);
     if (sr >= 0.275 && sr < 0.55) return null;         // the dropped half of the old 55% stone share — field stone rate halved
     const size = sr < 0.275 ? 0 : (sr < 0.93 ? 1 : (sr < 0.985 ? 2 : 3));   // stone 27.5% / small 38% / mid 5.5% / big 1.5%
     const rot = (ihash(cx * 23 + 2, cz * 7 + 11) * 3.99) | 0;
-    if (size === 0) return ROCKV ? { bx, bz, size, rot, mi: 0, up: ihash(cx * 43 + 12, cz * 47 + 21) < 0.5 ? 1 : 0 } : null;   // half stand upright
+    // Boulders stamp AFTER the cave carve, off the PRISTINE height, so one overhanging the mouth pit hangs in the
+    // air. The old guard tested the rock's CENTRE against a flat 52, but the pit measures 42-52 across and the widest
+    // model is 74 — a big rock centred just outside 52 still had its near edge ~37 voxels inside the hole. Grow the
+    // exclusion by the rock's own half-width so the whole footprint clears the pit, and only the big ones pay for it.
+    if (size === 0) return (ROCKV && !nearWormMouth(bx, bz, 52 + (Math.max(ROCKV.sx, ROCKV.sy) >> 1)))
+      ? { bx, bz, size, rot, mi: 0, up: ihash(cx * 43 + 12, cz * 47 + 21) < 0.5 ? 1 : 0 } : null;   // half stand upright
     const list = size === 1 ? R26S : (size === 2 ? R26M : R26B);
     if (!list.length) return null;
     const mi = list[(ihash(cx * 37 + 5, cz * 41 + 8) * list.length) | 0];
     const m = ROCK26[mi];
+    if (nearWormMouth(bx, bz, 52 + (Math.max(m.sx, m.sy) >> 1))) return null;
     if (size >= 2) {                                   // mid/big rocks are TREE-sized — reject candidates that would swallow a pine (same probe ferns use)
       const halfw = (Math.max(m.sx, m.sy) >> 1) + 8;
       for (let cz2 = Math.floor((bz - halfw) / TCELL); cz2 <= Math.floor((bz + halfw) / TCELL); cz2++)
@@ -1184,7 +1213,7 @@
   // fillet, so joints are concave-blended rather than butted), and the whole isosurface is displaced by low-frequency
   // COHERENT 3D noise — organic swelling and pinching along the bore instead of a perfectly round pipe.
   const TUBE_K = 7, TUBE_WOB = 5.5, TUBE_FRQ = 0.019;   // fillet width / wall displacement amplitude / noise wavelength (~53 vox — long, rolling)
-  const TUBE_SHELL = 3.0, CAVE_ROCKS = 5;               // PRESCREEN reach for the 1-voxel cave skin (the field is roughly a distance, so a face voxel always lands well inside 3) / small-rock scatter tries per station
+  const TUBE_SHELL = 3.0, CAVE_ROCKS = 5, CAVE_ORE = 9;   // PRESCREEN reach for the 1-voxel cave skin (the field is roughly a distance, so a face voxel always lands well inside 3) / small-rock scatter tries per station / ore-nodule tries per station
   const smin3 = (a, b, k) => { const h = Math.max(0, Math.min(1, 0.5 + 0.5 * (b - a) / k)); return b + (a - b) * h - k * h * (1 - h); };
   const capsF = (px, py, pz, A, B) => {                 // signed distance to the tapered capsule A→B (radius lerps along it)
     const bax = B.x - A.x, bay = B.y - A.y, baz = B.z - A.z;
@@ -1227,7 +1256,9 @@
               if (skin) {
                 const jj = gx + y * WX + gz * WX * WY;
                 const vw = W[jj];
-                if (vw && !CAVEKEEP[vw]) W[jj] = CAVEROCK[(ihash(x * 3 + y, z * 5 + y * 7) * CAVEROCK.length) | 0];   // mottled, hashed on WORLD coords so the pattern can't swim on a window shift
+                if (vw && !CAVEKEEP[vw]) W[jj] = vnoise3(x * 0.045 + 91, y * 0.045 + 17, z * 0.045 + 53) > 0.60
+                  ? MOSS[(ihash(x * 5 + y, z * 7 + y * 3) * MOSS.length) | 0]      // LUSH grotto (user): coherent-noise swathes of moss over the lining — patchy like real cave growth, never speckle
+                  : CAVEROCK[(ihash(x * 3 + y, z * 5 + y * 7) * CAVEROCK.length) | 0];   // mottled, hashed on WORLD coords so the pattern can't swim on a window shift
               }
             }
             continue;
@@ -1432,34 +1463,140 @@
       if (last && last[0].k === sg.k) last.push(sg); else runs.push([sg]);
     }
     for (const run of runs) carveTube(run, x0, x1, z0, z1);
-    for (const run of runs) stampCaveRocks(run, x0, x1, z0, z1);   // litter AFTER every bore is cut, so a later capsule can't carve a rock back out
+    const isChamber = (run) => run.length === 1 && run[0].r > 30;   // the terminal chamber is pushed as its own lone big-radius run
+    for (const run of runs) stampCaveRocks(run, c.segs, x0, x1, z0, z1);   // litter AFTER every bore is cut, so a later capsule can't carve a rock back out
+    for (const run of runs) stampCaveOre(run, c.segs, x0, x1, z0, z1);     // …then bed the coal/iron into the finished wall, so the lining can't repaint over it
+    for (let ri = 0; ri < runs.length; ri++) stampCaveFlora(runs[ri], c.segs, isChamber(runs[ri]) ? 2 : (ri === 0 ? 0 : 1), x0, x1, z0, z1);   // flora LAST — tufts land on rubble and floor alike, never floating over a later carve
   }
-  function stampCaveRocks(run, x0, x1, z0, z1) {       // LITTER the tunnel floor with the SMALL rocks from the 26-rock pack (user: small ones only)
+  // The carve field, evaluated over the WHOLE cave rather than one run. A run-local field reports solid rock
+  // wherever a BRANCH or the CHAMBER has already carved the space away, so anything anchored to it hangs in mid-air —
+  // that is what left rocks and grass floating. Still purely analytic (a pure function of world coords), so it stays
+  // region-safe: W is a region-local slab in the gen workers and a read outside the region would hit another part of
+  // the world entirely. Plain min instead of the carver's smin makes the cave read very slightly SMALLER, so anything
+  // resting on it errs into the rock rather than above it.
+  const caveNear = (segs, x, z) => {                   // indices of the stations whose reach can touch this column — the whole-cave loop only pays for these
+    const out = [];
+    for (let i = 0; i < segs.length; i++) {
+      const A = segs[i], B = (i + 1 < segs.length && segs[i + 1].k === A.k) ? segs[i + 1] : A;
+      const reach = Math.max(A.r, B.r) + TUBE_WOB + TUBE_K + 2;
+      if (x < Math.min(A.x, B.x) - reach || x > Math.max(A.x, B.x) + reach) continue;
+      if (z < Math.min(A.z, B.z) - reach || z > Math.max(A.z, B.z) + reach) continue;
+      out.push(i);
+    }
+    return out;
+  };
+  const caveSolid = (x, y, z, segs, near) => {         // >= 0 means rock. Reproduces carveTube's field EXACTLY — same smin3 fillet chain, same
+    let f = 1e9;                                       // per-station min, same noise. A plain capsule min instead reads a SMALLER cave than the one
+    for (let n = 0; n < near.length; n++) {            // actually carved, so 'solid' comes back for space that is really open air and anything
+      const i = near[n], A = segs[i];                  // anchored there hangs in the middle of the tunnel.
+      const B = (i + 1 < segs.length && segs[i + 1].k === A.k) ? segs[i + 1] : A;
+      const Pv = (i - 1 >= 0 && segs[i - 1].k === A.k) ? segs[i - 1] : A;
+      const N = (i + 2 < segs.length && segs[i + 2].k === A.k) ? segs[i + 2] : B;
+      let g = capsF(x, y, z, A, B);
+      g = smin3(g, capsF(x, y, z, Pv, A), TUBE_K);
+      g = smin3(g, capsF(x, y, z, B, N), TUBE_K);
+      if (g < f) f = g;                                // carveTube carves where ANY station's field <= 0, so solid means the MIN is still positive
+    }
+    return f + (vnoise3(x * TUBE_FRQ, y * TUBE_FRQ, z * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
+  };
+  const caveFloorY = (rx, rz, segs, fromY, lo) => {    // first solid voxel under (rx,rz) — the real one, counting every run
+    const near = caveNear(segs, rx, rz);
+    if (!near.length) return -1;
+    for (let y = Math.round(fromY); y > lo; y--)
+      if (caveSolid(rx, y, rz, segs, near) >= 0) return y + 1;
+    return -1;
+  };
+  function stampCaveRocks(run, segs, x0, x1, z0, z1) {       // SMALL rocks from the 26-pack bedded into the bore — floor, SIDES and ROOF alike (user), a quarter as many as before
     if (!R26S.length) return;
     for (let s = 0; s < run.length; s++) {
       const A = run[s], B = run[Math.min(s + 1, run.length - 1)];
       const Pv = run[Math.max(s - 1, 0)], N = run[Math.min(s + 2, run.length - 1)];
       for (let k = 0; k < CAVE_ROCKS; k++) {
-        if (ihash(A.x * 31 + s * 7 + k, A.z * 37 + k * 13) > 0.55) continue;   // not every try lands one — scattered, not paved
-        const ang = ihash(A.x * 17 + k * 5, A.z * 19 + s * 3 + k) * 6.283;
-        const rad = Math.sqrt(ihash(A.x * 11 + k, A.z * 23 + k * 9)) * A.r * 0.7;
-        const rx = Math.round(A.x + Math.cos(ang) * rad), rz = Math.round(A.z + Math.sin(ang) * rad);
-        if (rx + 40 < x0 || rx - 40 >= x1 || rz + 40 < z0 || rz - 40 >= z1) continue;   // reach cull only — stampModel does the real per-voxel clip
-        // Find the floor by walking the ANALYTIC field down, never by reading W: W is a region-local slab in the gen
-        // workers, so a read outside this region returns another part of the world and the rock would move with the
-        // region tiling. The field is a pure function of world coords, so every region agrees on the same floor.
-        let fy = -1;
-        const lo = Math.round(A.y - A.r - TUBE_WOB - 6);
-        for (let y = Math.round(A.y + 2); y > lo; y--) {
-          let f0 = capsF(rx, y, rz, A, B);
-          f0 = smin3(f0, capsF(rx, y, rz, Pv, A), TUBE_K);
-          f0 = smin3(f0, capsF(rx, y, rz, B, N), TUBE_K);
-          f0 += (vnoise3(rx * TUBE_FRQ, y * TUBE_FRQ, rz * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
-          if (f0 >= 0) { fy = y + 1; break; }           // first solid going down → the rock rests on the voxel above it
+        if (ihash(A.x * 31 + s * 7 + k, A.z * 37 + k * 13) > 0.275) continue;   // DOUBLED back from 0.1375 (user); still half the original 0.55
+        const th = ihash(A.x * 17 + k * 5, A.z * 19 + s * 3 + k) * 6.283;        // a direction off the bore axis: the whole sphere, so rocks ring the walls and hang off the roof
+        const ph = (ihash(A.x * 11 + k, A.z * 23 + k * 9) - 0.5) * 2.4;
+        const cph = Math.cos(ph), ux = Math.cos(th) * cph, uy = Math.sin(ph), uz = Math.sin(th) * cph;
+        let hit = -1;                                  // walk OUT to the rock face, testing the WHOLE cave — a run-local field calls a branch's open space 'solid' and the rock ends up hanging in it
+        for (let d = Math.max(2, A.r - 10); d < A.r + TUBE_WOB + 12; d += 0.5) {
+          const qx = A.x + ux * d, qy = A.y + uy * d, qz = A.z + uz * d;
+          if (caveSolid(qx, qy, qz, segs, caveNear(segs, Math.round(qx), Math.round(qz))) >= 0) { hit = d; break; }
         }
-        if (fy < 6 || fy >= WY) continue;
-        const mi = R26S[(ihash(rx * 7 + 3, rz * 11 + 5) * R26S.length) | 0];
-        stampModel(ROCK26[mi], (ihash(rx + 5, rz + 9) * 4) | 0, rx, fy, rz, x0, x1, z0, z1, 0);   // mode 0 = empty cells only, so a rock never plugs the bore
+        if (hit < 0) continue;
+        const mi = R26S[(ihash(A.x * 7 + 3 + k, A.z * 11 + 5 + s) * R26S.length) | 0], m = ROCK26[mi];
+        // Straddle the face: the rock JUTS 3-5 voxels into the cave interior (user) and the rest of it stays buried in
+        // the wall. Centre = face + halfExtent - protrusion, so the near edge lands `out` voxels inside the open bore
+        // while roughly 2*halfExtent - out voxels of rock remain embedded — anchored by construction, never floating.
+        const hx = (m.sx + m.sy + m.sz) / 6;           // mean half-extent, cheap stand-in for the extent along u
+        const out = 3 + ihash(A.x * 43 + k, A.z * 47 + s) * 2;
+        const cd = hit + hx - out;
+        let buried = 0;                                // the far half must really be rock — the wall noise can reopen a pocket just past the face
+        for (let q = 1; q <= 4; q++) {
+          const qd = cd + hx * (q / 4), qx2 = A.x + ux * qd, qy2 = A.y + uy * qd, qz2 = A.z + uz * qd;
+          if (caveSolid(qx2, qy2, qz2, segs, caveNear(segs, Math.round(qx2), Math.round(qz2))) >= 0) buried++;
+        }
+        if (buried < 3) continue;
+        const rx = Math.round(A.x + ux * cd), ry = Math.round(A.y + uy * cd), rz = Math.round(A.z + uz * cd);
+        // caveSolid models the CAVE, not the terrain: anywhere outside the bore it answers 'solid', which above ground
+        // at the mouth is really open sky. Without this the entrance stations flung rocks into the air over the pit.
+        if (ry >= H(rx, rz) - 2) continue;             // the anchor has to be genuinely under the surface
+        if (rx + 40 < x0 || rx - 40 >= x1 || rz + 40 < z0 || rz - 40 >= z1) continue;   // reach cull only — stampModel does the real per-voxel clip
+        const wy = ry - (m.sz >> 1);                   // centred on the buried anchor, so the model straddles the face whichever surface it grew from
+        if (wy < 6 || wy >= WY) continue;
+        stampModel(m, (ihash(rx + 5, rz + 9) * 4) | 0, rx, wy, rz, x0, x1, z0, z1, 0);   // mode 0 = empty cells only, so the buried half is skipped and a rock never plugs the bore
+      }
+    }
+  }
+  function stampCaveOre(run, segs, x0, x1, z0, z1) {         // COAL + IRON chunks bedded in the tunnel wall (user). The oreAt veins only show where a bore happens to
+    for (let s = 0; s < run.length; s++) {             // clip one, so seed nodules ON the wall directly — same idea as the seams stampCave already lays in the gorges.
+      const A = run[s], B = run[Math.min(s + 1, run.length - 1)];
+      const Pv = run[Math.max(s - 1, 0)], N = run[Math.min(s + 2, run.length - 1)];
+      for (let k = 0; k < CAVE_ORE; k++) {
+        if (ihash(A.x * 67 + s * 11 + k, A.z * 71 + k * 5) > 0.35) continue;   // HALVED (user)
+        const th = ihash(A.x * 13 + k * 7, A.z * 29 + s + k) * 6.283;          // a direction off the bore axis…
+        const ph = (ihash(A.x * 37 + k, A.z * 41 + k * 9) - 0.5) * 2.2;        // …tilted, so nodules ring the walls, floor and roof alike
+        const cph = Math.cos(ph), ux = Math.cos(th) * cph, uy = Math.sin(ph), uz = Math.sin(th) * cph;
+        let hit = -1;                                  // …then walk OUT to the rock face, whole-cave so a branch's open space is not mistaken for wall
+        for (let d = Math.max(2, A.r - 6); d < A.r + TUBE_WOB + 12; d += 1.0) {
+          const qx = A.x + ux * d, qy = A.y + uy * d, qz = A.z + uz * d;
+          if (caveSolid(qx, qy, qz, segs, caveNear(segs, Math.round(qx), Math.round(qz))) >= 0) { hit = d; break; }
+        }
+        if (hit < 0) continue;
+        const ox = Math.round(A.x + ux * (hit + 0.5)), oy = Math.round(A.y + uy * (hit + 0.5)), oz = Math.round(A.z + uz * (hit + 0.5));
+        if (ox + 6 < x0 || ox - 6 >= x1 || oz + 6 < z0 || oz - 6 >= z1) continue;
+        const ORE = ihash(A.x * 3 + k, A.z * 7 + s) < 0.5 ? OREIRON : ORECOAL;   // ~50/50, same split as oreAt
+        const br = 1.7 + ihash(ox, oz + k) * 1.7, BR = Math.ceil(br);
+        for (let dz2 = -BR; dz2 <= BR; dz2++) for (let dy2 = -BR; dy2 <= BR; dy2++) for (let dx2 = -BR; dx2 <= BR; dx2++) {
+          if (dx2 * dx2 + dy2 * dy2 + dz2 * dz2 > br * br) continue;
+          const yy = oy + dy2; if (yy < 5 || yy >= WY) continue;
+          const xx = ox + dx2, zz = oz + dz2;
+          if (xx < x0 || xx >= x1 || zz < z0 || zz >= z1) continue;   // per-voxel region clip, so a nodule straddling a seam still lands identically from either side
+          const jj = gwrap(xx, WX) + yy * WX + gwrap(zz, WZ) * WX * WY;
+          const vv = W[jj];
+          if (vv && !CAVEKEEP[vv]) W[jj] = ORE[(ihash(xx + yy, zz - yy) * 2) | 0];   // solid wall only — never fill the bore, never touch water/lava or an existing vein
+        }
+      }
+    }
+  }
+  function stampCaveFlora(run, segs, kind, x0, x1, z0, z1) {   // GREEN GROUND COVER only (user removed the fern + mushroom models): moss/grass strands over the bore floor
+    for (let s = 0; s < run.length; s++) {
+      const A = run[s], B = run[Math.min(s + 1, run.length - 1)];
+      const Pv = run[Math.max(s - 1, 0)], N = run[Math.min(s + 2, run.length - 1)];
+      const depth = kind === 0 ? s / run.length : 1;   // 0 at the mouth -> 1 at the end; branches and the chamber are all 'deep'
+      for (let k = 0; k < 7; k++) {
+        if (ihash(A.x * 83 + s * 5 + k, A.z * 89 + k * 3) > 0.6) continue;
+        const ang = ihash(A.x * 7 + k * 9, A.z * 13 + s + k) * 6.283;
+        const rad = Math.sqrt(ihash(A.x * 97 + k, A.z * 101 + k * 5)) * A.r * 0.75;
+        const rx = Math.round(A.x + Math.cos(ang) * rad), rz = Math.round(A.z + Math.sin(ang) * rad);
+        if (rx < x0 || rx >= x1 || rz < z0 || rz >= z1) continue;   // strands are single COLUMNS clipped strictly inside the region, which is exactly what makes the W read below safe:
+        const gx = gwrap(rx, WX), gz = gwrap(rz, WZ);              // the whole vertical column is in-slab, so this is the finished world and not a neighbouring region's data.
+        let fy = -1;                                               // Read the REAL floor rather than the analytic one — the field uses plain min where the carver uses smin, so it reports
+        const lo = Math.max(2, Math.round(A.y - A.r - TUBE_WOB - 10));   // a floor a voxel or two above the carved one and every strand ends up hanging in the air.
+        for (let y = Math.min(WY - 3, Math.round(A.y)); y > lo; y--)
+          if (W[gx + y * WX + gz * WX * WY]) { fy = y + 1; break; }
+        if (fy < 6 || fy >= WY - 2) continue;
+        const tall = depth < 0.28 && ihash(rx * 3, rz * 5) < 0.35 ? 2 : 1;   // taller blades where the mouth light still reaches
+        const col = (depth < 0.4 ? GRASS : MOSS)[(ihash(rx * 11 + 2, rz * 3 + 6) * 4) | 0];
+        for (let t = 0; t < tall; t++) { const ii = gx + (fy + t) * WX + gz * WX * WY; if (W[ii]) break; W[ii] = col; }
       }
     }
   }
@@ -1635,7 +1772,7 @@
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // spawn clearing
     if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
     if (nearCave(wx, wz)) return null;
-    if (nearWormMouth(wx, wz)) return null;           // don't stand a pine over a cave mouth
+    if (nearWormMouth(wx, wz, 52 + (Math.max(MSX, MSY) >> 1))) return null;   // don't stand a pine over a cave mouth — widened by the crown's half-width for the same overhang reason as the boulders
     return { tx: wx, tz: wz, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
   }
   function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
@@ -1808,9 +1945,9 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, TUBE_K, TUBE_WOB, TUBE_FRQ, TUBE_SHELL, CAVE_ROCKS, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, TUBE_K, TUBE_WOB, TUBE_FRQ, TUBE_SHELL, CAVE_ROCKS, CAVE_ORE, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH, CAVEROCK, CAVEKEEP };
-    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, fixCarveCol, smin3, capsF, carveTube, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, stampCaveRocks, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
+    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, fixCarveCol, smin3, capsF, carveTube, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, caveNear, caveSolid, caveFloorY, stampCaveRocks, stampCaveOre, stampCaveFlora, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
@@ -2590,6 +2727,20 @@
       let face = u32(alb4.a * 255.0 + 0.5) & 15u;
       let lavaG = f32(u32(alb4.a * 255.0 + 0.5) >> 4u) / 14.0;
       var col : vec3<f32>;
+      if (u.misc.w > 0.5) {                                          // ── EYE INSIDE A VOXEL ── show the MATERIAL you are buried in as chunky pixels, not a black void
+        let pk = u32(u.misc.w + 0.5) - 1u;                           // packed sRGB of that voxel: stone, needle green, trunk brown…
+        let base = pow(vec3<f32>(f32(pk & 255u), f32((pk >> 8u) & 255u), f32((pk >> 16u) & 255u)) / 255.0, vec3<f32>(2.2));
+        let bq = vec2<i32>(vec2<f32>(gid.xy) * 0.04);                // ~24 px blocks — 4x coarser than the first pass (user), so it reads as chunky voxel material
+        var hh = u32(bq.x) * 374761393u + u32(bq.y) * 668265263u;    // (ivhash lives in TRACE, not PRE — this is the same mix, inlined)
+        hh = (hh ^ (hh >> 13u)) * 1274126177u;
+        let h1 = f32((hh ^ (hh >> 16u)) & 1023u) / 1023.0;
+        var hc = u32(bq.x >> 2) * 2246822519u + u32(bq.y >> 2) * 374761393u;   // a coarser second octave breaks up the regular grid
+        hc = (hc ^ (hc >> 13u)) * 668265263u;
+        let h2 = f32((hc ^ (hc >> 16u)) & 1023u) / 1023.0;
+        let k = 0.30 + 0.42 * h1 + 0.24 * h2;                        // per-block shade — you are INSIDE it, so it stays dim whatever the material
+        textureStore(colorOut, vec2<i32>(gid.xy), vec4<f32>(sqrt(base * k), 1.0));
+        return;
+      }
       if (face == 7u) {
         col = skyColor(rd);
         if (rd.y > 0.02) {                                           // VOLUMETRIC CLOUDS — raymarched slab, beer-lambert with a sun tap
@@ -3143,10 +3294,13 @@
     return v === LAVA_T || v === LAVA_B || v === LAVA_R || v === LAVA_Y;
   };
   const boxFree = (px, py, pz, hh) => {
-    if (birdBox.active                                                     // SOLID cardinal (Task 2): the player's box may not overlap the bird's world-AABB
-      && px + HW > birdBox.cx - birdBox.hx && px - HW < birdBox.cx + birdBox.hx
-      && pz + HW > birdBox.cz - birdBox.hz && pz - HW < birdBox.cz + birdBox.hz
-      && py + hh > birdBox.cy - birdBox.hy && py       < birdBox.cy + birdBox.hy) return false;
+    for (let bb = 0; bb < birdBoxes.length; bb++) {                        // SOLID cardinals (Task 2): the player's box may not overlap any bird's world-AABB
+      const B2 = birdBoxes[bb];
+      if (B2.active
+        && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
+        && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+    }
     const x0 = Math.floor(px - HW), x1 = Math.floor(px + HW), z0 = Math.floor(pz - HW), z1 = Math.floor(pz + HW);
     const y0 = Math.floor(py + 0.001), y1 = Math.floor(py + hh - 0.001);
     for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (solid(x, y, z)) return false;
@@ -3337,8 +3491,118 @@
   // drifts to a new random target every few seconds (varied, believable arcs — never a fixed circle) and it terrain-follows via hmap so it
   // always clears the canopy. Pose is written into drop slot 4 each frame (see the drops uniform section) and DDA-raytraced off-grid —
   // smooth rotation, depth-tested, no world-grid writes.
-  const bird = { th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0 };
-  const birdBox = { active: false, cx: 0, cy: 0, cz: 0, hx: 8, hy: 8, hz: 8 };   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
+  const BIRD_N = 12;                                   // divisible by 1/2/3/4 — whatever the species count, the round-robin split below comes out exact                                    // a few cardinals in the air, not one (user). Bird 0 owns the dedicated drop slot 4;
+  const birds = Array.from({ length: BIRD_N }, () => ({ th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0, mode: 0, swoopT0: 0, swoopA: 0, swO: 0, edge: false, fi: 0, sp: 0 }));   // the rest ride the compacted creature slots. mode: 0 wander / 1 thermal soar / 2 swoop
+  const bird = birds[0];                               // the original singleton name, kept for the editor path + the primary hitbox
+  const birdStep = (b, bi, tb, dt) => {                // one bird's flight for this frame → its world pose. Identical maths for every bird; only the seed state differs.
+        // ── PROCEDURAL POPULATION ── the flyers follow the SAME ring rule as every other creature: a bird that falls
+        // more than LIFE_KEEP behind is recycled into the LIFE_IN..LIFE_OUT band around wherever the player is now.
+        // Without this the six spawned once at world start and the sky went empty the moment you walked away.
+        // The ground-creature band (0.78-0.94 of the keep radius) puts a flyer on the horizon where it is a single
+        // pixel — fine for a worm you walk up to, useless for a bird meant to be seen. Birds ride a TIGHTER ring:
+        // they arrive well inside the view and cross it. Nothing pops, because at 400+ voxels and 14 m up a bird is
+        // a speck against open sky either way.
+        const bKeep = Math.min(renderDist + 64, 1040), bOut = bKeep * 0.50, bIn = bKeep * 0.24;
+        if (b.init) { const ddx = b.x - P.x, ddz = b.z - P.z;
+          if (ddx * ddx + ddz * ddz > bKeep * bKeep) b.init = false; }   // left the ring → respawn it ahead of you instead
+        if (!b.init) {                                // placed out past the fog, never in plain view, and staggered so they never read as a formation
+          const a0 = (bi / BIRD_N) * Math.PI * 2 + Math.random() * 1.4, r0 = bIn + Math.random() * Math.max(1, bOut - bIn);
+          b.x = P.x + Math.cos(a0) * r0; b.z = P.z + Math.sin(a0) * r0;
+          b.x = Math.max(rect.xlo + 60, Math.min(rect.xhi - 60, b.x));   // never outside the generated rect — the hmap is stale there and the terrain-follow flies blind
+          b.z = Math.max(rect.zlo + 60, Math.min(rect.zhi - 60, b.z));
+          b.g = hmap[gwrap(Math.floor(b.x), WX) + gwrap(Math.floor(b.z), WZ) * WX] || P.y;
+          b.th = Math.random() * Math.PI * 2; b.pyPrev = b.g + BIRD_ALT; b.init = true;
+          b.altO = Math.random() * 30; b.tRe = tb + Math.random() * 3;   // staggered whim timers → independent behaviour
+          b.flapT0 = tb - Math.random() * 0.5;         // desynced wingbeats
+          b.om = 0; b.vyS = 0; b.swO = 0; b.mode = 0; b.glid = false;
+          b.sp = FLYERS.length ? (bi % FLYERS.length) : 0;   // ── SPECIES ── fixed by SLOT, never rolled: a coin flip drifts, this holds an exact even split (12 birds / 3 species = 4 each) no matter how many recycle
+        }
+        if (tb > b.tRe) {                             // pick the next BEHAVIOUR, not just a turn rate — that is what reads as intent instead of drift
+          const r = Math.random();
+          if (r < 0.18) {                                // THERMAL SOAR: settle into a steady banked circle, wings locked out, drifting a little higher
+            b.mode = 1;
+            b.omT = (Math.random() < 0.5 ? 1 : -1) * (0.45 + Math.random() * 0.35);
+            b.altT = 18 + Math.random() * 26;
+            b.tRe = tb + 6 + Math.random() * 7;
+          } else if (r < 0.34) {                         // SWOOP: fold in and dive, trade the height for speed, then bleed it back into the climb-out
+            b.mode = 2; b.swoopT0 = tb;
+            b.swoopA = 12 + Math.random() * Math.min(26, 6 + b.altO);   // never dives deeper than the height band it actually has in hand
+            b.omT = (Math.random() - 0.5) * 0.4;
+            b.tRe = tb + 3.2;
+          } else {                                       // WANDER: a fresh turn-rate + altitude urge, as before
+            b.mode = 0;
+            b.omT = (Math.random() - 0.5) * 1.0;      // rad/s: anything from a lazy drift to a tightish arc, either direction
+            b.altT = Math.random() * 34;              // cruise 0–34 vox above the minimum safe height
+            b.tRe = tb + 1.5 + Math.random() * 3.0;
+          }
+        }
+        // WORLD-EDGE AWARENESS: past the generated rect the hmap is stale and the terrain-follow flies blind — bank
+        // back toward the middle well before the edge. Not a player leash (the bird still never follows you); it just
+        // refuses to fly out of the world.
+        if (b.x < rect.xlo + 90 || b.x > rect.xhi - 90 || b.z < rect.zlo + 90 || b.z > rect.zhi - 90) {
+          const want = Math.atan2((rect.xlo + rect.xhi) * 0.5 - b.x, (rect.zlo + rect.zhi) * 0.5 - b.z);
+          let dth = want - b.th;
+          while (dth > Math.PI) dth -= 2 * Math.PI; while (dth < -Math.PI) dth += 2 * Math.PI;
+          b.omT = Math.max(-1.0, Math.min(1.0, dth * 1.2)); b.mode = 0; b.edge = true;   // the steer-home urge overrides whatever whim it was on
+        } else b.edge = false;
+        b.om += (b.omT - b.om) * (1 - Math.exp(-2.5 * dt));   // turn rate eases toward target — smooth, believable arcs, no snap turns
+        b.om = Math.max(-1.1, Math.min(1.1, b.om));
+        b.th += b.om * dt;
+        const Hx = Math.sin(b.th), Hz = Math.cos(b.th);   // horizontal heading; the beak (model −depth) points along it
+        const spd = BIRD_SPD * (1 + Math.max(-0.28, Math.min(0.5, -b.vyS * 0.045)));   // ENERGY EXCHANGE: a dive buys speed (up to +50%), a climb costs it — the swoop reads as physics, not animation
+        b.x += Hx * spd * dt; b.z += Hz * spd * dt;
+        const gHere = hmap[gwrap(Math.floor(b.x), WX) + gwrap(Math.floor(b.z), WZ) * WX];   // terrain-follow, ASYMMETRIC: climb fast ahead of rising ground, sink only gently —
+        const gNext = hmap[gwrap(Math.floor(b.x + Hx * 45), WX) + gwrap(Math.floor(b.z + Hz * 45), WZ) * WX];   // — so crossing a gorge is a mild swoop, not a plunge below the rims
+        const gT = Math.max(Math.max(gHere, gNext), WL);   // never track below sea level (also guards hmap zeros beyond the generated rect once it wanders far)
+        b.g += (gT - b.g) * (1 - Math.exp(-(gT > b.g ? 3.0 : 0.35) * dt));
+        b.altO += (b.altT - b.altO) * (1 - Math.exp(-0.4 * dt));
+        const swT = b.mode === 2 ? -b.swoopA * Math.sin(Math.PI * Math.min(1, (tb - b.swoopT0) / 3.2)) : 0;   // half-sine dive-and-recover over the swoop's 3.2 s
+        b.swO += (swT - b.swO) * (1 - Math.exp(-4 * dt));   // eased, so an interrupted swoop recovers smoothly instead of popping
+        const py3 = Math.max(b.g + 122, b.g + BIRD_ALT + b.altO + b.swO + Math.sin(tb * 1.2) * 3.0);   // safe height + wander band + swoop + flap bob; the floor keeps every dive above the tallest pine (116)
+        const px3 = b.x, pz3 = b.z;
+        const vy = (py3 - b.pyPrev) / Math.max(dt, 1e-4); b.pyPrev = py3;   // raw vertical velocity — NOISY (integer hmap samples step as voxel boundaries cross)
+        b.vyS += (vy - b.vyS) * (1 - Math.exp(-5.0 * dt));   // low-passed — attitude and the flap↔glide switch both read THIS, or the pitch snaps and the modes flicker
+        b.y = py3;
+        const Fy = Math.max(-0.6, Math.min(0.6, b.vyS / BIRD_SPD * 3.0));   // climb/dive attitude (×3 so the gentle bob reads at a glance)
+        const fl2 = Math.hypot(1, Fy);
+        const F = [Hx / fl2, Fy / fl2, Hz / fl2];        // 3D flight direction (pitch included)
+        const xl = Math.hypot(F[0], F[2]) || 1;
+        const Xw0 = [F[2] / xl, 0, -F[0] / xl];          // wingspan = up × F, normalised — for om > 0 this side faces the turn centre
+        const Zw0 = [F[1] * Xw0[2], F[2] * Xw0[0] - F[0] * Xw0[2], -F[1] * Xw0[0]];   // body-up = F × Xw0 (unit: F ⊥ Xw0)
+        const bank = Math.max(-0.5, Math.min(0.5, spd * b.om / GRAVITY * 1.8));   // v·ω/g at the LIVE speed (signed) — rolls INTO whichever way it's turning, harder when it is moving faster
+        const cb = Math.cos(bank), sb = Math.sin(bank);
+        const Xw = [Xw0[0] * cb - Zw0[0] * sb, Xw0[1] * cb - Zw0[1] * sb, Xw0[2] * cb - Zw0[2] * sb];   // roll about F: the wing on the turn-centre side dips
+        const Zw = [Zw0[0] * cb + Xw0[0] * sb, Zw0[1] * cb + Xw0[1] * sb, Zw0[2] * cb + Xw0[2] * sb];
+        const Yw = [-F[0], -F[1], -F[2]];                // tail — right-handed with the above (Yw×Zw = Xw)
+        if (b.glid ? b.vyS > -0.5 : b.vyS < -1.1) b.glid = !b.glid;   // undulating flight: FLAP to climb, GLIDE (wings spread) on the descent — HYSTERESIS so the modes can't flicker at the threshold
+        if (b.mode === 1) b.glid = true;           // a soaring circle is flown wings-out the whole way round
+        if (b.glid) b.flapT0 = -1;
+        else if (b.flapT0 < 0) b.flapT0 = tb;      // flapping just resumed → restart the wing cycle at frame 00 (an absolute-time phase would re-enter mid-cycle and visibly skip frames)
+        const STR = FLYERS[b.sp] || FLYERS[0];         // which strip this individual flies on — identical rig either way (F is already the flight vector above)
+        const sBase = STR.item0, sN = STR.n, sGl = STR.glide;
+        let fi = b.glid ? sGl : Math.floor((tb - b.flapT0) * BIRD_FLAP) % sN;
+        if (tb % 3.4 < 0.16) fi += sN;                   // BLINK — every ~3.4 s the eye flashes plumage-red for a beat (the +N..+2N-1 blink variants)
+        b.fi = fi; b.gliding = b.glid;               // debug taps (__vb.bird)
+    return { x: px3, y: py3, z: pz3, Xw, Yw, Zw, fi, item: sBase + fi, glideItem: sBase - 1 + sGl };
+  };
+  const birdWrite = (o2, ps, cam, right, up, fwd) => {   // pose → one drop slot (camera-space anchor + the three model axes)
+    const rx = ps.x - cam[0], ry = ps.y - cam[1], rz = ps.z - cam[2];
+    UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = BIRD_VS;
+    UF[o2 + 4] = ps.Xw[0] * right[0] + ps.Xw[1] * right[1] + ps.Xw[2] * right[2]; UF[o2 + 5] = ps.Xw[0] * up[0] + ps.Xw[1] * up[1] + ps.Xw[2] * up[2]; UF[o2 + 6] = ps.Xw[0] * fwd[0] + ps.Xw[1] * fwd[1] + ps.Xw[2] * fwd[2]; UF[o2 + 7] = ps.item;
+    UF[o2 + 8] = ps.Yw[0] * right[0] + ps.Yw[1] * right[1] + ps.Yw[2] * right[2]; UF[o2 + 9] = ps.Yw[0] * up[0] + ps.Yw[1] * up[1] + ps.Yw[2] * up[2]; UF[o2 + 10] = ps.Yw[0] * fwd[0] + ps.Yw[1] * fwd[1] + ps.Yw[2] * fwd[2]; UF[o2 + 11] = 0;
+    UF[o2 + 12] = ps.Zw[0] * right[0] + ps.Zw[1] * right[1] + ps.Zw[2] * right[2]; UF[o2 + 13] = ps.Zw[0] * up[0] + ps.Zw[1] * up[1] + ps.Zw[2] * up[2]; UF[o2 + 14] = ps.Zw[0] * fwd[0] + ps.Zw[1] * fwd[1] + ps.Zw[2] * fwd[2]; UF[o2 + 15] = 0;
+  };
+  const birdHit = (box, ps) => {                       // SOLID hitbox: project the glide-frame extents onto the world axes for a snug, stable AABB
+    const bdi = (itemsRef && itemsRef[ps.glideItem]) || { w: 14, d: 6, h: 10 };   // this bird's own glide frame — the two species are the same size, but keep it honest
+    const ew2 = bdi.w * 0.5 * BIRD_VS, ed2 = bdi.d * 0.5 * BIRD_VS, eh2 = bdi.h * 0.5 * BIRD_VS;
+    box.cx = ps.x; box.cy = ps.y; box.cz = ps.z;
+    box.hx = ew2 * Math.abs(ps.Xw[0]) + ed2 * Math.abs(ps.Yw[0]) + eh2 * Math.abs(ps.Zw[0]);
+    box.hy = ew2 * Math.abs(ps.Xw[1]) + ed2 * Math.abs(ps.Yw[1]) + eh2 * Math.abs(ps.Zw[1]);
+    box.hz = ew2 * Math.abs(ps.Xw[2]) + ed2 * Math.abs(ps.Yw[2]) + eh2 * Math.abs(ps.Zw[2]);
+    box.active = true;
+  };
+  const birdBoxes = Array.from({ length: 12 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 8, hy: 8, hz: 8 }));   // one per flying songbird
+  const birdBox = birdBoxes[0];   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
   const wbf = Array.from({ length: 244 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget)
   // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
@@ -4201,6 +4465,138 @@
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     pal(i) { return i === undefined ? palette.length : palette[i]; },
     rd() { return { renderDist, half: HALF, windowX: WX }; },   // fixed view-distance tap
+    mouthPit(r) {                                    // how far from the mouth is the SURFACE actually carved away? boulders stamp after the carve at pristine H, so anything inside this radius floats
+      const R = r || 4000, n = Math.ceil(R / WORM_CELL), out = [];
+      const c0x = Math.floor(P.x / WORM_CELL), c0z = Math.floor(P.z / WORM_CELL);
+      for (let dz = -n; dz <= n; dz++) for (let dx = -n; dx <= n; dx++) { const c = wormCaveAt(c0x + dx, c0z + dz);
+        if (c) out.push({ c, d: Math.hypot(c.mx - P.x, c.mz - P.z) }); }
+      out.sort((a2, b2) => a2.d - b2.d);
+      const res = [];
+      for (const e of out.slice(0, 6)) {              // sample several caves — the pit is elongated along the entry heading, so one is not representative
+        const c = e.c; let maxD = 0, carved = 0, ungen = 0;
+        for (let rad = 4; rad <= 200; rad += 2) for (let a2 = 0; a2 < 64; a2++) {
+          const th = a2 / 64 * 6.2832;
+          const x = Math.round(c.mx + Math.cos(th) * rad), z = Math.round(c.mz + Math.sin(th) * rad);
+          const hh = H(x, z); if (hh < 4 || hh >= WY - 4) continue;
+          let top = -1;                                // topmost solid in this column…
+          for (let y = hh + 3; y > hh - 60; y--) if (this.vox(x, y, z)) { top = y; break; }
+          if (top < 0) { ungen++; continue; }          // …nothing at all = region not generated here, NOT a pit; must not count
+          if (hh - top > 3) { carved++; if (rad > maxD) maxD = rad; }   // real ground sits well below the pristine height → the pit swallowed it
+        }
+        // …and the point of it all: is anything left hanging over the pit? Scan the airspace above the hole for
+        // solid voxels with a long drop under them — a boulder or trunk stamped off the pristine height.
+        let hang = 0, hangRock = 0; const hangAt = [], hcls = {};
+        const RID = new Set();                          // every rock palette id: the 26-pack plus the small field stone
+        for (const gi of R26S.concat(R26M, R26B)) for (const q of ROCK26[gi].vox) RID.add(q >>> 24);
+        if (ROCKV) for (const q of ROCKV.vox) RID.add(q >>> 24);
+        for (let rad = 0; rad <= 130; rad += 2) for (let a2 = 0; a2 < 48; a2++) {
+          const th = a2 / 48 * 6.2832;
+          const x = Math.round(c.mx + Math.cos(th) * rad), z = Math.round(c.mz + Math.sin(th) * rad);
+          const hh = H(x, z); if (hh < 4 || hh >= WY - 40) continue;
+          let ground = -1;
+          for (let y = hh + 34; y > hh - 60; y--) if (this.vox(x, y, z)) { ground = y; break; }
+          if (ground < 0) continue;
+          let gap = 0;                                 // count the empty voxels directly beneath the topmost solid
+          for (let y = ground - 1; y > ground - 26 && !this.vox(x, y, z); y--) gap++;
+          if (gap >= 4) { hang++;
+            const vid = this.vox(x, ground, z);
+            if (RID.has(vid)) hangRock++;              // ONLY rock counts as a floater — pine canopy over the rim legitimately has air beneath it
+            hcls[vid] = (hcls[vid] || 0) + 1;          // tally the culprit by voxel id so we can name the pass that placed it
+            if (hangAt.length < 4) hangAt.push({ x, y: ground, z, gap, id: vid, rgb: '#' + palette[vid].map((q) => q.toString(16).padStart(2, '0')).join('') }); }
+        }
+        res.push({ mouth: [c.mx, c.mz], maxCarvedRadius: maxD, carvedSamples: carved, ungenerated: ungen, dist: Math.round(e.d), hangingCols: hang, hangingRock: hangRock, hangAt,
+          hangIds: Object.entries(hcls).sort((p2, q2) => q2[1] - p2[1]).slice(0, 8)
+            .map(([id, n]) => ({ id: +id, n, rgb: '#' + palette[+id].map((q) => q.toString(16).padStart(2, '0')).join(''),
+              rock26: R26S.concat(R26M, R26B).some((gi) => ROCK26[gi].vox.some((q) => (q >>> 24) === +id)),
+              stone: ROCKV ? ROCKV.vox.some((q) => (q >>> 24) === +id) : false })) });
+      }
+      return res;
+    },
+    caveProbe(r) {                                   // nearest worm cave + a voxel census of its bore interior
+      const R = r || 4000, n = Math.ceil(R / WORM_CELL), out = [];
+      const c0x = Math.floor(P.x / WORM_CELL), c0z = Math.floor(P.z / WORM_CELL);
+      for (let dz = -n; dz <= n; dz++) for (let dx = -n; dx <= n; dx++) { const c = wormCaveAt(c0x + dx, c0z + dz);
+        if (c) out.push({ c, d: Math.hypot(c.mx - P.x, c.mz - P.z) }); }
+      out.sort((a2, b2) => a2.d - b2.d);
+      const e = out.find((q) => H(q.c.segs[q.c.segs.length - 1].x, q.c.segs[q.c.segs.length - 1].z) > 160) || out[0];
+      if (!e) return null;
+      const c = e.c, main = c.segs.filter((sg) => sg.k === 0);
+      const tally = { coal: 0, iron: 0, moss: 0, grass: 0, rock: 0, air: 0 };
+      const CO = new Set(ORECOAL), IR = new Set(OREIRON), MO = new Set(MOSS), GR = new Set(GRASS);
+      const box = { coal: 0, iron: 0, moss: 0, rock: 0, air: 0 };
+      const R26 = new Set(); for (const gi of R26S) for (const q of ROCK26[gi].vox) R26.add(q >>> 24);   // the small-rock palette ids
+      const site = { floor: 0, wall: 0, roof: 0 };   // where do rock voxels sit relative to each station centre?
+      { const sg = main[(main.length * 0.4) | 0], R2 = Math.round(sg.r) + 10;
+        for (let dy = -R2; dy <= R2; dy += 2) for (let dz = -R2; dz <= R2; dz += 2) for (let dx = -R2; dx <= R2; dx += 2) {
+          const y = sg.y + dy; if (y < 1 || y >= WY) continue;
+          const vv = this.vox(sg.x + dx, y, sg.z + dz);
+          if (!vv) box.air++; else if (CO.has(vv)) box.coal++; else if (IR.has(vv)) box.iron++; else if (MO.has(vv)) box.moss++; else box.rock++;
+        } }
+      const float2 = { blobs: 0, blobsFloating: 0, floatVox: 0, grassFloat: 0, grassOk: 0, worst: [] };
+      { const R26 = new Set(); for (const gi of R26S) for (const q of ROCK26[gi].vox) R26.add(q >>> 24);
+        const GM = new Set([...GRASS, ...MOSS]);
+        const seen = new Set(), key = (x, y, z) => x + ',' + y + ',' + z;
+        for (const sg of main.concat([c.segs[c.segs.length - 1]])) {
+          const R2 = Math.round(sg.r) + 10;
+          for (let dy = -R2; dy <= R2; dy++) for (let dz = -R2; dz <= R2; dz++) for (let dx = -R2; dx <= R2; dx++) {
+            const y = sg.y + dy; if (y < 2 || y >= WY) continue;
+            const x = sg.x + dx, z = sg.z + dz, vv = this.vox(x, y, z);
+            if (!vv) continue;
+            if (GM.has(vv)) {                          // free-standing strand: needs something under it
+              let nb = 0;
+              if (this.vox(x + 1, y, z)) nb++; if (this.vox(x - 1, y, z)) nb++;
+              if (this.vox(x, y, z + 1)) nb++; if (this.vox(x, y, z - 1)) nb++; if (this.vox(x, y + 1, z)) nb++;
+              if (nb >= 2) continue;                   // that is wall LINING, not a strand
+              if (this.vox(x, y - 1, z)) float2.grassOk++; else float2.grassFloat++;
+              continue;
+            }
+            if (!R26.has(vv) || seen.has(key(x, y, z))) continue;
+            // FLOOD the whole rock blob. A rock voxel always touches its own rock, so per-voxel neighbour tests
+            // prove nothing — the only real question is whether the BLOB touches the surrounding terrain anywhere.
+            const stack = [[x, y, z]], blob = []; let grounded = false;
+            seen.add(key(x, y, z));
+            while (stack.length && blob.length < 4000) {
+              const [ax, ay, az] = stack.pop(); blob.push([ax, ay, az]);
+              for (let n = 0; n < 6; n++) {
+                const bx = ax + (n === 0 ? 1 : n === 1 ? -1 : 0), by = ay + (n === 2 ? 1 : n === 3 ? -1 : 0), bz = az + (n === 4 ? 1 : n === 5 ? -1 : 0);
+                if (by < 1 || by >= WY) continue;
+                const w = this.vox(bx, by, bz);
+                if (!w) continue;
+                if (R26.has(w)) { const kk = key(bx, by, bz); if (!seen.has(kk)) { seen.add(kk); stack.push([bx, by, bz]); } }
+                else grounded = true;                  // touching anything that is not this rock pack = anchored
+              }
+            }
+            float2.blobs++;
+            if (!grounded) { float2.blobsFloating++; float2.floatVox += blob.length;
+              if (float2.worst.length < 5) float2.worst.push({ at: blob[0], vox: blob.length }); }
+          }
+        } }
+      for (const sg of main) {                       // rock-site census: sample just inside the bore all round each station
+        for (let t = 0; t < 160; t++) {
+          const th = t * 2.399963, ph = ((t % 11) / 10 - 0.5) * 2.4, cph = Math.cos(ph);
+          const uy = Math.sin(ph);
+          for (let d = Math.max(2, sg.r - 8); d < sg.r + 8; d += 2) {
+            const y = Math.round(sg.y + uy * d); if (y < 1 || y >= WY) continue;
+            const vv = this.vox(Math.round(sg.x + Math.cos(th) * cph * d), y, Math.round(sg.z + Math.sin(th) * cph * d));
+            if (vv && R26.has(vv)) { if (uy < -0.45) site.floor++; else if (uy > 0.45) site.roof++; else site.wall++; break; }
+          }
+        }
+      }
+      for (const sg of main) {                         // sample a sphere shell around each station: what does the wall actually show?
+        for (let t = 0; t < 40; t++) {
+          const th = t * 2.399963, ph = (t % 7) / 7 * 2.4 - 1.2, cph = Math.cos(ph);
+          const d = sg.r + 1 + (t % 5);
+          const x = Math.round(sg.x + Math.cos(th) * cph * d), y = Math.round(sg.y + Math.sin(ph) * d), z = Math.round(sg.z + Math.sin(th) * cph * d);
+          if (y < 1 || y >= WY) continue;
+          const v = this.vox(x, y, z);
+          if (!v) tally.air++; else if (CO.has(v)) tally.coal++; else if (IR.has(v)) tally.iron++;
+          else if (MO.has(v)) tally.moss++; else if (GR.has(v)) tally.grass++; else tally.rock++;
+        }
+      }
+      return { mouth: [c.mx, H(c.mx, c.mz), c.mz], dist: Math.round(e.d), stations: main.length,
+        s25: main[(main.length * 0.25) | 0], s28: main[((main.length * 0.25) | 0) + 3],
+        chamber: c.segs[c.segs.length - 1], tally, box, site, float2 };
+    },
     birdCensus(r, wx, wz) {                          // tally the songbird colours around any centre, straight from the placement rule
       const R = r || 6000, t = [0, 0, 0]; let pines = 0, birds = 0;
       const c0x = Math.floor((wx === undefined ? P.x : wx) / TCELL), c0z = Math.floor((wz === undefined ? P.z : wz) / TCELL), n = Math.ceil(R / TCELL);
@@ -4214,6 +4610,18 @@
         pct: t.map((x) => +(x * 100 / Math.max(1, birds)).toFixed(1)) };
     },
     compass() { return { on: cmpOn, hidden: $('compass').classList.contains('hidden'), stored: localStorage.getItem('vb_cmp') }; },   // compass-toggle tap                // palette occupancy tap — edCol silently NEAREST-MATCHES once this hits 256, which would quietly wash a reskin's colours into another bird's
+    itemCols(id) {                                   // distinct colours + dims of one item (1-based dit) — proves what a species actually renders with
+      const it = itemsRef && itemsRef[id - 1]; if (!it) return null;
+      const set = new Map();
+      for (const c of it.cells) if (c) { const k = '#' + c.map((q) => q.toString(16).padStart(2, '0')).join(''); set.set(k, (set.get(k) || 0) + 1); }
+      return { id, w: it.w, d: it.d, h: it.h, nVox: [...set.values()].reduce((p2, q) => p2 + q, 0),
+        cols: [...set.entries()].sort((p2, q) => q[1] - p2[1]).map(([c, n]) => c + '×' + n) };
+    },
+    bird() { const cen = {}; for (const b of birds) if (b.init) { const nm = (FLYERS[b.sp] || {}).name || '?'; cen[nm] = (cen[nm] || 0) + 1; }
+      return { n: BIRD_N, species: FLYERS.map((f) => ({ name: f.name, item0: f.item0, n: f.n, glide: f.glide })), census: cen,
+      frames: BIRD_NFRAMES, glidePose: BIRD_GLIDE, blueFrames: BLUEF_NFRAMES, cardBase: BIRD_ITEM0, blueBase: BLUEF_ITEM0,
+      birds: birds.map((b) => ({ init: b.init, x: +b.x.toFixed(1), y: +b.y.toFixed(1), z: +b.z.toFixed(1), mode: b.mode, glid: !!b.glid, fi: b.fi | 0, edge: !!b.edge, sp: b.sp | 0,
+        d: Math.round(Math.hypot(b.x - P.x, b.z - P.z)) })) }; },   // flyer tap
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
     perched() { const o = []; for (let j = 64; j < 244; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0), ids: B.sCells ? [...new Set(B.sCells.map((ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
@@ -4752,6 +5160,18 @@
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
     UF[1269] = snowLeadY; UF[1270] = snowTrailY;   // u.misc.y/z — the storm edges computed in the weather block above
+    // u.misc.w — is the EYE buried in solid rock? Inside a voxel every primary ray hits at t~0 with no light reaching
+    // it, so the screen went pitch black and only the off-grid creatures (which skip the world trace) stayed visible.
+    { // u.misc.w — WHICH voxel is the eye inside? Packed sRGB (+1 so 0 means 'not buried'), so the fill takes the
+      // material's own colour: stone underground, needle-green inside a pine crown, trunk brown inside a log.
+      // Read W directly rather than solid(): FOLIAGE is walk-through, so the collision test never fires in a canopy —
+      // which is exactly the case being fixed here.
+      let vid = 0;
+      const ex = Math.floor(P.x), ey = Math.floor(smoothEye), ez = Math.floor(P.z);
+      if (!ED.on && ey >= 0 && ey < WY) vid = W[gwrap(ex, WX) + ey * WX + gwrap(ez, WZ) * WX * WY];
+      const opaque = vid && vid !== WATER_T && vid !== WATER_B && vid !== LAVA_T && vid !== LAVA_B && vid !== LAVA_R && vid !== LAVA_Y;   // water has its own underwater tint; lava is emissive
+      const pc = opaque ? palette[vid] : null;
+      UF[1271] = pc ? (1 + pc[0] + pc[1] * 256 + pc[2] * 65536) : 0; }
     UF[1268] = vigOn ? Math.max(BASE_VIG, cineBlurK * CINE_VIG) : 0;   // u.misc.x — BASE vignette in normal play, deepening to the cinematic value while the camera flies; max() so leaving cinema eases back to base instead of snapping to zero                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
     if (!ED.on) autoPickup();                          // AUTO-PICKUP (user): a free hand slot vacuums up nearby floating items — no right-click, no aiming
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
@@ -4798,7 +5218,7 @@
     }
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
       if (ED.on) {                                       // ── EDITOR STAGE ── the cardinal is a STAMPED static object (world voxels → full lighting), NOT a drop: hide slot 4, and advance the animation by swapping to the next static frame in place
-        UF[o2 + 7] = 0; birdBox.active = false;          // item id 0 hides the drop slot; no bird hitbox in the editor
+        UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot; no bird hitboxes in the editor
         if (ED.frames.length && !ED.paused) {            // playing → 24 fps through all frames, brief HOLD on the LAST frame, then the WHOLE animation spins +90° and continues (seamless forward loop — user)
           const n = ED.frames.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
           const t = now % cyc, fi = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // 0..n-1, then hold the LAST frame during the pause
@@ -4806,62 +5226,10 @@
           const blink = (now % 3400) < 160;              // EYE BLINK — the black eye voxel flashes red for 0.16 s every 3.4 s (same cadence as the ducks)
           if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink || spin !== ED.spin) { ED.sel = fi; ED.blink = blink; ED.spin = spin; edLayout(); }
         }
-      } else if (BIRD_NFRAMES > 0) {                     // the WORLD bird (only when NOT in the editor)
-        const tb = now / 1000;
-        if (!bird.init) {                                // it STARTS at the spawn position, then goes wherever its wandering takes it
-          bird.x = P.x; bird.z = P.z; bird.g = P.y;
-          bird.th = Math.random() * Math.PI * 2; bird.pyPrev = P.y + BIRD_ALT; bird.init = true;
-        }
-        if (tb > bird.tRe) {                             // every 1.5–4.5 s pick a new turn-rate + altitude urge — the wander source
-          bird.omT = (Math.random() - 0.5) * 1.0;        // rad/s: anything from a lazy drift to a tightish arc, either direction
-          bird.altT = Math.random() * 25;                // cruise 0–25 vox above the minimum safe height
-          bird.tRe = tb + 1.5 + Math.random() * 3.0;
-        }
-        bird.om += (bird.omT - bird.om) * (1 - Math.exp(-2.5 * dt));   // turn rate eases toward target — smooth, believable arcs, no snap turns
-        bird.om = Math.max(-1.1, Math.min(1.1, bird.om));
-        bird.th += bird.om * dt;
-        const Hx = Math.sin(bird.th), Hz = Math.cos(bird.th);   // horizontal heading; the beak (model −depth) points along it
-        bird.x += Hx * BIRD_SPD * dt; bird.z += Hz * BIRD_SPD * dt;
-        const gHere = hmap[gwrap(Math.floor(bird.x), WX) + gwrap(Math.floor(bird.z), WZ) * WX];   // terrain-follow, ASYMMETRIC: climb fast ahead of rising ground, sink only gently —
-        const gNext = hmap[gwrap(Math.floor(bird.x + Hx * 45), WX) + gwrap(Math.floor(bird.z + Hz * 45), WZ) * WX];   // — so crossing a gorge is a mild swoop, not a plunge below the rims
-        const gT = Math.max(Math.max(gHere, gNext), WL);   // never track below sea level (also guards hmap zeros beyond the generated rect once it wanders far)
-        bird.g += (gT - bird.g) * (1 - Math.exp(-(gT > bird.g ? 3.0 : 0.35) * dt));
-        bird.altO += (bird.altT - bird.altO) * (1 - Math.exp(-0.4 * dt));
-        const py3 = bird.g + BIRD_ALT + bird.altO + Math.sin(tb * 1.2) * 3.0;   // safe height + wander band + the flap-cycle bob
-        const px3 = bird.x, pz3 = bird.z;
-        const vy = (py3 - bird.pyPrev) / Math.max(dt, 1e-4); bird.pyPrev = py3;   // raw vertical velocity — NOISY (integer hmap samples step as voxel boundaries cross)
-        bird.vyS += (vy - bird.vyS) * (1 - Math.exp(-5.0 * dt));   // low-passed — attitude and the flap↔glide switch both read THIS, or the pitch snaps and the modes flicker
-        bird.y = py3;
-        const Fy = Math.max(-0.6, Math.min(0.6, bird.vyS / BIRD_SPD * 3.0));   // climb/dive attitude (×3 so the gentle bob reads at a glance)
-        const fl2 = Math.hypot(1, Fy);
-        const F = [Hx / fl2, Fy / fl2, Hz / fl2];        // 3D flight direction (pitch included)
-        const xl = Math.hypot(F[0], F[2]) || 1;
-        const Xw0 = [F[2] / xl, 0, -F[0] / xl];          // wingspan = up × F, normalised — for om > 0 this side faces the turn centre
-        const Zw0 = [F[1] * Xw0[2], F[2] * Xw0[0] - F[0] * Xw0[2], -F[1] * Xw0[0]];   // body-up = F × Xw0 (unit: F ⊥ Xw0)
-        const bank = Math.max(-0.5, Math.min(0.5, BIRD_SPD * bird.om / GRAVITY * 1.8));   // v·ω/g (signed) — rolls INTO whichever way it's turning
-        const cb = Math.cos(bank), sb = Math.sin(bank);
-        const Xw = [Xw0[0] * cb - Zw0[0] * sb, Xw0[1] * cb - Zw0[1] * sb, Xw0[2] * cb - Zw0[2] * sb];   // roll about F: the wing on the turn-centre side dips
-        const Zw = [Zw0[0] * cb + Xw0[0] * sb, Zw0[1] * cb + Xw0[1] * sb, Zw0[2] * cb + Xw0[2] * sb];
-        const Yw = [-F[0], -F[1], -F[2]];                // tail — right-handed with the above (Yw×Zw = Xw)
-        if (bird.glid ? bird.vyS > -0.5 : bird.vyS < -1.1) bird.glid = !bird.glid;   // undulating flight: FLAP to climb, GLIDE (wings spread) on the descent — HYSTERESIS so the modes can't flicker at the threshold
-        if (bird.glid) bird.flapT0 = -1;
-        else if (bird.flapT0 < 0) bird.flapT0 = tb;      // flapping just resumed → restart the wing cycle at frame 00 (an absolute-time phase would re-enter mid-cycle and visibly skip frames)
-        let fi = bird.glid ? BIRD_GLIDE : Math.floor((tb - bird.flapT0) * BIRD_FLAP) % BIRD_NFRAMES;
-        if (tb % 3.4 < 0.16) fi += BIRD_NFRAMES;         // BLINK — every ~3.4 s the eye flashes plumage-red for a beat (items +8..+15 are the blink variants)
-        bird.gliding = bird.glid;                        // (debug tap name kept)
-        bird.fi = fi;                                    // debug tap (__vb.bird)
-        const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
-        UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = BIRD_VS;
-        UF[o2 + 4] = Xw[0] * right[0] + Xw[1] * right[1] + Xw[2] * right[2]; UF[o2 + 5] = Xw[0] * up[0] + Xw[1] * up[1] + Xw[2] * up[2]; UF[o2 + 6] = Xw[0] * fwd[0] + Xw[1] * fwd[1] + Xw[2] * fwd[2]; UF[o2 + 7] = BIRD_ITEM0 + fi;
-        UF[o2 + 8] = Yw[0] * right[0] + Yw[1] * right[1] + Yw[2] * right[2]; UF[o2 + 9] = Yw[0] * up[0] + Yw[1] * up[1] + Yw[2] * up[2]; UF[o2 + 10] = Yw[0] * fwd[0] + Yw[1] * fwd[1] + Yw[2] * fwd[2]; UF[o2 + 11] = 0;
-        UF[o2 + 12] = Zw[0] * right[0] + Zw[1] * right[1] + Zw[2] * right[2]; UF[o2 + 13] = Zw[0] * up[0] + Zw[1] * up[1] + Zw[2] * up[2]; UF[o2 + 14] = Zw[0] * fwd[0] + Zw[1] * fwd[1] + Zw[2] * fwd[2]; UF[o2 + 15] = 0;
-        const bdi = (itemsRef && itemsRef[BIRD_ITEM0 - 1 + BIRD_GLIDE]) || { w: 14, d: 6, h: 10 };   // SOLID hitbox: project the widest-frame extents onto the world axes for a snug, stable AABB (Task 2)
-        const ew2 = bdi.w * 0.5 * BIRD_VS, ed2 = bdi.d * 0.5 * BIRD_VS, eh2 = bdi.h * 0.5 * BIRD_VS;
-        birdBox.cx = px3; birdBox.cy = py3; birdBox.cz = pz3;
-        birdBox.hx = ew2 * Math.abs(Xw[0]) + ed2 * Math.abs(Yw[0]) + eh2 * Math.abs(Zw[0]);
-        birdBox.hy = ew2 * Math.abs(Xw[1]) + ed2 * Math.abs(Yw[1]) + eh2 * Math.abs(Zw[1]);
-        birdBox.hz = ew2 * Math.abs(Xw[2]) + ed2 * Math.abs(Yw[2]) + eh2 * Math.abs(Zw[2]);
-        birdBox.active = true;
+      } else if (FLYERS.length > 0) {                    // the WORLD bird (only when NOT in the editor)
+        const ps = birdStep(bird, 0, now / 1000, dt);    // bird 0 keeps the dedicated slot; the rest are emitted with the creatures below
+        birdWrite(o2, ps, cam, right, up, fwd);
+        birdHit(birdBox, ps);
       } else { UF[o2 + 7] = 0; birdBox.active = false; }
     }
     const bfObst = (x, y, z) => {                      // butterfly obstacle test — trunks, canopy, rocks, snow all block; soft grass/bloom/fern strands + grid-stamped worms don't
@@ -5078,6 +5446,16 @@
       }
     }
     let dropCursor = 9;                                // COMPACTION: live creatures emit to consecutive slots from 9; the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists
+    if (!ED.on && FLYERS.length > 0) {                 // ── the rest of the SONGBIRDS ── emitted FIRST so a busy scene drops a far butterfly rather than a bird
+      const tbF = now / 1000;
+      for (let bi = 1; bi < BIRD_N; bi++) {
+        if (dropCursor > 63) break;
+        const ps = birdStep(birds[bi], bi, tbF, dt);
+        birdWrite(68 + dropCursor * 16, ps, cam, right, up, fwd);
+        birdHit(birdBoxes[bi], ps);                    // every cardinal is solid, same as the first
+        dropCursor++;
+      }
+    } else for (let bi = 1; bi < BIRD_N; bi++) birdBoxes[bi].active = false;
     for (let wk = 0; wk < 244; wk++) {
       const B = wbf[wk];
       const wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64;
