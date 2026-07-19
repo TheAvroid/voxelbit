@@ -4804,6 +4804,41 @@
       flyCand[k] = flyCand[flyCand.length - 1]; flyCand.pop();
       return h;
     };
+    // ── PROCEDURAL WORMS ── same argument as the butterflies: a worm crawls, so what is fixed by the world is its
+    // HOME, not its position. One deterministic point per 160-vox cell, ~55% occupied, which matches the old ~11
+    // worms across the ring. Slots take the nearest free home, the worm is leashed to it, and it recycles when the
+    // HOME leaves range — so a patch of ground keeps its worms instead of re-rolling them every time you look away.
+    const WORM_HCELL = 160, WORM_LEASH = 70;
+    const wormHome = (cx, cz) => {
+      if (ihash(cx * 0x3B9A + 29, cz * 0x51ED + 61) >= 0.55) return null;
+      return { x: cx * WORM_HCELL + 20 + ihash(cx * 31 + 7, cz * 37 + 11) * (WORM_HCELL - 40),
+               z: cz * WORM_HCELL + 20 + ihash(cx * 41 + 13, cz * 43 + 17) * (WORM_HCELL - 40), cx, cz };
+    };
+    let wormCandF = -1;
+    const wormCand = [];
+    const findWormHome = (selfWk) => {
+      if (wormCandF !== frame) {
+        wormCandF = frame; wormCand.length = 0;
+        const owned = new Set();
+        for (let j = 32; j < 64; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2 && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        const R = Math.ceil(LIFE_OUT / WORM_HCELL);
+        const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
+        for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+          const h = wormHome(c0x + dx, c0z + dz); if (!h) continue;
+          if (owned.has(h.cx + ',' + h.cz)) continue;
+          if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
+          const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
+          if (d2 > LIFE_OUT * LIFE_OUT) continue;
+          h.d2 = d2; wormCand.push(h);
+        }
+      }
+      if (!wormCand.length) return null;
+      let k = 0;
+      for (let q = 1; q < wormCand.length; q++) if (wormCand[q].d2 < wormCand[k].d2) k = q;
+      const h = wormCand[k];
+      wormCand[k] = wormCand[wormCand.length - 1]; wormCand.pop();
+      return h;
+    };
     const birdsOnPine = (tx, tz) => {                   // 0-3, a deterministic property of the tree. HALVED (user 2026-07-18):
       const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);   // mean 0.83 -> 0.41 birds per pine (was .42/.80/.95)
       return h < 0.70 ? 0 : (h < 0.91 ? 1 : (h < 0.98 ? 2 : 3));
@@ -4909,7 +4944,7 @@
       // is why this no longer needs the "only spawn behind the player" rule the random placement depended on.
       const rdK = wantK === 5 ? CARD_KEEP : LIFE_KEEP;
       const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
-      const hd2 = (B.kind | 0) === 0 && B.hcx !== undefined ? (B.hx - P.x) * (B.hx - P.x) + (B.hz - P.z) * (B.hz - P.z) : dp2;
+      const hd2 = ((B.kind | 0) === 0 || (B.kind | 0) === 2) && B.hcx !== undefined ? (B.hx - P.x) * (B.hx - P.x) + (B.hz - P.z) * (B.hz - P.z) : dp2;
       const far = hd2 > rdK * rdK;                     // butterflies judge by their HOME, everything else by where it is
       if (!B.init || far || (B.trap > 12 && (B.kind < 3 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; but a duck/lily wedged ON real water NEVER teleports (the unstick frees it), only if it's off-water
           B.x <= rect.xlo + 4 || B.x >= rect.xhi - 4 || B.z <= rect.zlo + 4 || B.z >= rect.zhi - 4 ||   // the window recentred/shrank under it — this ground is stale garbage, leave it
@@ -4943,8 +4978,8 @@
             const pool7 = free.length ? free : lakeSpots;
             const L7 = pool7[tries % pool7.length];
             sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
-          } else if (wantK === 0) {                    // BUTTERFLY: take a procedural home rather than a random point on the ring
-            const h = findFlyHome(wk); if (!h) break;
+          } else if (wantK === 0 || wantK === 2) {     // BUTTERFLY / WORM: take a procedural home rather than a random point on the ring
+            const h = wantK === 0 ? findFlyHome(wk) : findWormHome(wk); if (!h) break;
             sx = h.x; sz = h.z; hcx = h.cx; hcz = h.cz;
           } else {
             const a5 = Math.random() * 6.283;
@@ -4957,7 +4992,7 @@
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
           if (wantK >= 3 && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
           if (wantK === 1 && tooClose(0, 16, 40)) continue;   // FIREFLIES still spread by proximity. BUTTERFLIES must NOT: their homes are already 128 vox apart by the cell grid, and testing against other butterflies' WANDERING positions made placement depend on where they happened to be — which is exactly what stopped the set being reproducible.             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
-          if (wantK === 2 && tooClose(32, 64, 60)) continue;          // worms spread WIDE — never bunched (user, doubled with the population)
+          // (worms no longer use tooClose: their homes are already 160 vox apart by the cell grid, and testing against other worms' CRAWLING positions made placement depend on where they had got to)          // worms spread WIDE — never bunched (user, doubled with the population)
           if (wantK === 3 && tooClose(16, 20, 200)) continue;         // mother ducks spawn ≥200 vox apart → at most ~2 families fit on a typical lake (user: 'only 1-2 per lake')
           if (wantK === 4 && tooClose(40, 55, 12)) continue;          // lilies scatter
           const sy = wantK === 2 ? gS + 2 : (wantK === 3 ? WL + 4 : (wantK === 4 ? WL + 1.4 : bfGlide(sx, sz) + (wantK ? 9 : 14)));   // ducks/lilies float; duck FEET sit inside the water voxel layer
@@ -4968,7 +5003,7 @@
           }
         }
         if (!placed) { if (B.sCells) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
-        if (wantK === 0) { B.hx = sx7; B.hz = sz7; B.hcx = hcx; B.hcz = hcz; } else { B.hcx = undefined; }
+        if (wantK === 0 || wantK === 2) { B.hx = sx7; B.hz = sz7; B.hcx = hcx; B.hcz = hcz; } else { B.hcx = undefined; }
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
@@ -5061,9 +5096,10 @@
         if (B.kind === 3 && stepOK) { const hl = isBaby ? 5.0 : 7.0; stepOK = bfWater(nx5 + Hx2 * hl, nz5 + Hz2 * hl); }   // DUCK HEAD BUFFER (user: 'keep further away, still running into it'): require water WELL ahead (7 vox mom / 5 baby) so it stops with a clear margin, never touching the bank
       }
       else stepOK = !bfObst(nx5, B.y, nz5) && !bfObst(nx5, B.y + 2, nz5);
-      if ((B.kind | 0) === 0 && B.hcx !== undefined) {   // LEASH: a butterfly drifts around its home rather than away from it
+      if (((B.kind | 0) === 0 || (B.kind | 0) === 2) && B.hcx !== undefined) {   // LEASH: a butterfly/worm drifts around its home rather than away from it
         const lx = B.x - B.hx, lz = B.z - B.hz, l2 = lx * lx + lz * lz;
-        if (l2 > FLY_LEASH * FLY_LEASH) {              // ease the heading back toward home — a hard clamp would make it skid along an invisible wall
+        const leash = (B.kind | 0) === 2 ? WORM_LEASH : FLY_LEASH;
+        if (l2 > leash * leash) {              // ease the heading back toward home — a hard clamp would make it skid along an invisible wall
           let want = Math.atan2(lx, lz) + Math.PI, d7 = want - B.th;
           while (d7 > Math.PI) d7 -= 6.283; while (d7 < -Math.PI) d7 += 6.283;
           B.th += d7 * Math.min(1, dt * 1.6);
