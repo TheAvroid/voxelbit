@@ -3350,10 +3350,14 @@
   };
   const ensureCardPoses = () => { if (!CARD_POSES && CARDINAL_ROTATE.length) CARD_POSES = buildBirdPoses(CARDINAL_ROTATE); return CARD_POSES; };
   const ensureBluePoses = () => { if (!BLUE_POSES && BLUEBIRD_ROTATE.length) BLUE_POSES = buildBirdPoses(BLUEBIRD_ROTATE); return BLUE_POSES; };   // blue bird = the cardinal reskinned, scattered the SAME way (user)
+  // DOUBLED (user 2026-07-18): 340 -> 680. The pool is the real limit before the radius is — at this density 680
+  // would hold ~300 birds against 120 slots, so the activation frontier lands near 432 vox rather than 680, and the
+  // generated rect (renderDist + 96) caps it from there. Declared at module scope because stampCardinal below needs it.
+  const CARD_KEEP = 680;
   const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
     const cp = (B.blue ? ensureBluePoses() : null) || ensureCardPoses(); if (!cp) return;   // half the perched birds are BLUE (B.blue), the rest red cardinals
     const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
-    const near = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) < 90 * 90;   // PERF (user lag): only birds within ~9 m ANIMATE (re-stamp every frame). Distant ones hold ONE static pose. TIGHTENED from 150 (user 2026-07-18: 'you removed the static shading'): the near-field bird count roughly doubled, which swept far more of them into the per-frame re-stamp and its AO shimmer → they stamp once and never churn the grid again, cutting ~150 tiny GPU buffer uploads/frame down to a handful. Imperceptible at range.
+    const near = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) < CARD_KEEP * CARD_KEEP;   // EVERY active bird animates (user: 'it doesn't look like all the birds are animated'). This was 90 while the population was double; halving it bought back the re-stamp budget.
     const t = (now + B.phase) % cyc;
     const fiC = near ? (t < n * frameMs ? Math.floor(t / frameMs) : n - 1) : 0;   // hold the last frame through the pause
     const q = near ? ((-(Math.floor((now + B.phase) / cyc) % 4)) & 3) : 0;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
@@ -4760,7 +4764,6 @@
       return h < 0.70 ? 0 : (h < 0.91 ? 1 : (h < 0.98 ? 2 : 3));
     };
     const CARD_PER_TREE = 3;                           // several birds to a pine, but not a roost — unlimited clumped them and the spread measured worse
-    const CARD_KEEP = 340;                             // perched-bird recycle radius — see rdK below
     const cardCand = [];
     const buildCardCand = () => {
       cardCand.length = 0;
