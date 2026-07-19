@@ -625,14 +625,19 @@
         sizes.push(n);
       }
       let big = 0; for (let c = 1; c < sizes.length; c++) if (sizes[c] > sizes[big]) big = c;
-      let moved = 0;
+      // Drop each small body until it RESTS ON the ground, rather than by a flat amount. A fixed -2 moves a body
+      // whatever its height, so one already sitting on the base got buried while one floating higher stayed floating.
+      // Shifting by the body's own lowest voxel plants it exactly touching, and leaves an already-grounded one alone.
+      const minZ = new Array(sizes.length).fill(255);
+      for (let i = 0; i < MUSHV.vox.length; i++) { const z = (MUSHV.vox[i] >> 16) & 255; if (z < minZ[comp[i]]) minZ[comp[i]] = z; }
+      const drops = [];
       for (let i = 0; i < MUSHV.vox.length; i++) {
-        if (comp[i] === big) continue;
+        const c = comp[i]; if (c === big || !minZ[c]) continue;   // the big mushroom keeps its height; a body already at z=0 is already planted
         const p = MUSHV.vox[i], z = (p >> 16) & 255;
-        MUSHV.vox[i] = (p & ~0xff0000) | (Math.max(0, z - 2) << 16);   // clamp: a cap already at the base just stays
-        moved++;
+        MUSHV.vox[i] = (p & ~0xff0000) | ((z - minZ[c]) << 16);
       }
-      console.log('[vb] mushroom cluster:', sizes.length, 'bodies, biggest', sizes[big], 'vox; sank', moved, 'small-mushroom voxels by 2');
+      for (let c = 0; c < sizes.length; c++) if (c !== big && minZ[c]) drops.push(sizes[c] + 'vox down' + minZ[c]);
+      console.log('[vb] mushroom cluster:', sizes.length, 'bodies, biggest', sizes[big], 'vox; planted small bodies:', drops.join(', ') || 'none (already grounded)');
     }
   } catch (e) { console.warn('[vb] mushroom.json missing — forest mushrooms skipped', e); }
   let LILYPAD_GIGV = null;                                                                   // GIGANTIC lilypad on lakes (lillypad_gigantic.json, palette-reduced + laid flat) — solid, 1-2 per lake
