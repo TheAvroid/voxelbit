@@ -1,9 +1,15 @@
-1. the camera is clipping trees in cinematic mode. prevent this. have the camera "bob and weave" between the trees. have the camera angled right when going right and angles left when going left. (like a spaceship would do). also make the camera smoother when going up and down as well.
+PROMPTS FOR FABLE
 
-2. can you make the cardinals and worms pop in further away? I can see cardinals just appear out of no where when walking. make every life form obey the spawning mechanics of the cardinal/worm.
+1. rework the entire cave system. give the caves a rocky look. maybe take the rocks from the 26 rock collection, and scatter them tightly together to form a rocky cave entrance/interior.
 
-3. push to github.
+2. Pursue a deep optimization. Try to create consistencies across the code base. especially when it comes to rendering life, make it consistent. optimize the architecture and coordination of the game as a whole. optimize the architecture of the life.
 
-4. if the hand slots are empty, automatically pick up floating items.
+3. apply denoising to the static objects when they move. there is some noise on movement. the noise is in the objects shadows.
 
-5. revert the cave changes. redesign the caves. make them smoothed out. not just run a sphere through it like you did before.
+4. rework the cinematic camera completely. give it a new cinematic take from scratch. make it act like a bird, flying through the forest.
+
+5. run an experiment where you tilt the pine trees very slightly. obviously keep pine trees that are straight as well. randomize straight and tilted pine trees.
+
+6. rework the fireflies lighting. make it have proper ray traced volumetric lighting. heres a link with useful information: https://juandiegomontoya.github.io/teardown_breakdown.html
+
+7. make the pinecones swing from the pine trees. keep the grid stamped lighting while keeping the smooth swinging.

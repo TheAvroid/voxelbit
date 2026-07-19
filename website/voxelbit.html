@@ -71,12 +71,20 @@
   #over h1 { font: 22px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; color: #ff6a3a; }
   #over .ohint { opacity: 0.75; font-size: 7px; }
   .hidden { display: none !important; }
-  body.noui #cross, body.noui #hud, body.noui #clashHint, body.noui #achv, body.noui #edHud { display: none !important; }   /* C toggles all HUD overlays off for clean views */
+  body.noui #cross, body.noui #hud, body.noui #clashHint, body.noui #achv, body.noui #edHud, body.noui #compass { display: none !important; }   /* C toggles all HUD overlays off for clean views */
+  #compass { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 240px; height: 22px; overflow: hidden; z-index: 12; pointer-events: none;
+    font: 8px/22px 'px3', Consolas, monospace; letter-spacing: 1px; color: #e8eef6; text-shadow: 0 1px 2px rgba(0,0,0,0.85);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); }
+  #cmpTrack { position: absolute; top: 0; left: 0; height: 22px; white-space: nowrap; will-change: transform; }
+  #cmpTrack span { position: absolute; top: 0; transform: translateX(-50%); }
+  #cmpTrack span.tick { color: #93a3b8; }
+  #cmpMark { position: absolute; left: 50%; top: 0; width: 1px; height: 7px; margin-left: -0.5px; background: #ff6a3a; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="cross" class="hidden"></div>
+<div id="compass" class="hidden"><div id="cmpTrack"></div><div id="cmpMark"></div></div>
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
 <div id="hud"></div>
@@ -111,7 +119,7 @@
   <div style="text-align:center"><button id="pkReset">reset</button><button id="pkClose">done</button></div>
 </div></div>
 <div id="load">generating forest…</div>
-<div id="over" class="hidden"><h1>game over</h1><div>you fell into the lava</div><div class="ohint">click to respawn</div></div>
+<div id="over" class="hidden"><h1>game over</h1><div id="overWhy">you fell into the lava</div><div class="ohint">click to respawn</div></div>
 
 <script type="module">
 (async () => {
@@ -166,7 +174,7 @@
   let winOX = 0, winOZ = 0;                            // world coord of the window corner (multiples of 8)
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
   const gwrap = (v, n) => ((v % n) + n) % n;
-  let SPWX = 384, SPWZ = 384;                          // world spawn — nudged east at boot if it lands in a lake
+  let SPWX = 2992, SPWZ = -946;                        // world spawn (user 2026-07-18: HUD 299.2 / -94.6 m) — nudged east at boot if it lands in a lake; Y comes from the terrain height there
 
   // deterministic integer hash — the shader ports this bit-for-bit for the far-field terrain
   const ihash = (x, z) => { let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263)) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
@@ -687,6 +695,7 @@
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
+  let ROBIN_ROTATE = [];                               // ROBIN = the SAME bird recoloured again (assets/life/robin/00-10 — frames sit at the folder root, no rotate/ subdir; base.vox ignored)
   let LOTUS_BYTES = null;                               // voxelized lotus.glb (10 cm .vox) → auto-loaded as the STATIC editable object on the editor stage (mushroom removed — user)
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
@@ -979,6 +988,10 @@
       for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/blue_bird/rotate/' + String(f).padStart(2, '0') + '.vox'); BLUEBIRD_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       console.log('[vb] blue_bird rotate', BLUEBIRD_ROTATE.length, 'frames (editor filmstrip)');
     } catch (e) { console.warn('[vb] blue_bird rotate frames missing', e); BLUEBIRD_ROTATE = []; }
+    try {                                                             // ROBIN rotate frames — identical geometry to the cardinal, so it reuses CARD_OFF/CARD_FOOTZ untouched
+      for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/robin/' + String(f).padStart(2, '0') + '.vox'); ROBIN_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      console.log('[vb] robin rotate', ROBIN_ROTATE.length, 'frames (3rd perched songbird)');
+    } catch (e) { console.warn('[vb] robin rotate frames missing', e); ROBIN_ROTATE = []; }
     try { LOTUS_BYTES = { name: 'lotus.vox', u8: await abuf('assets/decoration/lotus.vox') }; } catch (e) { console.warn('[vb] lotus.vox missing', e); }   // voxelized lotus for the editor stage
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
@@ -3096,7 +3109,7 @@
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
-    for (let j = 16; j < 184; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-63 + cardinals 64-183) to re-stamp fresh next frame (stale grid indices)
+    for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-63 + songbirds 64-243) to re-stamp fresh next frame (stale grid indices)
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
@@ -3106,7 +3119,7 @@
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
   const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;   // +20% base speed
   const BOUNCE_V0 = 95, BOUNCE_DV = 22, BOUNCE_MAX = 195;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped (≈9 m up)
-  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0 };
+  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0, sink: 0 };
   P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
   const keys = new Set();
@@ -3149,6 +3162,14 @@
     for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (sandTab[W[gwrap(x, WX) + gy * WX + gwrap(z, WZ) * WX * WY]]) return true;
     return false;
   };
+  const onFlatSand = () => {                            // QUICKSAND only swallows you on FLAT sand — sloped beaches and dune faces stay ordinary ground
+    if (!onSand()) return false;
+    const cx = Math.floor(P.x), cz = Math.floor(P.z);
+    const h0 = hmap[gwrap(cx, WX) + gwrap(cz, WZ) * WX];
+    for (let dz = -3; dz <= 3; dz += 3) for (let dx = -3; dx <= 3; dx += 3)
+      if (Math.abs(hmap[gwrap(cx + dx, WX) + gwrap(cz + dz, WZ) * WX] - h0) > 1) return false;   // any real step within 30 cm → it's a slope, not a sand flat
+    return true;
+  };
   function moveAxis(axis, d, hh) {
     if (d === 0) return false;                         // a zero move must never snap-shove an embedded player sideways
     let hit = false;
@@ -3175,7 +3196,7 @@
     else resetHist = 1;
   }
   function respawn() {
-    P.x = SPWX + 0.5; P.z = SPWZ + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0;
+    P.x = SPWX + 0.5; P.z = SPWZ + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0;   // respawning always lifts you back out of the sand
     maybeRecenter();
     P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
@@ -3317,7 +3338,7 @@
   const bird = { th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0 };
   const birdBox = { active: false, cx: 0, cy: 0, cz: 0, hx: 8, hy: 8, hz: 8 };   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
-  const wbf = Array.from({ length: 184 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-183 PERCHED CARDINALS (120 slots — DOUBLED AGAIN 2026-07-18 — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget)
+  const wbf = Array.from({ length: 244 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget)
   // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
   // Worms animate their crawl (re-stamping the current frame) while moving + freeze on a pause; ducks are a single rigid pose floating at a fixed waterline. A creature re-stamps only when its cell / facing / frame changes, so a still one fully converges to crisp static lighting.
   let WORM_STAMP = null, DUCK_STAMP = null, DUCKB_STAMP = null;   // [frame][orient0..3] → array of [dx,dy(up),dz,palId]; built lazily once the frames + palette exist
@@ -3374,7 +3395,7 @@
     stampApply(B, pose4[0][k], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + k + ',d' + (isBaby ? 1 : 0));
   };
   // ── GRID-STAMPED PERCHED CARDINAL (matches the editor exactly) ── built from the SAME rotate .vox via edParseVox + edRotVox + the same baked offsets, so its grid lighting/rotation/alignment are identical to the asset-editor cardinal (user)
-  let CARD_POSES = null, BLUE_POSES = null;
+  let CARD_POSES = null, BLUE_POSES = null, ROBIN_POSES = null;
   const CARD_OFF = { '04.vox': [0, 1, 0], '05.vox': [0, 1, 0] };   // baked per-frame alignment (user's copy-changes) — same table the editor uses
   const buildBirdPoses = (rotate) => {                  // [frame][orient0..3] pose lists from raw rotate .vox bytes — cardinal OR its BLUE reskin (identical geometry, so same offsets/FOOTZ)
     const frames = [];
@@ -3390,13 +3411,15 @@
   };
   const ensureCardPoses = () => { if (!CARD_POSES && CARDINAL_ROTATE.length) CARD_POSES = buildBirdPoses(CARDINAL_ROTATE); return CARD_POSES; };
   const ensureBluePoses = () => { if (!BLUE_POSES && BLUEBIRD_ROTATE.length) BLUE_POSES = buildBirdPoses(BLUEBIRD_ROTATE); return BLUE_POSES; };   // blue bird = the cardinal reskinned, scattered the SAME way (user)
+  const ensureRobinPoses = () => { if (!ROBIN_POSES && ROBIN_ROTATE.length) ROBIN_POSES = buildBirdPoses(ROBIN_ROTATE); return ROBIN_POSES; };   // robin = the same bird recoloured again — third colour in the same rotation
+  const ensureBirdPoses = (c) => (c === 2 ? ensureRobinPoses() : (c === 1 ? ensureBluePoses() : null)) || ensureCardPoses();   // any missing reskin quietly falls back to the red cardinal
   // DOUBLED (user 2026-07-18): 340 -> 680. The pool is the real limit before the radius is — at this density 680
-  // would hold ~300 birds against 120 slots, so the activation frontier lands near 432 vox rather than 680, and the
+  // would hold ~300 birds against 180 slots, so the activation frontier lands near 530 vox rather than 680, and the
   // generated rect (renderDist + 96) caps it from there. Declared at module scope because stampCardinal below needs it.
   const CARD_KEEP = 680;
   const CARD_SEP = 8;                                  // minimum gap between two perched birds, in voxels — must exceed the model footprint or their grid stamps collide
   const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
-    const cp = (B.blue ? ensureBluePoses() : null) || ensureCardPoses(); if (!cp) return;   // half the perched birds are BLUE (B.blue), the rest red cardinals
+    const cp = ensureBirdPoses(B.bird | 0); if (!cp) return;   // perched birds come in THREE colours (B.bird: 0 red cardinal, 1 blue bird, 2 robin)
     const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
     const near = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) < CARD_KEEP * CARD_KEEP;   // EVERY active bird animates (user: 'it doesn't look like all the birds are animated'). This was 90 while the population was double; halving it bought back the re-stamp budget.
     const t = (now + B.phase) % cyc;
@@ -3405,7 +3428,7 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
-  const unstampAllWorms = () => { for (let j = 16; j < 184; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-63 + cardinals 64-183; caller re-uploads occupancy
+  const unstampAllWorms = () => { for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B && B.sCells) { for (const ii of B.sCells) if (W[ii] !== 0) W[ii] = 0; B.sCells = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-63 + songbirds 64-243; caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
@@ -3670,7 +3693,8 @@
   todSlider.addEventListener('click', (e) => e.stopPropagation());
   todSlider.addEventListener('input', (e) => { e.stopPropagation(); tday = todSlider.value / 1440; });
   $('kbClose').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.add('hidden'); listenAction = null; });
-  kbPanel.addEventListener('click', (e) => e.stopPropagation());
+  kbPanel.addEventListener('click', (e) => { e.stopPropagation();   // stopPropagation so a click in here never reaches the document handler that enters the game
+    if (e.target === kbPanel) { kbPanel.classList.add('hidden'); listenAction = null; } });   // clicked the BACKDROP, not the card → same as 'done': close settings and fall back to the main menu behind it (user)
   document.addEventListener('keydown', (e) => {                      // capture phase — rebinding swallows the key
     if (!listenAction) { if (e.code === 'Escape') { kbPanel.classList.add('hidden'); const pk = $('pkPanel'); if (pk) pk.classList.add('hidden'); } return; }
     e.preventDefault(); e.stopPropagation();
@@ -3685,13 +3709,32 @@
   let locked = false;
   lockEl.classList.remove('hidden');
   const CDPTEST = location.search.includes('cdp');   // headless test harness: pointer lock in headless Chrome still ClipCursor-pins the REAL Windows cursor to the hidden window — never request it under test
-  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); return; } canvas.requestPointerLock(); };
+  // ── COMPASS ── a scrolling heading ribbon at top centre. yaw 0 faces +Z, so N=+Z, E=+X, S=-Z, W=-X and
+  // turning right walks the ribbon left. Three full turns are laid out so the wrap seam is never on screen.
+  const CMP_W = 240, CMP_PPD = 2;                      // container width, px per degree (360° = 720 px)
+  const cmpTrack = $('cmpTrack'), cmpEl = $('compass');
+  {
+    const marks = [[0, 'N'], [45, 'ne'], [90, 'E'], [135, 'se'], [180, 'S'], [225, 'sw'], [270, 'W'], [315, 'nw']];
+    let html = '';
+    for (let turn = 0; turn < 3; turn++) {
+      for (const [b, t] of marks) html += '<span style="left:' + ((turn * 360 + b) * CMP_PPD) + 'px">' + t + '</span>';
+      for (let b = 15; b < 360; b += 15) if (b % 45) html += '<span class="tick" style="left:' + ((turn * 360 + b) * CMP_PPD) + 'px">·</span>';
+    }
+    cmpTrack.innerHTML = html;
+    cmpTrack.style.width = (3 * 360 * CMP_PPD) + 'px';
+  }
+  const cmpUpdate = () => {                            // middle turn is the live one, so the ribbon never runs off either end
+    const hdg = ((P.yaw * 180 / Math.PI) % 360 + 360) % 360;
+    cmpTrack.style.transform = 'translateX(' + (CMP_W / 2 - (360 + hdg) * CMP_PPD) + 'px)';
+  };
+  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpEl.classList.remove('hidden'); return; } canvas.requestPointerLock(); };
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (!locked) tryLock(); });
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === canvas;
     lockEl.classList.toggle('hidden', locked || dead);
     crossEl.classList.toggle('hidden', !locked);
+    cmpEl.classList.toggle('hidden', !locked);   // the compass lives and dies with the crosshair
     keys.clear(); mouse0 = false;
   });
   document.addEventListener('mousemove', (e) => {
@@ -3719,6 +3762,15 @@
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - e.movementY * 0.0022));
   });
   let dead = false;
+  const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it
+  const die = (why) => {                               // every death routes through here so the game-over screen always says what killed you
+    if (dead) return;
+    dead = true;
+    const w = $('overWhy'); if (w) w.textContent = why;
+    $('over').classList.remove('hidden');
+    lockEl.classList.add('hidden');                    // never show the ESC menu under the game-over screen
+    try { document.exitPointerLock(); } catch (e) {}
+  };
   $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); respawn(); lockEl.classList.remove('hidden'); });
   let tday = 0.34, cycleSpeed = 1, cyclePause = false, godRays = true, vsyncOn = false;   // day/night cycle: 20-min day at 1x; v-sync off by default
   let moonDay = 4;                                     // moon PHASE day counter — starts at 4/8 = full moon; each in-game day advances the phase
@@ -3831,7 +3883,8 @@
     $('pkBtn').addEventListener('click', (e) => { e.stopPropagation(); pkPanel.classList.remove('hidden'); pkRefresh(); });
     $('pkClose').addEventListener('click', (e) => { e.stopPropagation(); pkPanel.classList.add('hidden'); });
     $('pkReset').addEventListener('click', (e) => { e.stopPropagation(); Object.assign(pickCfgs[pkIt], PICK_DEFS[pkIt]); pickSave(); pkRefresh(); });
-    pkPanel.addEventListener('click', (e) => e.stopPropagation());
+    pkPanel.addEventListener('click', (e) => { e.stopPropagation();
+      if (e.target === pkPanel) pkPanel.classList.add('hidden'); });   // backdrop click closes it too, matching the settings panel
   }
 
   // ── ASSET EDITOR PLATFORM ── a floating white stage (1-voxel-thick plane, 1 m grid in light grey) stamped just above
@@ -4111,9 +4164,10 @@
     edRot(kind, dir) { edApplyRot(kind, dir); const n = ED.frames.length, f = n ? ED.frames[((ED.sel % n) + n) % n] : null; return f ? { sx: f.sx, sy: f.sy, sz: f.sz, nvox: f.vox.length } : null; },   // rotate + report dims (test)
     edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
+    pal(i) { return i === undefined ? palette.length : palette[i]; },                // palette occupancy tap — edCol silently NEAREST-MATCHES once this hits 256, which would quietly wash a reskin's colours into another bird's
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
-    perched() { const o = []; for (let j = 64; j < 184; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, blue: !!B.blue, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0) }); } } return o; },   // perched-cardinal test tap
+    perched() { const o = []; for (let j = 64; j < 244; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0), ids: B.sCells ? [...new Set(B.sCells.map((ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
     reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
@@ -4354,14 +4408,16 @@
           P.vy = 0;
         }
       }
-      if (!dead && !P.fly && (lavaAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z)) || lavaAt(Math.floor(P.x), Math.floor(P.y + 1), Math.floor(P.z)))) {
-        dead = true; $('over').classList.remove('hidden');
-        lockEl.classList.add('hidden');                  // never show the ESC menu under the game-over screen
-        try { document.exitPointerLock(); } catch (e) {}
-      }
+      if (!dead && !P.fly && (lavaAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z)) || lavaAt(Math.floor(P.x), Math.floor(P.y + 1), Math.floor(P.z)))) die('you fell into the lava');
+      // ── QUICKSAND ── a sand flat swallows you a little more every second you stand on it. The sink is applied to the
+      // EYE, not to P.y: the player still stands on solid ground for collision, so nothing here can shove them through
+      // the world — the camera simply slides down into the sand. Once the sand closes over the eye, that's the death.
+      if (!dead && !P.fly && P.onGround && onFlatSand()) P.sink = Math.min(eyeH + 2, P.sink + SINK_IN * dt);
+      else P.sink = Math.max(0, P.sink - SINK_OUT * dt);   // stepped off / jumped / flying → haul yourself back out
+      if (!dead && !P.fly && P.sink >= eyeH) die('you sank into the quicksand');
       if (P.y < -60) respawn();
       // eye smoothing — step-ups AND stick-downs ease over ~80 ms instead of popping; exact tracking while airborne
-      const targetEye = P.y + eyeH;
+      const targetEye = P.y + eyeH - P.sink;           // …minus how far the quicksand has swallowed us
       smoothEye += (targetEye - smoothEye) * (1 - Math.exp(-(P.onGround ? 12 : 60) * dt));
       smoothEye = Math.max(targetEye - 3, Math.min(targetEye + 3, smoothEye));   // never lag more than 3 voxels
     }
@@ -4521,6 +4577,7 @@
       up = [up[0] * cr - right[0] * sr, up[1] * cr - right[1] * sr, up[2] * cr - right[2] * sr];
       right = r2;
     }
+    cmpUpdate();                                       // ── compass ── one transform write per frame
     const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera
     if (!locked) {                                     // ESC menu: the whole CAMERA drifts gently — the entire image sways
       const ts = now * 0.001;
@@ -4891,15 +4948,15 @@
       return h;
     };
     const birdsOnPine = (tx, tz) => {                   // 0-3, a deterministic property of the tree. HALVED (user 2026-07-18):
-      const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);   // mean 0.83 -> 0.41 birds per pine (was .42/.80/.95)
-      return h < 0.70 ? 0 : (h < 0.91 ? 1 : (h < 0.98 ? 2 : 3));
+      const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);   // mean 0.83 -> 0.41 birds per pine (was .42/.80/.95), then 0.41 -> 0.63
+      return h < 0.55 ? 0 : (h < 0.86 ? 1 : (h < 0.96 ? 2 : 3));   // …+50% when the ROBIN joined, so the third colour is ADDED on top instead of thinning the other two (user). The population is perch-limited, not slot-limited: nCard alone could not lift it past ~130.
     };
     const CARD_PER_TREE = 3;                           // several birds to a pine, but not a roost — unlimited clumped them and the spread measured worse
     const cardCand = [];
     const buildCardCand = () => {
       cardCand.length = 0;
       const owned = new Set();                         // (tree, index) pairs a slot already holds
-      for (let j = 64; j < 184; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) owned.add(O.tx + ',' + O.tz + ',' + O.bi); }
+      for (let j = 64; j < 244; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) owned.add(O.tx + ',' + O.tz + ',' + O.bi); }
       const R = Math.ceil(CARD_KEEP / TCELL);
       const c0x = Math.floor(P.x / TCELL), c0z = Math.floor(P.z / TCELL);
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -4920,7 +4977,7 @@
         cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();
         const cr = pineEdgePerch(c.tr.tx, c.tr.tz, c.bi); if (!cr) continue;
         let clash = false;                             // the cardinal model is ~7 vox across; two stamps closer than that corrupt each other
-        for (let j = 64; j < 184; j++) {
+        for (let j = 64; j < 244; j++) {
           const O = wbf[j];
           if (j === selfWk || !O || !O.init || (O.kind | 0) !== 5) continue;
           if (Math.abs(O.x - (cr[0] + 0.5)) < CARD_SEP && Math.abs(O.z - (cr[2] + 0.5)) < CARD_SEP &&
@@ -4956,8 +5013,8 @@
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
     // Count scales with the AREA the birds have to cover. The 60 cap was set when the spawn ring was ~331 vox; the
     // ring is now ~406, which is 1.5x the area, so the same 60 birds read as a thinner, patchier forest. This keeps
-    // the ORIGINAL density over the larger disc (~90 at the default view) and is still inside the 120-slot pool.
-    const nCard = CARD_NFRAMES ? 120 : 0;              // the FULL pool — perches are no longer the bottleneck now that a pine can hold more than one bird
+    // the ORIGINAL density over the larger disc (~90 at the default view) and is still inside the 180-slot pool.
+    const nCard = CARD_NFRAMES ? 180 : 0;              // the FULL pool — 120 -> 180 so the ROBIN is ADDED to the songbird population rather than splitting the cardinal/blue-bird share three ways (user)
 
     const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
@@ -4976,12 +5033,12 @@
       }
     }
     let dropCursor = 9;                                // COMPACTION: live creatures emit to consecutive slots from 9; the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists
-    for (let wk = 0; wk < 184; wk++) {
+    for (let wk = 0; wk < 244; wk++) {
       const B = wbf[wk];
       const wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
       const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
-      const wantK = lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)));   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-183 PERCHED CARDINALS (120)
+      const wantK = lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)));   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-243 PERCHED SONGBIRDS (180)
       const active = lilySlot ? (wk - 64 < nCard)
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
@@ -4990,7 +5047,7 @@
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
-      // Perched birds recycle at CARD_KEEP, just past where the 120-slot pool runs out at this density (~305 vox).
+      // Perched birds recycle at CARD_KEEP, just past where the 180-slot pool runs out at this density (~375 vox).
       // Because the frontier sits far beyond anything you can pick out, a bird activating there is invisible — which
       // is why this no longer needs the "only spawn behind the player" rule the random placement depended on.
       const rdK = wantK === 5 ? CARD_KEEP : LIFE_KEEP;
@@ -5070,11 +5127,17 @@
           // and read as deliberate grouping. Instead take the colour that is UNDER-represented among the perched
           // birds ALREADY nearby, so every neighbourhood self-balances; ties still flip a coin so it never
           // degenerates into a rigid checkerboard. Population stays ~50/50 globally.
-          // COLOUR COMES FROM THE PINE, not from a coin flip at spawn: a checkerboard over 40-vox blocks, with ~30%
-          // of trees flipped so it never reads as a literal grid. Deterministic per tree, so the same pine is always
-          // the same colour and the mix cannot drift or clump as birds recycle.
-          B.blue = BLUEBIRD_ROTATE.length > 0 &&
-            ((((Math.floor(B.tx / 40) + Math.floor(B.tz / 40)) & 1) === 0) !== (ihash(B.tx * 5 + 3 + B.bi * 97, B.tz * 9 + 7 + B.bi * 31) < 0.3));
+          // COLOUR COMES FROM THE PINE, not from a coin flip at spawn: a DIAGONAL 3-colouring over 40-vox blocks
+          // (cardinal / blue bird / robin), with ~30% of trees kicked to one of the other two so it never reads as a
+          // literal grid. Deterministic per tree, so the same pine is always the same colour and the mix cannot drift
+          // or clump as birds recycle. The 3-colouring guarantees ADJACENT blocks never share a colour, which is what
+          // keeps the songbirds intermixed now that there are three of them.
+          const blk = (((Math.floor(B.tx / 40) + 2 * Math.floor(B.tz / 40)) % 3) + 3) % 3;
+          const jt = ihash(B.tx * 5 + 3 + B.bi * 97, B.tz * 9 + 7 + B.bi * 31);
+          let bc = jt < 0.3 ? (blk + 1 + (jt < 0.15 ? 0 : 1)) % 3 : blk;
+          if (bc === 1 && !BLUEBIRD_ROTATE.length) bc = 0;
+          if (bc === 2 && !ROBIN_ROTATE.length) bc = 0;   // a missing reskin gives its share back to the cardinal
+          B.bird = bc;
         }
       }
       const fadeIn = Math.min(1, (now - B.born) / 700);   // grow in over 0.7 s so a recycled creature materialises smoothly instead of popping into view
