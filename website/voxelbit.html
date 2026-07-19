@@ -1499,7 +1499,7 @@
     return { wx, wz, rot: (ihash(cx * 2 + 13, cz * 2 + 7) * 3.99) | 0 };
   }
   function stampMush(m, x0, x1, z0, z1) {
-    stampModel(MUSHV, m.rot, m.wx, groundMin(m.wx, m.wz, 3), m.wz, x0, x1, z0, z1, 1);   // base sunk to the min nearby ground so the wide cluster never floats on a bump
+    stampModel(MUSHV, m.rot, m.wx, groundMin(m.wx, m.wz, 3) - 2, m.wz, x0, x1, z0, z1, 1);   // sunk 2 EXTRA voxels into the dirt (user 2026-07-18) so the caps sit in the ground rather than perched on it; base already sunk to the min nearby ground so the wide cluster never floats on a bump
   }
   const PCCELL = 26;                                   // GROUND PINECONES: fallen cones (pinecone.vox on its side), pickable, scattered on the forest floor
   function pconeAt(cx, cz) {
@@ -3647,6 +3647,7 @@
   });
   document.addEventListener('mousemove', (e) => {
     if (!locked) return;
+    if (cineMode && !ED.on) return;                    // CINEMA owns the camera (user): cineUpdate overwrote yaw/pitch every frame anyway, so dragging did nothing but fight it — and a fast flick still showed as a one-frame jolt before it was corrected
     if (ED.on && ED.dragAxis >= 0) {                    // dragging a move-gizmo arrow: map mouse motion onto the axis' on-screen direction, not the camera
       const A = ED.dragAxis, cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
       const fwd = [Math.sin(P.yaw) * cp, sp, Math.cos(P.yaw) * cp], rgt = [Math.cos(P.yaw), 0, -Math.sin(P.yaw)];
@@ -4168,7 +4169,7 @@
   const cineUpdate = (dt, now) => {                     // fly the camera like a bird: bound through the timber, bank into every turn, flap and glide
     P.fly = true; P.vy = 0; P.onGround = false;
     const tb = now / 1000;
-    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.175; cine.altT = 22 + Math.random() * 30; cine.tRe = tb + 2.5 + Math.random() * 3.5; }
+    if (tb > cine.tRe) { cine.omT = (Math.random() - 0.5) * 0.175; cine.altT = 128 + Math.random() * 46; cine.tRe = tb + 2.5 + Math.random() * 3.5; }
     // ── 3D GAP SEARCH ── score every (heading, pitch) pair by how far it stays clear, biased toward holding course and
     // toward the current bank. The winning PITCH becomes a climb/dive urge, so the bird lifts over a crown or drops
     // under a branch instead of only ever turning around it.
@@ -4219,10 +4220,10 @@
     if (cine.baseY < ground + 19) { cine.baseY = ground + 19; cine.vy = Math.max(cine.vy, 0); }   // hard floor — the spring may overshoot on a fast descent
     P.y = cine.baseY + cine.bnd;                        // the bounce rides on the smooth flight path
     // GLIDE TRADES HEIGHT FOR SPEED, the flap trades it back: sinking accelerates, climbing bleeds off
-    // NOTE: halving the speed alongside the turn rate was tried (turn radius is v/omega, so it should have held the
-    // radius at ~38 vox against ~45-vox pine spacing) and it did NOT reduce clipping — 30 frames became 36. The
-    // residual contact is not a turn-radius problem; left at full speed, which at least flies better.
-    const spd = (30 - (cine.vy + cine.fv * 0.5) * 0.42) * (0.5 + 0.5 * Math.min(1, ahead / 44));   // diving (path or bounce) speeds up, climbing bleeds off
+    // DOUBLED to 60 (user 2026-07-18). Note this widens the turn radius (v/omega) to ~140 vox against ~45-vox pine
+    // spacing, so it cannot thread gaps at all any more — see the altitude lift below, which keeps it over the crowns
+    // where there is nothing to thread.
+    const spd = (60 - (cine.vy + cine.fv * 0.5) * 0.42) * (0.5 + 0.5 * Math.min(1, ahead / 44));   // diving (path or bounce) speeds up, climbing bleeds off
     P.x += Math.sin(cine.yaw) * spd * dt; P.z += Math.cos(cine.yaw) * spd * dt;
     P.yaw = cine.yaw + Math.sin(cine.bobT * 0.45) * 0.05;   // gentle cinematic yaw sway
     const rollT = -cine.om * 0.62 + Math.sin(cine.bobT * 0.37) * 0.0125;   // BANK INTO THE TURN (right turn = om > 0 = rolls right). Coefficient DOUBLED when the turn rate was halved, so the tilt you see is unchanged — only the turn slowed.
