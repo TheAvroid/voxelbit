@@ -2227,6 +2227,38 @@
   // ── shared hierarchical DDA ── (window space, toroidal lookups — one conditional subtract per axis, no modulo). Included by TRACE
   // and by COMPOSITE (creature pixels trace a REAL sun-occlusion ray so moving things sit in tree shade exactly like the terrain).
   // The including module must declare storage buffers named `world`, `bricks`, `bricks2` (any binding slots — WGSL module scope is order-free).
+  const FLAKEBLK = /* wgsl */`
+    fn flakeBlocked(cw : vec3<f32>) -> bool {                       // a falling flake may exist ONLY in truly open air:
+      // ── STORM EDGES ── snow ARRIVES from the sky and LEAVES from the sky. u.misc.y is the leading edge, sweeping
+      // down at the storm's onset so flakes enter from the top of the screen instead of the whole column switching on
+      // at once; u.misc.z is the trailing edge, sweeping down as it ends so the sky clears first and the last flakes
+      // finish their fall. Between storms the two sit wide open and this costs one compare.
+      if (cw.y < u.misc.y || cw.y > u.misc.z) { return true; }
+      let ceilF = f32((u32(u.fx) >> 8u) & 31u) * 32.0;               // world ceiling (u.fx bits 8+): no solid at or above it, so a flake up there is in open air by definition
+      if (cw.y - 1.0 >= ceilF) { return false; }
+      if (cw.y >= f32(WY - 2)) { return false; }                     // above the world — open sky
+      if (cw.y <= 2.0) { return true; }
+      let a = vec3<i32>(floor(cw - vec3<f32>(0.5)));                 // (1) its full 10 cm cube must not touch ANY solid — all 8 corners tested, so it
+      let b = vec3<i32>(floor(cw + vec3<f32>(0.5)));                 //     can never poke into a trunk, a leaf cluster or the ground
+      if (voxAt(a) != 0u || voxAt(b) != 0u ||
+          voxAt(vec3<i32>(b.x, a.y, a.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, a.z)) != 0u ||
+          voxAt(vec3<i32>(a.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(b.x, b.y, a.z)) != 0u ||
+          voxAt(vec3<i32>(b.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, b.z)) != 0u) { return true; }
+      let ci = vec3<i32>(floor(cw));                                 // (2) and its column must be OPEN SKY. Voxel-exact for the first 16 above — the old
+      for (var k = 1; k <= 16; k++) {                                //     sparse probe ladder slipped BETWEEN thin canopy layers and cave shells, so
+        let py = ci.y + k;                                           //     flakes clipped through trees, the ground and into caves…
+        if (py >= WY - 2) { return false; }
+        if (voxAt(vec3<i32>(ci.x, py, ci.z)) != 0u) { return true; }
+      }
+      let bx = ci.x >> 3; let bz = ci.z >> 3;                        // …then BRICK-level (8³ occupancy — anything solid in the 8×8 column blocks) up to
+      let byTop = min(min(BY - 1, (ci.y + 128) >> 3), (i32(ceilF) - 1) >> 3);   //     +128: no gap a cave chamber or a canopy can hide in — and never past the world ceiling (nothing is up there)
+      for (var by = (ci.y + 17) >> 3; by <= byTop; by++) {
+        if (brickOcc(vec3<i32>(bx, by, bz))) { return true; }
+      }
+      return false;
+    }
+  `;
+
   const DDAW = /* wgsl */`
     const B2X : i32 = ${BX >> 2}; const B2Y : i32 = ${BY >> 2}; const B2Z : i32 = ${BZ >> 2};
     const WTv : u32 = ${WATER_T}u; const WBv : u32 = ${WATER_B}u;   // lake surface / body voxel ids
@@ -2349,42 +2381,16 @@
     @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;   // 32-voxel SUPER-brick occupancy (window origin is 32-aligned, so off>>5 is exact)
     const SNV : u32 = ${SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits
     const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
-    fn flakeBlocked(cw : vec3<f32>) -> bool {                       // a falling flake may exist ONLY in truly open air:
-      // ── STORM EDGES ── snow ARRIVES from the sky and LEAVES from the sky. u.misc.y is the leading edge, sweeping
-      // down at the storm's onset so flakes enter from the top of the screen instead of the whole column switching on
-      // at once; u.misc.z is the trailing edge, sweeping down as it ends so the sky clears first and the last flakes
-      // finish their fall. Between storms the two sit wide open and this costs one compare.
-      if (cw.y < u.misc.y || cw.y > u.misc.z) { return true; }
-      if (cw.y >= f32(WY - 2)) { return false; }                     // above the world — open sky
-      if (cw.y <= 2.0) { return true; }
-      let a = vec3<i32>(floor(cw - vec3<f32>(0.5)));                 // (1) its full 10 cm cube must not touch ANY solid — all 8 corners tested, so it
-      let b = vec3<i32>(floor(cw + vec3<f32>(0.5)));                 //     can never poke into a trunk, a leaf cluster or the ground
-      if (voxAt(a) != 0u || voxAt(b) != 0u ||
-          voxAt(vec3<i32>(b.x, a.y, a.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, a.z)) != 0u ||
-          voxAt(vec3<i32>(a.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(b.x, b.y, a.z)) != 0u ||
-          voxAt(vec3<i32>(b.x, a.y, b.z)) != 0u || voxAt(vec3<i32>(a.x, b.y, b.z)) != 0u) { return true; }
-      let ci = vec3<i32>(floor(cw));                                 // (2) and its column must be OPEN SKY. Voxel-exact for the first 16 above — the old
-      for (var k = 1; k <= 16; k++) {                                //     sparse probe ladder slipped BETWEEN thin canopy layers and cave shells, so
-        let py = ci.y + k;                                           //     flakes clipped through trees, the ground and into caves…
-        if (py >= WY - 2) { return false; }
-        if (voxAt(vec3<i32>(ci.x, py, ci.z)) != 0u) { return true; }
-      }
-      let bx = ci.x >> 3; let bz = ci.z >> 3;                        // …then BRICK-level (8³ occupancy — anything solid in the 8×8 column blocks) up to
-      let byTop = min(BY - 1, (ci.y + 128) >> 3);                    //     +128: no gap a cave chamber or a canopy can hide in
-      for (var by = (ci.y + 17) >> 3; by <= byTop; by++) {
-        if (brickOcc(vec3<i32>(bx, by, bz))) { return true; }
-      }
-      return false;
-    }
+    ${FLAKEBLK}
     fn onbT(n : vec3<f32>) -> vec3<f32> {
       return normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
     }
-    fn cosHemi(n : vec3<f32>, s : ptr<function, u32>) -> vec3<f32> {
-      let r1 = rand(s); let r2 = rand(s);
+    fn cosHemi(n : vec3<f32>, r1 : f32, r2 : f32) -> vec3<f32> {
       let a = 6.2831853 * r1; let r = sqrt(r2);
       let t = onbT(n); let b = cross(n, t);
       return t * (r * cos(a)) + b * (r * sin(a)) + n * sqrt(max(1.0 - r2, 0.0));
     }
+    fn ign(p : vec2<f32>) -> f32 { return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y)); }
     fn ivhash(c : vec3<i32>) -> f32 {
       var x = u32(c.x) * 374761393u + u32(c.y) * 668265263u + u32(c.z) * 2246822519u;
       x = (x ^ (x >> 13u)) * 1274126177u;
@@ -2421,10 +2427,16 @@
         let winOf = vec3<f32>(u.winO.x, 0.0, u.winO.y);
         var fte = 1e9;
         var fnn = vec3<f32>(0.0); var fface = 0u;
-        {                                                            // near field 0.3..60 vox: DDA over the 3-voxel flake lattice — a flake stays WHOLE from sky to ground
+        {                                                            // near field: DDA over the 3-voxel flake lattice — a flake stays WHOLE from sky to ground.
+          // A tile-binned producer pass was tried here (enumerate+bin flakes once, pixels read their tile): the TRACE
+          // side dropped to +0.35 ms, but on this driver ANY producer dispatch with atomics OR workgroup barriers costs
+          // ~3 ms flat (hash-only = 0.04 ms — measured either way), so the march wins on total. Its own order is
+          // OPTIMIZED: hash gate → storm-band check → free conservative slab vs the spin bound → exact rotated hit →
+          // flakeBlocked (~38 scattered loads) LAST, only for a ray that genuinely strikes the flake. All pure
+          // predicates — the image is identical to the original ordering.
           let fall = vec3<f32>(-u.rdist.z + sin(u.time * 0.6) * 0.8, u.pickY.w, -u.rdist.w + cos(u.time * 0.5) * 0.8);   // u.pickY.w = integrated fall (doubles when standing still) + gusting wind
           let roP = ro + winOf + fall;
-          let maxNear = min(min(select(1e9, h.t, h.t >= 0.0), u.rdist.x), 150.0);   // ONE renderer for all falling snow — the same lattice march near and far
+          let maxNear = min(min(select(1e9, h.t, h.t >= 0.0), u.rdist.x), 150.0);
           var c = vec3<i32>(floor((roP + rd * 0.3) * 0.3333));
           let stp = vec3<i32>(i32(sign(rdS.x)), i32(sign(rdS.y)), i32(sign(rdS.z)));
           let tDel = abs(inv) * 3.0;
@@ -2433,12 +2445,15 @@
             let h1 = ih3(c.x, c.y * 7, c.z);
             if (h1 > 0.9755) {                                       // ~2.45% of cells (halved again per user)
               let ctr = (vec3<f32>(c) + vec3<f32>(0.17 + 0.66 * fract(h1 * 43758.5), 0.17 + 0.66 * fract(h1 * 12345.7), 0.17 + 0.66 * fract(h1 * 7777.3))) * 3.0;
-              let cwn = ctr - fall - winOf;
-              if (flakeBlocked(cwn)) { }                             // touching solids, or roofed over (cave/canopy) — no flake here
-              else {
+              let cwy = ctr.y - fall.y;                              // storm-band pre-check (world y): free reject while the edges sweep in/out
+              if (cwy >= u.misc.y && cwy <= u.misc.z) {
+              let roL0 = roP - ctr;
+              let taC = (vec3<f32>(-0.708, -0.5, -0.708) - roL0) * inv;   // free conservative slab vs the flake's rotation bound (a spinning 1³ voxel about Y stays inside 0.708/0.5/0.708) — no trig yet
+              let tbC = (vec3<f32>(0.708, 0.5, 0.708) - roL0) * inv;
+              let tnC = min(taC, tbC); let tfC = max(taC, tbC);
+              if (max(max(tnC.x, tnC.y), max(tnC.z, 0.3)) < min(min(min(tfC.x, tfC.y), tfC.z), maxNear)) {
               let spin = u.time * (2.0 + h1 * 2.5) + h1 * 47.0;      // each flake TWIRLS at its own rate and phase
               let cs = cos(spin); let sn = sin(spin);
-              let roL0 = roP - ctr;
               var rdL = vec3<f32>(rdS.x * cs - rdS.z * sn, rdS.y, rdS.x * sn + rdS.z * cs);   // ray → flake-local (rotate about Y by −spin)
               if (abs(rdL.x) < 1e-6) { rdL.x = 1e-6; } if (abs(rdL.z) < 1e-6) { rdL.z = 1e-6; }
               let invL = 1.0 / rdL;
@@ -2448,7 +2463,7 @@
               let tn = min(ta2, tb2); let tf = max(ta2, tb2);
               let te = max(max(tn.x, tn.y), max(tn.z, 0.3));
               let tl = min(min(tf.x, tf.y), tf.z);
-              if (te > 1.0 && te < tl && te < maxNear) {             // te > 1: a flake that reaches the eye "hits your face" and is culled
+              if (te > 1.0 && te < tl && te < maxNear && !flakeBlocked(ctr - fall - winOf)) {   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike
                 fte = te;
                 var nl = vec3<f32>(0.0);
                 if (tn.x >= tn.y && tn.x >= tn.z) { nl.x = -sign(rdL.x); }
@@ -2459,6 +2474,7 @@
                 else if (abs(fnn.x) >= abs(fnn.z)) { fface = select(0u, 1u, fnn.x < 0.0); }
                 else { fface = select(4u, 5u, fnn.z < 0.0); }
                 break;
+              }
               }
               }
             }
@@ -2545,11 +2561,16 @@
         }
         var seed = ((gid.x * 1973u) ^ (gid.y * 9277u) ^ (u32(u.frame) * 26699u)) | 1u;
         let sp = pos + h.n * 0.02;
-        if (dot(h.n, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night
+        if (${location.search.includes('nosun') ? 0 : 1} == 1 && dot(h.n, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night (?nosun disables for A/B)
           let st = onbT(u.sunDir); let sb = cross(u.sunDir, st);
           let sdir = normalize(u.sunDir + st * ((rand(&seed) * 2.0 - 1.0) * 0.028) + sb * ((rand(&seed) * 2.0 - 1.0) * 0.028));
-          let sh = trace(sp, sdir, 1200.0, skipW);
+          let ceilY = f32((u32(u.fx) >> 8u) & 31u) * 32.0;           // world ceiling (u.fx bits 8+): no solid above it → a climbing ray is clear once past it
+          let sCap = select(1200.0, min(1200.0, (ceilY - sp.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
+          if (sCap <= 0.0) { sunV = 1.0; }                           // already above everything and going up — full sun, no ray
+          else {
+          let sh = trace(sp, sdir, sCap, skipW);
           sunV = select(1.0, 0.0, sh.t >= 0.0);
+          }
           if (${location.search.includes('nocshad') ? 0 : 1} == 1 && sunV > 0.0) {   // CREATURE CAST SHADOWS — the moving lilies/ducks/worms aren't in the world grid, so the sun ray tests their (AABB) bodies here → they cast shadows on ground/water like static voxels (sp and the boxes are both window-relative; ?nocshad disables for A/B)
             for (var s = 0; s < 16; s++) {
               let CA = u.cshad[s * 2];
@@ -2567,14 +2588,21 @@
             }
           }
         }
-        if (h.t < 500.0) {
-          for (var k = 0; k < 2; k++) {                              // Teardown AO: distance before collision ≈ indirect light
-            let d = cosHemi(h.n, &seed);
-            let ah = trace(sp, d, 24.0, skipW);
-            skyV += select(1.0, clamp(ah.t / 24.0, 0.0, 1.0), ah.t >= 0.0);
-          }
-          skyV *= 0.5;
-        } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, two rays saved per far pixel
+        if (${location.search.includes('noao') ? 0 : 1} == 1 && h.t < 500.0) {
+          // Teardown AO: distance before collision ≈ indirect light (?noao disables for A/B). ONE ray per frame, not two — the profiler put the
+          // white-noise 2-ray version at 4.3 ms (45% of the whole frame; incoherent directions thrash the DDA's L0 level
+          // and diverge the warps). The temporal accumulator (maxHist 64) + the 12-tap spatial already average dozens of
+          // frames, so the CONVERGED image is the sampler's mean either way — ray count only buys convergence speed. What
+          // actually buys back the lost speed is stratification: an R2 low-discrepancy sequence over frames, IGN-offset
+          // per pixel, covers the hemisphere evenly where rand() clumped, so 1 stratified ray converges about as fast as
+          // the 2 white-noise rays it replaces. Same mean, ~half the trace cost.
+          let fN = f32(u32(u.frame) & 1023u);
+          let r1 = fract(ign(vec2<f32>(gid.xy)) + fN * 0.7548777);   // R2 sequence (plastic constants) — azimuth
+          let r2 = fract(ign(vec2<f32>(gid.xy) + vec2<f32>(47.0, 17.0)) + fN * 0.5698403);   // decorrelated elevation lane
+          let d = cosHemi(h.n, r1, r2);
+          let ah = trace(sp, d, 24.0, skipW);
+          skyV = select(1.0, clamp(ah.t / 24.0, 0.0, 1.0), ah.t >= 0.0);
+        } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
       }
       var lavaG = 0u;                                                  // soft light cast by nearby lava — deterministic probe, no flicker
       // lava only exists at bedrock (y ≤ 8) and the probe reaches 18 down — pixels above y 28 can NEVER see glow, so 99.9% of pixels skip a whole ray
@@ -2707,7 +2735,9 @@
     fn cloudDen(p : vec3<f32>) -> f32 {                              // cumulus deck between y 480–800, wind-drifted
       let hf = clamp((p.y - 480.0) / 320.0, 0.0, 1.0);
       let q = vec3<f32>(p.x + u.time * 9.0, p.y, p.z + u.time * 3.5) * 0.0021;
-      var n = vn3(q * vec3<f32>(1.0, 2.4, 1.0)) * 0.60 + vn3(q * 2.6 + vec3<f32>(7.7)) * 0.28 + vn3(q * 6.1 + vec3<f32>(19.3)) * 0.12;
+      let o1 = vn3(q * vec3<f32>(1.0, 2.4, 1.0));
+      if (o1 * 0.60 + 0.40 < 0.565) { return 0.0; }                  // EXACT short-circuit: octaves 2+3 sum to at most 0.28+0.12, so below this bound the
+      var n = o1 * 0.60 + vn3(q * 2.6 + vec3<f32>(7.7)) * 0.28 + vn3(q * 6.1 + vec3<f32>(19.3)) * 0.12;   // clamp gate at 0.565 CANNOT open — same result, two of three noise octaves skipped
       n = n * smoothstep(0.0, 0.16, hf) * smoothstep(1.0, 0.70, hf);
       return clamp((n - 0.565) * 3.4, 0.0, 1.0);                     // ~35% coverage — scattered cumulus, plenty of blue
     }
@@ -2908,8 +2938,14 @@
                   let behind = col;                                  // scene color behind this creature — the translucent wing blend needs it
                   var sunC = 0.0;                                    // REAL sun occlusion: a creature under the canopy sits in tree shade exactly like the ground below it
                   if (${location.search.includes('noshadow') ? 0 : 1} == 1 && dot(nw, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {   // (deterministic un-jittered ray, no denoiser in the path — none of the irr-coupling translucency/shimmer; ?noshadow disables for A/B)
-                    let shC = trace(u.camPos + rd * bestT + nw * 0.6, u.sunDir, 900.0, false);
+                    let cSp = u.camPos + rd * bestT + nw * 0.6;
+                    let cCeil = f32((u32(u.fx) >> 8u) & 31u) * 32.0;   // same world-ceiling cap as the terrain sun ray — a flying bird is above most of it
+                    let cCap = select(900.0, min(900.0, (cCeil - cSp.y) / max(u.sunDir.y, 1e-4)), u.sunDir.y > 1e-4);
+                    if (cCap <= 0.0) { sunC = 1.0; }
+                    else {
+                    let shC = trace(cSp, u.sunDir, cCap, false);
                     sunC = select(1.0, 0.0, shC.t >= 0.0);
+                    }
                   } else if (${location.search.includes('noshadow') ? 1 : 0} == 1) { sunC = 1.0; }
                   let direct = sunTint() * (sunC * max(dot(nw, u.sunDir), 0.0));
                   let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();
@@ -4955,8 +4991,22 @@
       const scanTop = (wx, wz, buried) => {            // topmost landing surface at a column — passes through (and records) soft decor
         const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
         const b2 = gx + gz * WX * WY;
+        const bcol = (gx >> 3) + (gz >> 3) * BX * BY;  // this column's brick index base (+ (y>>3)*BX per level)
         let y = Math.min(WY - 2, hmap[gx + gz * WX] + 118);
-        while (y >= WL) { const idv = W[b2 + y * WX]; if (!idv) { y--; continue; } if (SNOW_PASS.has(idv)) { if (buried) buried.push(b2 + y * WX); y--; continue; } break; }
+        // The scan starts 118 above the terrain (tallest-tree allowance) but most columns are BARE — the old
+        // voxel-at-a-time descent burned ~118 array reads of empty air per column, ~6,400 columns per storm frame,
+        // and profiling put the whole storm CPU side at ~10 ms. An empty 8³ occupancy brick proves the next 8 rows
+        // of THIS column are air, so leap them — exact, and it cuts the scan to a handful of reads.
+        while (y >= WL) {
+          const idv = W[b2 + y * WX];
+          if (!idv) {
+            const bb = bcol + (y >> 3) * BX;
+            if (!((bricks[bb >> 5] >>> (bb & 31)) & 1)) { y = ((y >> 3) << 3) - 1; continue; }   // whole brick row empty → skip past it
+            y--; continue;
+          }
+          if (SNOW_PASS.has(idv)) { if (buried) buried.push(b2 + y * WX); y--; continue; }
+          break;
+        }
         return y;
       };
       const landSnowAt = (wx0, wz0) => {
@@ -5088,7 +5138,17 @@
     set3(16, [prevCam.pos[0] - winOX, prevCam.pos[1], prevCam.pos[2] - winOZ], prevCam.tanH);
     set3(20, prevCam.right, prevCam.aspect);
     const uw = waterAt(Math.floor(cam[0]), Math.floor(cam[1]), Math.floor(cam[2]));
-    set3(24, prevCam.up, cycleSpeed > 4 ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0));
+    // WORLD CEILING for shadow rays: nothing solid exists above the highest occupied 32-voxel slab, so a sun ray
+    // can stop the moment it climbs past it instead of marching its full range through empty sky. Scanned top-down
+    // over the L2 occupancy (a few hundred u32 reads — the top slabs are empty and OR to zero fast); exact by
+    // construction, so shadows are bit-identical.
+    let ceilB2 = 0;
+    for (let y2 = B2Y - 1; y2 >= 0 && !ceilB2; y2--) {
+      const w0 = (y2 * B2X) >> 5;                      // slab y2 = words for all x at each z: base (x0..63) is 2 aligned words per z row
+      for (let z2 = 0; z2 < B2Z; z2++) { const b0 = w0 + ((z2 * B2X * B2Y) >> 5);
+        if (bricks2[b0] | bricks2[b0 + 1]) { ceilB2 = y2 + 1; break; } }
+    }
+    set3(24, prevCam.up, cycleSpeed > 4 ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0) + (ceilB2 << 8));
     set3(32, sun, resetHist);
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
