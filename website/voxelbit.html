@@ -43,7 +43,6 @@
   #todWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #todSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
   #rdWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #rdSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
   #volWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #volSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
   #vigWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
@@ -51,6 +50,10 @@
   #vigBtn, #snowBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
   #snowBtn:hover { border-color: #6d8fc0; }
   #snowBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  #cmpBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 3px 15px; color: #66707f; cursor: pointer; display: flex; align-items: center; }
+  #cmpBtn svg { width: 17px; height: 17px; display: block; }   /* fill=currentColor → the icon itself shows the on/off state */
+  #cmpBtn:hover { border-color: #6d8fc0; }
+  #cmpBtn.on { border-color: #7fd05a; color: #b8ff6e; }
   #kbPanel, #pkPanel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(6,8,12,0.72); z-index: 30; }
   #kbCard, #pkCard { background: #10151c; border: 1px solid #2b3646; border-radius: 16px; padding: 22px 26px 18px; min-width: 350px; max-height: 82vh; overflow-y: auto; font: 8px/2.1 'px3', Consolas, monospace; letter-spacing: 1px; color: #dfe6ee; box-shadow: 0 12px 48px rgba(0,0,0,0.55); }
   #kbCard h2, #pkCard h2 { font: 12px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0 0 12px; color: #fff; }
@@ -78,13 +81,12 @@
   #cmpTrack { position: absolute; top: 0; left: 0; height: 22px; white-space: nowrap; will-change: transform; }
   #cmpTrack span { position: absolute; top: 0; transform: translateX(-50%); }
   #cmpTrack span.tick { color: #93a3b8; }
-  #cmpMark { position: absolute; left: 50%; top: 0; width: 1px; height: 7px; margin-left: -0.5px; background: #ff6a3a; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="cross" class="hidden"></div>
-<div id="compass" class="hidden"><div id="cmpTrack"></div><div id="cmpMark"></div></div>
+<div id="compass" class="hidden"><div id="cmpTrack"></div></div>
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
 <div id="hud"></div>
@@ -104,10 +106,10 @@
   <h2>settings</h2>
   <div id="optRows">
   <div id="todWrap"><span id="todLabel">08:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="480"></div>
-  <div id="rdWrap"><span id="rdLabel">view 37m</span><input type="range" id="rdSlider" min="96" max="368" step="8" value="368"></div>
   <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="100"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
   <div id="vigWrap"><span>vignette</span><button id="vigBtn">on</button></div>
+  <div id="cmpWrap"><span>compass</span><button id="cmpBtn" title="compass"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M12 20h2v-4h2v4h2v2H6v-2h4v-4h2v4Zm-6 0H4v-2h2v2Zm14 0h-2v-2h2v2ZM4 12h2v2H4v4H2V6h2v6Zm18 6h-2v-2h-4v-2h4v-4h-2V8h2V6h2v12Zm-12-2H6v-2h4v2Zm8-4h-4v-2h4v2Zm-4-2h-4V8h4v2Zm4-6h-8v4H8V4H6V2h12v2ZM6 6H4V4h2v2Zm14 0h-2V4h2v2Z"/></svg></button></div>
   </div>
   <h3 class="kbSub">keybinds</h3>
   <div id="kbRows"></div>
@@ -164,6 +166,7 @@
   const LIFT = WY >= 384 ? 128 : 0;                    // terrain floats this far above bedrock
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
+  const RD_FIXED = Math.min(1000, HALF - 24);           // ── VIEW DISTANCE ── pinned at 100 m (1000 vox), no slider (user). Clamped to the window: if the adapter caps the window at 768 this falls back to what fits rather than reaching past it.
   const W = new Uint8Array(WX * WY * WZ);             // CPU copy — collision + build (toroidal)
   const W32 = new Uint32Array(W.buffer);
   const hmap = new Int16Array(WX * WZ);               // terrain top per column (toroidal)
@@ -1765,8 +1768,7 @@
     }
   }
   async function buildWorld(withStages) {             // boot builds EVERYTHING the saved view distance can reach — no in-game waiting, like the classic full builds
-    const rdStored = Math.max(96, Math.min(HALF - 24, parseFloat(localStorage.getItem('vb_rd') || '368')));
-    const bh = Math.min(HALF, Math.ceil((rdStored + 96) / 8) * 8);
+    const bh = Math.min(HALF, Math.ceil((RD_FIXED + 96) / 8) * 8);
     const cx = winOX + HALF, cz = winOZ + HALF;
     rect.xlo = cx - bh; rect.xhi = cx + bh; rect.zlo = cz - bh; rect.zhi = cz + bh;
     let built = false;
@@ -3118,7 +3120,7 @@
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
   const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;   // +20% base speed
-  const BOUNCE_V0 = 95, BOUNCE_DV = 22, BOUNCE_MAX = 195;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped (≈9 m up)
+  const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
   const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: -0.7, pitch: -0.06, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0, sink: 0 };
   P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
@@ -3416,6 +3418,37 @@
   // DOUBLED (user 2026-07-18): 340 -> 680. The pool is the real limit before the radius is — at this density 680
   // would hold ~300 birds against 180 slots, so the activation frontier lands near 530 vox rather than 680, and the
   // generated rect (renderDist + 96) caps it from there. Declared at module scope because stampCardinal below needs it.
+  const birdColour = (tx, tz, bi) => {              // 0 cardinal / 1 blue bird / 2 robin — a pure function of the PINE, so a census can sample it without spawning anything
+    // LOCALLY EVEN (user). The old 40-vox `(x + 2z) % 3` colouring was even world-wide but not near you: a
+    // diagonal 3-colouring lays out long same-colour BANDS, so any one view skewed (64/49/67 of 180 measured).
+    // Index the pine's own candidate CELL instead — exactly one pine per cell — and colour it from a 3×3 LATIN
+    // SQUARE, which contains each colour exactly three times. Every 3×3 patch of cells is therefore even by
+    // construction, and rotating/flipping each patch independently stops the tiling reading as one motif.
+    // Balance the BIRDS, not the cells: a 3x3 Latin square over cells still skewed, because a pine carries
+    // 0-3 birds, so an even spread of cells is not an even spread of birds. Instead enumerate every bird in
+    // this pine's 3x3 patch of candidate cells in a fixed order and deal the three colours round-robin, which
+    // makes each patch exactly even however the birds are distributed across its pines. The per-patch rotation
+    // and stride (both coprime to 3, so balance is preserved) stop it reading as one repeating sequence.
+    const cx = Math.floor(tx / TCELL), cz = Math.floor(tz / TCELL);
+    const sx = Math.floor(cx / 3), sz = Math.floor(cz / 3);
+    const off = (ihash(sx * 37 + 11, sz * 53 + 7) * 3) | 0;
+    const stride = ihash(sx * 71 + 5, sz * 29 + 13) < 0.5 ? 1 : 2;
+    let seq = 0, mine = -1;
+    for (let jz = 0; jz < 3; jz++) for (let jx = 0; jx < 3; jx++) {
+      const ccx = sx * 3 + jx, ccz = sz * 3 + jz;
+      if (ccx === cx && ccz === cz) { mine = seq + bi; }
+      const tr = treeAt(ccx, ccz); if (!tr) continue;
+      seq += birdsOnPine(tr.tx, tr.tz);
+    }
+    let bc = (((mine < 0 ? bi : mine) * stride + off) % 3 + 3) % 3;
+    if (bc === 1 && !BLUEBIRD_ROTATE.length) bc = 0;
+    if (bc === 2 && !ROBIN_ROTATE.length) bc = 0;      // a missing reskin gives its share back to the cardinal
+    return bc;
+  };
+  const birdsOnPine = (tx, tz) => {                   // 0-3, a deterministic property of the tree. HALVED (user 2026-07-18):
+    const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);   // mean 0.83 -> 0.41 birds per pine (was .42/.80/.95), then 0.41 -> 0.63
+    return h < 0.55 ? 0 : (h < 0.86 ? 1 : (h < 0.96 ? 2 : 3));   // …+50% when the ROBIN joined, so the third colour is ADDED on top instead of thinning the other two (user). The population is perch-limited, not slot-limited: nCard alone could not lift it past ~130.
+  };
   const CARD_KEEP = 680;
   const CARD_SEP = 8;                                  // minimum gap between two perched birds, in voxels — must exceed the model footprint or their grid stamps collide
   const stampCardinal = (B, now) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
@@ -3604,8 +3637,8 @@
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
   // ── keybinds ── rebindable, persisted to localStorage
-  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', pausetime: 'KeyL', godrays: 'KeyG', vsync: 'KeyV', respawn: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
-  const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', pausetime: 'pause time', godrays: 'god rays', vsync: 'v-sync', respawn: 'respawn', scaledown: 'render scale -', scaleup: 'render scale +' };
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', godrays: 'KeyG', vignette: 'KeyL', vsync: 'KeyV', respawn: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
+  const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', godrays: 'god rays', vignette: 'vignette', vsync: 'v-sync', respawn: 'respawn', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
   if (binds.crouch === 'KeyC') { binds.crouch = 'AltLeft'; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE the old default: crouch moved off C (C now hides UI) → left Alt, even for players with a saved keybind
@@ -3627,14 +3660,15 @@
     }
   }
   $('kbBtn').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.remove('hidden'); kbRefresh(); });
-  const RDMAX = HALF - 24;                             // the window supports a view radius up to half its width (2048 window → 100 m)
-  let renderDist = Math.max(96, Math.min(RDMAX, parseFloat(localStorage.getItem('vb_rd') || '368')));   // view-distance slider, persisted
+  const renderDist = RD_FIXED;                         // FIXED 100 m — the slider is gone (user), so nothing reassigns this
   const BASE_VIG = 0.26;                               // always-on vignette in normal play — well under the cinematic 0.55 so it frames the view without reading as an effect
+  let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}   // persisted, default ON. MUST be declared here, above the settings-panel wiring below — declaring it beside CINE_VIG put it after its own use and the TDZ error killed boot.
   let snowOn = false;                                  // ── VOXEL SNOW ── weather-driven: RARE 5-minute snow events; the button forces one on/off
   let snowEndT = 0, snowNextT = performance.now() + 300000;   // FIRST snow 5 min after refresh, then 60 s events with a 10 min gap (user); performance.now() resets on refresh
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
+  let vigToggle = () => {};                            // set by the settings-panel wiring below; the L keybind calls the SAME path so the button label stays in sync
   let snowQI = [], snowQT = [], snowHead = 0;          // FIFO as parallel NUMBER arrays (cell idx / melt time) — object entries at 1.6M live voxels were ~10× the memory; ring-buffer head avoids O(n) shifts
   let snowOffT0 = -1e9;                                // when the last storm ENDED — drives the trailing edge sweep
   let snowLeadY = -1e9, snowTrailY = 1e9;              // the live storm edges (world y), computed once per frame and used by BOTH the landing pass and the shader
@@ -3658,9 +3692,10 @@
     const vigBtn = $('vigBtn');
     const vigShow = () => { vigBtn.textContent = vigOn ? 'on' : 'off'; vigBtn.classList.toggle('on', vigOn); };
     vigBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
-    vigBtn.addEventListener('click', (e) => { e.stopPropagation(); vigOn = !vigOn;
+    vigToggle = () => { vigOn = !vigOn;
       try { localStorage.setItem('vb_vig', vigOn ? '1' : '0'); } catch (e2) {}
-      vigShow(); });
+      vigShow(); };
+    vigBtn.addEventListener('click', (e) => { e.stopPropagation(); vigToggle(); });
     vigShow();
     const snowShow = () => { snowBtn.textContent = snowOn ? 'on' : 'off'; snowBtn.classList.toggle('on', snowOn); };
     snowBtnSync = snowShow;
@@ -3669,15 +3704,6 @@
     snowBtn.addEventListener('click', (e) => { e.stopPropagation(); snowOn = !snowOn;
       if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 600000; }
       snowShow(); }); }
-  const rdSlider = $('rdSlider'), rdLabel = $('rdLabel');
-  rdSlider.max = RDMAX;
-  rdSlider.value = renderDist;
-  const rdShow = () => { rdLabel.textContent = 'view ' + (renderDist / 10).toFixed(0) + 'm'; };
-  rdShow();
-  rdSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
-  rdSlider.addEventListener('click', (e) => e.stopPropagation());
-  rdSlider.addEventListener('input', (e) => { e.stopPropagation(); renderDist = parseFloat(rdSlider.value); rdShow();
-    try { localStorage.setItem('vb_rd', String(renderDist)); } catch (err) {} resetHist = 1; });
   const volSlider = $('volSlider'), volLabel = $('volLabel');   // MASTER VOLUME — scales every registered sound's base volume (persisted vb_vol)
   volSlider.value = Math.round(sndVol * 100);
   const volShow = () => { volLabel.textContent = 'volume ' + Math.round(sndVol * 100) + '%'; };
@@ -3723,18 +3749,27 @@
     cmpTrack.innerHTML = html;
     cmpTrack.style.width = (3 * 360 * CMP_PPD) + 'px';
   }
+  const cmpVis = () => cmpEl.classList.toggle('hidden', !locked || !cmpOn);   // shown only while playing AND only if the setting is on
   const cmpUpdate = () => {                            // middle turn is the live one, so the ribbon never runs off either end
+    if (!cmpOn) return;                                // switched off — don't pay for a layout write nobody sees
     const hdg = ((P.yaw * 180 / Math.PI) % 360 + 360) % 360;
     cmpTrack.style.transform = 'translateX(' + (CMP_W / 2 - (360 + hdg) * CMP_PPD) + 'px)';
   };
-  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpEl.classList.remove('hidden'); return; } canvas.requestPointerLock(); };
+  { const cmpBtn = $('cmpBtn');                        // the icon toggles the compass (user)
+    const cmpShow = () => { cmpBtn.classList.toggle('on', cmpOn); cmpBtn.title = cmpOn ? 'compass: on' : 'compass: off'; cmpVis(); };
+    cmpBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    cmpBtn.addEventListener('click', (e) => { e.stopPropagation(); cmpOn = !cmpOn;
+      try { localStorage.setItem('vb_cmp', cmpOn ? '1' : '0'); } catch (e2) {}
+      cmpShow(); });
+    cmpShow(); }
+  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); return; } canvas.requestPointerLock(); };
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (!locked) tryLock(); });
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === canvas;
     lockEl.classList.toggle('hidden', locked || dead);
     crossEl.classList.toggle('hidden', !locked);
-    cmpEl.classList.toggle('hidden', !locked);   // the compass lives and dies with the crosshair
+    cmpVis();                                    // the compass follows the crosshair, gated by the settings toggle
     keys.clear(); mouse0 = false;
   });
   document.addEventListener('mousemove', (e) => {
@@ -3772,7 +3807,7 @@
     try { document.exitPointerLock(); } catch (e) {}
   };
   $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); respawn(); lockEl.classList.remove('hidden'); });
-  let tday = 0.34, cycleSpeed = 1, cyclePause = false, godRays = true, vsyncOn = false;   // day/night cycle: 20-min day at 1x; v-sync off by default
+  let tday = 0.34, cycleSpeed = 1, godRays = true, vsyncOn = false;   // day/night cycle: 20-min day at 1x; v-sync off by default (pause-time removed — user)
   let moonDay = 4;                                     // moon PHASE day counter — starts at 4/8 = full moon; each in-game day advances the phase
   addEventListener('wheel', (e) => {                   // scroll = cycle hand slots; ALT + scroll = cycle speed (sensitive: x1.6 per notch)
     if (e.altKey) {
@@ -3789,8 +3824,8 @@
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
     if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }
-    if (e.code === binds.pausetime) { cyclePause = !cyclePause; }
     if (e.code === binds.godrays) { godRays = !godRays; }
+    if (e.code === binds.vignette) { vigToggle(); }         // same path as the settings button, so the panel label follows
     if (e.code === binds.vsync) { vsyncOn = !vsyncOn; }
     if (e.code === binds.respawn && !ED.on) { respawn(); }   // in the editor 'r' rotates the frame, not respawn
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
@@ -4164,7 +4199,21 @@
     edRot(kind, dir) { edApplyRot(kind, dir); const n = ED.frames.length, f = n ? ED.frames[((ED.sel % n) + n) % n] : null; return f ? { sx: f.sx, sy: f.sy, sz: f.sz, nvox: f.vox.length } : null; },   // rotate + report dims (test)
     edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
-    pal(i) { return i === undefined ? palette.length : palette[i]; },                // palette occupancy tap — edCol silently NEAREST-MATCHES once this hits 256, which would quietly wash a reskin's colours into another bird's
+    pal(i) { return i === undefined ? palette.length : palette[i]; },
+    rd() { return { renderDist, half: HALF, windowX: WX }; },   // fixed view-distance tap
+    birdCensus(r, wx, wz) {                          // tally the songbird colours around any centre, straight from the placement rule
+      const R = r || 6000, t = [0, 0, 0]; let pines = 0, birds = 0;
+      const c0x = Math.floor((wx === undefined ? P.x : wx) / TCELL), c0z = Math.floor((wz === undefined ? P.z : wz) / TCELL), n = Math.ceil(R / TCELL);
+      for (let dz = -n; dz <= n; dz++) for (let dx = -n; dx <= n; dx++) {
+        const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
+        pines++;
+        const k = birdsOnPine(tr.tx, tr.tz);
+        for (let i = 0; i < k; i++) { t[birdColour(tr.tx, tr.tz, i)]++; birds++; }
+      }
+      return { radius: R, pines, birds, cardinal: t[0], blue: t[1], robin: t[2],
+        pct: t.map((x) => +(x * 100 / Math.max(1, birds)).toFixed(1)) };
+    },
+    compass() { return { on: cmpOn, hidden: $('compass').classList.contains('hidden'), stored: localStorage.getItem('vb_cmp') }; },   // compass-toggle tap                // palette occupancy tap — edCol silently NEAREST-MATCHES once this hits 256, which would quietly wash a reskin's colours into another bird's
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
     perched() { const o = []; for (let j = 64; j < 244; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0), ids: B.sCells ? [...new Set(B.sCells.map((ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
@@ -4553,7 +4602,7 @@
     }
 
     // ── day/night cycle ── 20-minute full cycle at 1x; tday 0 = midnight, 0.5 = noon; ALT+scroll scales speed, L pauses
-    { const ntd = !cyclePause ? (tday + dt * cycleSpeed / 1200) % 1 : tday;
+    { const ntd = (tday + dt * cycleSpeed / 1200) % 1;
       if (ntd < tday) moonDay++;                       // a day rolled over → the moon advances one phase step (8-day cycle)
       tday = ntd; }
     const ang = tday * Math.PI * 2 - Math.PI / 2;
@@ -4595,7 +4644,7 @@
     set3(16, [prevCam.pos[0] - winOX, prevCam.pos[1], prevCam.pos[2] - winOZ], prevCam.tanH);
     set3(20, prevCam.right, prevCam.aspect);
     const uw = waterAt(Math.floor(cam[0]), Math.floor(cam[1]), Math.floor(cam[2]));
-    set3(24, prevCam.up, (cycleSpeed > 4 && !cyclePause) ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0));
+    set3(24, prevCam.up, cycleSpeed > 4 ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0));
     set3(32, sun, resetHist);
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
@@ -4947,10 +4996,6 @@
       wormCand[k] = wormCand[wormCand.length - 1]; wormCand.pop();
       return h;
     };
-    const birdsOnPine = (tx, tz) => {                   // 0-3, a deterministic property of the tree. HALVED (user 2026-07-18):
-      const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);   // mean 0.83 -> 0.41 birds per pine (was .42/.80/.95), then 0.41 -> 0.63
-      return h < 0.55 ? 0 : (h < 0.86 ? 1 : (h < 0.96 ? 2 : 3));   // …+50% when the ROBIN joined, so the third colour is ADDED on top instead of thinning the other two (user). The population is perch-limited, not slot-limited: nCard alone could not lift it past ~130.
-    };
     const CARD_PER_TREE = 3;                           // several birds to a pine, but not a roost — unlimited clumped them and the spread measured worse
     const cardCand = [];
     const buildCardCand = () => {
@@ -5132,12 +5177,7 @@
           // literal grid. Deterministic per tree, so the same pine is always the same colour and the mix cannot drift
           // or clump as birds recycle. The 3-colouring guarantees ADJACENT blocks never share a colour, which is what
           // keeps the songbirds intermixed now that there are three of them.
-          const blk = (((Math.floor(B.tx / 40) + 2 * Math.floor(B.tz / 40)) % 3) + 3) % 3;
-          const jt = ihash(B.tx * 5 + 3 + B.bi * 97, B.tz * 9 + 7 + B.bi * 31);
-          let bc = jt < 0.3 ? (blk + 1 + (jt < 0.15 ? 0 : 1)) % 3 : blk;
-          if (bc === 1 && !BLUEBIRD_ROTATE.length) bc = 0;
-          if (bc === 2 && !ROBIN_ROTATE.length) bc = 0;   // a missing reskin gives its share back to the cardinal
-          B.bird = bc;
+          B.bird = birdColour(B.tx, B.tz, B.bi);
         }
       }
       const fadeIn = Math.min(1, (now - B.born) / 700);   // grow in over 0.7 s so a recycled creature materialises smoothly instead of popping into view
@@ -5397,7 +5437,7 @@
         if (!todDrag) todSlider.value = mins;
       }
       hudEl.textContent = `${fpsEma.toFixed(0)} fps${vsyncOn ? '' : ' (uncapped)'}  ${RW}×${RH} (${renderScale.toFixed(2)}×)\n` +
-        `xyz ${(P.x / 10).toFixed(1)} ${(P.y / 10).toFixed(1)} ${(P.z / 10).toFixed(1)} m${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}  ${String(Math.floor(tday * 24)).padStart(2, '0')}:${String(Math.floor((tday * 24 % 1) * 60)).padStart(2, '0')}${cycleSpeed !== 1 ? ' x' + cycleSpeed.toFixed(1) : ''}${cyclePause ? ' paused' : ''}` +
+        `xyz ${(P.x / 10).toFixed(1)} ${(P.y / 10).toFixed(1)} ${(P.z / 10).toFixed(1)} m${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}  ${String(Math.floor(tday * 24)).padStart(2, '0')}:${String(Math.floor((tday * 24 % 1) * 60)).padStart(2, '0')}${cycleSpeed !== 1 ? ' x' + cycleSpeed.toFixed(1) : ''}` +
         `\n${slots.map((s, i) => { const nm = s ? (ITEM_NAMES[s.it] || '?') + (s.n > 1 ? '×' + s.n : '') : '·'; return i === selSlot ? `[${nm}]` : ` ${nm} `; }).join(' ')}`;
     }
     // V-SYNC OFF: pace frames off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the
