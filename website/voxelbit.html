@@ -275,6 +275,7 @@
   const W32 = new Uint32Array(W.buffer);
   const hmap = new Int16Array(WX * WZ);               // terrain top per column (toroidal)
   const bricks = new Uint32Array((BX * BY * BZ + 31) >> 5);
+  const wbricks = new Uint32Array((BX * BY * BZ + 31) >> 5);   // "occupied brick contains ONLY water" — skipW rays (underwater camera, refraction, reflection) stride whole 8³ bricks through the water body instead of fine-stepping every voxel; LOSSLESS (nothing in an all-water brick is hittable when water is skipped)
   const B2X = BX >> 2, B2Y = BY >> 2, B2Z = BZ >> 2;  // L2 occupancy: 32-voxel SUPER-bricks — long rays leap 32 voxels through open air
   const bricks2 = new Uint32Array((B2X * B2Y * B2Z + 31) >> 5);
   const touched = new Uint8Array(BX * BZ);             // per 8×8 column tile: has this memory EVER been written? virgin tiles skip air-clearing (~40% of a column)
@@ -2079,6 +2080,15 @@
         }
         const b = bx + by * BX + bz * BX * BY;
         if (occ) bricks[b >> 5] |= 1 << (b & 31); else bricks[b >> 5] &= ~(1 << (b & 31));
+        let wonly = 0;                                 // ── WATER-ONLY bit ── every nonzero voxel is WATER_T/WATER_B → skipW rays stride the whole brick (only bricks at/below the waterline can qualify; the byte scan early-outs on the first real solid, so land bricks pay ~1 byte)
+        if (occ && by * 8 <= WL) {
+          wonly = 1;
+          wscan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {
+            const r0 = y * WX + z * WX * WY + bx * 8;
+            for (let x = 0; x < 8; x++) { const v = W[r0 + x]; if (v !== 0 && v !== WATER_T && v !== WATER_B) { wonly = 0; break wscan; } }
+          }
+        }
+        if (wonly) wbricks[b >> 5] |= 1 << (b & 31); else wbricks[b >> 5] &= ~(1 << (b & 31));
       }
     }
     rebuildBricks2(gx0, gx1, gz0, gz1);
@@ -2157,6 +2167,7 @@
       '  genRegion(d.x0, d.x1, d.z0, d.z1, true);\n' +
       '  const nbx = sx >> 3, nbz = sz >> 3, nby = WY >> 3;\n' +               // ── SLAB BRICK BITS ── the 8³ occupancy scan runs HERE, in parallel, instead of on the main thread after the blit
       '  const bb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +
+      '  const wb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +       // parallel WATER-ONLY bits (skipW brick striding)
       '  const W32b = new Uint32Array(W.buffer);\n' +
       '  for (let bz = 0; bz < nbz; bz++) for (let bx = 0; bx < nbx; bx++) {\n' +
       '    let maxH = 0;\n' +
@@ -2168,10 +2179,18 @@
       '        const rw = (y * WX + z * WX * WY + bx * 8) >> 2;\n' +
       '        if (W32b[rw] | W32b[rw + 1]) { occ = 1; break scan; }\n' +
       '      }\n' +
-      '      if (occ) { const b = bx + by * nbx + bz * nbx * nby; bb[b >> 5] |= 1 << (b & 31); }\n' +
+      '      if (occ) { const b = bx + by * nbx + bz * nbx * nby; bb[b >> 5] |= 1 << (b & 31);\n' +
+      '        if (by * 8 <= WL) { let wonly = 1;\n' +
+      '          wscan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {\n' +
+      '            const r0 = y * WX + z * WX * WY + bx * 8;\n' +
+      '            for (let x = 0; x < 8; x++) { const v = W[r0 + x]; if (v !== 0 && v !== WATER_T && v !== WATER_B) { wonly = 0; break wscan; } }\n' +
+      '          }\n' +
+      '          if (wonly) wb[b >> 5] |= 1 << (b & 31);\n' +
+      '        }\n' +
+      '      }\n' +
       '    }\n' +
       '  }\n' +
-      '  postMessage({ id: d.id, stride: WX, W, hmap, bb, nbx, nby, nbz }, [W.buffer, hmap.buffer, bb.buffer]);\n' +
+      '  postMessage({ id: d.id, stride: WX, W, hmap, bb, wb, nbx, nby, nbz }, [W.buffer, hmap.buffer, bb.buffer, wb.buffer]);\n' +
       '  W = hmap = touched = null;\n' +
       '};';
     const purl = URL.createObjectURL(new Blob([wsrc2], { type: 'text/javascript' }));
@@ -2243,12 +2262,13 @@
       for (let x = j.x0; x < j.x1; x += 8) touched[(gwrap(x, WX) >> 3) + tr] = 1;
     }
     if (m.bb) {                                        // ── WORKER BRICK MERGE ── the slab's 8³ occupancy was scanned IN the worker; copy its bits into the global tables (chunks are 8-aligned, so every brick belongs wholly to this slab)
-      const nbx = m.nbx, nby = m.nby, nbz = m.nbz, bb = m.bb;
+      const nbx = m.nbx, nby = m.nby, nbz = m.nbz, bb = m.bb, wb = m.wb;
       for (let bz = 0; bz < nbz; bz++) { const gbz = gwrap(j.z0 + bz * 8, WZ) >> 3;
         for (let bx = 0; bx < nbx; bx++) { const gbx = gwrap(j.x0 + bx * 8, WX) >> 3;
           for (let by = 0; by < nby; by++) {
             const s = bx + by * nbx + bz * nbx * nby, g = gbx + by * BX + gbz * BX * BY;
             if ((bb[s >> 5] >>> (s & 31)) & 1) bricks[g >> 5] |= 1 << (g & 31); else bricks[g >> 5] &= ~(1 << (g & 31));
+            if (wb && ((wb[s >> 5] >>> (s & 31)) & 1)) wbricks[g >> 5] |= 1 << (g & 31); else wbricks[g >> 5] &= ~(1 << (g & 31));
           } } }
     }
   }
@@ -2280,7 +2300,9 @@
   new Uint32Array(brickBuf.getMappedRange()).set(bricks); brickBuf.unmap();
   const brick2Buf = device.createBuffer({ size: bricks2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
   new Uint32Array(brick2Buf.getMappedRange()).set(bricks2); brick2Buf.unmap();
-  const uploadBricks = () => { device.queue.writeBuffer(brickBuf, 0, bricks); device.queue.writeBuffer(brick2Buf, 0, bricks2); };
+  const wbrickBuf = device.createBuffer({ size: wbricks.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+  new Uint32Array(wbrickBuf.getMappedRange()).set(wbricks); wbrickBuf.unmap();
+  const uploadBricks = () => { device.queue.writeBuffer(brickBuf, 0, bricks); device.queue.writeBuffer(brick2Buf, 0, bricks2); device.queue.writeBuffer(wbrickBuf, 0, wbricks); };
   const palBuf = device.createBuffer({ size: 256 * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
   { const f = new Float32Array(palBuf.getMappedRange());           // sRGB → linear; shaders work in linear
     for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); f[i * 4 + 3] = 0; } }
@@ -2552,7 +2574,8 @@
           var bzw = bmin2.z + (i32(u.off.y) >> 3); if (bzw >= BZ) { bzw -= BZ; }   // letting both inner loops keep a RUNNING flat index (one add per step) instead of re-wrapping per sample
           var bIdx = bxw + (bc.x - bmin2.x) + bc.y * BX + (bzw + (bc.z - bmin2.z)) * BX * BY;
           for (var bi = 0; bi < 16; bi++) {                          // L1: the 4³ bricks inside this super-cell
-            if (((bricks[u32(bIdx) >> 5u] >> (u32(bIdx) & 31u)) & 1u) != 0u) {
+            if (((bricks[u32(bIdx) >> 5u] >> (u32(bIdx) & 31u)) & 1u) != 0u &&
+                !(skipW && ((wbricks[u32(bIdx) >> 5u] >> (u32(bIdx) & 31u)) & 1u) != 0u)) {   // a WATER-ONLY brick holds nothing a skipW ray can hit — stride it like empty air (underwater camera, refraction, reflection all fly through the water volume at brick speed)
               let bmin = bc * 8;
               var tv = tb2;
               let pv = ro + rd * (tv + 1e-4);
@@ -2601,6 +2624,7 @@
     @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
     @group(0) @binding(4) var gAlbedo : texture_storage_2d<rgba8unorm, write>;
     @group(0) @binding(5) var gIrr : texture_storage_2d<rgba16float, write>;
+    @group(0) @binding(7) var<storage, read> wbricks : array<u32>;   // water-only brick bits — skipW rays stride these
     ${DDAW}
     @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;   // 32-voxel SUPER-brick occupancy (window origin is 32-aligned, so off>>5 is exact)
     const SNV : u32 = ${SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits
@@ -2931,6 +2955,7 @@
     @group(0) @binding(17) var<storage, read> bricks : array<u32>;  // so moving things sit in tree shade exactly like the static terrain
     @group(0) @binding(18) var<storage, read> bricks2 : array<u32>;
     @group(0) @binding(19) var<storage, read> pal : array<vec4<f32>>;   // palette — the traced water reflection/refraction shades its hits here
+    @group(0) @binding(20) var<storage, read> wbricks : array<u32>;     // water-only brick bits — skipW rays stride these
     ${DDAW}
     ${pickWGSL}
     fn vn3(p : vec3<f32>) -> f32 {
@@ -3057,29 +3082,36 @@
         let cosI = clamp(-dot(rd, nW), 0.02, 1.0);
         let fres = 0.02 + 0.98 * pow(1.0 - cosI, 5.0);               // true Schlick, F0 = 0.02 (air→water)
         let sunW = smoothstep(-0.02, 0.12, u.sunDir.y) * irr.r;      // sun above horizon AND this surface point actually sees it
-        // ── RAY-TRACED REFLECTION ── the mirrored ray walks the real voxel scene; misses (and far hits) fall back to the sky
+        // ── RAY-TRACED REFLECTION ── the mirrored ray walks the real voxel scene; misses (and far hits) fall back to the sky.
+        // PERF (user: "fps tanks"): the killer was GRAZING views over big lakes — every distant water pixel launched a ray
+        // that SKIMS the surface for hundreds of voxels. Now only NEAR water traces (≤110 — where mirrored trees actually
+        // resolve; beyond that the mirror is sub-pixel mush and sky+glitter reads identically), near-vertical views skip
+        // (fres ≈ 0.02 → the mirror is invisible anyway), and the cap+fade tightened so the trace never outlives its
+        // visible contribution. Same look where it counts, a fraction of the rays.
         var refl = reflect(rd, nW);
         if (refl.y < 0.03) { refl = normalize(vec3<f32>(refl.x, 0.06 - refl.y * 0.5, refl.z)); }   // a grazing mirror ray that would dive back under the surface folds just above it — no self-hit acne
         var reflC = skyBase(refl);
-        {
-          let rh = trace(pw2 + vec3<f32>(0.0, 0.06, 0.0), refl, 220.0, false);
+        if (tWat < 110.0 && fres > 0.045) {
+          let rh = trace(pw2 + vec3<f32>(0.0, 0.06, 0.0), refl, 140.0, true);   // skipW: the folded mirror ray can never re-enter the flat water plane (crests live in the analytic field, not the grid) — output-identical, and it STRIDES the water-only bricks it skims instead of fine-stepping them
           if (rh.t >= 0.0) {
             let rpos = pw2 + refl * rh.t;
             let rvc = vec3<i32>(floor(rpos - rh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
             let ralb = pal[rh.vox].rgb * (0.88 + 0.24 * ivhash(rvc));
             let rlit = sunTint() * (max(dot(rh.n, u.sunDir), 0.0) * 0.9 * irr.r) + mix(HORIZON, ZENITH, 0.5 + 0.5 * rh.n.y) * 0.95 * dayScale() + vec3<f32>(0.012, 0.013, 0.016);
-            reflC = mix(ralb * rlit, skyBase(refl), 1.0 - exp(-rh.t * 0.010));   // the mirror fades into sky with distance, like the world fades into haze
+            reflC = mix(ralb * rlit, skyBase(refl), 1.0 - exp(-rh.t * 0.014));   // the mirror fades into sky with distance, like the world fades into haze
           }
         }
         // ── REFRACTION + BEER–LAMBERT ── the transmitted ray bends by Snell (η = 1/1.33) and marches to the bed; what
         // comes back is absorbed per-channel over the traveled water path — red dies first, blue carries.
+        // PERF: capped at 34 (beyond that Beer–Lambert leaves <3% — invisible), and skipped entirely at grazing angles
+        // (fres > 0.8 → the Fresnel split hands nearly everything to the mirror; the in-scatter constant stands in).
         let sigT = vec3<f32>(0.30, 0.115, 0.052);                    // extinction per voxel (10 cm)
         let scatC = vec3<f32>(0.018, 0.070, 0.092) * (0.30 + 0.70 * sunW) * dayScale() * (0.45 + 0.55 * irr.g);   // single-scatter source — the water's own glow, lit by sun + sky
         var refrC = scatC;                                           // no bed within reach → the column saturates to pure in-scatter
-        {
+        if (fres < 0.80) {
           var refr = refract(rd, nW, 0.752);
           if (dot(refr, refr) < 1e-5) { refr = rd; }                 // grazing/TIR fallback: continue straight
-          let bh = trace(pw2 + rd * 0.02, refr, 56.0, true);
+          let bh = trace(pw2 + rd * 0.02, refr, 34.0, true);
           if (bh.t >= 0.0) {
             let bpos = pw2 + rd * 0.02 + refr * bh.t;
             let bvc = vec3<i32>(floor(bpos - bh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
@@ -3323,10 +3355,10 @@
         var seedW = ((gid.x * 7817u) ^ (gid.y * 45589u) ^ (u32(u.frame) * 2657u)) | 1u;
         var accW = vec3<f32>(0.0);
         let sunUp = smoothstep(-0.02, 0.12, u.sunDir.y);
-        let dtW = wD / 6.0;
+        let dtW = wD / 4.0;                                          // 4 jittered steps (was 6) — the estimator is unbiased, so TAA converges to the SAME image; only the per-frame noise rises a hair (near-lossless)
         var tw2 = dtW * rand(&seedW);                                // jittered march start — TAA melts the step banding
         let sunInv = 1.0 / max(u.sunDir.y, 0.25);
-        for (var si = 0; si < 6; si++) {
+        for (var si = 0; si < 4; si++) {
           let p = u.camPos + rd * tw2;
           let dBelow = max(WLF + 1.0 - p.y, 0.0);
           let lightT = exp(-sigU * dBelow * sunInv);                 // the sun's own path through the water down to this point
@@ -3466,7 +3498,8 @@
     bgTrace = device.createBindGroup({ layout: pTrace.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: worldBuf } },
       { binding: 2, resource: { buffer: brickBuf } }, { binding: 3, resource: { buffer: palBuf } },
-      { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: brick2Buf } }] });
+      { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: brick2Buf } },
+      { binding: 7, resource: { buffer: wbrickBuf } }] });
     bgTemporal = [0, 1].map(par => device.createBindGroup({ layout: pTemporal.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gIrr) },
       { binding: 2, resource: v(par ? histA : histB) }, { binding: 3, resource: linSamp },
@@ -3480,7 +3513,8 @@
       { binding: 13, resource: { buffer: itemMapBuf } },
       { binding: 14, resource: moonTex.createView() }, { binding: 15, resource: linSamp },
       { binding: 16, resource: { buffer: worldBuf } }, { binding: 17, resource: { buffer: brickBuf } },
-      { binding: 18, resource: { buffer: brick2Buf } }, { binding: 19, resource: { buffer: palBuf } }] });
+      { binding: 18, resource: { buffer: brick2Buf } }, { binding: 19, resource: { buffer: palBuf } },
+      { binding: 20, resource: { buffer: wbrickBuf } }] });
     bgTaa = [0, 1].map(par => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(colorCur) },
       { binding: 2, resource: v(gIrr) }, { binding: 3, resource: v(par ? colHistA : colHistB) },
@@ -3829,6 +3863,7 @@
         if (W32[rw] | W32[rw + 1]) { occ = 1; break scan; }
       }
       if (occ) bricks[b >> 5] |= 1 << (b & 31); else bricks[b >> 5] &= ~(1 << (b & 31));
+      wbricks[b >> 5] &= ~(1 << (b & 31));             // any runtime edit (snow landing, worm stamp, editor…) CLEARS the water-only bit — conservative and lossless: the brick just falls back to fine-stepping
       if (!full) bWords.add(b >> 5);
     }
     const c2set = new Set();                           // refresh the touched L2 super-cells too
@@ -3844,7 +3879,7 @@
       if (!full) c2Words.add(c >> 5);
     }
     if (full) uploadBricks();
-    else { for (const w of bWords) device.queue.writeBuffer(brickBuf, w * 4, bricks.buffer, w * 4, 4); for (const w of c2Words) device.queue.writeBuffer(brick2Buf, w * 4, bricks2.buffer, w * 4, 4); }
+    else { for (const w of bWords) { device.queue.writeBuffer(brickBuf, w * 4, bricks.buffer, w * 4, 4); device.queue.writeBuffer(wbrickBuf, w * 4, wbricks.buffer, w * 4, 4); } for (const w of c2Words) device.queue.writeBuffer(brick2Buf, w * 4, bricks2.buffer, w * 4, 4); }
   }
 
   // ── flying cardinal ── free WANDERING flight (no home, no leash — it goes where it goes; it does NOT follow the player): the turn rate
@@ -4989,7 +5024,7 @@
     }
     ED.y = Math.min(WY - 24, Math.max((topMax + 15) & ~7, WY - 80));   // 8-aligned with ≥8 clearance, high in the sky
     unstampAllWorms();                                 // clear live worms out of W before the editor freezes the world (else edExit's rebuildBricks would resurrect them)
-    bricks.fill(0); bricks2.fill(0);                   // SEPARATE LEVEL: empty occupancy = the whole world vanishes from the tracer (W is untouched — exit rebuilds)
+    bricks.fill(0); bricks2.fill(0); wbricks.fill(0);  // SEPARATE LEVEL: empty occupancy = the whole world vanishes from the tracer (W is untouched — exit rebuilds)
     const cells = [];
     for (let z = ED.z0; z < ED.z0 + ED.pd; z++) for (let x = ED.x0; x < ED.x0 + ED.pw; x++) edSet(x, ED.y, z, edPlaneId(x, z), cells);
     gpuPatch(cells);
