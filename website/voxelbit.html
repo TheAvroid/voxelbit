@@ -4097,6 +4097,33 @@
   // fog-bound butterfly is the one dropped. Allocated ONCE — never per frame.
   const EMIT_CAP = 216, emitBuf = new Float32Array(EMIT_CAP * 16), emitDp = new Float64Array(EMIT_CAP), emitIdx = new Int32Array(EMIT_CAP);
   let fishSchoolSeq = 0;                                // rolling id handed to each new fish school so same-school mates recognise each other (3-6 per school; ~28% of fish stay lone)
+  // ── FISH 2.0 CONFIG ── every swimmer tunable in ONE bag, live-tweakable from the console (__vb.fishCfg.xxx = …).
+  // The AI itself runs in the creature tick (SWIM ⇄ FLEE states + ballistic AIR arcs) on the shared body predicate
+  // fishBodyAt/fishFits/fishReach — the planner can only ever choose moves the mover will accept, which is the
+  // anti-deadlock invariant that fixed "endlessly swims against the terrain".
+  const FISH_CFG = {
+    baseSpeed: 22,          // vox/s normal cruise — the tail-beat plays at animFps at this speed
+    fleeMult: 2.0,          // flee speed = baseSpeed × this, EXACTLY (the animation scales with it: 24 → 48 fps)
+    animFps: 24,            // swim-strip rate at baseSpeed, on the SIM clock — render fps never touches it
+    threatR: 28,            // player/predator distance (vox) that triggers the flee state
+    fleeHold: 1.2,          // s the flee state lingers after the threat leaves the radius (no flicker at the boundary)
+    predatorKinds: [3],     // wbf creature kinds fish flee from (3 = ducks); set [] to disable predator flight
+    yawRate: 2.2,           // rad/s heading-change cap while cruising…
+    fleeYawRate: 6.0,       // …and while fleeing (double speed needs sharper banking to keep clear of banks)
+    pitchMax: 0.30,         // SUBTLE nose pitch cap (rad, ~17°) for climbs/dives — yaw is free, roll is impossible by construction
+    pitchGain: 1.6,         // how strongly vertical velocity tips the nose
+    replanS: 1.3,           // s between channel re-aims (jittered per fish so the pods don't re-plan in lockstep)
+    lookMin: 12,            // reactive wall-backstop lookahead floor (scales up with speed)
+    jump: {                 // ── LEAP ── frequency / height / distance / cooldown all here (user)
+      cooldownMin: 9, cooldownMax: 31,   // s between leap attempts, divided by the species multiplier below
+      vMin: 46, vMax: 62,   // launch speed up (vox/s) → peak ≈ v²/2g ≈ 6.4-11.6 vox above the surface (HEIGHT dial)
+      gravity: 165,         // vox/s² — the arc's fall (matches the game's ballistic feel)
+      forward: 26,          // horizontal speed carried through the arc (vox/s) → DISTANCE ≈ forward · 2v/g ≈ 14-20 vox
+      minDepth: 5,          // only water this deep can launch a leap (never from a shelf it could land back onto)
+      armS: 4,              // max s the surface run-up may take before the attempt stands down
+      species: { salmon: 1.0, minnow: 0.3, bass: 0.6, blue_gill: 0.4, catfish: 0.1 },   // per-species FREQUENCY multiplier (0 = that species never leaps)
+    },
+  };
   // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
   // Worms animate their crawl (re-stamping the current frame) while moving + freeze on a pause; ducks are a single rigid pose floating at a fixed waterline. A creature re-stamps only when its cell / facing / frame changes, so a still one fully converges to crisp static lighting.
   let WORM_STAMP = null, DUCK_STAMP = null, DUCKB_STAMP = null;   // [frame][orient0..3] → array of [dx,dy(up),dz,palId]; built lazily once the frames + palette exist
@@ -5181,9 +5208,9 @@
       deficit: { xlo: rect.xlo - t.xlo, xhi: t.xhi - rect.xhi, zlo: rect.zlo - t.zlo, zhi: t.zhi - rect.zhi },   // how far the built rect lags its target on each side (0 = fully caught up)
       pool: poolOk, q: poolQueue.length, busy: genPool ? genPool.filter((w) => w.busyId).length : 0 }; },   // streaming-gen telemetry tap
     fish() { const o = []; const bodyClip = (B) => { const hx = Math.sin(B.th), hz = Math.cos(B.th), ay = Math.floor(B.y), hf = B.fhalf || 5; for (const a of [hf, hf * 0.5, 0, -hf * 0.5, -hf]) { const bx = Math.floor(B.x + hx * a), bz = Math.floor(B.z + hz * a); for (let yy = ay - 1; yy <= ay + 2; yy++) if (solid(bx, yy, bz)) return true; } return false; };   // per-species body length — the old fixed ±5 reported every short minnow as clipping
-      for (let j = 244; j < 260; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)) }); }
+      for (let j = 244; j < 260; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), air: B.jumpV !== undefined, arm: B.jumpArm !== undefined, flee: (B.fleeT || 0) * 1000 > performance.now(), vyS: +(B.vyS || 0).toFixed(1) }); }
       return { species: FISHES.map((f) => f.name + '(' + f.n + 'f@' + f.item0 + ')'), live: o }; },   // fish test tap
-    vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint
+    vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL, fishCfg: FISH_CFG,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint; fishCfg: LIVE fish tunables (speed/flee/jump/pitch)
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
     vig(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return { uniform: UF[1268], on: vigOn, cineWeight: cineBlurK }; },   // cinematic vignette tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
     vigFree() { blurLock = false; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
@@ -6264,11 +6291,13 @@
         if (!placed) { if (B.sCells) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
         if (wantK === 0 || wantK === 2 || wantK === 6) { B.hx = sx7; B.hz = sz7; B.hcx = hcx; B.hcz = hcz; } else { B.hcx = undefined; }
         B.dfly = (wantK === 0 && isDfly);              // the strip + frame count key off this; everything else about the creature is butterfly
-        if (wantK === 6) { B.spd = 18; B.spdT = 15 + Math.random() * 10; B.spdRe = 0; B.chRe = 0; B.dT = 0.3 + Math.random() * 0.5; B.dRe = 0; B.animClk = Math.random() * 40; B.cx = B.x; B.cy = B.y; B.cz = B.z;   // FISH: start at cruise speed + desynced tail-beat; chRe=0 → pick a channel heading on frame 1; cx/cy/cz = last body-clear pose (terrain hitbox revert)
+        if (wantK === 6) { B.spd = FISH_CFG.baseSpeed * 0.8; B.spdT = FISH_CFG.baseSpeed; B.chRe = 0; B.dT = 0.3 + Math.random() * 0.5; B.dRe = 0; B.animClk = Math.random() * 40; B.cx = B.x; B.cy = B.y; B.cz = B.z; B.vyS = 0;   // FISH: ease up into the configured cruise + desynced tail-beat; chRe=0 → pick a channel heading on frame 1; cx/cy/cz = last body-clear pose (terrain hitbox revert)
           B.fsp = wk % Math.max(1, FISHES.length);     // species fixed by SLOT (like the songbirds) — an exact even split that never drifts as fish recycle
-          B.salmon = ((FISHES[B.fsp] || {}).name === 'salmon');   // only SALMON leap (user); a recycled slot must never inherit a live arc
           B.fhalf = (FISHES[B.fsp] || {}).half || 5;              // body half-length for every navigation probe — per species, not a salmon-sized guess
-          B.jumpV = undefined; B.jumpArm = undefined; B.jumpRe = tb3 + 3 + Math.random() * 14;
+          { const sn = (FISHES[B.fsp] || {}).name;                // per-species LEAP frequency multiplier from the config (unlisted species get a modest default)
+            B.jumpMul = FISH_CFG.jump.species[sn] !== undefined ? FISH_CFG.jump.species[sn] : 0.25; }
+          B.jumpV = undefined; B.jumpArm = undefined; B.fleeT = 0;   // a recycled slot must never inherit a live arc or a stale flee window
+          B.jumpRe = tb3 + (3 + Math.random() * 14) / Math.max(0.05, B.jumpMul);
           // ── SCHOOL ── join a same-species school that still has room (spawning right beside it), else start a fresh school of 3-6, else swim alone (~28%)
           B.school = -1; B.schoolCap = 0;
           for (let m = 244; m < 260; m++) { const O = wbf[m]; if (O === B || !O.init || (O.kind | 0) !== 6 || O.school < 0 || O.fsp !== B.fsp) continue;
@@ -6341,53 +6370,80 @@
             B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : ((pF && nF) ? (B.om >= 0 ? 2.6 : -2.6) : (B.om >= 0 ? 3.4 : -3.4)));
           }
         }
-      } else if (B.kind === 6) {                       // ── FISH ── intelligent swimmer (user): follows the open-water CHANNEL smoothly, schools, avoids terrain walls, and DOUBLES speed to flee the player
-        const CRZ = 22;                                // reference cruise → 24 fps tail-beat; player-close flee is DOUBLE this (44 → 48 fps)
-        B.animClk = (B.animClk || 0) + dt * (B.spd || CRZ) / CRZ;   // tail-beat scales with speed: 24 fps cruising, 48 fps at double
+      } else if (B.kind === 6) {                       // ── FISH 2.0 ── config-driven swimmer (FISH_CFG): SWIM ⇄ FLEE states in the water, dead-straight in the AIR.
+        const FC = FISH_CFG, CRZ = FC.baseSpeed;
+        B.animClk = (B.animClk || 0) + dt * ((B.spd || CRZ) / CRZ) * (FC.animFps / 24);   // tail-beat LOCKED to swim speed on the SIM clock (the frame index floors animClk·24): baseSpeed → animFps, double speed → EXACTLY 2×animFps. Render fps never enters the equation.
         const ay = Math.floor(B.y);
         const fishOK = (th6, dist) => fishFits(B, th6, dist);      // BODY-aware + deep-enough water (see fishFits) — identical to what stepOK will accept
         const reachOf = (th6, maxD) => fishReach(B, th6, maxD);    // how far the open water runs along a heading — the compass for smooth channel-following
-        const pdx = B.x - P.x, pdz = B.z - P.z, pdy = B.y - (P.y + 2);
-        if (pdx * pdx + pdz * pdz + pdy * pdy < 28 * 28) {   // ── FLEE ── player got close → swim DOUBLE speed, angling away along the CLEAREST open water (never bolt into a bank)
-          const away = Math.atan2(pdx, pdz); let bo = 0, bs = -1e9;
-          for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.7, -1.7, 2.5, -2.5]) { const sc = reachOf(away + off, 30) - Math.abs(off) * 6; if (sc > bs) { bs = sc; bo = off; } }
-          const fth = away + bo;
-          B.omT = Math.max(-6, Math.min(6, Math.atan2(Math.sin(fth - B.th), Math.cos(fth - B.th)) * 5));
-          B.spdT = CRZ * 2; B.spdRe = tb3 + 1.0 + Math.random() * 0.6; B.dT = 0.6 + Math.random() * 0.3;   // ← DOUBLE speed when the player is close (user)
-        } else {                                       // ── CRUISE ── FOLLOW THE CHANNEL: re-aim (~every 1.4 s) at the heading with the longest clear water reach, heavy straight-bias → smooth river/lake runs, gentle bends, no zig-zag
-          if (tb3 > (B.chRe || 0)) { let bo = 0, bs = -1e9;
-            for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.15, -1.15]) { const sc = reachOf(B.th + off, 46) - Math.abs(off) * 7; if (sc > bs) { bs = sc; bo = off; } }
-            B.chTh = B.th + bo; B.chRe = tb3 + 1.2 + Math.random() * 1.4; }
-          let want = B.chTh !== undefined ? B.chTh : B.th;
-          if (B.school >= 0) {                         // schooling BLENDS with the channel: mostly stick with the group, but bend toward open water so the school never piles into a bank
-            let cx = 0, cz = 0, hx = 0, hz = 0, sxx = 0, szz = 0, n = 0;
-            for (let m = 244; m < 260; m++) { const O = wbf[m]; if (O === B || !O.init || O.school !== B.school) continue;
-              const dxs = O.x - B.x, dzs = O.z - B.z, d2 = dxs * dxs + dzs * dzs; if (d2 > 42 * 42) continue;
-              cx += O.x; cz += O.z; hx += Math.sin(O.th); hz += Math.cos(O.th); n++;
-              if (d2 < 7 * 7 && d2 > 0.01) { const w = 7 - Math.sqrt(d2); sxx -= dxs * w; szz -= dzs * w; } }
-            if (n > 0) { const gx = (cx / n - B.x) + sxx * 1.6, gz = (cz / n - B.z) + szz * 1.6;
-              const sth = (gx * gx + gz * gz > 1) ? Math.atan2(gx, gz) : Math.atan2(hx, hz);
-              want = Math.atan2(0.68 * Math.sin(sth) + 0.32 * Math.sin(want), 0.68 * Math.cos(sth) + 0.32 * Math.cos(want)); } }
-          B.omT = Math.max(-2.2, Math.min(2.2, Math.atan2(Math.sin(want - B.th), Math.cos(want - B.th)) * 1.9));   // gentle, eased turns toward the channel/school — SMOOTH, not twitchy
-          if (tb3 > (B.spdRe || 0)) { B.spdT = 15 + Math.random() * 13; B.spdRe = tb3 + 1.4 + Math.random() * 2.6; }   // dynamic-but-steady cruise (15-28); the fast state is clearly the player-flee (44)
-        }
-        B.spd = (B.spd || CRZ) + ((B.spdT || CRZ) - (B.spd || CRZ)) * (1 - Math.exp(-((B.spdT || 0) > (B.spd || CRZ) ? 6 : 1.4) * dt));   // asymmetric ease: the kick to double is FAST, the bleed-off slow — dart, then coast
-        if (tb3 > (B.dRe || 0)) { B.dT = 0.25 + Math.random() * 0.6; B.dRe = tb3 + 2 + Math.random() * 4; }   // depth wander — a new hold-depth every few seconds
-        { let rx = 0, rz = 0;                           // ── BANK REPULSION ── the LONG body must stay clear of terrain even when the centre is in water. Sum a push away from any shore/rock within 9 vox at the swim depth, then STEER and gently SLIDE toward open water. In a river the two banks cancel when the fish is centred, so it only acts when the body drifts toward a side (this is what frees a fish already resting its nose/tail in a bank — steering alone can't).
-          for (let k = 0; k < 8; k++) { const sa = Math.sin(k * 0.7854), ca = Math.cos(k * 0.7854);
-            for (let d = 3.5; d <= 9; d += 2.75) { const qx = B.x + sa * d, qz = B.z + ca * d;
-              if (WL - bfBed(qx, qz) < 3 || solid(Math.floor(qx), ay, Math.floor(qz)) || solid(Math.floor(qx), ay + 1, Math.floor(qz))) { rx -= sa * (10 - d); rz -= ca * (10 - d); break; } } }
-          if (rx * rx + rz * rz > 0.3) { const rl = Math.hypot(rx, rz), nrx = rx / rl, nrz = rz / rl;
-            if (bfWater(B.x + nrx * 2, B.z + nrz * 2) && WL - bfBed(B.x + nrx * 2, B.z + nrz * 2) >= 3) { B.x += nrx * Math.min(7, rl) * dt * 1.9; B.z += nrz * Math.min(7, rl) * dt * 1.9; }   // slide toward open water, but only if that step is itself clear (never shove into the opposite bank)
-            const dr = Math.atan2(Math.sin(Math.atan2(nrx, nrz) - B.th), Math.cos(Math.atan2(nrx, nrz) - B.th));
-            B.omT = Math.max(-5, Math.min(5, B.omT + dr * 2.2)); } }
-        const look = Math.max(12, B.spd * 0.62);       // ── REACTIVE WALL BACKSTOP ── terrain within the speed-scaled lookahead → override toward the clearest heading and slow HARD, so it never bores into a wall whatever the channel/school/flee wanted
-        if (!fishOK(B.th, look) || !fishOK(B.th, 5)) {
-          let bo = 0, bs = -1e9;
-          for (const off of [0, 0.4, -0.4, 0.85, -0.85, 1.4, -1.4, 2.1, -2.1, 3.14159]) { const sc = reachOf(B.th + off, look) - Math.abs(off) * 3.5 - (off * B.om < 0 ? 4 : 0); if (sc > bs) { bs = sc; bo = off; } }
-          B.omT = Math.max(-6.5, Math.min(6.5, (bs < 4 ? (B.om >= 0 ? 3.14159 : -3.14159) : bo) * 3.8));   // no gap anywhere → hard about-face
-          B.spd = Math.min(B.spd, bs < look * 0.5 ? 6 : 12);   // tight gap → crawl; comfortable gap → still shed the dart
-        }
+        if (B.jumpV === undefined) {                   // all steering is water-state only; an airborne fish holds its validated launch line
+          // ── THREAT SCAN ── the player plus every configured predator creature (FC.predatorKinds — ducks by default);
+          // the NEAREST one inside threatR (re)starts the flee window, and fleeHold keeps the state from flickering at the rim.
+          let td2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) + (B.y - P.y - 2) * (B.y - P.y - 2), tx9 = P.x, tz9 = P.z;
+          if (FC.predatorKinds.length) for (let m9 = 16; m9 < 32; m9++) { const O = wbf[m9];   // ducks live in 16-31; widen the scan if other kinds ever join the list
+            if (!O || !O.init || FC.predatorKinds.indexOf(O.kind | 0) < 0) continue;
+            const q2 = (B.x - O.x) * (B.x - O.x) + (B.z - O.z) * (B.z - O.z) + (B.y - O.y) * (B.y - O.y);
+            if (q2 < td2) { td2 = q2; tx9 = O.x; tz9 = O.z; } }
+          if (td2 < FC.threatR * FC.threatR) { B.fleeT = tb3 + FC.fleeHold; B.thrX = tx9; B.thrZ = tz9; }
+          if (tb3 < (B.fleeT || 0)) {                  // ── FLEE ── EXACTLY fleeMult × base speed, angling away along the CLEAREST open water (never bolt into a bank)
+            if (tb3 > (B.flRe || 0)) {                 // the escape-heading FAN re-plans at 8 Hz, not per render frame — at 700 fps the every-frame fan was most of the fish AI cost for zero behavioural gain (the om ease bridges 125 ms invisibly)
+              B.flRe = tb3 + 0.125;
+              const away = Math.atan2(B.x - (B.thrX !== undefined ? B.thrX : P.x), B.z - (B.thrZ !== undefined ? B.thrZ : P.z));
+              let bo = 0, bs = -1e9;
+              for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.7, -1.7, 2.5, -2.5]) { const sc = reachOf(away + off, 30) - Math.abs(off) * 6; if (sc > bs) { bs = sc; bo = off; } }
+              B.flTh = away + bo;
+            }
+            const fth = B.flTh !== undefined ? B.flTh : B.th;
+            B.omT = Math.max(-FC.fleeYawRate, Math.min(FC.fleeYawRate, Math.atan2(Math.sin(fth - B.th), Math.cos(fth - B.th)) * 5));
+            B.spdT = CRZ * FC.fleeMult; B.dT = 0.6 + Math.random() * 0.3;
+          } else {                                     // ── CRUISE ── FOLLOW THE CHANNEL: re-aim (~every replanS, jittered) at the heading with the longest clear
+            if (tb3 > (B.chRe || 0)) { let bo = 0, bs = -1e9;   // water reach, heavy straight-bias → smooth river/lake runs, gentle bends, no zig-zag
+              for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.15, -1.15]) { const sc = reachOf(B.th + off, 46) - Math.abs(off) * 7; if (sc > bs) { bs = sc; bo = off; } }
+              B.chTh = B.th + bo; B.chRe = tb3 + FC.replanS * (0.9 + Math.random() * 0.8); }
+            let want = B.chTh !== undefined ? B.chTh : B.th;
+            if (B.school >= 0) {                       // schooling BLENDS with the channel: mostly stick with the group, but bend toward open water so the school never piles into a bank
+              let cx = 0, cz = 0, hx = 0, hz = 0, sxx = 0, szz = 0, n = 0;
+              for (let m = 244; m < 260; m++) { const O = wbf[m]; if (O === B || !O.init || O.school !== B.school) continue;
+                const dxs = O.x - B.x, dzs = O.z - B.z, d2 = dxs * dxs + dzs * dzs; if (d2 > 42 * 42) continue;
+                cx += O.x; cz += O.z; hx += Math.sin(O.th); hz += Math.cos(O.th); n++;
+                if (d2 < 7 * 7 && d2 > 0.01) { const w = 7 - Math.sqrt(d2); sxx -= dxs * w; szz -= dzs * w; } }
+              if (n > 0) { const gx = (cx / n - B.x) + sxx * 1.6, gz = (cz / n - B.z) + szz * 1.6;
+                const sth = (gx * gx + gz * gz > 1) ? Math.atan2(gx, gz) : Math.atan2(hx, hz);
+                want = Math.atan2(0.68 * Math.sin(sth) + 0.32 * Math.sin(want), 0.68 * Math.cos(sth) + 0.32 * Math.cos(want)); } }
+            B.omT = Math.max(-FC.yawRate, Math.min(FC.yawRate, Math.atan2(Math.sin(want - B.th), Math.cos(want - B.th)) * 1.9));   // gentle, eased yaw toward the channel/school — SMOOTH, not twitchy
+            B.spdT = CRZ;                              // NORMAL swimming runs at the configured base speed, exactly — the flee state is the sole 2× (user)
+          }
+          B.spd = (B.spd || CRZ) + ((B.spdT || CRZ) - (B.spd || CRZ)) * (1 - Math.exp(-((B.spdT || 0) > (B.spd || CRZ) ? 6 : 1.4) * dt));   // asymmetric ease: the kick to double is FAST, the bleed-off slow — dart, then coast
+          if (tb3 > (B.dRe || 0)) { B.dT = 0.25 + Math.random() * 0.6; B.dRe = tb3 + 2 + Math.random() * 4; }   // depth wander — a new hold-depth every few seconds
+          // ── SENSE AT 20 Hz, ACT EVERY FRAME ── all voxel probing below re-evaluates on a 50 ms cadence (a fish covers
+          // ~1 voxel between checks — nothing can sneak inside the 12+ vox lookahead), while the cached RESULT (push
+          // vector, backstop heading, speed cap) still applies every frame so the motion stays perfectly smooth. At
+          // uncapped render rates the per-frame probing WAS the fish AI cost — behaviour is identical, ~10× cheaper.
+          if (tb3 > (B.senseRe || 0)) { B.senseRe = tb3 + 0.05;
+            let rx = 0, rz = 0;                         // ── BANK REPULSION ── the LONG body must stay clear of terrain even when the centre is in water. Sum a push away from any shore/rock within 9 vox at the swim depth. In a river the two banks cancel when the fish is centred, so it only acts when the body drifts toward a side (this is what frees a fish already resting its nose/tail in a bank — steering alone can't).
+            for (let k = 0; k < 8; k++) { const sa = Math.sin(k * 0.7854), ca = Math.cos(k * 0.7854);
+              for (let d = 3.5; d <= 9; d += 2.75) { const qx = B.x + sa * d, qz = B.z + ca * d;
+                if (WL - bfBed(qx, qz) < 3 || solid(Math.floor(qx), ay, Math.floor(qz)) || solid(Math.floor(qx), ay + 1, Math.floor(qz))) { rx -= sa * (10 - d); rz -= ca * (10 - d); break; } } }
+            B.repX = rx; B.repZ = rz;
+            const look = Math.max(FC.lookMin, B.spd * 0.62);   // ── REACTIVE WALL BACKSTOP ── terrain within the speed-scaled lookahead → override toward the clearest heading and slow, so it never bores into a wall whatever the channel/school/flee wanted
+            B.bkOn = !fishOK(B.th, look) || !fishOK(B.th, 5);
+            if (B.bkOn && tb3 > (B.bkRe || 0)) {        // the 10-heading FAN re-plans at 10 Hz while triggered
+              B.bkRe = tb3 + 0.1;
+              let bo = 0, bs = -1e9;
+              for (const off of [0, 0.4, -0.4, 0.85, -0.85, 1.4, -1.4, 2.1, -2.1, 3.14159]) { const sc = reachOf(B.th + off, look) - Math.abs(off) * 3.5 - (off * B.om < 0 ? 4 : 0); if (sc > bs) { bs = sc; bo = off; } }
+              B.bkTh = (bs < 4 ? (B.om >= 0 ? 3.14159 : -3.14159) : bo); B.bkTight = bs < look * 0.5;   // no gap anywhere → hard about-face
+            }
+          }
+          { const rx = B.repX || 0, rz = B.repZ || 0;   // apply the CACHED repulsion each frame (dt-scaled → frame-rate independent slide)
+            if (rx * rx + rz * rz > 0.3) { const rl = Math.hypot(rx, rz), nrx = rx / rl, nrz = rz / rl;
+              if (bfWater(B.x + nrx * 2, B.z + nrz * 2) && WL - bfBed(B.x + nrx * 2, B.z + nrz * 2) >= 3) { B.x += nrx * Math.min(7, rl) * dt * 1.9; B.z += nrz * Math.min(7, rl) * dt * 1.9; }   // slide toward open water, but only if that step is itself clear (never shove into the opposite bank)
+              const dr = Math.atan2(Math.sin(Math.atan2(nrx, nrz) - B.th), Math.cos(Math.atan2(nrx, nrz) - B.th));
+              B.omT = Math.max(-5, Math.min(5, B.omT + dr * 2.2)); } }
+          if (B.bkOn) {                                 // apply the CACHED backstop each frame
+            B.omT = Math.max(-6.5, Math.min(6.5, (B.bkTh || 0) * 3.8));
+            B.spd = Math.min(B.spd, B.bkTight ? 8 : 16);     // tight gap → crawl; comfortable gap → shed the dart but keep way on (6/12 read as fish stalling in open lakes — cruise averaged 15 instead of the configured 22)
+          }
+        } else { B.omT = 0; }                          // AIRBORNE: no steering — the splash-down was validated for the launch line and must stay where it was aimed
       } else {
         if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 4.0; B.tRe = tb3 + 0.4 + Math.random() * 0.8; }
         const la5 = 13;
@@ -6411,14 +6467,15 @@
         const gN = bfSurf(nx5, nz5);
         stepOK = gN > WL + 0.5 && Math.abs(gN - bfSurf(B.x, B.z)) <= 2 && !bfObstW(nx5, gN + 2, nz5) && !bfObstW(nx5, gN + 3, nz5);
       } else if (B.kind === 6) {                       // ── FISH TERRAIN HITBOX (user) ── the WHOLE BODY (a ~10-vox model) must clear solid, not just the centre point — otherwise the long nose pokes into a wall the centre hasn't reached. Sample nose→tail across the body height; any point in rock/ground/shore rejects the move. NO player hitbox — the fish still passes freely through you.
-        stepOK = bfWater(nx5, nz5) && WL - bfBed(nx5, nz5) >= 3     // still in real, deep-enough water at the centre…
-          && fishBodyAt(nx5, nz5, B.th, Math.floor(B.y), B.fhalf);  // …and the WHOLE body fits there — the same predicate the planner steers by, so it can only ever be told to go where it can actually go
+        stepOK = B.jumpV !== undefined ||              // AIRBORNE: mid-arc + splash-down were validated at launch — the water tests below would halt the arc in mid-air over a pad or bank lip
+          (bfWater(nx5, nz5) && WL - bfBed(nx5, nz5) >= 3           // still in real, deep-enough water at the centre…
+          && fishBodyAt(nx5, nz5, B.th, Math.floor(B.y), B.fhalf)); // …and the WHOLE body fits there — the same predicate the planner steers by, so it can only ever be told to go where it can actually go
       } else if (B.kind >= 3) { stepOK = bfWater(nx5, nz5) && bfSky(nx5, WL + 2, nz5)   // ducks + lilies only ever move onto OPEN-SKY REAL water — never onto a dry ravine floor or under a cave roof…
           && (bfOpenW(nx5, nz5) || !bfOpenW(B.x, B.z));  // …and never INTO a narrow gorge/ravine arm (escape moves out of one are always allowed so nothing gets pinned)
         if (B.kind === 3 && stepOK) { const hl = isBaby ? 5.0 : 7.0; stepOK = bfWater(nx5 + Hx2 * hl, nz5 + Hz2 * hl); }   // DUCK HEAD BUFFER (user: 'keep further away, still running into it'): require water WELL ahead (7 vox mom / 5 baby) so it stops with a clear margin, never touching the bank
       }
       else stepOK = !bfObst(nx5, B.y, nz5) && !bfObst(nx5, B.y + 2, nz5);
-      if (((B.kind | 0) === 0 || (B.kind | 0) === 2 || (B.kind | 0) === 6) && B.hcx !== undefined) {   // LEASH: a butterfly/worm/fish drifts around its home rather than away from it
+      if (((B.kind | 0) === 0 || (B.kind | 0) === 2 || (B.kind | 0) === 6) && B.hcx !== undefined && B.jumpV === undefined) {   // LEASH: a butterfly/worm/fish drifts around its home rather than away from it (never mid-LEAP — bending the heading in the air would curve the arc off its validated splash-down)
         const lx = B.x - B.hx, lz = B.z - B.hz; let l2 = lx * lx + lz * lz;
         const leash = (B.kind | 0) === 2 ? WORM_LEASH : ((B.kind | 0) === 6 ? 52 : FLY_LEASH);   // a fish patrols ~5 m around its pool spot — enough for river runs, never leaves its water body
         if ((B.kind | 0) === 2 && (B.trap || 0) > 0.35) l2 = 0;   // STUCK: stop pulling toward home so the normal avoidance can steer it around the trunk instead of into it
@@ -6477,34 +6534,43 @@
         B.y += Math.max(-12 * dt, Math.min(12 * dt, (gT7 - B.y) * (1 - Math.exp(-7 * dt)) + Math.sign(gT7 - B.y) * 2 * dt));
         if (B.y < gLoc + 1.6) B.y = gLoc + 1.6;        // hard body floor — the ease could lag uphill and sink the worm INTO the slope ('clips through the ground')
         if (bfObst(B.x, B.y, B.z)) B.y = gLoc + 2;     // body ended up inside something (streamed terrain/step edge) — re-seat on the local surface instead of hiding+vanishing
-      } else if (B.kind === 6) {                       // FISH: hold a WANDERING depth between the bed and the underside of the surface — the ease is what makes the swim read 3D
-        const bed9 = bfBed(B.x, B.z);
+      } else if (B.kind === 6) {                       // FISH: hold a WANDERING depth between the bed and the underside of the surface; LEAPS are real ballistics
+        const FC9 = FISH_CFG, bed9 = bfBed(B.x, B.z);
         const lo9 = bed9 + 1.6, hi9 = Math.max(WL - 1.4, lo9 + 0.2);
-        // ── SALMON LEAP (user) ── salmon break the surface on a real ballistic arc, then splash back. The body stays
-        // LEVEL the whole way: fish already render on the level frame (Zw = null), so an arc adds height, never pitch.
-        if (B.jumpV !== undefined) {                   // AIRBORNE — pure ballistics, the depth ease/clamp below is bypassed
-          B.y += B.jumpV * dt; B.jumpV -= 165 * dt;    // ~1.7 s hang at the launch speed picked below
-          if (B.jumpV < 0 && B.y <= hi9) { B.y = hi9; B.jumpV = undefined; B.jumpRe = tb3 + 9 + Math.random() * 22; }   // back through the surface → resume swimming, and don't re-leap immediately
+        if (B.jumpV !== undefined) {                   // ── AIRBORNE ── pure ballistics; the depth ease/clamp is bypassed and the global vertical budget exempts the arc
+          B.y += B.jumpV * dt; B.jumpV -= FC9.jump.gravity * dt;
+          if (B.jumpV < 0 && B.y <= hi9) {             // ── REENTRY ── falling back through the surface → swimming again, cleanly: hold-depth resumes, the terrain
+            B.y = hi9; B.jumpV = undefined;            // hitbox below re-validates the whole body, and the per-species cooldown keeps leaps occasional
+            B.jumpRe = tb3 + (FC9.jump.cooldownMin + Math.random() * (FC9.jump.cooldownMax - FC9.jump.cooldownMin)) / Math.max(0.05, B.jumpMul || 1);
+            B.spdT = FC9.baseSpeed; B.dT = 0.35 + Math.random() * 0.3;   // glide off the splash back into a mid-depth cruise
+          }
         } else {
           const tgt9 = lo9 + (hi9 - lo9) * (B.dT !== undefined ? B.dT : 0.5);
           B.y += Math.max(-7 * dt, Math.min(7 * dt, (tgt9 - B.y) * (1 - Math.exp(-2.2 * dt))));
           B.y = Math.max(lo9, Math.min(hi9, B.y));     // hard clamp — the body NEVER breaks the surface and never grinds the bed
-          // TWO PHASE, like the real thing: a salmon RUNS UP to the surface and then breaches. Waiting for the depth
-          // wander to happen to leave the fish near the surface almost never fired (dT tops out ~0.85 of the bed→surface
-          // span, so `already shallow` was practically unreachable and 90 s of lake produced zero leaps).
-          if (B.salmon && B.jumpArm === undefined && tb3 > (B.jumpRe || 0) && hi9 - lo9 > 5
+          // ── LEAP, TWO-PHASE ── ARM a run-up to the surface first (waiting for the depth wander to leave the fish
+          // shallow practically never fired), then BREACH only after the WHOLE ARC validates. Every dial lives in
+          // FISH_CFG.jump: the cooldown window ÷ species multiplier = frequency, vMin/vMax = height, forward = distance.
+          if ((B.jumpMul || 0) > 0 && B.jumpArm === undefined && tb3 > (B.jumpRe || 0) && hi9 - lo9 > FC9.jump.minDepth
               && bfSky(B.x, WL + 2, B.z) && fishFits(B, B.th, 10)) {
-            B.jumpArm = tb3 + 4;                       // ARM: climb for up to 4 s…
-            B.dT = 1; B.dRe = tb3 + 5;                 // …holding the shallow depth target so the wander can't pull it back down mid-ascent
+            B.jumpArm = tb3 + FC9.jump.armS;           // ARM: climb for up to armS seconds…
+            B.dT = 1; B.dRe = tb3 + FC9.jump.armS + 1; // …holding the shallow depth target so the wander can't pull it back down mid-ascent
           }
           if (B.jumpArm !== undefined) {
-            if (B.y > hi9 - 1.6 && bfSky(B.x, WL + 2, B.z) && fishFits(B, B.th, 10)) {   // at the surface with open sky and clear water ahead to land in → BREACH
-              B.jumpV = 46 + Math.random() * 16;       // 4.6-6.2 m/s up → the body clears the surface by ~5-10 voxels for ~0.6-0.8 s: an unmistakable leap, not a nose poking through
-              B.spd = Math.max(B.spd || 22, 26);       // carry real forward speed through the arc, so it travels rather than popping straight up
-              B.jumpArm = undefined;
-            } else if (tb3 > B.jumpArm) { B.jumpArm = undefined; B.jumpRe = tb3 + 6 + Math.random() * 12; }   // never got there (roofed/penned in) — stand down and try again later
+            if (B.y > hi9 - 1.6 && bfSky(B.x, WL + 2, B.z)) {   // reached the surface — now prove the ARC itself before committing:
+              const jv = FC9.jump.vMin + Math.random() * (FC9.jump.vMax - FC9.jump.vMin);
+              const hang = 2 * jv / FC9.jump.gravity;  // total air time → splash-down = launch + heading · forward · hang
+              const lx9 = B.x + Math.sin(B.th) * FC9.jump.forward * hang, lz9 = B.z + Math.cos(B.th) * FC9.jump.forward * hang;
+              const mx9 = (B.x + lx9) * 0.5, mz9 = (B.z + lz9) * 0.5;
+              if (bfWater(lx9, lz9) && WL - bfBed(lx9, lz9) >= 3 && bfSky(lx9, WL + 2, lz9) &&   // splash-down = REAL deep water under open sky — never land, never a shelf…
+                  bfWater(mx9, mz9) && bfSky(mx9, WL + 2, mz9) && fishFits(B, B.th, 8)) {        // …and the mid-arc + immediate exit are clear too
+                B.jumpV = jv; B.spd = FC9.jump.forward; B.spdT = FC9.jump.forward;   // launch, carrying the configured forward speed through the whole arc
+                B.om = 0; B.omT = 0; B.jumpArm = undefined;                          // dead-straight in the air — the validated splash-down must stay where it was aimed
+              } else { B.jumpArm = undefined; B.jumpRe = tb3 + 4 + Math.random() * 6; B.dT = 0.3 + Math.random() * 0.4; }   // the arc lands badly (bank/shallow/roof) — stand down, sink back, try elsewhere
+            } else if (tb3 > B.jumpArm) { B.jumpArm = undefined; B.jumpRe = tb3 + 6 + Math.random() * 12; }   // never reached the surface (roofed/penned in) — stand down
           }
         }
+        B.vyS = (B.vyS || 0) + ((B.y - yPrev5) / Math.max(dt, 1e-4) - (B.vyS || 0)) * (1 - Math.exp(-6 * dt));   // low-passed climb/dive — drives the SUBTLE nose pitch in the render frame below
       } else if (B.kind >= 3) {                        // DUCK / LILY: ride the CONTINUOUS swell (JS mirror of the TRACE wave field) — smooth by construction, no quantized ratcheting
         let wvMax = 0;
         if (freezeK < 0.4) {                           // waves are gated exactly like the renderer — a frozen lake is flat
@@ -6564,8 +6630,13 @@
       }
       const HxR = Math.sin(B.th), HzR = Math.cos(B.th);   // RENDER yaw — for lilies this spins freely, independent of drift
       let Xw = [HzR, 0, -HxR], Yw = [-HxR, 0, -HzR], Zw = null;   // level frame — Zw = up, right-handed (Yw×Zw = Xw); model −y (the head end) leads
-      // FISH (user): the body stays HORIZONTAL — no nose pitch when it changes depth on the y axis — but it still turns
-      // freely off-grid on its heading (yaw). So a fish uses this same level frame; only its swim DIRECTION rotates.
+      if (B.kind === 6 && B.jumpV === undefined) {     // ── FISH ORIENTATION ── upright always: free yaw, a SUBTLE nose pitch from the low-passed climb/dive, and ROLL
+        // IMPOSSIBLE BY CONSTRUCTION — the lateral axis Xw stays exactly horizontal and Zw completes the right-handed frame
+        // from it, so no path through this code can bank or flip the body. AIRBORNE leaps stay dead level (user).
+        const p9 = Math.max(-FISH_CFG.pitchMax, Math.min(FISH_CFG.pitchMax, Math.atan2((B.vyS || 0) * FISH_CFG.pitchGain, Math.max(6, B.spd || FISH_CFG.baseSpeed))));
+        if (p9 * p9 > 1e-6) { const cp9 = Math.cos(p9), sp9 = Math.sin(p9);
+          Yw = [-HxR * cp9, -sp9, -HzR * cp9]; Zw = [-HxR * sp9, cp9, -HzR * sp9]; }   // head dir = −Yw tips up when climbing; Zw = Xw×Yw stays roll-free
+      }
       const nfr = B.kind === 6 ? FISHES[B.fsp || 0].n : (B.kind >= 3 ? 1 : (B.kind === 2 ? WORM_NFRAMES : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES))));
       const fi3 = (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * 24) % nfr)   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
         : Math.floor((tb3 + wk * 0.37) * 24) % nfr;                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
