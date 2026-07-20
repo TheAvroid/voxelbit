@@ -39,7 +39,7 @@
     color: #e8edf4; font: 11px 'px3', Consolas, monospace; letter-spacing: 3px; text-shadow: 0 2px 6px rgba(0,0,0,0.85);
     pointer-events: none; animation: playHintPulse 1.8s ease-in-out infinite; }
   @keyframes playHintPulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.45; } }
-  #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; }
+  #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; transform: translateY(-28px); }   /* icons nudged up under the logo (user) */
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
   #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn { position: relative; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, transform 0.15s ease-out, box-shadow 0.15s; }   /* subtle resting drop shadow (user) — deepens on hover below */
   #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg { width: 22px; height: 22px; }
@@ -235,6 +235,21 @@
     ...(PROF ? { requiredFeatures: ['timestamp-query'] } : {}) });
   if (WYpick < 384 || WXZ < 2048) console.warn('[vb] adapter caps buffers at', lim, '— window', WXZ, '×', WYpick);
   device.addEventListener('uncapturederror', (e) => { console.error('[vb] gpu error:', e.error.message); });
+  // ── FREEZE FORENSICS ── (user: "sometimes the game freezes") every way the render loop can die is now caught,
+  // logged with a stack (window.__vbErr — paste it to be fixed), and where possible the loop is restarted instead
+  // of hanging. A LOST GPU DEVICE (driver reset/timeout — the classic mid-walk freeze) shows a visible banner.
+  window.__vbErr = null;
+  const vbNoteErr = (tag, e) => { window.__vbErr = tag + ': ' + ((e && (e.stack || e.message)) || e); console.error('[vb]', tag, e); };
+  window.addEventListener('error', (e) => vbNoteErr('uncaught', e.error || e.message));
+  window.addEventListener('unhandledrejection', (e) => vbNoteErr('rejection', e.reason));
+  device.lost.then((info) => {                         // device lost = the picture freezes at the last frame with no error anywhere — now it says so
+    vbNoteErr('gpu device lost', info.reason + ' — ' + info.message);
+    loadEl.classList.add('hidden');
+    const b = document.createElement('div');
+    b.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;align-items:center;justify-content:center;background:rgba(8,10,14,0.88);color:#ff8a95;font:10px "px3",Consolas,monospace;letter-spacing:2px;text-align:center;line-height:2';
+    b.textContent = 'gpu device lost (' + info.reason + ') — reload the page';
+    document.body.appendChild(b);
+  }).catch(() => {});
   const canvas = $('c');
   const ctx = canvas.getContext('webgpu');
   const format = navigator.gpu.getPreferredCanvasFormat();
@@ -1206,17 +1221,9 @@
     const base = gx + gz * WX * WY;
     let surfMoss = false;                              // grass only grows where a MOSS surface voxel actually landed
     const yTop = fresh ? (lake ? WL + 1 : h) : WY;     // fresh columns skip writing the empty sky — ~40% faster world builds
-    // ROCK core — the hottest loop in worldgen. The per-voxel ihash(wx + y·57, wz) is inlined INCREMENTALLY
-    // (imul is linear, so advancing x by 57 adds a constant) — bit-identical values, ~2× faster columns.
-    let acc = (Math.imul(wx, 374761393) + Math.imul(wz, 668265263)) | 0;
-    let idx = base;
-    const rockTop = Math.min(h - 3, yTop);
-    for (let y = 0; y < rockTop; y++) {
-      const hh = Math.imul(acc ^ (acc >>> 13), 1274126177);
-      W[idx] = ROCK[((((hh ^ (hh >>> 16)) >>> 0) / 4294967296) * 3) | 0];
-      idx += WX;
-      acc = (acc + ROCKSTEP) | 0;
-    }
+    // (the ROCK core — the hottest loop in worldgen, ~180 voxels/column — moved to rockRowSpan: writing it per COLUMN
+    // strode WX bytes per voxel, a fresh cache line every write; the row-major pass writes contiguous x-runs instead.
+    // rockTop was min(h-3, yTop), but yTop ≥ h in every branch, so h-3 exactly — rockRowSpan reproduces it bit-identically.)
     for (let y = Math.max(0, h - 3); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
@@ -1965,6 +1972,24 @@
         const c = atFn(cx, cz); if (c) { stampFn(c, x0, x1, z0, z1); yield; }
       }
   }
+  function rockRowSpan(x0, x1, wz, tops) {             // ── ROW-MAJOR ROCK CORE ── writes one wz-row's rock for every column at once, y-major with CONTIGUOUS x-runs.
+    // The old per-column loop strode WX bytes per voxel (every write its own cache line, 44% of all gen CPU); this is the
+    // same voxel set with the same incremental hash — imul is linear mod 2³², so re-anchoring per (x0, y) is bit-identical.
+    const len = x1 - x0;
+    let gxA = rockRowSpan.gx; if (!gxA || gxA.length < len) gxA = rockRowSpan.gx = new Int32Array(Math.max(2048, len));
+    let maxR = 0; for (let i = 0; i < len; i++) { if (tops[i] > maxR) maxR = tops[i]; gxA[i] = gwrap(x0 + i, WX); }
+    if (maxR <= 0) return;
+    const zb = gwrap(wz, WZ) * WX * WY;
+    for (let y = 0; y < maxR; y++) {
+      let acc = (Math.imul(x0, 374761393) + Math.imul(wz, 668265263) + Math.imul(y, ROCKSTEP)) | 0;
+      const yb = zb + y * WX;
+      for (let i = 0; i < len; i++) {
+        if (y < tops[i]) { const hh = Math.imul(acc ^ (acc >>> 13), 1274126177);
+          W[yb + gxA[i]] = ROCK[((((hh ^ (hh >>> 16)) >>> 0) / 4294967296) * 3) | 0]; }
+        acc = (acc + 374761393) | 0;                   // advancing x by 1 adds K1 — identical to imul(x0+i, K1) mod 2³²
+      }
+    }
+  }
   function* genRegionGen(x0, x1, z0, z1, fresh) {      // rolling sweep with row/column-cached noise — sweeps along the region's LONG axis so the cache always pays
     rivScope = gatherRivers(x0 - 300, x1 + 300, z0 - 300, z1 + 300);   // covers the region plus every stamp margin
     if (x1 - x0 >= z1 - z0) {
@@ -1974,11 +1999,17 @@
       const mossRow = new Float64Array(x1 - x0);
       const fillH = pre ? ((wz, out) => { const r = wz - (z0 - 1); out.set(pre.hs.subarray(r * wpad, (r + 1) * wpad)); })
                         : ((wz, out) => { const f = makeHRow(wz); for (let i = 0; i < wpad; i++) out[i] = f(x0 - 1 + i); });
+      let tops = rockRowSpan.tops; if (!tops || tops.length < x1 - x0) tops = rockRowSpan.tops = new Int16Array(Math.max(2048, x1 - x0));
       fillH(z0 - 1, hM); fillH(z0, hC);
       for (let wz = z0; wz < z1; wz++) {
         fillH(wz + 1, hP);
         if (pre) mossRow.set(pre.ms.subarray((wz - z0) * (x1 - x0), (wz - z0 + 1) * (x1 - x0)));
         else { const mf = makeMossRow(wz); for (let i = 0; i < x1 - x0; i++) mossRow[i] = mf(x0 + i); }
+        for (let i = 0; i < x1 - x0; i++) { const h0 = hC[i + 1];   // the rock ceiling = fillColumn's EXACT lake/beach-clamped h, minus 3
+          const lk = h0 <= WL - 1 || (h0 === WL && (hC[i] < WL || hC[i + 2] < WL || hM[i + 1] < WL || hP[i + 1] < WL));
+          tops[i] = ((!lk && h0 <= WL) ? WL + 1 : h0) - 3; }
+        rockRowSpan(x0, x1, wz, tops);                 // the row's whole rock core in contiguous x-runs
+        yield;
         for (let wx = x0; wx < x1; wx++) {
           const i = wx - x0;
           fillColumn(wx, wz, fresh, hC[i + 1], hC[i], hC[i + 2], hM[i + 1], hP[i + 1], mossRow[i]);
@@ -1989,11 +2020,22 @@
       }
     } else {                                           // TRANSPOSED: tall-thin region (x-direction band) — sweep columns along z
       const pre = takeRows(x0, x1, z0, z1, true);
-      const wpad = (z1 - z0) + 2;
+      const wpad = (z1 - z0) + 2, cols = (x1 - x0) + 2;
+      let hAll;                                        // ALL columns' heights materialized once — the rock pass runs row-major across the band (contiguous x-runs), the sweep reads its slices
+      if (pre) hAll = pre.hs;
+      else { hAll = new Int16Array(cols * wpad);
+        for (let c = 0; c < cols; c++) { const f = makeHCol(x0 - 1 + c); for (let i = 0; i < wpad; i++) hAll[c * wpad + i] = f(z0 - 1 + i); } }
+      { let tops = rockRowSpan.tops; if (!tops || tops.length < x1 - x0) tops = rockRowSpan.tops = new Int16Array(Math.max(2048, x1 - x0));
+        for (let wz = z0; wz < z1; wz++) { const r = wz - (z0 - 1);
+          for (let i = 0; i < x1 - x0; i++) { const c = (i + 1) * wpad + r, h0 = hAll[c];
+            const lk = h0 <= WL - 1 || (h0 === WL && (hAll[c - wpad] < WL || hAll[c + wpad] < WL || hAll[c - 1] < WL || hAll[c + 1] < WL));
+            tops[i] = ((!lk && h0 <= WL) ? WL + 1 : h0) - 3; }
+          rockRowSpan(x0, x1, wz, tops);
+          if (((wz - z0) & 63) === 63) { yield; }
+        } }
       let hM = new Int16Array(wpad), hC = new Int16Array(wpad), hP = new Int16Array(wpad);
       const mossCol = new Float64Array(z1 - z0);
-      const fillH = pre ? ((wx, out) => { const c = wx - (x0 - 1); out.set(pre.hs.subarray(c * wpad, (c + 1) * wpad)); })
-                        : ((wx, out) => { const f = makeHCol(wx); for (let i = 0; i < wpad; i++) out[i] = f(z0 - 1 + i); });
+      const fillH = (wx, out) => { const c = wx - (x0 - 1); out.set(hAll.subarray(c * wpad, (c + 1) * wpad)); };   // pre or inline, the heights are in hAll now
       fillH(x0 - 1, hM); fillH(x0, hC);
       for (let wx = x0; wx < x1; wx++) {
         fillH(wx + 1, hP);
@@ -2092,7 +2134,7 @@
   if (!location.search.includes('nopool')) try {
     const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, TUBE_K, TUBE_WOB, TUBE_FRQ, TUBE_SHELL, CAVE_ROCKS, CAVE_ORE, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH, CAVEROCK, CAVEKEEP };
-    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, stampModel, boulderAt, stampBoulder, caveAt, fixCarveCol, smin3, capsF, carveTube, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, caveNear, caveSolid, caveFloorY, stampCaveRocks, stampCaveOre, stampCaveFlora, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
+    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, caveAt, fixCarveCol, smin3, capsF, carveTube, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, caveNear, caveSolid, caveFloorY, stampCaveRocks, stampCaveOre, stampCaveFlora, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
@@ -2136,13 +2178,13 @@
       w.postMessage({ id: j.id, x0: j.x0, x1: j.x1, z0: j.z0, z1: j.z1 });
     }
   }
-  function poolChunks(x0, x1, z0, z1) {                // fan one region across the pool — 8-aligned splits along the roomier axis
-    const jobs = [];
-    const push = (a, b, c, d) => { const j = { id: ++poolSeq, x0: a, x1: b, z0: c, z1: d, done: false, msg: null }; jobById.set(j.id, j); poolQueue.push(j); jobs.push(j); };
-    if (z1 - z0 >= 16) { const step = Math.max(8, Math.ceil((z1 - z0) / genPool.length / 8) * 8);
-      for (let z = z0; z < z1; z += step) push(x0, x1, z, Math.min(z1, z + step));
-    } else { const step = Math.max(64, Math.ceil((x1 - x0) / genPool.length / 8) * 8);
+  function poolChunks(x0, x1, z0, z1) {                // fan one region across the pool — 8-aligned splits along the LONGER axis. Splitting the long axis keeps chunks
+    const jobs = [];                                   // CHUNKY (256×32) instead of SLIVERS (2048×8): a tree/rock model overlapping a chunk border re-iterates its whole
+    const push = (a, b, c, d) => { const j = { id: ++poolSeq, x0: a, x1: b, z0: c, z1: d, done: false, msg: null }; jobById.set(j.id, j); poolQueue.push(j); jobs.push(j); };   // sparse vox list in BOTH chunks, so fewer/shorter borders = less redundant stamp work per band
+    if (x1 - x0 >= z1 - z0) { const step = Math.max(64, Math.ceil((x1 - x0) / genPool.length / 8) * 8);
       for (let x = x0; x < x1; x += step) push(x, Math.min(x1, x + step), z0, z1);
+    } else { const step = Math.max(64, Math.ceil((z1 - z0) / genPool.length / 8) * 8);
+      for (let z = z0; z < z1; z += step) push(x0, x1, z, Math.min(z1, z + step));
     }
     poolPump();
     return jobs;
@@ -2668,14 +2710,14 @@
             albedo = mix(albedo, vec3<f32>(0.82, 0.87, 0.90), foamK);
           }
         }
-        if (faceId == 6u) {                                          // 20% TRANSLUCENT water — the bed shows through, fading with depth
-          let bh = trace(ro + rd * (h.t + 0.01), rd, 48.0, true);    // beyond 48 voxels the mix is <5% of 20% — invisible, so don't pay for it
+        if (faceId == 6u) {                                          // 50% TRANSLUCENT water (user) — the bed shows through, fading with depth
+          let bh = trace(ro + rd * (h.t + 0.01), rd, 48.0, true);    // beyond 48 voxels the mix is <5% of 50% — invisible, so don't pay for it
           if (bh.t >= 0.0) {
             let bpos = ro + rd * (h.t + 0.01) + rd * bh.t;
             let bvc = vec3<i32>(floor(bpos - bh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
             let ca = caust(floor(vec2<f32>(bpos.x + u.winO.x, bpos.z + u.winO.y)) + vec2<f32>(0.5));   // per-voxel caustic web on the bed
             let balb = pal[bh.vox].rgb * (0.88 + 0.24 * ivhash(bvc)) * (1.0 + 1.6 * ca * smoothstep(-0.02, 0.12, u.sunDir.y));
-            albedo = mix(albedo, balb, 0.20 * exp(-bh.t * 0.03) * (1.0 - foamK));
+            albedo = mix(albedo, balb, 0.50 * exp(-bh.t * 0.03) * (1.0 - foamK));
           }
         }
         var seed = ((gid.x * 1973u) ^ (gid.y * 9277u) ^ (u32(u.frame) * 26699u)) | 1u;
@@ -3008,6 +3050,9 @@
       if (ITEMN > 0) {                                             // DROPPED ITEMS — hovering, spinning, world-scale voxels, depth-tested against the scene
         let ib = textureLoad(irrF, vec2<i32>(gid.xy), 0).b;
         var bestT = select(1e9, ib, ib > 0.0);
+        var waterT = -1.0;                                           // primary hit is a WATER surface → its distance; a drop beyond it is UNDERWATER and composites THROUGH the surface (user: see the fish)
+        var waterCol = col;                                          // the shaded surface color (body + sheen + glitter) — what the underwater hit blends toward with depth
+        if (face == 6u && ib > 0.0) { waterT = ib; bestT = ib + 48.0; }   // extend the occlusion bound into the water — same 48-vox see-through range as the translucent bed
         let ndc3 = (px / u.res) * 2.0 - 1.0;
         let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));
         let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, 64);             // JS COMPACTS live creatures into consecutive slots from 9 and passes the count — the loop never wastes pixels on empty slots (the fixed 64 loop tanked fps over busy water)
@@ -3089,6 +3134,9 @@
                 } else {                                             // dropped items keep the flat raw-palette look
                   let shade = 0.45 + 0.55 * max(dot(nw, u.sunDir), 0.0);
                   col = cell.rgb * shade * (0.12 + 0.88 * dayScale());
+                }
+                if (waterT > 0.0 && bestT > waterT) {                // the hit sits UNDER the water surface → seen THROUGH it: blend toward the shaded surface color, fading with swim depth (matches the translucent-bed law)
+                  col = mix(waterCol, col, 0.55 * exp(-(bestT - waterT) * 0.03));
                 }
               }
               break;
@@ -3341,6 +3389,7 @@
   // view clamp guarantees only rect-interior terrain is ever traced.
   let xStripPending = -1;                              // grid x of a repacked strip awaiting its scatter dispatch
   let genJob = null;                                   // the ONE background generator — grows rect one 8-voxel band at a time
+  let genMs = 0, genBands = 0, genSpinMs = 0;          // streaming-gen telemetry (__vb.gen()): main-thread ms in stepShifts, completed bands, ms spent merely waiting on the pool
   function rectTarget() {                              // where rect should reach: view distance + margin around the player, inside the window
     const R = Math.min(HALF, renderDist + 96);
     return { xlo: Math.max(winOX, (Math.floor((P.x - R) / 8)) * 8), xhi: Math.min(winOX + WX, (Math.ceil((P.x + R) / 8)) * 8),
@@ -3353,65 +3402,78 @@
   function bandSpec(r) {                               // the most urgent deficient side of rectangle r vs the view target
     const t = rectTarget();
     const cand = [];
-    if (r.xlo > t.xlo) cand.push(['xlo', P.x - r.xlo]);
-    if (r.xhi < t.xhi) cand.push(['xhi', r.xhi - P.x]);
-    if (r.zlo > t.zlo) cand.push(['zlo', P.z - r.zlo]);
-    if (r.zhi < t.zhi) cand.push(['zhi', r.zhi - P.z]);
+    if (r.xlo > t.xlo) cand.push(['xlo', P.x - r.xlo, r.xlo - t.xlo]);
+    if (r.xhi < t.xhi) cand.push(['xhi', r.xhi - P.x, t.xhi - r.xhi]);
+    if (r.zlo > t.zlo) cand.push(['zlo', P.z - r.zlo, r.zlo - t.zlo]);
+    if (r.zhi < t.zhi) cand.push(['zhi', r.zhi - P.z, t.zhi - r.zhi]);
     if (!cand.length) return null;
     cand.sort((a, b) => a[1] - b[1]);                  // the side the player is closest to outrunning goes first
     const side = cand[0][0];
-    if (side === 'zlo') return { side, x0: r.xlo, x1: r.xhi, z0: r.zlo - 8, z1: r.zlo };
-    if (side === 'zhi') return { side, x0: r.xlo, x1: r.xhi, z0: r.zhi, z1: r.zhi + 8 };
-    if (side === 'xlo') return { side, x0: r.xlo - 8, x1: r.xlo, z0: r.zlo, z1: r.zhi };
-    return { side, x0: r.xhi, x1: r.xhi + 8, z0: r.zlo, z1: r.zhi };
+    // ── ADAPTIVE THICKNESS ── barely behind → an 8-band (lowest latency); far behind → up to 32 in one region. One 32-thick
+    // region is MUCH cheaper than four 8-bands: a tree/rock spanning ~50 voxels re-iterates its whole sparse model in every
+    // band that clips it, and the per-band fixed costs (river gather, brick rebuild+upload, blit rounds) amortize 4×.
+    const th = Math.max(8, Math.min(32, cand[0][2]));  // deficits are 8-aligned, so th is too
+    if (side === 'zlo') return { side, th, x0: r.xlo, x1: r.xhi, z0: r.zlo - th, z1: r.zlo };
+    if (side === 'zhi') return { side, th, x0: r.xlo, x1: r.xhi, z0: r.zhi, z1: r.zhi + th };
+    if (side === 'xlo') return { side, th, x0: r.xlo - th, x1: r.xlo, z0: r.zlo, z1: r.zhi };
+    return { side, th, x0: r.xhi, x1: r.xhi + th, z0: r.zlo, z1: r.zhi };
   }
-  function* genBandGen() {                             // grow rect by ONE band on the most urgent side, then finish
+  function* genBandGen() {                             // grow rect by ONE band (8-32 thick, see bandSpec) on the most urgent side, then finish
     const s = bandSpec(rect);
     if (!s) return;
     if (poolOk) poolRegion(s.x0, s.x1, s.z0, s.z1);    // queue the CURRENT band ahead of the next-band prefetch below (usually already in flight)
     { const nr = { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi };   // PREFETCH the next band while this one fills
-      if (s.side === 'zlo') nr.zlo -= 8; else if (s.side === 'zhi') nr.zhi += 8; else if (s.side === 'xlo') nr.xlo -= 8; else nr.xhi += 8;
+      if (s.side === 'zlo') nr.zlo -= s.th; else if (s.side === 'zhi') nr.zhi += s.th; else if (s.side === 'xlo') nr.xlo -= s.th; else nr.xhi += s.th;
       const ns = bandSpec(nr);
       if (ns) { if (poolOk) poolRegion(ns.x0, ns.x1, ns.z0, ns.z1); else reqRows(ns.x0, ns.x1, ns.z0, ns.z1); }
     }
     if (s.side === 'zlo' || s.side === 'zhi') {
       yield* genRegionThreaded(s.x0, s.x1, s.z0, s.z1);
-      const g0 = gwrap(s.z0, WZ);
       rebuildBricksW(s.x0, s.x1, s.z0, s.z1);
       yield;
       while (xStripPending >= 0) { yield; }            // ⚠ ORDERING: a pending x-strip scatter holds a PRE-band snapshot of these very rows (its "stale, outside rect" corner).
       // Uploading now would queue BEFORE that scatter executes — the scatter then stomps this fresh corner with stale wrapped
       // terrain (underground stone rendered as floating grey boxes; CPU W stays correct, so only F5 cured it). Wait it out first.
-      device.queue.writeBuffer(worldBuf, g0 * WX * WY, W.buffer, g0 * WX * WY, 8 * WX * WY);   // z-bands are contiguous grid rows
+      for (const [ga, gb] of splitWrap(s.z0, s.z1, WZ))   // z-bands are contiguous grid rows; a >8-thick band may cross the toroidal seam → write per contiguous segment
+        device.queue.writeBuffer(worldBuf, ga * WX * WY, W.buffer, ga * WX * WY, (gb - ga) * WX * WY);
       uploadBricks();
       if (s.side === 'zlo') rect.zlo = s.z0; else rect.zhi = s.z1;
+      genBands += s.th >> 3;
     } else {
       yield* genRegionThreaded(s.x0, s.x1, s.z0, s.z1);
-      const g0 = gwrap(s.x0, WX);
       rebuildBricksW(s.x0, s.x1, s.z0, s.z1);
       yield;
-      while (xStripPending >= 0) { yield; }            // one scatter in flight at a time
-      let i = 0;                                       // x-bands are strided — repack the full column strip into staging (stale parts are outside rect, harmless)
-      const zStride = (WX * WY) >> 2, yStride = WX >> 2, gw = g0 >> 2;
-      for (let q = 0; q < 8; q++) {
-        for (let z = (WZ * q) >> 3; z < (WZ * (q + 1)) >> 3; z++) { const rw = gw + z * zStride;
-          for (let y = 0; y < WY; y++) { const sw = rw + y * yStride; stag[i++] = W32[sw]; stag[i++] = W32[sw + 1]; } }
-        yield;
+      for (let sub = 0; sub < s.th; sub += 8) {        // the scatter path is 8 columns wide — a thick band streams its strips through it sequentially
+        while (xStripPending >= 0) { yield; }          // one scatter in flight at a time (also: the shared stag buffer must be consumed before repacking)
+        const g0 = gwrap(s.x0 + sub, WX);
+        let i = 0;                                     // x-bands are strided — repack the full column strip into staging (stale parts are outside rect, harmless)
+        const zStride = (WX * WY) >> 2, yStride = WX >> 2, gw = g0 >> 2;
+        for (let q = 0; q < 8; q++) {
+          for (let z = (WZ * q) >> 3; z < (WZ * (q + 1)) >> 3; z++) { const rw = gw + z * zStride;
+            for (let y = 0; y < WY; y++) { const sw = rw + y * yStride; stag[i++] = W32[sw]; stag[i++] = W32[sw + 1]; } }
+          yield;
+        }
+        device.queue.writeBuffer(stagBuf, 0, stag);
+        device.queue.writeBuffer(scatBuf, 0, new Uint32Array([g0, 0, 0, 0]));
+        xStripPending = g0;
       }
-      device.queue.writeBuffer(stagBuf, 0, stag);
-      device.queue.writeBuffer(scatBuf, 0, new Uint32Array([g0, 0, 0, 0]));
-      xStripPending = g0;
       uploadBricks();
       if (s.side === 'xlo') rect.xlo = s.x0; else rect.xhi = s.x1;
+      genBands += s.th >> 3;
     }
   }
   function stepShifts() {
     if (ED.on) return;                                 // the asset-editor world is FROZEN — no window shifts, no worldgen, nothing to relight the hidden forest
-    let moved = false;                                 // the origin slides INSTANTLY (32-aligned for L2 wrap) — wrapped rows simply leave the rect
-    while (P.x - (winOX + HALF) >= 32) { winOX += 32; moved = true; }
-    while (P.x - (winOX + HALF) <= -32) { winOX -= 32; moved = true; }
-    while (P.z - (winOZ + HALF) >= 32) { winOZ += 32; moved = true; }
-    while (P.z - (winOZ + HALF) <= -32) { winOZ -= 32; moved = true; }
+    if (!Number.isFinite(P.x) || !Number.isFinite(P.z) || !Number.isFinite(P.y)) {   // ── FREEZE GUARD ── a non-finite position spins the window-shift loops below FOREVER (Infinity never catches up) → a permanent hard freeze needing a reload. Recover to the window centre instead of hanging (user: "sometimes the game freezes" while walking).
+      P.x = winOX + HALF + 0.5; P.z = winOZ + HALF + 0.5; P.vy = P.hvx = P.hvz = 0;
+      P.y = Math.max(hmap[gwrap(Math.floor(P.x), WX) + gwrap(Math.floor(P.z), WZ) * WX], WL) + EYE;
+      console.warn('[vb] non-finite player position — recovered to window centre (was a freeze)');
+    }
+    let moved = false, guard = 0;                      // the origin slides INSTANTLY (32-aligned for L2 wrap) — wrapped rows simply leave the rect; the ±4096 cap is a backstop so a pathological coordinate can never lock the frame loop
+    while (P.x - (winOX + HALF) >= 32 && guard++ < 4096) { winOX += 32; moved = true; }
+    while (P.x - (winOX + HALF) <= -32 && guard++ < 4096) { winOX -= 32; moved = true; }
+    while (P.z - (winOZ + HALF) >= 32 && guard++ < 4096) { winOZ += 32; moved = true; }
+    while (P.z - (winOZ + HALF) <= -32 && guard++ < 4096) { winOZ -= 32; moved = true; }
     if (moved) {
       rect.xlo = Math.max(rect.xlo, winOX); rect.xhi = Math.min(rect.xhi, winOX + WX);
       rect.zlo = Math.max(rect.zlo, winOZ); rect.zhi = Math.min(rect.zhi, winOZ + WZ);
@@ -3425,9 +3487,10 @@
     const t0 = performance.now();
     while (performance.now() - t0 < budget) {          // chain bands back-to-back — no budget goes unused
       if (!genJob) { if (!needGen()) break; genJob = genBandGen(); }
-      if (genJob.next().done) genJob = null;
-      if (poolWait) break;                             // the band is cooking on the worker pool — don't burn the budget on empty spins
+      if (genJob.next().done) genJob = null;           // (genBands counts 8-band equivalents inside genBandGen — a thick band scores its true width)
+      if (poolWait) { genSpinMs += performance.now() - t0; break; }   // the band is cooking on the worker pool — don't burn the budget on empty spins
     }
+    genMs += performance.now() - t0;
   }
   function recenter(x, z) {                            // teleport-scale move: rebuild a starter square, the rest streams in
     loadEl.classList.remove('hidden'); loadMsgEl.textContent = 'regenerating forest…';
@@ -3789,6 +3852,7 @@
   // then after the loop the NEAREST are copied to the real slots. A fish right in front of you always renders; a far,
   // fog-bound butterfly is the one dropped. Allocated ONCE — never per frame.
   const EMIT_CAP = 216, emitBuf = new Float32Array(EMIT_CAP * 16), emitDp = new Float64Array(EMIT_CAP), emitIdx = new Int32Array(EMIT_CAP);
+  let fishSchoolSeq = 0;                                // rolling id handed to each new fish school so same-school mates recognise each other (3-6 per school; ~28% of fish stay lone)
   // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
   // Worms animate their crawl (re-stamping the current frame) while moving + freeze on a pause; ducks are a single rigid pose floating at a fixed waterline. A creature re-stamps only when its cell / facing / frame changes, so a still one fully converges to crisp static lighting.
   let WORM_STAMP = null, DUCK_STAMP = null, DUCKB_STAMP = null;   // [frame][orient0..3] → array of [dx,dy(up),dz,palId]; built lazily once the frames + palette exist
@@ -4473,7 +4537,8 @@
     lockEl.classList.add('hidden');                    // never show the ESC menu under the game-over screen
     try { document.exitPointerLock(); } catch (e) {}
   };
-  $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); respawn(); lockEl.classList.remove('hidden'); });
+  $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); if (ED.on) edExit();   // NEVER respawn in the asset editor (user) — force-exit it, and lock straight back into the GAME rather than the menu, so a respawn-click can't land on the editor button
+    respawn(); tryLock(); });
   let tday = 0.34, cycleSpeed = 1, godRays = true, vsyncOn = false;   // day/night cycle: 20-min day at 1x; v-sync off by default (pause-time removed — user)
   let moonDay = 4;                                     // moon PHASE day counter — starts at 4/8 = full moon; each in-game day advances the phase
   addEventListener('wheel', (e) => {                   // scroll = cycle hand slots; ALT + scroll = cycle speed (sensitive: x1.6 per notch)
@@ -4855,7 +4920,20 @@
     flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
     snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT }; },
-    fish() { const o = []; for (let j = 244; j < 260; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), spdT: +(B.spdT || 0).toFixed(1), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)) }); }
+    worldDump(wx0, wz0, n) { const out = new Uint8Array(n * n * WY); let k = 0;   // raw voxel block dump (base64) — lets a test DIFF two builds voxel-by-voxel
+      for (let z = wz0; z < wz0 + n; z++) for (let x = wx0; x < wx0 + n; x++) { const b9 = gwrap(z, WZ) * WX * WY + gwrap(x, WX);
+        for (let y = 0; y < WY; y++) out[k++] = W[b9 + y * WX]; }
+      let s9 = ''; for (let i = 0; i < out.length; i += 32768) s9 += String.fromCharCode.apply(null, out.subarray(i, Math.min(i + 32768, out.length)));
+      return btoa(s9); },
+    worldHash(wx0, wz0, n) { let h9 = 0x811c9dc5;      // FNV-ish hash of an n×WY×n world block (world coords) — proves a gen change is bit-identical
+      for (let z = wz0; z < wz0 + n; z++) for (let y = 0; y < WY; y++) { const b9 = gwrap(z, WZ) * WX * WY + y * WX;
+        for (let x = wx0; x < wx0 + n; x++) { h9 = (Math.imul(h9 ^ W[b9 + gwrap(x, WX)], 16777619)) >>> 0; } }
+      return h9; },
+    gen() { const t = rectTarget(); return { bands: genBands, ms: Math.round(genMs), spinMs: Math.round(genSpinMs), fps: Math.round(fpsEma),
+      deficit: { xlo: rect.xlo - t.xlo, xhi: t.xhi - rect.xhi, zlo: rect.zlo - t.zlo, zhi: t.zhi - rect.zhi },   // how far the built rect lags its target on each side (0 = fully caught up)
+      pool: poolOk, q: poolQueue.length, busy: genPool ? genPool.filter((w) => w.busyId).length : 0 }; },   // streaming-gen telemetry tap
+    fish() { const o = []; const bodyClip = (B) => { const hx = Math.sin(B.th), hz = Math.cos(B.th), ay = Math.floor(B.y); for (const a of [5, 2.5, 0, -2.5, -5]) { const bx = Math.floor(B.x + hx * a), bz = Math.floor(B.z + hz * a); for (let yy = ay - 1; yy <= ay + 2; yy++) if (solid(bx, yy, bz)) return true; } return false; };
+      for (let j = 244; j < 260; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)) }); }
       return { species: FISHES.map((f) => f.name + '(' + f.n + 'f@' + f.item0 + ')'), live: o }; },   // fish test tap
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL,
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
@@ -5121,7 +5199,17 @@
     P.x = cine.baseX; P.z = cine.baseZ;                 // position LOCKED — no flythrough
     P.y = cine.baseY + Math.sin(t * 0.31) * 1.05;       // one slow breath of vertical drift
   };
-  function tick(now) {
+  let tickReq = false, tickErrN = 0;                   // freeze forensics: did THIS frame schedule the next one yet / how many frames have thrown
+  function tick(now) {                                 // an uncaught exception used to kill the loop = PERMANENT FREEZE (nothing requeues rAF). Now it's logged once with its stack (__vbErr) and the loop survives.
+    try { tickBody(now); }
+    catch (e) {
+      tickErrN++;
+      if (tickErrN <= 5 || tickErrN % 300 === 0) vbNoteErr('tick exception #' + tickErrN, e);
+      if (!tickReq && tickErrN < 3600) requestAnimationFrame(tick);   // keep the game alive on a transient error; a solid minute of failing frames gives up (something is truly broken)
+    }
+  }
+  function tickBody(now) {
+    tickReq = false;
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
     fpsEma = fpsEma * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
 
@@ -5214,7 +5302,7 @@
       snowFallAcc += snowFallV * dt;
       if (snowOn && now > snowEndT) { snowOn = false; snowNextT = now + 600000; snowBtnSync(); }   // a snow EVENT lasts 60 s…
       else if (!snowOn && now > snowNextT) { snowOn = true; snowEndT = now + 60000; snowBtnSync(); }   // …then waits 10 min for the next (first one is 5 min after refresh)
-      freezeK += ((snowOn ? 1 : 0) - freezeK) * (1 - Math.exp(-dt / 8));                     // lakes freeze over ~25 s and thaw back just as gently
+      freezeK = snowOn ? Math.min(1, freezeK + dt / 5) : Math.max(0, freezeK - dt / 5);       // lakes FREEZE over 5 s once the snow starts (user), and thaw back over 5 s when it stops — a steady linear ramp, not the old ~25 s ease
       const nowSolid = freezeK > 0.6;
       if (nowSolid !== iceSolid) { iceSolid = nowSolid; solidTab[WATER_T] = nowSolid ? 1 : 0;
         if (nowSolid && waterAt(Math.floor(P.x), Math.floor(P.y + 2), Math.floor(P.z))) { P.y = WL + 1.5; P.vy = 0; } } }
@@ -5834,7 +5922,7 @@
       const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
       const hd2 = ((B.kind | 0) === 0 || (B.kind | 0) === 2 || (B.kind | 0) === 6) && B.hcx !== undefined ? (B.hx - P.x) * (B.hx - P.x) + (B.hz - P.z) * (B.hz - P.z) : dp2;
       const far = hd2 > rdK * rdK;                     // butterflies (and fish) judge by their HOME, everything else by where it is
-      if (!B.init || far || (B.trap > 12 && (B.kind < 3 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; but a duck/lily wedged ON real water NEVER teleports (the unstick frees it), only if it's off-water
+      if (!B.init || far || (B.trap > 12 && (B.kind < 3 || B.kind === 6 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; a duck/lily wedged ON real water NEVER teleports (the unstick frees it), but a FISH sealed in a rock pocket the escape can't solve does (respawns in open water)
           B.x <= rect.xlo + 4 || B.x >= rect.xhi - 4 || B.z <= rect.zlo + 4 || B.z >= rect.zhi - 4 ||   // the window recentred/shrank under it — this ground is stale garbage, leave it
           (isBaby && (B.x - mom5.x) * (B.x - mom5.x) + (B.z - mom5.z) * (B.z - mom5.z) > 40 * 40) ||   // a duckling stranded from its (recycled) mother rejoins her
           ((B.kind === 3 || B.kind === 4 || B.kind === 6) && !isBaby && ((frame + wk) & 63) === 0 && !bfWater(B.x, B.z)) ||   // recycle ONLY a DUCK/LILY/FISH genuinely OFF real water (dry ravine/land after a recenter) — NOT a perched cardinal (kind 5, never on water) and NOT one merely near a shore
@@ -5871,6 +5959,7 @@
             sx = L8.x + (Math.random() - 0.5) * 30; sz = L8.z + (Math.random() - 0.5) * 30;
             hcx = Math.floor(sx / FLY_CELL); hcz = Math.floor(sz / FLY_CELL);   // give it a home cell so the butterfly LEASH applies and it stays over its water
           } else if (wantK === 6) {                    // FISH: home is a water spot (lakes AND rivers — the same census the dragonfly flies over), body UNDER the surface
+            if (!waterSpots.length) break;             // the census can empty waterSpots THIS frame, after nFish was computed from last frame's — a `% 0` here made `L9.x` throw (this was a permanent game-freeze before the tick wrapper)
             const L9 = waterSpots[(wk + tries) % waterSpots.length];
             sx = L9.x + (Math.random() - 0.5) * 24; sz = L9.z + (Math.random() - 0.5) * 24;
             hcx = Math.floor(sx / FLY_CELL); hcz = Math.floor(sz / FLY_CELL);   // a home cell → the leash keeps it in its pool, the recycle judges by home like a butterfly's
@@ -5908,8 +5997,14 @@
         if (!placed) { if (B.sCells) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
         if (wantK === 0 || wantK === 2 || wantK === 6) { B.hx = sx7; B.hz = sz7; B.hcx = hcx; B.hcz = hcz; } else { B.hcx = undefined; }
         B.dfly = (wantK === 0 && isDfly);              // the strip + frame count key off this; everything else about the creature is butterfly
-        if (wantK === 6) { B.spd = 5; B.spdT = 4 + Math.random() * 6; B.spdRe = 0; B.dT = 0.3 + Math.random() * 0.5; B.dRe = 0; B.vyS = 0; B.animClk = Math.random() * 40;   // FISH: burst-glide state + desynced tail-beat
-          B.fsp = wk % Math.max(1, FISHES.length); }   // species fixed by SLOT (like the songbirds) — an exact even split that never drifts as fish recycle
+        if (wantK === 6) { B.spd = 18; B.spdT = 15 + Math.random() * 10; B.spdRe = 0; B.chRe = 0; B.dT = 0.3 + Math.random() * 0.5; B.dRe = 0; B.animClk = Math.random() * 40; B.cx = B.x; B.cy = B.y; B.cz = B.z;   // FISH: start at cruise speed + desynced tail-beat; chRe=0 → pick a channel heading on frame 1; cx/cy/cz = last body-clear pose (terrain hitbox revert)
+          B.fsp = wk % Math.max(1, FISHES.length);     // species fixed by SLOT (like the songbirds) — an exact even split that never drifts as fish recycle
+          // ── SCHOOL ── join a same-species school that still has room (spawning right beside it), else start a fresh school of 3-6, else swim alone (~28%)
+          B.school = -1; B.schoolCap = 0;
+          for (let m = 244; m < 260; m++) { const O = wbf[m]; if (O === B || !O.init || (O.kind | 0) !== 6 || O.school < 0 || O.fsp !== B.fsp) continue;
+            let cnt = 0; for (let q = 244; q < 260; q++) { const Q = wbf[q]; if (Q.init && Q.school === O.school) cnt++; }
+            if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
+          if (B.school < 0 && Math.random() > 0.28) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 3 + (Math.random() * 4 | 0); } }   // 3-6 per school
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
@@ -5976,29 +6071,55 @@
             B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : ((pF && nF) ? (B.om >= 0 ? 2.6 : -2.6) : (B.om >= 0 ? 3.4 : -3.4)));
           }
         }
-      } else if (B.kind === 6) {                       // ── FISH ── a burst-glide swimmer under the surface: kick up to a dart, then coast down — never a constant cruise
-        B.animClk = (B.animClk || 0) + dt * (0.55 + (B.spd || 6) / 22);   // tail-beat rides the swim speed (≈24 fps at cruise, faster in a dart, lazy in a glide)
+      } else if (B.kind === 6) {                       // ── FISH ── intelligent swimmer (user): follows the open-water CHANNEL smoothly, schools, avoids terrain walls, and DOUBLES speed to flee the player
+        const CRZ = 22;                                // reference cruise → 24 fps tail-beat; player-close flee is DOUBLE this (44 → 48 fps)
+        B.animClk = (B.animClk || 0) + dt * (B.spd || CRZ) / CRZ;   // tail-beat scales with speed: 24 fps cruising, 48 fps at double
+        const ay = Math.floor(B.y);
+        const fishOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist;   // clear, deep-enough water with NO solid across the body height at the swim depth
+          if (!bfWater(ax, az) || WL - bfBed(ax, az) < 3) return false;
+          const fx = Math.floor(ax), fz = Math.floor(az);
+          return !solid(fx, ay - 1, fz) && !solid(fx, ay, fz) && !solid(fx, ay + 1, fz) && !solid(fx, ay + 2, fz); };
+        const reachOf = (th6, maxD) => { let r = 0; for (let d = 5; d <= maxD; d += 4) { if (fishOK(th6, d)) r = d; else break; } return r; };   // how far the open water runs along a heading — the compass for smooth channel-following
         const pdx = B.x - P.x, pdz = B.z - P.z, pdy = B.y - (P.y + 2);
-        if (pdx * pdx + pdz * pdz + pdy * pdy < 24 * 24) {   // player too close — BOLT: a hard turn dead away and a full-speed sprint
-          const away = Math.atan2(pdx, pdz);
-          const dthF = Math.atan2(Math.sin(away - B.th), Math.cos(away - B.th));
-          B.omT = Math.max(-6.5, Math.min(6.5, dthF * 5));
-          B.spdT = 44; B.spdRe = tb3 + 1.1 + Math.random() * 0.7;   // the sprint holds ~1 s beyond the scare, then the pace re-rolls
-          B.dT = 0.7 + Math.random() * 0.25;           // and it dives for the deeper water as it goes
-        } else if (tb3 > (B.spdRe || 0)) {             // DYNAMIC PACE (user: slow to fast, fast to slow): mostly lazy cruise, sometimes a firm swim, occasionally an unprovoked dart
-          const r9 = Math.random();
-          B.spdT = r9 < 0.5 ? 2.5 + Math.random() * 4 : (r9 < 0.85 ? 8 + Math.random() * 8 : 22 + Math.random() * 14);
-          B.spdRe = tb3 + 1.2 + Math.random() * 2.8;
+        if (pdx * pdx + pdz * pdz + pdy * pdy < 28 * 28) {   // ── FLEE ── player got close → swim DOUBLE speed, angling away along the CLEAREST open water (never bolt into a bank)
+          const away = Math.atan2(pdx, pdz); let bo = 0, bs = -1e9;
+          for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.7, -1.7, 2.5, -2.5]) { const sc = reachOf(away + off, 30) - Math.abs(off) * 6; if (sc > bs) { bs = sc; bo = off; } }
+          const fth = away + bo;
+          B.omT = Math.max(-6, Math.min(6, Math.atan2(Math.sin(fth - B.th), Math.cos(fth - B.th)) * 5));
+          B.spdT = CRZ * 2; B.spdRe = tb3 + 1.0 + Math.random() * 0.6; B.dT = 0.6 + Math.random() * 0.3;   // ← DOUBLE speed when the player is close (user)
+        } else {                                       // ── CRUISE ── FOLLOW THE CHANNEL: re-aim (~every 1.4 s) at the heading with the longest clear water reach, heavy straight-bias → smooth river/lake runs, gentle bends, no zig-zag
+          if (tb3 > (B.chRe || 0)) { let bo = 0, bs = -1e9;
+            for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.15, -1.15]) { const sc = reachOf(B.th + off, 46) - Math.abs(off) * 7; if (sc > bs) { bs = sc; bo = off; } }
+            B.chTh = B.th + bo; B.chRe = tb3 + 1.2 + Math.random() * 1.4; }
+          let want = B.chTh !== undefined ? B.chTh : B.th;
+          if (B.school >= 0) {                         // schooling BLENDS with the channel: mostly stick with the group, but bend toward open water so the school never piles into a bank
+            let cx = 0, cz = 0, hx = 0, hz = 0, sxx = 0, szz = 0, n = 0;
+            for (let m = 244; m < 260; m++) { const O = wbf[m]; if (O === B || !O.init || O.school !== B.school) continue;
+              const dxs = O.x - B.x, dzs = O.z - B.z, d2 = dxs * dxs + dzs * dzs; if (d2 > 42 * 42) continue;
+              cx += O.x; cz += O.z; hx += Math.sin(O.th); hz += Math.cos(O.th); n++;
+              if (d2 < 7 * 7 && d2 > 0.01) { const w = 7 - Math.sqrt(d2); sxx -= dxs * w; szz -= dzs * w; } }
+            if (n > 0) { const gx = (cx / n - B.x) + sxx * 1.6, gz = (cz / n - B.z) + szz * 1.6;
+              const sth = (gx * gx + gz * gz > 1) ? Math.atan2(gx, gz) : Math.atan2(hx, hz);
+              want = Math.atan2(0.68 * Math.sin(sth) + 0.32 * Math.sin(want), 0.68 * Math.cos(sth) + 0.32 * Math.cos(want)); } }
+          B.omT = Math.max(-2.2, Math.min(2.2, Math.atan2(Math.sin(want - B.th), Math.cos(want - B.th)) * 1.9));   // gentle, eased turns toward the channel/school — SMOOTH, not twitchy
+          if (tb3 > (B.spdRe || 0)) { B.spdT = 15 + Math.random() * 13; B.spdRe = tb3 + 1.4 + Math.random() * 2.6; }   // dynamic-but-steady cruise (15-28); the fast state is clearly the player-flee (44)
         }
-        B.spd = (B.spd || 6) + (B.spdT - (B.spd || 6)) * (1 - Math.exp(-((B.spdT || 0) > (B.spd || 6) ? 6 : 1.4) * dt));   // asymmetric ease: the kick is FAST, the bleed-off is slow — dart, then coast
-        if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * (B.spd > 16 ? 1.1 : 2.4); B.tRe = tb3 + 0.7 + Math.random() * 2.0; }   // free y-axis wander: tight lazy turns at cruise, straighter lines at speed
+        B.spd = (B.spd || CRZ) + ((B.spdT || CRZ) - (B.spd || CRZ)) * (1 - Math.exp(-((B.spdT || 0) > (B.spd || CRZ) ? 6 : 1.4) * dt));   // asymmetric ease: the kick to double is FAST, the bleed-off slow — dart, then coast
         if (tb3 > (B.dRe || 0)) { B.dT = 0.25 + Math.random() * 0.6; B.dRe = tb3 + 2 + Math.random() * 4; }   // depth wander — a new hold-depth every few seconds
-        const fishOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist;
-          return bfWater(ax, az) && WL - bfBed(ax, az) >= 3; };   // ahead must be REAL water with body room under the surface
-        if (!fishOK(B.th, 7) || !fishOK(B.th, 3.5)) {  // shore/shelf ahead — commit to a firm turn toward the open side
-          const pF = fishOK(B.th + 1.1, 6), nF = fishOK(B.th - 1.1, 6);
-          B.omT = pF && !nF ? 3.2 : (nF && !pF ? -3.2 : (B.om >= 0 ? 3.2 : -3.2));
-          B.spd = Math.min(B.spd, 9);                  // and shed the dart speed — never slam the bank
+        { let rx = 0, rz = 0;                           // ── BANK REPULSION ── the LONG body must stay clear of terrain even when the centre is in water. Sum a push away from any shore/rock within 9 vox at the swim depth, then STEER and gently SLIDE toward open water. In a river the two banks cancel when the fish is centred, so it only acts when the body drifts toward a side (this is what frees a fish already resting its nose/tail in a bank — steering alone can't).
+          for (let k = 0; k < 8; k++) { const sa = Math.sin(k * 0.7854), ca = Math.cos(k * 0.7854);
+            for (let d = 3.5; d <= 9; d += 2.75) { const qx = B.x + sa * d, qz = B.z + ca * d;
+              if (WL - bfBed(qx, qz) < 3 || solid(Math.floor(qx), ay, Math.floor(qz)) || solid(Math.floor(qx), ay + 1, Math.floor(qz))) { rx -= sa * (10 - d); rz -= ca * (10 - d); break; } } }
+          if (rx * rx + rz * rz > 0.3) { const rl = Math.hypot(rx, rz), nrx = rx / rl, nrz = rz / rl;
+            if (bfWater(B.x + nrx * 2, B.z + nrz * 2) && WL - bfBed(B.x + nrx * 2, B.z + nrz * 2) >= 3) { B.x += nrx * Math.min(7, rl) * dt * 1.9; B.z += nrz * Math.min(7, rl) * dt * 1.9; }   // slide toward open water, but only if that step is itself clear (never shove into the opposite bank)
+            const dr = Math.atan2(Math.sin(Math.atan2(nrx, nrz) - B.th), Math.cos(Math.atan2(nrx, nrz) - B.th));
+            B.omT = Math.max(-5, Math.min(5, B.omT + dr * 2.2)); } }
+        const look = Math.max(12, B.spd * 0.62);       // ── REACTIVE WALL BACKSTOP ── terrain within the speed-scaled lookahead → override toward the clearest heading and slow HARD, so it never bores into a wall whatever the channel/school/flee wanted
+        if (!fishOK(B.th, look) || !fishOK(B.th, 5)) {
+          let bo = 0, bs = -1e9;
+          for (const off of [0, 0.4, -0.4, 0.85, -0.85, 1.4, -1.4, 2.1, -2.1, 3.14159]) { const sc = reachOf(B.th + off, look) - Math.abs(off) * 3.5 - (off * B.om < 0 ? 4 : 0); if (sc > bs) { bs = sc; bo = off; } }
+          B.omT = Math.max(-6.5, Math.min(6.5, (bs < 4 ? (B.om >= 0 ? 3.14159 : -3.14159) : bo) * 3.8));   // no gap anywhere → hard about-face
+          B.spd = Math.min(B.spd, bs < look * 0.5 ? 6 : 12);   // tight gap → crawl; comfortable gap → still shed the dart
         }
       } else {
         if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 4.0; B.tRe = tb3 + 0.4 + Math.random() * 0.8; }
@@ -6022,8 +6143,12 @@
       if (B.kind === 2) {                              // STEP-AWARE crawl: accept the move if the destination surface is land, within a 2-voxel step, and clear at ITS height AND above the body
         const gN = bfSurf(nx5, nz5);
         stepOK = gN > WL + 0.5 && Math.abs(gN - bfSurf(B.x, B.z)) <= 2 && !bfObstW(nx5, gN + 2, nz5) && !bfObstW(nx5, gN + 3, nz5);
-      } else if (B.kind === 6) {                       // FISH: destination must be real water deep enough for a submerged body — never onto a beach shelf or a dry ravine floor (bfObst would see the water voxels themselves as solid, so it is useless here)
-        stepOK = bfWater(nx5, nz5) && WL - bfBed(nx5, nz5) >= 2.5;
+      } else if (B.kind === 6) {                       // ── FISH TERRAIN HITBOX (user) ── the WHOLE BODY (a ~10-vox model) must clear solid, not just the centre point — otherwise the long nose pokes into a wall the centre hasn't reached. Sample nose→tail across the body height; any point in rock/ground/shore rejects the move. NO player hitbox — the fish still passes freely through you.
+        const ay6 = Math.floor(B.y);
+        stepOK = bfWater(nx5, nz5) && WL - bfBed(nx5, nz5) >= 3;   // still in real, deep-enough water at the centre
+        if (stepOK) for (const along of [5, 2.5, 0, -2.5, -4.5]) {   // nose (+5) → tail (−4.5) along the heading
+          const bx6 = Math.floor(nx5 + Hx2 * along), bz6 = Math.floor(nz5 + Hz2 * along);
+          if (solid(bx6, ay6 - 1, bz6) || solid(bx6, ay6, bz6) || solid(bx6, ay6 + 1, bz6) || solid(bx6, ay6 + 2, bz6)) { stepOK = false; break; } }
       } else if (B.kind >= 3) { stepOK = bfWater(nx5, nz5) && bfSky(nx5, WL + 2, nz5)   // ducks + lilies only ever move onto OPEN-SKY REAL water — never onto a dry ravine floor or under a cave roof…
           && (bfOpenW(nx5, nz5) || !bfOpenW(B.x, B.z));  // …and never INTO a narrow gorge/ravine arm (escape moves out of one are always allowed so nothing gets pinned)
         if (B.kind === 3 && stepOK) { const hl = isBaby ? 5.0 : 7.0; stepOK = bfWater(nx5 + Hx2 * hl, nz5 + Hz2 * hl); }   // DUCK HEAD BUFFER (user: 'keep further away, still running into it'): require water WELL ahead (7 vox mom / 5 baby) so it stops with a clear margin, never touching the bank
@@ -6045,12 +6170,13 @@
         B.trap = (B.trap || 0) + dt;                   // blocked (cornered) — count it
         if (B.kind >= 3) {                             // WATER creature blocked at a bank/rock (user: 'still getting stuck against shore/rocks'): don't just TURN — TURNING alone left it grazing corners.
           let bestA = -1, bestReach = -1;              // Actively STEP toward the clearest open water EVERY blocked frame so it physically peels off the bank and can never pin.
+          const ay9 = Math.floor(B.y), fishClear = (px9, pz9) => B.kind !== 6 || (WL - bfBed(px9, pz9) >= 3 && !solid(Math.floor(px9), ay9 - 1, Math.floor(pz9)) && !solid(Math.floor(px9), ay9, Math.floor(pz9)) && !solid(Math.floor(px9), ay9 + 1, Math.floor(pz9)) && !solid(Math.floor(px9), ay9 + 2, Math.floor(pz9)));   // for a fish, "clear" also means deep enough AND no rock across the body at the swim depth
           for (let k9 = 0; k9 < 16; k9++) { const th9 = k9 * 0.3927;
-            const sx9 = B.x + Math.sin(th9) * 1.5, sz9 = B.z + Math.cos(th9) * 1.5;
-            if (!bfWater(sx9, sz9) || !bfSky(sx9, WL + 2, sz9) || (B.kind === 6 && WL - bfBed(sx9, sz9) < 3)) continue;   // this heading's immediate step must land on OPEN-SKY water (deep enough, for a fish)
-            let reach = 1.5;
-            for (let d9 = 3.5; d9 <= 16; d9 += 2.0) { if (bfWater(B.x + Math.sin(th9) * d9, B.z + Math.cos(th9) * d9)) reach = d9; else break; }
-            if (reach > bestReach) { bestReach = reach; bestA = th9; }   // widest contiguous water wins → steer toward the OPEN lake, away from the bank
+            const sx9 = B.x + Math.sin(th9) * 2.5, sz9 = B.z + Math.cos(th9) * 2.5;   // probe a touch further so the fish peels FULLY off the rock, not just onto its edge
+            if (!bfWater(sx9, sz9) || !bfSky(sx9, WL + 2, sz9) || !fishClear(sx9, sz9)) continue;   // this heading's immediate step must land on OPEN-SKY water (deep + rock-free, for a fish)
+            let reach = 2.5;
+            for (let d9 = 4; d9 <= 16; d9 += 2.0) { const rx9 = B.x + Math.sin(th9) * d9, rz9 = B.z + Math.cos(th9) * d9; if (bfWater(rx9, rz9) && fishClear(rx9, rz9)) reach = d9; else break; }
+            if (reach > bestReach) { bestReach = reach; bestA = th9; }   // widest contiguous open water wins → steer toward the OPEN lake, away from the bank/boulder
           }
           if (bestReach > 0) {                         // MOVE toward that water at normal paddle speed + face it + clear trap → never pins, never mercy-recycles
             const mv = spd5 * dt;
@@ -6107,6 +6233,22 @@
       }
       if (B.kind < 2 && B.y < gLoc + 6) B.y = Math.min(gLoc + 6, B.y + 34 * dt);   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline)
       B.y = Math.max(yPrev5 - 30 * dt, Math.min(yPrev5 + 34 * dt, B.y));   // GLOBAL vertical budget: whatever the branches above did, the frame's total climb/descent stays at flutter speed — teleports impossible
+      if (B.kind === 6) {                              // ── FISH TERRAIN HITBOX ── a hard guarantee: never render with the body in terrain. If any part of the long body overlaps solid, RESOLVE it — push the centre out to the nearest clear spot (works WITH the repulsion, not against it); only if there's no clear spot within reach does it fall back to the last clear pose. This is the "hitbox for terrain, not for the player" the user asked for.
+        const bodyClear6 = (cx6, cz6) => { const hx6 = Math.sin(B.th), hz6 = Math.cos(B.th), ay6 = Math.floor(B.y);
+          for (const a6 of [5, 2.5, 0, -2.5, -5]) { const bx6 = Math.floor(cx6 + hx6 * a6), bz6 = Math.floor(cz6 + hz6 * a6);
+            for (let yy = ay6 - 1; yy <= ay6 + 2; yy++) if (solid(bx6, yy, bz6)) return false; } return true; };
+        if (bodyClear6(B.x, B.z)) { B.cx = B.x; B.cy = B.y; B.cz = B.z; }   // clear → remember this pose
+        else {                                                             // clipping → push the centre away from the surrounding terrain to the nearest clear spot
+          let ox6 = 0, oz6 = 0; const ay6 = Math.floor(B.y);
+          for (let k6 = 0; k6 < 8; k6++) { const sa = Math.sin(k6 * 0.7854), ca = Math.cos(k6 * 0.7854);
+            if (solid(Math.floor(B.x + sa * 4), ay6, Math.floor(B.z + ca * 4)) || WL - bfBed(B.x + sa * 4, B.z + ca * 4) < 3) { ox6 -= sa; oz6 -= ca; } }
+          const ol6 = Math.hypot(ox6, oz6);
+          let fixed = false;
+          if (ol6 > 0.01) { const nx6 = ox6 / ol6, nz6 = oz6 / ol6;
+            for (let s6 = 1; s6 <= 8; s6++) { if (bodyClear6(B.x + nx6 * s6, B.z + nz6 * s6)) { B.x += nx6 * s6; B.z += nz6 * s6; B.cx = B.x; B.cy = B.y; B.cz = B.z; fixed = true; break; } } }
+          if (!fixed && B.cx !== undefined) { B.x = B.cx; B.y = B.cy; B.z = B.cz; B.trap = (B.trap || 0) + dt; }   // nowhere clear nearby → last-resort revert; count it so a truly sealed-in fish recycles
+        }
+      }
       if (B.kind < 2 && (bfObst(B.x, B.y, B.z) || bfRoofed(B.x, B.y, B.z))) {   // under a roof (cave/overhang) — steer OUT horizontally (eased, never climb into it); count toward a recycle. Worms/ducks don't care about roofs.
         B.omT = (B.om >= 0 ? 5.0 : -5.0); B.trap = (B.trap || 0) + dt;
       }
@@ -6121,20 +6263,8 @@
       }
       const HxR = Math.sin(B.th), HzR = Math.cos(B.th);   // RENDER yaw — for lilies this spins freely, independent of drift
       let Xw = [HzR, 0, -HxR], Yw = [-HxR, 0, -HzR], Zw = null;   // level frame — Zw = up, right-handed (Yw×Zw = Xw); model −y (the head end) leads
-      if (B.kind === 6) {                              // FISH render frame: FULL 3D — nose pitches with the climb/dive and the body BANKS into turns, so the free y-axis rotation reads as swimming, not a sliding cutout
-        const spdF = Math.max(4, B.spd || 4);
-        const FyF = Math.max(-0.55, Math.min(0.55, (B.vyS || 0) / spdF * 1.5));   // climb/dive attitude from the low-passed vertical speed
-        const flF = Math.hypot(1, FyF);
-        const FF = [HxR / flF, FyF / flF, HzR / flF];  // 3D swim direction (pitch included)
-        const xlF = Math.hypot(FF[0], FF[2]) || 1;
-        const X0 = [FF[2] / xlF, 0, -FF[0] / xlF];
-        const Z0 = [FF[1] * X0[2], FF[2] * X0[0] - FF[0] * X0[2], -FF[1] * X0[0]];   // body-up = F × X0
-        const bankF = Math.max(-0.5, Math.min(0.5, (B.spd || 0) * B.om * 0.014));   // v·ω roll — harder lean the faster the turn
-        const cbF = Math.cos(bankF), sbF = Math.sin(bankF);
-        Xw = [X0[0] * cbF - Z0[0] * sbF, X0[1] * cbF - Z0[1] * sbF, X0[2] * cbF - Z0[2] * sbF];
-        Zw = [Z0[0] * cbF + X0[0] * sbF, Z0[1] * cbF + X0[1] * sbF, Z0[2] * cbF + X0[2] * sbF];
-        Yw = [-FF[0], -FF[1], -FF[2]];                 // tail — right-handed with the above
-      }
+      // FISH (user): the body stays HORIZONTAL — no nose pitch when it changes depth on the y axis — but it still turns
+      // freely off-grid on its heading (yaw). So a fish uses this same level frame; only its swim DIRECTION rotates.
       const nfr = B.kind === 6 ? FISHES[B.fsp || 0].n : (B.kind >= 3 ? 1 : (B.kind === 2 ? WORM_NFRAMES : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES))));
       const fi3 = (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * 24) % nfr)   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
         : Math.floor((tb3 + wk * 0.37) * 24) % nfr;                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
@@ -6256,9 +6386,11 @@
     // V-SYNC OFF: pace frames off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the
     // CPU's frame prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it.
     // When frames get expensive (long view distances), drop to same-frame pacing — pipelining latency reads as input LAG there.
-    if (vsyncOn || document.hidden) { paceWaited = false; requestAnimationFrame(tick); }   // hidden tab always idles via rAF
+    if (vsyncOn || document.hidden) { paceWaited = false; tickReq = true; requestAnimationFrame(tick); }   // hidden tab always idles via rAF
     else { const wait = gpuPrevDone; gpuPrevDone = device.queue.onSubmittedWorkDone(); const ts = performance.now();   // ONE pacing mode — no threshold flip-flop, so gen throughput is CONSISTENT
-      wait.then(() => { waitEma += (Math.min(30, performance.now() - ts) - waitEma) * 0.08; paceWaited = true; tick(performance.now()); }); }
+      tickReq = true;
+      wait.then(() => { waitEma += (Math.min(30, performance.now() - ts) - waitEma) * 0.08; paceWaited = true; tick(performance.now()); },
+        (err) => { vbNoteErr('gpu pacing rejected', err); paceWaited = false; requestAnimationFrame(tick); }); }   // a REJECTED onSubmittedWorkDone (device reset mid-walk) used to end the .then chain silently = PERMANENT FREEZE with no error — fall back to rAF pacing instead; if the device is truly lost, the device.lost banner says so
   }
   tick(performance.now());
 })();
