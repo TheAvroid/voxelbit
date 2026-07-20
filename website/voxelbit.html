@@ -2433,7 +2433,7 @@
     device.queue.writeBuffer(palBuf, 0, f); };
   const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
-  const UF = new Float32Array(1272);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth) → 1272
+  const UF = new Float32Array(1532);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);
@@ -2484,6 +2484,8 @@
       fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
       cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
       misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w spare
+      lifeMot : array<vec4<f32>, 64>,                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
+      lifeCfg : vec4<f32>,                                           // x = life debug view (0 off, 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO), y = trace-injection enabled (0 under ?oldlife → full analytic fallback), z/w spare
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -2747,6 +2749,8 @@
     @group(0) @binding(4) var gAlbedo : texture_storage_2d<rgba8unorm, write>;
     @group(0) @binding(5) var gIrr : texture_storage_2d<rgba16float, write>;
     @group(0) @binding(7) var<storage, read> wbricks : array<u32>;   // water-only brick bits — skipW rays stride these
+    @group(0) @binding(8) var slotOut : texture_storage_2d<r32uint, write>;   // ── DYNAMIC LIFE ── per-pixel creature id: bits 0-6 = drop slot + 1 (0 = terrain/sky), bits 7-9 = model-space hit axis*2+signBit (composite rebuilds the TRUE rotated normal from it)
+    ${pickWGSL}
     ${DDAW}
     @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;   // 32-voxel SUPER-brick occupancy (window origin is 32-aligned, so off>>5 is exact)
     const SNV : u32 = ${SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits
@@ -2761,8 +2765,41 @@
       return t * (r * cos(a)) + b * (r * sin(a)) + n * sqrt(max(1.0 - r2, 0.0));
     }
     fn ign(p : vec2<f32>) -> f32 { return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y)); }
+    var<workgroup> wgVis : array<u32, 64>;               // ── DYNAMIC LIFE tile cull ── same 8×8-tile drop-slot visibility the composite uses: one thread tests one slot's bounding sphere against the tile's view cone
     @compute @workgroup_size(8, 8)
-    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocation_index) lidx : u32, @builtin(workgroup_id) wgid : vec3<u32>) {
+      if (ITEMN > 0 && lidx < 64u) {                     // (before ANY return — the barrier below must be uniform)
+        var vis = 0u;
+        let diC = i32(lidx);
+        if (diC < clamp(i32(u.pick2Y.w + 0.5), 9, 64)) {
+          let dXv = u.drops[diC * 4 + 1];
+          let dit = i32(dXv.w + 0.5);
+          if (dit >= 1) {
+            let dA = u.drops[diC * 4];
+            let it3 = clamp(dit - 1, 0, ITEMN - 1);
+            if (ITEMD[it3].x >= 1) {
+              let ex2 = vec3<f32>(f32(ITEMD[it3].x), f32(ITEMD[it3].y), f32(ITEMD[it3].z)) * 0.5;
+              let radD = dA.w * (length(ex2) + 1.0);
+              let dlen = length(dA.xyz);
+              if (dlen <= radD + 1.0) { vis = 1u; }
+              else {
+                let tc = vec2<f32>(wgid.xy) * 8.0 + vec2<f32>(4.0);
+                let cdir = normalize(vec3<f32>((tc.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(tc.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
+                var cosT = 1.0;
+                for (var k = 0u; k < 4u; k++) {
+                  let co = tc + vec2<f32>(select(-4.6, 4.6, (k & 1u) != 0u), select(-4.6, 4.6, (k & 2u) != 0u));
+                  let cd = normalize(vec3<f32>((co.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(co.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
+                  cosT = min(cosT, dot(cd, cdir));
+                }
+                let cAng = acos(clamp(dot(dA.xyz / dlen, cdir), -1.0, 1.0));
+                if (cAng <= acos(clamp(cosT, -1.0, 1.0)) + asin(clamp(radD / dlen, 0.0, 1.0)) + 0.01) { vis = 1u; }
+              }
+            }
+          }
+        }
+        wgVis[lidx] = vis;
+      }
+      workgroupBarrier();
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let rd = rayDir(px);
@@ -2854,6 +2891,83 @@
           h.t = fte; h.vox = SNV; h.n = fnn; h.face = fface;
         }
       }
+      // ── DYNAMIC LIFE ── every creature is a rigid voxel MODEL evaluated right here in the primary trace (the proven
+      // snow-flake pattern, generalized): a model-space DDA with the slot's continuous sub-voxel transform. A nearer
+      // creature OVERRIDES the hit, so the sun ray, the AO ray, the glow field, fog, water and the whole SVGF chain
+      // treat it exactly like terrain — real contact AO and accumulated GI, no analytic stand-ins. Nothing is ever
+      // written into any world grid: terrain corruption, stamp clearing and creature-overlap conflicts are impossible
+      // by construction, and motion stays continuous (no grid snapping). Fireflies/sparks/dropped items keep the
+      // composite path (emissive + translucency), as does any creature seen THROUGH a water surface (Beer–Lambert).
+      var cSlot = 0u; var cCell = vec3<f32>(0.0); var cVc = vec3<i32>(0); var cAxis = 0u; var cN = vec3<f32>(0.0, 1.0, 0.0);
+      if (ITEMN > 0 && u.lifeCfg.y > 0.5) {
+        let ndc3 = (px / u.res) * 2.0 - 1.0;
+        let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));   // camera-space twin of rd — the drop transforms live in camera space
+        var bestT = select(1e9, h.t, h.t >= 0.0);
+        let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, 64);
+        for (var di = 4; di < dropN; di++) {                         // 4 = flying cardinal, 9+ = live creatures; 0-3 drops + 5-8 sparks stay analytic
+          if (di >= 5 && di <= 8) { continue; }
+          if (wgVis[di] == 0u) { continue; }
+          if ((u32(u.lifeMot[di].w + 0.5) & 1u) != 0u) { continue; } // analytic-only (firefly / empty)
+          let dXv = u.drops[di * 4 + 1];
+          let dit = i32(dXv.w + 0.5);
+          if (dit < 1) { continue; }
+          let dA = u.drops[di * 4]; let dYv = u.drops[di * 4 + 2]; let dZv = u.drops[di * 4 + 3];
+          let it3 = clamp(dit - 1, 0, ITEMN - 1);
+          let eW = ITEMD[it3].x; let eD = ITEMD[it3].y; let eH = ITEMD[it3].z; let eOff = ITEMD[it3].w;
+          if (eW < 1) { continue; }
+          let vsD = dA.w;
+          let ew2 = f32(eW) * 0.5; let ed2 = f32(eD) * 0.5; let eh2 = f32(eH) * 0.5;
+          let radD = vsD * (sqrt(ew2 * ew2 + ed2 * ed2 + eh2 * eh2) + 1.0);
+          let tcD = dot(dA.xyz, dc3);
+          if (tcD <= 0.0 || tcD - radD > bestT || length(dc3 * tcD - dA.xyz) > radD) { continue; }
+          let roD = vec3<f32>(-dot(dA.xyz, dXv.xyz), -dot(dA.xyz, dYv.xyz), -dot(dA.xyz, dZv.xyz)) / vsD + vec3<f32>(ew2, ed2, eh2);
+          var rdD = vec3<f32>(dot(dc3, dXv.xyz), dot(dc3, dYv.xyz), dot(dc3, dZv.xyz));
+          if (abs(rdD.x) < 1e-6) { rdD.x = 1e-6; }
+          if (abs(rdD.y) < 1e-6) { rdD.y = 1e-6; }
+          if (abs(rdD.z) < 1e-6) { rdD.z = 1e-6; }
+          let invD = 1.0 / rdD;
+          let taD = -roD * invD;
+          let tbD = (vec3<f32>(f32(eW), f32(eD), f32(eH)) - roD) * invD;
+          let tnD = min(taD, tbD); let tfD = max(taD, tbD);
+          let teD = max(max(tnD.x, tnD.y), max(tnD.z, 0.0));
+          let tlD = min(min(tfD.x, tfD.y), tfD.z);
+          if (teD >= tlD) { continue; }
+          var vaxD = 0;
+          if (tnD.y == teD) { vaxD = 1; } if (tnD.z == teD) { vaxD = 2; }
+          var vcD = clamp(vec3<i32>(floor(roD + rdD * (teD + 1e-4))), vec3<i32>(0), vec3<i32>(eW - 1, eD - 1, eH - 1));
+          let istD = vec3<i32>(sign(rdD));
+          var vNxD = (vec3<f32>(vcD + max(istD, vec3<i32>(0))) - roD) * invD;
+          var tHit = teD;
+          var iMapD = eOff + vcD.x + vcD.y * eW + vcD.z * eW * eD;
+          for (var i = 0; i < PICKSTEPS; i++) {
+            let cell = ITEMMAP[u32(iMapD)];
+            if (cell.w > 0.5) {
+              if (tHit * vsD < bestT) {
+                bestT = tHit * vsD;
+                cSlot = u32(di + 1);
+                cCell = cell.rgb; cVc = vcD;
+                var nl = vec3<f32>(0.0);
+                if (vaxD == 0) { nl.x = -f32(istD.x); } else if (vaxD == 1) { nl.y = -f32(istD.y); } else { nl.z = -f32(istD.z); }
+                let nc = dXv.xyz * nl.x + dYv.xyz * nl.y + dZv.xyz * nl.z;
+                cN = normalize(u.right * nc.x + u.up * nc.y + u.fwd * nc.z);   // TRUE rotated world normal — drives the sun ray + AO hemisphere (and the composite, via the axis bits)
+                let sgn = select(0u, 1u, (vaxD == 0 && nl.x > 0.0) || (vaxD == 1 && nl.y > 0.0) || (vaxD == 2 && nl.z > 0.0));
+                cAxis = u32(vaxD) * 2u + sgn;
+              }
+              break;
+            }
+            if (vNxD.x <= vNxD.y && vNxD.x <= vNxD.z) { tHit = vNxD.x; vNxD.x += abs(invD.x); vcD.x += istD.x; iMapD += istD.x; vaxD = 0; }
+            else if (vNxD.y <= vNxD.z) { tHit = vNxD.y; vNxD.y += abs(invD.y); vcD.y += istD.y; iMapD += istD.y * eW; vaxD = 1; }
+            else { tHit = vNxD.z; vNxD.z += abs(invD.z); vcD.z += istD.z; iMapD += istD.z * eW * eD; vaxD = 2; }
+            if (any(vcD < vec3<i32>(0)) || any(vcD >= vec3<i32>(eW, eD, eH))) { break; }
+          }
+        }
+        if (cSlot != 0u) {                                           // the creature IS the primary hit from here on
+          h.t = bestT; h.vox = 0u; h.n = cN;                         // vox 0 → the water/lava id checks below can't misfire
+          if (abs(cN.y) >= abs(cN.x) && abs(cN.y) >= abs(cN.z)) { h.face = select(2u, 3u, cN.y < 0.0); }
+          else if (abs(cN.x) >= abs(cN.z)) { h.face = select(0u, 1u, cN.x < 0.0); }
+          else { h.face = select(4u, 5u, cN.z < 0.0); }              // nearest-axis face: the denoiser's edge tests + a composite fallback; true shading normal comes from the axis bits
+        }
+      }
       var albedo = vec3<f32>(0.0);
       var faceId = 7u; var t = -1.0;
       var sunV = 0.0; var skyV = 0.0;
@@ -2863,7 +2977,8 @@
         if (h.vox == LVT || h.vox == LVB || h.vox == LVR || h.vox == LVY) { faceId = 8u; }   // lava → emissive
         let pos = ro + rd * t;
         let vcW = vec3<i32>(floor(pos - h.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));   // WORLD coords — grain must not swim when the window shifts
-        albedo = pal[h.vox].rgb * (0.88 + 0.24 * ivhash(vcW));
+        if (cSlot != 0u) { albedo = cCell * (0.87 + 0.26 * ih3(cVc.x, cVc.y, cVc.z)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — stable as it moves/rotates, exactly the analytic path's texture
+        else { albedo = pal[h.vox].rgb * (0.88 + 0.24 * ivhash(vcW)); }
         if (skipW && pos.y < WLF + 1.0) {                            // swimming: caustic webs dance on everything below the surface
           albedo = albedo * (1.0 + 1.3 * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
         }
@@ -2926,7 +3041,7 @@
           let sh = trace(sp, sdir, sCap, skipW);
           sunV = select(1.0, 0.0, sh.t >= 0.0);
           }
-          if (${location.search.includes('nocshad') ? 0 : 1} == 1 && sunV > 0.0) {   // CREATURE CAST SHADOWS — the moving lilies/ducks/worms aren't in the world grid, so the sun ray tests their (AABB) bodies here → they cast shadows on ground/water like static voxels (sp and the boxes are both window-relative; ?nocshad disables for A/B)
+          if (${location.search.includes('nocshad') ? 0 : 1} == 1 && sunV > 0.0 && cSlot == 0u) {   // CREATURE CAST SHADOWS — the sun ray tests the creature AABBs so they shadow ground/water. SKIPPED for a trace-injected creature pixel: its own box wraps the surface point and every sun ray would 'self-shadow' (cross-creature shadows are a lesser loss than a permanently dark body)
             for (var s = 0; s < 16; s++) {
               let CA = u.cshad[s * 2];
               if (CA.w < 0.5) { continue; }
@@ -2994,6 +3109,7 @@
       }
       textureStore(gAlbedo, vec2<i32>(gid.xy), vec4<f32>(sqrt(albedo), (f32(faceId) + f32(lavaG) * 16.0) / 255.0));
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, 0.0));
+      textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 7u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction
     }
   `;
 
@@ -3018,6 +3134,8 @@
     @group(0) @binding(2) var histPrev : texture_2d<f32>;
     @group(0) @binding(3) var samp : sampler;
     @group(0) @binding(4) var histOut : texture_storage_2d<rgba16float, write>;
+    @group(0) @binding(5) var slotCur : texture_2d<u32>;             // ── DYNAMIC LIFE ── this frame's creature ids (TRACE)…
+    @group(0) @binding(6) var slotPrev : texture_2d<u32>;            // …and last frame's — identity must match at the reprojected pixel or history is another surface's
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
@@ -3025,15 +3143,26 @@
       if (cur.b < 0.0) { textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(0.0, 0.0, -1.0, 0.0)); return; }
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let wp = u.camPos + rayDir(px) * cur.b;
-      let uv = prevUVd(wp - u.pPos);
+      let sl = textureLoad(slotCur, vec2<i32>(gid.xy), 0).r & 127u;
+      var wpp = wp;                                                  // where this surface point WAS last frame:
+      var lifeReject = false;
+      if (sl != 0u) {                                                // a creature pixel reprojects through the slot's RIGID world motion — the held-item lesson:
+        let mot = u.lifeMot[sl - 1u];                                // rigid anchor motion keeps SVGF history valid, per-voxel churn does not
+        if ((u32(mot.w + 0.5) & 6u) != 0u) { lifeReject = true; }    // animation frame flipped / occupant changed / teleported → the model's voxels are different, reject outright
+        wpp = wp - mot.xyz;
+      }
+      let uv = prevUVd(wpp - u.pPos);
       var hist = 1.0;
       var acc = cur.rg;
-      if (u.reset < 0.5 && uv.x > 0.001 && uv.y > 0.001 && uv.x < 0.999 && uv.y < 0.999) {
-        let prev = textureSampleLevel(histPrev, samp, uv, 0.0);
-        let expT = length(wp - u.pPos);
-        if (prev.b > 0.0 && abs(prev.b - expT) < 0.02 * expT + 1.5) {
-          hist = min(prev.a + 1.0, u.maxHist);
-          acc = mix(prev.rg, cur.rg, 1.0 / hist);
+      if (!lifeReject && u.reset < 0.5 && uv.x > 0.001 && uv.y > 0.001 && uv.x < 0.999 && uv.y < 0.999) {
+        let ps = textureLoad(slotPrev, vec2<i32>(uv * u.res), 0).r & 127u;
+        if (ps == sl) {                                              // same identity (terrain↔terrain or same creature) — a vacated/covered pixel is a disocclusion, rejected here
+          let prev = textureSampleLevel(histPrev, samp, uv, 0.0);
+          let expT = length(wpp - u.pPos);
+          if (prev.b > 0.0 && abs(prev.b - expT) < 0.02 * expT + 1.5) {   // rotation (not in the rigid delta) and newly revealed surfaces fail this distance check naturally
+            hist = min(prev.a + 1.0, u.maxHist);
+            acc = mix(prev.rg, cur.rg, 1.0 / hist);
+          }
         }
       }
       textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(acc, cur.b, hist));
@@ -3078,6 +3207,7 @@
     @group(0) @binding(18) var<storage, read> bricks2 : array<u32>;
     @group(0) @binding(19) var<storage, read> pal : array<vec4<f32>>;   // palette — the traced water reflection/refraction shades its hits here
     @group(0) @binding(20) var<storage, read> wbricks : array<u32>;     // water-only brick bits — skipW rays stride these
+    @group(0) @binding(21) var slotT : texture_2d<u32>;             // ── DYNAMIC LIFE ── TRACE's per-pixel creature id + hit-axis bits (see slotOut) — true-normal reconstruction + debug views
     ${DDAW}
     ${pickWGSL}
     fn vn3(p : vec3<f32>) -> f32 {
@@ -3274,7 +3404,17 @@
       } else {
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         let alb = alb4.rgb * alb4.rgb;
-        let n = faceN(face);
+        var n = faceN(face);
+        let slRaw = textureLoad(slotT, vec2<i32>(gid.xy), 0).r;
+        if ((slRaw & 127u) != 0u) {                                  // ── DYNAMIC LIFE ── a trace-injected creature: rebuild its TRUE rotated normal from the slot's
+          let s4 = (i32(slRaw & 127u) - 1) * 4;                      // model axes + the stored hit-axis bits, so shading doesn't quantize to world axes and pop as it turns
+          let ax = (slRaw >> 7u) & 7u;
+          var nl = vec3<f32>(0.0);
+          let sv = select(-1.0, 1.0, (ax & 1u) != 0u);
+          if ((ax >> 1u) == 0u) { nl.x = sv; } else if ((ax >> 1u) == 1u) { nl.y = sv; } else { nl.z = sv; }
+          let nc = u.drops[s4 + 1].xyz * nl.x + u.drops[s4 + 2].xyz * nl.y + u.drops[s4 + 3].xyz * nl.z;
+          n = normalize(u.right * nc.x + u.up * nc.y + u.fwd * nc.z);
+        }
         let direct = sunTint() * (irr.r * max(dot(n, u.sunDir), 0.0));
         let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
         let bounce = BOUNCE * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
@@ -3301,6 +3441,7 @@
         let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, 64);             // JS COMPACTS live creatures into consecutive slots from 9 and passes the count — the loop never wastes pixels on empty slots (the fixed 64 loop tanked fps over busy water)
         for (var di = 0; di < dropN; di++) {                         // slots 0..3 = dropped items, slot 4 = the flying cardinal, slots 5..8 = clash sparks, 9+ = live creatures (compacted)
           if (wgVis[di] == 0u) { continue; }                         // tile cull (top of main): this slot's sphere can't touch this 8×8 tile — skip before ANY uniform load
+          if (u.lifeCfg.y > 0.5 && (di == 4 || di >= 9) && face != 6u && (u32(u.lifeMot[di].w + 0.5) & 1u) == 0u) { continue; }   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies)
           let dXv = u.drops[di * 4 + 1];
           let dit = i32(dXv.w + 0.5);
           if (dit < 1) { continue; }                                 // itemId checked FIRST — an empty slot costs one uniform load, not four
@@ -3472,6 +3613,15 @@
           }
         }
       }
+      if (u.lifeCfg.x > 0.5) {                                       // ── DYNAMIC-LIFE DEBUG VIEWS (__vb.lifedbg) ── 1: slot ids (occupancy/object identity) · 2: history confidence (red = rejected/fresh, green = converged) · 3: per-slot motion vectors · 4: raw denoised AO
+        let dbgm = i32(u.lifeCfg.x + 0.5);
+        let slD = textureLoad(slotT, vec2<i32>(gid.xy), 0).r & 127u;
+        let irrD = textureLoad(irrF, vec2<i32>(gid.xy), 0);
+        if (dbgm == 1 && slD != 0u) { col = mix(col, vec3<f32>(fract(f32(slD) * 0.61803), fract(f32(slD) * 0.3247 + 0.33), fract(f32(slD) * 0.7548 + 0.66)), 0.72); }
+        else if (dbgm == 2 && irrD.b > 0.0) { let hc = clamp(irrD.a / u.maxHist, 0.0, 1.0); col = mix(vec3<f32>(0.9, 0.05, 0.05), vec3<f32>(0.05, 0.85, 0.15), hc); }
+        else if (dbgm == 3 && slD != 0u) { let mv = u.lifeMot[slD - 1u].xyz; col = clamp(abs(mv) * 2.5, vec3<f32>(0.06), vec3<f32>(1.0)); }
+        else if (dbgm == 4 && irrD.b > 0.0) { col = vec3<f32>(irrD.g); }
+      }
       if ((u32(u.fx) & 2u) != 0u) {                                  // ── UNDERWATER ── (camera submerged) Beer–Lambert absorption over the in-water path + a RAY-MARCHED single-scatter with caustic-modulated sun shafts (replaces the old flat blue tint)
         let irrU = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         var wD = select(1e4, irrU.b, irrU.b > 0.0);                  // in-water path toward the hit (sky pixels: the whole march range)
@@ -3508,6 +3658,7 @@
     @group(0) @binding(3) var colorPrev : texture_2d<f32>;
     @group(0) @binding(4) var samp : sampler;
     @group(0) @binding(5) var colorHistOut : texture_storage_2d<rgba8unorm, write>;
+    @group(0) @binding(6) var slotT : texture_2d<u32>;               // dynamic-life ids — creature pixels reproject through their slot's rigid motion (kills color-history ghost trails)
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
@@ -3523,7 +3674,12 @@
       let rd = rayDir(px);
       let t = textureLoad(gIrr, p, 0).b;
       var d = rd;
-      if (t > 0.0) { d = (u.camPos + rd * t) - u.pPos; }
+      if (t > 0.0) {
+        var wpT = u.camPos + rd * t;
+        let slT = textureLoad(slotT, p, 0).r & 127u;
+        if (slT != 0u) { wpT -= u.lifeMot[slT - 1u].xyz; }           // rigid per-creature motion — same reprojection the irradiance temporal uses
+        d = wpT - u.pPos;
+      }
       let uv = prevUVd(d);
       var outc = cur;
       if (u.reset < 0.5 && uv.x > 0.001 && uv.y > 0.001 && uv.x < 0.999 && uv.y < 0.999) {
@@ -3622,31 +3778,36 @@
     const gAlbedo = tex('rgba8unorm'), gIrr = tex('rgba16float');
     const histA = tex('rgba16float'), histB = tex('rgba16float'), irrF = tex('rgba16float');
     const colorCur = tex('rgba8unorm'), colHistA = tex('rgba8unorm'), colHistB = tex('rgba8unorm');
+    const slotA = tex('r32uint'), slotB = tex('r32uint');   // ── DYNAMIC LIFE ── per-pixel creature id + hit-axis bits, ping-ponged (temporal needs LAST frame's ids for identity checks). cur for frame parity par = par ? slotB : slotA — mirrors the hist ping-pong.
     const v = (t) => t.createView();
-    bgTrace = device.createBindGroup({ layout: pTrace.getBindGroupLayout(0), entries: [
+    bgTrace = [0, 1].map(par => device.createBindGroup({ layout: pTrace.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: worldBuf } },
       { binding: 2, resource: { buffer: brickBuf } }, { binding: 3, resource: { buffer: palBuf } },
       { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: brick2Buf } },
-      { binding: 7, resource: { buffer: wbrickBuf } }] });
+      { binding: 7, resource: { buffer: wbrickBuf } },
+      { binding: 8, resource: v(par ? slotB : slotA) }, { binding: 13, resource: { buffer: itemMapBuf } }] }));
     bgTemporal = [0, 1].map(par => device.createBindGroup({ layout: pTemporal.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gIrr) },
       { binding: 2, resource: v(par ? histA : histB) }, { binding: 3, resource: linSamp },
-      { binding: 4, resource: v(par ? histB : histA) }] }));
+      { binding: 4, resource: v(par ? histB : histA) },
+      { binding: 5, resource: v(par ? slotB : slotA) }, { binding: 6, resource: v(par ? slotA : slotB) }] }));
     bgSpatial = [0, 1].map(par => device.createBindGroup({ layout: pSpatial.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? histB : histA) },
       { binding: 2, resource: v(gAlbedo) }, { binding: 3, resource: v(irrF) }] }));
-    bgComposite = device.createBindGroup({ layout: pComposite.getBindGroupLayout(0), entries: [
+    bgComposite = [0, 1].map(par => device.createBindGroup({ layout: pComposite.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gAlbedo) },
       { binding: 2, resource: v(irrF) }, { binding: 3, resource: v(colorCur) },
       { binding: 13, resource: { buffer: itemMapBuf } },
       { binding: 14, resource: moonTex.createView() }, { binding: 15, resource: linSamp },
       { binding: 16, resource: { buffer: worldBuf } }, { binding: 17, resource: { buffer: brickBuf } },
       { binding: 18, resource: { buffer: brick2Buf } }, { binding: 19, resource: { buffer: palBuf } },
-      { binding: 20, resource: { buffer: wbrickBuf } }] });
+      { binding: 20, resource: { buffer: wbrickBuf } },
+      { binding: 21, resource: v(par ? slotB : slotA) }] }));
     bgTaa = [0, 1].map(par => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(colorCur) },
       { binding: 2, resource: v(gIrr) }, { binding: 3, resource: v(par ? colHistA : colHistB) },
-      { binding: 4, resource: linSamp }, { binding: 5, resource: v(par ? colHistB : colHistA) }] }));
+      { binding: 4, resource: linSamp }, { binding: 5, resource: v(par ? colHistB : colHistA) },
+      { binding: 6, resource: v(par ? slotB : slotA) }] }));
     bgBlit = [0, 1].map(par => device.createBindGroup({ layout: pBlit.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? colHistB : colHistA) },
       { binding: 2, resource: linSamp }] }));
@@ -3784,7 +3945,7 @@
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
-    for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature (ducks 16-31 + worms 32-63 + songbirds 64-243) to re-stamp fresh next frame (stale grid indices)
+    for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force the PERCHED SONGBIRDS (64-243, the only grid-stamped life) to re-stamp fresh next frame; 16-63 carry no stamps but clearing the fields is free
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
@@ -4118,7 +4279,18 @@
         b.fi = fi; b.gliding = b.glid;               // debug taps (__vb.bird)
     return { x: px3, y: py3, z: pz3, Xw, Yw, Zw, fi, item: sBase + fi, glideItem: sBase - 1 + sGl };
   };
+  // ── DYNAMIC-LIFE SLOT LEDGER ── who occupies each drop slot this frame, where its anchor is (world coords) and which
+  // item/anim frame it shows. The frame-end lifeMot fill derives per-slot rigid motion deltas + history-rejection flags
+  // from cur-vs-prev; the temporal/TAA passes reproject trace-injected creature pixels with them.
+  const lifeUid = new Int32Array(64), lifeUidPrev = new Int32Array(64);
+  const lifeAnc = new Float32Array(192), lifeAncPrev = new Float32Array(192);   // 64 × xyz world anchors
+  const lifeItem = new Int32Array(64), lifeItemPrev = new Int32Array(64);
+  const lifeAna = new Uint8Array(64);                  // analytic-only bit (fireflies, drops, sparks, empty slots)
+  const lifeSlotSet = (slot, uid, x, y, z, item, analytic) => {
+    lifeUid[slot] = uid; lifeItem[slot] = item; lifeAna[slot] = analytic ? 1 : 0;
+    lifeAnc[slot * 3] = x; lifeAnc[slot * 3 + 1] = y; lifeAnc[slot * 3 + 2] = z; };
   const birdWrite = (o2, ps, cam, right, up, fwd) => {   // pose → one drop slot (camera-space anchor + the three model axes)
+    lifeSlotSet((o2 - 68) >> 4, 1000 + (ps.uid || 0), ps.x, ps.y, ps.z, Math.round(ps.item), false);   // flying birds are trace-injected life
     const rx = ps.x - cam[0], ry = ps.y - cam[1], rz = ps.z - cam[2];
     UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = BIRD_VS;
     UF[o2 + 4] = ps.Xw[0] * right[0] + ps.Xw[1] * right[1] + ps.Xw[2] * right[2]; UF[o2 + 5] = ps.Xw[0] * up[0] + ps.Xw[1] * up[1] + ps.Xw[2] * up[2]; UF[o2 + 6] = ps.Xw[0] * fwd[0] + ps.Xw[1] * fwd[1] + ps.Xw[2] * fwd[2]; UF[o2 + 7] = ps.item;
@@ -4143,6 +4315,7 @@
   // then after the loop the NEAREST are copied to the real slots. A fish right in front of you always renders; a far,
   // fog-bound butterfly is the one dropped. Allocated ONCE — never per frame.
   const EMIT_CAP = 216, emitBuf = new Float32Array(EMIT_CAP * 16), emitDp = new Float64Array(EMIT_CAP), emitIdx = new Int32Array(EMIT_CAP);
+  const emitWho = new Int32Array(EMIT_CAP), emitAnc = new Float32Array(EMIT_CAP * 3), emitAna = new Uint8Array(EMIT_CAP);   // staged identity + world anchor + analytic-only flag → the dynamic-life slot ledger (filled in the nearest-first copy)
   let fishSchoolSeq = 0;                                // rolling id handed to each new fish school so same-school mates recognise each other (3-6 per school; ~28% of fish stay lone)
   // ── FISH 2.0 CONFIG ── every swimmer tunable in ONE bag, live-tweakable from the console (__vb.fishCfg.xxx = …).
   // The AI itself runs in the creature tick (SWIM ⇄ FLEE states + ballistic AIR arcs) on the shared body predicate
@@ -4174,31 +4347,9 @@
   };
   // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
   // Worms animate their crawl (re-stamping the current frame) while moving + freeze on a pause; ducks are a single rigid pose floating at a fixed waterline. A creature re-stamps only when its cell / facing / frame changes, so a still one fully converges to crisp static lighting.
-  let WORM_STAMP = null, DUCK_STAMP = null, DUCKB_STAMP = null;   // [frame][orient0..3] → array of [dx,dy(up),dz,palId]; built lazily once the frames + palette exist
-  const CREATURE_IDS = new Set();                      // palette ids stamped creatures use — bfObst/lookaheads must treat these as PASSABLE (a creature mustn't trip on its own or another's stamped voxels)
-  const wormPatch = [];                                // grid indices touched by creature (un)stamps this frame → one light gpuPatch at the loop's end (or when a pickup/editor clears one)
-  const stampIdOf = (rgb) => { for (let i = 1; i < palette.length; i++) { const p = palette[i]; if (p[0] === rgb[0] && p[1] === rgb[1] && p[2] === rgb[2]) return i; }
-    if (palette.length < 256) return addCol(rgb[0], rgb[1], rgb[2]);       // palette full → nearest existing color (never overflow the 256-entry GPU palette)
-    let bd = 1e9, bi = 1; for (let i = 1; i < palette.length; i++) { const p = palette[i], dd = (p[0] - rgb[0]) ** 2 + (p[1] - rgb[1]) ** 2 + (p[2] - rgb[2]) ** 2; if (dd < bd) { bd = dd; bi = i; } } return bi; };
-  const stampRot = (list, k) => list.map(([dx, dy, dz, id]) => { let X = dx, Z = dz; for (let r = 0; r < k; r++) { const nX = Z, nZ = -X; X = nX; Z = nZ; } return [X, dy, Z, id]; });   // k×90°: k1 puts the +z head at +x, k2 −z, k3 −x
-  const buildStampPoses = (item0, nframes) => {        // [frame][orient0..3] pose lists for an item range (head at model −y → +z at orient 0)
-    if (!item0 || !itemsRef || !itemsRef[item0 - 1]) return null;
-    const out = [];
-    for (let f = 0; f < nframes; f++) {
-      const it = itemsRef[item0 - 1 + f]; if (!it) return null;
-      const w = it.w, d = it.d, h = it.h, cells = it.cells, cx = (w - 1) >> 1, cy = (d - 1) >> 1, base = [];
-      for (let mz = 0; mz < h; mz++) for (let my = 0; my < d; my++) for (let mx = 0; mx < w; mx++) {
-        const c = cells[mx + my * w + mz * w * d]; if (!c) continue;
-        base.push([mx - cx, mz, -(my - cy), stampIdOf(c)]);
-      }
-      out.push([base, stampRot(base, 1), stampRot(base, 2), stampRot(base, 3)]);
-    }
-    for (const fr of out) for (const p of fr[0]) CREATURE_IDS.add(p[3]);    // register these palette ids as passable for the creature lookaheads
-    return out;
-  };
-  const ensureWormStamp = () => { if (!WORM_STAMP && WORM_NFRAMES) { WORM_STAMP = buildStampPoses(WORM_ITEM0, WORM_NFRAMES); if (WORM_STAMP) palSync(); } return WORM_STAMP; };
-  const ensureDuckStamp = () => { if (!DUCK_STAMP && DUCK_ITEM0) { DUCK_STAMP = buildStampPoses(DUCK_ITEM0, 1); DUCKB_STAMP = DUCKB_ITEM0 ? buildStampPoses(DUCKB_ITEM0, 1) : DUCK_STAMP; if (DUCK_STAMP) palSync(); } return DUCK_STAMP; };
-  const unstampWorm = (B) => { if (!B.sCells) return; for (let i = 0; i < B.sCells.length; i++) { const ii = B.sCells[i];
+  const CREATURE_IDS = new Set();                      // palette ids the PERCHED SONGBIRDS stamp (the only grid-stamped life) — bfObst/lookaheads treat these as PASSABLE. (The worm/duck moving-life stamp experiment that once lived here was dead code and is REMOVED: moving creatures are now TRACE-INJECTED rigid models — see the DYNAMIC LIFE block in TRACE — which gets them the full SVGF path with no grid writes at all.)
+  const wormPatch = [];                                // grid indices touched by PERCHED-BIRD (un)stamps this frame → one light gpuPatch at the loop's end (or when a pickup/editor clears one). Name kept for history; only the perched songbirds use the stamp path now.
+  const unstampWorm = (B) => { if (!B.sCells) return; for (let i = 0; i < B.sCells.length; i++) { const ii = B.sCells[i];   // (used ONLY by the perched songbirds — the sole grid-stamped life)
       if (W[ii] !== 0) { W[ii] = B.sPrev ? B.sPrev[i] : 0; wormPatch.push(ii); } }   // restore the overwritten foliage, not 0 — else the bird leaves a hole in the canopy
     B.sCells = null; B.sPrev = null; B.sKey = null; };
   const stampApply = (B, pose, gx, gy, gz, key) => {   // shared: re-stamp only on change; only into EMPTY AIR so un-stamp is a safe →0
@@ -4219,22 +4370,6 @@
     B.sCells = nc; B.sPrev = pv; B.sKey = key; B.sWant = pose.length;
   };
   const stampOrient = (th) => { const Hx = Math.sin(th), Hz = Math.cos(th); return Math.abs(Hz) >= Math.abs(Hx) ? (Hz >= 0 ? 0 : 2) : (Hx >= 0 ? 1 : 3); };   // nearest cardinal
-  const stampWorm = (B, fi) => {
-    const st = ensureWormStamp(); if (!st) return;
-    fi = ((fi % st.length) + st.length) % st.length;
-    const k = stampOrient(B.th);
-    const gx = Math.round(B.x), gz = Math.round(B.z), gy = hmap[gwrap(gx, WX) + gwrap(gz, WZ) * WX] + 1;   // sit ON the ground surface
-    stampApply(B, st[fi][k], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + k + ',' + fi);
-  };
-  const stampDuck = (B, isBaby) => {                   // DUCK: a single rigid pose floating at a FIXED waterline (no wave-bob) so it converges to static lighting; submerged rows fall on water voxels and are skipped
-    if (!ensureDuckStamp()) return;
-    const pose4 = (isBaby && DUCKB_STAMP) ? DUCKB_STAMP : DUCK_STAMP; if (!pose4) return;
-    const item0 = (isBaby && DUCKB_ITEM0) ? DUCKB_ITEM0 : DUCK_ITEM0;
-    const it = itemsRef[item0 - 1]; if (!it) return;
-    const k = stampOrient(B.th);
-    const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(WL + (isBaby ? 2.9 : 4.4)) - (it.h >> 1);   // model CENTRE at the still-water float height (matches the off-grid base9); bottom rows landing on water voxels are auto-skipped
-    stampApply(B, pose4[0][k], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + k + ',d' + (isBaby ? 1 : 0));
-  };
   // ── GRID-STAMPED PERCHED CARDINAL (matches the editor exactly) ── built from the SAME rotate .vox via edParseVox + edRotVox + the same baked offsets, so its grid lighting/rotation/alignment are identical to the asset-editor cardinal (user)
   let CARD_POSES = null, BLUE_POSES = null, ROBIN_POSES = null;
   const CARD_OFF = { '04.vox': [0, 1, 0], '05.vox': [0, 1, 0] };   // baked per-frame alignment (user's copy-changes) — same table the editor uses
@@ -4300,9 +4435,9 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
-  const unstampAllWorms = () => { for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B && B.sCells) {
+  const unstampAllWorms = () => { for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B && B.sCells) {   // (despite the name: only perched songbirds have sCells now)
     for (let i = 0; i < B.sCells.length; i++) { const ii = B.sCells[i]; if (W[ii] !== 0) W[ii] = B.sPrev ? B.sPrev[i] : 0; }   // restore, same reason as unstampWorm
-    B.sCells = null; B.sPrev = null; B.sKey = null; } } };   // hard clear (editor freeze) — ducks 16-31 + worms 32-63 + songbirds 64-243; caller re-uploads occupancy
+    B.sCells = null; B.sPrev = null; B.sKey = null; } } };   // hard clear (editor freeze) — in practice only the perched songbirds (64-243) carry stamps; caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const waterSpots = [];                              // detected WATER of any width — lakes AND rivers. Dragonflies home here; ducks still use lakeSpots (a river is too narrow for a family)
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
@@ -4879,6 +5014,8 @@
   // lockEl (the esc menu) stays hidden at boot — after loading, the overlay is removed to reveal the live game and a
   // click on the canvas takes control; the esc menu only appears on the first pointer-unlock (pressing Esc mid-game).
   const CDPTEST = location.search.includes('cdp');   // headless test harness: pointer lock in headless Chrome still ClipCursor-pins the REAL Windows cursor to the hidden window — never request it under test
+  const LIFE_TRACE = !location.search.includes('oldlife');   // ── DYNAMIC LIFE ── trace-injected creature rendering (full SVGF path); ?oldlife falls back to the analytic composite path for A/B
+  let lifeDbg = 0;                                     // life debug view (u.lifeCfg.x) — __vb.lifedbg(mode): 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO
   // ── COMPASS ── a scrolling heading ribbon at top centre. yaw 0 faces +Z, so N=+Z, E=+X, S=-Z, W=-X and
   // turning right walks the ribbon left. Three full turns are laid out so the wrap seam is never on screen.
   const CMP_W = 240, CMP_PPD = 2;                      // container width, px per degree (360° = 720 px)
@@ -5378,6 +5515,7 @@
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     pal(i) { return i === undefined ? palette.length : palette[i]; },
     rd() { return { renderDist, half: HALF, windowX: WX }; },   // fixed view-distance tap
+    lifedbg(m) { lifeDbg = m === undefined ? 0 : m | 0; return { mode: lifeDbg, traceInjected: LIFE_TRACE }; },   // dynamic-life debug views (0 off / 1 slot ids / 2 history confidence / 3 motion / 4 raw AO)
     mouthPit(r) {                                    // how far from the mouth is the SURFACE actually carved away? boulders stamp after the carve at pristine H, so anything inside this radius floats
       const R = r || 4000, n = Math.ceil(R / WORM_CELL), out = [];
       const c0x = Math.floor(P.x / WORM_CELL), c0z = Math.floor(P.z / WORM_CELL);
@@ -6105,6 +6243,7 @@
       UF[o2 + 8] = Yw[0] * right[0] + Yw[1] * right[1] + Yw[2] * right[2]; UF[o2 + 9] = Yw[0] * up[0] + Yw[1] * up[1] + Yw[2] * up[2]; UF[o2 + 10] = Yw[0] * fwd[0] + Yw[1] * fwd[1] + Yw[2] * fwd[2]; UF[o2 + 11] = 0;
       UF[o2 + 12] = Zw[0] * right[0] + Zw[1] * right[1] + Zw[2] * right[2]; UF[o2 + 13] = Zw[0] * up[0] + Zw[1] * up[1] + Zw[2] * up[2]; UF[o2 + 14] = Zw[0] * fwd[0] + Zw[1] * fwd[1] + Zw[2] * fwd[2]; UF[o2 + 15] = 0;
     }
+    lifeUid.fill(-1); lifeAna.fill(1);                 // ── dynamic-life ledger reset ── slots not claimed this frame stay analytic-only/empty
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
       if (ED.on) {                                       // ── EDITOR STAGE ── the cardinal is a STAMPED static object (world voxels → full lighting), NOT a drop: hide slot 4, and advance the animation by swapping to the next static frame in place
         UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot; no bird hitboxes in the editor
@@ -6117,6 +6256,7 @@
         }
       } else if (FLYERS.length > 0) {                    // the WORLD bird (only when NOT in the editor)
         const ps = birdStep(bird, 0, now / 1000, dt);    // bird 0 keeps the dedicated slot; the rest are emitted with the creatures below
+        ps.uid = 0;                                      // stable identity for the dynamic-life temporal reprojection
         birdWrite(o2, ps, cam, right, up, fwd);
         birdHit(birdBox, ps);
       } else { UF[o2 + 7] = 0; birdBox.active = false; }
@@ -6371,6 +6511,7 @@
       for (let bi = 1; bi < BIRD_N; bi++) {
         if (dropCursor > 63) break;
         const ps = birdStep(birds[bi], bi, tbF, dt);
+        ps.uid = bi;                                   // stable identity for the dynamic-life temporal reprojection
         birdWrite(68 + dropCursor * 16, ps, cam, right, up, fwd);
         birdHit(birdBoxes[bi], ps);                    // every cardinal is solid, same as the first
         dropCursor++;
@@ -6920,6 +7061,8 @@
         emitBuf[o4 + 8] = Yw[0] * right[0] + Yw[2] * right[2]; emitBuf[o4 + 9] = Yw[0] * up[0] + Yw[2] * up[2]; emitBuf[o4 + 10] = Yw[0] * fwd[0] + Yw[2] * fwd[2];
         emitBuf[o4 + 12] = right[1]; emitBuf[o4 + 13] = up[1]; emitBuf[o4 + 14] = fwd[1]; emitBuf[o4 + 15] = 0;
       }
+      emitWho[emitN] = wk; emitAna[emitN] = B.kind === 1 ? 1 : 0;   // FIREFLIES stay analytic (emissive abdomen + translucent wings need the composite path)
+      emitAnc[emitN * 3] = px3; emitAnc[emitN * 3 + 1] = py3; emitAnc[emitN * 3 + 2] = pz3;
       emitDp[emitN] = dp2; emitN++;
     }
     { const avail = 64 - dropCursor;                   // ── NEAREST-FIRST EMIT ── copy the closest staged poses into the real drop slots; the rest (far, in fog) are the ones dropped
@@ -6927,8 +7070,9 @@
       for (let i = 0; i < emitN; i++) idx[i] = i;
       idx.sort((a, b) => emitDp[a] - emitDp[b]);
       const nE = Math.min(emitN, avail);
-      for (let i = 0; i < nE; i++) { const src = idx[i] * 16, o4 = 68 + dropCursor * 16; dropCursor++;
-        for (let k = 0; k < 16; k++) UF[o4 + k] = emitBuf[src + k]; }
+      for (let i = 0; i < nE; i++) { const j = idx[i], src = j * 16, slot = dropCursor, o4 = 68 + slot * 16; dropCursor++;
+        for (let k = 0; k < 16; k++) UF[o4 + k] = emitBuf[src + k];
+        lifeSlotSet(slot, 2000 + emitWho[j], emitAnc[j * 3], emitAnc[j * 3 + 1], emitAnc[j * 3 + 2], Math.round(emitBuf[src + 7]), emitAna[j] === 1); }
     }
     if (wormPatch.length) { gpuPatch(wormPatch, false); wormPatch.length = 0; }   // one light brick-word patch for all worm (un)stamps this frame (incl. any queued by a pickup/toss)
     UF[1103] = dropCursor;                             // pick2Y.w = live slot count — the composite loop's bound (always ≥ 9 so drops/cardinal/sparks are covered)
@@ -6952,6 +7096,24 @@
       UF[o3 + 8] = Ys[0] * right[0] + Ys[2] * right[2]; UF[o3 + 9] = Ys[0] * up[0] + Ys[2] * up[2]; UF[o3 + 10] = Ys[0] * fwd[0] + Ys[2] * fwd[2]; UF[o3 + 11] = 1 - tS / sp4.life;
       UF[o3 + 12] = Zs[1] * right[1]; UF[o3 + 13] = Zs[1] * up[1]; UF[o3 + 14] = Zs[1] * fwd[1]; UF[o3 + 15] = 0;
     }
+    {                                                  // ── DYNAMIC-LIFE MOTION + FLAGS (u.lifeMot) ── per-slot rigid world delta for temporal/TAA reprojection of
+      for (let s9 = 0; s9 < 64; s9++) {                // trace-injected creature pixels, plus the history-rejection bits the temporal pass needs. Cur→prev handoff below.
+        const o9 = 1272 + s9 * 4;
+        let fl9 = 0, dx9 = 0, dy9 = 0, dz9 = 0;
+        if (lifeUid[s9] < 0 || lifeAna[s9]) fl9 |= 1;  // analytic-only (empty slot, drop, spark, firefly) — TRACE skips it, composite draws it
+        if (lifeUid[s9] >= 0) {
+          if (lifeUid[s9] !== lifeUidPrev[s9]) fl9 |= 4;   // occupant changed (spawn / compaction churn / recycle) → history is another creature's, reject
+          else {
+            dx9 = lifeAnc[s9 * 3] - lifeAncPrev[s9 * 3]; dy9 = lifeAnc[s9 * 3 + 1] - lifeAncPrev[s9 * 3 + 1]; dz9 = lifeAnc[s9 * 3 + 2] - lifeAncPrev[s9 * 3 + 2];
+            if (dx9 * dx9 + dy9 * dy9 + dz9 * dz9 > 900) fl9 |= 4;   // teleport-scale jump (>3 m in one frame) → hard reject
+            if (lifeItem[s9] !== lifeItemPrev[s9]) fl9 |= 2;         // animation frame flipped → the model's voxels changed, irradiance history is stale
+          }
+        }
+        UF[o9] = dx9; UF[o9 + 1] = dy9; UF[o9 + 2] = dz9; UF[o9 + 3] = fl9;
+      }
+      lifeUidPrev.set(lifeUid); lifeAncPrev.set(lifeAnc); lifeItemPrev.set(lifeItem);
+      UF[1528] = lifeDbg; UF[1529] = LIFE_TRACE ? 1 : 0; UF[1530] = 0; UF[1531] = 0;
+    }
     device.queue.writeBuffer(uniBuf, 0, UF);
 
     // ── passes ──
@@ -6971,10 +7133,10 @@
     const run = (pipe, bg) => {
       const p = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: qi++, endOfPassWriteIndex: qi++ } } : {});
       p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(gw, gh); p.end(); };
-    run(pTrace, bgTrace);
+    run(pTrace, bgTrace[par]);
     run(pTemporal, bgTemporal[par]);
     run(pSpatial, bgSpatial[par]);
-    run(pComposite, bgComposite);
+    run(pComposite, bgComposite[par]);
     run(pTaa, bgTaa[par]);
     if (profQS) {                                      // resolve + read back pass timings (only while __vb.prof polling has it armed)
       enc.resolveQuerySet(profQS, 0, 10, profRes, 0);
