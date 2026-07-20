@@ -15,6 +15,20 @@
   #cross::before, #cross::after { content: ''; position: absolute; background: #fff; }
   #cross::before { left: 0; right: 0; top: 6px; height: 2px; }
   #cross::after { top: 0; bottom: 0; left: 6px; width: 2px; }
+  /* ── FREE-MOUSE CURSOR ── the same 2px difference-blended bars as #cross, but built from FOUR of them: the two
+     horizontals sit on top of each other on the centre line (reading as one bar) and the two verticals likewise, so at
+     rest it is an ordinary crosshair. Over a button they slide apart to the four edges and it becomes a square — one
+     smooth transform transition, same lines, nothing added or removed. Native cursors cannot tween, hence the DOM. */
+  #curs { position: fixed; left: 0; top: 0; width: 16px; height: 16px; margin: -8px 0 0 -8px; mix-blend-mode: difference; pointer-events: none; z-index: 9999; display: none; }
+  body.freecur #curs { display: block; }
+  body.freecur, body.freecur * { cursor: none !important; }   /* beats the global `* { cursor: crosshair }` while the mouse is free */
+  #curs i { position: absolute; background: #fff; transition: transform 0.19s cubic-bezier(0.4, 0, 0.2, 1); }
+  #curs .h { left: 0; right: 0; height: 2px; top: 7px; }
+  #curs .v { top: 0; bottom: 0; width: 2px; left: 7px; }
+  #curs.sq .h1 { transform: translateY(-7px); }
+  #curs.sq .h2 { transform: translateY(7px); }
+  #curs.sq .v1 { transform: translateX(-7px); }
+  #curs.sq .v2 { transform: translateX(7px); }
   #clashHint { position: fixed; left: 50%; top: 57%; transform: translateX(-50%); color: #fff; font: 10px/1.6 'px3', Consolas, monospace; letter-spacing: 2px; text-shadow: 0 1px 3px #000; pointer-events: none; opacity: 0.85; }
   #achv { position: fixed; left: 50%; top: calc(50% - 350px); transform: translate(-50%, -50%); text-align: center; pointer-events: none; opacity: 0; transition: opacity 0.9s ease; font-family: 'px3', Consolas, monospace; text-shadow: 0 1px 3px #000; }
   #achv .a1 { font-size: 14px; letter-spacing: 6px; color: #ffd76a; }
@@ -82,6 +96,10 @@
   #veStage.has-clip #veVideo { display: block; }
   #veEmpty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0 30px; color: #6d7a8c; line-height: 1.9; }
   #veStage.has-clip #veEmpty { display: none; }
+  #veDraw { position: absolute; inset: 0; width: 100%; height: 100%; display: none; pointer-events: none; }   /* the annotation layer sits exactly over the letterboxed video; only the PEN tool turns pointer events on */
+  #veStage.has-clip #veDraw { display: block; }
+  #veStage.pen #veDraw { pointer-events: auto; cursor: crosshair; }
+  #vePen.on { border-color: #ff5a6a; color: #ff8b96; }
   /* ── SCRUBBER BOX ── the controls + timeline live together in their own separate box (user) */
   #veDock { background: #ffffff; border: 1px solid #d8dce4; border-radius: 16px; box-shadow: 0 18px 44px rgba(0,0,0,0.35); padding: 12px 14px; }   /* white scrubber box (user) */
   #veCtrls { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; }
@@ -107,15 +125,29 @@
   #optRows > div > span:first-child { min-width: 96px; }
   #kbCard h3.kbSub { font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; margin: 14px 0 8px; color: #8fa0b8; border-top: 1px solid #222b38; padding-top: 12px; }
   #todWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #todSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
+  #todSlider { width: 170px; cursor: pointer; }
+  /* ── SLIDER KNOBS ── custom thumbs so the circle can GROW on hover (user: keep the cross cursor over a slider, expand
+     the knob instead of squaring the cursor). accent-color can't animate a native thumb, so the track + thumb are drawn
+     by hand: a thin rail and a green disc that scales up (and gets a soft ring) while hovered or dragged. */
+  #todSlider, #volSlider { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; outline: none;
+    background: linear-gradient(to right, #7fd05a 0%, #7fd05a var(--fill, 50%), #2a3342 var(--fill, 50%), #2a3342 100%); }   /* --fill (JS-driven) is the GREEN LINE to the left of the knob (user) */
+  #todSlider::-webkit-slider-thumb, #volSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
+  #todSlider:hover::-webkit-slider-thumb, #volSlider:hover::-webkit-slider-thumb,
+  #todSlider:active::-webkit-slider-thumb, #volSlider:active::-webkit-slider-thumb { transform: scale(1.65); }   /* knob grows on hover — NO halo (user removed the box-shadow ring) */
+  #todSlider::-moz-range-thumb, #volSlider::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
+  #todSlider:hover::-moz-range-thumb, #volSlider:hover::-moz-range-thumb,
+  #todSlider:active::-moz-range-thumb, #volSlider:active::-moz-range-thumb { transform: scale(1.65); }
+  #todSlider::-moz-range-track, #volSlider::-moz-range-track { height: 5px; border-radius: 3px; background: #2a3342; }
+  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: #7fd05a; }   /* Firefox draws the filled-left portion natively */
   #rdWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #volWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #volSlider { width: 170px; accent-color: #7fd05a; cursor: pointer; }
+  #volSlider { width: 170px; cursor: pointer; }
   #vigWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #snowWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #vigBtn, #snowBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
-  #snowBtn:hover { border-color: #6d8fc0; }
-  #snowBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  #vigBtn, #snowBtn, #fsBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
+  #snowBtn:hover, #fsBtn:hover { border-color: #6d8fc0; }
+  #snowBtn.on, #fsBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  #fsWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #cmpBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 3px 15px; color: #66707f; cursor: pointer; display: flex; align-items: center; }
   #cmpBtn svg { width: 17px; height: 17px; display: block; }   /* fill=currentColor → the icon itself shows the on/off state */
   #cmpBtn:hover { border-color: #6d8fc0; }
@@ -152,6 +184,7 @@
 <body>
 <canvas id="c"></canvas>
 <div id="cross" class="hidden"></div>
+<div id="curs"><i class="h h1"></i><i class="h h2"></i><i class="v v1"></i><i class="v v2"></i></div>
 <div id="compass" class="hidden"><div id="cmpTrack"></div></div>
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
@@ -174,6 +207,7 @@
   <div id="todWrap"><span id="todLabel">08:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="480"></div>
   <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="100"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
+  <div id="fsWrap"><span>fullscreen</span><button id="fsBtn">off</button></div>
   <div id="vigWrap"><span>vignette</span><button id="vigBtn">on</button></div>
   <div id="cmpWrap"><span>compass</span><button id="cmpBtn" title="compass"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M12 20h2v-4h2v4h2v2H6v-2h4v-4h2v4Zm-6 0H4v-2h2v2Zm14 0h-2v-2h2v2ZM4 12h2v2H4v4H2V6h2v6Zm18 6h-2v-2h-4v-2h4v-4h-2V8h2V6h2v12Zm-12-2H6v-2h4v2Zm8-4h-4v-2h4v2Zm-4-2h-4V8h4v2Zm4-6h-8v4H8V4H6V2h12v2ZM6 6H4V4h2v2Zm14 0h-2V4h2v2Z"/></svg></button></div>
   </div>
@@ -195,11 +229,13 @@
     <div id="veTitle">video editor</div>
     <div id="veTools">
       <button id="veRecBtn" class="veTool" title="start / stop recording the screen">● rec</button>
+      <button id="vePen" class="veTool" title="draw on the video in red">✎ draw</button>
+      <button id="veErase" class="veTool" title="clear every drawing">clear</button>
       <button id="veExport" class="veTool" title="export the edited clip as .webm">export</button>
       <button id="veClose" class="veTool" title="close">done</button>
     </div>
   </div>
-  <div id="veStage"><video id="veVideo" playsinline></video><div id="veEmpty">no recording yet</div></div>
+  <div id="veStage"><video id="veVideo" playsinline></video><canvas id="veDraw"></canvas><div id="veEmpty">no recording yet</div></div>
   <div id="veDock">
     <div id="veCtrls">
       <button id="vePlay" class="veCtl" title="play / pause">▶</button>
@@ -3804,13 +3840,24 @@
     for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (sandTab[W[gwrap(x, WX) + gy * WX + gwrap(z, WZ) * WX * WY]]) return true;
     return false;
   };
-  const onFlatSand = () => {                            // QUICKSAND only swallows you on FLAT sand — sloped beaches and dune faces stay ordinary ground
+  const QS_DRY = 10, QS_SAND = 6;                       // quicksand needs NO water within QS_DRY, and unbroken sand out to QS_SAND in all 8 directions
+  const onFlatSand = () => {                            // QUICKSAND only swallows you on a real SAND FLAT — sloped beaches, dune faces and the thin sand RIM that outlines every lake and river stay ordinary ground
     if (!onSand()) return false;
     if (waterAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z))) return false;   // SUBMERGED sand is just lakebed, not quicksand (user): the voxel the body stands in is water → wading/standing on a bed never sinks you. A DRY beach top sits at WL with the player at WL+1, so this never fires on the sand flats that should swallow you.
     const cx = Math.floor(P.x), cz = Math.floor(P.z);
     const h0 = hmap[gwrap(cx, WX) + gwrap(cz, WZ) * WX];
     for (let dz = -3; dz <= 3; dz += 3) for (let dx = -3; dx <= 3; dx += 3)
       if (Math.abs(hmap[gwrap(cx + dx, WX) + gwrap(cz + dz, WZ) * WX] - h0) > 1) return false;   // any real step within 30 cm → it's a slope, not a sand flat
+    // ── SHORELINE GUARD (user: "you're making me sink in the sand that makes up the OUTLINE of water") ── the beach rim
+    // that traces every waterline is flat sand too, so flatness alone was swallowing people at the water's edge. A real
+    // sand PAN is broad and dry: no water anywhere within QS_DRY, and still pure sand underfoot out at QS_SAND on every
+    // heading. The shore rim fails both — water sits a few voxels away and dirt/grass takes over just inland.
+    for (let k = 0; k < 8; k++) { const a = k * 0.785398, sa = Math.sin(a), ca = Math.cos(a);
+      for (let d = 2; d <= QS_DRY; d += 2) if (waterAt(Math.round(cx + sa * d), WL, Math.round(cz + ca * d))) return false;
+      const px = Math.round(cx + sa * QS_SAND), pz = Math.round(cz + ca * QS_SAND);
+      const gpx = gwrap(px, WX), gpz = gwrap(pz, WZ), py = hmap[gpx + gpz * WX] - 1;
+      if (py < 0 || py >= WY || !sandTab[W[gpx + py * WX + gpz * WX * WY]]) return false;
+    }
     return true;
   };
   function moveAxis(axis, d, hh) {
@@ -4090,7 +4137,7 @@
   const birdBoxes = Array.from({ length: 12 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 8, hy: 8, hz: 8 }));   // one per flying songbird
   const birdBox = birdBoxes[0];   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
-  const wbf = Array.from({ length: 260 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget), 244-259 FISH (kind 6 — off-grid swimmers under the lake/river surface)
+  const wbf = Array.from({ length: 276 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget), 244-275 FISH (kind 6 — off-grid swimmers under the lake/river surface; 16 -> 32 slots, DOUBLED 2026-07-20 at user request)
   // ── DROP-SLOT PRIORITY ── six creature kinds share only 55 drop slots (9..63). Rather than emit in wk order (which
   // starved whatever came last — fish, then worms), each wbf creature's 16-float pose is staged here with its distance²,
   // then after the loop the NEAREST are copied to the real slots. A fish right in front of you always renders; a far,
@@ -4108,6 +4155,7 @@
     threatR: 28,            // player/predator distance (vox) that triggers the flee state
     fleeHold: 1.2,          // s the flee state lingers after the threat leaves the radius (no flicker at the boundary)
     predatorKinds: [3],     // wbf creature kinds fish flee from (3 = ducks); set [] to disable predator flight
+    schoolSpecies: ['salmon', 'minnow'],   // ONLY these species form schools (user); every other species swims alone
     yawRate: 2.2,           // rad/s heading-change cap while cruising…
     fleeYawRate: 6.0,       // …and while fleeing (double speed needs sharper banking to keep clear of banks)
     pitchMax: 0.30,         // SUBTLE nose pitch cap (rad, ~17°) for climbs/dives — yaw is free, roll is impossible by construction
@@ -4116,12 +4164,12 @@
     lookMin: 12,            // reactive wall-backstop lookahead floor (scales up with speed)
     jump: {                 // ── LEAP ── frequency / height / distance / cooldown all here (user)
       cooldownMin: 9, cooldownMax: 31,   // s between leap attempts, divided by the species multiplier below
-      vMin: 46, vMax: 62,   // launch speed up (vox/s) → peak ≈ v²/2g ≈ 6.4-11.6 vox above the surface (HEIGHT dial)
+      vMin: 65, vMax: 88,   // launch speed up (vox/s) → peak ≈ v²/2g ≈ 12.8-23.5 vox above the surface (HEIGHT dial). DOUBLED 2026-07-20 (user): peak scales with v², so v went up by √2
       gravity: 165,         // vox/s² — the arc's fall (matches the game's ballistic feel)
       forward: 26,          // horizontal speed carried through the arc (vox/s) → DISTANCE ≈ forward · 2v/g ≈ 14-20 vox
       minDepth: 5,          // only water this deep can launch a leap (never from a shelf it could land back onto)
       armS: 4,              // max s the surface run-up may take before the attempt stands down
-      species: { salmon: 1.0, minnow: 0.3, bass: 0.6, blue_gill: 0.4, catfish: 0.1 },   // per-species FREQUENCY multiplier (0 = that species never leaps)
+      species: { salmon: 1.0, minnow: 0.3, bass: 0.6, blue_gill: 0.9, catfish: 0.1 },   // per-species FREQUENCY multiplier (0 = that species never leaps). blue_gill 0.4 -> 0.9 (user asked whether it jumps: it did, but ~2.5x rarer than a salmon, so it read as never)
     },
   };
   // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
@@ -4361,7 +4409,7 @@
   // collide with a spark burst, and the first collision unlocks the "sharp edge" discovery achievement.
   let clashT0 = -1e9, clashSparked = true;
   let vbAch = {};                                      // achievements RESET on refresh (was localStorage vb_ach — user asked for per-session)
-  const achSnd = regSnd(new Audio('sound/sfx/high_score.mp4'), 0.25);   // achievement jingle — halved again 2026-07-16 (0.5 → 0.25)
+  const achSnd = regSnd(new Audio('sound/sfx/high_score.mp4'), 0.15);   // achievement jingle — 0.5 → 0.25 (2026-07-16), then a further 40% off (user 2026-07-20): 0.25 → 0.15
   const dualRocks = () => !dead && !grabAnim && !!(slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2);
   const achEl = $('achv'), clashHintEl = $('clashHint');
   let achHideT = 0;
@@ -4460,7 +4508,8 @@
   // export the result. Entirely self-contained DOM + MediaRecorder work — nothing here touches the WebGPU render loop.
   // The "recording" banner is a DOM element (never drawn on the canvas), so it can never appear in the capture/export.
   const VE = { clips: [], dur: 0, sel: -1, blobUrl: null, thumb: '', playing: false,
-               rec: null, chunks: [], recording: false, drag: null };
+               rec: null, chunks: [], recording: false, drag: null,
+               strokes: [], pen: false, drawing: false, exporting: false };   // strokes: red annotation polylines in NORMALISED video space; exporting: suspends the game's render work
   const veBtnEl = $('veBtn'), vePanel = $('vePanel'), veStage = $('veStage'), veVideo = $('veVideo'),
         veTrack = $('veTrack'), vePlayhead = $('vePlayhead'), veTimeEl = $('veTime'), vePlayBtn = $('vePlay'),
         veRecEl = $('veRec'), veTimeline = $('veTimeline'), veRecBtn = $('veRecBtn');
@@ -4534,7 +4583,7 @@
     try { const c = document.createElement('canvas'); c.width = 160; c.height = 90;
       c.getContext('2d').drawImage(veVideo, 0, 0, 160, 90); VE.thumb = c.toDataURL('image/jpeg', 0.5); } catch (e) {}
   };
-  veVideo.addEventListener('loadeddata', () => { veCaptureThumb(); veRenderTimeline(); });
+  veVideo.addEventListener('loadeddata', () => { veCaptureThumb(); veRenderTimeline(); veFitDraw(); });
 
   // ── TIMELINE (the scrubber box) ──
   const veXToTime = (clientX) => { const r = veTrack.getBoundingClientRect(); return Math.max(0, Math.min(VE.dur, ((clientX - r.left) / Math.max(1, r.width)) * VE.dur)); };
@@ -4620,32 +4669,101 @@
 
   // ── EXPORT ── play the kept clips through the <video> and record ITS stream (picture + audio), so the trimmed export
   // carries sound too. The "recording" banner is a separate DOM element, never part of the element's stream. ──
+  // ── RED ANNOTATION LAYER ── strokes are stored in NORMALISED video space (0..1), so they survive panel resizes and
+  // land on the exact same pixels in the export whatever the stage size is.
+  const veDraw = $('veDraw'), vePenBtn = $('vePen');
+  const veFitDraw = () => { const r = veDraw.getBoundingClientRect();       // keep the backing store at CSS size for crisp lines
+    const w = Math.max(2, Math.round(r.width)), h = Math.max(2, Math.round(r.height));
+    if (veDraw.width !== w || veDraw.height !== h) { veDraw.width = w; veDraw.height = h; }
+    veRedraw(); };
+  const veVidBox = () => {                                 // where the VIDEO actually sits inside the stage (object-fit: contain letterboxes it)
+    const cw = veDraw.width, ch = veDraw.height;
+    const vw = veVideo.videoWidth || 16, vh = veVideo.videoHeight || 9;
+    const s = Math.min(cw / vw, ch / vh);
+    const w = vw * s, h = vh * s;
+    return { x: (cw - w) / 2, y: (ch - h) / 2, w, h };
+  };
+  const veRedraw = () => {                                 // repaint every stroke from normalised space
+    const g = veDraw.getContext('2d'); g.clearRect(0, 0, veDraw.width, veDraw.height);
+    const b = veVidBox();
+    veStrokePaint(g, b.x, b.y, b.w, b.h, Math.max(1.5, b.w * 0.004));
+  };
+  const veStrokePaint = (g, ox, oy, w, h, lw) => {         // shared by the on-screen layer AND the export compositor
+    g.save(); g.strokeStyle = '#ff2d3f'; g.lineWidth = lw; g.lineCap = 'round'; g.lineJoin = 'round';
+    for (const st of VE.strokes) { if (st.length < 1) continue;
+      g.beginPath(); g.moveTo(ox + st[0].x * w, oy + st[0].y * h);
+      if (st.length === 1) g.lineTo(ox + st[0].x * w + 0.01, oy + st[0].y * h);
+      else for (let i = 1; i < st.length; i++) g.lineTo(ox + st[i].x * w, oy + st[i].y * h);
+      g.stroke(); }
+    g.restore();
+  };
+  const vePenPos = (e) => { const r = veDraw.getBoundingClientRect(), b = veVidBox();
+    const px = (e.clientX - r.left) * (veDraw.width / Math.max(1, r.width)) - b.x;
+    const py = (e.clientY - r.top) * (veDraw.height / Math.max(1, r.height)) - b.y;
+    return { x: px / Math.max(1, b.w), y: py / Math.max(1, b.h) };   // normalised to the VIDEO, not the stage
+  };
+  veDraw.addEventListener('pointerdown', (e) => { if (!VE.pen) return; e.stopPropagation(); e.preventDefault();
+    VE.drawing = true; VE.strokes.push([vePenPos(e)]); veDraw.setPointerCapture(e.pointerId); veRedraw(); });
+  veDraw.addEventListener('pointermove', (e) => { if (!VE.pen || !VE.drawing) return; e.stopPropagation();
+    VE.strokes[VE.strokes.length - 1].push(vePenPos(e)); veRedraw(); });
+  const veEndStroke = () => { VE.drawing = false; };
+  veDraw.addEventListener('pointerup', veEndStroke); veDraw.addEventListener('pointercancel', veEndStroke);
+  vePenBtn.addEventListener('click', (e) => { e.stopPropagation(); VE.pen = !VE.pen;
+    vePenBtn.classList.toggle('on', VE.pen); veStage.classList.toggle('pen', VE.pen); });
+  $('veErase').addEventListener('click', (e) => { e.stopPropagation(); VE.strokes.length = 0; veRedraw(); });
+
+  // ── EXPORT ── COMPOSITED, not a raw element capture. The old path recorded veVideo.captureStream() while the clip
+  // played in real time, so anything that hitched the page during those seconds — above all the game still rendering
+  // full-tilt behind the panel — was burned into the file as dropped/long frames. That is why it looked fine in the
+  // editor but juddered in the download. Now each presented video frame is drawn (plus the annotations) onto an
+  // offscreen canvas and PUSHED to the recorder via requestFrame(), so the output carries exactly the frames the
+  // decoder produced, and the game loop is suspended for the duration so nothing competes for the GPU.
   const veExport = async () => {
     if (!VE.clips.length || VE.dur <= 0) return;
     const mime = vePickMime(); if (!mime) return;
     const btn = $('veExport'), label0 = btn.textContent; btn.disabled = true; btn.textContent = 'exporting…'; vePause();
-    const wasMuted = veVideo.muted; veVideo.muted = false;                       // unmuted so the audio track carries into the capture
-    let stream; try { stream = veVideo.captureStream ? veVideo.captureStream() : veVideo.mozCaptureStream(); }
-    catch (e) { console.warn('[vb] export captureStream failed', e); veVideo.muted = wasMuted; btn.disabled = false; btn.textContent = label0; return; }
+    const vw = veVideo.videoWidth || 1280, vh = veVideo.videoHeight || 720;
+    const cvs = document.createElement('canvas'); cvs.width = vw; cvs.height = vh;
+    const g = cvs.getContext('2d', { alpha: false, desynchronized: true });
+    const lw = Math.max(2, vw * 0.004);
+    let stream, track;
+    try { stream = cvs.captureStream(0); track = stream.getVideoTracks()[0]; }   // 0 = manual: every frame is pushed explicitly
+    catch (e) { console.warn('[vb] export captureStream failed', e); btn.disabled = false; btn.textContent = label0; return; }
+    const wasMuted = veVideo.muted; veVideo.muted = false;
+    try { const a = veVideo.captureStream ? veVideo.captureStream() : (veVideo.mozCaptureStream ? veVideo.mozCaptureStream() : null);   // carry the ORIGINAL audio track across
+      if (a) for (const t of a.getAudioTracks()) stream.addTrack(t); } catch (e) {}
     const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16000000, audioBitsPerSecond: 128000 });
     const chunks = []; rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     const stopped = new Promise((res) => { rec.onstop = res; });
-    await veSeekAwait(VE.clips[0].s); rec.start();
+    const useRVFC = typeof veVideo.requestVideoFrameCallback === 'function';
+    let pump = null, alive = true;
+    const pushFrame = () => {                              // composite ONE frame: video + the red annotations, then hand it to the recorder
+      g.drawImage(veVideo, 0, 0, vw, vh);
+      if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
+      if (track.requestFrame) track.requestFrame();
+    };
+    VE.exporting = true;                                   // suspends the game's render work (see the frame loop) so playback cannot hitch
+    await veSeekAwait(VE.clips[0].s);
+    pushFrame(); rec.start();
+    if (useRVFC) { const step = () => { if (!alive) return; pushFrame(); pump = veVideo.requestVideoFrameCallback(step); }; pump = veVideo.requestVideoFrameCallback(step); }
+    else { pump = setInterval(pushFrame, 1000 / 30); }      // fallback for engines without rVFC — steady 30 fps pull
     for (const clip of VE.clips) {
       await veSeekAwait(clip.s); await veVideo.play().catch(() => {});
       await new Promise((res) => { const chk = () => { if (veVideo.currentTime >= clip.e - 0.02 || veVideo.ended) res(); else requestAnimationFrame(chk); }; requestAnimationFrame(chk); });
       veVideo.pause();
     }
-    rec.stop(); await stopped; veVideo.muted = wasMuted;
-    const url = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' })), a = document.createElement('a');
-    a.href = url; a.download = 'voxelbit-clip.webm'; document.body.appendChild(a); a.click(); a.remove();
+    alive = false;
+    if (useRVFC) { try { veVideo.cancelVideoFrameCallback(pump); } catch (e) {} } else clearInterval(pump);
+    rec.stop(); await stopped; veVideo.muted = wasMuted; VE.exporting = false;
+    const url = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' })), a2 = document.createElement('a');
+    a2.href = url; a2.download = 'voxelbit-clip.webm'; document.body.appendChild(a2); a2.click(); a2.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     btn.disabled = false; btn.textContent = label0; if (VE.clips.length) veSeek(VE.clips[0].s);
   };
   const veSeekAwait = (t) => new Promise((res) => { const on = () => { veVideo.removeEventListener('seeked', on); res(); }; veVideo.addEventListener('seeked', on); veVideo.currentTime = Math.max(0, Math.min(VE.dur - 1e-3, t)); });
 
   // ── OPEN / CLOSE + BUTTON WIRING ──
-  const veOpen = () => { vePanel.classList.remove('hidden'); veRenderTimeline(); veUpdatePlayhead(); veUpdateTime(); veUpdateButtons(); };
+  const veOpen = () => { vePanel.classList.remove('hidden'); veRenderTimeline(); veUpdatePlayhead(); veUpdateTime(); veUpdateButtons(); requestAnimationFrame(veFitDraw); };
   const veClose = () => { vePanel.classList.add('hidden'); vePause(); };
   veBtnEl.addEventListener('click', (e) => { e.stopPropagation(); veOpen(); });   // opens the editor; recording is the ● rec button inside the panel
   veRecBtn.addEventListener('click', (e) => { e.stopPropagation(); veToggleRec(); });
@@ -4656,7 +4774,7 @@
   $('veDel').addEventListener('click', (e) => { e.stopPropagation(); veDelete(); });
   vePanel.addEventListener('click', (e) => { e.stopPropagation(); if (e.target === vePanel) veClose(); });
   document.addEventListener('keydown', (e) => { if (e.code === 'Escape' && !vePanel.classList.contains('hidden')) { e.stopPropagation(); veClose(); } }, true);
-  window.addEventListener('resize', () => { if (!vePanel.classList.contains('hidden')) { veRenderTimeline(); veUpdatePlayhead(); } });
+  window.addEventListener('resize', () => { if (!vePanel.classList.contains('hidden')) { veRenderTimeline(); veUpdatePlayhead(); veFitDraw(); } });
   veUpdateButtons();
 
   const renderDist = RD_FIXED;                         // FIXED 100 m — the slider is gone (user), so nothing reassigns this
@@ -4664,11 +4782,15 @@
   let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}   // persisted, default ON. MUST be declared here, above the settings-panel wiring below — declaring it beside CINE_VIG put it after its own use and the TDZ error killed boot.
   let snowOn = false;                                  // ── VOXEL SNOW ── weather-driven: RARE 5-minute snow events; the button forces one on/off
-  let snowEndT = 0, snowNextT = performance.now() + 300000;   // FIRST snow 5 min after refresh, then 60 s events with a 10 min gap (user); performance.now() resets on refresh
+  let snowEndT = 0, snowNextT = performance.now() + 600000;   // snow arrives every 10 MINUTES (user 2026-07-20: was 5 min for the first one, 10 between — now uniform), each event lasting 60 s; performance.now() resets on refresh
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
   let vigToggle = () => {};                            // set by the settings-panel wiring below; the L keybind calls the SAME path so the button label stays in sync
   let snowQI = [], snowQT = [], snowHead = 0;          // FIFO as parallel NUMBER arrays (cell idx / melt time) — object entries at 1.6M live voxels were ~10× the memory; ring-buffer head avoids O(n) shifts
+  let snowWI = [], snowWHead = 0;                     // separate queue of snow voxels that landed on WATER/ICE — drained in one continuous sweep after the storm (snowWMeltAt), no per-voxel timers
+  const SNOW_WATER_GRACE = 6000;                       // ms after a storm ends before the frozen lake starts shedding its snow
+  const SNOW_WATER_RATE = 9000;                        // voxels/s the water blanket drains at once it starts — rapid + steady, ~8 s for a full lake (user)
+  let snowWMelting = false, snowWMeltAt = Infinity;    // latched into ONE continuous drain once SNOW_WATER_GRACE has passed since the storm (user: no per-voxel-timed bursts)
   let snowFreezeAt = Infinity;                         // ── FREEZE DELAY ── water may not start freezing until this moment. Gating on "a flake has landed"
   const SNOW_FREEZE_DELAY = 10000;                     // looked instant (1.6 s) because the far statistical SPRINKLE ring lands the moment the storm flag flips,
                                                        // while the flakes you can actually SEE are still falling from the cloud deck. A flat 10 s wall-clock delay
@@ -4706,21 +4828,39 @@
     snowBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
     snowBtn.addEventListener('click', (e) => { e.stopPropagation(); snowOn = !snowOn;
       if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 600000; }
-      snowShow(); }); }
+      snowShow(); });
+    // ── FULLSCREEN toggle (user) ── requestFullscreen needs a user gesture; the click qualifies. The label + .on state
+    // follow the real fullscreen status (F11 or the OS chrome can change it out from under us), so fullscreenchange drives the sync.
+    const fsBtn = $('fsBtn');
+    const fsShow = () => { const on = !!document.fullscreenElement; fsBtn.textContent = on ? 'on' : 'off'; fsBtn.classList.toggle('on', on); };
+    fsBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    fsBtn.addEventListener('click', (e) => { e.stopPropagation();
+      try {
+        if (document.fullscreenElement) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); }
+        else { const el = document.documentElement; const req = el.requestFullscreen || el.webkitRequestFullscreen;
+          const p = req.call(el); if (p && p.catch) p.catch(() => {}); }
+      } catch (err) {}
+    });
+    document.addEventListener('fullscreenchange', fsShow);
+    document.addEventListener('webkitfullscreenchange', fsShow);
+    fsShow(); }
+  const sliderFill = (sl) => { const lo = +sl.min, hi = +sl.max, pct = hi > lo ? (sl.value - lo) / (hi - lo) * 100 : 0;
+    sl.style.setProperty('--fill', pct + '%'); };   // paints the GREEN LINE up to the knob — re-run on every value change (input AND the per-frame tod sync)
   const volSlider = $('volSlider'), volLabel = $('volLabel');   // MASTER VOLUME — scales every registered sound's base volume (persisted vb_vol)
-  volSlider.value = Math.round(sndVol * 100);
+  volSlider.value = Math.round(sndVol * 100); sliderFill(volSlider);
   const volShow = () => { volLabel.textContent = 'volume ' + Math.round(sndVol * 100) + '%'; };
   volShow();
   volSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
   volSlider.addEventListener('click', (e) => e.stopPropagation());
-  volSlider.addEventListener('input', (e) => { e.stopPropagation(); sndVol = parseFloat(volSlider.value) / 100; applyVol(); volShow();
+  volSlider.addEventListener('input', (e) => { e.stopPropagation(); sndVol = parseFloat(volSlider.value) / 100; applyVol(); volShow(); sliderFill(volSlider);
     try { localStorage.setItem('vb_vol', String(sndVol)); } catch (err) {} });
   let todDrag = false;
   const todSlider = $('todSlider'), todLabel = $('todLabel');
+  sliderFill(todSlider);
   todSlider.addEventListener('pointerdown', (e) => { todDrag = true; e.stopPropagation(); });
   addEventListener('pointerup', () => { todDrag = false; });
   todSlider.addEventListener('click', (e) => e.stopPropagation());
-  todSlider.addEventListener('input', (e) => { e.stopPropagation(); tday = todSlider.value / 1440; });
+  todSlider.addEventListener('input', (e) => { e.stopPropagation(); tday = todSlider.value / 1440; sliderFill(todSlider); });
   $('kbClose').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.add('hidden'); listenAction = null; });
   kbPanel.addEventListener('click', (e) => { e.stopPropagation();   // stopPropagation so a click in here never reaches the document handler that enters the game
     if (e.target === kbPanel) { kbPanel.classList.add('hidden'); listenAction = null; } });   // clicked the BACKDROP, not the card → same as 'done': close settings and fall back to the main menu behind it (user)
@@ -4766,16 +4906,31 @@
       try { localStorage.setItem('vb_cmp', cmpOn ? '1' : '0'); } catch (e2) {}
       cmpShow(); });
     cmpShow(); }
-  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); return; } canvas.requestPointerLock(); };
+  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); cursSync(); return; } canvas.requestPointerLock(); };
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (!locked) tryLock(); });
   document.addEventListener('pointerlockerror', () => { if (!locked) lockEl.classList.remove('hidden'); });   // if a lock request is refused, fall back to the esc menu so the player is never stuck
+  // ── CUSTOM FREE-MOUSE CURSOR ── shown whenever the pointer is NOT locked (menus, the video editor, the death screen).
+  // Follows the mouse as a crosshair and morphs to a square over anything clickable; the native cursor is hidden so the
+  // two never double up. While locked the game's own centre crosshair takes over and this is hidden.
+  const cursEl = $('curs');
+  const cursSync = () => { document.body.classList.toggle('freecur', !locked); if (locked) cursEl.classList.remove('sq'); };
+  const CURS_HIT = 'button, .veTool, .veCtl, a, input:not([type="range"]), select, [role="button"]';   // ONLY genuinely clickable controls square the cursor. RANGE sliders are excluded (user): the cursor stays a cross over them and the KNOB grows on hover instead (see the slider CSS). `#lock` (the whole esc-menu backdrop) used to be in here too, so the cursor was a square across the ENTIRE menu; the buttons/anchors inside already match on their own.
+  cursSync();                                        // the game boots UNLOCKED (click-to-enter), so the custom cursor is live from the first frame
+  document.addEventListener('mousemove', (e) => {      // separate listener: the game's own mousemove early-returns while unlocked
+    if (locked) return;
+    cursEl.style.transform = 'translate3d(' + e.clientX + 'px,' + e.clientY + 'px,0)';
+    const t = e.target;
+    const over = !!(t && t.closest && t.closest(CURS_HIT) && !(t.closest('button') && t.closest('button').disabled));
+    cursEl.classList.toggle('sq', over);
+  }, true);
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === canvas;
     lockEl.classList.toggle('hidden', locked || dead);
     if (locked) $('playHint').classList.add('hidden');   // taken control → drop the click-to-enter prompt (the esc menu handles re-entry from here)
     crossEl.classList.toggle('hidden', !locked);
     cmpVis();                                    // the compass follows the crosshair, gated by the settings toggle
+    cursSync();
     keys.clear(); mouse0 = false;
   });
   document.addEventListener('mousemove', (e) => {
@@ -5194,7 +5349,7 @@
       if (B && B.init) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), trap: +(B.trap || 0).toFixed(2) }); } return o; },   // worm stuck-test tap
     flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
-    snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: snowQI.length - snowHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT, freezeAt: snowFreezeAt }; },
+    snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: (snowQI.length - snowHead) + (snowWI.length - snowWHead), liveWater: snowWI.length - snowWHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT, freezeAt: snowFreezeAt }; },
     worldDump(wx0, wz0, n) { const out = new Uint8Array(n * n * WY); let k = 0;   // raw voxel block dump (base64) — lets a test DIFF two builds voxel-by-voxel
       for (let z = wz0; z < wz0 + n; z++) for (let x = wx0; x < wx0 + n; x++) { const b9 = gwrap(z, WZ) * WX * WY + gwrap(x, WX);
         for (let y = 0; y < WY; y++) out[k++] = W[b9 + y * WX]; }
@@ -5208,7 +5363,7 @@
       deficit: { xlo: rect.xlo - t.xlo, xhi: t.xhi - rect.xhi, zlo: rect.zlo - t.zlo, zhi: t.zhi - rect.zhi },   // how far the built rect lags its target on each side (0 = fully caught up)
       pool: poolOk, q: poolQueue.length, busy: genPool ? genPool.filter((w) => w.busyId).length : 0 }; },   // streaming-gen telemetry tap
     fish() { const o = []; const bodyClip = (B) => { const hx = Math.sin(B.th), hz = Math.cos(B.th), ay = Math.floor(B.y), hf = B.fhalf || 5; for (const a of [hf, hf * 0.5, 0, -hf * 0.5, -hf]) { const bx = Math.floor(B.x + hx * a), bz = Math.floor(B.z + hz * a); for (let yy = ay - 1; yy <= ay + 2; yy++) if (solid(bx, yy, bz)) return true; } return false; };   // per-species body length — the old fixed ±5 reported every short minnow as clipping
-      for (let j = 244; j < 260; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), air: B.jumpV !== undefined, arm: B.jumpArm !== undefined, flee: (B.fleeT || 0) * 1000 > performance.now(), vyS: +(B.vyS || 0).toFixed(1) }); }
+      for (let j = 244; j < 276; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), air: B.jumpV !== undefined, arm: B.jumpArm !== undefined, flee: (B.fleeT || 0) * 1000 > performance.now(), vyS: +(B.vyS || 0).toFixed(1) }); }
       return { species: FISHES.map((f) => f.name + '(' + f.n + 'f@' + f.item0 + ')'), live: o }; },   // fish test tap
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL, fishCfg: FISH_CFG,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint; fishCfg: LIVE fish tunables (speed/flee/jump/pitch)
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
@@ -5593,8 +5748,9 @@
     }
     { const cells = [];
       if (snowOn !== snowPrevOn) { snowPrevOn = snowOn;   // storm edges: no time-melt DURING a storm (the blanket must not thin while flakes still fall)
-        if (snowOn) { snowOnT0 = now; snowFreezeAt = now + SNOW_FREEZE_DELAY; }   // the water may not skin over until 10 s in (user)
-        else { snowOffT0 = now; snowFreezeAt = Infinity; for (let qi = snowHead; qi < snowQT.length; qi++) snowQT[qi] += now - snowOnT0; }
+        if (snowOn) { snowOnT0 = now; snowFreezeAt = now + SNOW_FREEZE_DELAY; snowWMelting = false; snowWMeltAt = Infinity; }   // the water may not skin over until 10 s in (user); a new storm re-arms the water melt
+        else { snowOffT0 = now; snowFreezeAt = Infinity; snowWMeltAt = now + SNOW_WATER_GRACE;   // WATER snow starts its one continuous drain a few seconds after the storm ends — NOT gated on the huge per-voxel SNOW_MELT timer (that pushed the lake's first melt ~97 s out; user wants it to clear rapidly and steadily)
+          for (let qi = snowHead; qi < snowQT.length; qi++) snowQT[qi] += now - snowOnT0; }
       }
       {                                              // ── STORM EDGES ── both sweep DOWN from just off the top of the screen at SNOW_SWEEP.
         const topY = P.y + SNOW_HEAD;                  // Runs EVERY frame but must sit after the transition block above, which is what sets
@@ -5624,7 +5780,7 @@
         return y;
       };
       const landSnowAt = (wx0, wz0) => {
-        if (snowQI.length - snowHead >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
+        if ((snowQI.length - snowHead) + (snowWI.length - snowWHead) >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
         // ORDER (user): the FLAKES arrive first, the blanket second. The leading edge sweeps down from the sky, so
         // until it has passed THIS column's surface no flake has reached the ground here yet — laying snow before
         // then made the blanket appear under a still-empty sky. Tested per column, not globally, so a valley floor
@@ -5655,7 +5811,8 @@
         const ii = b2 + (y + 1) * WX;
         W[ii] = SNOW[(wx ^ wz) & 1];
         cells.push(ii);
-        snowQI.push(ii); snowQT.push(now + SNOW_MELT);
+        if (waterAt(wx, WL, wz)) { snowWI.push(ii); }   // landed on the frozen surface — drained continuously after the storm, not on a per-voxel timer
+        else { snowQI.push(ii); snowQT.push(now + SNOW_MELT); }
       };
       if (snowOn && !dead && !ED.on) {                 // no weather inside the asset-editor void
         const t3 = now / 1000;                         // ── EXACT LANDINGS ── mirror of the shader flake field (u.time = now/1000)
@@ -5688,15 +5845,36 @@
         snowSprinkAcc += rate * Math.PI * Math.max(0, R4 * R4 - R2 * R2) * dt;
         let tries = Math.min(Math.max(200, Math.round(dt * 40000)), snowSprinkAcc | 0); snowSprinkAcc -= tries;   // dt-scaled cap (like the melt drain) — the old flat 140/frame starved the far ring at big view radii, so the blanket filled visibly slower with distance
         if (snowSprinkAcc > 4000) snowSprinkAcc = 4000;   // starvation carry-over stays bounded — a lag spike must not dump minutes of backlog in one frame
-        for (let k = 0; k < tries; k++) {
-          const ang2 = Math.random() * 6.283, rad2 = Math.sqrt(R2 * R2 + Math.random() * Math.max(0, R4 * R4 - R2 * R2));
-          const wx = Math.floor(P.x + Math.sin(ang2) * rad2), wz = Math.floor(P.z + Math.cos(ang2) * rad2);
+        const fadeR = R4 * 0.62;                       // ── EDGE FADE (user: "make this snow cutoff less obvious") ── the sprinkle used to run at FULL density right up
+        const fadeSpan = Math.max(1, R4 - fadeR);      // to R4 and then stop, drawing a hard circular rim across open ground and frozen lakes alike. Past fadeR the
+        for (let k = 0; k < tries; k++) {              // landing chance now rolls off quadratically to zero at the rim, so the blanket THINS into bare ground over
+          const ang2 = Math.random() * 6.283, rad2 = Math.sqrt(R2 * R2 + Math.random() * Math.max(0, R4 * R4 - R2 * R2));   // ~380 vox and the boundary reads as
+          if (rad2 > fadeR) { const tE = (rad2 - fadeR) / fadeSpan; if (Math.random() < tE * tE) continue; }                // weather, not a line. Only the outer band
+          const wx = Math.floor(P.x + Math.sin(ang2) * rad2), wz = Math.floor(P.z + Math.cos(ang2) * rad2);                 // is thinned — near-field density is untouched.
           if (wx <= rect.xlo || wx >= rect.xhi || wz <= rect.zlo || wz >= rect.zhi) continue;
           landSnowAt(wx, wz);
         }
       }
       let melted = 0;                                  // drain expired snow — dt-scaled so melt pace is fps-independent too; ONLY time-based and ONLY between storms (the cap drops landings instead)
       const meltCap = Math.max(8, Math.round(dt * 24000));
+      // ── WATER SNOW: ONE CONTINUOUS MELT (user) ── the per-voxel expiry timers made the lake melt in STAGGERED BURSTS
+      // and only START ~97 s after the storm (SNOW_MELT rebased by the storm length). Instead, SNOW_WATER_GRACE seconds
+      // after the storm ends we latch `snowWMelting` and drain the WHOLE water queue at a steady rate with NO per-voxel
+      // timing — so a frozen lake sheds its blanket in one smooth, rapid, uninterrupted sweep (~8 s) and is clear long
+      // before the ground.
+      const wCap = Math.max(8, Math.round(dt * SNOW_WATER_RATE));
+      if (!snowOn && !snowWMelting && now >= snowWMeltAt) snowWMelting = true;
+      if (snowWMelting) { let wMelt = 0;
+        while (snowWHead < snowWI.length && wMelt < wCap) {
+          let jj = snowWI[snowWHead++];
+          if (W[jj] === SNOW[0] || W[jj] === SNOW[1]) {
+            for (let up = 0; up < 4 && jj + WX < W.length && (W[jj + WX] === SNOW[0] || W[jj + WX] === SNOW[1]); up++) jj += WX;
+            W[jj] = 0; cells.push(jj);
+          }
+          wMelt++;
+        }
+        if (snowWHead >= snowWI.length) { snowWMelting = false; snowWMeltAt = Infinity; }   // queue emptied — stand down until the next storm
+      }
       while (snowHead < snowQI.length && !snowOn && snowQT[snowHead] < now && melted < meltCap) {
         let jj = snowQI[snowHead++];
         if (W[jj] === SNOW[0] || W[jj] === SNOW[1]) {
@@ -5705,6 +5883,7 @@
         }
         melted++;
       }
+      if (snowWHead > 8192) { snowWI = snowWI.slice(snowWHead); snowWHead = 0; }
       if (snowHead > 8192) { snowQI = snowQI.slice(snowHead); snowQT = snowQT.slice(snowHead); snowHead = 0; }
       if (cells.length) gpuPatch(cells);
     }
@@ -5989,9 +6168,15 @@
       const ax = B.x + Math.sin(th) * dist, az = B.z + Math.cos(th) * dist;
       if (!bfWater(ax, az) || WL - bfBed(ax, az) < 3) return false;
       return fishBodyAt(ax, az, th, Math.floor(B.y), B.fhalf); };
-    const fishReach = (B, th, maxD) => {               // how far the BODY can actually travel along a heading — a CONTINUOUS 2.5-vox walk (a boulder narrower than the old 4-vox stride was invisible to the planner)
+    const fishReach = (B, th, maxD) => {               // how far the BODY can actually travel along a heading.
+      // STEP = the body's own half-length, floored at 2.5. Each fishFits samples nose→tail over ~2·fhalf voxels, so
+      // consecutive probes spaced fhalf apart still cover EVERY voxel along the ray with 2× overlap — nothing can hide
+      // between samples. The old flat 2.5 stride re-tested the same voxels ~4× per ray, and since a CLEAR heading never
+      // breaks early it was the most expensive case: fish nav hit 17.9% of the main thread at 24 fish. Same coverage,
+      // same decisions, roughly half the probes.
+      const st = Math.max(2.5, (B.fhalf || 5) * 0.9);
       let r = 0;
-      for (let d = 2.5; d <= maxD; d += 2.5) { if (!fishFits(B, th, d)) break; r = d; }
+      for (let d = st; d <= maxD; d += st) { if (!fishFits(B, th, d)) break; r = d; }
       return r; };
     // ── PERCHED CARDINALS ── the rotate-frame cardinal sits on a pine crown (feet on the green needles) and plays its spin animation. Uses the disabled lily slots (40-54).
     const foliageSet = new Uint8Array(256); for (const f of foliageIds) foliageSet[f] = 1;   // green canopy palette ids → the perch surface
@@ -6152,10 +6337,10 @@
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 2.5));   // BUTTERFLIES doubled (user 2026-07-18): 1.25 -> 2.5, still bounded by the 16 flyer slots   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
-    const nDfly = (DFLY_NFRAMES && waterSpots.length) ? Math.min(6, 1 + (waterSpots.length >> 1)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before
+    const nDfly = (DFLY_NFRAMES && waterSpots.length) ? Math.min(3, 1 + (waterSpots.length >> 2)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before. RATE HALVED 2026-07-20 (user): cap 6→3, per-spot growth >>1→>>2 — half as many at every water amount
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
-    const nFish = (FISHES.length && waterSpots.length) ? Math.min(12, 2 + waterSpots.length * 2) : 0;   // FISH scale with how much water is in view (lakes AND rivers — waterSpots is the dragonfly's census); 0 when no water, capped by the 16 fish slots
+    const nFish = (FISHES.length && waterSpots.length) ? Math.min(24, 4 + waterSpots.length * 4) : 0;   // FISH scale with how much water is in view (lakes AND rivers — waterSpots is the dragonfly's census); 0 when no water. DOUBLED 2026-07-20 (user): 12 -> 24, inside the widened 32-slot band
     // Count scales with the AREA the birds have to cover. The 60 cap was set when the spawn ring was ~331 vox; the
     // ring is now ~406, which is 1.5x the area, so the same 60 birds read as a thinner, patchier forest. This keeps
     // the ORIGINAL density over the larger disc (~90 at the default view) and is still inside the 180-slot pool.
@@ -6193,7 +6378,7 @@
     } else for (let bi = 1; bi < BIRD_N; bi++) birdBoxes[bi].active = false;
     const dropBase = dropCursor;                       // first slot free after the flying songbirds — the wbf creatures (staged below) fill from here by distance
     let emitN = 0;                                     // wbf poses staged into emitBuf this frame; sorted + emitted after the loop
-    for (let wk = 0; wk < 260; wk++) {
+    for (let wk = 0; wk < 276; wk++) {
       const B = wbf[wk];
       const fishSlot = wk >= 244, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
@@ -6276,7 +6461,7 @@
           if (wantK === 0 && isDfly && !bfWater(sx, sz)) continue;    // the jitter may have thrown it ashore — a dragonfly only ever starts over real water
           if (wantK === 0 && !isDfly && bfWater(sx, sz)) continue;    // …and a BUTTERFLY never starts over water (user: limit butterflies over lakes); it may still drift out over one
           if ((wantK === 3 || wantK === 4) && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
-          if (wantK === 6 && (!bfWater(sx, sz) || WL - bfBed(sx, sz) < 4 || tooClose(244, 260, 14))) continue;   // FISH need REAL water DEEP enough for a body below the surface (≥4 vox) — rivers qualify, shore shelves don't; ≥14 apart so a pool holds a loose school, not a knot
+          if (wantK === 6 && (!bfWater(sx, sz) || WL - bfBed(sx, sz) < 4 || tooClose(244, 276, 14))) continue;   // FISH need REAL water DEEP enough for a body below the surface (≥4 vox) — rivers qualify, shore shelves don't; ≥14 apart so a pool holds a loose school, not a knot
           if (wantK === 1 && tooClose(0, 16, 40)) continue;   // FIREFLIES still spread by proximity. BUTTERFLIES must NOT: their homes are already 128 vox apart by the cell grid, and testing against other butterflies' WANDERING positions made placement depend on where they happened to be — which is exactly what stopped the set being reproducible.             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
           // (worms no longer use tooClose: their homes are already 160 vox apart by the cell grid, and testing against other worms' CRAWLING positions made placement depend on where they had got to)          // worms spread WIDE — never bunched (user, doubled with the population)
           if (wantK === 3 && tooClose(16, 20, 200)) continue;         // mother ducks spawn ≥200 vox apart → at most ~2 families fit on a typical lake (user: 'only 1-2 per lake')
@@ -6295,15 +6480,16 @@
           B.fsp = wk % Math.max(1, FISHES.length);     // species fixed by SLOT (like the songbirds) — an exact even split that never drifts as fish recycle
           B.fhalf = (FISHES[B.fsp] || {}).half || 5;              // body half-length for every navigation probe — per species, not a salmon-sized guess
           { const sn = (FISHES[B.fsp] || {}).name;                // per-species LEAP frequency multiplier from the config (unlisted species get a modest default)
-            B.jumpMul = FISH_CFG.jump.species[sn] !== undefined ? FISH_CFG.jump.species[sn] : 0.25; }
+            B.jumpMul = FISH_CFG.jump.species[sn] !== undefined ? FISH_CFG.jump.species[sn] : 0.25;
+            B.schools = FISH_CFG.schoolSpecies.indexOf(sn) >= 0; }   // …and whether this species shoals at all
           B.jumpV = undefined; B.jumpArm = undefined; B.fleeT = 0;   // a recycled slot must never inherit a live arc or a stale flee window
           B.jumpRe = tb3 + (3 + Math.random() * 14) / Math.max(0.05, B.jumpMul);
           // ── SCHOOL ── join a same-species school that still has room (spawning right beside it), else start a fresh school of 3-6, else swim alone (~28%)
           B.school = -1; B.schoolCap = 0;
-          for (let m = 244; m < 260; m++) { const O = wbf[m]; if (O === B || !O.init || (O.kind | 0) !== 6 || O.school < 0 || O.fsp !== B.fsp) continue;
-            let cnt = 0; for (let q = 244; q < 260; q++) { const Q = wbf[q]; if (Q.init && Q.school === O.school) cnt++; }
+          for (let m = 244; m < 276; m++) { const O = wbf[m]; if (O === B || !O.init || (O.kind | 0) !== 6 || O.school < 0 || O.fsp !== B.fsp) continue;
+            let cnt = 0; for (let q = 244; q < 276; q++) { const Q = wbf[q]; if (Q.init && Q.school === O.school) cnt++; }
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
-          if (B.school < 0 && Math.random() > 0.28) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 3 + (Math.random() * 4 | 0); } }   // 3-6 per school
+          if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
         B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
@@ -6390,60 +6576,91 @@
               B.flRe = tb3 + 0.125;
               const away = Math.atan2(B.x - (B.thrX !== undefined ? B.thrX : P.x), B.z - (B.thrZ !== undefined ? B.thrZ : P.z));
               let bo = 0, bs = -1e9;
-              for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.7, -1.7, 2.5, -2.5]) { const sc = reachOf(away + off, 30) - Math.abs(off) * 6; if (sc > bs) { bs = sc; bo = off; } }
+              for (const off of [0, 0.7, -0.7, 1.6, -1.6]) { const sc = reachOf(away + off, 30) - Math.abs(off) * 6; if (sc > bs) { bs = sc; bo = off; } }   // 5 headings (was 9) — plenty to pick an open escape lane
               B.flTh = away + bo;
             }
             const fth = B.flTh !== undefined ? B.flTh : B.th;
             B.omT = Math.max(-FC.fleeYawRate, Math.min(FC.fleeYawRate, Math.atan2(Math.sin(fth - B.th), Math.cos(fth - B.th)) * 5));
             B.spdT = CRZ * FC.fleeMult; B.dT = 0.6 + Math.random() * 0.3;
-          } else {                                     // ── CRUISE ── FOLLOW THE CHANNEL: re-aim (~every replanS, jittered) at the heading with the longest clear
-            if (tb3 > (B.chRe || 0)) { let bo = 0, bs = -1e9;   // water reach, heavy straight-bias → smooth river/lake runs, gentle bends, no zig-zag
-              for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.15, -1.15]) { const sc = reachOf(B.th + off, 46) - Math.abs(off) * 7; if (sc > bs) { bs = sc; bo = off; } }
-              B.chTh = B.th + bo; B.chRe = tb3 + FC.replanS * (0.9 + Math.random() * 0.8); }
-            let want = B.chTh !== undefined ? B.chTh : B.th;
+            B.fleeing = true;
+          } else {                                     // ── CRUISE ── the LOCAL NAVIGATION PROBE (in the sense block below) is now the compass: a whisker fan
+            B.fleeing = false;                         // scanning the water every tick, so the cruise here only sets the long-range INTENT (drift straight, held by
+            // navTh) plus school cohesion. The probe then bends that intent onto the freest lane, which is what keeps the
+            // fish clear of banks and rocks proactively instead of only reacting once one is in its face (user).
+            let want = B.navTh !== undefined ? B.navTh : B.th;
             if (B.school >= 0) {                       // schooling BLENDS with the channel: mostly stick with the group, but bend toward open water so the school never piles into a bank
               let cx = 0, cz = 0, hx = 0, hz = 0, sxx = 0, szz = 0, n = 0;
-              for (let m = 244; m < 260; m++) { const O = wbf[m]; if (O === B || !O.init || O.school !== B.school) continue;
+              for (let m = 244; m < 276; m++) { const O = wbf[m]; if (O === B || !O.init || O.school !== B.school) continue;
                 const dxs = O.x - B.x, dzs = O.z - B.z, d2 = dxs * dxs + dzs * dzs; if (d2 > 42 * 42) continue;
                 cx += O.x; cz += O.z; hx += Math.sin(O.th); hz += Math.cos(O.th); n++;
                 if (d2 < 7 * 7 && d2 > 0.01) { const w = 7 - Math.sqrt(d2); sxx -= dxs * w; szz -= dzs * w; } }
               if (n > 0) { const gx = (cx / n - B.x) + sxx * 1.6, gz = (cz / n - B.z) + szz * 1.6;
                 const sth = (gx * gx + gz * gz > 1) ? Math.atan2(gx, gz) : Math.atan2(hx, hz);
                 want = Math.atan2(0.68 * Math.sin(sth) + 0.32 * Math.sin(want), 0.68 * Math.cos(sth) + 0.32 * Math.cos(want)); } }
-            B.omT = Math.max(-FC.yawRate, Math.min(FC.yawRate, Math.atan2(Math.sin(want - B.th), Math.cos(want - B.th)) * 1.9));   // gentle, eased yaw toward the channel/school — SMOOTH, not twitchy
+            B.navGoal = want;                          // the intent handed to the whisker probe — it steers toward the freest lane NEAR this, not blindly at it
             B.spdT = CRZ;                              // NORMAL swimming runs at the configured base speed, exactly — the flee state is the sole 2× (user)
           }
           B.spd = (B.spd || CRZ) + ((B.spdT || CRZ) - (B.spd || CRZ)) * (1 - Math.exp(-((B.spdT || 0) > (B.spd || CRZ) ? 6 : 1.4) * dt));   // asymmetric ease: the kick to double is FAST, the bleed-off slow — dart, then coast
           if (tb3 > (B.dRe || 0)) { B.dT = 0.25 + Math.random() * 0.6; B.dRe = tb3 + 2 + Math.random() * 4; }   // depth wander — a new hold-depth every few seconds
-          // ── SENSE AT 20 Hz, ACT EVERY FRAME ── all voxel probing below re-evaluates on a 50 ms cadence (a fish covers
-          // ~1 voxel between checks — nothing can sneak inside the 12+ vox lookahead), while the cached RESULT (push
-          // vector, backstop heading, speed cap) still applies every frame so the motion stays perfectly smooth. At
-          // uncapped render rates the per-frame probing WAS the fish AI cost — behaviour is identical, ~10× cheaper.
-          if (tb3 > (B.senseRe || 0)) { B.senseRe = tb3 + 0.05;
-            let rx = 0, rz = 0;                         // ── BANK REPULSION ── the LONG body must stay clear of terrain even when the centre is in water. Sum a push away from any shore/rock within 9 vox at the swim depth. In a river the two banks cancel when the fish is centred, so it only acts when the body drifts toward a side (this is what frees a fish already resting its nose/tail in a bank — steering alone can't).
+          // ── SENSE AT ~14 Hz, ACT EVERY FRAME ── the voxel probing re-evaluates on a ~70 ms cadence (a fish covers a
+          // voxel or two between checks — nothing sneaks inside the multi-body-length whiskers), while the cached RESULT
+          // (nav heading, push vector, backstop, speed cap) applies every frame so motion stays perfectly smooth. At
+          // uncapped render rates the per-frame probing WAS the fish AI cost.
+          if (tb3 > (B.senseRe || 0)) { B.senseRe = tb3 + 0.07;
+            // ── LOCAL NAVIGATION PROBE ── the "sensors constantly scanning the water" (user). A whisker fan sweeps the
+            // front arc around the current intent; each whisker measures how far the BODY can travel down it (fishReach)
+            // AND whether both flanks a few body-lengths ahead are open water (so it stays CENTRED in a channel, off the
+            // banks). The fish continuously banks toward the freest, best-centred lane — it curves around a shore, rock
+            // or river bend from many voxels out instead of only reacting once the wall is in its face. probeMax scales
+            // with speed, so a fast fish looks correspondingly further ahead.
+            const goal = B.navGoal !== undefined ? B.navGoal : B.th;
+            const probeMax = Math.max(20, B.spd * 1.1);
+            const flankD = Math.max(5, (B.fhalf || 5) + 2);
+            const flankClear = (th, side) => { const qx = B.x + Math.sin(th + side) * flankD, qz = B.z + Math.cos(th + side) * flankD;
+              return (bfWater(qx, qz) && WL - bfBed(qx, qz) >= 3 && !solid(Math.floor(qx), ay, Math.floor(qz))) ? 1 : 0; };
+            let bestTh = goal, best = -1e9, bestReach = 0;
+            for (const off of [0, 0.3, -0.3, 0.62, -0.62, 1.0, -1.0, 1.5, -1.5, 2.2, -2.2]) {
+              const th = goal + off;
+              const reach = fishReach(B, th, probeMax);
+              if (reach < 3) continue;                  // the body can't even start down this whisker — never a candidate
+              const flank = flankClear(th, 1.05) + flankClear(th, -1.05);   // 0..2 — lanes with water on both sides win, centring the fish
+              const turn = Math.abs(off) + Math.abs(Math.atan2(Math.sin(th - B.th), Math.cos(th - B.th))) * 0.5;   // prefer the goal AND the current heading → smooth, no dithering
+              const sc = Math.min(reach, probeMax) + flank * 6 - turn * 5;
+              if (sc > best) { best = sc; bestTh = th; bestReach = reach; }
+            }
+            if (best <= -1e9) { bestTh = B.th + (B.om >= 0 ? 3.14159 : -3.14159); bestReach = 0; }   // every whisker blocked → about-face
+            B.navTh = bestTh; B.navReach = bestReach;
+
+            let rx = 0, rz = 0;                         // ── BANK REPULSION ── a safety NET for a body that has already drifted a nose/tail into terrain even though the centre is in water: sum a push off any shore/rock within 9 vox and slide toward open water. With the probe steering proactively this rarely fires, but it is what physically peels a fish off an edge steering alone cannot.
             for (let k = 0; k < 8; k++) { const sa = Math.sin(k * 0.7854), ca = Math.cos(k * 0.7854);
               for (let d = 3.5; d <= 9; d += 2.75) { const qx = B.x + sa * d, qz = B.z + ca * d;
                 if (WL - bfBed(qx, qz) < 3 || solid(Math.floor(qx), ay, Math.floor(qz)) || solid(Math.floor(qx), ay + 1, Math.floor(qz))) { rx -= sa * (10 - d); rz -= ca * (10 - d); break; } } }
             B.repX = rx; B.repZ = rz;
-            const look = Math.max(FC.lookMin, B.spd * 0.62);   // ── REACTIVE WALL BACKSTOP ── terrain within the speed-scaled lookahead → override toward the clearest heading and slow, so it never bores into a wall whatever the channel/school/flee wanted
+            const look = Math.max(FC.lookMin, B.spd * 0.62);   // ── REACTIVE WALL BACKSTOP ── last-ditch: terrain inside the immediate lookahead → hard override + slow. The probe should prevent this from ever tripping, so it is now purely a fail-safe.
             B.bkOn = !fishOK(B.th, look) || !fishOK(B.th, 5);
-            if (B.bkOn && tb3 > (B.bkRe || 0)) {        // the 10-heading FAN re-plans at 10 Hz while triggered
+            if (B.bkOn && tb3 > (B.bkRe || 0)) {
               B.bkRe = tb3 + 0.1;
               let bo = 0, bs = -1e9;
-              for (const off of [0, 0.4, -0.4, 0.85, -0.85, 1.4, -1.4, 2.1, -2.1, 3.14159]) { const sc = reachOf(B.th + off, look) - Math.abs(off) * 3.5 - (off * B.om < 0 ? 4 : 0); if (sc > bs) { bs = sc; bo = off; } }
+              for (const off of [0, 0.5, -0.5, 1.1, -1.1, 2.0, -2.0]) { const sc = reachOf(B.th + off, look) - Math.abs(off) * 3.5 - (off * B.om < 0 ? 4 : 0); if (sc > bs) { bs = sc; bo = off; } }
               B.bkTh = (bs < 4 ? (B.om >= 0 ? 3.14159 : -3.14159) : bo); B.bkTight = bs < look * 0.5;   // no gap anywhere → hard about-face
             }
+          }
+          if (!B.fleeing) {                             // ── STEER toward the probe's chosen lane every frame (cached navTh) ── the eased om below smooths the ~70 ms cadence into a continuous glide
+            let dth = Math.atan2(Math.sin((B.navTh !== undefined ? B.navTh : B.th) - B.th), Math.cos((B.navTh !== undefined ? B.navTh : B.th) - B.th));
+            B.omT = Math.max(-FC.yawRate, Math.min(FC.yawRate, dth * 2.2));
+            const nr = B.navReach !== undefined ? B.navReach : 30;   // PROACTIVE SLOWDOWN: the open lane is short → ease off well before the backstop so tight water is taken at a controlled pace
+            if (nr < 16) B.spd = Math.min(B.spd, Math.max(9, nr));
           }
           { const rx = B.repX || 0, rz = B.repZ || 0;   // apply the CACHED repulsion each frame (dt-scaled → frame-rate independent slide)
             if (rx * rx + rz * rz > 0.3) { const rl = Math.hypot(rx, rz), nrx = rx / rl, nrz = rz / rl;
               if (bfWater(B.x + nrx * 2, B.z + nrz * 2) && WL - bfBed(B.x + nrx * 2, B.z + nrz * 2) >= 3) { B.x += nrx * Math.min(7, rl) * dt * 1.9; B.z += nrz * Math.min(7, rl) * dt * 1.9; }   // slide toward open water, but only if that step is itself clear (never shove into the opposite bank)
               const dr = Math.atan2(Math.sin(Math.atan2(nrx, nrz) - B.th), Math.cos(Math.atan2(nrx, nrz) - B.th));
               B.omT = Math.max(-5, Math.min(5, B.omT + dr * 2.2)); } }
-          if (B.bkOn) {                                 // apply the CACHED backstop each frame
+          if (B.bkOn) {                                 // apply the CACHED backstop each frame (fail-safe override)
             B.omT = Math.max(-6.5, Math.min(6.5, (B.bkTh || 0) * 3.8));
-            B.spd = Math.min(B.spd, B.bkTight ? 8 : 16);     // tight gap → crawl; comfortable gap → shed the dart but keep way on (6/12 read as fish stalling in open lakes — cruise averaged 15 instead of the configured 22)
+            B.spd = Math.min(B.spd, B.bkTight ? 8 : 16);     // tight gap → crawl; comfortable gap → shed the dart but keep way on
           }
-        } else { B.omT = 0; }                          // AIRBORNE: no steering — the splash-down was validated for the launch line and must stay where it was aimed
+        } else { B.omT = 0; B.fleeing = false; }       // AIRBORNE: no steering — the splash-down was validated for the launch line and must stay where it was aimed
       } else {
         if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 4.0; B.tRe = tb3 + 0.4 + Math.random() * 0.8; }
         const la5 = 13;
@@ -6486,9 +6703,15 @@
           Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
         }
       }
-      if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; }   // fast trap decay: only SUSTAINED blockage accumulates toward a recycle
+      if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; B.noMove = 0; }   // fast trap decay: only SUSTAINED blockage accumulates toward a recycle
       else {
         B.trap = (B.trap || 0) + dt;                   // blocked (cornered) — count it
+        // ── HARD ANTI-STALL (user: "fish are still getting stuck on rocks and terrain") ── `trap` is NOT a reliable
+        // stuck signal for a fish: the escape below clears it whenever it finds *somewhere* to nudge toward, so a fish
+        // wedged where its 10-voxel body fits NO heading jiggles on the spot with trap pinned at 0 and never reaches
+        // the 12 s mercy-recycle. Measured: one fish stalled 55 s of a 90 s soak. noMove counts REAL rejected motion
+        // and nothing resets it except an accepted move, so it always fires.
+        B.noMove = (B.noMove || 0) + dt;
         if (B.kind === 6) {                            // ── FISH ESCAPE ── body-aware, and it can go OVER an obstruction as well as around it (real fish rise over a boulder rather than grind its face).
           let bestA = -1, bestScore = -1e9;
           for (let k9 = 0; k9 < 16; k9++) { const th9 = k9 * 0.3927;
@@ -6545,13 +6768,14 @@
             B.spdT = FC9.baseSpeed; B.dT = 0.35 + Math.random() * 0.3;   // glide off the splash back into a mid-depth cruise
           }
         } else {
+          if ((snowOn || freezeK >= 0.02) && B.jumpArm !== undefined) { B.jumpArm = undefined; B.jumpRe = tb3 + 5; }   // snow began mid-run-up → abandon the leap (a fish must never breach a snowing/frozen lake — user)
           const tgt9 = lo9 + (hi9 - lo9) * (B.dT !== undefined ? B.dT : 0.5);
           B.y += Math.max(-7 * dt, Math.min(7 * dt, (tgt9 - B.y) * (1 - Math.exp(-2.2 * dt))));
           B.y = Math.max(lo9, Math.min(hi9, B.y));     // hard clamp — the body NEVER breaks the surface and never grinds the bed
           // ── LEAP, TWO-PHASE ── ARM a run-up to the surface first (waiting for the depth wander to leave the fish
           // shallow practically never fired), then BREACH only after the WHOLE ARC validates. Every dial lives in
           // FISH_CFG.jump: the cooldown window ÷ species multiplier = frequency, vMin/vMax = height, forward = distance.
-          if ((B.jumpMul || 0) > 0 && B.jumpArm === undefined && tb3 > (B.jumpRe || 0) && hi9 - lo9 > FC9.jump.minDepth
+          if ((B.jumpMul || 0) > 0 && !snowOn && freezeK < 0.02 && B.jumpArm === undefined && tb3 > (B.jumpRe || 0) && hi9 - lo9 > FC9.jump.minDepth
               && bfSky(B.x, WL + 2, B.z) && fishFits(B, B.th, 10)) {
             B.jumpArm = tb3 + FC9.jump.armS;           // ARM: climb for up to armS seconds…
             B.dT = 1; B.dRe = tb3 + FC9.jump.armS + 1; // …holding the shallow depth target so the wander can't pull it back down mid-ascent
@@ -6613,8 +6837,40 @@
             const qy = Math.min(WL - 1.4, B.y + u6);
             if (fishBodyAt(B.x, B.z, B.th, Math.floor(qy), B.fhalf)) { B.y = qy; B.cx = B.x; B.cy = qy; B.cz = B.z; B.cth = B.th; fixed = true; } }
           if (!fixed && B.cx !== undefined) { B.x = B.cx; B.y = B.cy; B.z = B.cz; if (B.cth !== undefined) B.th = B.cth;   // last-resort revert — RESTORE THE HEADING TOO: the body test depends on it, so a pose remembered at
-            B.trap = (B.trap || 0) + dt; }                                 // one heading can clip at another, and reverting position alone left a fish embedded for ~10 s at a time (measured).
+            B.trap = (B.trap || 0) + dt;                                   // one heading can clip at another, and reverting position alone left a fish embedded for ~10 s at a time (measured).
+            B.noMove = (B.noMove || 0) + dt;           // …and this counts as NOT MOVING. stepOK validates the body at the PRE-step y, then the depth ease shifts y and this
+          }                                            // resolve rejects at the new y and restores the same pose — the move "succeeded" every frame while the fish sat
+        }                                              // frozen (measured: 60 s at spd 8 with noMove stuck at 0). Both stall routes must feed the same counter.
+      }
+      // ── STALL WATCHDOG ── purely OBSERVATIONAL, and it is what finally kills the "stuck on rocks" report. Counting
+      // rejected moves was not enough: the post-move hitbox often "fixes" a clipping fish by nudging it, the next frame
+      // re-clips and nudges it back, and it oscillates on the spot with every internal counter reading healthy. So judge
+      // the only thing that matters — did it actually TRAVEL — and require the terrain backstop to be engaged so a fish
+      // merely circling in open water is never touched.
+      let stallHit = false;
+      if (B.kind === 6 && B.jumpV === undefined) {
+        if (B.stallT === undefined) { B.stallT = tb3; B.stallX = B.x; B.stallZ = B.z; }
+        else if (tb3 - B.stallT > 1.8) {
+          if (Math.hypot(B.x - B.stallX, B.z - B.stallZ) < 7 && B.bkOn) stallHit = true;   // < 3.9 vox/s of real progress while grinding terrain
+          B.stallT = tb3; B.stallX = B.x; B.stallZ = B.z;
         }
+      }
+      if (B.kind === 6 && ((B.noMove || 0) > 3 || stallHit) && B.jumpV === undefined) {
+        // Sweep outward for somewhere the body genuinely fits and relocate; if the whole neighbourhood
+        // is unusable, drop the slot so the spawner re-places it in open water. Either way no fish parks in the scenery.
+        let done = false;
+        for (let rr = 6; rr <= 40 && !done; rr += 4) {
+          for (let k8 = 0; k8 < 12; k8++) { const a8 = k8 * 0.5236 + B.th;
+            const qx = B.x + Math.sin(a8) * rr, qz = B.z + Math.cos(a8) * rr;
+            if (!bfWater(qx, qz) || WL - bfBed(qx, qz) < 5) continue;
+            const qy = Math.max(bfBed(qx, qz) + 2.2, Math.min(WL - 2, (bfBed(qx, qz) + WL) * 0.5));   // re-seat at MID depth — the stalls all began in shallow shelf water
+            if (!fishBodyAt(qx, qz, a8, Math.floor(qy), B.fhalf)) continue;
+            B.x = qx; B.z = qz; B.y = qy; B.th = a8; B.om = 0; B.omT = 0; B.dT = 0.5;
+            B.cx = qx; B.cy = qy; B.cz = qz; B.cth = a8; B.hx = qx; B.hz = qz;   // re-home too, or the leash drags it straight back into the pocket
+            B.noMove = 0; B.trap = 0; B.chRe = 0; B.bkOn = false; B.senseRe = 0;
+            B.stallT = tb3; B.stallX = qx; B.stallZ = qz; done = true; break; }
+        }
+        if (!done) { B.init = false; B.noMove = 0; B.stallT = undefined; }   // nowhere within 4 m works — recycle rather than leave a fish parked in the scenery
       }
       if (B.kind < 2 && (bfObst(B.x, B.y, B.z) || bfRoofed(B.x, B.y, B.z))) {   // under a roof (cave/overhang) — steer OUT horizontally (eased, never climb into it); count toward a recycle. Worms/ducks don't care about roofs.
         B.omT = (B.om >= 0 ? 5.0 : -5.0); B.trap = (B.trap || 0) + dt;
@@ -6699,6 +6955,10 @@
     device.queue.writeBuffer(uniBuf, 0, UF);
 
     // ── passes ──
+    if (VE.exporting) { tickReq = true; paceWaited = false; requestAnimationFrame(tick); return; }   // ── EXPORT QUIET MODE ── while the video editor is writing a file, skip the frame entirely: the
+    // tracer runs at 200+ fps behind the panel and its GPU/CPU contention is what made the exported clip judder
+    // (the editor preview looked fine because dropped frames only show up in the recorded timeline). The loop keeps
+    // pumping so playback, seeking and the recorder all continue normally.
     const par = frame & 1;
     const enc = device.createCommandEncoder();
     if (xStripPending >= 0) {                          // strip scatter runs before this frame's trace
@@ -6749,7 +7009,7 @@
       if (!locked) {
         const mins = Math.floor(tday * 1440);
         todLabel.textContent = String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
-        if (!todDrag) todSlider.value = mins;
+        if (!todDrag) { todSlider.value = mins; sliderFill(todSlider); }   // keep the green fill line tracking the clock as the day advances
       }
       hudEl.textContent = `${fpsEma.toFixed(0)} fps${vsyncOn ? '' : ' (uncapped)'}  ${RW}×${RH} (${renderScale.toFixed(2)}×)\n` +
         `xyz ${(P.x / 10).toFixed(1)} ${(P.y / 10).toFixed(1)} ${(P.z / 10).toFixed(1)} m${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}  ${String(Math.floor(tday * 24)).padStart(2, '0')}:${String(Math.floor((tday * 24 % 1) * 60)).padStart(2, '0')}${cycleSpeed !== 1 ? ' x' + cycleSpeed.toFixed(1) : ''}` +
