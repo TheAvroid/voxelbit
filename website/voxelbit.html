@@ -2081,6 +2081,9 @@
         if (occ) bricks[b >> 5] |= 1 << (b & 31); else bricks[b >> 5] &= ~(1 << (b & 31));
       }
     }
+    rebuildBricks2(gx0, gx1, gz0, gz1);
+  }
+  function rebuildBricks2(gx0, gx1, gz0, gz1) {        // L2-only rebuild (from the L1 bricks) — the pooled band path merges worker-computed L1 bits, then only this remains
     for (let cz = gz0 >> 5; cz <= (gz1 - 1) >> 5; cz++) for (let cy = 0; cy < B2Y; cy++) for (let cx = gx0 >> 5; cx <= (gx1 - 1) >> 5; cx++) {
       let occ = 0;                                     // L2 = OR of the 4³ covered bricks
       scan2: for (let bz = cz * 4; bz < cz * 4 + 4; bz++) for (let by = cy * 4; by < cy * 4 + 4; by++) for (let bx = cx * 4; bx < cx * 4 + 4; bx++) {
@@ -2152,11 +2155,27 @@
       '  W = new Uint8Array(WX * WY * WZ); hmap = new Int16Array(WX * WZ);\n' +
       '  touched = new Uint8Array(((WX >> 3) + 1) * ((WZ >> 3) + 2));\n' +
       '  genRegion(d.x0, d.x1, d.z0, d.z1, true);\n' +
-      '  postMessage({ id: d.id, stride: WX, W, hmap }, [W.buffer, hmap.buffer]);\n' +
+      '  const nbx = sx >> 3, nbz = sz >> 3, nby = WY >> 3;\n' +               // ── SLAB BRICK BITS ── the 8³ occupancy scan runs HERE, in parallel, instead of on the main thread after the blit
+      '  const bb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +
+      '  const W32b = new Uint32Array(W.buffer);\n' +
+      '  for (let bz = 0; bz < nbz; bz++) for (let bx = 0; bx < nbx; bx++) {\n' +
+      '    let maxH = 0;\n' +
+      '    for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) { const hv = hmap[x + z * WX]; if (hv > maxH) maxH = hv; }\n' +
+      '    const byCap = Math.min(nby, ((maxH + 122) >> 3) + 1);\n' +          // sky-cap: nothing exists above terrain + the tallest pine
+      '    for (let by = 0; by < byCap; by++) {\n' +
+      '      let occ = 0;\n' +
+      '      scan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {\n' +
+      '        const rw = (y * WX + z * WX * WY + bx * 8) >> 2;\n' +
+      '        if (W32b[rw] | W32b[rw + 1]) { occ = 1; break scan; }\n' +
+      '      }\n' +
+      '      if (occ) { const b = bx + by * nbx + bz * nbx * nby; bb[b >> 5] |= 1 << (b & 31); }\n' +
+      '    }\n' +
+      '  }\n' +
+      '  postMessage({ id: d.id, stride: WX, W, hmap, bb, nbx, nby, nbz }, [W.buffer, hmap.buffer, bb.buffer]);\n' +
       '  W = hmap = touched = null;\n' +
       '};';
     const purl = URL.createObjectURL(new Blob([wsrc2], { type: 'text/javascript' }));
-    const NPOOL = Math.max(2, Math.min(8, (navigator.hardwareConcurrency || 4) - 2));
+    const NPOOL = Math.max(2, Math.min(12, (navigator.hardwareConcurrency || 4) - 2));   // cap raised 8 → 12: on big machines the extra workers lift band throughput (gen rate), small ones are unchanged
     genPool = [];
     for (let i = 0; i < NPOOL; i++) {
       const w = new Worker(purl);
@@ -2223,19 +2242,29 @@
     for (let z = j.z0 & ~7; z < j.z1; z += 8) { const tr = (gwrap(z, WZ) >> 3) * BX;   // blitted memory is no longer virgin
       for (let x = j.x0; x < j.x1; x += 8) touched[(gwrap(x, WX) >> 3) + tr] = 1;
     }
+    if (m.bb) {                                        // ── WORKER BRICK MERGE ── the slab's 8³ occupancy was scanned IN the worker; copy its bits into the global tables (chunks are 8-aligned, so every brick belongs wholly to this slab)
+      const nbx = m.nbx, nby = m.nby, nbz = m.nbz, bb = m.bb;
+      for (let bz = 0; bz < nbz; bz++) { const gbz = gwrap(j.z0 + bz * 8, WZ) >> 3;
+        for (let bx = 0; bx < nbx; bx++) { const gbx = gwrap(j.x0 + bx * 8, WX) >> 3;
+          for (let by = 0; by < nby; by++) {
+            const s = bx + by * nbx + bz * nbx * nby, g = gbx + by * BX + gbz * BX * BY;
+            if ((bb[s >> 5] >>> (s & 31)) & 1) bricks[g >> 5] |= 1 << (g & 31); else bricks[g >> 5] &= ~(1 << (g & 31));
+          } } }
+    }
   }
-  function* genRegionThreaded(x0, x1, z0, z1) {        // pool-generated region; falls back to the identical inline sweep if the pool dies or stalls
+  function* genRegionThreaded(x0, x1, z0, z1) {        // pool-generated region; falls back to the identical inline sweep if the pool dies or stalls. Returns TRUE when the pooled path ran (slab brick bits already merged — only the L2 rebuild remains for the caller)
     if (poolOk) {
       const key = rgnKey(x0, x1, z0, z1), jobs = poolRegion(x0, x1, z0, z1);
       let spin = 0;
       while (poolOk && spin < 1800 && jobs.some(jb => !jb.done)) { spin++; poolWait = true; yield; }
       poolWait = false;
-      if (jobs.every(jb => jb.done)) { for (const jb of jobs) { blitSlab(jb); yield; } poolFree(key); return; }
+      if (jobs.every(jb => jb.done)) { for (const jb of jobs) { blitSlab(jb); yield; } poolFree(key); return true; }
       poolFree(key);                                   // dead or stalled — regenerate the whole region inline (deterministic, so overlap is harmless)
     }
     reqRows(x0, x1, z0, z1);
     for (let spin = 0; spin < 90 && rowsPending(x0, x1, z0, z1); spin++) { yield; }
     yield* genRegionGen(x0, x1, z0, z1, false);
+    return false;
   }
   await buildWorld(true);
   // (cardinal is not stamped into the world — it's an off-grid DDA model driven per-frame in the tick loop; see "flying cardinal → drop slot 4")
@@ -2267,6 +2296,25 @@
   const stag = new Uint32Array(STRIPW);
   const stagBuf = device.createBuffer({ size: stag.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const scatBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  // ── GERSTNER WAVE FIELD ── (user: physically-based water) 4 deep-water waves — a long primary swell, a crossing
+  // secondary, two short chop waves — with the deep-water dispersion ω = c·√(g·k) (g ≈ 98 vox/s², slowed 0.42× for a
+  // calm-lake feel). HEIGHT is the plain 4-cos sum (what the voxel-stepped crests + the JS floater mirror quantize);
+  // the SHADING normal adds the Gerstner Q (crest-pinch) term, so surfaces read sharp-crested without breaking the
+  // column grid. ONE table drives the shader AND the JS mirror — they can never drift apart.
+  const GW = [                                         // [dirX, dirZ, k = 2π/λ, amp (vox), Q steepness, phase]
+    [0.834, 0.552, 6.2831853 / 52, 1.30, 0.55, 0.0],
+    [-0.416, 0.909, 6.2831853 / 23, 0.72, 0.50, 2.1],
+    [0.966, -0.259, 6.2831853 / 11, 0.34, 0.45, 4.4],
+    [0.309, -0.951, 6.2831853 / 6.7, 0.20, 0.40, 1.3]];
+  const GWOM = GW.map((w) => 0.42 * Math.sqrt(98 * w[2]));   // dispersion per wave
+  const gerstHJS = (wx, wz, t) => {                    // the JS mirror — ducks/lilies ride EXACTLY the surface the shader draws
+    let h = 0; for (let i = 0; i < 4; i++) { const w = GW[i]; h += w[3] * Math.cos(w[2] * (w[0] * wx + w[1] * wz) - GWOM[i] * t + w[5]); } return h; };
+  const GERSTH_WGSL = GW.map((w, i) =>
+    `h_ += ${w[3]} * cos(${(w[2] * w[0]).toFixed(7)} * wx + ${(w[2] * w[1]).toFixed(7)} * wz - ${GWOM[i].toFixed(7)} * u.time + ${w[5]});`).join('\n      ');
+  const GERSTN_WGSL = GW.map((w, i) =>
+    `{ let ph = ${(w[2] * w[0]).toFixed(7)} * wx + ${(w[2] * w[1]).toFixed(7)} * wz - ${GWOM[i].toFixed(7)} * u.time + ${w[5]};
+        let s_ = sin(ph); nx_ += ${(w[0] * w[2] * w[3]).toFixed(7)} * s_; nz_ += ${(w[1] * w[2] * w[3]).toFixed(7)} * s_; ny_ -= ${(w[4] * w[2] * w[3]).toFixed(7)} * cos(ph); }`).join('\n      ');
 
   // ── WGSL ────────────────────────────────────────────────────────────────────
   const PRE = /* wgsl */`
@@ -2382,6 +2430,34 @@
     }
     fn aces(x : vec3<f32>) -> vec3<f32> {
       return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    const WLF : f32 = ${WL}.0;
+    fn gerstH(wx : f32, wz : f32) -> f32 {                           // GERSTNER height (4-wave sum) — the voxel wave columns + JS floaters quantize THIS
+      var h_ = 0.0;
+      ${GERSTH_WGSL}
+      return h_;
+    }
+    fn gerstN(wx : f32, wz : f32) -> vec3<f32> {                     // GERSTNER shading normal — the Q term pinches crests (GPU-Gems form)
+      var nx_ = 0.0; var nz_ = 0.0; var ny_ = 1.0;
+      ${GERSTN_WGSL}
+      return normalize(vec3<f32>(nx_, max(ny_, 0.30), nz_));
+    }
+    fn vn2(p : vec2<f32>) -> f32 {
+      let f = floor(p); let i = vec2<i32>(f);
+      var w = p - f; w = w * w * (3.0 - 2.0 * w);
+      let a = mix(ih3(i.x, i.y, 7), ih3(i.x + 1, i.y, 7), w.x);
+      let b = mix(ih3(i.x, i.y + 1, 7), ih3(i.x + 1, i.y + 1, 7), w.x);
+      return mix(a, b, w.y);
+    }
+    fn caust(p : vec2<f32>) -> f32 {                                 // CAUSTICS — two drifting noise fields; their coincidence lines are the bright webs
+      let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.55, u.time * 0.34));
+      let n2 = vn2(p * 0.11 + vec2<f32>(-u.time * 0.47, u.time * 0.29));
+      return pow(clamp(1.0 - abs(n1 - n2) * 2.6, 0.0, 1.0), 5.0);
+    }
+    fn ivhash(c : vec3<i32>) -> f32 {
+      var x = u32(c.x) * 374761393u + u32(c.y) * 668265263u + u32(c.z) * 2246822519u;
+      x = (x ^ (x >> 13u)) * 1274126177u;
+      return f32((x ^ (x >> 16u)) & 1023u) / 1023.0;
     }
   `;
 
@@ -2526,19 +2602,6 @@
     @group(0) @binding(4) var gAlbedo : texture_storage_2d<rgba8unorm, write>;
     @group(0) @binding(5) var gIrr : texture_storage_2d<rgba16float, write>;
     ${DDAW}
-    const WLF : f32 = ${WL}.0;
-    fn vn2(p : vec2<f32>) -> f32 {
-      let f = floor(p); let i = vec2<i32>(f);
-      var w = p - f; w = w * w * (3.0 - 2.0 * w);
-      let a = mix(ih3(i.x, i.y, 7), ih3(i.x + 1, i.y, 7), w.x);
-      let b = mix(ih3(i.x, i.y + 1, 7), ih3(i.x + 1, i.y + 1, 7), w.x);
-      return mix(a, b, w.y);
-    }
-    fn caust(p : vec2<f32>) -> f32 {                                 // CAUSTICS — two drifting noise fields; their coincidence lines are the bright webs
-      let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.55, u.time * 0.34));
-      let n2 = vn2(p * 0.11 + vec2<f32>(-u.time * 0.47, u.time * 0.29));
-      return pow(clamp(1.0 - abs(n1 - n2) * 2.6, 0.0, 1.0), 5.0);
-    }
     @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;   // 32-voxel SUPER-brick occupancy (window origin is 32-aligned, so off>>5 is exact)
     const SNV : u32 = ${SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits
     const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
@@ -2552,11 +2615,6 @@
       return t * (r * cos(a)) + b * (r * sin(a)) + n * sqrt(max(1.0 - r2, 0.0));
     }
     fn ign(p : vec2<f32>) -> f32 { return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y)); }
-    fn ivhash(c : vec3<i32>) -> f32 {
-      var x = u32(c.x) * 374761393u + u32(c.y) * 668265263u + u32(c.z) * 2246822519u;
-      x = (x ^ (x >> 13u)) * 1274126177u;
-      return f32((x ^ (x >> 16u)) & 1023u) / 1023.0;
-    }
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
@@ -2677,9 +2735,7 @@
           var wSide = false; var wCrest = -9.0; var whF = baseTop;
           for (var wi = 0; wi < 22; wi++) {
             let wxw = f32(cw.x) + u.winO.x; let wzw = f32(cw.y) + u.winO.y;
-            let g1 = 2.0 * pow(0.5 + 0.5 * sin(wxw * 0.062 + wzw * 0.041 + u.time * 0.95), 2.4) - 1.0;   // primary swell — long wavelength, peaked crests, flat troughs
-            let g2 = 2.0 * pow(0.5 + 0.5 * sin(wxw * -0.048 + wzw * 0.104 + u.time * 0.80), 2.0) - 1.0;  // crossing secondary swell
-            let wv = g1 * 1.3 + g2 * 0.9 + sin((wxw * 0.9 + wzw * 0.63) * 0.23 - u.time * 1.9) * 0.35;   // + short wind chop
+            let wv = gerstH(wxw, wzw);                                                                   // GERSTNER height field (see PRE) — same sum the JS floater mirror rides
             let wh = baseTop + floor(wv + 0.5);
             let tNext = min(tmx, tmz);
             if (ro.y + rd.y * tq <= wh) { t = tq; wSide = true; wCrest = wv; whF = wh; break; }          // SIDE face of a wave step
@@ -2710,16 +2766,8 @@
             albedo = mix(albedo, vec3<f32>(0.82, 0.87, 0.90), foamK);
           }
         }
-        if (faceId == 6u) {                                          // 50% TRANSLUCENT water (user) — the bed shows through, fading with depth
-          let bh = trace(ro + rd * (h.t + 0.01), rd, 48.0, true);    // beyond 48 voxels the mix is <5% of 50% — invisible, so don't pay for it
-          if (bh.t >= 0.0) {
-            let bpos = ro + rd * (h.t + 0.01) + rd * bh.t;
-            let bvc = vec3<i32>(floor(bpos - bh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
-            let ca = caust(floor(vec2<f32>(bpos.x + u.winO.x, bpos.z + u.winO.y)) + vec2<f32>(0.5));   // per-voxel caustic web on the bed
-            let balb = pal[bh.vox].rgb * (0.88 + 0.24 * ivhash(bvc)) * (1.0 + 1.6 * ca * smoothstep(-0.02, 0.12, u.sunDir.y));
-            albedo = mix(albedo, balb, 0.50 * exp(-bh.t * 0.03) * (1.0 - foamK));
-          }
-        }
+        // (the old 50%-translucent bed mix moved to the COMPOSITE: it now arrives via a REAL refracted ray with
+        // Beer–Lambert absorption — the G-buffer albedo stays the pure surface color + foam.)
         var seed = ((gid.x * 1973u) ^ (gid.y * 9277u) ^ (u32(u.frame) * 26699u)) | 1u;
         let sp = pos + h.n * 0.02;
         if (${location.search.includes('nosun') ? 0 : 1} == 1 && dot(h.n, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night (?nosun disables for A/B)
@@ -2882,6 +2930,7 @@
     @group(0) @binding(16) var<storage, read> world : array<u32>;   // world + occupancy for the shared DDA — creature pixels trace a REAL sun ray
     @group(0) @binding(17) var<storage, read> bricks : array<u32>;  // so moving things sit in tree shade exactly like the static terrain
     @group(0) @binding(18) var<storage, read> bricks2 : array<u32>;
+    @group(0) @binding(19) var<storage, read> pal : array<vec4<f32>>;   // palette — the traced water reflection/refraction shades its hits here
     ${DDAW}
     ${pickWGSL}
     fn vn3(p : vec3<f32>) -> f32 {
@@ -2997,16 +3046,52 @@
         var fogA = 1.0 - exp(-irr.b * 0.0006);
         fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
         col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
-      } else if (face == 6u) {                                       // WATER — deep solid blue, fresnel sky sheen, tight sun glitter
+      } else if (face == 6u) {                                       // ── PHYSICALLY-BASED WATER ── Gerstner surface, RAY-TRACED reflection + refraction, Beer–Lambert absorption + single scattering. The voxel aesthetic survives on purpose: the surface is still stepped 10 cm columns, the mirror image is the voxel world itself, glints stay discrete.
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         let alb = alb4.rgb * alb4.rgb;
-        let pw2 = u.camPos + rd * irr.b;
+        let tWat = irr.b;
+        let pw2 = u.camPos + rd * tWat;
         let wx2 = pw2.x + u.winO.x; let wz2 = pw2.z + u.winO.y;
-        let nW = normalize(vec3<f32>(sin(wx2 * 0.33 + u.time * 1.2) * 0.045 + sin(wz2 * 0.19 - u.time * 0.85) * 0.035, 1.0,
-                                     cos(wz2 * 0.31 + u.time * 1.05) * 0.045 + sin(wx2 * 0.17 + u.time * 0.65) * 0.035));
-        let refl = reflect(rd, nW);
-        let fres = 0.04 + 0.55 * pow(1.0 - clamp(-dot(rd, nW), 0.0, 1.0), 4.0);   // grazing angles mirror the sky
-        col = alb * (0.55 + 0.40 * irr.g) * (0.68 + 0.32 * irr.r) * dayScale() + skyBase(refl) * fres * 0.75;   // irr.r (sun visibility) darkens the water BODY in shadow — so a lily/duck (or the terrain) casts a clear shadow on the surface, not just a loss of glitter
+        let nW = gerstN(wx2, wz2);                                   // the GERSTNER normal — same field that raises the voxel crests, crest-pinched by the Q term
+        let foamW = smoothstep(0.16, 0.50, alb.g) * (1.0 - u.pickZ.w);   // foam carries a bright albedo → shade it as SURFACE, not window (ice path handles frozen)
+        let cosI = clamp(-dot(rd, nW), 0.02, 1.0);
+        let fres = 0.02 + 0.98 * pow(1.0 - cosI, 5.0);               // true Schlick, F0 = 0.02 (air→water)
+        let sunW = smoothstep(-0.02, 0.12, u.sunDir.y) * irr.r;      // sun above horizon AND this surface point actually sees it
+        // ── RAY-TRACED REFLECTION ── the mirrored ray walks the real voxel scene; misses (and far hits) fall back to the sky
+        var refl = reflect(rd, nW);
+        if (refl.y < 0.03) { refl = normalize(vec3<f32>(refl.x, 0.06 - refl.y * 0.5, refl.z)); }   // a grazing mirror ray that would dive back under the surface folds just above it — no self-hit acne
+        var reflC = skyBase(refl);
+        {
+          let rh = trace(pw2 + vec3<f32>(0.0, 0.06, 0.0), refl, 220.0, false);
+          if (rh.t >= 0.0) {
+            let rpos = pw2 + refl * rh.t;
+            let rvc = vec3<i32>(floor(rpos - rh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
+            let ralb = pal[rh.vox].rgb * (0.88 + 0.24 * ivhash(rvc));
+            let rlit = sunTint() * (max(dot(rh.n, u.sunDir), 0.0) * 0.9 * irr.r) + mix(HORIZON, ZENITH, 0.5 + 0.5 * rh.n.y) * 0.95 * dayScale() + vec3<f32>(0.012, 0.013, 0.016);
+            reflC = mix(ralb * rlit, skyBase(refl), 1.0 - exp(-rh.t * 0.010));   // the mirror fades into sky with distance, like the world fades into haze
+          }
+        }
+        // ── REFRACTION + BEER–LAMBERT ── the transmitted ray bends by Snell (η = 1/1.33) and marches to the bed; what
+        // comes back is absorbed per-channel over the traveled water path — red dies first, blue carries.
+        let sigT = vec3<f32>(0.30, 0.115, 0.052);                    // extinction per voxel (10 cm)
+        let scatC = vec3<f32>(0.018, 0.070, 0.092) * (0.30 + 0.70 * sunW) * dayScale() * (0.45 + 0.55 * irr.g);   // single-scatter source — the water's own glow, lit by sun + sky
+        var refrC = scatC;                                           // no bed within reach → the column saturates to pure in-scatter
+        {
+          var refr = refract(rd, nW, 0.752);
+          if (dot(refr, refr) < 1e-5) { refr = rd; }                 // grazing/TIR fallback: continue straight
+          let bh = trace(pw2 + rd * 0.02, refr, 56.0, true);
+          if (bh.t >= 0.0) {
+            let bpos = pw2 + rd * 0.02 + refr * bh.t;
+            let bvc = vec3<i32>(floor(bpos - bh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
+            let ca = caust(floor(vec2<f32>(bpos.x + u.winO.x, bpos.z + u.winO.y)) + vec2<f32>(0.5));   // caustic webs dance on the refracted bed
+            let balb = pal[bh.vox].rgb * (0.88 + 0.24 * ivhash(bvc)) * (1.0 + 1.6 * ca * sunW);
+            let blit = (0.45 + 0.55 * irr.g) * dayScale() * (0.55 + 0.45 * irr.r);
+            let trB = exp(-sigT * bh.t);                             // Beer–Lambert over the in-water path
+            refrC = balb * blit * trB + scatC * (vec3<f32>(1.0) - trB);
+          }
+        }
+        col = mix(refrC, reflC, fres);                               // energy split by Fresnel — transmission vs mirror
+        col = mix(col, alb * (0.55 + 0.45 * irr.g) * (0.60 + 0.40 * irr.r) * dayScale() * 1.30, foamW);   // FOAM voxels stay bright chunky surface
         if (u.pickZ.w > 0.015) {                                     // FREEZING/FROZEN — the ice look BLENDS in over ~25 s as the lake freezes, and back out as it thaws
           let nI = vec3<f32>(0.0, 1.0, 0.0);
           let fresI = 0.03 + 0.22 * pow(1.0 - clamp(-dot(rd, nI), 0.0, 1.0), 4.0);
@@ -3135,8 +3220,12 @@
                   let shade = 0.45 + 0.55 * max(dot(nw, u.sunDir), 0.0);
                   col = cell.rgb * shade * (0.12 + 0.88 * dayScale());
                 }
-                if (waterT > 0.0 && bestT > waterT) {                // the hit sits UNDER the water surface → seen THROUGH it: blend toward the shaded surface color, fading with swim depth (matches the translucent-bed law)
-                  col = mix(waterCol, col, 0.55 * exp(-(bestT - waterT) * 0.03));
+                if (waterT > 0.0 && bestT > waterT) {                // the hit sits UNDER the water surface → seen THROUGH it: per-channel Beer–Lambert toward the shaded surface color (red dies first, blue carries — same law as the refracted bed)
+                  let trF = exp(-vec3<f32>(0.30, 0.115, 0.052) * (bestT - waterT));
+                  col = waterCol * (vec3<f32>(1.0) - trF) + col * trF;
+                }
+                if ((u32(u.fx) & 2u) != 0u) {                        // camera SUBMERGED: the creature dims through the same water the scene does — no bright fish glowing through the murk
+                  col = col * exp(-vec3<f32>(0.16, 0.062, 0.030) * bestT) + vec3<f32>(0.010, 0.042, 0.055) * dayScale() * (1.0 - exp(-0.06 * bestT));
                 }
               }
               break;
@@ -3224,7 +3313,29 @@
           }
         }
       }
-      if ((u32(u.fx) & 2u) != 0u) { col = mix(col, vec3<f32>(0.05, 0.21, 0.33), 0.55); }   // underwater tint
+      if ((u32(u.fx) & 2u) != 0u) {                                  // ── UNDERWATER ── (camera submerged) Beer–Lambert absorption over the in-water path + a RAY-MARCHED single-scatter with caustic-modulated sun shafts (replaces the old flat blue tint)
+        let irrU = textureLoad(irrF, vec2<i32>(gid.xy), 0);
+        var wD = select(1e4, irrU.b, irrU.b > 0.0);                  // in-water path toward the hit (sky pixels: the whole march range)
+        if (rd.y > 0.001) { wD = min(wD, max((WLF + 1.0 - u.camPos.y) / rd.y, 0.0)); }   // the ray exits through the surface — only the submerged stretch attenuates
+        wD = clamp(wD, 0.0, 160.0);
+        let sigU = vec3<f32>(0.16, 0.062, 0.030);                    // gentler than the surface view — swimming has to stay playable
+        let trU = exp(-sigU * wD);
+        var seedW = ((gid.x * 7817u) ^ (gid.y * 45589u) ^ (u32(u.frame) * 2657u)) | 1u;
+        var accW = vec3<f32>(0.0);
+        let sunUp = smoothstep(-0.02, 0.12, u.sunDir.y);
+        let dtW = wD / 6.0;
+        var tw2 = dtW * rand(&seedW);                                // jittered march start — TAA melts the step banding
+        let sunInv = 1.0 / max(u.sunDir.y, 0.25);
+        for (var si = 0; si < 6; si++) {
+          let p = u.camPos + rd * tw2;
+          let dBelow = max(WLF + 1.0 - p.y, 0.0);
+          let lightT = exp(-sigU * dBelow * sunInv);                 // the sun's own path through the water down to this point
+          let caW = 0.45 + 1.75 * caust(floor(vec2<f32>(p.x + u.winO.x + dBelow * u.sunDir.x * sunInv, p.z + u.winO.y + dBelow * u.sunDir.z * sunInv)) + vec2<f32>(0.5));   // project along the sun to the surface → dancing god-ray shafts
+          accW += vec3<f32>(0.020, 0.078, 0.098) * (0.22 + 0.78 * sunUp * caW) * lightT * dayScale() * exp(-sigU * tw2) * (sigU * dtW * 2.6);
+          tw2 += dtW;
+        }
+        col = col * trU + accW;
+      }
       col = aces(col * 0.95);
       col = pow(col, vec3<f32>(1.0 / 2.2));
       textureStore(colorOut, vec2<i32>(gid.xy), vec4<f32>(col, 1.0));
@@ -3369,7 +3480,7 @@
       { binding: 13, resource: { buffer: itemMapBuf } },
       { binding: 14, resource: moonTex.createView() }, { binding: 15, resource: linSamp },
       { binding: 16, resource: { buffer: worldBuf } }, { binding: 17, resource: { buffer: brickBuf } },
-      { binding: 18, resource: { buffer: brick2Buf } }] });
+      { binding: 18, resource: { buffer: brick2Buf } }, { binding: 19, resource: { buffer: palBuf } }] });
     bgTaa = [0, 1].map(par => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(colorCur) },
       { binding: 2, resource: v(gIrr) }, { binding: 3, resource: v(par ? colHistA : colHistB) },
@@ -3399,6 +3510,9 @@
   function rebuildBricksW(wx0, wx1, wz0, wz1) {        // world-coord occupancy rebuild, split across the toroidal seam
     for (const [a, b] of splitWrap(wx0, wx1, WX)) for (const [c, d] of splitWrap(wz0, wz1, WZ)) rebuildBricks(a, b, c, d);
   }
+  function rebuildBricks2W(wx0, wx1, wz0, wz1) {       // L2-only variant — after a pooled band whose L1 bits were merged straight from the worker slabs
+    for (const [a, b] of splitWrap(wx0, wx1, WX)) for (const [c, d] of splitWrap(wz0, wz1, WZ)) rebuildBricks2(a, b, c, d);
+  }
   function bandSpec(r) {                               // the most urgent deficient side of rectangle r vs the view target
     const t = rectTarget();
     const cand = [];
@@ -3412,7 +3526,7 @@
     // ── ADAPTIVE THICKNESS ── barely behind → an 8-band (lowest latency); far behind → up to 32 in one region. One 32-thick
     // region is MUCH cheaper than four 8-bands: a tree/rock spanning ~50 voxels re-iterates its whole sparse model in every
     // band that clips it, and the per-band fixed costs (river gather, brick rebuild+upload, blit rounds) amortize 4×.
-    const th = Math.max(8, Math.min(32, cand[0][2]));  // deficits are 8-aligned, so th is too
+    const th = Math.max(8, Math.min(64, cand[0][2]));  // deficits are 8-aligned, so th is too; the 64 ceiling is CATCH-UP mode (post-teleport / sprint debt) — max stamp amortization per region
     if (side === 'zlo') return { side, th, x0: r.xlo, x1: r.xhi, z0: r.zlo - th, z1: r.zlo };
     if (side === 'zhi') return { side, th, x0: r.xlo, x1: r.xhi, z0: r.zhi, z1: r.zhi + th };
     if (side === 'xlo') return { side, th, x0: r.xlo - th, x1: r.xlo, z0: r.zlo, z1: r.zhi };
@@ -3428,8 +3542,8 @@
       if (ns) { if (poolOk) poolRegion(ns.x0, ns.x1, ns.z0, ns.z1); else reqRows(ns.x0, ns.x1, ns.z0, ns.z1); }
     }
     if (s.side === 'zlo' || s.side === 'zhi') {
-      yield* genRegionThreaded(s.x0, s.x1, s.z0, s.z1);
-      rebuildBricksW(s.x0, s.x1, s.z0, s.z1);
+      const pooled = yield* genRegionThreaded(s.x0, s.x1, s.z0, s.z1);
+      if (pooled) rebuildBricks2W(s.x0, s.x1, s.z0, s.z1); else rebuildBricksW(s.x0, s.x1, s.z0, s.z1);   // pooled slabs delivered their L1 bits — only L2 remains
       yield;
       while (xStripPending >= 0) { yield; }            // ⚠ ORDERING: a pending x-strip scatter holds a PRE-band snapshot of these very rows (its "stale, outside rect" corner).
       // Uploading now would queue BEFORE that scatter executes — the scatter then stomps this fresh corner with stale wrapped
@@ -3440,8 +3554,8 @@
       if (s.side === 'zlo') rect.zlo = s.z0; else rect.zhi = s.z1;
       genBands += s.th >> 3;
     } else {
-      yield* genRegionThreaded(s.x0, s.x1, s.z0, s.z1);
-      rebuildBricksW(s.x0, s.x1, s.z0, s.z1);
+      const pooled = yield* genRegionThreaded(s.x0, s.x1, s.z0, s.z1);
+      if (pooled) rebuildBricks2W(s.x0, s.x1, s.z0, s.z1); else rebuildBricksW(s.x0, s.x1, s.z0, s.z1);
       yield;
       for (let sub = 0; sub < s.th; sub += 8) {        // the scatter path is 8 columns wide — a thick band streams its strips through it sequentially
         while (xStripPending >= 0) { yield; }          // one scatter in flight at a time (also: the shared stag buffer must be consumed before repacking)
@@ -3478,15 +3592,17 @@
       rect.xlo = Math.max(rect.xlo, winOX); rect.xhi = Math.min(rect.xhi, winOX + WX);
       rect.zlo = Math.max(rect.zlo, winOZ); rect.zhi = Math.min(rect.zhi, winOZ + WZ);
     }
-    const needGen = () => { const t = rectTarget(); return rect.xlo > t.xlo || rect.xhi < t.xhi || rect.zlo > t.zlo || rect.zhi < t.zhi; };
-    if (!genJob && !needGen()) return;
+    const tT = rectTarget();
+    const deficit = Math.max(rect.xlo - tT.xlo, tT.xhi - rect.xhi, rect.zlo - tT.zlo, tT.zhi - rect.zhi);
+    if (!genJob && deficit <= 0) return;
     // budget = the MEASURED CPU idle time inside the frame pipeline, but never below a 7 ms floor while terrain
     // is owed — expansion speed is worth a transient fps dip, and the early-return above means the floor only
-    // applies while there is actually work to do.
-    const budget = Math.max(7, paceWaited ? Math.min(14, waitEma * 0.85) : Math.min(4, 250 / Math.max(fpsEma, 30)));
+    // applies while there is actually work to do. A LARGE deficit (teleport / sustained sprint) raises the floor
+    // further: the user prioritizes terrain CATCH-UP RATE over fps while the frontier is behind.
+    const budget = Math.max(deficit >= 128 ? 18 : 7, paceWaited ? Math.min(14, waitEma * 0.85) : Math.min(4, 250 / Math.max(fpsEma, 30)));
     const t0 = performance.now();
     while (performance.now() - t0 < budget) {          // chain bands back-to-back — no budget goes unused
-      if (!genJob) { if (!needGen()) break; genJob = genBandGen(); }
+      if (!genJob) { const t2 = rectTarget(); if (rect.xlo <= t2.xlo && rect.xhi >= t2.xhi && rect.zlo <= t2.zlo && rect.zhi >= t2.zhi) break; genJob = genBandGen(); }
       if (genJob.next().done) genJob = null;           // (genBands counts 8-band equivalents inside genBandGen — a thick band scores its true width)
       if (poolWait) { genSpinMs += performance.now() - t0; break; }   // the band is cooking on the worker pool — don't burn the budget on empty spins
     }
@@ -6204,12 +6320,8 @@
       } else if (B.kind >= 3) {                        // DUCK / LILY: ride the CONTINUOUS swell (JS mirror of the TRACE wave field) — smooth by construction, no quantized ratcheting
         let wvMax = 0;
         if (freezeK < 0.4) {                           // waves are gated exactly like the renderer — a frozen lake is flat
-          const wvAt = (wx, wz) => {
-            const cx9 = Math.floor(wx), cz9 = Math.floor(wz);
-            const g1 = 2 * Math.pow(0.5 + 0.5 * Math.sin(cx9 * 0.062 + cz9 * 0.041 + tb3 * 0.95), 2.4) - 1;
-            const g2 = 2 * Math.pow(0.5 + 0.5 * Math.sin(cx9 * -0.048 + cz9 * 0.104 + tb3 * 0.80), 2.0) - 1;
-            return g1 * 1.3 + g2 * 0.9 + Math.sin((cx9 * 0.9 + cz9 * 0.63) * 0.23 - tb3 * 1.9) * 0.35;
-          };                                           // MAX over the body FOOTPRINT — the waves are per-column, and a crest under an edge column must lift the whole float
+          const wvAt = (wx, wz) => gerstHJS(Math.floor(wx), Math.floor(wz), tb3);   // the GERSTNER mirror — bit-matched to the shader's gerstH, so floats ride EXACTLY the drawn surface
+                                                       // MAX over the body FOOTPRINT — the waves are per-column, and a crest under an edge column must lift the whole float
           const fr9 = B.kind === 4 ? 4 : 2.5;          // lily pads are WIDE and 1 voxel thin — the footprint must reach the pad edge or an edge-column crest swallows the whole pad
           wvMax = Math.max(wvAt(B.x, B.z), wvAt(B.x + fr9, B.z), wvAt(B.x - fr9, B.z), wvAt(B.x, B.z + fr9), wvAt(B.x, B.z - fr9));
           if (B.kind === 4) { const fd9 = 2.8; wvMax = Math.max(wvMax, wvAt(B.x + fd9, B.z + fd9), wvAt(B.x - fd9, B.z + fd9), wvAt(B.x + fd9, B.z - fd9), wvAt(B.x - fd9, B.z - fd9)); }
