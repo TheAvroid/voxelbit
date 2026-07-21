@@ -90,8 +90,8 @@
   #veTop { display: flex; align-items: center; justify-content: space-between; }
   #veTitle { font-size: 11px; letter-spacing: 2px; color: #e8edf4; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
   #veTools { display: flex; gap: 8px; }
-  .veTool, .veCtl { background: #1a2331; border: 1px solid #33405a; border-radius: 999px; padding: 6px 14px; color: #cfe0f4; cursor: pointer; font: inherit; transition: border-color 0.15s, color 0.15s, background 0.15s; }
-  .veTool:hover, .veCtl:hover { border-color: #6d8fc0; }
+  .veTool, .veCtl { background: #1a2331; border: 1px solid #33405a; border-radius: 999px; padding: 6px 14px; color: #cfe0f4; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
+  .veTool:hover, .veCtl:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → green outline + lift (user) */
   .veTool:disabled, .veCtl:disabled { opacity: 0.4; cursor: default; border-color: #2a3342; }
   #veRecBtn { border-color: #ff5a6a; color: #ff6a78; }   /* the record button reads red — text + border edges (user) */
   #veRecBtn:hover { border-color: #ff7480; color: #ff8a95; }
@@ -135,45 +135,47 @@
   /* ── SLIDER KNOBS ── custom thumbs so the circle can GROW on hover (user: keep the cross cursor over a slider, expand
      the knob instead of squaring the cursor). accent-color can't animate a native thumb, so the track + thumb are drawn
      by hand: a thin rail and a green disc that scales up (and gets a soft ring) while hovered or dragged. */
-  #todSlider, #volSlider { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; outline: none;
+  #todSlider, #volSlider, #sensSlider, #resSlider { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; outline: none;
     background: linear-gradient(to right, #7fd05a 0%, #7fd05a var(--fill, 50%), #2a3342 var(--fill, 50%), #2a3342 100%); }   /* --fill (JS-driven) is the GREEN LINE to the left of the knob (user) */
-  #todSlider::-webkit-slider-thumb, #volSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
-  #todSlider:hover::-webkit-slider-thumb, #volSlider:hover::-webkit-slider-thumb,
-  #todSlider:active::-webkit-slider-thumb, #volSlider:active::-webkit-slider-thumb { transform: scale(1.65); }   /* knob grows on hover — NO halo (user removed the box-shadow ring) */
-  #todSlider::-moz-range-thumb, #volSlider::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
-  #todSlider:hover::-moz-range-thumb, #volSlider:hover::-moz-range-thumb,
-  #todSlider:active::-moz-range-thumb, #volSlider:active::-moz-range-thumb { transform: scale(1.65); }
-  #todSlider::-moz-range-track, #volSlider::-moz-range-track { height: 5px; border-radius: 3px; background: #2a3342; }
-  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: #7fd05a; }   /* Firefox draws the filled-left portion natively */
+  #todSlider::-webkit-slider-thumb, #volSlider::-webkit-slider-thumb, #sensSlider::-webkit-slider-thumb, #resSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
+  #todSlider:hover::-webkit-slider-thumb, #volSlider:hover::-webkit-slider-thumb, #sensSlider:hover::-webkit-slider-thumb, #resSlider:hover::-webkit-slider-thumb,
+  #todSlider:active::-webkit-slider-thumb, #volSlider:active::-webkit-slider-thumb, #sensSlider:active::-webkit-slider-thumb, #resSlider:active::-webkit-slider-thumb { transform: scale(1.65); }   /* knob grows on hover — NO halo (user removed the box-shadow ring) */
+  #todSlider::-moz-range-thumb, #volSlider::-moz-range-thumb, #sensSlider::-moz-range-thumb, #resSlider::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
+  #todSlider:hover::-moz-range-thumb, #volSlider:hover::-moz-range-thumb, #sensSlider:hover::-moz-range-thumb, #resSlider:hover::-moz-range-thumb,
+  #todSlider:active::-moz-range-thumb, #volSlider:active::-moz-range-thumb, #sensSlider:active::-moz-range-thumb, #resSlider:active::-moz-range-thumb { transform: scale(1.65); }
+  #todSlider::-moz-range-track, #volSlider::-moz-range-track, #sensSlider::-moz-range-track, #resSlider::-moz-range-track { height: 5px; border-radius: 3px; background: #2a3342; }
+  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress, #sensSlider::-moz-range-progress, #resSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: #7fd05a; }   /* Firefox draws the filled-left portion natively */
   #rdWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #volWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #volSlider { width: 170px; cursor: pointer; }
+  #volWrap, #sensWrap, #resWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #volSlider, #sensSlider, #resSlider { width: 170px; cursor: pointer; }
   #vigWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #snowWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #vigBtn, #snowBtn, #fsBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #cfe0f4; cursor: pointer; font: inherit; }
-  #snowBtn:hover, #fsBtn:hover { border-color: #6d8fc0; }
-  #snowBtn.on, #fsBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  #vigBtn, #snowBtn, #fsBtn, #crdBtn, #fpsBtn, #timeBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 4px 16px; color: #ff9077; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red (user) */
+  #vigBtn:hover, #snowBtn:hover, #fsBtn:hover, #crdBtn:hover, #fpsBtn:hover, #timeBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off buttons LIFT on hover but KEEP their red/green colour — no green outline (user) */
+  #vigBtn.on, #snowBtn.on, #fsBtn.on, #crdBtn.on, #fpsBtn.on, #timeBtn.on { border-color: #7fd05a; color: #b8ff6e; }   /* ON = green (user) */
   #fsWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #cmpBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 3px 15px; color: #66707f; cursor: pointer; display: flex; align-items: center; }
+  #cmpBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 3px 15px; color: #ff9077; cursor: pointer; display: flex; align-items: center; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red */
   #cmpBtn svg { width: 17px; height: 17px; display: block; }   /* fill=currentColor → the icon itself shows the on/off state */
-  #cmpBtn:hover { border-color: #6d8fc0; }
-  #cmpBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  #cmpBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off → lift only, keeps red/green */
+  #cmpBtn.on { border-color: #7fd05a; color: #b8ff6e; }   /* ON = green */
   #kbPanel, #pkPanel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(6,8,12,0.72); z-index: 30; }
-  #kbCard, #pkCard { background: #10151c; border: 1px solid #2b3646; border-radius: 16px; padding: 22px 26px 18px; min-width: 350px; max-height: 82vh; overflow-y: auto; font: 8px/2.1 'px3', Consolas, monospace; letter-spacing: 1px; color: #dfe6ee; box-shadow: 0 12px 48px rgba(0,0,0,0.55); }
-  #kbCard h2, #pkCard h2 { font: 12px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0 0 12px; color: #fff; }
+  #kbWrap { display: flex; gap: 14px; align-items: flex-start; max-width: 94vw; }   /* SETTINGS + KEYBINDS as two separate rounded boxes side by side (user), like the video editor's stacked pieces */
+  #kbCard, #kbCard2, #pkCard { background: rgba(16,21,28,0.8); border: 1px solid #2b3646; border-radius: 16px; padding: 22px 26px 18px; min-width: 350px; max-height: 88vh; overflow-y: auto; scrollbar-width: none; font: 8px/2.1 'px3', Consolas, monospace; letter-spacing: 1px; color: #dfe6ee; box-shadow: 0 12px 48px rgba(0,0,0,0.55); }   /* 20% transparent (user); scrollbar-width:none → no scrollbar 'slider' on the right; still scrolls via wheel */
+  #kbCard::-webkit-scrollbar, #kbCard2::-webkit-scrollbar, #pkCard::-webkit-scrollbar { display: none; }   /* hide the WebKit scrollbar too */
+  #kbCard h2, #kbCard2 h2, #pkCard h2 { font: 12px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0 0 12px; color: #fff; }
   .pkRow { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
   .pkRow:last-child { border-bottom: none; }
   .pkRow input { width: 150px; accent-color: #7fd05a; cursor: pointer; }
   .pkVal { min-width: 52px; text-align: right; color: #9fd07a; }
-  #pkClose, #pkReset { margin: 14px 6px 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 22px; color: #dfe6ee; cursor: pointer; font: inherit; }
-  #pkClose:hover, #pkReset:hover { border-color: #8fb3dd; }
+  #pkClose, #pkReset { margin: 14px 6px 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 22px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
+  #pkClose:hover, #pkReset:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → green outline + lift */
   .kbRow { display: flex; justify-content: space-between; align-items: center; gap: 34px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
   .kbRow:last-child { border-bottom: none; }
-  .kbKey { min-width: 96px; text-align: center; background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 5px 10px; color: #cfe0f4; cursor: pointer; font: inherit; transition: border-color 0.12s; }
-  .kbKey:hover { border-color: #6d8fc0; }
+  .kbKey { min-width: 96px; text-align: center; background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 5px 10px; color: #cfe0f4; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.12s, color 0.12s; }
+  .kbKey:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → green outline + lift */
   .kbKey.listen { border-color: #7fd05a; color: #b8ff6e; }
-  #kbClose { display: block; margin: 14px auto 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; }
-  #kbClose:hover { border-color: #8fb3dd; }
+  #kbClose { display: block; margin: 14px auto 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
+  #kbClose:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → green outline + lift */
   #over { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; background: rgba(26,6,2,0.82); color: #ffd9c0; font: 9px/2 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; z-index: 25; }
   #over h1 { font: 22px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; color: #ff6a3a; }
   #over .ohint { opacity: 0.75; font-size: 7px; }
@@ -207,20 +209,27 @@
   <div id="edRow" class="hidden"><button id="edCopy" title="copy the per-frame offsets so you can paste them back to be baked into the code">export</button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
 </div>
 <div id="edHud" class="hidden"></div>
-<div id="kbPanel" class="hidden"><div id="kbCard">
+<div id="kbPanel" class="hidden"><div id="kbWrap"><div id="kbCard">
   <h2>settings</h2>
   <div id="optRows">
   <div id="todWrap"><span id="todLabel">08:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="480"></div>
   <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="100"></div>
+  <div id="sensWrap"><span id="sensLabel">sensitivity 50%</span><input type="range" id="sensSlider" min="0" max="100" step="10" value="50"></div>
+  <div id="resWrap"><span id="resLabel">resolution 90%</span><input type="range" id="resSlider" min="40" max="100" step="10" value="90"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
   <div id="fsWrap"><span>fullscreen</span><button id="fsBtn">off</button></div>
   <div id="vigWrap"><span>vignette</span><button id="vigBtn">on</button></div>
   <div id="cmpWrap"><span>compass</span><button id="cmpBtn" title="compass"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M12 20h2v-4h2v4h2v2H6v-2h4v-4h2v4Zm-6 0H4v-2h2v2Zm14 0h-2v-2h2v2ZM4 12h2v2H4v4H2V6h2v6Zm18 6h-2v-2h-4v-2h4v-4h-2V8h2V6h2v12Zm-12-2H6v-2h4v2Zm8-4h-4v-2h4v2Zm-4-2h-4V8h4v2Zm4-6h-8v4H8V4H6V2h12v2ZM6 6H4V4h2v2Zm14 0h-2V4h2v2Z"/></svg></button></div>
+  <div id="crdWrap"><span>coords</span><button id="crdBtn">on</button></div>
+  <div id="fpsWrap"><span>fps</span><button id="fpsBtn">on</button></div>
+  <div id="timeWrap"><span>time</span><button id="timeBtn">on</button></div>
   </div>
-  <h3 class="kbSub">keybinds</h3>
+</div>
+<div id="kbCard2">
+  <h2>keybinds</h2>
   <div id="kbRows"></div>
   <button id="kbClose">done</button>
-</div></div>
+</div></div></div>
 <div id="pkPanel" class="hidden"><div id="pkCard">
   <h2>held item</h2>
   <div id="pkRows"></div>
@@ -867,7 +876,8 @@
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
   let ROBIN_ROTATE = [];                               // ROBIN = the SAME bird recoloured again (assets/life/robin/rotate/00-10, base.vox ignored) — same layout as the cardinal and blue bird
-  let BUNNY_ROTATE = [];                               // BUNNY frames (assets/life/bunny/00-10, base.vox ignored) — auto-loaded as the asset-editor object (user); the editor previews the animation on the stage
+  let BUNNY_ROTATE = [];                               // ROTATE bunny frames (assets/life/bunny/rotate/00-10) — the RIGHT-lane editor object (jumps + rotates in place)
+  let BUNNY_JUMP = [];                                 // JUMP bunny frames (assets/life/bunny/jump/00-10) — the LEFT-lane editor object (jumps FORWARD). Both show on the stage together (user).
   let BUNNY_ITEM0 = 0;                                 // …and the same frames in the ITEM table (BUNNY_ITEM0+frame) so the editor TRACE-INJECTS the playing bunny — identical render path to every other life form (grain + baked AO + SVGF)
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
@@ -1239,9 +1249,10 @@
       for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/robin/rotate/' + String(f).padStart(2, '0') + '.vox'); ROBIN_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       console.log('[vb] robin rotate', ROBIN_ROTATE.length, 'frames (3rd perched songbird)');
     } catch (e) { console.warn('[vb] robin rotate frames missing', e); ROBIN_ROTATE = []; }
-    try {                                                             // BUNNY frames (raw bytes) → the asset-editor filmstrip; the numbered frames live directly in the species dir (like the fish/worm strips), not a /rotate/ subdir
-      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/' + String(f).padStart(2, '0') + '.vox'); if (!bv.length) break; BUNNY_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
-      console.log('[vb] bunny', BUNNY_ROTATE.length, 'frames (asset-editor object)');
+    try {                                                             // BUNNY frames (raw bytes) → the asset-editor filmstrips. BOTH variants load: rotate/ (right lane) AND jump/ (left lane) — the editor shows them side by side (user)
+      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/rotate/' + String(f).padStart(2, '0') + '.vox'); if (!bv.length) break; BUNNY_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/jump/' + String(f).padStart(2, '0') + '.vox'); if (!bv.length) break; BUNNY_JUMP.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      console.log('[vb] bunny', BUNNY_ROTATE.length, 'rotate +', BUNNY_JUMP.length, 'jump frames (asset-editor objects)');
       // …and load the SAME frames into the ITEM table so the editor TRACE-INJECTS the playing bunny through the dynamic-life
       // path (full SVGF + the creature grain/AO treatment) — i.e. it renders IDENTICALLY to the ducks/fish/birds (user).
       const bloaded = [];
@@ -1444,10 +1455,11 @@
   }
   const fixCarveCol = (gx, gz) => {                     // keep the walkable ground honest where a carve reaches daylight — shared by every carver
     const ci = gx + gz * WX;
-    let t = hmap[ci];
+    const top = hmap[ci];                              // the OLD surface — surface decor (grass/flowers/ferns) sits just above it
+    let t = top;
     while (t > 4 && W[gx + (t - 1) * WX + gz * WX * WY] === 0) t--;
     hmap[ci] = t;
-    for (let ty = t + 1; ty < Math.min(WY, t + 14); ty++) {   // drop any surface decor (grass/flowers/ferns) left hanging over the carve — bottom-up, so a strand cascades once its base loses support
+    for (let ty = Math.max(t + 1, top - 2); ty < Math.min(WY, top + 6); ty++) {   // drop any surface decor left hanging over the carve — sweep the band AROUND THE OLD SURFACE, not a fixed 14 above the new floor: a deep gorge drops the floor far below the grass, which then clings high on the wall (user). Bottom-up so a strand cascades once its base loses support.
       const jj = gx + ty * WX + gz * WX * WY;
       if (W[jj] !== 0 && FLOATDECOR.has(W[jj]) && W[gx + (ty - 1) * WX + gz * WX * WY] === 0) W[jj] = 0;
     }
@@ -3815,7 +3827,8 @@
   const linSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
-  let renderScale = 0.88;                              // default resolution scale (user 2026-07-17); [ ] keys still step it 0.375..1.5
+  let renderScale = 0.9;                               // default resolution scale (user: 90%); the settings slider steps 40..100% in 10s, [ ] keys nudge 0.375..1.0 (persisted vb_scale)
+  try { const v = parseFloat(localStorage.getItem('vb_scale')); if (v >= 0.375 && v <= 1.0) renderScale = v; } catch (e) {}
   let RW = 0, RH = 0, CW = 0, CH = 0;
   let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, visBuf = null;
   let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline
@@ -4004,7 +4017,8 @@
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
-  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0, bunny: false, rgiz: false, dragRing: -1, dragRAcc: 0, rgizBoxes: [] };   // giz/drag*: [e] move-gizmo; rgiz/dragRing*: [r] ROTATE-gizmo (2 voxel rings, yaw + pitch); blink: eye-blink phase; spin: +90° per completed rotation cycle; bunny: gates the trace-inject preview
+  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0, bunny: false, rgiz: false, dragRing: -1, dragRAcc: 0, rgizBoxes: [],
+    frames2: [], fcells2: [], box2: null, off2: '', name1: '', name2: '', hopX: 0, hopY: 0, hopZ: 0, hop2X: 0, hop2Y: 0, hop2Z: 0 };   // TWO bunnies on the stage (user): frames = LEFT/editable lane, frames2 = RIGHT/preview lane; fcells2/box2 = the preview's stamped cells + hitbox; off2 = the preview's offset namespace; name1/name2 = which variant is in each lane (for the combined export); hop*/hop2* = per-lane forward-march accumulation
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
@@ -4344,17 +4358,6 @@
   const lifeSlotSet = (slot, uid, x, y, z, item, analytic) => {
     lifeUid[slot] = uid; lifeItem[slot] = item; lifeAna[slot] = analytic ? 1 : 0;
     lifeAnc[slot * 3] = x; lifeAnc[slot * 3 + 1] = y; lifeAnc[slot * 3 + 2] = z; };
-  const edEmitModel = (o2, fi, cam, right, up, fwd) => {   // ── EDITOR TRACE-INJECT ── the playing bunny → drop slot 4 (upright, WORLD scale, at the stage centre), so it renders
-    const it0 = BUNNY_ITEM0 + fi, it = itemsRef && itemsRef[it0 - 1];   // through TRACE with full SVGF exactly like every other life form (grain + baked AO), instead of being grid-stamped
-    if (!it) { UF[o2 + 7] = 0; return false; }
-    const wcx = ED.x0 + ED.pw / 2, wcy = ED.y + 1 + it.h / 2, wcz = ED.z0 + ED.pd / 2;   // model centre in world (the stamp maps model z→world y, so height is it.h)
-    const rx = wcx - cam[0], ry = wcy - cam[1], rz = wcz - cam[2];
-    UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = 1;   // vs = 1: one model voxel = one world voxel, exactly like the stamp
-    UF[o2 + 4] = right[0]; UF[o2 + 5] = up[0]; UF[o2 + 6] = fwd[0]; UF[o2 + 7] = it0;     // model X → world +X
-    UF[o2 + 8] = right[2]; UF[o2 + 9] = up[2]; UF[o2 + 10] = fwd[2]; UF[o2 + 11] = 0;     // model Y → world +Z
-    UF[o2 + 12] = right[1]; UF[o2 + 13] = up[1]; UF[o2 + 14] = fwd[1]; UF[o2 + 15] = 0;   // model Z → world +Y
-    lifeSlotSet(4, 9000, wcx, wcy, wcz, it0, false);       // ledger: fixed position (motion 0); the item id changes each animation frame → the temporal rejects that one frame (flag 2), so a frame flip never ghosts
-    return true; };
   const birdWrite = (o2, ps, cam, right, up, fwd) => {   // pose → one drop slot (camera-space anchor + the three model axes)
     lifeSlotSet((o2 - 68) >> 4, 1000 + (ps.uid || 0), ps.x, ps.y, ps.z, Math.round(ps.item), false);   // flying birds are trace-injected life
     const rx = ps.x - cam[0], ry = ps.y - cam[1], rz = ps.z - cam[2];
@@ -4394,7 +4397,7 @@
     threatR: 28,            // player/predator distance (vox) that triggers the flee state
     fleeHold: 1.2,          // s the flee state lingers after the threat leaves the radius (no flicker at the boundary)
     predatorKinds: [3],     // wbf creature kinds fish flee from (3 = ducks); set [] to disable predator flight
-    schoolSpecies: ['salmon', 'minnow'],   // ONLY these species form schools (user); every other species swims alone
+    schoolSpecies: [],      // NO schooling (user: fish must spread out EVENLY + consistently). Schooling spawned fish ±4.5 vox around a schoolmate — a knot that bypassed the ≥14-vox even-spacing AND wasn't re-validated for deep water (so shallow-placed schoolmates got recycled → 'sometimes no fish'). Empty = every fish swims alone, spread ≥14 apart across the water spots. Re-add ['salmon','minnow'] to restore shoaling.
     yawRate: 2.2,           // rad/s heading-change cap while cruising…
     fleeYawRate: 6.0,       // …and while fleeing (double speed needs sharper banking to keep clear of banks)
     pitchMax: 0.30,         // SUBTLE nose pitch cap (rad, ~17°) for climbs/dives — yaw is free, roll is impossible by construction
@@ -4583,6 +4586,9 @@
   document.addEventListener('contextmenu', (e) => e.preventDefault());
   // ── MASTER VOLUME ── every sound registers its BASE volume; the menu slider scales them all (persisted vb_vol)
   let sndVol = 1; try { const v = parseFloat(localStorage.getItem('vb_vol')); if (v >= 0 && v <= 1) sndVol = v; } catch (e) {}
+  // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
+  let lookSens = 0.5; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}
+  const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
   const sndReg = [];
   const SND_GAIN = 1.25;                               // master loudness trim — every registered sound, +25% overall (user 2026-07-17); clamp keeps HTMLAudio's 0..1 legal
   const regSnd = (a, base) => { a.volume = Math.min(1, base * SND_GAIN * sndVol); sndReg.push({ a, base }); return a; };
@@ -4667,6 +4673,8 @@
           tmin = Math.max(tmin, ta); tmax = Math.min(tmax, tb); }
         if (tmin <= tmax) { ED.paused = !ED.paused; edLayout(); }   // the view ray passes through the model → toggle select
       }
+      if (!dead && performance.now() - swingStart >= 570) { swingStart = performance.now(); if (heldIt()) playSwish(); }   // SWING the held item in the editor too (user) — reached on any click that didn't grab a gizmo (those return above); select-toggle only fires on this mousedown, the swing then auto-repeats via the tick loop while held
+      mouse0 = true;
       return;
     }
     if (e.button === 0 && !dead) {
@@ -4680,8 +4688,8 @@
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
   // ── keybinds ── rebindable, persisted to localStorage
-  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', godrays: 'KeyG', vignette: 'KeyL', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
-  const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', godrays: 'god rays', vignette: 'vignette', vsync: 'v-sync', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', vignette: 'KeyL', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
+  const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', vignette: 'vignette', vsync: 'v-sync', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
   if (binds.crouch === 'KeyC') { binds.crouch = 'AltLeft'; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE the old default: crouch moved off C (C now hides UI) → left Alt, even for players with a saved keybind
@@ -5016,7 +5024,18 @@
   const SNOW_PASS = new Set([...GRASS, BLOOM[0], BLOOM[1], BLOOM[2], BLOOM[3], BLOOM[4], BLOOM[5]]);   // landings fall THROUGH grass/blooms and bury them — ferns are OUT: snow settles ON their fronds
   const SNOW_FERN = new Set(FERNIDS);                  // fern-topped columns skip the settle-roll (fronds sit above the ground beside them, so rolling would always shed the flake)
   const SNOW_SKIP = new Set([WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y]);                                    // …but never land on lava; surface water is FROZEN while it snows, so flakes settle on the ice
+  let showCoords = true; try { showCoords = localStorage.getItem('vb_coords') !== '0'; } catch (e) {}   // COORDS HUD toggle (user) — persisted vb_coords; hides the x/y/z lines top-left
+  let showFps = true; try { showFps = localStorage.getItem('vb_fps') !== '0'; } catch (e) {}            // FPS HUD toggle (user) — persisted vb_fps
+  let showTime = true; try { showTime = localStorage.getItem('vb_time') !== '0'; } catch (e) {}         // TIME (clock) HUD toggle (user) — persisted vb_time
   { const snowBtn = $('snowBtn');
+    const mkToggle = (id, get, set, key) => {            // wire a green/red on-off HUD toggle button (coords/fps/time)
+      const btn = $(id); const show = () => { btn.textContent = get() ? 'on' : 'off'; btn.classList.toggle('on', get()); };
+      btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      btn.addEventListener('click', (e) => { e.stopPropagation(); set(!get()); try { localStorage.setItem(key, get() ? '1' : '0'); } catch (e2) {} show(); });
+      show(); };
+    mkToggle('crdBtn', () => showCoords, (v) => showCoords = v, 'vb_coords');   // COORDS on/off
+    mkToggle('fpsBtn', () => showFps, (v) => showFps = v, 'vb_fps');            // FPS on/off
+    mkToggle('timeBtn', () => showTime, (v) => showTime = v, 'vb_time');        // TIME on/off
     const vigBtn = $('vigBtn');
     const vigShow = () => { vigBtn.textContent = vigOn ? 'on' : 'off'; vigBtn.classList.toggle('on', vigOn); };
     vigBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -5057,6 +5076,22 @@
   volSlider.addEventListener('click', (e) => e.stopPropagation());
   volSlider.addEventListener('input', (e) => { e.stopPropagation(); sndVol = parseFloat(volSlider.value) / 100; applyVol(); volShow(); sliderFill(volSlider);
     try { localStorage.setItem('vb_vol', String(sndVol)); } catch (err) {} });
+  const sensSlider = $('sensSlider'), sensLabel = $('sensLabel');   // MOUSE LOOK SENSITIVITY — scales the yaw/pitch multiplier (persisted vb_sens)
+  sensSlider.value = Math.round(lookSens * 100); sliderFill(sensSlider);
+  const sensShow = () => { sensLabel.textContent = 'sensitivity ' + Math.round(lookSens * 100) + '%'; };
+  sensShow();
+  sensSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
+  sensSlider.addEventListener('click', (e) => e.stopPropagation());
+  sensSlider.addEventListener('input', (e) => { e.stopPropagation(); lookSens = parseFloat(sensSlider.value) / 100; sensShow(); sliderFill(sensSlider);
+    try { localStorage.setItem('vb_sens', String(lookSens)); } catch (err) {} });
+  const resSlider = $('resSlider'), resLabel = $('resLabel');   // RESOLUTION — render scale (persisted vb_scale); the [ ] keys nudge it too and resSync() keeps this in step
+  const resShow = () => { resLabel.textContent = 'resolution ' + Math.round(renderScale * 100) + '%'; };
+  const resSync = () => { resSlider.value = Math.round(renderScale * 100); sliderFill(resSlider); resShow(); };
+  resSync();
+  resSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
+  resSlider.addEventListener('click', (e) => e.stopPropagation());
+  resSlider.addEventListener('input', (e) => { e.stopPropagation(); renderScale = Math.max(0.375, Math.min(1.0, parseFloat(resSlider.value) / 100)); makeTargets(); resShow(); sliderFill(resSlider);
+    try { localStorage.setItem('vb_scale', String(renderScale)); } catch (err) {} });
   let todDrag = false;
   const todSlider = $('todSlider'), todLabel = $('todLabel');
   sliderFill(todSlider);
@@ -5098,7 +5133,7 @@
     cmpTrack.innerHTML = html;
     cmpTrack.style.width = (3 * 360 * CMP_PPD) + 'px';
   }
-  const cmpVis = () => cmpEl.classList.toggle('hidden', !locked || !cmpOn);   // shown only while playing AND only if the setting is on
+  const cmpVis = () => cmpEl.classList.toggle('hidden', !locked || !cmpOn || ED.on);   // shown only while PLAYING (not in the asset editor — user) AND only if the setting is on
   const cmpUpdate = () => {                            // middle turn is the live one, so the ribbon never runs off either end
     if (!cmpOn) return;                                // switched off — don't pay for a layout write nobody sees
     const hdg = ((P.yaw * 180 / Math.PI) % 360 + 360) % 360;
@@ -5114,7 +5149,12 @@
   const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); cursSync(); return; } canvas.requestPointerLock(); };
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (!locked) tryLock(); });
-  document.addEventListener('keydown', () => { if (!locked && !$('playHint').classList.contains('hidden')) tryLock(); });   // "press any button" — any key enters from the start prompt (a click still works via the canvas handler above)
+  document.addEventListener('keydown', (e) => {        // "press any button" — ANY key leaves the start prompt (a click still works via the canvas handler above)
+    if (locked || $('playHint').classList.contains('hidden')) return;
+    $('playHint').classList.add('hidden');             // drop the text the instant a key is pressed — don't wait on a successful lock (Esc can't lock, so it would otherwise stay stuck on screen)
+    if (e.code === 'Escape') lockEl.classList.remove('hidden');   // Esc can't request pointer lock → count it as a button press and just open the esc menu
+    else tryLock();
+  });
   document.addEventListener('pointerlockerror', () => { if (!locked) lockEl.classList.remove('hidden'); });   // if a lock request is refused, fall back to the esc menu so the player is never stuck
   // ── CUSTOM FREE-MOUSE CURSOR ── shown whenever the pointer is NOT locked (menus, the video editor, the death screen).
   // Follows the mouse as a crosshair and morphs to a square over anything clickable; the native cursor is hidden so the
@@ -5161,8 +5201,9 @@
       while (ED.dragRAcc <= -RSTEP) { edApplyRot(ED.dragRing === 0 ? 'yaw' : 'pitch', -1); ED.dragRAcc += RSTEP; }
       return;                                           // suppress camera look while rotating
     }
-    P.yaw += e.movementX * 0.0022;
-    P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - e.movementY * 0.0022));
+    const ls = lookMul();
+    P.yaw += e.movementX * ls;
+    P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - e.movementY * ls));
   });
   let dead = false;
   const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it
@@ -5193,13 +5234,12 @@
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
     if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }
-    if (e.code === binds.godrays) { godRays = !godRays; }
     if (e.code === binds.vignette) { vigToggle(); }         // same path as the settings button, so the panel label follows
     if (e.code === binds.vsync) { vsyncOn = !vsyncOn; }
-    if (e.code === binds.record && !ED.on) { veToggleRec(); }   // R records / stops the screen (was respawn — respawn is now automatic on death); in the editor 'r' rotates the frame
+    if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
-    if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); }
-    if (e.code === binds.scaleup) { renderScale = Math.min(1.5, renderScale + 0.125); makeTargets(); }
+    if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); resSync(); try { localStorage.setItem('vb_scale', String(renderScale)); } catch (err) {} }
+    if (e.code === binds.scaleup) { renderScale = Math.min(1.0, renderScale + 0.125); makeTargets(); resSync(); try { localStorage.setItem('vb_scale', String(renderScale)); } catch (err) {} }
     if (e.code === 'KeyC' && !ED.on) { cineMode = !cineMode; document.body.classList.toggle('noui', cineMode);   // C — CINEMATIC still hold: freezes the camera + hides the HUD for a clean framed view; press again to exit + regain control
       if (cineMode) { cine.baseYaw = P.yaw; cine.basePitch = P.pitch; cine.baseX = P.x; cine.baseY = P.y; cine.baseZ = P.z; cine.bobT = 0; cine.roll = 0; P.fly = true; P.vy = 0; } }   // STILL HOLD (user): snapshot the exact framed shot; the camera stays put and only sways
     else if (e.code === 'KeyC' && ED.on) { document.body.classList.toggle('noui'); }   // in the editor, C still just toggles the HUD
@@ -5209,7 +5249,8 @@
       if (e.code === 'ArrowLeft') edMoveStep(-1);
       if (e.code === 'ArrowRight') edMoveStep(1);
       if (e.code === 'KeyE') { ED.paused = true; ED.giz = !ED.giz; if (ED.giz) ED.rgiz = false; edEnsureGizCols(); edLayout(); }   // toggle the XYZ move-gizmo on the selected frame
-      if (e.code === 'KeyR') { ED.paused = true; ED.rgiz = !ED.rgiz; if (ED.rgiz) ED.giz = false; edEnsureRgizCols(); edLayout(); }   // toggle the ROTATE-gizmo (2 rings: drag the flat ring to spin, the upright ring to tumble — both directions)
+      if (e.code === 'KeyR' && ED.paused) { ED.rgiz = !ED.rgiz; if (ED.rgiz) ED.giz = false; edEnsureRgizCols(); edLayout(); }   // toggle the ROTATE-gizmo — ONLY when the bunny is already selected (user); an R press with nothing selected records instead (never auto-selects)
+      if (e.code === 'KeyB') edSwapBunnies();          // swap which bunny (left/jump ↔ right/rotate) is the EDITABLE one
     }
     if (e.code === binds.jump || e.code === binds.crouch) e.preventDefault();   // Alt (crouch) — stop the browser stealing it for the menu bar
   });
@@ -5305,7 +5346,7 @@
     return ii; };
   const edPlaneId = (x, z) => ((x - ED.x0) % 10 === 0 || (z - ED.z0) % 10 === 0) ? ED_GREY : ED_WHITE;   // 1 m squares = every 10th voxel is a grey gridline
   const edHudUpd = () => { edHudEl.textContent = ED.frames.length
-    ? 'frame ' + ED.sel + '/' + (ED.frames.length - 1) + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? ('  ⏸ selected  [, .] scrub   [e] ' + (ED.giz ? 'move: drag an arrow (autosaves)' : 'move gizmo') + '   [r] ' + (ED.rgiz ? 'rotate: drag amber ring = spin, violet ring = tumble' : 'rotate gizmo') + '   [← →] reorder') : '  ▶ playing — left-click the model to select')
+    ? (ED.frames2.length ? ('editing: ' + (ED.name1 || 'left') + '   [b] switch to ' + (ED.name2 || 'right') + '   ') : '') + 'frame ' + ED.sel + '/' + (ED.frames.length - 1) + '  ' + (ED.frames[ED.sel] ? ED.frames[ED.sel].name : '') + (ED.paused ? ('  ⏸ selected  [, .] scrub   [e] ' + (ED.giz ? 'move: drag an arrow (autosaves)' : 'move gizmo') + '   [r] ' + (ED.rgiz ? 'rotate: drag amber ring = spin, violet ring = tumble' : 'rotate gizmo') + '   [← →] reorder') : '  ▶ playing — left-click the model to select')
     : 'asset editor — press ESC, then import a .vox to begin'; };
   let gizCol = null;                                   // [e] MOVE-GIZMO (Task 1): 3 stubby arrows (X red / Y green-up / Z blue) you aim at + drag to nudge the frame into alignment
   const edEnsureGizCols = () => { if (!gizCol) { gizCol = [edCol(240, 60, 55), edCol(70, 210, 70), edCol(80, 130, 255)]; palSync(); } };
@@ -5351,80 +5392,128 @@
   };
   const edOffset = (axis, d) => { const n = ED.frames.length; if (!n) return; const f = ED.frames[((ED.sel % n) + n) % n];   // nudge the selected frame one voxel along an axis + restamp
     f.ox = (f.ox || 0) + (axis === 0 ? d : 0); f.oy = (f.oy || 0) + (axis === 1 ? d : 0); f.oz = (f.oz || 0) + (axis === 2 ? d : 0); edLayout(); };
-  const edSaveOffsets = () => { try { const m = {}; for (const f of ED.frames) if (f.ox || f.oy || f.oz) m[f.name] = [f.ox, f.oy, f.oz]; localStorage.setItem('vb_edoffsets', JSON.stringify(m)); } catch (e) {} };   // AUTOSAVE on release
-  const edCopyOffsets = () => { const arr = ED.frames.map((f, i) => ({ frame: i, name: f.name, ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0 }));
-    const txt = JSON.stringify(arr); try { navigator.clipboard.writeText(txt); } catch (e) {} return txt; };
+  const edSaveOffsets = () => { try { const m = {}; for (const f of ED.frames) { const hasRot = f.rot && f.rot.length; if (f.ox || f.oy || f.oz || hasRot) m[f.name] = hasRot ? [f.ox || 0, f.oy || 0, f.oz || 0, f.rot.slice()] : [f.ox, f.oy, f.oz]; } localStorage.setItem(ED.offKey || 'vb_edoffsets', JSON.stringify(m)); } catch (e) {} };   // AUTOSAVE on release → the CURRENT variant's offset namespace (ED.offKey); 4th element = the rotation step list
+  const edFrameOffs = (frames) => frames.map((f, i) => ({ frame: i, name: f.name, ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, rot: (f.rot || []).slice() }));   // rot = ordered 90° steps ('y+'/'y-'/'p+'/'p-') so the export carries rotation too
+  const edCopyOffsets = () => {                          // export BOTH bunnies at once (user) — labelled by lane so I can bake each variant's positions
+    const out = { [ED.name1 || 'left']: edFrameOffs(ED.frames) };
+    if (ED.frames2.length) out[ED.name2 || 'right'] = edFrameOffs(ED.frames2);
+    const txt = JSON.stringify(out); try { navigator.clipboard.writeText(txt); } catch (e) {} return txt; };
   const edRotVox = (vox, sx, sy, q) => {               // rotate a frame's voxels q×90° about the vertical axis (non-destructive display rotation); dims swap on odd turns
     q = ((q % 4) + 4) % 4;
     let cur = vox, cx = sx, cy = sy;
     for (let r = 0; r < q; r++) { const out = []; for (const p of cur) { const x = p & 255, y = (p >> 8) & 255; out.push(y | ((cx - 1 - x) << 8) | (p & 0xffff0000)); } cur = out; const t = cx; cx = cy; cy = t; }
     return { vox: cur, sx: cx, sy: cy };
   };
-  const edClearStamp = () => {                          // restore any grid-stamped model/ring voxels to plane/air WITHOUT re-stamping — used when the model is TRACE-INJECTED (the playing bunny) so the world grid stays clean, and before a fresh .vox import lays out
-    if (!ED.fcells.length && !ED.ring.length) return;
+  const edClearStamp = () => {                          // restore any grid-stamped model/ring voxels to plane/air WITHOUT re-stamping — used before a fresh .vox import lays out
+    if (!ED.fcells.length && !ED.fcells2.length && !ED.ring.length) return;
     const cells = [];
     for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
     ED.fcells = [];
+    for (const ii of ED.fcells2) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }   // preview lane too
+    ED.fcells2 = [];
     for (const r of ED.ring) { const id = edPlaneId(r.x, r.z); if (W[r.ii] !== id) { W[r.ii] = id; cells.push(r.ii); } }
     ED.ring = [];
     if (cells.length) gpuPatch(cells); };
-  const edLayout = () => {                             // stamp ONLY the current frame, CENTRED, as a real static object (world voxels → full lighting) — the animation swaps to the next static frame in place; no filmstrip
+  const edLayout = () => {                             // stamp the current frame of BOTH bunnies as real static objects (world voxels → full lighting): the EDITABLE bunny in the LEFT lane (with gizmos/ring), the PREVIEW bunny in the RIGHT lane. The animation swaps to the next static frame in place; no filmstrip.
     const cells = [];
     for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
     ED.fcells = [];
+    for (const ii of ED.fcells2) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }   // …and the preview lane's cells
+    ED.fcells2 = [];
     for (const r of ED.ring) { const id = edPlaneId(r.x, r.z); if (W[r.ii] !== id) { W[r.ii] = id; cells.push(r.ii); } }
     ED.ring = [];
+    const LANE = ED.frames2.length ? 24 : 0;           // side-by-side lanes when a SECOND bunny is loaded; centred on the stage when the editable bunny is solo
+    const wrapIn = (v, lo, range) => lo + (((v - lo) % (range + 1) + (range + 1)) % (range + 1));   // fit a model start into [lo, lo+range] so the whole footprint stays in bounds after a forward-march shift
     const n = ED.frames.length;
-    if (n) {
+    if (n) {                                           // ── EDITABLE bunny — LEFT lane ──
       const f = ED.frames[((ED.sel % n) + n) % n];
       const vsrc0 = (ED.blink && f.voxBlink) ? f.voxBlink : f.vox;        // eye-blink variant while the blink phase is lit (playing only)
-      const rv = edRotVox(vsrc0, f.sx, f.sy, ED.paused ? 0 : (-ED.spin & 3));   // whole-animation spin accrues 90° per cycle IN THE SAME DIRECTION the frames rotate, so the loop continues forward (negated — the +90° went the wrong way and read as a 180° flip at the seam). No spin while editing/paused.
-      const bx = ED.x0 + ((ED.pw - rv.sx) >> 1), bz = ED.z0 + ((ED.pd - rv.sy) >> 1);   // the ONE animated/scrubbed frame, centred on the stage
+      const rv = edRotVox(vsrc0, f.sx, f.sy, ED.paused ? 0 : (-ED.spin & 3));   // no whole-animation spin while editing/paused
+      const bx = ED.x0 + ((ED.pw - rv.sx) >> 1) - LANE, bz = ED.z0 + ((ED.pd - rv.sy) >> 1);   // LEFT lane
       f.bx = bx; f.bz = bz;
-      const ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;             // per-frame alignment offset (gizmo-driven; oy is rotation-invariant, ox/oz are 0 on the cardinal)
-      for (const p of rv.vox) {                                         // the animated / scrubbed frame, shifted by its offset
-        const x = bx + ox + (p & 255), y = ED.y + 1 + oy + ((p >> 16) & 255), z = bz + oz + ((p >> 8) & 255);
+      const ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;             // per-frame alignment offset (gizmo-driven)
+      // ── CONTINUOUS HOP ── while PLAYING, add the accumulated cycle offset (ED.hop*) so this bunny keeps marching forward; wrap it back inside the stage so it never hops off-screen. Editing/paused = no hop (base position, so the gizmos & ring line up).
+      const xBase = ED.paused ? (bx + ox) : wrapIn(bx + ox + (ED.hopX || 0), ED.x0, Math.max(1, ED.pw - rv.sx));
+      const zBase = ED.paused ? (bz + oz) : wrapIn(bz + oz + (ED.hopZ || 0), ED.z0, Math.max(1, ED.pd - rv.sy));
+      const hopY = ED.paused ? 0 : (ED.hopY || 0);
+      let hxlo = 1e9, hylo = 1e9, hzlo = 1e9, hxhi = -1e9, hyhi = -1e9, hzhi = -1e9;   // world AABB of the stamped voxels → the SOLID hitbox
+      for (const p of rv.vox) {
+        const x = xBase + (p & 255), y = ED.y + 1 + oy + hopY + ((p >> 16) & 255), z = zBase + ((p >> 8) & 255);
         if (y <= ED.y || y >= WY - 1 || x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
+        if (x < hxlo) hxlo = x; if (x > hxhi) hxhi = x; if (y < hylo) hylo = y; if (y > hyhi) hyhi = y; if (z < hzlo) hzlo = z; if (z > hzhi) hzhi = z;
         ED.fcells.push(edSet(x, y, z, p >>> 24, cells));
       }
+      ED.box = hxhi >= hxlo ? { cx: (hxlo + hxhi + 1) / 2, cy: (hylo + hyhi + 1) / 2, cz: (hzlo + hzhi + 1) / 2,
+        hx: (hxhi - hxlo + 1) / 2, hy: (hyhi - hylo + 1) / 2, hz: (hzhi - hzlo + 1) / 2 } : null;
       f.sxR = rv.sx; f.syR = rv.sy;                                     // rotated footprint (for the ring)
-      const bx2 = bx + ox, bz2 = bz + oz;
-      if (ED.paused) {                                 // amber ring only while SELECTED (scrubbing) — follows the offset frame
-        const rx0 = bx2 - 2, rx1 = bx2 + f.sx + 1, rz0 = bz2 - 2, rz1 = bz2 + f.sy + 1;
+      const bxr = bx + ox, bzr = bz + oz;
+      if (ED.paused) {                                 // amber ring + gizmos only while SELECTED (scrubbing) — on the EDITABLE bunny
+        const rx0 = bxr - 2, rx1 = bxr + f.sx + 1, rz0 = bzr - 2, rz1 = bzr + f.sy + 1;
         for (let x = rx0; x <= rx1; x++) for (let z = rz0; z <= rz1; z++) {
           if (x !== rx0 && x !== rx1 && z !== rz0 && z !== rz1) continue;
           if (x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
           const ii = edSet(x, ED.y, z, ED_HLITE, cells);
           ED.ring.push({ ii, x, z });
         }
-        if (ED.giz) edGizmos(f, bx2, bz2, cells);      // [e] move-gizmo: 3 axis arrows on the selected frame
-        if (ED.rgiz) edRotGizmos(f, bx2, bz2, cells);  // [r] rotate-gizmo: 2 circular rings (yaw + pitch)
+        if (ED.giz) edGizmos(f, bxr, bzr, cells);      // [e] move-gizmo
+        if (ED.rgiz) edRotGizmos(f, bxr, bzr, cells);  // [r] rotate-gizmo
       } else { ED.gizBoxes = []; ED.rgizBoxes = []; }
     }
+    const n2 = ED.frames2.length;
+    if (n2) {                                          // ── PREVIEW bunny — RIGHT lane (animates, no gizmos/ring) ──
+      const f2 = ED.frames2[((ED.sel % n2) + n2) % n2];
+      const rv2 = edRotVox((ED.blink && f2.voxBlink) ? f2.voxBlink : f2.vox, f2.sx, f2.sy, 0);
+      const bx2 = ED.x0 + ((ED.pw - rv2.sx) >> 1) + LANE, bz2 = ED.z0 + ((ED.pd - rv2.sy) >> 1);   // RIGHT lane
+      const ox2 = f2.ox || 0, oy2 = f2.oy || 0, oz2 = f2.oz || 0;
+      const xB2 = ED.paused ? (bx2 + ox2) : wrapIn(bx2 + ox2 + (ED.hop2X || 0), ED.x0, Math.max(1, ED.pw - rv2.sx));
+      const zB2 = ED.paused ? (bz2 + oz2) : wrapIn(bz2 + oz2 + (ED.hop2Z || 0), ED.z0, Math.max(1, ED.pd - rv2.sy));
+      const hopY2 = ED.paused ? 0 : (ED.hop2Y || 0);
+      let ax = 1e9, ay = 1e9, az = 1e9, aX = -1e9, aY = -1e9, aZ = -1e9;
+      for (const p of rv2.vox) {
+        const x = xB2 + (p & 255), y = ED.y + 1 + oy2 + hopY2 + ((p >> 16) & 255), z = zB2 + ((p >> 8) & 255);
+        if (y <= ED.y || y >= WY - 1 || x < ED.x0 || x >= ED.x0 + ED.pw || z < ED.z0 || z >= ED.z0 + ED.pd) continue;
+        if (x < ax) ax = x; if (x > aX) aX = x; if (y < ay) ay = y; if (y > aY) aY = y; if (z < az) az = z; if (z > aZ) aZ = z;
+        ED.fcells2.push(edSet(x, y, z, p >>> 24, cells));
+      }
+      ED.box2 = aX >= ax ? { cx: (ax + aX + 1) / 2, cy: (ay + aY + 1) / 2, cz: (az + aZ + 1) / 2,
+        hx: (aX - ax + 1) / 2, hy: (aY - ay + 1) / 2, hz: (aZ - az + 1) / 2 } : null;
+    } else ED.box2 = null;
     gpuPatch(cells);
     edHudUpd();
   };
+  const edSwapBunnies = () => {                         // [b] swap the two bunnies between lanes → the OTHER one becomes editable (gizmos/scrub operate on ED.frames). Swap every per-lane field so the machinery follows.
+    if (!ED.frames2.length) return;
+    const t = ED.frames; ED.frames = ED.frames2; ED.frames2 = t;
+    const tk = ED.offKey; ED.offKey = ED.off2; ED.off2 = tk;
+    const tn = ED.name1; ED.name1 = ED.name2; ED.name2 = tn;
+    const hx = ED.hopX, hy = ED.hopY, hz = ED.hopZ; ED.hopX = ED.hop2X; ED.hopY = ED.hop2Y; ED.hopZ = ED.hop2Z; ED.hop2X = hx; ED.hop2Y = hy; ED.hop2Z = hz;
+    ED.sel = 0; ED.paused = false; ED.giz = false; ED.rgiz = false;   // fresh scrub/gizmo state for the newly-editable bunny
+    edLayout(); };
   const edSelStep = (d) => { const n = ED.frames.length; if (!n) return; ED.paused = true; ED.sel = ((ED.sel + d) % n + n) % n; edLayout(); };   // scrubbing pauses the animation
   const edMoveStep = (d, wrap) => { const n = ED.frames.length; if (n < 2) return; ED.paused = true; const s = ((ED.sel % n) + n) % n; let j = s + d;
     if (wrap) j = ((j % n) + n) % n; else if (j < 0 || j >= n) return;
     const t = ED.frames[s]; ED.frames[s] = ED.frames[j]; ED.frames[j] = t; ED.sel = j; edLayout(); };
-  const edApplyRot = (kind, dir) => {                  // ROTATE the selected frame 90° — kind 'yaw' (about vertical, horizontal spin) or 'pitch' (about the width/X axis, vertical tumble); dir ±1. Persists to raw XYZI + display vox + dims.
+  const edRotStep = (f, kind, dir) => {                // apply ONE 90° rotation to a frame's display vox + eye-blink variant + raw XYZI bytes + dims. PURE (no ED state, no repaint) — used LIVE by [r] and REPLAYED at load from the baked rot list.
+    const osx = f.sx, osy = f.sy, osz = f.sz;
+    const fn = kind === 'yaw'
+      ? (dir > 0 ? (arr) => arr.map((p) => (((p >> 8) & 255)) | ((osx - 1 - (p & 255)) << 8) | (p & 0xffff0000))      // (x,y)→(y, sx-1-x)
+                 : (arr) => arr.map((p) => ((osy - 1 - ((p >> 8) & 255))) | ((p & 255) << 8) | (p & 0xffff0000)))     // (x,y)→(sy-1-y, x)
+      : (dir > 0 ? (arr) => arr.map((p) => (p & 0xff0000ff) | ((osz - 1 - ((p >> 16) & 255)) << 8) | (((p >> 8) & 255) << 16))   // (y,z)→(sz-1-z, y)
+                 : (arr) => arr.map((p) => (p & 0xff0000ff) | (((p >> 16) & 255) << 8) | ((osy - 1 - ((p >> 8) & 255)) << 16)));  // (y,z)→(z, sy-1-y)
+    f.vox = fn(f.vox);
+    if (f.voxBlink) f.voxBlink = fn(f.voxBlink);       // keep the eye-blink variant in sync with the rotation
+    if (f.raw) { const r = new Uint8Array(f.raw.length);
+      if (kind === 'yaw') { for (let i = 0; i < f.raw.length; i += 4) { const x = f.raw[i], y = f.raw[i + 1]; r[i] = dir > 0 ? y : osy - 1 - y; r[i + 1] = dir > 0 ? osx - 1 - x : x; r[i + 2] = f.raw[i + 2]; r[i + 3] = f.raw[i + 3]; } }
+      else { for (let i = 0; i < f.raw.length; i += 4) { const y = f.raw[i + 1], z = f.raw[i + 2]; r[i] = f.raw[i]; r[i + 1] = dir > 0 ? osz - 1 - z : z; r[i + 2] = dir > 0 ? y : osy - 1 - y; r[i + 3] = f.raw[i + 3]; } }
+      f.raw = r; }
+    if (kind === 'yaw') { const t = f.sx; f.sx = f.sy; f.sy = t; } else { const t = f.sy; f.sy = f.sz; f.sz = t; }   // width↔depth (yaw) / depth↔height (pitch)
+  };
+  const edApplyRot = (kind, dir) => {                  // [r] gizmo: rotate the selected frame 90° AND record the step so export/bake/save can replay it at load (rotation now lives in the offset data, not only the .vox)
     const n = ED.frames.length; if (!n) return; ED.paused = true;
-    const f = ED.frames[((ED.sel % n) + n) % n], osx = f.sx, osy = f.sy, osz = f.sz;
-    if (kind === 'yaw') {                              // rotate the (x,y) plane, keep z(height) + color
-      f.vox = dir > 0 ? f.vox.map((p) => (((p >> 8) & 255)) | ((osx - 1 - (p & 255)) << 8) | (p & 0xffff0000))    // (x,y)→(y, sx-1-x)
-                      : f.vox.map((p) => ((osy - 1 - ((p >> 8) & 255))) | ((p & 255) << 8) | (p & 0xffff0000));   // (x,y)→(sy-1-y, x)
-      if (f.raw) { const r = new Uint8Array(f.raw.length);
-        for (let i = 0; i < f.raw.length; i += 4) { const x = f.raw[i], y = f.raw[i + 1]; r[i] = dir > 0 ? y : osy - 1 - y; r[i + 1] = dir > 0 ? osx - 1 - x : x; r[i + 2] = f.raw[i + 2]; r[i + 3] = f.raw[i + 3]; } f.raw = r; }
-      const t = f.sx; f.sx = f.sy; f.sy = t;           // width ↔ depth
-    } else {                                           // 'pitch' — rotate the (y,z) plane about X, keep x(width) + color
-      f.vox = dir > 0 ? f.vox.map((p) => (p & 0xff0000ff) | ((osz - 1 - ((p >> 16) & 255)) << 8) | (((p >> 8) & 255) << 16))    // (y,z)→(sz-1-z, y)
-                      : f.vox.map((p) => (p & 0xff0000ff) | (((p >> 16) & 255) << 8) | ((osy - 1 - ((p >> 8) & 255)) << 16));   // (y,z)→(z, sy-1-y)
-      if (f.raw) { const r = new Uint8Array(f.raw.length);
-        for (let i = 0; i < f.raw.length; i += 4) { const y = f.raw[i + 1], z = f.raw[i + 2]; r[i] = f.raw[i]; r[i + 1] = dir > 0 ? osz - 1 - z : z; r[i + 2] = dir > 0 ? y : osy - 1 - y; r[i + 3] = f.raw[i + 3]; } f.raw = r; }
-      const t = f.sy; f.sy = f.sz; f.sz = t;           // depth ↔ height
-    }
-    edLayout(); };
+    const f = ED.frames[((ED.sel % n) + n) % n];
+    edRotStep(f, kind, dir);
+    (f.rot = f.rot || []).push(kind[0] + (dir > 0 ? '+' : '-'));   // 'y+' 'y-' 'p+' 'p-' — the ordered step list; replaying it reproduces the exact orientation
+    edSaveOffsets(); edLayout(); };                    // autosave (incl. rot) like the move-gizmo does
   const edRotate = () => edApplyRot('yaw', 1);         // legacy tap: one 90° yaw step
   const edColCache = new Map();                        // runtime color → palette id; nearest-match once the 256-entry palette is full
   const edCol = (r, g, b) => { const key = (r << 16) | (g << 8) | b;
@@ -5484,13 +5573,16 @@
     });
     return ED.frames.length;
   };
-  const edImportBufs = (list) => {                     // [{name, u8}] in sequence order — replaces any previous import
+  const BUNNY_ROT_BAKE = { '03.vox': [0, 1, 0], '04.vox': [0, 2, 0], '05.vox': [0, 2, 0], '06.vox': [0, 2, 0, ['y-']], '07.vox': [0, 1, 0, ['y-']], '08.vox': [0, 0, 0, ['y-']], '09.vox': [0, 0, 0, ['y-']], '10.vox': [0, 0, 0, ['y-']] };   // BAKED rotate-bunny (user's copy-changes) — hop-bob (oy rise mid-cycle) + a 90° yaw (['y-']) held on the back half of the cycle (frames 6-10), so the bunny turns as it lands. 4th element = rotation step list replayed onto the .vox at load.
+  const BUNNY_JUMP_BAKE = { '03.vox': [0, 1, -1], '04.vox': [0, 2, -2], '05.vox': [0, 2, -3], '06.vox': [0, 2, -4], '07.vox': [0, 1, -5], '08.vox': [0, 0, -6], '09.vox': [0, 0, -6], '10.vox': [0, 0, -6] };   // BAKED jump-bunny hop (user's copy-changes) — rises + travels −6 in z over the cycle; last-frame oz drives the continuous forward march
+  const edBuildFrames = (list, offKey, bakeOff) => {   // parse [{name, u8}] → frames with baked + saved offsets + the eye-blink variant. Shared by BOTH lanes. offKey namespaces the per-frame offsets so each bunny variant keeps its OWN positions though the frames share names 00-10.vox. bakeOff = committed default (undefined → cardinal default; object → that variant's bake; null → none)
     const frames = [];
     for (const f of list) { try { frames.push(...edParseVox(f.u8, f.name)); } catch (e) { console.warn('[vb] editor: bad .vox', f.name, e); } }
-    if (!frames.length) return 0;
-    const CARD_BAKED_OFF = { '04.vox': [0, 1, 0], '05.vox': [0, 1, 0] };   // BAKED cardinal-rotate alignment (user's copy-changes 2026-07-18) — the committed default, applied even with no saved edits
-    for (const f of frames) { const b = CARD_BAKED_OFF[f.name]; if (b) { f.ox = b[0]; f.oy = b[1]; f.oz = b[2]; } }
-    try { const m = JSON.parse(localStorage.getItem('vb_edoffsets') || '{}'); for (const f of frames) { const o = m[f.name]; if (o) { f.ox = o[0] | 0; f.oy = o[1] | 0; f.oz = o[2] | 0; } } } catch (e) {}   // a live saved edit still overrides the bake
+    if (!frames.length) return frames;
+    const bake = bakeOff === undefined ? { '04.vox': [0, 1, 0], '05.vox': [0, 1, 0] } : bakeOff;   // BAKED alignment applied even with no saved edits; cardinal default for manual imports, each bunny passes its own. A 4th element (array) = the baked ROTATION step list.
+    if (bake) for (const f of frames) { const b = bake[f.name]; if (b) { f.ox = b[0]; f.oy = b[1]; f.oz = b[2]; if (Array.isArray(b[3])) f.rot = b[3].slice(); } }
+    try { const m = JSON.parse(localStorage.getItem(offKey || 'vb_edoffsets') || '{}'); for (const f of frames) { const o = m[f.name]; if (o) { f.ox = o[0] | 0; f.oy = o[1] | 0; f.oz = o[2] | 0; if (Array.isArray(o[3])) f.rot = o[3].slice(); } } } catch (e) {}   // a live saved edit still overrides the bake (offsets AND rotation)
+    for (const f of frames) if (f.rot && f.rot.length) for (const s of f.rot) edRotStep(f, s[0] === 'y' ? 'yaw' : 'pitch', s[1] === '+' ? 1 : -1);   // REPLAY the baked/saved rotation onto the loaded .vox — this is where 'rotation in the bake' happens (before the eye-blink variant is built, so it inherits the rotation)
     for (const f of frames) {                            // EYE BLINK: build a variant where each pitch-black voxel (the eye) is recolored to its NEAREST red-plumage voxel (user)
       const reds = [], blacks = [];
       for (let i = 0; i < f.vox.length; i++) { const c = palette[f.vox[i] >>> 24]; if (!c) continue;
@@ -5502,12 +5594,22 @@
           vb[bi] = (p & 0x00ffffff) | ((best >>> 24) << 24); }
         f.voxBlink = vb; }
     }
+    return frames; };
+  const edImportBufs = (list, offKey, bakeOff, name) => {   // LEFT/editable lane — resets the scrub + repaints
+    const frames = edBuildFrames(list, offKey, bakeOff);
+    if (!frames.length) return 0;
+    ED.offKey = offKey || 'vb_edoffsets'; ED.name1 = name || '';   // remembered so gizmo autosave writes back to the SAME variant's namespace
     ED.frames = frames; ED.sel = 0; ED.paused = false;
     palSync(); edLayout();
+    return frames.length; };
+  const edImportBufs2 = (list, offKey, bakeOff, name) => {   // RIGHT/preview lane — loads alongside, never touches the primary's scrub/selection
+    const frames = edBuildFrames(list, offKey, bakeOff);
+    ED.frames2 = frames; ED.off2 = offKey || ''; ED.name2 = name || '';
     return frames.length; };
   const edEnter = () => {
     if (ED.on) return;
     ED.on = true; ED.ret = { x: P.x, y: P.y, z: P.z, yaw: P.yaw, pitch: P.pitch, fly: P.fly };   // fly saved too — the editor turns it ON for the framing below, exit restores what the player had
+    cmpVis();                                          // hide the top-centre compass while in the editor (user)
     ED.x0 = Math.max(rect.xlo + 4, Math.min(rect.xhi - 4 - ED.pw, Math.round(P.x / 10) * 10 - (ED.pw >> 1)));
     ED.z0 = Math.max(rect.zlo + 4, Math.min(rect.zhi - 4 - ED.pd, Math.round(P.z / 10) * 10 - (ED.pd >> 1)));
     let topMax = WL;                                   // stage must sit above all content on its footprint (its bricks stay PURE — no terrain sharing an 8³ brick with the plane)
@@ -5525,8 +5627,14 @@
     gpuPatch(cells);
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = true;   // fly ON so the framing below can't be pulled off by gravity while the world is frozen
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && BUNNY_ROTATE.length) { edImportBufs(BUNNY_ROTATE); ED.bunny = BUNNY_ITEM0 > 0; }   // auto-load the BUNNY filmstrip as the editable object (user); ED.bunny gates the trace-inject preview
-    else if (!ED.frames.length && BLUEBIRD_ROTATE.length) { edImportBufs(BLUEBIRD_ROTATE); ED.bunny = false; }   // …falling back to the blue bird if the bunny frames are missing
+    if (!ED.frames.length && (BUNNY_JUMP.length || BUNNY_ROTATE.length)) {   // 50/50 EACH TIME YOU ENTER (user): the JUMP-forward bunny or the ROTATE bunny — both baked, loaded as a single centred object
+      const pickJump = BUNNY_JUMP.length && (!BUNNY_ROTATE.length || Math.random() < 0.5);
+      console.log('[vb] editor bunny pick:', pickJump ? 'JUMP' : 'ROTATE', '(jump frames:', BUNNY_JUMP.length, 'rotate frames:', BUNNY_ROTATE.length + ')');   // if jump frames is 0, the jump files never loaded → always rotate
+      if (pickJump) edImportBufs(BUNNY_JUMP, 'vb_edoffsets_jump', BUNNY_JUMP_BAKE, 'jump');
+      else edImportBufs(BUNNY_ROTATE, 'vb_edoffsets_rotate', BUNNY_ROT_BAKE, 'rotate');
+      ED.bunny = false;
+    }
+    else if (!ED.frames.length && BLUEBIRD_ROTATE.length) { edImportBufs(BLUEBIRD_ROTATE); ED.bunny = false; }   // …falling back to the blue bird if both bunny sets are missing
     // ── FRAME THE OBJECT ── stand the player 5 voxels BACK from the stage centre (where the model is stamped) with the FEET
     // ON THE FLOOR (P.y = ED.y + 1 = plane top), then pitch DOWN to aim the eye at the model's vertical centre so the object
     // stays framed. (The old framing floated the eye at the model's mid-height, which for any model shorter than the 18.5
@@ -5545,11 +5653,12 @@
     ED.on = false;
     const cells = [];
     for (const [ii, pv] of ED.prev) if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); }
-    ED.prev.clear(); ED.frames = []; ED.sel = -1; ED.fcells = []; ED.ring = []; bfly.init = false;
+    ED.prev.clear(); ED.frames = []; ED.frames2 = []; ED.sel = -1; ED.fcells = []; ED.fcells2 = []; ED.ring = []; ED.box = null; ED.box2 = null; bfly.init = false;   // both lanes cleared → no stale editor hitbox lingers after exit
     gpuPatch(cells);
     rebuildBricks(0, WX, 0, WZ); uploadBricks();       // bring the whole world back from the void (occupancy was zeroed on enter)
     const r = ED.ret; if (r) { P.x = r.x; P.y = r.y; P.z = r.z; P.yaw = r.yaw; P.pitch = r.pitch; P.fly = !!r.fly; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
     edBtnEl.classList.remove('on'); edRowEl.classList.add('hidden'); edHudEl.classList.add('hidden');
+    cmpVis();                                          // restore the compass (if locked + setting on) now the editor is closed
   };
   edBtnEl.addEventListener('click', (e) => { e.stopPropagation(); ED.on ? edExit() : edEnter(); });
   $('edCopy').addEventListener('click', (e) => { e.stopPropagation();   // copy the per-frame offsets → paste back to be baked into the code (replaces the .vox exporter)
@@ -5560,7 +5669,7 @@
     const list = [];
     for (const f of [...edFileEl.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
       list.push({ name: f.name, u8: new Uint8Array(await f.arrayBuffer()) });
-    if (list.length) { edImportBufs(list); ED.bunny = false; }   // a manually imported .vox isn't in the ITEM table → keep the grid-stamp edit path
+    if (list.length) { ED.frames2 = []; ED.box2 = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second bunny lane so only the imported model shows
     edFileEl.value = '';
     edClearStamp();
   });
@@ -5896,7 +6005,7 @@
       const spd = sprint ? 170 : 60;
       const k = 1 - Math.exp(-10 * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
-      let vy = 0; if (keys.has(binds.jump)) vy += spd; if (keys.has('ControlLeft') || keys.has(binds.crouch)) vy -= spd;
+      let vy = 0; if (keys.has(binds.jump)) vy += spd; if (keys.has(binds.crouch)) vy -= spd;   // fly down = crouch (Alt) only; Ctrl no longer descends (user removed it)
       P.x += P.hvx * dt; P.z += P.hvz * dt; P.y += vy * dt;
       P.y = Math.max(-40, Math.min(WY + 240, P.y));
       P.onGround = false;
@@ -5970,10 +6079,10 @@
     // deterministic flake lattice (same ih3 hash, same jitter, same integrated fall/wind) and places a voxel at the very
     // column and moment a flake reaches the surface. Beyond flake-visibility range a statistical sprinkle fills the distance.
     // Placement SETTLES SMOOTHLY (a flake rolls to the lowest neighbouring column, ≤2 hops) and melt is TOP-FIRST per column.
-    if (ED.on && (P.y < ED.y - 40 ||                   // fell off the stage (the void has no floor) …
-        Math.abs(P.x - (ED.x0 + ED.pw / 2)) > 700 || Math.abs(P.z - (ED.z0 + ED.pd / 2)) > 700)) {   // … or flew far enough that the toroidal window would wrap — pop back onto the centre
-      P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0;
-      smoothEye = P.y + EYE; resetHist = 1;
+    if (ED.on) {                                       // ── INVISIBLE BARRIER (user) ── clamp the player inside the stage rim so they can't walk/fly off into the void; no voxels, nothing rendered. Replaces the old fall-recovery teleport.
+      const bx0 = ED.x0 + HW, bx1 = ED.x0 + ED.pw - HW, bz0 = ED.z0 + HW, bz1 = ED.z0 + ED.pd - HW;   // half-width inset so the player BOX (not just its centre) stops at the edge
+      if (P.x < bx0) { P.x = bx0; P.hvx = Math.max(0, P.hvx); } else if (P.x > bx1) { P.x = bx1; P.hvx = Math.min(0, P.hvx); }   // zero the outward velocity so they don't stick jittering against the wall
+      if (P.z < bz0) { P.z = bz0; P.hvz = Math.max(0, P.hvz); } else if (P.z > bz1) { P.z = bz1; P.hvz = Math.min(0, P.hvz); }
     }
     { const cells = [];
       if (snowOn !== snowPrevOn) { snowPrevOn = snowOn;   // storm edges: no time-melt DURING a storm (the blanket must not thin while flakes still fall)
@@ -6339,17 +6448,22 @@
     }
     lifeUid.fill(-1); lifeAna.fill(1);                 // ── dynamic-life ledger reset ── slots not claimed this frame stay analytic-only/empty
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
-      if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is either TRACE-INJECTED (the bunny, playing) or GRID-STAMPED (paused, or a non-bunny .vox import)
-        UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot by default; edEmitModel re-enables it for the bunny
-        const traceInject = ED.frames.length && !ED.paused && ED.bunny && LIFE_TRACE && BUNNY_ITEM0 > 0;   // playing the built-in bunny → the SVGF path, identical to every other trace-injected life form (user)
+      if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is ALWAYS GRID-STAMPED (real world voxels → full lighting), exactly like every other model — NO trace-inject exception (user)
+        UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot (no trace-inject in the editor)
         if (ED.frames.length && !ED.paused) {            // playing → 24 fps through all frames, brief HOLD on the LAST frame, then loop
           const n = ED.frames.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
           const t = now % cyc, fi = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // 0..n-1, then hold the LAST frame during the pause
           const blink = (now % 3400) < 160;              // EYE BLINK — the black eye voxel flashes red for 0.16 s every 3.4 s (same cadence as the ducks)
           if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink) { ED.sel = fi; ED.blink = blink; ED.spin = 0;   // NO whole-animation rotation (user: the bunny just repeats its jump). The old +90°/cycle was a cardinal-rotate loop trick.
-            if (!traceInject) edLayout(); }              // grid-stamp path re-stamps on frame change; the trace path never touches the grid
+            const k = Math.floor(now / cyc);             // CONTINUOUS HOP (user): each completed cycle starts where the LAST frame ended, so a marching bunny keeps hopping forward instead of snapping back to the start
+            const lf = ED.frames[n - 1] || {}, f0 = ED.frames[0] || {};   // per lane: advance/cycle = LAST-frame offset − FIRST-frame offset (the net travel of one hop). edLayout wraps it inside the stage so it never hops off-screen.
+            ED.hopX = k * ((lf.ox || 0) - (f0.ox || 0)); ED.hopY = k * ((lf.oy || 0) - (f0.oy || 0)); ED.hopZ = k * ((lf.oz || 0) - (f0.oz || 0));
+            const n2 = ED.frames2.length, l2 = n2 ? ED.frames2[n2 - 1] : {}, g2 = n2 ? ED.frames2[0] : {};   // …same for the preview lane, so a forward-hopping preview marches too (the rotate bunny's oz is 0 → it stays in place)
+            ED.hop2X = k * ((l2.ox || 0) - (g2.ox || 0)); ED.hop2Y = k * ((l2.oy || 0) - (g2.oy || 0)); ED.hop2Z = k * ((l2.oz || 0) - (g2.oz || 0));
+            edLayout(); }                                // re-stamp BOTH lanes' world voxels on every frame change
         }
-        if (traceInject) { edClearStamp(); edEmitModel(o2, ((ED.sel % ED.frames.length) + ED.frames.length) % ED.frames.length, cam, right, up, fwd); }   // keep the grid clean, then emit the current frame to slot 4
+        if (ED.box) { birdBox.cx = ED.box.cx; birdBox.cy = ED.box.cy; birdBox.cz = ED.box.cz; birdBox.hx = ED.box.hx; birdBox.hy = ED.box.hy; birdBox.hz = ED.box.hz; birdBox.active = true; }   // SOLID hitbox for the EDITABLE bunny — republished every frame from the last edLayout AABB; boxFree() already tests every birdBox
+        if (ED.box2) { const B3 = birdBoxes[1]; B3.cx = ED.box2.cx; B3.cy = ED.box2.cy; B3.cz = ED.box2.cz; B3.hx = ED.box2.hx; B3.hy = ED.box2.hy; B3.hz = ED.box2.hz; B3.active = true; }   // …and the PREVIEW bunny (slot 1) so you can't walk through either
       } else if (FLYERS.length > 0) {                    // the WORLD bird (only when NOT in the editor)
         const ps = birdStep(bird, 0, now / 1000, dt);    // bird 0 keeps the dedicated slot; the rest are emitted with the creatures below
         ps.uid = 0;                                      // stable identity for the dynamic-life temporal reprojection
@@ -7267,13 +7381,18 @@
     if (hudT > 0.25) {
       hudT = 0;
       if (!locked) {
-        const mins = Math.floor(tday * 1440);
-        todLabel.textContent = String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
+        const mins = Math.floor(tday * 1440), th = Math.floor(mins / 60); let th12 = th % 12; if (th12 === 0) th12 = 12;   // 12-hour + am/pm in the settings clock too (user)
+        todLabel.textContent = th12 + ':' + String(mins % 60).padStart(2, '0') + ' ' + (th < 12 ? 'am' : 'pm');
         if (!todDrag) { todSlider.value = mins; sliderFill(todSlider); }   // keep the green fill line tracking the clock as the day advances
       }
-      hudEl.textContent = `${fpsEma.toFixed(0)} fps${vsyncOn ? '' : ' (uncapped)'}  ${RW}×${RH} (${renderScale.toFixed(2)}×)\n` +
-        `xyz ${(P.x / 10).toFixed(1)} ${(P.y / 10).toFixed(1)} ${(P.z / 10).toFixed(1)} m${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}  ${String(Math.floor(tday * 24)).padStart(2, '0')}:${String(Math.floor((tday * 24 % 1) * 60)).padStart(2, '0')}${cycleSpeed !== 1 ? ' x' + cycleSpeed.toFixed(1) : ''}` +
-        `\n${slots.map((s, i) => { const nm = s ? (ITEM_NAMES[s.it] || '?') + (s.n > 1 ? '×' + s.n : '') : '·'; return i === selSlot ? `[${nm}]` : ` ${nm} `; }).join(' ')}`;
+      const h24 = Math.floor(tday * 24), mn = Math.floor((tday * 24 % 1) * 60);   // 12-hour clock with AM/PM (user)
+      let h12 = h24 % 12; if (h12 === 0) h12 = 12;                                // 0/12/24 → 12
+      const clock = h12 + ':' + String(mn).padStart(2, '0') + ' ' + (h24 < 12 ? 'am' : 'pm');
+      const hudParts = [];                               // each section is toggleable (fps/coords/time) and joined by a BLANK LINE for spacing (user)
+      if (showFps) hudParts.push(`${fpsEma.toFixed(0)} fps`);
+      if (showCoords) hudParts.push(`x ${(P.x / 10).toFixed(1)}\ny ${(P.y / 10).toFixed(1)}\nz ${(P.z / 10).toFixed(1)}`);   // coords in metres, one axis per line
+      if (showTime) hudParts.push(`${clock}${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}${cycleSpeed !== 1 ? '  x' + cycleSpeed.toFixed(1) : ''}`);
+      hudEl.textContent = hudParts.join('\n\n');
     }
     // V-SYNC OFF: pace frames off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the
     // CPU's frame prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it.
