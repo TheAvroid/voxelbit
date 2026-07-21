@@ -847,6 +847,8 @@
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
   let ROBIN_ROTATE = [];                               // ROBIN = the SAME bird recoloured again (assets/life/robin/rotate/00-10, base.vox ignored) — same layout as the cardinal and blue bird
+  let BUNNY_ROTATE = [];                               // BUNNY frames (assets/life/bunny/00-10, base.vox ignored) — auto-loaded as the asset-editor object (user); the editor previews the animation on the stage
+  let BUNNY_ITEM0 = 0;                                 // …and the same frames in the ITEM table (BUNNY_ITEM0+frame) so the editor can TRACE-INJECT the playing bunny instead of grid-stamping it
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
@@ -1217,6 +1219,32 @@
       for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/robin/rotate/' + String(f).padStart(2, '0') + '.vox'); ROBIN_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       console.log('[vb] robin rotate', ROBIN_ROTATE.length, 'frames (3rd perched songbird)');
     } catch (e) { console.warn('[vb] robin rotate frames missing', e); ROBIN_ROTATE = []; }
+    try {                                                             // BUNNY frames (raw bytes) → the asset-editor filmstrip; the numbered frames live directly in the species dir (like the fish/worm strips), not a /rotate/ subdir
+      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/' + String(f).padStart(2, '0') + '.vox'); if (!bv.length) break; BUNNY_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      console.log('[vb] bunny', BUNNY_ROTATE.length, 'frames (asset-editor object)');
+      // …and load the SAME frames into the ITEM table so the editor can TRACE-INJECT the playing bunny (full SVGF, no
+      // grid-stamp → no denoiser ghost trails, which is what "shading issues when the bunny moves" was — user).
+      const bloaded = [];
+      for (const fr of BUNNY_ROTATE) { const bv = fr.u8, bdv = new DataView(bv.buffer, bv.byteOffset, bv.byteLength);
+        let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
+        const bwalk = (off, end) => { while (off + 12 <= end) {
+          const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+          const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+          if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
+          else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
+          else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
+          else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+          off += 12 + sz + csz;
+        } };
+        bwalk(8, bv.length);
+        if (!bvox) continue;
+        const cells = new Array(bsx * bsy * bsz).fill(null);
+        for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+        bloaded.push({ w: bsx, d: bsy, h: bsz, cells });
+      }
+      if (bloaded.length) { BUNNY_ITEM0 = items.length + 1; for (const it of bloaded) items.push(it);
+        console.log('[vb] bunny -> items', BUNNY_ITEM0, '..', items.length); }
+    } catch (e) { console.warn('[vb] bunny frames missing', e); BUNNY_ROTATE = []; }
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
       const sol = (x, y, z) => x >= 0 && x < w && y >= 0 && y < d && z >= 0 && z < h && !!cells[x + y * w + z * w * d];
@@ -1228,7 +1256,7 @@
         out[x + y * w + z * w * d] = [c[0] * ao, c[1] * ao, c[2] * ao];
       }
       it.cells = out; };
-    const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
+    const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0, BUNNY_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
     for (let i = creatureStart - 1; i < items.length; i++) if (items[i] && items[i].cells && items[i].cells.length) bakeAO(items[i]);
     itemsRef = items;                                  // publish the finished table to the tick loop (cardinal hitbox size + worm stamp poses)
     const dims = [], flat = [];
@@ -2645,6 +2673,12 @@
   const DDAW = /* wgsl */`
     const B2X : i32 = ${BX >> 2}; const B2Y : i32 = ${BY >> 2}; const B2Z : i32 = ${BZ >> 2};
     const WTv : u32 = ${WATER_T}u; const WBv : u32 = ${WATER_B}u;   // lake surface / body voxel ids
+    // ── FOLIAGE SEE-THROUGH ── when the camera clips INTO leaves, the primary ray treats foliage within folSkipD of the
+    // eye as air, so the leaves you are buried in never fill the screen. A per-invocation private var (not a trace() arg)
+    // so ONLY the primary ray sets it — the sun / AO / reflection traces keep foliage OPAQUE (the canopy still shadows).
+    var<private> folSkipD : f32 = 0.0;
+    const FOLSKIP : bool = §FOL§;                        // pipeline SPECIALIZATION: only the see-through TRACE variant (picked per frame when the eye is near foliage) pays the per-step check below — the normal-play variant compiles it out of the hottest loop entirely
+    fn isFol(v : u32) -> bool { return ${foliageIds.length ? foliageIds.map((id) => 'v == ' + id + 'u').join(' || ') : 'false'}; }
     struct Hit { t : f32, vox : u32, face : u32, n : vec3<f32>, }
     fn voxAt(c : vec3<i32>) -> u32 {
       var x = c.x + i32(u.off.x); if (x >= WX) { x -= WX; }
@@ -2711,6 +2745,7 @@
                 let ii = u32(vIdx);
                 var v = (world[ii >> 2u] >> ((ii & 3u) * 8u)) & 255u;
                 if (skipW && (v == WTv || v == WBv)) { v = 0u; }      // water: invisible to an underwater camera
+                if (FOLSKIP && folSkipD > 0.0 && tv < folSkipD && isFol(v)) { v = 0u; }   // near foliage: transparent to the clipped-in primary ray (dead-coded out of the non-FOLSKIP variant)
                 if (v != 0u) {
                   h.t = tv; h.vox = v;
                   var n = vec3<f32>(0.0);
@@ -2765,41 +2800,9 @@
       return t * (r * cos(a)) + b * (r * sin(a)) + n * sqrt(max(1.0 - r2, 0.0));
     }
     fn ign(p : vec2<f32>) -> f32 { return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y)); }
-    var<workgroup> wgVis : array<u32, 64>;               // ── DYNAMIC LIFE tile cull ── same 8×8-tile drop-slot visibility the composite uses: one thread tests one slot's bounding sphere against the tile's view cone
+    @group(0) @binding(9) var<storage, read> visb : array<u32>;      // ── DYNAMIC LIFE tile cull ── per-8×8-tile drop-slot visibility bitmask (2×u32/tile), computed ONCE per frame by the tiny VIS prepass and shared with the composite — replaces the per-workgroup recompute + workgroupBarrier that ran here even on creature-free frames
     @compute @workgroup_size(8, 8)
-    fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocation_index) lidx : u32, @builtin(workgroup_id) wgid : vec3<u32>) {
-      if (ITEMN > 0 && lidx < 64u) {                     // (before ANY return — the barrier below must be uniform)
-        var vis = 0u;
-        let diC = i32(lidx);
-        if (diC < clamp(i32(u.pick2Y.w + 0.5), 9, 64)) {
-          let dXv = u.drops[diC * 4 + 1];
-          let dit = i32(dXv.w + 0.5);
-          if (dit >= 1) {
-            let dA = u.drops[diC * 4];
-            let it3 = clamp(dit - 1, 0, ITEMN - 1);
-            if (ITEMD[it3].x >= 1) {
-              let ex2 = vec3<f32>(f32(ITEMD[it3].x), f32(ITEMD[it3].y), f32(ITEMD[it3].z)) * 0.5;
-              let radD = dA.w * (length(ex2) + 1.0);
-              let dlen = length(dA.xyz);
-              if (dlen <= radD + 1.0) { vis = 1u; }
-              else {
-                let tc = vec2<f32>(wgid.xy) * 8.0 + vec2<f32>(4.0);
-                let cdir = normalize(vec3<f32>((tc.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(tc.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
-                var cosT = 1.0;
-                for (var k = 0u; k < 4u; k++) {
-                  let co = tc + vec2<f32>(select(-4.6, 4.6, (k & 1u) != 0u), select(-4.6, 4.6, (k & 2u) != 0u));
-                  let cd = normalize(vec3<f32>((co.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(co.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
-                  cosT = min(cosT, dot(cd, cdir));
-                }
-                let cAng = acos(clamp(dot(dA.xyz / dlen, cdir), -1.0, 1.0));
-                if (cAng <= acos(clamp(cosT, -1.0, 1.0)) + asin(clamp(radD / dlen, 0.0, 1.0)) + 0.01) { vis = 1u; }
-              }
-            }
-          }
-        }
-        wgVis[lidx] = vis;
-      }
-      workgroupBarrier();
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(workgroup_id) wgid : vec3<u32>) {
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let rd = rayDir(px);
@@ -2820,7 +2823,12 @@
           }
         }
       }
+      if (FOLSKIP) {                                                 // ── FOLIAGE SEE-THROUGH ── if the eye sits inside a leaf voxel, make near foliage transparent to the PRIMARY ray only
+        let ce = vec3<i32>(floor(ro));                               // (this whole block only exists in the see-through pipeline variant — the CPU picks it when the eye is within 1 voxel of foliage)
+        if (ce.y > 0 && ce.y < WY - 1 && isFol(voxAt(clamp(ce, vec3<i32>(0), vec3<i32>(WX - 1, WY - 1, WZ - 1))))) { folSkipD = 30.0; }   // ~3 m: clears the crown you clipped into; distant canopy still renders normally
+      }
       var h = trace(ro + rd * tEye, rd, min(4000.0, tcap) - tEye, skipW);
+      folSkipD = 0.0;                                                 // reset before the sun / AO / lava / reflection traces below — they must still see the canopy as solid
       if (h.t >= 0.0) { h.t += tEye; }
       if ((u32(u.fx) & 16u) != 0u) {                               // FALLING SNOW — flakes are REAL VOXELS in the primary trace: grain, the jittered sun ray, AO, fog and the denoiser treat them exactly like the static world
         var rdS = rd;
@@ -2904,9 +2912,11 @@
         let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));   // camera-space twin of rd — the drop transforms live in camera space
         var bestT = select(1e9, h.t, h.t >= 0.0);
         let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, 64);
+        let tiV = (wgid.y * ((u32(u.res.x) + 7u) / 8u) + wgid.x) * 2u;   // this workgroup IS one 8×8 tile — read its two prepass mask words
+        let visM0 = visb[tiV]; let visM1 = visb[tiV + 1u];
         for (var di = 4; di < dropN; di++) {                         // 4 = flying cardinal, 9+ = live creatures; 0-3 drops + 5-8 sparks stay analytic
           if (di >= 5 && di <= 8) { continue; }
-          if (wgVis[di] == 0u) { continue; }
+          if (((select(visM0, visM1, di >= 32) >> (u32(di) & 31u)) & 1u) == 0u) { continue; }
           if ((u32(u.lifeMot[di].w + 0.5) & 1u) != 0u) { continue; } // analytic-only (firefly / empty)
           let dXv = u.drops[di * 4 + 1];
           let dit = i32(dXv.w + 0.5);
@@ -3228,41 +3238,9 @@
       n = n * smoothstep(0.0, 0.16, hf) * smoothstep(1.0, 0.70, hf);
       return clamp((n - 0.565) * 3.4, 0.0, 1.0);                     // ~35% coverage — scattered cumulus, plenty of blue
     }
-    var<workgroup> wgVis : array<u32, 64>;               // per-8×8-tile drop-slot visibility — one thread tests one slot's bounding sphere against the tile's view cone (64 threads = 64 slots)
+    @group(0) @binding(22) var<storage, read> visb : array<u32>;     // per-8×8-tile drop-slot visibility bitmask (2×u32/tile) — computed ONCE per frame by the VIS prepass and shared with TRACE (this pass used to recompute it per workgroup behind a barrier)
     @compute @workgroup_size(8, 8)
-    fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocation_index) lidx : u32, @builtin(workgroup_id) wgid : vec3<u32>) {
-      if (ITEMN > 0 && lidx < 64u) {                     // TILE CULL (before ANY return — the barrier below must be uniform): most tiles see 0-2 drops, the
-        var vis = 0u;                                    // per-pixel loop over ~20 live creature slots was pure waste on busy water
-        let diC = i32(lidx);
-        if (diC < clamp(i32(u.pick2Y.w + 0.5), 9, 64)) {
-          let dXv = u.drops[diC * 4 + 1];
-          let dit = i32(dXv.w + 0.5);
-          if (dit >= 1) {
-            let dA = u.drops[diC * 4];
-            let it3 = clamp(dit - 1, 0, ITEMN - 1);
-            if (ITEMD[it3].x >= 1) {
-              let ex2 = vec3<f32>(f32(ITEMD[it3].x), f32(ITEMD[it3].y), f32(ITEMD[it3].z)) * 0.5;
-              let radD = dA.w * (length(ex2) + 1.0);
-              let dlen = length(dA.xyz);
-              if (dlen <= radD + 1.0) { vis = 1u; }      // camera inside the sphere — always visible to this tile
-              else {
-                let tc = vec2<f32>(wgid.xy) * 8.0 + vec2<f32>(4.0);
-                let cdir = normalize(vec3<f32>((tc.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(tc.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
-                var cosT = 1.0;                          // tile half-angle = worst corner (±0.6 jitter margin baked into the ±4.6)
-                for (var k = 0u; k < 4u; k++) {
-                  let co = tc + vec2<f32>(select(-4.6, 4.6, (k & 1u) != 0u), select(-4.6, 4.6, (k & 2u) != 0u));
-                  let cd = normalize(vec3<f32>((co.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(co.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
-                  cosT = min(cosT, dot(cd, cdir));
-                }
-                let cAng = acos(clamp(dot(dA.xyz / dlen, cdir), -1.0, 1.0));
-                if (cAng <= acos(clamp(cosT, -1.0, 1.0)) + asin(clamp(radD / dlen, 0.0, 1.0)) + 0.01) { vis = 1u; }
-              }
-            }
-          }
-        }
-        wgVis[lidx] = vis;
-      }
-      workgroupBarrier();
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(workgroup_id) wgid : vec3<u32>) {
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let rd = rayDir(px);
@@ -3439,8 +3417,10 @@
         let ndc3 = (px / u.res) * 2.0 - 1.0;
         let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));
         let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, 64);             // JS COMPACTS live creatures into consecutive slots from 9 and passes the count — the loop never wastes pixels on empty slots (the fixed 64 loop tanked fps over busy water)
+        let tiV = (wgid.y * ((u32(u.res.x) + 7u) / 8u) + wgid.x) * 2u;   // this workgroup IS one 8×8 tile — read its two prepass mask words
+        let visM0 = visb[tiV]; let visM1 = visb[tiV + 1u];
         for (var di = 0; di < dropN; di++) {                         // slots 0..3 = dropped items, slot 4 = the flying cardinal, slots 5..8 = clash sparks, 9+ = live creatures (compacted)
-          if (wgVis[di] == 0u) { continue; }                         // tile cull (top of main): this slot's sphere can't touch this 8×8 tile — skip before ANY uniform load
+          if (((select(visM0, visM1, di >= 32) >> (u32(di) & 31u)) & 1u) == 0u) { continue; }   // tile cull (VIS prepass): this slot's sphere can't touch this 8×8 tile — skip before ANY uniform load
           if (u.lifeCfg.y > 0.5 && (di == 4 || di >= 9) && face != 6u && (u32(u.lifeMot[di].w + 0.5) & 1u) == 0u) { continue; }   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies)
           let dXv = u.drops[di * 4 + 1];
           let dit = i32(dXv.w + 0.5);
@@ -3755,8 +3735,51 @@
     }
   `;
 
-  const mkCompute = (code) => device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: PRE + code }), entryPoint: 'main' } });
-  const pTrace = mkCompute(TRACE), pTemporal = mkCompute(TEMPORAL), pSpatial = mkCompute(SPATIAL), pComposite = mkCompute(COMPOSITE), pTaa = mkCompute(TAA);
+  const VIS = /* wgsl */`
+    ${pickWGSL}
+    @group(0) @binding(1) var<storage, read_write> visb : array<u32>;   // 2×u32 bitmask per 8×8 screen tile: bit di = drop slot di's bounding sphere may touch this tile
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {          // one invocation = one TILE (not one pixel) — the whole pass is ~1/64th of a screen pass
+      let tX = (u32(u.res.x) + 7u) / 8u; let tY = (u32(u.res.y) + 7u) / 8u;
+      if (gid.x >= tX || gid.y >= tY) { return; }
+      var m0 = 0u; var m1 = 0u;
+      if (ITEMN > 0) {                                                 // EXACT math of the old per-workgroup cull, cone half-angle hoisted out of the slot loop (it only depends on the tile)
+        let tc = vec2<f32>(gid.xy) * 8.0 + vec2<f32>(4.0);
+        let cdir = normalize(vec3<f32>((tc.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(tc.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
+        var cosT = 1.0;                                                // tile half-angle = worst corner (±0.6 jitter margin baked into the ±4.6)
+        for (var k = 0u; k < 4u; k++) {
+          let co = tc + vec2<f32>(select(-4.6, 4.6, (k & 1u) != 0u), select(-4.6, 4.6, (k & 2u) != 0u));
+          let cd = normalize(vec3<f32>((co.x / u.res.x * 2.0 - 1.0) * u.tanH * u.aspect, -(co.y / u.res.y * 2.0 - 1.0) * u.tanH, 1.0));
+          cosT = min(cosT, dot(cd, cdir));
+        }
+        let tAng = acos(clamp(cosT, -1.0, 1.0));
+        let dN = clamp(i32(u.pick2Y.w + 0.5), 9, 64);
+        for (var diC = 0; diC < dN; diC++) {
+          let dXv = u.drops[diC * 4 + 1];
+          let dit = i32(dXv.w + 0.5);
+          if (dit < 1) { continue; }
+          let dA = u.drops[diC * 4];
+          let it3 = clamp(dit - 1, 0, ITEMN - 1);
+          if (ITEMD[it3].x < 1) { continue; }
+          let ex2 = vec3<f32>(f32(ITEMD[it3].x), f32(ITEMD[it3].y), f32(ITEMD[it3].z)) * 0.5;
+          let radD = dA.w * (length(ex2) + 1.0);
+          let dlen = length(dA.xyz);
+          var vis = 0u;
+          if (dlen <= radD + 1.0) { vis = 1u; }                        // camera inside the sphere — always visible to this tile
+          else {
+            let cAng = acos(clamp(dot(dA.xyz / dlen, cdir), -1.0, 1.0));
+            if (cAng <= tAng + asin(clamp(radD / dlen, 0.0, 1.0)) + 0.01) { vis = 1u; }
+          }
+          if (vis != 0u) { if (diC < 32) { m0 |= 1u << u32(diC); } else { m1 |= 1u << u32(diC - 32); } }
+        }
+      }
+      let ti = (gid.y * tX + gid.x) * 2u;
+      visb[ti] = m0; visb[ti + 1u] = m1;
+    }`;
+
+  const mkCompute = (code, fol) => device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: (PRE + code).replaceAll('§FOL§', fol ? 'true' : 'false') }), entryPoint: 'main' } });
+  const pTraceV = [mkCompute(TRACE, 0), mkCompute(TRACE, 1)];          // FOLIAGE SPECIALIZATION: variant 0 = normal play (see-through check compiled OUT of the hot DDA loop), variant 1 = eye near foliage
+  const pVis = mkCompute(VIS), pTemporal = mkCompute(TEMPORAL), pSpatial = mkCompute(SPATIAL), pComposite = mkCompute(COMPOSITE), pTaa = mkCompute(TAA);
   const pScatter = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: SCATTER }), entryPoint: 'main' } });
   const bgScatter = device.createBindGroup({ layout: pScatter.getBindGroupLayout(0), entries: [
     { binding: 0, resource: { buffer: scatBuf } }, { binding: 1, resource: { buffer: stagBuf } }, { binding: 2, resource: { buffer: worldBuf } }] });
@@ -3767,7 +3790,8 @@
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
   let renderScale = 0.88;                              // default resolution scale (user 2026-07-17); [ ] keys still step it 0.375..1.5
   let RW = 0, RH = 0, CW = 0, CH = 0;
-  let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit;
+  let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, visBuf = null;
+  let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline
   let resetHist = 1;
   function makeTargets() {
     CW = Math.max(2, Math.floor(canvas.clientWidth * devicePixelRatio));
@@ -3780,12 +3804,16 @@
     const colorCur = tex('rgba8unorm'), colHistA = tex('rgba8unorm'), colHistB = tex('rgba8unorm');
     const slotA = tex('r32uint'), slotB = tex('r32uint');   // ── DYNAMIC LIFE ── per-pixel creature id + hit-axis bits, ping-ponged (temporal needs LAST frame's ids for identity checks). cur for frame parity par = par ? slotB : slotA — mirrors the hist ping-pong.
     const v = (t) => t.createView();
-    bgTrace = [0, 1].map(par => device.createBindGroup({ layout: pTrace.getBindGroupLayout(0), entries: [
+    if (visBuf) visBuf.destroy();
+    visBuf = device.createBuffer({ size: Math.ceil(RW / 8) * Math.ceil(RH / 8) * 8, usage: GPUBufferUsage.STORAGE });   // 2×u32 tile-cull bitmask per 8×8 tile — written by the VIS prepass, read by TRACE + COMPOSITE
+    bgVis = device.createBindGroup({ layout: pVis.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: visBuf } }] });
+    bgTrace = pTraceV.map(pv => [0, 1].map(par => device.createBindGroup({ layout: pv.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: worldBuf } },
       { binding: 2, resource: { buffer: brickBuf } }, { binding: 3, resource: { buffer: palBuf } },
       { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: brick2Buf } },
-      { binding: 7, resource: { buffer: wbrickBuf } },
-      { binding: 8, resource: v(par ? slotB : slotA) }, { binding: 13, resource: { buffer: itemMapBuf } }] }));
+      { binding: 7, resource: { buffer: wbrickBuf } }, { binding: 9, resource: { buffer: visBuf } },
+      { binding: 8, resource: v(par ? slotB : slotA) }, { binding: 13, resource: { buffer: itemMapBuf } }] })));
     bgTemporal = [0, 1].map(par => device.createBindGroup({ layout: pTemporal.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gIrr) },
       { binding: 2, resource: v(par ? histA : histB) }, { binding: 3, resource: linSamp },
@@ -3802,7 +3830,7 @@
       { binding: 16, resource: { buffer: worldBuf } }, { binding: 17, resource: { buffer: brickBuf } },
       { binding: 18, resource: { buffer: brick2Buf } }, { binding: 19, resource: { buffer: palBuf } },
       { binding: 20, resource: { buffer: wbrickBuf } },
-      { binding: 21, resource: v(par ? slotB : slotA) }] }));
+      { binding: 21, resource: v(par ? slotB : slotA) }, { binding: 22, resource: { buffer: visBuf } }] }));
     bgTaa = [0, 1].map(par => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(colorCur) },
       { binding: 2, resource: v(gIrr) }, { binding: 3, resource: v(par ? colHistA : colHistB) },
@@ -3949,7 +3977,7 @@
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
-  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0, rgiz: false, dragRing: -1, dragRAcc: 0, rgizBoxes: [] };   // giz/drag*: [e] move-gizmo; rgiz/dragRing*: [r] ROTATE-gizmo (2 voxel rings, yaw + pitch); blink: eye-blink phase; spin: +90° per completed rotation cycle
+  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0, bunny: false, rgiz: false, dragRing: -1, dragRAcc: 0, rgizBoxes: [] };   // giz/drag*: [e] move-gizmo; rgiz/dragRing*: [r] ROTATE-gizmo (2 voxel rings, yaw + pitch); blink: eye-blink phase; spin: +90° per completed rotation cycle
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
@@ -4289,6 +4317,17 @@
   const lifeSlotSet = (slot, uid, x, y, z, item, analytic) => {
     lifeUid[slot] = uid; lifeItem[slot] = item; lifeAna[slot] = analytic ? 1 : 0;
     lifeAnc[slot * 3] = x; lifeAnc[slot * 3 + 1] = y; lifeAnc[slot * 3 + 2] = z; };
+  const edEmitModel = (o2, fi, cam, right, up, fwd) => {   // ── EDITOR TRACE-INJECT ── the playing bunny → drop slot 4 (upright, WORLD scale, at the stage centre), so it renders
+    const it0 = BUNNY_ITEM0 + fi, it = itemsRef && itemsRef[it0 - 1];   // through TRACE with full SVGF instead of being grid-stamped (grid-stamping an animating model was the ghost-trail source — user)
+    if (!it) { UF[o2 + 7] = 0; return false; }
+    const wcx = ED.x0 + ED.pw / 2, wcy = ED.y + 1 + it.h / 2, wcz = ED.z0 + ED.pd / 2;   // model centre in world (the stamp maps model z→world y, so height is it.h)
+    const rx = wcx - cam[0], ry = wcy - cam[1], rz = wcz - cam[2];
+    UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = 1;   // vs = 1: one model voxel = one world voxel, exactly like the stamp
+    UF[o2 + 4] = right[0]; UF[o2 + 5] = up[0]; UF[o2 + 6] = fwd[0]; UF[o2 + 7] = it0;     // model X → world +X
+    UF[o2 + 8] = right[2]; UF[o2 + 9] = up[2]; UF[o2 + 10] = fwd[2]; UF[o2 + 11] = 0;     // model Y → world +Z
+    UF[o2 + 12] = right[1]; UF[o2 + 13] = up[1]; UF[o2 + 14] = fwd[1]; UF[o2 + 15] = 0;   // model Z → world +Y
+    lifeSlotSet(4, 9000, wcx, wcy, wcz, it0, false);       // ledger: fixed position (motion 0); the item id changes each animation frame → the temporal rejects that one frame (flag 2), so a frame flip never ghosts
+    return true; };
   const birdWrite = (o2, ps, cam, right, up, fwd) => {   // pose → one drop slot (camera-space anchor + the three model axes)
     lifeSlotSet((o2 - 68) >> 4, 1000 + (ps.uid || 0), ps.x, ps.y, ps.z, Math.round(ps.item), false);   // flying birds are trace-injected life
     const rx = ps.x - cam[0], ry = ps.y - cam[1], rz = ps.z - cam[2];
@@ -5289,6 +5328,14 @@
     for (let r = 0; r < q; r++) { const out = []; for (const p of cur) { const x = p & 255, y = (p >> 8) & 255; out.push(y | ((cx - 1 - x) << 8) | (p & 0xffff0000)); } cur = out; const t = cx; cx = cy; cy = t; }
     return { vox: cur, sx: cx, sy: cy };
   };
+  const edClearStamp = () => {                          // restore any grid-stamped model/ring voxels to plane/air WITHOUT re-stamping — used when the model is TRACE-INJECTED (playing) so the world grid stays clean (no ghosts, no double-render)
+    if (!ED.fcells.length && !ED.ring.length) return;
+    const cells = [];
+    for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
+    ED.fcells = [];
+    for (const r of ED.ring) { const id = edPlaneId(r.x, r.z); if (W[r.ii] !== id) { W[r.ii] = id; cells.push(r.ii); } }
+    ED.ring = [];
+    if (cells.length) gpuPatch(cells); };
   const edLayout = () => {                             // stamp ONLY the current frame, CENTRED, as a real static object (world voxels → full lighting) — the animation swaps to the next static frame in place; no filmstrip
     const cells = [];
     for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
@@ -5428,7 +5475,7 @@
     return frames.length; };
   const edEnter = () => {
     if (ED.on) return;
-    ED.on = true; ED.ret = { x: P.x, y: P.y, z: P.z, yaw: P.yaw, pitch: P.pitch };
+    ED.on = true; ED.ret = { x: P.x, y: P.y, z: P.z, yaw: P.yaw, pitch: P.pitch, fly: P.fly };   // fly saved too — the editor turns it ON for the framing below, exit restores what the player had
     ED.x0 = Math.max(rect.xlo + 4, Math.min(rect.xhi - 4 - ED.pw, Math.round(P.x / 10) * 10 - (ED.pw >> 1)));
     ED.z0 = Math.max(rect.zlo + 4, Math.min(rect.zhi - 4 - ED.pd, Math.round(P.z / 10) * 10 - (ED.pd >> 1)));
     let topMax = WL;                                   // stage must sit above all content on its footprint (its bricks stay PURE — no terrain sharing an 8³ brick with the plane)
@@ -5444,9 +5491,18 @@
     const cells = [];
     for (let z = ED.z0; z < ED.z0 + ED.pd; z++) for (let x = ED.x0; x < ED.x0 + ED.pw; x++) edSet(x, ED.y, z, edPlaneId(x, z), cells);
     gpuPatch(cells);
-    P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = false;
+    P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = true;   // fly ON so the framing below can't be pulled off by gravity while the world is frozen
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && BLUEBIRD_ROTATE.length) edImportBufs(BLUEBIRD_ROTATE);   // auto-load the BLUE BIRD rotate filmstrip as the editable object (the lotus that used to sit here was removed — user). A manual .vox import replaces it.
+    if (!ED.frames.length && BUNNY_ROTATE.length) { edImportBufs(BUNNY_ROTATE); ED.bunny = BUNNY_ITEM0 > 0; }   // auto-load the BUNNY filmstrip as the editable object (user); ED.bunny gates the trace-inject preview
+    else if (!ED.frames.length && BLUEBIRD_ROTATE.length) { edImportBufs(BLUEBIRD_ROTATE); ED.bunny = false; }   // …falling back to the blue bird if the bunny frames are missing
+    // ── FRAME THE OBJECT ── stand the player 5 voxels BACK from the stage centre (where the model is stamped) and put the
+    // EYE at the model's mid-height looking LEVEL, so the object sits centred, face-on, right in front of the camera (user).
+    { const bf = ED.frames[0]; const midH = bf ? (bf.sz * 0.5) : 6;
+      const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2, mY = ED.y + 1 + midH;
+      P.x = cx; P.z = cz - 5;                           // 5 voxels back along −Z (yaw 0 faces +Z → the model; same convention as the lake-side spawn)
+      P.y = mY - EYE;                                   // eye level with the model's vertical centre → level, head-on view
+      P.yaw = 0; P.pitch = 0;
+      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
   };
@@ -5458,7 +5514,7 @@
     ED.prev.clear(); ED.frames = []; ED.sel = -1; ED.fcells = []; ED.ring = []; bfly.init = false;
     gpuPatch(cells);
     rebuildBricks(0, WX, 0, WZ); uploadBricks();       // bring the whole world back from the void (occupancy was zeroed on enter)
-    const r = ED.ret; if (r) { P.x = r.x; P.y = r.y; P.z = r.z; P.yaw = r.yaw; P.pitch = r.pitch; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
+    const r = ED.ret; if (r) { P.x = r.x; P.y = r.y; P.z = r.z; P.yaw = r.yaw; P.pitch = r.pitch; P.fly = !!r.fly; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
     edBtnEl.classList.remove('on'); edRowEl.classList.add('hidden'); edHudEl.classList.add('hidden');
   };
   edBtnEl.addEventListener('click', (e) => { e.stopPropagation(); ED.on ? edExit() : edEnter(); });
@@ -5470,8 +5526,9 @@
     const list = [];
     for (const f of [...edFileEl.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
       list.push({ name: f.name, u8: new Uint8Array(await f.arrayBuffer()) });
-    if (list.length) edImportBufs(list);
+    if (list.length) { edImportBufs(list); ED.bunny = false; }   // a manually imported .vox isn't in the ITEM table → keep the grid-stamp edit path
     edFileEl.value = '';
+    edClearStamp();
   });
 
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
@@ -6196,9 +6253,12 @@
       let vid = 0;
       const ex = Math.floor(P.x), ey = Math.floor(smoothEye), ez = Math.floor(P.z);
       if (!ED.on && ey >= 0 && ey < WY) vid = W[gwrap(ex, WX) + ey * WX + gwrap(ez, WZ) * WX * WY];
-      const opaque = vid && vid !== WATER_T && vid !== WATER_B && vid !== LAVA_T && vid !== LAVA_B && vid !== LAVA_R && vid !== LAVA_Y;   // water has its own underwater tint; lava is emissive
+      const opaque = vid && !foliaTab[vid] && vid !== WATER_T && vid !== WATER_B && vid !== LAVA_T && vid !== LAVA_B && vid !== LAVA_R && vid !== LAVA_Y;   // water has its own underwater tint; lava is emissive; FOLIAGE is now SEE-THROUGH (the primary ray skips near leaves — user), so no chunky green fill when you clip into a crown
       const pc = opaque ? palette[vid] : null;
-      UF[1271] = pc ? (1 + pc[0] + pc[1] * 256 + pc[2] * 65536) : 0; }
+      UF[1271] = pc ? (1 + pc[0] + pc[1] * 256 + pc[2] * 65536) : 0;
+      eyeFolV = 0;                                       // ── TRACE variant pick ── the see-through pipeline only when foliage is within 1 voxel of the eye (a strict SUPERSET of the shader's own eye-in-leaf test, so behaviour is exactly the old rule); everywhere else the fast variant runs with the check compiled out of the hot DDA loop
+      if (!ED.on) for (let ny = Math.max(1, ey - 1); ny <= Math.min(WY - 2, ey + 1) && !eyeFolV; ny++) for (let nx = ex - 1; nx <= ex + 1 && !eyeFolV; nx++) for (let nz = ez - 1; nz <= ez + 1; nz++)
+        if (foliaTab[W[gwrap(nx, WX) + ny * WX + gwrap(nz, WZ) * WX * WY]]) { eyeFolV = 1; break; } }
     UF[1268] = vigOn ? Math.max(BASE_VIG, cineBlurK * CINE_VIG) : 0;   // u.misc.x — BASE vignette in normal play, deepening to the cinematic value while the camera flies; max() so leaving cinema eases back to base instead of snapping to zero                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
     if (!ED.on) autoPickup();                          // AUTO-PICKUP (user): a free hand slot vacuums up nearby floating items — no right-click, no aiming
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
@@ -6245,15 +6305,17 @@
     }
     lifeUid.fill(-1); lifeAna.fill(1);                 // ── dynamic-life ledger reset ── slots not claimed this frame stay analytic-only/empty
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
-      if (ED.on) {                                       // ── EDITOR STAGE ── the cardinal is a STAMPED static object (world voxels → full lighting), NOT a drop: hide slot 4, and advance the animation by swapping to the next static frame in place
-        UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot; no bird hitboxes in the editor
-        if (ED.frames.length && !ED.paused) {            // playing → 24 fps through all frames, brief HOLD on the LAST frame, then the WHOLE animation spins +90° and continues (seamless forward loop — user)
+      if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is either TRACE-INJECTED (the bunny, playing) or GRID-STAMPED (paused, or a non-bunny .vox import)
+        UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot by default; edEmitModel re-enables it for the bunny
+        const traceInject = ED.frames.length && !ED.paused && ED.bunny && LIFE_TRACE && BUNNY_ITEM0 > 0;   // playing the built-in bunny → the SVGF path (no grid-stamp ghost trails, user)
+        if (ED.frames.length && !ED.paused) {            // playing → 24 fps through all frames, brief HOLD on the LAST frame, then loop
           const n = ED.frames.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
           const t = now % cyc, fi = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // 0..n-1, then hold the LAST frame during the pause
-          const spin = n > 1 ? Math.floor(now / cyc) % 4 : 0;   // multi-frame animation spins +90°/cycle for a seamless loop; a SINGLE-frame object (the mushroom) stays STATIC
           const blink = (now % 3400) < 160;              // EYE BLINK — the black eye voxel flashes red for 0.16 s every 3.4 s (same cadence as the ducks)
-          if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink || spin !== ED.spin) { ED.sel = fi; ED.blink = blink; ED.spin = spin; edLayout(); }
+          if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink) { ED.sel = fi; ED.blink = blink; ED.spin = 0;   // NO whole-animation rotation (user: the bunny just repeats its jump). The old +90°/cycle was a cardinal-rotate loop trick.
+            if (!traceInject) edLayout(); }              // grid-stamp path re-stamps on frame change; the trace path never touches the grid
         }
+        if (traceInject) { edClearStamp(); edEmitModel(o2, ((ED.sel % ED.frames.length) + ED.frames.length) % ED.frames.length, cam, right, up, fwd); }   // keep the grid clean, then emit the current frame to slot 4
       } else if (FLYERS.length > 0) {                    // the WORLD bird (only when NOT in the editor)
         const ps = birdStep(bird, 0, now / 1000, dt);    // bird 0 keeps the dedicated slot; the rest are emitted with the creatures below
         ps.uid = 0;                                      // stable identity for the dynamic-life temporal reprojection
@@ -7133,7 +7195,9 @@
     const run = (pipe, bg) => {
       const p = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: qi++, endOfPassWriteIndex: qi++ } } : {});
       p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(gw, gh); p.end(); };
-    run(pTrace, bgTrace[par]);
+    { const p = enc.beginComputePass(); p.setPipeline(pVis); p.setBindGroup(0, bgVis);   // ── VIS prepass ── one thread per 8×8 TILE (~1/64th of a screen pass): the creature/drop tile-cull bitmask, computed once and shared by TRACE + COMPOSITE
+      p.dispatchWorkgroups(Math.ceil(gw / 8), Math.ceil(gh / 8)); p.end(); }
+    run(pTraceV[eyeFolV], bgTrace[eyeFolV][par]);
     run(pTemporal, bgTemporal[par]);
     run(pSpatial, bgSpatial[par]);
     run(pComposite, bgComposite[par]);
