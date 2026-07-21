@@ -48,7 +48,7 @@
   /* ── SMOOTH PROGRESS METER (user) ── the fill's scaleX and the % are eased toward each phase's target by one rAF loop,
      so the bar glides 0→100 instead of stepping as chunks land. */
   #loadMeter { display: flex; flex-direction: column; align-items: center; gap: 7px; }
-  #loadBar { width: 240px; max-width: 62vw; height: 4px; background: rgba(255,255,255,0.14); border-radius: 3px; overflow: hidden; }
+  #loadBar { width: 240px; max-width: 62vw; height: 8px; background: rgba(255,255,255,0.14); border-radius: 4px; overflow: hidden; }   /* doubled thickness (user) */
   #loadFill { width: 100%; height: 100%; transform-origin: left center; transform: scaleX(0); border-radius: 3px; background: linear-gradient(90deg, #b8ff6e, #7fd05a); will-change: transform; }
   #loadPct { font-size: 8px; opacity: 0.82; letter-spacing: 3px; }
   #load::before { content: ''; position: absolute; inset: 0; z-index: -1;
@@ -61,17 +61,26 @@
   @keyframes playHintPulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.45; } }
   #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; transform: translateY(-28px); }   /* icons nudged up under the logo (user) */
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
-  #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn { position: relative; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, transform 0.15s ease-out, box-shadow 0.15s; }   /* subtle resting drop shadow (user) — deepens on hover below */
-  #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg { width: 22px; height: 22px; }
-  #kbBtn:hover, #pkBtn:hover, #edBtn:hover, #dcBtn:hover, #veBtn:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-4px); box-shadow: 0 7px 16px rgba(0,0,0,0.5); }
+  #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn, #edCopy { position: relative; top: 0; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, top 0.15s ease-out, box-shadow 0.15s; will-change: transform; }   /* subtle resting drop shadow (user) — deepens on hover below. Explicit top:0 so the hover-lift TRANSITIONS (top:auto→-4px can't interpolate → would jump). */
+  #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg, #edCopy svg { width: 22px; height: 22px; }
+  #kbBtn:hover, #pkBtn:hover, #edBtn:hover, #dcBtn:hover, #veBtn:hover, #edCopy:hover { border-color: #7fd05a; color: #b8ff6e; top: -4px; box-shadow: 0 7px 16px rgba(0,0,0,0.5); }   /* hover LIFT via `top` — leaves `transform` free for the wave, which the compositor runs smoothly even while the game renders */
+  /* subtle up/down WAVE across the esc-menu icons (user) — driven by TRANSFORM so it runs on the GPU compositor (no main-thread jank while the game's WebGPU frame is busy); hover-lift uses `top` so the two never fight. Staggered delays make the wave travel along the row. */
+  @keyframes escWave { 0%, 100% { transform: translate3d(0, 3px, 0); } 50% { transform: translate3d(0, -3px, 0); } }
+  #kbBtn { animation: escWave 2.6s ease-in-out infinite; animation-delay: 0s; }
+  #pkBtn { animation: escWave 2.6s ease-in-out infinite; animation-delay: -0.22s; }
+  #edBtn, #edCopy { animation: escWave 2.6s ease-in-out infinite; animation-delay: -0.44s; }   /* the export button shares the asset-editor button's phase → they bob up/down together (user) */
+  #veBtn { animation: escWave 2.6s ease-in-out infinite; animation-delay: -0.66s; }
+  #dcBtn { animation: escWave 2.6s ease-in-out infinite; animation-delay: -0.88s; }
   /* HOVER LABEL (user): the icon's name, centred under the tile, fading both ways. Absolutely positioned so it never
      becomes a flex item and shoves the glyph off-centre; pointer-events off so it can't steal the hover from the tile. */
-  #kbBtn::after, #pkBtn::after, #edBtn::after, #dcBtn::after, #veBtn::after {
+  #kbBtn::after, #pkBtn::after, #edBtn::after, #dcBtn::after, #veBtn::after, #edCopy::after {
     content: attr(data-lbl); position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 9px;
     font: 7px/1 'px3', Consolas, monospace; letter-spacing: 1px; color: #b8ff6e; white-space: nowrap;
     text-shadow: 0 1px 3px rgba(0,0,0,0.9); opacity: 0; transition: opacity 0.18s ease-out; pointer-events: none; }
-  #kbBtn:hover::after, #pkBtn:hover::after, #edBtn:hover::after, #dcBtn:hover::after, #veBtn:hover::after { opacity: 1; }   /* HOVER (user): the tile lifts and the icon goes green — same green as the settings toggles' on-state (svg fill is currentColor, so the colour carries) */
+  #kbBtn:hover::after, #pkBtn:hover::after, #edBtn:hover::after, #dcBtn:hover::after, #veBtn:hover::after, #edCopy:hover::after { opacity: 1; }   /* HOVER (user): the tile lifts and the icon goes green — same green as the settings toggles' on-state (svg fill is currentColor, so the colour carries) */
   #edBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  #edCopy.copied { border-color: #7fd05a; color: #b8ff6e; }   /* green pulse on export → confirms the copy without replacing the icon */
+  #edCopy.copied::after { opacity: 1; }                        /* …and surface the "copied ✓" label even if the cursor isn't on it */
   /* ── VIDEO-EDITOR BUTTON ── opens the editor; it pulses red while a capture is running (started from the ● rec button
      inside the panel). The monitor glyph shares the round-button styling above. */
   #veBtn.recording { border-color: #ff3b4d; color: #ff5a6a; animation: veBtnPulse 1.1s ease-in-out infinite; }
@@ -120,9 +129,8 @@
   .veHandle { position: absolute; top: 0; bottom: 0; width: 8px; background: rgba(184,160,255,0.9); cursor: ew-resize; z-index: 2; }
   .veHandle.l { left: 0; border-radius: 8px 0 0 8px; } .veHandle.r { right: 0; border-radius: 0 8px 8px 0; }
   #vePlayhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #8f6bff; box-shadow: 0 0 6px #8f6bff; pointer-events: none; z-index: 3; }
-  #edRow { display: flex; flex-direction: column; gap: 10px; align-items: center; margin-top: 10px; }   /* stacked under the button row, centred on it; #lock's own 10px gap matches the button spacing, +10px drop (user) */
-  #edRow button { background: #1a2331; border: 1px solid #33405a; border-radius: 999px; padding: 6px 22px; color: #cfe0f4; cursor: pointer; font: inherit; }   /* PILL (user) — the huge radius always resolves to a half-height cap whatever the text length */
-  #edRow button:hover { border-color: #6d8fc0; }
+  #edRow { position: absolute; left: 50%; top: 50%; transform: translate(-50%, 92px); display: flex; gap: 10px; align-items: center; opacity: 1; transition: transform 0.42s cubic-bezier(0.34, 1.28, 0.64, 1), opacity 0.26s ease; }   /* ABSOLUTE (user): out of the flex flow so it doesn't add height and push the title/buttons UP — the editor menu now sits exactly like the main menu. Centred → the export circle lands under the middle (asset-editor) button, clear below the row (+10px, user). */
+  #edRow.hidden { display: flex !important; transform: translate(-50%, 34px); opacity: 0; pointer-events: none; }   /* DROP-DOWN (user): override .hidden's display:none so it can animate — tucked up behind the asset-editor button + invisible; opening the editor slides+fades it DOWN to rest (slight overshoot), leaving the editor slides it back UP. */
   #edHud { position: fixed; left: 50%; top: 18px; transform: translateX(-50%); color: #cfe0f4; font: 9px/1.8 'px3', Consolas, monospace; letter-spacing: 1px; text-shadow: 0 1px 3px #000; pointer-events: none; text-align: center; }
   /* the four option rows used to be pinned to the top-right of the ESC menu; they now live inside the settings
      panel, so they are plain rows. Each keeps its id — every listener binds by id, so nothing else has to change. */
@@ -206,7 +214,7 @@
     <button id="veBtn" aria-label="video editor" data-lbl="video editor" title="video editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M16 19H4v-2h12v2ZM4 17H2V7h2v10Zm14-8h2V7h2v10h-2v-2h-2v2h-2V7h2v2Zm-2-2H4V5h12v2Z"/></svg></button>
     <a id="dcBtn" href="https://discord.gg/AtW5fWZtSG" target="_blank" rel="noopener noreferrer" aria-label="discord" data-lbl="discord"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M21 22h-9v-2h9v2Zm-9-2h-2v-2h2v2Zm11 0h-2v-5h2v5Zm-13-2H8v-2h2v2Zm7-1h-4v-2h4v2Zm-9-1H6v-2h2v2Zm5-1h-2v-2h2v2Zm8 0h-4v-2h4v2ZM6 14H4v-2h2v2Zm5-1H9v-2h2v2Zm-7-1H2V3h2v9Zm5-1H7V7h2v4Zm9 0h-2V8h2v3Zm4 0h-2V6h2v5Zm-6-3h-3V6h3v2Zm-5-1H9V3h2v4Zm9-1h-2V4h2v2Zm-2-2h-5V2h5v2ZM9 3H4V1h5v2Z"/></svg></a>
   </div>
-  <div id="edRow" class="hidden"><button id="edCopy" title="copy the per-frame offsets so you can paste them back to be baked into the code">export</button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
+  <div id="edRow" class="hidden"><button id="edCopy" aria-label="export" data-lbl="export" title="copy the per-frame offsets so you can paste them back to be baked into the code"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M20 22H4V20H20V22ZM4 20H2V14H4V20ZM22 20H20V14H22V20ZM13 4H15V6H17V8H13V18H11V8H7V6H9V4H11V2H13V4ZM9 14H4V12H9V14ZM20 14H15V12H20V14Z"/></svg></button><input id="edFile" type="file" accept=".vox" multiple style="display:none"></div>
 </div>
 <div id="edHud" class="hidden"></div>
 <div id="kbPanel" class="hidden"><div id="kbWrap"><div id="kbCard">
@@ -246,7 +254,7 @@
       <button id="veRecBtn" class="veTool" title="start / stop recording the screen">● rec</button>
       <button id="vePen" class="veTool" title="draw on the video in red">✎ draw</button>
       <button id="veErase" class="veTool" title="clear every drawing">clear</button>
-      <button id="veExport" class="veTool" title="export the edited clip as .webm">export</button>
+      <button id="veExport" class="veTool" title="export the edited clip as .mp4">export</button>
       <button id="veClose" class="veTool" title="close">done</button>
     </div>
   </div>
@@ -878,7 +886,10 @@
   let ROBIN_ROTATE = [];                               // ROBIN = the SAME bird recoloured again (assets/life/robin/rotate/00-10, base.vox ignored) — same layout as the cardinal and blue bird
   let BUNNY_ROTATE = [];                               // ROTATE bunny frames (assets/life/bunny/rotate/00-10) — the RIGHT-lane editor object (jumps + rotates in place)
   let BUNNY_JUMP = [];                                 // JUMP bunny frames (assets/life/bunny/jump/00-10) — the LEFT-lane editor object (jumps FORWARD). Both show on the stage together (user).
+  let BUNNY_ROTATE_RIGHT = [];                         // RIGHT-rotating bunny frames (assets/life/bunny/rotate/right/00-10) — authored right-turn .vox (rotation is IN the voxel data), user
   let BUNNY_ITEM0 = 0;                                 // …and the same frames in the ITEM table (BUNNY_ITEM0+frame) so the editor TRACE-INJECTS the playing bunny — identical render path to every other life form (grain + baked AO + SVGF)
+  let BUNNY_NFRAMES = 0;                               // frame count of the item-table bunny ROTATE frames — the WORLD bunnies play these while turning
+  let BUNNY_JUMP_ITEM0 = 0, BUNNY_JUMP_NFRAMES = 0;    // …and the JUMP frames in the item table — world bunnies play these while HOPPING forward (editor-style grid behavior)
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
@@ -1249,32 +1260,38 @@
       for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/robin/rotate/' + String(f).padStart(2, '0') + '.vox'); ROBIN_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       console.log('[vb] robin rotate', ROBIN_ROTATE.length, 'frames (3rd perched songbird)');
     } catch (e) { console.warn('[vb] robin rotate frames missing', e); ROBIN_ROTATE = []; }
-    try {                                                             // BUNNY frames (raw bytes) → the asset-editor filmstrips. BOTH variants load: rotate/ (right lane) AND jump/ (left lane) — the editor shows them side by side (user)
-      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/rotate/' + String(f).padStart(2, '0') + '.vox'); if (!bv.length) break; BUNNY_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
-      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/jump/' + String(f).padStart(2, '0') + '.vox'); if (!bv.length) break; BUNNY_JUMP.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+    try {                                                             // BUNNY frames (raw bytes) → the asset-editor filmstrips. Folders: jump/, rotate/left/, rotate/right/ (00-10 each). A missing file 404s to an HTML page, so REQUIRE the 'VOX ' magic before pushing — else the loop swallows 404 pages as garbage frames.
+      const isVox = (u8) => u8.length > 4 && u8[0] === 0x56 && u8[1] === 0x4f && u8[2] === 0x58 && u8[3] === 0x20;   // 'VOX '
+      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/rotate/left/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; BUNNY_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/jump/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; BUNNY_JUMP.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/rotate/right/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; BUNNY_ROTATE_RIGHT.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }   // authored RIGHT-rotate frames
       console.log('[vb] bunny', BUNNY_ROTATE.length, 'rotate +', BUNNY_JUMP.length, 'jump frames (asset-editor objects)');
       // …and load the SAME frames into the ITEM table so the editor TRACE-INJECTS the playing bunny through the dynamic-life
       // path (full SVGF + the creature grain/AO treatment) — i.e. it renders IDENTICALLY to the ducks/fish/birds (user).
-      const bloaded = [];
-      for (const fr of BUNNY_ROTATE) { const bv = fr.u8, bdv = new DataView(bv.buffer, bv.byteOffset, bv.byteLength);
-        let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
-        const bwalk = (off, end) => { while (off + 12 <= end) {
-          const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
-          const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
-          if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
-          else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
-          else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
-          else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
-          off += 12 + sz + csz;
-        } };
-        bwalk(8, bv.length);
-        if (!bvox) continue;
-        const cells = new Array(bsx * bsy * bsz).fill(null);
-        for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
-        bloaded.push({ w: bsx, d: bsy, h: bsz, cells });
-      }
-      if (bloaded.length) { BUNNY_ITEM0 = items.length + 1; for (const it of bloaded) items.push(it);
-        console.log('[vb] bunny -> items', BUNNY_ITEM0, '..', items.length); }
+      const parseBunny = (frames) => { const out = [];
+        for (const fr of frames) { const bv = fr.u8, bdv = new DataView(bv.buffer, bv.byteOffset, bv.byteLength);
+          let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
+          const bwalk = (off, end) => { while (off + 12 <= end) {
+            const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+            const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+            if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
+            else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
+            else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
+            else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+            off += 12 + sz + csz;
+          } };
+          bwalk(8, bv.length);
+          if (!bvox) continue;
+          const cells = new Array(bsx * bsy * bsz).fill(null);
+          for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+          out.push({ w: bsx, d: bsy, h: bsz, cells });
+        }
+        return out; };
+      const bloaded = parseBunny(BUNNY_ROTATE);           // ROTATE frames (turn animation) → BUNNY_ITEM0
+      if (bloaded.length) { BUNNY_ITEM0 = items.length + 1; for (const it of bloaded) items.push(it); BUNNY_NFRAMES = bloaded.length; }
+      const bjloaded = parseBunny(BUNNY_JUMP);             // JUMP frames (hop animation) → BUNNY_JUMP_ITEM0
+      if (bjloaded.length) { BUNNY_JUMP_ITEM0 = items.length + 1; for (const it of bjloaded) items.push(it); BUNNY_JUMP_NFRAMES = bjloaded.length; }
+      console.log('[vb] bunny -> items: rotate', BUNNY_ITEM0, '(' + BUNNY_NFRAMES + '), jump', BUNNY_JUMP_ITEM0, '(' + BUNNY_JUMP_NFRAMES + ')');
     } catch (e) { console.warn('[vb] bunny frames missing', e); BUNNY_ROTATE = []; }
     const bakeAO = (it) => {                                          // per-voxel SELF-AMBIENT-OCCLUSION → darker in creases/undersides, the depth cue static world voxels get from irr.g (user: creatures 'don't render like static objects')
       const w = it.w, d = it.d, h = it.h, cells = it.cells, out = cells.slice();
@@ -4053,6 +4070,13 @@
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
         && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
     }
+    for (let bb = 0; bb < bunnyBoxes.length; bb++) {                       // SOLID BUNNIES (user): the player can't run through a nearby world bunny
+      const B2 = bunnyBoxes[bb];
+      if (B2.active
+        && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
+        && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+    }
     const x0 = Math.floor(px - HW), x1 = Math.floor(px + HW), z0 = Math.floor(pz - HW), z1 = Math.floor(pz + HW);
     const y0 = Math.floor(py + 0.001), y1 = Math.floor(py + hh - 0.001);
     for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (solid(x, y, z)) return false;
@@ -4377,8 +4401,9 @@
   };
   const birdBoxes = Array.from({ length: 12 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 8, hy: 8, hz: 8 }));   // one per flying songbird
   const birdBox = birdBoxes[0];   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
+  const bunnyBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 3.5, hy: 5, hz: 3.5 }));   // SOLID world-bunny hitboxes (user) — the nearest few bunnies to the player, republished each frame; tested by boxFree
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
-  const wbf = Array.from({ length: 276 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget), 244-275 FISH (kind 6 — off-grid swimmers under the lake/river surface; 16 -> 32 slots, DOUBLED 2026-07-20 at user request)
+  const wbf = Array.from({ length: 300 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget), 244-275 FISH (kind 6 — off-grid swimmers under the lake/river surface; 16 -> 32 slots, DOUBLED 2026-07-20 at user request), 276-299 BUNNIES (24 — kind 2 ground hoppers reusing the worm machinery, model = BUNNY_ITEM0, added 2026-07-21 at user request)
   // ── DROP-SLOT PRIORITY ── six creature kinds share only 55 drop slots (9..63). Rather than emit in wk order (which
   // starved whatever came last — fish, then worms), each wbf creature's 16-float pose is staged here with its distance²,
   // then after the loop the NEAREST are copied to the real slots. A fish right in front of you always renders; a far,
@@ -4718,12 +4743,13 @@
   // The "recording" banner is a DOM element (never drawn on the canvas), so it can never appear in the capture/export.
   const VE = { clips: [], dur: 0, sel: -1, blobUrl: null, thumb: '', playing: false,
                rec: null, chunks: [], recording: false, drag: null,
-               strokes: [], pen: false, drawing: false, exporting: false };   // strokes: red annotation polylines in NORMALISED video space; exporting: suspends the game's render work
+               strokes: [], undone: [], pen: false, drawing: false, exporting: false };   // strokes: red annotation polylines in NORMALISED video space; undone: redo stack for Ctrl+Z; exporting: suspends the game's render work
   const veBtnEl = $('veBtn'), vePanel = $('vePanel'), veStage = $('veStage'), veVideo = $('veVideo'),
         veTrack = $('veTrack'), vePlayhead = $('vePlayhead'), veTimeEl = $('veTime'), vePlayBtn = $('vePlay'),
         veRecEl = $('veRec'), veTimeline = $('veTimeline'), veRecBtn = $('veRecBtn');
   const veFmt = (s) => { s = Math.max(0, s || 0); const m = Math.floor(s / 60), q = Math.floor(s % 60); return (m < 10 ? '0' : '') + m + ':' + (q < 10 ? '0' : '') + q; };
   const vePickMime = () => { for (const m of ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return ''; };
+  const vePickExportMime = () => { for (const m of ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/mp4']) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return vePickMime(); };   // EXPORT as .mp4 (H.264/AAC) when the browser can record it (user); falls back to webm otherwise
 
   // ── AUDIO TAP ── every game sound registers through sndReg, so route them all into a MediaStream and mix that into
   // the capture — recordings then carry sound as well as picture. Built lazily on the first capture and wrapped in
@@ -4912,14 +4938,22 @@
     return { x: px / Math.max(1, b.w), y: py / Math.max(1, b.h) };   // normalised to the VIDEO, not the stage
   };
   veDraw.addEventListener('pointerdown', (e) => { if (!VE.pen) return; e.stopPropagation(); e.preventDefault();
-    VE.drawing = true; VE.strokes.push([vePenPos(e)]); veDraw.setPointerCapture(e.pointerId); veRedraw(); });
+    VE.drawing = true; VE.undone.length = 0; VE.strokes.push([vePenPos(e)]); veDraw.setPointerCapture(e.pointerId); veRedraw(); });   // a fresh stroke invalidates the redo stack
   veDraw.addEventListener('pointermove', (e) => { if (!VE.pen || !VE.drawing) return; e.stopPropagation();
     VE.strokes[VE.strokes.length - 1].push(vePenPos(e)); veRedraw(); });
   const veEndStroke = () => { VE.drawing = false; };
   veDraw.addEventListener('pointerup', veEndStroke); veDraw.addEventListener('pointercancel', veEndStroke);
   vePenBtn.addEventListener('click', (e) => { e.stopPropagation(); VE.pen = !VE.pen;
     vePenBtn.classList.toggle('on', VE.pen); veStage.classList.toggle('pen', VE.pen); });
-  $('veErase').addEventListener('click', (e) => { e.stopPropagation(); VE.strokes.length = 0; veRedraw(); });
+  $('veErase').addEventListener('click', (e) => { e.stopPropagation(); VE.strokes.length = 0; VE.undone.length = 0; veRedraw(); });
+  // ── UNDO / REDO the red strokes (user) ── Ctrl/⌘+Z pops the last stroke onto a redo stack; Ctrl/⌘+Shift+Z (or Ctrl+Y) puts it back. Only while the video editor is open; capture phase so it beats the game's key handling.
+  window.addEventListener('keydown', (e) => {
+    if (vePanel.classList.contains('hidden')) return;              // only inside the video editor
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); if (VE.strokes.length) { VE.undone.push(VE.strokes.pop()); veRedraw(); } }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); e.stopPropagation(); if (VE.undone.length) { VE.strokes.push(VE.undone.pop()); veRedraw(); } }
+  }, true);
 
   // ── EXPORT ── COMPOSITED, not a raw element capture. The old path recorded veVideo.captureStream() while the clip
   // played in real time, so anything that hitched the page during those seconds — above all the game still rendering
@@ -4929,7 +4963,8 @@
   // decoder produced, and the game loop is suspended for the duration so nothing competes for the GPU.
   const veExport = async () => {
     if (!VE.clips.length || VE.dur <= 0) return;
-    const mime = vePickMime(); if (!mime) return;
+    const mime = vePickExportMime(); if (!mime) return;
+    const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm';   // download extension follows the container the recorder actually produced
     const btn = $('veExport'), label0 = btn.textContent; btn.disabled = true; btn.textContent = 'exporting…'; vePause();
     const vw = veVideo.videoWidth || 1280, vh = veVideo.videoHeight || 720;
     const cvs = document.createElement('canvas'); cvs.width = vw; cvs.height = vh;
@@ -4964,8 +4999,8 @@
     alive = false;
     if (useRVFC) { try { veVideo.cancelVideoFrameCallback(pump); } catch (e) {} } else clearInterval(pump);
     rec.stop(); await stopped; veVideo.muted = wasMuted; VE.exporting = false;
-    const url = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' })), a2 = document.createElement('a');
-    a2.href = url; a2.download = 'voxelbit-clip.webm'; document.body.appendChild(a2); a2.click(); a2.remove();
+    const url = URL.createObjectURL(new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' })), a2 = document.createElement('a');
+    a2.href = url; a2.download = 'voxelbit-clip.' + ext; document.body.appendChild(a2); a2.click(); a2.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     btn.disabled = false; btn.textContent = label0; if (VE.clips.length) veSeek(VE.clips[0].s);
   };
@@ -5101,7 +5136,7 @@
   todSlider.addEventListener('input', (e) => { e.stopPropagation(); tday = todSlider.value / 1440; sliderFill(todSlider); });
   $('kbClose').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.add('hidden'); listenAction = null; });
   kbPanel.addEventListener('click', (e) => { e.stopPropagation();   // stopPropagation so a click in here never reaches the document handler that enters the game
-    if (e.target === kbPanel) { kbPanel.classList.add('hidden'); listenAction = null; } });   // clicked the BACKDROP, not the card → same as 'done': close settings and fall back to the main menu behind it (user)
+    if (!e.target.closest('#kbCard') && !e.target.closest('#kbCard2')) { kbPanel.classList.add('hidden'); listenAction = null; } });   // clicked ANYWHERE outside the two boxes — the backdrop OR the kbWrap gap/under a shorter box — closes settings and falls back to the esc menu (user)
   document.addEventListener('keydown', (e) => {                      // capture phase — rebinding swallows the key
     if (!listenAction) { if (e.code === 'Escape') { kbPanel.classList.add('hidden'); const pk = $('pkPanel'); if (pk) pk.classList.add('hidden'); } return; }
     e.preventDefault(); e.stopPropagation();
@@ -5407,18 +5442,18 @@
   const edClearStamp = () => {                          // restore any grid-stamped model/ring voxels to plane/air WITHOUT re-stamping — used before a fresh .vox import lays out
     if (!ED.fcells.length && !ED.fcells2.length && !ED.ring.length) return;
     const cells = [];
-    for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
+    for (const ii of ED.fcells) { if (W[ii] !== 0) { W[ii] = 0; cells.push(ii); } }   // vacated cells → EMPTY (not ED.prev) so a tall-tree voxel the model overlapped is never revealed; ED.prev still drives edExit's rebuild
     ED.fcells = [];
-    for (const ii of ED.fcells2) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }   // preview lane too
+    for (const ii of ED.fcells2) { if (W[ii] !== 0) { W[ii] = 0; cells.push(ii); } }   // preview lane too
     ED.fcells2 = [];
     for (const r of ED.ring) { const id = edPlaneId(r.x, r.z); if (W[r.ii] !== id) { W[r.ii] = id; cells.push(r.ii); } }
     ED.ring = [];
     if (cells.length) gpuPatch(cells); };
   const edLayout = () => {                             // stamp the current frame of BOTH bunnies as real static objects (world voxels → full lighting): the EDITABLE bunny in the LEFT lane (with gizmos/ring), the PREVIEW bunny in the RIGHT lane. The animation swaps to the next static frame in place; no filmstrip.
     const cells = [];
-    for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
+    for (const ii of ED.fcells) { if (W[ii] !== 0) { W[ii] = 0; cells.push(ii); } }   // vacated model cells clear to EMPTY (not ED.prev) — the play space above the plane must stay empty, else a cell that overlapped a tall-tree voxel would restore & REVEAL that voxel (a "tree piece" left behind by the hopping bunny). ED.prev is untouched → edExit still rebuilds the real world.
     ED.fcells = [];
-    for (const ii of ED.fcells2) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }   // …and the preview lane's cells
+    for (const ii of ED.fcells2) { if (W[ii] !== 0) { W[ii] = 0; cells.push(ii); } }   // …and the preview lane's cells
     ED.fcells2 = [];
     for (const r of ED.ring) { const id = edPlaneId(r.x, r.z); if (W[r.ii] !== id) { W[r.ii] = id; cells.push(r.ii); } }
     ED.ring = [];
@@ -5573,7 +5608,9 @@
     });
     return ED.frames.length;
   };
-  const BUNNY_ROT_BAKE = { '03.vox': [0, 1, 0], '04.vox': [0, 2, 0], '05.vox': [0, 2, 0], '06.vox': [0, 2, 0, ['y-']], '07.vox': [0, 1, 0, ['y-']], '08.vox': [0, 0, 0, ['y-']], '09.vox': [0, 0, 0, ['y-']], '10.vox': [0, 0, 0, ['y-']] };   // BAKED rotate-bunny (user's copy-changes) — hop-bob (oy rise mid-cycle) + a 90° yaw (['y-']) held on the back half of the cycle (frames 6-10), so the bunny turns as it lands. 4th element = rotation step list replayed onto the .vox at load.
+  const BUNNY_ROT_BAKE = { '03.vox': [0, 1, 0], '04.vox': [0, 2, 0], '05.vox': [0, 2, 0], '06.vox': [0, 2, 0, ['y-']], '07.vox': [0, 1, 0, ['y-']], '08.vox': [0, 0, 0, ['y-']], '09.vox': [0, 0, 0, ['y-']], '10.vox': [0, 0, 0, ['y-']] };   // BAKED rotate-bunny (user's copy-changes) — hop-bob (oy rise mid-cycle) + a 90° yaw (['y-']) held on the back half of the cycle (frames 6-10), so the bunny turns LEFT as it lands. 4th element = rotation step list replayed onto the .vox at load.
+  const BUNNY_ROT_BAKE_R = Object.fromEntries(Object.entries(BUNNY_ROT_BAKE).map(([k, v]) => [k, v[3] ? [v[0], v[1], v[2], v[3].map((s) => s[0] + (s[1] === '-' ? '+' : '-'))] : v.slice()]));   // RIGHT turn = the LEFT rotation exactly, just flipped ('y-'→'y+') (user) — same bob/offsets, mirrored yaw
+  const BUNNY_ROT_BOB = Object.fromEntries(Object.entries(BUNNY_ROT_BAKE).map(([k, v]) => [k, [v[0], v[1], v[2]]]));   // ONLY the oy hop-bob, NO baked yaw — the rotation runs through the .vox FRAMES themselves (user does the rotating, not the bake)
   const BUNNY_JUMP_BAKE = { '03.vox': [0, 1, -1], '04.vox': [0, 2, -2], '05.vox': [0, 2, -3], '06.vox': [0, 2, -4], '07.vox': [0, 1, -5], '08.vox': [0, 0, -6], '09.vox': [0, 0, -6], '10.vox': [0, 0, -6] };   // BAKED jump-bunny hop (user's copy-changes) — rises + travels −6 in z over the cycle; last-frame oz drives the continuous forward march
   const edBuildFrames = (list, offKey, bakeOff) => {   // parse [{name, u8}] → frames with baked + saved offsets + the eye-blink variant. Shared by BOTH lanes. offKey namespaces the per-frame offsets so each bunny variant keeps its OWN positions though the frames share names 00-10.vox. bakeOff = committed default (undefined → cardinal default; object → that variant's bake; null → none)
     const frames = [];
@@ -5583,14 +5620,15 @@
     if (bake) for (const f of frames) { const b = bake[f.name]; if (b) { f.ox = b[0]; f.oy = b[1]; f.oz = b[2]; if (Array.isArray(b[3])) f.rot = b[3].slice(); } }
     try { const m = JSON.parse(localStorage.getItem(offKey || 'vb_edoffsets') || '{}'); for (const f of frames) { const o = m[f.name]; if (o) { f.ox = o[0] | 0; f.oy = o[1] | 0; f.oz = o[2] | 0; if (Array.isArray(o[3])) f.rot = o[3].slice(); } } } catch (e) {}   // a live saved edit still overrides the bake (offsets AND rotation)
     for (const f of frames) if (f.rot && f.rot.length) for (const s of f.rot) edRotStep(f, s[0] === 'y' ? 'yaw' : 'pitch', s[1] === '+' ? 1 : -1);   // REPLAY the baked/saved rotation onto the loaded .vox — this is where 'rotation in the bake' happens (before the eye-blink variant is built, so it inherits the rotation)
-    for (const f of frames) {                            // EYE BLINK: build a variant where each pitch-black voxel (the eye) is recolored to its NEAREST red-plumage voxel (user)
-      const reds = [], blacks = [];
+    for (const f of frames) {                            // EYE BLINK: build a variant where each pitch-black eye voxel is recolored to its NEAREST body-colour voxel — red plumage for the cardinal, TAN for the bunny (user). Same cadence/mechanism as the other blinking life forms.
+      const reds = [], body = [], blacks = [];
       for (let i = 0; i < f.vox.length; i++) { const c = palette[f.vox[i] >>> 24]; if (!c) continue;
-        if (c[0] < 30 && c[1] < 30 && c[2] < 30) blacks.push(i);
-        else if (c[0] > 130 && c[0] > c[1] * 1.7 && c[0] > c[2] * 1.7) reds.push(f.vox[i]); }
-      if (blacks.length && reds.length) { const vb = f.vox.slice();
+        if (c[0] < 30 && c[1] < 30 && c[2] < 30) blacks.push(i);   // the pitch-black eye
+        else { body.push(f.vox[i]); if (c[0] > 130 && c[0] > c[1] * 1.7 && c[0] > c[2] * 1.7) reds.push(f.vox[i]); } }   // every non-black voxel is a blink candidate; reds are preferred when present
+      const cands = reds.length ? reds : body;           // cardinal → red plumage; bunny (no red) → nearest body voxel = its tan
+      if (blacks.length && cands.length) { const vb = f.vox.slice();
         for (const bi of blacks) { const p = f.vox[bi], ex = p & 255, ey = (p >> 8) & 255, ez = (p >> 16) & 255;
-          let best = reds[0], bd = 1e9; for (const r of reds) { const dx = (r & 255) - ex, dy = ((r >> 8) & 255) - ey, dz = ((r >> 16) & 255) - ez, d2 = dx * dx + dy * dy + dz * dz; if (d2 < bd) { bd = d2; best = r; } }
+          let best = cands[0], bd = 1e9; for (const r of cands) { const dx = (r & 255) - ex, dy = ((r >> 8) & 255) - ey, dz = ((r >> 16) & 255) - ez, d2 = dx * dx + dy * dy + dz * dz; if (d2 < bd) { bd = d2; best = r; } }
           vb[bi] = (p & 0x00ffffff) | ((best >>> 24) << 24); }
         f.voxBlink = vb; }
     }
@@ -5627,14 +5665,31 @@
     gpuPatch(cells);
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = true;   // fly ON so the framing below can't be pulled off by gravity while the world is frozen
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && (BUNNY_JUMP.length || BUNNY_ROTATE.length)) {   // 50/50 EACH TIME YOU ENTER (user): the JUMP-forward bunny or the ROTATE bunny — both baked, loaded as a single centred object
-      const pickJump = BUNNY_JUMP.length && (!BUNNY_ROTATE.length || Math.random() < 0.5);
-      console.log('[vb] editor bunny pick:', pickJump ? 'JUMP' : 'ROTATE', '(jump frames:', BUNNY_JUMP.length, 'rotate frames:', BUNNY_ROTATE.length + ')');   // if jump frames is 0, the jump files never loaded → always rotate
-      if (pickJump) edImportBufs(BUNNY_JUMP, 'vb_edoffsets_jump', BUNNY_JUMP_BAKE, 'jump');
-      else edImportBufs(BUNNY_ROTATE, 'vb_edoffsets_rotate', BUNNY_ROT_BAKE, 'rotate');
+    if (!ED.frames.length && BUNNY_JUMP.length && BUNNY_ROTATE.length && BUNNY_ROTATE_RIGHT.length) {   // RANDOM BEHAVIOR (user): each action → 75% HOP forward, 25% ROTATE (of which 50% LEFT / 50% RIGHT). Dynamic state machine, INTEGER position (advances a whole hop per action), baked rotation (ED.spin=0). Frames per heading h (0-3): [jump 0-10][rotate-LEFT 11-21][rotate-RIGHT 22-32].
+      const pad2 = (n) => String(n).padStart(2, '0');
+      const yrot = (h) => new Array(h & 3).fill('y-');   // heading h via left-steps; DIR/rot2 in the tick match it
+      const rot2 = (ox, oz, h) => { let x = ox, z = oz; for (let k = 0; k < (h & 3); k++) { const nx = -z, nz = x; x = nx; z = nz; } return [x, z]; };
+      const combo = [], bake = {}; let fi = 0;
+      for (let h = 0; h < 4; h++) {
+        BUNNY_JUMP.forEach((f, i) => {                   // JUMP block: forward hop rotated INTO heading h (the lunge lives in the frames; the AI carries the net advance)
+          const nm = pad2(fi++) + '.vox'; combo.push({ name: nm, u8: f.u8 });
+          const b = BUNNY_JUMP_BAKE[pad2(i) + '.vox'] || [0, 0, 0];
+          const [rx, rz] = rot2(b[0] || 0, b[2] || 0, h), rot = yrot(h);
+          bake[nm] = rot.length ? [rx, b[1] || 0, rz, rot] : [rx, b[1] || 0, rz];
+        });
+        for (const rb of [BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R]) (rb === BUNNY_ROT_BAKE ? BUNNY_ROTATE : BUNNY_ROTATE_RIGHT).forEach((f, i) => {   // ROTATE-LEFT then ROTATE-RIGHT: bob + heading h + this block's turn
+          const nm = pad2(fi++) + '.vox'; combo.push({ name: nm, u8: f.u8 });
+          const s = rb[pad2(i) + '.vox'] || [0, 0, 0], rot = yrot(h).concat(s[3] || []);
+          bake[nm] = rot.length ? [0, s[1] || 0, 0, rot] : [0, s[1] || 0, 0];
+        });
+      }
+      edImportBufs(combo, 'vb_edoffsets_behave', bake, 'behavior');
+      ED.bun = { px: 0, pz: 0, h: 0, action: 0, animT: 0, nJ: BUNNY_JUMP.length, fleeing: false, fps: 24 };   // action: 0=hop, 1=rotate-left, 2=rotate-right; fleeing = darting from a nearby player; fps eases 24↔48
       ED.bunny = false;
     }
-    else if (!ED.frames.length && BLUEBIRD_ROTATE.length) { edImportBufs(BLUEBIRD_ROTATE); ED.bunny = false; }   // …falling back to the blue bird if both bunny sets are missing
+    else if (!ED.frames.length && BUNNY_JUMP.length) { edImportBufs(BUNNY_JUMP, 'vb_edoffsets_jump', BUNNY_JUMP_BAKE, 'jump'); ED.bunny = false; }   // jump frames only → just hop forward
+    else if (!ED.frames.length && BUNNY_ROTATE.length) { edImportBufs(BUNNY_ROTATE, 'vb_edoffsets_rotate', BUNNY_ROT_BAKE, 'rotate'); ED.bunny = false; }   // rotate frames only
+    else if (!ED.frames.length && BLUEBIRD_ROTATE.length) { edImportBufs(BLUEBIRD_ROTATE); ED.bunny = false; }   // …or the blue bird if both bunny sets are missing
     // ── FRAME THE OBJECT ── stand the player 5 voxels BACK from the stage centre (where the model is stamped) with the FEET
     // ON THE FLOOR (P.y = ED.y + 1 = plane top), then pitch DOWN to aim the eye at the model's vertical centre so the object
     // stays framed. (The old framing floated the eye at the model's mid-height, which for any model shorter than the 18.5
@@ -5653,7 +5708,7 @@
     ED.on = false;
     const cells = [];
     for (const [ii, pv] of ED.prev) if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); }
-    ED.prev.clear(); ED.frames = []; ED.frames2 = []; ED.sel = -1; ED.fcells = []; ED.fcells2 = []; ED.ring = []; ED.box = null; ED.box2 = null; bfly.init = false;   // both lanes cleared → no stale editor hitbox lingers after exit
+    ED.prev.clear(); ED.frames = []; ED.frames2 = []; ED.sel = -1; ED.fcells = []; ED.fcells2 = []; ED.ring = []; ED.box = null; ED.box2 = null; ED.bun = null; bfly.init = false;   // both lanes + creature AI cleared → no stale editor hitbox lingers after exit
     gpuPatch(cells);
     rebuildBricks(0, WX, 0, WZ); uploadBricks();       // bring the whole world back from the void (occupancy was zeroed on enter)
     const r = ED.ret; if (r) { P.x = r.x; P.y = r.y; P.z = r.z; P.yaw = r.yaw; P.pitch = r.pitch; P.fly = !!r.fly; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
@@ -5661,15 +5716,16 @@
     cmpVis();                                          // restore the compass (if locked + setting on) now the editor is closed
   };
   edBtnEl.addEventListener('click', (e) => { e.stopPropagation(); ED.on ? edExit() : edEnter(); });
+  edEnter();   // TEMP (user): auto-open the asset editor on refresh — DELETE this line to boot straight into the game
   $('edCopy').addEventListener('click', (e) => { e.stopPropagation();   // copy the per-frame offsets → paste back to be baked into the code (replaces the .vox exporter)
-    const btn2 = e.currentTarget; if (!ED.frames.length) { btn2.textContent = 'nothing to copy'; setTimeout(() => { btn2.textContent = 'copy changes'; }, 1500); return; }
-    edCopyOffsets(); btn2.textContent = 'copied ✓ — paste it to me'; setTimeout(() => { btn2.textContent = 'export'; }, 2000); });
+    const btn2 = e.currentTarget; if (!ED.frames.length) { btn2.dataset.lbl = 'nothing to copy'; setTimeout(() => { btn2.dataset.lbl = 'export'; }, 1500); return; }   // icon button now — flash the hover LABEL + a green pulse instead of replacing the SVG with text
+    edCopyOffsets(); btn2.classList.add('copied'); btn2.dataset.lbl = 'copied ✓ — paste it to me'; setTimeout(() => { btn2.classList.remove('copied'); btn2.dataset.lbl = 'export'; }, 2000); });
   edFileEl.addEventListener('click', (e) => e.stopPropagation());
   edFileEl.addEventListener('change', async () => {
     const list = [];
     for (const f of [...edFileEl.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
       list.push({ name: f.name, u8: new Uint8Array(await f.arrayBuffer()) });
-    if (list.length) { ED.frames2 = []; ED.box2 = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second bunny lane so only the imported model shows
+    if (list.length) { ED.frames2 = []; ED.box2 = null; ED.bun = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI so only the imported model shows
     edFileEl.value = '';
     edClearStamp();
   });
@@ -6450,17 +6506,54 @@
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
       if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is ALWAYS GRID-STAMPED (real world voxels → full lighting), exactly like every other model — NO trace-inject exception (user)
         UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot (no trace-inject in the editor)
-        if (ED.frames.length && !ED.paused) {            // playing → 24 fps through all frames, brief HOLD on the LAST frame, then loop
+        if (ED.frames.length && !ED.paused && ED.bun) {  // ── BEHAVIOR state machine: wander (75% HOP / 25% ROTATE 50-50) at 24 fps; FLEE the player at 48 fps when near. Whole-hop-per-action INTEGER position, baked rotation (ED.spin=0). ──
+          const B = ED.bun, nJ = B.nJ, block = nJ * 3, HOP_END = 6;
+          const rot2 = (ox, oz, h) => { let x = ox, z = oz; for (let k = 0; k < (h & 3); k++) { const nx = -z, nz = x; x = nx; z = nz; } return [x, z]; };
+          const DIR = [[0, -1], [1, 0], [0, 1], [-1, 0]];   // hop/facing direction per heading h (world x,z) — matches rot2/yrot
+          const bcx = ED.box ? ED.box.cx : (ED.x0 + (ED.pw >> 1) + B.px), bcz = ED.box ? ED.box.cz : (ED.z0 + (ED.pd >> 1) + B.pz);   // bunny world centre
+          const adx = bcx - P.x, adz = bcz - P.z, d2 = adx * adx + adz * adz;   // vector pointing AWAY from the player (horizontal)
+          B.fleeing = d2 < (B.fleeing ? 55 * 55 : 40 * 40);   // enter flee within 40 voxels; keep fleeing until >55 (hysteresis → no fps flip-flop)
+          const targetFps = B.fleeing ? 48 : 24, CYCLE_FRAMES = nJ + 6;   // FLEE = 48 fps (user). FRAME-based clock (11 anim + 6 pause frames): fps only scales the advance SPEED, never jumps the current frame.
+          B.fps += (targetFps - B.fps) * Math.min(1, dt * 6);   // EASE the speed toward the target (τ≈0.17s) so 24↔48 ramps smoothly — no abrupt speed jerk at the transition (user)
+          B.animT += dt * B.fps;                         // B.animT is a continuous FRAME position (not ms); B.fps scales how fast it advances
+          if (B.animT >= CYCLE_FRAMES) { B.animT -= CYCLE_FRAMES;   // one action finished → apply its effect, then roll the next
+            const MX = Math.max(2, (ED.pw >> 1) - 10), MZ = Math.max(2, (ED.pd >> 1) - 10);   // stage bounds (margin covers footprint + one hop's lunge)
+            const blocked = (h) => { const [dx, dz] = rot2(0, -HOP_END, h); const nx = B.px + dx, nz = B.pz + dz; return nx < -MX || nx > MX || nz < -MZ || nz > MZ; };   // would a hop at heading h cross the invisible barrier?
+            if (B.action === 0) { const [dx, dz] = rot2(0, -HOP_END, B.h); B.px += dx; B.pz += dz;   // HOP: advance one whole hop in the facing direction
+              B.px = Math.max(-MX, Math.min(MX, B.px)); B.pz = Math.max(-MZ, Math.min(MZ, B.pz)); }   // …clamped (safety; the guard below normally stops a blocked hop being chosen)
+            else if (B.action === 1) B.h = (B.h + 1) & 3;   // ROTATE-LEFT  → heading +1
+            else B.h = (B.h + 3) & 3;                       // ROTATE-RIGHT → heading −1
+            if (B.fleeing) {                                // FLEE: face directly AWAY from the player (the heading whose hop moves most away), then dart
+              let bestH = 0, bestDot = -1e9;
+              for (let h = 0; h < 4; h++) { const dot = DIR[h][0] * adx + DIR[h][1] * adz; if (dot > bestDot) { bestDot = dot; bestH = h; } }
+              const diff = (bestH - B.h + 4) & 3;           // 0 = already facing away → hop; 1 = one left; 3 = one right; 2 = 180° (turn left, finish next cycle)
+              B.action = diff === 0 ? 0 : diff === 3 ? 2 : 1;
+            } else B.action = Math.random() < 0.75 ? 0 : (Math.random() < 0.5 ? 1 : 2);   // WANDER: 75% hop, else a rotate split 50/50 left/right
+            if (B.action === 0 && blocked(B.h)) {           // BARRIER GUARD (user): never hop INTO the barrier — rotate toward the most open heading instead so it never stalls against the edge
+              let goalH = -1, best = -1e9;
+              for (let h = 0; h < 4; h++) { if (blocked(h)) continue; const s = -DIR[h][0] * B.px - DIR[h][1] * B.pz; if (s > best) { best = s; goalH = h; } }   // most open = hop stays in bounds AND heads back toward the stage centre
+              B.action = (goalH >= 0 && ((goalH - B.h + 4) & 3) === 3) ? 2 : 1;   // turn ONE step toward it (right if it's CW from here, else left)
+            }
+          }
+          const af = Math.min(nJ - 1, Math.floor(B.animT));   // frame index within the action (0..nJ-1), held at the last frame during the pause tail
+          const sel = (B.h & 3) * block + B.action * nJ + af;
+          const blink = (now % 3400) < 160;
+          if (sel !== ED.sel || blink !== ED.blink || B.px !== ED.bhx || B.pz !== ED.bhz) {
+            ED.sel = sel; ED.blink = blink; ED.spin = 0; ED.bhx = B.px; ED.bhz = B.pz;
+            ED.hopX = B.px; ED.hopY = 0; ED.hopZ = B.pz; ED.hop2X = ED.hop2Y = ED.hop2Z = 0;
+            edLayout(); }
+        }
+        else if (ED.frames.length && !ED.paused) {       // ── playing → 24 fps + continuous forward march (the hop bunny + manual .vox imports) ──
           const n = ED.frames.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
-          const t = now % cyc, fi = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // 0..n-1, then hold the LAST frame during the pause
-          const blink = (now % 3400) < 160;              // EYE BLINK — the black eye voxel flashes red for 0.16 s every 3.4 s (same cadence as the ducks)
-          if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink) { ED.sel = fi; ED.blink = blink; ED.spin = 0;   // NO whole-animation rotation (user: the bunny just repeats its jump). The old +90°/cycle was a cardinal-rotate loop trick.
-            const k = Math.floor(now / cyc);             // CONTINUOUS HOP (user): each completed cycle starts where the LAST frame ended, so a marching bunny keeps hopping forward instead of snapping back to the start
-            const lf = ED.frames[n - 1] || {}, f0 = ED.frames[0] || {};   // per lane: advance/cycle = LAST-frame offset − FIRST-frame offset (the net travel of one hop). edLayout wraps it inside the stage so it never hops off-screen.
+          const t = now % cyc, fi = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;
+          const blink = (now % 3400) < 160;
+          if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink) { ED.sel = fi; ED.blink = blink; ED.spin = 0;
+            const k = Math.floor(now / cyc);
+            const lf = ED.frames[n - 1] || {}, f0 = ED.frames[0] || {};
             ED.hopX = k * ((lf.ox || 0) - (f0.ox || 0)); ED.hopY = k * ((lf.oy || 0) - (f0.oy || 0)); ED.hopZ = k * ((lf.oz || 0) - (f0.oz || 0));
-            const n2 = ED.frames2.length, l2 = n2 ? ED.frames2[n2 - 1] : {}, g2 = n2 ? ED.frames2[0] : {};   // …same for the preview lane, so a forward-hopping preview marches too (the rotate bunny's oz is 0 → it stays in place)
+            const n2 = ED.frames2.length, l2 = n2 ? ED.frames2[n2 - 1] : {}, g2 = n2 ? ED.frames2[0] : {};
             ED.hop2X = k * ((l2.ox || 0) - (g2.ox || 0)); ED.hop2Y = k * ((l2.oy || 0) - (g2.oy || 0)); ED.hop2Z = k * ((l2.oz || 0) - (g2.oz || 0));
-            edLayout(); }                                // re-stamp BOTH lanes' world voxels on every frame change
+            edLayout(); }
         }
         if (ED.box) { birdBox.cx = ED.box.cx; birdBox.cy = ED.box.cy; birdBox.cz = ED.box.cz; birdBox.hx = ED.box.hx; birdBox.hy = ED.box.hy; birdBox.hz = ED.box.hz; birdBox.active = true; }   // SOLID hitbox for the EDITABLE bunny — republished every frame from the last edLayout AABB; boxFree() already tests every birdBox
         if (ED.box2) { const B3 = birdBoxes[1]; B3.cx = ED.box2.cx; B3.cy = ED.box2.cy; B3.cz = ED.box2.cz; B3.hx = ED.box2.hx; B3.hy = ED.box2.hy; B3.hz = ED.box2.hz; B3.active = true; }   // …and the PREVIEW bunny (slot 1) so you can't walk through either
@@ -6611,6 +6704,7 @@
         wormCandF = frame; wormCand.length = 0;
         const owned = new Set();
         for (let j = 32; j < 64; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2 && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        for (let j = 276; j < 300; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // BUNNIES claim home cells too (user: they were bunching because their cells weren't reserved) → each bunny/worm takes a DISTINCT grid cell, so they spread out
         const R = Math.ceil(LIFE_OUT / WORM_HCELL);
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -6687,6 +6781,7 @@
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 2.5));   // BUTTERFLIES doubled (user 2026-07-18): 1.25 -> 2.5, still bounded by the 16 flyer slots   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
+    const nBunny = BUNNY_ITEM0 ? Math.max(3, Math.min(14, Math.round(nActD * 0.9))) : 0;   // ground BUNNIES (slots 276-299) — kind 2, hop through the forest like the worm crawls (user 2026-07-21)
     const nDfly = (DFLY_NFRAMES && waterSpots.length) ? Math.min(3, 1 + (waterSpots.length >> 2)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before. RATE HALVED 2026-07-20 (user): cap 6→3, per-spot growth >>1→>>2 — half as many at every water amount
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
@@ -6729,19 +6824,21 @@
     } else for (let bi = 1; bi < BIRD_N; bi++) birdBoxes[bi].active = false;
     const dropBase = dropCursor;                       // first slot free after the flying songbirds — the wbf creatures (staged below) fill from here by distance
     let emitN = 0;                                     // wbf poses staged into emitBuf this frame; sorted + emitted after the loop
-    for (let wk = 0; wk < 276; wk++) {
+    let bunnyBoxN = 0; for (const bx9 of bunnyBoxes) bx9.active = false;   // rebuild the solid-bunny hitboxes each frame from the nearest bunnies
+    for (let wk = 0; wk < 300; wk++) {
       const B = wbf[wk];
-      const fishSlot = wk >= 244, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
+      const bunnySlot = wk >= 276, fishSlot = wk >= 244 && wk < 276, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
       const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
-      const wantK = fishSlot ? 6 : (lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0))));
+      const wantK = bunnySlot ? 2 : (fishSlot ? 6 : (lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)))));   // BUNNIES are kind 2 (worm machinery) — the slot band, not the kind, tells them apart at emit
       const isDfly = wantK === 0 && nDfly > 0 && waterSpots.length > 0 && wk >= nAct - nDfly;   // DRAGONFLIES take the TOP of the active flyer band — butterflies only give up slots when there is water in view   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-243 PERCHED SONGBIRDS (180), 244-259 FISH
-      const active = fishSlot ? (wk - 244 < nFish)
+      const active = bunnySlot ? (wk - 276 < nBunny)
+        : (fishSlot ? (wk - 244 < nFish)
         : (lilySlot ? (wk - 64 < nCard)
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
-        : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct)))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles
-      if (ED.on || dead || !active || (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length)))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck) must clear its stamp
+        : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles
+      if (ED.on || dead || !active || (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck) must clear its stamp
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
@@ -6842,7 +6939,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true;
+        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.bh = undefined;   // bh undefined → a (re)spawned bunny reinits its cardinal state machine from the fresh heading
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
         if (lilySlot) {                                // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + red cardinals / BLUE BIRDS (the reskin) — both grid-stamped by stampCardinal
@@ -6868,6 +6965,36 @@
       if (B.kind === 4) {                              // LILY PAD: slow drift on the water + constant free rotation; movement heading (mth) is independent of the visual spin
         if (tb3 > B.tRe) { B.mth += (Math.random() - 0.5) * 1.2; B.tRe = tb3 + 3 + Math.random() * 4; }
         if (!bfWater(B.x + Math.sin(B.mth) * 5, B.z + Math.cos(B.mth) * 5)) B.mth += 2.6 * dt;   // shore/dry ahead — curl the drift away
+      } else if (B.kind === 2 && bunnySlot) {          // BUNNY (user): its MOTION IS THE BAKED ANIMATION — I apply no glide or turn of my own. The jump bake carries the −6 forward march; the rotate bake carries the 90° yaw. I only choose which sequence to play + follow the terrain. Cardinal grid, editor-identical.
+        const DIRb = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+        const cardTh = (h) => Math.atan2(DIRb[h & 3][0], DIRb[h & 3][1]);
+        const rot2b = (ox, oz, h) => { let x = ox, z = oz; for (let k = 0; k < (h & 3); k++) { const nx = -z, nz = x; x = nx; z = nz; } return [x, z]; };
+        const pad2b = (n) => (n < 10 ? '0' + n : '' + n) + '.vox';
+        const hopOK = (h) => { const tx = B.bpx + DIRb[h & 3][0] * 6, tz = B.bpz + DIRb[h & 3][1] * 6, gA = bfSurf(tx, tz);   // the whole baked hop (−6 ahead) must land on climbable LAND, clear over the body
+          return gA > WL + 0.5 && Math.abs(gA - B.bg) <= 3 && !bfObstW(tx, gA + 2, tz) && !bfObstW(tx, gA + 4, tz); };
+        if (B.bh === undefined) { B.bh = ((Math.round(B.th / (Math.PI / 2)) % 4) + 4) % 4; B.bst = 0; B.bfclk = 0; B.bpx = B.x; B.bpz = B.z; B.bg = bfSurf(B.x, B.z); B.bWhim = 0; B.bfps = 24; }   // bpx/bpz = base cell; bst: 0 jump | 1 rotate-left | 2 rotate-right
+        const NFR = 11;                                 // frames per baked sequence (00-10)
+        const adx = B.bpx - P.x, adz = B.bpz - P.z;
+        B.bflee = (adx * adx + adz * adz) < (B.bflee ? 55 * 55 : 40 * 40);
+        B.bfps += ((B.bflee ? 48 : 24) - B.bfps) * Math.min(1, dt * 6);   // ease the PLAY SPEED (flee = 2×) — the only thing I vary; the animation does the moving
+        B.bfclk += dt * B.bfps;
+        if (B.bfclk >= NFR) { B.bfclk -= NFR;           // a baked sequence just finished → commit its motion, pick the next
+          if (B.bst === 0) { const [dx, dz] = rot2b(0, -6, B.bh); B.bpx += dx; B.bpz += dz; B.bg = bfSurf(B.bpx, B.bpz); }   // jump baked −6 forward → advance the base cell
+          else B.bh = (B.bst === 1 ? B.bh + 1 : B.bh + 3) & 3;   // rotate baked a 90° yaw → commit the new cardinal
+          let act;
+          if (B.bflee) { let best = B.bh, bd = -1e9; for (let h = 0; h < 4; h++) { const d = DIRb[h][0] * adx + DIRb[h][1] * adz; if (d > bd) { bd = d; best = h; } } const diff = (best - B.bh + 4) & 3; act = diff === 0 ? 0 : diff === 3 ? 2 : 1; }   // face away from the player
+          else if (tb3 > B.bWhim) { B.bWhim = tb3 + 1.6 + Math.random() * 3; act = Math.random() < 0.75 ? 0 : (Math.random() < 0.5 ? 1 : 2); }   // editor odds: 75% hop, 25% turn
+          else act = 0;
+          if (act === 0 && !hopOK(B.bh)) act = hopOK(B.bh + 1) ? 1 : (hopOK(B.bh + 3) ? 2 : 1);   // a hop into a cliff/water/tree → turn instead
+          B.bst = act;
+        }
+        const fi = Math.min(NFR - 1, Math.floor(B.bfclk));
+        const bake = B.bst === 0 ? BUNNY_JUMP_BAKE : (B.bst === 1 ? BUNNY_ROT_BAKE : BUNNY_ROT_BAKE_R);
+        const off = bake[pad2b(fi)] || [0, 0, 0];
+        const [lx, lz] = rot2b(off[0] || 0, off[2] || 0, B.bh);   // THIS FRAME's baked lunge, rotated into the heading (rotate bakes have oz=0 → in place)
+        B.x = B.bpx + lx; B.z = B.bpz + lz; B.bOy = off[1] || 0;   // baked bob (oy) is lifted in the emit
+        B.th = (B.bst !== 0 && off[3] && off[3].length) ? cardTh(B.bst === 1 ? B.bh + 1 : B.bh + 3) : cardTh(B.bh);   // the baked 90° yaw sits on frames 6-10 → the facing SNAPS there, exactly like the editor (no manual interp)
+        B.om = 0; B.omT = 0; B.bspd = 0; B.animClk = B.bfclk / 24;   // kill the shared glide/steering; animClk (=frames/24) feeds the emit's frame index
       } else if (B.kind === 2) {                       // WORM: smooth continuous meandering crawl (the random pause was removed — user)
         B.animClk = (B.animClk || 0) + dt;
         const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
@@ -7028,7 +7155,7 @@
       if (B.kind === 4) { B.th += B.spin * dt; Hx2 = Math.sin(B.mth); Hz2 = Math.cos(B.mth); }   // lily: spin the MODEL (th) freely while drifting along mth
       else { Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }
       const spd5 = B.kind === 6 ? (B.spd || 6) : (B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? (B.chase > 9 ? 10 : (B.chase > 3.5 ? 7 : 1.5)) : 7)   // fish ride their live burst-glide speed; lilies drift; ducklings hustle when behind, dawdle at heel
-        : (B.kind === 2 ? 16 : (B.kind === 1 ? 26 : 56))));   // worm 1.6 m/s (continuous), firefly 2.6, butterfly 5.6
+        : (B.kind === 2 ? (bunnySlot ? (B.bspd || 0) : 16) : (B.kind === 1 ? 26 : 56))));   // bunny hops at its state-machine speed (0 while turning); worm 1.6 m/s (continuous), firefly 2.6, butterfly 5.6
       const nx5 = B.x + Hx2 * spd5 * dt, nz5 = B.z + Hz2 * spd5 * dt;
       let stepOK;
       if (B.kind === 2) {                              // STEP-AWARE crawl: accept the move if the destination surface is land, within a 2-voxel step, and clear at ITS height AND above the body
@@ -7102,12 +7229,13 @@
       }
       const gLoc = bfSurf(B.x, B.z);                   // the actual ground right here
       const yPrev5 = B.y;                              // total vertical motion this frame is budget-capped below — branches must never STACK into a visible jump
-      if (B.kind === 2) {                              // WORM: rides the terrain SMOOTHLY — target blends the ground AHEAD (starts the ramp before a step) and eases at a gentle rate
+      if (B.kind === 2) {                              // WORM / BUNNY: rides the terrain SMOOTHLY — target blends the ground AHEAD (starts the ramp before a step) and eases at a gentle rate
         const gFwd = bfSurf(B.x + Hx2 * 3, B.z + Hz2 * 3);
-        const gT7 = (gLoc * 2 + gFwd) / 3 + 2;
+        const yoff = bunnySlot ? 5 : 2, yflr = bunnySlot ? 4 : 1.6;   // BUNNY sits higher so its FEET rest ON the surface (taller, centre-anchored model) instead of clipping in
+        const gT7 = (gLoc * 2 + gFwd) / 3 + yoff;
         B.y += Math.max(-12 * dt, Math.min(12 * dt, (gT7 - B.y) * (1 - Math.exp(-7 * dt)) + Math.sign(gT7 - B.y) * 2 * dt));
-        if (B.y < gLoc + 1.6) B.y = gLoc + 1.6;        // hard body floor — the ease could lag uphill and sink the worm INTO the slope ('clips through the ground')
-        if (bfObst(B.x, B.y, B.z)) B.y = gLoc + 2;     // body ended up inside something (streamed terrain/step edge) — re-seat on the local surface instead of hiding+vanishing
+        if (B.y < gLoc + yflr) B.y = gLoc + yflr;      // hard body floor — the ease could lag uphill and sink it INTO the slope ('clips through the ground')
+        if (bfObst(B.x, B.y, B.z)) B.y = gLoc + yoff;  // body ended up inside something (streamed terrain/step edge) — re-seat on the local surface instead of hiding+vanishing
       } else if (B.kind === 6) {                       // FISH: hold a WANDERING depth between the bed and the underside of the surface; LEAPS are real ballistics
         const FC9 = FISH_CFG, bed9 = bfBed(B.x, B.z);
         const lo9 = bed9 + 1.6, hi9 = Math.max(WL - 1.4, lo9 + 0.2);
@@ -7229,7 +7357,7 @@
       if (B.kind < 3 && bfObst(B.x, B.y, B.z)) continue;   // body-in-solid hide (skip emission) — LAND/AIR creatures only: a duck/lily bobbing into the water voxel layer is normal
       const bobA = B.kind === 2 || B.kind === 6 ? 0 : (B.kind === 4 ? 0.12 : (B.kind === 3 ? (isBaby ? 0.18 : 0.25) : (B.kind === 1 ? 1.1 : 2.2)));   // worms/fish don't bob (the fish's REAL depth wander is its vertical life); water floats keep the cosmetic bob SMALL — the wave riding is the real motion, a deep bob dip re-sank the bottom rows
       const bobF = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? 2.3 : 1.6) : (B.kind === 1 ? 2.6 : 6.8));
-      const px3 = B.x, pz3 = B.z, py3 = B.y + Math.sin(tb3 * bobF + wk * 1.9) * bobA;   // (worm grid-snapping was undone at user request — smooth continuous pose)
+      const px3 = B.x, pz3 = B.z, py3 = B.y + (bunnySlot ? (B.bOy || 0) : Math.sin(tb3 * bobF + wk * 1.9) * bobA);   // BUNNY: the lift is the BAKED oy of the current animation frame (the jump's rise, the rotate's bob) — no arc invented by me. Worm bob stays 0.
       if (B.kind >= 2 && B.kind !== 6 && freezeK < 0.4) {   // GROUND/WATER creatures cast a sun shadow (lily/duck/worm) — flyers (0/1) skip, FISH skip (submerged: the surface owns the light there); frozen lakes are flat & shadow-free like the water
         const hxz = B.kind === 4 ? 5.0 : (B.kind === 3 ? (isBaby ? 1.8 : 3.0) : 3.0);
         const hy = B.kind === 4 ? 1.3 : (B.kind === 3 ? (isBaby ? 1.5 : 2.5) : 1.2);   // lily box a touch taller so the pad's shadow projects clear of the pad (not tucked underneath)
@@ -7244,7 +7372,7 @@
         if (p9 * p9 > 1e-6) { const cp9 = Math.cos(p9), sp9 = Math.sin(p9);
           Yw = [-HxR * cp9, -sp9, -HzR * cp9]; Zw = [-HxR * sp9, cp9, -HzR * sp9]; }   // head dir = −Yw tips up when climbing; Zw = Xw×Yw stays roll-free
       }
-      const nfr = B.kind === 6 ? FISHES[B.fsp || 0].n : (B.kind >= 3 ? 1 : (B.kind === 2 ? WORM_NFRAMES : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES))));
+      const nfr = B.kind === 6 ? FISHES[B.fsp || 0].n : (B.kind >= 3 ? 1 : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_NFRAMES : BUNNY_JUMP_NFRAMES) : WORM_NFRAMES) : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES))));
       const fi3 = (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * 24) % nfr)   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
         : Math.floor((tb3 + wk * 0.37) * 24) % nfr;                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
       let glow = 0;
@@ -7257,10 +7385,11 @@
         glow = B.blink ? 1 : 0;
       }
       const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
+      if (bunnySlot && dp2 < 30 * 30 && bunnyBoxN < bunnyBoxes.length) { const bx9 = bunnyBoxes[bunnyBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // SOLID (user): publish a hitbox for each near bunny so the player can't run through it
       if (emitN >= EMIT_CAP) continue;                 // stage the pose (never emit directly) — the nearest are chosen after the loop
       const o4 = emitN * 16;
       emitBuf[o4] = rx * right[0] + ry * right[1] + rz * right[2]; emitBuf[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; emitBuf[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; emitBuf[o4 + 3] = bScale;
-      emitBuf[o4 + 7] = (B.kind === 6 ? FISHES[B.fsp || 0].item0 : (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? WORM_ITEM0 : (B.kind === 1 ? FFLY_ITEM0 : (B.dfly ? DFLY_ITEM0 : BFLY_COLS[B.col])))))) + fi3;
+      emitBuf[o4 + 7] = (B.kind === 6 ? FISHES[B.fsp || 0].item0 : (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_ITEM0 : BUNNY_JUMP_ITEM0) : WORM_ITEM0) : (B.kind === 1 ? FFLY_ITEM0 : (B.dfly ? DFLY_ITEM0 : BFLY_COLS[B.col])))))) + fi3;
       emitBuf[o4 + 11] = glow;
       if (Zw) {                                        // FULL 3D frame (fish): every axis has a y component — the level-frame fast path below assumes Zw = world-up
         emitBuf[o4 + 4] = Xw[0] * right[0] + Xw[1] * right[1] + Xw[2] * right[2]; emitBuf[o4 + 5] = Xw[0] * up[0] + Xw[1] * up[1] + Xw[2] * up[2]; emitBuf[o4 + 6] = Xw[0] * fwd[0] + Xw[1] * fwd[1] + Xw[2] * fwd[2];
