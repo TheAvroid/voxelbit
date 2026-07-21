@@ -45,6 +45,12 @@
      buffers. A dark gradient scrim keeps the text legible over any frame. #load is display:none when dismissed, so the
      video stops the instant the game starts. */
   #loadVid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -2; }
+  /* ── SMOOTH PROGRESS METER (user) ── the fill's scaleX and the % are eased toward each phase's target by one rAF loop,
+     so the bar glides 0→100 instead of stepping as chunks land. */
+  #loadMeter { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  #loadBar { width: 240px; max-width: 62vw; height: 4px; background: rgba(255,255,255,0.14); border-radius: 3px; overflow: hidden; }
+  #loadFill { width: 100%; height: 100%; transform-origin: left center; transform: scaleX(0); border-radius: 3px; background: linear-gradient(90deg, #b8ff6e, #7fd05a); will-change: transform; }
+  #loadPct { font-size: 8px; opacity: 0.82; letter-spacing: 3px; }
   #load::before { content: ''; position: absolute; inset: 0; z-index: -1;
     background: linear-gradient(rgba(9,12,16,0.34), rgba(9,12,16,0.5)); }
   /* CLICK-TO-ENTER prompt (user) — centred over the LIVE game after loading; transparent + pointer-events:none so the
@@ -220,9 +226,9 @@
   <div id="pkRows"></div>
   <div style="text-align:center"><button id="pkReset">reset</button><button id="pkClose">done</button></div>
 </div></div>
-<div id="load"><video id="loadVid" autoplay loop muted playsinline poster="assets/wallpaper.png"><source src="loading.mp4" type="video/mp4"></video><h1 id="loadTitle"><span class="tv">voxel</span><span class="tb">bit</span></h1><span id="loadMsg">generating forest…</span></div>
+<div id="load"><video id="loadVid" autoplay loop muted playsinline poster="assets/wallpaper.png"><source src="loading.mp4" type="video/mp4"></video><h1 id="loadTitle"><span class="tv">voxel</span><span class="tb">bit</span></h1><span id="loadMsg">generating forest…</span><div id="loadMeter"><div id="loadBar"><div id="loadFill"></div></div><span id="loadPct">0%</span></div></div>
 <div id="over" class="hidden"><h1>game over</h1><div id="overWhy">you fell into the lava</div><div class="ohint">click to respawn</div></div>
-<div id="playHint" class="hidden">click to enter</div>
+<div id="playHint" class="hidden">press any button</div>
 <div id="veRec" class="hidden"><span class="dot"></span>recording</div>
 <div id="vePanel" class="hidden"><div id="veWrap">
   <div id="veTop">
@@ -253,6 +259,20 @@
   const $ = (id) => document.getElementById(id);
   const loadEl = $('load'), lockEl = $('lock'), hudEl = $('hud'), crossEl = $('cross'), loadMsgEl = $('loadMsg');
   const fail = (msg) => { loadEl.classList.remove('hidden'); loadMsgEl.textContent = msg; throw new Error(msg); };   // loadMsgEl, not loadEl.textContent — the latter would wipe the background <video>
+  // ── SMOOTH LOADING METER ── one rAF loop eases the shown value toward the phase target, so the bar + % glide 0→100
+  // continuously instead of stepping as slabs land (the "jittery" the user reported). setLoad(p) only ever RAISES the
+  // target (monotonic → never a backward jump), and each phase below maps into its own slice of the 0-100 range.
+  const loadFillEl = $('loadFill'), loadPctEl = $('loadPct');
+  let loadTgt = 0, loadCur = 0, loadAnim = false;
+  const loadStep = () => {
+    loadAnim = false;
+    loadCur += (loadTgt - loadCur) * 0.14;               // ease toward the target
+    if (loadTgt - loadCur < 0.4) loadCur = loadTgt;      // snap the last fraction so it settles cleanly
+    loadFillEl.style.transform = 'scaleX(' + (loadCur / 100) + ')';
+    loadPctEl.textContent = Math.round(loadCur) + '%';
+    if (loadCur < loadTgt) loadAnim = (requestAnimationFrame(loadStep), true);   // keep easing until caught up; setLoad re-arms on the next bump
+  };
+  const setLoad = (p) => { loadTgt = Math.max(loadTgt, Math.min(100, p)); if (!loadAnim && loadCur < loadTgt) loadAnim = (requestAnimationFrame(loadStep), true); };
   const stage = async (msg) => { loadMsgEl.textContent = msg; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); };
 
   // ── WebGPU init ────────────────────────────────────────────────────────────
@@ -318,7 +338,7 @@
   let winOX = 0, winOZ = 0;                            // world coord of the window corner (multiples of 8)
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
   const gwrap = (v, n) => ((v % n) + n) % n;
-  let SPWX = 623, SPWZ = -1194;                        // world spawn (user 2026-07-19: baked from the T pose-export) — nudged east at boot if it lands in a lake; Y comes from the terrain height there
+  let SPWX = 0, SPWZ = 0;                              // world spawn — placeholder; RANDOMISED on every refresh at boot (user 2026-07-20), see the spawn block below
   let SPYAW = -1.517; const SPPITCH = -0.044;          // spawn CAMERA facing baked with the position (same T export); the lake-side spawn below re-aims the yaw at the water
 
   // deterministic integer hash — the shader ports this bit-for-bit for the far-field terrain
@@ -627,7 +647,7 @@
   const ORECRYS = [addCol(88, 196, 202), addCol(70, 176, 184)];
 
   // ── pine5.vox ── MagicaVoxel, Z-up (model z → world y)
-  await stage('loading pine5.vox…');
+  setLoad(12); await stage('loading pine5.vox…');
   let vox;
   try { vox = new Uint8Array(await (await fetch('assets/v0.9/pine5.vox')).arrayBuffer()); } catch (e) { fail('failed to fetch assets/v0.9/pine5.vox — serve over http (start-server.bat)'); }
   const dv = new DataView(vox.buffer);
@@ -698,7 +718,7 @@
   // vox: [x | y<<8 | z<<16 | palId<<24, …] }. MagicaVoxel is z-up so model z maps straight to world y.
   // Each model gets its OWN palette ids (deduped within the model only) — solid, pickable and walk-through
   // classes can never collide on a shared id. All ids land above DECOR_MIN → walk-through unless marked solid.
-  await stage('loading decorations…');
+  setLoad(22); await stage('loading decorations…');
   const parseVoxModel = (pv) => {
     const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
     let sx = 0, sy = 0, sz = 0, pvox = null; const ppal = new Uint8Array(1024);
@@ -848,7 +868,7 @@
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
   let ROBIN_ROTATE = [];                               // ROBIN = the SAME bird recoloured again (assets/life/robin/rotate/00-10, base.vox ignored) — same layout as the cardinal and blue bird
   let BUNNY_ROTATE = [];                               // BUNNY frames (assets/life/bunny/00-10, base.vox ignored) — auto-loaded as the asset-editor object (user); the editor previews the animation on the stage
-  let BUNNY_ITEM0 = 0;                                 // …and the same frames in the ITEM table (BUNNY_ITEM0+frame) so the editor can TRACE-INJECT the playing bunny instead of grid-stamping it
+  let BUNNY_ITEM0 = 0;                                 // …and the same frames in the ITEM table (BUNNY_ITEM0+frame) so the editor TRACE-INJECTS the playing bunny — identical render path to every other life form (grain + baked AO + SVGF)
   let itemsRef = null;                                 // module-scope handle to the loader's `items` table (dims + baked cells) — the tick loop reads it for the cardinal hitbox + worm grid-stamp
 
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
@@ -1222,8 +1242,8 @@
     try {                                                             // BUNNY frames (raw bytes) → the asset-editor filmstrip; the numbered frames live directly in the species dir (like the fish/worm strips), not a /rotate/ subdir
       for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/' + String(f).padStart(2, '0') + '.vox'); if (!bv.length) break; BUNNY_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       console.log('[vb] bunny', BUNNY_ROTATE.length, 'frames (asset-editor object)');
-      // …and load the SAME frames into the ITEM table so the editor can TRACE-INJECT the playing bunny (full SVGF, no
-      // grid-stamp → no denoiser ghost trails, which is what "shading issues when the bunny moves" was — user).
+      // …and load the SAME frames into the ITEM table so the editor TRACE-INJECTS the playing bunny through the dynamic-life
+      // path (full SVGF + the creature grain/AO treatment) — i.e. it renders IDENTICALLY to the ducks/fish/birds (user).
       const bloaded = [];
       for (const fr of BUNNY_ROTATE) { const bv = fr.u8, bdv = new DataView(bv.buffer, bv.byteOffset, bv.byteLength);
         let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
@@ -1396,7 +1416,14 @@
     let c = caveCache.get(key);
     if (c !== undefined) return c;
     c = null;
-    if (ihash(cx * 91 + 31, cz * 97 + 57) <= 0.125) {
+    const myRoll = ihash(cx * 91 + 31, cz * 97 + 57);                // base roll 0.22 → ~9.9% EFFECTIVE after the adjacency cull below (user wants ~10% effective WITH no adjacency; 0.22 was tuned by simulation), then the dryness test culls any whose path touches water/basins
+    let win = myRoll <= 0.22;
+    for (let dz = -1; dz <= 1 && win; dz++) for (let dx = -1; dx <= 1; dx++) {   // NO TWO RAVINES ADJACENT (user): of the 8-neighbour cells that ALSO rolled, only the SMALLEST roll survives → a ravine never touches another. Uses the raw roll only (not caveAt) so it stays non-recursive; ties break on cell index.
+      if (!dx && !dz) continue;
+      const nr = ihash((cx + dx) * 91 + 31, (cz + dz) * 97 + 57);
+      if (nr <= 0.22 && (nr < myRoll || (nr === myRoll && (cx + dx) * 100003 + (cz + dz) < cx * 100003 + cz))) { win = false; break; }
+    }
+    if (win) {
       const sx = Math.round(cx * CAVE_CELL + 60 + ihash(cx * 3 + 12, cz * 7 + 44) * (CAVE_CELL - 120));
       const sz = Math.round(cz * CAVE_CELL + 60 + ihash(cx * 9 + 71, cz * 5 + 13) * (CAVE_CELL - 120));
       const ang = ihash(cx + 21, cz + 63) * 6.283, len = 450 + ihash(cx * 23, cz * 29) * 350;
@@ -2226,7 +2253,7 @@
       let done = 0, lastPct = -1;
       for (const j of jobs) {
         while (poolOk && !j.done) {
-          if (withStages) { const pct = (done * 100 / jobs.length) | 0; if (pct !== lastPct) { lastPct = pct; loadMsgEl.textContent = `growing forest… ${pct}%`; } }
+          if (withStages) { const pct = (done * 100 / jobs.length) | 0; if (pct !== lastPct) { lastPct = pct; loadMsgEl.textContent = 'growing forest…'; setLoad(22 + done / jobs.length * 60); } }
           await new Promise(r => setTimeout(r, 2));
         }
         if (!poolOk) break;
@@ -2236,10 +2263,10 @@
       if (!built) { poolQueue.length = 0; jobById.clear(); }
     }
     if (!built) for (let s = 0; s < 32; s++) {         // no pool (or it died mid-build) — the inline path regenerates everything identically
-      if (withStages) await stage(`growing forest… ${(s * 100 / 32) | 0}%`);
+      if (withStages) { setLoad(22 + s / 32 * 60); await stage('growing forest…'); }
       genRegion(rect.xlo, rect.xhi, rect.zlo + (((bh * 2) * s) >> 5), rect.zlo + (((bh * 2) * (s + 1)) >> 5), true);
     }
-    if (withStages) await stage('baking occupancy…');
+    if (withStages) { setLoad(86); await stage('baking occupancy…'); }
     rebuildBricks(0, WX, 0, WZ);
   }
   // ── SPAWN BESIDE A LAKE (user 2026-07-20) ── walk the river systems for the nearest reservoir/tail lake, then step out
@@ -2276,11 +2303,11 @@
       }
       return null;
     };
-    const sp = lakeSpawn();
-    if (sp) { SPWX = sp.x; SPWZ = sp.z; SPYAW = sp.yaw; }
-    console.log('[vb] spawn', sp ? 'beside lake' : 'inland fallback', SPWX, SPWZ);
+    SPWX = Math.round((Math.random() - 0.5) * 400000);   // ── RANDOM SPAWN each refresh (user) ── land anywhere in a ±20 km span; the capped nudge below walks east to the first valid dry, cave-free ground. lakeSpawn() above is left defined but unused (easy re-enable).
+    SPWZ = Math.round((Math.random() - 0.5) * 400000);
+    console.log('[vb] spawn RANDOM', SPWX, SPWZ);
   }
-  while (H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ) || nearWormMouth(SPWX, SPWZ)) SPWX += 16;   // never spawn in a lake or a gorge
+  { let g = 0; while ((H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ) || nearWormMouth(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random point over a huge basin can't loop forever
   winOX = Math.round(SPWX / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
 
   // ── GEN POOL ── the ENTIRE generator (terrain sweep + every stamp pass) runs on a pool of worker threads.
@@ -2440,7 +2467,7 @@
   console.log('[vb] world built at', winOX, winOZ, 'spawn', SPWX, SPWZ);
 
   // ── GPU buffers ─────────────────────────────────────────────────────────────
-  await stage('uploading world…');
+  setLoad(94); await stage('uploading world…');
   const worldBuf = device.createBuffer({ size: W.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the GPU world back to verify it matches W
   const uploadWorld = () => { const CH = 128 << 20;    // chunked — a single 1.5 GB writeBuffer would need a same-sized staging allocation
     for (let o = 0; o < W.byteLength; o += CH) device.queue.writeBuffer(worldBuf, o, W.buffer, o, Math.min(CH, W.byteLength - o)); };
@@ -2987,7 +3014,7 @@
         if (h.vox == LVT || h.vox == LVB || h.vox == LVR || h.vox == LVY) { faceId = 8u; }   // lava → emissive
         let pos = ro + rd * t;
         let vcW = vec3<i32>(floor(pos - h.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));   // WORLD coords — grain must not swim when the window shifts
-        if (cSlot != 0u) { albedo = cCell * (0.87 + 0.26 * ih3(cVc.x, cVc.y, cVc.z)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — stable as it moves/rotates, exactly the analytic path's texture
+        if (cSlot != 0u) { albedo = cCell * (0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
         else { albedo = pal[h.vox].rgb * (0.88 + 0.24 * ivhash(vcW)); }
         if (skipW && pos.y < WLF + 1.0) {                            // swimming: caustic webs dance on everything below the surface
           albedo = albedo * (1.0 + 1.3 * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
@@ -3481,7 +3508,7 @@
                   let bounceC = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
                   var alb2 = cell.rgb;                                 // DUCK EYE BLINK: the black eye voxel flashes the head-GREEN when the slot's blink lane (dYv.w) is lit (user)
                   if (${DUCK_ITEM0 > 0 ? 1 : 0} == 1 && dYv.w > 0.5 && (dit == ${DUCK_ITEM0 || 9999} || dit == ${DUCKB_ITEM0 || 9998}) && alb2.r < 0.02 && alb2.g < 0.02 && alb2.b < 0.02) { alb2 = vec3<f32>(${DUCK_GREEN[0].toFixed(4)}, ${DUCK_GREEN[1].toFixed(4)}, ${DUCK_GREEN[2].toFixed(4)}); }
-                  let grain = 0.87 + 0.26 * ih3(vcD.x, vcD.y, vcD.z);   // per-voxel texture like the STATIC world (user: lilies 'lack depth/volume') — hashed on the MODEL-local voxel so it's stable as the creature drifts/rotates
+                  let grain = 0.95 + 0.10 * ih3(vcD.x, vcD.y, vcD.z);   // per-voxel texture — GENTLE (±5%) so authored colour transitions dominate the noise (user); hashed on the MODEL-local voxel so it's stable as the creature drifts/rotates
                   col = alb2 * (direct + (skyIrr + bounceC) * 0.85 + vec3<f32>(0.012, 0.013, 0.016)) * grain;   // 0.85 ≈ the terrain's typical open-air AO term — same formula as the static world (irr coupling stays banned: it read as translucent)
                   if (${WORM_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${WORM_ITEM0 || 9999} && dit < ${(WORM_ITEM0 || 9999) + (WORM_NFRAMES || 1)}) {   // WORM fake-AO — the smooth off-grid worm's stand-in for the grid-stamped cardinal's REAL contact AO (user chose 'fake AO, stay smooth'): darken the underside + lower body so it reads GROUNDED, no grid-stamp shimmer
                     let upN = clamp(0.5 + 0.5 * nw.y, 0.0, 1.0);              // 1 = top-facing, 0 = down-facing (the shaded underside against the ground)
@@ -3960,7 +3987,7 @@
     genMs += performance.now() - t0;
   }
   function recenter(x, z) {                            // teleport-scale move: rebuild a starter square, the rest streams in
-    loadEl.classList.remove('hidden'); loadMsgEl.textContent = 'regenerating forest…';
+    loadEl.classList.remove('hidden'); loadMsgEl.textContent = 'regenerating forest…'; $('loadMeter').style.display = 'none';   // in-game regen is a brief synchronous flash — no 0-100 progress to show, so hide the boot meter
     genJob = null; xStripPending = -1;
     winOX = Math.round(x / 32) * 32 - HALF; winOZ = Math.round(z / 32) * 32 - HALF;
     W.fill(0); touched.fill(0);
@@ -3977,7 +4004,7 @@
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
-  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0, bunny: false, rgiz: false, dragRing: -1, dragRAcc: 0, rgizBoxes: [] };   // giz/drag*: [e] move-gizmo; rgiz/dragRing*: [r] ROTATE-gizmo (2 voxel rings, yaw + pitch); blink: eye-blink phase; spin: +90° per completed rotation cycle
+  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0, bunny: false, rgiz: false, dragRing: -1, dragRAcc: 0, rgizBoxes: [] };   // giz/drag*: [e] move-gizmo; rgiz/dragRing*: [r] ROTATE-gizmo (2 voxel rings, yaw + pitch); blink: eye-blink phase; spin: +90° per completed rotation cycle; bunny: gates the trace-inject preview
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
@@ -4318,7 +4345,7 @@
     lifeUid[slot] = uid; lifeItem[slot] = item; lifeAna[slot] = analytic ? 1 : 0;
     lifeAnc[slot * 3] = x; lifeAnc[slot * 3 + 1] = y; lifeAnc[slot * 3 + 2] = z; };
   const edEmitModel = (o2, fi, cam, right, up, fwd) => {   // ── EDITOR TRACE-INJECT ── the playing bunny → drop slot 4 (upright, WORLD scale, at the stage centre), so it renders
-    const it0 = BUNNY_ITEM0 + fi, it = itemsRef && itemsRef[it0 - 1];   // through TRACE with full SVGF instead of being grid-stamped (grid-stamping an animating model was the ghost-trail source — user)
+    const it0 = BUNNY_ITEM0 + fi, it = itemsRef && itemsRef[it0 - 1];   // through TRACE with full SVGF exactly like every other life form (grain + baked AO), instead of being grid-stamped
     if (!it) { UF[o2 + 7] = 0; return false; }
     const wcx = ED.x0 + ED.pw / 2, wcy = ED.y + 1 + it.h / 2, wcz = ED.z0 + ED.pd / 2;   // model centre in world (the stamp maps model z→world y, so height is it.h)
     const rx = wcx - cam[0], ry = wcy - cam[1], rz = wcz - cam[2];
@@ -4937,8 +4964,10 @@
   const veSeekAwait = (t) => new Promise((res) => { const on = () => { veVideo.removeEventListener('seeked', on); res(); }; veVideo.addEventListener('seeked', on); veVideo.currentTime = Math.max(0, Math.min(VE.dur - 1e-3, t)); });
 
   // ── OPEN / CLOSE + BUTTON WIRING ──
-  const veOpen = () => { vePanel.classList.remove('hidden'); veRenderTimeline(); veUpdatePlayhead(); veUpdateTime(); veUpdateButtons(); requestAnimationFrame(veFitDraw); };
-  const veClose = () => { vePanel.classList.add('hidden'); vePause(); };
+  const veOpen = () => { vePanel.classList.remove('hidden'); lockEl.classList.add('hidden');   // the editor takes over the screen: hide the esc menu behind it and RELEASE the pointer so the mouse drives the UI, not the camera (the R-stop path leaves the game pointer-locked — user: "the mouse is still connected to the player camera in the background")
+    if (document.pointerLockElement) document.exitPointerLock();
+    veRenderTimeline(); veUpdatePlayhead(); veUpdateTime(); veUpdateButtons(); requestAnimationFrame(veFitDraw); };
+  const veClose = () => { vePanel.classList.add('hidden'); vePause(); if (!locked && !dead) lockEl.classList.remove('hidden'); };   // hand the screen back to the esc menu so the player resumes / re-locks from there
   veBtnEl.addEventListener('click', (e) => { e.stopPropagation(); veOpen(); });   // opens the editor; recording is the ● rec button inside the panel
   veRecBtn.addEventListener('click', (e) => { e.stopPropagation(); veToggleRec(); });
   $('veExport').addEventListener('click', (e) => { e.stopPropagation(); veExport(); });
@@ -5085,6 +5114,7 @@
   const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); cursSync(); return; } canvas.requestPointerLock(); };
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (!locked) tryLock(); });
+  document.addEventListener('keydown', () => { if (!locked && !$('playHint').classList.contains('hidden')) tryLock(); });   // "press any button" — any key enters from the start prompt (a click still works via the canvas handler above)
   document.addEventListener('pointerlockerror', () => { if (!locked) lockEl.classList.remove('hidden'); });   // if a lock request is refused, fall back to the esc menu so the player is never stuck
   // ── CUSTOM FREE-MOUSE CURSOR ── shown whenever the pointer is NOT locked (menus, the video editor, the death screen).
   // Follows the mouse as a crosshair and morphs to a square over anything clickable; the native cursor is hidden so the
@@ -5102,7 +5132,7 @@
   }, true);
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === canvas;
-    lockEl.classList.toggle('hidden', locked || dead);
+    lockEl.classList.toggle('hidden', locked || dead || !vePanel.classList.contains('hidden'));   // never surface the esc menu on top of the open video editor
     if (locked) $('playHint').classList.add('hidden');   // taken control → drop the click-to-enter prompt (the esc menu handles re-entry from here)
     crossEl.classList.toggle('hidden', !locked);
     cmpVis();                                    // the compass follows the crosshair, gated by the settings toggle
@@ -5111,6 +5141,7 @@
   });
   document.addEventListener('mousemove', (e) => {
     if (!locked) return;
+    if (!vePanel.classList.contains('hidden')) return;   // VIDEO EDITOR open over the screen → the mouse drives its UI, never the camera behind it (user)
     if (cineMode && !ED.on) return;                    // CINEMA owns the camera (user): cineUpdate overwrote yaw/pitch every frame anyway, so dragging did nothing but fight it — and a fast flick still showed as a one-frame jolt before it was corrected
     if (ED.on && ED.dragAxis >= 0) {                    // dragging a move-gizmo arrow: map mouse motion onto the axis' on-screen direction, not the camera
       const A = ED.dragAxis, cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
@@ -5202,6 +5233,7 @@
   const prevCam = { pos: [0, 0, 0], right: [1, 0, 0], up: [0, 1, 0], fwd: [0, 0, 1], tanH: 1, aspect: 1, jit: [0, 0] };   // pos in WORLD coords
   const FOV = 72 * Math.PI / 180;
 
+  loadTgt = loadCur = 100; loadFillEl.style.transform = 'scaleX(1)'; loadPctEl.textContent = '100%';   // snap the meter to full the instant the world is ready (the overlay drops on the next line)
   loadEl.classList.add('hidden');                      // world ready → drop the whole overlay, revealing the LIVE game; a canvas click locks the mouse and takes control (user)
   if (!CDPTEST) $('playHint').classList.remove('hidden');   // centred "click to enter" prompt over the live game (tests don't want it intercepting/visible)
   const PICK_DEFS = {                                  // PER-ITEM held poses — tuning one item never moves the others (panel copy-pose exports)
@@ -5328,7 +5360,7 @@
     for (let r = 0; r < q; r++) { const out = []; for (const p of cur) { const x = p & 255, y = (p >> 8) & 255; out.push(y | ((cx - 1 - x) << 8) | (p & 0xffff0000)); } cur = out; const t = cx; cx = cy; cy = t; }
     return { vox: cur, sx: cx, sy: cy };
   };
-  const edClearStamp = () => {                          // restore any grid-stamped model/ring voxels to plane/air WITHOUT re-stamping — used when the model is TRACE-INJECTED (playing) so the world grid stays clean (no ghosts, no double-render)
+  const edClearStamp = () => {                          // restore any grid-stamped model/ring voxels to plane/air WITHOUT re-stamping — used when the model is TRACE-INJECTED (the playing bunny) so the world grid stays clean, and before a fresh .vox import lays out
     if (!ED.fcells.length && !ED.ring.length) return;
     const cells = [];
     for (const ii of ED.fcells) { const pv = ED.prev.get(ii) || 0; if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); } }
@@ -5495,13 +5527,15 @@
     smoothEye = P.y + EYE; resetHist = 1;
     if (!ED.frames.length && BUNNY_ROTATE.length) { edImportBufs(BUNNY_ROTATE); ED.bunny = BUNNY_ITEM0 > 0; }   // auto-load the BUNNY filmstrip as the editable object (user); ED.bunny gates the trace-inject preview
     else if (!ED.frames.length && BLUEBIRD_ROTATE.length) { edImportBufs(BLUEBIRD_ROTATE); ED.bunny = false; }   // …falling back to the blue bird if the bunny frames are missing
-    // ── FRAME THE OBJECT ── stand the player 5 voxels BACK from the stage centre (where the model is stamped) and put the
-    // EYE at the model's mid-height looking LEVEL, so the object sits centred, face-on, right in front of the camera (user).
+    // ── FRAME THE OBJECT ── stand the player 5 voxels BACK from the stage centre (where the model is stamped) with the FEET
+    // ON THE FLOOR (P.y = ED.y + 1 = plane top), then pitch DOWN to aim the eye at the model's vertical centre so the object
+    // stays framed. (The old framing floated the eye at the model's mid-height, which for any model shorter than the 18.5
+    // eye height sank the 20-voxel person's feet below the plane — the "clipped through the floor" the user reported.)
     { const bf = ED.frames[0]; const midH = bf ? (bf.sz * 0.5) : 6;
-      const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2, mY = ED.y + 1 + midH;
-      P.x = cx; P.z = cz - 5;                           // 5 voxels back along −Z (yaw 0 faces +Z → the model; same convention as the lake-side spawn)
-      P.y = mY - EYE;                                   // eye level with the model's vertical centre → level, head-on view
-      P.yaw = 0; P.pitch = 0;
+      const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2, back = 50;
+      P.x = cx; P.z = cz - back;                        // 50 voxels back along −Z (yaw 0 faces +Z → the model) — stands well clear of the object for a fuller view (user)
+      P.y = ED.y + 1;                                   // feet planted on the plane (NOT floating at eye-mid-height)
+      P.yaw = 0; P.pitch = Math.atan2(midH - EYE, back);   // aim the eye down at the model's vertical centre → the object sits framed in front of the camera
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
@@ -6307,7 +6341,7 @@
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
       if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is either TRACE-INJECTED (the bunny, playing) or GRID-STAMPED (paused, or a non-bunny .vox import)
         UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot by default; edEmitModel re-enables it for the bunny
-        const traceInject = ED.frames.length && !ED.paused && ED.bunny && LIFE_TRACE && BUNNY_ITEM0 > 0;   // playing the built-in bunny → the SVGF path (no grid-stamp ghost trails, user)
+        const traceInject = ED.frames.length && !ED.paused && ED.bunny && LIFE_TRACE && BUNNY_ITEM0 > 0;   // playing the built-in bunny → the SVGF path, identical to every other trace-injected life form (user)
         if (ED.frames.length && !ED.paused) {            // playing → 24 fps through all frames, brief HOLD on the LAST frame, then loop
           const n = ED.frames.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
           const t = now % cyc, fi = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;   // 0..n-1, then hold the LAST frame during the pause
