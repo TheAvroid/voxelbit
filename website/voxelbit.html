@@ -892,9 +892,11 @@
   let BUNNY_ROTATE = [];                               // ROTATE bunny frames (assets/life/bunny/rotate/00-10) — the RIGHT-lane editor object (jumps + rotates in place)
   let BUNNY_JUMP = [];                                 // JUMP bunny frames (assets/life/bunny/jump/00-10) — the LEFT-lane editor object (jumps FORWARD). Both show on the stage together (user).
   let BUNNY_ROTATE_RIGHT = [];                         // RIGHT-rotating bunny frames (assets/life/bunny/rotate/right/00-10) — authored right-turn .vox (rotation is IN the voxel data), user
-  let ARMADILLO_WALK = [];                             // ARMADILLO walk frames (assets/life/armadillo/walk/00-07) — the asset-editor object (user)
+  let ARMADILLO_WALK = [];                             // ARMADILLO walk frames (assets/life/armadillo/walk/00-07) — world creature; still loaded for the pine-forest armadillo (no longer the asset-editor default)
+  let PORCUPINE_WALK = [];                             // PORCUPINE walk frames (assets/life/porcupine/00-10) — the asset-editor object (user: replaced the armadillo in the editor)
   let ARMADILLO_ITEM0 = 0, ARMADILLO_NFRAMES = 0;      // (legacy trace path — the world armadillo now GRID-STAMPS instead, see ARMADILLO_POSES)
   let ARMADILLO_POSES = null, ARMADILLO_FOOTZ = 0;     // GRID-STAMP poses [frame][heading] (built lazily) — the world armadillo stamps into W exactly like the asset editor (identical box-centre + armOffset), so its alignment matches 1:1 (user)
+  let PORCUPINE_POSES = null, PORCUPINE_FOOTZ = 0;     // GRID-STAMP poses [frame][heading] for the world porcupine (built lazily from PORCUPINE_WALK + PORCUPINE_BAKES) — same machinery as the armadillo, editor-identical alignment (user)
   let BUNNY_ITEM0 = 0;                                 // …and the same frames in the ITEM table (BUNNY_ITEM0+frame) so the editor TRACE-INJECTS the playing bunny — identical render path to every other life form (grain + baked AO + SVGF)
   let BUNNY_NFRAMES = 0;                               // frame count of the item-table bunny ROTATE frames — the WORLD bunnies play these while turning
   let BUNNY_JUMP_ITEM0 = 0, BUNNY_JUMP_NFRAMES = 0;    // …and the JUMP frames in the item table — world bunnies play these while HOPPING forward (editor-style grid behavior)
@@ -1273,7 +1275,8 @@
       for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/rotate/left/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; BUNNY_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/jump/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; BUNNY_JUMP.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/rotate/right/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; BUNNY_ROTATE_RIGHT.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }   // authored RIGHT-rotate frames
-      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/armadillo/walk/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; ARMADILLO_WALK.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }   // ARMADILLO walk cycle (asset-editor object, user)
+      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/armadillo/walk/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; ARMADILLO_WALK.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }   // ARMADILLO walk cycle (world creature)
+      for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/porcupine/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; PORCUPINE_WALK.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }   // PORCUPINE walk cycle — the asset-editor object (user)
       console.log('[vb] bunny', BUNNY_ROTATE.length, 'rotate +', BUNNY_JUMP.length, 'jump frames (asset-editor objects)');
       // …and load the SAME frames into the ITEM table so the editor TRACE-INJECTS the playing bunny through the dynamic-life
       // path (full SVGF + the creature grain/AO treatment) — i.e. it renders IDENTICALLY to the ducks/fish/birds (user).
@@ -4095,6 +4098,13 @@
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
         && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
     }
+    for (let bb = 0; bb < porcBoxes.length; bb++) {                        // SOLID PORCUPINES: the player can't run through a nearby world porcupine
+      const B2 = porcBoxes[bb];
+      if (B2.active
+        && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
+        && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+    }
     const x0 = Math.floor(px - HW), x1 = Math.floor(px + HW), z0 = Math.floor(pz - HW), z1 = Math.floor(pz + HW);
     const y0 = Math.floor(py + 0.001), y1 = Math.floor(py + hh - 0.001);
     for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (solid(x, y, z)) return false;
@@ -4421,8 +4431,9 @@
   const birdBox = birdBoxes[0];   // SOLID cardinal hitbox (Task 2): the player can't fly/walk through it. World-axis half-extents, republished each frame from the oriented model
   const bunnyBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 3.5, hy: 5, hz: 3.5 }));   // SOLID world-bunny hitboxes (user) — the nearest few bunnies to the player, republished each frame; tested by boxFree
   const armBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 3, hz: 4 }));   // SOLID world-armadillo hitboxes — lower + flatter than the bunny; nearest few, republished each frame
+  const porcBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 4, hz: 4 }));   // SOLID world-porcupine hitboxes — a touch taller than the armadillo (rounder body); nearest few, republished each frame
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
-  const wbf = Array.from({ length: 324 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget), 244-275 FISH (kind 6 — off-grid swimmers under the lake/river surface; 16 -> 32 slots, DOUBLED 2026-07-20 at user request), 276-299 BUNNIES (24 — kind 2 ground hoppers reusing the worm machinery, model = BUNNY_ITEM0, added 2026-07-21 at user request), 300-323 ARMADILLOS (24 — kind 2 ground WALKERS, continuous cardinal march, model = ARMADILLO_ITEM0, added 2026-07-21 at user request)
+  const wbf = Array.from({ length: 348 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the 64-drop budget), 244-275 FISH (kind 6 — off-grid swimmers under the lake/river surface; 16 -> 32 slots, DOUBLED 2026-07-20 at user request), 276-299 BUNNIES (24 — kind 2 ground hoppers reusing the worm machinery, model = BUNNY_ITEM0, added 2026-07-21 at user request), 300-323 ARMADILLOS (24 — kind 2 ground WALKERS, continuous cardinal march, model = ARMADILLO_ITEM0, added 2026-07-21 at user request), 324-347 PORCUPINES (24 — kind 2 ground WALKERS, same cardinal-march AI as the armadillo, GRID-STAMPED via PORCUPINE_POSES, added 2026-07-21 at user request)
   // ── DROP-SLOT PRIORITY ── six creature kinds share only 55 drop slots (9..63). Rather than emit in wk order (which
   // starved whatever came last — fish, then worms), each wbf creature's 16-float pose is staged here with its distance²,
   // then after the loop the NEAREST are copied to the real slots. A fish right in front of you always renders; a far,
@@ -4548,9 +4559,9 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
-  const unstampAllWorms = () => { for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B && B.sCells) {   // (despite the name: only perched songbirds have sCells now)
+  const unstampAllWorms = () => { for (let j = 16; j < 348; j++) { const B = wbf[j]; if (B && B.sCells) {   // ALL grid-stamped creatures: perched songbirds (64-243) + BUNNIES/ARMADILLOS/PORCUPINES (276-347). Must cover the mammals too, or their stamps get unstamped one-by-one AFTER the editor's bricks.fill(0) and re-patch as floating chunks (user bug)
     for (let i = 0; i < B.sCells.length; i++) { const ii = B.sCells[i]; if (W[ii] !== 0) W[ii] = B.sPrev ? B.sPrev[i] : 0; }   // restore, same reason as unstampWorm
-    B.sCells = null; B.sPrev = null; B.sKey = null; } } };   // hard clear (editor freeze) — in practice only the perched songbirds (64-243) carry stamps; caller re-uploads occupancy
+    B.sCells = null; B.sPrev = null; B.sKey = null; } } };   // hard clear (editor freeze) — caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const waterSpots = [];                              // detected WATER of any width — lakes AND rivers. Dragonflies home here; ducks still use lakeSpots (a river is too narrow for a family)
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
@@ -5350,7 +5361,7 @@
         else if (A.hd < 3) A.hd = (A.hd + 1) & 3;
         else A.frozen = false;
         A.px = 0; A.pz = 0; ED.hopX = 0; ED.hopY = 0; ED.hopZ = 0; ED.spin = A.hd & 3;
-        if (A.frozen) { const bk = ARMADILLO_BAKES[A.hd & 3] || {}; for (const fr of ED.frames) { const en = bk[fr.name]; fr.ox = en ? (en[0] || 0) : 0; fr.oy = en ? (en[1] || 0) : 0; fr.oz = en ? (en[2] || 0) : 0; } }   // seed the per-frame offsets from this heading's current bake so you adjust from it
+        if (A.frozen) { const bk = (ED.bakes || ARMADILLO_BAKES)[A.hd & 3] || {}; for (const fr of ED.frames) { const en = bk[fr.name]; fr.ox = en ? (en[0] || 0) : 0; fr.oy = en ? (en[1] || 0) : 0; fr.oz = en ? (en[2] || 0) : 0; } }   // seed the per-frame offsets from this heading's current bake so you adjust from it
         edLayout();
         console.log('[vb] armadillo ' + (A.frozen ? 'FROZEN facing heading ' + A.hd + ' (0=S, 1=E/+x, 2=N, 3=W/-x) — pause + align, export, press H for next' : 'WALKING (resumed)'));
       }
@@ -5536,7 +5547,7 @@
       const bx = ED.x0 + ((ED.pw - rv.sx) >> 1) - LANE, bz = ED.z0 + ((ED.pd - rv.sy) >> 1);   // LEFT lane
       f.bx = bx; f.bz = bz;
       let ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;              // per-frame alignment offset (live gizmo edit)
-      if (ED.arm && !ED.paused) { const e = armOffset(ED.spin, f.name); ox = e ? (e[0] || 0) : 0; oy = e ? (e[1] || 0) : 0; oz = e ? (e[2] || 0) : 0; }   // WALKING armadillo → South alignment rotated rigidly onto the current heading (or a manual override). Paused = the live gizmo offset so you can adjust.
+      if (ED.arm && !ED.paused) { const e = armOffset(ED.spin, f.name, ED.bakes || ARMADILLO_BAKES); ox = e ? (e[0] || 0) : 0; oy = e ? (e[1] || 0) : 0; oz = e ? (e[2] || 0) : 0; }   // WALKING creature → South alignment rotated rigidly onto the current heading (or a manual override). Paused = the live gizmo offset so you can adjust.
       // ── CONTINUOUS HOP ── while PLAYING, add the accumulated cycle offset (ED.hop*) so this bunny keeps marching forward; wrap it back inside the stage so it never hops off-screen. Editing/paused = no hop (base position, so the gizmos & ring line up).
       const xBase = ED.paused ? (bx + ox) : wrapIn(bx + ox + (ED.hopX || 0), ED.x0, Math.max(1, ED.pw - rv.sx));
       const zBase = ED.paused ? (bz + oz) : wrapIn(bz + oz + (ED.hopZ || 0), ED.z0, Math.max(1, ED.pd - rv.sy));
@@ -5682,12 +5693,13 @@
   const ARMADILLO_BAKES = [ARMADILLO_BAKE, {},
     { '01.vox': [1, 0, 0], '02.vox': [1, 0, 0], '03.vox': [1, 0, 0] },   // NORTH (spin 2, user): 180° flips the leg-phase, so the nudge lands on frames 01-03 (+1x), NOT the rigid rotation of South — can't be auto-derived
     { '01.vox': [0, 0, 1], '02.vox': [0, 0, 1], '03.vox': [0, 0, 1] }];  // WEST (spin 3, user): same flip, +1z on 01-03
+  const PORCUPINE_BAKES = [{ '06.vox': [0, 1, 0], '07.vox': [0, 1, 0] }, {}, {}, {}];   // PORCUPINE alignment (user export): frames 06/07 up 1 voxel. Offsets are purely VERTICAL (oy) → rotation-invariant, so this SOUTH bake applies to all four headings (E/N/W derive it rigidly — no per-heading override needed, unlike the armadillo's horizontal nudges).
   // [0]=S source alignment, [1]=E EMPTY → armOffset() rotates South rigidly (user's East export confirmed the 90° rotation), [2]=N & [3]=W = manual overrides (180°/270° flip the walk phase so the rotation can't derive them).
-  const armOffset = (spin, name) => {                     // per-heading alignment for the armadillo
+  const armOffset = (spin, name, bakes = ARMADILLO_BAKES) => {   // per-heading alignment for a walking creature. Default = armadillo world creature; the editor passes the LOADED creature's bakes (e.g. PORCUPINE_BAKES) so its offsets never leak across models.
     spin &= 3;
-    const tbl = ARMADILLO_BAKES[spin];
+    const tbl = bakes[spin];
     if (Object.keys(tbl).length) return tbl[name] || [0, 0, 0];   // this heading is MANUALLY aligned (S, N, W) → use its table EXCLUSIVELY; a frame not listed has no offset (don't fall back to the rotation)
-    const s = ARMADILLO_BAKES[0][name]; if (!s) return null;       // else (E, empty) → rotate the SOUTH offset rigidly onto this heading
+    const s = bakes[0][name]; if (!s) return null;                // else (E, empty) → rotate the SOUTH offset rigidly onto this heading
     let ox = s[0] || 0, oz = s[2] || 0; const oy = s[1] || 0;
     for (let r = 0; r < spin; r++) { const t = ox; ox = -oz; oz = t; }   // (ox,oz) → (−oz, ox) per 90° step: S(+1,0) → E(0,+1)
     return [ox, oy, oz];
@@ -5715,6 +5727,31 @@
     const n = ARMADILLO_POSES.length, afi = Math.floor((B.animClk || 0) * 24) % n, h = B.ah & 3;
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = gsurf + 1 - ARMADILLO_FOOTZ;
     stampApply(B, ARMADILLO_POSES[afi][h], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + afi + ',' + h);
+  };
+  const buildPorcPoses = () => {                          // PORCUPINE grid-stamp poses — IDENTICAL machinery to buildArmPoses, but from PORCUPINE_WALK + its own PORCUPINE_BAKES so the editor alignment carries 1:1 into the world (user)
+    if (PORCUPINE_POSES || !PORCUPINE_WALK.length) return;
+    const frames = [];
+    for (const fr of PORCUPINE_WALK) { try { frames.push(...edParseVox(fr.u8, fr.name)); } catch (e) {} }
+    if (!frames.length) return;
+    let footz = 255; for (const f of frames) for (const p of f.vox) { const z = (p >> 16) & 255; if (z < footz) footz = z; }   // lowest occupied model-z → feet sit on the ground
+    PORCUPINE_FOOTZ = footz === 255 ? 0 : footz;
+    const poses = [];
+    for (const f of frames) { const perH = [];
+      for (let h = 0; h < 4; h++) {                        // heading h → editor rotation q = (−h)&3 + armOffset(h, PORCUPINE_BAKES)
+        const rv = edRotVox(f.vox, f.sx, f.sy, (-h) & 3);
+        const e = armOffset(h, f.name, PORCUPINE_BAKES), ox = e ? (e[0] || 0) : 0, oy = e ? (e[1] || 0) : 0, oz = e ? (e[2] || 0) : 0;
+        const cx = rv.sx >> 1, cy = rv.sy >> 1, list = [];
+        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx + ox, ((p >> 16) & 255) + oy, ((p >> 8) & 255) - cy + oz, id]); CREATURE_IDS.add(id); }
+        perH.push(list); }
+      poses.push(perH); }
+    PORCUPINE_POSES = poses;
+    palSync();                                             // upload any palette ids edParseVox allocated for the porcupine (buildArmPoses relies on other paths to sync; the porcupine syncs itself so it never renders with a stale palette)
+  };
+  const stampPorcupine = (B, gsurf) => {                  // stamp the porcupine's current walk frame into W — clear-then-restamp via stampApply, exactly like the armadillo
+    buildPorcPoses(); if (!PORCUPINE_POSES) return;
+    const n = PORCUPINE_POSES.length, afi = Math.floor((B.animClk || 0) * 24) % n, h = B.ah & 3;
+    const gx = Math.round(B.x), gz = Math.round(B.z), gy = gsurf + 1 - PORCUPINE_FOOTZ;
+    stampApply(B, PORCUPINE_POSES[afi][h], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + afi + ',' + h);
   };
   const BUNNY_ROT_BAKE = { '03.vox': [0, 1, 0], '04.vox': [0, 2, 0], '05.vox': [0, 2, 0], '06.vox': [0, 2, 0, ['y-']], '07.vox': [0, 1, 0, ['y-']], '08.vox': [0, 0, 0, ['y-']], '09.vox': [0, 0, 0, ['y-']], '10.vox': [0, 0, 0, ['y-']] };   // BAKED rotate-bunny (user's copy-changes) — hop-bob (oy rise mid-cycle) + a 90° yaw (['y-']) held on the back half of the cycle (frames 6-10), so the bunny turns LEFT as it lands. 4th element = rotation step list replayed onto the .vox at load.
   const BUNNY_ROT_BAKE_R = Object.fromEntries(Object.entries(BUNNY_ROT_BAKE).map(([k, v]) => [k, v[3] ? [v[0], v[1], v[2], v[3].map((s) => s[0] + (s[1] === '-' ? '+' : '-'))] : v.slice()]));   // RIGHT turn = the LEFT rotation exactly, just flipped ('y-'→'y+') (user) — same bob/offsets, mirrored yaw
@@ -5765,7 +5802,7 @@
         else { body.push(f.vox[i]);
           if (c[0] > 130 && c[0] > c[1] * 1.7 && c[0] > c[2] * 1.7) reds.push(f.vox[i]);   // cardinal plumage / the armadillo's saturated orange shell
           else if (c[0] >= c[1] && c[1] >= c[2] && c[0] - c[2] > 12) tan.push(f.vox[i]); } }   // warm & DESCENDING (r≥g≥b) = tan / light-brown; excludes pink (blue elevated → b>g) and greys
-      const cands = (name === 'armadillo') ? (tan.length ? tan : body)   // armadillo eye blinks to the nearest LIGHT-BROWN voxel — not its orange shell (red) nor a pink face voxel (user)
+      const cands = (name === 'armadillo' || name === 'porcupine') ? (tan.length ? tan : body)   // armadillo + porcupine eyes blink to the nearest LIGHT-BROWN voxel — not a red shell nor a pink face voxel (user)
                   : (reds.length ? reds : body);           // cardinal → red plumage; bunny (no red) → nearest body voxel = its tan
       if (blacks.length && cands.length) { const vb = f.vox.slice();
         for (const bi of blacks) { const p = f.vox[bi], ex = p & 255, ey = (p >> 8) & 255, ez = (p >> 16) & 255;
@@ -5806,7 +5843,7 @@
     gpuPatch(cells);
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = true;   // fly ON so the framing below can't be pulled off by gravity while the world is frozen
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && ARMADILLO_WALK.length) { edImportBufs(ARMADILLO_WALK, 'vb_edoffsets_armadillo', ARMADILLO_BAKE, 'armadillo'); ED.bun = null; ED.bunny = false; ED.arm = { hd: 0, px: 0, pz: 0, tRe: 0 }; }   // ARMADILLO walk cycle (user): baked body-centering; walks around the stage turning only 90° (perpendicular grid march — see the ED.arm render branch)
+    if (!ED.frames.length && PORCUPINE_WALK.length) { edImportBufs(PORCUPINE_WALK, 'vb_edoffsets_porcupine', PORCUPINE_BAKES[0], 'porcupine'); ED.bun = null; ED.bunny = false; ED.arm = { hd: 0, px: 0, pz: 0, tRe: 0 }; ED.bakes = PORCUPINE_BAKES; }   // PORCUPINE walk cycle (user: replaced the armadillo): walks around the stage turning only 90°, H cycles the cardinal headings to align + export each (its own PORCUPINE_BAKES + 'vb_edoffsets_porcupine' namespace — armadillo offsets never leak in)
     else if (!ED.frames.length && BUNNY_JUMP.length) { edImportBufs(BUNNY_JUMP, 'vb_edoffsets_jump', BUNNY_JUMP_BAKE, 'jump'); ED.bunny = false; }   // jump frames only → just hop forward
     else if (!ED.frames.length && BUNNY_ROTATE.length) { edImportBufs(BUNNY_ROTATE, 'vb_edoffsets_rotate', BUNNY_ROT_BAKE, 'rotate'); ED.bunny = false; }   // rotate frames only
     else if (!ED.frames.length && BLUEBIRD_ROTATE.length) { edImportBufs(BLUEBIRD_ROTATE); ED.bunny = false; }   // …or the blue bird if both bunny sets are missing
@@ -5888,7 +5925,7 @@
     edRgiz(v) { ED.paused = true; ED.rgiz = v === undefined ? !ED.rgiz : !!v; if (ED.rgiz) ED.giz = false; edEnsureRgizCols(); edLayout(); return { rgiz: ED.rgiz, rings: ED.rgizBoxes.map((g) => g.kind) }; },   // rotate-gizmo test tap
     edRot(kind, dir) { edApplyRot(kind, dir); const n = ED.frames.length, f = n ? ED.frames[((ED.sel % n) + n) % n] : null; return f ? { sx: f.sx, sy: f.sy, sz: f.sz, nvox: f.vox.length } : null; },   // rotate + report dims (test)
     edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
-    cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
+    cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, name1: ED.name1, arm: !!ED.arm, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     pal(i) { return i === undefined ? palette.length : palette[i]; },
     rd() { return { renderDist, half: HALF, windowX: WX }; },   // fixed view-distance tap
     lifedbg(m) { lifeDbg = m === undefined ? 0 : m | 0; return { mode: lifeDbg, traceInjected: LIFE_TRACE }; },   // dynamic-life debug views (0 off / 1 slot ids / 2 history confidence / 3 motion / 4 raw AO)
@@ -6842,7 +6879,7 @@
         wormCandF = frame; wormCand.length = 0;
         const owned = new Set();
         for (let j = 32; j < 64; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2 && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
-        for (let j = 276; j < 324; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // BUNNIES + ARMADILLOS claim home cells too (user: they were bunching because their cells weren't reserved) → each bunny/armadillo/worm takes a DISTINCT grid cell, so they spread out
+        for (let j = 276; j < 348; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // BUNNIES + ARMADILLOS + PORCUPINES claim home cells too (user: they were bunching because their cells weren't reserved) → each bunny/armadillo/porcupine/worm takes a DISTINCT grid cell, so they spread out
         const R = Math.ceil(LIFE_OUT / WORM_HCELL);
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -6859,6 +6896,36 @@
       for (let q = 1; q < wormCand.length; q++) if (wormCand[q].d2 < wormCand[k].d2) k = q;
       const h = wormCand[k];
       wormCand[k] = wormCand[wormCand.length - 1]; wormCand.pop();
+      return h;
+    };
+    const porcHome = (cx, cz) => {                         // PORCUPINE home grid — CENTRED IN THE GAPS of the worm/bunny/armadillo grid ((cx+0.5) half-cell offset) with its OWN hash, so porcupines get a full, INDEPENDENT cell supply (they no longer lose the home race to the earlier bands → count matches the armadillo/bunny) and stay spatially clear of the other creatures
+      if (ihash(cx * 0x4D2F + 83, cz * 0x71A3 + 97) >= 0.55) return null;
+      return { x: (cx + 0.5) * WORM_HCELL + 20 + ihash(cx * 53 + 19, cz * 59 + 23) * (WORM_HCELL - 40),
+               z: (cz + 0.5) * WORM_HCELL + 20 + ihash(cx * 61 + 29, cz * 67 + 31) * (WORM_HCELL - 40), cx, cz };
+    };
+    let porcCandF = -1;
+    const porcCand = [];
+    const findPorcHome = () => {                           // identical machinery to findWormHome, but on the porcupine grid + reserving ONLY against other porcupines (324-347) — its own cache
+      if (porcCandF !== frame) {
+        porcCandF = frame; porcCand.length = 0;
+        const owned = new Set();
+        for (let j = 324; j < 348; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        const R = Math.ceil(LIFE_OUT / WORM_HCELL);
+        const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
+        for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+          const h = porcHome(c0x + dx, c0z + dz); if (!h) continue;
+          if (owned.has(h.cx + ',' + h.cz)) continue;
+          if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
+          const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
+          if (d2 > LIFE_OUT * LIFE_OUT) continue;
+          h.d2 = d2; porcCand.push(h);
+        }
+      }
+      if (!porcCand.length) return null;
+      let k = 0;
+      for (let q = 1; q < porcCand.length; q++) if (porcCand[q].d2 < porcCand[k].d2) k = q;
+      const h = porcCand[k];
+      porcCand[k] = porcCand[porcCand.length - 1]; porcCand.pop();
       return h;
     };
     const CARD_PER_TREE = 3;                           // several birds to a pine, but not a roost — unlimited clumped them and the spread measured worse
@@ -6921,6 +6988,7 @@
     const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
     const nBunny = BUNNY_ITEM0 ? (Math.max(4, Math.min(14, Math.round(nActD * 0.9))) & ~1) : 0;   // ground BUNNIES (slots 276-299) — kind 2, hop through the forest. & ~1 → EVEN count (user)
     const nArmadillo = ARMADILLO_ITEM0 ? (Math.max(4, Math.min(14, Math.round(nActD * 0.9))) & ~1) : 0;   // ground ARMADILLOS (slots 300-323) — kind 2, WALK the forest floor at ~9 vox/s. MATCHES the bunny formula/count, & ~1 → EVEN (user)
+    const nPorcupine = PORCUPINE_WALK.length ? (Math.max(4, Math.min(14, Math.round(nActD * 0.9))) & ~1) : 0;   // ground PORCUPINES (slots 324-347) — kind 2, same cardinal walk as the armadillo. SAME formula/count as the bunny + armadillo, & ~1 → EVEN (user)
     const nDfly = (DFLY_NFRAMES && waterSpots.length) ? Math.min(3, 1 + (waterSpots.length >> 2)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before. RATE HALVED 2026-07-20 (user): cap 6→3, per-spot growth >>1→>>2 — half as many at every water amount
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
@@ -6965,21 +7033,23 @@
     let emitN = 0;                                     // wbf poses staged into emitBuf this frame; sorted + emitted after the loop
     let bunnyBoxN = 0; for (const bx9 of bunnyBoxes) bx9.active = false;   // rebuild the solid-bunny hitboxes each frame from the nearest bunnies
     let armBoxN = 0; for (const bx9 of armBoxes) bx9.active = false;   // …and the solid-armadillo hitboxes
-    for (let wk = 0; wk < 324; wk++) {
+    let porcBoxN = 0; for (const bx9 of porcBoxes) bx9.active = false;   // …and the solid-porcupine hitboxes
+    for (let wk = 0; wk < 348; wk++) {
       const B = wbf[wk];
-      const armSlot = wk >= 300, bunnySlot = wk >= 276 && wk < 300, fishSlot = wk >= 244 && wk < 276, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
+      const porcSlot = wk >= 324, armSlot = wk >= 300 && wk < 324, bunnySlot = wk >= 276 && wk < 300, fishSlot = wk >= 244 && wk < 276, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
       const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
-      const wantK = (bunnySlot || armSlot) ? 2 : (fishSlot ? 6 : (lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)))));   // BUNNIES + ARMADILLOS are kind 2 (worm machinery) — the slot band, not the kind, tells them apart at emit/AI
+      const wantK = (bunnySlot || armSlot || porcSlot) ? 2 : (fishSlot ? 6 : (lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)))));   // BUNNIES + ARMADILLOS + PORCUPINES are kind 2 (worm machinery) — the slot band, not the kind, tells them apart at emit/AI
       const isDfly = wantK === 0 && nDfly > 0 && waterSpots.length > 0 && wk >= nAct - nDfly;   // DRAGONFLIES take the TOP of the active flyer band — butterflies only give up slots when there is water in view   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-243 PERCHED SONGBIRDS (180), 244-259 FISH
-      const active = armSlot ? (wk - 300 < nArmadillo)
+      const active = porcSlot ? (wk - 324 < nPorcupine)
+        : (armSlot ? (wk - 300 < nArmadillo)
         : (bunnySlot ? (wk - 276 < nBunny)
         : (fishSlot ? (wk - 244 < nFish)
         : (lilySlot ? (wk - 64 < nCard)
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
-        : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct)))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles  [extra ) closes the armSlot branch]
-      if (ED.on || dead || !active || (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length)))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck) must clear its stamp
+        : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct))))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles  [two extra ) close the armSlot + porcSlot branches]
+      if (ED.on || dead || !active || (porcSlot ? !PORCUPINE_WALK.length : (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck/porcupine) must clear its stamp
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
@@ -7037,7 +7107,7 @@
             sx = L9.x + (Math.random() - 0.5) * 24; sz = L9.z + (Math.random() - 0.5) * 24;
             hcx = Math.floor(sx / FLY_CELL); hcz = Math.floor(sz / FLY_CELL);   // a home cell → the leash keeps it in its pool, the recycle judges by home like a butterfly's
           } else if (wantK === 0 || wantK === 2) {     // BUTTERFLY / WORM: take a procedural home rather than a random point on the ring
-            const h = wantK === 0 ? findFlyHome(wk) : findWormHome(wk); if (!h) break;
+            const h = wantK === 0 ? findFlyHome(wk) : (porcSlot ? findPorcHome() : findWormHome(wk)); if (!h) break;
           if (wantK === 2) {                           // a home inside a trunk is unreachable, and the leash below would grind the worm against it forever
             const tc = treeAt(Math.floor(h.x / TCELL), Math.floor(h.z / TCELL));
             if (tc && (tc.tx - h.x) * (tc.tx - h.x) + (tc.tz - h.z) * (tc.tz - h.z) < 14 * 14) continue;
@@ -7052,7 +7122,7 @@
           sx7 = sx; sz7 = sz;
           const gS = bfSurf(sx, sz);
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
-          if ((bunnySlot || armSlot) && gS > WL + 0.5) {   // no LAND MAMMALS (bunny/armadillo) on top of a LARGE rock formation (user)
+          if ((bunnySlot || armSlot || porcSlot) && gS > WL + 0.5) {   // no LAND MAMMALS (bunny/armadillo/porcupine) on top of a LARGE rock formation (user)
             const xi = gwrap(Math.floor(sx), WX), zi = gwrap(Math.floor(sz), WZ) * WX * WY, yt = Math.floor(gS) - 1;
             const grey = (y) => { if (y < 1) return false; const v = W[xi + y * WX + zi]; if (!v) return false; const c = palette[v]; return !!c && Math.abs(c[0] - c[1]) < 18 && Math.abs(c[1] - c[2]) < 18 && c[0] > 60 && c[0] < 200; };   // grey (r≈g≈b, mid-bright) = rock/boulder, not green grass / brown dirt / white snow
             if (grey(yt) && grey(yt - 2)) continue;        // grey ≥3 voxels deep = a raised FORMATION, not a 1-vox pebble → reject the spot
@@ -7116,7 +7186,7 @@
       if (B.kind === 4) {                              // LILY PAD: slow drift on the water + constant free rotation; movement heading (mth) is independent of the visual spin
         if (tb3 > B.tRe) { B.mth += (Math.random() - 0.5) * 1.2; B.tRe = tb3 + 3 + Math.random() * 4; }
         if (!bfWater(B.x + Math.sin(B.mth) * 5, B.z + Math.cos(B.mth) * 5)) B.mth += 2.6 * dt;   // shore/dry ahead — curl the drift away
-      } else if (B.kind === 2 && armSlot) {            // ARMADILLO (user): a continuous cardinal WALK on the forest floor — marches ~9 vox/s, turns only 90° (never diagonal), follows the terrain, breaks out of dead-ends (never spins). Editor behaviour, world terrain.
+      } else if (B.kind === 2 && (armSlot || porcSlot)) {   // ARMADILLO + PORCUPINE (user): a continuous cardinal WALK on the forest floor — marches ~9 vox/s, turns only 90° (never diagonal), follows the terrain, breaks out of dead-ends (never spins). Editor behaviour, world terrain. (Same AI; the slot band picks the stamp model.)
         const DIRa = [[0, -1], [1, 0], [0, 1], [-1, 0]];
         const cardTh = (h) => Math.atan2(DIRa[h & 3][0], DIRa[h & 3][1]);
         const walkOK = (h) => { const tx = B.x + DIRa[h & 3][0] * 5, tz = B.z + DIRa[h & 3][1] * 5, gA = bfSurf(tx, tz), cur = bfSurf(B.x, B.z);   // 5 vox ahead must be climbable LAND, clear over the body
@@ -7233,7 +7303,7 @@
         }
       } else if (B.kind === 6) {                       // ── FISH 2.0 ── config-driven swimmer (FISH_CFG): SWIM ⇄ FLEE states in the water, dead-straight in the AIR.
         const FC = FISH_CFG, CRZ = FC.baseSpeed;
-        B.animClk = (B.animClk || 0) + dt * ((B.spd || CRZ) / CRZ) * (FC.animFps / 24);   // tail-beat LOCKED to swim speed on the SIM clock (the frame index floors animClk·24): baseSpeed → animFps, double speed → EXACTLY 2×animFps. Render fps never enters the equation.
+        if (freezeK < 0.4) B.animClk = (B.animClk || 0) + dt * ((B.spd || CRZ) / CRZ) * (FC.animFps / 24);   // tail-beat LOCKED to swim speed on the SIM clock (the frame index floors animClk·24): baseSpeed → animFps, double speed → EXACTLY 2×animFps. Render fps never enters the equation. FROZEN in the ice (freezeK≥0.4) → hold the tail frame too, not just movement (user)
         const ay = Math.floor(B.y);
         const fishOK = (th6, dist) => fishFits(B, th6, dist);      // BODY-aware + deep-enough water (see fishFits) — identical to what stepOK will accept
         const reachOf = (th6, maxD) => fishReach(B, th6, maxD);    // how far the open water runs along a heading — the compass for smooth channel-following
@@ -7353,7 +7423,7 @@
       if (B.kind === 4) { B.th += B.spin * dt; Hx2 = Math.sin(B.mth); Hz2 = Math.cos(B.mth); }   // lily: spin the MODEL (th) freely while drifting along mth
       else { Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }
       const spd5 = iceLock ? 0 : (B.kind === 6 ? (B.spd || 6) : (B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? (B.chase > 9 ? 10 : (B.chase > 3.5 ? 7 : 1.5)) : 7)   // fish ride their live burst-glide speed; lilies drift; ducklings hustle when behind, dawdle at heel
-        : (B.kind === 2 ? ((bunnySlot || armSlot) ? (B.bspd || 0) : 16) : (B.kind === 1 ? 26 : 56)))));   // bunny/armadillo drive their OWN motion (bspd 0 → no shared glide); worm 1.6 m/s (continuous), firefly 2.6, butterfly 5.6  [extra ) closes the iceLock ternary]
+        : (B.kind === 2 ? ((bunnySlot || armSlot || porcSlot) ? (B.bspd || 0) : 16) : (B.kind === 1 ? 26 : 56)))));   // bunny/armadillo/porcupine drive their OWN motion (bspd 0 → no shared glide); worm 1.6 m/s (continuous), firefly 2.6, butterfly 5.6  [extra ) closes the iceLock ternary]
       const nx5 = B.x + Hx2 * spd5 * dt, nz5 = B.z + Hz2 * spd5 * dt;
       let stepOK;
       if (B.kind === 2) {                              // STEP-AWARE crawl: accept the move if the destination surface is land, within a 2-voxel step, and clear at ITS height AND above the body
@@ -7429,7 +7499,7 @@
       const yPrev5 = B.y;                              // total vertical motion this frame is budget-capped below — branches must never STACK into a visible jump
       if (B.kind === 2) {                              // WORM / BUNNY: rides the terrain SMOOTHLY — target blends the ground AHEAD (starts the ramp before a step) and eases at a gentle rate
         const gFwd = bfSurf(B.x + Hx2 * 3, B.z + Hz2 * 3);
-        const yoff = bunnySlot ? 5 : (armSlot ? 2.5 : 2), yflr = bunnySlot ? 4 : (armSlot ? 2 : 1.6);   // BUNNY sits highest; ARMADILLO is low + flat (~5 tall, centre-anchored) so a smaller lift keeps its FEET on the surface; worm lowest
+        const yoff = bunnySlot ? 5 : ((armSlot || porcSlot) ? 2.5 : 2), yflr = bunnySlot ? 4 : ((armSlot || porcSlot) ? 2 : 1.6);   // BUNNY sits highest; ARMADILLO + PORCUPINE are low + flat (~5 tall, centre-anchored) so a smaller lift keeps their FEET on the surface; worm lowest
         const gT7 = (gLoc * 2 + gFwd) / 3 + yoff;
         B.y += Math.max(-12 * dt, Math.min(12 * dt, (gT7 - B.y) * (1 - Math.exp(-7 * dt)) + Math.sign(gT7 - B.y) * 2 * dt));
         if (B.y < gLoc + yflr) B.y = gLoc + yflr;      // hard body floor — the ease could lag uphill and sink it INTO the slope ('clips through the ground')
@@ -7587,6 +7657,8 @@
       if (bunnySlot) { stampBunny(B, Math.round(bfSurf(B.x, B.z))); continue; }   // BUNNY is GRID-STAMPED into W (editor-identical, user) — stamp instead of trace-emit, and SKIP the emit below (hitbox already published above)
       if (armSlot && dp2 < 30 * 30 && armBoxN < armBoxes.length) { const bx9 = armBoxes[armBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near armadillo
       if (armSlot) { stampArmadillo(B, Math.round(bfSurf(B.x, B.z))); continue; }   // ARMADILLO is GRID-STAMPED into W again (editor-identical alignment, user) — stamp instead of trace-emit, skip the emit below
+      if (porcSlot && dp2 < 30 * 30 && porcBoxN < porcBoxes.length) { const bx9 = porcBoxes[porcBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near porcupine
+      if (porcSlot) { stampPorcupine(B, Math.round(bfSurf(B.x, B.z))); continue; }   // PORCUPINE is GRID-STAMPED into W (editor-identical alignment, user) — stamp instead of trace-emit, skip the emit below
       if (emitN >= EMIT_CAP) continue;                 // stage the pose (never emit directly) — the nearest are chosen after the loop
       const o4 = emitN * 16;
       emitBuf[o4] = rx * right[0] + ry * right[1] + rz * right[2]; emitBuf[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; emitBuf[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; emitBuf[o4 + 3] = bScale;
