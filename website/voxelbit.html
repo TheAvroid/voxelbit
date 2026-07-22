@@ -52,8 +52,8 @@
   /* ── SMOOTH PROGRESS METER (user) ── the fill's scaleX and the % are eased toward each phase's target by one rAF loop,
      so the bar glides 0→100 instead of stepping as chunks land. */
   #loadMeter { display: flex; flex-direction: column; align-items: center; gap: 7px; }
-  #loadBar { width: 240px; max-width: 62vw; height: 8px; background: rgba(255,255,255,0.14); border-radius: 4px; overflow: hidden; }   /* doubled thickness (user) */
-  #loadFill { width: 100%; height: 100%; transform-origin: left center; transform: scaleX(0); border-radius: 3px; background: linear-gradient(90deg, #b8ff6e, #7fd05a); will-change: transform; }
+  #loadBar { width: 240px; max-width: 62vw; height: 16px; background: rgba(255,255,255,0.14); border-radius: 8px; overflow: hidden; }   /* thickness doubled 8→16 (user 2026-07-22) */
+  #loadFill { width: 100%; height: 100%; transform-origin: left center; transform: scaleX(0); border-radius: 7px; background: linear-gradient(180deg, #b8ff6e, #7fd05a); will-change: transform; }   /* TOP→BOTTOM gradient (user): lighter lime #b8ff6e at the top, darker green #7fd05a at the bottom (the game's lime-green pair) */
   #loadPct { font-size: 8px; opacity: 0.82; letter-spacing: 3px; }
   #load::before { content: ''; position: absolute; inset: 0; z-index: -1;
     background: linear-gradient(rgba(9,12,16,0.34), rgba(9,12,16,0.5)); }
@@ -64,6 +64,8 @@
     pointer-events: none; animation: playHintPulse 1.8s ease-in-out infinite; }
   @keyframes playHintPulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.45; } }
   #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; transform: translateY(-28px); }   /* icons nudged up under the logo (user) */
+  /* ══ HIDDEN ESC BUTTONS (user 2026-07-22): the ASSET-EDITOR (#edBtn) + ITEM-POSITION (#pkBtn) buttons are disabled from the esc menu. All their HTML + JS is left intact — this ONE rule just hides them. TO BRING THEM BACK: delete (or comment out) this single rule. ══ */
+  #pkBtn, #edBtn { display: none !important; }
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
   #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn, #edCopy { position: relative; top: 0; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, top 0.15s ease-out, box-shadow 0.15s; will-change: transform; }   /* subtle resting drop shadow (user) — deepens on hover below. Explicit top:0 so the hover-lift TRANSITIONS (top:auto→-4px can't interpolate → would jump). */
   #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg, #edCopy svg { width: 22px; height: 22px; }
@@ -2861,7 +2863,7 @@
     ${pickWGSL}
     ${DDAW}
     @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;   // 32-voxel SUPER-brick occupancy (window origin is 32-aligned, so off>>5 is exact)
-    const SNV : u32 = ${SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits
+    const SNV : u32 = ${location.search.includes('flakedbg') ? LAVA_T : SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits (?flakedbg paints them as emissive lava to bisect trace-vs-downstream)
     const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
     ${FLAKEBLK}
     fn onbT(n : vec3<f32>) -> vec3<f32> {
@@ -2903,6 +2905,7 @@
       var h = trace(ro + rd * tEye, rd, min(4000.0, tcap) - tEye, skipW);
       folSkipD = 0.0;                                                 // reset before the sun / AO / lava / reflection traces below — they must still see the canopy as solid
       if (h.t >= 0.0) { h.t += tEye; }
+      var flakeHit = false;                                        // set when the primary hit IS a falling flake — the lighting below gives those a scatter floor (see the sunV/skyV clamp)
       if ((u32(u.fx) & 16u) != 0u) {                               // FALLING SNOW — flakes are REAL VOXELS in the primary trace: grain, the jittered sun ray, AO, fog and the denoiser treat them exactly like the static world
         var rdS = rd;
         if (abs(rdS.x) < 1e-6) { rdS.x = 1e-6; } if (abs(rdS.y) < 1e-6) { rdS.y = 1e-6; } if (abs(rdS.z) < 1e-6) { rdS.z = 1e-6; }
@@ -2969,7 +2972,7 @@
           }
         }
         if (fte < 8e8 && (h.t < 0.0 || fte < h.t)) {                 // a flake beat the world hit — it IS a snow voxel from here on
-          h.t = fte; h.vox = SNV; h.n = fnn; h.face = fface;
+          h.t = fte; h.vox = SNV; h.n = fnn; h.face = fface; flakeHit = true;
         }
       }
       // ── DYNAMIC LIFE ── every creature is a rigid voxel MODEL evaluated right here in the primary trace (the proven
@@ -3156,6 +3159,7 @@
           let ah = trace(sp, d, 24.0, skipW);
           skyV = select(1.0, clamp(ah.t / 24.0, 0.0, 1.0), ah.t >= 0.0);
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
+        if (flakeHit && h.vox == SNV) { sunV = max(sunV, 0.6); skyV = max(skyV, 0.85); }   // FALLING FLAKES SCATTER — real snow is white from EVERY direction, so a flake never shows a dark shaded face. Without this floor, anti-sunward flakes shaded to ~sky luminance and vanished — the "snow band clipping" wedge the user saw (the void tracked the anti-sun azimuth, verified via the ?flakedbg emissive A/B). Scales with the sun/moon term downstream, so night stays subtle.
       }
       var lavaG = 0u;                                                  // soft light cast by nearby lava — deterministic probe, no flicker
       // lava only exists at bedrock (y ≤ 8) and the probe reaches 18 down — pixels above y 28 can NEVER see glow, so 99.9% of pixels skip a whole ray
@@ -4688,7 +4692,7 @@
   }
   document.addEventListener('contextmenu', (e) => e.preventDefault());
   // ── MASTER VOLUME ── every sound registers its BASE volume; the menu slider scales them all (persisted vb_vol)
-  let sndVol = 1; try { const v = parseFloat(localStorage.getItem('vb_vol')); if (v >= 0 && v <= 1) sndVol = v; } catch (e) {}
+  let sndVol = 1;   // ALWAYS start at 100% on refresh (user 2026-07-22) — the slider still adjusts it within a session, but a page refresh resets to full volume (no longer restores the persisted vb_vol)
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -5105,8 +5109,9 @@
   const BASE_VIG = 0.26;                               // always-on vignette in normal play — well under the cinematic 0.55 so it frames the view without reading as an effect
   let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}   // persisted, default ON. MUST be declared here, above the settings-panel wiring below — declaring it beside CINE_VIG put it after its own use and the TDZ error killed boot.
+  let lifeNearUntil = performance.now() + 18000;       // ── NEAR-SPAWN GRACE ── for the first ~18 s after refresh, land-mammal home grids drop their LIFE_IN fog-distance floor (→ a 30-vox near floor) so mammals fill the NEARBY forest, not just the ring past the fog. On a fresh load everything materialises at once, so there's no pop-in to hide; after the window, respawns go back out past the fog. (user: "I have to travel to see land mammals")
   let snowOn = false;                                  // ── VOXEL SNOW ── weather-driven: RARE 5-minute snow events; the button forces one on/off
-  let snowEndT = 0, snowNextT = performance.now() + 600000;   // snow arrives every 10 MINUTES (user 2026-07-20: was 5 min for the first one, 10 between — now uniform), each event lasting 60 s; performance.now() resets on refresh
+  let snowEndT = 0, snowNextT = performance.now() + 120000;   // FIRST snow 2 MINUTES after refresh, then every 5 MINUTES (user 2026-07-22), each event lasting 60 s; performance.now() resets on refresh
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
   let vigToggle = () => {};                            // set by the settings-panel wiring below; the L keybind calls the SAME path so the button label stays in sync
@@ -5162,7 +5167,7 @@
     snowShow();
     snowBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
     snowBtn.addEventListener('click', (e) => { e.stopPropagation(); snowOn = !snowOn;
-      if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 600000; }
+      if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 300000; }
       snowShow(); });
     // ── FULLSCREEN toggle (user) ── requestFullscreen needs a user gesture; the click qualifies. The label + .on state
     // follow the real fullscreen status (F11 or the OS chrome can change it out from under us), so fullscreenchange drives the sync.
@@ -5901,7 +5906,7 @@
     cmpVis();                                          // restore the compass (if locked + setting on) now the editor is closed
   };
   edBtnEl.addEventListener('click', (e) => { e.stopPropagation(); ED.on ? edExit() : edEnter(); });
-  edEnter();   // TEMP (user): auto-open the asset editor on refresh — DELETE this line to boot straight into the game
+  // (boot straight into the pine forest — the asset editor no longer auto-opens on refresh; open it with the editor button. user 2026-07-22)
   $('edCopy').addEventListener('click', (e) => { e.stopPropagation();   // copy the per-frame offsets → paste back to be baked into the code (replaces the .vox exporter)
     const btn2 = e.currentTarget; if (!ED.frames.length) { btn2.dataset.lbl = 'nothing to copy'; setTimeout(() => { btn2.dataset.lbl = 'export'; }, 1500); return; }   // icon button now — flash the hover LABEL + a green pulse instead of replacing the SVG with text
     edCopyOffsets(); btn2.classList.add('copied'); btn2.dataset.lbl = 'copied ✓ — paste it to me'; setTimeout(() => { btn2.classList.remove('copied'); btn2.dataset.lbl = 'export'; }, 2000); });
@@ -6154,6 +6159,8 @@
         if (run >= ln) runs.push(['x', gx, 0, run]); }
       return { rect: { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi }, winOX, winOZ, px: P.x, pz: P.z, nRuns: runs.length, runs: runs.slice(0, 40) }; },
     hAt(x, z) { return { hmap: hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], analytic: H(Math.floor(x), Math.floor(z)) }; },   /*TEMP-DEBUG*/
+    mammals() { const b = (a, z) => { let n = 0, near = 0; const pos = []; for (let j = a; j < z; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2) { n++; pos.push([Math.round(O.x), Math.round(O.z), Math.round(O.hx || 0), Math.round(O.hz || 0)]); if ((O.x - P.x) ** 2 + (O.z - P.z) ** 2 < 400 * 400) near++; } } return { active: n, within400: near, pos }; };   /*TEMP-DEBUG: live land-mammal census + positions/homes*/
+      return { bunny: b(276, 300), armadillo: b(300, 324), skunk: b(324, 348), porcupine: b(348, 372), p: [Math.round(P.x), Math.round(P.z)] }; },
     edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, paused: ED.paused, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pw: ED.pw, pd: ED.pd, pal: palette.length }; },
     dbg() { return { smoothEye, pickRock: [...PICK_ROCK], passthru: [...PASSTHRU] }; },
     htest(n) { let bad = 0; for (let i = 0; i < (n || 1000); i++) { const x = ((Math.random() * 2e6) | 0) - 1e6, z = ((Math.random() * 2e6) | 0) - 1e6;
@@ -6320,8 +6327,8 @@
       windAX += Math.cos(wAng) * wSpd * dt; windAZ += Math.sin(wAng) * wSpd * dt;
       snowFallV = 11.0;                                // CONSTANT fall speed — no motion-based modulation (it read as far flakes speeding up while running)
       snowFallAcc += snowFallV * dt;
-      if (snowOn && now > snowEndT) { snowOn = false; snowNextT = now + 600000; snowBtnSync(); }   // a snow EVENT lasts 60 s…
-      else if (!snowOn && now > snowNextT) { snowOn = true; snowEndT = now + 60000; snowBtnSync(); }   // …then waits 10 min for the next (first one is 5 min after refresh)
+      if (snowOn && now > snowEndT) { snowOn = false; snowNextT = now + 300000; snowBtnSync(); }   // a snow EVENT lasts 60 s…
+      else if (!snowOn && now > snowNextT) { snowOn = true; snowEndT = now + 60000; snowBtnSync(); }   // …then waits 5 min for the next (first one is 2 min after refresh)
       freezeK = (snowOn && now >= snowFreezeAt) ? Math.min(1, freezeK + dt / 5) : Math.max(0, freezeK - dt / 5);   // water freezes over 5 s and thaws back over 5 s — but only from SNOW_FREEZE_DELAY (10 s) after the storm starts, so the flakes you can see have reached the ground before the river skins over
       const nowSolid = freezeK > 0.6;
       if (nowSolid !== iceSolid) { iceSolid = nowSolid; solidTab[WATER_T] = nowSolid ? 1 : 0;
@@ -6925,8 +6932,7 @@
       if (wormCandF !== frame) {
         wormCandF = frame; wormCand.length = 0;
         const owned = new Set();
-        for (let j = 32; j < 64; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2 && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
-        for (let j = 276; j < 324; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // BUNNIES + ARMADILLOS claim home cells too (user: they were bunching because their cells weren't reserved) → each bunny/armadillo/worm takes a DISTINCT grid cell. SKUNKS (324-347) are NOT in this set: they reserve on their OWN half-cell-offset grid (findSkunkHome) — mixing their keys in here phantom-blocked same-numbered worm-grid cells
+        for (let j = 32; j < 64; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2 && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // the worm grid is now WORMS-ONLY: every land mammal (bunny/armadillo/skunk/porcupine) reserves on its OWN offset grid (findBunnyHome/findArmHome/findSkunkHome/findPorcHome) — the bunny was the last still sharing, and worms (22 cells) starved it at some locations (measured b=11 vs 14/14/14)
         const R = Math.ceil(LIFE_OUT / WORM_HCELL);
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -6948,7 +6954,7 @@
       return h;
     };
     const skunkHome = (cx, cz) => {                         // SKUNK home grid — CENTRED IN THE GAPS of the worm/bunny/armadillo grid ((cx+0.5) half-cell offset) with its OWN hash, so skunks get a full, INDEPENDENT cell supply (they no longer lose the home race to the earlier bands → count matches the armadillo/bunny) and stay spatially clear of the other creatures
-      if (ihash(cx * 0x4D2F + 83, cz * 0x71A3 + 97) >= 0.55) return null;
+      if (ihash(cx * 0x4D2F + 83, cz * 0x71A3 + 97) >= 0.85) return null;
       return { x: (cx + 0.5) * WORM_HCELL + 20 + ihash(cx * 53 + 19, cz * 59 + 23) * (WORM_HCELL - 40),
                z: (cz + 0.5) * WORM_HCELL + 20 + ihash(cx * 61 + 29, cz * 67 + 31) * (WORM_HCELL - 40), cx, cz };
     };
@@ -6966,19 +6972,20 @@
           if (owned.has(h.cx + ',' + h.cz)) continue;
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
-          if (d2 > LIFE_OUT * LIFE_OUT || d2 < LIFE_IN * LIFE_IN) continue;   // spawn band = LIFE_IN..LIFE_OUT like everything else — the skunk's PRIVATE grid meant nothing consumed its near cells, so it popped in right beside the player (user)
+          if (d2 > (performance.now() < lifeNearUntil ? Math.min(LIFE_OUT * LIFE_OUT, 250000) : LIFE_OUT * LIFE_OUT) || d2 < (performance.now() < lifeNearUntil ? 900 : LIFE_IN * LIFE_IN)) continue;   // spawn band = LIFE_IN..LIFE_OUT like everything else — the skunk's PRIVATE grid meant nothing consumed its near cells, so it popped in right beside the player (user)
           h.d2 = d2; skunkCand.push(h);
         }
       }
       if (!skunkCand.length) return null;
       let k = 0;
-      for (let q = 1; q < skunkCand.length; q++) if (skunkCand[q].d2 < skunkCand[k].d2) k = q;
+      if (performance.now() < lifeNearUntil) k = (Math.random() * skunkCand.length) | 0;   // BOOT FILL: area-uniform random cell — nearest-first during the grace window bunched every mammal around the player and starved the far ring (user)
+      else for (let q = 1; q < skunkCand.length; q++) if (skunkCand[q].d2 < skunkCand[k].d2) k = q;
       const h = skunkCand[k];
       skunkCand[k] = skunkCand[skunkCand.length - 1]; skunkCand.pop();
       return h;
     };
     const porcHome = (cx, cz) => {                          // PORCUPINE home grid — offset (cx, cz+0.5) into the OTHER gap of the worm/bunny/armadillo grid, its OWN hash → independent cell supply, spatially clear of the skunk's (cx+0.5, cz+0.5) grid too (user's 4th land mammal)
-      if (ihash(cx * 0x2F1B + 41, cz * 0x63C5 + 53) >= 0.55) return null;
+      if (ihash(cx * 0x2F1B + 41, cz * 0x63C5 + 53) >= 0.85) return null;
       return { x: cx * WORM_HCELL + 20 + ihash(cx * 71 + 37, cz * 73 + 41) * (WORM_HCELL - 40),
                z: (cz + 0.5) * WORM_HCELL + 20 + ihash(cx * 79 + 43, cz * 83 + 47) * (WORM_HCELL - 40), cx, cz };
     };
@@ -6996,15 +7003,78 @@
           if (owned.has(h.cx + ',' + h.cz)) continue;
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
-          if (d2 > LIFE_OUT * LIFE_OUT || d2 < LIFE_IN * LIFE_IN) continue;   // out past the fog like the skunk — never pops in close
+          if (d2 > (performance.now() < lifeNearUntil ? Math.min(LIFE_OUT * LIFE_OUT, 250000) : LIFE_OUT * LIFE_OUT) || d2 < (performance.now() < lifeNearUntil ? 900 : LIFE_IN * LIFE_IN)) continue;   // out past the fog like the skunk — never pops in close
           h.d2 = d2; porcCand.push(h);
         }
       }
       if (!porcCand.length) return null;
       let k = 0;
-      for (let q = 1; q < porcCand.length; q++) if (porcCand[q].d2 < porcCand[k].d2) k = q;
+      if (performance.now() < lifeNearUntil) k = (Math.random() * porcCand.length) | 0;   // BOOT FILL: area-uniform random cell — nearest-first during the grace window bunched every mammal around the player and starved the far ring (user)
+      else for (let q = 1; q < porcCand.length; q++) if (porcCand[q].d2 < porcCand[k].d2) k = q;
       const h = porcCand[k];
       porcCand[k] = porcCand[porcCand.length - 1]; porcCand.pop();
+      return h;
+    };
+    const bunnyHome = (cx, cz) => {                        // BUNNY home grid — quarter-offset (cx+0.25, cz+0.25) with its OWN hash → INDEPENDENT cell supply. FIX (measured 2026-07-22: bunny=11 vs 14/14/14): the bunny was the LAST mammal sharing the integer worm grid, and the worms' 22 cells starved it at worm-dense locations. All four land mammals now own a private grid.
+      if (ihash(cx * 0x3A87 + 19, cz * 0x59D1 + 71) >= 0.85) return null;
+      return { x: (cx + 0.25) * WORM_HCELL + 20 + ihash(cx * 107 + 77, cz * 109 + 81) * (WORM_HCELL - 40),
+               z: (cz + 0.25) * WORM_HCELL + 20 + ihash(cx * 113 + 87, cz * 127 + 91) * (WORM_HCELL - 40), cx, cz };
+    };
+    let bunnyCandF = -1;
+    const bunnyCand = [];
+    const findBunnyHome = () => {                           // identical machinery to findSkunkHome, on the bunny grid + reserving ONLY against other bunnies (276-299) — its own cache + the LIFE_IN..LIFE_OUT spawn band
+      if (bunnyCandF !== frame) {
+        bunnyCandF = frame; bunnyCand.length = 0;
+        const owned = new Set();
+        for (let j = 276; j < 300; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        const R = Math.ceil(LIFE_OUT / WORM_HCELL);
+        const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
+        for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+          const h = bunnyHome(c0x + dx, c0z + dz); if (!h) continue;
+          if (owned.has(h.cx + ',' + h.cz)) continue;
+          if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
+          const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
+          if (d2 > (performance.now() < lifeNearUntil ? Math.min(LIFE_OUT * LIFE_OUT, 250000) : LIFE_OUT * LIFE_OUT) || d2 < (performance.now() < lifeNearUntil ? 900 : LIFE_IN * LIFE_IN)) continue;
+          h.d2 = d2; bunnyCand.push(h);
+        }
+      }
+      if (!bunnyCand.length) return null;
+      let k = 0;
+      if (performance.now() < lifeNearUntil) k = (Math.random() * bunnyCand.length) | 0;   // BOOT FILL: area-uniform random cell — nearest-first during the grace window bunched every mammal around the player and starved the far ring (user)
+      else for (let q = 1; q < bunnyCand.length; q++) if (bunnyCand[q].d2 < bunnyCand[k].d2) k = q;
+      const h = bunnyCand[k];
+      bunnyCand[k] = bunnyCand[bunnyCand.length - 1]; bunnyCand.pop();
+      return h;
+    };
+    const armHome = (cx, cz) => {                          // ARMADILLO home grid — the 4th quadrant offset (cx+0.5, cz), its OWN hash → INDEPENDENT cell supply. FIX (measured 2026-07-22: armadillo=6 vs 14 for the others): the armadillo used to share the integer worm grid with worms+bunnies and, processed LAST, was starved of free cells. Its own grid fixes the imbalance, matching skunk/porcupine.
+      if (ihash(cx * 0x1BD7 + 67, cz * 0x5C9F + 29) >= 0.85) return null;
+      return { x: (cx + 0.5) * WORM_HCELL + 20 + ihash(cx * 89 + 51, cz * 97 + 59) * (WORM_HCELL - 40),
+               z: cz * WORM_HCELL + 20 + ihash(cx * 101 + 63, cz * 103 + 71) * (WORM_HCELL - 40), cx, cz };
+    };
+    let armCandF = -1;
+    const armCand = [];
+    const findArmHome = () => {                             // identical machinery to findSkunkHome, on the armadillo grid + reserving ONLY against other armadillos (300-323) — its own cache + the LIFE_IN..LIFE_OUT spawn band
+      if (armCandF !== frame) {
+        armCandF = frame; armCand.length = 0;
+        const owned = new Set();
+        for (let j = 300; j < 324; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        const R = Math.ceil(LIFE_OUT / WORM_HCELL);
+        const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
+        for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+          const h = armHome(c0x + dx, c0z + dz); if (!h) continue;
+          if (owned.has(h.cx + ',' + h.cz)) continue;
+          if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
+          const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
+          if (d2 > (performance.now() < lifeNearUntil ? Math.min(LIFE_OUT * LIFE_OUT, 250000) : LIFE_OUT * LIFE_OUT) || d2 < (performance.now() < lifeNearUntil ? 900 : LIFE_IN * LIFE_IN)) continue;
+          h.d2 = d2; armCand.push(h);
+        }
+      }
+      if (!armCand.length) return null;
+      let k = 0;
+      if (performance.now() < lifeNearUntil) k = (Math.random() * armCand.length) | 0;   // BOOT FILL: area-uniform random cell — nearest-first during the grace window bunched every mammal around the player and starved the far ring (user)
+      else for (let q = 1; q < armCand.length; q++) if (armCand[q].d2 < armCand[k].d2) k = q;
+      const h = armCand[k];
+      armCand[k] = armCand[armCand.length - 1]; armCand.pop();
       return h;
     };
     const CARD_PER_TREE = 3;                           // several birds to a pine, but not a roost — unlimited clumped them and the spread measured worse
@@ -7189,7 +7259,7 @@
             sx = L9.x + (Math.random() - 0.5) * 24; sz = L9.z + (Math.random() - 0.5) * 24;
             hcx = Math.floor(sx / FLY_CELL); hcz = Math.floor(sz / FLY_CELL);   // a home cell → the leash keeps it in its pool, the recycle judges by home like a butterfly's
           } else if (wantK === 0 || wantK === 2) {     // BUTTERFLY / WORM: take a procedural home rather than a random point on the ring
-            const h = wantK === 0 ? findFlyHome(wk) : (porcSlot ? findPorcHome() : (skunkSlot ? findSkunkHome() : findWormHome(wk))); if (!h) break;
+            const h = wantK === 0 ? findFlyHome(wk) : (porcSlot ? findPorcHome() : (skunkSlot ? findSkunkHome() : (armSlot ? findArmHome() : (bunnySlot ? findBunnyHome() : findWormHome(wk))))); if (!h) break;
           if (wantK === 2) {                           // a home inside a trunk is unreachable, and the leash below would grind the worm against it forever
             const tc = treeAt(Math.floor(h.x / TCELL), Math.floor(h.z / TCELL));
             if (tc && (tc.tx - h.x) * (tc.tx - h.x) + (tc.tz - h.z) * (tc.tz - h.z) < 14 * 14) continue;
@@ -7204,7 +7274,7 @@
           sx7 = sx; sz7 = sz;
           const gS = bfSurf(sx, sz);
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
-          if ((bunnySlot || armSlot || skunkSlot || porcSlot) && tooClose(276, 372, 24)) continue;   // CROSS-SPECIES floor: never spawn a land mammal within 24 vox of ANY live mammal (bunny/armadillo/skunk/porcupine) — the offset home grids can jitter a home right next to another's, and a rejected try just pops the next free cell
+          if ((bunnySlot || armSlot || skunkSlot || porcSlot) && tooClose(276, 372, 12)) continue;   // CROSS-SPECIES floor: never spawn a land mammal within 12 vox of ANY live mammal (bunny/armadillo/skunk/porcupine) — enough to stop two ~8-wide models overlapping, but NOT so wide it steals counts. Was 24, which rejected axis-adjacent quadrant-grid homes and left the later-processed band (skunk) 2 short (measured, user)
           if ((bunnySlot || armSlot || skunkSlot || porcSlot) && gS > WL + 0.5) {   // no LAND MAMMALS (bunny/armadillo/skunk/porcupine) on top of a LARGE rock formation (user)
             const xi = gwrap(Math.floor(sx), WX), zi = gwrap(Math.floor(sz), WZ) * WX * WY, yt = Math.floor(gS) - 1;
             const grey = (y) => { if (y < 1) return false; const v = W[xi + y * WX + zi]; if (!v) return false; const c = palette[v]; return !!c && Math.abs(c[0] - c[1]) < 18 && Math.abs(c[1] - c[2]) < 18 && c[0] > 60 && c[0] < 200; };   // grey (r≈g≈b, mid-bright) = rock/boulder, not green grass / brown dirt / white snow
