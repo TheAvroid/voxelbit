@@ -52,8 +52,15 @@
   /* ── SMOOTH PROGRESS METER (user) ── the fill's scaleX and the % are eased toward each phase's target by one rAF loop,
      so the bar glides 0→100 instead of stepping as chunks land. */
   #loadMeter { display: flex; flex-direction: column; align-items: center; gap: 7px; }
-  #loadBar { width: 240px; max-width: 62vw; height: 16px; background: rgba(255,255,255,0.14); border-radius: 8px; overflow: hidden; }   /* thickness doubled 8→16 (user 2026-07-22) */
-  #loadFill { width: 100%; height: 100%; transform-origin: left center; transform: scaleX(0); border-radius: 7px; background: linear-gradient(180deg, #b8ff6e, #7fd05a); will-change: transform; }   /* TOP→BOTTOM gradient (user): lighter lime #b8ff6e at the top, darker green #7fd05a at the bottom (the game's lime-green pair) */
+  #loadBar { position: relative; width: 240px; max-width: 62vw; height: 16px; background: rgba(255,255,255,0.14); border-radius: 8px; overflow: hidden; }   /* thickness doubled 8→16 (user 2026-07-22); position:relative so the absolute bubble overlay sizes to the BAR, not the fullscreen overlay */
+  #loadFill { width: 100%; height: 100%; transform-origin: left center; transform: scaleX(0); border-radius: 7px; background: linear-gradient(180deg, #b8ff6e, #7fd05a); will-change: transform; }   /* TOP→BOTTOM gradient (user): lighter lime #b8ff6e at the top, darker green #7fd05a at the bottom. The fill TRANSITION is set from JS (a long time-based trickle, then a quick finish) — see the loading meter */
+  /* ── GLOSS REFLECTION (user) ── a glassy highlight on the fill: a STATIONARY bright band across the top third + a diagonal GLINT that sweeps left→right. A separate overlay (its width tracks the fill in JS) so the fill's scaleX can't smear the highlight. */
+  #loadGloss { position: absolute; left: 0; top: 0; height: 100%; width: 0%; overflow: hidden; pointer-events: none; border-radius: 7px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.50) 0%, rgba(255,255,255,0.12) 36%, transparent 58%); }   /* fixed top-gloss — a glossy sheen on the upper part of the bar */
+  #loadGloss::before { content: ''; position: absolute; top: 0; left: 0; height: 100%; width: 90px;
+    background: linear-gradient(105deg, transparent 15%, rgba(255,255,255,0.65) 50%, transparent 85%);
+    animation: loadGlint 2.4s ease-in-out infinite; }   /* the travelling specular streak */
+  @keyframes loadGlint { 0% { transform: translateX(-110px); } 55%, 100% { transform: translateX(330px); } }   /* streak sweeps across, pauses, repeats (clipped to the fill by overflow:hidden) */
   #loadPct { font-size: 8px; opacity: 0.82; letter-spacing: 3px; }
   #load::before { content: ''; position: absolute; inset: 0; z-index: -1;
     background: linear-gradient(rgba(9,12,16,0.34), rgba(9,12,16,0.5)); }
@@ -250,7 +257,7 @@
   <div id="pkRows"></div>
   <div style="text-align:center"><button id="pkReset">reset</button><button id="pkClose">done</button></div>
 </div></div>
-<div id="load"><video id="loadVid" autoplay loop muted playsinline poster="assets/wallpaper.png"><source src="loading.mp4" type="video/mp4"></video><h1 id="loadTitle"><span class="tv">voxel</span><span class="tb">bit</span></h1><span id="loadMsg">generating forest…</span><div id="loadMeter"><div id="loadBar"><div id="loadFill"></div></div><span id="loadPct">0%</span></div></div>
+<div id="load"><video id="loadVid" autoplay loop muted playsinline poster="assets/wallpaper.png"><source src="loading.mp4" type="video/mp4"></video><h1 id="loadTitle"><span class="tv">voxel</span><span class="tb">bit</span></h1><span id="loadMsg">generating forest…</span><div id="loadMeter"><div id="loadBar"><div id="loadFill"></div><div id="loadGloss"></div></div><span id="loadPct">0%</span></div></div>
 <div id="over" class="hidden"><h1>game over</h1><div id="overWhy">you fell into the lava</div><div class="ohint">click to respawn</div></div>
 <div id="playHint" class="hidden">press any button</div>
 <div id="veRec" class="hidden"><span class="dot"></span>recording</div>
@@ -283,20 +290,32 @@
   const $ = (id) => document.getElementById(id);
   const loadEl = $('load'), lockEl = $('lock'), hudEl = $('hud'), crossEl = $('cross'), loadMsgEl = $('loadMsg');
   const fail = (msg) => { loadEl.classList.remove('hidden'); loadMsgEl.textContent = msg; throw new Error(msg); };   // loadMsgEl, not loadEl.textContent — the latter would wipe the background <video>
-  // ── SMOOTH LOADING METER ── one rAF loop eases the shown value toward the phase target, so the bar + % glide 0→100
-  // continuously instead of stepping as slabs land (the "jittery" the user reported). setLoad(p) only ever RAISES the
-  // target (monotonic → never a backward jump), and each phase below maps into its own slice of the 0-100 range.
-  const loadFillEl = $('loadFill'), loadPctEl = $('loadPct');
-  let loadTgt = 0, loadCur = 0, loadAnim = false;
-  const loadStep = () => {
-    loadAnim = false;
-    loadCur += (loadTgt - loadCur) * 0.14;               // ease toward the target
-    if (loadTgt - loadCur < 0.4) loadCur = loadTgt;      // snap the last fraction so it settles cleanly
-    loadFillEl.style.transform = 'scaleX(' + (loadCur / 100) + ')';
-    loadPctEl.textContent = Math.round(loadCur) + '%';
-    if (loadCur < loadTgt) loadAnim = (requestAnimationFrame(loadStep), true);   // keep easing until caught up; setLoad re-arms on the next bump
+  // MOBILE DEVICE? — the play prompt tells a phone/tablet to "find a good computer" instead of "press any button" (user).
+  const isMobile = (() => {
+    try { if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') return navigator.userAgentData.mobile; } catch (e) {}
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Silk/i.test(navigator.userAgent || '')
+      || (matchMedia('(pointer: coarse)').matches && matchMedia('(hover: none)').matches);   // touch-only, no hover → a handheld, even when the UA lies (modern iPadOS reports as desktop)
+  })();
+
+  // ── SMOOTH LOADING METER ── The bar is a pure TIME-BASED trickle, driven by a compositor `transform` transition, so it
+  // glides continuously 0→90% even while the main thread is blocked mid-worldgen. Real progress is CHUNKY — slabs land in
+  // bursts with long synchronous pauses — so driving the bar off progress events always steps/stalls no matter how it's
+  // eased (that was the jerk). When the world is actually ready, finishLoad() sweeps it to 100. The % text + gloss just
+  // READ the bar's live animated width each frame (via the computed matrix), so they always agree with it.
+  const loadFillEl = $('loadFill'), loadPctEl = $('loadPct'), loadGlossEl = $('loadGloss');
+  const readScale = () => { const t = getComputedStyle(loadFillEl).transform; return t && t !== 'none' ? (new DOMMatrixReadOnly(t)).a : 0; };
+  const loadNumStep = () => {                            // the % text + sheen mirror whatever the compositor has the bar at right now
+    const s = Math.max(0, Math.min(1, readScale()));
+    loadPctEl.textContent = Math.round(s * 100) + '%';
+    loadGlossEl.style.width = (s * 100) + '%';
+    if (!loadEl.classList.contains('hidden')) requestAnimationFrame(loadNumStep);
   };
-  const setLoad = (p) => { loadTgt = Math.max(loadTgt, Math.min(100, p)); if (!loadAnim && loadCur < loadTgt) loadAnim = (requestAnimationFrame(loadStep), true); };
+  { loadFillEl.style.transform = 'scaleX(0)'; void loadFillEl.offsetWidth;   // commit 0 first so the transition actually runs from empty
+    loadFillEl.style.transition = 'transform 9s cubic-bezier(0.05, 0.7, 0.2, 1)';   // front-loaded ease-out: quick, responsive start that decelerates and lingers near 90 (never visibly stalls)
+    loadFillEl.style.transform = 'scaleX(0.9)';
+    requestAnimationFrame(loadNumStep); }
+  const setLoad = () => {};                              // real progress no longer drives the BAR (the trickle owns it); kept as a no-op so the phase calls below stay harmless
+  const finishLoad = () => { loadFillEl.style.transition = 'transform 0.4s ease-out'; loadFillEl.style.transform = 'scaleX(1)'; };   // world ready → sweep the last stretch to full, smoothly
   const stage = async (msg) => { loadMsgEl.textContent = msg; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); };
 
   // ── WebGPU init ────────────────────────────────────────────────────────────
@@ -886,7 +905,7 @@
   let DUCK_GREEN = [0.03, 0.22, 0.07];                 // the mallard HEAD green (linear) — extracted at load; the black eye voxel blinks to THIS (user)
   let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
   let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads (kind 4) drift and rotate OFF-grid on the water; static worldgen stamping retired
-  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone (the natural ones get AO+grain)
+  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
@@ -968,6 +987,8 @@
     items.push(CONEV ? modelToItem(CONEV) : { w: 0, d: 0, h: 0, cells: [] });   // PINECONE (item 4) — pickable ground/tree cones; keep the slot even if the .vox is missing so ids stay stable
     SPARK_IT = items.length + 1;                                      // CLASH SPARK — one bright 10 cm voxel, rendered through the drops path (never in inventory)
     items.push({ w: 1, d: 1, h: 1, cells: [[255, 208, 112]] });
+    SMOKE_IT = items.length + 1;                                      // DEATH SMOKE — one white voxel (like a snowflake is one voxel). Each smoke SLOT is an INDIVIDUAL voxel at its own continuous position + snowflake spin (user: "move off the grid like the snowflakes"), rendered TRANSLUCENT (20%) through the drops path (never in inventory)
+    items.push({ w: 1, d: 1, h: 1, cells: [[255, 255, 255]] });
     KNIFE_IT = items.length + 1;                                      // STONE KNIFE — born when two rocks are clashed together
     try {
       const kv = await abuf('assets/stone_tools/stone_knife.vox');
@@ -1724,7 +1745,7 @@
     let c = wormCache.get(key);
     if (c !== undefined) return c;
     c = null;
-    if (ihash(cx * 101 + 37, cz * 103 + 59) <= 0.22) {
+    if (ihash(cx * 101 + 37, cz * 103 + 59) <= 0.165) {   // 25% RARER (user): per-cell spawn chance 0.22 → 0.165
       const ex = Math.round(cx * WORM_CELL + 40 + ihash(cx * 3 + 77, cz * 7 + 41) * (WORM_CELL - 80));
       const ez = Math.round(cz * WORM_CELL + 40 + ihash(cx * 9 + 13, cz * 5 + 71) * (WORM_CELL - 80));
       const eh = H(ex, ez);
@@ -2921,17 +2942,25 @@
           // flakeBlocked (~38 scattered loads) LAST, only for a ray that genuinely strikes the flake. All pure
           // predicates — the image is identical to the original ordering.
           let fall = vec3<f32>(-u.rdist.z + sin(u.time * 0.6) * 0.8, u.pickY.w, -u.rdist.w + cos(u.time * 0.5) * 0.8);   // u.pickY.w = integrated fall (doubles when standing still) + gusting wind
-          let roP = ro + winOf + fall;
+          // ── LARGE-COORDINATE PRECISION (user: "the snow clips into 2 sections") ── the old march ran on ro+winOf+fall
+          // directly: at a far spawn (|world| ~1e5-4e5) f32 keeps only ~0.03 vox, and every slab/DDA test inherited that
+          // error → flakes silently lost in view-dependent sectors. Split the big offset into an EXACT integer cell
+          // offset (offC, fed to the hash) + a small [0,3) remainder (offR) and run the whole march in window-local
+          // floats — bit-identical cells, full sub-voxel precision at ANY world position.
+          let off = winOf + fall;
+          let offC = vec3<i32>(floor(off * (1.0 / 3.0)));            // integer 3-vox-cell offset — exact (|off|/3 ≤ ~1.4e5, and f32 holds integers to 16.7M)
+          let offR = off - vec3<f32>(offC) * 3.0;                    // remainder in [0,3) — small, continuous as the wind/fall drift
+          let roP = ro + offR;                                       // window-local march origin (≤ ~2051 in magnitude → ~1e-4 vox precision)
           let maxNear = min(min(select(1e9, h.t, h.t >= 0.0), u.rdist.x), 150.0);
-          var c = vec3<i32>(floor((roP + rd * 0.3) * 0.3333));
+          var c = vec3<i32>(floor((roP + rd * 0.3) * (1.0 / 3.0)));  // exact third (0.3333 undershot by 1e-4 relative — harmless here, but keep it exact)
           let stp = vec3<i32>(i32(sign(rdS.x)), i32(sign(rdS.y)), i32(sign(rdS.z)));
           let tDel = abs(inv) * 3.0;
           var tMax = ((vec3<f32>(c) + max(vec3<f32>(stp), vec3<f32>(0.0))) * 3.0 - roP) * inv;
           for (var it = 0; it < 96; it++) {
-            let h1 = ih3(c.x, c.y * 7, c.z);
+            let h1 = ih3(c.x + offC.x, (c.y + offC.y) * 7, c.z + offC.z);   // hash on the WORLD cell (local + exact offset) — the same integers as before, so the flake set is unchanged
             if (h1 > 0.9755) {                                       // ~2.45% of cells (halved again per user)
               let ctr = (vec3<f32>(c) + vec3<f32>(0.17 + 0.66 * fract(h1 * 43758.5), 0.17 + 0.66 * fract(h1 * 12345.7), 0.17 + 0.66 * fract(h1 * 7777.3))) * 3.0;
-              let cwy = ctr.y - fall.y;                              // storm-band pre-check (world y): free reject while the edges sweep in/out
+              let cwy = ctr.y - offR.y;                              // storm-band pre-check — ctr is window-local, so minus the small remainder IS the world y (winOf.y = 0)
               if (cwy >= u.misc.y && cwy <= u.misc.z) {
               let roL0 = roP - ctr;
               let taC = (vec3<f32>(-0.708, -0.5, -0.708) - roL0) * inv;   // free conservative slab vs the flake's rotation bound (a spinning 1³ voxel about Y stays inside 0.708/0.5/0.708) — no trig yet
@@ -2949,7 +2978,7 @@
               let tn = min(ta2, tb2); let tf = max(ta2, tb2);
               let te = max(max(tn.x, tn.y), max(tn.z, 0.3));
               let tl = min(min(tf.x, tf.y), tf.z);
-              if (te > 1.0 && te < tl && te < maxNear && !flakeBlocked(ctr - fall - winOf)) {   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike
+              if (te > 1.0 && te < tl && te < maxNear && !flakeBlocked(ctr - offR)) {   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike. ctr is window-local now — minus the small remainder = the window position (exact at any world coordinate)
                 fte = te;
                 var nl = vec3<f32>(0.0);
                 if (tn.x >= tn.y && tn.x >= tn.z) { nl.x = -sign(rdL.x); }
@@ -2972,7 +3001,7 @@
           }
         }
         if (fte < 8e8 && (h.t < 0.0 || fte < h.t)) {                 // a flake beat the world hit — it IS a snow voxel from here on
-          h.t = fte; h.vox = SNV; h.n = fnn; h.face = fface; flakeHit = true;
+          h.t = fte; h.vox = SNV; h.n = u.sunDir; h.face = fface; flakeHit = true;   // SUN-FACING normal (user: "the snowflakes split into 2 chunks"): per-face cube shading tinted anti-sunward flakes grey vs white sunward ones — a visible tonal divide. A flake SCATTERS, so its lighting must not depend on face orientation; n = sunDir makes every flake's dot(n,sun) = 1 → one uniform field. (fface keeps the real face for grain.)
         }
       }
       // ── DYNAMIC LIFE ── every creature is a rigid voxel MODEL evaluated right here in the primary trace (the proven
@@ -2990,8 +3019,8 @@
         let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, 64);
         let tiV = (wgid.y * ((u32(u.res.x) + 7u) / 8u) + wgid.x) * 2u;   // this workgroup IS one 8×8 tile — read its two prepass mask words
         let visM0 = visb[tiV]; let visM1 = visb[tiV + 1u];
-        for (var di = 4; di < dropN; di++) {                         // 4 = flying cardinal, 9+ = live creatures; 0-3 drops + 5-8 sparks stay analytic
-          if (di >= 5 && di <= 8) { continue; }
+        for (var di = 4; di < dropN; di++) {                         // 4 = flying cardinal, 25+ = live creatures; 0-3 drops + 5-24 sparks/smoke stay analytic
+          if (di >= 5 && di <= 24) { continue; }
           if (((select(visM0, visM1, di >= 32) >> (u32(di) & 31u)) & 1u) == 0u) { continue; }
           if ((u32(u.lifeMot[di].w + 0.5) & 1u) != 0u) { continue; } // analytic-only (firefly / empty)
           let dXv = u.drops[di * 4 + 1];
@@ -3498,7 +3527,7 @@
         let visM0 = visb[tiV]; let visM1 = visb[tiV + 1u];
         for (var di = 0; di < dropN; di++) {                         // slots 0..3 = dropped items, slot 4 = the flying cardinal, slots 5..8 = clash sparks, 9+ = live creatures (compacted)
           if (((select(visM0, visM1, di >= 32) >> (u32(di) & 31u)) & 1u) == 0u) { continue; }   // tile cull (VIS prepass): this slot's sphere can't touch this 8×8 tile — skip before ANY uniform load
-          if (u.lifeCfg.y > 0.5 && (di == 4 || di >= 9) && face != 6u && (u32(u.lifeMot[di].w + 0.5) & 1u) == 0u) { continue; }   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies)
+          if (u.lifeCfg.y > 0.5 && (di == 4 || di >= 25) && face != 6u && (u32(u.lifeMot[di].w + 0.5) & 1u) == 0u) { continue; }   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies). Creature base → 25 (20 death-burst slots 5-24: 4 sparks + 16 individual smoke voxels, user).
           let dXv = u.drops[di * 4 + 1];
           let dit = i32(dXv.w + 0.5);
           if (dit < 1) { continue; }                                 // itemId checked FIRST — an empty slot costs one uniform load, not four
@@ -3540,7 +3569,7 @@
                 if (vaxD == 0) { nl.x = -f32(istD.x); } else if (vaxD == 1) { nl.y = -f32(istD.y); } else { nl.z = -f32(istD.z); }
                 let nc = dXv.xyz * nl.x + dYv.xyz * nl.y + dZv.xyz * nl.z;
                 let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
-                if (di == 4 || di >= 9) {                            // the CARDINAL + ALL WORLD CREATURES incl. worms + lily pads — the EXACT world surface model (shadowed sun + sky + bounce + fog)
+                if (di == 4 || di >= 25) {                           // the CARDINAL + ALL WORLD CREATURES incl. worms + lily pads — the EXACT world surface model (shadowed sun + sky + bounce + fog). Creature base → 25 (20 death-burst slots 5-24).
                   let behind = col;                                  // scene color behind this creature — the translucent wing blend needs it
                   var sunC = 0.0;                                    // REAL sun occlusion: a creature under the canopy sits in tree shade exactly like the ground below it
                   if (${location.search.includes('noshadow') ? 0 : 1} == 1 && dot(nw, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {   // (deterministic un-jittered ray, no denoiser in the path — none of the irr-coupling translucency/shimmer; ?noshadow disables for A/B)
@@ -3571,8 +3600,12 @@
                   col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogB);
                   if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} &&
                       cell.r > 0.88 && cell.g > 0.88 && cell.b > 0.88) { col = mix(behind, col, 0.6); }   // FIREFLY WINGS (the white voxels) — 40% translucent
-                } else if (di >= 5) {                                // clash SPARKS (slots 5-8 only reach here) — emissive 10 cm voxels, fading out over their flight (dYv.w = fade)
-                  col = cell.rgb * (0.8 + 2.6 * dYv.w);
+                } else if (di >= 5) {                                // slots 5-24: clash/death SPARKS + death SMOKE (dYv.w = fade)
+                  if (dit == ${SMOKE_IT || 9997}) {                  // DEATH SMOKE — each slot is ONE individual white VOXEL (like a snowflake), 24% opacity, fading (col here still holds the scene BEHIND it → mix = true translucency). Off-grid look comes from its own continuous position + snowflake spin in the emit.
+                    col = mix(col, vec3<f32>(1.0), 0.24 * dYv.w);
+                  } else {                                           // SPARK — emissive 10 cm ember
+                    col = cell.rgb * (0.8 + 2.6 * dYv.w);
+                  }
                 } else {                                             // dropped items keep the flat raw-palette look
                   let shade = 0.45 + 0.55 * max(dot(nw, u.sunDir), 0.0);
                   col = cell.rgb * shade * (0.12 + 0.88 * dayScale());
@@ -4186,7 +4219,7 @@
     maybeRecenter();
     P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
-    P.fallT = 0;
+    P.fallT = 0; uwT = 0;                               // fresh lungs on respawn
     smoothEye = P.y + EYE;
   }
   let spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
@@ -4205,11 +4238,11 @@
   const slots = [{ it: 1, n: 1 }, null, null, null];   // slot 0 starts with the stone axe; ids: 1 axe, 2 rock, 3 twig, 4 pinecone
   let selSlot = 0;
   const canAdd = (it) => slots.some((s) => !s || s.it === it);
-  function addItem(it) {                               // prefer stacking, then the SELECTED slot (so a fresh grab lands in the hand), then any empty
-    for (const s of slots) if (s && s.it === it) { s.n++; return true; }
-    if (!slots[selSlot]) { slots[selSlot] = { it, n: 1 }; return true; }
-    for (let i = 0; i < slots.length; i++) if (!slots[i]) { slots[i] = { it, n: 1 }; return true; }
-    return false;
+  function addItem(it) {                               // prefer stacking, then the SELECTED slot, then any empty. Returns the slot index it landed in (0-3), or -1 if full — a grab uses that to SELECT the new item so it stays in the hand (user: a picked-up rock must not snap back to the axe).
+    for (let i = 0; i < slots.length; i++) if (slots[i] && slots[i].it === it) { slots[i].n++; return i; }
+    if (!slots[selSlot]) { slots[selSlot] = { it, n: 1 }; return selSlot; }
+    for (let i = 0; i < slots.length; i++) if (!slots[i]) { slots[i] = { it, n: 1 }; return i; }
+    return -1;
   }
   // quaternion helpers — item orientations interpolate as ROTATIONS (slerp), never as three independently
   // lerped axis vectors (that collapses mid-flight and reads as the item flipping/glitching)
@@ -4716,6 +4749,7 @@
     document.addEventListener('keydown', kick);
   }
   let swingStart = -1e9, mouse0 = false;               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
+  let pendKillT = 0;                                   // pending creature-hit: armed at swing start, FIRES ~250 ms in — when the axe visually LANDS on screen (user: only register the hit when the axe hits), not at the click
   const swishSnd = regSnd(new Audio('sound/sfx/bow/swish.mp4'), 0.36);   // swing whoosh — cut 40% (user), then a further 40% (0.6 → 0.36)
   const playSwish = () => { try { swishSnd.currentTime = 0; const pr = swishSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
   let bobPh = 0, bobAmp = 0;                           // walk/sprint view-model bob state
@@ -4727,7 +4761,7 @@
   const dualRocks = () => !dead && !grabAnim && !!(slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2);
   const achEl = $('achv'), clashHintEl = $('clashHint');
   let achHideT = 0;
-  const sparks3d = [null, null, null, null];           // 4 REAL 10 cm voxel sparks (drops uniform slots 5-8) — world-space ballistic embers from the clash point
+  const sparks3d = [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null];   // 20 death-burst slots (drops uniform 5-24): CLASH uses the first 4 as embers; a DEATH fills 4 sparks + 16 INDIVIDUAL smoke voxels (10 cm each → the plume needs more of them to read as dense) — world-space particles
   function unlockSharpEdge() {
     if (vbAch.sharpEdge) return;
     vbAch.sharpEdge = true;                            // session-only — refresh resets the discovery (and brings the hint back)
@@ -4743,9 +4777,48 @@
     for (let i = 0; i < 4; i++) {
       const a = Math.random() * 6.283, sp3 = 12 + Math.random() * 22;
       sparks3d[i] = { x: ox, y: oy, z: oz, vx: Math.cos(a) * sp3, vy: 16 + Math.random() * 22, vz: Math.sin(a) * sp3,
-        born: performance.now(), life: 0.45 + Math.random() * 0.3, ph: Math.random() * 6.283 };
+        born: performance.now(), life: 0.45 + Math.random() * 0.3, ph: Math.random() * 6.283, smoke: false };
     }
   }
+  function spawnDeathBurst(wx, wy, wz) {                // DEATH POOF: 4 bright sparks + 16 INDIVIDUAL smoke voxels fire TOGETHER (user), slots 5-24. Each smoke voxel floats up + twirls independently, like a snowflake.
+    const cy = wy + 2;                                  // aim at the body centre
+    for (let i = 0; i < 20; i++) {
+      const a = Math.random() * 6.283;
+      if (i < 4) { const sp = 14 + Math.random() * 22;  // SPARK — fast ballistic ember bursting outward, short life
+        sparks3d[i] = { x: wx, y: cy, z: wz, vx: Math.cos(a) * sp, vy: 12 + Math.random() * 22, vz: Math.sin(a) * sp,
+          born: performance.now(), life: 0.4 + Math.random() * 0.25, ph: Math.random() * 6.283, smoke: false };
+      } else { const r = 0.5 + Math.random() * 1.8;     // SMOKE — 16 INDIVIDUAL 10 cm voxels rising as one loose column: tight spawn radius, gentle outward drift + strong lift, staggered heights so they form a continuous stream, each with its OWN snowflake spin/drift
+        sparks3d[i] = { x: wx + Math.cos(a) * r, y: cy + (i - 4) * 0.55, z: wz + Math.sin(a) * r,   // (i-4)*0.55 → the 16 voxels start stacked up a ~8-vox column (denser than the old 8-voxel stream)
+          vx: Math.cos(a) * (1 + Math.random() * 2), vy: 12 + Math.random() * 6, vz: Math.sin(a) * (1 + Math.random() * 2),
+          born: performance.now(), life: 1.0 + Math.random() * 0.5, ph: Math.random() * 6.283, spin: 2 + Math.random() * 2.5, smoke: true };   // spin = snowflake twirl rate (2 + rand·2.5 rad/s), random phase
+      }
+    }
+  }
+  const aimedCreature = () => {                         // the nearest reachable, hittable life form under the crosshair right now → its wbf slot (or -1). Shared by the KILL and the crosshair-□ mirror so they agree exactly.
+    if (ED.on || dead) return -1;
+    const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
+    const vx = Math.sin(P.yaw) * cp, vy = sp, vz = Math.cos(P.yaw) * cp;   // view direction (yaw/pitch → x=sin·cos, y=sin, z=cos·cos)
+    const HREACH = 48, MAX3 = 102, MINDOT = 0.82;       // TRIPLED reach (user 2026-07-22): ≤4.8 m HORIZONTAL reach (the eye sits ~1.85 m up, so measuring 3D-from-eye would put a ground creature permanently out of range) + a 3D cap + a ~35° crosshair cone
+    let best = -1, bestD = 1e9;
+    for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];   // 0-371 = every SPAWNED life form (flyers/ducks/worms/perched birds/fish/mammals). Flying songbirds live in birds[] and are excluded (out of melee reach anyway).
+      if (!B || !B.init) continue;
+      const by = (B.kind | 0) === 5 ? (B.perchFeet || 0) + 3 : B.y + 2;   // a PERCHED BIRD's height lives in perchFeet (B.y is stale for kind 5) — +3 ≈ body centre. This is what makes the songbirds in the crowns KILLABLE (user).
+      const dx = B.x - P.x, dy = by - smoothEye, dz = B.z - P.z;
+      const dh = Math.hypot(dx, dz), d3 = Math.hypot(dx, dy, dz);
+      if (dh > HREACH || d3 > MAX3 || d3 < 0.5) continue;
+      if ((dx * vx + dy * vy + dz * vz) / d3 < MINDOT) continue;   // must be roughly under the crosshair (3D, so aiming DOWN at a ground creature works)
+      if (d3 < bestD) { bestD = d3; best = wk; }
+    }
+    return best;
+  };
+  const tryKillCreature = () => {                       // LEFT-CLICK SWING KILL (user): the nearest reachable creature under the crosshair dies in a spark+smoke poof
+    const best = aimedCreature();
+    if (best < 0) return;
+    const B = wbf[best];
+    spawnDeathBurst(B.x, (B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y, B.z);   // poof at the creature (a PERCHED BIRD's height lives in perchFeet — B.y is stale for kind 5)
+    if (B.sCells) unstampWorm(B);                       // clear a grid-stamped creature's world voxels (mammals + perched birds)
+    B.init = false; B.dieT = 0; B.slain = true;         // SLAIN (user: "when I kill something, it respawns somewhere else — prevent this"): the slot is dead for the rest of the session — the population loop skips it, so nothing re-places it elsewhere
+  };
   document.addEventListener('mousedown', (e) => {
     if (!locked) return;
     if (e.button === 2) tryPickup();
@@ -4787,7 +4860,7 @@
     if (e.button === 0 && !dead) {
       if (e.shiftKey && dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }   // clash instead of swing — only when the knife will have somewhere to go (exactly-2 rocks frees this slot)
       mouse0 = true;
-      if (performance.now() - swingStart >= 570) { swingStart = performance.now(); if (heldIt()) playSwish(); }   // a click is IGNORED until the current swing's full 570 ms animation finishes — no mid-swing restart (user; applies to every held item). Holding still auto-repeats via the tick loop.
+      if (performance.now() - swingStart >= 570) { swingStart = performance.now(); if (heldIt()) playSwish(); pendKillT = swingStart + 250; }   // a click is IGNORED until the current swing's full 570 ms animation finishes — no mid-swing restart (user; applies to every held item). Holding still auto-repeats via the tick loop. The creature-hit is ARMED here but registers 250 ms in, when the axe visually lands (user).
     }
   });
   document.addEventListener('mouseup', (e) => { if (e.button === 0) { mouse0 = false;
@@ -4795,7 +4868,7 @@
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
   // ── keybinds ── rebindable, persisted to localStorage
-  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', vignette: 'KeyL', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', vignette: 'KeyL', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // fly on F restored (user 2026-07-22)
   const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', vignette: 'vignette', vsync: 'v-sync', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
@@ -5109,7 +5182,6 @@
   const BASE_VIG = 0.26;                               // always-on vignette in normal play — well under the cinematic 0.55 so it frames the view without reading as an effect
   let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}   // persisted, default ON. MUST be declared here, above the settings-panel wiring below — declaring it beside CINE_VIG put it after its own use and the TDZ error killed boot.
-  let lifeNearUntil = performance.now() + 18000;       // ── NEAR-SPAWN GRACE ── for the first ~18 s after refresh, land-mammal home grids drop their LIFE_IN fog-distance floor (→ a 30-vox near floor) so mammals fill the NEARBY forest, not just the ring past the fog. On a fresh load everything materialises at once, so there's no pop-in to hide; after the window, respawns go back out past the fog. (user: "I have to travel to see land mammals")
   let snowOn = false;                                  // ── VOXEL SNOW ── weather-driven: RARE 5-minute snow events; the button forces one on/off
   let snowEndT = 0, snowNextT = performance.now() + 120000;   // FIRST snow 2 MINUTES after refresh, then every 5 MINUTES (user 2026-07-22), each event lasting 60 s; performance.now() resets on refresh
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
@@ -5326,6 +5398,8 @@
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - e.movementY * ls));
   });
   let dead = false;
+  let uwT = 0;                                          // ── DROWN CLOCK ── seconds the EYE has been continuously submerged; hits DROWN_T → game over. Reset on surfacing/respawn; frozen (not reset) while paused/editor.
+  const DROWN_T = 10;                                  // you can hold your breath for 10 s underwater (user)
   const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it
   const die = (why) => {                               // every death routes through here so the game-over screen always says what killed you
     if (dead) return;
@@ -5353,7 +5427,7 @@
     if (!locked) return;
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
-    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }
+    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }   // toggle fly (user re-added the F keybind 2026-07-22)
     if (e.code === binds.vignette) { vigToggle(); }         // same path as the settings button, so the panel label follows
     if (e.code === binds.vsync) { vsyncOn = !vsyncOn; }
     if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
@@ -5395,9 +5469,11 @@
   const prevCam = { pos: [0, 0, 0], right: [1, 0, 0], up: [0, 1, 0], fwd: [0, 0, 1], tanH: 1, aspect: 1, jit: [0, 0] };   // pos in WORLD coords
   const FOV = 72 * Math.PI / 180;
 
-  loadTgt = loadCur = 100; loadFillEl.style.transform = 'scaleX(1)'; loadPctEl.textContent = '100%';   // snap the meter to full the instant the world is ready (the overlay drops on the next line)
-  loadEl.classList.add('hidden');                      // world ready → drop the whole overlay, revealing the LIVE game; a canvas click locks the mouse and takes control (user)
-  if (!CDPTEST) $('playHint').classList.remove('hidden');   // centred "click to enter" prompt over the live game (tests don't want it intercepting/visible)
+  finishLoad();                                        // world ready → sweep the meter to full SMOOTHLY (the trickle owns 0→90; this is the last 90→100)
+  const revealGame = () => loadEl.classList.add('hidden');   // drop the whole overlay, revealing the LIVE game; a canvas click locks the mouse and takes control (user)
+  if (CDPTEST) revealGame(); else setTimeout(revealGame, 480);   // let the ~0.4 s finish sweep actually PLAY before the overlay drops (tests reveal instantly)
+  $('playHint').textContent = isMobile ? 'find a good computer' : 'press any button';   // MOBILE (user): tell a handheld to go find a real computer instead of "press any button"
+  if (!CDPTEST) setTimeout(() => { if (!locked) $('playHint').classList.remove('hidden'); }, 480);   // reveal the prompt with the game, after the overlay lifts
   const PICK_DEFS = {                                  // PER-ITEM held poses — tuning one item never moves the others (panel copy-pose exports)
     1: { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 },   // stone axe (user bake 2026-07-15)
     2: { x: 0.75, y: -0.24, z: 0.96, yaw: -0.41, pitch: -2.28, roll: 1.52, scale: 0.08 },   // small rock (user bake 2026-07-16)
@@ -6159,6 +6235,13 @@
         if (run >= ln) runs.push(['x', gx, 0, run]); }
       return { rect: { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi }, winOX, winOZ, px: P.x, pz: P.z, nRuns: runs.length, runs: runs.slice(0, 40) }; },
     hAt(x, z) { return { hmap: hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], analytic: H(Math.floor(x), Math.floor(z)) }; },   /*TEMP-DEBUG*/
+    sparkDbg() { return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: death-burst / clash-spark slot state*/
+    kill() { tryKillCreature(); return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: force a kill-attempt from the current camera*/
+    testBurst() { const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch), fx = Math.sin(P.yaw) * cp, fy = sp, fz = Math.cos(P.yaw) * cp; spawnDeathBurst(P.x + fx * 12, smoothEye + fy * 12 - 2, P.z + fz * 12); return true; },   /*TEMP-DEBUG: fire a death poof 12 vox ahead of the camera*/
+    killProbe() { const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch), vx = Math.sin(P.yaw) * cp, vy = sp, vz = Math.cos(P.yaw) * cp; let best = null;   /*TEMP-DEBUG*/
+      for (let wk = 0; wk < 372; wk++) { const B = wbf[wk]; if (!B || !B.init) continue; const dx = B.x - P.x, dy = (B.y + 2) - smoothEye, dz = B.z - P.z, dh = Math.hypot(dx, dz), d3 = Math.hypot(dx, dy, dz);
+        if (!best || d3 < best.d3) best = { wk, dh: Math.round(dh), d3: Math.round(d3), dot: +((dx * vx + dy * vy + dz * vz) / d3).toFixed(2), by: Math.round(B.y) }; }
+      return { player: [Math.round(P.x), Math.round(smoothEye), Math.round(P.z)], nearest: best }; },
     mammals() { const b = (a, z) => { let n = 0, near = 0; const pos = []; for (let j = a; j < z; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2) { n++; pos.push([Math.round(O.x), Math.round(O.z), Math.round(O.hx || 0), Math.round(O.hz || 0)]); if ((O.x - P.x) ** 2 + (O.z - P.z) ** 2 < 400 * 400) near++; } } return { active: n, within400: near, pos }; };   /*TEMP-DEBUG: live land-mammal census + positions/homes*/
       return { bunny: b(276, 300), armadillo: b(300, 324), skunk: b(324, 348), porcupine: b(348, 372), p: [Math.round(P.x), Math.round(P.z)] }; },
     edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, paused: ED.paused, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pw: ED.pw, pd: ED.pd, pal: palette.length }; },
@@ -6511,7 +6594,7 @@
       right = r2;
     }
     cmpUpdate();                                       // ── compass ── one transform write per frame
-    crossEl.classList.toggle('sq', locked && !ED.on && pickAim());   // crosshair morphs + → □ (main-menu square) while it rests on something the player can pick up (user); short-circuits pickAim off unless actually playing
+    crossEl.classList.toggle('sq', locked && !ED.on && (pickAim() || aimedCreature() >= 0));   // crosshair morphs + → □ (main-menu square) while it rests on something the player can PICK UP or a life form it can HIT (user); short-circuits off unless actually playing
     const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera
     if (!locked) {                                     // ESC menu: the whole CAMERA drifts gently — the entire image sways
       const ts = now * 0.001;
@@ -6529,6 +6612,10 @@
     set3(16, [prevCam.pos[0] - winOX, prevCam.pos[1], prevCam.pos[2] - winOZ], prevCam.tanH);
     set3(20, prevCam.right, prevCam.aspect);
     const uw = waterAt(Math.floor(cam[0]), Math.floor(cam[1]), Math.floor(cam[2]));
+    if (uw && !dead && !P.fly && !ED.on && !cineMode && locked) {   // ── DROWNING ── head submerged while actively swimming → lungs run out after DROWN_T
+      uwT += dt;
+      if (uwT >= DROWN_T) die('you drowned');
+    } else if (!uw || P.fly) { uwT = 0; }              // surfaced or flew out → catch your breath (menu/editor/cinematic just FREEZE the clock — they don't refill it)
     // WORLD CEILING for shadow rays: nothing solid exists above the highest occupied 32-voxel slab, so a sun ray
     // can stop the moment it climbs past it instead of marching its full range through empty sky. Scanned top-down
     // over the L2 occupancy (a few hundred u32 reads — the top slabs are empty and OR to zero fast); exact by
@@ -6544,7 +6631,8 @@
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
     UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
-    { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; if (heldIt()) playSwish(); }   // hold left click → continuous swinging
+    { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; if (heldIt()) playSwish(); pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)
+      if (pendKillT && now >= pendKillT) { pendKillT = 0; tryKillCreature(); }   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
       // SWING — Teardown-style 3 phases over 570 ms (user-tuned): WINDUP raises the tool up-back (0–35%),
       // the STRIKE slams it down to the MIDDLE of the screen (35–55%, accelerating), then it eases back to rest (55–100%).
       const swT = (now - swingStart) / 570;
@@ -6563,7 +6651,7 @@
         if (cs && cs.it === 2 && cs.n >= 2 && KNIFE_IT) {
           cs.n -= 2; if (!cs.n) slots[selSlot] = null;
           if (!slots[selSlot]) slots[selSlot] = { it: KNIFE_IT, n: 1 };   // the newborn knife lands IN THE HAND every craft — addItem's stack-first rule silently merged repeat crafts into an existing knife stack ("the knife never spawns")
-          else if (!addItem(KNIFE_IT)) cs.n += 2;      // nowhere to hold it (guarded at clash start, but never eat rocks for nothing)
+          else if (addItem(KNIFE_IT) === -1) cs.n += 2;   // nowhere to hold it (guarded at clash start, but never eat rocks for nothing)
         }
       }
       const hcfg = heldCfg(heldIt() || 1);             // the shown item's OWN pose (during a grab flight this is the grabbed item's)
@@ -6598,7 +6686,7 @@
                          m2q(AX, AY, AZ), e2);
         const M = q2m(q); AX = M[0]; AY = M[1]; AZ = M[2];
         showId = dead ? 0 : grabAnim.it;
-        if (k >= 1) { addItem(grabAnim.it); grabAnim = null; }
+        if (k >= 1) { const as = addItem(grabAnim.it); if (as >= 0) selSlot = as; grabAnim = null; }   // SELECT the slot the grab landed in → the newly picked-up item stays in the hand instead of snapping back to whatever was held (user)
       }
       set3(48, [hx, hy, hz], hcfg.scale);
       if (WORM_NFRAMES && showId >= WORM_ITEM0 && showId < WORM_ITEM0 + WORM_NFRAMES) showId = WORM_ITEM0 + Math.floor(now * 0.024) % WORM_NFRAMES;   // the caught worm SQUIGGLES — its 24 fps crawl cycle keeps playing in the hand (and through the grab flight)
@@ -6965,21 +7053,20 @@
         skunkCandF = frame; skunkCand.length = 0;
         const owned = new Set();
         for (let j = 324; j < 348; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
-        const R = Math.ceil(LIFE_OUT / WORM_HCELL);
+        const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (680·0.94) — LIFE_OUT under-scanned at default views, silently capping the reach at ~480
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
           const h = skunkHome(c0x + dx, c0z + dz); if (!h) continue;
           if (owned.has(h.cx + ',' + h.cz)) continue;
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
-          if (d2 > (performance.now() < lifeNearUntil ? Math.min(LIFE_OUT * LIFE_OUT, 250000) : LIFE_OUT * LIFE_OUT) || d2 < (performance.now() < lifeNearUntil ? 900 : LIFE_IN * LIFE_IN)) continue;   // spawn band = LIFE_IN..LIFE_OUT like everything else — the skunk's PRIVATE grid meant nothing consumed its near cells, so it popped in right beside the player (user)
-          h.d2 = d2; skunkCand.push(h);
+          if (d2 > MAM_OUT * MAM_OUT) continue;              // NO inner floor + MAM_OUT ceiling (user): mammals fill the forest like the perched songbirds — nearest-first from the player out to the BIRD reach (~536, rect-clipped). Tradeoff: a mammal can occasionally recycle into view as you walk (the perched-bird model has no near floor either).
+          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); skunkCand.push(h);   // ord = deterministic scatter key (see the pick below)
         }
       }
       if (!skunkCand.length) return null;
       let k = 0;
-      if (performance.now() < lifeNearUntil) k = (Math.random() * skunkCand.length) | 0;   // BOOT FILL: area-uniform random cell — nearest-first during the grace window bunched every mammal around the player and starved the far ring (user)
-      else for (let q = 1; q < skunkCand.length; q++) if (skunkCand[q].d2 < skunkCand[k].d2) k = q;
+      for (let q = 1; q < skunkCand.length; q++) if (skunkCand[q].ord < skunkCand[k].ord) k = q;   // HASH-ORDER SCATTER (user: "bunched up by the player") — nearest-first spent the whole 14-slot pool on the near cells (measured: density collapsed past 400 vox). Picking by a per-cell hash instead samples the WHOLE disc area-uniformly out to MAM_OUT, deterministic per world spot, still stratified by the 160-vox grid.
       const h = skunkCand[k];
       skunkCand[k] = skunkCand[skunkCand.length - 1]; skunkCand.pop();
       return h;
@@ -6996,21 +7083,20 @@
         porcCandF = frame; porcCand.length = 0;
         const owned = new Set();
         for (let j = 348; j < 372; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
-        const R = Math.ceil(LIFE_OUT / WORM_HCELL);
+        const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (see skunk)
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
           const h = porcHome(c0x + dx, c0z + dz); if (!h) continue;
           if (owned.has(h.cx + ',' + h.cz)) continue;
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
-          if (d2 > (performance.now() < lifeNearUntil ? Math.min(LIFE_OUT * LIFE_OUT, 250000) : LIFE_OUT * LIFE_OUT) || d2 < (performance.now() < lifeNearUntil ? 900 : LIFE_IN * LIFE_IN)) continue;   // out past the fog like the skunk — never pops in close
-          h.d2 = d2; porcCand.push(h);
+          if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
+          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); porcCand.push(h);   // ord = deterministic scatter key (see the pick below)
         }
       }
       if (!porcCand.length) return null;
       let k = 0;
-      if (performance.now() < lifeNearUntil) k = (Math.random() * porcCand.length) | 0;   // BOOT FILL: area-uniform random cell — nearest-first during the grace window bunched every mammal around the player and starved the far ring (user)
-      else for (let q = 1; q < porcCand.length; q++) if (porcCand[q].d2 < porcCand[k].d2) k = q;
+      for (let q = 1; q < porcCand.length; q++) if (porcCand[q].ord < porcCand[k].ord) k = q;   // HASH-ORDER SCATTER — area-uniform over the disc, not nearest-first (see the skunk pick)
       const h = porcCand[k];
       porcCand[k] = porcCand[porcCand.length - 1]; porcCand.pop();
       return h;
@@ -7027,21 +7113,20 @@
         bunnyCandF = frame; bunnyCand.length = 0;
         const owned = new Set();
         for (let j = 276; j < 300; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
-        const R = Math.ceil(LIFE_OUT / WORM_HCELL);
+        const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (see skunk)
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
           const h = bunnyHome(c0x + dx, c0z + dz); if (!h) continue;
           if (owned.has(h.cx + ',' + h.cz)) continue;
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
-          if (d2 > (performance.now() < lifeNearUntil ? Math.min(LIFE_OUT * LIFE_OUT, 250000) : LIFE_OUT * LIFE_OUT) || d2 < (performance.now() < lifeNearUntil ? 900 : LIFE_IN * LIFE_IN)) continue;
-          h.d2 = d2; bunnyCand.push(h);
+          if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
+          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); bunnyCand.push(h);   // ord = deterministic scatter key (see the pick below)
         }
       }
       if (!bunnyCand.length) return null;
       let k = 0;
-      if (performance.now() < lifeNearUntil) k = (Math.random() * bunnyCand.length) | 0;   // BOOT FILL: area-uniform random cell — nearest-first during the grace window bunched every mammal around the player and starved the far ring (user)
-      else for (let q = 1; q < bunnyCand.length; q++) if (bunnyCand[q].d2 < bunnyCand[k].d2) k = q;
+      for (let q = 1; q < bunnyCand.length; q++) if (bunnyCand[q].ord < bunnyCand[k].ord) k = q;   // HASH-ORDER SCATTER — area-uniform over the disc, not nearest-first (see the skunk pick)
       const h = bunnyCand[k];
       bunnyCand[k] = bunnyCand[bunnyCand.length - 1]; bunnyCand.pop();
       return h;
@@ -7058,21 +7143,20 @@
         armCandF = frame; armCand.length = 0;
         const owned = new Set();
         for (let j = 300; j < 324; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
-        const R = Math.ceil(LIFE_OUT / WORM_HCELL);
+        const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (see skunk)
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
           const h = armHome(c0x + dx, c0z + dz); if (!h) continue;
           if (owned.has(h.cx + ',' + h.cz)) continue;
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
-          if (d2 > (performance.now() < lifeNearUntil ? Math.min(LIFE_OUT * LIFE_OUT, 250000) : LIFE_OUT * LIFE_OUT) || d2 < (performance.now() < lifeNearUntil ? 900 : LIFE_IN * LIFE_IN)) continue;
-          h.d2 = d2; armCand.push(h);
+          if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
+          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); armCand.push(h);   // ord = deterministic scatter key (see the pick below)
         }
       }
       if (!armCand.length) return null;
       let k = 0;
-      if (performance.now() < lifeNearUntil) k = (Math.random() * armCand.length) | 0;   // BOOT FILL: area-uniform random cell — nearest-first during the grace window bunched every mammal around the player and starved the far ring (user)
-      else for (let q = 1; q < armCand.length; q++) if (armCand[q].d2 < armCand[k].d2) k = q;
+      for (let q = 1; q < armCand.length; q++) if (armCand[q].ord < armCand[k].ord) k = q;   // HASH-ORDER SCATTER — area-uniform over the disc, not nearest-first (see the skunk pick)
       const h = armCand[k];
       armCand[k] = armCand[armCand.length - 1]; armCand.pop();
       return h;
@@ -7132,6 +7216,8 @@
     const LIFE_KEEP = Math.min(rdV + 64, LIFE_CAP);    // DESPAWN radius (every kind) — slightly PAST the view, still safely inside the generated rect
     const LIFE_OUT = LIFE_KEEP * 0.94;                 // outermost SPAWN radius — the gap to LIFE_KEEP is the hysteresis band
     const LIFE_IN = Math.min(LIFE_KEEP * 0.78, LIFE_OUT - 24);   // innermost SPAWN radius — out past the fog, never in clear view
+    const MAM_KEEP = CARD_KEEP;                        // LAND MAMMALS reach EXACTLY as far as the perched songbirds (user): the birds' FIXED 680 — not max(LIFE_KEEP,…), which let a big view slider push mammals past the birds and dilute the 56-head pool over an oversized disc (measured: mammals at 1020 vox, in-view rings near-empty)
+    const MAM_OUT = MAM_KEEP * 0.94;                   // …and their outer SPAWN ring matches, with the same 6% hysteresis gap. Rect-clipped like the birds, so the effective reach lands wherever the generated world ends.
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 2.5));   // BUTTERFLIES doubled (user 2026-07-18): 1.25 -> 2.5, still bounded by the 16 flyer slots   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
@@ -7148,7 +7234,7 @@
     // the ORIGINAL density over the larger disc (~90 at the default view) and is still inside the 180-slot pool.
     const nCard = CARD_NFRAMES ? 180 : 0;              // the FULL pool — 120 -> 180 so the ROBIN is ADDED to the songbird population rather than splitting the cardinal/blue-bird share three ways (user)
 
-    const ffLights = [];                               // glowing fireflies this frame → the u.fflies point-light slots (window coords + intensity)
+    const ffLights = [];                               // glowing fireflies + live clash/death SPARKS this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
     if ((DUCK_ITEM0 || DFLY_NFRAMES || FISHES.length) && !ED.on && now > lakeScanT) {   // ── LAKE + WATER CENSUS (every 2.5 s) ── grid-sample the view for wide-open-water spots, cluster them into lakes; fish home on the same census;
       lakeScanT = now + 2500;                          //    mother ducks below TARGET these so every visible lake gets its own family (pool cap 2 families)
@@ -7167,7 +7253,7 @@
         else lakeSpots.push({ x: sx8, z: sz8, ax: sx8, az: sz8, n: 1 });
       }
     }
-    let dropCursor = 9;                                // COMPACTION: live creatures emit to consecutive slots from 9; the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists
+    let dropCursor = 25;                               // COMPACTION: live creatures emit to consecutive slots from 25; the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists. (5-24 = the 20 fixed death-burst slots: 4 sparks + 16 individual smoke voxels, user)
     if (!ED.on && FLYERS.length > 0) {                 // ── the rest of the SONGBIRDS ── emitted FIRST so a busy scene drops a far butterfly rather than a bird
       const tbF = now / 1000;
       for (let bi = 1; bi < BIRD_N; bi++) {
@@ -7187,6 +7273,7 @@
     let porcBoxN = 0; for (const bx9 of porcBoxes) bx9.active = false;   // …and the solid-porcupine hitboxes
     for (let wk = 0; wk < 372; wk++) {
       const B = wbf[wk];
+      if (B.slain) continue;                           // KILLED BY THE PLAYER (user): a slain slot never recycles or re-places — the creature is gone for the session (kill already cleared its stamp; init=false keeps it out of every emit/census)
       const porcSlot = wk >= 348, skunkSlot = wk >= 324 && wk < 348, armSlot = wk >= 300 && wk < 324, bunnySlot = wk >= 276 && wk < 300, fishSlot = wk >= 244 && wk < 276, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
       const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
@@ -7208,7 +7295,7 @@
       // Perched birds recycle at CARD_KEEP, just past where the 180-slot pool runs out at this density (~375 vox).
       // Because the frontier sits far beyond anything you can pick out, a bird activating there is invisible — which
       // is why this no longer needs the "only spawn behind the player" rule the random placement depended on.
-      const rdK = wantK === 5 ? CARD_KEEP : LIFE_KEEP;
+      const rdK = wantK === 5 ? CARD_KEEP : ((bunnySlot || armSlot || skunkSlot || porcSlot) ? MAM_KEEP : LIFE_KEEP);   // land mammals persist to the bird keep radius (user: "spawn as far as the perched birds"); worms/ducks/fish keep LIFE_KEEP
       const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
       const hd2 = ((B.kind | 0) === 0 || (B.kind | 0) === 2 || (B.kind | 0) === 6) && B.hcx !== undefined ? (B.hx - P.x) * (B.hx - P.x) + (B.hz - P.z) * (B.hz - P.z) : dp2;
       const far = hd2 > rdK * rdK;                     // butterflies (and fish) judge by their HOME, everything else by where it is
@@ -7274,7 +7361,7 @@
           sx7 = sx; sz7 = sz;
           const gS = bfSurf(sx, sz);
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
-          if ((bunnySlot || armSlot || skunkSlot || porcSlot) && tooClose(276, 372, 12)) continue;   // CROSS-SPECIES floor: never spawn a land mammal within 12 vox of ANY live mammal (bunny/armadillo/skunk/porcupine) — enough to stop two ~8-wide models overlapping, but NOT so wide it steals counts. Was 24, which rejected axis-adjacent quadrant-grid homes and left the later-processed band (skunk) 2 short (measured, user)
+          if ((bunnySlot || armSlot || skunkSlot || porcSlot) && tooClose(276, 372, 70)) continue;   // CROSS-SPECIES floor: never spawn a land mammal within 70 vox of ANY live mammal (bunny/armadillo/skunk/porcupine) — breaks up the multi-species KNOTS (user: skunk 24 vox from a bunny etc.). 70 was count-starving under NEAREST-FIRST (even 24 left skunk 2 short — rejects had nowhere else to go), but the HASH-ORDER scatter retries land anywhere in the disc, so counts hold (measured 14/14/14/14).
           if ((bunnySlot || armSlot || skunkSlot || porcSlot) && gS > WL + 0.5) {   // no LAND MAMMALS (bunny/armadillo/skunk/porcupine) on top of a LARGE rock formation (user)
             const xi = gwrap(Math.floor(sx), WX), zi = gwrap(Math.floor(sz), WZ) * WX * WY, yt = Math.floor(gS) - 1;
             const grey = (y) => { if (y < 1) return false; const v = W[xi + y * WX + zi]; if (!v) return false; const c = palette[v]; return !!c && Math.abs(c[0] - c[1]) < 18 && Math.abs(c[1] - c[2]) < 18 && c[0] > 60 && c[0] < 200; };   // grey (r≈g≈b, mid-bright) = rock/boulder, not green grass / brown dirt / white snow
@@ -7376,6 +7463,15 @@
           const tx = B.x + DIRa[B.ah][0] * 5, tz = B.z + DIRa[B.ah][1] * 5, gA = bfSurf(tx, tz);
           if (gA > WL + 0.5 && !bfObstW(tx, gA + 2, tz) && !bfObstW(tx, gA + 4, tz)) { B.x += DIRa[B.ah][0] * B.aspd * dt; B.z += DIRa[B.ah][1] * B.aspd * dt; } }
         B.th = cardTh(B.ah);
+        if (B.aAncX === undefined || (B.x - B.aAncX) * (B.x - B.aAncX) + (B.z - B.aAncZ) * (B.z - B.aAncZ) > 2.5 * 2.5) { B.aAncX = B.x; B.aAncZ = B.z; B.aStk = 0; B.aStkN = 0; }   // ── STEEP-TERRAIN STUCK WATCHDOG (user) ── judge by NET DISPLACEMENT, not blockage: a marcher can pass every walkOK test yet oscillate in place at a slope base (leash pulls uphill → blocked → contour turn → pulled back…). Real walking resets the anchor constantly; only genuine pinning accumulates.
+        else if ((B.aStk = (B.aStk || 0) + dt) > 3 && !(B.aRelax > 0)) {
+          B.aStk = 0; B.aStkN = (B.aStkN || 0) + 1;
+          let best = -1, bgv = -1e9;                     // force the RELAXED escape (step limit ignored — same gate as boxed-in) toward the most climbable neighbour
+          for (let h = 0; h < 4; h++) { const tx = B.x + DIRa[h][0] * 5, tz = B.z + DIRa[h][1] * 5, gA = bfSurf(tx, tz);
+            if (gA > WL + 0.5 && !bfObstW(tx, gA + 2, tz) && !bfObstW(tx, gA + 4, tz) && gA > bgv) { bgv = gA; best = h; } }
+          if (best < 0 || B.aStkN >= 3) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // three failed escapes (or nowhere to go) = truly wedged → respawn on fresh ground
+          B.ah = best; B.aTurnT = tb3 + 0.28; B.aRelax = 1.4;
+        }
         B.animClk = (B.animClk || 0) + dt;   // armadillo walk clock (24 fps, read by stampArmadillo)
         if (skunkSlot || porcSlot) { const fps = B.aflee ? 24 : 12; B.afps = (B.afps === undefined) ? fps : B.afps + (fps - B.afps) * Math.min(1, dt * 6); B.aframe = ((B.aframe || 0) + dt * B.afps) % (skunkSlot ? SKUNK_WALK.length : PORCUPINE_WALK.length); }   // SKUNK + PORCUPINE (user): ease 12↔24 fps (DOUBLE the walk cycle when fleeing, bunny-style) on a frame-position clock so switching rate never jumps a frame; read by stampSkunk/stampPorcupine
         B.om = 0; B.omT = 0; B.bspd = 0;                 // kill the shared glide/steering — the march above is the motion. Alignment lives in the GRID-STAMP poses (armOffset baked in), not a render offset — the armadillo grid-stamps again (user).
@@ -7397,8 +7493,11 @@
         if (B.bfclk >= NFR) { B.bfclk -= NFR;           // a baked sequence just finished → commit its motion, pick the next
           if (B.bst === 0) { const [dx, dz] = rot2b(0, -6, B.bh); B.bpx += dx; B.bpz += dz; B.bg = bfSurf(B.bpx, B.bpz); }   // jump baked −6 forward → advance the base cell
           else B.bh = (B.bst === 1 ? B.bh + 1 : B.bh + 3) & 3;   // rotate baked a 90° yaw → commit the new cardinal
-          if (!hopOK(B.bh)) {                            // ── OBSTACLE AHEAD (user) ──
-            if (hopOK(B.bh + 1) || hopOK(B.bh + 2) || hopOK(B.bh + 3)) {   // a clean cardinal EXISTS → commit ONE turn toward it, persisted so the escape can't oscillate (clears a corner in one turn, a dead-end in two)
+          if (B.bAncX === undefined || (B.bpx - B.bAncX) * (B.bpx - B.bAncX) + (B.bpz - B.bAncZ) * (B.bpz - B.bAncZ) > 5 * 5) { B.bAncX = B.bpx; B.bAncZ = B.bpz; B.bStkT = tb3; B.bStkN = 0; }   // ── STEEP-TERRAIN STUCK WATCHDOG (user) ── same net-displacement rule as the marchers: hopping around normally moves the base cell and resets the anchor; only real pinning ages the clock
+          const bForce = tb3 - (B.bStkT === undefined ? tb3 : B.bStkT) > 4;
+          if (bForce) { B.bStkT = tb3; B.bStkN = (B.bStkN || 0) + 1; }
+          if (bForce || !hopOK(B.bh)) {                  // ── OBSTACLE AHEAD (user) ── (or the watchdog fired — then skip the polite turn and break out)
+            if (!bForce && (hopOK(B.bh + 1) || hopOK(B.bh + 2) || hopOK(B.bh + 3))) {   // a clean cardinal EXISTS → commit ONE turn toward it, persisted so the escape can't oscillate (clears a corner in one turn, a dead-end in two)
               if (!B.besc) B.besc = hopOK(B.bh + 1) ? 1 : (hopOK(B.bh + 3) ? 2 : 1);
               B.bst = B.besc;
             } else {                                     // BOXED IN — no clean hop in ANY direction. THIS is what made it turn forever; break out instead of spinning (user: "gets stuck and rotates endlessly")
@@ -7406,8 +7505,8 @@
               let best = -1, bgv = -1e9;                 // the most climbable LAND neighbour, IGNORING the ±3 step limit → hop DOWN a ledge / over a small gap to escape the pocket
               for (let h = 0; h < 4; h++) { const tx = B.bpx + DIRb[h][0] * 6, tz = B.bpz + DIRb[h][1] * 6, gA = bfSurf(tx, tz);
                 if (gA > WL + 0.5 && !bfObstW(tx, gA + 2, tz) && !bfObstW(tx, gA + 4, tz) && gA > bgv) { bgv = gA; best = h; } }
-              if (best >= 0) { B.bh = best; B.bst = 0; }   // snap to face the escape + HOP out (the vertical snap is worth breaking the spin)
-              else { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // truly islanded (only water/void within reach) → respawn on fresh land
+              if (best >= 0 && (B.bStkN || 0) < 3) { B.bh = best; B.bst = 0; }   // snap to face the escape + HOP out (the vertical snap is worth breaking the spin)
+              else { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // truly islanded (only water/void within reach) OR three watchdog escapes went nowhere → respawn on fresh land
             }
           } else {                                       // ── CLEAR AHEAD ── escape done; resume normal behaviour
             B.besc = 0;
@@ -7854,26 +7953,40 @@
     }
     if (wormPatch.length) { gpuPatch(wormPatch, false); wormPatch.length = 0; }   // one light brick-word patch for all worm (un)stamps this frame (incl. any queued by a pickup/toss)
     UF[1103] = dropCursor;                             // pick2Y.w = live slot count — the composite loop's bound (always ≥ 9 so drops/cardinal/sparks are covered)
-    ffLights.sort((a, b) => a[4] - b[4]);              // nearest glowing fireflies win the 8 point-light slots
-    for (let li = 0; li < 8; li++) { const o5 = 1108 + li * 4, L = ffLights[li];
-      UF[o5] = L ? L[0] : 0; UF[o5 + 1] = L ? L[1] : 0; UF[o5 + 2] = L ? L[2] : 0; UF[o5 + 3] = L ? L[3] : 0; }
     cshadList.sort((a, b) => a[5] - b[5]);             // nearest 16 ground/water creatures cast shadows (the sun ray tests these boxes)
     for (let ci = 0; ci < 16; ci++) { const o6 = 1140 + ci * 8, C = cshadList[ci];
       if (C) { UF[o6] = C[0]; UF[o6 + 1] = C[1]; UF[o6 + 2] = C[2]; UF[o6 + 3] = 1; UF[o6 + 4] = C[3]; UF[o6 + 5] = C[4]; UF[o6 + 6] = 0; UF[o6 + 7] = 0; }
       else UF[o6 + 3] = 0; }
-    for (let si2 = 0; si2 < 4; si2++) {                // ── clash sparks → drop slots 5-8 ── 4 real 10 cm voxels on short ballistic arcs, fading out
+    for (let si2 = 0; si2 < 20; si2++) {               // ── clash/death sparks + death SMOKE → drop slots 5-24 ── real voxels on short arcs, fading out (sp4.smoke picks the look)
       const o3 = 68 + (5 + si2) * 16, sp4 = sparks3d[si2];
       const tS = sp4 ? (now - sp4.born) / 1000 : 1e9;
       if (!sp4 || tS > sp4.life) { UF[o3 + 7] = 0; if (sp4) sparks3d[si2] = null; continue; }
-      const px4 = sp4.x + sp4.vx * tS, py4 = sp4.y + sp4.vy * tS - 85 * tS * tS, pz4 = sp4.z + sp4.vz * tS;
-      const a4 = sp4.ph + tS * 7, ca4 = Math.cos(a4), sa4 = Math.sin(a4);
-      const Xs = [ca4, 0, sa4], Ys = [sa4, 0, -ca4], Zs = [0, 1, 0];   // slow spin about vertical, right-handed
+      const smoke = !!sp4.smoke, grav = smoke ? 1.5 : 85;   // SMOKE keeps RISING (near-zero gravity → floats up like a snowflake in reverse, doesn't fall back); SPARKS arc down fast
+      let px4 = sp4.x + sp4.vx * tS, py4 = sp4.y + sp4.vy * tS - grav * tS * tS, pz4 = sp4.z + sp4.vz * tS;
+      const a4 = sp4.ph + tS * (smoke ? (sp4.spin || 3) : 7), ca4 = Math.cos(a4), sa4 = Math.sin(a4);   // SMOKE voxels TWIRL like the snowflakes (user): about the vertical at a per-particle rate (~2-4.5 rad/s); sparks spin faster
+      const Xs = [ca4, 0, sa4], Ys = [sa4, 0, -ca4], Zs = [0, 1, 0];   // spin about vertical (like a snowflake), right-handed
+      let itn = SPARK_IT, vsc = 1.0;
+      if (smoke) {                                     // ONE individual voxel, off the grid like a snowflake: a per-voxel wandering DRIFT (sin/cos, like the flakes' wind sway) as it floats up, then CENTRE it on its position so it spins about its own middle (not a corner)
+        itn = SMOKE_IT; vsc = 1.0;                     // 10 cm voxel — exactly a snowflake's size (user)
+        px4 += Math.sin(tS * 1.6 + sp4.ph) * 1.4;
+        pz4 += Math.cos(tS * 1.9 + sp4.ph * 1.7) * 1.4;
+        px4 -= (Xs[0] + Ys[0] + Zs[0]) * 0.5 * vsc;    // model centre (0.5,0.5,0.5)·scale → the drops path's min-corner anchor, so the spin is about the voxel's centre
+        py4 -= (Xs[1] + Ys[1] + Zs[1]) * 0.5 * vsc;
+        pz4 -= (Xs[2] + Ys[2] + Zs[2]) * 0.5 * vsc;
+      }
+      if (!smoke) {                                    // a SPARK CASTS LIGHT (user): feed the firefly point-light lane — the traced, shadowed area light the tracer already resolves — so the ember throws a warm flash on the ground/creatures around it, fading with its life
+        const dxL = px4 - P.x, dzL = pz4 - P.z;        // same horizontal-d² metric the firefly entries sort by
+        ffLights.push([px4 - winOX, py4, pz4 - winOZ, 3.4 * (1 - tS / sp4.life), dxL * dxL + dzL * dzL]);
+      }
       const rx = px4 - cam[0], ry = py4 - cam[1], rz = pz4 - cam[2];
-      UF[o3] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o3 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o3 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o3 + 3] = 1.0;
-      UF[o3 + 4] = Xs[0] * right[0] + Xs[2] * right[2]; UF[o3 + 5] = Xs[0] * up[0] + Xs[2] * up[2]; UF[o3 + 6] = Xs[0] * fwd[0] + Xs[2] * fwd[2]; UF[o3 + 7] = SPARK_IT;
+      UF[o3] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o3 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o3 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o3 + 3] = vsc;
+      UF[o3 + 4] = Xs[0] * right[0] + Xs[2] * right[2]; UF[o3 + 5] = Xs[0] * up[0] + Xs[2] * up[2]; UF[o3 + 6] = Xs[0] * fwd[0] + Xs[2] * fwd[2]; UF[o3 + 7] = itn;
       UF[o3 + 8] = Ys[0] * right[0] + Ys[2] * right[2]; UF[o3 + 9] = Ys[0] * up[0] + Ys[2] * up[2]; UF[o3 + 10] = Ys[0] * fwd[0] + Ys[2] * fwd[2]; UF[o3 + 11] = 1 - tS / sp4.life;
       UF[o3 + 12] = Zs[1] * right[1]; UF[o3 + 13] = Zs[1] * up[1]; UF[o3 + 14] = Zs[1] * fwd[1]; UF[o3 + 15] = 0;
     }
+    ffLights.sort((a, b) => a[4] - b[4]);              // nearest glowing lights (fireflies + live sparks) win the 8 point-light slots — sorted AFTER the spark loop so a death flash can claim a slot
+    for (let li = 0; li < 8; li++) { const o5 = 1108 + li * 4, L = ffLights[li];
+      UF[o5] = L ? L[0] : 0; UF[o5 + 1] = L ? L[1] : 0; UF[o5 + 2] = L ? L[2] : 0; UF[o5 + 3] = L ? L[3] : 0; }
     {                                                  // ── DYNAMIC-LIFE MOTION + FLAGS (u.lifeMot) ── per-slot rigid world delta for temporal/TAA reprojection of
       for (let s9 = 0; s9 < 64; s9++) {                // trace-injected creature pixels, plus the history-rejection bits the temporal pass needs. Cur→prev handoff below.
         const o9 = 1272 + s9 * 4;
