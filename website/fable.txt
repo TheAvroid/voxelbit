@@ -1,3 +1,0 @@
-1. pursue deeper optimizations on the water without sacrificing visual quality.
-
-2. pursue deeper optimizations on procedurally generating terrain. 

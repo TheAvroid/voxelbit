@@ -1,0 +1,34 @@
+Research Teardown’s destruction physics using primary developer sources, then inspect the complete Voxelbit engine.
+
+Use the attached Teardown-physics specification as the architectural target, but do not attempt the entire system superficially in one pass.
+
+Implement the first complete vertical slice:
+
+1. Register an existing pine tree as an object-local destructible voxel shape.
+2. Let chopping remove actual trunk voxels.
+3. Run six-neighbour connectivity only on that tree.
+4. Keep it static while connected to its root anchor.
+5. When the final trunk connection breaks, extract the upper connected component as one rigid voxel body.
+6. Compute its mass, center of mass and inertia from its voxels.
+7. Simulate fixed-timestep gravity, translation, quaternion rotation and angular velocity.
+8. Make it collide stably with the static voxel terrain.
+9. Render it using a continuous transformed-voxel path without stamping the moving tree into W.
+10. Put it to sleep after it settles.
+11. Correctly remove the original static tree voxels and patch GPU occupancy.
+12. Add __vb.phys debugging, validation and performance telemetry.
+
+Do not create one rigid body per voxel. Do not use an animation to fake the fall. Do not rewrite the existing renderer, terrain generator or player physics.
+
+Before editing, identify exactly how generated pine voxels enter W, how they can be associated with an object-local shape, how dirty GPU world updates work, and how the current transformed voxel-model renderer can be generalized for the falling component.
+
+After implementation, demonstrate:
+
+- Partial trunk damage does not detach the tree.
+- Cutting the final connection detaches it.
+- The tree naturally tips according to its center of mass and impact impulse.
+- It collides, rotates, settles and sleeps.
+- No duplicate tree remains.
+- __vb.gpudiff(), __vb.btest() and the new physics validation pass.
+- No large main-thread stall occurs during separation.
+
+Complete and verify this vertical slice before expanding the system to arbitrary structures, dynamic-body collisions, explosions or secondary fragmentation. 
