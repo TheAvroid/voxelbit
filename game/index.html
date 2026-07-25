@@ -4760,7 +4760,7 @@
   {
     const amb = new Audio();
     amb.loop = true; regSnd(amb, 0.625);               // +25% 2026-07-16 (was 0.5)
-    const srcs = ['sound/sfx/forest_ambience.mp4', 'sound/sfx/forest_ambience.mp3', 'sound/sfx/forest_ambience.wav', 'sound/sfx/ambience.mp4'];
+    const srcs = ['sound/forest_ambience.mp4', 'sound/forest_ambience.mp3', 'sound/forest_ambience.wav', 'sound/ambience.mp4'];
     let si = 0;
     const ambPlay = () => { try { const p = amb.play(); if (p) p.catch(() => {}); } catch (e) {} };
     amb.addEventListener('error', () => { if (si < srcs.length) { amb.src = srcs[si++]; ambPlay(); } });
@@ -4771,14 +4771,14 @@
   }
   let swingStart = -1e9, mouse0 = false;               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
   let pendKillT = 0;                                   // pending creature-hit: armed at swing start, FIRES ~250 ms in — when the axe visually LANDS on screen (user: only register the hit when the axe hits), not at the click
-  const swishSnd = regSnd(new Audio('sound/sfx/bow/swish.mp4'), 0.36);   // swing whoosh — cut 40% (user), then a further 40% (0.6 → 0.36)
+  const swishSnd = regSnd(new Audio('sound/bow/swish.mp4'), 0.36);   // swing whoosh — cut 40% (user), then a further 40% (0.6 → 0.36)
   const playSwish = () => { try { swishSnd.currentTime = 0; const pr = swishSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
   let bobPh = 0, bobAmp = 0;                           // walk/sprint view-model bob state
   // ── DUAL-WIELD rock clash ── shift + left click with a rock in EACH hand: both rocks accelerate to screen centre,
   // collide with a spark burst, and the first collision unlocks the "sharp edge" discovery achievement.
   let clashT0 = -1e9, clashSparked = true;
   let vbAch = {};                                      // achievements RESET on refresh (was localStorage vb_ach — user asked for per-session)
-  const achSnd = regSnd(new Audio('sound/sfx/high_score.mp4'), 0.15);   // achievement jingle — 0.5 → 0.25 (2026-07-16), then a further 40% off (user 2026-07-20): 0.25 → 0.15
+  const achSnd = regSnd(new Audio('sound/high_score.mp4'), 0.15);   // achievement jingle — 0.5 → 0.25 (2026-07-16), then a further 40% off (user 2026-07-20): 0.25 → 0.15
   const dualRocks = () => !dead && !grabAnim && !!(slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2);
   const achEl = $('achv'), clashHintEl = $('clashHint');
   let achHideT = 0;
