@@ -23,8 +23,10 @@ import http.server, socketserver, functools, os, sys, time, threading
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'game'))   # serve game/ - this script lives in tools/. Derived from __file__ rather than hardcoded, so moving or renaming the project never breaks the server (an earlier version pinned r'c:\voxelbit\website', which stopped existing the moment the site moved).
 
-GRACE = 6.0          # seconds a refresh may take before we treat the tab as gone. Must comfortably exceed RETRY_MS below, or a transient drop could race the watchdog and kill the server mid-session.
-RETRY_MS = 1000      # tell EventSource how fast to reconnect instead of relying on the browser default (~3 s in Chrome), which sat too close to GRACE
+GRACE = 1.5          # seconds a refresh may take before the tab counts as gone. MEASURED: a real Chrome reload of this game reconnects the beacon 346 ms after requesting the page, so 1.5 s is ~4x margin. Must also stay well clear of RETRY_MS, or a transient drop could race the watchdog and kill the server mid-session.
+RETRY_MS = 500       # tell EventSource how fast to reconnect instead of relying on the browser default (~3 s in Chrome), which now exceeds GRACE outright
+POLL = 0.15          # watchdog tick — small, so shutdown lands close to GRACE instead of up to a poll-interval late
+PING = 0.25          # SSE keep-alive interval. This is the DETECTION latency: a dropped socket is only noticed when the next write fails, so a 1 s ping added a full second before the grace timer even started.
 _LOCK = threading.Lock()
 _TABS = {'open': 0, 'ever': False, 'zero_at': None}
 
@@ -84,9 +86,9 @@ class NoCache(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(b'retry: %d\n\n' % RETRY_MS)   # pin the client's reconnect delay (see RETRY_MS)
             self.wfile.flush()
             while True:
-                self.wfile.write(b': ping\n\n')   # comment frame - keeps the socket warm, ignored by EventSource
+                self.wfile.write(b': ping\n\n')   # comment frame - keeps the socket warm, ignored by EventSource. The write is also the probe: it fails once the tab is gone.
                 self.wfile.flush()
-                time.sleep(1)
+                time.sleep(PING)
         except Exception:
             pass                                   # tab closed / navigated away
         finally:
@@ -106,7 +108,7 @@ class NoCache(http.server.SimpleHTTPRequestHandler):
 def watchdog():
     """Exit once every tab has been gone for GRACE seconds."""
     while True:
-        time.sleep(0.4)
+        time.sleep(POLL)
         with _LOCK:
             gone = _TABS['ever'] and _TABS['open'] == 0 and _TABS['zero_at']
             waited = (time.time() - _TABS['zero_at']) if gone else 0
