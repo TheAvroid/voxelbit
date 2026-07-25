@@ -1,41 +1,38 @@
-# ── git here is for the CODE, and the RUNTIME assets that make it run. ─────────
-# Source art (.glb sculpts, hundreds of megabytes) stays out: it is binary,
-# effectively static, does not need per-line history, and makes every git
-# command crawl. Back it up separately (a drive or a cloud folder).
+# ── Layout ────────────────────────────────────────────────────────────────────
+#   game/    EXACTLY what deploys. Upload this folder and nothing else.
+#   source/  authoring originals (.glb sculpts, the music library). NOT shipped,
+#            and mostly NOT tracked — see below. Back this up separately.
+#   tools/   build scripts + the local dev server.
+#   docs/    plans and notes.
 #
-# 2026-07-18: assets/ and the game's sound ARE tracked. They were ignored once, so a
-# GitHub zip download arrived with no models and no sound and the game could not run.
-# The runtime set is fine for git; the .glb source art stays OUT — 369 MB in 9 files,
-# and palm_tree.glb alone is 233 MB, over GitHub's 100 MB per-file hard limit, which
-# would make the push fail outright.
+# git here is for the CODE and the RUNTIME assets that make it run. Source art is
+# binary, effectively static, does not need per-line history, and makes every git
+# command crawl.
 #
-# 2026-07-24: the site was FLATTENED (website/* moved to the repo root, engine.html
-# renamed index.html). The old rule was a bare `/sound/` — under the old layout that
-# ignored the root-level source audio while website/sound/ stayed tracked. Flattening
-# merged those into ONE sound/ folder, so `/sound/` would now exclude sound/sfx/ —
-# the only audio the game actually loads — and reintroduce the silent-game bug above.
-# Hence: exclude the unused music libraries BY NAME, and keep sound/sfx/ tracked.
+# 2026-07-18: game assets and sfx ARE tracked. They were ignored once, so a GitHub
+# zip arrived with no models and no sound and the game could not run. Keep them in.
+#
+# 2026-07-24: site flattened, then restructured into game/ + source/ + tools/.
+# The unused music libraries moved to source/audio/ and the .glb sculpts belong in
+# source/glb/ — both excluded here. sound/sfx/ lives in game/ and stays TRACKED:
+# it is the only audio index.html loads, and excluding it reintroduces the silent-
+# game bug above.
 
-# ── unused audio libraries (646 MB) — verified zero references in index.html ──
-# The game loads ONLY sound/sfx/*. These are the composing/source library and must
-# not ship: they bloat the repo and risk GitHub's 100 MB per-file limit.
-sound/classical/
-sound/anthem/
-sound/soundtrack/
-sound/8bit/
-sound/life/
-sound/environment/
+# ── source art: large, binary, backed up outside git ──
+# palm_tree.glb alone is 233 MB — over GitHub's 100 MB per-file hard limit, which
+# would make the push fail outright. The audio library is ~646 MB and unreferenced.
+source/glb/
+source/audio/
+*.glb
 
-# ── source art trees — not loaded by the game ──
+# NOTE: source/wip/ is deliberately NOT ignored. It is work-in-progress voxel art
+# kept out of game/ so it never deploys, but still tracked so it has a backup.
+
+# ── legacy / scratch ──
 art/
 .vox/
 website_old/
 _snapshots/
-
-# .glb sculpts are the source form; the game loads baked .vox instead
-*.glb
-
-# scratch
 *.bak
 *.log
 node_modules/

@@ -4,7 +4,7 @@ REM Double-click this file: it starts the no-cache server and opens the game in 
 cd /d "%~dp0"
 
 echo.
-echo  Serving %CD%
+echo  Serving %CD%game
 echo  Open:  http://localhost:8080/
 echo  (Press Ctrl+C or close this window to stop.)
 echo.
@@ -21,9 +21,11 @@ for /f "tokens=5" %%p in ('netstat -ano 2^>nul ^| findstr /c:":8080" ^| findstr 
 REM Open the game once the server is up (detached 1 s delay so the first load doesn't race the server).
 start "" cmd /c "timeout /t 1 >nul & start "" http://localhost:8080/"
 
-REM No-cache server (serve-nocache.py, port 8080) so edits show up on refresh.
+REM No-cache server (tools\serve-nocache.py, port 8080) so edits show up on refresh.
+REM The script lives in tools\ and serves the game\ folder - only game\ is ever exposed,
+REM so tools\, source\ and docs\ are not reachable from the browser (and never deploy).
 REM Prefer the "py" launcher, fall back to "python".
-where py >nul 2>nul && (py serve-nocache.py) || (python serve-nocache.py)
+where py >nul 2>nul && (py tools\serve-nocache.py) || (python tools\serve-nocache.py)
 
 REM If the window closed instantly, Python isn't installed/on PATH.
 pause

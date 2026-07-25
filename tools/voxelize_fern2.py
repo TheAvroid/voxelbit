@@ -1,6 +1,7 @@
 """Voxelize fern.glb (single large fern plant) to 10cm voxels, quantize colors, emit JSON.
 
-Output: C:/voxelbit/website/assets/decoration/fern2.json
+Input:  source/glb/fern.glb            (source sculpt - gitignored, never shipped)
+Output: game/assets/decoration/fern2.json   (baked runtime asset the game loads)
   { "pal": [[r,g,b],...], "ferns": [ {"name", "sx","sy","sz", "vox":[x|y<<8|z<<16|ci<<24, ...]} ] }
 Model axes match the engine's item convention: x = width, y = depth, z = height.
 
@@ -10,12 +11,13 @@ fern.glb quirks vs the ferns_grass pipeline:
 - the diffuse texture lives in KHR_materials_pbrSpecularGlossiness.diffuseTexture
   (alphaMode BLEND leaf cards) — sample RGBA there, skip texels with alpha < 128
 """
-import struct, json, io, math
+import struct, json, io, math, os
 import numpy as np
 from PIL import Image
 
-GLB = r"C:\voxelbit\website\assets\decoration\fern.glb"
-OUT = r"C:\voxelbit\website\assets\decoration\fern2.json"
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repo root (this script lives in tools/); paths derived, not hardcoded — the old absolute C:\voxelbit\website\... paths broke silently on restructure
+GLB = os.path.join(_ROOT, 'source', 'glb', 'fern.glb')
+OUT = os.path.join(_ROOT, 'game', 'assets', 'decoration', 'fern2.json')
 TARGET_H = 11   # voxels tall (~1.1 m fern)
 PALN = 10
 

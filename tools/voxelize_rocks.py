@@ -1,15 +1,20 @@
 """Voxelize the 26 rocks in rocks.glb to 10cm voxels, quantize colors, emit JSON.
 
-Output: C:/voxelbit/website/assets/decoration/rocks26.json
+Input:  source/glb/rocks.glb            (source sculpt - gitignored, never shipped)
+Output: game/assets/decoration/rocks26.json   (baked runtime asset the game loads)
   { "pal": [[r,g,b],...], "rocks": [ {"name", "sx","sy","sz", "vox":[x|y<<8|z<<16|ci<<24, ...]} ... ] }
 Model axes match the engine's item convention: x = width, y = depth, z = height.
+
+Paths are derived from this file's location (tools/), not hardcoded - the previous
+absolute C:\voxelbit\website\... paths silently broke when the site was restructured.
 """
-import struct, json, io, math
+import struct, json, io, math, os
 import numpy as np
 from PIL import Image
 
-GLB = r"C:\voxelbit\website\assets\decoration\rocks.glb"
-OUT = r"C:\voxelbit\website\assets\decoration\rocks26.json"
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repo root (this script lives in tools/)
+GLB = os.path.join(_ROOT, 'source', 'glb', 'rocks.glb')
+OUT = os.path.join(_ROOT, 'game', 'assets', 'decoration', 'rocks26.json')
 VOX = 0.1  # meters per voxel
 
 d = open(GLB, 'rb').read()

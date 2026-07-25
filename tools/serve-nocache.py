@@ -15,8 +15,9 @@ class ThreadingServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-ROOT = os.path.dirname(os.path.abspath(__file__))   # serve THIS script's own folder — no hardcoded path, so moving/renaming the project never breaks the server (was r'c:\voxelbit\website', which stopped existing when the site moved to the repo root)
+ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'game'))   # serve the game/ folder — this script lives in tools/, so go up one and into game/. Derived from __file__ instead of hardcoded, so moving or renaming the project never breaks the server (an earlier version pinned r'c:\voxelbit\website', which stopped existing the moment the site moved).
 handler = functools.partial(NoCache, directory=ROOT)
 with ThreadingServer(('', 8080), handler) as httpd:
     print('no-cache server (threaded) on http://localhost:8080')
+    print('serving', ROOT)
     httpd.serve_forever()
