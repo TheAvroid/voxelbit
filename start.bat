@@ -1,9 +1,13 @@
 @echo off
 REM ────── voxelbit local dev server (needed for WebGPU; file:// won't work) ──────
 REM Double-click this file. It starts the no-cache server MINIMISED and opens the game.
-REM This launcher window closes itself once the browser is opening - only the small
-REM minimised "voxelbit server" window stays behind. Close that window to stop the server.
+REM This launcher window closes itself once the browser is opening, and the minimised
+REM "voxelbit server" window closes itself when you close the game tab - so a normal
+REM play session leaves nothing behind.
 cd /d "%~dp0"
+
+REM Re-entry point: the minimised window runs this same file with --server (see below).
+if /i "%~1"=="--server" goto :server
 
 REM ── Stop any PREVIOUS server still holding port 8080 ──────────────────────────
 REM Without this, an old instance keeps serving STALE code: your edits don't show up, and a
@@ -14,15 +18,27 @@ for /f "tokens=5" %%p in ('netstat -ano 2^>nul ^| findstr /c:":8080" ^| findstr 
     taskkill /PID %%p /F >nul 2>nul
 )
 
-REM ── Start the server in its OWN minimised window ──────────────────────────────
-REM tools\serve-nocache.py serves the game\ folder only, so tools\, source\ and docs\
-REM are unreachable from the browser. The spawned window inherits this directory.
-REM The trailing pause keeps the window readable if Python is missing or the port is
-REM taken - otherwise the error would vanish with the window.
-start "voxelbit server" /min cmd /c "where py >nul 2>nul && (py tools\serve-nocache.py) || (python tools\serve-nocache.py) & echo. & echo  Server stopped. If it closed instantly, Python is not installed or not on PATH. & pause >nul"
-
-REM ── Open the game, then close this launcher window ────────────────────────────
-REM 1 s so the first request doesn't race the server's startup.
+REM ── Start the server in its OWN minimised window, then open the game and exit ──
+start "voxelbit server" /min cmd /c call "%~f0" --server
 timeout /t 1 >nul
 start "" http://localhost:8080/
-exit
+exit /b
+
+
+:server
+REM ── Runs inside the minimised window ──────────────────────────────────────────
+REM tools\serve-nocache.py serves the game\ folder only, so tools\, source\ and docs\
+REM are unreachable from the browser. It shuts itself down when the last game tab closes.
+where py >nul 2>nul && (py tools\serve-nocache.py) || (python tools\serve-nocache.py)
+
+REM Only hold the window open if something actually went WRONG (Python missing, port
+REM busy, crash). A clean exit means the server shut down on purpose because the game
+REM tab was closed - pausing there is what used to leave this window open forever.
+if errorlevel 1 (
+    echo.
+    echo  Server stopped unexpectedly ^(exit code %errorlevel%^).
+    echo  If this window appeared instantly, Python is not installed or not on PATH.
+    echo.
+    pause
+)
+exit /b
