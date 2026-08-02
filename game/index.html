@@ -354,12 +354,51 @@
     ...(WBYTES > (1 << 27) ? { requiredLimits: { maxStorageBufferBindingSize: WBYTES, maxBufferSize: Math.max(WBYTES, 268435456) } } : {}),
     ...(PROF ? { requiredFeatures: ['timestamp-query'] } : {}) });
   if (WYpick < 384 || WXZ < 2048) console.warn('[vb] adapter caps buffers at', lim, '— window', WXZ, '×', WYpick);
-  device.addEventListener('uncapturederror', (e) => { console.error('[vb] gpu error:', e.error.message); });
+  // GPU errors are also RECORDED, not just logged. A shader that fails to compile makes every command
+  // buffer it is encoded into invalid, so the whole frame is silently dropped — the picture keeps moving
+  // (stale swapchain) while the world quietly stops updating. Console-only reporting let exactly that hide;
+  // __vbGpuErr makes it assertable from a test. Deduped + capped so a per-frame error can't grow unbounded.
+  window.__vbGpuErr = [];
+  device.addEventListener('uncapturederror', (e) => {
+    const m = e.error.message;
+    console.error('[vb] gpu error:', m);
+    const k = m.slice(0, 160), hit = window.__vbGpuErr.find((q) => q.msg === k);
+    if (hit) hit.n++; else if (window.__vbGpuErr.length < 24) window.__vbGpuErr.push({ msg: k, n: 1 });
+  });
   // ── FREEZE FORENSICS ── (user: "sometimes the game freezes") every way the render loop can die is now caught,
   // logged with a stack (window.__vbErr — paste it to be fixed), and where possible the loop is restarted instead
   // of hanging. A LOST GPU DEVICE (driver reset/timeout — the classic mid-walk freeze) shows a visible banner.
   window.__vbErr = null;
   const vbNoteErr = (tag, e) => { window.__vbErr = tag + ': ' + ((e && (e.stack || e.message)) || e); console.error('[vb]', tag, e); };
+  // ── CPU PHASE TELEMETRY ── (dev) armed with __vb.cprof(true). When disarmed this costs exactly one
+  // predictable `if (CPROF)` test per phase boundary — no performance.now() calls, no allocation — so it
+  // is safe to leave compiled into normal play. Armed, it EMAs the ms spent in each tickBody phase.
+  let CPROF = 0, cpLast = 0;
+  const CP_NAMES = ['physics', 'stream', 'weather', 'snowvox', 'camera', 'life', 'emit', 'encode'];
+  const cpEma = new Float64Array(CP_NAMES.length);
+  const cpCur = new Float64Array(CP_NAMES.length);     // THIS frame's phase costs (the EMA hides spikes)
+  const cpMark = (i) => { const t = performance.now(); cpCur[i] = t - cpLast; cpEma[i] += (cpCur[i] - cpEma[i]) * 0.08; cpLast = t; };
+  // ── FRAME-TIME RING ── always on (two float stores per frame) so 1% lows / spikes can be read at any moment.
+  // FT = the wall gap between frames; FTB = time actually spent INSIDE tickBody. The pair is the whole
+  // diagnosis: FT >> FTB means the stall is outside our code (GPU pacing / present / GC), FT ≈ FTB means it is ours.
+  const FTR = 4096;                                  // ~13 s at 300 fps — a 1024 ring covered only 3.4 s, so ft() and spikes() reported different windows
+  const FT = new Float32Array(FTR), FTB = new Float32Array(FTR); let ftI = 0, ftN = 0;
+  let heapPrev = 0, heapDrops = 0, heapAlloc = 0;    // GC discrimination: a frame where the JS heap SHRINKS is a collection
+  // ── SPIKE LOG ── worst frames with their phase breakdown + which heavy subsystems ran that frame.
+  const CPE_NAMES = ['census', 'band', 'upBricks', 'recenter', 'targets', 'snowPatch', 'stampPatch', 'heapShrank'];
+  let cpEvt = 0, cpSpikeTh = 12;
+  const cpSpikes = [];
+  // ── GPU UPLOAD ACCOUNTING ── installed only while armed: writeBuffer is wrapped to tally calls + bytes.
+  let upN = 0, upB = 0, upWrapped = null, cpUpN = 0, cpUpB = 0, tbT0 = 0;
+  function cprofArm(on) {
+    if (on && !upWrapped) { const q = device.queue, orig = q.writeBuffer.bind(q);
+      upWrapped = orig;
+      q.writeBuffer = function (buf, off, data, dOff, size) {
+        upN++; upB += (size !== undefined ? size * (data.BYTES_PER_ELEMENT || 1) : (data.byteLength || 0) - (dOff || 0) * (data.BYTES_PER_ELEMENT || 1));
+        return dOff === undefined ? orig(buf, off, data) : (size === undefined ? orig(buf, off, data, dOff) : orig(buf, off, data, dOff, size)); };
+    } else if (!on && upWrapped) { device.queue.writeBuffer = upWrapped; upWrapped = null; }
+    CPROF = on ? 1 : 0;
+  }
   window.addEventListener('error', (e) => vbNoteErr('uncaught', e.error || e.message));
   window.addEventListener('unhandledrejection', (e) => vbNoteErr('rejection', e.reason));
   device.lost.then((info) => {                         // device lost = the picture freezes at the last frame with no error anywhere — now it says so
@@ -378,8 +417,11 @@
   device.queue.writeTexture({ texture: moonTex }, new Uint8Array([205, 210, 220, 255]), {}, [1, 1]);   // flat fallback if the photo is missing
   try {                                                // REAL moon — NASA SVS full-moon photograph mapped onto the disc
     const mimg = await createImageBitmap(await (await fetch('assets/moon.jpg')).blob());
+    const moonFallback = moonTex;                      // the 1x1 placeholder is superseded here — destroy it once the real photo is in place
     moonTex = device.createTexture({ size: [mimg.width, mimg.height], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
     device.queue.copyExternalImageToTexture({ source: mimg }, { texture: moonTex }, [mimg.width, mimg.height]);
+    mimg.close();                                      // release the decoded bitmap immediately — the texture owns the pixels now
+    try { moonFallback.destroy(); } catch (e) {}       // no bind group has been built yet (makeTargets runs later), so nothing references it
   } catch (e) { console.warn('[vb] moon.jpg missing — flat moon disc', e); }
 
   // ── ENDLESS WORLD ── voxel = 10 cm. A 768×160×768 window (94 MB u8) slides with the player over an
@@ -664,7 +706,9 @@
       '  }\n' +
       '  postMessage({ key, hs, ms }, [hs.buffer, ms.buffer]);\n' +
       '};';
-    genWorker = new Worker(URL.createObjectURL(new Blob([wsrc], { type: 'text/javascript' })));
+    const gurl = URL.createObjectURL(new Blob([wsrc], { type: 'text/javascript' }));
+    genWorker = new Worker(gurl);
+    URL.revokeObjectURL(gurl);                         // the worker holds its own copy of the script; the blob URL would otherwise pin the source for the page's lifetime
     genWorker.onmessage = (e) => { const j = rowJobs.get(e.data.key); if (j) { j.hs = e.data.hs; j.ms = e.data.ms; j.done = true; } };
     genWorker.onerror = (e) => { console.warn('[vb] gen worker error — inline generation', e.message || e); genWorkerOk = false; };
     genWorkerOk = true;
@@ -2470,6 +2514,7 @@
       w.postMessage({ init: 1, MROT, remap });
       genPool.push(w);
     }
+    URL.revokeObjectURL(purl);                         // every worker is constructed by now — drop the blob (see genWorker above)
     poolOk = true;
     console.log('[vb] gen pool:', NPOOL, 'workers');
   } catch (e) { console.warn('[vb] gen pool unavailable — inline generation', e); }
@@ -2562,13 +2607,46 @@
   const uploadWorld = () => { const CH = 128 << 20;    // chunked — a single 1.5 GB writeBuffer would need a same-sized staging allocation
     for (let o = 0; o < W.byteLength; o += CH) device.queue.writeBuffer(worldBuf, o, W.buffer, o, Math.min(CH, W.byteLength - o)); };
   uploadWorld();
-  const brickBuf = device.createBuffer({ size: bricks.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+  const brickBuf = device.createBuffer({ size: bricks.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });   // COPY_SRC: __vb.bdiff() reads occupancy back to verify the dirty-word uploads
   new Uint32Array(brickBuf.getMappedRange()).set(bricks); brickBuf.unmap();
-  const brick2Buf = device.createBuffer({ size: bricks2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+  const brick2Buf = device.createBuffer({ size: bricks2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
   new Uint32Array(brick2Buf.getMappedRange()).set(bricks2); brick2Buf.unmap();
-  const wbrickBuf = device.createBuffer({ size: wbricks.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+  const wbrickBuf = device.createBuffer({ size: wbricks.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
   new Uint32Array(wbrickBuf.getMappedRange()).set(wbricks); wbrickBuf.unmap();
-  const uploadBricks = () => { device.queue.writeBuffer(brickBuf, 0, bricks); device.queue.writeBuffer(brick2Buf, 0, bricks2); device.queue.writeBuffer(wbrickBuf, 0, wbricks); };
+  const uploadBricks = () => { if (CPROF) cpEvt |= 4; device.queue.writeBuffer(brickBuf, 0, bricks); device.queue.writeBuffer(brick2Buf, 0, bricks2); device.queue.writeBuffer(wbrickBuf, 0, wbricks); };
+  // ── Z-BAND OCCUPANCY UPLOAD ── a z-band's bricks are CONTIGUOUS in both tables: the flat index is
+  // bx + by*BX + bz*BX*BY (and cx + cy*B2X + cz*B2X*B2Y), with the z axis outermost. So a band that only
+  // grew rows [gz0,gz1) touches exactly one slice, and the whole 384 KB table no longer has to be re-sent
+  // for every 8-voxel band. BX*BY (12288) and B2X*B2Y (768) are both multiples of 32, so the bit ranges
+  // land on u32 word boundaries and the slice is exact — no neighbouring bits are clipped or clobbered.
+  // Only used where the caller KNOWS the change is confined to that z range (genBandGen's z path).
+  const uploadBricksZ = (gz0, gz1) => {
+    if (CPROF) cpEvt |= 4;
+    const b0 = (gz0 >> 3) * BX * BY, b1 = ((gz1 + 7) >> 3) * BX * BY;   // L1 bit range
+    const w0 = b0 >> 5, w1 = (b1 + 31) >> 5;
+    device.queue.writeBuffer(brickBuf, w0 * 4, bricks.buffer, w0 * 4, (w1 - w0) * 4);
+    device.queue.writeBuffer(wbrickBuf, w0 * 4, wbricks.buffer, w0 * 4, (w1 - w0) * 4);
+    const c0 = (gz0 >> 5) * B2X * B2Y, c1 = ((gz1 + 31) >> 5) * B2X * B2Y;   // L2 bit range (32-voxel super-bricks)
+    const v0 = c0 >> 5, v1 = (c1 + 31) >> 5;
+    device.queue.writeBuffer(brick2Buf, v0 * 4, bricks2.buffer, v0 * 4, (v1 - v0) * 4);
+  };
+  // Coalesce a set of dirty u32 word indices into contiguous runs — one writeBuffer per run instead of per word.
+  // Bridging a small gap re-uploads a few CLEAN words, which is always safe: the CPU array is authoritative,
+  // so copying more of it can only bring the GPU closer to it, never further away.
+  const WRUN_GAP = 16;
+  const wrunTmp = [];
+  const writeWordRuns = (buf, src, wset) => {
+    if (!wset || !wset.size) return;
+    wrunTmp.length = 0;
+    for (const w of wset) wrunTmp.push(w);
+    wrunTmp.sort((p, q) => p - q);
+    let s = wrunTmp[0], e = s + 1;
+    for (let i = 1; i < wrunTmp.length; i++) {
+      if (wrunTmp[i] <= e + WRUN_GAP) { e = wrunTmp[i] + 1; continue; }
+      device.queue.writeBuffer(buf, s * 4, src, s * 4, (e - s) * 4); s = wrunTmp[i]; e = s + 1;
+    }
+    device.queue.writeBuffer(buf, s * 4, src, s * 4, (e - s) * 4);
+  };
   const palBuf = device.createBuffer({ size: 256 * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
   { const f = new Float32Array(palBuf.getMappedRange());           // sRGB → linear; shaders work in linear
     for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); f[i * 4 + 3] = 0; } }
@@ -2585,6 +2663,18 @@
   const stag64 = new Float64Array(stag.buffer);        // whole-f64 view for the repack loop — one store per 8 voxels (same trick blitSlab's narrow-run path uses)
   const stagBuf = device.createBuffer({ size: stag.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const scatBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  // ── VOXEL PATCH SCATTER ── (creature stamps, snow landings, pickups, editor edits)
+  // gpuPatch used to issue ONE 4-byte device.queue.writeBuffer per touched word. A busy frame touches
+  // 2-3k words, and that many staging writes stalls the driver's upload ring: MEASURED as 25-37 ms frame
+  // gaps with only ~2 ms of CPU inside tickBody (the stall lands in submit/present, outside our code).
+  // Now the touched word INDICES are staged and applied by one writeBuffer + one tiny compute dispatch,
+  // so the GPU call count is O(1) in the number of edited voxels instead of O(n).
+  const PATCHMAX = 1 << 16;                            // word indices staged per dispatch; a bigger frame flushes early and loops
+  const patchIdx = new Uint32Array(PATCHMAX);          // staged word indices (duplicates allowed — see below)
+  const patchPairs = new Uint32Array(PATCHMAX * 2);    // (index, value) upload image, packed at FLUSH time
+  let patchN = 0;
+  const patchBuf = device.createBuffer({ size: patchPairs.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const patchCnt = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
   // ── GERSTNER WAVE FIELD ── (user: physically-based water) 4 deep-water waves — a long primary swell, a crossing
   // secondary, two short chop waves — with the deep-water dispersion ω = c·√(g·k) (g ≈ 98 vox/s², slowed 0.42× for a
@@ -3266,6 +3356,22 @@
     }
   `;
 
+  // voxel patch scatter — applies a staged (wordIndex, value) list to the world buffer in one dispatch.
+  // Duplicate indices are harmless: values are read from the CPU world at flush time, so every writer of
+  // a given address stores the SAME final word (a benign race, not a nondeterministic one).
+  const PATCHW = /* wgsl */`
+    struct PC { n : u32, pad0 : u32, pad1 : u32, pad2 : u32 }
+    @group(0) @binding(0) var<uniform> pc : PC;
+    @group(0) @binding(1) var<storage, read> pdata : array<u32>;   // NOT named 'patch': that is a RESERVED WGSL keyword, and the failed
+    @group(0) @binding(2) var<storage, read_write> world : array<u32>;   // module compile invalidates every command buffer it is encoded into
+    @compute @workgroup_size(64)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+      let i = gid.x;
+      if (i >= pc.n) { return; }
+      world[pdata[i * 2u]] = pdata[i * 2u + 1u];
+    }
+  `;
+
   const TEMPORAL = /* wgsl */`
     @group(0) @binding(1) var gIrr : texture_2d<f32>;
     @group(0) @binding(2) var histPrev : texture_2d<f32>;
@@ -3914,6 +4020,29 @@
   const pScatter = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: SCATTER }), entryPoint: 'main' } });
   const bgScatter = device.createBindGroup({ layout: pScatter.getBindGroupLayout(0), entries: [
     { binding: 0, resource: { buffer: scatBuf } }, { binding: 1, resource: { buffer: stagBuf } }, { binding: 2, resource: { buffer: worldBuf } }] });
+  const pPatch = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: PATCHW }), entryPoint: 'main' } });
+  const bgPatch = device.createBindGroup({ layout: pPatch.getBindGroupLayout(0), entries: [
+    { binding: 0, resource: { buffer: patchCnt } }, { binding: 1, resource: { buffer: patchBuf } }, { binding: 2, resource: { buffer: worldBuf } }] });
+  // Encode the staged patch into `enc`. Values are read from W32 HERE, so a word edited several times
+  // this frame uploads its final state exactly once. Returns the pair count (0 = nothing to do).
+  function patchEncode(enc) {
+    if (!patchN) return 0;
+    for (let i = 0; i < patchN; i++) { const w = patchIdx[i]; patchPairs[i * 2] = w; patchPairs[i * 2 + 1] = W32[w]; }
+    device.queue.writeBuffer(patchBuf, 0, patchPairs.buffer, 0, patchN * 8);
+    device.queue.writeBuffer(patchCnt, 0, new Uint32Array([patchN, 0, 0, 0]));
+    const p = enc.beginComputePass(); p.setPipeline(pPatch); p.setBindGroup(0, bgPatch);
+    p.dispatchWorkgroups(Math.ceil(patchN / 64)); p.end();
+    const n = patchN; patchN = 0; return n;
+  }
+  // Immediate flush — used when the stage overflows mid-frame, and by __vb.gpudiff() so a readback
+  // never races staged-but-undispatched edits.
+  function patchFlush() {
+    if (!patchN) return 0;
+    const enc = device.createCommandEncoder();
+    const n = patchEncode(enc);
+    device.queue.submit([enc.finish()]);
+    return n;
+  }
   const blitModule = device.createShaderModule({ code: PRE + BLIT });
   const pBlit = device.createRenderPipeline({ layout: 'auto', vertex: { module: blitModule, entryPoint: 'vs' }, fragment: { module: blitModule, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } });
   const linSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
@@ -3925,18 +4054,30 @@
   let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, visBuf = null;
   let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline
   let resetHist = 1;
-  function makeTargets() {
-    CW = Math.max(2, Math.floor(canvas.clientWidth * devicePixelRatio));
-    CH = Math.max(2, Math.floor(canvas.clientHeight * devicePixelRatio));
+  let liveTargets = null;                              // textures the CURRENT bind groups reference — destroyed only after the GPU is done with them
+  function makeTargets(force) {
+    const nCW = Math.max(2, Math.floor(canvas.clientWidth * devicePixelRatio));
+    const nCH = Math.max(2, Math.floor(canvas.clientHeight * devicePixelRatio));
+    const nRW = Math.max(2, Math.round(nCW * renderScale)), nRH = Math.max(2, Math.round(nCH * renderScale));
+    if (!force && liveTargets && nCW === CW && nCH === CH && nRW === RW && nRH === RH) return;   // a resize event that did not change the pixel size must not rebuild ten textures (and reset temporal history)
+    if (CPROF) cpEvt |= 16;
+    CW = nCW; CH = nCH; RW = nRW; RH = nRH;
     canvas.width = CW; canvas.height = CH;
-    RW = Math.max(2, Math.round(CW * renderScale)); RH = Math.max(2, Math.round(CH * renderScale));
     const tex = (fmt) => device.createTexture({ size: [RW, RH], format: fmt, usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
     const gAlbedo = tex('rgba8unorm'), gIrr = tex('rgba16float');
     const histA = tex('rgba16float'), histB = tex('rgba16float'), irrF = tex('rgba16float');
     const colorCur = tex('rgba8unorm'), colHistA = tex('rgba8unorm'), colHistB = tex('rgba8unorm');
     const slotA = tex('r32uint'), slotB = tex('r32uint');   // ── DYNAMIC LIFE ── per-pixel creature id + hit-axis bits, ping-ponged (temporal needs LAST frame's ids for identity checks). cur for frame parity par = par ? slotB : slotA — mirrors the hist ping-pong.
     const v = (t) => t.createView();
-    if (visBuf) visBuf.destroy();
+    // ── LIFETIME ── the superseded set is released only after every submitted frame that still references it
+    // has completed; destroying at swap time would pull textures out from under in-flight GPU work. Before this,
+    // nothing was ever destroyed and each resize/scale change leaked a full screen-texture set until GC noticed.
+    const oldT = liveTargets, oldVis = visBuf;
+    liveTargets = [gAlbedo, gIrr, histA, histB, irrF, colorCur, colHistA, colHistB, slotA, slotB];
+    if (oldT || oldVis) device.queue.onSubmittedWorkDone().then(() => {
+      if (oldT) for (const t of oldT) { try { t.destroy(); } catch (e) {} }
+      if (oldVis) { try { oldVis.destroy(); } catch (e) {} }
+    }).catch(() => {});
     visBuf = device.createBuffer({ size: Math.ceil(RW / 8) * Math.ceil(RH / 8) * 8, usage: GPUBufferUsage.STORAGE });   // 2×u32 tile-cull bitmask per 8×8 tile — written by the VIS prepass, read by TRACE + COMPOSITE
     bgVis = device.createBindGroup({ layout: pVis.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: visBuf } }] });
@@ -3973,8 +4114,9 @@
       { binding: 2, resource: linSamp }] }));
     resetHist = 1;
   }
-  makeTargets();
-  addEventListener('resize', makeTargets);
+  makeTargets(true);
+  let resizeT = 0;                                     // DEBOUNCE: a drag-resize fires dozens of events; each one rebuilt every target and reset temporal history
+  addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => makeTargets(), 120); });
 
   // ── DEMAND-DRIVEN STREAMING ── the world holds a fully-generated RECTANGLE (`rect`, world coords, 8-aligned)
   // sized to the view distance. Moving grows it band-by-band toward where the player is heading — bands are only
@@ -4031,9 +4173,11 @@
       while (xStripPending >= 0) { yield; }            // ⚠ ORDERING: a pending x-strip scatter holds a PRE-band snapshot of these very rows (its "stale, outside rect" corner).
       // Uploading now would queue BEFORE that scatter executes — the scatter then stomps this fresh corner with stale wrapped
       // terrain (underground stone rendered as floating grey boxes; CPU W stays correct, so only F5 cured it). Wait it out first.
-      for (const [ga, gb] of splitWrap(s.z0, s.z1, WZ))   // z-bands are contiguous grid rows; a >8-thick band may cross the toroidal seam → write per contiguous segment
+      if (CPROF) cpEvt |= 2;
+      for (const [ga, gb] of splitWrap(s.z0, s.z1, WZ)) {   // z-bands are contiguous grid rows; a >8-thick band may cross the toroidal seam → write per contiguous segment
         device.queue.writeBuffer(worldBuf, ga * WX * WY, W.buffer, ga * WX * WY, (gb - ga) * WX * WY);
-      uploadBricks();
+        uploadBricksZ(ga, gb);                         // only THIS band's occupancy slice — the change is confined to these rows
+      }
       if (s.side === 'zlo') rect.zlo = s.z0; else rect.zhi = s.z1;
       genBands += s.th >> 3;
     } else {
@@ -4092,6 +4236,7 @@
     genMs += performance.now() - t0;
   }
   function recenter(x, z) {                            // teleport-scale move: rebuild a starter square, the rest streams in
+    if (CPROF) cpEvt |= 8;
     loadEl.classList.remove('hidden'); loadMsgEl.textContent = 'regenerating forest…'; $('loadMeter').style.display = 'none';   // in-game regen is a brief synchronous flash — no 0-100 progress to show, so hide the boot meter
     genJob = null; xStripPending = -1;
     winOX = Math.round(x / 32) * 32 - HALF; winOZ = Math.round(z / 32) * 32 - HALF;
@@ -4105,7 +4250,7 @@
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
-    for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B) { B.sCells = null; B.sKey = null; } }   // world was zeroed above — force the PERCHED SONGBIRDS (64-243, the only grid-stamped life) to re-stamp fresh next frame; 16-63 carry no stamps but clearing the fields is free
+    for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B) { B.sN = 0; B.sKey = null; } }   // world was zeroed above — force the PERCHED SONGBIRDS (64-243, the only grid-stamped life) to re-stamp fresh next frame; 16-63 carry no stamps but clearing the fields is free
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
@@ -4178,10 +4323,32 @@
     for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (solid(x, y, z)) return false;
     return true;
   };
+  // Is this world cell currently owned by a GRID-STAMPED creature (perched songbirds 64-243, land
+  // mammals 276-371)? Needed because mushTab is keyed by PALETTE ID, and the palette is full at 256:
+  // edCol nearest-matches a new model colour onto an existing entry, so the armadillo's browns landed
+  // on mushroom browns (ids 175/176) and the player trampolined off its back. stampApply only ever
+  // writes into AIR or FOLIAGE, and a real mushroom voxel is neither — so a bouncy id inside a live
+  // stamp is ALWAYS this false positive, never real mushroom geometry.
+  // Cheap by construction: onMushroom() runs on a LANDING, not per frame, and the radius test rejects
+  // every creature that cannot be under the player's feet before touching its cell list.
+  const cellStamped = (ii) => {
+    for (let j = 64; j < 372; j++) {
+      const B = wbf[j];
+      if (!B || !B.sN) continue;
+      const dx = B.x - P.x, dz = B.z - P.z;
+      if (dx * dx + dz * dz > 400) continue;           // >20 vox away — cannot be the voxel under the feet
+      const c = B.sCells;
+      for (let i = 0; i < B.sN; i++) if (c[i] === ii) return true;
+    }
+    return false;
+  };
   const onMushroom = () => {                            // is the player's box resting on a bouncy mushroom voxel? (feet sit at floor(P.y); the surface is the voxel below)
     const gy = Math.floor(P.y) - 1; if (gy < 0 || gy >= WY) return false;
     const x0 = Math.floor(P.x - HW), x1 = Math.floor(P.x + HW), z0 = Math.floor(P.z - HW), z1 = Math.floor(P.z + HW);
-    for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (mushTab[W[gwrap(x, WX) + gy * WX + gwrap(z, WZ) * WX * WY]]) return true;
+    for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+      const ii = gwrap(x, WX) + gy * WX + gwrap(z, WZ) * WX * WY;
+      if (mushTab[W[ii]] && !cellStamped(ii)) return true;   // real mushroom only — a creature standing on one of the shared ids must not trampoline
+    }
     return false;
   };
   const onSand = () => {                                // is the player standing on sand? (beach/lakebed) → slow their movement
@@ -4336,14 +4503,15 @@
     for (const ii of found) W[ii] = 0;
     return found;
   }
-  function gpuPatch(cells, full = true) {              // few voxels: word-level buffer writes + refresh the touched brick bits. full=false uploads ONLY the touched brick words (per-frame worm stamps — the whole-buffer re-upload is far too heavy at 60 fps)
-    const words = new Set(), bset = new Set();
-    for (const ii of cells) {
-      words.add(ii >> 2);
+  function gpuPatch(cells, full = true, n = cells.length) {              // few voxels: STAGE the touched words for the frame's patch scatter + refresh the touched brick bits. full=false uploads ONLY the touched brick words (per-frame worm stamps — the whole-buffer re-upload is far too heavy at 60 fps)
+    const bset = new Set();
+    for (let q = 0; q < n; q++) {
+      const ii = cells[q];
+      if (patchN >= PATCHMAX) patchFlush();            // stage full mid-frame → dispatch what we have and keep going (bounded memory, unchanged result)
+      patchIdx[patchN++] = ii >> 2;                    // duplicates are fine: patchEncode reads the FINAL word value from W32
       const gx = ii % WX, gy = ((ii / WX) | 0) % WY, gz = (ii / (WX * WY)) | 0;
       bset.add((gx >> 3) + (gy >> 3) * BX + (gz >> 3) * BX * BY);
     }
-    for (const w of words) device.queue.writeBuffer(worldBuf, w * 4, W.buffer, w * 4, 4);
     const bWords = full ? null : new Set(), c2Words = full ? null : new Set();
     for (const b of bset) {
       const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
@@ -4369,7 +4537,7 @@
       if (!full) c2Words.add(c >> 5);
     }
     if (full) uploadBricks();
-    else { for (const w of bWords) { device.queue.writeBuffer(brickBuf, w * 4, bricks.buffer, w * 4, 4); device.queue.writeBuffer(wbrickBuf, w * 4, wbricks.buffer, w * 4, 4); } for (const w of c2Words) device.queue.writeBuffer(brick2Buf, w * 4, bricks2.buffer, w * 4, 4); }
+    else { writeWordRuns(brickBuf, bricks.buffer, bWords); writeWordRuns(wbrickBuf, wbricks.buffer, bWords); writeWordRuns(brick2Buf, bricks2.buffer, c2Words); }
   }
 
   // ── flying cardinal ── free WANDERING flight (no home, no leash — it goes where it goes; it does NOT follow the player): the turn rate
@@ -4541,26 +4709,40 @@
   // ── GRID-STAMPED CREATURES (Tasks 3 + 6) ── worms AND ducks are stamped into the world voxel grid so they pick up the SAME static SVGF lighting as terrain, instead of the analytic off-grid drop shading.
   // Worms animate their crawl (re-stamping the current frame) while moving + freeze on a pause; ducks are a single rigid pose floating at a fixed waterline. A creature re-stamps only when its cell / facing / frame changes, so a still one fully converges to crisp static lighting.
   const CREATURE_IDS = new Set();                      // palette ids the PERCHED SONGBIRDS stamp (the only grid-stamped life) — bfObst/lookaheads treat these as PASSABLE. (The worm/duck moving-life stamp experiment that once lived here was dead code and is REMOVED: moving creatures are now TRACE-INJECTED rigid models — see the DYNAMIC LIFE block in TRACE — which gets them the full SVGF path with no grid writes at all.)
-  const wormPatch = [];                                // grid indices touched by PERCHED-BIRD (un)stamps this frame → one light gpuPatch at the loop's end (or when a pickup/editor clears one). Name kept for history; only the perched songbirds use the stamp path now.
-  const unstampWorm = (B) => { if (!B.sCells) return; for (let i = 0; i < B.sCells.length; i++) { const ii = B.sCells[i];   // (used ONLY by the perched songbirds — the sole grid-stamped life)
-      if (W[ii] !== 0) { W[ii] = B.sPrev ? B.sPrev[i] : 0; wormPatch.push(ii); } }   // restore the overwritten foliage, not 0 — else the bird leaves a hole in the canopy
-    B.sCells = null; B.sPrev = null; B.sKey = null; };
+  // grid indices touched by PERCHED-BIRD (un)stamps this frame → one light gpuPatch at the loop's end.
+  // POOLED: this used to be a plain Array push-ed thousands of times per frame and truncated with .length = 0,
+  // which churns its backing store every frame. A grown-once Int32Array + count allocates nothing in steady state.
+  const buriedTmp = [], snowCells = [];             // pooled scratch for the snow settle scan + this frame's snow voxel edits
+  let wormPatch = new Int32Array(1 << 15), wormPatchN = 0;
+  const wormPatchPush = (ii) => {
+    if (wormPatchN >= wormPatch.length) { const g = new Int32Array(wormPatch.length * 2); g.set(wormPatch); wormPatch = g; }
+    wormPatch[wormPatchN++] = ii;
+  };
+  // Per-creature stamp buffers, grown in place and REUSED. The old code built two fresh JS Arrays per re-stamp;
+  // at 24 fps across ~180 perched birds + mammals that was the single largest allocator in the profile (~40% of
+  // all per-frame garbage). B.sN is now the "is stamped" truth — B.sCells stays allocated between stamps.
+  const stampAlloc = (B, n) => { if (!B.sCells || B.sCells.length < n) { B.sCells = new Int32Array(n + 64); B.sPrev = new Uint8Array(n + 64); } };
+  const unstampWorm = (B) => { if (!B.sN) return; const nc = B.sCells, pv = B.sPrev;   // (used ONLY by the perched songbirds — the sole grid-stamped life)
+    for (let i = 0; i < B.sN; i++) { const ii = nc[i];
+      if (W[ii] !== 0) { W[ii] = pv[i]; wormPatchPush(ii); } }   // restore the overwritten foliage, not 0 — else the bird leaves a hole in the canopy
+    B.sN = 0; B.sKey = null; };
   const stampApply = (B, pose, gx, gy, gz, key) => {   // shared: re-stamp only on change; only into EMPTY AIR so un-stamp is a safe →0
-    if (B.sKey === key && B.sCells) return;
+    if (B.sKey === key && B.sN) return;
     unstampWorm(B);
     // A perched bird sits INSIDE the pine crown, so much of its body lands on needles. Writing only into empty air
     // dropped every one of those voxels and left birds with holes punched through them (42% of them, worst cases
     // losing a third of the model). Foliage is now overwritten and the PREVIOUS id is remembered per cell, so the
     // un-stamp restores the needles instead of leaving a bird-shaped hole in the tree. Anything else — trunks, rocks,
     // another bird's stamp — still blocks, so nothing structural is ever eaten.
-    const nc = [], pv = [];
-    for (const p of pose) { const wy = gy + p[1]; if (wy < 1 || wy >= WY - 1) continue;
+    stampAlloc(B, pose.length);
+    const nc = B.sCells, pv = B.sPrev; let k = 0;
+    for (let q = 0; q < pose.length; q++) { const p = pose[q]; const wy = gy + p[1]; if (wy < 1 || wy >= WY - 1) continue;
       const ii = gwrap(gx + p[0], WX) + wy * WX + gwrap(gz + p[2], WZ) * WX * WY;
       const cur = W[ii];
       if (cur !== 0 && !foliaTab[cur]) continue;   // trunks, rocks and other stamps still block; a voxel lost inside the branch is hidden by it anyway
-      pv.push(cur); W[ii] = p[3]; nc.push(ii); wormPatch.push(ii);
+      pv[k] = cur; W[ii] = p[3]; nc[k] = ii; k++; wormPatchPush(ii);
     }
-    B.sCells = nc; B.sPrev = pv; B.sKey = key; B.sWant = pose.length;
+    B.sN = k; B.sKey = key; B.sWant = pose.length;
   };
   const stampOrient = (th) => { const Hx = Math.sin(th), Hz = Math.cos(th); return Math.abs(Hz) >= Math.abs(Hx) ? (Hz >= 0 ? 0 : 2) : (Hx >= 0 ? 1 : 3); };   // nearest cardinal
   // ── GRID-STAMPED PERCHED CARDINAL (matches the editor exactly) ── built from the SAME rotate .vox via edParseVox + edRotVox + the same baked offsets, so its grid lighting/rotation/alignment are identical to the asset-editor cardinal (user)
@@ -4628,9 +4810,9 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
-  const unstampAllWorms = () => { for (let j = 16; j < 372; j++) { const B = wbf[j]; if (B && B.sCells) {   // ALL grid-stamped creatures: perched songbirds (64-243) + BUNNIES/ARMADILLOS/SKUNKS/PORCUPINES (276-371). Must cover the mammals too, or their stamps get unstamped one-by-one AFTER the editor's bricks.fill(0) and re-patch as floating chunks (user bug)
-    for (let i = 0; i < B.sCells.length; i++) { const ii = B.sCells[i]; if (W[ii] !== 0) W[ii] = B.sPrev ? B.sPrev[i] : 0; }   // restore, same reason as unstampWorm
-    B.sCells = null; B.sPrev = null; B.sKey = null; } } };   // hard clear (editor freeze) — caller re-uploads occupancy
+  const unstampAllWorms = () => { for (let j = 16; j < 372; j++) { const B = wbf[j]; if (B && B.sN) {   // ALL grid-stamped creatures: perched songbirds (64-243) + BUNNIES/ARMADILLOS/SKUNKS/PORCUPINES (276-371). Must cover the mammals too, or their stamps get unstamped one-by-one AFTER the editor's bricks.fill(0) and re-patch as floating chunks (user bug)
+    for (let i = 0; i < B.sN; i++) { const ii = B.sCells[i]; if (W[ii] !== 0) W[ii] = B.sPrev[i]; }   // restore, same reason as unstampWorm
+    B.sN = 0; B.sKey = null; } } };   // hard clear (editor freeze) — caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const waterSpots = [];                              // detected WATER of any width — lakes AND rivers. Dragonflies home here; ducks still use lakeSpots (a river is too narrow for a family)
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
@@ -4837,7 +5019,7 @@
     if (best < 0) return;
     const B = wbf[best];
     spawnDeathBurst(B.x, (B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y, B.z);   // poof at the creature (a PERCHED BIRD's height lives in perchFeet — B.y is stale for kind 5)
-    if (B.sCells) unstampWorm(B);                       // clear a grid-stamped creature's world voxels (mammals + perched birds)
+    if (B.sN) unstampWorm(B);                           // clear a grid-stamped creature's world voxels (mammals + perched birds)
     B.init = false; B.dieT = 0; B.slain = true;         // SLAIN (user: "when I kill something, it respawns somewhere else — prevent this"): the slot is dead for the rest of the session — the population loop skips it, so nothing re-places it elsewhere
   };
   document.addEventListener('mousedown', (e) => {
@@ -4948,7 +5130,8 @@
   const veStartRec = () => {
     if (VE.recording) return;
     const mime = veCaptureMime(); if (!mime) { console.warn('[vb] MediaRecorder unsupported'); return; }   // hardware H.264 first → doesn't contend with the render loop the way software VP9 did
-    let stream; try { stream = canvas.captureStream(60); } catch (e) { console.warn('[vb] canvas.captureStream failed', e); return; }   // 60 fps → matches the game's cadence so playback isn't juddery (user)
+    let stream; try { stream = canvas.captureStream(60); } catch (e) { console.warn('[vb] canvas.captureStream failed', e); return; }
+    VE.recStream = stream;                             // kept so veStopRec can release the canvas capture (see there)   // 60 fps → matches the game's cadence so playback isn't juddery (user)
     const adest = veAudioDest(); if (adest) { try { adest.stream.getAudioTracks().forEach((t) => stream.addTrack(t)); } catch (e) {} }   // mix in the game audio (user) — video-only if it fails
     VE.chunks = [];
     try { VE.rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: veBitrate(canvas.width, canvas.height), audioBitsPerSecond: 192000 }); }   // record at full canvas res + a resolution-scaled bitrate so encode #1 is high quality (the export re-encodes it)
@@ -4964,6 +5147,10 @@
   const veStopRec = () => {
     if (!VE.recording) return;
     try { VE.rec.stop(); } catch (e) {}
+    // Release the canvas capture. Without this the compositor keeps feeding a stream nobody reads for
+    // the rest of the session. VIDEO tracks only: the audio tracks come from the shared veGameDest node
+    // and stopping them would silence every later recording.
+    if (VE.recStream) { try { for (const t of VE.recStream.getVideoTracks()) t.stop(); } catch (e) {} VE.recStream = null; }
     VE.recording = false;
     veRecEl.classList.add('hidden');
     veBtnEl.classList.remove('recording');
@@ -5196,6 +5383,7 @@
     alive = false;
     cancelAnimationFrame(pump);
     rec.stop(); await stopped; veVideo.muted = wasMuted; VE.exporting = false;
+    try { for (const t of stream.getTracks()) t.stop(); } catch (e) {}   // release the export compositor's capture + the borrowed audio track
     const url = URL.createObjectURL(new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' })), a2 = document.createElement('a');
     a2.href = url; a2.download = 'voxelbit-clip.' + ext; document.body.appendChild(a2); a2.click(); a2.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
@@ -5229,8 +5417,33 @@
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
   let vigToggle = () => {};                            // set by the settings-panel wiring below; the L keybind calls the SAME path so the button label stays in sync
-  let snowQI = [], snowQT = [], snowHead = 0;          // FIFO as parallel NUMBER arrays (cell idx / melt time) — object entries at 1.6M live voxels were ~10× the memory; ring-buffer head avoids O(n) shifts
-  let snowWI = [], snowWHead = 0;                     // separate queue of snow voxels that landed on WATER/ICE — drained in one continuous sweep after the storm (snowWMeltAt), no per-voxel timers
+  // FIFO as parallel TYPED arrays (cell idx / melt time) — object entries at 1.6M live voxels were ~10× the memory.
+  // These were plain Arrays compacted with .slice(head); at ~450k live voxels each slice copied the whole queue and
+  // the pushes re-grew it, which the heap profiler put at ~99% of ALL snowfall garbage. Now capacity doubles on
+  // demand (bounded by SNOW_MAX) and compaction is an in-place copyWithin — zero allocation in steady state.
+  let snowQI = new Int32Array(1 << 16), snowQT = new Float64Array(1 << 16), snowQN = 0, snowHead = 0;
+  let snowWI = new Int32Array(1 << 14), snowWN = 0, snowWHead = 0;   // snow that landed on WATER/ICE — drained in one continuous sweep after the storm (snowWMeltAt), no per-voxel timers
+  const snowCompactQ = () => { if (snowHead <= 0) return; snowQI.copyWithin(0, snowHead, snowQN); snowQT.copyWithin(0, snowHead, snowQN); snowQN -= snowHead; snowHead = 0; };
+  const snowCompactW = () => { if (snowWHead <= 0) return; snowWI.copyWithin(0, snowWHead, snowWN); snowWN -= snowWHead; snowWHead = 0; };
+  const snowRoomQ = () => {                            // ensure one free slot; compact first, grow only if that is not enough
+    if (snowQN < snowQI.length) return true;
+    snowCompactQ();
+    if (snowQN < snowQI.length) return true;
+    const cap = Math.min(SNOW_MAX + 4096, snowQI.length * 2);
+    if (cap <= snowQI.length) return false;
+    const a = new Int32Array(cap); a.set(snowQI.subarray(0, snowQN)); snowQI = a;
+    const b = new Float64Array(cap); b.set(snowQT.subarray(0, snowQN)); snowQT = b;
+    return true;
+  };
+  const snowRoomW = () => {
+    if (snowWN < snowWI.length) return true;
+    snowCompactW();
+    if (snowWN < snowWI.length) return true;
+    const cap = Math.min(SNOW_MAX + 4096, snowWI.length * 2);
+    if (cap <= snowWI.length) return false;
+    const a = new Int32Array(cap); a.set(snowWI.subarray(0, snowWN)); snowWI = a;
+    return true;
+  };
   const SNOW_WATER_GRACE = 6000;                       // ms after a storm ends before the frozen lake starts shedding its snow
   const SNOW_WATER_RATE = 9000;                        // voxels/s the water blanket drains at once it starts — rapid + steady, ~8 s for a full lake (user)
   let snowWMelting = false, snowWMeltAt = Infinity;    // latched into ONE continuous drain once SNOW_WATER_GRACE has passed since the storm (user: no per-voxel-timed bursts)
@@ -5324,7 +5537,7 @@
   resSync();
   resSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
   resSlider.addEventListener('click', (e) => e.stopPropagation());
-  resSlider.addEventListener('input', (e) => { e.stopPropagation(); renderScale = Math.max(0.375, Math.min(1.0, parseFloat(resSlider.value) / 100)); makeTargets(); resShow(); sliderFill(resSlider);
+  resSlider.addEventListener('input', (e) => { e.stopPropagation(); renderScale = Math.max(0.375, Math.min(1.0, parseFloat(resSlider.value) / 100)); makeTargets(true); resShow(); sliderFill(resSlider);
     try { localStorage.setItem('vb_scale', String(renderScale)); } catch (err) {} });
   let todDrag = false;
   const todSlider = $('todSlider'), todLabel = $('todLabel');
@@ -5486,8 +5699,8 @@
     if (e.code === 'KeyP') { snowOn = !snowOn;               // P — toggle the snow storm (user); mirrors the settings snow button EXACTLY so the two stay in sync
       if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 300000; }
       snowBtnSync(); }
-    if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(); resSync(); try { localStorage.setItem('vb_scale', String(renderScale)); } catch (err) {} }
-    if (e.code === binds.scaleup) { renderScale = Math.min(1.0, renderScale + 0.125); makeTargets(); resSync(); try { localStorage.setItem('vb_scale', String(renderScale)); } catch (err) {} }
+    if (e.code === binds.scaledown) { renderScale = Math.max(0.375, renderScale - 0.125); makeTargets(true); resSync(); try { localStorage.setItem('vb_scale', String(renderScale)); } catch (err) {} }
+    if (e.code === binds.scaleup) { renderScale = Math.min(1.0, renderScale + 0.125); makeTargets(true); resSync(); try { localStorage.setItem('vb_scale', String(renderScale)); } catch (err) {} }
     if (e.code === 'KeyC' && !ED.on) { cineMode = !cineMode; document.body.classList.toggle('noui', cineMode);   // C — CINEMATIC still hold: freezes the camera + hides the HUD for a clean framed view; press again to exit + regain control
       if (cineMode) { cine.baseYaw = P.yaw; cine.basePitch = P.pitch; cine.baseX = P.x; cine.baseY = P.y; cine.baseZ = P.z; cine.bobT = 0; cine.roll = 0; P.fly = true; P.vy = 0; } }   // STILL HOLD (user): snapshot the exact framed shot; the camera stays put and only sways
     else if (e.code === 'KeyC' && ED.on) { document.body.classList.toggle('noui'); }   // in the editor, C still just toggles the HUD
@@ -5510,15 +5723,20 @@
   const JIT = Array.from({ length: 8 }, (_, i) => [halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5]);
   let frame = 0, prevT = performance.now(), fpsEma = 60, hudT = 0;
   let profQS = null, profRes = null, profStg = null, profBusy = false, profNew = false;   // per-pass GPU timing — armed via __vb.prof(true)
-  const profEma = [0, 0, 0, 0, 0], PROF_NAMES = ['trace', 'temporal', 'spatial', 'composite', 'taa'];
+  const profEma = [0, 0, 0, 0, 0, 0, 0], PROF_NAMES = ['trace', 'temporal', 'spatial', 'composite', 'taa', 'vis', 'blit'];
   function profArm(on) {
     if (on && PROF && !profQS) {
-      profQS = device.createQuerySet({ type: 'timestamp', count: 10 });
-      profRes = device.createBuffer({ size: 80, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
-      profStg = device.createBuffer({ size: 80, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      profQS = device.createQuerySet({ type: 'timestamp', count: 14 });   // 5 run() passes + the VIS prepass (10/11) + the blit render pass (12/13)
+      profRes = device.createBuffer({ size: 112, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+      profStg = device.createBuffer({ size: 112, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     } else if (!on && profQS) { profQS.destroy(); profRes.destroy(); profStg.destroy(); profQS = profRes = profStg = null; }
   }
-  let waitEma = 4, paceWaited = true;                  // measured pipeline-wait (CPU idle) — sizes the worldgen budget precisely
+  let waitEma = 4, paceWaited = true, paceTs = 0;      // measured pipeline-wait (CPU idle) — sizes the worldgen budget precisely
+  // Pacing continuations, hoisted out of the frame loop so no closure is allocated per frame.
+  // paceFail keeps the old contract: a REJECTED onSubmittedWorkDone (device reset mid-walk) must not end the
+  // .then chain silently — that was a PERMANENT FREEZE with no error. Fall back to rAF pacing instead.
+  const paceOk = () => { waitEma += (Math.min(30, performance.now() - paceTs) - waitEma) * 0.08; paceWaited = true; tick(performance.now()); };
+  const paceFail = (err) => { vbNoteErr('gpu pacing rejected', err); paceWaited = false; requestAnimationFrame(tick); };
   let gpuPrevDone = Promise.resolve();                 // completion of frame N-1 — pacing on it keeps 2 frames in flight, CPU prep overlaps GPU work
   const prevCam = { pos: [0, 0, 0], right: [1, 0, 0], up: [0, 1, 0], fwd: [0, 0, 1], tanH: 1, aspect: 1, jit: [0, 0] };   // pos in WORLD coords
   const FOV = 72 * Math.PI / 180;
@@ -6062,7 +6280,7 @@
       if (B && B.init) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), trap: +(B.trap || 0).toFixed(2) }); } return o; },   // worm stuck-test tap
     flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
-    snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: (snowQI.length - snowHead) + (snowWI.length - snowWHead), liveWater: snowWI.length - snowWHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT, freezeAt: snowFreezeAt }; },
+    snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: (snowQN - snowHead) + (snowWN - snowWHead), liveWater: snowWN - snowWHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT, freezeAt: snowFreezeAt }; },
     worldDump(wx0, wz0, n) { const out = new Uint8Array(n * n * WY); let k = 0;   // raw voxel block dump (base64) — lets a test DIFF two builds voxel-by-voxel
       for (let z = wz0; z < wz0 + n; z++) for (let x = wx0; x < wx0 + n; x++) { const b9 = gwrap(z, WZ) * WX * WY + gwrap(x, WX);
         for (let y = 0; y < WY; y++) out[k++] = W[b9 + y * WX]; }
@@ -6090,6 +6308,20 @@
     edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, name1: ED.name1, arm: !!ED.arm, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     pal(i) { return i === undefined ? palette.length : palette[i]; },
+    bouncyIds() { const o = []; for (let i = 0; i < 256; i++) if (mushTab[i]) o.push(i); return o; },   // palette ids flagged BOUNCY (mushroom trampoline) — a creature whose stamp shares one of these would trampoline the player
+    mushProbe() {                                      // what the trampoline test sees under the player RIGHT NOW.
+      const gy = Math.floor(P.y) - 1;                  // raw = the old id-only rule, live = the rule that ignores creature stamps.
+      if (gy < 0 || gy >= WY) return { raw: false, live: false, ids: [] };
+      const x0 = Math.floor(P.x - HW), x1 = Math.floor(P.x + HW), z0 = Math.floor(P.z - HW), z1 = Math.floor(P.z + HW);
+      let raw = false; const ids = [];
+      for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+        const ii = gwrap(x, WX) + gy * WX + gwrap(z, WZ) * WX * WY;
+        if (mushTab[W[ii]]) { raw = true; ids.push([W[ii], cellStamped(ii) ? 'creature' : 'world']); }
+      }
+      return { raw, live: onMushroom(), ids };
+    },
+    stampIds(a, b) { const s = new Set(); for (let j = a; j < b; j++) { const B = wbf[j];   // ids a grid-stamped creature band currently has in the world
+      if (B && B.sN) for (let i = 0; i < B.sN; i++) s.add(W[B.sCells[i]]); } return [...s].sort((p, q) => p - q); },
     rd() { return { renderDist, half: HALF, windowX: WX }; },   // fixed view-distance tap
     lifedbg(m) { lifeDbg = m === undefined ? 0 : m | 0; return { mode: lifeDbg, traceInjected: LIFE_TRACE }; },   // dynamic-life debug views (0 off / 1 slot ids / 2 history confidence / 3 motion / 4 raw AO)
     mouthPit(r) {                                    // how far from the mouth is the SURFACE actually carved away? boulders stamp after the carve at pristine H, so anything inside this radius floats
@@ -6249,12 +6481,34 @@
       frames: BIRD_NFRAMES, glidePose: BIRD_GLIDE, blueFrames: BLUEF_NFRAMES, cardBase: BIRD_ITEM0, blueBase: BLUEF_ITEM0,
       birds: birds.map((b) => ({ init: b.init, x: +b.x.toFixed(1), y: +b.y.toFixed(1), z: +b.z.toFixed(1), mode: b.mode, glid: !!b.glid, fi: b.fi | 0, edge: !!b.edge, sp: b.sp | 0,
         d: Math.round(Math.hypot(b.x - P.x, b.z - P.z)) })) }; },   // flyer tap
-    birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
-    duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sCells) { n += B.sCells.length; live++; } } for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
-    perched() { const o = []; for (let j = 64; j < 244; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: (B.sCells ? B.sCells.length : 0), want: B.sWant | 0, ids: B.sCells ? [...new Set(B.sCells.map((ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
+    birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
+    duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } } for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
+    perched() { const o = []; for (let j = 64; j < 244; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: B.sN | 0, want: B.sWant | 0, ids: B.sN ? [...new Set(Array.from(B.sCells.subarray(0, B.sN), (ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
     reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
+    cprof(on) { if (on !== undefined) cprofArm(on);          // CPU phase timings + per-frame GPU upload volume
+      const o = Object.fromEntries(CP_NAMES.map((n, i) => [n, +cpEma[i].toFixed(3)]));
+      o.cpuTotal = +CP_NAMES.reduce((a, n, i) => a + cpEma[i], 0).toFixed(3);
+      o.upCalls = +cpUpN.toFixed(1); o.upKB = +(cpUpB / 1024).toFixed(1); o.fps = +fpsEma.toFixed(0); return o; },
+    ft() { const n = Math.min(ftN, FTR); if (!n) return null;   // frame-time distribution → 1% lows + worst spike
+      const a = Array.from(FT.subarray(0, n)).sort((p, q) => p - q);
+      const b = Array.from(FTB.subarray(0, n)).sort((p, q) => p - q);
+      const q = (arr, f) => +arr[Math.min(n - 1, Math.floor(n * f))].toFixed(2);
+      const mean = a.reduce((p, c) => p + c, 0) / n;
+      return { n, gcFrames: heapDrops, allocMBs: +(heapAlloc / 1048576).toFixed(1),
+        avg: +mean.toFixed(2), p50: q(a, 0.5), p90: q(a, 0.9), p99: q(a, 0.99), max: +a[n - 1].toFixed(2),
+        fps1pctLow: +(1000 / q(a, 0.99)).toFixed(1), fpsAvg: +(1000 / mean).toFixed(1),
+        tickP50: q(b, 0.5), tickP99: q(b, 0.99), tickMax: +b[n - 1].toFixed(2) }; },   // tick* = CPU inside tickBody; flat tick* against a spiking max means the stall is OUTSIDE our code (pacing / present / GC)
+    spikes() { return { th: cpSpikeTh, names: CP_NAMES, evNames: CPE_NAMES, list: cpSpikes.slice() }; },
+    spikeTh(v) { if (v !== undefined) cpSpikeTh = v; cpSpikes.length = 0; return cpSpikeTh; },
+    ftReset() { ftN = 0; ftI = 0; cpSpikes.length = 0; heapDrops = 0; heapAlloc = 0; return true; },
+    mem() { const m = performance.memory || {};        // CPU heap + the static GPU allocation the world costs
+      return { jsHeapMB: +((m.usedJSHeapSize || 0) / 1048576).toFixed(1), jsHeapTotalMB: +((m.totalJSHeapSize || 0) / 1048576).toFixed(1),
+        worldMB: +(W.byteLength / 1048576).toFixed(1), bricksMB: +((bricks.byteLength + bricks2.byteLength + wbricks.byteLength) / 1048576).toFixed(2),
+        hmapMB: +(hmap.byteLength / 1048576).toFixed(2), stagMB: +(stag.byteLength / 1048576).toFixed(2), RW, RH, CW, CH, renderScale }; },
+    res(v) { if (v !== undefined) { renderScale = Math.max(0.375, Math.min(1, v)); makeTargets(true); resSync(); } return { renderScale, RW, RH }; },   // A/B the resolution scale from a test (does NOT persist — a test must not rewrite the player's vb_scale)
     async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
+      patchFlush();                                    // staged voxel edits must land before the readback, or they read as false diffs
       const CH = 64 << 20, stg = device.createBuffer({ size: CH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       const WXW = WX >> 2, mx = new Uint8Array(WXW), mz = new Uint8Array(WZ);   // per-word x-mask and per-row z-mask; boundary words count as outside (no false positives)
       const gx0 = gwrap(rect.xlo, WX), xw = rect.xhi - rect.xlo, gz0 = gwrap(rect.zlo, WZ), zw = rect.zhi - rect.zlo;
@@ -6277,6 +6531,21 @@
       }
       stg.destroy();
       return { diffs, spots };
+    },
+    async bdiff() {                                    // GPU-vs-CPU OCCUPANCY diff (bricks / bricks2 / wbricks). 0 = in sync.
+      patchFlush();                                    // pending voxel edits carry pending brick bits
+      const out = {};
+      for (const [name, cpu, buf] of [['bricks', bricks, brickBuf], ['bricks2', bricks2, brick2Buf], ['wbricks', wbricks, wbrickBuf]]) {
+        const stg = device.createBuffer({ size: cpu.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+        const e2 = device.createCommandEncoder(); e2.copyBufferToBuffer(buf, 0, stg, 0, cpu.byteLength); device.queue.submit([e2.finish()]);
+        await stg.mapAsync(GPUMapMode.READ);
+        const g = new Uint32Array(stg.getMappedRange());
+        let bad = 0; const spots = [];
+        for (let i = 0; i < g.length; i++) if (g[i] !== cpu[i]) { bad++; if (spots.length < 8) spots.push([i, g[i] >>> 0, cpu[i] >>> 0]); }
+        out[name] = bad ? { bad, spots } : 0;
+        stg.unmap(); stg.destroy();
+      }
+      return out;
     },
     scanCliffs(TH, LEN) { const th = TH || 25, ln = LEN || 24, runs = [];   /*TEMP-DEBUG: find long AXIS-ALIGNED hmap cliffs (rect-pit edges)*/
       for (let gz = 0; gz < WZ - 1; gz++) { let run = 0, sx = 0;
@@ -6376,6 +6645,11 @@
     tickReq = false;
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
     fpsEma = fpsEma * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
+    FT[ftI] = dt * 1000;                               // frame-time ring (1% lows / spike hunting); FTB is filled at the end of the body
+    if (CPROF) { cpLast = performance.now(); tbT0 = cpLast; upN = 0; upB = 0; cpEvt = 0;
+      const hm = performance.memory; if (hm) { const h = hm.usedJSHeapSize;
+        if (heapPrev) { const d = h - heapPrev; if (d < 0) { heapDrops++; cpEvt |= 128; } else heapAlloc += d; }
+        heapPrev = h; } }
 
     // ── player physics ──
     const crouching = keys.has(binds.crouch) && !P.fly;
@@ -6456,7 +6730,9 @@
     }
 
     // ── stream the world window toward the player ──
+    if (CPROF) cpMark(0);
     stepShifts();
+    if (CPROF) cpMark(1);
 
     { const gust = Math.max(0, 0.55 + 0.45 * Math.sin(now * 0.00037) + 0.35 * Math.sin(now * 0.00113 + 2.1));   // ── WIND ── strength gusts (0..~1.35) over ~10-30 s
       const wSpd = 8.0 + 16.0 * gust;                 // 0.8–3 m/s of sideways drift — flakes travel at a marked HORIZONTAL angle, not straight down
@@ -6470,6 +6746,7 @@
       const nowSolid = freezeK > 0.6;
       if (nowSolid !== iceSolid) { iceSolid = nowSolid; solidTab[WATER_T] = nowSolid ? 1 : 0;
         if (nowSolid && waterAt(Math.floor(P.x), Math.floor(P.y + 2), Math.floor(P.z))) { P.y = WL + 1.5; P.vy = 0; } } }
+    if (CPROF) cpMark(2);
 
     // ── voxel snow ── NEAR the player, landings are the ACTUAL rendered flakes touching down: JS mirrors the shader's
     // deterministic flake lattice (same ih3 hash, same jitter, same integrated fall/wind) and places a voxel at the very
@@ -6480,11 +6757,11 @@
       if (P.x < bx0) { P.x = bx0; P.hvx = Math.max(0, P.hvx); } else if (P.x > bx1) { P.x = bx1; P.hvx = Math.min(0, P.hvx); }   // zero the outward velocity so they don't stick jittering against the wall
       if (P.z < bz0) { P.z = bz0; P.hvz = Math.max(0, P.hvz); } else if (P.z > bz1) { P.z = bz1; P.hvz = Math.min(0, P.hvz); }
     }
-    { const cells = [];
+    { const cells = snowCells; cells.length = 0;       // POOLED across frames — this list reaches thousands of entries during a storm
       if (snowOn !== snowPrevOn) { snowPrevOn = snowOn;   // storm edges: no time-melt DURING a storm (the blanket must not thin while flakes still fall)
         if (snowOn) { snowOnT0 = now; snowFreezeAt = now + SNOW_FREEZE_DELAY; snowWMelting = false; snowWMeltAt = Infinity; }   // the water may not skin over until 10 s in (user); a new storm re-arms the water melt
         else { snowOffT0 = now; snowFreezeAt = Infinity; snowWMeltAt = now + SNOW_WATER_GRACE;   // WATER snow starts its one continuous drain a few seconds after the storm ends — NOT gated on the huge per-voxel SNOW_MELT timer (that pushed the lake's first melt ~97 s out; user wants it to clear rapidly and steadily)
-          for (let qi = snowHead; qi < snowQT.length; qi++) snowQT[qi] += now - snowOnT0; }
+          for (let qi = snowHead; qi < snowQN; qi++) snowQT[qi] += now - snowOnT0; }
       }
       {                                              // ── STORM EDGES ── both sweep DOWN from just off the top of the screen at SNOW_SWEEP.
         const topY = P.y + SNOW_HEAD;                  // Runs EVERY frame but must sit after the transition block above, which is what sets
@@ -6514,7 +6791,7 @@
         return y;
       };
       const landSnowAt = (wx0, wz0) => {
-        if ((snowQI.length - snowHead) + (snowWI.length - snowWHead) >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
+        if ((snowQN - snowHead) + (snowWN - snowWHead) >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
         // ORDER (user): the FLAKES arrive first, the blanket second. The leading edge sweeps down from the sky, so
         // until it has passed THIS column's surface no flake has reached the ground here yet — laying snow before
         // then made the blanket appear under a still-empty sky. Tested per column, not globally, so a valley floor
@@ -6532,7 +6809,8 @@
           if (bx === wx && bz === wz) { break; }
           wx = bx; wz = bz;
         }
-        const buried = [];
+        buriedTmp.length = 0;                          // REUSED: a fresh [] here was 98.5% of the snowfall allocation profile (one per candidate column, thousands per frame)
+        const buried = buriedTmp;
         const y = scanTop(wx, wz, buried);
         const gx = gwrap(wx, WX), gz = gwrap(wz, WZ), b2 = gx + gz * WX * WY;
         const top = W[b2 + y * WX];
@@ -6545,8 +6823,8 @@
         const ii = b2 + (y + 1) * WX;
         W[ii] = SNOW[(wx ^ wz) & 1];
         cells.push(ii);
-        if (waterAt(wx, WL, wz)) { snowWI.push(ii); }   // landed on the frozen surface — drained continuously after the storm, not on a per-voxel timer
-        else { snowQI.push(ii); snowQT.push(now + SNOW_MELT); }
+        if (waterAt(wx, WL, wz)) { if (snowRoomW()) snowWI[snowWN++] = ii; }   // landed on the frozen surface — drained continuously after the storm, not on a per-voxel timer
+        else if (snowRoomQ()) { snowQI[snowQN] = ii; snowQT[snowQN] = now + SNOW_MELT; snowQN++; }
       };
       if (snowOn && !dead && !ED.on) {                 // no weather inside the asset-editor void
         const t3 = now / 1000;                         // ── EXACT LANDINGS ── mirror of the shader flake field (u.time = now/1000)
@@ -6599,7 +6877,7 @@
       const wCap = Math.max(8, Math.round(dt * SNOW_WATER_RATE));
       if (!snowOn && !snowWMelting && now >= snowWMeltAt) snowWMelting = true;
       if (snowWMelting) { let wMelt = 0;
-        while (snowWHead < snowWI.length && wMelt < wCap) {
+        while (snowWHead < snowWN && wMelt < wCap) {
           let jj = snowWI[snowWHead++];
           if (W[jj] === SNOW[0] || W[jj] === SNOW[1]) {
             for (let up = 0; up < 4 && jj + WX < W.length && (W[jj + WX] === SNOW[0] || W[jj + WX] === SNOW[1]); up++) jj += WX;
@@ -6607,9 +6885,9 @@
           }
           wMelt++;
         }
-        if (snowWHead >= snowWI.length) { snowWMelting = false; snowWMeltAt = Infinity; }   // queue emptied — stand down until the next storm
+        if (snowWHead >= snowWN) { snowWMelting = false; snowWMeltAt = Infinity; }   // queue emptied — stand down until the next storm
       }
-      while (snowHead < snowQI.length && !snowOn && snowQT[snowHead] < now && melted < meltCap) {
+      while (snowHead < snowQN && !snowOn && snowQT[snowHead] < now && melted < meltCap) {
         let jj = snowQI[snowHead++];
         if (W[jj] === SNOW[0] || W[jj] === SNOW[1]) {
           for (let up = 0; up < 4 && jj + WX < W.length && (W[jj + WX] === SNOW[0] || W[jj + WX] === SNOW[1]); up++) jj += WX;   // climb to the column's TOP snow voxel
@@ -6617,10 +6895,11 @@
         }
         melted++;
       }
-      if (snowWHead > 8192) { snowWI = snowWI.slice(snowWHead); snowWHead = 0; }
-      if (snowHead > 8192) { snowQI = snowQI.slice(snowHead); snowQT = snowQT.slice(snowHead); snowHead = 0; }
-      if (cells.length) gpuPatch(cells);
+      if (snowWHead > 8192) snowCompactW();            // in-place, no reallocation (was .slice() of a multi-hundred-thousand-entry array)
+      if (snowHead > 8192) snowCompactQ();
+      if (cells.length) { if (CPROF) cpEvt |= 32; gpuPatch(cells, false); }   // dirty-word brick upload, not the 774 KB whole-table re-upload — same bits, ~1000x less traffic (verified by __vb.bdiff())
     }
+    if (CPROF) cpMark(3);
 
     // ── day/night cycle ── 20-minute full cycle at 1x; tday 0 = midnight, 0.5 = noon; ALT+scroll scales speed, L pauses
     { const ntd = (tday + dt * cycleSpeed / 1200) % 1;
@@ -6848,6 +7127,7 @@
       UF[o2 + 8] = Yw[0] * right[0] + Yw[1] * right[1] + Yw[2] * right[2]; UF[o2 + 9] = Yw[0] * up[0] + Yw[1] * up[1] + Yw[2] * up[2]; UF[o2 + 10] = Yw[0] * fwd[0] + Yw[1] * fwd[1] + Yw[2] * fwd[2]; UF[o2 + 11] = 0;
       UF[o2 + 12] = Zw[0] * right[0] + Zw[1] * right[1] + Zw[2] * right[2]; UF[o2 + 13] = Zw[0] * up[0] + Zw[1] * up[1] + Zw[2] * up[2]; UF[o2 + 14] = Zw[0] * fwd[0] + Zw[1] * fwd[1] + Zw[2] * fwd[2]; UF[o2 + 15] = 0;
     }
+    if (CPROF) cpMark(4);
     lifeUid.fill(-1); lifeAna.fill(1);                 // ── dynamic-life ledger reset ── slots not claimed this frame stay analytic-only/empty
     { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
       if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is ALWAYS GRID-STAMPED (real world voxels → full lighting), exactly like every other model — NO trace-inject exception (user)
@@ -7291,7 +7571,7 @@
     const ffLights = [];                               // glowing fireflies + live clash/death SPARKS this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
     if ((DUCK_ITEM0 || DFLY_NFRAMES || FISHES.length) && !ED.on && now > lakeScanT) {   // ── LAKE + WATER CENSUS (every 2.5 s) ── grid-sample the view for wide-open-water spots, cluster them into lakes; fish home on the same census;
-      lakeScanT = now + 2500;                          //    mother ducks below TARGET these so every visible lake gets its own family (pool cap 2 families)
+      lakeScanT = now + 2500; if (CPROF) cpEvt |= 1;                          //    mother ducks below TARGET these so every visible lake gets its own family (pool cap 2 families)
       lakeSpots.length = 0; waterSpots.length = 0;
       const R7 = LIFE_OUT;                             // lake census reaches the full spawn ring — at 0.8·rdV no lake was ever detected out where ducks now spawn, so they could never appear there
       for (let gx7 = -R7; gx7 <= R7; gx7 += 20) for (let gz7 = -R7; gz7 <= R7; gz7 += 20) {
@@ -7436,7 +7716,7 @@
             B.col = ((Math.imul(cx, 374761393) ^ Math.imul(cz, 668265263)) >>> 0) % Math.max(1, BFLY_COLS.length);
           }
         }
-        if (!placed) { if (B.sCells) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
+        if (!placed) { if (B.sN) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
         if (wantK === 0 || wantK === 2 || wantK === 6) { B.hx = sx7; B.hz = sz7; B.hcx = hcx; B.hcz = hcz; } else { B.hcx = undefined; }
         B.dfly = (wantK === 0 && isDfly);              // the strip + frame count key off this; everything else about the creature is butterfly
         if (wantK === 6) { B.spd = FISH_CFG.baseSpeed * 0.8; B.spdT = FISH_CFG.baseSpeed; B.chRe = 0; B.dT = 0.3 + Math.random() * 0.5; B.dRe = 0; B.animClk = Math.random() * 40; B.cx = B.x; B.cy = B.y; B.cz = B.z; B.vyS = 0;   // FISH: ease up into the configured cruise + desynced tail-beat; chRe=0 → pick a channel heading on frame 1; cx/cy/cz = last body-clear pose (terrain hitbox revert)
@@ -7523,7 +7803,7 @@
           let best = -1, bgv = -1e9;                     // force the RELAXED escape (step limit ignored — same gate as boxed-in) toward the most climbable neighbour
           for (let h = 0; h < 4; h++) { const tx = B.x + DIRa[h][0] * 5, tz = B.z + DIRa[h][1] * 5, gA = bfSurf(tx, tz);
             if (gA > WL + 0.5 && !bfObstW(tx, gA + 2, tz) && !bfObstW(tx, gA + 4, tz) && gA > bgv) { bgv = gA; best = h; } }
-          if (best < 0 || B.aStkN >= 3) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // three failed escapes (or nowhere to go) = truly wedged → respawn on fresh ground
+          if (best < 0 || B.aStkN >= 3) { if (B.sN) unstampWorm(B); B.init = false; continue; }   // three failed escapes (or nowhere to go) = truly wedged → respawn on fresh ground
           B.ah = best; B.aTurnT = tb3 + 0.28; B.aRelax = 1.4;
         }
         B.animClk = (B.animClk || 0) + dt;   // armadillo walk clock (24 fps, read by stampArmadillo)
@@ -7560,7 +7840,7 @@
               for (let h = 0; h < 4; h++) { const tx = B.bpx + DIRb[h][0] * 6, tz = B.bpz + DIRb[h][1] * 6, gA = bfSurf(tx, tz);
                 if (gA > WL + 0.5 && !bfObstW(tx, gA + 2, tz) && !bfObstW(tx, gA + 4, tz) && gA > bgv) { bgv = gA; best = h; } }
               if (best >= 0 && (B.bStkN || 0) < 3) { B.bh = best; B.bst = 0; }   // snap to face the escape + HOP out (the vertical snap is worth breaking the spin)
-              else { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // truly islanded (only water/void within reach) OR three watchdog escapes went nowhere → respawn on fresh land
+              else { if (B.sN) unstampWorm(B); B.init = false; continue; }   // truly islanded (only water/void within reach) OR three watchdog escapes went nowhere → respawn on fresh land
             }
           } else {                                       // ── CLEAR AHEAD ── escape done; resume normal behaviour
             B.besc = 0;
@@ -7996,6 +8276,7 @@
       emitAnc[emitN * 3] = px3; emitAnc[emitN * 3 + 1] = py3; emitAnc[emitN * 3 + 2] = pz3;
       emitDp[emitN] = dp2; emitN++;
     }
+    if (CPROF) cpMark(5);
     { const avail = 64 - dropCursor;                   // ── NEAREST-FIRST EMIT ── copy the closest staged poses into the real drop slots; the rest (far, in fog) are the ones dropped
       const idx = emitIdx.subarray(0, emitN);
       for (let i = 0; i < emitN; i++) idx[i] = i;
@@ -8005,7 +8286,7 @@
         for (let k = 0; k < 16; k++) UF[o4 + k] = emitBuf[src + k];
         lifeSlotSet(slot, 2000 + emitWho[j], emitAnc[j * 3], emitAnc[j * 3 + 1], emitAnc[j * 3 + 2], Math.round(emitBuf[src + 7]), emitAna[j] === 1); }
     }
-    if (wormPatch.length) { gpuPatch(wormPatch, false); wormPatch.length = 0; }   // one light brick-word patch for all worm (un)stamps this frame (incl. any queued by a pickup/toss)
+    if (wormPatchN) { if (CPROF) cpEvt |= 64; gpuPatch(wormPatch, false, wormPatchN); wormPatchN = 0; }   // one light brick-word patch for all worm (un)stamps this frame (incl. any queued by a pickup/toss)
     UF[1103] = dropCursor;                             // pick2Y.w = live slot count — the composite loop's bound (always ≥ 9 so drops/cardinal/sparks are covered)
     cshadList.sort((a, b) => a[5] - b[5]);             // nearest 16 ground/water creatures cast shadows (the sun ray tests these boxes)
     for (let ci = 0; ci < 16; ci++) { const o6 = 1140 + ci * 8, C = cshadList[ci];
@@ -8060,6 +8341,7 @@
       UF[1528] = lifeDbg; UF[1529] = LIFE_TRACE ? 1 : 0; UF[1530] = 0; UF[1531] = 0;
     }
     device.queue.writeBuffer(uniBuf, 0, UF);
+    if (CPROF) cpMark(6);
 
     // ── passes ──
     if (VE.exporting) { tickReq = true; paceWaited = false; requestAnimationFrame(tick); return; }   // ── EXPORT QUIET MODE ── while the video editor is writing a file, skip the frame entirely: the
@@ -8073,12 +8355,16 @@
       p.dispatchWorkgroups(Math.ceil(STRIPW / 256)); p.end();
       xStripPending = -1;
     }
+    // ⚠ ORDERING: the voxel patch goes AFTER the strip scatter. The scatter carries a PRE-band snapshot of a
+    // whole x-strip; applying creature/snow/edit words first would let it stomp them with stale wrapped terrain.
+    patchEncode(enc);
     const gw = Math.ceil(RW / 8), gh = Math.ceil(RH / 8);
     let qi = 0;
     const run = (pipe, bg) => {
       const p = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: qi++, endOfPassWriteIndex: qi++ } } : {});
       p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(gw, gh); p.end(); };
-    { const p = enc.beginComputePass(); p.setPipeline(pVis); p.setBindGroup(0, bgVis);   // ── VIS prepass ── one thread per 8×8 TILE (~1/64th of a screen pass): the creature/drop tile-cull bitmask, computed once and shared by TRACE + COMPOSITE
+    { const p = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 10, endOfPassWriteIndex: 11 } } : {});   // ── VIS prepass ── one thread per 8×8 TILE (~1/64th of a screen pass): the creature/drop tile-cull bitmask, computed once and shared by TRACE + COMPOSITE
+      p.setPipeline(pVis); p.setBindGroup(0, bgVis);
       p.dispatchWorkgroups(Math.ceil(gw / 8), Math.ceil(gh / 8)); p.end(); }
     run(pTraceV[eyeFolV], bgTrace[eyeFolV][par]);
     run(pTemporal, bgTemporal[par]);
@@ -8086,21 +8372,30 @@
     run(pComposite, bgComposite[par]);
     run(pTaa, bgTaa[par]);
     if (profQS) {                                      // resolve + read back pass timings (only while __vb.prof polling has it armed)
-      enc.resolveQuerySet(profQS, 0, 10, profRes, 0);
-      if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 80); profNew = true; }
+      enc.resolveQuerySet(profQS, 0, 14, profRes, 0);
+      if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 112); profNew = true; }
     }
-    const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+    const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
     rp.setPipeline(pBlit); rp.setBindGroup(0, bgBlit[par]); rp.draw(3); rp.end();
     device.queue.submit([enc.finish()]);
     if (profNew && !profBusy) {
       profNew = false; profBusy = true;
       profStg.mapAsync(GPUMapMode.READ).then(() => {
         const q = new BigInt64Array(profStg.getMappedRange());
-        for (let i = 0; i < 5; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) profEma[i] = profEma[i] * 0.92 + ms * 0.08; }
+        for (let i = 0; i < 7; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) profEma[i] = profEma[i] * 0.92 + ms * 0.08; }
         profStg.unmap(); profBusy = false;
       }).catch(() => { profBusy = false; });
     }
 
+    if (CPROF) { cpMark(7); cpUpN += (upN - cpUpN) * 0.08; cpUpB += (upB - cpUpB) * 0.08;
+      const tb = performance.now() - tbT0; FTB[ftI] = tb;
+      if (dt * 1000 > cpSpikeTh || tb > cpSpikeTh) {   // log the worst frames with full attribution
+        if (cpSpikes.length >= 40) cpSpikes.shift();
+        cpSpikes.push({ dt: +(dt * 1000).toFixed(2), tick: +tb.toFixed(2),
+          ph: Array.from(cpCur, (v) => +v.toFixed(2)), ev: cpEvt, upN, upKB: +(upB / 1024).toFixed(1) });
+      }
+    }
+    ftI = (ftI + 1) % FTR; if (ftN < FTR) ftN++;
     // ── save prev cam (world coords) ──
     prevCam.pos = cam; prevCam.right = right; prevCam.up = up; prevCam.fwd = fwd;
     prevCam.tanH = tanH; prevCam.aspect = aspect; prevCam.jit = j;
@@ -8134,10 +8429,9 @@
     // CPU's frame prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it.
     // When frames get expensive (long view distances), drop to same-frame pacing — pipelining latency reads as input LAG there.
     if (vsyncOn || document.hidden) { paceWaited = false; tickReq = true; requestAnimationFrame(tick); }   // hidden tab always idles via rAF
-    else { const wait = gpuPrevDone; gpuPrevDone = device.queue.onSubmittedWorkDone(); const ts = performance.now();   // ONE pacing mode — no threshold flip-flop, so gen throughput is CONSISTENT
+    else { const wait = gpuPrevDone; gpuPrevDone = device.queue.onSubmittedWorkDone(); paceTs = performance.now();   // ONE pacing mode — no threshold flip-flop, so gen throughput is CONSISTENT
       tickReq = true;
-      wait.then(() => { waitEma += (Math.min(30, performance.now() - ts) - waitEma) * 0.08; paceWaited = true; tick(performance.now()); },
-        (err) => { vbNoteErr('gpu pacing rejected', err); paceWaited = false; requestAnimationFrame(tick); }); }   // a REJECTED onSubmittedWorkDone (device reset mid-walk) used to end the .then chain silently = PERMANENT FREEZE with no error — fall back to rAF pacing instead; if the device is truly lost, the device.lost banner says so
+      wait.then(paceOk, paceFail); }   // HOISTED handlers (see above): the inline arrow pair allocated two closures EVERY frame — the top entry in the steady-state heap profile
   }
   tick(performance.now());
 })();
