@@ -893,25 +893,7 @@
   let ROCK26 = [], R26S = [], R26M = [], R26B = [];                                         // 26 pre-voxelized rocks from rocks.glb (see scratch voxelize_rocks.py) in 3 rarity tiers
   try {
     const rj = await (await fetch('assets/decoration/rocks26.json')).json();
-    const ROCK_SMOOTH = (() => { const m = /[?&]rock=([0-9.]+)/.exec(location.search);
-      return m ? Math.max(0, Math.min(1, parseFloat(m[1]))) : 0.55; })();
-    const rcnt = new Array(rj.pal.length).fill(0);                                          // how much of each shade the 26 models actually use
-    for (const r of rj.rocks) for (const q of r.vox) rcnt[q >>> 24]++;
-    let rsr = 0, rsg = 0, rsb = 0, rsw = 0;
-    rj.pal.forEach((c, i) => { const w = rcnt[i]; rsr += c[0] * w; rsg += c[1] * w; rsb += c[2] * w; rsw += w; });
-    const rmr = rsw ? rsr / rsw : 0, rmg = rsw ? rsg / rsw : 0, rmb = rsw ? rsb / rsw : 0;
-    const rlum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-    const rl0 = rj.pal.map(rlum);
-    const ROCK_LIFT = (() => { const m = /[?&]rocklift=([0-9.]+)/.exec(location.search);
-      return m ? Math.max(0, Math.min(1, parseFloat(m[1]))) : 0.21; })();   // 0 = as authored (mean luminance 74), 1 = white. 0.21 sits HALFWAY between the authored dark stone and the 0.42 light grey (user) - mean luminance 112.
-    const lift = (v) => Math.round(v + (255 - v) * ROCK_LIFT);
-    const rpal = rj.pal.map((c) => [lift(Math.round(c[0] + (rmr - c[0]) * ROCK_SMOOTH)),
-                                    lift(Math.round(c[1] + (rmg - c[1]) * ROCK_SMOOTH)),
-                                    lift(Math.round(c[2] + (rmb - c[2]) * ROCK_SMOOTH))]);
-    const rl1 = rpal.map(rlum);
-    console.log('[vb] rock smoothing', ROCK_SMOOTH, 'lift', ROCK_LIFT, '- luminance spread',
-      (Math.max(...rl0) - Math.min(...rl0)).toFixed(1), '->', (Math.max(...rl1) - Math.min(...rl1)).toFixed(1));
-    const rids = rpal.map((c) => addCol(c[0], c[1], c[2]));                                 // 12 shared quantized shades for all 26 rocks, contrast-compressed (see ROCK_SMOOTH)
+    const rids = rj.pal.map((c) => addCol(c[0], c[1], c[2]));                               // 12 shared quantized shades for all 26 rocks
     ROCK26 = rj.rocks.map((r) => ({ sx: r.sx, sy: r.sy, sz: r.sz, vox: r.vox.map((p) => (p & 0xffffff) | (rids[p >>> 24] << 24)) }));
     rj.rocks.forEach((r, i) => { (r.grp === 'big' ? R26B : (r.grp === 'mid' ? R26M : R26S)).push(i); });
   } catch (e) { console.warn('[vb] rocks26.json missing — GLB rocks skipped', e); }
@@ -7718,6 +7700,13 @@
                sphere: (it === 1 ? CHOP_RAD : (KNIFE_IT > 0 && it === KNIFE_IT ? CHOP_RAD * KNIFE_SCALE : CHOP_RAD)),
                chunk: PH.chopBite, lastChops: PH.stats.chops, lastVoxRemoved: PH.stats.voxRemoved };
     },                     // stone-knife item id — it cuts like the axe at half the sphere
+    lifeDump() {                                     // live creatures + how many voxels each model carries — sizing data for the dynamic shadow volume
+      const o = [];
+      for (let j = 0; j < 372; j++) { const B = wbf[j]; if (!B || !B.init) continue;
+        o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(1), y: +((B.kind|0)===5 ? (B.perchFeet||0) : B.y).toFixed(1), z: +B.z.toFixed(1),
+                 stamped: B.sN | 0 }); }
+      return o;
+    },
     decorIds() { const o = []; for (let i = 0; i < 256; i++) if (decorTab[i]) o.push(i); return o; },   // palette ids the axe can carve chunks from
     axeOnlyIds() { const o = []; for (let i = 0; i < 256; i++) if (axeOnlyTab[i]) o.push(i); return o; },   // …of those, the ones that need the AXE (wood)
     ducks() { const o = []; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 3) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), th: +(B.th || 0).toFixed(3), om: +(B.om || 0).toFixed(3), turnAcc: +((B.turnAcc || 0)).toFixed(2) }); } return o; },   // duck slots — circling shows up as turnAcc growing without bound
