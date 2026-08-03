@@ -4871,7 +4871,7 @@
     tipHoldMs: 380,                                  // after touchdown the top SITS on the base this long before it starts to go over (user: land on the base every time, then tilt)
     tipArmMs: 1600, tipBlockDepth: 2.2,              // a severed top DROPS onto the stump first and only then starts to tip (user). tipArmMs is the fallback if it never lands; tipBlockDepth pauses the drive while it is DEEPLY penetrating something, so it can never rotate THROUGH the stump. Must sit well above the ~1.3 vox a trunk normally rests at, or the guard fires constantly and the tree stalls half-tipped (measured).
     fellSpread: 1.5,                                 // rad of RANDOM spread either side of the notch direction when a trunk is severed (user: trees all dropped the same way)
-    crashThrough: 200,                               // a body this big ignores foliage in its contacts — it smashes through canopy instead of hanging on it
+    crashThrough: 200,                               // "this body is a TRUNK, not a chunk" — gates the topple drive and its speed ceiling (see phStep). It used to also exempt trunks from foliage contacts; leaves have no hitbox for anything now, so that part is gone.
     stuckMs: 2500, stuckNudge: 40,                   // …and if one hangs up on something SOLID, re-arm the topple every stuckMs with a downward shove
     tipSeed: 0.18,                                   // rad/s the topple STARTS at — a barely-perceptible lean, so the fall has somewhere to accelerate from (user: momentum)
     tipRate: 0.34,                                   // …the linear part of the ramp, reached about halfway over (see the topple drive in phStep)
@@ -5141,13 +5141,11 @@
   // canopy is walk-through for the PLAYER via solidTab, and stays that way — this is a separate test used
   // only by the rigid-body solver, so a falling trunk now catches on neighbouring branches the way a real
   // one hangs up, while you can still walk through the crown.
-  let phSoftPass = false;                              // set while generating contacts for a body heavy enough to smash through canopy (see PH.crashThrough)
   const phSolidAt = (x, y, z) => {
     if (y < 0) return true;
     if (y >= WY) return false;
     const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
-    if (solidTab[id] === 1) return true;
-    return !phSoftPass && foliaTab[id] === 1;         // needles stop a shed leaf, never a falling trunk
+    return solidTab[id] === 1;                       // FOLIAGE IS NOT SOLID (user): leaves have no hitbox, so a crown swings through the next tree's needles and a chunk falls past them to the ground rather than hanging in mid-air
   };
   // Outward normal of a solid cell: point toward whichever faces are open. Gives real normals on slopes
   // and walls instead of assuming the ground is flat.
@@ -5736,7 +5734,6 @@
     const dw = -0.5 * h * (w[0] * q[0] + w[1] * q[1] + w[2] * q[2]);
     q[0] += dx; q[1] += dy; q[2] += dz; q[3] += dw; phQNorm(q);
     // ── CONTACT GENERATION (once per step) ── probe voxels are SPHERES of radius 0.5, like Teardown
-    phSoftPass = b.n >= PH.crashThrough;              // a trunk pushes through needles rather than resting on them (see phSolidAt)
     let nc = 0, deepest = 0;
     for (let i = 0; i < b.probes.length && nc < PH.maxContacts; i++) {
       const pi = b.probes[i];
@@ -5804,7 +5801,6 @@
       if (!b.tipping && ++b.sleepT >= PH.sleepFrames) { b.sleeping = true; b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0;
         if (b.n <= PH.retireMax) b.retire = true; }
     } else b.sleepT = Math.max(0, b.sleepT - 1);     // DECAY, don't reset: one jittery step must not restart the countdown
-    phSoftPass = false;                              // strictly scoped to this body's contact pass
     phQRot(b.q, PHX, b.ax); phQRot(b.q, PHY, b.ay); phQRot(b.q, PHZ, b.az);   // keep the collision axes in step with the pose
   };
   // A settled CHIP is written back into the static grid at its resting pose and its slot released. Only
