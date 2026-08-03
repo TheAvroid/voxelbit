@@ -863,7 +863,8 @@
   for (const f of foliageIds) foliaTab[f] = 1;
   const mushTab = new Uint8Array(256);                 // per-id BOUNCY flag — mushroom voxels trampoline the player (filled once MUSHV loads)
   const decorTab = new Uint8Array(256);                // per-id CHOPPABLE-DECOR flag — mushrooms, ferns and ground logs yield chunks (see phChopDecor). Deliberately NOT mushTab: choppable and bouncy are different properties, and reusing it would make every fern a trampoline.
-  const axeOnlyTab = new Uint8Array(256);              // …and of those, which need the AXE rather than any held tool. Wood does; mushrooms and ferns do not.
+  const axeOnlyTab = new Uint8Array(256);              // …and of those, which need a CUTTING tool (axe/knife) rather than any held tool. Wood does; mushrooms and ferns do not.
+  const pickOnlyTab = new Uint8Array(256);             // …and which need the PICK. Stone does: an axe bounces off a boulder, and the pick is no use against a tree (see the swing gate).
   const sandTab = new Uint8Array(256); for (const s of SAND) sandTab[s] = 1;   // per-id SAND flag — walking on beach/lakebed sand slows the player (sand pits)
   console.log('[vb] pine5.vox', MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
 
@@ -896,7 +897,7 @@
     return { sx, sy, sz, vox: mvox };
   };
   const fetchVoxModel = async (url) => { try { return parseVoxModel(new Uint8Array(await (await fetch(url)).arrayBuffer())); } catch (e) { console.warn('[vb]', url, 'missing — that decoration is skipped', e); return null; } };
-  const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV] = await Promise.all([        // fetched IN PARALLEL — decoration models no longer block one another on boot
+  const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV] = await Promise.all([        // fetched IN PARALLEL — decoration models no longer block one another on boot
     fetchVoxModel('assets/decoration/pinecone.vox'),                                        // hangs under pine branches
     fetchVoxModel('assets/decoration/lillypad_small.vox'),                                  // floats on lakes + rivers
     fetchVoxModel('assets/decoration/lillypad_medium.vox'),
@@ -904,7 +905,8 @@
     fetchVoxModel('assets/decoration/stick_1.vox'),                                         // ground scatter, pickable
     fetchVoxModel('assets/decoration/stick_2.vox'),
     fetchVoxModel('assets/decoration/log.vox'),                                             // rare fallen log, solid
-    fetchVoxModel('assets/decoration/rock.vox')]);                                          // the small stone, pickable
+    fetchVoxModel('assets/decoration/rock.vox'),                                            // the small stone, pickable
+    fetchVoxModel('assets/stone_tools/stone_pick.vox')]);                                   // …and the STONE PICK, the rock-breaking counterpart to the axe (user)
   const CONEVL = CONEV ? { sx: CONEV.sx, sy: CONEV.sz, sz: CONEV.sy,                        // the same cone tipped 90° onto its side — fallen cones lie on the forest floor
     vox: CONEV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((CONEV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
   const LILYV = [lilyS, lilyM, lilyL].filter(Boolean);
@@ -1037,6 +1039,7 @@
   if (MUSHV) for (const q of MUSHV.vox) decorTab[q >>> 24] = 1;                             // ── CHOPPABLE DECOR ── mushrooms…
   for (const i of FERNIDS) decorTab[i] = 1;                                                 // …and ferns (user): any tool takes chunks out of both
   if (LOGV) for (const q of LOGV.vox) { decorTab[q >>> 24] = 1; axeOnlyTab[q >>> 24] = 1; }  // …and the ground LOGS (user), but those want the axe
+  for (const r of ROCK26) for (const q of r.vox) { decorTab[q >>> 24] = 1; pickOnlyTab[q >>> 24] = 1; }   // …and the 26 BOULDERS (user), which want the PICK. All 26 share one 12-shade palette, so this marks every rock in the world.
   const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
@@ -1073,7 +1076,7 @@
   let DUCK_GREEN = [0.03, 0.22, 0.07];                 // the mallard HEAD green (linear) — extracted at load; the black eye voxel blinks to THIS (user)
   let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
   let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads (kind 4) drift and rotate OFF-grid on the water; static worldgen stamping retired
-  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
+  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
@@ -1177,6 +1180,9 @@
       items.push({ w: ksx, d: ksy, h: ksz, cells: kcells });
       console.log('[vb] stone_knife.vox', ksx, ksy, ksz, 'voxels', kvox.length / 4);
     } catch (e) { console.warn('[vb] stone_knife.vox missing — clash still sparks, no knife', e); items.push({ w: 0, d: 0, h: 0, cells: [] }); }
+    // STONE PICK (user) — the rock tool. APPENDED here, after every fixed id: 1-4 are hard-coded in
+    // PICK_DEFS/ITEM_NAMES, so slotting it in among them would silently hand the twig the pinecone's pose.
+    if (PICKV) { PICK_IT = items.length + 1; items.push(modelToItem(PICKV)); console.log('[vb] stone_pick.vox item', PICK_IT, PICKV.sx, PICKV.sy, PICKV.sz); }
     // ONE loader for every flying songbird strip — the cardinal and the blue bird ship identical 7-frame packs,
     // so the parse, the widest-frame scan and the eye-blink variants are all shared rather than copy-pasted.
     const loadFlight = async (dir, label) => {
@@ -4726,7 +4732,7 @@
 
   // ── right-click pickup: pebbles + twigs ─────────────────────────────────────
   // ── HAND SLOTS ── 4-slot hotbar; scroll wheel cycles, Q drops from the selected slot. Same-type items stack.
-  const slots = [{ it: 1, n: 1 }, null, null, null];   // slot 0 starts with the stone axe; ids: 1 axe, 2 rock, 3 twig, 4 pinecone
+  const slots = [{ it: 1, n: 1 }, PICK_IT ? { it: PICK_IT, n: 1 } : null, null, null];   // slot 0 the stone axe, slot 1 the stone PICK (user); ids: 1 axe, 2 rock, 3 twig, 4 pinecone
   let selSlot = 0;
   const canAdd = (it) => slots.some((s) => !s || s.it === it);
   function addItem(it) {                               // prefer stacking, then the SELECTED slot, then any empty. Returns the slot index it landed in (0-3), or -1 if full — a grab uses that to SELECT the new item so it stays in the hand (user: a picked-up rock must not snap back to the axe).
@@ -5629,6 +5635,7 @@
     // still knock chunks out of soft decor. The knife works the same way at HALF the sphere (user), and
     // the bite scales with it so the piece stays a full ball rather than a sliver of a big one.
     const it = heldIt(), axe = it === 1, knife = KNIFE_IT > 0 && it === KNIFE_IT, cut = axe || knife;
+    const pick = PICK_IT > 0 && it === PICK_IT;      // the PICK breaks stone and nothing else — note it is deliberately NOT part of `cut`, which is what gates every wood path below
     const kS = knife ? KNIFE_SCALE : 1;
     const C_RAD = CHOP_RAD * kS, C_DEEP = CHOP_DEEP * kS;
     const C_BITE = knife ? Math.max(4, Math.round(PH.chopBite * KNIFE_BITE)) : PH.chopBite;   // the knife takes HALF the axe's chunk (user)
@@ -5650,7 +5657,8 @@
       if (cut && !S && (phChopBody(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, C_MIN, C_BITE) ||
                         phChopBody(x, y, z, C_RAD, C_MIN, C_BITE))) return true;   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
       const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
-      if (id && decorTab[id] && (cut || !axeOnlyTab[id]) && phChopDecor(x, y, z, C_RAD, C_BITE)) return true;   // MUSHROOMS + FERNS (any tool) and WOOD (a cutting tool) — free gate, the id is already in hand
+      // ROCK needs the pick, WOOD needs a cutting edge, everything else soft yields to whatever is in hand.
+      if (id && decorTab[id] && (pickOnlyTab[id] ? pick : (axeOnlyTab[id] ? cut : true)) && phChopDecor(x, y, z, C_RAD, C_BITE)) return true;   // free gate, the id is already in hand
       // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
       // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
       // where the trunk was, and a solid-only trigger could never find the tree again — the axe would
@@ -7247,13 +7255,16 @@
     4: { x: 0.9, y: -0.24, z: 0.96, yaw: -0.09, pitch: -1.29, roll: 1.52, scale: 0.08 },   // pinecone (user bake 2026-07-16)
   };
   PICK_DEFS[KNIFE_IT] = { x: 0.75, y: -0.1, z: 0.84, yaw: 0.07, pitch: -1.32, roll: 3.13, scale: 0.07 };   // stone knife (user bake 2026-07-16)
+  if (PICK_IT) PICK_DEFS[PICK_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 };   // stone pick — starts on the AXE's baked pose (same haft, same swing); tune it live in the held-item panel and re-bake
   if (WORM_ITEM0) PICK_DEFS[WORM_ITEM0] = { x: 0.81, y: -0.22, z: 1.13, yaw: 0.3, pitch: -0.14, roll: -3.14, scale: 0.08 };   // live worm (user bake 2026-07-17)
   const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] }, 4: { ...PICK_DEFS[4] } };
   pickCfgs[KNIFE_IT] = { ...PICK_DEFS[KNIFE_IT] };
+  if (PICK_IT) pickCfgs[PICK_IT] = { ...PICK_DEFS[PICK_IT] };
   if (WORM_ITEM0) pickCfgs[WORM_ITEM0] = { ...PICK_DEFS[WORM_ITEM0] };
   try { const sv = JSON.parse(localStorage.getItem('vb_pick3') || '{}'); for (const k in sv) if (pickCfgs[k]) Object.assign(pickCfgs[k], sv[k]); } catch (e) {}   // key bumped from vb_pick2 — the old value was one shared pose
   const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
   ITEM_NAMES[KNIFE_IT] = 'knife';
+  if (PICK_IT) ITEM_NAMES[PICK_IT] = 'pick';
   if (WORM_ITEM0) ITEM_NAMES[WORM_ITEM0] = 'worm';
   const heldIt = () => (grabAnim && !grabAnim.left ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty; left-hand grab flights don't change it)
   const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];
@@ -7820,7 +7831,8 @@
     physChop(x, y, z, r) { return physChopAt(x, y, z, r); },
     physSwing() { return chopSwing(); },
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
-    knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; },
+    knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; }, pickId() { return PICK_IT; },
+    toolTabs() { const d = [], a = [], k = []; for (let i = 0; i < 256; i++) { if (decorTab[i]) d.push(i); if (axeOnlyTab[i]) a.push(i); if (pickOnlyTab[i]) k.push(i); } return { choppable: d.length, needsCut: a.length, needsPick: k.length, pickIds: k }; },
     dropsInfo() { return drops.map((d) => ({ it: d.it, x: Math.round(d.x), z: Math.round(d.z), flightS: +(d.T || 0).toFixed(2) })); },   // items in flight / lying on the ground — a throw lands one of these far from the player, a lob lands it near
     mouseR(v) { mouse2 = !!v; return mouse2; },        // hold/release the RIGHT button from a test (the throw's wind-up); CDP mouse events do not reach the game's own handlers under pointer lock
     swingInfo() {                                    // run this WHILE holding the tool — says whether the game sees it as a cutter
