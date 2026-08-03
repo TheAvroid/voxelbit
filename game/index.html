@@ -460,7 +460,7 @@
   const bricks2 = new Uint32Array((B2X * B2Y * B2Z + 31) >> 5);
   const touched = new Uint8Array(BX * BZ);             // per 8×8 column tile: has this memory EVER been written? virgin tiles skip air-clearing (~40% of a column)
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
-  const LGT_ALL = 0x1ff;                               // 9 lighting terms, all enabled = the normal image (see the top-right panel / LG() in the shader)
+  const LGT_ALL = 0x1ffff;                             // 17 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader)
   let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt'); return v === null ? LGT_ALL : (parseInt(v, 10) & LGT_ALL); } catch (e) { return LGT_ALL; } })();
   let winOX = 0, winOZ = 0;                            // world coord of the window corner (multiples of 8)
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
@@ -2865,6 +2865,8 @@
     // 2 creature shadow boxes, 3 firefly/lava glow, 4 water reflect+refract, 5 fog,
     // 6 irradiance history, 7 spatial filter, 8 TAA. Everything on = the normal image.
     fn LG(b : u32) -> bool { return (u32(u.lgt.x + 0.5) & (1u << b)) != 0u; }
+    // 9 body grain (felled chunks), 10 terrain grain, 11 creature grain, 12 sun penumbra,
+    // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading.
     fn rand(s : ptr<function, u32>) -> f32 {
       *s = *s * 747796405u + 2891336453u;
       let w = ((*s >> ((*s >> 28u) + 4u)) ^ *s) * 277803737u;
@@ -3010,7 +3012,7 @@
     var<private> folSkipD : f32 = 0.0;
     const FOLSKIP : bool = §FOL§;                        // pipeline SPECIALIZATION: only the see-through TRACE variant (picked per frame when the eye is near foliage) pays the per-step check below — the normal-play variant compiles it out of the hottest loop entirely
     fn isFol(v : u32) -> bool { return ${foliageIds.length ? foliageIds.map((id) => 'v == ' + id + 'u').join(' || ') : 'false'}; }
-    struct Hit { t : f32, vox : u32, face : u32, n : vec3<f32>, }
+    struct Hit { t : f32, vox : u32, face : u32, n : vec3<f32>, vc : vec3<i32>, }   // vc = the hit cell in the BODY's own grid (rigid bodies only) — grain has to be indexed in the object's frame, not the world's, or it crawls whenever the object moves
     fn voxAt(c : vec3<i32>) -> u32 {
       var x = c.x + i32(u.off.x); if (x >= WX) { x -= WX; }
       var z = c.z + i32(u.off.y); if (z >= WZ) { z -= WZ; }
@@ -3160,7 +3162,7 @@
           if (cid != 0u) {
             if (tH * vsB < best) {
               best = tH * vsB;
-              h.t = best; h.vox = cid;
+              h.t = best; h.vox = cid; h.vc = vc;
               var nl = vec3<f32>(0.0);
               if (vax == 0) { nl.x = -f32(ist.x); } else if (vax == 1) { nl.y = -f32(ist.y); } else { nl.z = -f32(ist.z); }
               h.n = normalize(Xa.xyz * nl.x + Ya.xyz * nl.y + Za.xyz * nl.z);   // TRUE rotated world normal
@@ -3396,7 +3398,7 @@
         {                                                            // ── RIGID BODIES ── same traversal the shadow/AO rays use, so what you see and what the light sees can never disagree
           let bh2 = bodyTrace(ro, rd, bestT);
           if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bN = bh2.n;
-            bVc = vec3<i32>(floor((ro + rd * bh2.t) * 1.0)); }
+            bVc = bh2.vc; }                                        // BODY-LOCAL cell (see Hit.vc): the grain rides with the wood instead of the trunk sliding through a world-anchored noise field
         }
         if (bHit) {                                                  // a felled chunk is the primary hit — terrain-identical shading from here on
           h.t = bestT; h.vox = 0u; h.n = bN;
@@ -3412,7 +3414,7 @@
       }
       var albedo = vec3<f32>(0.0);
       var faceId = 7u; var t = -1.0;
-      var sunV = 0.0; var skyV = 0.0;
+      var sunV = 0.0; var skyV = 0.0;   // (bit 15 zeroes skyV at the end of the lighting block — the ambient/sky term, as opposed to the AO ray that modulates it)
       var creReact = 0.0;                                            // set inside the creature-shadow loop below: this pixel sits in a MOVING shadow's penumbra, so the reactive mask must cap its history (declared out here — the reactive mask is written well past the shading block's scope)
       if (h.t >= 0.0) {
         t = h.t; faceId = h.face;
@@ -3420,15 +3422,15 @@
         if (h.vox == LVT || h.vox == LVB || h.vox == LVR || h.vox == LVY) { faceId = 8u; }   // lava → emissive
         let pos = ro + rd * t;
         let vcW = vec3<i32>(floor(pos - h.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));   // WORLD coords — grain must not swim when the window shifts
-        if (bHit) { albedo = bCol * (0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z)); }   // felled chunk: palette colour + MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
-        else if (cSlot != 0u) { albedo = cCell * (0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
-        else { albedo = pal[h.vox].rgb * (0.88 + 0.24 * ivhash(vcW)); }
+        if (bHit) { albedo = bCol * select(1.0, 0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z), LG(9u)); }   // felled chunk: palette colour + genuinely MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
+        else if (cSlot != 0u) { albedo = cCell * select(1.0, 0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z), LG(11u)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
+        else { albedo = pal[h.vox].rgb * select(1.0, 0.88 + 0.24 * ivhash(vcW), LG(10u)); }
         if (u.hurtB.w > 0.0) {                                       // ── HIT FLASH ── the animal the knife just wounded, blinking through red (user)
           let dHit = abs(pos - u.hurtB.xyz);
           if (all(dHit <= u.hurtH.xyz)) { albedo = mix(albedo, vec3<f32>(0.60, 0.02, 0.02), 0.62 * u.hurtB.w); }   // MIX, not replace — the animal reads as stained red, not repainted, so its shape stays legible
         }
         if (skipW && pos.y < WLF + 1.0) {                            // swimming: caustic webs dance on everything below the surface
-          albedo = albedo * (1.0 + 1.3 * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
+          albedo = albedo * (1.0 + select(0.0, 1.3, LG(13u)) * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
         }
         var foamK = 0.0;
         if (faceId == 6u && h.face == 2u && rd.y < -0.01 && u.pickZ.w < 0.4) {   // VOXEL OCEAN WAVES — still while the surface is more than half frozen
@@ -3481,7 +3483,8 @@
         let sp = pos + h.n * 0.02;
         if (${location.search.includes('nosun') ? 0 : 1} == 1 && dot(h.n, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night (?nosun disables for A/B)
           let st = onbT(u.sunDir); let sb = cross(u.sunDir, st);
-          let sdir = normalize(u.sunDir + st * ((rand(&seed) * 2.0 - 1.0) * 0.028) + sb * ((rand(&seed) * 2.0 - 1.0) * 0.028));
+          let jitK = select(0.0, 0.028, LG(12u));                   // bit 12: sun PENUMBRA — off = a pin-sharp, perfectly hard shadow edge
+          let sdir = normalize(u.sunDir + st * ((rand(&seed) * 2.0 - 1.0) * jitK) + sb * ((rand(&seed) * 2.0 - 1.0) * jitK));
           let ceilY = f32((u32(u.fx) >> 8u) & 31u) * 32.0;           // world ceiling (u.fx bits 8+): no solid above it → a climbing ray is clear once past it
           let sCap = select(1200.0, min(1200.0, (ceilY - sp.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
           if (sCap <= 0.0) { sunV = 1.0; }                           // already above everything and going up — full sun, no ray
@@ -3533,7 +3536,8 @@
                         skyV = select(1.0, clamp(ah.t / 24.0, 0.0, 1.0), ah.t >= 0.0); }
           else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
-        if (flakeHit && h.vox == SNV) { sunV = max(sunV, 0.6); skyV = max(skyV, 0.85); }   // FALLING FLAKES SCATTER — real snow is white from EVERY direction, so a flake never shows a dark shaded face. Without this floor, anti-sunward flakes shaded to ~sky luminance and vanished — the "snow band clipping" wedge the user saw (the void tracked the anti-sun azimuth, verified via the ?flakedbg emissive A/B). Scales with the sun/moon term downstream, so night stays subtle.
+        if (flakeHit && h.vox == SNV) { sunV = max(sunV, 0.6); skyV = max(skyV, 0.85); }
+        if (!LG(15u)) { skyV = 0.0; }                              // bit 15: the SKY/AMBIENT term entirely — leaves only direct sun, so anything not in sunlight goes black   // FALLING FLAKES SCATTER — real snow is white from EVERY direction, so a flake never shows a dark shaded face. Without this floor, anti-sunward flakes shaded to ~sky luminance and vanished — the "snow band clipping" wedge the user saw (the void tracked the anti-sun azimuth, verified via the ?flakedbg emissive A/B). Scales with the sun/moon term downstream, so night stays subtle.
       }
       var lavaG = 0u;                                                  // soft light cast by nearby lava — deterministic probe, no flicker
       if (LG(3u)) {                                                    // LIGHT DEBUG bit 3: lava + firefly point lights
@@ -3894,7 +3898,7 @@
         }
         let direct = sunTint() * (irr.r * max(dot(n, u.sunDir), 0.0));
         let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
-        let bounce = BOUNCE * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
+        let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
         col = alb * (direct + (skyIrr + bounce) * irr.g + vec3<f32>(0.012, 0.013, 0.016));   // faint cave ambient
         let glowY = u.camPos.y + rd.y * irr.b;                                                   // the shared 4-bit glow field: bedrock hits = LAVA orange, surface hits = FIREFLY warm yellow
         if (glowY < 28.0) { col += alb * lavaG * vec3<f32>(1.0, 0.44, 0.13) * 3.6; }             // lava: linear decode, unchanged
@@ -3978,7 +3982,7 @@
                   } else if (${location.search.includes('noshadow') ? 1 : 0} == 1) { sunC = 1.0; }
                   let direct = sunTint() * (sunC * max(dot(nw, u.sunDir), 0.0));
                   let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();
-                  let bounceC = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
+                  let bounceC = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
                   var alb2 = cell.rgb;                                 // DUCK EYE BLINK: the black eye voxel flashes the head-GREEN when the slot's blink lane (dYv.w) is lit (user)
                   if (${DUCK_ITEM0 > 0 ? 1 : 0} == 1 && dYv.w > 0.5 && (dit == ${DUCK_ITEM0 || 9999} || dit == ${DUCKB_ITEM0 || 9998}) && alb2.r < 0.02 && alb2.g < 0.02 && alb2.b < 0.02) { alb2 = vec3<f32>(${DUCK_GREEN[0].toFixed(4)}, ${DUCK_GREEN[1].toFixed(4)}, ${DUCK_GREEN[2].toFixed(4)}); }
                   let grain = 0.95 + 0.10 * ih3(vcD.x, vcD.y, vcD.z);   // per-voxel texture — GENTLE (±5%) so authored colour transitions dominate the noise (user); hashed on the MODEL-local voxel so it's stable as the creature drifts/rotates
@@ -4065,9 +4069,9 @@
                     if (vax == 0) { nl.x = -f32(istep.x); } else if (vax == 1) { nl.y = -f32(istep.y); } else { nl.z = -f32(istep.z); }
                     let nc = pX.xyz * nl.x + pY.xyz * nl.y + pZ.xyz * nl.z;
                     let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
-                    let direct = sunTint() * max(dot(nw, u.sunDir), 0.0) * u.heldCfg.x;    // world-matched LIGHTING (sun + sky + ground bounce + ambient) INCLUDING the sun-visibility term the world gets (u.heldCfg.x) — without it a tool stayed fully lit in shade. No per-voxel grain though —
+                    let direct = sunTint() * max(dot(nw, u.sunDir), 0.0) * u.heldCfg.x * select(0.0, 1.0, LG(16u));   // bit 16: the held item's DIRECT sun term    // world-matched LIGHTING (sun + sky + ground bounce + ambient) INCLUDING the sun-visibility term the world gets (u.heldCfg.x) — without it a tool stayed fully lit in shade. No per-voxel grain though —
                     let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();   // grain is ±12% per voxel and scrambles hand-authored .vox gradients (~5% steps on the axe handle)
-                    let bounce = BOUNCE * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // warm ground bounce on side/under faces — without it side faces are sky-only (cool + dark), the axe handle read grey-brown
+                    let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // warm ground bounce on side/under faces — without it side faces are sky-only (cool + dark), the axe handle read grey-brown
                     var aoF = 1.0;
                     if (i32(pX.w + 0.5) == 1) {                     // AXE ONLY (user): cheap voxel cavity AO — the exposed face darkens where the 4 in-plane neighbours are solid (head↔handle join + crevices). Geometry-based, so it adds depth WITHOUT scrambling the hand-authored gradient like grain would
                       var nlo = vec3<i32>(0);
@@ -4743,7 +4747,10 @@
   let grabAnim = null;                                 // {t0, it, x, y, z, aPh} — a grabbed item FLYING from its world spot into the hand
   const drops = [];                                    // DROPPED ITEMS (Q) — TOSSED on a ballistic arc, then hover + spin; right-click to grab
   const TOSS_G = -170, TOSS_V = 55, TOSS_UP = 18;      // vox/s² gravity, throw speed along the view ray, extra up-kick
-  function dropHeld() {
+  const HURL_V = 240, HURL_UP = 9;                     // …and the THROWN profile (right-hold + left-click on a rock). Level-aimed it carries ~2x a Q-toss;
+                                                       // the small up-kick is what stops a flat throw burying itself a few metres out — gravity here is 170 vox/s²,
+                                                       // so with none at all the rock is on the ground in a third of a second no matter how fast it leaves the hand.
+  function dropHeld(hurl) {                            // hurl = thrown hard along the view ray (see HURL_V) rather than lobbed
     const sel = slots[selSlot];
     if (!sel || dead) return;
     const it = sel.it;
@@ -4758,7 +4765,8 @@
     const sy2 = pr.pos[1] + pr.right[1] * cx2 + pr.up[1] * cy2 + pr.fwd[1] * cz2;
     const sz = pr.pos[2] + pr.right[2] * cx2 + pr.up[2] * cy2 + pr.fwd[2] * cz2;
     const cpv = Math.cos(P.pitch), spv = Math.sin(P.pitch);                     // TOSS along the view ray + an up-kick, integrated against the terrain
-    const vx = Math.sin(P.yaw) * cpv * TOSS_V, vy0 = spv * TOSS_V + TOSS_UP, vz = Math.cos(P.yaw) * cpv * TOSS_V;
+    const tV = hurl ? HURL_V : TOSS_V, tU = hurl ? HURL_UP : TOSS_UP;
+    const vx = Math.sin(P.yaw) * cpv * tV, vy0 = spv * tV + tU, vz = Math.cos(P.yaw) * cpv * tV;
     let px = sx, py = sy2, pz = sz, vy = vy0, T = 0;
     for (let i = 0; i < 360; i++) {                                             // 1.8 s cap, 5 ms steps (trapezoid = exact for constant g)
       const nvy = vy + TOSS_G * 0.005;
@@ -6348,7 +6356,7 @@
     document.addEventListener('pointerdown', kick);
     document.addEventListener('keydown', kick);
   }
-  let swingStart = -1e9, mouse0 = false;               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
+  let swingStart = -1e9, mouse0 = false, mouse2 = false;   // mouse2: RIGHT button HELD — the wind-up for a rock throw (right-hold, then left-click)               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
   let pendKillT = 0;                                   // pending creature-hit: armed at swing start, FIRES ~250 ms in — when the axe visually LANDS on screen (user: only register the hit when the axe hits), not at the click
   const swishSnd = regSnd(new Audio('sound/bow/swish.mp4'), 0.36);   // swing whoosh — cut 40% (user), then a further 40% (0.6 → 0.36)
   const playSwish = () => { try { swishSnd.currentTime = 0; const pr = swishSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
@@ -6437,7 +6445,7 @@
   };
   document.addEventListener('mousedown', (e) => {
     if (!locked) return;
-    if (e.button === 2) tryPickup();
+    if (e.button === 2) { mouse2 = true; tryPickup(); }   // …and the right button stays HELD as the throw wind-up
     if (e.button === 0 && ED.on) {                     // ASSET EDITOR: left-click the stamped cardinal to SELECT it (pause) / click again to resume; then , . scrub the frames
       const n = ED.frames.length;
       if (n) {                                         // AABB slab test against the model's bounding box — forgiving for a small SPARSE model (an exact-voxel ray slips through the gaps)
@@ -6473,22 +6481,29 @@
       mouse0 = true;
       return;
     }
+    if (e.button === 0 && !dead && mouse2 && ROCK_IT > 0 && heldIt() === ROCK_IT) {
+      dropHeld(true);                                  // ── THROW ── right held + left click, rock in hand (user). Consumes the rock and sends it flying flat.
+      playSwish();
+      return;                                          // no swing this click: the hand is empty now
+    }
     if (e.button === 0 && !dead) {
       if (e.shiftKey && dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }   // clash instead of swing — only when the knife will have somewhere to go (exactly-2 rocks frees this slot)
       mouse0 = true;
       if (performance.now() - swingStart >= 570) { swingStart = performance.now(); if (heldIt()) playSwish(); pendKillT = swingStart + 250; }   // a click is IGNORED until the current swing's full 570 ms animation finishes — no mid-swing restart (user; applies to every held item). Holding still auto-repeats via the tick loop. The creature-hit is ARMED here but registers 250 ms in, when the axe visually lands (user).
     }
   });
-  document.addEventListener('mouseup', (e) => { if (e.button === 0) { mouse0 = false;
+  document.addEventListener('mouseup', (e) => { if (e.button === 2) mouse2 = false;
+    if (e.button === 0) { mouse0 = false;
     if (ED.dragAxis >= 0) { ED.dragAxis = -1; edSaveOffsets(); edHudUpd(); }   // let go of a gizmo arrow → AUTOSAVE the new offset
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
   // ── keybinds ── rebindable, persisted to localStorage
-  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', vignette: 'KeyL', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // fly on F restored (user 2026-07-22)
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', vignette: 'KeyK', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // fly on F restored (user 2026-07-22)
   const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', vignette: 'vignette', vsync: 'v-sync', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
-  if (binds.crouch === 'KeyC') { binds.crouch = 'AltLeft'; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE the old default: crouch moved off C (C now hides UI) → left Alt, even for players with a saved keybind
+  if (binds.crouch === 'KeyC') { binds.crouch = 'AltLeft'; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }
+  if (binds.vignette === 'KeyL') { binds.vignette = DEFBINDS.vignette; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE: L is the light panel now, and it used to toggle the vignette underneath it   // MIGRATE the old default: crouch moved off C (C now hides UI) → left Alt, even for players with a saved keybind
   const prettyKey = (c) => c.replace(/^Key|^Digit/, '').replace('BracketLeft', '[').replace('BracketRight', ']')
     .replace('ShiftLeft', 'L-SHIFT').replace('ShiftRight', 'R-SHIFT').replace('ControlLeft', 'L-CTRL').replace('ControlRight', 'R-CTRL')
     .replace('AltLeft', 'L-ALT').replace('AltRight', 'R-ALT')
@@ -6907,8 +6922,10 @@
       show(); };
     // ── LIGHT DEBUG PANEL ── one row per lighting term, each a bit in u.lgt.x. Bit order is shared
     // with LG() in the shader. Persisted, so a bisection survives the reload you will inevitably do.
-    const LGT = [['sun shadow', 0], ['ambient occl', 1], ['creature shad', 2], ['glow (lava/fly)', 3],
-                 ['reactive mask', 4], ['fog', 5], ['irr history', 6], ['spatial blur', 7], ['taa', 8]];
+    const LGT = [['sun shadow', 0], ['sun penumbra', 12], ['ambient occl', 1], ['sky / ambient', 15],
+                 ['bounce light', 14], ['creature shad', 2], ['glow (lava/fly)', 3], ['caustics', 13],
+                 ['fog', 5], ['body grain', 9], ['terrain grain', 10], ['creature grain', 11],
+                 ['held item lit', 16], ['reactive mask', 4], ['irr history', 6], ['spatial blur', 7], ['taa', 8]];
     {
       const panel = $('lgtPanel');
       lgtPaint = () => { for (const [, b] of LGT) { const btn = $('lgtB' + b);
@@ -7097,7 +7114,7 @@
     crossEl.classList.toggle('hidden', !locked);
     cmpVis();                                    // the compass follows the crosshair, gated by the settings toggle
     cursSync();
-    keys.clear(); mouse0 = false;
+    keys.clear(); mouse0 = false; mouse2 = false;   // losing the pointer drops the throw wind-up too
   });
   document.addEventListener('mousemove', (e) => {
     if (!locked) return;
@@ -7794,7 +7811,9 @@
     physChop(x, y, z, r) { return physChopAt(x, y, z, r); },
     physSwing() { return chopSwing(); },
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
-    knifeId() { return KNIFE_IT; },
+    knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; },
+    dropsInfo() { return drops.map((d) => ({ it: d.it, x: Math.round(d.x), z: Math.round(d.z), flightS: +(d.T || 0).toFixed(2) })); },   // items in flight / lying on the ground — a throw lands one of these far from the player, a lob lands it near
+    mouseR(v) { mouse2 = !!v; return mouse2; },        // hold/release the RIGHT button from a test (the throw's wind-up); CDP mouse events do not reach the game's own handlers under pointer lock
     swingInfo() {                                    // run this WHILE holding the tool — says whether the game sees it as a cutter
       const it = heldIt();
       return { heldItem: it, axeId: 1, knifeId: KNIFE_IT,
@@ -7883,7 +7902,7 @@
                smallBodies: now2.length, spots });
       }, 400));
     },
-    lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256 } }; },   // the light-debug bitmask, from the console
+    lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
       for (const b of PH.bodies) { b.sleeping = f; if (f) { b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0; } }
       return PH.bodies.map((b) => ({ vox: b.n, pos: b.pos.map((q) => +q.toFixed(2)), sleeping: b.sleeping })); },
