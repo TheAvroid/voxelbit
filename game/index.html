@@ -2738,7 +2738,7 @@
     device.queue.writeBuffer(palBuf, 0, f); };
   const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
-  const UF = new Float32Array(1864);   // …+ heldCfg 1860..1863 (x = held-item sun visibility, see heldSunV)
+  const UF = new Float32Array(1872);   // …+ heldCfg 1860..1863 (x = held-item sun visibility) + hurtB 1864..1867 + hurtH 1868..1871 (the knife's red hit-flash box)
   const UF_OLD_LEN = 1860;   // …+ physB 16 bodies x 5 vec4 1532..1851 + physC 1852..1855 + physBound 1856..1859 → 1860 (voxel rigid bodies)                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
@@ -2815,6 +2815,8 @@
                                                                      // [2] local Y axis + dimY · [3] local Z axis + dimZ · [4] comLocal.xyz + buffer offset
       physC : vec4<f32>,                                             // x = ACTIVE body count (0 = the whole path is one compare), y = how many are AWAKE (the reactive mask keys off y; tracing keys off x)
       physBound : vec4<f32>,                                         // xyz = centre (window coords) of a sphere enclosing EVERY body, w = its radius — one test rejects a ray that cannot touch any of them
+      hurtB : vec4<f32>,                                             // ── HIT FLASH ── xyz = centre (window coords) of the animal the knife just wounded, w = flash strength (0 = nothing showing, the usual case)
+      hurtH : vec4<f32>,                                             // …and its half-extents. Snug: taken from the voxels the animal actually stamped, so the ground it stands on stays its own colour.
       heldCfg : vec4<f32>,                                           // x = SUN VISIBILITY at the player (0 = the tool in your hands is in shade, 1 = open sun). Held items had no visibility term at all and were lit as if always in the open.
     }
     @group(0) @binding(0) var<uniform> u : U;
@@ -3394,6 +3396,10 @@
         if (bHit) { albedo = bCol * (0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z)); }   // felled chunk: palette colour + MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
         else if (cSlot != 0u) { albedo = cCell * (0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
         else { albedo = pal[h.vox].rgb * (0.88 + 0.24 * ivhash(vcW)); }
+        if (u.hurtB.w > 0.0) {                                       // ── HIT FLASH ── the animal the knife just wounded, blinking through red (user)
+          let dHit = abs(pos - u.hurtB.xyz);
+          if (all(dHit <= u.hurtH.xyz)) { albedo = mix(albedo, vec3<f32>(0.60, 0.02, 0.02), 0.62 * u.hurtB.w); }   // MIX, not replace — the animal reads as stained red, not repainted, so its shape stays legible
+        }
         if (skipW && pos.y < WLF + 1.0) {                            // swimming: caustic webs dance on everything below the surface
           albedo = albedo * (1.0 + 1.3 * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
         }
@@ -6055,13 +6061,20 @@
     // another bird's stamp — still blocks, so nothing structural is ever eaten.
     stampAlloc(B, pose.length);
     const nc = B.sCells, pv = B.sPrev; let k = 0;
+    let sb0 = 1e9, sb1 = 1e9, sb2 = 1e9, sb3 = -1e9, sb4 = -1e9, sb5 = -1e9;
     for (let q = 0; q < pose.length; q++) { const p = pose[q]; const wy = gy + p[1]; if (wy < 1 || wy >= WY - 1) continue;
       const ii = gwrap(gx + p[0], WX) + wy * WX + gwrap(gz + p[2], WZ) * WX * WY;
       const cur = W[ii];
       if (cur !== 0 && !foliaTab[cur]) continue;   // trunks, rocks and other stamps still block; a voxel lost inside the branch is hidden by it anyway
       pv[k] = cur; W[ii] = p[3]; nc[k] = ii; k++; wormPatchPush(ii);
+      const wx = gx + p[0], wz = gz + p[2];             // WORLD bounds of what actually landed — the knife's hit flash boxes exactly this and nothing around it
+      if (wx < sb0) sb0 = wx; if (wx > sb3) sb3 = wx;
+      if (wy < sb1) sb1 = wy; if (wy > sb4) sb4 = wy;
+      if (wz < sb2) sb2 = wz; if (wz > sb5) sb5 = wz;
     }
     B.sN = k; B.sKey = key; B.sWant = pose.length;
+    if (k) { if (!B.sB) B.sB = new Float32Array(6);
+      B.sB[0] = sb0; B.sB[1] = sb1; B.sB[2] = sb2; B.sB[3] = sb3; B.sB[4] = sb4; B.sB[5] = sb5; }
   };
   const stampOrient = (th) => { const Hx = Math.sin(th), Hz = Math.cos(th); return Math.abs(Hz) >= Math.abs(Hx) ? (Hz >= 0 ? 0 : 2) : (Hx >= 0 ? 1 : 3); };   // nearest cardinal
   // ── GRID-STAMPED PERCHED CARDINAL (matches the editor exactly) ── built from the SAME rotate .vox via edParseVox + edRotVox + the same baked offsets, so its grid lighting/rotation/alignment are identical to the asset-editor cardinal (user)
@@ -6367,10 +6380,26 @@
     }
     return best;
   };
+  const HURT_MS = 600;                                 // how long the wounded flash runs — 3 blinks. Paced for TAA, not for the eye: a flash shorter than the colour history's ~8-frame blend never reaches full strength on screen.
+  const HURT = { t0: -1e9, hold: false, slot: -1, cx: 0, cy: 0, cz: 0, hx: 0, hy: 0, hz: 0 };   // world coords — rebased to the window at publish time, so a world shift mid-blink cannot drag the box off the animal
+  const hurtBox = (B) => {                             // the animal's CURRENT stamped bounds — re-read every frame, because it is still walking while it flashes
+    const q = B && B.sB && B.sN ? B.sB : null;
+    if (q) { HURT.cx = (q[0] + q[3]) * 0.5; HURT.cy = (q[1] + q[4]) * 0.5; HURT.cz = (q[2] + q[5]) * 0.5;
+             HURT.hx = (q[3] - q[0]) * 0.5 + 0.6; HURT.hy = (q[4] - q[1]) * 0.5 + 0.6; HURT.hz = (q[5] - q[2]) * 0.5 + 0.6; }
+    else if (B) { HURT.cx = B.x; HURT.cy = B.y + 3; HURT.cz = B.z; HURT.hx = 5; HURT.hy = 5; HURT.hz = 5; }   // between stamps: a generous box beats no feedback
+  };
   const tryKillCreature = () => {                       // LEFT-CLICK SWING KILL (user): the nearest reachable creature under the crosshair dies in a spark+smoke poof
     const best = aimedCreature();
     if (best < 0) return;
     const B = wbf[best];
+    // ── KNIFE vs LAND MAMMAL ── the first hit wounds, the second kills (user). Slots 276+ are the four
+    // land mammals (bunny / armadillo / skunk / porcupine); everything else dies in one hit as before.
+    if (KNIFE_IT > 0 && heldIt() === KNIFE_IT && best >= 276 && !B.hurt) {
+      B.hurt = 1;
+      HURT.slot = best; HURT.hold = false; hurtBox(B);
+      HURT.t0 = performance.now();
+      return;                                           // wounded, not dead
+    }
     spawnDeathBurst(B.x, (B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y, B.z);   // poof at the creature (a PERCHED BIRD's height lives in perchFeet — B.y is stale for kind 5)
     if (B.sN) unstampWorm(B);                           // clear a grid-stamped creature's world voxels (mammals + perched birds)
     B.init = false; B.dieT = 0; B.slain = true;         // SLAIN (user: "when I kill something, it respawns somewhere else — prevent this"): the slot is dead for the rest of the session — the population loop skips it, so nothing re-places it elsewhere
@@ -7637,7 +7666,8 @@
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
-      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); },
+      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
+    hurtInfo() { return { flash: +UF[1867].toFixed(3), world: [UF[1864] + winOX, UF[1865], UF[1866] + winOZ], half: [UF[1868], UF[1869], UF[1870]] }; },   // the knife hit-flash box the tracer is tinting inside right now
     swing(offMs) { swingStart = performance.now() - (offMs || 0); }, drop() { dropHeld(); },
     sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
     clash() { if (dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return true; } return false; },   // same guard as shift+click — headless knife-craft testing
@@ -8053,6 +8083,8 @@
       return { rect: { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi }, winOX, winOZ, px: P.x, pz: P.z, nRuns: runs.length, runs: runs.slice(0, 40) }; },
     hAt(x, z) { return { hmap: hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], analytic: H(Math.floor(x), Math.floor(z)) }; },   /*TEMP-DEBUG*/
     sparkDbg() { return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: death-burst / clash-spark slot state*/
+    hurtTest(slot, hold) { const B = wbf[slot | 0]; if (!B || !B.init) return null; HURT.slot = slot | 0; HURT.hold = !!hold; hurtBox(B); HURT.t0 = performance.now(); return __vb.hurtInfo(); },   // arm the wounded flash WITHOUT the hit, so a capture can be timed against it
+    aimed() { return aimedCreature(); },              // which life slot the crosshair is actually on (-1 = none) — a swing test has to confirm it is ON target before it can read anything into the result
     kill() { tryKillCreature(); return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: force a kill-attempt from the current camera*/
     testBurst() { const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch), fx = Math.sin(P.yaw) * cp, fy = sp, fz = Math.cos(P.yaw) * cp; spawnDeathBurst(P.x + fx * 12, smoothEye + fy * 12 - 2, P.z + fz * 12); return true; },   /*TEMP-DEBUG: fire a death poof 12 vox ahead of the camera*/
     killProbe() { const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch), vx = Math.sin(P.yaw) * cp, vy = sp, vz = Math.cos(P.yaw) * cp; let best = null;   /*TEMP-DEBUG*/
@@ -8474,6 +8506,20 @@
       } else vis = 0;                                  // below the horizon: no direct sun on the tool either
       heldSunV += (vis - heldSunV) * (1 - Math.exp(-8 * dt));   // ~0.15 s ease so dappled canopy fades instead of strobing
       UF[1860] = heldSunV; UF[1861] = 0; UF[1862] = 0; UF[1863] = 0;
+      { // ── HIT FLASH ── the knife-wounded animal blinks red, then stops. Stepped at 24 fps like every
+        // other animation here, so it reads as a deliberate blink rather than a smooth throb.
+        const he = (now - HURT.t0) / HURT_MS;
+        let hk = 0;
+        if (he >= 0 && he < 1) { const hf = Math.floor(he * 12);                 // 12 phases over the blink, stepped like every other animation here
+          hk = (hf % 4 < 2) ? (1 - he * 0.55) : 0;        // 2 phases ON (~100 ms) then 2 OFF → 3 flashes, each a little fainter than the last.
+                                                          // 100 ms is the floor worth using: TAA blends 12% per frame, so a shorter pulse is half gone before it lands.
+          if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
+          const HB = HURT.slot >= 0 ? wbf[HURT.slot] : null;
+          if (HB && HB.init) hurtBox(HB); else hk = 0;      // it died or despawned mid-blink — nothing left to stain
+        }
+        UF[1864] = HURT.cx - winOX; UF[1865] = HURT.cy; UF[1866] = HURT.cz - winOZ; UF[1867] = hk;
+        UF[1868] = HURT.hx; UF[1869] = HURT.hy; UF[1870] = HURT.hz; UF[1871] = 0;
+      }
     }
     set3(32, sun, resetHist);
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
@@ -9250,7 +9296,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
+        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0;   // fresh occupant — never inherits the last one's knife wound B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
         if (lilySlot) {                                // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + red cardinals / BLUE BIRDS (the reskin) — both grid-stamped by stampCardinal
