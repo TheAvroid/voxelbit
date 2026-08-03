@@ -240,7 +240,7 @@
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
 <div id="hud"></div>
-<div id="lgtPanel"><div class="lgtHead"><span>light</span><button id="lgtAll" title="all terms back on">reset</button></div></div>
+<div id="lgtPanel" class="hidden"><div class="lgtHead"><span>light</span><button id="lgtAll" title="all terms back on">reset</button></div></div>
 <div id="lock" class="hidden">
   <h1><span class="tv">voxel</span><span class="tb">bit</span></h1>
   <div id="btnRow">
@@ -6457,7 +6457,7 @@
     }
     return best;
   };
-  const HURT_MS = 600;                                 // how long the wounded flash runs — 3 blinks. Paced for TAA, not for the eye: a flash shorter than the colour history's ~8-frame blend never reaches full strength on screen.
+  const HURT_MS = 500;                                 // ONE blink, half a second (user). Comfortably longer than TAA's ~8-frame colour blend, which is what made an earlier 83 ms flash almost invisible on screen.
   const HURT = { t0: -1e9, hold: false, slot: -1, cx: 0, cy: 0, cz: 0, hx: 0, hy: 0, hz: 0 };   // world coords — rebased to the window at publish time, so a world shift mid-blink cannot drag the box off the animal
   const hurtBox = (B) => {                             // the animal's CURRENT stamped bounds — re-read every frame, because it is still walking while it flashes
     const q = B && B.sB && B.sN ? B.sB : null;
@@ -6477,9 +6477,24 @@
       HURT.t0 = performance.now();
       return;                                           // wounded, not dead
     }
-    spawnDeathBurst(B.x, (B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y, B.z);   // poof at the creature (a PERCHED BIRD's height lives in perchFeet — B.y is stale for kind 5)
-    if (B.sN) unstampWorm(B);                           // clear a grid-stamped creature's world voxels (mammals + perched birds)
-    B.init = false; B.dieT = 0; B.slain = true;         // SLAIN (user: "when I kill something, it respawns somewhere else — prevent this"): the slot is dead for the rest of the session — the population loop skips it, so nothing re-places it elsewhere
+    // EVERY life form flashes red first (user). The poof and the slot teardown wait out the blink,
+    // so the hit reads on the animal itself rather than the animal simply vanishing into smoke.
+    if (B.dying) return;                                // already flashing its way out — a second click must not double-kill or restart the blink
+    B.dying = true;
+    HURT.slot = best; HURT.hold = false; hurtBox(B); HURT.t0 = performance.now();
+    pendDeath.push({ slot: best, at: performance.now() + HURT_MS });
+  };
+  const pendDeath = [];                                 // creatures mid-blink: {slot, at} — they die for real when the flash finishes
+  const reapDeaths = (nowMs) => {                        // …and this is where that happens, one blink later
+    for (let i = pendDeath.length - 1; i >= 0; i--) {
+      if (nowMs < pendDeath[i].at) continue;
+      const B = wbf[pendDeath[i].slot];
+      pendDeath.splice(i, 1);
+      if (!B || !B.init) continue;
+      spawnDeathBurst(B.x, (B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y, B.z);   // poof at the creature (a PERCHED BIRD's height lives in perchFeet — B.y is stale for kind 5)
+      if (B.sN) unstampWorm(B);                           // clear a grid-stamped creature's world voxels (mammals + perched birds)
+      B.init = false; B.dieT = 0; B.slain = true; B.dying = false;         // SLAIN (user: "when I kill something, it respawns somewhere else — prevent this"): the slot is dead for the rest of the session — the population loop skips it, so nothing re-places it elsewhere
+    }
   };
   document.addEventListener('mousedown', (e) => {
     if (!locked) return;
@@ -8651,9 +8666,8 @@
         // other animation here, so it reads as a deliberate blink rather than a smooth throb.
         const he = (now - HURT.t0) / HURT_MS;
         let hk = 0;
-        if (he >= 0 && he < 1) { const hf = Math.floor(he * 12);                 // 12 phases over the blink, stepped like every other animation here
-          hk = (hf % 4 < 2) ? (1 - he * 0.55) : 0;        // 2 phases ON (~100 ms) then 2 OFF → 3 flashes, each a little fainter than the last.
-                                                          // 100 ms is the floor worth using: TAA blends 12% per frame, so a shorter pulse is half gone before it lands.
+        if (he >= 0 && he < 1) { const hf = Math.floor(he * 12);                 // 12 phases over the blink, stepped at 24 fps like every other animation here
+          hk = 1 - hf / 12;                               // ONE flash (user): full at the instant of the hit, fading out across the half second
           if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
           const HB = HURT.slot >= 0 ? wbf[HURT.slot] : null;
           if (HB && HB.init) hurtBox(HB); else hk = 0;      // it died or despawned mid-blink — nothing left to stain
@@ -8667,6 +8681,7 @@
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
     UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
     { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; if (heldIt()) playSwish(); pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)
+      reapDeaths(now);                                 // creatures whose red flash has run out now actually die (see tryKillCreature)
       if (pendKillT && now >= pendKillT) { pendKillT = 0;
         const kn9 = KNIFE_IT > 0 && heldIt() === KNIFE_IT, am9 = kn9 ? aimedCreature() : -1;
         if (am9 >= 276) tryKillCreature();              // KNIFE on a LAND MAMMAL: the animal takes the swing. Otherwise chopSwing carves its stamped voxels out of the world and the creature is never hit at all.
@@ -9440,7 +9455,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0;   // fresh occupant — never inherits the last one's knife wound B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
+        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.dying = false;   // fresh occupant — never inherits the last one's knife wound or a pending death B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
         if (lilySlot) {                                // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + red cardinals / BLUE BIRDS (the reskin) — both grid-stamped by stampCardinal
