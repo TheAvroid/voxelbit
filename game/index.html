@@ -172,6 +172,19 @@
   #volSlider, #sensSlider, #resSlider { width: 170px; cursor: pointer; }
   #vigWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #snowWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  /* ── LIGHT DEBUG PANEL ── every lighting term on its own switch, top-right, so the image can be
+     bisected live instead of guessed at. Sits above the HUD z-order and ignores pointer-lock clicks. */
+  #lgtPanel { position: fixed; top: 10px; right: 12px; z-index: 30; background: rgba(12,16,22,0.82); border: 1px solid #2b3648;
+    border-radius: 10px; padding: 7px 9px 8px; font: 7px/1.6 'px3', Consolas, monospace; letter-spacing: 1px; color: #cfd6e0;
+    display: flex; flex-direction: column; gap: 3px; min-width: 132px; box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
+  #lgtPanel .lgtHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #8fa0b8; padding-bottom: 3px; border-bottom: 1px solid #223046; margin-bottom: 2px; }
+  #lgtPanel .lgtHead button { background: #1a2331; border: 1px solid #3d4a60; border-radius: 7px; color: #cfd6e0; font: inherit; padding: 2px 7px; cursor: pointer; }
+  #lgtPanel .lgtHead button:hover { border-color: #7fd05a; color: #b8ff6e; }
+  #lgtPanel .lgtRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  #lgtPanel .lgtRow button { background: #1a2331; border: 1px solid #d9553f; border-radius: 7px; color: #f0b8ac; font: inherit;
+    padding: 2px 9px; cursor: pointer; min-width: 34px; }
+  #lgtPanel .lgtRow button.on { border-color: #7fd05a; color: #b8ff6e; }
+  #lgtPanel.hidden { display: none; }
   #vigBtn, #snowBtn, #fsBtn, #crdBtn, #fpsBtn, #timeBtn, #resHudBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 4px 16px; color: #ff9077; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red (user) */
   #vigBtn:hover, #snowBtn:hover, #fsBtn:hover, #crdBtn:hover, #fpsBtn:hover, #timeBtn:hover, #resHudBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off buttons LIFT on hover but KEEP their red/green colour — no green outline (user) */
   #vigBtn.on, #snowBtn.on, #fsBtn.on, #crdBtn.on, #fpsBtn.on, #timeBtn.on, #resHudBtn.on { border-color: #7fd05a; color: #b8ff6e; }   /* ON = green (user) */
@@ -225,6 +238,7 @@
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
 <div id="hud"></div>
+<div id="lgtPanel"><div class="lgtHead"><span>light</span><button id="lgtAll" title="all terms back on">reset</button></div></div>
 <div id="lock" class="hidden">
   <h1><span class="tv">voxel</span><span class="tb">bit</span></h1>
   <div id="btnRow">
@@ -443,6 +457,9 @@
   const B2X = BX >> 2, B2Y = BY >> 2, B2Z = BZ >> 2;  // L2 occupancy: 32-voxel SUPER-bricks — long rays leap 32 voxels through open air
   const bricks2 = new Uint32Array((B2X * B2Y * B2Z + 31) >> 5);
   const touched = new Uint8Array(BX * BZ);             // per 8×8 column tile: has this memory EVER been written? virgin tiles skip air-clearing (~40% of a column)
+  let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
+  const LGT_ALL = 0x1ff;                               // 9 lighting terms, all enabled = the normal image (see the top-right panel / LG() in the shader)
+  let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt'); return v === null ? LGT_ALL : (parseInt(v, 10) & LGT_ALL); } catch (e) { return LGT_ALL; } })();
   let winOX = 0, winOZ = 0;                            // world coord of the window corner (multiples of 8)
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
   const gwrap = (v, n) => ((v % n) + n) % n;
@@ -2738,7 +2755,7 @@
     device.queue.writeBuffer(palBuf, 0, f); };
   const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
-  const UF = new Float32Array(1872);   // …+ heldCfg 1860..1863 (x = held-item sun visibility) + hurtB 1864..1867 + hurtH 1868..1871 (the knife's red hit-flash box)
+  const UF = new Float32Array(1876);   // …+ heldCfg 1860..1863 (x = held-item sun visibility) + lgt 1864..1867 (light-debug bitmask) + hurtB 1868..1871 + hurtH 1872..1875 (the knife's red hit-flash box)
   const UF_OLD_LEN = 1860;   // …+ physB 16 bodies x 5 vec4 1532..1851 + physC 1852..1855 + physBound 1856..1859 → 1860 (voxel rigid bodies)                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
@@ -2815,9 +2832,13 @@
                                                                      // [2] local Y axis + dimY · [3] local Z axis + dimZ · [4] comLocal.xyz + buffer offset
       physC : vec4<f32>,                                             // x = ACTIVE body count (0 = the whole path is one compare), y = how many are AWAKE (the reactive mask keys off y; tracing keys off x)
       physBound : vec4<f32>,                                         // xyz = centre (window coords) of a sphere enclosing EVERY body, w = its radius — one test rejects a ray that cannot touch any of them
+      heldCfg : vec4<f32>,
+      // ── APPENDED TAIL ── these MUST stay in the same order as the UF writes at the end of the frame
+      // (heldCfg 1860, lgt 1864, hurtB 1868, hurtH 1872). WGSL lays a struct out in declaration order,
+      // so re-ordering these silently feeds each field its neighbour's numbers instead of erroring.
+      lgt : vec4<f32>,                                               // ── LIGHT DEBUG ── x = bitmask of which lighting terms are enabled (see LG / the top-right panel). All bits set = the normal image.
       hurtB : vec4<f32>,                                             // ── HIT FLASH ── xyz = centre (window coords) of the animal the knife just wounded, w = flash strength (0 = nothing showing, the usual case)
-      hurtH : vec4<f32>,                                             // …and its half-extents. Snug: taken from the voxels the animal actually stamped, so the ground it stands on stays its own colour.
-      heldCfg : vec4<f32>,                                           // x = SUN VISIBILITY at the player (0 = the tool in your hands is in shade, 1 = open sun). Held items had no visibility term at all and were lit as if always in the open.
+      hurtH : vec4<f32>,                                             // …and its half-extents. Snug: taken from the voxels the animal actually stamped, so the ground it stands on stays its own colour.                                           // x = SUN VISIBILITY at the player (0 = the tool in your hands is in shade, 1 = open sun). Held items had no visibility term at all and were lit as if always in the open.
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -2838,6 +2859,10 @@
       let uv = vec2<f32>(x * 0.5 + 0.5, 0.5 - y * 0.5);
       return (uv * u.res - u.pJit) / u.res;
     }
+    // LIGHT DEBUG — is term n enabled? Bits, in panel order: 0 sun shadow, 1 ambient occlusion,
+    // 2 creature shadow boxes, 3 firefly/lava glow, 4 water reflect+refract, 5 fog,
+    // 6 irradiance history, 7 spatial filter, 8 TAA. Everything on = the normal image.
+    fn LG(b : u32) -> bool { return (u32(u.lgt.x + 0.5) & (1u << b)) != 0u; }
     fn rand(s : ptr<function, u32>) -> f32 {
       *s = *s * 747796405u + 2891336453u;
       let w = ((*s >> ((*s >> 28u) + 4u)) ^ *s) * 277803737u;
@@ -3459,10 +3484,11 @@
           let sCap = select(1200.0, min(1200.0, (ceilY - sp.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
           if (sCap <= 0.0) { sunV = 1.0; }                           // already above everything and going up — full sun, no ray
           else {
-          let sh = traceAll(sp, sdir, sCap, skipW);   // bodies included → a felled tree casts a REAL shadow
-          sunV = select(1.0, 0.0, sh.t >= 0.0);
+          if (LG(0u)) { let sh = traceAll(sp, sdir, sCap, skipW);   // bodies included → a felled tree casts a REAL shadow
+                        sunV = select(1.0, 0.0, sh.t >= 0.0); }
+          else { sunV = 1.0; }                        // sun shadows OFF — every sunward surface fully lit
           }
-          if (${location.search.includes('nocshad') ? 0 : 1} == 1 && sunV > 0.0 && cSlot == 0u) {   // CREATURE CAST SHADOWS — the sun ray tests the creature AABBs so they shadow ground/water. SKIPPED for a trace-injected creature pixel: its own box wraps the surface point and every sun ray would 'self-shadow' (cross-creature shadows are a lesser loss than a permanently dark body)
+          if (LG(2u) && ${location.search.includes('nocshad') ? 0 : 1} == 1 && sunV > 0.0 && cSlot == 0u) {   // CREATURE CAST SHADOWS — the sun ray tests the creature AABBs so they shadow ground/water. SKIPPED for a trace-injected creature pixel: its own box wraps the surface point and every sun ray would 'self-shadow' (cross-creature shadows are a lesser loss than a permanently dark body)
             for (var s = 0; s < 16; s++) {
               let CA = u.cshad[s * 2];
               if (CA.w < 0.5) { continue; }
@@ -3501,12 +3527,14 @@
           let r1 = fract(ign(vec2<f32>(gid.xy)) + fN * 0.7548777);   // R2 sequence (plastic constants) — azimuth
           let r2 = fract(ign(vec2<f32>(gid.xy) + vec2<f32>(47.0, 17.0)) + fN * 0.5698403);   // decorrelated elevation lane
           let d = cosHemi(h.n, r1, r2);
-          let ah = traceAll(sp, d, 24.0, skipW);      // bodies included → real contact AO and self-shadowing, no bake needed
-          skyV = select(1.0, clamp(ah.t / 24.0, 0.0, 1.0), ah.t >= 0.0);
+          if (LG(1u)) { let ah = traceAll(sp, d, 24.0, skipW);      // bodies included → real contact AO and self-shadowing, no bake needed
+                        skyV = select(1.0, clamp(ah.t / 24.0, 0.0, 1.0), ah.t >= 0.0); }
+          else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
         if (flakeHit && h.vox == SNV) { sunV = max(sunV, 0.6); skyV = max(skyV, 0.85); }   // FALLING FLAKES SCATTER — real snow is white from EVERY direction, so a flake never shows a dark shaded face. Without this floor, anti-sunward flakes shaded to ~sky luminance and vanished — the "snow band clipping" wedge the user saw (the void tracked the anti-sun azimuth, verified via the ?flakedbg emissive A/B). Scales with the sun/moon term downstream, so night stays subtle.
       }
       var lavaG = 0u;                                                  // soft light cast by nearby lava — deterministic probe, no flicker
+      if (LG(3u)) {                                                    // LIGHT DEBUG bit 3: lava + firefly point lights
       // lava only exists at bedrock (y ≤ 8) and the probe reaches 18 down — pixels above y 28 can NEVER see glow, so 99.9% of pixels skip a whole ray
       if (t >= 0.0 && faceId != 8u && faceId != 7u && (ro.y + rd.y * t) < 28.0) {
         let pos2 = ro + rd * t + h.n * 0.02;
@@ -3539,6 +3567,7 @@
           }
         }
       }
+      }                                                                // …end LIGHT DEBUG bit 3 (glow)
       textureStore(gAlbedo, vec2<i32>(gid.xy), vec4<f32>(sqrt(albedo), (f32(faceId) + f32(lavaG) * 16.0) / 255.0));
       // ── REACTIVE MASK ── the temporal pass blends 1/hist per frame with hist up to maxHist = 64, so a
       // pixel newly covered or uncovered by a MOVING shadow needs ~64 frames to catch up: the shadow
@@ -3546,8 +3575,8 @@
       // interacted with a rigid body and let TEMPORAL cap that pixel's history. Cheap — it reuses the same
       // enclosing-sphere test bodyTrace already does. Teardown carries an equivalent reactive mask in its
       // motion G-buffer for exactly this reason.
-      var reactive = creReact;
-      if (t >= 0.0 && u.physC.y > 0.5) {                             // AWAKE bodies only: a settled trunk must not pin every nearby pixel's history at 4 forever (see physC)
+      var reactive = select(0.0, creReact, LG(4u));
+      if (LG(4u) && t >= 0.0 && u.physC.y > 0.5) {                             // AWAKE bodies only: a settled trunk must not pin every nearby pixel's history at 4 forever (see physC)
         let sp2 = ro + rd * t;
         let dc2 = u.physBound.xyz - sp2;
         let sdir2 = select(u.sunDir, vec3<f32>(0.0, 1.0, 0.0), u.sunDir.y <= 0.0);
@@ -3627,7 +3656,7 @@
           let prev = textureSampleLevel(histPrev, samp, uv, 0.0);
           let expT = length(wpp - u.pPos);
           if (prev.b > 0.0 && abs(prev.b - expT) < 0.02 * expT + 1.5) {   // rotation (not in the rigid delta) and newly revealed surfaces fail this distance check naturally
-            hist = min(abs(prev.a) + 1.0, select(u.maxHist, 4.0, cur.a > 0.5));   // reactive pixel: converge in ~4 frames so a moving shadow TRACKS its body instead of trailing it
+            hist = min(abs(prev.a) + 1.0, select(select(1.0, u.maxHist, LG(6u)), 4.0, cur.a > 0.5));   // bit 6 off → hist pinned at 1 = no irradiance history at all   // reactive pixel: converge in ~4 frames so a moving shadow TRACKS its body instead of trailing it
             acc = mix(prev.rg, cur.rg, 1.0 / hist);
           }
         }
@@ -3659,6 +3688,7 @@
       let radius = select(mix(${(() => { const m = /[?&]blur=([0-9.]+)/.exec(location.search); return m ? Math.max(1, Math.min(8, parseFloat(m[1]))) : 4.0; })()}, 1.5, clamp(hA / 8.0, 0.0, 1.0)), 2.6, c.a < 0.0);   // see the note above: 8 px was smearing shadows across voxel faces on any surface whose history cannot converge
       var sum = c.rg; var wsum = 1.0;
       for (var i = 0; i < 12; i++) {
+        if (!LG(7u)) { break; }                                  // bit 7 off → raw, unfiltered irradiance
         let q = vec2<i32>(vec2<f32>(gid.xy) + P[i] * radius + 0.5);
         if (q.x < 0 || q.y < 0 || q.x >= i32(u.res.x) || q.y >= i32(u.res.y)) { continue; }
         let s = textureLoad(hist, q, 0);
@@ -3765,6 +3795,7 @@
         col = alb * (3.1 + 0.6 * sin(u.time * 2.1)) + vec3<f32>(0.65, 0.13, 0.0);   // molten orange, glowing, gentle pulse
         var fogA = 1.0 - exp(-irr.b * 0.0006);
         fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
+        if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
         col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
       } else if (face == 6u) {                                       // ── PHYSICALLY-BASED WATER ── Gerstner surface, RAY-TRACED reflection + refraction, Beer–Lambert absorption + single scattering. The voxel aesthetic survives on purpose: the surface is still stepped 10 cm columns, the mirror image is the voxel world itself, glints stay discrete.
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
@@ -3843,6 +3874,7 @@
         }
         var fogA = 1.0 - exp(-irr.b * 0.0006);
         fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
+        if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
         col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
       } else {
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
@@ -3866,7 +3898,8 @@
         if (glowY < 28.0) { col += alb * lavaG * vec3<f32>(1.0, 0.44, 0.13) * 3.6; }             // lava: linear decode, unchanged
         else { col += alb * lavaG * lavaG * vec3<f32>(1.0, 0.82, 0.30) * 4.6; }                  // firefly: sqrt-encoded in TRACE → SQUARED decode restores the physical falloff curve
         var fogA = 1.0 - exp(-irr.b * 0.0006);
-        fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));   // soft CIRCULAR horizon
+        fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
+        if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog   // soft CIRCULAR horizon
         col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
       }
       // Distance to the nearest FOREGROUND surface drawn over the g-buffer (creature, drop, held item), or -1 if the scene
@@ -4137,7 +4170,7 @@
       var outc = cur;
       if (u.reset < 0.5 && uv.x > 0.001 && uv.y > 0.001 && uv.x < 0.999 && uv.y < 0.999) {
         let prev = clamp(textureSampleLevel(colorPrev, samp, uv, 0.0).rgb, mn, mx);
-        outc = mix(prev, cur, 0.12);
+        outc = mix(prev, cur, select(1.0, 0.12, LG(8u)));           // bit 8 off → no colour history (raw, jittery, but instant)
       }
       textureStore(colorHistOut, vec2<i32>(gid.xy), vec4<f32>(outc, select(0.0, 1.0, t < 0.0)));   // alpha = SKY mask → only the sky/sun feed the god-ray scatter in the blit
     }
@@ -6874,6 +6907,29 @@
       btn.addEventListener('pointerdown', (e) => e.stopPropagation());
       btn.addEventListener('click', (e) => { e.stopPropagation(); set(!get()); try { localStorage.setItem(key, get() ? '1' : '0'); } catch (e2) {} show(); });
       show(); };
+    // ── LIGHT DEBUG PANEL ── one row per lighting term, each a bit in u.lgt.x. Bit order is shared
+    // with LG() in the shader. Persisted, so a bisection survives the reload you will inevitably do.
+    const LGT = [['sun shadow', 0], ['ambient occl', 1], ['creature shad', 2], ['glow (lava/fly)', 3],
+                 ['reactive mask', 4], ['fog', 5], ['irr history', 6], ['spatial blur', 7], ['taa', 8]];
+    {
+      const panel = $('lgtPanel');
+      lgtPaint = () => { for (const [, b] of LGT) { const btn = $('lgtB' + b);
+        const on = (lgtMask & (1 << b)) !== 0; btn.textContent = on ? 'on' : 'off'; btn.classList.toggle('on', on); } };
+      for (const [label, b] of LGT) {
+        const row = document.createElement('div'); row.className = 'lgtRow';
+        row.innerHTML = '<span></span><button id="lgtB' + b + '">on</button>';
+        row.firstChild.textContent = label;
+        panel.appendChild(row);
+        const btn = row.lastChild;
+        btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+        btn.addEventListener('click', (e) => { e.stopPropagation(); lgtMask ^= (1 << b); resetHist = 1;   // the filters hold seconds of history; drop it so the change is visible immediately
+          try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} lgtPaint(); });
+      }
+      $('lgtAll').addEventListener('pointerdown', (e) => e.stopPropagation());
+      $('lgtAll').addEventListener('click', (e) => { e.stopPropagation(); lgtMask = LGT_ALL; resetHist = 1;
+        try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} lgtPaint(); });
+      lgtPaint();
+    }
     mkToggle('crdBtn', () => showCoords, (v) => showCoords = v, 'vb_coords');   // COORDS on/off
     mkToggle('fpsBtn', () => showFps, (v) => showFps = v, 'vb_fps');            // FPS on/off
     mkToggle('timeBtn', () => showTime, (v) => showTime = v, 'vb_time');        // TIME on/off
@@ -7667,7 +7723,7 @@
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
-    hurtInfo() { return { flash: +UF[1867].toFixed(3), world: [UF[1864] + winOX, UF[1865], UF[1866] + winOZ], half: [UF[1868], UF[1869], UF[1870]] }; },   // the knife hit-flash box the tracer is tinting inside right now
+    hurtInfo() { return { flash: +UF[1871].toFixed(3), world: [UF[1868] + winOX, UF[1869], UF[1870] + winOZ], half: [UF[1872], UF[1873], UF[1874]] }; },   // the knife hit-flash box the tracer is tinting inside right now
     swing(offMs) { swingStart = performance.now() - (offMs || 0); }, drop() { dropHeld(); },
     sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
     clash() { if (dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return true; } return false; },   // same guard as shift+click — headless knife-craft testing
@@ -7810,6 +7866,7 @@
                smallBodies: now2.length, spots });
       }, 400));
     },
+    lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
       for (const b of PH.bodies) { b.sleeping = f; if (f) { b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0; } }
       return PH.bodies.map((b) => ({ vox: b.n, pos: b.pos.map((q) => +q.toFixed(2)), sleeping: b.sleeping })); },
@@ -8506,6 +8563,7 @@
       } else vis = 0;                                  // below the horizon: no direct sun on the tool either
       heldSunV += (vis - heldSunV) * (1 - Math.exp(-8 * dt));   // ~0.15 s ease so dappled canopy fades instead of strobing
       UF[1860] = heldSunV; UF[1861] = 0; UF[1862] = 0; UF[1863] = 0;
+      UF[1864] = lgtMask; UF[1865] = 0; UF[1866] = 0; UF[1867] = 0;   // ── LIGHT DEBUG ── which lighting terms are switched on (top-right panel)
       { // ── HIT FLASH ── the knife-wounded animal blinks red, then stops. Stepped at 24 fps like every
         // other animation here, so it reads as a deliberate blink rather than a smooth throb.
         const he = (now - HURT.t0) / HURT_MS;
@@ -8517,8 +8575,8 @@
           const HB = HURT.slot >= 0 ? wbf[HURT.slot] : null;
           if (HB && HB.init) hurtBox(HB); else hk = 0;      // it died or despawned mid-blink — nothing left to stain
         }
-        UF[1864] = HURT.cx - winOX; UF[1865] = HURT.cy; UF[1866] = HURT.cz - winOZ; UF[1867] = hk;
-        UF[1868] = HURT.hx; UF[1869] = HURT.hy; UF[1870] = HURT.hz; UF[1871] = 0;
+        UF[1868] = HURT.cx - winOX; UF[1869] = HURT.cy; UF[1870] = HURT.cz - winOZ; UF[1871] = hk;
+        UF[1872] = HURT.hx; UF[1873] = HURT.hy; UF[1874] = HURT.hz; UF[1875] = 0;
       }
     }
     set3(32, sun, resetHist);
@@ -8526,7 +8584,10 @@
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
     UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
     { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; if (heldIt()) playSwish(); pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)
-      if (pendKillT && now >= pendKillT) { pendKillT = 0; if (!chopSwing()) tryKillCreature(); }   // an axe that bites a trunk spends the swing on the tree; otherwise it can still kill   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
+      if (pendKillT && now >= pendKillT) { pendKillT = 0;
+        const kn9 = KNIFE_IT > 0 && heldIt() === KNIFE_IT, am9 = kn9 ? aimedCreature() : -1;
+        if (am9 >= 276) tryKillCreature();              // KNIFE on a LAND MAMMAL: the animal takes the swing. Otherwise chopSwing carves its stamped voxels out of the world and the creature is never hit at all.
+        else if (!chopSwing()) tryKillCreature(); }   // an axe that bites a trunk spends the swing on the tree; otherwise it can still kill   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
       // SWING — Teardown-style 3 phases over 570 ms (user-tuned): WINDUP raises the tool up-back (0–35%),
       // the STRIKE slams it down to the MIDDLE of the screen (35–55%, accelerating), then it eases back to rest (55–100%).
       const swT = (now - swingStart) / 570;
