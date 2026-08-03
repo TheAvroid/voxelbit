@@ -73,8 +73,6 @@
   #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; transform: translateY(-28px); }   /* icons nudged up under the logo (user) */
   /* ══ HIDDEN ESC BUTTONS (user 2026-07-22): the ASSET-EDITOR (#edBtn) + ITEM-POSITION (#pkBtn) buttons are disabled from the esc menu. All their HTML + JS is left intact — this ONE rule just hides them. TO BRING THEM BACK: delete (or comment out) this single rule. ══ */
   #pkBtn, #edBtn { display: none !important; }
-  /* ══ VIDEO EDITOR BUTTON DISABLED (user 2026-07-23): the VIDEO-EDITOR (#veBtn) button is hidden from the esc menu for now, leaving just settings + discord. All its HTML + JS is left intact — this ONE rule just hides it. TO BRING IT BACK: delete (or comment out) this single rule. ══ */
-  #veBtn { display: none !important; }
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
   #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn, #edCopy { position: relative; top: 0; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, top 0.15s ease-out, box-shadow 0.15s; will-change: transform; }   /* subtle resting drop shadow (user) — deepens on hover below. Explicit top:0 so the hover-lift TRANSITIONS (top:auto→-4px can't interpolate → would jump). */
   #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg, #edCopy svg { width: 22px; height: 22px; }
@@ -243,9 +241,9 @@
   <h2>settings</h2>
   <div id="optRows">
   <div id="todWrap"><span id="todLabel">07:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="420"></div>
-  <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="100"></div>
+  <div id="volWrap"><span id="volLabel">volume 0%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="0"></div>
   <div id="sensWrap"><span id="sensLabel">sensitivity 30%</span><input type="range" id="sensSlider" min="0" max="100" step="10" value="30"></div>
-  <div id="resWrap"><span id="resLabel">resolution 90%</span><input type="range" id="resSlider" min="40" max="100" step="10" value="90"></div>
+  <div id="resWrap"><span id="resLabel">resolution 80%</span><input type="range" id="resSlider" min="40" max="100" step="10" value="80"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
   <div id="fsWrap"><span>fullscreen</span><button id="fsBtn">off</button></div>
   <div id="vigWrap"><span>vignette</span><button id="vigBtn">on</button></div>
@@ -344,7 +342,11 @@
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) fail('no WebGPU adapter');
   const SIZE384 = 768 * 768 * 384, SIZE256 = 768 * 768 * 256;   // the minimum deep world wants 226 MB; fall back gracefully
-  const lim = Math.min(adapter.limits.maxStorageBufferBindingSize, adapter.limits.maxBufferSize);
+  let lim = Math.min(adapter.limits.maxStorageBufferBindingSize, adapter.limits.maxBufferSize);
+  // DEV: ?worldcap=<bytes> pretends the adapter is smaller, so the weak-device fallback ladder
+  // (WYpick 384/256/192, WXZ 2048/1536/1280/1024/768) can actually be exercised and measured on a
+  // big GPU. The game now ships to players' own machines, so those paths are shipping paths.
+  { const m = /worldcap=(\d+)/.exec(location.search); if (m) lim = Math.min(lim, +m[1]); }
   const WYpick = lim >= SIZE384 ? 384 : (lim >= SIZE256 ? 256 : 192);
   let WXZ = 768;                                       // widest window the adapter can bind: 2048 (1.5 GB) → a TRUE 100 m view radius
   if (WYpick === 384) for (const c of [2048, 1536, 1280, 1024]) if (lim >= c * c * 384) { WXZ = c; break; }
@@ -819,6 +821,8 @@
   const foliaTab = new Uint8Array(256);                // per-id CANOPY flag — foliage is walk-through for the player, but the cinematic camera must still steer around it or it flies straight through pine crowns
   for (const f of foliageIds) foliaTab[f] = 1;
   const mushTab = new Uint8Array(256);                 // per-id BOUNCY flag — mushroom voxels trampoline the player (filled once MUSHV loads)
+  const decorTab = new Uint8Array(256);                // per-id CHOPPABLE-DECOR flag — mushrooms, ferns and ground logs yield chunks (see phChopDecor). Deliberately NOT mushTab: choppable and bouncy are different properties, and reusing it would make every fern a trampoline.
+  const axeOnlyTab = new Uint8Array(256);              // …and of those, which need the AXE rather than any held tool. Wood does; mushrooms and ferns do not.
   const sandTab = new Uint8Array(256); for (const s of SAND) sandTab[s] = 1;   // per-id SAND flag — walking on beach/lakebed sand slows the player (sand pits)
   console.log('[vb] pine5.vox', MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
 
@@ -884,6 +888,61 @@
     const mj = await (await fetch('assets/decoration/mushroom.json')).json();
     const mids = mj.pal.map((c) => addCol(c[0], c[1], c[2]));                                // its own quantized shades → global ids
     MUSHV = { sx: mj.sx, sy: mj.sy, sz: mj.sz, vox: mj.vox.map((p) => (p & 0xffffff) | (mids[p >>> 24] << 24)) };
+    // ── FILL THE SHELL ── see the block comment convention above: hollow until the axe cut into it (user).
+    {
+      const SX = MUSHV.sx, SY = MUSHV.sy, SZ = MUSHV.sz, NC = SX * SY * SZ;
+      const at = (x, y, z) => x + y * SX + z * SX * SY;
+      const cell = new Int32Array(NC).fill(-1);        // -1 empty, else the palette id occupying it
+      for (const q of MUSHV.vox) cell[at(q & 255, (q >> 8) & 255, (q >> 16) & 255)] = q >>> 24;
+      const OUT = 1, IN = 2;
+      const mark = new Uint8Array(NC), st = new Int32Array(NC);
+      let sp = 0;
+      for (let z = 0; z < SZ; z++) for (let y = 0; y < SY; y++) for (let x = 0; x < SX; x++) {
+        if (x && x < SX - 1 && y && y < SY - 1 && z && z < SZ - 1) continue;   // boundary shell only
+        const k = at(x, y, z); if (cell[k] >= 0 || mark[k]) continue;
+        mark[k] = OUT; st[sp++] = k;
+      }
+      while (sp > 0) {                                 // 1. reachable-from-outside empty space
+        const k = st[--sp], x = k % SX, y = ((k / SX) | 0) % SY, z = (k / (SX * SY)) | 0;
+        for (let d = 0; d < 6; d++) {
+          const nx = x + (d === 0 ? 1 : d === 1 ? -1 : 0);
+          const ny = y + (d === 2 ? 1 : d === 3 ? -1 : 0);
+          const nz = z + (d === 4 ? 1 : d === 5 ? -1 : 0);
+          if (nx < 0 || nx >= SX || ny < 0 || ny >= SY || nz < 0 || nz >= SZ) continue;
+          const nk = at(nx, ny, nz);
+          if (cell[nk] >= 0 || mark[nk]) continue;
+          mark[nk] = OUT; st[sp++] = nk;
+        }
+      }
+      let cav = 0;
+      for (let k = 0; k < NC; k++) if (cell[k] < 0 && !mark[k]) { mark[k] = IN; cav++; }
+      if (cav) {
+        sp = 0;                                        // 2. grow the shell's colours inward
+        for (let k = 0; k < NC; k++) if (cell[k] >= 0) st[sp++] = k;
+        let head = 0;
+        const q2 = Array.from(st.subarray(0, sp));
+        while (head < q2.length) {
+          const k = q2[head++], x = k % SX, y = ((k / SX) | 0) % SY, z = (k / (SX * SY)) | 0;
+          for (let d = 0; d < 6; d++) {
+            const nx = x + (d === 0 ? 1 : d === 1 ? -1 : 0);
+            const ny = y + (d === 2 ? 1 : d === 3 ? -1 : 0);
+            const nz = z + (d === 4 ? 1 : d === 5 ? -1 : 0);
+            if (nx < 0 || nx >= SX || ny < 0 || ny >= SY || nz < 0 || nz >= SZ) continue;
+            const nk = at(nx, ny, nz);
+            if (mark[nk] !== IN || cell[nk] >= 0) continue;
+            cell[nk] = cell[k];                        // nearest surface voxel's colour
+            q2.push(nk);
+          }
+        }
+        const filled = [];
+        for (let k = 0; k < NC; k++) if (cell[k] >= 0) {
+          const x = k % SX, y = ((k / SX) | 0) % SY, z = (k / (SX * SY)) | 0;
+          filled.push(x | (y << 8) | (z << 16) | (cell[k] << 24));
+        }
+        console.log('[vb] mushroom: shell', MUSHV.vox.length, 'vox +', cav, 'interior filled =', filled.length);
+        MUSHV.vox = filled;
+      }
+    }
     // ── PLANT THE SMALL MUSHROOMS ── the cluster is one model, so sinking it sank the big cap too. Split it into
     // connected components instead: the LARGEST is the big mushroom and keeps its height, every other component is a
     // small mushroom and drops 2 voxels so it is planted in the ground rather than perched on it. Component-based
@@ -934,6 +993,9 @@
     LILYPAD_GIGV = { sx: gj.sx, sy: gj.sy, sz: gj.sz, vox: gj.vox.map((p) => (p & 0xffffff) | (gids[p >>> 24] << 24)) };
   } catch (e) { console.warn('[vb] lillypad_gigantic.json missing — giant pads skipped', e); }
   const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
+  if (MUSHV) for (const q of MUSHV.vox) decorTab[q >>> 24] = 1;                             // ── CHOPPABLE DECOR ── mushrooms…
+  for (const i of FERNIDS) decorTab[i] = 1;                                                 // …and ferns (user): any tool takes chunks out of both
+  if (LOGV) for (const q of LOGV.vox) { decorTab[q >>> 24] = 1; axeOnlyTab[q >>> 24] = 1; }  // …and the ground LOGS (user), but those want the axe
   const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
@@ -2656,7 +2718,7 @@
     device.queue.writeBuffer(palBuf, 0, f); };
   const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
-  const UF = new Float32Array(1532);                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
+  const UF = new Float32Array(1860);   // …+ physB 16 bodies x 5 vec4 1532..1851 + physC 1852..1855 + physBound 1856..1859 → 1860 (voxel rigid bodies)                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);
@@ -2675,6 +2737,12 @@
   let patchN = 0;
   const patchBuf = device.createBuffer({ size: patchPairs.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const patchCnt = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  // ── RIGID BODY VOXELS ── one dense grid per live body (palette id per cell, 0 = empty), sub-allocated
+  // back to back. Nothing is written into W: a detached body exists ONLY as this buffer plus its
+  // transform, which is what keeps the world grid authoritative and free of moving-object stamps.
+  const BODYCAP = 2 << 20;                             // 2M cells = 8 MB; a whole pine box is 35*36*116 = 146k
+  const bodyBuf = device.createBuffer({ size: BODYCAP * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  let bodyTop = 0;                                     // bump allocator; reset when no body references it
 
   // ── GERSTNER WAVE FIELD ── (user: physically-based water) 4 deep-water waves — a long primary swell, a crossing
   // secondary, two short chop waves — with the deep-water dispersion ω = c·√(g·k) (g ≈ 98 vox/s², slowed 0.42× for a
@@ -2686,7 +2754,7 @@
     [-0.416, 0.909, 6.2831853 / 23, 0.72, 0.50, 2.1],
     [0.966, -0.259, 6.2831853 / 11, 0.34, 0.45, 4.4],
     [0.309, -0.951, 6.2831853 / 6.7, 0.20, 0.40, 1.3]];
-  const GWOM = GW.map((w) => 0.42 * Math.sqrt(98 * w[2]));   // dispersion per wave
+  const GWOM = GW.map((w) => 0.21 * Math.sqrt(98 * w[2]));   // dispersion per wave — HALVED (user 2026-08-02: water 50% slower). ONE table drives the shader AND the JS floater mirror, so ducks/lilies stay bit-matched automatically.
   const gerstHJS = (wx, wz, t) => {                    // the JS mirror — ducks/lilies ride EXACTLY the surface the shader draws
     let h = 0; for (let i = 0; i < 4; i++) { const w = GW[i]; h += w[3] * Math.cos(w[2] * (w[0] * wx + w[1] * wz) - GWOM[i] * t + w[5]); } return h; };
   const GERSTH_WGSL = GW.map((w, i) =>
@@ -2721,6 +2789,11 @@
       misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w spare
       lifeMot : array<vec4<f32>, 64>,                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
       lifeCfg : vec4<f32>,                                           // x = life debug view (0 off, 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO), y = trace-injection enabled (0 under ?oldlife → full analytic fallback), z/w spare
+      physB : array<vec4<f32>, 80>,                                  // ── RIGID BODIES ── 16 x 5 vec4, appended LAST so no existing offset moves:
+                                                                     // [0] anchor.xyz (camera space, at the COM) + voxel scale · [1] local X axis in camera space + dimX
+                                                                     // [2] local Y axis + dimY · [3] local Z axis + dimZ · [4] comLocal.xyz + buffer offset
+      physC : vec4<f32>,                                             // x = ACTIVE body count (0 = the whole path is one compare)
+      physBound : vec4<f32>,                                         // xyz = centre (window coords) of a sphere enclosing EVERY body, w = its radius — one test rejects a ray that cannot touch any of them
     }
     @group(0) @binding(0) var<uniform> u : U;
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -2831,8 +2904,8 @@
       return mix(a, b, w.y);
     }
     fn caust(p : vec2<f32>) -> f32 {                                 // CAUSTICS — two drifting noise fields; their coincidence lines are the bright webs
-      let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.55, u.time * 0.34));
-      let n2 = vn2(p * 0.11 + vec2<f32>(-u.time * 0.47, u.time * 0.29));
+      let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.275, u.time * 0.17));    // caustic drift halved with the waves
+      let n2 = vn2(p * 0.11 + vec2<f32>(-u.time * 0.235, u.time * 0.145));
       return pow(clamp(1.0 - abs(n1 - n2) * 2.6, 0.0, 1.0), 5.0);
     }
     fn ivhash(c : vec3<i32>) -> f32 {
@@ -2983,6 +3056,86 @@
       }
       return h;
     }
+    // ── RIGID BODY TRACE ── walks the transformed voxel grid of every live body and returns the nearest
+    // hit, in the SAME window-space convention trace() uses. Because it shares that convention it can be
+    // used by the primary ray AND by shadow / AO / reflection rays, which is what makes a felled tree
+    // light exactly like a standing one instead of needing baked AO and a box-shaped fake shadow.
+    fn bodyTrace(ro : vec3<f32>, rd : vec3<f32>, maxT : f32) -> Hit {
+      var h : Hit; h.t = -1.0;
+      let nB = i32(u.physC.x + 0.5);
+      if (nB <= 0) { return h; }
+      { let dc = u.physBound.xyz - ro;                              // one sphere test against ALL bodies
+        let tc = dot(dc, rd);
+        let r2 = u.physBound.w * u.physBound.w;
+        if (dot(dc, dc) - tc * tc > r2) { return h; }               // ray misses the whole set
+        if (tc < -u.physBound.w || tc - u.physBound.w > maxT) { return h; }
+      }
+      var best = maxT;
+      for (var bi = 0; bi < nB; bi++) {
+        let A = u.physB[bi * 5]; let Xa = u.physB[bi * 5 + 1]; let Ya = u.physB[bi * 5 + 2];
+        let Za = u.physB[bi * 5 + 3]; let E = u.physB[bi * 5 + 4];
+        let bw = i32(Xa.w + 0.5); let bh = i32(Ya.w + 0.5); let bd = i32(Za.w + 0.5);
+        if (bw < 1) { continue; }
+        let vsB = A.w;
+        let dA = A.xyz - ro;
+        let hw = f32(bw) * 0.5; let hh2 = f32(bh) * 0.5; let hd = f32(bd) * 0.5;
+        let radB = vsB * (sqrt(hw * hw + hh2 * hh2 + hd * hd) + 1.0);
+        let tcB = dot(dA, rd);
+        if (tcB - radB > best || tcB + radB < 0.0) { continue; }
+        if (dot(dA, dA) - tcB * tcB > radB * radB) { continue; }
+        let d0 = ro - A.xyz;                                        // ray origin in body-local voxel space
+        let roB = vec3<f32>(dot(d0, Xa.xyz), dot(d0, Ya.xyz), dot(d0, Za.xyz)) / vsB + E.xyz;
+        var rdB = vec3<f32>(dot(rd, Xa.xyz), dot(rd, Ya.xyz), dot(rd, Za.xyz));
+        if (abs(rdB.x) < 1e-6) { rdB.x = 1e-6; }
+        if (abs(rdB.y) < 1e-6) { rdB.y = 1e-6; }
+        if (abs(rdB.z) < 1e-6) { rdB.z = 1e-6; }
+        let invB = 1.0 / rdB;
+        let taB = -roB * invB;
+        let tbB = (vec3<f32>(f32(bw), f32(bh), f32(bd)) - roB) * invB;
+        let tnB = min(taB, tbB); let tfB = max(taB, tbB);
+        let teB = max(max(tnB.x, tnB.y), max(tnB.z, 0.0));
+        let tlB = min(min(tfB.x, tfB.y), tfB.z);
+        if (teB >= tlB || teB * vsB > best) { continue; }
+        var vax = 0;
+        if (tnB.y == teB) { vax = 1; } if (tnB.z == teB) { vax = 2; }
+        var vc = clamp(vec3<i32>(floor(roB + rdB * (teB + 1e-4))), vec3<i32>(0), vec3<i32>(bw - 1, bh - 1, bd - 1));
+        let ist = vec3<i32>(sign(rdB));
+        var vNx = (vec3<f32>(vc + max(ist, vec3<i32>(0))) - roB) * invB;
+        var tH = teB;
+        let off = i32(E.w + 0.5);
+        var iB = off + vc.x + vc.y * bw + vc.z * bw * bh;
+        for (var q2 = 0; q2 < 320; q2++) {                          // 320 >= the longest diagonal of a pine box
+          let cid = bodyVox[u32(iB)];
+          if (cid != 0u) {
+            if (tH * vsB < best) {
+              best = tH * vsB;
+              h.t = best; h.vox = cid;
+              var nl = vec3<f32>(0.0);
+              if (vax == 0) { nl.x = -f32(ist.x); } else if (vax == 1) { nl.y = -f32(ist.y); } else { nl.z = -f32(ist.z); }
+              h.n = normalize(Xa.xyz * nl.x + Ya.xyz * nl.y + Za.xyz * nl.z);   // TRUE rotated world normal
+              if (abs(h.n.y) >= abs(h.n.x) && abs(h.n.y) >= abs(h.n.z)) { h.face = select(2u, 3u, h.n.y < 0.0); }
+              else if (abs(h.n.x) >= abs(h.n.z)) { h.face = select(0u, 1u, h.n.x < 0.0); }
+              else { h.face = select(4u, 5u, h.n.z < 0.0); }
+            }
+            break;
+          }
+          if (vNx.x <= vNx.y && vNx.x <= vNx.z) { tH = vNx.x; vNx.x += abs(invB.x); vc.x += ist.x; iB += ist.x; vax = 0; }
+          else if (vNx.y <= vNx.z) { tH = vNx.y; vNx.y += abs(invB.y); vc.y += ist.y; iB += ist.y * bw; vax = 1; }
+          else { tH = vNx.z; vNx.z += abs(invB.z); vc.z += ist.z; iB += ist.z * bw * bh; vax = 2; }
+          if (any(vc < vec3<i32>(0)) || any(vc >= vec3<i32>(bw, bh, bd))) { break; }
+        }
+      }
+      return h;
+    }
+    // Static world + rigid bodies, nearest wins. THIS is what secondary rays call, so a falling tree
+    // casts a real tree-shaped shadow, darkens its own creases, and shows up in the water.
+    fn traceAll(ro : vec3<f32>, rd : vec3<f32>, maxT : f32, skipW : bool) -> Hit {
+      var h = trace(ro, rd, maxT, skipW);
+      let lim = select(maxT, h.t, h.t >= 0.0);
+      let b = bodyTrace(ro, rd, lim);
+      if (b.t >= 0.0 && (h.t < 0.0 || b.t < h.t)) { return b; }
+      return h;
+    }
   `;
   const TRACE = /* wgsl */`
     @group(0) @binding(1) var<storage, read> world : array<u32>;
@@ -3007,6 +3160,7 @@
       return t * (r * cos(a)) + b * (r * sin(a)) + n * sqrt(max(1.0 - r2, 0.0));
     }
     fn ign(p : vec2<f32>) -> f32 { return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y)); }
+    @group(0) @binding(23) var<storage, read> bodyVox : array<u32>;  // ── RIGID BODIES ── dense per-body voxel grids (palette id per cell, 0 = empty), sub-allocated back to back
     @group(0) @binding(9) var<storage, read> visb : array<u32>;      // ── DYNAMIC LIFE tile cull ── per-8×8-tile drop-slot visibility bitmask (2×u32/tile), computed ONCE per frame by the tiny VIS prepass and shared with the composite — replaces the per-workgroup recompute + workgroupBarrier that ran here even on creature-free frames
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(workgroup_id) wgid : vec3<u32>) {
@@ -3123,6 +3277,7 @@
       // by construction, and motion stays continuous (no grid snapping). Fireflies/sparks/dropped items keep the
       // composite path (emissive + translucency), as does any creature seen THROUGH a water surface (Beer–Lambert).
       var cSlot = 0u; var cCell = vec3<f32>(0.0); var cVc = vec3<i32>(0); var cAxis = 0u; var cN = vec3<f32>(0.0, 1.0, 0.0);
+      var bHit = false; var bCol = vec3<f32>(0.0); var bN = vec3<f32>(0.0, 1.0, 0.0); var bVc = vec3<i32>(0);   // rigid-body (felled chunk) hit
       if (ITEMN > 0 && u.lifeCfg.y > 0.5) {
         let ndc3 = (px / u.res) * 2.0 - 1.0;
         let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));   // camera-space twin of rd — the drop transforms live in camera space
@@ -3187,7 +3342,17 @@
             if (any(vcD < vec3<i32>(0)) || any(vcD >= vec3<i32>(eW, eD, eH))) { break; }
           }
         }
-        if (cSlot != 0u) {                                           // the creature IS the primary hit from here on
+        {                                                            // ── RIGID BODIES ── same traversal the shadow/AO rays use, so what you see and what the light sees can never disagree
+          let bh2 = bodyTrace(ro, rd, bestT);
+          if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bN = bh2.n;
+            bVc = vec3<i32>(floor((ro + rd * bh2.t) * 1.0)); }
+        }
+        if (bHit) {                                                  // a felled chunk is the primary hit — terrain-identical shading from here on
+          h.t = bestT; h.vox = 0u; h.n = bN;
+          if (abs(bN.y) >= abs(bN.x) && abs(bN.y) >= abs(bN.z)) { h.face = select(2u, 3u, bN.y < 0.0); }
+          else if (abs(bN.x) >= abs(bN.z)) { h.face = select(0u, 1u, bN.x < 0.0); }
+          else { h.face = select(4u, 5u, bN.z < 0.0); }
+        } else if (cSlot != 0u) {                                    // the creature IS the primary hit from here on
           h.t = bestT; h.vox = 0u; h.n = cN;                         // vox 0 → the water/lava id checks below can't misfire
           if (abs(cN.y) >= abs(cN.x) && abs(cN.y) >= abs(cN.z)) { h.face = select(2u, 3u, cN.y < 0.0); }
           else if (abs(cN.x) >= abs(cN.z)) { h.face = select(0u, 1u, cN.x < 0.0); }
@@ -3197,13 +3362,15 @@
       var albedo = vec3<f32>(0.0);
       var faceId = 7u; var t = -1.0;
       var sunV = 0.0; var skyV = 0.0;
+      var creReact = 0.0;                                            // set inside the creature-shadow loop below: this pixel sits in a MOVING shadow's penumbra, so the reactive mask must cap its history (declared out here — the reactive mask is written well past the shading block's scope)
       if (h.t >= 0.0) {
         t = h.t; faceId = h.face;
         if ((h.vox == WTv || h.vox == WBv) && h.face == 2u) { faceId = 6u; }   // water top → reflective shading in the composite
         if (h.vox == LVT || h.vox == LVB || h.vox == LVR || h.vox == LVY) { faceId = 8u; }   // lava → emissive
         let pos = ro + rd * t;
         let vcW = vec3<i32>(floor(pos - h.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));   // WORLD coords — grain must not swim when the window shifts
-        if (cSlot != 0u) { albedo = cCell * (0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
+        if (bHit) { albedo = bCol * (0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z)); }   // felled chunk: palette colour + MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
+        else if (cSlot != 0u) { albedo = cCell * (0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
         else { albedo = pal[h.vox].rgb * (0.88 + 0.24 * ivhash(vcW)); }
         if (skipW && pos.y < WLF + 1.0) {                            // swimming: caustic webs dance on everything below the surface
           albedo = albedo * (1.0 + 1.3 * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
@@ -3264,7 +3431,7 @@
           let sCap = select(1200.0, min(1200.0, (ceilY - sp.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
           if (sCap <= 0.0) { sunV = 1.0; }                           // already above everything and going up — full sun, no ray
           else {
-          let sh = trace(sp, sdir, sCap, skipW);
+          let sh = traceAll(sp, sdir, sCap, skipW);   // bodies included → a felled tree casts a REAL shadow
           sunV = select(1.0, 0.0, sh.t >= 0.0);
           }
           if (${location.search.includes('nocshad') ? 0 : 1} == 1 && sunV > 0.0 && cSlot == 0u) {   // CREATURE CAST SHADOWS — the sun ray tests the creature AABBs so they shadow ground/water. SKIPPED for a trace-injected creature pixel: its own box wraps the surface point and every sun ray would 'self-shadow' (cross-creature shadows are a lesser loss than a permanently dark body)
@@ -3276,6 +3443,16 @@
               let CB = u.cshad[s * 2 + 1];
               let he = vec3<f32>(CB.x, CB.y, CB.x);                  // half-extents (horizontal, vertical, horizontal) — axis-aligned box
               let inv2 = 1.0 / select(sdir, vec3<f32>(1e-5), abs(sdir) < vec3<f32>(1e-5));
+              // GROWN box first. A pixel this ray only just misses is a pixel the shadow is about to
+              // sweep over (or has just left), and it is exactly those pixels the 64-frame accumulator
+              // smears. Flagging them reactive costs one extra slab test on the rare near-miss, and the
+              // exact test below only runs when the grown one already hit — so the common case, a ray
+              // nowhere near this creature, is unchanged.
+              let heR = he * 1.6 + vec3<f32>(0.8);
+              let taR = (CA.xyz - heR - sp) * inv2; let tbR = (CA.xyz + heR - sp) * inv2;
+              let tnR = min(taR, tbR); let tfR = max(taR, tbR);
+              if (max(max(tnR.x, tnR.y), tnR.z) >= min(min(tfR.x, tfR.y), tfR.z) || min(min(tfR.x, tfR.y), tfR.z) <= 0.05) { continue; }
+              creReact = 1.0;                                        // moving shadow may touch this pixel → short history (see the reactive mask below)
               let ta2 = (CA.xyz - he - sp) * inv2; let tb2 = (CA.xyz + he - sp) * inv2;
               let tn2 = min(ta2, tb2); let tf2 = max(ta2, tb2);
               let teB = max(max(tn2.x, tn2.y), tn2.z);
@@ -3296,7 +3473,7 @@
           let r1 = fract(ign(vec2<f32>(gid.xy)) + fN * 0.7548777);   // R2 sequence (plastic constants) — azimuth
           let r2 = fract(ign(vec2<f32>(gid.xy) + vec2<f32>(47.0, 17.0)) + fN * 0.5698403);   // decorrelated elevation lane
           let d = cosHemi(h.n, r1, r2);
-          let ah = trace(sp, d, 24.0, skipW);
+          let ah = traceAll(sp, d, 24.0, skipW);      // bodies included → real contact AO and self-shadowing, no bake needed
           skyV = select(1.0, clamp(ah.t / 24.0, 0.0, 1.0), ah.t >= 0.0);
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
         if (flakeHit && h.vox == SNV) { sunV = max(sunV, 0.6); skyV = max(skyV, 0.85); }   // FALLING FLAKES SCATTER — real snow is white from EVERY direction, so a flake never shows a dark shaded face. Without this floor, anti-sunward flakes shaded to ~sky luminance and vanished — the "snow band clipping" wedge the user saw (the void tracked the anti-sun azimuth, verified via the ?flakedbg emissive A/B). Scales with the sun/moon term downstream, so night stays subtle.
@@ -3327,7 +3504,7 @@
           let jit3 = vec3<f32>(rand(&s2), rand(&s2), rand(&s2)) * 1.8 - vec3<f32>(0.9);   // "a ray to a RANDOM POINT on the light's surface" — soft area-light penumbra via TAA
           let dv = u.fflies[bi].xyz + jit3 - (pos2 + h.n * 0.02);
           let dist = length(dv);
-          let sh = trace(pos2 + h.n * 0.02, dv / max(dist, 1e-4), max(dist - 0.6, 0.0), true);
+          let sh = traceAll(pos2 + h.n * 0.02, dv / max(dist, 1e-4), max(dist - 0.6, 0.0), true);
           if (sh.t < 0.0) {
             let ign = fract(52.9829189 * fract(0.06711056 * f32(gid.x) + 0.00583715 * f32(gid.y)) + f32(u32(u.frame) & 63u) * 0.618034);   // temporal IGN dither — TAA melts the 14 quantization steps into a smooth gradient
             lavaG = u32(clamp(sqrt(best) * 5.2 + ign, 0.0, 14.0));     // sqrt-encoded: extra levels in the dim tail, where banding rings were most visible
@@ -3335,7 +3512,26 @@
         }
       }
       textureStore(gAlbedo, vec2<i32>(gid.xy), vec4<f32>(sqrt(albedo), (f32(faceId) + f32(lavaG) * 16.0) / 255.0));
-      textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, 0.0));
+      // ── REACTIVE MASK ── the temporal pass blends 1/hist per frame with hist up to maxHist = 64, so a
+      // pixel newly covered or uncovered by a MOVING shadow needs ~64 frames to catch up: the shadow
+      // visibly lags and smears behind the body that casts it. Flag any pixel whose sun ray could have
+      // interacted with a rigid body and let TEMPORAL cap that pixel's history. Cheap — it reuses the same
+      // enclosing-sphere test bodyTrace already does. Teardown carries an equivalent reactive mask in its
+      // motion G-buffer for exactly this reason.
+      var reactive = creReact;
+      if (t >= 0.0 && u.physC.x > 0.5) {
+        let sp2 = ro + rd * t;
+        let dc2 = u.physBound.xyz - sp2;
+        let sdir2 = select(u.sunDir, vec3<f32>(0.0, 1.0, 0.0), u.sunDir.y <= 0.0);
+        let tc2 = dot(dc2, sdir2);
+        if (tc2 > -u.physBound.w && dot(dc2, dc2) - tc2 * tc2 < u.physBound.w * u.physBound.w) { reactive = 1.0; }
+        // …and the AO ray, which the sun-cylinder test above misses entirely. AO reaches 24 voxels in
+        // EVERY direction, so the contact darkening a moving trunk casts on the ground beside it was
+        // still converging at maxHist and trailed the trunk by a good half second.
+        let aoR = u.physBound.w + 24.0;
+        if (dot(dc2, dc2) < aoR * aoR) { reactive = 1.0; }
+      }
+      textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, reactive));
       textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 7u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction
     }
   `;
@@ -3403,7 +3599,7 @@
           let prev = textureSampleLevel(histPrev, samp, uv, 0.0);
           let expT = length(wpp - u.pPos);
           if (prev.b > 0.0 && abs(prev.b - expT) < 0.02 * expT + 1.5) {   // rotation (not in the rigid delta) and newly revealed surfaces fail this distance check naturally
-            hist = min(prev.a + 1.0, u.maxHist);
+            hist = min(prev.a + 1.0, select(u.maxHist, 4.0, cur.a > 0.5));   // reactive pixel: converge in ~4 frames so a moving shadow TRACKS its body instead of trailing it
             acc = mix(prev.rg, cur.rg, 1.0 / hist);
           }
         }
@@ -3450,6 +3646,7 @@
     @group(0) @binding(18) var<storage, read> bricks2 : array<u32>;
     @group(0) @binding(19) var<storage, read> pal : array<vec4<f32>>;   // palette — the traced water reflection/refraction shades its hits here
     @group(0) @binding(20) var<storage, read> wbricks : array<u32>;     // water-only brick bits — skipW rays stride these
+    @group(0) @binding(23) var<storage, read> bodyVox : array<u32>;  // ── RIGID BODIES ── shared with TRACE; DDAW's bodyTrace() reads it
     @group(0) @binding(21) var slotT : texture_2d<u32>;             // ── DYNAMIC LIFE ── TRACE's per-pixel creature id + hit-axis bits (see slotOut) — true-normal reconstruction + debug views
     ${DDAW}
     ${pickWGSL}
@@ -3555,7 +3752,7 @@
         if (refl.y < 0.03) { refl = normalize(vec3<f32>(refl.x, 0.06 - refl.y * 0.5, refl.z)); }   // a grazing mirror ray that would dive back under the surface folds just above it — no self-hit acne
         var reflC = skyBase(refl);
         if (tWat < 110.0 && fres > 0.045) {
-          let rh = trace(pw2 + vec3<f32>(0.0, 0.06, 0.0), refl, 140.0, true);   // skipW: the folded mirror ray can never re-enter the flat water plane (crests live in the analytic field, not the grid) — output-identical, and it STRIDES the water-only bricks it skims instead of fine-stepping them
+          let rh = traceAll(pw2 + vec3<f32>(0.0, 0.06, 0.0), refl, 140.0, true);   // skipW: the folded mirror ray can never re-enter the flat water plane (crests live in the analytic field, not the grid) — output-identical, and it STRIDES the water-only bricks it skims instead of fine-stepping them
           if (rh.t >= 0.0) {
             let rpos = pw2 + refl * rh.t;
             let rvc = vec3<i32>(floor(rpos - rh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
@@ -3574,7 +3771,7 @@
         if (fres < 0.80) {
           var refr = refract(rd, nW, 0.752);
           if (dot(refr, refr) < 1e-5) { refr = rd; }                 // grazing/TIR fallback: continue straight
-          let bh = trace(pw2 + rd * 0.02, refr, 34.0, true);
+          let bh = traceAll(pw2 + rd * 0.02, refr, 34.0, true);
           if (bh.t >= 0.0) {
             let bpos = pw2 + rd * 0.02 + refr * bh.t;
             let bvc = vec3<i32>(floor(bpos - bh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
@@ -3602,7 +3799,7 @@
             col += shimC * pow(max(dot(refl, u.sunDir), 0.0), 64.0) * (0.5 * gk) * irr.r * dayScale();   // soft shimmer under the sparkles
             let cell = floor(vec2<f32>(wx2, wz2));                   // one glint cell = one 10 cm voxel
             let ph = fract(sin(cell.x * 91.7 + cell.y * 47.3) * 4321.7) * 6.2831853;   // per-voxel random phase
-            let tw = sin(u.time * 3.2 + ph) * 0.5 + 0.5;
+            let tw = sin(u.time * 1.6 + ph) * 0.5 + 0.5;   // glint twinkle halved to match
             let pick = step(0.5, fract(sin(cell.x * 12.9898 + cell.y * 78.233) * 43758.5453));   // ~half the voxels participate — scattered, not a sheet
             let spark = smoothstep(0.82, 1.0, tw) * pick;            // sharp on/off flash → a discrete voxel glint
             let sparkC = select(vec3<f32>(1.35, 1.25, 1.0), vec3<f32>(1.15, 1.18, 1.3), isMoon()) * (0.35 + 0.65 * dayScale());
@@ -4048,7 +4245,7 @@
   const linSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
-  let renderScale = 0.9;                               // default resolution scale (user: 90%); the settings slider steps 40..100% in 10s, [ ] keys nudge 0.375..1.0 (persisted vb_scale)
+  let renderScale = 0.8;                               // default resolution scale (user 2026-08-02: 80%, was 90%); the settings slider steps 40..100% in 10s, [ ] keys nudge 0.375..1.0 (persisted vb_scale)
   try { const v = parseFloat(localStorage.getItem('vb_scale')); if (v >= 0.375 && v <= 1.0) renderScale = v; } catch (e) {}
   let RW = 0, RH = 0, CW = 0, CH = 0;
   let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, visBuf = null;
@@ -4086,7 +4283,8 @@
       { binding: 2, resource: { buffer: brickBuf } }, { binding: 3, resource: { buffer: palBuf } },
       { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: brick2Buf } },
       { binding: 7, resource: { buffer: wbrickBuf } }, { binding: 9, resource: { buffer: visBuf } },
-      { binding: 8, resource: v(par ? slotB : slotA) }, { binding: 13, resource: { buffer: itemMapBuf } }] })));
+      { binding: 8, resource: v(par ? slotB : slotA) }, { binding: 13, resource: { buffer: itemMapBuf } },
+      { binding: 23, resource: { buffer: bodyBuf } }] })));
     bgTemporal = [0, 1].map(par => device.createBindGroup({ layout: pTemporal.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gIrr) },
       { binding: 2, resource: v(par ? histA : histB) }, { binding: 3, resource: linSamp },
@@ -4103,7 +4301,8 @@
       { binding: 16, resource: { buffer: worldBuf } }, { binding: 17, resource: { buffer: brickBuf } },
       { binding: 18, resource: { buffer: brick2Buf } }, { binding: 19, resource: { buffer: palBuf } },
       { binding: 20, resource: { buffer: wbrickBuf } },
-      { binding: 21, resource: v(par ? slotB : slotA) }, { binding: 22, resource: { buffer: visBuf } }] }));
+      { binding: 21, resource: v(par ? slotB : slotA) }, { binding: 22, resource: { buffer: visBuf } },
+      { binding: 23, resource: { buffer: bodyBuf } }] }));
     bgTaa = [0, 1].map(par => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(colorCur) },
       { binding: 2, resource: v(gIrr) }, { binding: 3, resource: v(par ? colHistA : colHistB) },
@@ -4265,12 +4464,31 @@
   P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
   const keys = new Set();
+  // Is this world point inside a rigid body? A fallen tree is NOT in W — that is the whole point of the
+  // off-grid representation — so without this the player walks straight through a felled trunk. Cheap:
+  // one sphere reject per body, then a direct grid lookup. No search, the same property Teardown relies
+  // on for voxel-vs-voxel collision.
+  const phBodySolid = (x, y, z) => {
+    if (!PH.on) return false;
+    for (let i = 0; i < PH.bodies.length; i++) {
+      const b = PH.bodies[i], g = b.cpuGrid; if (!g || !b.gpu || b.absorbing) continue;   // a chunk on its way into the player must not shove them
+      const dx = x + 0.5 - b.pos[0], dy = y + 0.5 - b.pos[1], dz = z + 0.5 - b.pos[2];
+      if (dx * dx + dy * dy + dz * dz > (b.rMax + 2) * (b.rMax + 2)) continue;
+      const lx2 = Math.floor(dx * b.ax[0] + dy * b.ax[1] + dz * b.ax[2] + b.gpu.comL[0]);
+      const ly2 = Math.floor(dx * b.ay[0] + dy * b.ay[1] + dz * b.ay[2] + b.gpu.comL[1]);
+      const lz2 = Math.floor(dx * b.az[0] + dy * b.az[1] + dz * b.az[2] + b.gpu.comL[2]);
+      if (lx2 < 0 || ly2 < 0 || lz2 < 0 || lx2 >= b.gpu.bw || ly2 >= b.gpu.bh || lz2 >= b.gpu.bd) continue;
+      const bid = g[lx2 + ly2 * b.gpu.bw + lz2 * b.gpu.bw * b.gpu.bh];
+      if (bid && solidTab[bid] === 1) return true;
+    }
+    return false;
+  };
   const solid = (x, y, z) => {                         // world coords, toroidal — the window always surrounds the player
     if (y < 0) return true;
     if (y >= WY) return false;
     const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
     if (ED.on) return id === ED_WHITE || id === ED_GREY || id === ED_HLITE;   // editor world: ONLY the stage collides — the hidden forest must not be an invisible wall
-    return solidTab[id] === 1;
+    return solidTab[id] === 1 || phBodySolid(x, y, z);   // a felled tree keeps its hitbox even though it lives off the grid
   };
   const waterAt = (x, y, z) => {
     if (y < 0 || y >= WY) return false;
@@ -4540,6 +4758,1098 @@
     else { writeWordRuns(brickBuf, bricks.buffer, bWords); writeWordRuns(wbrickBuf, wbricks.buffer, bWords); writeWordRuns(brick2Buf, bricks2.buffer, c2Words); }
   }
 
+
+  // ── VOXEL DESTRUCTION + RIGID BODIES ───────────────────────────────────────
+  // Modelled on Teardown (Tuxedo Labs), whose approach is documented by its author:
+  //   · detachment is a plain 6-CONNECTED FACE-ONLY flood fill, run per breakage event, not per frame
+  //     ("it's just a flood fill, there's absolutely nothing special to it")
+  //   · mass / centre of mass / inertia are BRUTE-FORCE SUMS over the voxels, recomputed on every
+  //     break ("you just sum up all the voxels ... there is no hand tweaking")
+  //   · there is deliberately NO structural-stress model — connectivity alone decides what falls
+  //   · voxels collide as SPHERES, not cubes
+  //   · contacts are pruned by classifying voxels edge/corner/face/interior; a shipping container goes
+  //     from 1000+ candidate contacts to 4 ("that's kind of the key to making it run at this speed")
+  //   · solver is sequential impulse / PGS at a FIXED 60 Hz with 8 iterations, and carries NO contact
+  //     or pair state between frames — only body state persists
+  //
+  // A pine's world voxels are a PURE FUNCTION of its tree cell: stampTree writes
+  //   A[mx + mz*R.sx + my*R.sx*R.sz]  ->  world (bx+mx, gy+my, bz+mz)
+  // so local<->world is an exact affine map and no per-voxel ownership table is needed; treeAt() is the
+  // deterministic reverse lookup. That is what makes an "object-local destructible shape" free here.
+  const PH = {
+    on: !location.search.includes('nophys'),
+    dt: 1 / 60,                                      // FIXED 60 Hz, like Teardown — the sim must not vary with render fps
+    iters: 8,                                        // sequential-impulse iterations per step (Teardown ships 8)
+    acc: 0, bodies: [], maxBodies: 16,
+    gravity: 200,                                    // matches the player's GRAVITY so falls read at the same scale
+    linDamp: 0.05, angDamp: 0.18, restitution: 0.0, friction: 0.6,
+    sleepLin: 1.2, sleepAng: 0.30, sleepFrames: 40,
+    retireMax: 6,                                    // a settled body this small is written back into the grid and its slot freed
+    maxProbes: 512, maxContacts: 96, maxCCD: 12,     // maxCCD caps the adaptive substepping (see physStep).
+    //   maxProbes was 160, but an 8-voxel bucketing of a 35x93x36 crown yields ~300 buckets — so barely
+    //   half the body's surface cells carried a probe, and a narrow stump could pass clean between them.
+    //   Probes only cost a grid lookup during contact GENERATION (once per substep), so 512 is cheap.
+    absorbMax: 96, absorbMs: 450, absorbFly: 420,    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
+    //                                                 absorbFly = the flight itself, left at 420 ms so the transition stays smooth rather than snapping in
+    chopBite: 30,                                    // voxels an axe swing takes out — a FIXED count, so every chunk is the same size (user). 40 -> 30, a 25% reduction (user 2026-08-02)
+    leafLifeMs: 9000,                                // hard lifetime for a shed needle — at leafV it falls 144 voxels in that time, further than any crown is tall
+    leafV: 16, leafMax: 6, leafReserve: 5,           // …and transient debris never fills the last leafReserve body slots: phSeparate MUST be able to spawn a severed crown, or the tree is erased instead of felled                           // shed needles descend at leafV voxels/sec, straight down; at most leafMax are airborne at once (every secondary ray visits every body)
+    shakeLeaves: 4, shakeR: 16,                      // leaves knocked loose from the canopy on EVERY axe hit, and how far around the impact column to look
+    absorbY: -4,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE = chest height. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container
+    chopMinBody: 24, chopBodyBite: 4,                // a rigid body this big is choppable, and this many voxels is a real bite out of one (tiny debris is not a target)
+    fellOrphans: 40,                                 // orphan voxels that mean a CROWN came loose (not just an axe chip) — the threshold that kills the birds perched in it
+    fallSlow: 0.39,                                  // gravity multiplier for a FELLED TRUNK = 1/k^2 with k = 1.6 — the fall plays out ~60% slower (user). Chips/leaves/decor are unaffected.
+    crashThrough: 200,                               // a body this big ignores foliage in its contacts — it smashes through canopy instead of hanging on it
+    stuckMs: 2500, stuckNudge: 40,                   // …and if one hangs up on something SOLID, re-arm the topple every stuckMs with a downward shove
+    tipSeed: 0.18,                                   // rad/s the topple STARTS at — a barely-perceptible lean, so the fall has somewhere to accelerate from (user: momentum)
+    tipRate: 0.34,                                   // …the linear part of the ramp, reached about halfway over (see the topple drive in phStep)
+    tipAccel: 1.3,                                   // …rising to tipRate + tipAccel as it goes over, so it accelerates past balance like a real tree (also /k)
+    tipDone: 0.34,                                   // stop driving once the trunk's own up-axis has tilted past ~70 deg from vertical (cos 70 deg) — physics takes the landing from there
+    tipMax: 1.0,                                     // rad/s ceiling on a felled trunk's rotation, drive or no drive — the top speed, not the average (user)
+    tipMaxMs: 15000,   // …and the drive's hard stop stretches with it
+    tipDamp: 0.6,                                    // per-SUBSTEP retention of any rotation that is not about the topple axis — solver noise, and the source of the shudder                                  // hard stop: never drive a topple longer than this, whatever it is caught on
+    stats: { chops: 0, voxRemoved: 0, separations: 0, floods: 0, floodVox: 0, dustVox: 0,
+             retired: 0, evicted: 0, sparks: 0, unstuck: 0, topples: 0, toppleMaxTilt: 0, ccd: 1, chunks: 0, reclaimed: 0, absorbed: 0, leaves: 0, dropped: 0, birdsKilled: 0, bodyChops: 0, bodySplits: 0, decorFalls: 0, lastBodyChopMs: 0, lastFloodMs: 0, lastSepMs: 0, stepMs: 0, substeps: 0, contacts: 0 },
+  };
+  const treeShapeAt = (wx, wz) => {                  // which pine covers this world column, and its exact local frame
+    const c0x = Math.floor(wx / TCELL), c0z = Math.floor(wz / TCELL);
+    const r = Math.ceil(Math.max(MSX, MSY) / TCELL) + 1;   // a crown can overhang several cells
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
+      const R = MROT[tr.rot], bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
+      if (wx < bx || wx >= bx + R.sx || wz < bz || wz >= bz + R.sz) continue;
+      return { tr, R, bx, bz, gy: groundMin(tr.tx, tr.tz, 2) - tr.sink };
+    }
+    return null;
+  };
+  // 4 emissive embers at an impact point — the death poof's spark half, reused for a landed chop (user).
+  // sparks3d is declared further down; this only ever runs from a swing, long after that.
+  const spawnChopSparks = (wx, wy, wz) => {
+    for (let i = 0; i < 4; i++) {
+      const a = Math.random() * 6.283, sp = 14 + Math.random() * 22;
+      sparks3d[i] = { x: wx, y: wy, z: wz, vx: Math.cos(a) * sp, vy: 12 + Math.random() * 22, vz: Math.sin(a) * sp,
+        born: performance.now(), life: 0.4 + Math.random() * 0.25, ph: Math.random() * 6.283, smoke: false };
+    }
+    PH.stats.sparks++;
+  };
+  const phWorldIdx = (S, mx, my, mz) => gwrap(S.bx + mx, WX) + (S.gy + my) * WX + gwrap(S.bz + mz, WZ) * WX * WY;
+  // Kill every perched songbird in this pine (see the block comment above phFlushBirds' first use).
+  // Slots 64-243 are the perched birds; kind 5 is the perched-bird kind. Runs ONLY on the swing that
+  // actually fells the tree.
+  //
+  // The bird DIES here rather than being recycled. Clearing init alone sent it back through the normal
+  // population loop, which tries findPineCrown and then falls through to the GENERIC open-spot
+  // placement when that misses — the "bird teleports to the ground" the user saw. This is the exact
+  // triple tryKillCreature uses: the slot is dead for the session, so nothing re-places it anywhere.
+  // Birds within `rad` of a single impact — used on EVERY landed chop, since carving foliage can pull
+  // a perch out from under a bird without the felling gate ever firing.
+  const phFlushBirdsNear = (wx, wy, wz, rad) => {
+    let n = 0;
+    for (let j = 64; j < 244; j++) {
+      const B = wbf[j];
+      if (!B || !B.init || (B.kind | 0) !== 5) continue;
+      const dx = B.x - wx, dz = B.z - wz, dy = (B.perchFeet || 0) - wy;
+      if (dx * dx + dz * dz + dy * dy > rad * rad) continue;
+      if (B.sN) unstampWorm(B);                        // needles restored while the crown is still there, so they leave with it
+      B.init = false; B.dieT = 0; B.slain = true;
+      n++;
+    }
+    PH.stats.birdsKilled += n;
+    return n;
+  };
+  const phFlushBirds = (S) => {
+    let n = 0;
+    for (let j = 64; j < 244; j++) {
+      const B = wbf[j];
+      if (!B || !B.init || (B.kind | 0) !== 5) continue;
+      const mx = Math.round(B.x) - S.bx, mz = Math.round(B.z) - S.bz;
+      if (mx < -2 || mx >= S.R.sx + 2 || mz < -2 || mz >= S.R.sz + 2) continue;   // perched in some other pine
+      if (B.sN) unstampWorm(B);                        // needles restored into the STILL-STANDING tree, so they fall with it
+      B.init = false; B.dieT = 0; B.slain = true;      // gone for good — no recycle, no re-placement
+      n++;
+    }
+    PH.stats.birdsKilled += n;
+    return n;
+  };
+  // Returns the WORLD PALETTE ID when this local cell still belongs to the tree, else 0. Two kinds qualify:
+  //   · a pine model voxel not since replaced (snow / creature stamps / an earlier chop), and
+  //   · a HUNG PINECONE — cones are a SEPARATE model (stampTree stamps CONEV under canopy anchors) with no
+  //     entry in R.A at all, which is why a felled tree would otherwise leave its cones floating. A cone's
+  //     top voxel sits directly under its anchor foliage, so once cones are in the shape the ordinary
+  //     6-neighbour flood carries them with the crown for free.
+  // The height gate keeps GROUND cones out: fallen CONEVL decor shares the same palette ids but lies at
+  // ground level, and swallowing those would delete pickable items and burn body slots.
+  const phPresent = (S, mx, my, mz) => {
+    const y = S.gy + my; if (y < 1 || y >= WY) return 0;
+    const wid = W[phWorldIdx(S, mx, my, mz)];
+    const v = S.R.A[mx + mz * S.R.sx + my * S.R.sx * S.R.sz];
+    if (v) return wid === remap[v] ? wid : 0;
+    if (wid && my > S.tr.sink + 12 && PICK_CONE.has(wid)) return wid;
+    return 0;
+  };
+  // ── 6-NEIGHBOUR CONNECTIVITY over ONE tree ── seeds are the buried courses (my <= sink): the root
+  // anchor. Anything the flood cannot reach from the root is detached. Flat mark buffer sized to the
+  // model box, allocated once and reused, so a chop allocates nothing.
+  let phMark = null, phStack = null;
+  const phFlood = (S) => {
+    const sx = S.R.sx, sz = S.R.sz, nAll = sx * sz * MSZ;
+    if (!phMark || phMark.length < nAll) { phMark = new Uint8Array(nAll); phStack = new Int32Array(nAll); }
+    else phMark.fill(0, 0, nAll);
+    const li = (mx, my, mz) => mx + mz * sx + my * sx * sz;
+    let sp = 0, reached = 0, total = 0;
+    const t0 = performance.now();
+    for (let my = 0; my < MSZ; my++) for (let mz = 0; mz < sz; mz++) for (let mx = 0; mx < sx; mx++)
+      if (phPresent(S, mx, my, mz)) { total++;
+        if (my <= S.tr.sink) { const k = li(mx, my, mz); if (!phMark[k]) { phMark[k] = 1; phStack[sp++] = k; } } }
+    while (sp > 0) {
+      const k = phStack[--sp]; reached++;
+      const mx = k % sx, mz = ((k / sx) | 0) % sz, my = (k / (sx * sz)) | 0;
+      for (let d = 0; d < 6; d++) {
+        const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+        const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
+        const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+        const nk = li(nx, ny, nz);
+        if (phMark[nk] || !phPresent(S, nx, ny, nz)) continue;
+        phMark[nk] = 1; phStack[sp++] = nk;
+      }
+    }
+    PH.stats.floods++; PH.stats.floodVox += total;
+    PH.stats.lastFloodMs = +(performance.now() - t0).toFixed(2);
+    return { total, reached, orphans: total - reached, sx, sz, li };
+  };
+  const phComponent = (S, f, start) => {             // one connected component of the ORPHANED cells
+    const { sx, sz, li } = f;
+    const cells = [];
+    let sp = 0; phStack[sp++] = start; phMark[start] = 2;
+    while (sp > 0) {
+      const k = phStack[--sp]; cells.push(k);
+      const mx = k % sx, mz = ((k / sx) | 0) % sz, my = (k / (sx * sz)) | 0;
+      for (let d = 0; d < 6; d++) {
+        const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+        const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
+        const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+        const nk = li(nx, ny, nz);
+        if (phMark[nk] || !phPresent(S, nx, ny, nz)) continue;
+        phMark[nk] = 2; phStack[sp++] = nk;
+      }
+    }
+    return cells;
+  };
+  // ── SHED A NEEDLE ── the voxel leaves W and becomes a one-voxel rigid body descending at a constant
+  // rate. Airborne leaves are capped: every secondary ray visits every body, so an uncapped shower would
+  // be paid for on the sun and AO rays of every pixel. Past the cap the OLDEST leaf gives way.
+  const phLeafDrop = (wx, y, wz, id) => {
+    const ii = gwrap(wx, WX) + y * WX + gwrap(wz, WZ) * WX * WY;
+    if (W[ii] !== id) return;                          // the cell moved on (a chop, a creature stamp) — nothing to shed
+    let live = 0, oldest = -1, oT = Infinity;
+    for (let i = 0; i < PH.bodies.length; i++) { const b2 = PH.bodies[i];
+      if (!b2.leaf) continue; live++; if (b2.born < oT) { oT = b2.born; oldest = i; } }
+    if (live >= PH.leafMax) { if (oldest < 0) return; PH.bodies.splice(oldest, 1); }
+    else if (PH.bodies.length >= PH.maxBodies - PH.leafReserve) return;   // leave headroom for structure (see PH.leafReserve)
+    W[ii] = 0; gpuPatch([ii], false);
+    const b = phBuildBody({ bx: wx, gy: y, bz: wz }, [0], { sx: 1, sz: 1 }, new Map([[0, id]]));
+    b.leaf = 1;                                        // straight down, no gravity, no spin, no contacts, never absorbed
+    b.vel[0] = b.vel[1] = b.vel[2] = 0;
+    b.omega[0] = b.omega[1] = b.omega[2] = 0;
+    PH.bodies.push(b);
+    PH.stats.leaves++;
+  };
+  // ── BODY BUILD ── mass / COM / inertia straight from the voxels, plus Teardown's contact
+  // classification: count filled 6-neighbours per voxel — 6 = interior (can never touch anything, never
+  // probed), 5 = face, 4 = edge, <=3 = corner. Probes are taken CORNERS FIRST, which is what collapses a
+  // flat-bottomed body from hundreds of candidate contacts to a handful.
+  const phBuildBody = (S, cells, f, idMap) => {
+    const { sx, sz } = f, N = cells.length;
+    const lx = new Int16Array(N), ly = new Int16Array(N), lz = new Int16Array(N), id = new Uint8Array(N);
+    let cxs = 0, cys = 0, czs = 0;
+    const inComp = new Set(cells);
+    for (let i = 0; i < N; i++) {
+      const k = cells[i], mx = k % sx, mz = ((k / sx) | 0) % sz, my = (k / (sx * sz)) | 0;
+      lx[i] = mx; ly[i] = my; lz[i] = mz;
+      id[i] = idMap ? idMap.get(k) : W[phWorldIdx(S, mx, my, mz)];   // LIVE voxel (covers pinecones, absent from R.A) unless the caller already carved it out
+      cxs += mx + 0.5; cys += my + 0.5; czs += mz + 0.5;
+    }
+    const mass = N, com = [cxs / N, cys / N, czs / N];
+    let Ixx = 0, Iyy = 0, Izz = 0;
+    const cube = 1 / 6;                              // a solid 1x1x1 voxel about its own centre
+    for (let i = 0; i < N; i++) {
+      const rx = lx[i] + 0.5 - com[0], ry = ly[i] + 0.5 - com[1], rz = lz[i] + 0.5 - com[2];
+      Ixx += ry * ry + rz * rz + 2 * cube; Iyy += rx * rx + rz * rz + 2 * cube; Izz += rx * rx + ry * ry + 2 * cube;
+    }
+    let rMax = 0;                                    // farthest voxel from the COM — sets the tip speed, which sets how finely this body must be stepped
+    for (let i = 0; i < N; i++) {
+      const rx = lx[i] + 0.5 - com[0], ry = ly[i] + 0.5 - com[1], rz = lz[i] + 0.5 - com[2];
+      const d2 = rx * rx + ry * ry + rz * rz; if (d2 > rMax) rMax = d2;
+    }
+    rMax = Math.sqrt(rMax);
+    const b = { n: N, mass, com, id, lx, ly, lz, rMax, I: [Ixx, Iyy, Izz],
+      pos: [S.bx + com[0], S.gy + com[1], S.bz + com[2]],   // world position OF THE COM
+      origin: [S.bx, S.gy, S.bz],                    // where the local frame sat in W — physValidate proves no duplicate remains
+      vel: [0, 0, 0], omega: [0, 0, 0], q: [0, 0, 0, 1],
+      sleeping: false, sleepT: 0, born: performance.now(), sx, sz,
+      ax: [1, 0, 0], ay: [0, 1, 0], az: [0, 0, 1] };   // cached world axes — refreshed whenever the body moves, read by phBodySolid
+    const rank = [];                                 // 0 = corner (best probe) … 3 = interior (never)
+    for (let i = 0; i < N; i++) {
+      const mx = lx[i], my = ly[i], mz = lz[i];
+      let filled = 0;
+      for (let d = 0; d < 6; d++) {
+        const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+        const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
+        const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+        if (inComp.has(nx + nz * sx + ny * sx * sz)) filled++;
+      }
+      if (filled >= 6) continue;                     // INTERIOR — skipped entirely
+      rank.push([filled, i]);
+    }
+    rank.sort((p, q) => p[0] - q[0]);                // corners first
+    b.surfN = rank.length;
+    // SPATIAL STRATIFICATION. Corner-first alone samples only the extremities — for a felled trunk that
+    // is the crown tips, and the flat CUT FACE got no probes at all, so the body sank straight through
+    // the stump it should have been resting on. Bucket the surface into 8-voxel cells, take the
+    // best-ranked (most corner-like) voxel from each, and only then fill any remaining slots with the
+    // next-best overall. Keeps Teardown's corner preference AND guarantees every face is represented.
+    const seenB = new Set(), pr = [];
+    for (let i = 0; i < rank.length && pr.length < PH.maxProbes; i++) {
+      const idx = rank[i][1];
+      const bkey = (lx[idx] >> 3) | ((ly[idx] >> 3) << 8) | ((lz[idx] >> 3) << 16);
+      if (seenB.has(bkey)) continue;
+      seenB.add(bkey); pr.push(idx);
+    }
+    for (let i = 0; i < rank.length && pr.length < PH.maxProbes; i++) {
+      const idx = rank[i][1];
+      if (pr.indexOf(idx) < 0) pr.push(idx);
+    }
+    b.probes = new Int32Array(pr);
+    // ── GPU SHAPE ── a TIGHT bbox around the component (a felled crown is a fraction of the full model
+    // box) uploaded as one dense id grid. The renderer DDAs this; W never sees it.
+    let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;
+    for (let i = 0; i < N; i++) {
+      if (lx[i] < x0) x0 = lx[i]; if (lx[i] > x1) x1 = lx[i];
+      if (ly[i] < y0) y0 = ly[i]; if (ly[i] > y1) y1 = ly[i];
+      if (lz[i] < z0) z0 = lz[i]; if (lz[i] > z1) z1 = lz[i];
+    }
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1, bd = z1 - z0 + 1, cells2 = bw * bh * bd;
+    phReclaim(cells2);                               // make room by retiring the oldest fallen debris (see phReclaim)
+    if (bodyTop + cells2 > BODYCAP) { b.gpu = null; return b; }   // still no room (one body larger than the whole buffer) — simulates but is not drawn
+    const grid = new Uint32Array(cells2);
+    for (let i = 0; i < N; i++) grid[(lx[i] - x0) + (ly[i] - y0) * bw + (lz[i] - z0) * bw * bh] = id[i];
+    device.queue.writeBuffer(bodyBuf, bodyTop * 4, grid.buffer, 0, cells2 * 4);
+    b.cpuGrid = grid;                              // CPU copy so player collision can query the body (see phBodySolid)
+    b.gpu = { off: bodyTop, bw, bh, bd, cells: cells2, comL: [com[0] - x0, com[1] - y0, com[2] - z0] };
+    bodyTop += cells2;
+    return b;
+  };
+  // Evict the OLDEST bodies until `need` cells fit, compacting the shape buffer as we go. The user's
+  // call: old fallen debris may disappear to make room for new. Compaction re-uploads the survivors from
+  // their CPU grids, which is why every drawn body keeps one.
+  // Free ONE body slot by dropping the oldest. Chunk spawning used to just `continue` when the slot
+  // budget was full, so once a few felled trunks (which never retire) filled the list, the axe stopped
+  // producing chunks entirely — the "chunks stop working after a couple of trees" report. Old fallen
+  // debris giving way to new is the user's stated preference.
+  const phMakeRoom = () => {
+    if (PH.bodies.length < PH.maxBodies) return true;
+    for (let i = 0; i < PH.bodies.length; i++) if (PH.bodies[i].leaf) { PH.bodies.splice(i, 1); PH.stats.reclaimed++; return true; }   // an airborne needle is transient — it yields to a real chunk before anything else does
+    let oi = -1;
+    for (let i = 0; i < PH.bodies.length; i++) if (oi < 0 || PH.bodies[i].born < PH.bodies[oi].born) oi = i;
+    if (oi < 0) return false;
+    PH.bodies.splice(oi, 1); PH.stats.reclaimed++;
+    return true;
+  };
+  const phReclaim = (need) => {
+    let guard = 0;
+    while (PH.bodies.length && BODYCAP - bodyTop < need && guard++ < 64) {
+      let oi = 0;
+      for (let i = 1; i < PH.bodies.length; i++) if (PH.bodies[i].born < PH.bodies[oi].born) oi = i;
+      PH.bodies.splice(oi, 1);
+      PH.stats.reclaimed++;
+      bodyTop = 0;                                   // repack the survivors from the start of the buffer
+      for (const b2 of PH.bodies) {
+        if (!b2.gpu || !b2.cpuGrid) continue;
+        device.queue.writeBuffer(bodyBuf, bodyTop * 4, b2.cpuGrid.buffer, 0, b2.cpuGrid.length * 4);
+        b2.gpu.off = bodyTop; bodyTop += b2.cpuGrid.length;
+      }
+    }
+  };
+  const phQRot = (q, v, o) => {                      // o = q * v * q^-1
+    const x = q[0], y = q[1], z = q[2], w = q[3];
+    const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+    o[0] = v[0] + w * tx + (y * tz - z * ty);
+    o[1] = v[1] + w * ty + (z * tx - x * tz);
+    o[2] = v[2] + w * tz + (x * ty - y * tx);
+    return o;
+  };
+  const phQNorm = (q) => { const l = Math.hypot(q[0], q[1], q[2], q[3]) || 1; q[0] /= l; q[1] /= l; q[2] /= l; q[3] /= l; };
+  const phTmp = [0, 0, 0], phTmp2 = [0, 0, 0], phNrm = [0, 0, 0];
+  const PHX = [1, 0, 0], PHY = [0, 1, 0], PHZ = [0, 0, 1], PHAX = [0, 0, 0], PHAY = [0, 0, 0], PHAZ = [0, 0, 0];
+  // STATIC terrain only — bodies do not collide with each other in this pass.
+  // FOLIAGE COUNTS HERE (user 2026-08-02: "leaves have hitboxes for everything but the player"). The
+  // canopy is walk-through for the PLAYER via solidTab, and stays that way — this is a separate test used
+  // only by the rigid-body solver, so a falling trunk now catches on neighbouring branches the way a real
+  // one hangs up, while you can still walk through the crown.
+  let phSoftPass = false;                              // set while generating contacts for a body heavy enough to smash through canopy (see PH.crashThrough)
+  const phSolidAt = (x, y, z) => {
+    if (y < 0) return true;
+    if (y >= WY) return false;
+    const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+    if (solidTab[id] === 1) return true;
+    return !phSoftPass && foliaTab[id] === 1;         // needles stop a shed leaf, never a falling trunk
+  };
+  // Outward normal of a solid cell: point toward whichever faces are open. Gives real normals on slopes
+  // and walls instead of assuming the ground is flat.
+  const phNormalAt = (x, y, z, out) => {
+    let nx = 0, ny = 0, nz = 0;
+    if (!phSolidAt(x + 1, y, z)) nx += 1; if (!phSolidAt(x - 1, y, z)) nx -= 1;
+    if (!phSolidAt(x, y + 1, z)) ny += 1; if (!phSolidAt(x, y - 1, z)) ny -= 1;
+    if (!phSolidAt(x, y, z + 1)) nz += 1; if (!phSolidAt(x, y, z - 1)) nz -= 1;
+    const l = Math.hypot(nx, ny, nz);
+    if (l < 1e-6) { out[0] = 0; out[1] = 1; out[2] = 0; return out; }   // fully buried — push straight up
+    out[0] = nx / l; out[1] = ny / l; out[2] = nz / l; return out;
+  };
+  // Contact scratch (preallocated; the solver carries NO state between steps, like Teardown)
+  const cR = new Float64Array(PH.maxContacts * 3), cN = new Float64Array(PH.maxContacts * 3), cD = new Float64Array(PH.maxContacts);
+  // Direction a newly severed piece should fall. Set from the swing (you fell a tree away from
+  // yourself); falls back to "away from the player" when chopped programmatically.
+  const phFallDir = [0, 0, 1];
+  const phSetFallDir = (dx, dz) => { const l = Math.hypot(dx, dz); if (l > 1e-4) { phFallDir[0] = dx / l; phFallDir[2] = dz / l; } };
+  // ── AXE BITE -> FALLING CHUNK ── the voxels the axe carves out used to be deleted outright, so a hit
+  // just made material vanish. They are now kept: split into 6-connected pieces and thrown clear as real
+  // bodies. A LONE TRUNK voxel is dropped rather than spawned (single brown specks tumbling off every
+  // swing read as litter, not debris); a lone FOLIAGE voxel is kept, because scattered green flecks
+  // falling out of the canopy is exactly what a struck tree should shed.
+  const phSpawnChunk = (S, quads) => {
+    if (!quads.length) return;
+    const sx = S.R.sx, sz = S.R.sz;
+    const key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
+    const idMap = new Map();
+    for (let i = 0; i < quads.length; i += 4) idMap.set(key(quads[i], quads[i + 1], quads[i + 2]), quads[i + 3]);
+    const left = new Set(idMap.keys());
+    const f = { sx, sz };
+    // One body per 6-CONNECTED PIECE of the bite (user reverted the single-body version): a cut that
+    // clips two branches throws two chunks, which is what it looks like it should do.
+    while (left.size) {
+      const start = left.values().next().value;
+      const comp = []; const st = [start]; left.delete(start);
+      while (st.length) {
+        const k = st.pop(); comp.push(k);
+        const mx = k % sx, mz = ((k / sx) | 0) % sz, my = (k / (sx * sz)) | 0;
+        for (let d = 0; d < 6; d++) {
+          const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+          const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
+          const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+          if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+          const nk = key(nx, ny, nz);
+          if (left.has(nk)) { left.delete(nk); st.push(nk); }
+        }
+      }
+      if (comp.length < 2) continue;                   // a lone speck is litter, not a chunk
+      if (PH.bodies.length >= PH.maxBodies && !phMakeRoom()) continue;
+      const b = phBuildBody(S, comp, f, idMap);
+      b.vel[0] = phFallDir[0] * 6 + (Math.random() - 0.5) * 4;     // thrown clear of the cut
+      b.vel[1] = 4 + Math.random() * 3;
+      b.vel[2] = phFallDir[2] * 6 + (Math.random() - 0.5) * 4;
+      b.omega[0] = (Math.random() - 0.5) * 3; b.omega[1] = (Math.random() - 0.5) * 3; b.omega[2] = (Math.random() - 0.5) * 3;
+      b.absorbAt = performance.now() + PH.absorbMs;
+      PH.bodies.push(b);
+      PH.stats.chunks++;
+    }
+  };
+  const phSeparate = (S, f) => {                     // orphans -> rigid bodies; the SAME cell list drives the world erase, so a voxel is in exactly one state
+    const t0 = performance.now();
+    const made = [], cellsOut = [], comps = [];
+    for (let k = 0; k < phMark.length; k++) {
+      if (phMark[k] !== 0) continue;
+      const mx0 = k % f.sx, mz0 = ((k / f.sx) | 0) % f.sz, my0 = (k / (f.sx * f.sz)) | 0;
+      if (!phPresent(S, mx0, my0, mz0)) continue;
+      comps.push(phComponent(S, f, k));
+    }
+    comps.sort((a, b2) => b2.length - a.length);     // LARGEST FIRST — a shower of chips must never starve the trunk of a slot
+    for (const comp of comps) {
+      if (PH.bodies.length >= PH.maxBodies) {         // budget: a bigger component evicts the smallest live chip
+        let si = -1, sn = Infinity;
+        for (let q2 = 0; q2 < PH.bodies.length; q2++) if (PH.bodies[q2].n < sn) { sn = PH.bodies[q2].n; si = q2; }
+        if (si >= 0 && sn < comp.length) { PH.stats.evicted++; PH.bodies.splice(si, 1); }
+      }
+      if (PH.bodies.length >= PH.maxBodies) phMakeRoom();   // shed an airborne leaf first — erasing real geometry is the last resort, not the first
+      if (PH.bodies.length >= PH.maxBodies) {         // still full — erase, since a detached voxel left in W hangs in mid-air
+        for (const c of comp) { phMark[c] = 3;
+          const mx2 = c % f.sx, mz2 = ((c / f.sx) | 0) % f.sz, my2 = (c / (f.sx * f.sz)) | 0;
+          const ii = phWorldIdx(S, mx2, my2, mz2); W[ii] = 0; cellsOut.push(ii); }
+        PH.stats.dustVox += comp.length; continue;
+      }
+      if (comp.length < 2) {                          // a single detached voxel
+        const c0 = comp[0], mxa = c0 % f.sx, mza = ((c0 / f.sx) | 0) % f.sz, mya = (c0 / (f.sx * f.sz)) | 0;
+        const ii0 = phWorldIdx(S, mxa, mya, mza), v0 = W[ii0];
+        phMark[c0] = 3;
+        // A lone NEEDLE the cut orphaned drops exactly like a shaken one — same grid fall, so every
+        // foliage voxel in the game falls the same way whatever knocked it loose. A lone TRUNK speck is
+        // litter and is simply erased.
+        if (foliaTab[v0]) phLeafDrop(S.bx + mxa, S.gy + mya, S.bz + mza, v0);
+        else { W[ii0] = 0; cellsOut.push(ii0); PH.stats.dustVox++; }
+        continue;
+      }
+      const b = phBuildBody(S, comp, f);
+      for (const c of comp) {
+        const mx2 = c % f.sx, mz2 = ((c / f.sx) | 0) % f.sz, my2 = (c / (f.sx * f.sz)) | 0;
+        const ii = phWorldIdx(S, mx2, my2, mz2); W[ii] = 0; cellsOut.push(ii);
+      }
+      for (let lift = 0; lift < 32; lift++) {        // spawn de-penetration: a component cut near the ground can be born inside terrain
+        let inside = 0;
+        for (let i = 0; i < b.probes.length && !inside; i++) { const pi = b.probes[i];
+          if (phSolidAt(Math.floor(b.pos[0] + b.lx[pi] + 0.5 - b.com[0]), Math.floor(b.pos[1] + b.ly[pi] + 0.5 - b.com[1]),
+                        Math.floor(b.pos[2] + b.lz[pi] + 0.5 - b.com[2]))) inside = 1; }
+        if (!inside) break;
+        b.pos[1] += 1;
+      }
+      // ── TOPPLE ── a trunk cut through sits with its centre of mass directly over the stump: that is
+      // unstable equilibrium, and with no nudge it just drops vertically THROUGH the stump. Give it an
+      // initial spin about the horizontal axis perpendicular to the fall direction, which tips the top
+      // toward the cut. omega = normalize(up x d) makes the point at +up move toward +d, so the crown
+      // leans the way the notch faces and gravity takes over from there. Only pieces tall enough to
+      // topple get it — chips just fall.
+      if (b.n > PH.retireMax * 4) {
+        const ax = -phFallDir[2], az = phFallDir[0];   // up x d — makes the point at +up move toward +d
+        const al = Math.hypot(ax, az) || 1;
+        b.tipAx = ax / al; b.tipAz = az / al;          // the topple axis, held for the whole fall (see phStep)
+        b.tipping = 1; b.tipT0 = performance.now(); PH.stats.topples++;
+        b.slowFall = PH.fallSlow;                    // the trunk falls in the slowed time base (see PH.fallSlow); everything else keeps normal gravity
+        b.omega[0] = b.tipAx * PH.tipSeed; b.omega[2] = b.tipAz * PH.tipSeed;   // starts at a crawl (user) — the drive accelerates it from here
+        b.vel[0] = phFallDir[0] * 2.0; b.vel[2] = phFallDir[2] * 2.0;   // a touch of lean so it clears the stump
+      }
+      PH.bodies.push(b); made.push(b);
+    }
+    if (cellsOut.length) gpuPatch(cellsOut, false);
+    PH.stats.separations += made.length;
+    PH.stats.lastSepMs = +(performance.now() - t0).toFixed(2);
+    return made;
+  };
+  // Build a body out of a subset of ANOTHER body's voxels, keeping the parent's pose. phBuildBody works
+  // in the tree-model frame the parent's lx/ly/lz are still expressed in, so replaying the parent's
+  // origin as a pseudo-shape is enough to reuse it wholesale. The new COM sits somewhere else in that
+  // frame, so the world position has to be carried across through the parent's rotation — otherwise the
+  // piece teleports back to where the tree originally grew.
+  const phSubBody = (b, cells, idMap) => {
+    const nb = phBuildBody({ bx: b.origin[0], gy: b.origin[1], bz: b.origin[2] }, cells, { sx: b.sx, sz: b.sz }, idMap);
+    phTmp[0] = nb.com[0] - b.com[0]; phTmp[1] = nb.com[1] - b.com[1]; phTmp[2] = nb.com[2] - b.com[2];
+    phQRot(b.q, phTmp, phTmp2);
+    nb.pos[0] = b.pos[0] + phTmp2[0]; nb.pos[1] = b.pos[1] + phTmp2[1]; nb.pos[2] = b.pos[2] + phTmp2[2];
+    nb.q = [b.q[0], b.q[1], b.q[2], b.q[3]];
+    phQRot(nb.q, PHX, nb.ax); phQRot(nb.q, PHY, nb.ay); phQRot(nb.q, PHZ, nb.az);
+    nb.vel[0] = b.vel[0]; nb.vel[1] = b.vel[1]; nb.vel[2] = b.vel[2];
+    nb.omega[0] = b.omega[0]; nb.omega[1] = b.omega[1]; nb.omega[2] = b.omega[2];
+    return nb;
+  };
+  // ── CHOP A RIGID BODY ── the felled trunk is not in W (that is the whole point of the off-grid
+  // representation), so physChopAt cannot touch it and the axe used to swing straight through a tree
+  // lying on the ground. Same carve, done in the body's own frame instead: transform the impact point
+  // into body-local coords with the cached world axes phBodySolid already uses, take a sphere out of the
+  // voxel list, then rebuild — the remainder is re-split into 6-connected pieces (bucking a log in half
+  // really does give you two logs) and the bite flies off as a chunk on the usual absorb path.
+  const phChopBody = (wx, wy, wz, rad, minBite) => {
+    if (!PH.on) return false;
+    const t0 = performance.now();
+    const r2 = rad * rad;
+    for (let i = PH.bodies.length - 1; i >= 0; i--) {
+      const b = PH.bodies[i];
+      if (!b.cpuGrid || b.absorbing || b.n < PH.chopMinBody) continue;   // flying debris is not a chopping target
+      const dx = wx + 0.5 - b.pos[0], dy = wy + 0.5 - b.pos[1], dz = wz + 0.5 - b.pos[2];
+      const rr = b.rMax + rad + 2;
+      if (dx * dx + dy * dy + dz * dz > rr * rr) continue;
+      // impact point in the body's own frame (same basis phBodySolid uses, but un-floored)
+      const cx = dx * b.ax[0] + dy * b.ax[1] + dz * b.ax[2] + b.com[0];
+      const cy = dx * b.ay[0] + dy * b.ay[1] + dz * b.ay[2] + b.com[1];
+      const cz = dx * b.az[0] + dy * b.az[1] + dz * b.az[2] + b.com[2];
+      // ── CHEAP REJECT ── count the bite in the body's dense grid first. The full partition below is
+      // O(voxels), and a swing samples ~82 points along the ray against every body in range — on a
+      // 7500-voxel trunk that is ~600k iterations per click, a visible hitch. The grid answers "is there
+      // even anything here" in ~340 lookups, and the O(n) pass then runs at most once per swing.
+      const G = b.cpuGrid, bw = b.gpu.bw, bh = b.gpu.bh, bd = b.gpu.bd;
+      const gx = dx * b.ax[0] + dy * b.ax[1] + dz * b.ax[2] + b.gpu.comL[0];
+      const gy = dx * b.ay[0] + dy * b.ay[1] + dz * b.ay[2] + b.gpu.comL[1];
+      const gz = dx * b.az[0] + dy * b.az[1] + dz * b.az[2] + b.gpu.comL[2];
+      let avail = 0;
+      for (let z2 = Math.max(0, Math.floor(gz - rad)), zE = Math.min(bd - 1, Math.ceil(gz + rad)); z2 <= zE && avail < minBite; z2++)
+        for (let y2 = Math.max(0, Math.floor(gy - rad)), yE = Math.min(bh - 1, Math.ceil(gy + rad)); y2 <= yE && avail < minBite; y2++)
+          for (let x2 = Math.max(0, Math.floor(gx - rad)), xE = Math.min(bw - 1, Math.ceil(gx + rad)); x2 <= xE; x2++) {
+            const ex = x2 + 0.5 - gx, ey = y2 + 0.5 - gy, ez = z2 + 0.5 - gz;
+            if (ex * ex + ey * ey + ez * ez > r2) continue;
+            if (G[x2 + y2 * bw + z2 * bw * bh]) avail++;
+          }
+      if (avail < minBite) continue;                   // grazed it — keep marching, something further along may hold a real bite
+      const sx = b.sx, sz = b.sz, key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
+      const cutC = [], keepC = [], idMap = new Map(), inD = [], inK = [];
+      for (let k = 0; k < b.n; k++) {
+        const ex = b.lx[k] + 0.5 - cx, ey = b.ly[k] + 0.5 - cy, ez = b.lz[k] + 0.5 - cz;
+        const kk = key(b.lx[k], b.ly[k], b.lz[k]);
+        idMap.set(kk, b.id[k]);
+        const d2 = ex * ex + ey * ey + ez * ez;
+        if (d2 <= r2) { inD.push(d2); inK.push(kk); } else keepC.push(kk);
+      }
+      const ord2 = new Int32Array(inD.length);         // nearest-first, then take a FIXED count — same rule, same size chunk as a standing trunk
+      for (let k = 0; k < ord2.length; k++) ord2[k] = k;
+      ord2.sort((a2, b2) => inD[a2] - inD[b2]);
+      const takeB = Math.min(PH.chopBite, ord2.length);
+      for (let k = 0; k < ord2.length; k++) { if (k < takeB) cutC.push(inK[ord2[k]]); else keepC.push(inK[ord2[k]]); }
+      PH.bodies.splice(i, 1);                          // out of the list BEFORE rebuilding: phBuildBody's reclaim may splice it too
+      PH.stats.bodyChops++; PH.stats.voxRemoved += cutC.length;
+      // ── the remainder ── 6-connected pieces of what is left, largest first so a big trunk half never
+      // loses its slot to a splinter (the same rule phSeparate uses).
+      const left = new Set(keepC), comps = [];
+      while (left.size) {
+        const start = left.values().next().value;
+        const comp = [], st = [start]; left.delete(start);
+        while (st.length) {
+          const k2 = st.pop(); comp.push(k2);
+          const mx = k2 % sx, mz = ((k2 / sx) | 0) % sz, my = (k2 / (sx * sz)) | 0;
+          for (let d = 0; d < 6; d++) {
+            const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+            const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
+            const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+            if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+            const nk = key(nx, ny, nz);
+            if (left.has(nk)) { left.delete(nk); st.push(nk); }
+          }
+        }
+        comps.push(comp);
+      }
+      comps.sort((a2, b2) => b2.length - a2.length);
+      if (comps.length > 1) PH.stats.bodySplits++;
+      for (const comp of comps) {
+        if (comp.length < 2) continue;                 // a lone splinter left by the carve is litter
+        if (PH.bodies.length >= PH.maxBodies && !phMakeRoom()) break;
+        const nb = phSubBody(b, comp, idMap);
+        nb.sleeping = false; nb.sleepT = 0;            // the shape changed under it — let it re-settle
+        PH.bodies.push(nb);
+      }
+      // ── the bite ── one chunk, thrown clear along the swing, collected like every other chip
+      if (PH.bodies.length < PH.maxBodies || phMakeRoom()) {
+        const chip = phSubBody(b, cutC, idMap);
+        chip.vel[0] += phFallDir[0] * 6 + (Math.random() - 0.5) * 4;
+        chip.vel[1] += 4 + Math.random() * 3;
+        chip.vel[2] += phFallDir[2] * 6 + (Math.random() - 0.5) * 4;
+        chip.omega[0] = (Math.random() - 0.5) * 3; chip.omega[1] = (Math.random() - 0.5) * 3; chip.omega[2] = (Math.random() - 0.5) * 3;
+        chip.absorbAt = performance.now() + PH.absorbMs;
+        PH.bodies.push(chip);
+        PH.stats.chunks++;
+      }
+      spawnChopSparks(wx, wy, wz);                   // …and off a felled trunk too
+      PH.stats.lastBodyChopMs = +(performance.now() - t0).toFixed(2);
+      return true;
+    }
+    return false;
+  };
+  // ── CHOP ── carve real trunk voxels in a sphere, then re-test connectivity. Foliage is NOT chopped:
+  // the canopy is walk-through decor, and cutting it would let the crown fall off its own branches
+  // instead of the tree falling at the trunk.
+  const physChopAt = (wx, wy, wz, rad, S0, minBite) => {
+    const S = S0 || treeShapeAt(Math.round(wx), Math.round(wz));
+    if (!S) return { hit: false, why: 'no pine here' };
+    const r = rad === undefined ? 3 : rad, r2 = r * r;
+    phFlushBirdsNear(wx, wy, wz, r + 8);              // a bird standing on what is about to be cut leaves FIRST (see phFlushBirdsNear)
+    const cellsOut = []; let removed = 0;
+    const chipCells = [];                             // (mx,my,mz,id) of everything the axe carves out
+    // COUNT FIRST. Once a notch exists the sphere is mostly air, so a naive carve often found a single
+    // voxel and the swing "succeeded" having removed almost nothing — chunk sizes came out wildly
+    // inconsistent. With a minimum bite the swing keeps looking further along the ray for somewhere with
+    // real material instead of settling for a speck.
+    // gather every voxel the sphere could take, with its distance from the impact
+    const cD = [], cX = [], cY = [], cZ = [], cV = [];
+    for (let dy = -r; dy <= r; dy++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      const d2 = dx * dx + dy * dy + dz * dz; if (d2 > r2) continue;
+      const mx = Math.round(wx) + dx - S.bx, my = Math.round(wy) + dy - S.gy, mz = Math.round(wz) + dz - S.bz;
+      if (mx < 0 || mx >= S.R.sx || mz < 0 || mz >= S.R.sz || my < 0 || my >= MSZ) continue;
+      const v = phPresent(S, mx, my, mz); if (!v) continue;
+      if (PICK_CONE.has(v)) continue;                // cones are pickable ITEMS, not material. Foliage IS carved now (user: break the canopy into chunks while the tree still stands) — the flood below then decides honestly whether what is left is still attached.
+      if (my <= S.tr.sink) continue;                 // never cut the buried root courses out from under the anchor
+      cX.push(mx); cY.push(my); cZ.push(mz); cV.push(v);
+    }
+    if (cX.length < minBite) return { hit: false, why: 'thin bite (' + cX.length + ')' };
+    // CENTRE OF MASS of the carvable material in range — the deepest point the trunk actually has.
+    let bcx = 0, bcy = 0, bcz = 0;
+    for (let k = 0; k < cX.length; k++) { bcx += cX[k]; bcy += cY[k]; bcz += cZ[k]; }
+    bcx /= cX.length; bcy /= cX.length; bcz /= cX.length;
+    for (let k = 0; k < cX.length; k++) {
+      const ex = cX[k] - bcx, ey = cY[k] - bcy, ez = cZ[k] - bcz;
+      cD.push(ex * ex + ey * ey + ez * ez);          // plain Euclidean from the CENTROID → the roundest set the geometry allows
+    }
+    const ord = new Int32Array(cD.length);
+    for (let k = 0; k < ord.length; k++) ord[k] = k;
+    ord.sort((a2, b2) => cD[a2] - cD[b2]);           // nearest-first about the material's centre
+    const take = Math.min(PH.chopBite, ord.length);  // ALWAYS this many — that is what makes the chunk the same size every swing
+    for (let k = 0; k < take; k++) {
+      const j = ord[k], mx = cX[j], my = cY[j], mz = cZ[j];
+      const ii = phWorldIdx(S, mx, my, mz);
+      W[ii] = 0; cellsOut.push(ii); removed++;
+      chipCells.push(mx, my, mz, cV[j]);              // keep the carved voxel — it becomes a falling chunk, not litter
+    }
+    if (!S0) phSetFallDir(Math.round(wx) - P.x, Math.round(wz) - P.z);   // console chop: away from the player
+    if (!removed) return { hit: false, why: 'no trunk voxel in range' };
+    gpuPatch(cellsOut, false);
+    spawnChopSparks(wx, wy, wz);                      // the bite landed — 4 embers at the impact (user)
+    PH.stats.chops++; PH.stats.voxRemoved += removed;
+    phSpawnChunk(S, chipCells);                       // the bite the axe took + the shaken leaves fly off as real bodies
+    let f = phFlood(S);
+    if (f.orphans > PH.fellOrphans && phFlushBirds(S)) f = phFlood(S);   // a whole crown just came loose: the birds in it die with it, then re-test with their grid stamp gone (see phFlushBirds)
+    const bodies = f.orphans > 0 ? phSeparate(S, f) : [];
+    return { hit: true, removed, total: f.total, reached: f.reached, orphans: f.orphans,
+             detached: bodies.length, bodyVox: bodies.map((b) => b.n),
+             floodMs: PH.stats.lastFloodMs, sepMs: PH.stats.lastSepMs };
+  };
+  // Everything of `tab` type in a box around the impact that no longer has a path down to the terrain.
+  // Returns the orphaned components, largest first, in world coordinates.
+  let phDecM = null, phDecS = null;
+  const phDecorOrphans = (wx, wy, wz, tab) => {
+    const R = 16, UP = 22;
+    const x0 = Math.round(wx) - R, z0 = Math.round(wz) - R;
+    const y0 = Math.max(1, Math.round(wy) - R), y1 = Math.min(WY - 1, Math.round(wy) + UP);
+    const bw = 2 * R + 1, bd = 2 * R + 1, bh = y1 - y0 + 1, nAll = bw * bd * bh;
+    if (!phDecM || phDecM.length < nAll) { phDecM = new Uint8Array(nAll); phDecS = new Int32Array(nAll); }
+    else phDecM.fill(0, 0, nAll);
+    const li = (ix, iy, iz) => ix + iz * bw + iy * bw * bd;
+    const wIdx = (ix, iy, iz) => gwrap(x0 + ix, WX) + (y0 + iy) * WX + gwrap(z0 + iz, WZ) * WX * WY;
+    // pass 1: mark occupancy (1), and seed anything standing on solid NON-decor ground
+    let sp = 0;
+    for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bd; iz++) for (let ix = 0; ix < bw; ix++) {
+      const v = W[wIdx(ix, iy, iz)];
+      if (!v || !tab[v]) continue;
+      const k = li(ix, iy, iz); phDecM[k] = 1;
+      if (iy === 0) { phDecM[k] = 2; phDecS[sp++] = k; continue; }   // box floor — treat as supported, never orphan on a clipped box
+      const bv = W[wIdx(ix, iy - 1, iz)];
+      if (bv && !tab[bv] && solidTab[bv] === 1) { phDecM[k] = 2; phDecS[sp++] = k; }   // rooted in the terrain
+    }
+    while (sp > 0) {
+      const k = phDecS[--sp];
+      const ix = k % bw, iz = ((k / bw) | 0) % bd, iy = (k / (bw * bd)) | 0;
+      for (let d = 0; d < 6; d++) {
+        const nx = ix + (d === 0 ? 1 : d === 1 ? -1 : 0);
+        const ny = iy + (d === 2 ? 1 : d === 3 ? -1 : 0);
+        const nz = iz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+        if (nx < 0 || nx >= bw || nz < 0 || nz >= bd || ny < 0 || ny >= bh) continue;
+        const nk = li(nx, ny, nz);
+        if (phDecM[nk] !== 1) continue;
+        phDecM[nk] = 2; phDecS[sp++] = nk;
+      }
+    }
+    const comps = [];
+    for (let k0 = 0; k0 < nAll; k0++) {
+      if (phDecM[k0] !== 1) continue;
+      const comp = []; let q = 0; phDecS[q++] = k0; phDecM[k0] = 3;
+      while (q > 0) {
+        const k = phDecS[--q]; comp.push(k);
+        const ix = k % bw, iz = ((k / bw) | 0) % bd, iy = (k / (bw * bd)) | 0;
+        for (let d = 0; d < 6; d++) {
+          const nx = ix + (d === 0 ? 1 : d === 1 ? -1 : 0);
+          const ny = iy + (d === 2 ? 1 : d === 3 ? -1 : 0);
+          const nz = iz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+          if (nx < 0 || nx >= bw || nz < 0 || nz >= bd || ny < 0 || ny >= bh) continue;
+          const nk = li(nx, ny, nz);
+          if (phDecM[nk] === 1) { phDecM[nk] = 3; phDecS[q++] = nk; }
+        }
+      }
+      comps.push(comp.map((k) => [x0 + (k % bw), y0 + ((k / (bw * bd)) | 0), z0 + (((k / bw) | 0) % bd)]));
+    }
+    comps.sort((a2, b2) => b2.length - a2.length);
+    return comps;
+  };
+  // Lift a list of world cells out of W and hand them back as one rigid body on the parent's spot.
+  const phBodyFromCells = (cells) => {
+    let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;
+    for (const c of cells) {
+      if (c[0] < x0) x0 = c[0]; if (c[0] > x1) x1 = c[0];
+      if (c[1] < y0) y0 = c[1]; if (c[1] > y1) y1 = c[1];
+      if (c[2] < z0) z0 = c[2]; if (c[2] > z1) z1 = c[2];
+    }
+    const sx = x1 - x0 + 1, sz = z1 - z0 + 1;
+    const keys = [], idMap = new Map(), out = [];
+    for (const c of cells) {
+      const ii = gwrap(c[0], WX) + c[1] * WX + gwrap(c[2], WZ) * WX * WY;
+      const v = W[ii]; if (!v) continue;
+      const kk = (c[0] - x0) + (c[2] - z0) * sx + (c[1] - y0) * sx * sz;
+      if (idMap.has(kk)) continue;                     // the toroidal window folded two cells onto one slot
+      keys.push(kk); idMap.set(kk, v);
+      W[ii] = 0; out.push(ii);
+    }
+    if (!keys.length) return null;
+    gpuPatch(out, false);
+    return phBuildBody({ bx: x0, gy: y0, bz: z0 }, keys, { sx, sz }, idMap);
+  };
+  // ── CHOP DECOR ── a mushroom belongs to no tree, so physChopAt (which works in a pine's model frame)
+  // can never reach it. This is the same nearest-first, fixed-count carve done straight in world
+  // coordinates, so a bite out of a mushroom is the same size as a bite out of a trunk.
+  const phChopDecor = (wx, wy, wz, rad) => {
+    const r = rad, r2 = r * r;
+    const cD = [], cI = [], cX = [], cY = [], cZ = [], cV = [];
+    for (let dy = -r; dy <= r; dy++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      const d2 = dx * dx + dy * dy + dz * dz; if (d2 > r2) continue;
+      const x = Math.round(wx) + dx, y = Math.round(wy) + dy, z = Math.round(wz) + dz;
+      if (y < 1 || y >= WY) continue;
+      const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+      const v = W[ii]; if (!v || !decorTab[v]) continue;
+      if (cellStamped(ii)) continue;                 // a creature standing on one of the shared palette ids is not mushroom geometry (see cellStamped)
+      cD.push(d2); cI.push(ii); cX.push(x); cY.push(y); cZ.push(z); cV.push(v);
+    }
+    if (!cD.length) return false;
+    const ord = new Int32Array(cD.length);
+    for (let k = 0; k < ord.length; k++) ord[k] = k;
+    ord.sort((a2, b2) => cD[a2] - cD[b2]);
+    const take = Math.min(PH.chopBite, ord.length);
+    let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;
+    for (let k = 0; k < take; k++) { const j = ord[k];
+      if (cX[j] < x0) x0 = cX[j]; if (cX[j] > x1) x1 = cX[j];
+      if (cY[j] < y0) y0 = cY[j]; if (cY[j] > y1) y1 = cY[j];
+      if (cZ[j] < z0) z0 = cZ[j]; if (cZ[j] > z1) z1 = cZ[j]; }
+    const sx = x1 - x0 + 1, sz = z1 - z0 + 1;
+    const cells = [], idMap = new Map(), out = [];
+    for (let k = 0; k < take; k++) { const j = ord[k];
+      const kk = (cX[j] - x0) + (cZ[j] - z0) * sx + (cY[j] - y0) * sx * sz;
+      if (idMap.has(kk)) continue;                   // the window wrapped two cells onto one local slot — keep the first
+      cells.push(kk); idMap.set(kk, cV[j]);
+      W[cI[j]] = 0; out.push(cI[j]);
+    }
+    if (!cells.length) return false;
+    gpuPatch(out, false);
+    spawnChopSparks(wx, wy, wz);                      // …and off mushrooms, ferns and logs
+    PH.stats.chops++; PH.stats.voxRemoved += out.length;
+    if (PH.bodies.length < PH.maxBodies || phMakeRoom()) {
+      const b = phBuildBody({ bx: x0, gy: y0, bz: z0 }, cells, { sx, sz }, idMap);
+      b.vel[0] = phFallDir[0] * 6 + (Math.random() - 0.5) * 4;
+      b.vel[1] = 4 + Math.random() * 3;
+      b.vel[2] = phFallDir[2] * 6 + (Math.random() - 0.5) * 4;
+      b.omega[0] = (Math.random() - 0.5) * 3; b.omega[1] = (Math.random() - 0.5) * 3; b.omega[2] = (Math.random() - 0.5) * 3;
+      b.absorbAt = performance.now() + PH.absorbMs;
+      PH.bodies.push(b); PH.stats.chunks++;
+    }
+    // ── WHAT IS LEFT STANDING? ── a mushroom cap overhangs its stem, so cutting the stem out from under
+    // it leaves the cap with no path down to the ground. This is the decor equivalent of the phFlood /
+    // phSeparate pass a chopped tree gets, and without it the cap simply hung in the air (user).
+    for (const comp of phDecorOrphans(wx, wy, wz, decorTab)) {
+      // A two-voxel splinter is not a chunk (user: one piece, not a shower of them) — and a floater is
+      // never acceptable, so anything not worth spawning is erased rather than left standing.
+      if (comp.length < 3 || (PH.bodies.length >= PH.maxBodies && !phMakeRoom())) {
+        const dead = [];
+        for (const c of comp) { const ii = gwrap(c[0], WX) + c[1] * WX + gwrap(c[2], WZ) * WX * WY;
+          if (W[ii]) { W[ii] = 0; dead.push(ii); } }
+        if (dead.length) gpuPatch(dead, false);
+        PH.stats.dustVox += dead.length; continue;
+      }
+      const ob = phBodyFromCells(comp); if (!ob) continue;
+      ob.omega[1] = (Math.random() - 0.5) * 0.6;       // it lost its support rather than being struck: it drops, it does not fly
+      ob.absorbAt = performance.now() + PH.absorbMs;
+      PH.bodies.push(ob); PH.stats.chunks++; PH.stats.decorFalls++;
+    }
+    return true;
+  };
+  // ── AXE SWING -> TRUNK ── melee reach along the view ray, trunk voxels only. Returns true when the
+  // swing bit wood so the caller can spend the swing on the tree rather than also registering a kill.
+  // ── SHAKE THE CANOPY ── knock a few foliage voxels loose above the impact so EVERY hit rains leaves.
+  // This is deliberately independent of whether the carve found wood: swinging into a spot you already
+  // notched still shakes the tree. Each loose voxel is handed to phSpawnChunk, where a lone FOLIAGE voxel
+  // spawns as its own drifting speck (a lone TRUNK voxel is dropped as litter) — that is what reads as leaves.
+  const phShakeLeaves = (S, wx, wy, wz) => {
+    const cands = [], cy = Math.round(wy) - S.gy, rr = PH.shakeR;
+    for (let dz = -rr; dz <= rr; dz += 2) for (let dx = -rr; dx <= rr; dx += 2) {
+      const mx = Math.round(wx) + dx - S.bx, mz = Math.round(wz) + dz - S.bz;
+      if (mx < 0 || mx >= S.R.sx || mz < 0 || mz >= S.R.sz) continue;
+      for (let my = cy + 2; my < Math.min(MSZ, cy + 70); my += 3) {
+        const v3 = phPresent(S, mx, my, mz);
+        if (v3 && foliaTab[v3]) cands.push(mx, my, mz, v3);
+      }
+    }
+    const nC = cands.length >> 2;
+    if (!nC) return 0;
+    let made = 0;
+    for (let k = 0, tries = 0; k < PH.shakeLeaves && tries < 40; tries++) {
+      const q = ((Math.random() * nC) | 0) * 4;
+      const mx = cands[q], my = cands[q + 1], mz = cands[q + 2];
+      if (!phPresent(S, mx, my, mz)) continue;         // already taken by an earlier pick this swing
+      phLeafDrop(S.bx + mx, S.gy + my, S.bz + mz, cands[q + 3]);   // stays a GRID voxel and descends (see leafFallTick)
+      k++; made++;
+    }
+    return made;
+  };
+  const CHOP_REACH = 42, CHOP_RAD = 5, CHOP_DEEP = 3;   // RAD 5 so a full PH.chopBite is reachable from one impact point; CHOP_DEEP pushes the carve sphere into the wood so the chunk has depth instead of being a surface cap
+  const CHOP_MINBITE = 30, CHOP_BODYBITE = 30;        // = PH.chopBite: the swing keeps marching until it finds somewhere that can give a FULL piece
+  const CHOP_LAST = 15;                               // last-resort bite for an almost-severed trunk — half a piece, never the 2-3 voxel specks the old `1` produced   // a fallen trunk takes the SAME minimum bite as a standing one: at 4 the ray settled for the fringe of the hole it had just made and every swing after the first shaved 3-4 voxels   // a swing takes at least this many voxels, or it keeps looking
+  const chopSwing = () => {
+    if (!PH.on || ED.on || dead) return false;
+    const axe = heldIt() === 1;                      // FELLING is the stone axe's job; soft decor (mushrooms, ferns) yields to any tool, or to bare hands (user)
+    const cp = Math.cos(P.pitch), vx = Math.sin(P.yaw) * cp, vy = Math.sin(P.pitch), vz = Math.cos(P.yaw) * cp;
+    phSetFallDir(vx, vz);                              // fell it AWAY from the player, like a real notch
+    let S = null;
+    for (let t = 1; t < CHOP_REACH; t += 0.5) {
+      const x = Math.round(P.x + vx * t), y = Math.round(smoothEye + vy * t), z = Math.round(P.z + vz * t);
+      if (y < 1 || y >= WY) continue;
+      if (axe && !S && (phChopBody(x + vx * CHOP_DEEP, y + vy * CHOP_DEEP, z + vz * CHOP_DEEP, CHOP_RAD, CHOP_BODYBITE) ||
+                        phChopBody(x, y, z, CHOP_RAD, CHOP_BODYBITE))) return true;   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the axe hits what is actually nearest
+      const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+      if (id && decorTab[id] && (axe || !axeOnlyTab[id]) && phChopDecor(x, y, z, CHOP_RAD)) return true;   // MUSHROOMS + FERNS (any tool) and GROUND LOGS (axe only) — free gate, the id is already in hand
+      // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
+      // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
+      // where the trunk was, and a solid-only trigger could never find the tree again — the axe would
+      // land exactly one bite and then stop.
+      if (axe && !S && (id !== 0 || t - Math.floor(t / 4) * 4 < 0.5)) S = treeShapeAt(x, z);
+      if (S) {
+        // physChopAt cuts everything within CHOP_RAD of the point, so marching through the trunk's
+        // airspace WIDENS the notch each swing instead of needing an exact voxel hit. The bite is taken
+        // CHOP_DEEP further along the ray so the sphere sits INSIDE the wood: centred on the surface
+        // sample, most of it hung in open air and the chunk came out a flat cap (user: "the chunks are
+        // often flat pieces"). If the deeper point has run out the far side, the surface point still gets
+        // its turn.
+        if (physChopAt(x + vx * CHOP_DEEP, y + vy * CHOP_DEEP, z + vz * CHOP_DEEP, CHOP_RAD, S, CHOP_MINBITE).hit ||
+            physChopAt(x, y, z, CHOP_RAD, S, CHOP_MINBITE).hit) { phShakeLeaves(S, x, y, z); return true; }
+        continue;
+      }
+      if (id !== 0 && !foliaTab[id]) return false;   // solid and no pine here — a real obstruction stops the swing
+    }
+    // Nothing along the ray held a full bite (a heavily notched trunk). Take whatever is there rather
+    // than letting the swing do nothing at all.
+    for (let t2 = 1; t2 < CHOP_REACH; t2 += 0.5) {
+      const x2 = Math.round(P.x + vx * t2), y2 = Math.round(smoothEye + vy * t2), z2 = Math.round(P.z + vz * t2);
+      if (y2 < 1 || y2 >= WY) continue;
+      if (axe && phChopBody(x2, y2, z2, CHOP_RAD, CHOP_LAST)) return true;   // …and a reduced bite off a fallen trunk still counts
+      if (S && physChopAt(x2, y2, z2, CHOP_RAD, S, CHOP_LAST).hit) { phShakeLeaves(S, x2, y2, z2); return true; }
+    }
+    return false;                                     // the swing never bit anything — no hit, and NO leaves (user: they must not fall unless the axe connects)
+  };
+  // ── SOLVER ── sequential impulse / PGS, fixed 60 Hz, PH.iters iterations, no pair state between steps.
+  const phStep = (b, h) => {
+    if (b.sleeping || b.absorbing) return;             // an absorbing chunk is driven by its flight curve, not by physics
+    if (b.leaf) { b.pos[1] -= PH.leafV * h; return; }  // ── SHED NEEDLE ── straight down at a fixed rate: no gravity ramp, no spin, no contacts (user: off the grid, but falling exactly as the grid version did)
+    if (b.n >= PH.crashThrough && !b.tipping && b.tipAx !== undefined) {
+      // ── HUNG UP ── still airborne and not moving: something solid is holding it. Re-arm the drive.
+      const mv = Math.abs(b.pos[1] - (b.stuckY === undefined ? 1e9 : b.stuckY));
+      const tN = performance.now();
+      if (b.stuckT === undefined || mv > 1.5) { b.stuckT = tN; b.stuckY = b.pos[1]; }
+      else if (tN - b.stuckT > PH.stuckMs) {
+        b.stuckT = tN; b.stuckY = b.pos[1];
+        b.tipping = 1; b.tipT0 = tN;                   // another go at going over…
+        b.vel[1] -= PH.stuckNudge;                     // …plus a shove, so it settles rather than hovering
+        b.sleeping = false; b.sleepT = 0;
+        PH.stats.unstuck++;
+      }
+    }
+    if (b.n >= PH.crashThrough && b.tipAx !== undefined) {   // the ceiling outlives the drive: past tipDone the fall is plain physics, and that is where it used to run away
+      const wm = Math.hypot(b.omega[0], b.omega[1], b.omega[2]);
+      if (wm > PH.tipMax) { const kc = PH.tipMax / wm; b.omega[0] *= kc; b.omega[1] *= kc; b.omega[2] *= kc; }
+    }
+    if (b.tipping) {                                   // ── TOPPLE DRIVE ── see the block comment on PH.tipDone
+      // b.ay is the body's own up-axis in world space, refreshed at the end of every step, so its Y
+      // component IS cos(tilt) — 1 upright, 0 flat on its side.
+      const up = b.ay[1];
+      if (up <= PH.tipDone || performance.now() - b.tipT0 > PH.tipMaxMs) b.tipping = 0;   // committed (or stuck) — hand it back to plain physics
+      else {
+        // A FLOOR on the topple-axis component left the contact solver free to inject rotation about the
+        // OTHER two axes — impulses off the stump, the crown clipping ground — and that cross-axis spin is
+        // what made a falling trunk shudder and spin out (user: "glitches out and spases out"). A tree
+        // pivoting on its stump turns about ONE axis; anything else is solver noise, so it is damped hard
+        // for as long as the drive is running. The topple component itself is still only a floor, so a
+        // genuine impulse can speed the fall up — it just cannot wrench the trunk sideways.
+        // sN: 0 the instant it is severed, 1 at the release angle. The quadratic term is the momentum —
+        // early on the trunk creeps, and by the time it is halfway over it is moving several times faster.
+        const sN = Math.min(1, Math.max(0, (1 - up) / Math.max(1e-3, 1 - PH.tipDone)));
+        const want = PH.tipSeed + PH.tipRate * sN + PH.tipAccel * sN * sN;
+        const wAxis = Math.min(PH.tipMax, Math.max(b.omega[0] * b.tipAx + b.omega[2] * b.tipAz, want));
+        const perpX = b.omega[0] - wAxis * b.tipAx, perpZ = b.omega[2] - wAxis * b.tipAz;
+        const k = PH.tipDamp;
+        b.omega[0] = wAxis * b.tipAx + perpX * k;
+        b.omega[1] *= k;
+        b.omega[2] = wAxis * b.tipAz + perpZ * k;
+        b.sleepT = 0;                                  // a half-fallen trunk must not doze off mid-tilt
+      }
+    }
+    // RESTING LATCH: a body that was in contact last step and is barely moving does not re-accumulate
+    // gravity. Without this, every contact-free step re-added 3.3 vox/s of fall which the next step's
+    // impulse cancelled — a limit cycle that kept a visibly stationary body above the sleep threshold
+    // forever. Self-correcting: if the support goes away, contacts hit 0 and gravity resumes next step.
+    const resting = (b.contacts | 0) > 0 && Math.hypot(b.vel[0], b.vel[1], b.vel[2]) < PH.sleepLin;   // NB: this stays ON during a topple. Exempting tipping bodies reopened the gravity/impulse limit cycle the latch exists to stop, and a driven topple does not need gravity to turn anyway.
+    if (!resting) b.vel[1] -= PH.gravity * (b.slowFall === undefined ? 1 : b.slowFall) * h;   // a felled trunk falls in a slowed time base — see PH.fallSlow
+    const ld = Math.exp(-PH.linDamp * h), ad = Math.exp(-PH.angDamp * h);
+    b.vel[0] *= ld; b.vel[1] *= ld; b.vel[2] *= ld;
+    b.omega[0] *= ad; b.omega[1] *= ad; b.omega[2] *= ad;
+    b.pos[0] += b.vel[0] * h; b.pos[1] += b.vel[1] * h; b.pos[2] += b.vel[2] * h;
+    const w = b.omega, q = b.q;                      // q += 0.5 * omega(quat) * q
+    const dx = 0.5 * h * (w[0] * q[3] + w[1] * q[2] - w[2] * q[1]);
+    const dy = 0.5 * h * (w[1] * q[3] + w[2] * q[0] - w[0] * q[2]);
+    const dz = 0.5 * h * (w[2] * q[3] + w[0] * q[1] - w[1] * q[0]);
+    const dw = -0.5 * h * (w[0] * q[0] + w[1] * q[1] + w[2] * q[2]);
+    q[0] += dx; q[1] += dy; q[2] += dz; q[3] += dw; phQNorm(q);
+    // ── CONTACT GENERATION (once per step) ── probe voxels are SPHERES of radius 0.5, like Teardown
+    phSoftPass = b.n >= PH.crashThrough;              // a trunk pushes through needles rather than resting on them (see phSolidAt)
+    let nc = 0, deepest = 0;
+    for (let i = 0; i < b.probes.length && nc < PH.maxContacts; i++) {
+      const pi = b.probes[i];
+      phTmp[0] = b.lx[pi] + 0.5 - b.com[0]; phTmp[1] = b.ly[pi] + 0.5 - b.com[1]; phTmp[2] = b.lz[pi] + 0.5 - b.com[2];
+      phQRot(b.q, phTmp, phTmp2);
+      const wx = b.pos[0] + phTmp2[0], wy = b.pos[1] + phTmp2[1], wz = b.pos[2] + phTmp2[2];
+      const gx = Math.floor(wx), gy2 = Math.floor(wy), gz = Math.floor(wz);
+      if (!phSolidAt(gx, gy2, gz)) continue;
+      phNormalAt(gx, gy2, gz, phNrm);
+      // sphere-vs-voxel depth along the contact normal, measured from the solid cell's open face
+      const fx = wx - (gx + 0.5), fy = wy - (gy2 + 0.5), fz = wz - (gz + 0.5);
+      const along = fx * phNrm[0] + fy * phNrm[1] + fz * phNrm[2];
+      const depth = Math.max(0.01, 1.0 - along);     // 0.5 (cell half) + 0.5 (voxel sphere) - along
+      if (depth > deepest) deepest = depth;
+      cR[nc * 3] = phTmp2[0]; cR[nc * 3 + 1] = phTmp2[1]; cR[nc * 3 + 2] = phTmp2[2];
+      cN[nc * 3] = phNrm[0]; cN[nc * 3 + 1] = phNrm[1]; cN[nc * 3 + 2] = phNrm[2];
+      cD[nc] = depth; nc++;
+    }
+    b.contacts = nc; b.deepest = deepest;
+    PH.stats.contacts += nc;
+    if (nc) {
+      const invM = 1 / b.mass;
+      const Ii = [1 / Math.max(b.I[0], 1e-3), 1 / Math.max(b.I[1], 1e-3), 1 / Math.max(b.I[2], 1e-3)];
+      for (let it = 0; it < PH.iters; it++) {        // PGS: relax every contact, repeatedly
+        for (let c = 0; c < nc; c++) {
+          const rx = cR[c * 3], ry = cR[c * 3 + 1], rz = cR[c * 3 + 2];
+          const nx = cN[c * 3], ny = cN[c * 3 + 1], nz = cN[c * 3 + 2];
+          const vpx = b.vel[0] + (b.omega[1] * rz - b.omega[2] * ry);
+          const vpy = b.vel[1] + (b.omega[2] * rx - b.omega[0] * rz);
+          const vpz = b.vel[2] + (b.omega[0] * ry - b.omega[1] * rx);
+          const vn = vpx * nx + vpy * ny + vpz * nz;
+          if (vn >= 0) continue;
+          const cx = ry * nz - rz * ny, cy = rz * nx - rx * nz, cz = rx * ny - ry * nx;   // r x n
+          const denom = invM + cx * cx * Ii[0] + cy * cy * Ii[1] + cz * cz * Ii[2];
+          const j = -(1 + PH.restitution) * vn / Math.max(denom, 1e-6);
+          b.vel[0] += j * nx * invM; b.vel[1] += j * ny * invM; b.vel[2] += j * nz * invM;
+          b.omega[0] += cx * j * Ii[0]; b.omega[1] += cy * j * Ii[1]; b.omega[2] += cz * j * Ii[2];
+          const tvx = vpx - vn * nx, tvy = vpy - vn * ny, tvz = vpz - vn * nz;   // Coulomb friction
+          const tl = Math.hypot(tvx, tvy, tvz);
+          if (tl > 1e-4) {
+            const jt = Math.min(PH.friction * j, b.mass * tl / nc);
+            b.vel[0] -= (tvx / tl) * jt * invM; b.vel[1] -= (tvy / tl) * jt * invM; b.vel[2] -= (tvz / tl) * jt * invM;
+          }
+        }
+      }
+      // Baumgarte positional correction: a FRACTION of the penetration, hard-capped. Applying the full
+      // depth every substep pumps small chunks up out of the ground.
+      let px = 0, py = 0, pz = 0;
+      for (let c = 0; c < nc; c++) { const k = Math.min(cD[c] * 0.25, 0.06);
+        px += cN[c * 3] * k; py += cN[c * 3 + 1] * k; pz += cN[c * 3 + 2] * k; }
+      b.pos[0] += px / nc; b.pos[1] += py / nc; b.pos[2] += pz / nc;
+      const rb = Math.exp(-6 * h);                   // rest bias — sheds the residual the solver cannot cancel
+      b.vel[0] *= rb; b.vel[2] *= rb;
+      b.omega[0] *= rb; b.omega[1] *= rb; b.omega[2] *= rb;
+    }
+    const lin = Math.hypot(b.vel[0], b.vel[1], b.vel[2]), ang = Math.hypot(b.omega[0], b.omega[1], b.omega[2]);
+    // A chip of a few voxels has inertia ~0.33, so any impulse spins it past a sensible angular
+    // threshold — yet its orientation is meaningless at that size. Judge those on linear rest alone.
+    const angOK = b.n <= PH.retireMax ? true : ang < PH.sleepAng;
+    // Sleep on LOW MOTION alone, not on having a contact this step. Contacts flicker in and out as a
+    // resting body micro-settles, and requiring one meant the countdown decayed faster than it grew —
+    // a body that had visibly stopped stayed awake forever. Free fall cannot false-trigger it: one step
+    // of gravity is already 3.3 vox/s, well over sleepLin.
+    if (lin < PH.sleepLin && angOK) {
+      if (!b.tipping && ++b.sleepT >= PH.sleepFrames) { b.sleeping = true; b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0;
+        if (b.n <= PH.retireMax) b.retire = true; }
+    } else b.sleepT = Math.max(0, b.sleepT - 1);     // DECAY, don't reset: one jittery step must not restart the countdown
+    phSoftPass = false;                              // strictly scoped to this body's contact pass
+    phQRot(b.q, PHX, b.ax); phQRot(b.q, PHY, b.ay); phQRot(b.q, PHZ, b.az);   // keep the collision axes in step with the pose
+  };
+  // A settled CHIP is written back into the static grid at its resting pose and its slot released. Only
+  // tiny fragments do this — a few voxels have no orientation worth preserving, so grid-snapping them is
+  // invisible, and it keeps the body budget for things that need continuous transforms.
+  // …but ONLY when it settled on the TERRAIN. A shed leaf that came to rest on a BRANCH used to be baked
+  // in right there, and when the tree was later felled the crown left W while the baked needle stayed —
+  // hanging in mid-air. (Measured: 10 of the 15 voxels a felled pine left floating.) A fragment that
+  // stopped anywhere else is simply dropped instead: it is a speck, and losing it is invisible next to
+  // leaving it stuck in the sky.
+  const phOnGround = (b) => {
+    for (let i = 0; i < b.n; i++) {
+      phTmp[0] = b.lx[i] + 0.5 - b.com[0]; phTmp[1] = b.ly[i] + 0.5 - b.com[1]; phTmp[2] = b.lz[i] + 0.5 - b.com[2];
+      phQRot(b.q, phTmp, phTmp2);
+      const x = Math.floor(b.pos[0] + phTmp2[0]), y = Math.floor(b.pos[1] + phTmp2[1]), z = Math.floor(b.pos[2] + phTmp2[2]);
+      if (y <= H(x, z) + 2) return true;               // on the terrain surface (+2 covers snow and ground decor) — safe to bake in
+    }
+    return false;
+  };
+  const physRetire = (b) => {
+    if (!phOnGround(b)) { PH.stats.dropped++; return; }   // came to rest up a tree — do NOT bake it into the grid (see phOnGround)
+    const cells = [];
+    for (let i = 0; i < b.n; i++) {
+      phTmp[0] = b.lx[i] + 0.5 - b.com[0]; phTmp[1] = b.ly[i] + 0.5 - b.com[1]; phTmp[2] = b.lz[i] + 0.5 - b.com[2];
+      phQRot(b.q, phTmp, phTmp2);
+      const x = Math.floor(b.pos[0] + phTmp2[0]), y = Math.floor(b.pos[1] + phTmp2[1]), z = Math.floor(b.pos[2] + phTmp2[2]);
+      if (y < 1 || y >= WY) continue;
+      const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+      if (W[ii]) continue;                           // only into empty air — never overwrite terrain
+      W[ii] = b.id[i]; cells.push(ii);
+    }
+    if (cells.length) gpuPatch(cells, false);
+    PH.stats.retired++;
+  };
+  const physStep = (dtR) => {                        // fixed-rate accumulator, capped so a stall cannot spiral
+    if (!PH.on || !PH.bodies.length) { PH.acc = 0; return; }
+    const t0 = performance.now();
+    PH.acc = Math.min(PH.acc + dtR, 0.25);
+    let k = 0;
+    while (PH.acc >= PH.dt && k < 8) {
+      for (const b of PH.bodies) {
+        if (b.sleeping) continue;
+        // ── CCD-LITE ── contacts are point samples with no swept test, so a fast body tunnels: a toppling
+        // 93-voxel pine has a tip 50 from the COM, and at 3 rad/s that tip moves 2.5 voxels per 60 Hz step
+        // — straight through the stump it should hit. Subdivide THIS body's step so no point on it can
+        // travel more than half a voxel, which is finer than the grid it is colliding against.
+        const tip = Math.hypot(b.vel[0], b.vel[1], b.vel[2]) + Math.hypot(b.omega[0], b.omega[1], b.omega[2]) * b.rMax;
+        const sub2 = Math.max(1, Math.min(PH.maxCCD, Math.ceil(tip * PH.dt / 0.5)));
+        const hh = PH.dt / sub2;
+        for (let q3 = 0; q3 < sub2; q3++) phStep(b, hh);
+        PH.stats.ccd = Math.max(PH.stats.ccd, sub2);
+      }
+      PH.acc -= PH.dt; k++;
+    }
+    // ── ABSORB ── a chunk the axe knocked loose is drawn INTO the player a moment after it breaks away.
+    // NO ITEM is granted: this used to call startGrab(3, …), the twig pickup, which stuffed the hotbar
+    // with sticks every swing (user 2026-08-02). Chopping debris is scrap, not loot.
+    // The flight is a real transition rather than a pop: once it starts the chunk leaves the simulation
+    // (no gravity, no contacts, no hitbox), eases toward the player's chest on a curve that accelerates
+    // into the grab, and shrinks to nothing as it arrives.
+    const tNow = performance.now();
+    for (let i = PH.bodies.length - 1; i >= 0; i--) {
+      const b = PH.bodies[i];
+      if (b.leaf) {                                    // has this needle reached something yet?
+        const lx = Math.floor(b.pos[0]), ly = Math.floor(b.pos[1]), lz = Math.floor(b.pos[2]);
+        if (tNow - b.born > PH.leafLifeMs) { PH.bodies.splice(i, 1); continue; }   // overstayed — see PH.leafLifeMs
+        if (ly > 1 && !phSolidAt(lx, ly - 1, lz)) continue;
+        PH.bodies.splice(i, 1);
+        // Only GROUND litter is allowed to persist as a grid voxel. One that came to rest up a tree would
+        // be left hanging the moment that tree is felled, so it simply goes — the same rule phOnGround
+        // applies to settled rigid fragments.
+        if (ly > 1 && ly <= H(lx, lz) + 2) { const ii = gwrap(lx, WX) + ly * WX + gwrap(lz, WZ) * WX * WY;
+          if (!W[ii]) { W[ii] = b.id[0]; gpuPatch([ii], false); } }
+        continue;
+      }
+      if (b.absorbing) {
+        const k = Math.min(1, (tNow - b.absorbT0) / PH.absorbFly);
+        const e = k * k * (3 - 2 * k);                 // smoothstep — leaves the ground gently, arrives fast
+        const tx = P.x, ty = smoothEye + PH.absorbY, tz = P.z;   // tracked live so the chunk follows a moving player
+        b.pos[0] = b.absorbP[0] + (tx - b.absorbP[0]) * e;
+        b.pos[1] = b.absorbP[1] + (ty - b.absorbP[1]) * e + Math.sin(e * Math.PI) * 3;   // slight arc so it lifts rather than slides
+        b.pos[2] = b.absorbP[2] + (tz - b.absorbP[2]) * e;
+        b.scale = Math.max(0.05, 1 - e * 0.9);         // shrinks out as it reaches you
+        b.omega[0] = 6; b.omega[2] = 4;                // keeps tumbling on the way in
+        const w = b.omega, q = b.q, h2 = dtR;
+        const dx = 0.5 * h2 * (w[0] * q[3] + w[1] * q[2] - w[2] * q[1]);
+        const dy = 0.5 * h2 * (w[1] * q[3] + w[2] * q[0] - w[0] * q[2]);
+        const dz = 0.5 * h2 * (w[2] * q[3] + w[0] * q[1] - w[1] * q[0]);
+        const dw = -0.5 * h2 * (w[0] * q[0] + w[1] * q[1] + w[2] * q[2]);
+        q[0] += dx; q[1] += dy; q[2] += dz; q[3] += dw; phQNorm(q);
+        phQRot(q, PHX, b.ax); phQRot(q, PHY, b.ay); phQRot(q, PHZ, b.az);
+        if (k >= 1) { PH.bodies.splice(i, 1); PH.stats.absorbed++; }
+        continue;
+      }
+      if (!b.absorbAt || tNow < b.absorbAt || b.n > PH.absorbMax) continue;
+      b.absorbing = true; b.absorbT0 = tNow;
+      b.absorbP = [b.pos[0], b.pos[1], b.pos[2]];      // where the flight starts
+      b.sleeping = false;                              // a settled chunk must still be able to fly in
+    }
+    for (let i = PH.bodies.length - 1; i >= 0; i--) if (PH.bodies[i].retire) { physRetire(PH.bodies[i]); PH.bodies.splice(i, 1); }
+    if (!PH.bodies.length) bodyTop = 0;              // no body references the shape buffer — reclaim it whole
+    PH.stats.substeps += k;
+    PH.stats.stepMs = +(performance.now() - t0).toFixed(3);
+  };
+
   // ── flying cardinal ── free WANDERING flight (no home, no leash — it goes where it goes; it does NOT follow the player): the turn rate
   // drifts to a new random target every few seconds (varied, believable arcs — never a fixed circle) and it terrain-follows via hmap so it
   // always clears the canopy. Pose is written into drop slot 4 each frame (see the drops uniform section) and DDA-raytraced off-grid —
@@ -4808,6 +6118,29 @@
     const fiC = near ? (t < n * frameMs ? Math.floor(t / frameMs) : n - 1) : 0;   // hold the last frame through the pause
     const q = near ? ((-(Math.floor((now + B.phase) / cyc) % 4)) & 3) : 0;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
+    // ── IS THE PERCH STILL THERE? ── the crown it was assigned can be chopped or felled between the
+    // perch being chosen and this stamp; without this the bird stamps into thin air and hangs there.
+    //
+    // TWO THINGS THIS HAS TO GET RIGHT, both learned the hard way (life CPU 0.47 -> 13.1 ms):
+    //   · the cell under the feet is frequently part of the bird's OWN stamp — the model extends below
+    //     perchFeet by CARD_FOOTZ — and a bird voxel is neither foliage nor solid. Reading W naively
+    //     failed for most birds and recycled the whole population EVERY FRAME. Consult sPrev, which
+    //     remembers what the stamp covered, so the test sees the crown and not the bird.
+    //   · it does not need to run at frame rate. A perch disappears when a tree is chopped, which is
+    //     rare; twice a second is instant to a player and costs nothing.
+    if (now > (B.perchChk || 0)) {
+      B.perchChk = now + 400 + Math.random() * 300;
+      const pf = Math.max(1, Math.round(B.perchFeet) - 1);
+      const ii = gwrap(gx, WX) + pf * WX + gwrap(gz, WZ) * WX * WY;
+      let under = W[ii];
+      if (B.sN) { const nc = B.sCells, pv = B.sPrev;
+        for (let q = 0; q < B.sN; q++) if (nc[q] === ii) { under = pv[q]; break; } }   // what the crown had there before this bird covered it
+      if (!under || !(foliaTab[under] || solidTab[under] === 1)) {
+        if (B.sN) unstampWorm(B);
+        B.init = false;                                // no perch left → back into the population loop for a new one
+        return;
+      }
+    }
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
   const unstampAllWorms = () => { for (let j = 16; j < 372; j++) { const B = wbf[j]; if (B && B.sN) {   // ALL grid-stamped creatures: perched songbirds (64-243) + BUNNIES/ARMADILLOS/SKUNKS/PORCUPINES (276-371). Must cover the mammals too, or their stamps get unstamped one-by-one AFTER the editor's bricks.fill(0) and re-patch as floating chunks (user bug)
@@ -4928,7 +6261,7 @@
   }
   document.addEventListener('contextmenu', (e) => e.preventDefault());
   // ── MASTER VOLUME ── every sound registers its BASE volume; the menu slider scales them all (persisted vb_vol)
-  let sndVol = 1;   // ALWAYS start at 100% on refresh (user 2026-07-22) — the slider still adjusts it within a session, but a page refresh resets to full volume (no longer restores the persisted vb_vol)
+  let sndVol = 0;   // ALWAYS start MUTED on refresh (user 2026-08-02) — the slider still adjusts it within a session and still writes vb_vol, but a page load NEVER restores it. Was 100% (2026-07-22); before that it restored the persisted value.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -5413,7 +6746,10 @@
   let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}   // persisted, default ON. MUST be declared here, above the settings-panel wiring below — declaring it beside CINE_VIG put it after its own use and the TDZ error killed boot.
   let snowOn = false;                                  // ── VOXEL SNOW ── weather-driven: RARE 5-minute snow events; the button forces one on/off
-  let snowEndT = 0, snowNextT = performance.now() + 120000;   // FIRST snow 2 MINUTES after refresh, then every 5 MINUTES (user 2026-07-22), each event lasting 60 s; performance.now() resets on refresh
+  let snowEndT = 0, snowNextT = Infinity;   // ── TEMPORARY (user 2026-08-02) ── snow stays OFF on refresh: no storm is ever scheduled.
+  // TO RESTORE the weather cycle, put this back to `performance.now() + 120000` (first storm 2 min after refresh, then every 5 min).
+  // The snow button / P key still forces a storm on by hand, and that path re-arms snowNextT normally.
+  const SNOW_AUTO_OFF = true;   // (previously: first snow 2 min after refresh, then every 5 min, each event 60 s — user 2026-07-22)
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
   let vigToggle = () => {};                            // set by the settings-panel wiring below; the L keybind calls the SAME path so the button label stays in sync
@@ -5693,8 +7029,8 @@
     if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }   // toggle fly (user re-added the F keybind 2026-07-22)
     if (e.code === binds.vignette) { vigToggle(); }         // same path as the settings button, so the panel label follows
     if (e.code === binds.vsync) { vsyncOn = !vsyncOn; }
-    // ── R-KEY RECORDING DISABLED (user 2026-07-23): the record toggle is off for now, matching the hidden #veBtn. Left intact — TO BRING IT BACK: uncomment the line below. The editor's own 'r' frame-rotate (KeyR + ED.paused) is a separate handler and is unaffected. ──
-    // if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
+    // R-key recording is BACK ON with the #veBtn button (user 2026-08-02, reversing the 2026-07-23 disable).
+    if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
     if (e.code === 'KeyP') { snowOn = !snowOn;               // P — toggle the snow storm (user); mirrors the settings snow button EXACTLY so the two stay in sync
       if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 300000; }
@@ -6308,6 +7644,119 @@
     edFrameOff() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, name: f.name }; },
     cardDbg() { return { sel: ED.sel, blink: ED.blink, spin: ED.spin, name1: ED.name1, arm: !!ED.arm, frames: ED.frames.map((f, i) => ({ i, name: f.name, oy: f.oy || 0, hasBlink: !!f.voxBlink })) }; },   // editor-cardinal test tap
     pal(i) { return i === undefined ? palette.length : palette[i]; },
+    treeAt, TCELL, isCone(id) { return PICK_CONE.has(id); },
+    treeDims() { return { MSX, MSY, MSZ, rot: MROT.map((R) => ({ sx: R.sx, sz: R.sz })), foliage: foliageIds.slice() }; },
+    phys(v) {                                          // ── VOXEL DESTRUCTION ── enable/inspect
+      if (v !== undefined) { PH.on = !!v; if (!PH.on) { PH.bodies.length = 0; PH.acc = 0; bodyTop = 0; } }
+      return { on: PH.on, dt: PH.dt, iters: PH.iters, bodies: PH.bodies.length, awake: PH.bodies.filter((b) => !b.sleeping).length,
+        stats: { ...PH.stats },
+        body: PH.bodies.map((b) => ({ vox: b.n, surf: b.surfN, probes: b.probes.length, mass: b.mass,
+          com: b.com.map((q) => +q.toFixed(2)), pos: b.pos.map((q) => +q.toFixed(2)),
+          vel: b.vel.map((q) => +q.toFixed(2)), omega: b.omega.map((q) => +q.toFixed(3)),
+          quat: b.q.map((q) => +q.toFixed(3)), I: b.I.map((q) => Math.round(q)),
+          gpu: b.gpu ? { off: b.gpu.off, dims: [b.gpu.bw, b.gpu.bh, b.gpu.bd] } : null,
+          sleeping: b.sleeping, sleepT: b.sleepT, contacts: b.contacts | 0, deepest: +(b.deepest || 0).toFixed(2),
+          ageMs: Math.round(performance.now() - b.born) })) };
+    },
+    physChop(x, y, z, r) { return physChopAt(x, y, z, r); },
+    physSwing() { return chopSwing(); },
+    physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
+    decorIds() { const o = []; for (let i = 0; i < 256; i++) if (decorTab[i]) o.push(i); return o; },   // palette ids the axe can carve chunks from
+    axeOnlyIds() { const o = []; for (let i = 0; i < 256; i++) if (axeOnlyTab[i]) o.push(i); return o; },   // …of those, the ones that need the AXE (wood)
+    leafAir() { return PH.bodies.filter((b) => b.leaf).length; },   // needles currently descending
+    ducks() { const o = []; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 3) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), th: +(B.th || 0).toFixed(3), om: +(B.om || 0).toFixed(3), turnAcc: +((B.turnAcc || 0)).toFixed(2) }); } return o; },   // duck slots — circling shows up as turnAcc growing without bound
+    // ── FLOATER PROBE ── call this WHILE a suspect voxel is on screen.
+    // Floods EVERY solid voxel in a box around you, upward from the terrain at its base, and reports
+    // what it cannot reach. That is the only honest definition of "floating": no path to the ground
+    // through anything solid. (The first version seeded on foliage resting on solid and flooded only
+    // through foliage — but canopy attaches to its trunk sideways, through WOOD, so healthy trees
+    // failed it and it reported ~1200 false positives.)
+    floatBase(r) { return this.floaters(r).then(() => { window.__vbFloatBase = window.__vbFloatLast; return 'baseline set (' + window.__vbFloatBase.size + ' pre-existing) — now go chop, then run __vb.floaters()'; }); },
+    floaters(r) {
+      const R = Math.min(64, r === undefined ? 48 : r);
+      const x0 = Math.round(P.x) - R, z0 = Math.round(P.z) - R;
+      const y0 = Math.max(1, Math.round(P.y) - 12), y1 = Math.min(WY - 1, Math.round(P.y) + 96);
+      const bw = 2 * R + 1, bh = y1 - y0 + 1, nAll = bw * bw * bh;
+      const occ = new Uint8Array(nAll), stk = new Int32Array(nAll);
+      const li = (ix, iy, iz) => ix + iz * bw + iy * bw * bw;
+      const wIdx = (ix, iy, iz) => gwrap(x0 + ix, WX) + (y0 + iy) * WX + gwrap(z0 + iz, WZ) * WX * WY;
+      for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bw; iz++) for (let ix = 0; ix < bw; ix++)
+        if (W[wIdx(ix, iy, iz)]) occ[li(ix, iy, iz)] = 1;
+      let sp = 0;
+      for (let iy = 0; iy < 3; iy++) for (let iz = 0; iz < bw; iz++) for (let ix = 0; ix < bw; ix++) {
+        const k = li(ix, iy, iz); if (occ[k] === 1) { occ[k] = 2; stk[sp++] = k; } }
+      while (sp > 0) {
+        const k = stk[--sp], ix = k % bw, iz = ((k / bw) | 0) % bw, iy = (k / (bw * bw)) | 0;
+        for (let d = 0; d < 6; d++) {
+          const nx = ix + (d === 0 ? 1 : d === 1 ? -1 : 0), ny = iy + (d === 2 ? 1 : d === 3 ? -1 : 0), nz = iz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+          if (nx < 0 || nx >= bw || nz < 0 || nz >= bw || ny < 0 || ny >= bh) continue;
+          const nk = li(nx, ny, nz); if (occ[nk] === 1) { occ[nk] = 2; stk[sp++] = nk; } }
+      }
+      // A voxel with no 6-connected path down is NOT automatically a bug: the pine model attaches many
+      // needles only DIAGONALLY, so healthy canopy fails that test while sitting visually on its tree.
+      // What the eye calls "floating" is ISOLATION — a cube alone in open air. So only count detached
+      // voxels with nothing still-attached within `ISO` cells; everything else is authored geometry.
+      const ISO = 2;
+      const attached = (ix, iy, iz) => {
+        for (let dy = -ISO; dy <= ISO; dy++) for (let dz = -ISO; dz <= ISO; dz++) for (let dx = -ISO; dx <= ISO; dx++) {
+          const nx = ix + dx, ny = iy + dy, nz = iz + dz;
+          if (nx < 0 || nx >= bw || nz < 0 || nz >= bw || ny < 0 || ny >= bh) continue;
+          if (occ[li(nx, ny, nz)] === 2) return true;
+        }
+        return false;
+      };
+      // Even isolation is not enough on its own: about 2% of an UNTOUCHED pine's canopy is attached
+      // only diagonally, so whole needle tufts fail any connectivity test while looking perfectly
+      // normal. There is no absolute threshold that separates that from a real floater — the only
+      // sound instrument is a BEFORE/AFTER diff at the same place. __vb.floatBase() records the
+      // baseline; everything reported here is what appeared SINCE.
+      const byId = {}, spots = []; let green = 0, other = 0, nearCanopy = 0, fresh = 0;
+      const base = window.__vbFloatBase, now = new Set();
+      for (let k = 0; k < nAll; k++) {
+        if (occ[k] !== 1) continue;
+        const ix = k % bw, iz = ((k / bw) | 0) % bw, iy = (k / (bw * bw)) | 0;
+        if (attached(ix, iy, iz)) { nearCanopy++; continue; }   // touching its tree — authored, not a floater
+        const v = W[wIdx(ix, iy, iz)];
+        const wk = (x0 + ix) + ':' + (y0 + iy) + ':' + (z0 + iz);
+        now.add(wk);
+        if (base && base.has(wk)) continue;                    // was already there before you touched anything
+        fresh++;
+        byId[v] = (byId[v] || 0) + 1;
+        if (foliaTab[v]) green++; else other++;
+        if (spots.length < 10) spots.push([x0 + ix, y0 + iy, z0 + iz, v]);
+      }
+      window.__vbFloatLast = now;
+      const bods = PH.bodies.filter((b) => b.n <= 60).map((b) => +b.pos[1].toFixed(2));
+      return new Promise((res) => setTimeout(() => {
+        const now2 = PH.bodies.filter((b) => b.n <= 60).map((b) => +b.pos[1].toFixed(2));
+        res({ baseline: base ? 'set' : 'MISSING - call __vb.floatBase() first, before chopping',
+               newFloatersGreen: green, newFloatersOther: other, newTotal: fresh, byId,
+               stoppedDescending: now2.filter((y, i) => bods[i] !== undefined && Math.abs(y - bods[i]) < 0.05).length,
+               smallBodies: now2.length, spots });
+      }, 400));
+    },
+    physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
+      for (const b of PH.bodies) { b.sleeping = f; if (f) { b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0; } }
+      return PH.bodies.map((b) => ({ vox: b.n, pos: b.pos.map((q) => +q.toFixed(2)), sleeping: b.sleeping })); },
+    physValidate() {                                   // invariants the system must hold; ok:true = pass
+      const out = { problems: [], bodies: PH.bodies.length, dupVoxels: 0 };
+      let nan = 0;
+      for (const b of PH.bodies) {
+        for (const q of b.pos.concat(b.vel, b.omega, b.q)) if (!Number.isFinite(q)) nan++;
+        if (b.n !== b.lx.length) out.problems.push('voxel count mismatch');
+        if (b.mass !== b.n) out.problems.push('mass != voxel count');
+        if (b.pos[1] < -200 || b.pos[1] > WY + 400) out.problems.push('body out of world Y');
+        // NO DUPLICATE: every voxel a body owns must be GONE from the static world.
+        for (let i = 0; i < b.n; i++) {
+          const ii = gwrap(b.origin[0] + b.lx[i], WX) + (b.origin[1] + b.ly[i]) * WX + gwrap(b.origin[2] + b.lz[i], WZ) * WX * WY;
+          if (W[ii] === b.id[i]) out.dupVoxels++;
+        }
+      }
+      if (nan) out.problems.push(nan + ' non-finite body state values');
+      if (out.dupVoxels) out.problems.push(out.dupVoxels + ' body voxels STILL present in W (duplicate)');
+      out.ok = out.problems.length === 0;
+      return out;
+    },
     bouncyIds() { const o = []; for (let i = 0; i < 256; i++) if (mushTab[i]) o.push(i); return o; },   // palette ids flagged BOUNCY (mushroom trampoline) — a creature whose stamp shares one of these would trampoline the player
     mushProbe() {                                      // what the trampoline test sees under the player RIGHT NOW.
       const gy = Math.floor(P.y) - 1;                  // raw = the old id-only rule, live = the rule that ignores creature stamps.
@@ -6740,13 +8189,14 @@
       windAX += Math.cos(wAng) * wSpd * dt; windAZ += Math.sin(wAng) * wSpd * dt;
       snowFallV = 11.0;                                // CONSTANT fall speed — no motion-based modulation (it read as far flakes speeding up while running)
       snowFallAcc += snowFallV * dt;
-      if (snowOn && now > snowEndT) { snowOn = false; snowNextT = now + 300000; snowBtnSync(); }   // a snow EVENT lasts 60 s…
+      if (snowOn && now > snowEndT) { snowOn = false; snowNextT = SNOW_AUTO_OFF ? Infinity : now + 300000; snowBtnSync(); }   // a snow EVENT lasts 60 s…
       else if (!snowOn && now > snowNextT) { snowOn = true; snowEndT = now + 60000; snowBtnSync(); }   // …then waits 5 min for the next (first one is 2 min after refresh)
       freezeK = (snowOn && now >= snowFreezeAt) ? Math.min(1, freezeK + dt / 5) : Math.max(0, freezeK - dt / 5);   // water freezes over 5 s and thaws back over 5 s — but only from SNOW_FREEZE_DELAY (10 s) after the storm starts, so the flakes you can see have reached the ground before the river skins over
       const nowSolid = freezeK > 0.6;
       if (nowSolid !== iceSolid) { iceSolid = nowSolid; solidTab[WATER_T] = nowSolid ? 1 : 0;
         if (nowSolid && waterAt(Math.floor(P.x), Math.floor(P.y + 2), Math.floor(P.z))) { P.y = WL + 1.5; P.vy = 0; } } }
     if (CPROF) cpMark(2);
+    physStep(dt);                                      // voxel rigid bodies — FIXED 60 Hz inside (see PH.dt)
 
     // ── voxel snow ── NEAR the player, landings are the ACTUAL rendered flakes touching down: JS mirrors the shader's
     // deterministic flake lattice (same ih3 hash, same jitter, same integrated fall/wind) and places a voxel at the very
@@ -6965,7 +8415,7 @@
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
     UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
     { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; if (heldIt()) playSwish(); pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)
-      if (pendKillT && now >= pendKillT) { pendKillT = 0; tryKillCreature(); }   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
+      if (pendKillT && now >= pendKillT) { pendKillT = 0; if (!chopSwing()) tryKillCreature(); }   // an axe that bites a trunk spends the swing on the tree; otherwise it can still kill   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
       // SWING — Teardown-style 3 phases over 570 ms (user-tuned): WINDUP raises the tool up-back (0–35%),
       // the STRIKE slams it down to the MIDDLE of the screen (35–55%, accelerating), then it eases back to rest (55–100%).
       const swT = (now - swingStart) / 570;
@@ -7555,10 +9005,10 @@
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 2.5));   // BUTTERFLIES doubled (user 2026-07-18): 1.25 -> 2.5, still bounded by the 16 flyer slots   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
-    const nBunny = BUNNY_ITEM0 ? (Math.max(4, Math.min(8, Math.round(nActD * 0.506))) & ~1) : 0;   // ground BUNNIES (slots 276-299) — kind 2, hop through the forest. & ~1 → EVEN count (user)
-    const nArmadillo = ARMADILLO_ITEM0 ? (Math.max(4, Math.min(8, Math.round(nActD * 0.506))) & ~1) : 0;   // ground ARMADILLOS (slots 300-323) — kind 2, WALK the forest floor at ~9 vox/s. MATCHES the bunny formula/count, & ~1 → EVEN (user)
-    const nSkunk = SKUNK_WALK.length ? (Math.max(4, Math.min(8, Math.round(nActD * 0.506))) & ~1) : 0;   // ground SKUNKS (slots 324-347) — kind 2, same cardinal walk as the armadillo. SAME formula/count as the bunny + armadillo, & ~1 → EVEN (user)
-    const nPorcupine = PORCUPINE_WALK.length ? (Math.max(4, Math.min(8, Math.round(nActD * 0.506))) & ~1) : 0;   // ground PORCUPINES (slots 348-371) — kind 2, restored to the pine forest 2026-07-22 after the user re-edited it in the asset editor. SAME formula/count as the other three land mammals, & ~1 → EVEN
+    const nBunny = BUNNY_ITEM0 ? (Math.max(3, Math.min(7, Math.round(nActD * 0.405))) & ~1) : 0;   // ground BUNNIES (slots 276-299) — kind 2, hop through the forest. & ~1 → EVEN count (user)
+    const nArmadillo = ARMADILLO_ITEM0 ? (Math.max(3, Math.min(7, Math.round(nActD * 0.405))) & ~1) : 0;   // ground ARMADILLOS (slots 300-323) — kind 2, WALK the forest floor at ~9 vox/s. MATCHES the bunny formula/count, & ~1 → EVEN (user)
+    const nSkunk = SKUNK_WALK.length ? (Math.max(3, Math.min(7, Math.round(nActD * 0.405))) & ~1) : 0;   // ground SKUNKS (slots 324-347) — kind 2, same cardinal walk as the armadillo. SAME formula/count as the bunny + armadillo, & ~1 → EVEN (user)
+    const nPorcupine = PORCUPINE_WALK.length ? (Math.max(3, Math.min(7, Math.round(nActD * 0.405))) & ~1) : 0;   // ground PORCUPINES (slots 348-371) — kind 2, restored to the pine forest 2026-07-22 after the user re-edited it in the asset editor. SAME formula/count as the other three land mammals, & ~1 → EVEN
     const nDfly = (DFLY_NFRAMES && waterSpots.length) ? Math.min(3, 1 + (waterSpots.length >> 2)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before. RATE HALVED 2026-07-20 (user): cap 6→3, per-spot growth >>1→>>2 — half as many at every water amount
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
@@ -7891,11 +9341,22 @@
             for (let d = 4; d <= 15; d += 3) { if (!bfWater(B.x + sa * d, B.z + ca * d)) { rx -= sa * (17 - d); rz -= ca * (17 - d); break; } } }   // sees banks out to 15 vox; closer edge → stronger push
           if (rx * rx + rz * rz > 0.02) {              // a bank is within ~15 vox — ease the heading toward the resultant OPEN-water direction
             let dth = Math.atan2(rx, rz) - B.th; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
+            // If it has already wound up most of a turn, prefer unwinding the long way round to the
+            // same heading rather than completing the loop.
+            if (Math.abs(B.turnAcc || 0) > 4.0 && Math.sign(dth) === Math.sign(B.turnAcc)) dth -= Math.sign(dth) * 6.283185;
             B.omT = Math.max(-2.8, Math.min(2.8, dth * 2.8));
           } else if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.0; B.tRe = tb3 + 2 + Math.random() * 3; }   // open water — gentle wander
-          if (!duckOK(B.th, 13) || !duckOK(B.th, 7)) {  // imminent bank ahead — HARD turn toward the open side (backs up the soft repulsion; earlier lookahead so it never reaches the shore)
-            const pF = duckOK(B.th + 1.1, 11), nF = duckOK(B.th - 1.1, 11);
-            B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : ((pF && nF) ? (B.om >= 0 ? 2.6 : -2.6) : (B.om >= 0 ? 3.4 : -3.4)));
+          // signed yaw carried over the last several seconds: ~±6.3 means a full circle one way
+          B.turnAcc = (B.turnAcc || 0) * 0.992 + (B.om || 0) * dt;
+          if (!duckOK(B.th, 13) || !duckOK(B.th, 7)) {  // imminent bank ahead — turn down the LONGEST open lane (backs up the soft repulsion; earlier lookahead so it never reaches the shore)
+            const duckReach = (th6) => { for (let d = 5; d <= 26; d += 3) if (!duckOK(th6, d)) return d; return 26; };
+            const spin = Math.abs(B.turnAcc) > 2.5 ? Math.sign(B.turnAcc) : 0;   // already part-way round? penalise going further that way
+            let bo = 0, bs = -1e9;
+            for (const off of [0.6, -0.6, 1.2, -1.2, 1.9, -1.9, 2.7, -2.7]) {
+              const sc = duckReach(B.th + off) - Math.abs(off) * 2.2 - (Math.sign(off) === spin ? 9 : 0);
+              if (sc > bs) { bs = sc; bo = off; }
+            }
+            B.omT = Math.max(-3.4, Math.min(3.4, bo * 2.4));
           }
         }
       } else if (B.kind === 6) {                       // ── FISH 2.0 ── config-driven swimmer (FISH_CFG): SWIM ⇄ FLEE states in the water, dead-straight in the AIR.
@@ -8339,6 +9800,36 @@
       }
       lifeUidPrev.set(lifeUid); lifeAncPrev.set(lifeAnc); lifeItemPrev.set(lifeItem);
       UF[1528] = lifeDbg; UF[1529] = LIFE_TRACE ? 1 : 0; UF[1530] = 0; UF[1531] = 0;
+    }
+    {                                                  // ── RIGID BODIES → u.physB ──
+      // Same convention the creature models use: anchor + the three LOCAL axes, all expressed in CAMERA
+      // space, so the shader's DDA runs in the body's own grid with no matrix inverse.
+      // Bodies are published in WINDOW/WORLD space (not camera space) so ONE shader function can serve
+      // the primary ray and every secondary ray. physBound is a sphere over all of them: shadow and AO
+      // rays that cannot touch any body reject in a single compare.
+      let nb = 0, bcx = 0, bcy = 0, bcz = 0, brad = 0;
+      for (const b of PH.bodies) {
+        if (nb >= 16 || !b.gpu) continue;
+        phQRot(b.q, PHX, PHAX); phQRot(b.q, PHY, PHAY); phQRot(b.q, PHZ, PHAZ);   // local axes → world
+        const o = 1532 + nb * 20, g = b.gpu;
+        const ax = b.pos[0] - winOX, ay = b.pos[1], az = b.pos[2] - winOZ;        // window-relative, matching u.camPos
+        UF[o] = ax; UF[o + 1] = ay; UF[o + 2] = az; UF[o + 3] = b.scale === undefined ? 1.0 : b.scale;   // absorbing chunks shrink as they arrive
+        UF[o + 4] = PHAX[0]; UF[o + 5] = PHAX[1]; UF[o + 6] = PHAX[2]; UF[o + 7] = g.bw;
+        UF[o + 8] = PHAY[0]; UF[o + 9] = PHAY[1]; UF[o + 10] = PHAY[2]; UF[o + 11] = g.bh;
+        UF[o + 12] = PHAZ[0]; UF[o + 13] = PHAZ[1]; UF[o + 14] = PHAZ[2]; UF[o + 15] = g.bd;
+        UF[o + 16] = g.comL[0]; UF[o + 17] = g.comL[1]; UF[o + 18] = g.comL[2]; UF[o + 19] = g.off;
+        bcx += ax; bcy += ay; bcz += az; nb++;
+      }
+      if (nb) { bcx /= nb; bcy /= nb; bcz /= nb;
+        for (const b of PH.bodies) {                     // radius = farthest body centre + its own half-diagonal
+          if (!b.gpu) continue;
+          const g = b.gpu, ax = b.pos[0] - winOX, ay = b.pos[1], az = b.pos[2] - winOZ;
+          const half = Math.hypot(g.bw, g.bh, g.bd) * 0.5 + 1;
+          const d = Math.hypot(ax - bcx, ay - bcy, az - bcz) + half;
+          if (d > brad) brad = d;
+        } }
+      UF[1856] = bcx; UF[1857] = bcy; UF[1858] = bcz; UF[1859] = brad;
+      UF[1852] = nb; UF[1853] = 0; UF[1854] = 0; UF[1855] = 0;
     }
     device.queue.writeBuffer(uniBuf, 0, UF);
     if (CPROF) cpMark(6);
