@@ -184,6 +184,8 @@
   #lgtPanel .lgtRow button { background: #1a2331; border: 1px solid #d9553f; border-radius: 7px; color: #f0b8ac; font: inherit;
     padding: 2px 9px; cursor: pointer; min-width: 34px; }
   #lgtPanel .lgtRow button.on { border-color: #7fd05a; color: #b8ff6e; }
+  #lgtPanel.lit { border-color: #7fd05a; box-shadow: 0 0 0 1px rgba(127,208,90,0.35), 0 6px 18px rgba(0,0,0,0.5); }   /* LIGHT MODE: the panel has the cursor */
+  #lgtPanel .lgtHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; }
   #lgtPanel.hidden { display: none; }
   #vigBtn, #snowBtn, #fsBtn, #crdBtn, #fpsBtn, #timeBtn, #resHudBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 4px 16px; color: #ff9077; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red (user) */
   #vigBtn:hover, #snowBtn:hover, #fsBtn:hover, #crdBtn:hover, #fpsBtn:hover, #timeBtn:hover, #resHudBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off buttons LIFT on hover but KEEP their red/green colour — no green outline (user) */
@@ -855,7 +857,7 @@
   const solidTab = new Uint8Array(256);                // per-id collision: terrain/trunks/logs solid; decor + FOLIAGE walk-through
   for (let i = 1; i < DECOR_MIN; i++) solidTab[i] = 1;
   for (const f of foliageIds) solidTab[f] = 0;
-  const foliaTab = new Uint8Array(256);                // per-id CANOPY flag — foliage is walk-through for the player, but the cinematic camera must still steer around it or it flies straight through pine crowns
+  const foliaTab = new Uint8Array(256);                // per-id CANOPY flag. Leaves collide with NOTHING (user): not the player, not rigid bodies, not creature navigation. What is left of this flag is rendering (see-through when the eye is inside a crown), the perched-bird SUPPORT test (which is placement, not collision — birds have to be able to sit in a canopy), and letting a stamp overwrite needles. Was: walk-through for the player, but the cinematic camera must still steer around it or it flies straight through pine crowns
   for (const f of foliageIds) foliaTab[f] = 1;
   const mushTab = new Uint8Array(256);                 // per-id BOUNCY flag — mushroom voxels trampoline the player (filled once MUSHV loads)
   const decorTab = new Uint8Array(256);                // per-id CHOPPABLE-DECOR flag — mushrooms, ferns and ground logs yield chunks (see phChopDecor). Deliberately NOT mushTab: choppable and bouncy are different properties, and reusing it would make every fern a trampoline.
@@ -6921,6 +6923,9 @@
         btn.addEventListener('click', (e) => { e.stopPropagation(); lgtMask ^= (1 << b); resetHist = 1;   // the filters hold seconds of history; drop it so the change is visible immediately
           try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} lgtPaint(); });
       }
+      const hint = document.createElement('div'); hint.className = 'lgtHint';
+      hint.textContent = 'L — cursor on/off';   // the panel says how to reach it; nothing else in the HUD would
+      panel.appendChild(hint);
       $('lgtAll').addEventListener('pointerdown', (e) => e.stopPropagation());
       $('lgtAll').addEventListener('click', (e) => { e.stopPropagation(); lgtMask = LGT_ALL; resetHist = 1;
         try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} lgtPaint(); });
@@ -7007,6 +7012,7 @@
   smoothEye = P.y + EYE;
 
   // ── input ──────────────────────────────────────────────────────────────────
+  let lightMode = false;                               // L: cursor released for the light panel only — no esc menu, no camera drift
   let locked = false;
   // lockEl (the esc menu) stays hidden at boot — after loading, the overlay is removed to reveal the live game and a
   // click on the canvas takes control; the esc menu only appears on the first pointer-unlock (pressing Esc mid-game).
@@ -7043,8 +7049,22 @@
       cmpShow(); });
     cmpShow(); }
   const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); cursSync(); return; } canvas.requestPointerLock(); };
+  const setLightMode = (on) => {                        // L: hand the cursor to the light panel, and nothing else
+    lightMode = !!on;
+    if (lightMode) { try { document.exitPointerLock(); } catch (e) {} }
+    else if (!locked) tryLock();
+    lockEl.classList.toggle('hidden', locked || dead || lightMode || !vePanel.classList.contains('hidden'));
+    cursSync();
+  };
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyL' || e.repeat || listenAction) return;
+    if (ED.on || !vePanel.classList.contains('hidden') || dead) return;   // not over the asset editor, the video editor, or the death screen
+    if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    e.preventDefault();
+    setLightMode(!lightMode);
+  });
   lockEl.addEventListener('click', tryLock);
-  canvas.addEventListener('click', () => { if (!locked) tryLock(); });
+  canvas.addEventListener('click', () => { if (!locked) { lightMode = false; tryLock(); } });   // clicking the world takes control back and ends light mode
   document.addEventListener('keydown', (e) => {        // "press any button" — ANY key leaves the start prompt (a click still works via the canvas handler above)
     if (locked || $('playHint').classList.contains('hidden')) return;
     $('playHint').classList.add('hidden');             // drop the text the instant a key is pressed — don't wait on a successful lock (Esc can't lock, so it would otherwise stay stuck on screen)
@@ -7056,7 +7076,8 @@
   // Follows the mouse as a crosshair and morphs to a square over anything clickable; the native cursor is hidden so the
   // two never double up. While locked the game's own centre crosshair takes over and this is hidden.
   const cursEl = $('curs');
-  const cursSync = () => { document.body.classList.toggle('freecur', !locked); if (locked) cursEl.classList.remove('sq'); };
+  const cursSync = () => { document.body.classList.toggle('freecur', !locked); if (locked) cursEl.classList.remove('sq');
+    $('lgtPanel').classList.toggle('lit', lightMode); };   // the panel highlights while it has the cursor, so the mode is never ambiguous
   const CURS_HIT = 'button, .veTool, .veCtl, a, input:not([type="range"]), select, [role="button"]';   // ONLY genuinely clickable controls square the cursor. RANGE sliders are excluded (user): the cursor stays a cross over them and the KNOB grows on hover instead (see the slider CSS). `#lock` (the whole esc-menu backdrop) used to be in here too, so the cursor was a square across the ENTIRE menu; the buttons/anchors inside already match on their own.
   cursSync();                                        // the game boots UNLOCKED (click-to-enter), so the custom cursor is live from the first frame
   document.addEventListener('mousemove', (e) => {      // separate listener: the game's own mousemove early-returns while unlocked
@@ -7071,7 +7092,7 @@
     const wasLocked = locked;
     locked = document.pointerLockElement === canvas;
     if (locked && !wasLocked) freshLock = true;
-    lockEl.classList.toggle('hidden', locked || dead || !vePanel.classList.contains('hidden'));   // never surface the esc menu on top of the open video editor
+    lockEl.classList.toggle('hidden', locked || dead || lightMode || !vePanel.classList.contains('hidden'));   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
     if (locked) $('playHint').classList.add('hidden');   // taken control → drop the click-to-enter prompt (the esc menu handles re-entry from here)
     crossEl.classList.toggle('hidden', !locked);
     cmpVis();                                    // the compass follows the crosshair, gated by the settings toggle
@@ -8516,7 +8537,8 @@
     cmpUpdate();                                       // ── compass ── one transform write per frame
     crossEl.classList.toggle('sq', locked && !ED.on && pickAim());   // crosshair morphs + → □ ONLY over something RIGHT-CLICK can pick up (user 2026-08-02 — it used to include aimedCreature(), so it also lit up on anything killable, which is a LEFT-click action and made the square mean two different things)
     const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera
-    if (!locked) {                                     // ESC menu: the whole CAMERA drifts gently — the entire image sways
+    if (!locked && !lightMode) {                       // ESC menu: the whole CAMERA drifts gently — the entire image sways.
+                                                       // NOT in light mode: comparing two lighting terms needs the camera to hold perfectly still.
       const ts = now * 0.001;
       cam[0] += Math.sin(ts * 0.42) * 0.9;
       cam[1] += Math.sin(ts * 0.61 + 1.7) * 0.55;
@@ -8836,11 +8858,11 @@
     const bfObst = (x, y, z) => {                      // butterfly obstacle test — trunks, canopy, rocks, snow all block; soft grass/bloom/fern strands + grid-stamped worms don't
       const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
       const id = W[gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY];
-      return id !== 0 && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !CREATURE_IDS.has(id); };
+      return id !== 0 && !foliaTab[id] && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !CREATURE_IDS.has(id); };   // LEAVES ARE NOT AN OBSTACLE (user) — flyers pass straight through a crown
     const bfObstW = (x, y, z) => {                     // WORM obstacle test — same as bfObst but also passes small ground clutter (cones/sticks/field stones) so a crawling worm never pins on them
       const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
       const id = W[gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY];
-      return id !== 0 && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !CREATURE_IDS.has(id) && !WORM_PASS.has(id); };
+      return id !== 0 && !foliaTab[id] && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !CREATURE_IDS.has(id) && !WORM_PASS.has(id); };   // …same for worms
     const bfSurf = (x, z) => Math.max(hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], WL);
     const bfGlide = (x, z) => {                        // MAX terrain over a wide stencil → the flight height RIDES THE RIMS, gliding over ravines/gorges instead of diving in
       let m = bfSurf(x, z);
