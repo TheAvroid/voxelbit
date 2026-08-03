@@ -5631,8 +5631,10 @@
   };
   // ── AXE SWING -> TRUNK ── melee reach along the view ray, trunk voxels only. Returns true when the
   // swing bit wood so the caller can spend the swing on the tree rather than also registering a kill.
+  const AIM_FORGIVE = 1.6;                            // voxels of slack around a creature's own radius in the kill test. Small and ABSOLUTE, so it forgives a shaky hand without ever growing into the fixed 35-degree cone this replaced.
+  const AIM_R = [2.2, 2.2, 3.0, 3.0, 5.0, 3.0, 3.0];  // fallback target radius by B.kind (flyer, bird, worm/mammal, duck, lily, perched, fish) — used only when the creature is not grid-stamped, in which case its real stamped bounds are exact
   const REACH_H = 53, REACH_3D = 107, REACH_DOT = 0.82;   // THE melee reach — shared by the stone tools (chopSwing) and the kill test (aimedCreature) so the two can never drift apart (user). +5 voxels 2026-08-02.
-  const PICK_SCALE = 2.0;                             // the stone PICK's carve sphere is DOUBLE the axe's radius (user) — stone comes away in a wider bite than wood does
+  const PICK_SCALE = 2.0, DIG_SCALE = 2.0;            // the stone PICK's and SHOVEL's carve spheres are DOUBLE the axe's radius (user) — stone and soil come away in a wider bite than wood does
   const KNIFE_SCALE = 0.25, KNIFE_BITE = 0.5;         // the stone knife's carve sphere is a QUARTER of the axe's radius (halved twice, user); the chunk it yields is half. 1.0/1.0 would make it identical to the axe.
   const CHOP_RAD = 5, CHOP_DEEP = 3;   // RAD 5 so a full PH.chopBite is reachable from one impact point; CHOP_DEEP pushes the carve sphere into the wood so the chunk has depth instead of being a surface cap
   const CHOP_MINBITE = 30, CHOP_BODYBITE = 30;        // = PH.chopBite: the swing keeps marching until it finds somewhere that can give a FULL piece
@@ -5645,7 +5647,7 @@
     const it = heldIt(), axe = it === 1, knife = KNIFE_IT > 0 && it === KNIFE_IT, cut = axe || knife;
     const pick = PICK_IT > 0 && it === PICK_IT;      // the PICK breaks stone and nothing else — note it is deliberately NOT part of `cut`, which is what gates every wood path below
     const dig = SHOVEL_IT > 0 && it === SHOVEL_IT;   // …and the SHOVEL moves ground and nothing else, on the same principle
-    const kS = knife ? KNIFE_SCALE : (pick ? PICK_SCALE : 1);
+    const kS = knife ? KNIFE_SCALE : (pick ? PICK_SCALE : (dig ? DIG_SCALE : 1));
     const C_RAD = CHOP_RAD * kS, C_DEEP = CHOP_DEEP * kS;
     const C_BITE = knife ? Math.max(4, Math.round(PH.chopBite * KNIFE_BITE)) : PH.chopBite;   // the knife takes HALF the axe's chunk (user)
     // A minimum bite bigger than the sphere can physically hold makes every swing miss (that is how the
@@ -6432,7 +6434,7 @@
     if (ED.on || dead) return -1;
     const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
     const vx = Math.sin(P.yaw) * cp, vy = sp, vz = Math.cos(P.yaw) * cp;   // view direction (yaw/pitch → x=sin·cos, y=sin, z=cos·cos)
-    const HREACH = REACH_H, MAX3 = REACH_3D, MINDOT = REACH_DOT;   // TRIPLED reach (user 2026-07-22): ≤4.8 m HORIZONTAL reach (the eye sits ~1.85 m up, so measuring 3D-from-eye would put a ground creature permanently out of range) + a 3D cap + a ~35° crosshair cone. Shared with the axe — see REACH_H.
+    const HREACH = REACH_H, MAX3 = REACH_3D;   // TRIPLED reach (user 2026-07-22): ≤4.8 m HORIZONTAL reach (the eye sits ~1.85 m up, so measuring 3D-from-eye would put a ground creature permanently out of range) + a 3D cap + a ~35° crosshair cone. Shared with the axe — see REACH_H.
     let best = -1, bestD = 1e9;
     for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];   // 0-371 = every SPAWNED life form (flyers/ducks/worms/perched birds/fish/mammals). Flying songbirds live in birds[] and are excluded (out of melee reach anyway).
       if (!B || !B.init) continue;
@@ -6440,7 +6442,17 @@
       const dx = B.x - P.x, dy = by - smoothEye, dz = B.z - P.z;
       const dh = Math.hypot(dx, dz), d3 = Math.hypot(dx, dy, dz);
       if (dh > HREACH || d3 > MAX3 || d3 < 0.5) continue;
-      if ((dx * vx + dy * vy + dz * vz) / d3 < MINDOT) continue;   // must be roughly under the crosshair (3D, so aiming DOWN at a ground creature works)
+      // RAY vs the creature, not a cone. proj = how far along the view it sits; perp = how far the
+      // view ray passes from it. A miss by more than its own radius is a miss.
+      const proj = dx * vx + dy * vy + dz * vz;
+      if (proj <= 0) continue;                                     // behind the camera
+      // MEAN half-extent, not the half-diagonal: a sphere drawn around the corners of the box is far
+      // wider than the animal actually looks, and that generosity is the complaint being fixed.
+      const q = B.sB && B.sN
+        ? ((B.sB[3] - B.sB[0]) + (B.sB[4] - B.sB[1]) + (B.sB[5] - B.sB[2])) / 6
+        : (AIM_R[B.kind | 0] || 3.0);
+      const rr = q + AIM_FORGIVE;
+      if (d3 * d3 - proj * proj > rr * rr) continue;               // the ray passes wide of it
       if (d3 < bestD) { bestD = d3; best = wk; }
     }
     return best;
@@ -7853,7 +7865,7 @@
                isAxe: it === 1, isKnife: KNIFE_IT > 0 && it === KNIFE_IT,
                cutsWood: it === 1 || (KNIFE_IT > 0 && it === KNIFE_IT),
                isPick: PICK_IT > 0 && it === PICK_IT, isShovel: SHOVEL_IT > 0 && it === SHOVEL_IT,
-               sphere: CHOP_RAD * (KNIFE_IT > 0 && it === KNIFE_IT ? KNIFE_SCALE : (PICK_IT > 0 && it === PICK_IT ? PICK_SCALE : 1)),   // the tap used to hard-code the axe's radius for everything that was not the knife, so a retuned pick showed up as unchanged
+               sphere: CHOP_RAD * (KNIFE_IT > 0 && it === KNIFE_IT ? KNIFE_SCALE : (PICK_IT > 0 && it === PICK_IT ? PICK_SCALE : (SHOVEL_IT > 0 && it === SHOVEL_IT ? DIG_SCALE : 1))),   // the tap used to hard-code the axe's radius for everything that was not the knife, so a retuned tool showed up as unchanged
                chunk: PH.chopBite, lastChops: PH.stats.chops, lastVoxRemoved: PH.stats.voxRemoved };
     },                     // stone-knife item id — it cuts like the axe at half the sphere
     lifeDump() {                                     // live creatures + how many voxels each model carries — sizing data for the dynamic shadow volume
