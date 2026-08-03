@@ -462,6 +462,8 @@
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
   const LGT_ALL = 0x1ffff;                             // 17 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader)
   let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt'); return v === null ? LGT_ALL : (parseInt(v, 10) & LGT_ALL); } catch (e) { return LGT_ALL; } })();
+  const REACT_FADE = 450;                              // ms for the reactive mask to fade out after the last body motion. Long enough that a trunk jittering in and out of sleep on its contacts reads as one continuous settle rather than a strobe.
+  let reactT0 = -1e9;                                  // when a rigid body was last in motion (see physC.y / the reactive mask)
   let winOX = 0, winOZ = 0;                            // world coord of the window corner (multiples of 8)
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
   const gwrap = (v, n) => ((v % n) + n) % n;
@@ -2832,7 +2834,7 @@
       physB : array<vec4<f32>, 80>,                                  // ── RIGID BODIES ── 16 x 5 vec4, appended LAST so no existing offset moves:
                                                                      // [0] anchor.xyz (camera space, at the COM) + voxel scale · [1] local X axis in camera space + dimX
                                                                      // [2] local Y axis + dimY · [3] local Z axis + dimZ · [4] comLocal.xyz + buffer offset
-      physC : vec4<f32>,                                             // x = ACTIVE body count (0 = the whole path is one compare), y = how many are AWAKE (the reactive mask keys off y; tracing keys off x)
+      physC : vec4<f32>,                                             // x = ACTIVE body count (0 = the whole path is one compare), y = REACTIVE STRENGTH 0..1 (1 while a body is moving, eased to 0 over ~0.45 s after it stops — a binary here made a settling trunk pulse its own shadow noise on and off), z/w spare. Was: how many are AWAKE (the reactive mask keys off y; tracing keys off x)
       physBound : vec4<f32>,                                         // xyz = centre (window coords) of a sphere enclosing EVERY body, w = its radius — one test rejects a ray that cannot touch any of them
       heldCfg : vec4<f32>,
       // ── APPENDED TAIL ── these MUST stay in the same order as the UF writes at the end of the frame
@@ -3582,17 +3584,17 @@
       // enclosing-sphere test bodyTrace already does. Teardown carries an equivalent reactive mask in its
       // motion G-buffer for exactly this reason.
       var reactive = select(0.0, creReact, LG(4u));
-      if (LG(4u) && t >= 0.0 && u.physC.y > 0.5) {                             // AWAKE bodies only: a settled trunk must not pin every nearby pixel's history at 4 forever (see physC)
+      if (LG(4u) && t >= 0.0 && u.physC.y > 0.004) {                           // only while something is actually moving (eased, not switched — see physC.y): a settled trunk must not pin every nearby pixel's history forever (see physC)
         let sp2 = ro + rd * t;
         let dc2 = u.physBound.xyz - sp2;
         let sdir2 = select(u.sunDir, vec3<f32>(0.0, 1.0, 0.0), u.sunDir.y <= 0.0);
         let tc2 = dot(dc2, sdir2);
-        if (tc2 > -u.physBound.w && dot(dc2, dc2) - tc2 * tc2 < u.physBound.w * u.physBound.w) { reactive = 1.0; }
+        if (tc2 > -u.physBound.w && dot(dc2, dc2) - tc2 * tc2 < u.physBound.w * u.physBound.w) { reactive = max(reactive, u.physC.y); }
         // …and the AO ray, which the sun-cylinder test above misses entirely. AO reaches 24 voxels in
         // EVERY direction, so the contact darkening a moving trunk casts on the ground beside it was
         // still converging at maxHist and trailed the trunk by a good half second.
         let aoR = u.physBound.w + 24.0;
-        if (dot(dc2, dc2) < aoR * aoR) { reactive = 1.0; }
+        if (dot(dc2, dc2) < aoR * aoR) { reactive = max(reactive, u.physC.y); }
       }
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, reactive));
       textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 7u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction
@@ -3662,7 +3664,11 @@
           let prev = textureSampleLevel(histPrev, samp, uv, 0.0);
           let expT = length(wpp - u.pPos);
           if (prev.b > 0.0 && abs(prev.b - expT) < 0.02 * expT + 1.5) {   // rotation (not in the rigid delta) and newly revealed surfaces fail this distance check naturally
-            hist = min(abs(prev.a) + 1.0, select(select(1.0, u.maxHist, LG(6u)), 4.0, cur.a > 0.5));   // bit 6 off → hist pinned at 1 = no irradiance history at all   // reactive pixel: converge in ~4 frames so a moving shadow TRACKS its body instead of trailing it
+            let hBase = select(1.0, u.maxHist, LG(6u));              // bit 6 off → hist pinned at 1 = no irradiance history at all
+            // Reactive pixels ease toward a 10-frame floor rather than snapping to 4. Snapping was
+            // the flicker: the mask flipped every time a resting trunk woke, and the noise floor
+            // jumped with it. 10 rather than 4 because 4 samples of a binary sun ray still sparkle.
+            hist = min(abs(prev.a) + 1.0, mix(hBase, min(hBase, 10.0), clamp(cur.a, 0.0, 1.0)));   // reactive pixel: converge in ~4 frames so a moving shadow TRACKS its body instead of trailing it
             acc = mix(prev.rg, cur.rg, 1.0 / hist);
           }
         }
@@ -4557,6 +4563,7 @@
       const lz2 = Math.floor(dx * b.az[0] + dy * b.az[1] + dz * b.az[2] + b.gpu.comL[2]);
       if (lx2 < 0 || ly2 < 0 || lz2 < 0 || lx2 >= b.gpu.bw || ly2 >= b.gpu.bh || lz2 >= b.gpu.bd) continue;
       const bid = g[lx2 + ly2 * b.gpu.bw + lz2 * b.gpu.bw * b.gpu.bh];
+      if (foliaTab[bid]) continue;                   // …and the player walks through a fallen crown's needles, same as a standing one
       if (bid && solidTab[bid] === 1) return true;
     }
     return false;
@@ -5053,7 +5060,7 @@
       vel: [0, 0, 0], omega: [0, 0, 0], q: [0, 0, 0, 1],
       sleeping: false, sleepT: 0, born: performance.now(), sx, sz,
       ax: [1, 0, 0], ay: [0, 1, 0], az: [0, 0, 1] };   // cached world axes — refreshed whenever the body moves, read by phBodySolid
-    const rank = [];                                 // 0 = corner (best probe) … 3 = interior (never)
+    const rank = [], rankFol = [];                   // 0 = corner (best probe) … 3 = interior (never); rankFol = the foliage cells held back in case the body turns out to be nothing else
     for (let i = 0; i < N; i++) {
       const mx = lx[i], my = ly[i], mz = lz[i];
       let filled = 0;
@@ -5065,8 +5072,10 @@
         if (inComp.has(nx + nz * sx + ny * sx * sz)) filled++;
       }
       if (filled >= 6) continue;                     // INTERIOR — skipped entirely
+      if (foliaTab[id[i]]) { rankFol.push([filled, i]); continue; }   // LEAVES HAVE NO HITBOX (user): needles never generate a contact, so a crown clips into the ground instead of standing the trunk up on it
       rank.push([filled, i]);
     }
+    if (!rank.length) { for (const r of rankFol) rank.push(r); }   // …unless the body is ALL leaves (a chunk chopped out of pure canopy), which would otherwise have no contacts at all and fall through the world
     rank.sort((p, q) => p[0] - q[0]);                // corners first
     b.surfN = rank.length;
     // SPATIAL STRATIFICATION. Corner-first alone samples only the extremities — for a felled trunk that
@@ -10016,7 +10025,7 @@
       // Bodies are published in WINDOW/WORLD space (not camera space) so ONE shader function can serve
       // the primary ray and every secondary ray. physBound is a sphere over all of them: shadow and AO
       // rays that cannot touch any body reject in a single compare.
-      let nb = 0, bcx = 0, bcy = 0, bcz = 0, brad = 0, awake = 0;
+      let nb = 0, bcx = 0, bcy = 0, bcz = 0, brad = 0;
       for (const b of PH.bodies) {
         if (nb >= 16 || !b.gpu) continue;
         phQRot(b.q, PHX, PHAX); phQRot(b.q, PHY, PHAY); phQRot(b.q, PHZ, PHAZ);   // local axes → world
@@ -10028,7 +10037,7 @@
         UF[o + 12] = PHAZ[0]; UF[o + 13] = PHAZ[1]; UF[o + 14] = PHAZ[2]; UF[o + 15] = g.bd;
         UF[o + 16] = g.comL[0]; UF[o + 17] = g.comL[1]; UF[o + 18] = g.comL[2]; UF[o + 19] = g.off;
         bcx += ax; bcy += ay; bcz += az; nb++;
-        if (!b.sleeping) awake++;                  // …and how many are actually MOVING (see physC.y)
+        if (!b.sleeping) reactT0 = now;            // …and WHEN a body was last in motion (see physC.y): the mask eases out from here instead of switching off the instant the solver parks it
       }
       if (nb) { bcx /= nb; bcy /= nb; bcz /= nb;
         for (const b of PH.bodies) {                     // radius = farthest body centre + its own half-diagonal
@@ -10039,7 +10048,7 @@
           if (d > brad) brad = d;
         } }
       UF[1856] = bcx; UF[1857] = bcy; UF[1858] = bcz; UF[1859] = brad;
-      UF[1852] = nb; UF[1853] = awake; UF[1854] = 0; UF[1855] = 0;   // y = AWAKE bodies — the reactive mask keys off this, not off nb
+      UF[1852] = nb; UF[1853] = Math.max(0, 1 - (now - reactT0) / REACT_FADE); UF[1854] = 0; UF[1855] = 0;   // y = REACTIVE STRENGTH, eased — the mask keys off this, not off nb
     }
     device.queue.writeBuffer(uniBuf, 0, UF);
     if (CPROF) cpMark(6);
