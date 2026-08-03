@@ -1042,7 +1042,7 @@
   for (const i of FERNIDS) decorTab[i] = 1;                                                 // …and ferns (user): any tool takes chunks out of both
   if (LOGV) for (const q of LOGV.vox) { decorTab[q >>> 24] = 1; axeOnlyTab[q >>> 24] = 1; }  // …and the ground LOGS (user), but those want the axe
   for (const r of ROCK26) for (const q of r.vox) { decorTab[q >>> 24] = 1; pickOnlyTab[q >>> 24] = 1; }   // …and the 26 BOULDERS (user), which want the PICK. All 26 share one 12-shade palette, so this marks every rock in the world.
-  for (const i of [...DIRT, ...MOSS]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the GROUND ITSELF (user): dirt and the mossy grass on top of it, dug only with the SHOVEL. GRASS (the strands) is separate walk-through decor and stays any-tool.
+  for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
   const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
@@ -5632,6 +5632,7 @@
   // ── AXE SWING -> TRUNK ── melee reach along the view ray, trunk voxels only. Returns true when the
   // swing bit wood so the caller can spend the swing on the tree rather than also registering a kill.
   const REACH_H = 53, REACH_3D = 107, REACH_DOT = 0.82;   // THE melee reach — shared by the stone tools (chopSwing) and the kill test (aimedCreature) so the two can never drift apart (user). +5 voxels 2026-08-02.
+  const PICK_SCALE = 2.0;                             // the stone PICK's carve sphere is DOUBLE the axe's radius (user) — stone comes away in a wider bite than wood does
   const KNIFE_SCALE = 0.25, KNIFE_BITE = 0.5;         // the stone knife's carve sphere is a QUARTER of the axe's radius (halved twice, user); the chunk it yields is half. 1.0/1.0 would make it identical to the axe.
   const CHOP_RAD = 5, CHOP_DEEP = 3;   // RAD 5 so a full PH.chopBite is reachable from one impact point; CHOP_DEEP pushes the carve sphere into the wood so the chunk has depth instead of being a surface cap
   const CHOP_MINBITE = 30, CHOP_BODYBITE = 30;        // = PH.chopBite: the swing keeps marching until it finds somewhere that can give a FULL piece
@@ -5644,7 +5645,7 @@
     const it = heldIt(), axe = it === 1, knife = KNIFE_IT > 0 && it === KNIFE_IT, cut = axe || knife;
     const pick = PICK_IT > 0 && it === PICK_IT;      // the PICK breaks stone and nothing else — note it is deliberately NOT part of `cut`, which is what gates every wood path below
     const dig = SHOVEL_IT > 0 && it === SHOVEL_IT;   // …and the SHOVEL moves ground and nothing else, on the same principle
-    const kS = knife ? KNIFE_SCALE : 1;
+    const kS = knife ? KNIFE_SCALE : (pick ? PICK_SCALE : 1);
     const C_RAD = CHOP_RAD * kS, C_DEEP = CHOP_DEEP * kS;
     const C_BITE = knife ? Math.max(4, Math.round(PH.chopBite * KNIFE_BITE)) : PH.chopBite;   // the knife takes HALF the axe's chunk (user)
     // A minimum bite bigger than the sphere can physically hold makes every swing miss (that is how the
@@ -7264,7 +7265,7 @@
   };
   PICK_DEFS[KNIFE_IT] = { x: 0.75, y: -0.1, z: 0.84, yaw: 0.07, pitch: -1.32, roll: 3.13, scale: 0.07 };   // stone knife (user bake 2026-07-16)
   if (PICK_IT) PICK_DEFS[PICK_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 };   // stone pick — starts on the AXE's baked pose (same haft, same swing); tune it live in the held-item panel and re-bake
-  if (SHOVEL_IT) PICK_DEFS[SHOVEL_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 };   // stone shovel — same starting pose, same reason
+  if (SHOVEL_IT) PICK_DEFS[SHOVEL_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: 1.72, roll: 3.15, scale: 0.08 };   // stone shovel — the axe's pose with the roll flipped a half-turn, so the SPADE points UP (user)
   if (WORM_ITEM0) PICK_DEFS[WORM_ITEM0] = { x: 0.81, y: -0.22, z: 1.13, yaw: 0.3, pitch: -0.14, roll: -3.14, scale: 0.08 };   // live worm (user bake 2026-07-17)
   const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] }, 4: { ...PICK_DEFS[4] } };
   pickCfgs[KNIFE_IT] = { ...PICK_DEFS[KNIFE_IT] };
@@ -7851,7 +7852,8 @@
       return { heldItem: it, axeId: 1, knifeId: KNIFE_IT,
                isAxe: it === 1, isKnife: KNIFE_IT > 0 && it === KNIFE_IT,
                cutsWood: it === 1 || (KNIFE_IT > 0 && it === KNIFE_IT),
-               sphere: (it === 1 ? CHOP_RAD : (KNIFE_IT > 0 && it === KNIFE_IT ? CHOP_RAD * KNIFE_SCALE : CHOP_RAD)),
+               isPick: PICK_IT > 0 && it === PICK_IT, isShovel: SHOVEL_IT > 0 && it === SHOVEL_IT,
+               sphere: CHOP_RAD * (KNIFE_IT > 0 && it === KNIFE_IT ? KNIFE_SCALE : (PICK_IT > 0 && it === PICK_IT ? PICK_SCALE : 1)),   // the tap used to hard-code the axe's radius for everything that was not the knife, so a retuned pick showed up as unchanged
                chunk: PH.chopBite, lastChops: PH.stats.chops, lastVoxRemoved: PH.stats.voxRemoved };
     },                     // stone-knife item id — it cuts like the axe at half the sphere
     lifeDump() {                                     // live creatures + how many voxels each model carries — sizing data for the dynamic shadow volume
