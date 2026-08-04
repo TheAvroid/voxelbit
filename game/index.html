@@ -3436,6 +3436,7 @@
       }
       var albedo = vec3<f32>(0.0);
       var faceId = 7u; var t = -1.0;
+      var hurtGlow = 0.0;                                            // >0 on a pixel inside the hit flash: it is emissive, so it must not be left to whatever light happens to reach it
       var sunV = 0.0; var skyV = 0.0;   // (bit 15 zeroes skyV at the end of the lighting block — the ambient/sky term, as opposed to the AO ray that modulates it)
       var creReact = 0.0;                                            // set inside the creature-shadow loop below: this pixel sits in a MOVING shadow's penumbra, so the reactive mask must cap its history (declared out here — the reactive mask is written well past the shading block's scope)
       if (h.t >= 0.0) {
@@ -3447,9 +3448,14 @@
         if (bHit) { albedo = bCol * select(1.0, 0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z), LG(9u)); }   // felled chunk: palette colour + genuinely MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
         else if (cSlot != 0u) { albedo = cCell * select(1.0, 0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z), LG(11u)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
         else { albedo = pal[h.vox].rgb * select(1.0, 0.88 + 0.24 * ivhash(vcW), LG(10u)); }
-        if (u.hurtB.w > 0.0) {                                       // ── HIT FLASH ── the animal the knife just wounded, blinking through red (user)
+        if (u.hurtB.w > 0.0) {                                       // ── HIT FLASH ── the animal just hit, blinking through red (user)
           let dHit = abs(pos - u.hurtB.xyz);
-          if (all(dHit <= u.hurtH.xyz)) { albedo = mix(albedo, vec3<f32>(0.60, 0.02, 0.02), 0.62 * u.hurtB.w); }   // MIX, not replace — the animal reads as stained red, not repainted, so its shape stays legible
+          if (all(dHit <= u.hurtH.xyz)) {
+            // EMISSIVE, like the impact sparks (user): a red past what any surface can reflect, mixed
+            // rather than replaced so the animal's shape stays legible through it.
+            albedo = mix(albedo, vec3<f32>(2.60, 0.06, 0.05), 0.72 * u.hurtB.w);
+            hurtGlow = u.hurtB.w;                                    // …and it lights itself — see the sun/AO block
+          }
         }
         if (skipW && pos.y < WLF + 1.0) {                            // swimming: caustic webs dance on everything below the surface
           albedo = albedo * (1.0 + select(0.0, 1.3, LG(13u)) * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
@@ -3559,6 +3565,7 @@
           else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
         if (flakeHit && h.vox == SNV) { sunV = max(sunV, 0.6); skyV = max(skyV, 0.85); }
+        if (hurtGlow > 0.0) { sunV = max(sunV, hurtGlow); skyV = max(skyV, hurtGlow); }   // the flash glows in shadow too (user) — otherwise an animal hit under a canopy barely changed colour
         if (!LG(15u)) { skyV = 0.0; }                              // bit 15: the SKY/AMBIENT term entirely — leaves only direct sun, so anything not in sunlight goes black   // FALLING FLAKES SCATTER — real snow is white from EVERY direction, so a flake never shows a dark shaded face. Without this floor, anti-sunward flakes shaded to ~sky luminance and vanished — the "snow band clipping" wedge the user saw (the void tracked the anti-sun azimuth, verified via the ?flakedbg emissive A/B). Scales with the sun/moon term downstream, so night stays subtle.
       }
       var lavaG = 0u;                                                  // soft light cast by nearby lava — deterministic probe, no flicker
@@ -6486,6 +6493,14 @@
     }
     return best;
   };
+  const HOP_H = 2.6;                                   // voxels a creature is knocked UP when hit (user) — an arc over the flash window, so the blink and the bounce read as one impact
+  const hurtHop = (B) => {                             // …the offset itself: 0 unless this creature is mid-flash
+    if (!B || B.hopT0 === undefined) return 0;
+    const e = (performance.now() - B.hopT0) / HURT_MS;
+    if (e < 0 || e >= 1) return 0;
+    const q = Math.floor(e * 12) / 12;                 // 24 fps steps, like every other animation here
+    return Math.sin(q * Math.PI) * HOP_H;              // up and back down across the window
+  };
   const HURT_MS = 500;                                 // ONE blink, half a second (user). Comfortably longer than TAA's ~8-frame colour blend, which is what made an earlier 83 ms flash almost invisible on screen.
   const HURT = { t0: -1e9, hold: false, slot: -1, cx: 0, cy: 0, cz: 0, hx: 0, hy: 0, hz: 0 };   // world coords — rebased to the window at publish time, so a world shift mid-blink cannot drag the box off the animal
   const hurtBox = (B) => {                             // the animal's CURRENT stamped bounds — re-read every frame, because it is still walking while it flashes
@@ -6504,6 +6519,7 @@
     // the second kills. Everything else still dies in one hit, whatever is in hand.
     if (KNIFE_IT > 0 && heldIt() === KNIFE_IT && (best >= 276 || (B.kind | 0) === 6) && !B.hurt) {
       B.hurt = 1;
+      B.hopT0 = performance.now();                      // …a wound bounces it too
       B.blinked = true;                                 // this is the creature's one flash — the killing blow will not repeat it
       HURT.slot = best; HURT.hold = false; hurtBox(B);
       HURT.t0 = performance.now();
@@ -6516,6 +6532,7 @@
     if (best >= 276) B.mammal = true;                   // remember WHAT it was: by the time it dies the slot is only a bag of stale numbers
     const blink = !B.blinked;                           // ONE flash per creature (user): a wounded mammal already had it, so its killing blow does not flash again
     if (blink) { B.blinked = true; HURT.slot = best; HURT.hold = false; hurtBox(B); HURT.t0 = performance.now(); }
+    B.hopT0 = performance.now();                        // BOUNCE (user) — every hit, wounding or killing
     pendDeath.push({ slot: best, at: performance.now() + (blink ? HURT_MS : 0) });   // …and with no flash to wait out, it dies immediately
   };
   const dropMeat = (B) => {                             // RAW MEAT where a land mammal fell (user): lands as an ordinary drop, so it hovers, spins and can be picked up like anything else
@@ -6630,7 +6647,13 @@
   const veFmt = (s) => { s = Math.max(0, s || 0); const m = Math.floor(s / 60), q = Math.floor(s % 60); return (m < 10 ? '0' : '') + m + ':' + (q < 10 ? '0' : '') + q; };
   const vePickMime = () => { for (const m of ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return ''; };
   const vePickExportMime = () => { for (const m of ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/mp4']) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return vePickMime(); };   // EXPORT as .mp4 (H.264/AAC) when the browser can record it (user); falls back to webm otherwise
-  const veCaptureMime = () => { for (const m of ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/webm']) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return ''; };   // LIVE-CAPTURE codec: VP8 webm FIRST. It fixes BOTH complaints — VP8 is 2-5× cheaper to encode than VP9 (no more render-loop lag) AND webm scrubs cleanly in the editor, whereas MediaRecorder's fragmented mp4 has no seek index → the export's frame-by-frame seek stalled and froze the output. mp4 stays only as a last resort for browsers with no webm recording (Safari). The export re-encodes to mp4 regardless, so live quality only needs to be decent.
+  // H.264 FIRST. The export replays this recording in real time and captures presented frames, so any
+  // frame the decoder cannot present in time is lost from the file for good. VP8 at this resolution is
+  // software-decoded and could only sustain ~46 fps of a 58 fps recording -- measured, and NOT an encode
+  // cost: halving the export resolution changed nothing. ?vecap=vp8 puts the old order back for an A/B.
+  const veCaptureMime = () => { for (const m of (location.search.includes('vecap=vp8')
+      ? ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/webm']
+      : ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm'])) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return ''; };   // LIVE-CAPTURE codec: VP8 webm FIRST. It fixes BOTH complaints — VP8 is 2-5× cheaper to encode than VP9 (no more render-loop lag) AND webm scrubs cleanly in the editor, whereas MediaRecorder's fragmented mp4 has no seek index → the export's frame-by-frame seek stalled and froze the output. mp4 stays only as a last resort for browsers with no webm recording (Safari). The export re-encodes to mp4 regardless, so live quality only needs to be decent.
   const veBitrate = (w, h) => Math.min(100e6, Math.max(28e6, Math.round((w || 1280) * (h || 720) * 60 * 0.2)));   // QUALITY (user: "download looks lower"): the export is a SECOND encode on top of the recording (trim+annotate needs a re-compress), so 16 Mbps compounded into visible loss. Scale the bitrate to the actual resolution × 60 fps at ~0.2 bpp so BOTH the recording and the re-encode stay near-transparent: ~28 Mbps at 1080p, ~44 at 1440p, capped at 100 for 4K/high-DPI. Bigger files, but the download now matches the preview.
 
   // ── AUDIO TAP ── every game sound registers through sndReg, so route them all into a MediaStream and mix that into
@@ -6862,7 +6885,11 @@
     const mime = vePickExportMime(); if (!mime) return;
     const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm';   // download extension follows the container the recorder actually produced
     const btn = $('veExport'), label0 = btn.textContent; btn.disabled = true; btn.textContent = 'exporting…'; vePause();
-    const vw = veVideo.videoWidth || 1280, vh = veVideo.videoHeight || 720;
+    // ?vescale=N shrinks the ENCODE without touching the recording. The export replays the clip in real
+    // time and captures presented frames, so if decode+encode cannot keep 60 fps the missing frames are
+    // gone for good — this is the lever for finding out whether encode load is what costs them.
+    const VESC = (() => { const m = /[?&]vescale=([0-9.]+)/.exec(location.search); return m ? Math.max(0.25, Math.min(1, parseFloat(m[1]))) : 1; })();
+    const vw = Math.round((veVideo.videoWidth || 1280) * VESC) & ~1, vh = Math.round((veVideo.videoHeight || 720) * VESC) & ~1;
     const cvs = document.createElement('canvas'); cvs.width = vw; cvs.height = vh;
     const g = cvs.getContext('2d', { alpha: false, desynchronized: true });
     const lw = Math.max(2, vw * 0.004);
@@ -9509,7 +9536,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.dying = false; B.blinked = false;   // fresh occupant — never inherits the last one's knife wound, pending death or spent flash B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
+        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined;   // fresh occupant — never inherits the last one's knife wound, pending death or spent flash B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
         if (lilySlot) {                                // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + red cardinals / BLUE BIRDS (the reskin) — both grid-stamped by stampCardinal
@@ -10007,7 +10034,8 @@
       if (B.kind < 3 && bfObst(B.x, B.y, B.z)) continue;   // body-in-solid hide (skip emission) — LAND/AIR creatures only: a duck/lily bobbing into the water voxel layer is normal
       const bobA = iceLock ? 0 : (B.kind === 2 || B.kind === 6 ? 0 : (B.kind === 4 ? 0.12 : (B.kind === 3 ? (isBaby ? 0.18 : 0.25) : (B.kind === 1 ? 1.1 : 2.2))));   // frozen duck → dead still (no bob); else worms/fish don't bob, water floats keep the cosmetic bob SMALL — the wave riding is the real motion, a deep bob dip re-sank the bottom rows
       const bobF = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? 2.3 : 1.6) : (B.kind === 1 ? 2.6 : 6.8));
-      const px3 = B.x + (armSlot ? (B.aRoX || 0) : 0), pz3 = B.z + (armSlot ? (B.aRoZ || 0) : 0), py3 = B.y + (bunnySlot ? (B.bOy || 0) : (armSlot ? (B.aRoY || 0) : Math.sin(tb3 * bobF + wk * 1.9) * bobA));   // ARMADILLO: shift by its per-heading/per-frame alignment offset so it centres like the editor (user). BUNNY: the lift is the BAKED oy. Worm bob stays 0.
+      const hop3 = hurtHop(B);   // BOUNCE (user): a short arc up and back down over the flash window
+      const px3 = B.x + (armSlot ? (B.aRoX || 0) : 0), pz3 = B.z + (armSlot ? (B.aRoZ || 0) : 0), py3 = hop3 + B.y + (bunnySlot ? (B.bOy || 0) : (armSlot ? (B.aRoY || 0) : Math.sin(tb3 * bobF + wk * 1.9) * bobA));   // ARMADILLO: shift by its per-heading/per-frame alignment offset so it centres like the editor (user). BUNNY: the lift is the BAKED oy. Worm bob stays 0.
       if (B.kind >= 2 && B.kind !== 6 && freezeK < 0.4) {   // GROUND/WATER creatures cast a sun shadow (lily/duck/worm) — flyers (0/1) skip, FISH skip (submerged: the surface owns the light there); frozen lakes are flat & shadow-free like the water
         const hxz = B.kind === 4 ? 5.0 : (B.kind === 3 ? (isBaby ? 1.8 : 3.0) : 3.0);
         const hy = B.kind === 4 ? 1.3 : (B.kind === 3 ? (isBaby ? 1.5 : 2.5) : 1.2);   // lily box a touch taller so the pad's shadow projects clear of the pad (not tucked underneath)
@@ -10042,7 +10070,7 @@
       if (skunkSlot && dp2 < 30 * 30 && skunkBoxN < skunkBoxes.length) { const bx9 = skunkBoxes[skunkBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near skunk
       if (skunkSlot) { stampSkunk(B, Math.round(bfSurf(B.x, B.z)), now); continue; }   // SKUNK is GRID-STAMPED into W (editor-identical alignment + blink, user) — stamp instead of trace-emit, skip the emit below
       if (porcSlot && dp2 < 30 * 30 && porcBoxN < porcBoxes.length) { const bx9 = porcBoxes[porcBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near porcupine
-      if (porcSlot) { stampPorcupine(B, Math.round(bfSurf(B.x, B.z))); continue; }   // PORCUPINE is GRID-STAMPED into W (armadillo-style, user's 4th land mammal) — stamp instead of trace-emit, skip the emit below
+      if (porcSlot) { stampPorcupine(B, Math.round(bfSurf(B.x, B.z) + hurtHop(B))); continue; }   // …including the bounce (user)   // PORCUPINE is GRID-STAMPED into W (armadillo-style, user's 4th land mammal) — stamp instead of trace-emit, skip the emit below
       if (emitN >= EMIT_CAP) continue;                 // stage the pose (never emit directly) — the nearest are chosen after the loop
       const o4 = emitN * 16;
       emitBuf[o4] = rx * right[0] + ry * right[1] + rz * right[2]; emitBuf[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; emitBuf[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; emitBuf[o4 + 3] = bScale;
