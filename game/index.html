@@ -4755,7 +4755,7 @@
   // ── HAND SLOTS ── UNLIMITED (user, for now): the hotbar grows as things are picked up and always keeps
   // one trailing empty, so a pickup can never be refused. Scroll wheel cycles the whole list; Q drops
   // from the selected slot. Same-type items still stack rather than taking a new slot each time.
-  const slots = [{ it: 1, n: 1 }, PICK_IT ? { it: PICK_IT, n: 1 } : null, SHOVEL_IT ? { it: SHOVEL_IT, n: 1 } : null].filter(Boolean);   // stone axe, PICK, SHOVEL — and the last slot stays EMPTY (user), so there is always somewhere for a pickup to land. The BOW is no longer in the starting kit for that reason; __vb.giveIt(__vb.bowId()) puts it in hand to tune.
+  const slots = [{ it: 1, n: 1 }, PICK_IT ? { it: PICK_IT, n: 1 } : null, SHOVEL_IT ? { it: SHOVEL_IT, n: 1 } : null, BOW_IT ? { it: BOW_IT, n: 1 } : null].filter(Boolean);   // …and the BOW is back (user)   // stone axe, PICK, SHOVEL — and the last slot stays EMPTY (user), so there is always somewhere for a pickup to land. The BOW is no longer in the starting kit for that reason; __vb.giveIt(__vb.bowId()) puts it in hand to tune.
   let selSlot = 0;
   const canAdd = () => true;                           // …so nothing is ever un-pickable for want of room (see slotTidy)
   const slotTidy = () => {                             // keep EXACTLY one trailing empty: pickups always have a home, and the wheel never lands on a run of blanks
@@ -4916,7 +4916,7 @@
     absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: ANY chunk comes to you now (user), was 96. NOT unlimited on purpose — a felled trunk (~7800 voxels) carries an absorbAt as well, and without a ceiling the whole tree would fly into your chest.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
     //                                                 absorbFly = the flight itself, left at 420 ms so the transition stays smooth rather than snapping in
     chopBite: 30,                                    // voxels an axe swing takes out — a FIXED count, so every chunk is the same size (user). 40 -> 30, a 25% reduction (user 2026-08-02)
-    absorbY: -6,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE — dropped 2 more voxels (user), so it arrives at the waist rather than the chest. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container
+    absorbY: -9,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE — dropped 2 more voxels (user), so it arrives at the waist rather than the chest. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container
     chopMinBody: 24, chopBodyBite: 4,                // a rigid body this big is choppable, and this many voxels is a real bite out of one (tiny debris is not a target)
     fellOrphans: 40,                                 // orphan voxels that mean a CROWN came loose (not just an axe chip) — the threshold that kills the birds perched in it
     fallSlow: 0.39,                                  // gravity multiplier for a FELLED TRUNK = 1/k^2 with k = 1.6 — the fall plays out ~60% slower (user). Chips/leaves/decor are unaffected.
@@ -5322,10 +5322,12 @@
         // with, so starting it at the cut let the trunk rotate straight through its own stump (user).
         // Drop cleanly onto the cut face first; phStep starts the topple once it has actually landed.
         b.tipArm = 1; b.tipArmT = performance.now();
+        b.noAbsorb = true;                           // the TOPPLING TRUNK is the tree falling, not debris — it must never fly into the player
         b.slowFall = PH.fallSlow;                    // the trunk falls in the slowed time base (see PH.fallSlow); everything else keeps normal gravity
         b.omega[0] = b.omega[1] = b.omega[2] = 0;    // no spin at all until it is down
         b.vel[0] = b.vel[2] = 0;                     // …and straight down, so it meets the stump square
       }
+      if (!b.noAbsorb) b.absorbAt = performance.now() + PH.absorbMs;   // BROKEN PIECES are collectable too (user): before this only swing-carved chunks had a timer, so separated pieces lay on the ground forever
       PH.bodies.push(b); made.push(b);
     }
     if (cellsOut.length) gpuPatch(cellsOut, false);
@@ -5587,7 +5589,7 @@
   // ── CHOP DECOR ── a mushroom belongs to no tree, so physChopAt (which works in a pine's model frame)
   // can never reach it. This is the same nearest-first, fixed-count carve done straight in world
   // coordinates, so a bite out of a mushroom is the same size as a bite out of a trunk.
-  const phChopDecor = (wx, wy, wz, rad, bite) => {
+  const phChopDecor = (wx, wy, wz, rad, bite, ok) => {   // ok(v): which materials THIS tool may take. Without it the sphere eats anything choppable it reaches, whatever it was aimed at.
     const r = rad, r2 = r * r;
     const cD = [], cI = [], cX = [], cY = [], cZ = [], cV = [];
     const ri = Math.ceil(r);                         // WHOLE-voxel steps (see physChopAt) — a fractional radius made every index undefined
@@ -5604,6 +5606,7 @@
         const x = cx0 + dx, z = cz0 + dz;
         const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
         const v = W[ii]; if (!v || !decorTab[v]) continue;
+        if (ok && !ok(v)) continue;                    // wrong material for the tool in hand (user): the shovel takes soil and leaves the stone, the pick the reverse
         if (cellStamped(ii)) continue;               // a creature standing on one of the shared palette ids is not mushroom geometry (see cellStamped)
         cD.push(d2); cI.push(ii); cX.push(x); cY.push(y); cZ.push(z); cV.push(v);
       }
@@ -5703,7 +5706,9 @@
                         phChopBody(x, y, z, C_RAD, C_MIN, C_BITE))) return true;   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
       const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
       // ROCK needs the pick, WOOD needs a cutting edge, everything else soft yields to whatever is in hand.
-      if (id && decorTab[id] && (digOnlyTab[id] ? dig : (pickOnlyTab[id] ? pick : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, C_RAD, C_BITE)) return true;   // free gate, the id is already in hand
+      // …and the carve is confined to that same material, so the sphere cannot spill into the next one.
+      const okMat = digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]));
+      if (id && decorTab[id] && (digOnlyTab[id] ? dig : (pickOnlyTab[id] ? pick : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, C_RAD, C_BITE, okMat)) return true;   // free gate, the id is already in hand
       // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
       // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
       // where the trunk was, and a solid-only trigger could never find the tree again — the axe would
