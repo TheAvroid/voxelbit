@@ -898,7 +898,7 @@
     return { sx, sy, sz, vox: mvox };
   };
   const fetchVoxModel = async (url) => { try { return parseVoxModel(new Uint8Array(await (await fetch(url)).arrayBuffer())); } catch (e) { console.warn('[vb]', url, 'missing — that decoration is skipped', e); return null; } };
-  const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV, SHOVV, BOWV] = await Promise.all([        // fetched IN PARALLEL — decoration models no longer block one another on boot
+  const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV, SHOVV, BOWV, MEATV] = await Promise.all([        // fetched IN PARALLEL — decoration models no longer block one another on boot
     fetchVoxModel('assets/decoration/pinecone.vox'),                                        // hangs under pine branches
     fetchVoxModel('assets/decoration/lillypad_small.vox'),                                  // floats on lakes + rivers
     fetchVoxModel('assets/decoration/lillypad_medium.vox'),
@@ -909,7 +909,8 @@
     fetchVoxModel('assets/decoration/rock.vox'),                                            // the small stone, pickable
     fetchVoxModel('assets/stone_tools/stone_pick.vox'),                                     // …and the STONE PICK, the rock-breaking counterpart to the axe (user)
     fetchVoxModel('assets/stone_tools/stone_shovel.vox'),                                   // …and the STONE SHOVEL, which digs ground and nothing else (user)
-    fetchVoxModel('assets/stone_tools/bow_arrow/bow/00.vox')]);                             // …and the BOW at rest (user). 00..06 are its draw frames; only the undrawn one is held for now.
+    fetchVoxModel('assets/stone_tools/bow_arrow/bow/00.vox'),                               // …the BOW at rest (user). 00..06 are its draw frames; only the undrawn one is held for now.
+    fetchVoxModel('assets/food/meat/meat.vox')]);                                       // …and RAW MEAT, which a killed land mammal leaves behind (user)
   const CONEVL = CONEV ? { sx: CONEV.sx, sy: CONEV.sz, sz: CONEV.sy,                        // the same cone tipped 90° onto its side — fallen cones lie on the forest floor
     vox: CONEV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((CONEV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
   const LILYV = [lilyS, lilyM, lilyL].filter(Boolean);
@@ -1080,7 +1081,7 @@
   let DUCK_GREEN = [0.03, 0.22, 0.07];                 // the mallard HEAD green (linear) — extracted at load; the black eye voxel blinks to THIS (user)
   let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
   let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads (kind 4) drift and rotate OFF-grid on the water; static worldgen stamping retired
-  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
+  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0, MEAT_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
@@ -1188,7 +1189,8 @@
     // PICK_DEFS/ITEM_NAMES, so slotting it in among them would silently hand the twig the pinecone's pose.
     if (PICKV) { PICK_IT = items.length + 1; items.push(modelToItem(PICKV)); console.log('[vb] stone_pick.vox item', PICK_IT, PICKV.sx, PICKV.sy, PICKV.sz); }
     if (SHOVV) { SHOVEL_IT = items.length + 1; items.push(modelToItem(SHOVV)); console.log('[vb] stone_shovel.vox item', SHOVEL_IT, SHOVV.sx, SHOVV.sy, SHOVV.sz); }
-    if (BOWV) { BOW_IT = items.length + 1; items.push(modelToItem(BOWV)); console.log('[vb] bow item', BOW_IT, BOWV.sx, BOWV.sy, BOWV.sz); }   // …appended after the pick, same reason: ids 1-4 are hard-coded elsewhere
+    if (BOWV) { BOW_IT = items.length + 1; items.push(modelToItem(BOWV)); console.log('[vb] bow item', BOW_IT, BOWV.sx, BOWV.sy, BOWV.sz); }
+    if (MEATV) { MEAT_IT = items.length + 1; items.push(modelToItem(MEATV)); console.log('[vb] raw_meat item', MEAT_IT, MEATV.sx, MEATV.sy, MEATV.sz); }   // …appended after the pick, same reason: ids 1-4 are hard-coded elsewhere
     // ONE loader for every flying songbird strip — the cardinal and the blue bird ship identical 7-frame packs,
     // so the parse, the widest-frame scan and the eye-blink variants are all shared rather than copy-pasted.
     const loadFlight = async (dir, label) => {
@@ -1525,7 +1527,12 @@
       }
       it.cells = out; };
     const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0, BUNNY_ITEM0, ARMADILLO_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
-    for (let i = creatureStart - 1; i < items.length; i++) if (items[i] && items[i].cells && items[i].cells.length) bakeAO(items[i]);
+    const HELD_ITEMS = new Set([1, ROCK_IT, STICK_IT, CONE_IT, KNIFE_IT, PICK_IT, SHOVEL_IT, BOW_IT, MEAT_IT].filter(Boolean));
+    for (let i = creatureStart - 1; i < items.length; i++) {
+      if (!items[i] || !items[i].cells || !items[i].cells.length) continue;
+      if (!location.search.includes('bakeao') && HELD_ITEMS.has(i + 1)) continue;   // HELD + DROPPED ITEMS light like static geometry (user): no baked occlusion in the albedo, only the traced term the world gets. ?bakeao restores it for an A/B.
+      bakeAO(items[i]);
+    }
     itemsRef = items;                                  // publish the finished table to the tick loop (cardinal hitbox size + worm stamp poses)
     const dims = [], flat = [];
     for (const it of items) {
@@ -6469,14 +6476,17 @@
              HURT.hx = (q[3] - q[0]) * 0.5 + 0.6; HURT.hy = (q[4] - q[1]) * 0.5 + 0.6; HURT.hz = (q[5] - q[2]) * 0.5 + 0.6; }
     else if (B) { HURT.cx = B.x; HURT.cy = B.y + 3; HURT.cz = B.z; HURT.hx = 5; HURT.hy = 5; HURT.hz = 5; }   // between stamps: a generous box beats no feedback
   };
-  const tryKillCreature = () => {                       // LEFT-CLICK SWING KILL (user): the nearest reachable creature under the crosshair dies in a spark+smoke poof
-    const best = aimedCreature();
-    if (best < 0) return;
+  const tryKillCreature = () => { const b0 = aimedCreature(); if (b0 >= 0) hitCreature(b0); };   // LEFT-CLICK SWING KILL (user): whatever is under the crosshair takes the hit
+  const hitCreature = (best) => {                       // …and this is the hit itself, on a KNOWN slot — callable from a test without having to aim first
     const B = wbf[best];
+    if (!B || !B.init) return;
     // ── KNIFE vs LAND MAMMAL ── the first hit wounds, the second kills (user). Slots 276+ are the four
     // land mammals (bunny / armadillo / skunk / porcupine); everything else dies in one hit as before.
-    if (KNIFE_IT > 0 && heldIt() === KNIFE_IT && best >= 276 && !B.hurt) {
+    // KNIFE vs LAND MAMMALS (slots 276+) and FISH (kind 6, user): the first hit wounds and flashes,
+    // the second kills. Everything else still dies in one hit, whatever is in hand.
+    if (KNIFE_IT > 0 && heldIt() === KNIFE_IT && (best >= 276 || (B.kind | 0) === 6) && !B.hurt) {
       B.hurt = 1;
+      B.blinked = true;                                 // this is the creature's one flash — the killing blow will not repeat it
       HURT.slot = best; HURT.hold = false; hurtBox(B);
       HURT.t0 = performance.now();
       return;                                           // wounded, not dead
@@ -6485,8 +6495,16 @@
     // so the hit reads on the animal itself rather than the animal simply vanishing into smoke.
     if (B.dying) return;                                // already flashing its way out — a second click must not double-kill or restart the blink
     B.dying = true;
-    HURT.slot = best; HURT.hold = false; hurtBox(B); HURT.t0 = performance.now();
-    pendDeath.push({ slot: best, at: performance.now() + HURT_MS });
+    if (best >= 276) B.mammal = true;                   // remember WHAT it was: by the time it dies the slot is only a bag of stale numbers
+    const blink = !B.blinked;                           // ONE flash per creature (user): a wounded mammal already had it, so its killing blow does not flash again
+    if (blink) { B.blinked = true; HURT.slot = best; HURT.hold = false; hurtBox(B); HURT.t0 = performance.now(); }
+    pendDeath.push({ slot: best, at: performance.now() + (blink ? HURT_MS : 0) });   // …and with no flash to wait out, it dies immediately
+  };
+  const dropMeat = (B) => {                             // RAW MEAT where a land mammal fell (user): lands as an ordinary drop, so it hovers, spins and can be picked up like anything else
+    const lx = Math.round(B.x), lz = Math.round(B.z);
+    drops.push({ x: lx, y: hmap[gwrap(lx, WX) + gwrap(lz, WZ) * WX], z: lz, it: MEAT_IT, ph: Math.random() * 6.28,
+      born: performance.now(), T: 0, q0: [0, 0, 0, 1] });
+    if (drops.length > 4) drops.shift();                // the composite renders up to 4 at once
   };
   const pendDeath = [];                                 // creatures mid-blink: {slot, at} — they die for real when the flash finishes
   const reapDeaths = (nowMs) => {                        // …and this is where that happens, one blink later
@@ -6495,6 +6513,7 @@
       const B = wbf[pendDeath[i].slot];
       pendDeath.splice(i, 1);
       if (!B || !B.init) continue;
+      if (MEAT_IT && pendDeath.length >= 0 && B.mammal) dropMeat(B);   // LAND MAMMALS leave RAW MEAT behind (user) — armed at the hit, since B.x/B.y are about to stop being maintained
       spawnDeathBurst(B.x, (B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y, B.z);   // poof at the creature (a PERCHED BIRD's height lives in perchFeet — B.y is stale for kind 5)
       if (B.sN) unstampWorm(B);                           // clear a grid-stamped creature's world voxels (mammals + perched birds)
       B.init = false; B.dieT = 0; B.slain = true; B.dying = false;         // SLAIN (user: "when I kill something, it respawns somewhere else — prevent this"): the slot is dead for the rest of the session — the population loop skips it, so nothing re-places it elsewhere
@@ -7297,6 +7316,7 @@
   PICK_DEFS[KNIFE_IT] = { x: 0.75, y: -0.1, z: 0.84, yaw: 0.07, pitch: -1.32, roll: 3.13, scale: 0.07 };   // stone knife (user bake 2026-07-16)
   if (PICK_IT) PICK_DEFS[PICK_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 };   // stone pick — starts on the AXE's baked pose (same haft, same swing); tune it live in the held-item panel and re-bake
   if (SHOVEL_IT) PICK_DEFS[SHOVEL_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: 1.72, roll: 3.15, scale: 0.08 };   // stone shovel — the axe's pose with the roll flipped a half-turn, so the SPADE points UP (user)
+  if (MEAT_IT) PICK_DEFS[MEAT_IT] = { x: 0.80, y: -0.18, z: 0.92, yaw: 0.0, pitch: -0.5, roll: 1.57, scale: 0.07 };   // raw meat, held
   if (BOW_IT) PICK_DEFS[BOW_IT] = { x: 0.62, y: -0.30, z: 0.95, yaw: -0.20, pitch: 1.57, roll: 0.0, scale: 0.075 };   // bow — held upright across the hand, smaller scale because the model is much longer than a hand tool. Tune live in the held-item panel.
   if (WORM_ITEM0) PICK_DEFS[WORM_ITEM0] = { x: 0.81, y: -0.22, z: 1.13, yaw: 0.3, pitch: -0.14, roll: -3.14, scale: 0.08 };   // live worm (user bake 2026-07-17)
   const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] }, 4: { ...PICK_DEFS[4] } };
@@ -7304,6 +7324,7 @@
   if (PICK_IT) pickCfgs[PICK_IT] = { ...PICK_DEFS[PICK_IT] };
   if (SHOVEL_IT) pickCfgs[SHOVEL_IT] = { ...PICK_DEFS[SHOVEL_IT] };
   if (BOW_IT) pickCfgs[BOW_IT] = { ...PICK_DEFS[BOW_IT] };
+  if (MEAT_IT) pickCfgs[MEAT_IT] = { ...PICK_DEFS[MEAT_IT] };
   if (WORM_ITEM0) pickCfgs[WORM_ITEM0] = { ...PICK_DEFS[WORM_ITEM0] };
   try { const sv = JSON.parse(localStorage.getItem('vb_pick3') || '{}'); for (const k in sv) if (pickCfgs[k]) Object.assign(pickCfgs[k], sv[k]); } catch (e) {}   // key bumped from vb_pick2 — the old value was one shared pose
   const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
@@ -7311,6 +7332,7 @@
   if (PICK_IT) ITEM_NAMES[PICK_IT] = 'pick';
   if (SHOVEL_IT) ITEM_NAMES[SHOVEL_IT] = 'shovel';
   if (BOW_IT) ITEM_NAMES[BOW_IT] = 'bow';
+  if (MEAT_IT) ITEM_NAMES[MEAT_IT] = 'raw meat';
   if (WORM_ITEM0) ITEM_NAMES[WORM_ITEM0] = 'worm';
   const heldIt = () => (grabAnim && !grabAnim.left ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty; left-hand grab flights don't change it)
   const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];
@@ -7877,7 +7899,8 @@
     physChop(x, y, z, r) { return physChopAt(x, y, z, r); },
     physSwing() { return chopSwing(); },
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
-    knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; }, pickId() { return PICK_IT; }, shovelId() { return SHOVEL_IT; }, bowId() { return BOW_IT; },
+    knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; }, pickId() { return PICK_IT; }, shovelId() { return SHOVEL_IT; }, bowId() { return BOW_IT; }, meatId() { return MEAT_IT; },
+    dropMeatAt(x, y, z) { if (!MEAT_IT) return null; dropMeat({ x, y, z }); return __vb.dropsInfo(); },   // drop meat on demand, for tests and for looking at it
     toolTabs() { const d = [], a = [], k = [], g = []; for (let i = 0; i < 256; i++) { if (decorTab[i]) d.push(i); if (axeOnlyTab[i]) a.push(i); if (pickOnlyTab[i]) k.push(i); if (digOnlyTab[i]) g.push(i); } return { choppable: d.length, needsCut: a.length, needsPick: k.length, needsShovel: g.length, pickIds: k, digIds: g }; },
     dropsInfo() { return drops.map((d) => ({ it: d.it, x: Math.round(d.x), z: Math.round(d.z), flightS: +(d.T || 0).toFixed(2) })); },   // items in flight / lying on the ground — a throw lands one of these far from the player, a lob lands it near
     mouseR(v) { mouse2 = !!v; return mouse2; },        // hold/release the RIGHT button from a test (the throw's wind-up); CDP mouse events do not reach the game's own handlers under pointer lock
@@ -8244,6 +8267,7 @@
       return { rect: { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi }, winOX, winOZ, px: P.x, pz: P.z, nRuns: runs.length, runs: runs.slice(0, 40) }; },
     hAt(x, z) { return { hmap: hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], analytic: H(Math.floor(x), Math.floor(z)) }; },   /*TEMP-DEBUG*/
     sparkDbg() { return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: death-burst / clash-spark slot state*/
+    killSlot(s) { hitCreature(s | 0); return { init: !!wbf[s].init, hurt: wbf[s].hurt | 0, dying: !!wbf[s].dying }; },   // run the hit on a KNOWN creature, no aiming involved
     hurtTest(slot, hold) { const B = wbf[slot | 0]; if (!B || !B.init) return null; HURT.slot = slot | 0; HURT.hold = !!hold; hurtBox(B); HURT.t0 = performance.now(); return __vb.hurtInfo(); },   // arm the wounded flash WITHOUT the hit, so a capture can be timed against it
     aimed() { return aimedCreature(); },              // which life slot the crosshair is actually on (-1 = none) — a swing test has to confirm it is ON target before it can read anything into the result
     kill() { tryKillCreature(); return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: force a kill-attempt from the current camera*/
@@ -9466,7 +9490,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.dying = false;   // fresh occupant — never inherits the last one's knife wound or a pending death B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
+        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.dying = false; B.blinked = false;   // fresh occupant — never inherits the last one's knife wound, pending death or spent flash B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
         if (lilySlot) {                                // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + red cardinals / BLUE BIRDS (the reskin) — both grid-stamped by stampCardinal
