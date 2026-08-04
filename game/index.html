@@ -4744,15 +4744,23 @@
   }
 
   // ── right-click pickup: pebbles + twigs ─────────────────────────────────────
-  // ── HAND SLOTS ── 4-slot hotbar; scroll wheel cycles, Q drops from the selected slot. Same-type items stack.
-  const slots = [{ it: 1, n: 1 }, PICK_IT ? { it: PICK_IT, n: 1 } : null, SHOVEL_IT ? { it: SHOVEL_IT, n: 1 } : null, null];   // stone axe, PICK, SHOVEL — and the last slot stays EMPTY (user), so there is always somewhere for a pickup to land. The BOW is no longer in the starting kit for that reason; __vb.giveIt(__vb.bowId()) puts it in hand to tune.
+  // ── HAND SLOTS ── UNLIMITED (user, for now): the hotbar grows as things are picked up and always keeps
+  // one trailing empty, so a pickup can never be refused. Scroll wheel cycles the whole list; Q drops
+  // from the selected slot. Same-type items still stack rather than taking a new slot each time.
+  const slots = [{ it: 1, n: 1 }, PICK_IT ? { it: PICK_IT, n: 1 } : null, SHOVEL_IT ? { it: SHOVEL_IT, n: 1 } : null].filter(Boolean);   // stone axe, PICK, SHOVEL — and the last slot stays EMPTY (user), so there is always somewhere for a pickup to land. The BOW is no longer in the starting kit for that reason; __vb.giveIt(__vb.bowId()) puts it in hand to tune.
   let selSlot = 0;
-  const canAdd = (it) => slots.some((s) => !s || s.it === it);
-  function addItem(it) {                               // prefer stacking, then the SELECTED slot, then any empty. Returns the slot index it landed in (0-3), or -1 if full — a grab uses that to SELECT the new item so it stays in the hand (user: a picked-up rock must not snap back to the axe).
+  const canAdd = () => true;                           // …so nothing is ever un-pickable for want of room (see slotTidy)
+  const slotTidy = () => {                             // keep EXACTLY one trailing empty: pickups always have a home, and the wheel never lands on a run of blanks
+    while (slots.length > 1 && !slots[slots.length - 1] && !slots[slots.length - 2]) slots.pop();
+    if (slots.length === 0 || slots[slots.length - 1]) slots.push(null);
+    if (selSlot >= slots.length) selSlot = slots.length - 1;
+  };
+  slotTidy();                                          // start with the trailing empty already in place
+  function addItem(it) {                               // prefer stacking, then the SELECTED slot, then any empty, then a NEW one. Never fails.
     for (let i = 0; i < slots.length; i++) if (slots[i] && slots[i].it === it) { slots[i].n++; return i; }
-    if (!slots[selSlot]) { slots[selSlot] = { it, n: 1 }; return selSlot; }
-    for (let i = 0; i < slots.length; i++) if (!slots[i]) { slots[i] = { it, n: 1 }; return i; }
-    return -1;
+    if (!slots[selSlot]) { slots[selSlot] = { it, n: 1 }; slotTidy(); return selSlot; }
+    for (let i = 0; i < slots.length; i++) if (!slots[i]) { slots[i] = { it, n: 1 }; slotTidy(); return i; }
+    slots.push({ it, n: 1 }); slotTidy(); return slots.length - 2;   // grew the hotbar (user) — -2 because slotTidy has just appended the next empty
   }
   // quaternion helpers — item orientations interpolate as ROTATIONS (slerp), never as three independently
   // lerped axis vectors (that collapses mid-flight and reads as the item flipping/glitching)
@@ -7245,7 +7253,7 @@
     }
     if (!locked || dead || !e.deltaY) return;
     e.preventDefault();
-    selSlot = (selSlot + (e.deltaY > 0 ? 1 : 3)) & 3;
+    selSlot = (selSlot + (e.deltaY > 0 ? 1 : slots.length - 1)) % slots.length;   // wraps the WHOLE list now, however long it has grown
   }, { passive: false });
   document.addEventListener('keydown', (e) => {
     if (!locked) return;
@@ -7316,7 +7324,7 @@
   PICK_DEFS[KNIFE_IT] = { x: 0.75, y: -0.1, z: 0.84, yaw: 0.07, pitch: -1.32, roll: 3.13, scale: 0.07 };   // stone knife (user bake 2026-07-16)
   if (PICK_IT) PICK_DEFS[PICK_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 };   // stone pick — starts on the AXE's baked pose (same haft, same swing); tune it live in the held-item panel and re-bake
   if (SHOVEL_IT) PICK_DEFS[SHOVEL_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: 1.72, roll: 3.15, scale: 0.08 };   // stone shovel — the axe's pose with the roll flipped a half-turn, so the SPADE points UP (user)
-  if (MEAT_IT) PICK_DEFS[MEAT_IT] = { x: 0.80, y: -0.18, z: 0.92, yaw: 0.0, pitch: -0.5, roll: 1.57, scale: 0.07 };   // raw meat, held
+  if (MEAT_IT) PICK_DEFS[MEAT_IT] = { x: 0.8, y: -0.18, z: 0.92, yaw: 0.67, pitch: 0.97, roll: 2.1, scale: 0.07 };   // raw meat — user bake 2026-08-03
   if (BOW_IT) PICK_DEFS[BOW_IT] = { x: 0.62, y: -0.30, z: 0.95, yaw: -0.20, pitch: 1.57, roll: 0.0, scale: 0.075 };   // bow — held upright across the hand, smaller scale because the model is much longer than a hand tool. Tune live in the held-item panel.
   if (WORM_ITEM0) PICK_DEFS[WORM_ITEM0] = { x: 0.81, y: -0.22, z: 1.13, yaw: 0.3, pitch: -0.14, roll: -3.14, scale: 0.08 };   // live worm (user bake 2026-07-17)
   const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] }, 4: { ...PICK_DEFS[4] } };
