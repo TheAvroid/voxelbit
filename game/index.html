@@ -465,7 +465,7 @@
   const bricks2 = new Uint32Array((B2X * B2Y * B2Z + 31) >> 5);
   const touched = new Uint8Array(BX * BZ);             // per 8×8 column tile: has this memory EVER been written? virgin tiles skip air-clearing (~40% of a column)
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
-  const LGT_ALL = 0x1ffff;                             // 17 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader)
+  const LGT_ALL = 0x3ffff;                             // 17 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader)
   let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt'); return v === null ? LGT_ALL : (parseInt(v, 10) & LGT_ALL); } catch (e) { return LGT_ALL; } })();
   const REACT_FADE = 450;                              // ms for the reactive mask to fade out after the last body motion. Long enough that a trunk jittering in and out of sleep on its contacts reads as one continuous settle rather than a strobe.
   let reactT0 = -1e9;                                  // when a rigid body was last in motion (see physC.y / the reactive mask)
@@ -609,6 +609,7 @@
     return best;
   }
   const groundMin = (x, z, r) => Math.min(H(x, z), H(x - r, z), H(x + r, z), H(x, z - r), H(x, z + r));   // lowest ground under a footprint — nothing floats on slopes
+
 
   // ── ROW-CACHED noise ── the bulk fill sweeps rows (fixed wz, ascending wx), so every vnoise stream's z-lattice
   // pair is row-constant and its x-corners only change every 1/scale columns. These samplers return BIT-IDENTICAL
@@ -804,6 +805,7 @@
   for (let i = 0; i < voxels.length; i += 4) M[voxels[i] + voxels[i + 1] * MSX + voxels[i + 2] * MSX * MSY] = voxels[i + 3];
   const remap = new Uint8Array(256);
   const foliageIds = [];                               // green tree voxels get NO hitbox — you can walk through the canopy
+  const woodIds = [];                                  // …and the BARK/branch ids: everything in the pine that is not foliage. The axe cuts any of it (user), tree or stump.
   // ── BARK SMOOTHING (user) ── the authored trunk shades sit far apart, so neighbouring voxels read as
   // hard-edged blotches rather than one piece of wood. Pull every BARK shade toward the trunk's own
   // weighted mean, which compresses the contrast while keeping each shade's relative order and hue —
@@ -826,7 +828,7 @@
       const l0 = lum(r, g, b); if (l0 < lo) lo = l0; if (l0 > hi) hi = l0;
       const nr = Math.round(r + (mr - r) * k), ng = Math.round(g + (mg - g) * k), nb = Math.round(b + (mb - b) * k);
       const l1 = lum(nr, ng, nb); if (l1 < lo2) lo2 = l1; if (l1 > hi2) hi2 = l1;
-      remap[ci] = addCol(nr, ng, nb); }
+      remap[ci] = addCol(nr, ng, nb); woodIds.push(remap[ci]); }
     console.log('[vb] bark smoothing', k, '- luminance spread', (hi - lo).toFixed(1), '->', (hi2 - lo2).toFixed(1)); }
   const MROT = [];                                     // the 4 exact 90° rotations, precomputed — variation without resampling artifacts
   for (let k = 0; k < 4; k++) {
@@ -1049,8 +1051,16 @@
   for (const i of FERNIDS) decorTab[i] = 1;                                                 // …and ferns (user): any tool takes chunks out of both
   if (LOGV) for (const q of LOGV.vox) { decorTab[q >>> 24] = 1; axeOnlyTab[q >>> 24] = 1; }  // …and the ground LOGS (user), but those want the axe
   for (const r of ROCK26) for (const q of r.vox) { decorTab[q >>> 24] = 1; pickOnlyTab[q >>> 24] = 1; }   // …and the 26 BOULDERS (user), which want the PICK. All 26 share one 12-shade palette, so this marks every rock in the world.
-  for (const i of [...ROCK, ...ROCKX]) { decorTab[i] = 1; pickOnlyTab[i] = 1; }   // …the STONE STRATA under the soil (user) belong to the PICK, not the shovel: dig down with the shovel, then swap and keep going
+  for (const i of [...ROCK, ...ROCKX, ...ORECOAL, ...OREIRON]) { decorTab[i] = 1; pickOnlyTab[i] = 1; }   // …and COAL + IRON (user): ore belongs to the pick like the stone it sits in   // …the STONE STRATA under the soil (user) belong to the PICK, not the shovel: dig down with the shovel, then swap and keep going
+  const woodTab = new Uint8Array(256);                 // ── WOOD ── the axe takes chunks out of anything made of wood voxels (user), including a stump the
+  for (const i of woodIds) { woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }   // felled tree left behind, which belongs to no tree shape any more
   for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the SOIL (user): dirt, the mossy grass on top of it, the brown pine litter that covers most of the forest floor, and beach sand. NOT the stone strata underneath — the shovel stops at rock (user).   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
+  // ── SURFACE SCATTER ── grass strands, flowers, twigs and pinecones. None of it is choppable decor, so
+  // none of it is in decorTab — but all of it needs something underneath, which is what floatTab marks.
+  const floatTab = new Uint8Array(256);
+  for (const i of [...GRASS, ...BLOOM]) floatTab[i] = 1;
+  for (const m of STICKV) for (const q of m.vox) floatTab[q >>> 24] = 1;            // twigs (user)
+  if (CONEV) for (const q of CONEV.vox) floatTab[q >>> 24] = 1;                     // …and the pinecones lying beside them
   const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
@@ -1111,6 +1121,7 @@
   // the old engine's buildHeldFrames approach) DDA-raytraced in camera space. Item ids in u.pickX.w:
   // 0 = empty hand, 1 = stone axe (.vox), 2 = pebble rock, 3 = twig. Add future pickups to `items`.
   let pickWGSL = 'const ITEMN : i32 = 0; const PICKSTEPS : i32 = 1;\n    const ITEMD : array<vec4<i32>, 1> = array<vec4<i32>, 1>(vec4<i32>(0));\n    @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;';
+  let itemHalfH = null;                              // per-item half height in voxels — a settled drop rests its BOTTOM on the ground, so it needs its own size
   let itemMapF32 = new Float32Array(4);                // ITEMMAP lives in a STORAGE BUFFER (binding 13) — as a var<private> constant array it silently broke past ~2.6k entries (the butterfly frames pushed it over; FXC-side limit, no compile error)
   {
     const items = [];                                  // {w, d, h, cells: [[r,g,b] | null]} — x = width, y = depth, z = height
@@ -1546,6 +1557,7 @@
       for (const c of it.cells) { if (c) flat.push(Math.pow(c[0] / 255, 2.2), Math.pow(c[1] / 255, 2.2), Math.pow(c[2] / 255, 2.2), 1.0); else flat.push(0, 0, 0, 0); }
     }
     if (!flat.length) flat.push(0, 0, 0, 0);
+    itemHalfH = items.map((m) => (m.h || 9) * 0.5);   // …and each item's half height, for the resting pose of a dropped item (see the drop block)
     itemMapF32 = new Float32Array(flat);               // → storage buffer at binding 13 (created with the other GPU buffers)
     const maxSteps = Math.max(...items.map(it => it.w + it.d + it.h + 3));
     pickWGSL = `const ITEMN : i32 = ${items.length}; const PICKSTEPS : i32 = ${maxSteps};
@@ -1579,6 +1591,9 @@
       else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(sh * 3) | 0];     // dithered sand-to-forest blend
       else { c = (mossy ? MOSS : NEEDLE)[(sh * 4) | 0]; surfMoss = mossy; }
       W[base + (h - 1) * WX] = c;
+      // ── DEEP SOIL ── grass columns carry 5 MORE voxels of dirt beneath the usual two (user), cut out
+      // of the rock core rockRowSpan already wrote. Grass itself stays the top voxel and nothing else.
+      if (surfMoss) for (let y = Math.max(0, h - 8); y < h - 3; y++) W[base + y * WX] = DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     }
     if (lake) for (let y = h; y <= Math.min(WL, yTop - 1); y++) W[base + y * WX] = y === WL ? WATER_T : WATER_B;
     if (!fresh) { let ia = base + (lake ? WL + 1 : h) * WX; for (let y = lake ? WL + 1 : h; y < WY; y++) { W[ia] = 0; ia += WX; } }
@@ -2893,7 +2908,7 @@
     // 6 irradiance history, 7 spatial filter, 8 TAA. Everything on = the normal image.
     fn LG(b : u32) -> bool { return (u32(u.lgt.x + 0.5) & (1u << b)) != 0u; }
     // 9 body grain (felled chunks), 10 terrain grain, 11 creature grain, 12 sun penumbra,
-    // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading.
+    // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading, 17 volumetric light.
     fn rand(s : ptr<function, u32>) -> f32 {
       *s = *s * 747796405u + 2891336453u;
       let w = ((*s >> ((*s >> 28u) + 4u)) ^ *s) * 277803737u;
@@ -3778,6 +3793,51 @@
       return clamp((n - 0.565) * 3.4, 0.0, 1.0);                     // ~35% coverage — scattered cumulus, plenty of blue
     }
     @group(0) @binding(22) var<storage, read> visb : array<u32>;     // per-8×8-tile drop-slot visibility bitmask (2×u32/tile) — computed ONCE per frame by the VIS prepass and shared with TRACE (this pass used to recompute it per workgroup behind a barrier)
+    // ── VOLUMETRIC LIGHT ── march the camera ray, gathering in-scatter from the emissive point lights
+    // and testing visibility from each step to the light. Teardown's method; see the call site for how
+    // this differs from theirs.
+    fn volLight(ro : vec3<f32>, rd : vec3<f32>, tMax : f32, dither : f32) -> vec3<f32> {
+      var acc = vec3<f32>(0.0);
+      var far = min(tMax, 90.0);
+      if (far <= 0.2) { return acc; }
+      // ── CULL AGAINST THE RAY ── one dot product per light drops every one the ray never passes near,
+      // and narrows the march to the span that can actually receive anything.
+      var mask = 0u; var lo = far; var hi = 0.0;
+      for (var f = 0; f < 8; f++) {
+        let F = u.fflies[f];
+        if (F.w <= 0.0) { continue; }
+        let dv = F.xyz - ro;
+        let tc = clamp(dot(dv, rd), 0.0, far);                   // closest approach along the ray
+        if (dot(dv, dv) - tc * tc > 900.0) { continue; }         // the ray never comes within reach of this light
+        mask |= (1u << u32(f));
+        lo = min(lo, max(tc - 30.0, 0.0));                       // …and only this span of the ray matters
+        hi = max(hi, min(tc + 30.0, far));
+      }
+      if (mask == 0u || hi <= lo) { return acc; }                // nothing on this ray — the common case, and it costs 8 dots
+      let STEPS = 8;                                             // fewer steps than before; the dither and TAA carry the smoothing
+      let dt = (hi - lo) / f32(STEPS);
+      for (var i = 0; i < STEPS; i++) {
+        let ps = ro + rd * (lo + (f32(i) + dither) * dt);
+        // strongest contributor at this point — ONE trace serves it, as the surface glow term does
+        var bw = 0.0; var bi = -1; var bd2 = 0.0;
+        for (var f = 0; f < 8; f++) {
+          if ((mask & (1u << u32(f))) == 0u) { continue; }
+          let F = u.fflies[f];
+          let dv = F.xyz - ps;
+          let d2 = dot(dv, dv);
+          if (d2 > 900.0) { continue; }
+          let w = F.w / (1.0 + d2 * 0.05) * (1.0 - smoothstep(400.0, 900.0, d2));
+          if (w > bw) { bw = w; bi = f; bd2 = d2; }
+        }
+        if (bi < 0) { continue; }
+        let dvB = u.fflies[bi].xyz - ps;
+        let dist = sqrt(max(bd2, 1e-4));
+        let sh = traceAll(ps, dvB / dist, max(dist - 0.7, 0.0), true);   // the visibility ray the article describes
+        if (sh.t >= 0.0) { continue; }                           // solid between the medium and the light — this step is in shadow
+        acc += vec3<f32>(1.0, 0.34, 0.16) * bw;                  // warm: everything in this lane is an ember, a firefly or a wound
+      }
+      return acc * dt * 0.010;                                   // scatter per unit length, HALVED (user) — the march integrates it
+    }
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(workgroup_id) wgid : vec3<u32>) {
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
@@ -4178,6 +4238,21 @@
       }
       col = aces(col * 0.95);
       col = pow(col, vec3<f32>(1.0 / 2.2));
+      // ── VOLUMETRICS ── added on top of the shaded image, the way Teardown composites its volumetric
+      // buffer alongside diffuse and specular. Gated on the lane holding anything at all, so a scene
+      // with no embers, fireflies or wounded animals in it pays one compare.
+      if (LG(17u)) {
+        var anyL = false;
+        for (var f = 0; f < 8; f++) { if (u.fflies[f].w > 0.0) { anyL = true; break; } }
+        if (anyL) {
+          let vD = textureLoad(irrF, vec2<i32>(gid.xy), 0).b;      // distance to whatever this pixel shows
+          let wDepth = select(90.0, vD, vD > 0.0);                 // stop the march at that surface — past it the medium is behind geometry
+          // interleaved-gradient noise, inlined: ign() lives in the tracer module, not here
+          let ig = fract(52.9829189 * fract(0.06711056 * f32(gid.x) + 0.00583715 * f32(gid.y)));
+          let dth = fract(ig + f32(u32(u.frame) & 31u) * 0.7548777);   // …rotated per frame so TAA averages the march offsets away
+          col += volLight(u.camPos, rayDir(vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y)), wDepth, dth);
+        }
+      }
       textureStore(colorOut, vec2<i32>(gid.xy), vec4<f32>(col, 1.0));
     }
   `;
@@ -4795,6 +4870,7 @@
     return [a[0] * ka + bb[0] * kb, a[1] * ka + bb[1] * kb, a[2] * ka + bb[2] * kb, a[3] * ka + bb[3] * kb]; };
   let grabAnim = null;                                 // {t0, it, x, y, z, aPh} — a grabbed item FLYING from its world spot into the hand
   const drops = [];                                    // DROPPED ITEMS (Q) — TOSSED on a ballistic arc, then hover + spin; right-click to grab
+  const DROP_REST_MS = 30000, DROP_REST_EASE = 1000;  // a dropped item hovers for this long, then eases to a dead stop on the ground (user)
   const TOSS_G = -170, TOSS_V = 55, TOSS_UP = 18;      // vox/s² gravity, throw speed along the view ray, extra up-kick
   const HURL_V = 240, HURL_UP = 9;                     // …and the THROWN profile (right-hold + left-click on a rock). Level-aimed it carries ~2x a Q-toss;
                                                        // the small up-kick is what stops a flat throw burying itself a few metres out — gravity here is 170 vox/s²,
@@ -4920,10 +4996,13 @@
     //   maxProbes was 160, but an 8-voxel bucketing of a 35x93x36 crown yields ~300 buckets — so barely
     //   half the body's surface cells carried a probe, and a narrow stump could pass clean between them.
     //   Probes only cost a grid lookup during contact GENERATION (once per substep), so 512 is cheap.
+    treeLifeMs: 300000, chunkLifeMs: 60000,          // ── LIFETIMES (user) ── a felled tree is gone after 5 min, any chunk the player never absorbed after 60 s.
+    //                                                 Told apart by noAbsorb, which marks the toppling trunk and nothing else.
+    absorbR: 16,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
     absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: ANY chunk comes to you now (user), was 96. NOT unlimited on purpose — a felled trunk (~7800 voxels) carries an absorbAt as well, and without a ceiling the whole tree would fly into your chest.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
     //                                                 absorbFly = the flight itself, left at 420 ms so the transition stays smooth rather than snapping in
     chopBite: 30,                                    // voxels an axe swing takes out — a FIXED count, so every chunk is the same size (user). 40 -> 30, a 25% reduction (user 2026-08-02)
-    absorbY: -9,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE — dropped 2 more voxels (user), so it arrives at the waist rather than the chest. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container
+    absorbY: -12,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE — dropped 3 MORE voxels (user, -9 → -12), so it arrives lower still than the waist chest. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container
     chopMinBody: 24, chopBodyBite: 4,                // a rigid body this big is choppable, and this many voxels is a real bite out of one (tiny debris is not a target)
     fellOrphans: 40,                                 // orphan voxels that mean a CROWN came loose (not just an axe chip) — the threshold that kills the birds perched in it
     fallSlow: 0.39,                                  // gravity multiplier for a FELLED TRUNK = 1/k^2 with k = 1.6 — the fall plays out ~60% slower (user). Chips/leaves/decor are unaffected.
@@ -5519,6 +5598,8 @@
   // Returns the orphaned components, largest first, in world coordinates.
   let phDecM = null, phDecS = null;
   const phDecorOrphans = (wx, wy, wz, tab) => {
+    // R of 16 covers it however big the tool's sphere is: a swing takes the nearest `bite` cells, not the
+    // whole sphere, so the hole a single swing opens is only a few voxels across whatever the radius says.
     const R = 16, UP = 22;
     const x0 = Math.round(wx) - R, z0 = Math.round(wz) - R;
     const y0 = Math.max(1, Math.round(wy) - R), y1 = Math.min(WY - 1, Math.round(wy) + UP);
@@ -5637,6 +5718,20 @@
       cells.push(kk); idMap.set(kk, cV[j]);
       W[cI[j]] = 0; out.push(cI[j]);
     }
+    // ── SCATTER LEFT HANGING ── grass strands, twigs and pinecones sit ON the surface and carry no
+    // support of their own, so digging the voxel out from under one leaves it in mid-air (user). None of
+    // it is in decorTab, which is why the orphan pass below has never been able to see it.
+    const scat = [], colSeen = new Set();
+    for (let k = 0; k < take; k++) { const j = ord[k];
+      const ck = cX[j] * 65536 + cZ[j]; if (colSeen.has(ck)) continue; colSeen.add(ck);
+      const cb = gwrap(cX[j], WX) + gwrap(cZ[j], WZ) * WX * WY;
+      for (let y = Math.max(1, cY[j]); y < Math.min(WY, cY[j] + 10); y++) {   // UPWARD: erasing the lowest strand un-foots the one above it
+        const v2 = W[cb + y * WX];
+        if (!v2 || !floatTab[v2] || W[cb + (y - 1) * WX]) continue;           // not scatter, or still standing on something
+        W[cb + y * WX] = 0; scat.push(cb + y * WX);
+      }
+    }
+    if (scat.length) { gpuPatch(scat, false); PH.stats.dustVox += scat.length; }
     if (!cells.length) return false;
     gpuPatch(out, false);
     { const cols = new Set();                        // DIGGING lowers the ground: re-derive the surface of every column this bite emptied
@@ -5715,7 +5810,7 @@
       // ROCK needs the pick, WOOD needs a cutting edge, everything else soft yields to whatever is in hand.
       // …and the carve is confined to that same material, so the sphere cannot spill into the next one.
       const okMat = digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]));
-      if (id && decorTab[id] && (digOnlyTab[id] ? dig : (pickOnlyTab[id] ? pick : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, C_RAD, C_BITE, okMat)) return true;   // free gate, the id is already in hand
+      if (id && decorTab[id] && !woodTab[id] && (digOnlyTab[id] ? dig : (pickOnlyTab[id] ? pick : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, C_RAD, C_BITE, okMat)) return true;   // …but NOT wood: a standing trunk belongs to the tree path below, which is what fells it   // free gate, the id is already in hand
       // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
       // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
       // where the trunk was, and a solid-only trigger could never find the tree again — the axe would
@@ -5732,6 +5827,12 @@
             physChopAt(x, y, z, C_RAD, S, C_MIN, C_BITE).hit) return true;
         continue;
       }
+      // ── ORPHANED WOOD ── a STUMP is wood that belongs to no tree: treeShapeAt stops answering for that
+      // column the moment the trunk topples, so S is null and nothing above cuts it. Worse, a stump is
+      // SHORT, so the swing that means to hit it usually samples the dirt in FRONT of it and stops there.
+      // Hence no test on the sampled voxel: whatever the ray landed on, if wood is within the axe's own
+      // sphere it gets cut. ok() confines the carve to wood, so it can never eat the ground it stands in.
+      if (cut && phChopDecor(x, y, z, C_RAD, C_BITE, (v) => !!woodTab[v])) return true;
       if (id !== 0 && !foliaTab[id]) return false;   // solid and no pine here — a real obstruction stops the swing
     }
     // Nothing along the ray held a full bite (a heavily notched trunk). Take whatever is there rather
@@ -5741,6 +5842,7 @@
       if (y2 < 1 || y2 >= WY) continue;
       if (cut && phChopBody(x2, y2, z2, C_RAD, C_LAST, C_BITE)) return true;   // …and a reduced bite off a fallen trunk still counts
       if (S && physChopAt(x2, y2, z2, C_RAD, S, C_LAST, C_BITE).hit) return true;
+      if (cut && woodTab[W[gwrap(x2, WX) + y2 * WX + gwrap(z2, WZ) * WX * WY]] && phChopDecor(x2, y2, z2, C_RAD, C_LAST, (v) => !!woodTab[v])) return true;   // …and the last splinters of a stump
     }
     return false;                                     // the swing never bit anything
   };
@@ -5948,6 +6050,10 @@
     const tNow = performance.now();
     for (let i = PH.bodies.length - 1; i >= 0; i--) {
       const b = PH.bodies[i];
+      if (!b.absorbing && tNow - b.born > (b.noAbsorb ? PH.treeLifeMs : PH.chunkLifeMs)) {
+        PH.bodies.splice(i, 1); PH.stats.expired = (PH.stats.expired | 0) + 1;   // ── EXPIRED (user) ── see treeLifeMs / chunkLifeMs
+        continue;                                      // one already flying into the player finishes its flight — it is about to be gone anyway
+      }
       if (b.absorbing) {
         const k = Math.min(1, (tNow - b.absorbT0) / PH.absorbFly);
         const e = k * k * (3 - 2 * k);                 // smoothstep — leaves the ground gently, arrives fast
@@ -5967,7 +6073,12 @@
         if (k >= 1) { PH.bodies.splice(i, 1); PH.stats.absorbed++; }
         continue;
       }
-      if (!b.absorbAt || tNow < b.absorbAt || b.n > PH.absorbMax) continue;
+      if (b.n > PH.absorbMax) continue;
+      if (!b.absorbAt || tNow < b.absorbAt) {          // no break scheduled it (or not yet) — but a LOOSE one at rest comes in when you walk up to it (user)
+        if (!b.sleeping) continue;                     // …only once it has settled: a chunk mid-tumble keeps its arc
+        const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
+        if (dxA * dxA + dyA * dyA + dzA * dzA > PH.absorbR * PH.absorbR) continue;
+      }
       b.absorbing = true; b.absorbT0 = tNow;
       b.absorbP = [b.pos[0], b.pos[1], b.pos[2]];      // where the flight starts
       b.sleeping = false;                              // a settled chunk must still be able to fly in
@@ -6308,12 +6419,12 @@
       const dr = drops[i];
       if (dr.T && (performance.now() - dr.born) / 1000 < dr.T) continue;        // still mid-toss — let it land first
       if (!canAdd(dr.it)) continue;                    // no slot free for it
-      const ox = dr.x + 0.5 - P.x, oy = dr.y + 9.0 - smoothEye, oz = dr.z + 0.5 - P.z;
+      const ox = dr.x + 0.5 - P.x, oy = dr.y + dropAnchor(dr) - smoothEye, oz = dr.z + 0.5 - P.z;
       const tq = ox * d[0] + oy * d[1] + oz * d[2];
       if (tq < 0 || tq > 55) continue;
       const qx = ox - d[0] * tq, qy = oy - d[1] * tq, qz = oz - d[2] * tq;
       if (qx * qx + qy * qy + qz * qz < 42) {
-        startGrab(dr.it, dr.x + 0.5, dr.y + 9.0 + Math.sin(performance.now() * 0.002 + dr.ph) * 1.3, dr.z + 0.5, performance.now() * 0.0012 + dr.ph);
+        startGrab(dr.it, dr.x + 0.5, dr.y + dropAnchor(dr), dr.z + 0.5, dr.spin === undefined ? performance.now() * 0.0012 + dr.ph : dr.spin);   // …from its CURRENT height: a settled drop is not where the hover pose was
         drops.splice(i, 1);
         return;
       }
@@ -6358,7 +6469,7 @@
       const dr = drops[i];
       if (dr.T && (performance.now() - dr.born) / 1000 < dr.T) continue;
       if (!canAdd(dr.it)) continue;
-      const ox = dr.x + 0.5 - P.x, oy = dr.y + 9.0 - smoothEye, oz = dr.z + 0.5 - P.z;
+      const ox = dr.x + 0.5 - P.x, oy = dr.y + dropAnchor(dr) - smoothEye, oz = dr.z + 0.5 - P.z;
       const tq = ox * d[0] + oy * d[1] + oz * d[2];
       if (tq < 0 || tq > 55) continue;
       const qx = ox - d[0] * tq, qy = oy - d[1] * tq, qz = oz - d[2] * tq;
@@ -6387,6 +6498,15 @@
     }
     return false;
   }
+  // where a drop's anchor actually is right now — hovering and bobbing at first, resting on the ground
+  // once it has settled. Shared by both pickups and the aim tests so none of them grabs at a stale height.
+  const dropAnchor = (dr) => {
+    const nw = performance.now();
+    const rK = Math.min(1, Math.max(0, (nw - dr.born - DROP_REST_MS) / DROP_REST_EASE));
+    const rE = rK * rK * (3 - 2 * rK);
+    const restY = itemHalfH ? (itemHalfH[dr.it - 1] || 4.5) : 4.5;
+    return 9.0 + (restY - 9.0) * rE + Math.sin(nw * 0.002 + dr.ph) * 1.3 * (1 - rE);
+  };
   const AUTO_PICK_R = 16;                              // AUTO-PICKUP radius (vox) — walk this close and a FREE hand slot vacuums the item up
   function autoPickup() {                              // proximity grab: RADIAL, not the view-ray march tryPickup() uses — you never have to aim at it
     if (grabAnim || dead) return;                      // one flight at a time — startGrab would clobber the item already in the air
@@ -6396,13 +6516,13 @@
     for (let i = 0; i < drops.length; i++) {
       const dr = drops[i];
       if (dr.T && (tNow - dr.born) / 1000 < dr.T) continue;   // still mid-toss — let it land before it can be re-grabbed (else a Q-toss boomerangs straight back)
-      const ox = dr.x + 0.5 - P.x, oy = dr.y + 9.0 - smoothEye, oz = dr.z + 0.5 - P.z;
+      const ox = dr.x + 0.5 - P.x, oy = dr.y + dropAnchor(dr) - smoothEye, oz = dr.z + 0.5 - P.z;
       const d2 = ox * ox + oy * oy + oz * oz;
       if (d2 < bd) { bd = d2; bi = i; }
     }
     if (bi < 0) return;
     const dr = drops[bi];
-    startGrab(dr.it, dr.x + 0.5, dr.y + 9.0 + Math.sin(tNow * 0.002 + dr.ph) * 1.3, dr.z + 0.5, tNow * 0.0012 + dr.ph);
+    startGrab(dr.it, dr.x + 0.5, dr.y + dropAnchor(dr), dr.z + 0.5, dr.spin === undefined ? tNow * 0.0012 + dr.ph : dr.spin);
     drops.splice(bi, 1);
   }
   document.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -6512,6 +6632,7 @@
     if (e < 0 || e >= 1) return 0;
     return Math.sin(e * Math.PI) * HOP_H;              // up and back down across the window — CONTINUOUS, not stepped: at 500 ms a 24 fps quantisation reads as a stutter rather than a hop (user)
   };
+  const HITS_TO_KILL = 3;                              // hits a non-AXE tool needs to kill a life form (user). The axe is the killing tool and ignores this entirely.
   const HURT_MS = 500;                                 // ONE blink, half a second (user). Comfortably longer than TAA's ~8-frame colour blend, which is what made an earlier 83 ms flash almost invisible on screen.
   const HURT = { t0: -1e9, hold: false, slot: -1, cx: 0, cy: 0, cz: 0, hx: 0, hy: 0, hz: 0 };   // world coords — rebased to the window at publish time, so a world shift mid-blink cannot drag the box off the animal
   const hurtBox = (B) => {                             // the animal's CURRENT stamped bounds — re-read every frame, because it is still walking while it flashes
@@ -6524,25 +6645,31 @@
   const hitCreature = (best) => {                       // …and this is the hit itself, on a KNOWN slot — callable from a test without having to aim first
     const B = wbf[best];
     if (!B || !B.init) return;
-    // ── KNIFE vs LAND MAMMAL ── the first hit wounds, the second kills (user). Slots 276+ are the four
-    // land mammals (bunny / armadillo / skunk / porcupine); everything else dies in one hit as before.
-    // KNIFE vs LAND MAMMALS (slots 276+) and FISH (kind 6, user): the first hit wounds and flashes,
-    // the second kills. Everything else still dies in one hit, whatever is in hand.
-    if (KNIFE_IT > 0 && heldIt() === KNIFE_IT && (best >= 276 || (B.kind | 0) === 6) && !B.hurt) {
-      B.hurt = 1;
-      B.hopT0 = performance.now();                      // …a wound bounces it too
-      B.blinked = true;                                 // this is the creature's one flash — the killing blow will not repeat it
-      HURT.slot = best; HURT.hold = false; hurtBox(B);
-      HURT.t0 = performance.now();
-      return;                                           // wounded, not dead
+    // ── HOW MANY HITS ── the AXE kills outright; everything else takes THREE (user). One rule for every
+    // life form and every tool — pick, shovel, knife, bow, a held rock, empty hands all wear it down.
+    // …except a BUTTERFLY, which dies to anything in one hit (user): slots 0..15 are the butterfly/moth
+    // band, and a creature that size surviving three blows from a shovel reads as absurd.
+    if (B.lastSwing === swingStart) { return; }         // this same swing already landed on this creature — one swing, one hit
+    B.lastSwing = swingStart;
+    if (!B.dying && heldIt() !== 1 && best >= 16) {
+      B.hits = (B.hits | 0) + 1;
+      if (B.hits < HITS_TO_KILL) {
+        B.hurt = 1;
+        B.hopT0 = performance.now();                    // the BOUNCE lands on every hit — it is what shows hits two and three registering
+        B.blinked = true;                               // EVERY hit flashes (user): gating this to the first one made hits two and three look like misses.
+        HURT.slot = best; HURT.hold = false; hurtBox(B);  // One flash per HIT, not two — the B.lastSwing guard above already allows a single hit per swing.
+        HURT.t0 = performance.now();
+        return;                                         // wounded, not dead
+      }
     }
     // EVERY life form flashes red first (user). The poof and the slot teardown wait out the blink,
     // so the hit reads on the animal itself rather than the animal simply vanishing into smoke.
     if (B.dying) return;                                // already flashing its way out — a second click must not double-kill or restart the blink
     B.dying = true;
     if (best >= 276) B.mammal = true;                   // remember WHAT it was: by the time it dies the slot is only a bag of stale numbers
-    const blink = !B.blinked;                           // ONE flash per creature (user): a wounded mammal already had it, so its killing blow does not flash again
-    if (blink) { B.blinked = true; HURT.slot = best; HURT.hold = false; hurtBox(B); HURT.t0 = performance.now(); }
+    const blink = true;                                 // the KILLING blow flashes too (user) — it used to be skipped whenever an earlier hit had already flashed,
+    B.blinked = true;                                   // which left the third and fatal swing with no feedback of its own at all.
+    HURT.slot = best; HURT.hold = false; hurtBox(B); HURT.t0 = performance.now();
     B.hopT0 = performance.now();                        // BOUNCE (user) — every hit, wounding or killing
     pendDeath.push({ slot: best, at: performance.now() + (blink ? HURT_MS : 0) });   // …and with no flash to wait out, it dies immediately
   };
@@ -7057,7 +7184,7 @@
     const LGT = [['sun shadow', 0], ['sun penumbra', 12], ['ambient occl', 1], ['sky / ambient', 15],
                  ['bounce light', 14], ['creature shad', 2], ['glow (lava/fly)', 3], ['caustics', 13],
                  ['fog', 5], ['body grain', 9], ['terrain grain', 10], ['creature grain', 11],
-                 ['held item lit', 16], ['reactive mask', 4], ['irr history', 6], ['spatial blur', 7], ['taa', 8]];
+                 ['held item lit', 16], ['volumetric', 17], ['reactive mask', 4], ['irr history', 6], ['spatial blur', 7], ['taa', 8]];
     {
       const panel = $('lgtPanel');
       lgtPaint = () => { for (const [, b] of LGT) { const btn = $('lgtB' + b);
@@ -8051,7 +8178,7 @@
                smallBodies: now2.length, spots });
       }, 400));
     },
-    lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536 } }; },   // the light-debug bitmask, from the console
+    lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536, volumetric: 131072 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
       for (const b of PH.bodies) { b.sleeping = f; if (f) { b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0; } }
       return PH.bodies.map((b) => ({ vox: b.n, pos: b.pos.map((q) => +q.toFixed(2)), sleeping: b.sleeping })); },
@@ -8325,7 +8452,8 @@
       return { rect: { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi }, winOX, winOZ, px: P.x, pz: P.z, nRuns: runs.length, runs: runs.slice(0, 40) }; },
     hAt(x, z) { return { hmap: hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], analytic: H(Math.floor(x), Math.floor(z)) }; },   /*TEMP-DEBUG*/
     sparkDbg() { return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: death-burst / clash-spark slot state*/
-    killSlot(s) { hitCreature(s | 0); return { init: !!wbf[s].init, hurt: wbf[s].hurt | 0, dying: !!wbf[s].dying }; },   // run the hit on a KNOWN creature, no aiming involved
+    killSlot(s) { swingStart = performance.now(); hitCreature(s | 0); return { init: !!wbf[s].init, hits: wbf[s].hits | 0, dying: !!wbf[s].dying }; },   // each tap counts as its OWN swing: the one-hit-per-swing guard keys on swingStart, which this tap otherwise never advances
+    hitsOn(s) { const B = wbf[s | 0]; return B ? { hits: B.hits | 0, needs: HITS_TO_KILL, alive: !!B.init, dying: !!B.dying } : null; },   // how many hits this creature has taken, for checking the rule in play   // run the hit on a KNOWN creature, no aiming involved
     hurtTest(slot, hold) { const B = wbf[slot | 0]; if (!B || !B.init) return null; HURT.slot = slot | 0; HURT.hold = !!hold; hurtBox(B); HURT.t0 = performance.now(); return __vb.hurtInfo(); },   // arm the wounded flash WITHOUT the hit, so a capture can be timed against it
     aimed() { return aimedCreature(); },              // which life slot the crosshair is actually on (-1 = none) — a swing test has to confirm it is ON target before it can read anything into the result
     kill() { tryKillCreature(); return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: force a kill-attempt from the current camera*/
@@ -8767,10 +8895,8 @@
           if (HB && HB.init) hurtBox(HB); else hk = 0;      // it died or despawned mid-blink — nothing left to stain
         }
         UF[1868] = HURT.cx - winOX; UF[1869] = HURT.cy; UF[1870] = HURT.cz - winOZ; UF[1871] = hk;
-      if (hk > 0) {                                   // …and it CASTS light (user): borrow the last firefly slot, which is a properly traced and shadowed point light
-        const fo = 1108 + 7 * 4;
-        UF[fo] = HURT.cx - winOX; UF[fo + 1] = HURT.cy + 1; UF[fo + 2] = HURT.cz - winOZ; UF[fo + 3] = hk * 2.4;
-      }
+        HURT.k = hk;                                    // …and the wound CASTS light too (user). It cannot write a point-light slot from HERE — the ffLights
+                                                        // publish runs later in this same tick and rewrites all 8 — so it goes into that list instead.
         UF[1872] = HURT.hx; UF[1873] = HURT.hy; UF[1874] = HURT.hz; UF[1875] = 0;
       }
     }
@@ -8927,8 +9053,17 @@
     for (let di = 0; di < 4; di++) {                   // dropped items → camera space (voxel units), hovering + spinning (+ launch flight out of the hand)
       const o2 = 68 + di * 16, dr = drops[di];
       if (!dr) { UF[o2 + 7] = 0; continue; }
-      const a2 = now * 0.0012 + dr.ph, ca2 = Math.cos(a2), sa2 = Math.sin(a2);
-      let px3 = dr.x + 0.5, py3 = dr.y + 9.0 + Math.sin(now * 0.002 + dr.ph) * 1.3, pz3 = dr.z + 0.5;   // anchor 9 up: the axe (half-height 4.5) bottoms out >= 3 voxels clear of the ground
+      // ── SETTLE ── after DROP_REST_MS the hover ends (user): the spin decays to a stop, the bob fades
+      // out and the item lowers until its base sits on the ground. Eased over a second so it slows to a
+      // halt. The spin is ACCUMULATED rather than derived from `now`, which is the only way to decelerate
+      // it smoothly — scaling a now-based angle runs the item backwards as the factor falls.
+      const rK = Math.min(1, Math.max(0, (now - dr.born - DROP_REST_MS) / DROP_REST_EASE));
+      const rE = rK * rK * (3 - 2 * rK);
+      dr.spin = (dr.spin === undefined ? dr.ph : dr.spin) + Math.min(64, now - (dr.spinT || now)) * 0.0012 * (1 - rE);
+      dr.spinT = now;
+      const restY = itemHalfH ? (itemHalfH[dr.it - 1] || 4.5) : 4.5;   // bottom on the ground: dr.y is the first AIR voxel of the column
+      const a2 = dr.spin, ca2 = Math.cos(a2), sa2 = Math.sin(a2);
+      let px3 = dr.x + 0.5, py3 = dr.y + (9.0 + (restY - 9.0) * rE) + Math.sin(now * 0.002 + dr.ph) * 1.3 * (1 - rE), pz3 = dr.z + 0.5;   // anchor 9 up while it hovers: the axe (half-height 4.5) bottoms out >= 3 voxels clear of the ground
       let Xw = [ca2, 0, sa2], Yw = [sa2, 0, -ca2], Zw = [0, 1, 0];   // RIGHT-handed (Y = Z×X) — an improper frame here turns into a bogus quat mid-flight
       const tE = (now - dr.born) / 1000;
       if (dr.T && tE < dr.T + 0.22) {
@@ -9558,7 +9693,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined;   // fresh occupant — never inherits the last one's knife wound, pending death or spent flash B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
+        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined;   // fresh occupant — never inherits the last one's knife wound, pending death or spent flash B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
         if (lilySlot) {                                // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + red cardinals / BLUE BIRDS (the reskin) — both grid-stamped by stampCardinal
@@ -10153,6 +10288,10 @@
       UF[o3 + 4] = Xs[0] * right[0] + Xs[2] * right[2]; UF[o3 + 5] = Xs[0] * up[0] + Xs[2] * up[2]; UF[o3 + 6] = Xs[0] * fwd[0] + Xs[2] * fwd[2]; UF[o3 + 7] = itn;
       UF[o3 + 8] = Ys[0] * right[0] + Ys[2] * right[2]; UF[o3 + 9] = Ys[0] * up[0] + Ys[2] * up[2]; UF[o3 + 10] = Ys[0] * fwd[0] + Ys[2] * fwd[2]; UF[o3 + 11] = 1 - tS / sp4.life;
       UF[o3 + 12] = Zs[1] * right[1]; UF[o3 + 13] = Zs[1] * up[1]; UF[o3 + 14] = Zs[1] * fwd[1]; UF[o3 + 15] = 0;
+    }
+    if (HURT.k > 0) {                                  // ── THE WOUND ── a hit creature glows red for the half second it blinks, and that glow scatters
+      const dxH = HURT.cx - P.x, dzH = HURT.cz - P.z;  // through the air like an ember does — same lane, same sort, so neither can clobber the other
+      ffLights.push([HURT.cx - winOX, HURT.cy + 1, HURT.cz - winOZ, HURT.k * 2.4, dxH * dxH + dzH * dzH]);
     }
     ffLights.sort((a, b) => a[4] - b[4]);              // nearest glowing lights (fireflies + live sparks) win the 8 point-light slots — sorted AFTER the spark loop so a death flash can claim a slot
     for (let li = 0; li < 8; li++) { const o5 = 1108 + li * 4, L = ffLights[li];
