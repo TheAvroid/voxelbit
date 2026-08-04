@@ -187,6 +187,10 @@
   #lgtPanel.lit { border-color: #7fd05a; box-shadow: 0 0 0 1px rgba(127,208,90,0.35), 0 6px 18px rgba(0,0,0,0.5); }   /* LIGHT MODE: the panel has the cursor */
   #lgtPanel .lgtHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; }
   #lgtPanel.hidden { display: none; }
+  /* ── HELD-STACK COUNT ── top right, shown only when the hand holds more than one (user) */
+  #stackN { position: fixed; top: 12px; right: 16px; z-index: 24; font: 22px/1 'px3', Consolas, monospace; letter-spacing: 2px;
+    color: #f2e6c8; text-shadow: 0 2px 6px rgba(0,0,0,0.85), 0 0 12px rgba(0,0,0,0.6); pointer-events: none; }
+  #stackN.hidden { display: none; }
   #vigBtn, #snowBtn, #fsBtn, #crdBtn, #fpsBtn, #timeBtn, #resHudBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 4px 16px; color: #ff9077; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red (user) */
   #vigBtn:hover, #snowBtn:hover, #fsBtn:hover, #crdBtn:hover, #fpsBtn:hover, #timeBtn:hover, #resHudBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off buttons LIFT on hover but KEEP their red/green colour — no green outline (user) */
   #vigBtn.on, #snowBtn.on, #fsBtn.on, #crdBtn.on, #fpsBtn.on, #timeBtn.on, #resHudBtn.on { border-color: #7fd05a; color: #b8ff6e; }   /* ON = green (user) */
@@ -240,6 +244,7 @@
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
 <div id="hud"></div>
+<div id="stackN" class="hidden"></div>
 <div id="lgtPanel" class="hidden"><div class="lgtHead"><span>light</span><button id="lgtAll" title="all terms back on">reset</button></div></div>
 <div id="lock" class="hidden">
   <h1><span class="tv">voxel</span><span class="tb">bit</span></h1>
@@ -4757,6 +4762,8 @@
   // from the selected slot. Same-type items still stack rather than taking a new slot each time.
   const slots = [{ it: 1, n: 1 }, PICK_IT ? { it: PICK_IT, n: 1 } : null, SHOVEL_IT ? { it: SHOVEL_IT, n: 1 } : null, BOW_IT ? { it: BOW_IT, n: 1 } : null].filter(Boolean);   // …and the BOW is back (user)   // stone axe, PICK, SHOVEL — and the last slot stays EMPTY (user), so there is always somewhere for a pickup to land. The BOW is no longer in the starting kit for that reason; __vb.giveIt(__vb.bowId()) puts it in hand to tune.
   let selSlot = 0;
+  const STACK_MAX = 8;                                 // how deep a stackable item goes (user)
+  const stackable = (it) => !(it === 1 || it === KNIFE_IT || it === PICK_IT || it === SHOVEL_IT || it === BOW_IT);   // TOOLS AND WEAPONS DO NOT STACK (user) — each takes its own slot; everything else (raw meat, rocks, twigs, cones) stacks to STACK_MAX
   const canAdd = () => true;                           // …so nothing is ever un-pickable for want of room (see slotTidy)
   const slotTidy = () => {                             // keep EXACTLY one trailing empty: pickups always have a home, and the wheel never lands on a run of blanks
     while (slots.length > 1 && !slots[slots.length - 1] && !slots[slots.length - 2]) slots.pop();
@@ -4765,7 +4772,7 @@
   };
   slotTidy();                                          // start with the trailing empty already in place
   function addItem(it) {                               // prefer stacking, then the SELECTED slot, then any empty, then a NEW one. Never fails.
-    for (let i = 0; i < slots.length; i++) if (slots[i] && slots[i].it === it) { slots[i].n++; return i; }
+    if (stackable(it)) for (let i = 0; i < slots.length; i++) if (slots[i] && slots[i].it === it && slots[i].n < STACK_MAX) { slots[i].n++; return i; }   // stack first, up to the cap
     if (!slots[selSlot]) { slots[selSlot] = { it, n: 1 }; slotTidy(); return selSlot; }
     for (let i = 0; i < slots.length; i++) if (!slots[i]) { slots[i] = { it, n: 1 }; slotTidy(); return i; }
     slots.push({ it, n: 1 }); slotTidy(); return slots.length - 2;   // grew the hotbar (user) — -2 because slotTidy has just appended the next empty
@@ -6503,8 +6510,7 @@
     if (!B || B.hopT0 === undefined) return 0;
     const e = (performance.now() - B.hopT0) / HURT_MS;
     if (e < 0 || e >= 1) return 0;
-    const q = Math.floor(e * 12) / 12;                 // 24 fps steps, like every other animation here
-    return Math.sin(q * Math.PI) * HOP_H;              // up and back down across the window
+    return Math.sin(e * Math.PI) * HOP_H;              // up and back down across the window — CONTINUOUS, not stepped: at 500 ms a 24 fps quantisation reads as a stutter rather than a hop (user)
   };
   const HURT_MS = 500;                                 // ONE blink, half a second (user). Comfortably longer than TAA's ~8-frame colour blend, which is what made an earlier 83 ms flash almost invisible on screen.
   const HURT = { t0: -1e9, hold: false, slot: -1, cx: 0, cy: 0, cz: 0, hx: 0, hy: 0, hz: 0 };   // world coords — rebased to the window at publish time, so a world shift mid-blink cannot drag the box off the animal
@@ -7219,6 +7225,8 @@
   // Follows the mouse as a crosshair and morphs to a square over anything clickable; the native cursor is hidden so the
   // two never double up. While locked the game's own centre crosshair takes over and this is hidden.
   const cursEl = $('curs');
+  const stackEl = $('stackN');                         // the x2..x8 badge; only redrawn when the count actually changes
+  let stackShown = -1;
   const cursSync = () => { document.body.classList.toggle('freecur', !locked); if (locked) cursEl.classList.remove('sq');
     $('lgtPanel').classList.toggle('lit', lightMode); };   // the panel highlights while it has the cursor, so the mode is never ambiguous
   const CURS_HIT = 'button, .veTool, .veCtl, a, input:not([type="range"]), select, [role="button"]';   // ONLY genuinely clickable controls square the cursor. RANGE sliders are excluded (user): the cursor stays a cross over them and the KNOB grows on hover instead (see the slider CSS). `#lock` (the whole esc-menu backdrop) used to be in here too, so the cursor was a square across the ENTIRE menu; the buttons/anchors inside already match on their own.
@@ -8696,6 +8704,11 @@
       right = r2;
     }
     cmpUpdate();                                       // ── compass ── one transform write per frame
+    { const hs = slots[selSlot];                       // ── HELD-STACK COUNT ── x2..x8 top right, hidden at one (user)
+      const nHold = hs && !dead ? (hs.n | 0) : 0;
+      if (nHold !== stackShown) { stackShown = nHold;
+        stackEl.textContent = 'x' + nHold;
+        stackEl.classList.toggle('hidden', nHold < 2); } }
     crossEl.classList.toggle('sq', locked && !ED.on && pickAim());   // crosshair morphs + → □ ONLY over something RIGHT-CLICK can pick up (user 2026-08-02 — it used to include aimedCreature(), so it also lit up on anything killable, which is a LEFT-click action and made the square mean two different things)
     const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera
     if (!locked && !lightMode) {                       // ESC menu: the whole CAMERA drifts gently — the entire image sways.
@@ -8754,6 +8767,10 @@
           if (HB && HB.init) hurtBox(HB); else hk = 0;      // it died or despawned mid-blink — nothing left to stain
         }
         UF[1868] = HURT.cx - winOX; UF[1869] = HURT.cy; UF[1870] = HURT.cz - winOZ; UF[1871] = hk;
+      if (hk > 0) {                                   // …and it CASTS light (user): borrow the last firefly slot, which is a properly traced and shadowed point light
+        const fo = 1108 + 7 * 4;
+        UF[fo] = HURT.cx - winOX; UF[fo + 1] = HURT.cy + 1; UF[fo + 2] = HURT.cz - winOZ; UF[fo + 3] = hk * 2.4;
+      }
         UF[1872] = HURT.hx; UF[1873] = HURT.hy; UF[1874] = HURT.hz; UF[1875] = 0;
       }
     }
@@ -8764,8 +8781,8 @@
     { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; if (heldIt()) playSwish(); pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)
       reapDeaths(now);                                 // creatures whose red flash has run out now actually die (see tryKillCreature)
       if (pendKillT && now >= pendKillT) { pendKillT = 0;
-        const kn9 = KNIFE_IT > 0 && heldIt() === KNIFE_IT, am9 = kn9 ? aimedCreature() : -1;
-        if (am9 >= 276) tryKillCreature();              // KNIFE on a LAND MAMMAL: the animal takes the swing. Otherwise chopSwing carves its stamped voxels out of the world and the creature is never hit at all.
+        const am9 = aimedCreature();                     // ANY tool: whatever the crosshair is genuinely on takes the swing (user)
+        if (am9 >= 0) hitCreature(am9);                  // …otherwise chopSwing carves a grid-stamped animal's voxels out of the world and it comes apart in pieces instead of dying
         else if (!chopSwing()) tryKillCreature(); }   // an axe that bites a trunk spends the swing on the tree; otherwise it can still kill   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
       // SWING — Teardown-style 3 phases over 570 ms (user-tuned): WINDUP raises the tool up-back (0–35%),
       // the STRIKE slams it down to the MIDDLE of the screen (35–55%, accelerating), then it eases back to rest (55–100%).
@@ -10069,11 +10086,11 @@
       }
       const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
       if (bunnySlot && dp2 < 30 * 30 && bunnyBoxN < bunnyBoxes.length) { const bx9 = bunnyBoxes[bunnyBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // SOLID (user): publish a hitbox for each near bunny so the player can't run through it
-      if (bunnySlot) { stampBunny(B, Math.round(bfSurf(B.x, B.z))); continue; }   // BUNNY is GRID-STAMPED into W (editor-identical, user) — stamp instead of trace-emit, and SKIP the emit below (hitbox already published above)
+      if (bunnySlot) { stampBunny(B, Math.round(bfSurf(B.x, B.z) + hurtHop(B))); continue; }   // …including the bounce (user)   // BUNNY is GRID-STAMPED into W (editor-identical, user) — stamp instead of trace-emit, and SKIP the emit below (hitbox already published above)
       if (armSlot && dp2 < 30 * 30 && armBoxN < armBoxes.length) { const bx9 = armBoxes[armBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near armadillo
-      if (armSlot) { stampArmadillo(B, Math.round(bfSurf(B.x, B.z))); continue; }   // ARMADILLO is GRID-STAMPED into W again (editor-identical alignment, user) — stamp instead of trace-emit, skip the emit below
+      if (armSlot) { stampArmadillo(B, Math.round(bfSurf(B.x, B.z) + hurtHop(B))); continue; }   // …including the bounce (user)   // ARMADILLO is GRID-STAMPED into W again (editor-identical alignment, user) — stamp instead of trace-emit, skip the emit below
       if (skunkSlot && dp2 < 30 * 30 && skunkBoxN < skunkBoxes.length) { const bx9 = skunkBoxes[skunkBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near skunk
-      if (skunkSlot) { stampSkunk(B, Math.round(bfSurf(B.x, B.z)), now); continue; }   // SKUNK is GRID-STAMPED into W (editor-identical alignment + blink, user) — stamp instead of trace-emit, skip the emit below
+      if (skunkSlot) { stampSkunk(B, Math.round(bfSurf(B.x, B.z) + hurtHop(B)), now); continue; }   // …including the bounce (user)   // SKUNK is GRID-STAMPED into W (editor-identical alignment + blink, user) — stamp instead of trace-emit, skip the emit below
       if (porcSlot && dp2 < 30 * 30 && porcBoxN < porcBoxes.length) { const bx9 = porcBoxes[porcBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near porcupine
       if (porcSlot) { stampPorcupine(B, Math.round(bfSurf(B.x, B.z) + hurtHop(B))); continue; }   // …including the bounce (user)   // PORCUPINE is GRID-STAMPED into W (armadillo-style, user's 4th land mammal) — stamp instead of trace-emit, skip the emit below
       if (emitN >= EMIT_CAP) continue;                 // stage the pose (never emit directly) — the nearest are chosen after the loop
