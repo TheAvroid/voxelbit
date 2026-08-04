@@ -72,7 +72,7 @@
   @keyframes playHintPulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.45; } }
   #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; transform: translateY(-28px); }   /* icons nudged up under the logo (user) */
   /* ══ HIDDEN ESC BUTTONS (user 2026-07-22): the ASSET-EDITOR (#edBtn) + ITEM-POSITION (#pkBtn) buttons are disabled from the esc menu. All their HTML + JS is left intact — this ONE rule just hides them. TO BRING THEM BACK: delete (or comment out) this single rule. ══ */
-  #pkBtn, #edBtn { display: none !important; }
+  #edBtn { display: none !important; }   /* the ASSET-EDITOR button stays hidden; the ITEM-POSITION one (#pkBtn) is back in the esc menu (user) — it is how a held pose gets tuned */
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
   #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn, #edCopy { position: relative; top: 0; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, top 0.15s ease-out, box-shadow 0.15s; will-change: transform; }   /* subtle resting drop shadow (user) — deepens on hover below. Explicit top:0 so the hover-lift TRANSITIONS (top:auto→-4px can't interpolate → would jump). */
   #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg, #edCopy svg { width: 22px; height: 22px; }
@@ -1044,7 +1044,7 @@
   for (const i of FERNIDS) decorTab[i] = 1;                                                 // …and ferns (user): any tool takes chunks out of both
   if (LOGV) for (const q of LOGV.vox) { decorTab[q >>> 24] = 1; axeOnlyTab[q >>> 24] = 1; }  // …and the ground LOGS (user), but those want the axe
   for (const r of ROCK26) for (const q of r.vox) { decorTab[q >>> 24] = 1; pickOnlyTab[q >>> 24] = 1; }   // …and the 26 BOULDERS (user), which want the PICK. All 26 share one 12-shade palette, so this marks every rock in the world.
-  for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND, ...ROCK, ...ROCKX]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …ROCK/ROCKX are the STONE STRATA the soil sits on (user): dig through the dirt and the shovel keeps going. Distinct ids from the 26 boulders, which stay pick-only.   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
+  for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the SOIL (user): dirt, the mossy grass on top of it, the brown pine litter that covers most of the forest floor, and beach sand. NOT the stone strata underneath — the shovel stops at rock (user).   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
   const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
@@ -4745,7 +4745,7 @@
 
   // ── right-click pickup: pebbles + twigs ─────────────────────────────────────
   // ── HAND SLOTS ── 4-slot hotbar; scroll wheel cycles, Q drops from the selected slot. Same-type items stack.
-  const slots = [{ it: 1, n: 1 }, PICK_IT ? { it: PICK_IT, n: 1 } : null, SHOVEL_IT ? { it: SHOVEL_IT, n: 1 } : null, BOW_IT ? { it: BOW_IT, n: 1 } : null];   // slots 0-3: stone axe, PICK, SHOVEL, BOW (user). NOTE this fills the hotbar — nothing picked up has anywhere to go until one is dropped with Q.
+  const slots = [{ it: 1, n: 1 }, PICK_IT ? { it: PICK_IT, n: 1 } : null, SHOVEL_IT ? { it: SHOVEL_IT, n: 1 } : null, null];   // stone axe, PICK, SHOVEL — and the last slot stays EMPTY (user), so there is always somewhere for a pickup to land. The BOW is no longer in the starting kit for that reason; __vb.giveIt(__vb.bowId()) puts it in hand to tune.
   let selSlot = 0;
   const canAdd = (it) => slots.some((s) => !s || s.it === it);
   function addItem(it) {                               // prefer stacking, then the SELECTED slot, then any empty. Returns the slot index it landed in (0-3), or -1 if full — a grab uses that to SELECT the new item so it stays in the hand (user: a picked-up rock must not snap back to the axe).
@@ -4897,10 +4897,10 @@
     //   maxProbes was 160, but an 8-voxel bucketing of a 35x93x36 crown yields ~300 buckets — so barely
     //   half the body's surface cells carried a probe, and a narrow stump could pass clean between them.
     //   Probes only cost a grid lookup during contact GENERATION (once per substep), so 512 is cheap.
-    absorbMax: 96, absorbMs: 450, absorbFly: 420,    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
+    absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: ANY chunk comes to you now (user), was 96. NOT unlimited on purpose — a felled trunk (~7800 voxels) carries an absorbAt as well, and without a ceiling the whole tree would fly into your chest.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
     //                                                 absorbFly = the flight itself, left at 420 ms so the transition stays smooth rather than snapping in
     chopBite: 30,                                    // voxels an axe swing takes out — a FIXED count, so every chunk is the same size (user). 40 -> 30, a 25% reduction (user 2026-08-02)
-    absorbY: -4,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE = chest height. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container
+    absorbY: -6,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE — dropped 2 more voxels (user), so it arrives at the waist rather than the chest. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container
     chopMinBody: 24, chopBodyBite: 4,                // a rigid body this big is choppable, and this many voxels is a real bite out of one (tiny debris is not a target)
     fellOrphans: 40,                                 // orphan voxels that mean a CROWN came loose (not just an axe chip) — the threshold that kills the birds perched in it
     fallSlow: 0.39,                                  // gravity multiplier for a FELLED TRUNK = 1/k^2 with k = 1.6 — the fall plays out ~60% slower (user). Chips/leaves/decor are unaffected.
@@ -6393,7 +6393,7 @@
     document.addEventListener('pointerdown', kick);
     document.addEventListener('keydown', kick);
   }
-  const SWAP_MS = 180;                                 // how long a tool swap takes to rise back into frame — short enough that it never delays a swing
+  const SWAP_MS = 240;                                 // how long a tool swap takes to rise back into frame — short enough that it never delays a swing
   let swapT0 = -1e9, prevHeldIt = -1;                  // …and when the current one started (see the view-model block)
   let swingStart = -1e9, mouse0 = false, mouse2 = false;   // mouse2: RIGHT button HELD — the wind-up for a rock throw (right-hold, then left-click)               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
   let pendKillT = 0;                                   // pending creature-hit: armed at swing start, FIRES ~250 ms in — when the axe visually LANDS on screen (user: only register the hit when the axe hits), not at the click
@@ -8739,7 +8739,8 @@
         }
       }
       { const hNow = heldIt() || 0; if (hNow !== prevHeldIt) { prevHeldIt = hNow; swapT0 = now; } }   // ── TOOL SWAP ── keyed off the ITEM, so a pickup or a craft landing in the hand animates too
-      const swapF = Math.floor(Math.max(0, SWAP_MS - (now - swapT0)) / SWAP_MS * 6) / 6;   // 1 → 0 across the swap, stepped at 24 fps like every other animation here
+      const swapR = Math.max(0, 1 - (now - swapT0) / SWAP_MS);
+      const swapF = swapR * swapR * (3 - 2 * swapR);   // 1 → 0 across the swap, SMOOTHSTEPPED and not quantised: this is a camera move, not a character animation, and stepping it at 24 fps read as a stutter (user)
       const hcfg = heldCfg(heldIt() || 1);             // the shown item's OWN pose (during a grab flight this is the grabbed item's)
       const swPitch = -0.9 * wind + 1.35 * chop;       // windup tips the head back/up, the strike slams it forward-down
       const cy = Math.cos(hcfg.yaw), sy = Math.sin(hcfg.yaw), cp2 = Math.cos(hcfg.pitch + swPitch), sp2 = Math.sin(hcfg.pitch + swPitch), cr2 = Math.cos(hcfg.roll), sr2 = Math.sin(hcfg.roll);
