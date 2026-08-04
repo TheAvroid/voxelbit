@@ -1044,6 +1044,7 @@
   for (const i of FERNIDS) decorTab[i] = 1;                                                 // …and ferns (user): any tool takes chunks out of both
   if (LOGV) for (const q of LOGV.vox) { decorTab[q >>> 24] = 1; axeOnlyTab[q >>> 24] = 1; }  // …and the ground LOGS (user), but those want the axe
   for (const r of ROCK26) for (const q of r.vox) { decorTab[q >>> 24] = 1; pickOnlyTab[q >>> 24] = 1; }   // …and the 26 BOULDERS (user), which want the PICK. All 26 share one 12-shade palette, so this marks every rock in the world.
+  for (const i of [...ROCK, ...ROCKX]) { decorTab[i] = 1; pickOnlyTab[i] = 1; }   // …the STONE STRATA under the soil (user) belong to the PICK, not the shovel: dig down with the shovel, then swap and keep going
   for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the SOIL (user): dirt, the mossy grass on top of it, the brown pine litter that covers most of the forest floor, and beach sand. NOT the stone strata underneath — the shovel stops at rock (user).   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
   const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
@@ -5583,14 +5584,23 @@
     const r = rad, r2 = r * r;
     const cD = [], cI = [], cX = [], cY = [], cZ = [], cV = [];
     const ri = Math.ceil(r);                         // WHOLE-voxel steps (see physChopAt) — a fractional radius made every index undefined
-    for (let dy = -ri; dy <= ri; dy++) for (let dz = -ri; dz <= ri; dz++) for (let dx = -ri; dx <= ri; dx++) {
-      const d2 = dx * dx + dy * dy + dz * dz; if (d2 > r2) continue;
-      const x = Math.round(wx) + dx, y = Math.round(wy) + dy, z = Math.round(wz) + dz;
-      if (y < 1 || y >= WY) continue;
-      const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
-      const v = W[ii]; if (!v || !decorTab[v]) continue;
-      if (cellStamped(ii)) continue;                 // a creature standing on one of the shared palette ids is not mushroom geometry (see cellStamped)
-      cD.push(d2); cI.push(ii); cX.push(x); cY.push(y); cZ.push(z); cV.push(v);
+    const want = bite === undefined ? PH.chopBite : bite;
+    const cx0 = Math.round(wx), cy0 = Math.round(wy), cz0 = Math.round(wz);
+    let spare = -1;                                  // shells still to walk once we already hold enough candidates
+    for (let sh = 0; sh <= ri; sh++) {               // Chebyshev shells, nearest first — see the note above
+      if (spare === 0) break;                        // enough in hand, and one further shell already walked to cover the corners of the last one
+      if (spare > 0) spare--;
+      for (let dy = -sh; dy <= sh; dy++) for (let dz = -sh; dz <= sh; dz++) for (let dx = -sh; dx <= sh; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== sh) continue;   // shell surface only; the interior was covered by earlier shells
+        const d2 = dx * dx + dy * dy + dz * dz; if (d2 > r2) continue;
+        const y = cy0 + dy; if (y < 1 || y >= WY) continue;
+        const x = cx0 + dx, z = cz0 + dz;
+        const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+        const v = W[ii]; if (!v || !decorTab[v]) continue;
+        if (cellStamped(ii)) continue;               // a creature standing on one of the shared palette ids is not mushroom geometry (see cellStamped)
+        cD.push(d2); cI.push(ii); cX.push(x); cY.push(y); cZ.push(z); cV.push(v);
+      }
+      if (spare < 0 && cD.length >= want) spare = 1;   // walk ONE more shell, then stop: shells go out nearest-first, so the true nearest `want` are all in hand by then
     }
     if (!cD.length) return false;
     const ord = new Int32Array(cD.length);
@@ -5651,7 +5661,7 @@
   const AIM_FORGIVE = 1.6;                            // voxels of slack around a creature's own radius in the kill test. Small and ABSOLUTE, so it forgives a shaky hand without ever growing into the fixed 35-degree cone this replaced.
   const AIM_R = [2.2, 2.2, 3.0, 3.0, 5.0, 3.0, 3.0];  // fallback target radius by B.kind (flyer, bird, worm/mammal, duck, lily, perched, fish) — used only when the creature is not grid-stamped, in which case its real stamped bounds are exact
   const REACH_H = 53, REACH_3D = 107, REACH_DOT = 0.82;   // THE melee reach — shared by the stone tools (chopSwing) and the kill test (aimedCreature) so the two can never drift apart (user). +5 voxels 2026-08-02.
-  const PICK_SCALE = 2.0, DIG_SCALE = 4.0;            // the PICK's carve sphere is DOUBLE the axe's radius and the SHOVEL's is FOUR TIMES it (user) — soil moves in shovelfuls, stone in chunks, wood a bite at a time
+  const PICK_SCALE = 4.0, DIG_SCALE = 8.0;            // the PICK's carve sphere is FOUR times the axe's radius and the SHOVEL's is EIGHT (user) — soil moves in shovelfuls, stone in chunks, wood a bite at a time
   const KNIFE_SCALE = 0.25, KNIFE_BITE = 0.5;         // the stone knife's carve sphere is a QUARTER of the axe's radius (halved twice, user); the chunk it yields is half. 1.0/1.0 would make it identical to the axe.
   const CHOP_RAD = 5, CHOP_DEEP = 3;   // RAD 5 so a full PH.chopBite is reachable from one impact point; CHOP_DEEP pushes the carve sphere into the wood so the chunk has depth instead of being a surface cap
   const CHOP_MINBITE = 30, CHOP_BODYBITE = 30;        // = PH.chopBite: the swing keeps marching until it finds somewhere that can give a FULL piece
@@ -5666,7 +5676,7 @@
     const dig = SHOVEL_IT > 0 && it === SHOVEL_IT;   // …and the SHOVEL moves ground and nothing else, on the same principle
     const kS = knife ? KNIFE_SCALE : (pick ? PICK_SCALE : (dig ? DIG_SCALE : 1));
     const C_RAD = CHOP_RAD * kS, C_DEEP = CHOP_DEEP * kS;
-    const C_BITE = knife ? Math.max(4, Math.round(PH.chopBite * KNIFE_BITE)) : PH.chopBite;   // the knife takes HALF the axe's chunk (user)
+    const C_BITE = knife ? Math.max(4, Math.round(PH.chopBite * KNIFE_BITE)) : Math.round(PH.chopBite * kS);   // the knife takes HALF the axe's chunk (user); the PICK and SHOVEL take proportionally MORE, because a wider sphere that still lifts 30 voxels is just a slower way to dig the same hole
     // A minimum bite bigger than the sphere can physically hold makes every swing miss (that is how the
     // knife looked broken before). ~2r^2 is a fair count of solid cells a half-filled sphere of radius r
     // can offer, so the requirement can never exceed what is reachable.
