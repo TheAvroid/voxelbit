@@ -815,7 +815,10 @@
 
   // ── palette ── slot 0 = empty. Ground grain variants + remapped tree palette with per-tree tints.
   const palette = [[0, 0, 0]];
-  const addCol = (r, g, b) => (palette.push([r, g, b]), palette.length - 1);
+  let palIdx = null;                                   // colour → first palette id, for palShare. Declared HERE, above addCol, because addCol now keeps it current and the named tables below call addCol long before palShare is defined — leaving it further down put it in the temporal dead zone.
+  const addCol = (r, g, b) => { const id = (palette.push([r, g, b]), palette.length - 1);
+    if (palIdx) { const k = (r << 16) | (g << 8) | b; if (!palIdx.has(k)) palIdx.set(k, id); }   // …so a colour added by a NON-share loader is still found by the next share lookup. palIdx used to be built once and never updated, which let share mode mint a second copy of a colour someone else had already added.
+    return id; };
   const NEEDLE = [addCol(97, 74, 50), addCol(88, 67, 45), addCol(106, 82, 56), addCol(80, 61, 41)];      // 1..4 (shader far-field relies on these slots)
   const MOSS   = [addCol(74, 96, 48), addCol(66, 88, 44), addCol(82, 104, 54), addCol(58, 79, 40)];      // 5..8
   const DIRT   = [addCol(112, 90, 64), addCol(102, 82, 58), addCol(122, 98, 70)];
@@ -930,7 +933,6 @@
   setLoad(22); await stage('loading decorations…');
   // colour → existing palette id, for SHARE mode below. Built once on first use, so it sees every
   // colour the world registered before any item model is parsed.
-  let palIdx = null;
   const palShare = (r, g, b) => {
     if (!palIdx) { palIdx = new Map();
       for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (!c) continue;
@@ -1133,9 +1135,16 @@
   };
   const fetchVoxStrip = async (url) => { try { return parseVoxAll(new Uint8Array(await (await fetch(url)).arrayBuffer()), true); } catch (e) { console.warn('[vb] vox strip', url, e); return []; } };   // …EVERY frame in a multi-model .vox (the bow)
   const fetchVoxShared = async (url) => { try { return parseVoxModel(new Uint8Array(await (await fetch(url)).arrayBuffer()), true); } catch (e) { console.warn('[vb] vox', url, e); return null; } };   // …in SHARE mode: an item-only model that must not cost palette entries (the bow strip)
-  const fetchVoxModel = async (url) => { try { return parseVoxModel(new Uint8Array(await (await fetch(url)).arrayBuffer())); } catch (e) { console.warn('[vb]', url, 'missing — that decoration is skipped', e); return null; } };
+  // SHARE by default (2026-08-05). Every decoration used to mint a fresh palette entry for colours the table
+  // already held — the pine browns and foliage greens landed two and three times over, 40 duplicate ids in all,
+  // and the table hit its 256 ceiling before the land mammals loaded. Past the ceiling edCol silently
+  // NEAREST-MATCHES, which is why the porcupine wore a mushroom's olive and the armadillo's shell gradient
+  // scattered. Reusing an identical colour is invisible; what it is NOT safe for is a model whose OWN ids gate a
+  // behaviour — PICK_CONE is built from the pinecone's ids, so a shared id there would let one cone pickup flood
+  // everything else wearing that colour. Pass own = true to keep dedicated entries, as the pinecone does.
+  const fetchVoxModel = async (url, own) => { try { return parseVoxModel(new Uint8Array(await (await fetch(url)).arrayBuffer()), !own); } catch (e) { console.warn('[vb]', url, 'missing — that decoration is skipped', e); return null; } };
   const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV, SHOVV, ARROWV, BOWSTRIP, MEATV, HOEV, SPEARV] = await Promise.all([        // fetched IN PARALLEL — decoration models no longer block one another on boot
-    fetchVoxModel('assets/decoration/pinecone.vox'),                                        // hangs under pine branches
+    fetchVoxModel('assets/decoration/pinecone.vox', true),                                  // hangs under pine branches — OWN ids: PICK_CONE is built from them, so they must not be shared with anything else
     fetchVoxModel('assets/decoration/lillypad_small.vox'),                                  // floats on lakes + rivers
     fetchVoxModel('assets/decoration/lillypad_medium.vox'),
     fetchVoxModel('assets/decoration/lillypad_large.vox'),
@@ -3120,7 +3129,7 @@
     device.queue.writeBuffer(palBuf, 0, f); };
   const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });   // COPY_DST: turning the arrow rewrites the bow strip's block in place (bowRefit)   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
-  const UF = new Float32Array(1876);   // …+ heldCfg 1860..1863 (x = held-item sun visibility) + lgt 1864..1867 (light-debug bitmask) + hurtB 1868..1871 + hurtH 1872..1875 (the knife's red hit-flash box)
+  const UF = new Float32Array(1876);   // …+ heldCfg 1860..1863 (x = held-item sun visibility, y = its SKY visibility) + lgt 1864..1867 (light-debug bitmask) + hurtB 1868..1871 + hurtH 1872..1875 (the knife's red hit-flash box)
   const UF_OLD_LEN = 1860;   // …+ physB 16 bodies x 5 vec4 1532..1851 + physC 1852..1855 + physBound 1856..1859 → 1860 (voxel rigid bodies)                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
@@ -3197,7 +3206,7 @@
                                                                      // [2] local Y axis + dimY · [3] local Z axis + dimZ · [4] comLocal.xyz + buffer offset
       physC : vec4<f32>,                                             // x = ACTIVE body count (0 = the whole path is one compare), y = REACTIVE STRENGTH 0..1 (1 while a body is moving, eased to 0 over ~0.45 s after it stops — a binary here made a settling trunk pulse its own shadow noise on and off), z/w spare. Was: how many are AWAKE (the reactive mask keys off y; tracing keys off x)
       physBound : vec4<f32>,                                         // xyz = centre (window coords) of a sphere enclosing EVERY body, w = its radius — one test rejects a ray that cannot touch any of them
-      heldCfg : vec4<f32>,
+      heldCfg : vec4<f32>,                                           // x = SUN visibility at the player (gates the held item's DIRECT term), y = its SKY visibility (gates the ambient + ground bounce, standing in for the irr.g the world gets), z/w spare
       // ── APPENDED TAIL ── these MUST stay in the same order as the UF writes at the end of the frame
       // (heldCfg 1860, lgt 1864, hurtB 1868, hurtH 1872). WGSL lays a struct out in declaration order,
       // so re-ordering these silently feeds each field its neighbour's numbers instead of erroring.
@@ -4530,7 +4539,14 @@
                       }
                       aoF = 1.0 - 0.14 * f32(occ);    // up to ~0.44 in a full crevice; ~0.86–0.72 for typical creases
                     }
-                    col = cell.rgb * (direct + skyIrr + bounce + vec3<f32>(0.012, 0.013, 0.016)) * aoF;
+                    // …and OCCLUDE the ambient exactly as the world does. The static path multiplies its own
+                    // (skyIrr + bounce) by irr.g; the held item had no irr.g at all
+                    // (it is composited past the g-buffer, so it has no traced irradiance of its own) and so kept
+                    // the full open-sky term wherever it went. u.heldCfg.y is the eye's own sky visibility, marched
+                    // in JS alongside the sun ray, and it stands in for irr.g here. Gated on the AO debug bit so
+                    // it switches with the world's AO rather than against it.
+                    let skyOcc = select(1.0, u.heldCfg.y, LG(1u));
+                    col = cell.rgb * (direct + (skyIrr + bounce) * skyOcc + vec3<f32>(0.012, 0.013, 0.016)) * aoF;
                   }
                   break;
                 }
@@ -5610,7 +5626,8 @@
     treeLifeMs: 300000, chunkLifeMs: 60000,          // ── LIFETIMES (user) ── a felled tree is gone after 5 min, any chunk the player never absorbed after 60 s.
     //                                                 Told apart by noAbsorb, which marks the toppling trunk and nothing else.
     absorbR: 16,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
-    absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: ANY chunk comes to you now (user), was 96. NOT unlimited on purpose — a felled trunk (~7800 voxels) carries an absorbAt as well, and without a ceiling the whole tree would fly into your chest.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
+    absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
+    absorbSize: 200,                                 // ── TOO BIG TO CARRY (user) ── a chunk over this many voxels REFUSES to be absorbed: break it down first. Measured on a felled pine, one tree yields chunks of ~7, 12 and 139 voxels plus 800+ voxel trunk sections; 200 lets an armful through and turns the big sections into something you have to work on. Chopping one splits/shrinks it (phChopBody takes a ~30-voxel bite and can sever a long piece in two) until the parts drop under this and vacuum up normally.
     //                                                 absorbFly = the flight itself, left at 420 ms so the transition stays smooth rather than snapping in
     chopBite: 30,                                    // voxels an axe swing takes out — a FIXED count, so every chunk is the same size (user). 40 -> 30, a 25% reduction (user 2026-08-02)
     absorbY: -12,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE — dropped 3 MORE voxels (user, -9 → -12), so it arrives lower still than the waist chest. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container
@@ -6894,7 +6911,7 @@
         if (k >= 1) { PH.bodies.splice(i, 1); PH.stats.absorbed++; }
         continue;
       }
-      if (b.n > PH.absorbMax) continue;
+      if (b.n > PH.absorbSize) { b.tooBig = true; continue; }   // ── TOO BIG TO CARRY (user) ── it stays where it is until the player breaks it down. No on-screen message (user): the chunk simply not coming to you is the feedback. tooBig is kept purely so __vb.phys() can report which chunks were refused.
       if (!b.absorbAt || tNow < b.absorbAt) {          // no break scheduled it (or not yet) — but a LOOSE one at rest comes in when you walk up to it (user)
         // …only once it has settled: a chunk mid-tumble keeps its arc. But a small chunk on uneven ground
         // can jitter forever without ever formally sleeping — which left ARROW chunks uncollectable no
@@ -8003,6 +8020,9 @@
   // The snow button / P key still forces a storm on by hand, and that path re-arms snowNextT normally.
   const SNOW_AUTO_OFF = true;   // (previously: first snow 2 min after refresh, then every 5 min, each event 60 s — user 2026-07-22)
   let heldSunV = 1;                                    // eased sun visibility at the player — gates the held item's DIRECT term so a tool in shade reads like the world around it (u.heldCfg.x)
+  let heldSkyV = 1;                                    // …and eased SKY visibility — gates its AMBIENT + ground bounce, the term the world gets from irr.g (u.heldCfg.y). Without it a tool kept full open-sky ambient under a canopy or in a cave while the world around it went dark.
+  const HELD_SKY_DIRS = [[0, 1, 0], [0.707, 0.707, 0], [-0.707, 0.707, 0], [0, 0.707, 0.707], [0, 0.707, -0.707]];   // straight up + four at 45°; each ray's y component IS its cosine weight, so the average is cosine-weighted like the world's hemisphere ray
+  const HELD_SKY_R = 24;                               // …and the SAME 24-voxel range the world normalises its AO ray against (clamp(ah.t / 24)), so the two terms mean the same thing
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
   let vigToggle = () => {};                            // set by the settings-panel wiring below; the L keybind calls the SAME path so the button label stays in sync
@@ -8521,7 +8541,7 @@
   if (BOW_IT) for (let f = 0; f < BOW_FRAMES; f++) ITEM_NAMES[BOW_IT + f] = 'bow';   // every frame answers to the same name in the held-item editor
   if (MEAT_IT) ITEM_NAMES[MEAT_IT] = 'raw meat';
   if (WORM_ITEM0) ITEM_NAMES[WORM_ITEM0] = 'worm';
-  const heldIt = () => (slots[selSlot] ? slots[selSlot].it : 0);   // the item the RIGHT hand is showing (0 = empty). A grab FLIGHT no longer borrows it (user): the incoming item flies as its own world object and your tool stays out the whole way — see grabGhost.
+  const heldIt = () => (grabAnim && !grabAnim.left && !slots[selSlot] ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty). A grab flight into a FULL hand does not borrow it (user): that pickup flies as its own world object so your tool stays out — see grabGhost. An EMPTY hand borrows it again, the way it did originally, so the incoming item flies into the HELD POSE itself and there is no tool to lose.
   let grabGhost = null;                                // the item mid-flight, drawn through the DROP path instead of the hand
   const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];
   const pickSave = () => { try {                     // …written back BY NAME, so a future item-list change cannot scramble them again
@@ -9089,6 +9109,8 @@
     phys(v) {                                          // ── VOXEL DESTRUCTION ── enable/inspect
       if (v !== undefined) { PH.on = !!v; if (!PH.on) { PH.bodies.length = 0; PH.acc = 0; bodyTop = 0; } }
       return { on: PH.on, dt: PH.dt, iters: PH.iters, bodies: PH.bodies.length, awake: PH.bodies.filter((b) => !b.sleeping).length,
+        absorbSize: PH.absorbSize, tooBig: PH.bodies.filter((b) => b.n > PH.absorbSize).map((b) => b.n),   // the carry limit + every chunk currently over it
+        oversize: PH.bodies.filter((b) => b.n > PH.absorbSize).map((b) => ({ vox: b.n, noAbsorb: !!b.noAbsorb, refused: !!b.tooBig })),   // every chunk over the carry limit, whether it came off a tree or not
         stats: { ...PH.stats },
         body: PH.bodies.map((b) => ({ vox: b.n, surf: b.surfN, probes: b.probes.length, mass: b.mass,
           com: b.com.map((q) => +q.toFixed(2)), pos: b.pos.map((q) => +q.toFixed(2)),
@@ -9931,11 +9953,35 @@
         const ox = P.x, oy = smoothEye + 1, oz = P.z;
         for (let d = 1.5; d < 150; d += 1.0) {
           const gy = Math.floor(oy + sun[1] * d); if (gy >= WY) break; if (gy < 1) continue;
-          if (solidTab[W[gwrap(Math.floor(ox + sun[0] * d), WX) + gy * WX + gwrap(Math.floor(oz + sun[2] * d), WZ) * WX * WY]] === 1) { vis = 0; break; }
+          // ANY voxel blocks, not just solidTab ones. Foliage is deliberately non-solid (line 915, so a crown has no
+          // hitbox), but the WORLD's sun shadow is traceAll, which hits needles like anything else — so the ground
+          // under a pine was shaded while the tool in your hands stayed in full sun. This line's own comment below
+          // already assumed the canopy dappled it; it never could. Same test the sky ray below uses.
+          if (W[gwrap(Math.floor(ox + sun[0] * d), WX) + gy * WX + gwrap(Math.floor(oz + sun[2] * d), WZ) * WX * WY]) { vis = 0; break; }
         }
       } else vis = 0;                                  // below the horizon: no direct sun on the tool either
       heldSunV += (vis - heldSunV) * (1 - Math.exp(-8 * dt));   // ~0.15 s ease so dappled canopy fades instead of strobing
-      UF[1860] = heldSunV; UF[1861] = 0; UF[1862] = 0; UF[1863] = 0;
+      // ── HELD-ITEM SKY VISIBILITY ── the world multiplies its ambient + ground bounce by irr.g, the traced sky
+      // visibility. The held item had NO such term, so a tool carried the full open-sky value everywhere: under a
+      // pine crown or inside a cave it kept glowing while the world around it went dark — the biggest reason held
+      // lighting did not match static lighting. Same trick as the sun ray above, one short march per direction from
+      // the eye, averaging how far each gets: that ratio is exactly what the world's AO ray measures. Five rays of
+      // ~16 steps is cheaper than the single 150-step sun ray. TESTED AGAINST RAW VOXELS, not solidTab — foliage is
+      // deliberately non-solid (line 915) and a pine canopy is the single biggest sky occluder there is; the world's
+      // traceAll hits it, so this must too.
+      { const ox2 = P.x, oy2 = smoothEye + 1, oz2 = P.z;
+        let acc = 0, wsum = 0;
+        for (let i = 0; i < HELD_SKY_DIRS.length; i++) {
+          const d3 = HELD_SKY_DIRS[i], wgt = d3[1];    // y component = cos(elevation) = this ray's share of the hemisphere
+          let reach = HELD_SKY_R;
+          for (let s = 1.5; s < HELD_SKY_R; s += 1.5) {
+            const gy = Math.floor(oy2 + d3[1] * s); if (gy >= WY) break; if (gy < 1) continue;
+            if (W[gwrap(Math.floor(ox2 + d3[0] * s), WX) + gy * WX + gwrap(Math.floor(oz2 + d3[2] * s), WZ) * WX * WY]) { reach = s; break; }
+          }
+          acc += (reach / HELD_SKY_R) * wgt; wsum += wgt;
+        }
+        heldSkyV += ((wsum > 0 ? acc / wsum : 1) - heldSkyV) * (1 - Math.exp(-8 * dt)); }   // the SAME ~0.15 s ease the sun term uses — walking under a crown must fade, not strobe
+      UF[1860] = heldSunV; UF[1861] = heldSkyV; UF[1862] = 0; UF[1863] = 0;
       UF[1864] = lgtMask; UF[1865] = 0; UF[1866] = 0; UF[1867] = 0;   // ── LIGHT DEBUG ── which lighting terms are switched on (top-right panel)
       // ── HIT FLASH ── published AFTER the creature stamps (see the block by UF[1875] further down), because a
       // land mammal re-stamps itself later in this same tick — bounce included — and a box measured here would
@@ -10012,21 +10058,39 @@
       if (grabAnim && !grabAnim.left) {                // FLY-TO-HAND — the pickup glides in as ITS OWN object; the hand keeps whatever it was holding (user)
         const k = Math.min(1, (now - grabAnim.t0) / 340);
         const e2 = k * k * (3 - 2 * k);
-        // …drawn in to the same point on the player a carved chunk is — UNLESS the hand is empty, in which
-        // case it flies to the hand itself and stays there, the way it always did (user).
-        const toHand = !slots[selSlot];
-        const tw = toHand ? [cam[0] + right[0] * hx + up[0] * hy + fwd[0] * hz,
-                             cam[1] + right[1] * hx + up[1] * hy + fwd[1] * hz,
-                             cam[2] + right[2] * hx + up[2] * hy + fwd[2] * hz]
-                          : [P.x, smoothEye + PH.absorbY, P.z];
-        // …and it comes in EXACTLY as a carved chunk does (user): FULL SIZE the whole way, on the same gentle
-        // arc. Shrinking it read as the tool evaporating rather than being picked up — the same complaint
-        // that took the shrink off the chunks.
-        grabGhost = { it: grabAnim.it, ph: grabAnim.aPh || 0,
-          x: grabAnim.x + (tw[0] - grabAnim.x) * e2,
-          y: grabAnim.y + (tw[1] - grabAnim.y) * e2 + Math.sin(e2 * Math.PI) * 3,
-          z: grabAnim.z + (tw[2] - grabAnim.z) * e2,
-          vs: 1 };
+        if (!slots[selSlot]) {
+          // ── EMPTY HAND: STRAIGHT INTO THE HAND (user) ── the original flight, restored. The item IS the held
+          // item for the length of the trip: its world spot is expressed in the HELD frame and eased into the
+          // held pose, so it lands exactly where the hand holds it, at matching angular size the whole way.
+          // The version this replaces flew a world-space ghost toward
+          //   cam + right*hx + up*hy + fwd*hz
+          // which mixes units — hx/hy/hz are HELD units and world = held ÷ scale (see the throw, which divides).
+          // Multiplying instead of dividing collapsed the target onto the camera, so the pickup flew to the
+          // middle of the player and only reached the hand when the flight ended and the item was granted.
+          const rx = grabAnim.x - cam[0], ry = grabAnim.y - cam[1], rz = grabAnim.z - cam[2];
+          const sxc = (rx * right[0] + ry * right[1] + rz * right[2]) * hcfg.scale;
+          const syc = (rx * up[0] + ry * up[1] + rz * up[2]) * hcfg.scale;
+          const szc = (rx * fwd[0] + ry * fwd[1] + rz * fwd[2]) * hcfg.scale;
+          hx = sxc + (hx - sxc) * e2; hy = syc + (hy - syc) * e2; hz = szc + (hz - szc) * e2;
+          const ca3 = Math.cos(grabAnim.aPh), sa3 = Math.sin(grabAnim.aPh);   // the hover SPIN slerped into the held orientation, so it settles rather than snapping
+          const qg = qslerp(m2q([ca3 * right[0] + sa3 * right[2], ca3 * up[0] + sa3 * up[2], ca3 * fwd[0] + sa3 * fwd[2]],
+                                [sa3 * right[0] - ca3 * right[2], sa3 * up[0] - ca3 * up[2], sa3 * fwd[0] - ca3 * fwd[2]],   // Y = Z×X — matches the (right-handed) hover frame
+                                [right[1], up[1], fwd[1]]),
+                            m2q(AX, AY, AZ), e2);
+          const M = q2m(qg); AX = M[0]; AY = M[1]; AZ = M[2];
+          showId = dead ? 0 : grabAnim.it;
+          grabGhost = null;                            // it is the HELD item now, not a world object — drawing both would double it
+        } else {
+          // ── HAND FULL ── it is drawn in to the same point on the player a carved chunk is, as its own world
+          // object, so the tool you are holding stays out (user). FULL SIZE the whole way on the same gentle
+          // arc: shrinking it read as the item evaporating rather than being picked up.
+          const tw = [P.x, smoothEye + PH.absorbY, P.z];
+          grabGhost = { it: grabAnim.it, ph: grabAnim.aPh || 0,
+            x: grabAnim.x + (tw[0] - grabAnim.x) * e2,
+            y: grabAnim.y + (tw[1] - grabAnim.y) * e2 + Math.sin(e2 * Math.PI) * 3,
+            z: grabAnim.z + (tw[2] - grabAnim.z) * e2,
+            vs: 1 };
+        }
         // …and the hand KEEPS WHAT IT WAS HOLDING (user). This used to select the slot the pickup landed in,
         // so walking over a twig put the twig in your hand and your axe away — reversed here: the pickup
         // goes to its slot and the tool stays out. An EMPTY hand still takes it, since there is nothing to lose.
