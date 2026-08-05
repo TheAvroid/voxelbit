@@ -905,14 +905,6 @@
   const ED_WHITE = addCol(250, 250, 252), ED_GREY = addCol(202, 207, 216), ED_HLITE = addCol(255, 186, 64);   // asset-editor stage: white plane, 1 m gridline grey, amber selection ring (all marked solid below)
   const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);                                    // twig (pickable) / stick — pine-trunk browns
   const BLOOM   = [addCol(198, 62, 54), addCol(226, 192, 62), addCol(230, 228, 220), addCol(152, 94, 192), addCol(224, 122, 162), addCol(228, 142, 56)];   // flower heads
-  // ── CAVE WALL LINING ── the stone a tunnel cuts through is mostly DIRT, which reads as flat brown mud underground.
-  // The carve repaints the shell just outside the bore in ROCK/ROCKX shades so caves look like rock, not soil.
-  const CAVEROCK = ROCK.concat(ROCKX);                 // wall shades (plain Arrays — they cross to the gen workers via the JSON `tables`)
-  const CAVEKEEP = (() => {                            // ids the lining must NOT paint over: ore veins (stamped BEFORE caves, so they'd be erased) and water/lava
-    const a = new Array(256).fill(0);
-    for (const id of [WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y].concat(ORECOAL, OREIRON, OREGOLD, ORECRYS)) a[id] = 1;
-    return a;
-  })();
   const solidTab = new Uint8Array(256);                // per-id collision: terrain/trunks/logs solid; decor + FOLIAGE walk-through
   for (let i = 1; i < DECOR_MIN; i++) solidTab[i] = 1;
   for (const f of foliageIds) solidTab[f] = 0;
@@ -1327,7 +1319,6 @@
   for (const i of [...GRASS, ...BLOOM]) floatTab[i] = 1;
   for (const m of STICKV) for (const q of m.vox) floatTab[q >>> 24] = 1;            // twigs (user)
   if (CONEV) for (const q of CONEV.vox) floatTab[q >>> 24] = 1;                     // …and the pinecones lying beside them
-  const FLOATDECOR = new Set([...GRASS, ...BLOOM, ...FERNIDS]);                             // surface decor (grass strands, flowers, fern fronds) removed if a cave/tunnel carves the ground out from under it — no floating grass over cave mouths
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
     markSolid(MUSHV);                                                                        // mushroom clusters collide (its ids are its own — addCol never dedupes)
@@ -1962,13 +1953,12 @@
     // air. The old guard tested the rock's CENTRE against a flat 52, but the pit measures 42-52 across and the widest
     // model is 74 — a big rock centred just outside 52 still had its near edge ~37 voxels inside the hole. Grow the
     // exclusion by the rock's own half-width so the whole footprint clears the pit, and only the big ones pay for it.
-    if (size === 0) return (ROCKV && !nearWormMouth(bx, bz, 52 + (Math.max(ROCKV.sx, ROCKV.sy) >> 1)))
+    if (size === 0) return ROCKV
       ? { bx, bz, size, rot, mi: 0, up: ihash(cx * 43 + 12, cz * 47 + 21) < 0.5 ? 1 : 0 } : null;   // half stand upright
     const list = size === 1 ? R26S : (size === 2 ? R26M : R26B);
     if (!list.length) return null;
     const mi = list[(ihash(cx * 37 + 5, cz * 41 + 8) * list.length) | 0];
     const m = ROCK26[mi];
-    if (nearWormMouth(bx, bz, 52 + (Math.max(m.sx, m.sy) >> 1))) return null;
     if (size >= 2) {                                   // mid/big rocks are TREE-sized — reject candidates that would swallow a pine (same probe ferns use)
       const halfw = (Math.max(m.sx, m.sy) >> 1) + 8;
       for (let cz2 = Math.floor((bz - halfw) / TCELL); cz2 <= Math.floor((bz + halfw) / TCELL); cz2++)
@@ -2026,116 +2016,6 @@
     }
     caveCache.set(key, c);
     return c;
-  }
-  const fixCarveCol = (gx, gz) => {                     // keep the walkable ground honest where a carve reaches daylight — shared by every carver
-    const ci = gx + gz * WX;
-    const top = hmap[ci];                              // the OLD surface — surface decor (grass/flowers/ferns) sits just above it
-    let t = top;
-    while (t > 4 && W[gx + (t - 1) * WX + gz * WX * WY] === 0) t--;
-    hmap[ci] = t;
-    for (let ty = Math.max(t + 1, top - 2); ty < Math.min(WY, top + 6); ty++) {   // drop any surface decor left hanging over the carve — sweep the band AROUND THE OLD SURFACE, not a fixed 14 above the new floor: a deep gorge drops the floor far below the grass, which then clings high on the wall (user). Bottom-up so a strand cascades once its base loses support.
-      const jj = gx + ty * WX + gz * WX * WY;
-      if (W[jj] !== 0 && FLOATDECOR.has(W[jj]) && W[gx + (ty - 1) * WX + gz * WX * WY] === 0) W[jj] = 0;
-    }
-  };
-  // ── SMOOTH TUBE CARVER ── the worm caves are NOT a string of independent spheres (that beads/lumps at every station).
-  // Consecutive stations become TAPERED CAPSULES, adjacent capsules are joined with a polynomial smooth-min (a true
-  // fillet, so joints are concave-blended rather than butted), and the whole isosurface is displaced by low-frequency
-  // COHERENT 3D noise — organic swelling and pinching along the bore instead of a perfectly round pipe.
-  const TUBE_K = 7, TUBE_WOB = 5.5, TUBE_FRQ = 0.019;   // fillet width / wall displacement amplitude / noise wavelength (~53 vox — long, rolling)
-  const TUBE_SHELL = 3.0, CAVE_ROCKS = 5, CAVE_ORE = 9;   // PRESCREEN reach for the 1-voxel cave skin (the field is roughly a distance, so a face voxel always lands well inside 3) / small-rock scatter tries per station / ore-nodule tries per station
-  const smin3 = (a, b, k) => { const h = Math.max(0, Math.min(1, 0.5 + 0.5 * (b - a) / k)); return b + (a - b) * h - k * h * (1 - h); };
-  const capsF = (px, py, pz, A, B) => {                 // signed distance to the tapered capsule A→B (radius lerps along it)
-    const bax = B.x - A.x, bay = B.y - A.y, baz = B.z - A.z;
-    const pax = px - A.x, pay = py - A.y, paz = pz - A.z;
-    const bb = bax * bax + bay * bay + baz * baz;
-    const t = bb > 0 ? Math.max(0, Math.min(1, (pax * bax + pay * bay + paz * baz) / bb)) : 0;
-    const dx = pax - bax * t, dy = pay - bay * t, dz = paz - baz * t;
-    return Math.sqrt(dx * dx + dy * dy + dz * dz) - (A.r + (B.r - A.r) * t);
-  };
-  function carveTube(run, x0, x1, z0, z1) {             // `run` = one continuous chain of stations (a march); separate runs must NOT be chained or a straight ghost tunnel links them
-    for (let s = 0; s < run.length; s++) {
-      const A = run[s], B = run[Math.min(s + 1, run.length - 1)];
-      const P = run[Math.max(s - 1, 0)], N = run[Math.min(s + 2, run.length - 1)];   // the capsules on either side, for the fillet
-      const pad = Math.ceil(Math.max(A.r, B.r) + TUBE_WOB + TUBE_K + 2);
-      const bx0 = Math.max(x0, Math.min(A.x, B.x) - pad), bx1 = Math.min(x1, Math.max(A.x, B.x) + pad + 1);
-      const bz0 = Math.max(z0, Math.min(A.z, B.z) - pad), bz1 = Math.min(z1, Math.max(A.z, B.z) + pad + 1);
-      const by0 = Math.max(4, Math.min(A.y, B.y) - pad), by1 = Math.min(WY, Math.max(A.y, B.y) + pad + 1);
-      const abx = B.x - A.x, abz = B.z - A.z, ab2 = abx * abx + abz * abz;   // ── 2D COLUMN PRUNE ── capsF ≥ horizontal distance to the A-B footprint minus the fatter
-      const thr = Math.max(A.r, B.r) + TUBE_K + TUBE_WOB + 0.5;             // radius, for EVERY y in the column — beyond the blend band the whole y loop is a no-op
-      for (let z = bz0; z < bz1; z++) for (let x = bx0; x < bx1; x++) {     // (the box is square around a diagonal capsule, so that is MOST columns). +0.5 slack keeps
-        const cax = x - A.x, caz = z - A.z;                                 // the float lower bound clear of the exact f > K+WOB test below.
-        let ct = ab2 > 0 ? (cax * abx + caz * abz) / ab2 : 0; ct = ct < 0 ? 0 : (ct > 1 ? 1 : ct);
-        const cdx = cax - abx * ct, cdz = caz - abz * ct;
-        const d2 = cdx * cdx + cdz * cdz;
-        if (d2 > thr * thr) continue;
-        const dyLim = Math.sqrt(thr * thr - d2) + 0.5;                      // same bound stood upright: 3D dist² ≥ d2 + yGap², so rows further than this from the
-        const ay0 = Math.max(by0, Math.ceil(Math.min(A.y, B.y) - dyLim));   // segment's y-span can't reach the blend band — the y loop shrinks from the whole pad
-        const ay1 = Math.min(by1, Math.floor(Math.max(A.y, B.y) + dyLim) + 1);   // box to the tube's true height over this column
-        const gx = gwrap(x, WX), gz = gwrap(z, WZ);
-        let touched = false;
-        for (let y = ay0; y < ay1; y++) {
-          let f = capsF(x, y, z, A, B);
-          if (f > TUBE_K + TUBE_WOB) continue;          // well outside the blend band — skip the neighbour + noise work (the adjacent capsule covers its own side symmetrically)
-          f = smin3(f, capsF(x, y, z, P, A), TUBE_K);
-          f = smin3(f, capsF(x, y, z, B, N), TUBE_K);
-          if (f < -TUBE_WOB) {                          // sign-certain bulk sides of the wall skip the noise: it lives in (-WOB, WOB), so this deep
-            const iq = gx + y * WX + gz * WX * WY;      // in the bore the voxel carves whatever it says…
-            const vq = W[iq];
-            if (vq && vq !== WATER_T && vq !== WATER_B) { W[iq] = 0; touched = true; }
-            continue;
-          }
-          if (f > TUBE_SHELL + TUBE_WOB) continue;      // …and this deep in the rock it neither carves nor can reach the skin window
-          f += (vnoise3(x * TUBE_FRQ, y * TUBE_FRQ, z * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
-          if (f > 0) {                                  // ── CAVE SKIN ── EXACTLY the solid voxels that touch the bore: ONE layer thick, no gaps, so the whole
-            if (f < TUBE_SHELL) {                       // inner surface of the cave is rock and nothing else is left showing.
-              let skin = false;                         // Membership is decided on the analytic FIELD, never on W's neighbours: in the gen workers W is a
-              for (let n = 0; n < 6 && !skin; n++) {    // region-local slab, so a read one voxel outside the region hits a different part of the world and
-                const nx = x + (n === 0 ? 1 : (n === 1 ? -1 : 0));   // would leave bare voxels along every region seam.
-                const ny = y + (n === 2 ? 1 : (n === 3 ? -1 : 0));
-                const nz = z + (n === 4 ? 1 : (n === 5 ? -1 : 0));
-                let g = capsF(nx, ny, nz, A, B);
-                g = smin3(g, capsF(nx, ny, nz, P, A), TUBE_K);
-                g = smin3(g, capsF(nx, ny, nz, B, N), TUBE_K);
-                if (g < -TUBE_WOB) { skin = true; continue; }   // sign-certain both ways — the ±WOB noise can't bridge a wider gap, skip its eval
-                if (g > TUBE_WOB) continue;
-                g += (vnoise3(nx * TUBE_FRQ, ny * TUBE_FRQ, nz * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
-                if (g <= 0) skin = true;                // a neighbour is open bore → this voxel is an exposed face
-              }
-              if (skin) {
-                const jj = gx + y * WX + gz * WX * WY;
-                const vw = W[jj];
-                if (vw && !CAVEKEEP[vw]) W[jj] = vnoise3(x * 0.045 + 91, y * 0.045 + 17, z * 0.045 + 53) > 0.60
-                  ? MOSS[(ihash(x * 5 + y, z * 7 + y * 3) * MOSS.length) | 0]      // LUSH grotto (user): coherent-noise swathes of moss over the lining — patchy like real cave growth, never speckle
-                  : CAVEROCK[(ihash(x * 3 + y, z * 5 + y * 7) * CAVEROCK.length) | 0];   // mottled, hashed on WORLD coords so the pattern can't swim on a window shift
-              }
-            }
-            continue;
-          }
-          const ii = gx + y * WX + gz * WX * WY;
-          const v = W[ii];
-          if (v && v !== WATER_T && v !== WATER_B) { W[ii] = 0; touched = true; }
-        }
-        if (touched) fixCarveCol(gx, gz);
-      }
-    }
-  }
-  function carveSphere(px, py, pz, r, x0, x1, z0, z1) {
-    const R = Math.ceil(r);
-    const cxq = Math.round(px), cyq = Math.round(py), czq = Math.round(pz);
-    for (let dz = -R; dz <= R; dz++) { const z = czq + dz; if (z < z0 || z >= z1) continue;
-      for (let dx = -R; dx <= R; dx++) { const x = cxq + dx; if (x < x0 || x >= x1) continue;
-        const gx = gwrap(x, WX), gz = gwrap(z, WZ);
-        let touched = false;
-        for (let dy = -R; dy <= R; dy++) {
-          const y = cyq + dy; if (y < 4 || y >= WY) continue;
-          if (dx * dx + dy * dy + dz * dz > r * r) continue;   // plain round falloff — the per-voxel white-noise wobble that used to live here made gritty speckled walls, not rock
-          const ii = gx + y * WX + gz * WX * WY;
-          const v = W[ii];
-          if (v && v !== WATER_T && v !== WATER_B) { W[ii] = 0; touched = true; }
-        }
-        if (touched) fixCarveCol(gx, gz);
-      } }
   }
   function stampCave(c, x0, x1, z0, z1) {
     const dxr = Math.cos(c.ang), dzr = Math.sin(c.ang);
@@ -2201,44 +2081,6 @@
         }
       }
     }
-    for (let t = 36; t < c.len - 36; t += 44) {         // CAVE MOUTHS: walk-in tunnels punched through the gorge walls
-      const hcm = ihash(c.seed + t * 7, 313);
-      if (hcm > 0.5) continue;
-      const kk = Math.sin(Math.PI * t / c.len);
-      const wE = c.wb * Math.pow(kk, 1.5);
-      if (wE < 6) continue;
-      const offT = Math.sin(t * 0.02 + c.seed) * 14 + Math.sin(t * 0.053 + c.seed * 1.7) * 5;
-      const side = hcm < 0.25 ? 1 : -1;
-      let cxp = c.sx + dxr * t + nx * (offT + side * (wE + 1));
-      let czp = c.sz + dzr * t + nz * (offT + side * (wE + 1));
-      let cyp = 12 + hcm * 22;                          // well above the lava
-      let yaw2 = Math.atan2(nz * side, nx * side);
-      let pit2 = 0.05 + hcm * 0.2;
-      for (let i2 = 0; i2 < 40; i2++) {
-        carveSphere(cxp, cyp, czp, 3.4 + ihash(c.seed + i2, t) * 1.2, x0, x1, z0, z1);
-        yaw2 += (ihash(c.seed + i2 * 3, t + 5) - 0.5) * 0.4;
-        pit2 = Math.max(-0.2, Math.min(0.35, pit2 + (ihash(c.seed + i2 * 7, t + 9) - 0.5) * 0.2));
-        cxp += Math.cos(yaw2) * Math.cos(pit2) * 2.2;
-        czp += Math.sin(yaw2) * Math.cos(pit2) * 2.2;
-        cyp += Math.sin(pit2) * 2.2;
-        if (cyp > H(Math.round(cxp), Math.round(czp)) - 4) break;   // surfaced — a hillside mouth
-      }
-    }
-    let px = c.sx + dxr * c.len, pz = c.sz + dzr * c.len;   // CAVE WORM: descends from the ravine end, wandering, with chambers
-    let py = 14;                                       // the gorge floor sits at bedrock — caves branch from down there
-    let yaw3 = c.ang + (ihash(c.seed, 5) - 0.5) * 1.2;
-    let pit = -0.30;
-    for (let i = 0; i < 110; i++) {
-      const rr2 = 3.2 + ihash(c.seed + i, 11) * 2.4 + ((i % 34) < 4 ? 3.0 : 0);
-      if (H(Math.round(px), Math.round(pz)) > WL + 2) carveSphere(px, py, pz, rr2, x0, x1, z0, z1);   // never tunnel under water
-      yaw3 += (ihash(c.seed + i, 17) - 0.5) * 0.55;
-      pit = Math.max(-0.5, Math.min(0.12, pit + (ihash(c.seed + i, 23) - 0.5) * 0.24));
-      px += Math.cos(yaw3) * Math.cos(pit) * 2.4;
-      pz += Math.sin(yaw3) * Math.cos(pit) * 2.4;
-      py += Math.sin(pit) * 2.4;
-      if (py < 9) pit = Math.abs(pit) * 0.5;
-      if (i > 30 && py > H(Math.round(px), Math.round(pz)) - 3) break;   // resurfaced - a natural cave mouth
-    }
   }
   function nearCave(x, z, r = 56) {                    // surface decor keeps off the ravine line (r widens for big features like domes)
     for (let cz = Math.floor((z - CAVE_MARGIN) / CAVE_CELL); cz <= Math.floor((z + CAVE_MARGIN) / CAVE_CELL); cz++)
@@ -2247,240 +2089,6 @@
         const dxr = Math.cos(c.ang), dzr = Math.sin(c.ang);
         const t = Math.max(0, Math.min(c.len, (x - c.sx) * dxr + (z - c.sz) * dzr));
         const ddx = x - (c.sx + dxr * t), ddz = z - (c.sz + dzr * t);
-        if (ddx * ddx + ddz * ddz < r * r) return true;
-      }
-    return false;
-  }
-  // ── WORM CAVES ── Minecraft-style walk-in caves: noise-steered Perlin worms (the classic MC carver) tunnelled through
-  // the stone — a visible surface MOUTH, a winding descending tunnel (~2.4 m bore, a 20-voxel player walks it), usually a
-  // branch, and a terminal chamber. Past the mouth the tunnel NEVER breaks the surface or a lakebed (no surprise sinkholes,
-  // no drained lakes), and it stays above the bedrock lava.
-  const WORM_CELL = 448, WORM_MARGIN = 900;            // one candidate per ~45 m cell, rare roll; margin covers the longest wander
-  const wormCache = new Map();
-  function wormCaveAt(cx, cz) {
-    const key = cx * 100003 + cz;
-    let c = wormCache.get(key);
-    if (c !== undefined) return c;
-    c = null;
-    if (ihash(cx * 101 + 37, cz * 103 + 59) <= 0.165) {   // 25% RARER (user): per-cell spawn chance 0.22 → 0.165
-      const ex = Math.round(cx * WORM_CELL + 40 + ihash(cx * 3 + 77, cz * 7 + 41) * (WORM_CELL - 80));
-      const ez = Math.round(cz * WORM_CELL + 40 + ihash(cx * 9 + 13, cz * 5 + 71) * (WORM_CELL - 80));
-      const eh = H(ex, ez);
-      if (eh <= WL + 6 || nearCave(ex, ez, 70)) { wormCache.set(key, null); return c; }   // dry entrance, clear of the gorges
-      const sseed = ihash(cx * 41 + 3, cz * 43 + 19) * 640;
-      const segs = [];
-      let runId = 0;                                   // each march is its own CHAIN — the tube carver only links stations sharing a run, else the branch start would be joined to the main tunnel's end by a straight ghost bore
-      const march = (sx0, sy0, sz0, az0, pit0, len, rt, ent) => {  // one worm: a carve station every 8 voxels, sphere radius ~rt
-        const rid = runId++;
-        let px = sx0, py = sy0, pz = sz0, az = az0, pit = pit0;
-        for (let t = 0, i = 0; t < len; t += 4, i++) {
-          az += (vnoise(sseed + t * 0.012, 7.3) - 0.5) * 0.5 + (vnoise(sseed * 1.7 + t * 0.04, 19.1) - 0.5) * 0.26;   // smooth noise steering
-          pit += (((t / len) < 0.3 ? -0.5 : 0) - pit) * 0.07 + (vnoise(sseed + t * 0.025, 41.7) - 0.5) * 0.14;        // dive first, then level out and wander
-          pit = Math.max(-0.55, Math.min(0.3, pit));
-          const cp = Math.cos(pit);
-          px += Math.cos(az) * cp * 4; pz += Math.sin(az) * cp * 4; py += Math.sin(pit) * 4;
-          if (py < 42) { py = 42; pit = Math.abs(pit) * 0.4; }     // never carve down into the bedrock lava (sphere bottoms stay above y~14 at r 26)
-          if (i % 3 === 0) {                          // stations every 12 voxels — the doubled spheres still overlap deeply
-            const r = rt + (vnoise(sseed + t * 0.05, 91.3) - 0.5) * 5;
-            const hs = H(Math.round(px), Math.round(pz));
-            if ((!ent || i >= 12) && py + r > hs - 5) py = hs - 5 - r;   // past the mouth the tunnel never surfaces (dips under valleys and riverbeds)
-            segs.push({ x: Math.round(px), y: Math.round(py), z: Math.round(pz), r, k: rid });
-          }
-        }
-        return [px, py, pz];
-      };
-      const az0 = ihash(cx + 21, cz + 87) * 6.283;
-      const len = 480 + ihash(cx * 11 + 5, cz * 13 + 9) * 320;     // 48-80 m main tunnel
-      const end = march(ex, eh + 4, ez, az0, -0.5, len, 24, true);   // r 24 ~ 4.8 m bore (doubled — 12 was 'too cramped')
-      const bs = segs[(segs.length * 0.45) | 0];                   // a BRANCH takes off roughly mid-way down (70% of systems)
-      if (ihash(cx * 23 + 7, cz * 29 + 15) < 0.7)
-        march(bs.x, bs.y, bs.z, az0 + (ihash(cx * 31 + 2, cz * 37 + 6) < 0.5 ? 1.4 : -1.4), 0, len * 0.4, 21, false);
-      const cr = 34 + ihash(cx * 47 + 9, cz * 53 + 25) * 10;      // terminal CHAMBER (doubled), clamped safely under its own surface
-      const cy = Math.min(Math.round(end[1]), H(Math.round(end[0]), Math.round(end[2])) - 6 - Math.ceil(cr));
-      segs.push({ x: Math.round(end[0]), y: Math.max(14 + Math.ceil(cr), cy), z: Math.round(end[2]), r: cr, k: runId++ });   // the chamber is its own run — a lone blob that the noise rounds out, overlapping the tunnel end it sits on
-      let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
-      for (const sg of segs) { x0 = Math.min(x0, sg.x - sg.r); x1 = Math.max(x1, sg.x + sg.r); z0 = Math.min(z0, sg.z - sg.r); z1 = Math.max(z1, sg.z + sg.r); }
-      c = { segs, mx: ex, mz: ez, x0, x1, z0, z1 };
-    }
-    wormCache.set(key, c);
-    return c;
-  }
-  function stampWormCave(c, x0, x1, z0, z1) {          // carveTube does the region clip, water-skip and hmap fix per column
-    let mre = 0;                                       // widest small-rock mean half-extent — the farthest any cave decor can land past the station bbox
-    for (let gi = 0; gi < R26S.length; gi++) { const mm = ROCK26[R26S[gi]]; const hh = (mm.sx + mm.sy + mm.sz) / 6; if (hh > mre) mre = hh; }
-    const mar = mre + 55;                              // rock walk (WOB+12) + centre shift (mre−3) + its ±40 stamp pre-clip; the carve (K+WOB+2) and ore (WOB+19+6) reach less
-    if (c.x1 + mar < x0 || c.x0 - mar >= x1 || c.z1 + mar < z0 || c.z0 - mar >= z1) return;   // the system can't touch this region at all — WORM_MARGIN casts a 900-vox net per cell, the bbox is exact. Identical output: every pass below clips to the region anyway.
-    const runs = [];                                   // regroup the flat station list into its marches (stations are pushed in run order, so a simple split works)
-    for (const sg of c.segs) {
-      const last = runs[runs.length - 1];
-      if (last && last[0].k === sg.k) last.push(sg); else runs.push([sg]);
-    }
-    for (const run of runs) carveTube(run, x0, x1, z0, z1);
-    const isChamber = (run) => run.length === 1 && run[0].r > 30;   // the terminal chamber is pushed as its own lone big-radius run
-    for (const run of runs) stampCaveRocks(run, c.segs, x0, x1, z0, z1);   // litter AFTER every bore is cut, so a later capsule can't carve a rock back out
-    for (const run of runs) stampCaveOre(run, c.segs, x0, x1, z0, z1);     // …then bed the coal/iron into the finished wall, so the lining can't repaint over it
-    for (let ri = 0; ri < runs.length; ri++) stampCaveFlora(runs[ri], c.segs, isChamber(runs[ri]) ? 2 : (ri === 0 ? 0 : 1), x0, x1, z0, z1);   // flora LAST — tufts land on rubble and floor alike, never floating over a later carve
-  }
-  // The carve field, evaluated over the WHOLE cave rather than one run. A run-local field reports solid rock
-  // wherever a BRANCH or the CHAMBER has already carved the space away, so anything anchored to it hangs in mid-air —
-  // that is what left rocks and grass floating. Still purely analytic (a pure function of world coords), so it stays
-  // region-safe: W is a region-local slab in the gen workers and a read outside the region would hit another part of
-  // the world entirely. Plain min instead of the carver's smin makes the cave read very slightly SMALLER, so anything
-  // resting on it errs into the rock rather than above it.
-  const caveNear = (segs, x, z) => {                   // indices of the stations whose reach can touch this column — the whole-cave loop only pays for these
-    const out = [];
-    for (let i = 0; i < segs.length; i++) {
-      const A = segs[i], B = (i + 1 < segs.length && segs[i + 1].k === A.k) ? segs[i + 1] : A;
-      const reach = Math.max(A.r, B.r) + TUBE_WOB + TUBE_K + 2;
-      if (x < Math.min(A.x, B.x) - reach || x > Math.max(A.x, B.x) + reach) continue;
-      if (z < Math.min(A.z, B.z) - reach || z > Math.max(A.z, B.z) + reach) continue;
-      out.push(i);
-    }
-    return out;
-  };
-  const caveNearR = (segs, x, z, R) => {               // caveNear for a whole R-radius NEIGHBOURHOOD — a superset of caveNear(q) for every q within R
-    const out = [];                                    // of (x,z). Sign-safe to hand caveSolid: a station caveNear(q) would exclude keeps field > K+2
-    for (let i = 0; i < segs.length; i++) {            // at q even after noise, so extra stations can never flip the >= 0 answer. One list per decor
-      const A = segs[i], B = (i + 1 < segs.length && segs[i + 1].k === A.k) ? segs[i + 1] : A;   // WALK replaces a fresh caveNear scan per probe step.
-      const reach = Math.max(A.r, B.r) + TUBE_WOB + TUBE_K + 2 + R;
-      if (x < Math.min(A.x, B.x) - reach || x > Math.max(A.x, B.x) + reach) continue;
-      if (z < Math.min(A.z, B.z) - reach || z > Math.max(A.z, B.z) + reach) continue;
-      out.push(i);
-    }
-    return out;
-  };
-  const caveSolid = (x, y, z, segs, near) => {         // >= 0 means rock. Reproduces carveTube's field EXACTLY — same smin3 fillet chain, same
-    let f = 1e9;                                       // per-station min, same noise. A plain capsule min instead reads a SMALLER cave than the one
-    for (let n = 0; n < near.length; n++) {            // actually carved, so 'solid' comes back for space that is really open air and anything
-      const i = near[n], A = segs[i];                  // anchored there hangs in the middle of the tunnel.
-      const B = (i + 1 < segs.length && segs[i + 1].k === A.k) ? segs[i + 1] : A;
-      const Pv = (i - 1 >= 0 && segs[i - 1].k === A.k) ? segs[i - 1] : A;
-      const N = (i + 2 < segs.length && segs[i + 2].k === A.k) ? segs[i + 2] : B;
-      let g = capsF(x, y, z, A, B);
-      g = smin3(g, capsF(x, y, z, Pv, A), TUBE_K);
-      g = smin3(g, capsF(x, y, z, B, N), TUBE_K);
-      if (g < f) f = g;                                // carveTube carves where ANY station's field <= 0, so solid means the MIN is still positive
-      if (f < -TUBE_WOB) return -1;                    // SIGN-certain fast exits: the noise term lives in (-WOB, WOB), so a bore this deep stays open
-    }                                                  // whatever the remaining stations or the noise say — and every caller only tests the sign
-    if (f > TUBE_WOB) return 1;                        // (the >= 0 compares in the decor walks). Rock-side certainty skips the vnoise3 too.
-    return f + (vnoise3(x * TUBE_FRQ, y * TUBE_FRQ, z * TUBE_FRQ) - 0.5) * TUBE_WOB * 2;
-  };
-  const caveFloorY = (rx, rz, segs, fromY, lo) => {    // first solid voxel under (rx,rz) — the real one, counting every run
-    const near = caveNear(segs, rx, rz);
-    if (!near.length) return -1;
-    for (let y = Math.round(fromY); y > lo; y--)
-      if (caveSolid(rx, y, rz, segs, near) >= 0) return y + 1;
-    return -1;
-  };
-  function stampCaveRocks(run, segs, x0, x1, z0, z1) {       // SMALL rocks from the 26-pack bedded into the bore — floor, SIDES and ROOF alike (user), a quarter as many as before
-    if (!R26S.length) return;
-    let mre = 0;                                       // widest mean half-extent in the small-rock pack — bounds how far a stamped rock reaches past its anchor
-    for (let gi = 0; gi < R26S.length; gi++) { const mm = ROCK26[R26S[gi]]; const hh = (mm.sx + mm.sy + mm.sz) / 6; if (hh > mre) mre = hh; }
-    for (let s = 0; s < run.length; s++) {
-      const A = run[s], B = run[Math.min(s + 1, run.length - 1)];
-      const Pv = run[Math.max(s - 1, 0)], N = run[Math.min(s + 2, run.length - 1)];
-      const rr = A.r + TUBE_WOB + 12 + mre;            // rock centres land within walk reach + model half-extent of the station, and the stamp pre-clip
-      if (A.x + rr + 40 < x0 || A.x - rr - 40 >= x1 || A.z + rr + 40 < z0 || A.z - rr - 40 >= z1) continue;   // is ±40 — a station this far out cannot put a voxel in this region. Identical output: every candidate it would try dies on that clip. Regions are band chunks (~32-176 wide) and a system spans ~800, so most stations skip.
-      const nearA = caveNearR(segs, A.x, A.z, rr + mre + 2);   // one whole-walk near list (walk probes stay within rr; buried probes reach cd + hx ≤ rr + mre; +2 covers the probe rounding)
-      for (let k = 0; k < CAVE_ROCKS; k++) {
-        if (ihash(A.x * 31 + s * 7 + k, A.z * 37 + k * 13) > 0.275) continue;   // DOUBLED back from 0.1375 (user); still half the original 0.55
-        const th = ihash(A.x * 17 + k * 5, A.z * 19 + s * 3 + k) * 6.283;        // a direction off the bore axis: the whole sphere, so rocks ring the walls and hang off the roof
-        const ph = (ihash(A.x * 11 + k, A.z * 23 + k * 9) - 0.5) * 2.4;
-        const cph = Math.cos(ph), ux = Math.cos(th) * cph, uy = Math.sin(ph), uz = Math.sin(th) * cph;
-        let hit = -1;                                  // walk OUT to the rock face, testing the WHOLE cave — a run-local field calls a branch's open space 'solid' and the rock ends up hanging in it
-        for (let d = Math.max(2, A.r - 10); d < A.r + TUBE_WOB + 12; d += 0.5) {
-          const qx = A.x + ux * d, qy = A.y + uy * d, qz = A.z + uz * d;
-          if (caveSolid(qx, qy, qz, segs, nearA) >= 0) { hit = d; break; }
-        }
-        if (hit < 0) continue;
-        const mi = R26S[(ihash(A.x * 7 + 3 + k, A.z * 11 + 5 + s) * R26S.length) | 0], m = ROCK26[mi];
-        // Straddle the face: the rock JUTS 3-5 voxels into the cave interior (user) and the rest of it stays buried in
-        // the wall. Centre = face + halfExtent - protrusion, so the near edge lands `out` voxels inside the open bore
-        // while roughly 2*halfExtent - out voxels of rock remain embedded — anchored by construction, never floating.
-        const hx = (m.sx + m.sy + m.sz) / 6;           // mean half-extent, cheap stand-in for the extent along u
-        const out = 3 + ihash(A.x * 43 + k, A.z * 47 + s) * 2;
-        const cd = hit + hx - out;
-        let buried = 0;                                // the far half must really be rock — the wall noise can reopen a pocket just past the face
-        for (let q = 1; q <= 4; q++) {
-          const qd = cd + hx * (q / 4), qx2 = A.x + ux * qd, qy2 = A.y + uy * qd, qz2 = A.z + uz * qd;
-          if (caveSolid(qx2, qy2, qz2, segs, nearA) >= 0) buried++;
-        }
-        if (buried < 3) continue;
-        const rx = Math.round(A.x + ux * cd), ry = Math.round(A.y + uy * cd), rz = Math.round(A.z + uz * cd);
-        // caveSolid models the CAVE, not the terrain: anywhere outside the bore it answers 'solid', which above ground
-        // at the mouth is really open sky. Without this the entrance stations flung rocks into the air over the pit.
-        if (ry >= H(rx, rz) - 2) continue;             // the anchor has to be genuinely under the surface
-        if (rx + 40 < x0 || rx - 40 >= x1 || rz + 40 < z0 || rz - 40 >= z1) continue;   // reach cull only — stampModel does the real per-voxel clip
-        const wy = ry - (m.sz >> 1);                   // centred on the buried anchor, so the model straddles the face whichever surface it grew from
-        if (wy < 6 || wy >= WY) continue;
-        stampModel(m, (ihash(rx + 5, rz + 9) * 4) | 0, rx, wy, rz, x0, x1, z0, z1, 0);   // mode 0 = empty cells only, so the buried half is skipped and a rock never plugs the bore
-      }
-    }
-  }
-  function stampCaveOre(run, segs, x0, x1, z0, z1) {         // COAL + IRON chunks bedded in the tunnel wall (user). The oreAt veins only show where a bore happens to
-    for (let s = 0; s < run.length; s++) {             // clip one, so seed nodules ON the wall directly — same idea as the seams stampCave already lays in the gorges.
-      const A = run[s], B = run[Math.min(s + 1, run.length - 1)];
-      const Pv = run[Math.max(s - 1, 0)], N = run[Math.min(s + 2, run.length - 1)];
-      const rr = A.r + TUBE_WOB + 13;                  // walk reach + the ±0.5 face offset + rounding; nodule centres can't land past it
-      if (A.x + rr + 6 < x0 || A.x - rr - 6 >= x1 || A.z + rr + 6 < z0 || A.z - rr - 6 >= z1) continue;   // ±6 = the existing centre pre-clip — a station this far out stamps nothing here (identical output, same argument as the rocks pass)
-      const nearA = caveNearR(segs, A.x, A.z, rr + 2);
-      for (let k = 0; k < CAVE_ORE; k++) {
-        if (ihash(A.x * 67 + s * 11 + k, A.z * 71 + k * 5) > 0.35) continue;   // HALVED (user)
-        const th = ihash(A.x * 13 + k * 7, A.z * 29 + s + k) * 6.283;          // a direction off the bore axis…
-        const ph = (ihash(A.x * 37 + k, A.z * 41 + k * 9) - 0.5) * 2.2;        // …tilted, so nodules ring the walls, floor and roof alike
-        const cph = Math.cos(ph), ux = Math.cos(th) * cph, uy = Math.sin(ph), uz = Math.sin(th) * cph;
-        let hit = -1;                                  // …then walk OUT to the rock face, whole-cave so a branch's open space is not mistaken for wall
-        for (let d = Math.max(2, A.r - 6); d < A.r + TUBE_WOB + 12; d += 1.0) {
-          const qx = A.x + ux * d, qy = A.y + uy * d, qz = A.z + uz * d;
-          if (caveSolid(qx, qy, qz, segs, nearA) >= 0) { hit = d; break; }
-        }
-        if (hit < 0) continue;
-        const ox = Math.round(A.x + ux * (hit + 0.5)), oy = Math.round(A.y + uy * (hit + 0.5)), oz = Math.round(A.z + uz * (hit + 0.5));
-        if (ox + 6 < x0 || ox - 6 >= x1 || oz + 6 < z0 || oz - 6 >= z1) continue;
-        const ORE = ihash(A.x * 3 + k, A.z * 7 + s) < 0.5 ? OREIRON : ORECOAL;   // ~50/50, same split as oreAt
-        const br = 1.7 + ihash(ox, oz + k) * 1.7, BR = Math.ceil(br);
-        for (let dz2 = -BR; dz2 <= BR; dz2++) for (let dy2 = -BR; dy2 <= BR; dy2++) for (let dx2 = -BR; dx2 <= BR; dx2++) {
-          if (dx2 * dx2 + dy2 * dy2 + dz2 * dz2 > br * br) continue;
-          const yy = oy + dy2; if (yy < 5 || yy >= WY) continue;
-          const xx = ox + dx2, zz = oz + dz2;
-          if (xx < x0 || xx >= x1 || zz < z0 || zz >= z1) continue;   // per-voxel region clip, so a nodule straddling a seam still lands identically from either side
-          const jj = gwrap(xx, WX) + yy * WX + gwrap(zz, WZ) * WX * WY;
-          const vv = W[jj];
-          if (vv && !CAVEKEEP[vv]) W[jj] = ORE[(ihash(xx + yy, zz - yy) * 2) | 0];   // solid wall only — never fill the bore, never touch water/lava or an existing vein
-        }
-      }
-    }
-  }
-  function stampCaveFlora(run, segs, kind, x0, x1, z0, z1) {   // GREEN GROUND COVER only (user removed the fern + mushroom models): moss/grass strands over the bore floor
-    for (let s = 0; s < run.length; s++) {
-      const A = run[s], B = run[Math.min(s + 1, run.length - 1)];
-      const Pv = run[Math.max(s - 1, 0)], N = run[Math.min(s + 2, run.length - 1)];
-      const rr = A.r * 0.75 + 2;                       // strands land within 0.75·r of the station (+ rounding) and are clipped strictly to the region —
-      if (A.x + rr < x0 || A.x - rr >= x1 || A.z + rr < z0 || A.z - rr >= z1) continue;   // a station out of reach contributes nothing (identical output)
-      const depth = kind === 0 ? s / run.length : 1;   // 0 at the mouth -> 1 at the end; branches and the chamber are all 'deep'
-      for (let k = 0; k < 7; k++) {
-        if (ihash(A.x * 83 + s * 5 + k, A.z * 89 + k * 3) > 0.6) continue;
-        const ang = ihash(A.x * 7 + k * 9, A.z * 13 + s + k) * 6.283;
-        const rad = Math.sqrt(ihash(A.x * 97 + k, A.z * 101 + k * 5)) * A.r * 0.75;
-        const rx = Math.round(A.x + Math.cos(ang) * rad), rz = Math.round(A.z + Math.sin(ang) * rad);
-        if (rx < x0 || rx >= x1 || rz < z0 || rz >= z1) continue;   // strands are single COLUMNS clipped strictly inside the region, which is exactly what makes the W read below safe:
-        const gx = gwrap(rx, WX), gz = gwrap(rz, WZ);              // the whole vertical column is in-slab, so this is the finished world and not a neighbouring region's data.
-        let fy = -1;                                               // Read the REAL floor rather than the analytic one — the field uses plain min where the carver uses smin, so it reports
-        const lo = Math.max(2, Math.round(A.y - A.r - TUBE_WOB - 10));   // a floor a voxel or two above the carved one and every strand ends up hanging in the air.
-        for (let y = Math.min(WY - 3, Math.round(A.y)); y > lo; y--)
-          if (W[gx + y * WX + gz * WX * WY]) { fy = y + 1; break; }
-        if (fy < 6 || fy >= WY - 2) continue;
-        const tall = depth < 0.28 && ihash(rx * 3, rz * 5) < 0.35 ? 2 : 1;   // taller blades where the mouth light still reaches
-        const col = (depth < 0.4 ? GRASS : MOSS)[(ihash(rx * 11 + 2, rz * 3 + 6) * 4) | 0];
-        for (let t = 0; t < tall; t++) { const ii = gx + (fy + t) * WX + gz * WX * WY; if (W[ii]) break; W[ii] = col; }
-      }
-    }
-  }
-  function nearWormMouth(x, z, r = 52) {               // trees + spawn keep off the cave mouths (the entrance pit would swallow them)
-    for (let cz = Math.floor((z - r) / WORM_CELL) - 1; cz <= Math.floor((z + r) / WORM_CELL) + 1; cz++)
-      for (let cx = Math.floor((x - r) / WORM_CELL) - 1; cx <= Math.floor((x + r) / WORM_CELL) + 1; cx++) {
-        const c = wormCaveAt(cx, cz); if (!c) continue;
-        const ddx = x - c.mx, ddz = z - c.mz;
         if (ddx * ddx + ddz * ddz < r * r) return true;
       }
     return false;
@@ -2517,7 +2125,6 @@
     const wz = Math.round(cz * F2CELL + 3 + ihash(cx * 11 + 33, cz * 7 + 15) * (F2CELL - 6));
     if (H(wx, wz) <= WL + 4) return null;              // no ferns in water or on beaches
     if (nearCave(wx, wz)) return null;
-    if (nearWormMouth(wx, wz)) return null;
     for (let cz2 = Math.floor((wz - 14) / TCELL); cz2 <= Math.floor((wz + 14) / TCELL); cz2++)   // keep clear of pine trunks — the plant is 23 wide
       for (let cx2 = Math.floor((wx - 14) / TCELL); cx2 <= Math.floor((wx + 14) / TCELL); cx2++) {
         const t = treeAt(cx2, cz2); if (!t) continue;
@@ -2546,7 +2153,6 @@
     const wz = Math.round(cz * MUCELL + 5 + ihash(cx * 11 + 7, cz * 7 + 19) * (MUCELL - 10));
     if (H(wx, wz) <= WL + 4) return null;              // no mushrooms in water or on beaches
     if (nearCave(wx, wz)) return null;
-    if (nearWormMouth(wx, wz)) return null;
     let nearPine = false;                              // PINE-FOREST GATE: a pine within ~46 vox (crown reach) but ≥16 away so the 23-wide cluster never swallows a trunk
     for (let cz2 = Math.floor((wz - 46) / TCELL); cz2 <= Math.floor((wz + 46) / TCELL); cz2++)
       for (let cx2 = Math.floor((wx - 46) / TCELL); cx2 <= Math.floor((wx + 46) / TCELL); cx2++) {
@@ -2593,7 +2199,6 @@
     const wz = Math.round(cz * PCCELL + 3 + ihash(cx * 3 + 17, cz * 11 + 8) * (PCCELL - 6));
     if (H(wx, wz) <= WL + 4) return null;              // cones stay off beaches and lakebeds
     if (nearCave(wx, wz)) return null;
-    if (nearWormMouth(wx, wz)) return null;
     return { wx, wz, rot: (ihash(cx + 19, cz + 23) * 3.99) | 0 };
   }
   function stampPcone(p, x0, x1, z0, z1) {
@@ -2607,7 +2212,6 @@
     const wz = Math.round(cz * SCELL + 2 + ihash(cx * 7 + 2, cz * 9 + 6) * (SCELL - 4));
     if (H(wx, wz) <= WL + 4) return null;              // sticks stay off the beach
     if (nearCave(wx, wz)) return null;
-    if (nearWormMouth(wx, wz)) return null;            // no floating sticks over the mouth pit
     return { wx, wz, m: ihash(cx * 11 + 3, cz * 13 + 5) < 0.5 ? 0 : STICKV.length - 1, rot: (ihash(cx + 4, cz + 7) * 3.99) | 0 };
   }
   function stampStick(s, x0, x1, z0, z1) {
@@ -2621,7 +2225,6 @@
     const wz = Math.round(cz * LGCELL + 6 + ihash(cx * 11 + 4, cz * 13 + 2) * (LGCELL - 12));
     if (H(wx, wz) <= WL + 4) return null;
     if (nearCave(wx, wz)) return null;
-    if (nearWormMouth(wx, wz)) return null;
     return { wx, wz, rot: (ihash(cx * 5 + 21, cz * 3 + 33) * 3.99) | 0 };
   }
   function stampLog(l, x0, x1, z0, z1) {
@@ -2663,7 +2266,6 @@
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // spawn clearing
     if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
     if (nearCave(wx, wz)) return null;
-    if (nearWormMouth(wx, wz, 52 + (Math.max(MSX, MSY) >> 1))) return null;   // don't stand a pine over a cave mouth — widened by the crown's half-width for the same overhang reason as the boulders
     return { tx: wx, tz: wz, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
   }
   function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
@@ -2791,7 +2393,6 @@
     }
     yield* stampCellsGen(x0, x1, z0, z1, OCELL, 6, oreAt, stampOre);
     yield* stampCellsGen(x0, x1, z0, z1, CAVE_CELL, CAVE_MARGIN, caveAt, stampCave);
-    yield* stampCellsGen(x0, x1, z0, z1, WORM_CELL, WORM_MARGIN, wormCaveAt, stampWormCave);
     yield* stampCellsGen(x0, x1, z0, z1, BCELL, 44, boulderAt, stampBoulder);   // margin covers the widest rocks26 model (74 wide)
     yield* stampCellsGen(x0, x1, z0, z1, F2CELL, 16, fern2At, stampFern2);   // the fern.glb plant (23 wide)
     yield* stampCellsGen(x0, x1, z0, z1, MUCELL, 18, mushAt, stampMush);      // rare pine-forest mushroom cluster (23×27 footprint)
@@ -2894,7 +2495,7 @@
           const x = Math.round(L.x + ux * d), z = Math.round(L.z + uz * d);
           if (H(x, z) <= WL + 1) continue;             // still water/beach-flush — keep walking outward
           const sx = Math.round(L.x + ux * (d + 6)), sz = Math.round(L.z + uz * (d + 6));   // stand a little inland of the waterline
-          if (H(sx, sz) <= WL + 1 || nearCave(sx, sz) || nearWormMouth(sx, sz)) break;
+          if (H(sx, sz) <= WL + 1 || nearCave(sx, sz)) break;
           let shore = false;                           // …and confirm real lake water is actually in view from there
           for (let b = 0; b < 8; b++) { const ba = b * 0.7854;
             if (H(Math.round(sx + Math.cos(ba) * 14), Math.round(sz + Math.sin(ba) * 14)) <= WL) { shore = true; break; } }
@@ -2908,7 +2509,7 @@
     SPWZ = Math.round((Math.random() - 0.5) * 400000);
     console.log('[vb] spawn RANDOM', SPWX, SPWZ);
   }
-  { let g = 0; while ((H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ) || nearWormMouth(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random point over a huge basin can't loop forever
+  { let g = 0; while ((H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random point over a huge basin can't loop forever
   winOX = Math.round(SPWX / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
 
   // ── GEN POOL ── the ENTIRE generator (terrain sweep + every stamp pass) runs on a pool of worker threads.
@@ -2922,16 +2523,15 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, WORM_CELL, WORM_MARGIN, TUBE_K, TUBE_WOB, TUBE_FRQ, TUBE_SHELL, CAVE_ROCKS, CAVE_ORE, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH, CAVEROCK, CAVEKEEP };
-    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, caveAt, fixCarveCol, smin3, capsF, carveTube, carveSphere, stampCave, nearCave, wormCaveAt, stampWormCave, caveNear, caveNearR, caveSolid, caveFloorY, stampCaveRocks, stampCaveOre, stampCaveFlora, nearWormMouth, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
+    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
+    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, caveAt, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
-    wsrc2 += 'const FLOATDECOR = new Set(' + JSON.stringify([...FLOATDECOR]) + ');\n';   // carveSphere's floating-decor sweep needs this in the worker scope (a Set can't cross via JSON tables)
     wsrc2 += 'let WX = 0, WZ = 0, OX = 0, OZ = 0, BX = 0, W = null, hmap = null, touched = null, MROT = null, remap = null, rivScope = null;\n' +
       'const gwrap = (v, n) => v - (n === WX ? OX : OZ);\n' +
-      'const rivCache = new Map(), caveCache = new Map(), wormCache = new Map();\n' +
+      'const rivCache = new Map(), caveCache = new Map();\n' +
       'const takeRows = () => null;\n';
     for (const k in fns) wsrc2 += 'const ' + k + ' = ' + fns[k].toString() + ';\n';
     wsrc2 += 'onmessage = (e) => {\n' +
@@ -5185,7 +4785,7 @@
     SPWX = Math.round((Math.random() - 0.5) * 400000);
     SPWZ = Math.round((Math.random() - 0.5) * 400000);
     let g = 0;
-    while ((H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ) || nearWormMouth(SPWX, SPWZ)) && g++ < 6000) SPWX += 16;   // valid land, off water/caves (H, nearCave, nearWormMouth are all deterministic → work anywhere)
+    while ((H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ)) && g++ < 6000) SPWX += 16;   // valid land, off water/gorges (H and nearCave are both deterministic → work anywhere)
     respawn();                                          // teleport + maybeRecenter regenerates the world at the new spawn
     spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
     console.log('[vb] SPAWN RESET [H] → paste this over line ~156 to BAKE it:   ' + spawnBake);
@@ -9088,7 +8688,7 @@
     fish() { const o = []; const bodyClip = (B) => { const hx = Math.sin(B.th), hz = Math.cos(B.th), ay = Math.floor(B.y), hf = B.fhalf || 5; for (const a of [hf, hf * 0.5, 0, -hf * 0.5, -hf]) { const bx = Math.floor(B.x + hx * a), bz = Math.floor(B.z + hz * a); for (let yy = ay - 1; yy <= ay + 2; yy++) if (solid(bx, yy, bz)) return true; } return false; };   // per-species body length — the old fixed ±5 reported every short minnow as clipping
       for (let j = 244; j < 276; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), air: B.jumpV !== undefined, arm: B.jumpArm !== undefined, flee: (B.fleeT || 0) * 1000 > performance.now(), vyS: +(B.vyS || 0).toFixed(1) }); }
       return { species: FISHES.map((f) => f.name + '(' + f.n + 'f@' + f.item0 + ')'), live: o }; },   // fish test tap
-    vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, wormCaveAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL, fishCfg: FISH_CFG,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint; fishCfg: LIVE fish tunables (speed/flee/jump/pitch)
+    vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW }, slots, LILY_SZ, WL, fishCfg: FISH_CFG,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint; fishCfg: LIVE fish tunables (speed/flee/jump/pitch)
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
     vig(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return { uniform: UF[1268], on: vigOn, cineWeight: cineBlurK }; },   // cinematic vignette tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
     vigFree() { blurLock = false; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
@@ -9292,138 +8892,6 @@
       if (B && B.sN) for (let i = 0; i < B.sN; i++) s.add(W[B.sCells[i]]); } return [...s].sort((p, q) => p - q); },
     rd() { return { renderDist, half: HALF, windowX: WX }; },   // fixed view-distance tap
     lifedbg(m) { lifeDbg = m === undefined ? 0 : m | 0; return { mode: lifeDbg, traceInjected: LIFE_TRACE }; },   // debug views: 0 off / 1 slot ids / 2 history confidence / 3 motion / 4 denoised AO / 5 RAW sun visibility / 6 DENOISED sun visibility
-    mouthPit(r) {                                    // how far from the mouth is the SURFACE actually carved away? boulders stamp after the carve at pristine H, so anything inside this radius floats
-      const R = r || 4000, n = Math.ceil(R / WORM_CELL), out = [];
-      const c0x = Math.floor(P.x / WORM_CELL), c0z = Math.floor(P.z / WORM_CELL);
-      for (let dz = -n; dz <= n; dz++) for (let dx = -n; dx <= n; dx++) { const c = wormCaveAt(c0x + dx, c0z + dz);
-        if (c) out.push({ c, d: Math.hypot(c.mx - P.x, c.mz - P.z) }); }
-      out.sort((a2, b2) => a2.d - b2.d);
-      const res = [];
-      for (const e of out.slice(0, 6)) {              // sample several caves — the pit is elongated along the entry heading, so one is not representative
-        const c = e.c; let maxD = 0, carved = 0, ungen = 0;
-        for (let rad = 4; rad <= 200; rad += 2) for (let a2 = 0; a2 < 64; a2++) {
-          const th = a2 / 64 * 6.2832;
-          const x = Math.round(c.mx + Math.cos(th) * rad), z = Math.round(c.mz + Math.sin(th) * rad);
-          const hh = H(x, z); if (hh < 4 || hh >= WY - 4) continue;
-          let top = -1;                                // topmost solid in this column…
-          for (let y = hh + 3; y > hh - 60; y--) if (this.vox(x, y, z)) { top = y; break; }
-          if (top < 0) { ungen++; continue; }          // …nothing at all = region not generated here, NOT a pit; must not count
-          if (hh - top > 3) { carved++; if (rad > maxD) maxD = rad; }   // real ground sits well below the pristine height → the pit swallowed it
-        }
-        // …and the point of it all: is anything left hanging over the pit? Scan the airspace above the hole for
-        // solid voxels with a long drop under them — a boulder or trunk stamped off the pristine height.
-        let hang = 0, hangRock = 0; const hangAt = [], hcls = {};
-        const RID = new Set();                          // every rock palette id: the 26-pack plus the small field stone
-        for (const gi of R26S.concat(R26M, R26B)) for (const q of ROCK26[gi].vox) RID.add(q >>> 24);
-        if (ROCKV) for (const q of ROCKV.vox) RID.add(q >>> 24);
-        for (let rad = 0; rad <= 130; rad += 2) for (let a2 = 0; a2 < 48; a2++) {
-          const th = a2 / 48 * 6.2832;
-          const x = Math.round(c.mx + Math.cos(th) * rad), z = Math.round(c.mz + Math.sin(th) * rad);
-          const hh = H(x, z); if (hh < 4 || hh >= WY - 40) continue;
-          let ground = -1;
-          for (let y = hh + 34; y > hh - 60; y--) if (this.vox(x, y, z)) { ground = y; break; }
-          if (ground < 0) continue;
-          let gap = 0;                                 // count the empty voxels directly beneath the topmost solid
-          for (let y = ground - 1; y > ground - 26 && !this.vox(x, y, z); y--) gap++;
-          if (gap >= 4) { hang++;
-            const vid = this.vox(x, ground, z);
-            if (RID.has(vid)) hangRock++;              // ONLY rock counts as a floater — pine canopy over the rim legitimately has air beneath it
-            hcls[vid] = (hcls[vid] || 0) + 1;          // tally the culprit by voxel id so we can name the pass that placed it
-            if (hangAt.length < 4) hangAt.push({ x, y: ground, z, gap, id: vid, rgb: '#' + palette[vid].map((q) => q.toString(16).padStart(2, '0')).join('') }); }
-        }
-        res.push({ mouth: [c.mx, c.mz], maxCarvedRadius: maxD, carvedSamples: carved, ungenerated: ungen, dist: Math.round(e.d), hangingCols: hang, hangingRock: hangRock, hangAt,
-          hangIds: Object.entries(hcls).sort((p2, q2) => q2[1] - p2[1]).slice(0, 8)
-            .map(([id, n]) => ({ id: +id, n, rgb: '#' + palette[+id].map((q) => q.toString(16).padStart(2, '0')).join(''),
-              rock26: R26S.concat(R26M, R26B).some((gi) => ROCK26[gi].vox.some((q) => (q >>> 24) === +id)),
-              stone: ROCKV ? ROCKV.vox.some((q) => (q >>> 24) === +id) : false })) });
-      }
-      return res;
-    },
-    caveProbe(r) {                                   // nearest worm cave + a voxel census of its bore interior
-      const R = r || 4000, n = Math.ceil(R / WORM_CELL), out = [];
-      const c0x = Math.floor(P.x / WORM_CELL), c0z = Math.floor(P.z / WORM_CELL);
-      for (let dz = -n; dz <= n; dz++) for (let dx = -n; dx <= n; dx++) { const c = wormCaveAt(c0x + dx, c0z + dz);
-        if (c) out.push({ c, d: Math.hypot(c.mx - P.x, c.mz - P.z) }); }
-      out.sort((a2, b2) => a2.d - b2.d);
-      const e = out.find((q) => H(q.c.segs[q.c.segs.length - 1].x, q.c.segs[q.c.segs.length - 1].z) > 160) || out[0];
-      if (!e) return null;
-      const c = e.c, main = c.segs.filter((sg) => sg.k === 0);
-      const tally = { coal: 0, iron: 0, moss: 0, grass: 0, rock: 0, air: 0 };
-      const CO = new Set(ORECOAL), IR = new Set(OREIRON), MO = new Set(MOSS), GR = new Set(GRASS);
-      const box = { coal: 0, iron: 0, moss: 0, rock: 0, air: 0 };
-      const R26 = new Set(); for (const gi of R26S) for (const q of ROCK26[gi].vox) R26.add(q >>> 24);   // the small-rock palette ids
-      const site = { floor: 0, wall: 0, roof: 0 };   // where do rock voxels sit relative to each station centre?
-      { const sg = main[(main.length * 0.4) | 0], R2 = Math.round(sg.r) + 10;
-        for (let dy = -R2; dy <= R2; dy += 2) for (let dz = -R2; dz <= R2; dz += 2) for (let dx = -R2; dx <= R2; dx += 2) {
-          const y = sg.y + dy; if (y < 1 || y >= WY) continue;
-          const vv = this.vox(sg.x + dx, y, sg.z + dz);
-          if (!vv) box.air++; else if (CO.has(vv)) box.coal++; else if (IR.has(vv)) box.iron++; else if (MO.has(vv)) box.moss++; else box.rock++;
-        } }
-      const float2 = { blobs: 0, blobsFloating: 0, floatVox: 0, grassFloat: 0, grassOk: 0, worst: [] };
-      { const R26 = new Set(); for (const gi of R26S) for (const q of ROCK26[gi].vox) R26.add(q >>> 24);
-        const GM = new Set([...GRASS, ...MOSS]);
-        const seen = new Set(), key = (x, y, z) => x + ',' + y + ',' + z;
-        for (const sg of main.concat([c.segs[c.segs.length - 1]])) {
-          const R2 = Math.round(sg.r) + 10;
-          for (let dy = -R2; dy <= R2; dy++) for (let dz = -R2; dz <= R2; dz++) for (let dx = -R2; dx <= R2; dx++) {
-            const y = sg.y + dy; if (y < 2 || y >= WY) continue;
-            const x = sg.x + dx, z = sg.z + dz, vv = this.vox(x, y, z);
-            if (!vv) continue;
-            if (GM.has(vv)) {                          // free-standing strand: needs something under it
-              let nb = 0;
-              if (this.vox(x + 1, y, z)) nb++; if (this.vox(x - 1, y, z)) nb++;
-              if (this.vox(x, y, z + 1)) nb++; if (this.vox(x, y, z - 1)) nb++; if (this.vox(x, y + 1, z)) nb++;
-              if (nb >= 2) continue;                   // that is wall LINING, not a strand
-              if (this.vox(x, y - 1, z)) float2.grassOk++; else float2.grassFloat++;
-              continue;
-            }
-            if (!R26.has(vv) || seen.has(key(x, y, z))) continue;
-            // FLOOD the whole rock blob. A rock voxel always touches its own rock, so per-voxel neighbour tests
-            // prove nothing — the only real question is whether the BLOB touches the surrounding terrain anywhere.
-            const stack = [[x, y, z]], blob = []; let grounded = false;
-            seen.add(key(x, y, z));
-            while (stack.length && blob.length < 4000) {
-              const [ax, ay, az] = stack.pop(); blob.push([ax, ay, az]);
-              for (let n = 0; n < 6; n++) {
-                const bx = ax + (n === 0 ? 1 : n === 1 ? -1 : 0), by = ay + (n === 2 ? 1 : n === 3 ? -1 : 0), bz = az + (n === 4 ? 1 : n === 5 ? -1 : 0);
-                if (by < 1 || by >= WY) continue;
-                const w = this.vox(bx, by, bz);
-                if (!w) continue;
-                if (R26.has(w)) { const kk = key(bx, by, bz); if (!seen.has(kk)) { seen.add(kk); stack.push([bx, by, bz]); } }
-                else grounded = true;                  // touching anything that is not this rock pack = anchored
-              }
-            }
-            float2.blobs++;
-            if (!grounded) { float2.blobsFloating++; float2.floatVox += blob.length;
-              if (float2.worst.length < 5) float2.worst.push({ at: blob[0], vox: blob.length }); }
-          }
-        } }
-      for (const sg of main) {                       // rock-site census: sample just inside the bore all round each station
-        for (let t = 0; t < 160; t++) {
-          const th = t * 2.399963, ph = ((t % 11) / 10 - 0.5) * 2.4, cph = Math.cos(ph);
-          const uy = Math.sin(ph);
-          for (let d = Math.max(2, sg.r - 8); d < sg.r + 8; d += 2) {
-            const y = Math.round(sg.y + uy * d); if (y < 1 || y >= WY) continue;
-            const vv = this.vox(Math.round(sg.x + Math.cos(th) * cph * d), y, Math.round(sg.z + Math.sin(th) * cph * d));
-            if (vv && R26.has(vv)) { if (uy < -0.45) site.floor++; else if (uy > 0.45) site.roof++; else site.wall++; break; }
-          }
-        }
-      }
-      for (const sg of main) {                         // sample a sphere shell around each station: what does the wall actually show?
-        for (let t = 0; t < 40; t++) {
-          const th = t * 2.399963, ph = (t % 7) / 7 * 2.4 - 1.2, cph = Math.cos(ph);
-          const d = sg.r + 1 + (t % 5);
-          const x = Math.round(sg.x + Math.cos(th) * cph * d), y = Math.round(sg.y + Math.sin(ph) * d), z = Math.round(sg.z + Math.sin(th) * cph * d);
-          if (y < 1 || y >= WY) continue;
-          const v = this.vox(x, y, z);
-          if (!v) tally.air++; else if (CO.has(v)) tally.coal++; else if (IR.has(v)) tally.iron++;
-          else if (MO.has(v)) tally.moss++; else if (GR.has(v)) tally.grass++; else tally.rock++;
-        }
-      }
-      return { mouth: [c.mx, H(c.mx, c.mz), c.mz], dist: Math.round(e.d), stations: main.length,
-        s25: main[(main.length * 0.25) | 0], s28: main[((main.length * 0.25) | 0) + 3],
-        chamber: c.segs[c.segs.length - 1], tally, box, site, float2 };
-    },
     birdCensus(r, wx, wz) {                          // tally the songbird colours around any centre, straight from the placement rule
       const R = r || 6000, t = [0, 0, 0]; let pines = 0, birds = 0;
       const c0x = Math.floor((wx === undefined ? P.x : wx) / TCELL), c0z = Math.floor((wz === undefined ? P.z : wz) / TCELL), n = Math.ceil(R / TCELL);
