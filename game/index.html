@@ -185,6 +185,12 @@
     padding: 2px 9px; cursor: pointer; min-width: 34px; }
   #lgtPanel .lgtRow button.on { border-color: #7fd05a; color: #b8ff6e; }
   #lgtPanel.lit { border-color: #7fd05a; box-shadow: 0 0 0 1px rgba(127,208,90,0.35), 0 6px 18px rgba(0,0,0,0.5); }   /* LIGHT MODE: the panel has the cursor */
+  #lgtPanel .lgtSld input[type="range"] { flex: 1; min-width: 0; height: 12px; accent-color: #7fd05a; background: transparent; cursor: pointer; }   /* reflection-strength slider — same treatment as the arrow panel's */
+  #lgtPanel .lgtSld .lgtVal { min-width: 22px; text-align: right; color: #9fd07a; }
+  #lgtPanel .lgtBake { gap: 4px; }                     /* the bake line + its copy button — mirrors #arwPanel .arwBake */
+  #lgtPanel .lgtBake input { flex: 1; min-width: 0; background: #0c1118; border: 1px solid #33405a; border-radius: 7px; color: #9fd07a; font: inherit; padding: 3px 5px; }
+  #lgtPanel .lgtBake button { background: #1a2331; border: 1px solid #3d4a60; border-radius: 7px; color: #cfd6e0; font: inherit; padding: 2px 7px; cursor: pointer; }
+  #lgtPanel .lgtBake button:hover { border-color: #7fd05a; color: #b8ff6e; }
   #lgtPanel .lgtHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; }
   #lgtPanel.hidden { display: none; }
   /* ── ARROW ORIENTATION ── top right, shown whenever the cursor is free; each button turns the arrow on the bow a quarter turn */
@@ -201,6 +207,9 @@
   #arwPanel .arwBake input { flex: 1; min-width: 0; background: #0c1118; border: 1px solid #33405a; border-radius: 7px; color: #9fd07a; font: inherit; padding: 3px 5px; }
   #arwPanel .arwHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; text-align: center; }
   #arwPanel.hidden { display: none; }
+  /* ── HAND SETTINGS: OFF SCREEN (user 2026-08-05) ── the panel, its sliders and every listener stay wired
+     exactly as they were, so nothing else has to change; this one rule keeps it out of sight. Delete to restore. */
+  #arwPanel { display: none !important; }
   /* ── HELD-STACK COUNT ── top right, shown only when the hand holds more than one (user) */
   #stackN { position: fixed; top: 12px; right: 16px; z-index: 24; font: 22px/1 'px3', Consolas, monospace; letter-spacing: 2px;
     color: #f2e6c8; text-shadow: 0 2px 6px rgba(0,0,0,0.85), 0 0 12px rgba(0,0,0,0.6); pointer-events: none; }
@@ -246,18 +255,31 @@
      the 2px above and below stays as it was. */
   #cmdBar { position: fixed; left: 14px; bottom: 14px; z-index: 40; display: flex; align-items: center; gap: 7px;
     background: rgba(12,14,18,0.615); border: 0; border-radius: 999px;   /* 25% more transparent, and NO outline (user) */
-    padding: 2px 16px; overflow: visible; line-height: 0; }
+    padding: 3px 16px; overflow: visible; line-height: 0; }
   /* line-height 0 on the bar + an explicit one on the runs: the row is then exactly as tall as the text
      and flex centres it, with none of the font's own leading pushing it off centre (user). */
-  #cmdCaret, #cmdTxt, #cmdCur { position: relative; top: -1px; }   /* one pixel up — that is what centres it (user) */
-  #cmdCaret, #cmdTxt { font: 13px/16px 'px3', Consolas, monospace; }
+  /* ── WHY THE LETTERS SAT LOW (user 2026-08-05 — MEASURED off the font, not guessed) ── px3 is 640 units
+     to the em but declares ascent 1024 / descent 256, so the CONTENT BOX flexbox centres is 2.0em tall and
+     the ink is nowhere near the middle of it. Work it through and the baseline lands a flat 0.6em BELOW
+     the bar's centre WHATEVER the line-height is (the line-height cancels out) — which is exactly why
+     every previous attempt to fix this by retuning the line-height only ever moved the pill's height and
+     never the text inside it. Caps are 1.0em and descenders 0.4em, so a centred cap band wants the
+     baseline 0.5em below centre: the correction is a flat 0.1em UP, in em so it survives a size change.
+     The pill must also clear cap + 2x descender (1.8em = 19.8px) or the tail of a 'p' hangs out under the
+     curve — 15px line + 3px padding = 21px, which it does. 11px (user 2026-08-05: 2px smaller); the caret
+     is 6px because that is the px3 glyph advance at 11px (7px at 13px), and its negative margin must MATCH
+     the bar's gap so it lands on the next letter's cell. #cmdCur deliberately keeps top:0 — an 11px block
+     centred in a 21px bar IS the centred cap band, so the blink lines up with the letters only while the
+     nudge is NOT applied to it too. */
+  #cmdCaret, #cmdTxt, #cmdCur { position: relative; top: 0; }
+  #cmdCaret, #cmdTxt { font: 11px/15px 'px3', Consolas, monospace; top: -0.1em; }
   #cmdCaret { color: #9fe08a; }
   #cmdTxt { color: #f2e6c8; white-space: pre; margin-left: -1px; }   /* a pixel closer to the green > (user) */
-  #cmdCur { width: 7px; height: 13px; background: #f2e6c8; animation: cmdBlink 1s steps(1) infinite;
+  #cmdCur { width: 6px; height: 11px; background: #f2e6c8; animation: cmdBlink 1s steps(1) infinite;
     margin-left: -7px; }              /* cancel the row's gap: the caret belongs ON the next letter's cell, not a slot past it (user) */
   @keyframes cmdBlink { 50% { opacity: 0; } }
   #cmdMsg { position: absolute; left: 0; bottom: 100%; margin-bottom: 6px; white-space: nowrap;
-    color: #ffd9a0; font: 13px/1.2 'px3', Consolas, monospace; text-shadow: 0 2px 6px rgba(0,0,0,0.9); }
+    color: #ffd9a0; font: 11px/1.2 'px3', Consolas, monospace; text-shadow: 0 2px 6px rgba(0,0,0,0.9); }   /* the reply line follows the input down to 11px (user) */
   body.noui #cross, body.noui #hud, body.noui #clashHint, body.noui #achv, body.noui #edHud, body.noui #compass { display: none !important; }   /* C toggles all HUD overlays off for clean views */
   #compass { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 240px; height: 22px; overflow: hidden; z-index: 12; pointer-events: none;
     font: 8px/22px 'px3', Consolas, monospace; letter-spacing: 1px; color: #e8eef6; text-shadow: 0 1px 2px rgba(0,0,0,0.85);
@@ -283,7 +305,7 @@
 <div id="hud"></div>
 <div id="cmdBar" class="hidden"><span id="cmdCaret">&gt;</span><span id="cmdTxt"></span><span id="cmdCur"></span><div id="cmdMsg"></div></div>
 <div id="stackN" class="hidden"></div>
-<div id="lgtPanel" class="hidden"><div class="lgtHead"><span>light</span><button id="lgtAll" title="all terms back on">reset</button></div></div>
+<div id="lgtPanel" class="hidden"><div class="lgtHead"><span>water</span><button id="lgtAll" title="water back to stock">reset</button></div></div>
 <div id="arwPanel" class="hidden"><div class="arwHead"><span>arrow</span><button id="arwReset" title="back to the shipped orientation">reset</button></div>
   <div class="arwRow"><span>x axis</span><button data-ax="0" data-d="1">+90</button><button data-ax="0" data-d="-1">-90</button></div>
   <div class="arwRow"><span>y axis</span><button data-ax="1" data-d="1">+90</button><button data-ax="1" data-d="-1">-90</button></div>
@@ -297,7 +319,6 @@
   <h1><span class="tv">voxel</span><span class="tb">bit</span></h1>
   <div id="btnRow">
     <button id="kbBtn" aria-label="settings" data-lbl="settings"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
-    <button id="pkBtn" aria-label="item position" data-lbl="item position"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H8v-2h2v2Zm8 0h-2v-2h2v2ZM4 18h2v2H2v-4h2v2Zm12 2h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 18H6v-2h2v2Zm6 0h-2v-2h2v2Zm8 0h-2v-2h2v2ZM6 16H4v-2h2v2Zm4 0H8v-2h2v2Zm6 0h-2v-2h2v2Zm4 0h-2v-2h2v2ZM8 14H6v-2h2v2Zm4 0h-2v-2h2v2Zm6 0h-2v-2h2v2Zm-8-2H8v-2h2v2Zm4 0h-2v-2h2v2Zm8 0h-2v-2h2v2Zm-10-2h-2V8h2v2Zm8-4h-2v2h-2v2h-2V8h-2V6h2V4h2V2h4v4ZM6 8H4V6h2v2ZM4 6H2V4h2v2Zm4 0H6V4h2v2ZM6 4H4V2h2v2Z"/></svg></button>
     <button id="edBtn" aria-label="asset editor" data-lbl="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
     <button id="veBtn" aria-label="video editor" data-lbl="video editor" title="video editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M16 19H4v-2h12v2ZM4 17H2V7h2v10Zm14-8h2V7h2v10h-2v-2h-2v2h-2V7h2v2Zm-2-2H4V5h12v2Z"/></svg></button>
     <a id="dcBtn" href="https://discord.gg/AtW5fWZtSG" target="_blank" rel="noopener noreferrer" aria-label="discord" data-lbl="discord"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M21 22h-9v-2h9v2Zm-9-2h-2v-2h2v2Zm11 0h-2v-5h2v5Zm-13-2H8v-2h2v2Zm7-1h-4v-2h4v2Zm-9-1H6v-2h2v2Zm5-1h-2v-2h2v2Zm8 0h-4v-2h4v2ZM6 14H4v-2h2v2Zm5-1H9v-2h2v2Zm-7-1H2V3h2v9Zm5-1H7V7h2v4Zm9 0h-2V8h2v3Zm4 0h-2V6h2v5Zm-6-3h-3V6h3v2Zm-5-1H9V3h2v4Zm9-1h-2V4h2v2Zm-2-2h-5V2h5v2ZM9 3H4V1h5v2Z"/></svg></a>
@@ -512,8 +533,28 @@
   const bricks2 = new Uint32Array((B2X * B2Y * B2Z + 31) >> 5);
   const touched = new Uint8Array(BX * BZ);             // per 8×8 column tile: has this memory EVER been written? virgin tiles skip air-clearing (~40% of a column)
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
-  const LGT_ALL = 0x3ffff;                             // 17 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader)
-  let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt'); return v === null ? LGT_ALL : (parseInt(v, 10) & LGT_ALL); } catch (e) { return LGT_ALL; } })();
+  const LGT_ALL = 0xffffff;                            // 24 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader). Bits 18-23 are the WATER group (user 2026-08-05). Stays exact in the f32 uniform: integers are exact to 2^24.
+  const LGT_WATER = 0xfc0000;                          // bits 18-23 — the WATER group, and the only terms the panel exposes (user 2026-08-05: "I only want buttons that change the water")
+  const LGT2_ALL = 0x1;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits and an f32 is only exact to 2^24, so a 25th bit there would round. Bit 0 = WATER SOFT GLISTEN, split off from the pixel glisten (lgt.x bit 22).
+  // ══ WATER BAKE (user 2026-08-05) ══ THE defaults for every water control. Tune with the top-right panel,
+  // hit `copy` on its bake row, and paste the line it gives you OVER this one — that is the whole workflow.
+  // A player who has never touched the panel gets exactly what is written here; `reset` in the panel puts a
+  // live session back to it. `reflection` is the Fresnel mirror weight (1 = physical Schlick), the rest are
+  // on/off. Anything the player HAS changed is remembered in localStorage and wins until they hit reset.
+  const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, softGlisten: 0, pixelGlisten: 1, waves: 0, reflection: 0.45 };
+  const WBIT = { reflect: 18, refract: 19, foam: 20, ice: 21, pixelGlisten: 22, waves: 23 };   // …their bits in u.lgt.x; softGlisten is bit 0 of u.lgt.z
+  const wBakeMask = () => { let m = LGT_ALL & ~LGT_WATER; for (const k in WBIT) if (WATER_BAKE[k]) m |= (1 << WBIT[k]); return m; };
+  const wBakeMask2 = () => (WATER_BAKE.softGlisten ? 1 : 0);
+  const wBakeRefl = () => { const v = +WATER_BAKE.reflection; return (isFinite(v) && v >= 0 && v <= 2) ? v : 1; };
+  // Everything OUTSIDE the water group is FORCED ON at load. The panel used to carry all 24 terms, so a
+  // saved mask can have sun shadow / AO / fog / TAA switched off from an earlier bisection — and with those
+  // rows gone there would be no way left to switch them back. Only the water bits are restored from storage.
+  let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt');
+    return v === null ? wBakeMask() : (((parseInt(v, 10) & LGT_WATER) | (LGT_ALL & ~LGT_WATER)) & LGT_ALL); } catch (e) { return wBakeMask(); } })();
+  let lgtMask2 = (() => { try { const v = localStorage.getItem('vb_lgt2'); return v === null ? wBakeMask2() : (parseInt(v, 10) & LGT2_ALL); } catch (e) { return wBakeMask2(); } })();
+  // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
+  // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
+  let wReflK = (() => { try { const v = parseFloat(localStorage.getItem('vb_wrefl')); return (isFinite(v) && v >= 0 && v <= 2) ? v : wBakeRefl(); } catch (e) { return wBakeRefl(); } })();
   const REACT_FADE = 450;                              // ms for the reactive mask to fade out after the last body motion. Long enough that a trunk jittering in and out of sleep on its contacts reads as one continuous settle rather than a strobe.
   let reactT0 = -1e9;                                  // when a rigid body was last in motion (see physC.y / the reactive mask)
   let winOX = 0, winOZ = 0;                            // world coord of the window corner (multiples of 8)
@@ -899,6 +940,7 @@
   const DECOR_MIN = palette.length;
   const GRASS = [addCol(83, 108, 54), addCol(74, 99, 49), addCol(92, 117, 61), addCol(65, 88, 45)];      // = the MOSS palette, only ~12% brighter — strands blend into their patch
   const WATER_T = addCol(58, 128, 154), WATER_B = addCol(43, 106, 134);
+  const isWater = (v) => v === WATER_T || v === WATER_B;   // the lake surface / body ids — a swing walks straight through these (see chopSwing)
   const LAVA_T = addCol(255, 122, 22), LAVA_B = addCol(198, 44, 6), LAVA_R = addCol(226, 58, 10), LAVA_Y = addCol(255, 206, 46);   // gorge-floor lava — blended red/orange/yellow, emissive, deadly                                  // pond surface / body, close shades (walk-through — you swim)
   const PEBBLE  = [addCol(122, 120, 114), addCol(103, 101, 97)];                                         // SMALL rock — right-click to pick up
   const SNOW = [addCol(234, 238, 246), addCol(221, 227, 239)];                                           // fallen snow — strictly 1-voxel (10 cm) layers, walk-through decor
@@ -1316,9 +1358,16 @@
   // ── SURFACE SCATTER ── grass strands, flowers, twigs and pinecones. None of it is choppable decor, so
   // none of it is in decorTab — but all of it needs something underneath, which is what floatTab marks.
   const floatTab = new Uint8Array(256);
+  const coneTab = new Uint8Array(256);                 // PINECONE ids — no hitbox for the PLAYER (see solid()); every other system still treats them normally
   for (const i of [...GRASS, ...BLOOM]) floatTab[i] = 1;
   for (const m of STICKV) for (const q of m.vox) floatTab[q >>> 24] = 1;            // twigs (user)
-  if (CONEV) for (const q of CONEV.vox) floatTab[q >>> 24] = 1;                     // …and the pinecones lying beside them
+  // ── PINECONES ARE WALK-THROUGH FOR THE PLAYER (user 2026-08-05: "should be able to clip through them") ──
+  // floatTab already called them surface scatter, but solidTab is set by the BLANKET `i < DECOR_MIN` sweep
+  // above and cones come out of the pine's own palette, so they landed in that range and kept a hitbox: you
+  // could stand on a cone and it blocked a step. solidTab is deliberately NOT cleared — cone ids are shared
+  // with the pine's BARK ids, so that would take the hitbox off every trunk. The exemption lives in the
+  // player's own solid() test instead; see coneTab there.
+  if (CONEV) for (const q of CONEV.vox) { const ci = q >>> 24; floatTab[ci] = 1; coneTab[ci] = 1; }   // …and the pinecones lying beside them
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
     markSolid(MUSHV);                                                                        // mushroom clusters collide (its ids are its own — addCol never dedupes)
@@ -1353,8 +1402,15 @@
   let DUCK_ITEM0 = 0;                                  // duck (assets/life/duck/base.vox) — floats on lakes with its orange feet below the waterline (pool slots 16-19 = moms)
   let DUCK_GREEN = [0.03, 0.22, 0.07];                 // the mallard HEAD green (linear) — extracted at load; the black eye voxel blinks to THIS (user)
   let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
+  let DUCKB_EYES = [];                                 // …its EYE voxels in model space — where an orphan's tears come from (see the scan at load)
   let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads (kind 4) drift and rotate OFF-grid on the water; static worldgen stamping retired
-  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0, BOW_NOCK = 0, BOW_FRAMES = 0, ARROW_IT = 0, MEAT_IT = 0, HOE_IT = 0, SPEAR_IT = 0;   // BOW_NOCK = the same strip WITHOUT the arrow, shown once it is loosed   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
+  // ── FOAM, ONE COLOUR ── the shoreline foam the water shader draws AND the splash droplets thrown when
+  // something breaks the surface (user 2026-08-05). Linear, because that is what the shader works in; the
+  // item builder wants sRGB bytes, so it converts rather than carrying a second literal that could drift.
+  const FOAM_RGB = [0.82, 0.87, 0.90];
+  const FOAM_SRGB = FOAM_RGB.map((v) => Math.round(Math.pow(v, 1 / 2.2) * 255));
+  let FOAM_IT = 0;                                     // …its item id (one 10 cm voxel, the splash particle)
+  let SPARK_IT = 0, HITRED_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0, BOW_NOCK = 0, BOW_FRAMES = 0, ARROW_IT = 0, MEAT_IT = 0, HOE_IT = 0, SPEAR_IT = 0;   // BOW_NOCK = the same strip WITHOUT the arrow, shown once it is loosed   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
@@ -1437,8 +1493,12 @@
     items.push(CONEV ? modelToItem(CONEV) : { w: 0, d: 0, h: 0, cells: [] });   // PINECONE (item 4) — pickable ground/tree cones; keep the slot even if the .vox is missing so ids stay stable
     SPARK_IT = items.length + 1;                                      // CLASH SPARK — one bright 10 cm voxel, rendered through the drops path (never in inventory)
     items.push({ w: 1, d: 1, h: 1, cells: [[255, 208, 112]] });
+    HITRED_IT = items.length + 1;                                     // ── HIT VOXEL (user 2026-08-05) ── striking a life form throws RED voxels rather than the rocks' amber embers. Identical particle in every other way — same arc, spin and lifetime — so the DEATH poof can keep the original sparks.
+    items.push({ w: 1, d: 1, h: 1, cells: [[222, 38, 30]] });
     SMOKE_IT = items.length + 1;                                      // DEATH SMOKE — one white voxel (like a snowflake is one voxel). Each smoke SLOT is an INDIVIDUAL voxel at its own continuous position + snowflake spin (user: "move off the grid like the snowflakes"), rendered TRANSLUCENT (20%) through the drops path (never in inventory)
     items.push({ w: 1, d: 1, h: 1, cells: [[255, 255, 255]] });
+    FOAM_IT = items.length + 1;                                       // ── SPLASH DROPLET (user 2026-08-05) ── the same particle as a spark, in FOAM: thrown when a fish or the player breaks the surface either way
+    items.push({ w: 1, d: 1, h: 1, cells: [FOAM_SRGB.slice()] });
     KNIFE_IT = items.length + 1;                                      // STONE KNIFE — born when two rocks are clashed together
     try {
       const kv = await abuf('assets/stone_tools/stone_knife.vox');
@@ -1722,7 +1782,25 @@
         for (let i = 0; i < cvox.length; i += 4) { const ci = cvox[i + 3]; cc[cvox[i] + cvox[i + 1] * cx2 + cvox[i + 2] * cx2 * cy2] = [cpal[(ci - 1) * 4], cpal[(ci - 1) * 4 + 1], cpal[(ci - 1) * 4 + 2]]; }
         DUCKB_ITEM0 = items.length + 1;
         items.push({ w: cx2, d: cy2, h: cz2, cells: cc });
-        console.log('[vb] baby duck -> item', DUCKB_ITEM0);
+        // ── WHERE THE EYES ARE (user 2026-08-05) ── an orphaned duckling CRIES, and the tears have to come
+        // out of the eyes rather than the middle of the model. The eye is the BLACK voxel — the same one the
+        // blink flashes green, found by the same test the shader uses (linear < 0.02 ≈ sRGB < 42), so the two
+        // can never disagree about which voxel is an eye. Only the upper half is searched: a duckling's
+        // feet are black too, and tears from the feet would be a different effect entirely.
+        // ── STORED RELATIVE TO THE MODEL'S CENTRE (user 2026-08-05: "not coming out of the right area") ──
+        // and that is the whole fix. The drop-slot tracer puts the emit ANCHOR at the middle of the box:
+        // its ray origin is (camera−anchor)/scale + (w/2, d/2, h/2), so a model cell m sits at
+        //   anchor + (Xw·(m.x−w/2) + Yw·(m.y−d/2) + Zw·(m.z−h/2)) · scale.
+        // The emit was rotating the RAW cell centre, i.e. missing that half-extent, so every tear appeared
+        // a half-model up-and-across from the duckling instead of at its eye. baby.vox is 3x6x6 with its
+        // one black voxel at (1,2,4), so the error was (1.5, 3, 3) cells — bigger than the duckling.
+        DUCKB_EYES = [];
+        for (let z = cz2 >> 1; z < cz2; z++) for (let y = 0; y < cy2; y++) for (let x = 0; x < cx2; x++) {
+          const c = cc[x + y * cx2 + z * cx2 * cy2];
+          if (c && c[0] < 42 && c[1] < 42 && c[2] < 42)
+            DUCKB_EYES.push([x + 0.5 - cx2 * 0.5, y + 0.5 - cy2 * 0.5, z + 0.5 - cz2 * 0.5]);
+        }
+        console.log('[vb] baby duck -> item', DUCKB_ITEM0, 'eye voxels', DUCKB_EYES.length);
       } catch (e) { console.warn('[vb] baby duck missing - mothers swim alone', e); DUCKB_ITEM0 = 0; }
     } catch (e) { console.warn('[vb] duck missing - lakes stay empty', e); DUCK_ITEM0 = 0; }
     if (LILYV.length) {                                               // LILY PADS → item table: the same lake decor models, now free-floating entities
@@ -2821,6 +2899,7 @@
     const ZENITH  : vec3<f32> = vec3<f32>(0.118, 0.302, 0.663);   // deep clear blue
     const HORIZON : vec3<f32> = vec3<f32>(0.402, 0.567, 0.769);   // blue haze, not grey
     const BOUNCE  : vec3<f32> = vec3<f32>(0.238, 0.207, 0.156);
+    const HURT_RED : vec3<f32> = vec3<f32>(2.1, 0.07, 0.055);   // the wound red — used by BOTH the hit flash on the animal and the blood voxels it throws, so they always match exactly (user 2026-08-05)
     fn rayDir(px : vec2<f32>) -> vec3<f32> {
       let ndc = (px / u.res) * 2.0 - 1.0;
       return normalize(u.fwd + u.right * (ndc.x * u.tanH * u.aspect) - u.up * (ndc.y * u.tanH));
@@ -2836,7 +2915,11 @@
     // LIGHT DEBUG — is term n enabled? Bits, in panel order: 0 sun shadow, 1 ambient occlusion,
     // 2 creature shadow boxes, 3 firefly/lava glow, 4 water reflect+refract, 5 fog,
     // 6 irradiance history, 7 spatial filter, 8 TAA. Everything on = the normal image.
+    const FOAM_C = vec3<f32>(${FOAM_RGB[0]}, ${FOAM_RGB[1]}, ${FOAM_RGB[2]});   // shoreline foam AND the splash droplet — one constant so the two can never drift apart (see FOAM_RGB)
     fn LG(b : u32) -> bool { return (u32(u.lgt.x + 0.5) & (1u << b)) != 0u; }
+    // ── SECOND MASK (u.lgt.z) ── lgt.x is FULL: it carries 24 terms and an f32 holds integers exactly only
+    // to 2^24, so a 25th bit there would start rounding and flip its neighbours. Extra switches live here.
+    fn LG2(b : u32) -> bool { return (u32(u.lgt.z + 0.5) & (1u << b)) != 0u; }
     // 9 body grain (felled chunks), 10 terrain grain, 11 creature grain, 12 sun penumbra,
     // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading, 17 volumetric light.
     fn rand(s : ptr<function, u32>) -> f32 {
@@ -3411,7 +3494,13 @@
           // The box alone is an AABB, so it also holds the grass between the animal's legs and the ground
           // under its belly — painting those was the red square on the terrain (user). With the flag the
           // grid-stamped test is as exact as the trace-injected one: creature voxels only, terrain never.
-          if (isMe || (u.hurtH.w < 0.5 && pal[h.vox].a > 0.5 && all(dHit <= vec3<f32>(1.0)))) {   // the WHOLE stamp, not an ellipsoid inside it (user)
+          // …and a RAGDOLL is neither: on the killing blow the animal becomes a rigid BODY (bHit), which
+          // carries no cSlot and no palette flag. hurtBox tracks that body's live centre while it falls, so
+          // testing a body pixel against the box is what keeps it red the whole way down (user 2026-08-05:
+          // "red and rigid at the same time"). Only bodies INSIDE the box are touched, and the box is the
+          // dead animal's own radius, so an ordinary chopped chunk lying elsewhere is never painted.
+          if (isMe || (u.hurtH.w < 0.5 && bHit && all(dHit <= vec3<f32>(1.0)))
+                   || (u.hurtH.w < 0.5 && !bHit && pal[h.vox].a > 0.5 && all(dHit <= vec3<f32>(1.0)))) {   // the WHOLE stamp, not an ellipsoid inside it (user)
             // NO SLACK (user: "the land mammals cast a red square on the terrain"). The box used to carry a
             // whole voxel of padding on every side, and everything in that shell — the ground under the
             // animal's feet, the grass beside it — was painted red too: a square of stained terrain around
@@ -3422,7 +3511,7 @@
             let hTrue = max(u.hurtH.xyz, vec3<f32>(0.001));
             let mTrue = max(abs(pos.x - u.hurtB.x) / hTrue.x, max(abs(pos.y - u.hurtB.y) / hTrue.y, abs(pos.z - u.hurtB.z) / hTrue.z));
             let fEdge = select(1.0 - smoothstep(1.0, 1.7, mTrue), 1.0, isMe);
-            albedo = mix(albedo, vec3<f32>(2.1, 0.07, 0.055), fEdge);    // DARKER (user): 9.0 saturated the red channel outright and tonemapped to a flat pale pink — this still reads as emissive but keeps its colour as RED
+            albedo = mix(albedo, HURT_RED, fEdge);    // DARKER (user): 9.0 saturated the red channel outright and tonemapped to a flat pale pink — this still reads as emissive but keeps its colour as RED
             hurtGlow = u.hurtB.w * fEdge;                            // …and it lights itself — see the sun/AO block
           }
           // Nothing else is touched here on purpose: the light this throws on its surroundings is the
@@ -3474,7 +3563,7 @@
             }
             if (foam > 0.5) { t = min(t, (whF + 2.0 - ro.y) / rd.y); }                    // foam voxels RISE 2 steps above the surface (user: +1 voxel higher)
             foamK = clamp(foam, 0.0, 1.0) * 0.8;
-            albedo = mix(albedo, vec3<f32>(0.82, 0.87, 0.90), foamK);
+            albedo = mix(albedo, FOAM_C, foamK);
           }
         }
         // (the old 50%-translucent bed mix moved to the COMPOSITE: it now arrives via a REAL refracted ray with
@@ -3860,7 +3949,7 @@
         let tWat = irr.b;
         let pw2 = u.camPos + rd * tWat;
         let wx2 = pw2.x + u.winO.x; let wz2 = pw2.z + u.winO.y;
-        let nW = gerstN(wx2, wz2);                                   // the GERSTNER normal — same field that raises the voxel crests, crest-pinched by the Q term
+        let nW = select(vec3<f32>(0.0, 1.0, 0.0), gerstN(wx2, wz2), LG(23u));   // bit 23: WATER WAVES — off = a flat mirror plane, so wave shape can be told apart from wave lighting                                   // the GERSTNER normal — same field that raises the voxel crests, crest-pinched by the Q term
         let foamW = smoothstep(0.16, 0.50, alb.g) * (1.0 - u.pickZ.w);   // foam carries a bright albedo → shade it as SURFACE, not window (ice path handles frozen)
         let cosI = clamp(-dot(rd, nW), 0.02, 1.0);
         let fres = 0.02 + 0.98 * pow(1.0 - cosI, 5.0);               // true Schlick, F0 = 0.02 (air→water)
@@ -3891,7 +3980,7 @@
         let sigT = vec3<f32>(0.30, 0.115, 0.052);                    // extinction per voxel (10 cm)
         let scatC = vec3<f32>(0.018, 0.070, 0.092) * (0.30 + 0.70 * sunW) * dayScale() * (0.45 + 0.55 * irr.g);   // single-scatter source — the water's own glow, lit by sun + sky
         var refrC = scatC;                                           // no bed within reach → the column saturates to pure in-scatter
-        if (fres < 0.80) {
+        if (fres < 0.80 && LG(19u)) {                                // bit 19: WATER REFRACTION — off leaves refrC at the pure in-scatter colour, no bed, no Beer-Lambert
           var refr = refract(rd, nW, 0.752);
           if (dot(refr, refr) < 1e-5) { refr = rd; }                 // grazing/TIR fallback: continue straight
           let bh = traceAll(pw2 + rd * 0.02, refr, 34.0, true);
@@ -3905,28 +3994,38 @@
             refrC = balb * blit * trB + scatC * (vec3<f32>(1.0) - trB);
           }
         }
-        col = mix(refrC, reflC, fres);                               // energy split by Fresnel — transmission vs mirror
-        col = mix(col, alb * (0.55 + 0.45 * irr.g) * (0.60 + 0.40 * irr.r) * dayScale() * 1.30, foamW);   // FOAM voxels stay bright chunky surface
-        if (u.pickZ.w > 0.015) {                                     // FREEZING/FROZEN — the ice look BLENDS in over ~25 s as the lake freezes, and back out as it thaws
+        // energy split by Fresnel — transmission vs mirror. Bit 18: WATER REFLECTION — off hands the whole
+        // surface to refraction. u.lgt.y is the panel's REFLECTION STRENGTH slider (1 = physical Schlick).
+        col = mix(refrC, reflC, clamp(select(0.0, fres * u.lgt.y, LG(18u)), 0.0, 1.0));
+        col = mix(col, alb * (0.55 + 0.45 * irr.g) * (0.60 + 0.40 * irr.r) * dayScale() * 1.30, select(0.0, foamW, LG(20u)));   // bit 20: WATER FOAM   // FOAM voxels stay bright chunky surface
+        if (u.pickZ.w > 0.015 && LG(21u)) {                           // bit 21: WATER ICE — off keeps the surface liquid-looking however frozen it is.   // FREEZING/FROZEN — the ice look BLENDS in over ~25 s as the lake freezes, and back out as it thaws
           let nI = vec3<f32>(0.0, 1.0, 0.0);
           let fresI = 0.03 + 0.22 * pow(1.0 - clamp(-dot(rd, nI), 0.0, 1.0), 4.0);
           let frost = 0.9 + 0.2 * fract(sin(floor(wx2) * 12.9898 + floor(wz2) * 78.233) * 43758.5453);
           let iceC = mix(alb, vec3<f32>(0.74, 0.81, 0.90), 0.62) * frost * (0.5 + 0.5 * irr.g) * dayScale() + skyBase(reflect(rd, nI)) * fresI;
           col = mix(col, iceC, min(1.0, u.pickZ.w * 1.12));
         }
-        if (u.pickZ.w < 0.4) {                                                            // VOXEL GLISTEN — discrete 10 cm glints twinkling inside the light column (the engine.html look)
+        // ── TWO SEPARATE EFFECTS (user 2026-08-05) ── one switch used to carry both, so there was no way to
+        // see which of them was doing what. They share only the light COLUMN they live inside:
+        //   · SOFT GLISTEN  (lgt.z bit 0) — a smooth continuous sheen toward the light, ADDED to the surface.
+        //   · PIXEL GLISTEN (lgt.x bit 22) — discrete 10 cm cubes flashing on and off (the engine.html look).
+        if (u.pickZ.w < 0.4 && (LG(22u) || LG2(0u))) {
           let gk = select(smoothstep(-0.02, 0.10, u.sunDir.y), 0.6, isMoon());
           if (gk > 0.01) {
-            let column = pow(max(dot(refl, u.sunDir), 0.0), 26.0);   // reflection column toward the light — the glisten lives ONLY inside this
-            let shimC = select(vec3<f32>(1.05, 0.92, 0.72), vec3<f32>(0.72, 0.82, 1.05), isMoon());
-            col += shimC * pow(max(dot(refl, u.sunDir), 0.0), 64.0) * (0.5 * gk) * irr.r * dayScale();   // soft shimmer under the sparkles
-            let cell = floor(vec2<f32>(wx2, wz2));                   // one glint cell = one 10 cm voxel
-            let ph = fract(sin(cell.x * 91.7 + cell.y * 47.3) * 4321.7) * 6.2831853;   // per-voxel random phase
-            let tw = sin(u.time * 1.6 + ph) * 0.5 + 0.5;   // glint twinkle halved to match
-            let pick = step(0.5, fract(sin(cell.x * 12.9898 + cell.y * 78.233) * 43758.5453));   // ~half the voxels participate — scattered, not a sheet
-            let spark = smoothstep(0.82, 1.0, tw) * pick;            // sharp on/off flash → a discrete voxel glint
-            let sparkC = select(vec3<f32>(1.35, 1.25, 1.0), vec3<f32>(1.15, 1.18, 1.3), isMoon()) * (0.35 + 0.65 * dayScale());
-            col = mix(col, sparkC, spark * column * gk * 0.85 * irr.r);   // translucent voxel glint (mix, not add — reads as a bright cube on the surface)
+            let column = pow(max(dot(refl, u.sunDir), 0.0), 26.0);   // reflection column toward the light — both glistens live ONLY inside this
+            if (LG2(0u)) {                                          // ── SOFT ── broad sheen, no structure
+              let shimC = select(vec3<f32>(1.05, 0.92, 0.72), vec3<f32>(0.72, 0.82, 1.05), isMoon());
+              col += shimC * pow(max(dot(refl, u.sunDir), 0.0), 64.0) * (0.5 * gk) * irr.r * dayScale();
+            }
+            if (LG(22u)) {                                          // ── PIXEL ── discrete twinkling voxels
+              let cell = floor(vec2<f32>(wx2, wz2));                 // one glint cell = one 10 cm voxel
+              let ph = fract(sin(cell.x * 91.7 + cell.y * 47.3) * 4321.7) * 6.2831853;   // per-voxel random phase
+              let tw = sin(u.time * 1.6 + ph) * 0.5 + 0.5;   // glint twinkle halved to match
+              let pick = step(0.5, fract(sin(cell.x * 12.9898 + cell.y * 78.233) * 43758.5453));   // ~half the voxels participate — scattered, not a sheet
+              let spark = smoothstep(0.82, 1.0, tw) * pick;          // sharp on/off flash → a discrete voxel glint
+              let sparkC = select(vec3<f32>(1.35, 1.25, 1.0), vec3<f32>(1.15, 1.18, 1.3), isMoon()) * (0.35 + 0.65 * dayScale());
+              col = mix(col, sparkC, spark * column * gk * 0.85 * irr.r);   // translucent voxel glint (mix, not add — reads as a bright cube on the surface)
+            }
           }
         }
         var fogA = 1.0 - exp(-irr.b * 0.0006);
@@ -4052,6 +4151,22 @@
                 } else if (di >= 5) {                                // slots 5-24: clash/death SPARKS + death SMOKE (dYv.w = fade)
                   if (dit == ${SMOKE_IT || 9997}) {                  // DEATH SMOKE — each slot is ONE individual white VOXEL (like a snowflake), 24% opacity, fading (col here still holds the scene BEHIND it → mix = true translucency). Off-grid look comes from its own continuous position + snowflake spin in the emit.
                     col = mix(col, vec3<f32>(1.0), 0.24 * dYv.w);
+                  } else if (dit == ${HITRED_IT || 9996}) {          // ── BLOOD ── the SAME red the animal itself flashes (user 2026-08-05). It reuses the hit
+                    // flash's own albedo constant rather than a palette colour, so the two can never drift apart, and
+                    // it is lit the way the flash lights the animal: the flash floors sun visibility at 0.55 and sky at
+                    // 0.75 of its strength, so a blood voxel carries those same floors. That is what makes a voxel in
+                    // the air read as the same material as the red on the animal it came off. It does NOT pulse or fade
+                    // with dYv.w — the flash is a steady colour for the half second it lasts, and so is this.
+                    let bDir = sunTint() * max(dot(nw, u.sunDir), 0.0) * 0.55;
+                    let bSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale() * 0.75;
+                    col = HURT_RED * (bDir + bSky + vec3<f32>(0.012, 0.013, 0.016));
+                  } else if (dit == ${FOAM_IT || 9995}) {            // ── SPLASH ── a droplet of the SAME foam the shoreline draws (FOAM_C), so a burst
+                    // off the surface reads as water torn off the water rather than a white speck. Lit as a
+                    // diffuse surface, NOT emissive like a spark: foam does not glow. It thins out as it dies
+                    // (mix toward the scene behind), which is what sells it as spray rather than a solid cube.
+                    let sDir = sunTint() * max(dot(nw, u.sunDir), 0.0) * 0.55;
+                    let sSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale() * 0.85;
+                    col = mix(col, FOAM_C * (sDir + sSky + vec3<f32>(0.02, 0.022, 0.025)), 0.35 + 0.65 * dYv.w);
                   } else {                                           // SPARK — emissive 10 cm ember
                     col = cell.rgb * (0.8 + 2.6 * dYv.w);
                   }
@@ -4640,6 +4755,12 @@
     if (y >= WY) return false;
     const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
     if (ED.on) return id === ED_WHITE || id === ED_GREY || id === ED_HLITE;   // editor world: ONLY the stage collides — the hidden forest must not be an invisible wall
+    // ── PINECONES HAVE NO HITBOX FOR THE PLAYER (user 2026-08-05) ── you walk straight through them. Done
+    // HERE and not by clearing solidTab, because a cone's palette ids are also the pine's own WOOD ids: the
+    // model shares entries with the bark, so zeroing solidTab for them would take the hitbox off the trunks
+    // too. Scoping it to the player's own collision leaves the tool paths, the chop gates and the physics
+    // reading exactly what they read before.
+    if (coneTab[id]) return phBodySolid(x, y, z);
     return solidTab[id] === 1 || phBodySolid(x, y, z);   // a felled tree keeps its hitbox even though it lives off the grid
   };
   const waterAt = (x, y, z) => {
@@ -4831,6 +4952,13 @@
     const th = Math.acos(Math.min(1, d)), s = Math.sin(th), ka = Math.sin((1 - t) * th) / s, kb = Math.sin(t * th) / s;
     return [a[0] * ka + bb[0] * kb, a[1] * ka + bb[1] * kb, a[2] * ka + bb[2] * kb, a[3] * ka + bb[3] * kb]; };
   let grabAnim = null;                                 // {t0, it, x, y, z, aPh} — a grabbed item FLYING from its world spot into the hand
+  // ── HOW LONG THAT FLIGHT TAKES (user 2026-08-05: faster) ── 340 → 180 ms. This is THE delay behind "an
+  // arrow lying on the ground takes a specific amount of time to get absorbed": only ONE grab may be in the
+  // air at a time (tryPickup and autoPickup both bail while grabAnim is set), so a pile of loosed arrows
+  // drained at one item per flight and the wait compounded. It is still a real eased flight rather than a
+  // pop — the pickup is visibly drawn in, it just no longer holds up the next one. Chunks a swing knocks
+  // loose keep their OWN, deliberately slower timings (PH.absorbMs / PH.absorbFly): those are tuned apart.
+  const GRAB_MS = 180;
   const drops = [];                                    // DROPPED ITEMS (Q) — TOSSED on a ballistic arc, then hover + spin; right-click to grab
   const DROP_REST_MS = 30000, DROP_REST_EASE = 1000;  // a dropped item hovers for this long, then eases to a dead stop on the ground (user)
   const TOSS_G = -170, TOSS_V = 55, TOSS_UP = 18;      // vox/s² gravity, throw speed along the view ray, extra up-kick
@@ -4948,13 +5076,112 @@
     if (drops.length > 32) drops.shift();
     cmdSay('spawned ' + key + ' (item ' + it + ')');
   };
+  // ══ /locate <thing> ══ walk the generator OUTWARD from the player's own cell until the thing turns up,
+  // then stand the player next to it. Everything here is ANALYTIC — treeAt/boulderAt/riverAt/caveAt answer
+  // for any cell in the infinite world without it being generated first — so the search is not limited to
+  // what is loaded, and the arrival does a full recenter exactly as respawn() does.
+  //
+  // Each finder returns a WORLD COLUMN to stand at, or null. `cell` is the generator's own grid size, and
+  // the ring walk visits cells nearest-first so the answer really is the closest one.
+  const CMD_LOCATE = (() => {
+    const nearestCell = (cell, rings, hit) => {          // spiral out over the generator's cell grid
+      const c0x = Math.floor(P.x / cell), c0z = Math.floor(P.z / cell);
+      for (let r = 0; r <= rings; r++) {
+        let best = null, bd = Infinity;
+        for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;   // ring surface only — the interior was covered by smaller r
+          const got = hit(c0x + dx, c0z + dz); if (!got) continue;
+          const d = (got.x - P.x) * (got.x - P.x) + (got.z - P.z) * (got.z - P.z);
+          if (d < bd) { bd = d; best = got; }
+        }
+        if (best) return best;                           // nearest hit in the first ring that has one
+      }
+      return null;
+    };
+    // stand on the first DRY column stepping out from a water spot — a lake is somewhere to arrive AT, not in
+    const shoreOf = (wx, wz) => {
+      for (let r = 0; r <= 700; r += 2) for (let a = 0; a < 12; a++) {   // 700 clears even the biggest reservoir — a short walk would give up mid-lake and land the player in the water
+        const x = Math.round(wx + Math.cos(a * 0.5236) * r), z = Math.round(wz + Math.sin(a * 0.5236) * r);
+        if (H(x, z) > WL + 1 && !nearCave(x, z)) return { x, z };
+      }
+      return { x: Math.round(wx), z: Math.round(wz) };
+    };
+    return {
+      lake: () => { const g = nearestCell(RIVCELL, 8, (cx, cz) => { const R = riverAt(cx, cz); if (!R) return null;
+          let b = null; for (const L of R.lakes) if (L.r >= 120 && (!b || L.r > b.r)) b = L;   // reservoirs/tail lakes — a headwater pond is not what "lake" means
+          return b ? { x: b.x, z: b.z, r: b.r } : null; });
+        return g ? { ...shoreOf(g.x, g.z), what: 'lake (r ' + Math.round(g.r) + ')' } : null; },
+      river: () => { const g = nearestCell(RIVCELL, 8, (cx, cz) => { const R = riverAt(cx, cz); if (!R || !R.segs.length) return null;
+          const s = R.segs[0]; return { x: s.sx + s.dxr * s.len * 0.5, z: s.sz + s.dzr * s.len * 0.5 }; });
+        return g ? { ...shoreOf(g.x, g.z), what: 'river' } : null; },
+      tree: () => { const g = nearestCell(TCELL, 40, (cx, cz) => { const t = treeAt(cx, cz); return t ? { x: t.tx, z: t.tz } : null; });
+        return g ? { x: g.x + 12, z: g.z, what: 'pine' } : null; },
+      rock: () => { const g = nearestCell(BCELL, 60, (cx, cz) => { const b = boulderAt(cx, cz); return b ? { x: b.bx, z: b.bz } : null; });
+        return g ? { x: g.x + 8, z: g.z, what: 'rock' } : null; },
+      log: () => { const g = nearestCell(LGCELL, 40, (cx, cz) => { const l = logAt(cx, cz); return l ? { x: l.wx, z: l.wz } : null; });
+        return g ? { x: g.x + 6, z: g.z, what: 'fallen log' } : null; },
+      // …a mushroom CLUSTER is 23 wide and only ever grows under a pine, so land clear of both: a short
+      // standoff put the player inside the crown and the lift-out loop then walked them up the tree.
+      mushroom: () => { const g = nearestCell(MUCELL, 40, (cx, cz) => { const m2 = mushAt(cx, cz); return m2 ? { x: m2.wx, z: m2.wz } : null; });
+        return g ? { x: g.x + 16, z: g.z, what: 'mushrooms' } : null; },
+      fern: () => { const g = nearestCell(F2CELL, 40, (cx, cz) => { const f = fern2At(cx, cz); return f ? { x: f.wx, z: f.wz } : null; });
+        return g ? { x: g.x + 10, z: g.z, what: 'ferns' } : null; },
+      // …the gorge is DRY by construction (caveAt rejects any path touching water), so no shore walk: drop
+      // the player straight onto its floor — cmdGoTo's hmap read lands them at the bottom, which is the point.
+      gorge: () => { const g = nearestCell(CAVE_CELL, 24, (cx, cz) => { const c2 = caveAt(cx, cz); return c2 ? { x: c2.sx, z: c2.sz } : null; });
+        return g ? { x: g.x, z: g.z, what: 'gorge' } : null; },
+    };
+  })();
+  const CMD_LOC_ALIAS = { water: 'lake', pond: 'lake', stream: 'river', pine: 'tree', forest: 'tree', boulder: 'rock',
+    stone: 'rock', mushrooms: 'mushroom', ferns: 'fern', ravine: 'gorge', cave: 'gorge', canyon: 'gorge', logs: 'log', trees: 'tree', rocks: 'rock', lakes: 'lake' };
+  const cmdLocate = (what) => {
+    const key0 = String(what || '').trim().toLowerCase().replace(/\s+/g, '_');
+    if (!key0) { cmdSay('locate what? ' + Object.keys(CMD_LOCATE).join(', ') + ', or any creature'); return; }
+    const key = CMD_LOC_ALIAS[key0] || key0;
+    // ── A LIVE CREATURE ── nearest one already in the world; no search, the pool is right here.
+    if (CMD_SPECIES[key]) {
+      const [lo, hi] = CMD_SPECIES[key];
+      let best = null, bd = Infinity;
+      for (let j = lo; j < hi; j++) { const B = wbf[j]; if (!B || !B.init) continue;
+        const d = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
+        if (d < bd) { bd = d; best = B; } }
+      if (!best) { cmdSay('no ' + key + ' alive nearby — try /spawn ' + key); return; }
+      cmdGoTo(Math.round(best.x), Math.round(best.z), key + ' (' + Math.round(Math.sqrt(bd)) + ' vox)');
+      return;
+    }
+    const f = CMD_LOCATE[key];
+    if (!f) { cmdSay('cannot locate "' + key0 + '" — try: ' + Object.keys(CMD_LOCATE).join(', ')); return; }
+    const spot = f();
+    if (!spot) { cmdSay('no ' + key + ' found within range'); return; }
+    cmdGoTo(Math.round(spot.x), Math.round(spot.z), spot.what);
+  };
+  // Put the player down on solid ground at a world column, however far away — same sequence respawn() uses:
+  // move, recenter (which regenerates around the new spot), THEN read the height, because hmap is wrapped
+  // window data and means nothing for a column the window did not cover a moment ago.
+  const cmdGoTo = (x, z, label) => {
+    const d0 = Math.round(Math.hypot(x - P.x, z - P.z));
+    P.x = x + 0.5; P.z = z + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0; P.fly = false;
+    // maybeRecenter only fires past its own distance threshold, and a hop SHORTER than that can still land
+    // outside the built rect — where hmap and W are another column's wrapped data, so the ground reads
+    // wrong and the lift-out-of-solid loop below climbs through garbage (it put the player ~100 voxels in
+    // the air on /locate log). Anything not comfortably inside the rect gets a real regen first.
+    const M = 24;
+    if (x < rect.xlo + M || x > rect.xhi - M || z < rect.zlo + M || z > rect.zhi - M) recenter(x, z);
+    else maybeRecenter();
+    P.y = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
+    for (let g = 0; g < 40 && P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT); g++) P.y += 1;   // never land inside a rock or a trunk — capped, so a bad column drops you rather than launching you
+    P.fallT = 0; smoothEye = P.y + EYE; resetHist = 1;
+    cmdSay('→ ' + label + ' — ' + d0 + ' voxels');
+  };
   const cmdRun = (line) => {
     const t = String(line || '').trim();
     if (!t) return;
     const m = t.match(/^\/?(\w+)\s*(.*)$/);
     if (!m) { cmdSay('?'); return; }
-    if (m[1].toLowerCase() === 'spawn') cmdSpawn(m[2]);
-    else cmdSay('unknown command: ' + m[1] + ' (only /spawn so far)');
+    const c = m[1].toLowerCase();
+    if (c === 'spawn') cmdSpawn(m[2]);
+    else if (c === 'locate' || c === 'find' || c === 'goto') cmdLocate(m[2]);
+    else cmdSay('unknown command: ' + m[1] + ' (/spawn, /locate)');
   };
   // CAPTURE phase, on the document: this has to work even when the input never got focus, or the line
   // cannot be dismissed and the keyboard stays captured (user: "pressing esc should disable the command line").
@@ -5281,6 +5508,24 @@
   // triple tryKillCreature uses: the slot is dead for the session, so nothing re-places it anywhere.
   // Birds within `rad` of a single impact — used on EVERY landed chop, since carving foliage can pull
   // a perch out from under a bird without the felling gate ever firing.
+  // ── A BIRD NEVER JUST VANISHES (user 2026-08-05: "hitting a bird in the tree, it just disappears instead
+  // of going through the death sequence") ── this runs on EVERY landed chop, at the tool's own radius + 8, so
+  // a swing that misses the bird and bites the branch beside it used to delete the bird outright: no flash,
+  // no poof, nothing. It still dies — a perch cut out from under it is fatal — but it now dies the way
+  // everything else does. birdDeath is assigned once the death machinery exists further down; until then the
+  // old silent teardown stands in, which only matters during load when nothing is chopping anyway.
+  let birdDeath = null;
+  const phKillBird = (B) => {
+    // ONCE. A ragdolled bird keeps B.init set for the half second its death plays out, and physChopAt runs
+    // the near-flush AND (when the crown comes loose) the whole-tree flush in the same swing — so without
+    // this the second pass killed the same bird again, which re-ran the teardown on a body it no longer had
+    // and tore the death sequence back down to the silent vanish this exists to remove.
+    if (B.rag || B.slain) return false;
+    if (birdDeath) { birdDeath(B); return true; }
+    if (B.sN) unstampWorm(B);                          // needles restored while the crown is still there, so they leave with it
+    B.init = false; B.dieT = 0; B.slain = true;
+    return true;
+  };
   const phFlushBirdsNear = (wx, wy, wz, rad) => {
     let n = 0;
     for (let j = 64; j < 244; j++) {
@@ -5288,9 +5533,7 @@
       if (!B || !B.init || (B.kind | 0) !== 5) continue;
       const dx = B.x - wx, dz = B.z - wz, dy = (B.perchFeet || 0) - wy;
       if (dx * dx + dz * dz + dy * dy > rad * rad) continue;
-      if (B.sN) unstampWorm(B);                        // needles restored while the crown is still there, so they leave with it
-      B.init = false; B.dieT = 0; B.slain = true;
-      n++;
+      if (phKillBird(B)) n++;
     }
     PH.stats.birdsKilled += n;
     return n;
@@ -5302,9 +5545,7 @@
       if (!B || !B.init || (B.kind | 0) !== 5) continue;
       const mx = Math.round(B.x) - S.bx, mz = Math.round(B.z) - S.bz;
       if (mx < -2 || mx >= S.R.sx + 2 || mz < -2 || mz >= S.R.sz + 2) continue;   // perched in some other pine
-      if (B.sN) unstampWorm(B);                        // needles restored into the STILL-STANDING tree, so they fall with it
-      B.init = false; B.dieT = 0; B.slain = true;      // gone for good — no recycle, no re-placement
-      n++;
+      if (phKillBird(B)) n++;                          // …the same visible death (see phKillBird) — a whole crown coming down should not silently swallow the birds in it either
     }
     PH.stats.birdsKilled += n;
     return n;
@@ -5404,6 +5645,7 @@
     }
     rMax = Math.sqrt(rMax);
     const b = { n: N, mass, com, id, lx, ly, lz, rMax, I: [Ixx, Iyy, Izz],
+      src: phSrc,                                  // …readable via __vb.bodyMats()
       pos: [S.bx + com[0], S.gy + com[1], S.bz + com[2]],   // world position OF THE COM
       origin: [S.bx, S.gy, S.bz],                    // where the local frame sat in W — physValidate proves no duplicate remains
       vel: [0, 0, 0], omega: [0, 0, 0], q: [0, 0, 0, 1],
@@ -5537,7 +5779,8 @@
   // bodies. A LONE TRUNK voxel is dropped rather than spawned (single brown specks tumbling off every
   // swing read as litter, not debris); a lone FOLIAGE voxel is kept, because scattered green flecks
   // falling out of the canopy is exactly what a struck tree should shed.
-  const phSpawnChunk = (S, quads) => {
+  let phSrc = '?';   // which path built the body — stamped onto it below. Cheap, and it is what identified a sweep that was tearing perched birds into debris (user 2026-08-05).
+  const phSpawnChunk = (S, quads) => { phSrc = 'treeChunk';
     if (!quads.length) return;
     const sx = S.R.sx, sz = S.R.sz;
     const key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
@@ -5574,7 +5817,7 @@
       PH.stats.chunks++;
     }
   };
-  const phSeparate = (S, f) => {                     // orphans -> rigid bodies; the SAME cell list drives the world erase, so a voxel is in exactly one state
+  const phSeparate = (S, f) => { phSrc = 'treeSeparate';                     // orphans -> rigid bodies; the SAME cell list drives the world erase, so a voxel is in exactly one state
     const t0 = performance.now();
     const made = [], cellsOut = [], comps = [];
     for (let k = 0; k < phMark.length; k++) {
@@ -5654,7 +5897,7 @@
   // origin as a pseudo-shape is enough to reuse it wholesale. The new COM sits somewhere else in that
   // frame, so the world position has to be carried across through the parent's rotation — otherwise the
   // piece teleports back to where the tree originally grew.
-  const phSubBody = (b, cells, idMap) => {
+  const phSubBody = (b, cells, idMap) => { phSrc = 'subBody';
     const nb = phBuildBody({ bx: b.origin[0], gy: b.origin[1], bz: b.origin[2] }, cells, { sx: b.sx, sz: b.sz }, idMap);
     phTmp[0] = nb.com[0] - b.com[0]; phTmp[1] = nb.com[1] - b.com[1]; phTmp[2] = nb.com[2] - b.com[2];
     phQRot(b.q, phTmp, phTmp2);
@@ -5677,7 +5920,7 @@
     const r2 = rad * rad;
     for (let i = PH.bodies.length - 1; i >= 0; i--) {
       const b = PH.bodies[i];
-      if (!b.cpuGrid || b.absorbing || b.n < PH.chopMinBody) continue;   // flying debris is not a chopping target
+      if (!b.cpuGrid || b.absorbing || b.rag || b.n < PH.chopMinBody) continue;   // flying debris is not a chopping target — and neither is a CORPSE: a ragdoll is mid-death and lives half a second, so letting the next swing of an auto-repeating chop mince it is exactly the "chunks break off the animal" the ragdoll was meant to replace (user 2026-08-05)
       const dx = wx + 0.5 - b.pos[0], dy = wy + 0.5 - b.pos[1], dz = wz + 0.5 - b.pos[2];
       const rr = b.rMax + rad + 2;
       if (dx * dx + dy * dy + dz * dz > rr * rr) continue;
@@ -5767,7 +6010,9 @@
   // ── CHOP ── carve real trunk voxels in a sphere, then re-test connectivity. Foliage is NOT chopped:
   // the canopy is walk-through decor, and cutting it would let the crown fall off its own branches
   // instead of the tree falling at the trunk.
-  const physChopAt = (wx, wy, wz, rad, S0, minBite, bite) => {
+  // ok(v): which of the tree's materials THIS swing may take. Without it the sphere takes whatever tree
+  // voxel is nearest, and NEEDLES outnumber bark everywhere in the crown — see the gather loop below.
+  const physChopAt = (wx, wy, wz, rad, S0, minBite, bite, ok) => {
     const S = S0 || treeShapeAt(Math.round(wx), Math.round(wz));
     if (!S) return { hit: false, why: 'no pine here' };
     const r = rad === undefined ? 3 : rad, r2 = r * r;
@@ -5786,7 +6031,8 @@
       const mx = Math.round(wx) + dx - S.bx, my = Math.round(wy) + dy - S.gy, mz = Math.round(wz) + dz - S.bz;
       if (mx < 0 || mx >= S.R.sx || mz < 0 || mz >= S.R.sz || my < 0 || my >= MSZ) continue;
       const v = phPresent(S, mx, my, mz); if (!v) continue;
-      if (PICK_CONE.has(v)) continue;                // cones are pickable ITEMS, not material. Foliage IS carved now (user: break the canopy into chunks while the tree still stands) — the flood below then decides honestly whether what is left is still attached.
+      if (PICK_CONE.has(v)) continue;                // cones are pickable ITEMS, not material. Foliage IS carvable (user: break the canopy into chunks while the tree still stands) — the flood below then decides honestly whether what is left is still attached.
+      if (ok && !ok(v)) continue;                    // …but a swing aimed at the TRUNK passes a wood-only filter, or it comes back full of needles (see chopSwing)
       if (my <= S.tr.sink) continue;                 // never cut the buried root courses out from under the anchor
       cX.push(mx); cY.push(my); cZ.push(mz); cV.push(v);
     }
@@ -5839,8 +6085,9 @@
     // pass 1: mark occupancy (1), and seed anything standing on solid NON-decor ground
     let sp = 0;
     for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bd; iz++) for (let ix = 0; ix < bw; ix++) {
-      const v = W[wIdx(ix, iy, iz)];
-      if (!v || !tab[v]) continue;
+      const iiD = wIdx(ix, iy, iz);
+      const v = W[iiD];
+      if (!v || !tab[v] || stampedIdx.has(iiD)) continue;   // …and a live animal is never orphaned decor: creature ids SHARE palette entries with decor, so without this a perched bird came apart as "unsupported mushroom" (user 2026-08-05)
       const k = li(ix, iy, iz); phDecM[k] = 1;
       if (iy === 0) { phDecM[k] = 2; phDecS[sp++] = k; continue; }   // box floor — treat as supported, never orphan on a clipped box
       const bv = W[wIdx(ix, iy - 1, iz)];
@@ -5880,6 +6127,117 @@
     comps.sort((a2, b2) => b2.length - a2.length);
     return comps;
   };
+  // ── SEVERED FROM THE WORLD (user 2026-08-05: "nothing should be floating on its own") ── phDecorOrphans
+  // above only ever looks at ONE material class and only asks whether it is rooted in the terrain. This is
+  // the general rule for everything else: after a carve, any 6-connected component of SOLID world voxels
+  // near the impact that has no path back to the rest of the world is cut out and dropped as a body.
+  //
+  // Two things make it safe to run per swing:
+  //   · EVERY FACE OF THE BOX IS SUPPORT. A component touching ANY of the six faces is assumed to continue
+  //     outside the region, so only what is wholly enclosed — and therefore PROVABLY detached from
+  //     everything beyond — can fall. That makes a false positive structurally impossible: the sweep can
+  //     never punch a hole in real terrain. The top face counts too, or an arch over a gorge, carved at its
+  //     foot, would leave through the ceiling and be dropped. The failure mode left is a floater bigger than
+  //     the box surviving, which is the harmless direction.
+  //   · A SIZE CAP. Past ORPH_MAX the component is terrain, not debris: bail rather than lift a hillside.
+  //     Nothing is ever erased here either — too big for a rigid body means it stays exactly where it is.
+  //
+  // Foliage and surface scatter are deliberately EXCLUDED: phFallLoose already walks those with its own
+  // rules (a canopy hangs off diagonal neighbours and would fail a 6-connected test while looking fine).
+  let phOrpM = null, phOrpS = null;
+  const ORPH_R = 18, ORPH_UP = 20, ORPH_MAX = 2000;
+  const phSeveredFall = (wx, wy, wz) => { phSrc = 'severed';
+    const x0 = Math.round(wx) - ORPH_R, z0 = Math.round(wz) - ORPH_R;
+    const y0 = Math.max(1, Math.round(wy) - ORPH_R), y1 = Math.min(WY - 1, Math.round(wy) + ORPH_UP);
+    const bw = 2 * ORPH_R + 1, bd = 2 * ORPH_R + 1, bh = y1 - y0 + 1, nAll = bw * bd * bh;
+    if (bh < 3) return 0;
+    if (!phOrpM || phOrpM.length < nAll) { phOrpM = new Uint8Array(nAll); phOrpS = new Int32Array(nAll); }
+    else phOrpM.fill(0, 0, nAll);
+    const li = (ix, iy, iz) => ix + iz * bw + iy * bw * bd;
+    const wIdx = (ix, iy, iz) => gwrap(x0 + ix, WX) + (y0 + iy) * WX + gwrap(z0 + iz, WZ) * WX * WY;
+    // ── A LIVING ANIMAL IS NOT TERRAIN (user 2026-08-05: "chunks seem to break off of them") ── a grid-stamped
+    // creature's voxels are a temporary overlay on the world, and a perched bird rests on FOLIAGE, which this
+    // sweep deliberately ignores. So the bird read as a solid mass touching nothing — wholly enclosed, i.e.
+    // exactly the "severed" shape — and got lifted out of the tree as debris. MEASURED: one sweep at a bird
+    // produced a 42-voxel body of which 30 were the bird. Stamped cells are now INVISIBLE here: never lifted,
+    // and never counted as support either, since they will be gone the moment the animal takes a step.
+    const solidHere = (v, ii) => v && !foliaTab[v] && !floatTab[v] && !stampedIdx.has(ii);   // foliage/scatter belong to phFallLoose
+    let sp = 0;
+    for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bd; iz++) for (let ix = 0; ix < bw; ix++) {
+      const iiH = wIdx(ix, iy, iz);
+      if (!solidHere(W[iiH], iiH)) continue;
+      const k = li(ix, iy, iz);
+      // all six faces are the world continuing past the box — seeds, not candidates
+      if (iy === 0 || iy === bh - 1 || ix === 0 || ix === bw - 1 || iz === 0 || iz === bd - 1) { phOrpM[k] = 2; phOrpS[sp++] = k; }
+      else phOrpM[k] = 1;
+    }
+    while (sp > 0) {
+      const k = phOrpS[--sp];
+      const ix = k % bw, iz = ((k / bw) | 0) % bd, iy = (k / (bw * bd)) | 0;
+      for (let d = 0; d < 6; d++) {
+        const nx = ix + (d === 0 ? 1 : d === 1 ? -1 : 0);
+        const ny = iy + (d === 2 ? 1 : d === 3 ? -1 : 0);
+        const nz = iz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+        if (nx < 0 || nx >= bw || nz < 0 || nz >= bd || ny < 0 || ny >= bh) continue;
+        const nk = li(nx, ny, nz);
+        if (phOrpM[nk] === 1) { phOrpM[nk] = 2; phOrpS[sp++] = nk; }
+      }
+    }
+    let dropped = 0;
+    for (let k0 = 0; k0 < nAll; k0++) {
+      if (phOrpM[k0] !== 1) continue;
+      const comp = []; let q = 0; phOrpS[q++] = k0; phOrpM[k0] = 3;
+      let over = false;
+      while (q > 0) {
+        const k = phOrpS[--q]; comp.push(k);
+        if (comp.length > ORPH_MAX) { over = true; break; }
+        const ix = k % bw, iz = ((k / bw) | 0) % bd, iy = (k / (bw * bd)) | 0;
+        for (let d = 0; d < 6; d++) {
+          const nx = ix + (d === 0 ? 1 : d === 1 ? -1 : 0);
+          const ny = iy + (d === 2 ? 1 : d === 3 ? -1 : 0);
+          const nz = iz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+          if (nx < 0 || nx >= bw || nz < 0 || nz >= bd || ny < 0 || ny >= bh) continue;
+          const nk = li(nx, ny, nz);
+          if (phOrpM[nk] === 1) { phOrpM[nk] = 3; phOrpS[q++] = nk; }
+        }
+      }
+      if (over || comp.length < 1) continue;             // terrain-sized: leave it alone rather than lift a hill
+      if (comp.length > PH.absorbMax) continue;          // too big to BE a rigid body — and erasing real geometry is worse than a floater
+      if (PH.bodies.length >= PH.maxBodies && !phMakeRoom()) break;
+      const fb = phBodyFromCells(comp.map((k) => [x0 + (k % bw), y0 + ((k / (bw * bd)) | 0), z0 + (((k / bw) | 0) % bd)]));
+      if (!fb) continue;
+      fb.omega[0] = (Math.random() - 0.5) * 1.2;         // it lost its footing rather than being struck — it drops, it does not fly
+      fb.omega[1] = (Math.random() - 0.5) * 1.2;
+      fb.omega[2] = (Math.random() - 0.5) * 1.2;
+      fb.absorbAt = performance.now() + PH.absorbMs;     // …and is gathered up like any other chunk
+      PH.bodies.push(fb); PH.stats.chunks++; PH.stats.severed = (PH.stats.severed | 0) + 1;
+      dropped++;
+    }
+    return dropped;
+  };
+  // ── A BODY FROM EXPLICIT VOXELS ── same build as phBodyFromCells, but the caller supplies the palette id
+  // per cell and W is never read or written. That is what a creature needs: a duck is TRACE-INJECTED, so it
+  // has no world voxels to lift out — its ragdoll is built from the model it is drawn from.
+  // cells: [x, y, z, palId] in WORLD coordinates.
+  const phBodyFromVoxels = (cells) => { phSrc = 'ragdoll';
+    let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;
+    for (const c of cells) {
+      if (c[0] < x0) x0 = c[0]; if (c[0] > x1) x1 = c[0];
+      if (c[1] < y0) y0 = c[1]; if (c[1] > y1) y1 = c[1];
+      if (c[2] < z0) z0 = c[2]; if (c[2] > z1) z1 = c[2];
+    }
+    if (x1 < x0) return null;
+    const sx = x1 - x0 + 1, sz = z1 - z0 + 1;
+    const keys = [], idMap = new Map();
+    for (const c of cells) {
+      if (!c[3]) continue;
+      const kk = (c[0] - x0) + (c[2] - z0) * sx + (c[1] - y0) * sx * sz;
+      if (idMap.has(kk)) continue;
+      keys.push(kk); idMap.set(kk, c[3]);
+    }
+    if (!keys.length) return null;
+    return phBuildBody({ bx: x0, gy: y0, bz: z0 }, keys, { sx, sz }, idMap);
+  };
   // Lift a list of world cells out of W and hand them back as one rigid body on the parent's spot.
   const phBodyFromCells = (cells) => {
     let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;
@@ -5916,8 +6274,12 @@
   // a size cap instead — a piece that large is a tree, not debris.
   const FALL_SEED_R = 10;                              // how far from the carve to look for pieces it may have cut loose
   const FALL_MAX = 3000;                               // past this, stop and assume it is held: it is not debris
-  const phFallLoose = (cx0, cy0, cz0) => {
-    const loose = (v) => v && (foliaTab[v] || floatTab[v]);
+  const phFallLoose = (cx0, cy0, cz0) => { phSrc = 'fallLoose';
+    // A creature stamp is never "loose scatter", however its palette ids happen to be shared — a perched
+    // bird sitting in needles would otherwise be walked as part of the clump and dropped with it, which is
+    // one of the ways animals came apart into chunks (user 2026-08-05). Stamped cells read as EMPTY here:
+    // not loose, and not support either, since the animal will move off them on its own.
+    const loose = (v, ii) => v && (foliaTab[v] || floatTab[v]) && !stampedIdx.has(ii);
     const seen = new Set();
     const idxOf = (x, y, z) => gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
     const R = FALL_SEED_R;
@@ -5925,7 +6287,7 @@
       const sy2 = cy0 + dy; if (sy2 < 1 || sy2 >= WY) continue;
       const sx2 = cx0 + dx, sz2 = cz0 + dz;
       const si = idxOf(sx2, sy2, sz2);
-      if (seen.has(si) || !loose(W[si])) continue;
+      if (seen.has(si) || !loose(W[si], si)) continue;
       // ── walk this whole clump ── it is held the moment any voxel of it touches something that is not
       // loose. Bail out on the cap rather than crawling an entire forest canopy.
       const comp = [], q = [[sx2, sy2, sz2]], mine = new Set([si]);
@@ -5937,8 +6299,8 @@
           const nx = c[0] + (d === 0 ? 1 : d === 1 ? -1 : 0), ny = c[1] + (d === 2 ? 1 : d === 3 ? -1 : 0), nz = c[2] + (d === 4 ? 1 : d === 5 ? -1 : 0);
           if (ny < 1 || ny >= WY) { held = true; continue; }
           const ni = idxOf(nx, ny, nz), nv = W[ni];
-          if (!nv) continue;
-          if (!loose(nv)) { held = true; continue; }   // a branch, the trunk, the ground — this clump is attached
+          if (!nv || stampedIdx.has(ni)) continue;     // a creature standing there is not geometry: it neither joins the clump nor holds it up
+          if (!loose(nv, ni)) { held = true; continue; }   // a branch, the trunk, the ground — this clump is attached
           if (!mine.has(ni)) { mine.add(ni); q.push([nx, ny, nz]); }
         }
       }
@@ -5960,7 +6322,7 @@
       PH.bodies.push(fb); PH.stats.chunks++;
     }
   };
-  const phChopLeaves = (wx, wy, wz, rad, bite) => {
+  const phChopLeaves = (wx, wy, wz, rad, bite) => { phSrc = 'chopLeaves';
     const r2 = rad * rad, ri = Math.ceil(rad), cx0 = Math.round(wx), cy0 = Math.round(wy), cz0 = Math.round(wz);
     const cD = [], cI = [], cX = [], cY = [], cZ = [];   // world coords too: the chunk is built from cells, not indices
     for (let dy = -ri; dy <= ri; dy++) for (let dz = -ri; dz <= ri; dz++) for (let dx = -ri; dx <= ri; dx++) {
@@ -6037,7 +6399,7 @@
         const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
         const v = W[ii]; if (!v || !decorTab[v]) continue;
         if (ok && !ok(v)) continue;                    // wrong material for the tool in hand (user): the shovel takes soil and leaves the stone, the pick the reverse
-        if (cellStamped(ii)) continue;               // a creature standing on one of the shared palette ids is not mushroom geometry (see cellStamped)
+        if (stampedIdx.has(ii)) continue;            // a creature standing on one of the shared palette ids is not mushroom geometry. stampedIdx, NOT cellStamped: that one only scans animals within 20 voxels of the PLAYER, so a bird 30 voxels away was unprotected and got carved into chunks (user 2026-08-05).
         cD.push(d2); cI.push(ii); cX.push(x); cY.push(y); cZ.push(z); cV.push(v);
       }
       if (spare < 0 && cD.length >= want) spare = 1;   // walk ONE more shell, then stop: shells go out nearest-first, so the true nearest `want` are all in hand by then
@@ -6082,6 +6444,7 @@
     spawnChopSparks(wx, wy, wz);                      // …and off mushrooms, ferns and logs
     PH.stats.chops++; PH.stats.voxRemoved += out.length;
     if (PH.bodies.length < PH.maxBodies || phMakeRoom()) {
+      phSrc = 'decorBite';
       const b = phBuildBody({ bx: x0, gy: y0, bz: z0 }, cells, { sx, sz }, idMap);
       b.vel[0] = phFallDir[0] * 6 + (Math.random() - 0.5) * 4;
       b.vel[1] = 4 + Math.random() * 3;
@@ -6093,6 +6456,7 @@
     // ── WHAT IS LEFT STANDING? ── a mushroom cap overhangs its stem, so cutting the stem out from under
     // it leaves the cap with no path down to the ground. This is the decor equivalent of the phFlood /
     // phSeparate pass a chopped tree gets, and without it the cap simply hung in the air (user).
+    phSrc = 'decorOrphan';
     for (const comp of phDecorOrphans(wx, wy, wz, decorTab)) {
       // A two-voxel splinter is not a chunk (user: one piece, not a shower of them) — and a floater is
       // never acceptable, so anything not worth spawning is erased rather than left standing.
@@ -6108,6 +6472,7 @@
       ob.absorbAt = performance.now() + PH.absorbMs;
       PH.bodies.push(ob); PH.stats.chunks++; PH.stats.decorFalls++;
     }
+    phSeveredFall(wx, wy, wz);                         // …and ANYTHING ELSE this carve cut free — soil, stone, a stamped rock left with nothing under it (user)
     return true;
   };
   // ── AXE SWING -> TRUNK ── melee reach along the view ray, trunk voxels only. Returns true when the
@@ -6115,10 +6480,43 @@
   const AIM_FORGIVE = 1.6;                            // voxels of slack around a creature's own radius in the kill test. Small and ABSOLUTE, so it forgives a shaky hand without ever growing into the fixed 35-degree cone this replaced.
   const AIM_R = [2.2, 2.2, 3.0, 3.0, 5.0, 3.0, 3.0];  // fallback target radius by B.kind (flyer, bird, worm/mammal, duck, lily, perched, fish) — used only when the creature is not grid-stamped, in which case its real stamped bounds are exact
   const REACH_H = 53, REACH_3D = 107, REACH_DOT = 0.82;   // THE melee reach — shared by the stone tools (chopSwing) and the kill test (aimedCreature) so the two can never drift apart (user). +5 voxels 2026-08-02.
+  // ── VOXEL-ACCURATE AIM (user 2026-08-05) ── ONE traversal for every tool and every probe in the game.
+  // What it replaces was point sampling: `for (t += 0.5) { x = Math.round(P.x + vx*t) … }`, which is wrong
+  // twice over. Math.ROUND snaps to the NEAREST integer, but voxel v occupies [v, v+1) — so every lookup sat
+  // half a voxel off on all three axes and could read the neighbour of the one under the crosshair. And a fixed
+  // 0.5 step SAMPLES the ray rather than walking it: it can skip a voxel entirely, or land twice in one and
+  // never touch the next. Aiming at a trunk and cutting the leaf beside it is exactly what those two produce.
+  // This is the standard grid traversal (Amanatides & Woo): it visits every voxel the ray truly passes through,
+  // in order, with no gaps and no repeats, and hands back the exact entry distance. `hit` returns truthy to
+  // stop, and that value is returned, so a caller can act on whatever it found.
+  const voxRay = (ox, oy, oz, dx, dy, dz, maxT, hit) => {
+    let x = Math.floor(ox), y = Math.floor(oy), z = Math.floor(oz);
+    const sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
+    const ax = Math.abs(dx) < 1e-9 ? Infinity : 1 / Math.abs(dx);   // distance travelled per whole voxel crossed, per axis
+    const ay = Math.abs(dy) < 1e-9 ? Infinity : 1 / Math.abs(dy);
+    const az = Math.abs(dz) < 1e-9 ? Infinity : 1 / Math.abs(dz);
+    let tx = ax === Infinity ? Infinity : (dx > 0 ? x + 1 - ox : ox - x) * ax;   // …to the FIRST boundary on each axis
+    let ty = ay === Infinity ? Infinity : (dy > 0 ? y + 1 - oy : oy - y) * ay;
+    let tz = az === Infinity ? Infinity : (dz > 0 ? z + 1 - oz : oz - z) * az;
+    let t = 0;
+    for (let guard = 0; guard < 4096; guard++) {
+      const r = hit(x, y, z, t);                       // the voxel the ray is inside right now, entered at distance t
+      if (r) return r;
+      if (tx <= ty && tx <= tz) { t = tx; tx += ax; x += sx; }
+      else if (ty <= tz) { t = ty; ty += ay; y += sy; }
+      else { t = tz; tz += az; z += sz; }
+      if (t > maxT) return false;
+    }
+    return false;
+  };
   const AXE_SCALE = 1.0;                              // THE reference sphere — every tool shares it (user)
   const PICK_SCALE = 1.0, DIG_SCALE = 1.0;            // the pick and the shovel now reach exactly as far as the axe (user)
   const KNIFE_SCALE = 0.5;                            // …except the KNIFE, which is smaller (user). Off its own material it works at half of this again. stone in chunks, wood a bite at a time
   const KNIFE_BITE = 0.5;                             // the stone knife BREAKS ANYTHING (user) and takes half the chunk doing it. Its OWN material is wood, so it reaches as far as the axe there. Unl of it.
+  // ── THE SHOVEL LIFTS DOUBLE (user 2026-08-05) ── this is the lever SOI_OWN is not: the sphere only ever
+  // decides WHICH voxels are candidates, and the near shells already hold far more soil than one bite, so
+  // widening it changed nothing (measured null twice). The BITE is how much a swing actually takes.
+  const DIG_BITE = 2;
   //                                                    A QUARTER of the axe's radius (halved twice, user); the chunk it yields is half. 1.0/1.0 would make it identical to the axe.
   const CHOP_RAD = 5, CHOP_DEEP = 3;   // RAD 5 so a full PH.chopBite is reachable from one impact point; CHOP_DEEP pushes the carve sphere into the wood so the chunk has depth instead of being a surface cap
   const CHOP_MINBITE = 30, CHOP_BODYBITE = 30;        // = PH.chopBite: the swing keeps marching until it finds somewhere that can give a FULL piece
@@ -6136,11 +6534,11 @@
     const vx = Math.sin(P.yaw) * cp, vy = sp, vz = Math.cos(P.yaw) * cp;
     const reach = Math.min(REACH_3D, REACH_H / Math.max(0.15, Math.abs(cp)));   // the same reach a swing gets (CHOP_REACH itself is local to chopSwing)
     let cx = 0, cz = 0, found = false;                 // where the swing lands on the ground
-    for (let t = 1; t < reach; t += 0.5) {
-      const x = Math.round(P.x + vx * t), y = Math.round(smoothEye + vy * t), z = Math.round(P.z + vz * t);
-      if (y < 1 || y >= WY) continue;
-      if (solid(x, y, z)) { cx = x; cz = z; found = true; break; }
-    }
+    voxRay(P.x, smoothEye, P.z, vx, vy, vz, reach, (x, y, z) => {
+      if (y < 1 || y >= WY) return false;
+      if (!solid(x, y, z)) return false;
+      cx = x; cz = z; found = true; return true;       // the FIRST voxel the ray truly enters, not the nearest-rounded sample
+    });
     if (!found) return false;
     // TILLED EARTH: a DARKER brown than the first pass (user) — turned soil, not dust. One palette entry, and
     // only if the hoe is ever actually used — but the table is HARD CAPPED at 256 and
@@ -6167,7 +6565,18 @@
       const top = W[ii];
       if (tillSet.has(ii)) continue;                 // ── ONE LAYER ONLY (user) ── already turned over: the hoe cannot dig itself deeper
       if (!top || !digOnlyTab[top]) continue;        // only SOIL turns over
-      tilled.push({ t: performance.now(), ii, prevTop: top, jj, prevBelow: W[jj], hi });
+      // ── AND THE STRANDS ON TOP GO WITH IT (user) ── grass tufts, flowers, twigs and cones stand ON the
+      // surface voxel that just came away and carry no support of their own — that is exactly what floatTab
+      // marks, and the chop path already erases the same set when it digs the ground out from under them.
+      // Without this the tufts hung in mid-air over bare turned soil. The whole column is lifted and
+      // REMEMBERED, so it grows back with the ground beneath it when the till reverts.
+      const str = [];
+      for (let y = h; y < Math.min(WY, h + 10); y++) {
+        const si = gx + y * WX + gz * WX * WY, sv = W[si];
+        if (!sv || !floatTab[sv]) break;             // clear sky, or a log/rock/trunk — real geometry, and not ours to move
+        str.push(si, sv); W[si] = 0; cells.push(si);
+      }
+      tilled.push({ t: performance.now(), ii, prevTop: top, jj, prevBelow: W[jj], hi, str });
       tillSet.add(jj);                               // …the NEW surface is tilled earth, and stays off limits until it grows back
       W[ii] = 0; cells.push(ii);
       W[jj] = TILL_ID; cells.push(jj);
@@ -6187,6 +6596,11 @@
       if (W[q.ii] || W[q.jj] !== TILL_ID) { tillSet.delete(q.jj); continue; }   // something was built or dug here since — leave it alone
       W[q.ii] = q.prevTop; cells.push(q.ii);
       W[q.jj] = q.prevBelow; cells.push(q.jj);
+      if (q.str) for (let k = 0; k < q.str.length; k += 2) {   // …and the grass the hoe turned under grows back with it (user)
+        const si = q.str[k];
+        if (W[si]) continue;                         // something moved in since — a snow layer, a dropped chunk: leave it be
+        W[si] = q.str[k + 1]; cells.push(si);
+      }
       tillSet.delete(q.jj);
       hmap[q.hi] = hmap[q.hi] + 1;
     }
@@ -6205,9 +6619,22 @@
     // at half, and WOOD always at the axe's sphere whatever is in hand. `base` is this tool's own.
     const base = knife ? KNIFE_SCALE : (dig ? DIG_SCALE : (pick ? PICK_SCALE : AXE_SCALE));
     const ownTab = dig ? digOnlyTab : (pick ? pickOnlyTab : woodTab);   // a cutting edge owns WOOD; the shovel soil, the pick stone and ore
-    const soi = (id) => (ownTab && ownTab[id]) ? base : base * 0.5;     // own material full, anything else half (user)
+    // ── SOI DOUBLED (user 2026-08-05) ── every tool reaches TWICE as far into its OWN material. Only that
+    // number moves: off-material reach stays at half the base sphere, and every BITE stays exactly what it was,
+    // which is why the bite keeps its own factor (soi) while the reach uses soiR. Doubling one function for
+    // both would have doubled how much each swing lifts as well.
+    // The SHOVEL gets TWICE that again (user 2026-08-05) — a radius-20 sphere in soil where every other tool
+    // gets 10. NOTE what this does and does not change: the sphere only ever hands phChopDecor a wider set of
+    // CANDIDATES, and the swing still lifts `mBite` of them. On ordinary ground the near shells already hold
+    // far more soil than one bite, so the wider sphere changes nothing there — it tells only where soil is
+    // scarce within 10 but not within 20 (a patch smaller than a bite, the far lip of a crater). Making a dig
+    // visibly faster is the BITE's job, not this one's.
+    const SOI_OWN = dig ? 4 : 2;
+    const isWood = (v) => !!woodTab[v];               // the tree paths below cut BARK AND BRANCH, never needles (see the physChopAt calls)
+    const soi = (id) => (ownTab && ownTab[id]) ? base : base * 0.5;     // material factor for the BITE — unchanged
+    const soiR = (id) => (ownTab && ownTab[id]) ? base * SOI_OWN : base * 0.5;   // …and the REACH, doubled on the tool's own material
     const kS = base;
-    const C_RAD = CHOP_RAD * base, C_DEEP = CHOP_DEEP * base;   // the WOOD paths — this tool's own sphere
+    const C_RAD = CHOP_RAD * base * SOI_OWN, C_DEEP = CHOP_DEEP * base;   // the WOOD paths — a cutting edge OWNS wood, so this is its doubled sphere; C_DEEP is a depth offset, not a reach, and is untouched
     const C_BITE = knife ? Math.max(4, Math.round(PH.chopBite * KNIFE_BITE * base)) : Math.round(PH.chopBite * base);   // the WOOD chunk, at this tool's sphere   // the knife takes HALF the axe's chunk (user); the PICK and SHOVEL take proportionally MORE, because a wider sphere that still lifts 30 voxels is just a slower way to dig the same hole
     // A minimum bite bigger than the sphere can physically hold makes every swing miss (that is how the
     // knife looked broken before). ~2r^2 is a fair count of solid cells a half-filled sphere of radius r
@@ -6224,34 +6651,54 @@
     // (user). Decided BEFORE the march because the wood path finds its tree with a sparse probe that
     // fires every 4 voxels through open air — aiming at foliage, the swing was spent on the trunk
     // behind it before the ray ever reached the leaf.
-    for (let t = 1; t < CHOP_REACH; t += 0.5) {
-      const lx = Math.round(P.x + vx * t), ly = Math.round(smoothEye + vy * t), lz = Math.round(P.z + vz * t);
-      if (ly < 1 || ly >= WY) continue;
+    // ── LEAF vs TRUNK ── "first thing the ray touches wins" is not what the player means. A pine's trunk
+    // stands INSIDE its crown, so a ray aimed dead at the trunk still clips a needle a voxel or two before it
+    // — and now that the walk is exact rather than sampled every half voxel, it clips EVERY one of them
+    // instead of skipping most. That is why aiming at a trunk started cutting leaves (user). So: when the ray
+    // first meets foliage, keep walking a short way. If WOOD is close behind it, the crosshair was on the
+    // trunk and the leaf was only in the way — hand the swing to the wood path. The leaf wins only when
+    // nothing solid is hiding behind it, which is exactly when the player really is pointing at foliage.
+    const LEAF_SEE_THROUGH = 6;                        // voxels of needles a trunk can hide behind — a pine crown is a few voxels of needle around the bole
+    let firstLeaf = null, leafT = 0;
+    const leafHit = voxRay(P.x, smoothEye, P.z, vx, vy, vz, CHOP_REACH, (lx, ly, lz, t) => {
+      if (ly < 1 || ly >= WY) return 0;
       const lv = W[gwrap(lx, WX) + ly * WX + gwrap(lz, WZ) * WX * WY];
-      if (!lv) continue;                               // still in the air — keep looking for the FIRST thing the crosshair meets
-      if (foliaTab[lv] && phChopLeaves(lx, ly, lz, CHOP_RAD * base * 0.5, Math.max(2, Math.round(C_BITE * 0.5)))) return true;   // FOLIAGE is nobody's own material: half the tool's sphere (user)
-      break;                                           // the first solid thing was not a leaf: the ordinary march decides it
-    }
+      if (!lv) return 0;                               // still in the air — keep looking for the first thing the crosshair meets
+      if (foliaTab[lv]) {                              // a leaf: remember it, then keep looking for wood just behind
+        if (!firstLeaf) { firstLeaf = [lx, ly, lz]; leafT = t; }
+        return 0;
+      }
+      if (!firstLeaf) return 2;                        // solid, and no leaf in front of it — the ordinary march decides
+      if (woodTab[lv] && t - leafT <= LEAF_SEE_THROUGH) return 2;   // TRUNK behind the needles → the player meant the trunk
+      return 3;                                        // something else solid behind the leaf → the leaf really was the target
+    });
+    if ((leafHit === 3 || (leafHit === false && firstLeaf))          // the leaf wins: nothing behind it, or the ray ran out inside the crown
+        && phChopLeaves(firstLeaf[0], firstLeaf[1], firstLeaf[2], CHOP_RAD * base * 0.5, Math.max(2, Math.round(C_BITE * 0.5)))) return true;   // FOLIAGE is nobody's own material: half the tool's sphere (user)
     let S = null;
-    for (let t = 1; t < CHOP_REACH; t += 0.5) {
-      const x = Math.round(P.x + vx * t), y = Math.round(smoothEye + vy * t), z = Math.round(P.z + vz * t);
-      if (y < 1 || y >= WY) continue;
+    // ── VOXEL-ACCURATE (user 2026-08-05) ── walk the exact voxels the crosshair ray passes through. The
+    // body below is unchanged; only its exits are, because a callback cannot continue/return the outer
+    // function: 0 = keep walking, 1 = the swing bit something, 2 = a real obstruction stops it.
+    let nStep = 0;
+    const mainHit = voxRay(P.x, smoothEye, P.z, vx, vy, vz, CHOP_REACH, (x, y, z, t) => {
+      nStep++;
+      if (y < 1 || y >= WY) return 0;
       if (cut && !S && (phChopBody(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, C_MIN, C_BITE) ||
-                        phChopBody(x, y, z, C_RAD, C_MIN, C_BITE))) return true;   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
+                        phChopBody(x, y, z, C_RAD, C_MIN, C_BITE))) return 1;   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
       const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
       // ROCK needs the pick, WOOD needs a cutting edge, everything else soft yields to whatever is in hand.
       // …and the carve is confined to that same material, so the sphere cannot spill into the next one.
       const okMat = digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]));
-      const mS = soi(id);                            // this material's reach for the tool in hand (own = full, anything else = half)
+      const mS = soi(id);                            // this material's BITE factor (own = full, anything else = half) — unchanged by the SOI doubling
+      const mR = soiR(id);                           // …and its REACH, the doubled one on the tool's own material
       // the BITE follows the sphere it came out of — scaled from PH.chopBite, not from C_BITE, which
       // already carries the tool's own factor and would apply it a second time.
-      const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS)) : Math.max(2, Math.round(PH.chopBite * mS));
-      if (id && decorTab[id] && !woodTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, CHOP_RAD * mS, mBite, okMat)) return true;   // …but NOT wood: a standing trunk belongs to the tree path below, which is what fells it   // free gate, the id is already in hand
+      const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS)) : Math.max(2, Math.round(PH.chopBite * mS * (dig ? DIG_BITE : 1)));
+      if (id && decorTab[id] && !woodTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat)) return 1;   // …but NOT wood: a standing trunk belongs to the tree path below, which is what fells it   // free gate, the id is already in hand
       // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
       // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
       // where the trunk was, and a solid-only trigger could never find the tree again — the axe would
       // land exactly one bite and then stop.
-      if (cut && !S && (id !== 0 || t - Math.floor(t / 4) * 4 < 0.5)) S = treeShapeAt(x, z);   // WOOD wants a cutting edge — the axe or the knife
+      if (cut && !S && (id !== 0 || (nStep & 3) === 0)) S = treeShapeAt(x, z);   // WOOD wants a cutting edge — the axe or the knife
       if (S) {
         // physChopAt cuts everything within CHOP_RAD of the point, so marching through the trunk's
         // airspace WIDENS the notch each swing instead of needing an exact voxel hit. The bite is taken
@@ -6259,29 +6706,42 @@
         // sample, most of it hung in open air and the chunk came out a flat cap (user: "the chunks are
         // often flat pieces"). If the deeper point has run out the far side, the surface point still gets
         // its turn.
-        if (physChopAt(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, S, C_MIN, C_BITE).hit ||
-            physChopAt(x, y, z, C_RAD, S, C_MIN, C_BITE).hit) { phFallLoose(x, y, z); return true; }   // …and whatever that branch was holding up drops (user)
-        continue;
+        // ── WOOD ONLY (user 2026-08-05: "aiming at the trunk gets the leaves") ── treeShapeAt is a COLUMN
+        // test: it answers the moment the ray enters the pine's footprint, which is the whole crown, so the
+        // first carve point is usually open air 15 voxels short of the bole. An unfiltered sphere then took
+        // the nearest 30 tree voxels it could reach from there — needles, every time, since the crown is
+        // nothing but. Filtered to wood, the canopy holds no bite at all and the march walks on to the
+        // trunk the player was actually pointing at. Aiming AT foliage still cuts foliage: that is decided
+        // before this march and goes to phChopLeaves.
+        if (physChopAt(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, S, C_MIN, C_BITE, isWood).hit ||
+            physChopAt(x, y, z, C_RAD, S, C_MIN, C_BITE, isWood).hit) { phFallLoose(x, y, z); phSeveredFall(x, y, z); return 1; }   // …and whatever that branch was holding up drops (user), plus anything the cut severed outright
+        return 0;
       }
       // ── ORPHANED WOOD ── a STUMP is wood that belongs to no tree: treeShapeAt stops answering for that
       // column the moment the trunk topples, so S is null and nothing above cuts it. Worse, a stump is
       // SHORT, so the swing that means to hit it usually samples the dirt in FRONT of it and stops there.
       // Hence no test on the sampled voxel: whatever the ray landed on, if wood is within the axe's own
       // sphere it gets cut. ok() confines the carve to wood, so it can never eat the ground it stands in.
-      if (cut && phChopDecor(x, y, z, C_RAD, C_BITE, (v) => !!woodTab[v])) { phFallLoose(x, y, z); return true; }
-      if (id !== 0 && !foliaTab[id] && !floatTab[id]) return false;   // solid and no pine here — a real obstruction stops the swing.
-      // SURFACE SCATTER (grass strands, flowers, twigs, cones) is NOT an obstruction: it has no collision, no
-      // tool takes it, and the crosshair must reach the soil underneath it (user). Passed over exactly like foliage.
-    }
+      if (cut && phChopDecor(x, y, z, C_RAD, C_BITE, (v) => !!woodTab[v])) { phFallLoose(x, y, z); return 1; }   // phChopDecor runs the severed sweep itself
+      // ── WATER IS NOT AN OBSTRUCTION (user 2026-08-05: "let me use tools underwater") ── a water voxel is a
+      // non-zero id like any other, so this test used to STOP the swing dead at the surface: the pick bounced
+      // off the lake instead of the rock beneath it, and nothing submerged could be worked at all. A FROZEN
+      // lake is a different matter — solidTab[WATER_T] flips to 1 as the ice sets in, and ice SHOULD stop a
+      // swing — so the pass-through asks solidTab rather than trusting the id.
+      if (id !== 0 && !foliaTab[id] && !floatTab[id] && !(isWater(id) && !solidTab[id])) return 2;   // solid and no pine here — a real obstruction stops the swing.
+      return 0;                                        // water, surface scatter and foliage are not obstructions — walk on to what is underneath (user)
+    });
+    if (mainHit === 1) return true;
+    if (mainHit === 2) return false;
     // Nothing along the ray held a full bite (a heavily notched trunk). Take whatever is there rather
     // than letting the swing do nothing at all.
-    for (let t2 = 1; t2 < CHOP_REACH; t2 += 0.5) {
-      const x2 = Math.round(P.x + vx * t2), y2 = Math.round(smoothEye + vy * t2), z2 = Math.round(P.z + vz * t2);
-      if (y2 < 1 || y2 >= WY) continue;
+    if (voxRay(P.x, smoothEye, P.z, vx, vy, vz, CHOP_REACH, (x2, y2, z2) => {
+      if (y2 < 1 || y2 >= WY) return false;
       if (cut && phChopBody(x2, y2, z2, C_RAD, C_LAST, C_BITE)) return true;   // …and a reduced bite off a fallen trunk still counts
-      if (S && physChopAt(x2, y2, z2, C_RAD, S, C_LAST, C_BITE).hit) return true;
+      if (S && physChopAt(x2, y2, z2, C_RAD, S, C_LAST, C_BITE, isWood).hit) return true;   // …still wood only, for the same reason the main march is
       if (cut && woodTab[W[gwrap(x2, WX) + y2 * WX + gwrap(z2, WZ) * WX * WY]] && phChopDecor(x2, y2, z2, C_RAD, C_LAST, (v) => !!woodTab[v])) return true;   // …and the last splinters of a stump
-    }
+      return false;
+    })) return true;
     return false;                                     // the swing never bit anything
   };
   // ── SOLVER ── sequential impulse / PGS, fixed 60 Hz, PH.iters iterations, no pair state between steps.
@@ -6713,9 +7173,18 @@
   // Per-creature stamp buffers, grown in place and REUSED. The old code built two fresh JS Arrays per re-stamp;
   // at 24 fps across ~180 perched birds + mammals that was the single largest allocator in the profile (~40% of
   // all per-frame garbage). B.sN is now the "is stamped" truth — B.sCells stays allocated between stamps.
-  const stampAlloc = (B, n) => { if (!B.sCells || B.sCells.length < n) { B.sCells = new Int32Array(n + 64); B.sPrev = new Uint8Array(n + 64); } };
+  // sW: the WORLD coordinate of each landed cell, 3 per cell. sCells holds the flat WINDOW index, and the
+  // window is toroidal — you cannot recover a world position from it. The RAGDOLL needs real world coords
+  // (a rigid body is positioned in world space), so they are recorded as the stamp is laid down.
+  const stampAlloc = (B, n) => { if (!B.sCells || B.sCells.length < n) { B.sCells = new Int32Array(n + 64); B.sPrev = new Uint8Array(n + 64); B.sW = new Int32Array((n + 64) * 3); } };
+  // ── WHICH WORLD CELLS ARE A CREATURE RIGHT NOW ── an exact index of every voxel currently occupied by a
+  // grid-stamped animal. cellStamped() cannot answer this: it only scans creatures within 20 voxels of the
+  // PLAYER, which is right for "what am I standing on" and useless for a carve happening 50 voxels away.
+  // The severed-voxel sweep needs the truth anywhere, or it treats a perched bird as detached terrain and
+  // lifts the animal out of the tree as debris (user 2026-08-05: "chunks seem to break off of them").
+  const stampedIdx = new Set();
   const unstampWorm = (B) => { if (!B.sN) return; const nc = B.sCells, pv = B.sPrev;   // (used ONLY by the perched songbirds — the sole grid-stamped life)
-    for (let i = 0; i < B.sN; i++) { const ii = nc[i];
+    for (let i = 0; i < B.sN; i++) { const ii = nc[i]; stampedIdx.delete(ii);
       if (W[ii] !== 0) { W[ii] = pv[i]; wormPatchPush(ii); } }   // restore the overwritten foliage, not 0 — else the bird leaves a hole in the canopy
     B.sN = 0; B.sKey = null; };
   const stampApply = (B, pose, gx, gy, gz, key) => {   // shared: re-stamp only on change; only into EMPTY AIR so un-stamp is a safe →0
@@ -6733,8 +7202,9 @@
       const ii = gwrap(gx + p[0], WX) + wy * WX + gwrap(gz + p[2], WZ) * WX * WY;
       const cur = W[ii];
       if (cur !== 0 && !foliaTab[cur]) continue;   // trunks, rocks and other stamps still block; a voxel lost inside the branch is hidden by it anyway
-      pv[k] = cur; W[ii] = p[3]; nc[k] = ii; k++; wormPatchPush(ii);
       const wx = gx + p[0], wz = gz + p[2];             // WORLD bounds of what actually landed — the knife's hit flash boxes exactly this and nothing around it
+      B.sW[k * 3] = wx; B.sW[k * 3 + 1] = wy; B.sW[k * 3 + 2] = wz;   // …and the world coord itself, for the ragdoll (see stampAlloc)
+      pv[k] = cur; W[ii] = p[3]; nc[k] = ii; k++; wormPatchPush(ii); stampedIdx.add(ii);
       if (wx < sb0) sb0 = wx; if (wx > sb3) sb3 = wx;
       if (wy < sb1) sb1 = wy; if (wy > sb4) sb4 = wy;
       if (wz < sb2) sb2 = wz; if (wz > sb5) sb5 = wz;
@@ -6844,7 +7314,7 @@
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
   const unstampAllWorms = () => { for (let j = 16; j < 372; j++) { const B = wbf[j]; if (B && B.sN) {   // ALL grid-stamped creatures: perched songbirds (64-243) + BUNNIES/ARMADILLOS/SKUNKS/PORCUPINES (276-371). Must cover the mammals too, or their stamps get unstamped one-by-one AFTER the editor's bricks.fill(0) and re-patch as floating chunks (user bug)
-    for (let i = 0; i < B.sN; i++) { const ii = B.sCells[i]; if (W[ii] !== 0) W[ii] = B.sPrev[i]; }   // restore, same reason as unstampWorm
+    for (let i = 0; i < B.sN; i++) { const ii = B.sCells[i]; stampedIdx.delete(ii); if (W[ii] !== 0) W[ii] = B.sPrev[i]; }   // restore, same reason as unstampWorm
     B.sN = 0; B.sKey = null; } } };   // hard clear (editor freeze) — caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
   const waterSpots = [];                              // detected WATER of any width — lakes AND rivers. Dragonflies home here; ducks still use lakeSpots (a river is too narrow for a family)
@@ -7055,8 +7525,97 @@
     for (let i = 0; i < 4; i++) {
       const a = Math.random() * 6.283, sp3 = 12 + Math.random() * 20;
       sparks3d[i] = { x: wx, y: wy, z: wz, vx: Math.cos(a) * sp3, vy: 14 + Math.random() * 20, vz: Math.sin(a) * sp3,
-        born: performance.now(), life: 0.4 + Math.random() * 0.3, ph: Math.random() * 6.283, smoke: false };
+        born: performance.now(), life: 0.4 + Math.random() * 0.3, ph: Math.random() * 6.283, smoke: false, red: true };   // red: the HIT colour (user) — spawnDeathBurst leaves it unset, so a kill still throws the 4 ordinary sparks
     }
+  }
+  // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
+  // something breaks the surface — a fish launching, the same fish coming back down, and the player going
+  // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is
+  // WIDER than an ember burst, so the horizontal speed is up.
+  // ── HIGHER (user 2026-08-05) ── the first version lifted 9-22, which under the shared 85 gravity peaked
+  // barely 3 voxels above the surface: it read as a ripple, not a splash. 26-48 throws the column ~4-13
+  // voxels (0.4-1.3 m) clear of the water. The LIFE had to grow with it — at 48 a droplet is still climbing
+  // 0.56 s in, so the old 0.34-0.56 killed it mid-rise and nothing ever came back down.
+  // ── CONSISTENT (user 2026-08-05: "sometimes the splash voxels disappear too quickly") ── the life is now
+  // FIXED rather than a 0.62-0.92 roll, so no droplet is visibly shorter-lived than its neighbours, and the
+  // burst draws from the splash BAND (see bandSlot) instead of always stamping slots 0-3, which is what let
+  // the next splash — or a chop spark — delete a droplet mid-arc.
+  // `k` scales the whole thing: a leaping salmon throws more than a duckling-sized ripple.
+  const SPLASH_LIFE = 0.9;
+  // ── ONLY WHERE YOU CAN SEE THE FISH (user 2026-08-05: "the splash voxels show even when the fish is not
+  // visible jumping out of the water") ── a leap threw a splash wherever it happened, and MEASURED on a lake
+  // the median leap is 179 voxels from the player and 43 of 53 are past 120. The fish itself breaches fine
+  // (peak 10-20 voxels clear of the surface, never a dud) but at that range it is a speck, while four bright
+  // foam voxels at the waterline still read clearly — so the splash arrived on its own. Beyond this radius a
+  // leap is silent. The PLAYER's own splash is never gated: it is always right under the camera.
+  // ── AND THE WHOLE LEAP DECIDES ONCE (user 2026-08-05: "sometimes they play and sometimes they don't") ──
+  // the range was re-tested at launch AND again at splash-down, but a leap carries the fish 14-20 voxels
+  // sideways, so one that took off at 105 landed at 125: the launch splashed and the re-entry did not. Same
+  // jump, one splash. The test now runs ONCE, when the arc is committed, and both ends honour that answer.
+  // Radius raised 110 -> 150: 110 was cutting leaps that are plainly visible, which is the other half of the
+  // same complaint. The far ones this exists to silence sit at 180-420.
+  const FISH_SPLASH_R = 150;
+  let splashLast = 0;
+  function spawnSplash(wx, wz, k) {
+    const now = performance.now();
+    if (now - splashLast < 16) return;                 // same-FRAME guard only — the band holds two overlapping bursts and never steals, so a second fish 40 ms later must still get its own splash
+    splashLast = now;
+    const s = k === undefined ? 1 : k;
+    let placed = 0;
+    for (let i = 0; i < 4; i++) {
+      const slot = bandSlot(SPLASH_LO, SPLASH_HI); if (slot < 0) break;   // band full — place fewer droplets rather than delete one that is still in the air
+      placed++;
+      const a = Math.random() * 6.283, sp = (14 + Math.random() * 16) * s;
+      sparks3d[slot] = { x: wx + Math.cos(a) * 0.6, y: WL + 0.5, z: wz + Math.sin(a) * 0.6,
+        vx: Math.cos(a) * sp, vy: (26 + Math.random() * 22) * s, vz: Math.sin(a) * sp,
+        born: now, life: SPLASH_LIFE, ph: Math.random() * 6.283, smoke: false, foam: true };
+    }
+    PH.stats.splashTry = (PH.stats.splashTry | 0) + 1;
+    PH.stats.splashDrops = (PH.stats.splashDrops | 0) + placed;
+    if (placed < 4) PH.stats.splashShort = (PH.stats.splashShort | 0) + 1;
+  }
+  // ── A TEAR (user 2026-08-05) ── one droplet welling out of an orphaned duckling's eye. Same foam voxel
+  // the splash throws, but it does not burst: it barely leaves the eye and falls, which is what reads as
+  // crying rather than spraying.
+  // ── SLOT BANDS ── the 20 particle slots, divided so one effect can never cut another short. Splashes were
+  // writing 0-3 unconditionally, which is why they "sometimes disappeared too quickly" (user 2026-08-05): on
+  // open water a fish launching, the same fish landing and the player wading all land inside a second, and
+  // each burst overwrote the last one MID-FLIGHT. Two bursts' worth of splash slots plus free-slot-first
+  // allocation means a droplet now always lives out its full life.
+  const SPLASH_LO = 4, SPLASH_HI = 12;                 // 8 slots = two complete bursts in the air at once
+  const TEAR_LO = 12, TEAR_HI = 20;                    // 8 slots — three ducklings at CRY_GAP never need more
+  // Take the next slot in a band: FREE first, then the oldest one holding DEATH SMOKE, else -1.
+  // ── NEVER STEAL A DROPLET (user 2026-08-05: "some are cut off real short and others are fine") ── the
+  // first version fell back to the oldest live slot whatever it held, which is exactly a droplet being
+  // deleted mid-arc. MEASURED on a lake: 60 of 180 droplets — one in three — were taken over at 0.33 s and
+  // 0.65 s of their 0.9 s life.
+  // ── BUT SMOKE MUST YIELD (user 2026-08-05: "now I don't see the splash droplets 100% of the time") ── a
+  // death poof writes 4 sparks + 16 SMOKE across the whole pool, so for the 1.0-1.5 s that plume lives it
+  // squats on all eight splash slots and a burst placed ZERO droplets — MEASURED: 8 smoke voxels in the
+  // splash band, 0 of 4 droplets placed, the splash simply did not happen. Smoke is a 16-voxel column where
+  // one missing voxel cannot be seen; a missing splash can. So smoke yields, and only smoke.
+  const bandSlot = (lo, hi) => {
+    const now = performance.now();
+    let smokeSlot = -1, smokeBorn = Infinity;
+    for (let i = lo; i < hi; i++) { const s = sparks3d[i];
+      if (!s || (now - s.born) / 1000 >= s.life) return i;
+      if (s.smoke && s.born < smokeBorn) { smokeBorn = s.born; smokeSlot = i; }
+    }
+    return smokeSlot;
+  };
+  const TEAR_LIFE = 0.7;                               // FIXED, like the splash — a tear that lasted a random 0.75-1.0 read as flickering
+  function spawnTear(wx, wy, wz) {
+    const slot = bandSlot(TEAR_LO, TEAR_HI); if (slot < 0) return;   // same rule as the splash: skip this tear rather than cut a live one short
+    const a = Math.random() * 6.283;
+    sparks3d[slot] = { x: wx, y: wy, z: wz,
+      vx: Math.cos(a) * 1.6, vy: 1.5 + Math.random() * 2.5, vz: Math.sin(a) * 1.6,   // a gentle well-up, then gravity takes it straight down the cheek
+      born: performance.now(), life: TEAR_LIFE, ph: Math.random() * 6.283, smoke: false, foam: true };
+  }
+  const CRY_WAIT = 900, CRY_MS = 3000, CRY_GAP = 260;   // …starts after the mother's death poof has cleared, runs 3 s (user), one tear every 260 ms — "one after the other"
+  function startCrying(momSlot) {                       // her whole brood, at the moment she is confirmed dead
+    const b0 = 20 + (momSlot - 16) * 3;
+    for (let j = b0; j < b0 + 3; j++) { const B = wbf[j]; if (!B || !B.init) continue;
+      B.cryFrom = performance.now() + CRY_WAIT; B.cryTo = B.cryFrom + CRY_MS; B.cryNext = B.cryFrom; B.cryEye = 0; }
   }
   function spawnDeathBurst(wx, wy, wz) {                // DEATH POOF: 4 bright sparks + 16 INDIVIDUAL smoke voxels fire TOGETHER (user), slots 5-24. Each smoke voxel floats up + twirls independently, like a snowflake.
     const cy = wy + 2;                                  // aim at the body centre
@@ -7066,7 +7625,13 @@
         sparks3d[i] = { x: wx, y: cy, z: wz, vx: Math.cos(a) * sp, vy: 12 + Math.random() * 22, vz: Math.sin(a) * sp,
           born: performance.now(), life: 0.4 + Math.random() * 0.25, ph: Math.random() * 6.283, smoke: false };
       } else { const r = 0.5 + Math.random() * 1.8;     // SMOKE — 16 INDIVIDUAL 10 cm voxels rising as one loose column: tight spawn radius, gentle outward drift + strong lift, staggered heights so they form a continuous stream, each with its OWN snowflake spin/drift
-        sparks3d[i] = { x: wx + Math.cos(a) * r, y: cy + (i - 4) * 0.55, z: wz + Math.sin(a) * r,   // (i-4)*0.55 → the 16 voxels start stacked up a ~8-vox column (denser than the old 8-voxel stream)
+        // ── THE PLUME YIELDS TO A LIVE SPLASH (user 2026-08-05: "I don't see the splash droplets 100% of the
+        // time") ── this used to stamp slots 4-19 outright, deleting any droplet or tear in flight. MEASURED:
+        // 24 droplets cut short over 25 s with a death every 3 s. Smoke now takes free slots and other smoke
+        // only; if none is left it places one voxel fewer. A 15-voxel column against a 16-voxel one cannot be
+        // told apart — a splash that never appears can.
+        const ds = bandSlot(4, 20); if (ds < 0) continue;
+        sparks3d[ds] = { x: wx + Math.cos(a) * r, y: cy + (i - 4) * 0.55, z: wz + Math.sin(a) * r,   // (i-4)*0.55 → the 16 voxels start stacked up a ~8-vox column (denser than the old 8-voxel stream)
           vx: Math.cos(a) * (1 + Math.random() * 2), vy: 12 + Math.random() * 6, vz: Math.sin(a) * (1 + Math.random() * 2),
           born: performance.now(), life: 1.0 + Math.random() * 0.5, ph: Math.random() * 6.283, spin: 2 + Math.random() * 2.5, smoke: true };   // spin = snowflake twirl rate (2 + rand·2.5 rad/s), random phase
       }
@@ -7123,6 +7688,12 @@
     // surface (a knife-edge dHit == 1.0) while a whole voxel of slack went to waste underneath it, and the
     // shader's fade — which measures against hurtH-1 — then started INSIDE the animal on those three faces.
     // Measured on a live armadillo that left its back at 0.62 red against 0.98 on its belly.
+    // ── A RAGDOLL CARRIES ITS OWN FLASH ── once the animal is a rigid body it is no longer where the AI
+    // thinks it is: it is falling. Box it by the body's live centre and radius so the red stays ON it all
+    // the way down, which is what "red and rigid at the same time" needs.
+    if (B && B.ragBody) { const rb = B.ragBody, r = (rb.rMax || 4) + 0.6;
+      HURT.cx = rb.pos[0]; HURT.cy = rb.pos[1]; HURT.cz = rb.pos[2];
+      HURT.hx = r; HURT.hy = r; HURT.hz = r; return; }
     if (q) { HURT.cx = (q[0] + q[3] + 1) * 0.5; HURT.cy = (q[1] + q[4] + 1) * 0.5; HURT.cz = (q[2] + q[5] + 1) * 0.5;
              // The TRUE half-extent and NOTHING MORE (user: "the land mammals cast a red square on the
              // terrain"). The old +1 voxel of slack on every side is what stained the ground around them —
@@ -7132,6 +7703,57 @@
     else if (B) { HURT.cx = B.x; HURT.cy = B.y + 3; HURT.cz = B.z; HURT.hx = 5; HURT.hy = 5; HURT.hz = 5; }   // between stamps: a generous box beats no feedback
   };
   const tryKillCreature = () => { const b0 = aimedCreature(); if (b0 >= 0) hitCreature(b0); };   // LEFT-CLICK SWING KILL (user): whatever is under the crosshair takes the hit
+  // ══ RAGDOLL (user 2026-08-05) ══ the KILLING blow turns the animal into a real rigid body — the same kind
+  // a chopped trunk becomes — so it goes stiff and tumbles to the ground while it flashes red, and the yellow
+  // poof then fires where it came to rest. ONLY the fatal hit does this; wounding hits are untouched.
+  //
+  // Two sources of voxels, because the game draws life two different ways:
+  //   · GRID-STAMPED (mammals, perched birds) are already world voxels — take them and hand the world back
+  //     what was underneath (unstampWorm), so the ragdoll never leaves the animal's silhouette punched into
+  //     the pine it was sitting in.
+  //   · TRACE-INJECTED (ducks, fish, flyers, butterflies) have no world voxels at all. Their ragdoll is built
+  //     from the ITEM MODEL at the pose the renderer last drew, which the emit caches on the creature.
+  //     Model colours are raw RGB, so each one is resolved through edCol — exact palette match first, then
+  //     nearest once the 256 entries are full. That is the same route imported art already takes.
+  const RAG_UP = [0, 1, 0];                             // the level frame's Z axis — shared, so caching a pose allocates nothing
+  const ragCellsBuf = [];
+  const creatureRagdoll = (B) => {
+    if (!PH.on) return null;
+    ragCellsBuf.length = 0;
+    if (B.sN && B.sW) {                                 // grid-stamped: lift its own world voxels
+      for (let i = 0; i < B.sN; i++) { const v = W[B.sCells[i]]; if (!v) continue;
+        ragCellsBuf.push([B.sW[i * 3], B.sW[i * 3 + 1], B.sW[i * 3 + 2], v]); }
+      unstampWorm(B);                                   // …and put back the needles/ground it was standing in
+    } else if (B.ragIt && itemsRef) {                   // trace-injected: rebuild from the model at its last drawn pose
+      const it = itemsRef[(B.ragIt | 0) - 1];
+      if (!it || !it.cells) return null;
+      const ax = B.ragX, ay = B.ragY, az = B.ragZ, s = B.ragS || 1;
+      for (let z = 0; z < it.h; z++) for (let y = 0; y < it.d; y++) for (let x = 0; x < it.w; x++) {
+        const c = it.cells[x + y * it.w + z * it.w * it.d]; if (!c) continue;
+        const mx = (x + 0.5) * s, my = (y + 0.5) * s, mz = (z + 0.5) * s;
+        ragCellsBuf.push([Math.round(B.ragA0 + ax[0] * mx + ay[0] * my + az[0] * mz),
+                          Math.round(B.ragA1 + ax[1] * mx + ay[1] * my + az[1] * mz),
+                          Math.round(B.ragA2 + ax[2] * mx + ay[2] * my + az[2] * mz),
+                          edCol(c[0], c[1], c[2])]);
+      }
+    } else return null;
+    if (ragCellsBuf.length < 2) return null;
+    if (ragCellsBuf.length > PH.absorbMax) return null;  // too big to be a body at all — leave the old death alone
+    if (PH.bodies.length >= PH.maxBodies && !phMakeRoom()) return null;
+    const fb = phBodyFromVoxels(ragCellsBuf);
+    if (!fb) return null;
+    // THE BLOW carries it: away from the player, a little upward, and tumbling. Small — this is a body going
+    // limp and dropping, not a chunk being thrown.
+    const dxK = fb.pos[0] - P.x, dzK = fb.pos[2] - P.z, dK = Math.max(1e-3, Math.hypot(dxK, dzK));
+    fb.vel[0] += (dxK / dK) * 9; fb.vel[1] += 7; fb.vel[2] += (dzK / dK) * 9;
+    fb.omega[0] = (Math.random() - 0.5) * 5; fb.omega[1] = (Math.random() - 0.5) * 5; fb.omega[2] = (Math.random() - 0.5) * 5;
+    fb.sleeping = false; fb.sleepT = 0;
+    fb.rag = true;                                      // NO absorbAt: a corpse is not a chunk to collect — it is removed with the death poof half a second later (see reapDeaths)
+    PH.bodies.push(fb); PH.stats.chunks++;
+    PH.stats.ragdolls = (PH.stats.ragdolls | 0) + 1;
+    B.ragBody = fb;                                     // the flash follows it while it falls (see hurtBox)
+    return fb;
+  };
   const hitCreature = (best, token) => {                // …and this is the hit itself, on a KNOWN slot — callable from a test without having to aim first
     const B = wbf[best];
     if (!B || !B.init) return;
@@ -7171,8 +7793,13 @@
     if (best >= 276) B.mammal = true;                   // remember WHAT it was: by the time it dies the slot is only a bag of stale numbers
     const blink = true;                                 // the KILLING blow flashes too (user) — it used to be skipped whenever an earlier hit had already flashed,
     B.blinked = true;                                   // which left the third and fatal swing with no feedback of its own at all.
+    // ── GO RIGID (user 2026-08-05) ── ONLY here, on the blow that kills: the animal becomes a rigid body and
+    // starts falling this instant, so it is red AND a ragdoll together. Wounding hits never reach this line.
+    // If the conversion cannot happen (physics off, model too big, no body slot) the old death plays out
+    // exactly as before — B.rag stays false and the creature keeps rendering through its flash.
+    if (creatureRagdoll(B)) B.rag = true;
     HURT.slot = best; HURT.hold = false; hurtBox(B); HURT.t0 = performance.now();
-    B.hopT0 = performance.now();                        // BOUNCE (user) — every hit, wounding or killing
+    B.hopT0 = B.rag ? undefined : performance.now();    // BOUNCE (user) — every hit, wounding or killing. A ragdoll does its own falling; the scripted hop would fight it.
     pendDeath.push({ slot: best, at: performance.now() + (blink ? HURT_MS : 0) });   // …and with no flash to wait out, it dies immediately
   };
   const dropMeat = (B) => {                             // RAW MEAT where a land mammal fell (user): lands as an ordinary drop, so it hovers, spins and can be picked up like anything else
@@ -7181,17 +7808,36 @@
       born: performance.now(), T: 0, q0: [0, 0, 0, 1] });
     if (drops.length > 4) drops.shift();                // the composite renders up to 4 at once
   };
+  // …and now that the ragdoll and the poof both exist, a bird cut out of its perch gets the SAME death as one
+  // struck directly: it goes rigid, drops out of the tree, and the yellow sparks fire where it lands. No red
+  // flash — nothing hit the bird itself, its branch went — so this is a fall, not a wound.
+  birdDeath = (B) => {
+    const gone = creatureRagdoll(B);                    // lifts its stamped voxels and hands the needles back
+    if (!gone) { if (B.sN) unstampWorm(B); spawnDeathBurst(B.x, B.perchFeet || B.y, B.z); }   // no body to be had (physics off, no slot) — at least poof where it sat
+    else B.rag = true;
+    B.dieT = 0; B.slain = true;
+    if (gone) pendDeath.push({ slot: wbf.indexOf(B), at: performance.now() + HURT_MS });   // …the poof follows the fall, exactly as a struck animal's does
+    else B.init = false;
+  };
   const pendDeath = [];                                 // creatures mid-blink: {slot, at} — they die for real when the flash finishes
   const reapDeaths = (nowMs) => {                        // …and this is where that happens, one blink later
     for (let i = pendDeath.length - 1; i >= 0; i--) {
       if (nowMs < pendDeath[i].at) continue;
-      const B = wbf[pendDeath[i].slot];
+      const slotD = pendDeath[i].slot;
+      const B = wbf[slotD];
       pendDeath.splice(i, 1);
       if (!B || !B.init) continue;
       if (MEAT_IT && pendDeath.length >= 0 && B.mammal) dropMeat(B);   // LAND MAMMALS leave RAW MEAT behind (user) — armed at the hit, since B.x/B.y are about to stop being maintained
-      spawnDeathBurst(B.x, (B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y, B.z);   // poof at the creature (a PERCHED BIRD's height lives in perchFeet — B.y is stale for kind 5)
+      // …the poof goes where the animal ACTUALLY IS. A ragdoll has been falling for the whole flash, so B.x/B.y
+      // is where it was standing half a second ago; its body knows where it landed (user: it dies with the sparks).
+      // The body goes WITH the poof: the sparks are the death, and leaving the corpse behind would both outlive
+      // the moment and hand the player a dead animal to vacuum up on the ordinary chunk-absorb path.
+      if (B.ragBody) { spawnDeathBurst(B.ragBody.pos[0], B.ragBody.pos[1], B.ragBody.pos[2]);
+        const bi = PH.bodies.indexOf(B.ragBody); if (bi >= 0) PH.bodies.splice(bi, 1); B.ragBody = null; }
+      else spawnDeathBurst(B.x, (B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y, B.z);   // poof at the creature (a PERCHED BIRD's height lives in perchFeet — B.y is stale for kind 5)
       if (B.sN) unstampWorm(B);                           // clear a grid-stamped creature's world voxels (mammals + perched birds)
       B.init = false; B.dieT = 0; B.slain = true; B.dying = false;         // SLAIN (user: "when I kill something, it respawns somewhere else — prevent this"): the slot is dead for the rest of the session — the population loop skips it, so nothing re-places it elsewhere
+      if (slotD >= 16 && slotD < 20) startCrying(slotD);   // …a MOTHER duck: the brood she leaves behind cries (user). Armed HERE, not at the hit, so a wounded-but-alive mother never sets them off.
     }
   };
   document.addEventListener('mousedown', (e) => {
@@ -7253,15 +7899,15 @@
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
   // ── keybinds ── rebindable, persisted to localStorage
-  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'AltLeft', drop: 'KeyQ', fly: 'KeyF', vignette: 'KeyK', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // fly on F restored (user 2026-07-22)
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'CapsLock', drop: 'KeyQ', fly: 'KeyF', vignette: 'KeyK', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // crouch on CAPS LOCK (user 2026-08-05), off Alt   // fly on F restored (user 2026-07-22)
   const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', vignette: 'vignette', vsync: 'v-sync', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
-  if (binds.crouch === 'KeyC') { binds.crouch = 'AltLeft'; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }
+  if (binds.crouch === 'KeyC' || binds.crouch === 'AltLeft') { binds.crouch = 'CapsLock'; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE: crouch went C → left Alt → CAPS LOCK (user 2026-08-05), carrying saved binds with it. Alt is no longer a crouch key at all.
   if (binds.vignette === 'KeyL') { binds.vignette = DEFBINDS.vignette; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE: L is the light panel now, and it used to toggle the vignette underneath it   // MIGRATE the old default: crouch moved off C (C now hides UI) → left Alt, even for players with a saved keybind
   const prettyKey = (c) => c.replace(/^Key|^Digit/, '').replace('BracketLeft', '[').replace('BracketRight', ']')
     .replace('ShiftLeft', 'L-SHIFT').replace('ShiftRight', 'R-SHIFT').replace('ControlLeft', 'L-CTRL').replace('ControlRight', 'R-CTRL')
-    .replace('AltLeft', 'L-ALT').replace('AltRight', 'R-ALT')
+    .replace('AltLeft', 'L-ALT').replace('AltRight', 'R-ALT').replace('CapsLock', 'CAPS LOCK')
     .replace('Space', 'SPACE').replace('Arrow', '').toLowerCase();   // keybind menu is all lowercase (user)
   const kbPanel = $('kbPanel'), kbRows = $('kbRows');
   let listenAction = null;
@@ -7688,32 +8334,77 @@
       btn.addEventListener('pointerdown', (e) => e.stopPropagation());
       btn.addEventListener('click', (e) => { e.stopPropagation(); set(!get()); try { localStorage.setItem(key, get() ? '1' : '0'); } catch (e2) {} show(); });
       show(); };
-    // ── LIGHT DEBUG PANEL ── one row per lighting term, each a bit in u.lgt.x. Bit order is shared
-    // with LG() in the shader. Persisted, so a bisection survives the reload you will inevitably do.
-    const LGT = [['sun shadow', 0], ['sun penumbra', 12], ['ambient occl', 1], ['sky / ambient', 15],
-                 ['bounce light', 14], ['creature shad', 2], ['glow (lava/fly)', 3], ['caustics', 13],
-                 ['fog', 5], ['body grain', 9], ['terrain grain', 10], ['creature grain', 11],
-                 ['held item lit', 16], ['volumetric', 17], ['reactive mask', 4], ['irr history', 6], ['spatial blur', 7], ['taa', 8]];
+    // ── WATER PANEL ── one row per WATER term, each a bit in u.lgt.x, bit order shared with LG() in the
+    // shader. Persisted, so a setting survives the reload you will inevitably do.
+    // WATER ONLY (user 2026-08-05). The other 18 terms this panel used to carry — caustics, volumetric,
+    // sun shadow, penumbra, AO, sky/ambient, bounce, creature shadow, glow, fog, the three grains, held-item
+    // lighting, reactive mask, irr history, spatial blur, TAA — are whole-scene switches, which is why
+    // clicking them changed the environment. They are forced ON at load (see LGT_WATER) and are reachable
+    // only from the console now: __vb.lgt(mask). Every bit BELOW is confined to the `face == 6u` water
+    // branch of the shader and cannot touch a land pixel.
+    // [label, bit, mask] — mask 1 = u.lgt.x (LG), mask 2 = u.lgt.z (LG2). The GLISTEN is two separate
+    // effects sharing one light column (user 2026-08-05): a smooth added SHEEN and discrete flashing
+    // VOXELS. One button could not tell you which of them you were looking at, so they are two.
+    const LGT = [['reflect', 18, 1], ['refract', 19, 1], ['foam', 20, 1], ['ice', 21, 1],
+                 ['soft glisten', 0, 2], ['pixel glisten', 22, 1], ['waves', 23, 1]];
+    const lgtGet = (b, m) => ((m === 2 ? lgtMask2 : lgtMask) & (1 << b)) !== 0;
     {
       const panel = $('lgtPanel');
-      lgtPaint = () => { for (const [, b] of LGT) { const btn = $('lgtB' + b);
-        const on = (lgtMask & (1 << b)) !== 0; btn.textContent = on ? 'on' : 'off'; btn.classList.toggle('on', on); } };
-      for (const [label, b] of LGT) {
+      const bid = (b, m) => 'lgtB' + m + '_' + b;
+      lgtPaint = () => { for (const [, b, m] of LGT) { const btn = $(bid(b, m));
+        const on = lgtGet(b, m); btn.textContent = on ? 'on' : 'off'; btn.classList.toggle('on', on); } };
+      for (const [label, b, m] of LGT) {
         const row = document.createElement('div'); row.className = 'lgtRow';
-        row.innerHTML = '<span></span><button id="lgtB' + b + '">on</button>';
+        row.innerHTML = '<span></span><button id="' + bid(b, m) + '">on</button>';
         row.firstChild.textContent = label;
         panel.appendChild(row);
         const btn = row.lastChild;
         btn.addEventListener('pointerdown', (e) => e.stopPropagation());
-        btn.addEventListener('click', (e) => { e.stopPropagation(); lgtMask ^= (1 << b); resetHist = 1;   // the filters hold seconds of history; drop it so the change is visible immediately
-          try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} lgtPaint(); });
+        btn.addEventListener('click', (e) => { e.stopPropagation(); resetHist = 1;   // the filters hold seconds of history; drop it so the change is visible immediately
+          if (m === 2) { lgtMask2 ^= (1 << b); try { localStorage.setItem('vb_lgt2', String(lgtMask2)); } catch (e2) {} }
+          else { lgtMask ^= (1 << b); try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} }
+          lgtPaint(); });
       }
+      // ── REFLECTION STRENGTH (user 2026-08-05) ── how much of the Fresnel split goes to the mirror.
+      // 1.00 is physical Schlick (the look it has always had); 0 kills the mirror, 2 doubles it. Lives in
+      // u.lgt.y, so it costs nothing extra — the reflection ray is traced either way, this only weights it.
+      const sld = document.createElement('div'); sld.className = 'lgtRow lgtSld';
+      sld.innerHTML = '<span>reflection</span><input id="lgtRefl" type="range" min="0" max="2" step="0.05"><span class="lgtVal" id="lgtReflV"></span>';
+      panel.appendChild(sld);
+      const reflIn = $('lgtRefl'), reflVal = $('lgtReflV');
+      const reflPaint = () => { reflIn.value = String(wReflK); reflVal.textContent = wReflK.toFixed(2); };
+      reflIn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      reflIn.addEventListener('input', (e) => { e.stopPropagation(); wReflK = +reflIn.value; resetHist = 1;
+        try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} reflPaint(); });
+      reflPaint();
+      // ── BAKE ── the whole water setup as ONE line, ready to paste over the WATER_BAKE declaration in the
+      // source (same idea as the arrow panel's bake row). What is written there is what a fresh player gets.
+      const bake = document.createElement('div'); bake.className = 'lgtRow lgtBake';
+      bake.innerHTML = '<input type="text" id="lgtBake" readonly><button id="lgtCopy">copy</button>';
+      panel.appendChild(bake);
+      const bakeIn = $('lgtBake'), bakeBtn = $('lgtCopy');
+      const bakeStr = () => 'const WATER_BAKE = { ' + [
+        'reflect: ' + (lgtGet(18, 1) ? 1 : 0), 'refract: ' + (lgtGet(19, 1) ? 1 : 0),
+        'foam: ' + (lgtGet(20, 1) ? 1 : 0), 'ice: ' + (lgtGet(21, 1) ? 1 : 0),
+        'softGlisten: ' + (lgtGet(0, 2) ? 1 : 0), 'pixelGlisten: ' + (lgtGet(22, 1) ? 1 : 0),
+        'waves: ' + (lgtGet(23, 1) ? 1 : 0), 'reflection: ' + (+wReflK).toFixed(2),
+      ].join(', ') + ' };';
+      const bakePaint = () => { bakeIn.value = bakeStr(); };
+      bakeIn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      bakeIn.addEventListener('click', (e) => { e.stopPropagation(); bakeIn.select(); });
+      bakeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      bakeBtn.addEventListener('click', (e) => { e.stopPropagation();
+        const done = () => { bakeBtn.textContent = 'copied!'; setTimeout(() => { bakeBtn.textContent = 'copy'; }, 1200); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(bakeIn.value).then(done, () => { bakeIn.select(); document.execCommand('copy'); done(); });
+        else { bakeIn.select(); document.execCommand('copy'); done(); } });
+      { const base = lgtPaint; lgtPaint = () => { base(); reflPaint(); bakePaint(); }; }   // one repaint covers buttons, slider AND the bake line, so __vb.wrefl()/__vb.lgt() from the console can never disagree with what is drawn
       const hint = document.createElement('div'); hint.className = 'lgtHint';
       hint.textContent = 'L — cursor on/off';   // the panel says how to reach it; nothing else in the HUD would
       panel.appendChild(hint);
       $('lgtAll').addEventListener('pointerdown', (e) => e.stopPropagation());
-      $('lgtAll').addEventListener('click', (e) => { e.stopPropagation(); lgtMask = LGT_ALL; resetHist = 1;
-        try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} lgtPaint(); });
+      $('lgtAll').addEventListener('click', (e) => { e.stopPropagation();   // reset = back to whatever is BAKED in the source, not to all-on
+        lgtMask = wBakeMask(); lgtMask2 = wBakeMask2(); wReflK = wBakeRefl(); resetHist = 1;
+        try { localStorage.setItem('vb_lgt', String(lgtMask)); localStorage.setItem('vb_lgt2', String(lgtMask2)); localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} lgtPaint(); });
       lgtPaint();
     }
     {   // ── THE ADJUST BOX ── quarter turns and voxel nudges for WHATEVER IS IN HAND (user). Holding the
@@ -7952,6 +8643,15 @@
   let stackShown = -1;
   const cursSync = () => { document.body.classList.toggle('freecur', !locked); if (locked) cursEl.classList.remove('sq');
     $('arwPanel').classList.toggle('hidden', locked || !$('over').classList.contains('hidden'));   // the arrow buttons are only REACHABLE with a free cursor, so that is exactly when they show — but never over the death screen. (Read from the DOM, not `dead`: cursSync runs once during init, BEFORE that binding exists.)
+    // ── THE LIGHT PANEL SHOWS ON THE SAME RULE ── it is authored `hidden` and nothing ever took that class
+    // off, so the water/lighting switches could not appear at all and L handed the cursor to a panel that
+    // was display:none (user 2026-08-05: "I don't see the water visual buttons"). Same reachability test as
+    // the arrow panel — free cursor, never over the death screen — plus the video editor, which owns the
+    // screen outright and sits above this panel's z-order.
+    // `locked && !lightMode`, not plain `locked`: L calls setLightMode -> cursSync BEFORE the browser has
+    // fired pointerlockchange, so `locked` is still true on that first pass and the panel L exists to open
+    // would flash hidden until the event landed. lightMode IS the cursor being free, so say so outright.
+    $('lgtPanel').classList.toggle('hidden', (locked && !lightMode) || !$('over').classList.contains('hidden') || !vePanel.classList.contains('hidden'));
     $('lgtPanel').classList.toggle('lit', lightMode); };   // the panel highlights while it has the cursor, so the mode is never ambiguous
   const CURS_HIT = 'button, .veTool, .veCtl, a, input:not([type="range"]), select, [role="button"]';   // ONLY genuinely clickable controls square the cursor. RANGE sliders are excluded (user): the cursor stays a cross over them and the KNOB grows on hover instead (see the slider CSS). `#lock` (the whole esc-menu backdrop) used to be in here too, so the cursor was a square across the ENTIRE menu; the buttons/anchors inside already match on their own.
   cursSync();                                        // the game boots UNLOCKED (click-to-enter), so the custom cursor is live from the first frame
@@ -8059,7 +8759,7 @@
       if (e.code === 'KeyB') edSwapBunnies();          // swap which bunny (left/jump ↔ right/rotate) is the EDITABLE one
       // (KeyH per-heading alignment REMOVED — alignment is authored ONCE in SOUTH; armOffset auto-derives every heading with the rigid rotation + parity correction, so there is nothing to cycle through or export per heading.)
     }
-    if (e.code === binds.jump || e.code === binds.crouch) e.preventDefault();   // Alt (crouch) — stop the browser stealing it for the menu bar
+    if (e.code === binds.jump || e.code === binds.crouch) e.preventDefault();   // Space (scroll) and whatever crouch is bound to — Alt used to be stolen by the browser for the menu bar. NOTE preventDefault cannot stop CAPS LOCK toggling the OS state; it only keeps the key out of the browser's own handling.
   });
   document.addEventListener('keyup', (e) => keys.delete(e.code));
 
@@ -8179,7 +8879,9 @@
         else { inp.select(); document.execCommand('copy'); done(); } });
       row.appendChild(inp); row.appendChild(btn); pkRows.appendChild(row);
     }
-    $('pkBtn').addEventListener('click', (e) => { e.stopPropagation(); pkPanel.classList.remove('hidden'); pkRefresh(); });
+    // the ESC-menu button was removed (user 2026-08-05); the panel and every slider below stay wired, so
+    // __vb.pick() and a re-added button both still work. Guarded because the element is no longer there.
+    { const pb = $('pkBtn'); if (pb) pb.addEventListener('click', (e) => { e.stopPropagation(); pkPanel.classList.remove('hidden'); pkRefresh(); }); }
     $('pkClose').addEventListener('click', (e) => { e.stopPropagation(); pkPanel.classList.add('hidden'); });
     $('pkReset').addEventListener('click', (e) => { e.stopPropagation(); Object.assign(pickCfgs[pkIt], PICK_DEFS[pkIt]); pickSave(); pkRefresh(); });
     pkPanel.addEventListener('click', (e) => { e.stopPropagation();
@@ -8693,6 +9395,8 @@
     vig(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return { uniform: UF[1268], on: vigOn, cineWeight: cineBlurK }; },   // cinematic vignette tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
     vigFree() { blurLock = false; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
+    solidAt2(x, y, z) { return solid(x, y, z); },      // what the PLAYER actually collides with (cones exempted) — solidAt reports the raw table
+    boxFreeAt(x, y, z) { return boxFree(x, y, z, HEIGHT); },   // can the player's whole box sit here?
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
     edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; if (ED.giz) ED.rgiz = false; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
     edRgiz(v) { ED.paused = true; ED.rgiz = v === undefined ? !ED.rgiz : !!v; if (ED.rgiz) ED.giz = false; edEnsureRgizCols(); edLayout(); return { rgiz: ED.rgiz, rings: ED.rgizBoxes.map((g) => g.kind) }; },   // rotate-gizmo test tap
@@ -8723,6 +9427,9 @@
     physChop(x, y, z, r) { return physChopAt(x, y, z, r); },
     physSwing() { return chopSwing(); },
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
+    cmd(line) { cmdRun(line); return { msg: cmdMsg ? cmdMsg.textContent : '', at: [Math.round(P.x), Math.round(P.y), Math.round(P.z)] }; },   // run a command line exactly as Enter does — /spawn, /locate
+    severedFall(x, y, z) { return phSeveredFall(x, y, z); },   // run the severed-from-the-world sweep at a point; returns how many components it dropped
+    severedCfg() { return { R: ORPH_R, up: ORPH_UP, maxComp: ORPH_MAX, bodyCap: PH.absorbMax }; },
     knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; }, pickId() { return PICK_IT; }, shovelId() { return SHOVEL_IT; }, bowId() { return BOW_IT; }, meatId() { return MEAT_IT; },
     dropMeatAt(x, y, z) { if (!MEAT_IT) return null; dropMeat({ x, y, z }); return __vb.dropsInfo(); },   // drop meat on demand, for tests and for looking at it
     toolTabs() { const d = [], a = [], k = [], g = []; for (let i = 0; i < 256; i++) { if (decorTab[i]) d.push(i); if (axeOnlyTab[i]) a.push(i); if (pickOnlyTab[i]) k.push(i); if (digOnlyTab[i]) g.push(i); } return { choppable: d.length, needsCut: a.length, needsPick: k.length, needsShovel: g.length, pickIds: k, digIds: g }; },
@@ -8743,6 +9450,7 @@
       return lo > hi ? null : [lo, hi]; },
     poseOf(id) { const c = pickCfgs[(id | 0)]; return c ? { ...c } : null; },   // an item's live held pose, for checking what the adjust box did
     killTest(slot) { hitCreature(slot | 0); return __vb.hitsOn(slot | 0); },   // land a hit on a KNOWN creature with whatever is in hand — no aiming in the way
+    hitAt(slot, token) { hitCreature(slot | 0, token); return __vb.hitsOn(slot | 0); },   // …and with an explicit swing token, so a test can land SUCCESSIVE blows (one swing = one hit is enforced on the token)
     aimKill() { const b = aimedCreature(); if (b >= 0) hitCreature(b); return b; },   // exactly what a left click does, without having to drive the mouse
     birdKills() { return birdKills; },
     birdCount() { let n = 0; for (const B of birds) if (B && B.init) n++; return n; },   // songbirds actually in the air
@@ -8770,7 +9478,7 @@
                isAxe: it === 1, isKnife: KNIFE_IT > 0 && it === KNIFE_IT,
                cutsWood: it === 1 || (KNIFE_IT > 0 && it === KNIFE_IT),
                isPick: PICK_IT > 0 && it === PICK_IT, isShovel: SHOVEL_IT > 0 && it === SHOVEL_IT,
-               sphere: CHOP_RAD * (KNIFE_IT > 0 && it === KNIFE_IT ? KNIFE_SCALE : (PICK_IT > 0 && it === PICK_IT ? PICK_SCALE : (SHOVEL_IT > 0 && it === SHOVEL_IT ? DIG_SCALE : AXE_SCALE))),   // this tool's OWN sphere. Off its own material it works at half of this, and WOOD is always the axe's (user)
+               sphere: 2 * CHOP_RAD * (KNIFE_IT > 0 && it === KNIFE_IT ? KNIFE_SCALE : (PICK_IT > 0 && it === PICK_IT ? PICK_SCALE : (SHOVEL_IT > 0 && it === SHOVEL_IT ? DIG_SCALE : AXE_SCALE))),   // this tool's OWN sphere. Off its own material it works at half of this, and WOOD is always the axe's (user)
                chunk: PH.chopBite, lastChops: PH.stats.chops, lastVoxRemoved: PH.stats.voxRemoved };
     },                     // stone-knife item id — it cuts like the axe at half the sphere
     lifeDump() {                                     // live creatures + how many voxels each model carries — sizing data for the dynamic shadow volume
@@ -8853,7 +9561,10 @@
                smallBodies: now2.length, spots });
       }, 400));
     },
-    lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536, volumetric: 131072 } }; },   // the light-debug bitmask, from the console
+    wrefl(v) { if (v !== undefined) { wReflK = Math.max(0, Math.min(2, +v)); resetHist = 1; try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e) {} lgtPaint(); } return wReflK; },   // WATER REFLECTION STRENGTH — the panel's slider, from the console
+    lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; try { localStorage.setItem('vb_lgt2', String(lgtMask2)); } catch (e) {} lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: { waterSoftGlisten: 1 } }; },   // the SECOND mask (u.lgt.z) — lgt.x is full at 24 bits
+    lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, water: LGT_WATER, mask2: lgtMask2, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536, volumetric: 131072,
+      waterReflect: 262144, waterRefract: 524288, waterFoam: 1048576, waterIce: 2097152, waterGlisten: 4194304, waterWaves: 8388608 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
       for (const b of PH.bodies) { b.sleeping = f; if (f) { b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0; } }
       return PH.bodies.map((b) => ({ vox: b.n, pos: b.pos.map((q) => +q.toFixed(2)), sleeping: b.sleeping })); },
@@ -8994,7 +9705,27 @@
         if (run >= ln) runs.push(['x', gx, 0, run]); }
       return { rect: { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi }, winOX, winOZ, px: P.x, pz: P.z, nRuns: runs.length, runs: runs.slice(0, 40) }; },
     hAt(x, z) { return { hmap: hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], analytic: H(Math.floor(x), Math.floor(z)) }; },   /*TEMP-DEBUG*/
-    sparkDbg() { return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: death-burst / clash-spark slot state*/
+    sparkDbg() { return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : (s.foam ? 'foam' : 'spark')) : null); },   /*TEMP-DEBUG: death-burst / clash-spark / SPLASH slot state*/
+    foamId() { return FOAM_IT; },                      // the splash droplet's item id
+    splashAt(x, z, k) { spawnSplash(x, z, k); return __vb.sparkDbg().slice(0, 4); },   // fire a splash on demand (test tap)
+    duckEyes() { return { n: DUCKB_EYES.length, cells: DUCKB_EYES }; },   // the duckling eye voxels the tears come out of - offsets from the model's CENTRE, which is where the drop-slot tracer anchors it
+    crying() { const o = []; for (let j = 20; j < 32; j++) { const B = wbf[j];
+      if (B && B.init && B.cryTo) o.push({ slot: j, msLeft: Math.round(B.cryTo - performance.now()) }); } return o; },
+    tears() { const n = performance.now(); return sparks3d.slice(TEAR_LO, TEAR_HI).filter((s) => s && s.foam && (n - s.born) / 1000 < s.life).length; },   // live TEAR droplets, tear band only
+    splashLive() { const n = performance.now(); return sparks3d.slice(SPLASH_LO, SPLASH_HI).filter((s) => s && s.foam && (n - s.born) / 1000 < s.life).length; },
+    splashLife() { return SPLASH_LIFE; },
+    sparkAll() { return sparks3d.map((s) => s ? { born: s.born, life: s.life, foam: !!s.foam, smoke: !!s.smoke } : null); },   // every particle slot's identity — a test can watch for one being taken over mid-life
+    bodyMats() { return PH.bodies.map((b) => { let crea = 0; for (let i = 0; i < b.n; i++) if (CREA_FLAG[b.id[i]]) crea++;
+      return { vox: b.n, creatureVox: crea, rag: !!b.rag, src: b.src }; }); },   // how much of each live rigid body is CREATURE material — anything non-ragdoll with creature voxels is an animal that got carved up
+    ragdolls() { return { made: PH.stats.ragdolls | 0,
+      live: PH.bodies.filter((b) => b.rag).map((b) => ({ vox: b.n, pos: b.pos.map((q) => +q.toFixed(1)), sleeping: !!b.sleeping })) }; },
+    ragOf(slot) { const B = wbf[slot | 0]; if (!B) return null;
+      return { rag: !!B.rag, hasBody: !!B.ragBody, bodyVox: B.ragBody ? B.ragBody.n : 0,
+        pos: B.ragBody ? B.ragBody.pos.map((q) => +q.toFixed(1)) : null, init: !!B.init, slain: !!B.slain }; },
+    splashDbg() { const now = performance.now();       // live particle heights, computed EXACTLY as the emit does (y + vy·t − grav·t²) — so a test reads the height actually drawn, not a guess
+      return sparks3d.slice(0, 4).map((s) => { if (!s) return null;
+        const t = (now - s.born) / 1000; if (t > s.life) return null;
+        return { y: s.y + s.vy * t - (s.smoke ? 1.5 : 85) * t * t, aboveWL: s.y + s.vy * t - 85 * t * t - WL, foam: !!s.foam }; }); },
     killSlot(s) { swingStart = performance.now(); hitCreature(s | 0); return { init: !!wbf[s].init, hits: wbf[s].hits | 0, dying: !!wbf[s].dying }; },   // each tap counts as its OWN swing: the one-hit-per-swing guard keys on swingStart, which this tap otherwise never advances
     hitsOn(s) { const B = wbf[s | 0]; return B ? { hits: B.hits | 0, needs: HITS_TO_KILL, alive: !!B.init, dying: !!B.dying } : null; },   // how many hits this creature has taken, for checking the rule in play   // run the hit on a KNOWN creature, no aiming involved
     hurtTest(slot, hold) { const B = wbf[slot | 0]; if (!B || !B.init) return null; HURT.slot = slot | 0; HURT.hold = !!hold; hurtBox(B); HURT.t0 = performance.now(); return __vb.hurtInfo(); },   // arm the wounded flash WITHOUT the hit, so a capture can be timed against it
@@ -9129,6 +9860,12 @@
       smoothEye = P.y + eyeH;
     } else {
       const inWater = waterAt(Math.floor(P.x), Math.floor(P.y + 3), Math.floor(P.z));
+      // ── THE PLAYER BREAKS THE SURFACE ── same splash a fish throws, either direction (user 2026-08-05).
+      // Keyed off the STATE CHANGE, so wading along at the waterline cannot chatter; scaled by how hard the
+      // crossing was, so a dive throws spray and stepping in off a beach barely ripples.
+      if (P.wasWet === undefined) P.wasWet = inWater;
+      if (inWater !== P.wasWet) { P.wasWet = inWater;
+        if (!dead) spawnSplash(P.x, P.z, Math.max(0.55, Math.min(1.6, Math.abs(P.vy) / 60 + 0.55))); }
       const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? 0.55 : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
@@ -9450,7 +10187,7 @@
         }
         heldSkyV += ((wsum > 0 ? acc / wsum : 1) - heldSkyV) * (1 - Math.exp(-8 * dt)); }   // the SAME ~0.15 s ease the sun term uses — walking under a crown must fade, not strobe
       UF[1860] = heldSunV; UF[1861] = heldSkyV; UF[1862] = 0; UF[1863] = 0;
-      UF[1864] = lgtMask; UF[1865] = 0; UF[1866] = 0; UF[1867] = 0;   // ── LIGHT DEBUG ── which lighting terms are switched on (top-right panel)
+      UF[1864] = lgtMask; UF[1865] = wReflK; UF[1866] = lgtMask2; UF[1867] = 0;   // ── WATER PANEL ── x = term mask (LG), y = the REFLECTION STRENGTH slider, z = the SECOND term mask (LG2 — lgt.x is full at 24 bits)
       // ── HIT FLASH ── published AFTER the creature stamps (see the block by UF[1875] further down), because a
       // land mammal re-stamps itself later in this same tick — bounce included — and a box measured here would
       // describe where it WAS last frame while the GPU shades where it IS now.
@@ -9524,7 +10261,7 @@
       let showId = dead ? 0 : (slots[selSlot] ? slots[selSlot].it : 0);          // held item = the SELECTED hand slot (0 = empty hand)
       if (clashK > 0 && (showId === 2 || showId === KNIFE_IT)) { hx += (0.13 - hx) * clashK; hy += (-0.17 - hy) * clashK; hz += (0.92 - hz) * clashK; }   // right rock drives to centre; the newborn knife eases back from there
       if (grabAnim && !grabAnim.left) {                // FLY-TO-HAND — the pickup glides in as ITS OWN object; the hand keeps whatever it was holding (user)
-        const k = Math.min(1, (now - grabAnim.t0) / 340);
+        const k = Math.min(1, (now - grabAnim.t0) / GRAB_MS);
         const e2 = k * k * (3 - 2 * k);
         if (!slots[selSlot]) {
           // ── EMPTY HAND: STRAIGHT INTO THE HAND (user) ── the original flight, restored. The item IS the held
@@ -9597,7 +10334,7 @@
               lz = c2.z;
           if (clashK > 0) { lx += (-0.13 - lx) * clashK; ly += (-0.17 - ly) * clashK; lz += (0.92 - lz) * clashK; }   // left rock mirrors the drive to centre
           if (lgrab) {                               // fly from the world spot into the LEFT rest pose — same glide as the right hand
-            const k = Math.min(1, (now - grabAnim.t0) / 340);
+            const k = Math.min(1, (now - grabAnim.t0) / GRAB_MS);
             const e2 = k * k * (3 - 2 * k);
             const rx = grabAnim.x - cam[0], ry = grabAnim.y - cam[1], rz = grabAnim.z - cam[2];
             const sxc = (rx * right[0] + ry * right[1] + rz * right[2]) * c2.scale;
@@ -10235,9 +10972,17 @@
     for (let wk = 0; wk < 372; wk++) {
       const B = wbf[wk];
       if (B.slain) continue;                           // KILLED BY THE PLAYER (user): a slain slot never recycles or re-places — the creature is gone for the session (kill already cleared its stamp; init=false keeps it out of every emit/census)
+      if (B.rag) continue;                             // RAGDOLLED: the rigid body IS the animal now. Steering, animating or emitting it again would draw a second copy standing where it used to be while the real one falls.
       const porcSlot = wk >= 348, skunkSlot = wk >= 324 && wk < 348, armSlot = wk >= 300 && wk < 324, bunnySlot = wk >= 276 && wk < 300, fishSlot = wk >= 244 && wk < 276, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
       const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
+      // ── ORPHANED (user 2026-08-05: "killing the mom kills all the baby ducks — each duck has to be killed")
+      // A brood used to be defined out of existence the instant its mother's slot went inactive, so one hit on
+      // the mom silently deleted three ducklings that were never touched. Only a SLAIN mother makes orphans:
+      // she is gone for the session, so the deactivation is permanent and the brood must stand on its own.
+      // A merely RECYCLED mother (walked out of range, window recentred) still takes her babies with her —
+      // that is population churn far from the player, not a kill, and the pair must recycle together.
+      const orphan = isBaby && !!mom5.slain;
       const wantK = (bunnySlot || armSlot || skunkSlot || porcSlot) ? 2 : (fishSlot ? 6 : (lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)))));   // BUNNIES + ARMADILLOS + SKUNKS + PORCUPINES are kind 2 (worm machinery) — the slot band, not the kind, tells them apart at emit/AI
       const isDfly = wantK === 0 && nDfly > 0 && waterSpots.length > 0 && wk >= nAct - nDfly;   // DRAGONFLIES take the TOP of the active flyer band — butterflies only give up slots when there is water in view   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-243 PERCHED SONGBIRDS (180), 244-259 FISH
       const active = porcSlot ? (wk - 348 < nPorcupine)
@@ -10247,7 +10992,7 @@
         : (fishSlot ? (wk - 244 < nFish)
         : (lilySlot ? (wk - 64 < nCard)
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
-        : (isBaby ? (!!DUCKB_ITEM0 && mom5.init && sib < (mom5.nBab || 0))   // a duckling exists only while its mother does, up to her brood size
+        : (isBaby ? (!!DUCKB_ITEM0 && (orphan ? B.init : (mom5.init && sib < (mom5.nBab || 0))))   // a duckling exists only while its mother does, up to her brood size — unless she was KILLED, in which case it carries on alone until it is killed too
         : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct)))))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles  [three extra ) close the porcSlot + skunkSlot + armSlot branches]
       if (ED.on || dead || !active || (porcSlot ? !PORCUPINE_WALK.length : (skunkSlot ? !SKUNK_WALK.length : (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length)))))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck/skunk/porcupine) must clear its stamp
       const tb3 = now / 1000;
@@ -10262,7 +11007,7 @@
       const far = hd2 > rdK * rdK;                     // butterflies (and fish) judge by their HOME, everything else by where it is
       if (!B.init || far || (B.trap > 12 && (B.kind < 3 || B.kind === 6 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; a duck/lily wedged ON real water NEVER teleports (the unstick frees it), but a FISH sealed in a rock pocket the escape can't solve does (respawns in open water)
           B.x <= rect.xlo + 4 || B.x >= rect.xhi - 4 || B.z <= rect.zlo + 4 || B.z >= rect.zhi - 4 ||   // the window recentred/shrank under it — this ground is stale garbage, leave it
-          (isBaby && (B.x - mom5.x) * (B.x - mom5.x) + (B.z - mom5.z) * (B.z - mom5.z) > 40 * 40) ||   // a duckling stranded from its (recycled) mother rejoins her
+          (isBaby && !orphan && (B.x - mom5.x) * (B.x - mom5.x) + (B.z - mom5.z) * (B.z - mom5.z) > 40 * 40) ||   // a duckling stranded from its (recycled) mother rejoins her — an ORPHAN has nowhere to rejoin, and must not be teleported to where its mother died
           ((B.kind === 3 || B.kind === 4 || B.kind === 6) && !isBaby && ((frame + wk) & 63) === 0 && !bfWater(B.x, B.z)) ||   // recycle ONLY a DUCK/LILY/FISH genuinely OFF real water (dry ravine/land after a recenter) — NOT a perched cardinal (kind 5, never on water) and NOT one merely near a shore
           (B.trap > 4 && (dp2 > 0.7 * 0.7 * rdK * rdK || (B.kind < 3 && bfObst(B.x, B.y, B.z))))) {   // stuck 4 s: recycle if far in the fog OR body-in-solid (kinds <3 only — a duck's body dips into the WATER voxel in wave troughs, which is not 'stuck')
         if (B.rel) B.rel = false;                      // a released worm that leaves/loses its spot rejoins the normal population rules
@@ -10271,7 +11016,7 @@
           const pc = findPineCrown(wk);
           if (pc) { B.tx = pc.tx; B.tz = pc.tz; B.bi = pc.bi; B.x = pc.x; B.z = pc.z; B.perchFeet = pc.y + 1; placed = true; }   // feet rest ON TOP of the crown needle
         }
-        if (isBaby) {                                  // ducklings hatch right behind their mother, in line order
+        if (isBaby && !orphan) {                       // ducklings hatch right behind their mother, in line order (an orphan has none — it takes the generic open-water spot below, like a lone adult)
           let hx6 = mom5.x - Math.sin(mom5.th) * (4 + sib * 3.5) + (Math.random() - 0.5) * 2;
           let hz6 = mom5.z - Math.cos(mom5.th) * (4 + sib * 3.5) + (Math.random() - 0.5) * 2;
           if (!bfWater(hx6, hz6) || !bfSky(hx6, WL + 2, hz6)) { hx6 = mom5.x; hz6 = mom5.z; }   // the trail spot is ashore/dry-ravine/inside the bank (mom hugging the shore) — hatch AT mom instead; she's on valid water by construction
@@ -10512,13 +11257,14 @@
           B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : (B.om >= 0 ? 2.6 : -2.6));
         }
       } else if (B.kind === 3) {                       // DUCK: paddles its lake — veer away from the shore, gentle drifting turns
-        if (isBaby) {                                  // DUCKLING: steer for a spot just behind its leader — mom for the first, the sibling ahead for the rest (a follow line)
+        if (isBaby && !orphan) {                       // DUCKLING: steer for a spot just behind its leader — mom for the first, the sibling ahead for the rest (a follow line)
           const lead = (sib === 0 || !wbf[wk - 1].init) ? mom5 : wbf[wk - 1];
           const tx = lead.x - Math.sin(lead.th) * 4.5, tz = lead.z - Math.cos(lead.th) * 4.5;
           let dth = Math.atan2(tx - B.x, tz - B.z) - B.th; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
           B.omT = Math.max(-2.8, Math.min(2.8, dth * 2.2));
           B.chase = Math.hypot(tx - B.x, tz - B.z);    // distance to heel — drives the paddle speed
         } else {
+          if (orphan) B.chase = 4;                     // …an ORPHAN has no line to hold, so it paddles the lake on its own: the edge-avoidance wander below, at the steady 7 the speed table gives for a chase over 3.5 (never the 10 of a duckling scrambling to catch up)
           const duckOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist;
             return bfWater(ax, az) && bfSky(ax, WL + 2, az); };   // lookahead matches the MOVE rule (real water + open sky)
           let rx = 0, rz = 0;                          // PROACTIVE EDGE AVOIDANCE (user: 'keep the ducks further away from the terrain'): a stronger, WIDER repulsion so the duck banks off well before it can touch a shore/rock
@@ -10754,6 +11500,7 @@
           B.y += B.jumpV * dt; B.jumpV -= FC9.jump.gravity * dt;
           if (B.jumpV < 0 && B.y <= hi9) {             // ── REENTRY ── falling back through the surface → swimming again, cleanly: hold-depth resumes, the terrain
             B.y = hi9; B.jumpV = undefined;            // hitbox below re-validates the whole body, and the per-species cooldown keeps leaps occasional
+            if (B.jumpSpl) spawnSplash(B.x, B.z, 1.15); if (B.jumpSpl) PH.stats.leapDown = (PH.stats.leapDown|0)+1;   // …and it goes back in with a splash (user) — a shade bigger than the launch, it is coming down with the arc behind it. Whatever the LAUNCH decided: a leap must not splash at one end only.
             B.jumpRe = tb3 + (FC9.jump.cooldownMin + Math.random() * (FC9.jump.cooldownMax - FC9.jump.cooldownMin)) / Math.max(0.05, B.jumpMul || 1);
             B.spdT = FC9.baseSpeed; B.dT = 0.35 + Math.random() * 0.3;   // glide off the splash back into a mid-depth cruise
           }
@@ -10780,6 +11527,8 @@
                   bfWater(mx9, mz9) && bfSky(mx9, WL + 2, mz9) && fishFits(B, B.th, 8)) {        // …and the mid-arc + immediate exit are clear too
                 B.jumpV = jv; B.spd = FC9.jump.forward; B.spdT = FC9.jump.forward;   // launch, carrying the configured forward speed through the whole arc
                 B.om = 0; B.omT = 0; B.jumpArm = undefined;                          // dead-straight in the air — the validated splash-down must stay where it was aimed
+                B.jumpSpl = dp2 < FISH_SPLASH_R * FISH_SPLASH_R;   // decided HERE, for the whole arc — see FISH_SPLASH_R
+                if (B.jumpSpl) spawnSplash(B.x, B.z, 1); if (B.jumpSpl) PH.stats.leapUp = (PH.stats.leapUp|0)+1;   // …and it breaks the surface with a splash (user), if it is near enough to be seen doing it
               } else { B.jumpArm = undefined; B.jumpRe = tb3 + 4 + Math.random() * 6; B.dT = 0.3 + Math.random() * 0.4; }   // the arc lands badly (bank/shallow/roof) — stand down, sink back, try elsewhere
             } else if (tb3 > B.jumpArm) { B.jumpArm = undefined; B.jumpRe = tb3 + 6 + Math.random() * 12; }   // never reached the surface (roofed/penned in) — stand down
           }
@@ -10796,7 +11545,7 @@
           wvMax += 0.5;                                // +0.5 = the renderer's floor(wv + 0.5) worst case — the float stays AT or ABOVE the drawn surface at all times
         }
         const base9 = B.kind === 4 ? WL + 1.6 + 0.5 * (LILY_SZ[B.col % Math.max(1, LILY_SZ.length)] || 1)   // lily rests ON the surface with clearance — a 1-voxel-thin pad has NO sacrificial bottom row
-          : (isBaby ? WL + 2.9 : WL + 4.4);            // ducks: ride high — only (part of) the BOTTOM voxel row ever dips
+          : (isBaby ? WL + 1.9 : WL + 3.4);            // ducks: ONE VOXEL LOWER (user 2026-08-05) — they sat too high on the surface; the bottom row now dips properly   // ducks: ride high — only (part of) the BOTTOM voxel row ever dips
         const tgt9 = base9 + wvMax;
         const ek9 = B.kind === 4 ? 14 : 5, ec9 = B.kind === 4 ? 10 : 7;   // lily tracks TIGHT (lag ~0.2 vox — it has no draft to hide lag in); ducks keep the lazy bob-along ease
         B.y += Math.max(-ec9 * dt, Math.min(ec9 * dt, (tgt9 - B.y) * (1 - Math.exp(-ek9 * dt))));   // ONE symmetric ease — the swell moves ≤ ~2.5 vox/s, so this tracks it closely and SMOOTHLY
@@ -10884,6 +11633,25 @@
         if (p9 * p9 > 1e-6) { const cp9 = Math.cos(p9), sp9 = Math.sin(p9);
           Yw = [-HxR * cp9, -sp9, -HzR * cp9]; Zw = [-HxR * sp9, cp9, -HzR * sp9]; }   // head dir = −Yw tips up when climbing; Zw = Xw×Yw stays roll-free
       }
+      // ── CRYING (user 2026-08-05) ── an orphaned duckling weeps for 3 s, one tear at a time, alternating
+      // eyes. Done HERE because this is where the model's world frame exists: an eye is a model-space cell,
+      // and (px3,py3,pz3) + Xw/Yw/Zw + bScale is exactly the basis the emit hands the tracer, so a tear
+      // leaves the eye the renderer actually draws — at any heading, and riding the same wave bob.
+      if (isBaby && B.cryTo && DUCKB_EYES.length) {
+        if (now > B.cryTo) B.cryTo = 0;
+        else if (now >= B.cryNext) {
+          B.cryNext = now + CRY_GAP;
+          B.cryEye++;                                  // a free-running counter now, NOT wrapped to the eye list: baby.vox
+          const e = DUCKB_EYES[B.cryEye % DUCKB_EYES.length];   // is one voxel wide at the head, so it has ONE black voxel and `% length` pinned this to 0 forever
+          // …and the droplet wells out of the SIDE of that voxel, alternating cheeks — half a cell along the
+          // model's own X puts it exactly on the eye's outer face, so it is visible the instant it is born
+          // instead of spending its first frames buried inside the head.
+          const ex = e[0] + ((B.cryEye & 1) ? 0.5 : -0.5), zW = Zw || [0, 1, 0];
+          spawnTear(px3 + (Xw[0] * ex + Yw[0] * e[1] + zW[0] * e[2]) * bScale,
+                    py3 + (Xw[1] * ex + Yw[1] * e[1] + zW[1] * e[2]) * bScale,
+                    pz3 + (Xw[2] * ex + Yw[2] * e[1] + zW[2] * e[2]) * bScale);
+        }
+      }
       const nfr = B.kind === 6 ? FISHES[B.fsp || 0].n : (B.kind >= 3 ? 1 : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_NFRAMES : BUNNY_JUMP_NFRAMES) : (armSlot ? ARMADILLO_NFRAMES : WORM_NFRAMES)) : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES))));
       const fi3 = (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * 24) % nfr)   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
         : Math.floor((tb3 + wk * 0.37) * 24) % nfr;                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
@@ -10910,6 +11678,11 @@
       emitBuf[o4] = rx * right[0] + ry * right[1] + rz * right[2]; emitBuf[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; emitBuf[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; emitBuf[o4 + 3] = bScale;
       emitBuf[o4 + 7] = (B.kind === 6 ? FISHES[B.fsp || 0].item0 : (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_ITEM0 : BUNNY_JUMP_ITEM0) : (armSlot ? ARMADILLO_ITEM0 : WORM_ITEM0)) : (B.kind === 1 ? FFLY_ITEM0 : (B.dfly ? DFLY_ITEM0 : BFLY_COLS[B.col])))))) + fi3;
       emitBuf[o4 + 11] = glow;
+      // ── THE POSE THE RENDERER USED ── cached so the RAGDOLL can rebuild this creature's voxels in world
+      // space at the instant it dies. Nothing extra is allocated: Xw/Yw/Zw are this frame's own arrays, and
+      // the anchor is three numbers written over three numbers.
+      B.ragIt = emitBuf[o4 + 7]; B.ragA0 = px3; B.ragA1 = py3; B.ragA2 = pz3;
+      B.ragX = Xw; B.ragY = Yw; B.ragZ = Zw || RAG_UP; B.ragS = bScale;
       if (Zw) {                                        // FULL 3D frame (fish): every axis has a y component — the level-frame fast path below assumes Zw = world-up
         emitBuf[o4 + 4] = Xw[0] * right[0] + Xw[1] * right[1] + Xw[2] * right[2]; emitBuf[o4 + 5] = Xw[0] * up[0] + Xw[1] * up[1] + Xw[2] * up[2]; emitBuf[o4 + 6] = Xw[0] * fwd[0] + Xw[1] * fwd[1] + Xw[2] * fwd[2];
         emitBuf[o4 + 8] = Yw[0] * right[0] + Yw[1] * right[1] + Yw[2] * right[2]; emitBuf[o4 + 9] = Yw[0] * up[0] + Yw[1] * up[1] + Yw[2] * up[2]; emitBuf[o4 + 10] = Yw[0] * fwd[0] + Yw[1] * fwd[1] + Yw[2] * fwd[2];
@@ -10955,7 +11728,10 @@
                                                       // publish runs later in this same tick and rewrites all 8 — so it goes into that list instead.
       UF[1872] = HURT.hx; UF[1873] = HURT.hy; UF[1874] = HURT.hz;
       let hs = 0;                                     // ── WHICH SLOT IS THE WOUNDED ANIMAL DRAWN IN? ── the shader matches cSlot against this to
-      if (HURT.slot >= 0 && hk > 0) {                 // paint the flash on its actual pixels. 0 = grid-stamped, and the bounds test covers that case.
+      // A RAGDOLL is drawn in NO slot — it is a rigid body now — so it must report 0 and be matched by the
+      // box instead. Left to the search below, a ledger entry left over from the frame before it died would
+      // point the flash at whatever creature has since been compacted into that slot.
+      if (HURT.slot >= 0 && hk > 0 && !(wbf[HURT.slot] && wbf[HURT.slot].rag)) {   // paint the flash on its actual pixels. 0 = grid-stamped, and the bounds test covers that case.
         const want = 2000 + HURT.slot;                // lifeSlotSet stamps 2000 + the creature's pool slot into the ledger
         for (let s = 0; s < 64; s++) if (lifeUid[s] === want) { hs = s + 1; break; }   // cSlot is the slot index PLUS ONE (0 means 'no creature here')
       }
@@ -10973,7 +11749,7 @@
       let px4 = sp4.x + sp4.vx * tS, py4 = sp4.y + sp4.vy * tS - grav * tS * tS, pz4 = sp4.z + sp4.vz * tS;
       const a4 = sp4.ph + tS * (smoke ? (sp4.spin || 3) : 7), ca4 = Math.cos(a4), sa4 = Math.sin(a4);   // SMOKE voxels TWIRL like the snowflakes (user): about the vertical at a per-particle rate (~2-4.5 rad/s); sparks spin faster
       const Xs = [ca4, 0, sa4], Ys = [sa4, 0, -ca4], Zs = [0, 1, 0];   // spin about vertical (like a snowflake), right-handed
-      let itn = SPARK_IT, vsc = 1.0;
+      let itn = (sp4.foam && FOAM_IT) ? FOAM_IT : ((sp4.red && HITRED_IT) ? HITRED_IT : SPARK_IT), vsc = 1.0;   // …the only place the three differ
       if (smoke) {                                     // ONE individual voxel, off the grid like a snowflake: a per-voxel wandering DRIFT (sin/cos, like the flakes' wind sway) as it floats up, then CENTRE it on its position so it spins about its own middle (not a corner)
         itn = SMOKE_IT; vsc = 1.0;                     // 10 cm voxel — exactly a snowflake's size (user)
         px4 += Math.sin(tS * 1.6 + sp4.ph) * 1.4;
@@ -10982,10 +11758,11 @@
         py4 -= (Xs[1] + Ys[1] + Zs[1]) * 0.5 * vsc;
         pz4 -= (Xs[2] + Ys[2] + Zs[2]) * 0.5 * vsc;
       }
-      if (!smoke) {                                    // a SPARK CASTS LIGHT (user): feed the firefly point-light lane — the traced, shadowed area light the tracer already resolves — so the ember throws a warm flash on the ground/creatures around it, fading with its life
-        const dxL = px4 - P.x, dzL = pz4 - P.z;        // same horizontal-d² metric the firefly entries sort by
-        ffLights.push([px4 - winOX, py4, pz4 - winOZ, 3.4 * (1 - tS / sp4.life), dxL * dxL + dzL * dzL]);
-      }
+      // ── A SPARK NO LONGER CASTS LIGHT (user 2026-08-05: "this spark lighting costs too much") ── it used
+      // to push itself into the firefly point-light lane, and those are TRACED, SHADOWED area lights: four
+      // embers off a single chop claimed half the eight slots and made the tracer resolve four extra lights
+      // for the third of a second they lived, on every swing. The ember itself is unchanged — it is an
+      // EMISSIVE voxel drawn through the drops path, which is what it looked like before the light was added.
       const rx = px4 - cam[0], ry = py4 - cam[1], rz = pz4 - cam[2];
       UF[o3] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o3 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o3 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o3 + 3] = vsc;
       UF[o3 + 4] = Xs[0] * right[0] + Xs[2] * right[2]; UF[o3 + 5] = Xs[0] * up[0] + Xs[2] * up[2]; UF[o3 + 6] = Xs[0] * fwd[0] + Xs[2] * fwd[2]; UF[o3 + 7] = itn;
