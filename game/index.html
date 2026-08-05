@@ -1230,11 +1230,14 @@
         MUSHV.vox = filled;
       }
     }
-    // ── PLANT THE SMALL MUSHROOMS ── the cluster is one model, so sinking it sank the big cap too. Split it into
-    // connected components instead: the LARGEST is the big mushroom and keeps its height, every other component is a
-    // small mushroom and drops 2 voxels so it is planted in the ground rather than perched on it. Component-based
-    // rather than red-cap-colour based, because a cap colour is shared with the big mushroom's own cap — the thing
-    // that actually distinguishes them is being a separate body. Model z is world HEIGHT (MagicaVoxel is z-up).
+    // ── ONE BODY PER MUSHROOM, EVERY BASE ON THE GROUND ── mushroom.vox is authored as three separate
+    // mushrooms (see tools/voxelize_mushroom.py, which flattens them into this one cluster). Split the
+    // cluster into connected components: each is one mushroom, each drops to z = 0 so it starts flush,
+    // and each is kept as its own sub-model so stampMush can sit it on ITS OWN terrain height. A single
+    // stamp put the whole cluster on one ground plane, which on any slope left the uphill mushrooms
+    // buried and the downhill ones perched in the air (user: "the base of every mushroom must touch the
+    // ground"). Component-based rather than cap-colour based — a cap colour is shared between mushrooms;
+    // being a separate body is what actually tells them apart. Model z is world HEIGHT (MagicaVoxel is z-up).
     {
       const key = (x, y, z) => x | (y << 8) | (z << 16);
       const occ = new Map();
@@ -1253,20 +1256,41 @@
         }
         sizes.push(n);
       }
-      let big = 0; for (let c = 1; c < sizes.length; c++) if (sizes[c] > sizes[big]) big = c;
-      // Drop each small body until it RESTS ON the ground, rather than by a flat amount. A fixed -2 moves a body
-      // whatever its height, so one already sitting on the base got buried while one floating higher stayed floating.
-      // Shifting by the body's own lowest voxel plants it exactly touching, and leaves an already-grounded one alone.
+      // Drop EVERY body until it RESTS ON z = 0 — no exemption for the biggest. A body that keeps an authored
+      // height is a mushroom left hanging, which is the whole complaint. Shifting by the body's own lowest
+      // voxel plants it exactly touching and leaves an already-grounded one alone.
       const minZ = new Array(sizes.length).fill(255);
       for (let i = 0; i < MUSHV.vox.length; i++) { const z = (MUSHV.vox[i] >> 16) & 255; if (z < minZ[comp[i]]) minZ[comp[i]] = z; }
-      const drops = [];
       for (let i = 0; i < MUSHV.vox.length; i++) {
-        const c = comp[i]; if (c === big || !minZ[c]) continue;   // the big mushroom keeps its height; a body already at z=0 is already planted
+        if (!minZ[comp[i]]) continue;                            // already at z=0
         const p = MUSHV.vox[i], z = (p >> 16) & 255;
-        MUSHV.vox[i] = (p & ~0xff0000) | ((z - minZ[c]) << 16);
+        MUSHV.vox[i] = (p & ~0xff0000) | ((z - minZ[comp[i]]) << 16);
       }
-      for (let c = 0; c < sizes.length; c++) if (c !== big && minZ[c]) drops.push(sizes[c] + 'vox down' + minZ[c]);
-      console.log('[vb] mushroom cluster:', sizes.length, 'bodies, biggest', sizes[big], 'vox; planted small bodies:', drops.join(', ') || 'none (already grounded)');
+      // Each body becomes its OWN sub-model, but declared in the CLUSTER's frame (same sx/sy, voxels left at
+      // their cluster coordinates). stampModel rotates off sx/sy, so every body then rotates through exactly
+      // the arithmetic the merged model used — no box-parity correction to get wrong (see the armOffset saga).
+      // The only thing that differs per body is the height it is stamped at. cx/cy is the body's own centre,
+      // which is all stampMush needs to ask the terrain how high the ground is under THAT mushroom.
+      const bx0 = new Array(sizes.length).fill(255), bx1 = new Array(sizes.length).fill(0);
+      const by0 = new Array(sizes.length).fill(255), by1 = new Array(sizes.length).fill(0);
+      const bz1 = new Array(sizes.length).fill(0), bvox = [];
+      for (let c = 0; c < sizes.length; c++) bvox.push([]);
+      for (let i = 0; i < MUSHV.vox.length; i++) {
+        const p = MUSHV.vox[i], c = comp[i], x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+        if (x < bx0[c]) bx0[c] = x; if (x > bx1[c]) bx1[c] = x;
+        if (y < by0[c]) by0[c] = y; if (y > by1[c]) by1[c] = y;
+        if (z > bz1[c]) bz1[c] = z;
+        bvox[c].push(p);
+      }
+      MUSHV.bodies = [];
+      for (let c = 0; c < sizes.length; c++) MUSHV.bodies.push({ sx: MUSHV.sx, sy: MUSHV.sy, sz: bz1[c] + 1,
+        cx: bx0[c] + ((bx1[c] - bx0[c] + 1) >> 1), cy: by0[c] + ((by1[c] - by0[c] + 1) >> 1),
+        // …and the radius groundMin should probe: the body's OWN half-footprint, the same rule stampBoulder
+        // uses. A fixed radius samples a cross that misses a wide body's corners, so a mushroom straddling a
+        // 2-voxel step still ended up hanging over the low side (measured: 3 voxels of air under its base).
+        br: Math.max(1, Math.min(10, Math.max(bx1[c] - bx0[c] + 1, by1[c] - by0[c] + 1) >> 1)), vox: bvox[c] });
+      console.log('[vb] mushroom cluster:', sizes.length, 'mushrooms —',
+        MUSHV.bodies.map((b, c) => sizes[c] + 'vox h' + b.sz + (minZ[c] ? ' (dropped ' + minZ[c] + ')' : '')).join(', '));
     }
   } catch (e) { console.warn('[vb] mushroom.json missing — forest mushrooms skipped', e); }
   let LILYPAD_GIGV = null;                                                                   // GIGANTIC lilypad on lakes (lillypad_gigantic.json, palette-reduced + laid flat) — solid, 1-2 per lake
@@ -1796,7 +1820,11 @@
     const HELD_ITEMS = new Set([1, ROCK_IT, STICK_IT, CONE_IT, KNIFE_IT, PICK_IT, SHOVEL_IT, BOW_IT, MEAT_IT, HOE_IT, SPEAR_IT].filter(Boolean));
     for (let i = creatureStart - 1; i < items.length; i++) {
       if (!items[i] || !items[i].cells || !items[i].cells.length) continue;
-      if (!location.search.includes('bakeao') && HELD_ITEMS.has(i + 1)) continue;   // HELD + DROPPED ITEMS light like static geometry (user): no baked occlusion in the albedo, only the traced term the world gets. ?bakeao restores it for an A/B.
+      // ── STATIC LIGHTING ON WHAT YOU CARRY (user) ── held and dropped items now get the SAME baked
+      // occlusion every other model does, so a tool has form in the hand — its head reads as separate from
+      // its haft, and the recesses hold shadow — instead of sitting flat under whatever the world lights it
+      // with. ?flatheld goes back to the traced-only look for an A/B.
+      if (location.search.includes('flatheld') && HELD_ITEMS.has(i + 1)) continue;
       bakeAO(items[i]);
     }
     itemsRef = items;                                  // publish the finished table to the tick loop (cardinal hitbox size + worm stamp poses)
@@ -2531,7 +2559,22 @@
     return { wx, wz, rot: (ihash(cx * 2 + 13, cz * 2 + 7) * 3.99) | 0 };
   }
   function stampMush(m, x0, x1, z0, z1) {
-    stampModel(MUSHV, m.rot, m.wx, groundMin(m.wx, m.wz, 3), m.wz, x0, x1, z0, z1, 1);   // base sunk to the min nearby ground so the wide cluster never floats on a bump
+    // EVERY MUSHROOM ON ITS OWN GROUND (user). One stamp put all three on a single plane taken at the
+    // cluster's centre, so across a 23×28 footprint on sloping forest floor the uphill ones sank and the
+    // downhill ones hung in the air. Each body is stamped separately at the ground under itself instead.
+    if (!MUSHV.bodies) { stampModel(MUSHV, m.rot, m.wx, groundMin(m.wx, m.wz, 3), m.wz, x0, x1, z0, z1, 1); return; }
+    const sx = MUSHV.sx, sy = MUSHV.sy;
+    const fw = (m.rot & 1) ? sy : sx, fd = (m.rot & 1) ? sx : sy;   // the cluster's rotated footprint — same anchor stampModel uses
+    const ax = m.wx - (fw >> 1), az = m.wz - (fd >> 1);
+    for (let i = 0; i < MUSHV.bodies.length; i++) {
+      const b = MUSHV.bodies[i];
+      let rx, rz;                                      // this body's centre, carried through the SAME rotation stampModel applies
+      if (m.rot === 0) { rx = b.cx; rz = b.cy; }
+      else if (m.rot === 1) { rx = sy - 1 - b.cy; rz = b.cx; }
+      else if (m.rot === 2) { rx = sx - 1 - b.cx; rz = sy - 1 - b.cy; }
+      else { rx = b.cy; rz = sx - 1 - b.cx; }
+      stampModel(b, m.rot, m.wx, groundMin(ax + rx, az + rz, b.br), m.wz, x0, x1, z0, z1, 1);   // …only the HEIGHT differs per body; b carries cluster coords + cluster sx/sy, so the rotation is identical
+    }
   }
   const PCCELL = 26;                                   // GROUND PINECONES: fallen cones (pinecone.vox on its side), pickable, scattered on the forest floor
   function pconeAt(cx, cz) {
@@ -3062,12 +3105,18 @@
     }
     device.queue.writeBuffer(buf, s * 4, src, s * 4, (e - s) * 4);
   };
+  // Which palette ids belong to a GRID-STAMPED creature (mammals + perched songbirds). Rides in the unused
+  // 4th float of each palette entry, so the tracer can ask "is this voxel part of an animal?" for free. The
+  // hit flash needs it: its box is an AABB, and an AABB around an animal also contains the grass between its
+  // legs and the ground under its belly — which is the red square the user saw stamped on the terrain.
+  // Declared HERE, above palSync, so palSync can never read it through the temporal dead zone.
+  const CREA_FLAG = new Uint8Array(256);
   const palBuf = device.createBuffer({ size: 256 * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
   { const f = new Float32Array(palBuf.getMappedRange());           // sRGB → linear; shaders work in linear
     for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); f[i * 4 + 3] = 0; } }
   palBuf.unmap();
   const palSync = () => { const f = new Float32Array(256 * 4);     // asset-editor imports addCol at RUNTIME — re-upload the whole palette (COPY_DST above exists for this)
-    for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); }
+    for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); f[i * 4 + 3] = CREA_FLAG[i]; }   // .a = grid-stamped-creature flag (see CREA_FLAG) — every pose builder re-syncs after registering its ids
     device.queue.writeBuffer(palBuf, 0, f); };
   const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });   // COPY_DST: turning the arrow rewrites the bow strip's block in place (bowRefit)   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
@@ -3749,12 +3798,22 @@
           // Grid-stamped animals (mammals, perched birds) are ordinary world voxels with no cSlot — but
           // hurtBox hands over their exact stamped bounds, so testing against those hugs the animal.
           let dHit = abs(pos - u.hurtB.xyz) / max(u.hurtH.xyz, vec3<f32>(0.001));
-          if (isMe || (u.hurtH.w < 0.5 && all(dHit <= vec3<f32>(1.0)))) {   // the WHOLE stamp, not an ellipsoid inside it (user)
-            // SOFT EDGE (user): the box has a voxel of slack so the animal's outer shell lights up, but that
-            // slack also clipped a hard-edged red slab onto whatever it stood against. Fade the last quarter
-            // of the box instead — the animal's own voxels (isMe) stay fully lit, the spill falls away.
-            let fEdge = select(1.0 - smoothstep(0.72, 1.0, max(dHit.x, max(dHit.y, dHit.z))), 1.0, isMe);
-            albedo = mix(albedo, vec3<f32>(2.60, 0.06, 0.05), fEdge);   // REPLACED outright for the half second (user), not tinted
+          // …and the voxel has to BE the animal: pal[].a carries the grid-stamped-creature flag (CREA_FLAG).
+          // The box alone is an AABB, so it also holds the grass between the animal's legs and the ground
+          // under its belly — painting those was the red square on the terrain (user). With the flag the
+          // grid-stamped test is as exact as the trace-injected one: creature voxels only, terrain never.
+          if (isMe || (u.hurtH.w < 0.5 && pal[h.vox].a > 0.5 && all(dHit <= vec3<f32>(1.0)))) {   // the WHOLE stamp, not an ellipsoid inside it (user)
+            // NO SLACK (user: "the land mammals cast a red square on the terrain"). The box used to carry a
+            // whole voxel of padding on every side, and everything in that shell — the ground under the
+            // animal's feet, the grass beside it — was painted red too: a square of stained terrain around
+            // the animal. hurtBox now hands over the animal's EXACT geometric bounds, so the only terrain
+            // that can still be caught is the surface a neighbouring voxel shares with the animal's own
+            // outer face, which the animal itself hides. Measuring the fade against those same bounds keeps
+            // every voxel of the creature at mTrue <= 1, i.e. fully lit, with nothing left outside to fade.
+            let hTrue = max(u.hurtH.xyz, vec3<f32>(0.001));
+            let mTrue = max(abs(pos.x - u.hurtB.x) / hTrue.x, max(abs(pos.y - u.hurtB.y) / hTrue.y, abs(pos.z - u.hurtB.z) / hTrue.z));
+            let fEdge = select(1.0 - smoothstep(1.0, 1.7, mTrue), 1.0, isMe);
+            albedo = mix(albedo, vec3<f32>(2.1, 0.07, 0.055), fEdge);    // DARKER (user): 9.0 saturated the red channel outright and tonemapped to a flat pale pink — this still reads as emissive but keeps its colour as RED
             hurtGlow = u.hurtB.w * fEdge;                            // …and it lights itself — see the sun/AO block
           }
           // Nothing else is touched here on purpose: the light this throws on its surroundings is the
@@ -3869,7 +3928,8 @@
           else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
         if (flakeHit && h.vox == SNV) { sunV = max(sunV, 0.6); skyV = max(skyV, 0.85); }
-        if (hurtGlow > 0.0) { sunV = max(sunV, hurtGlow); skyV = max(skyV, hurtGlow); }   // the flash glows in shadow too (user) — otherwise an animal hit under a canopy barely changed colour
+        if (hurtGlow > 0.0) { sunV = max(sunV, hurtGlow * 0.55); skyV = max(skyV, hurtGlow * 0.75); }   // the flash glows in shadow too (user) — otherwise an animal hit under a canopy barely changed colour   // SOFTER (user): pinning both terms to FULL erased the creature's own sun/AO shading, so the whole animal went flat and blew out; lifting them part-way keeps its form readable while a wound in deep shade still reads
+
         if (!LG(15u)) { skyV = 0.0; }                              // bit 15: the SKY/AMBIENT term entirely — leaves only direct sun, so anything not in sunlight goes black   // FALLING FLAKES SCATTER — real snow is white from EVERY direction, so a flake never shows a dark shaded face. Without this floor, anti-sunward flakes shaded to ~sky luminance and vanished — the "snow band clipping" wedge the user saw (the void tracked the anti-sun azimuth, verified via the ?flakedbg emissive A/B). Scales with the sun/moon term downstream, so night stays subtle.
       }
       var lavaG = 0u;                                                  // soft light cast by nearby lava — deterministic probe, no flicker
@@ -6452,6 +6512,7 @@
   const TILL_R = 5, TILL_MS = 45000;
   let TILL_ID = 0;
   const tilled = [];                                   // {t, ii, prevTop, jj, prevBelow, hi} — everything needed to put it back exactly
+  const tillSet = new Set();                           // the voxels that ARE tilled earth, by index — the one-layer rule tests this, not the colour
   const hoeTill = () => {
     if (ED.on || dead) return false;
     const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
@@ -6464,15 +6525,16 @@
       if (solid(x, y, z)) { cx = x; cz = z; found = true; break; }
     }
     if (!found) return false;
-    // ONE palette entry, and only if the hoe is ever actually used — but the table is HARD CAPPED at 256 and
+    // TILLED EARTH: a DARKER brown than the first pass (user) — turned soil, not dust. One palette entry, and
+    // only if the hoe is ever actually used — but the table is HARD CAPPED at 256 and
     // an id past that wraps to 0, which wrote AIR into the ground instead of tilled earth. If there is no
     // room left, take the nearest colour already in the table rather than corrupting the world.
     if (!TILL_ID) {
-      if (palette.length < 255) TILL_ID = addCol(198, 154, 94);
+      if (palette.length < 255) TILL_ID = addCol(150, 116, 76);
       else {                                           // the table is FULL — pick the closest shade already in it, by hand:
         let bd = 1e9;                                  // edCol's own match came back near-white, which is not tilled earth
         for (let i = 0; i < palette.length && i < 255; i++) { const c = palette[i];
-          const d = (c[0] - 198) ** 2 + (c[1] - 154) ** 2 + (c[2] - 94) ** 2;
+          const d = (c[0] - 150) ** 2 + (c[1] - 116) ** 2 + (c[2] - 76) ** 2;
           if (d < bd) { bd = d; TILL_ID = i + 1; } }
       }
       solidTab[TILL_ID] = 1; digOnlyTab[TILL_ID] = 1; palSync();
@@ -6486,9 +6548,10 @@
       if (h < 3 || h >= WY - 1) continue;
       const ii = gx + (h - 1) * WX + gz * WX * WY, jj = gx + (h - 2) * WX + gz * WX * WY;
       const top = W[ii];
+      if (tillSet.has(ii)) continue;                 // ── ONE LAYER ONLY (user) ── already turned over: the hoe cannot dig itself deeper
       if (!top || !digOnlyTab[top]) continue;        // only SOIL turns over
-      if (W[jj] === TILL_ID && top === TILL_ID) continue;   // …and never twice over the same patch
       tilled.push({ t: performance.now(), ii, prevTop: top, jj, prevBelow: W[jj], hi });
+      tillSet.add(jj);                               // …the NEW surface is tilled earth, and stays off limits until it grows back
       W[ii] = 0; cells.push(ii);
       W[jj] = TILL_ID; cells.push(jj);
       hmap[hi] = h - 1;
@@ -6504,9 +6567,10 @@
       const q = tilled[i];
       if (nowMs - q.t < TILL_MS) continue;
       tilled.splice(i, 1);
-      if (W[q.ii] || W[q.jj] !== TILL_ID) continue;    // something was built or dug here since — leave it alone
+      if (W[q.ii] || W[q.jj] !== TILL_ID) { tillSet.delete(q.jj); continue; }   // something was built or dug here since — leave it alone
       W[q.ii] = q.prevTop; cells.push(q.ii);
       W[q.jj] = q.prevBelow; cells.push(q.jj);
+      tillSet.delete(q.jj);
       hmap[q.hi] = hmap[q.hi] + 1;
     }
     if (cells.length) gpuPatch(cells, false);
@@ -7072,7 +7136,7 @@
     if (!frames.length) return null;
     const poses = frames.map((f) => { const o = CARD_OFF[f.name] || [0, 0, 0], orients = [];
       for (let q = 0; q < 4; q++) { const rv = edRotVox(f.vox, f.sx, f.sy, q), cx = rv.sx >> 1, cy = rv.sy >> 1, list = [];
-        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx, ((p >> 16) & 255) + o[1], ((p >> 8) & 255) - cy, id]); CREATURE_IDS.add(id); }   // dx centred, dy = model-z (height) + oy, dz centred (ox/oz are 0)
+        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx, ((p >> 16) & 255) + o[1], ((p >> 8) & 255) - cy, id]); CREATURE_IDS.add(id); CREA_FLAG[id] = 1; }   // dx centred, dy = model-z (height) + oy, dz centred (ox/oz are 0)
         orients.push(list); }
       return orients; });
     palSync();                                          // edParseVox appended the bird's colors via edCol
@@ -7425,18 +7489,29 @@
     if (e < 0 || e >= 1) return 0;
     return Math.sin(e * Math.PI) * HOP_H;              // up and back down across the window — CONTINUOUS, not stepped: at 500 ms a 24 fps quantisation reads as a stutter rather than a hop (user)
   };
+  const hitSpot = (B) => {                             // where a blow LANDS on this creature — its stamped body centre when it has one, so the sparks fly off the animal
+    const q = B && B.sB && B.sN ? B.sB : null;         // rather than off the point the AI happens to track. Grid-stamped life (mammals, perched birds) always has bounds;
+    if (q) return [(q[0] + q[3] + 1) * 0.5, (q[1] + q[4] + 1) * 0.5, (q[2] + q[5] + 1) * 0.5];   // +1 because sB holds voxel INDICES and voxel v fills [v, v+1) — same convention as hurtBox
+    return [B.x, ((B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y) + 2, B.z];   // off-grid life: its own position, lifted to the body middle (a perched bird's height lives in perchFeet)
+  };
   const HITS_TO_KILL = 3;                              // hits a non-AXE tool needs to kill a life form (user). The axe is the killing tool and ignores this entirely.
   const ARROW_HITS_TO_KILL = 2;                        // …and an ARROW takes two (user) — between the axe's one blow and every hand tool's three
   const HURT_MS = 500;                                 // ONE blink, half a second (user). Comfortably longer than TAA's ~8-frame colour blend, which is what made an earlier 83 ms flash almost invisible on screen.
   const HURT = { t0: -1e9, hold: false, slot: -1, cx: 0, cy: 0, cz: 0, hx: 0, hy: 0, hz: 0 };   // world coords — rebased to the window at publish time, so a world shift mid-blink cannot drag the box off the animal
   const hurtBox = (B) => {                             // the animal's CURRENT stamped bounds — re-read every frame, because it is still walking while it flashes
     const q = B && B.sB && B.sN ? B.sB : null;
-    if (q) { HURT.cx = (q[0] + q[3]) * 0.5; HURT.cy = (q[1] + q[4]) * 0.5; HURT.cz = (q[2] + q[5]) * 0.5;
-             // …+1 VOXEL of slack on every side (user: "the red doesn't cover every voxel"). The bounds run
-             // centre-to-centre of the outermost voxels, but the tracer tests the point it HIT — a surface,
-             // which sits half a voxel further out — so the whole outer shell of the animal fell outside the
-             // box and stayed unlit. One voxel covers that shell and anything the stamp rounds off.
-             HURT.hx = (q[3] - q[0]) * 0.5 + 1; HURT.hy = (q[4] - q[1]) * 0.5 + 1; HURT.hz = (q[5] - q[2]) * 0.5 + 1; }
+    // sB holds voxel INDICES, and voxel v fills [v, v+1) — so the animal's geometric span is [q0, q3+1] and its
+    // true centre is half a voxel PAST the index midpoint. Taking the midpoint of the indices as the centre put
+    // the box half a voxel low/behind on every axis: its +x/+y/+z faces landed exactly on the animal's own
+    // surface (a knife-edge dHit == 1.0) while a whole voxel of slack went to waste underneath it, and the
+    // shader's fade — which measures against hurtH-1 — then started INSIDE the animal on those three faces.
+    // Measured on a live armadillo that left its back at 0.62 red against 0.98 on its belly.
+    if (q) { HURT.cx = (q[0] + q[3] + 1) * 0.5; HURT.cy = (q[1] + q[4] + 1) * 0.5; HURT.cz = (q[2] + q[5] + 1) * 0.5;
+             // The TRUE half-extent and NOTHING MORE (user: "the land mammals cast a red square on the
+             // terrain"). The old +1 voxel of slack on every side is what stained the ground around them —
+             // with the centre above corrected the animal is fully covered without it. The 0.02 is float
+             // safety so a surface point sitting exactly on the boundary can't fall out of the box.
+             HURT.hx = (q[3] - q[0] + 1) * 0.5 + 0.02; HURT.hy = (q[4] - q[1] + 1) * 0.5 + 0.02; HURT.hz = (q[5] - q[2] + 1) * 0.5 + 0.02; }
     else if (B) { HURT.cx = B.x; HURT.cy = B.y + 3; HURT.cz = B.z; HURT.hx = 5; HURT.hy = 5; HURT.hz = 5; }   // between stamps: a generous box beats no feedback
   };
   const tryKillCreature = () => { const b0 = aimedCreature(); if (b0 >= 0) hitCreature(b0); };   // LEFT-CLICK SWING KILL (user): whatever is under the crosshair takes the hit
@@ -7450,6 +7525,7 @@
     // band, and a creature that size surviving three blows from a shovel reads as absurd.
     if (B.lastSwing === tk) { return; }                 // this same swing already landed on this creature — one swing, one hit
     B.lastSwing = tk;
+    spawnHitSparks(...hitSpot(B));                      // SPARKS ON EVERY BLOW (user) — the same embers a shaft already threw, now on any hit, wounding or killing. Fired here, before the wound/kill split, so hits one, two and three all show it.
     const need = (token !== undefined && String(token).startsWith('arrow')) ? ARROW_HITS_TO_KILL : HITS_TO_KILL;   // an ARROW is a weapon, not a hand tool: TWO and the animal is down (user)
     // …and the SPEAR kills outright, thrust or thrown — the axe's privilege, for the one tool that is a
     // weapon first (user). Everything else wears the animal down.
@@ -8445,7 +8521,8 @@
   if (BOW_IT) for (let f = 0; f < BOW_FRAMES; f++) ITEM_NAMES[BOW_IT + f] = 'bow';   // every frame answers to the same name in the held-item editor
   if (MEAT_IT) ITEM_NAMES[MEAT_IT] = 'raw meat';
   if (WORM_ITEM0) ITEM_NAMES[WORM_ITEM0] = 'worm';
-  const heldIt = () => (grabAnim && !grabAnim.left ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty; left-hand grab flights don't change it)
+  const heldIt = () => (slots[selSlot] ? slots[selSlot].it : 0);   // the item the RIGHT hand is showing (0 = empty). A grab FLIGHT no longer borrows it (user): the incoming item flies as its own world object and your tool stays out the whole way — see grabGhost.
+  let grabGhost = null;                                // the item mid-flight, drawn through the DROP path instead of the hand
   const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];
   const pickSave = () => { try {                     // …written back BY NAME, so a future item-list change cannot scramble them again
     const byName = {}; for (const id in pickCfgs) { const nm = ITEM_NAMES[id]; if (nm) byName[nm] = pickCfgs[id]; }
@@ -8676,7 +8753,14 @@
   const edCol = (r, g, b) => { const key = (r << 16) | (g << 8) | b;
     let cid = edColCache.get(key);
     if (cid === undefined) {
-      if (palette.length < 256) cid = addCol(r, g, b);
+      // REUSE AN EXACT MATCH FIRST. Imported art kept minting fresh entries for colours the palette already
+      // held — 30 different shades sat on two, three, even four ids apiece, which is most of why the table
+      // filled. addCol is deliberately left alone: ids like BROCK repeat ROCK's greys ON PURPOSE, so that
+      // right-click pickup can flood a boulder without eating the terrain around it.
+      for (let i = 1; i < palette.length && cid === undefined; i++) { const q = palette[i];
+        if (q[0] === r && q[1] === g && q[2] === b) cid = i; }
+      if (cid !== undefined) { /* found one already in the table */ }
+      else if (palette.length < 256) cid = addCol(r, g, b);
       else { let bd = 1e9; cid = 1; for (let i = 1; i < palette.length; i++) { const p = palette[i], d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b); if (d < bd) { bd = d; cid = i; } } }
       edColCache.set(key, cid);
     }
@@ -8756,7 +8840,7 @@
         const rv = edRotVox(f.vox, f.sx, f.sy, (-h) & 3);
         const e = armOffset(h, f.name, f.sx, f.sy), ox = e[0] || 0, oy = e[1] || 0, oz = e[2] || 0;
         const cx = rv.sx >> 1, cy = rv.sy >> 1, list = [];   // −cx/−cy centres the footprint on the anchor = editor's ((pw−sx)>>1) box-centre
-        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx + ox, ((p >> 16) & 255) + oy, ((p >> 8) & 255) - cy + oz, id]); CREATURE_IDS.add(id); }
+        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx + ox, ((p >> 16) & 255) + oy, ((p >> 8) & 255) - cy + oz, id]); CREATURE_IDS.add(id); CREA_FLAG[id] = 1; }
         perH.push(list); }
       poses.push(perH); }
     ARMADILLO_POSES = poses;
@@ -8781,7 +8865,7 @@
         const rv = edRotVox(f.vox, f.sx, f.sy, (-h) & 3);
         const e = armOffset(h, f.name, f.sx, f.sy, PORCUPINE_BAKES), ox = e[0] || 0, oy = e[1] || 0, oz = e[2] || 0;
         const cx = rv.sx >> 1, cy = rv.sy >> 1, list = [];
-        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx + ox, ((p >> 16) & 255) + oy, ((p >> 8) & 255) - cy + oz, id]); CREATURE_IDS.add(id); }
+        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx + ox, ((p >> 16) & 255) + oy, ((p >> 8) & 255) - cy + oz, id]); CREATURE_IDS.add(id); CREA_FLAG[id] = 1; }
         perH.push(list); }
       poses.push(perH); }
     PORCUPINE_POSES = poses;
@@ -8804,7 +8888,7 @@
         const rv = edRotVox(src, f.sx, f.sy, (-h) & 3);
         const e = armOffset(h, f.name, f.sx, f.sy, SKUNK_BAKES), ox = e[0] || 0, oy = e[1] || 0, oz = e[2] || 0;
         const cx = rv.sx >> 1, cy = rv.sy >> 1, list = [];
-        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx + ox, ((p >> 16) & 255) + oy, ((p >> 8) & 255) - cy + oz, id]); CREATURE_IDS.add(id); }
+        for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx + ox, ((p >> 16) & 255) + oy, ((p >> 8) & 255) - cy + oz, id]); CREATURE_IDS.add(id); CREA_FLAG[id] = 1; }
         perH.push(list); }
       return perH; });
     SKUNK_POSES = mk(false); SKUNK_POSES_B = mk(true);      // normal + eye-blink pose sets (blink recolours the eye, geometry unchanged)
@@ -8832,7 +8916,7 @@
       for (const f of frames) for (const p of f.vox) { const z = (p >> 16) & 255; if (z < BUNNY_FOOTZ) BUNNY_FOOTZ = z; }
       return frames.map((f) => { const perH = [];
         for (let h = 0; h < 4; h++) { const rv = edRotVox(f.vox, f.sx, f.sy, (-h) & 3), cx = rv.sx >> 1, cy = rv.sy >> 1, list = [];   // box-centre; NO offset (bunny has no static armOffset — all bakes are motion/bob/rotation)
-          for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx, (p >> 16) & 255, ((p >> 8) & 255) - cy, id]); CREATURE_IDS.add(id); }
+          for (const p of rv.vox) { const id = p >>> 24; list.push([(p & 255) - cx, (p >> 16) & 255, ((p >> 8) & 255) - cy, id]); CREATURE_IDS.add(id); CREA_FLAG[id] = 1; }
           perH.push(list); }
         return perH; });
     };
@@ -9853,21 +9937,9 @@
       heldSunV += (vis - heldSunV) * (1 - Math.exp(-8 * dt));   // ~0.15 s ease so dappled canopy fades instead of strobing
       UF[1860] = heldSunV; UF[1861] = 0; UF[1862] = 0; UF[1863] = 0;
       UF[1864] = lgtMask; UF[1865] = 0; UF[1866] = 0; UF[1867] = 0;   // ── LIGHT DEBUG ── which lighting terms are switched on (top-right panel)
-      { // ── HIT FLASH ── the knife-wounded animal blinks red, then stops. Stepped at 24 fps like every
-        // other animation here, so it reads as a deliberate blink rather than a smooth throb.
-        const he = (now - HURT.t0) / HURT_MS;
-        let hk = 0;
-        if (he >= 0 && he < 1) { const hf = Math.floor(he * 12);                 // 12 phases over the blink, stepped at 24 fps like every other animation here
-          hk = 1 - hf / 12;                               // ONE flash (user): full at the instant of the hit, fading out across the half second
-          if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
-          const HB = HURT.slot >= 0 ? wbf[HURT.slot] : null;
-          if (HB && HB.init) hurtBox(HB); else hk = 0;      // it died or despawned mid-blink — nothing left to stain
-        }
-        UF[1868] = HURT.cx - winOX; UF[1869] = HURT.cy; UF[1870] = HURT.cz - winOZ; UF[1871] = hk;
-        HURT.k = hk;                                    // …and the wound CASTS light too (user). It cannot write a point-light slot from HERE — the ffLights
-                                                        // publish runs later in this same tick and rewrites all 8 — so it goes into that list instead.
-        UF[1872] = HURT.hx; UF[1873] = HURT.hy; UF[1874] = HURT.hz; UF[1875] = 0;
-      }
+      // ── HIT FLASH ── published AFTER the creature stamps (see the block by UF[1875] further down), because a
+      // land mammal re-stamps itself later in this same tick — bounce included — and a box measured here would
+      // describe where it WAS last frame while the GPU shades where it IS now.
     }
     set3(32, sun, resetHist);
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
@@ -9937,28 +10009,32 @@
       let AZ = [sy, -cy * sp2, cy * cp2];
       let showId = dead ? 0 : (slots[selSlot] ? slots[selSlot].it : 0);          // held item = the SELECTED hand slot (0 = empty hand)
       if (clashK > 0 && (showId === 2 || showId === KNIFE_IT)) { hx += (0.13 - hx) * clashK; hy += (-0.17 - hy) * clashK; hz += (0.92 - hz) * clashK; }   // right rock drives to centre; the newborn knife eases back from there
-      if (grabAnim && !grabAnim.left) {                // FLY-TO-HAND — glide from the world spot into the held pose (angular size matches at k=0, so no pop); left-hand flights are handled below
+      if (grabAnim && !grabAnim.left) {                // FLY-TO-HAND — the pickup glides in as ITS OWN object; the hand keeps whatever it was holding (user)
         const k = Math.min(1, (now - grabAnim.t0) / 340);
         const e2 = k * k * (3 - 2 * k);
-        const rx = grabAnim.x - cam[0], ry = grabAnim.y - cam[1], rz = grabAnim.z - cam[2];
-        const sxc = (rx * right[0] + ry * right[1] + rz * right[2]) * hcfg.scale;
-        const syc = (rx * up[0] + ry * up[1] + rz * up[2]) * hcfg.scale;
-        const szc = (rx * fwd[0] + ry * fwd[1] + rz * fwd[2]) * hcfg.scale;
-        hx = sxc + (hx - sxc) * e2; hy = syc + (hy - syc) * e2; hz = szc + (hz - szc) * e2;
-        const ca3 = Math.cos(grabAnim.aPh), sa3 = Math.sin(grabAnim.aPh);       // spin orientation (world) expressed in the camera basis, slerped into the held pose
-        // …and the BOW hovers z-DOWN (its art's +z is the underside). Start the flight from the frame it is
-        // ACTUALLY in: read z-up here and the slerp had to unwind a full half turn through a degenerate
-        // axis, so the bow thrashed on its way into the hand exactly as it did on the way out (user).
-        const gflip = !!(BOW_IT && BOW_NOCK && grabAnim.it >= BOW_IT && grabAnim.it < BOW_NOCK + BOW_FRAMES);
-        const gs = gflip ? -1 : 1;
-        const q = qslerp(m2q([ca3 * right[0] + sa3 * right[2], ca3 * up[0] + sa3 * up[2], ca3 * fwd[0] + sa3 * fwd[2]],
-                             [gs * (sa3 * right[0] - ca3 * right[2]), gs * (sa3 * up[0] - ca3 * up[2]), gs * (sa3 * fwd[0] - ca3 * fwd[2])],   // Y = Z×X — matches the (right-handed) hover frame, flipped side included
-                             [gs * right[1], gs * up[1], gs * fwd[1]]),
-                         m2q(AX, AY, AZ), e2);
-        const M = q2m(q); AX = M[0]; AY = M[1]; AZ = M[2];
-        showId = dead ? 0 : grabAnim.it;
-        if (k >= 1) { const as = addItem(grabAnim.it); if (as >= 0) selSlot = as; grabAnim = null; }   // SELECT the slot the grab landed in → the newly picked-up item stays in the hand instead of snapping back to whatever was held (user)
-      }
+        // …drawn in to the same point on the player a carved chunk is — UNLESS the hand is empty, in which
+        // case it flies to the hand itself and stays there, the way it always did (user).
+        const toHand = !slots[selSlot];
+        const tw = toHand ? [cam[0] + right[0] * hx + up[0] * hy + fwd[0] * hz,
+                             cam[1] + right[1] * hx + up[1] * hy + fwd[1] * hz,
+                             cam[2] + right[2] * hx + up[2] * hy + fwd[2] * hz]
+                          : [P.x, smoothEye + PH.absorbY, P.z];
+        // …and it comes in EXACTLY as a carved chunk does (user): FULL SIZE the whole way, on the same gentle
+        // arc. Shrinking it read as the tool evaporating rather than being picked up — the same complaint
+        // that took the shrink off the chunks.
+        grabGhost = { it: grabAnim.it, ph: grabAnim.aPh || 0,
+          x: grabAnim.x + (tw[0] - grabAnim.x) * e2,
+          y: grabAnim.y + (tw[1] - grabAnim.y) * e2 + Math.sin(e2 * Math.PI) * 3,
+          z: grabAnim.z + (tw[2] - grabAnim.z) * e2,
+          vs: 1 };
+        // …and the hand KEEPS WHAT IT WAS HOLDING (user). This used to select the slot the pickup landed in,
+        // so walking over a twig put the twig in your hand and your axe away — reversed here: the pickup
+        // goes to its slot and the tool stays out. An EMPTY hand still takes it, since there is nothing to lose.
+        if (k >= 1) { const wasEmpty = !slots[selSlot];
+          const as = addItem(grabAnim.it);
+          if (as >= 0 && wasEmpty) selSlot = as;
+          grabAnim = null; grabGhost = null; }
+      } else grabGhost = null;
       set3(48, [hx, hy, hz], hcfg.scale);
       heldOff = [hx, hy, hz];                          // published for shootArrow: the bow's own place in the frame
       if (BOW_IT && showId === BOW_IT) {            // BOW DRAW (user): the strip swaps under the one held pose…
@@ -10075,7 +10151,19 @@
       drops.splice(i, 1);
     }
     for (let di = 0; di < 4; di++) {                   // dropped items → camera space (voxel units), hovering + spinning (+ launch flight out of the hand)
-      const o2 = 68 + di * 16, dr = drops[di];
+      const o2 = 68 + di * 16;
+      if (grabGhost && di === 0) {                     // ── THE FLIGHT ── a world object in the first drop slot, so the hand is never borrowed (user)
+        const g = grabGhost, rx = g.x - cam[0], ry = g.y - cam[1], rz = g.z - cam[2];
+        const a3 = g.ph + now * 0.004, ca3 = Math.cos(a3), sa3 = Math.sin(a3);
+        const GX = [ca3, 0, sa3], GY = [sa3, 0, -ca3], GZ = [0, 1, 0];   // the ordinary drop frame, spinning as it comes
+        UF[o2] = rx * right[0] + ry * right[1] + rz * right[2]; UF[o2 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; UF[o2 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; UF[o2 + 3] = g.vs;
+        UF[o2 + 4] = GX[0] * right[0] + GX[1] * right[1] + GX[2] * right[2]; UF[o2 + 5] = GX[0] * up[0] + GX[1] * up[1] + GX[2] * up[2]; UF[o2 + 6] = GX[0] * fwd[0] + GX[1] * fwd[1] + GX[2] * fwd[2];
+        UF[o2 + 7] = g.it;
+        UF[o2 + 8] = GY[0] * right[0] + GY[1] * right[1] + GY[2] * right[2]; UF[o2 + 9] = GY[0] * up[0] + GY[1] * up[1] + GY[2] * up[2]; UF[o2 + 10] = GY[0] * fwd[0] + GY[1] * fwd[1] + GY[2] * fwd[2]; UF[o2 + 11] = 0;
+        UF[o2 + 12] = GZ[0] * right[0] + GZ[1] * right[1] + GZ[2] * right[2]; UF[o2 + 13] = GZ[0] * up[0] + GZ[1] * up[1] + GZ[2] * up[2]; UF[o2 + 14] = GZ[0] * fwd[0] + GZ[1] * fwd[1] + GZ[2] * fwd[2]; UF[o2 + 15] = 0;
+        continue;
+      }
+      const dr = drops[grabGhost ? di - 1 : di];        // …the real drops shuffle along behind it for those 340 ms
       if (!dr) { UF[o2 + 7] = 0; continue; }
       // ── SETTLE ── after DROP_REST_MS the hover ends (user): the spin decays to a stop, the bob fades
       // out and the item lowers until its base sits on the ground. Eased over a second so it slows to a
@@ -10742,7 +10830,15 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined;   // fresh occupant — never inherits the last one's knife wound, pending death or spent flash B.bh = undefined; B.ah = undefined;   // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading
+        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined;   // fresh occupant — never inherits the last one's knife wound, pending death or spent flash
+        // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading.
+        // THIS LINE WAS DEAD: it used to sit after a `//` on the line above, so the trailing comment ate it. The
+        // bunny is the one creature whose position is ASSIGNED rather than integrated (B.x = B.bpx + bake offset),
+        // so a stale bh meant a stale bpx/bpz base cell: the frame after it was re-placed near the player it
+        // snapped straight back to its old spot hundreds of voxels away, went out of range again, was re-placed
+        // again… every single frame. That is the bunny "glitching" and being impossible to hit. The armadillo and
+        // the other marchers survived it because they integrate (B.x += …), so a stale heading is harmless.
+        B.bh = undefined; B.ah = undefined;
         B.kind = wantK; B.dieT = 0; B.glow = false; B.glowT = 0; B.gRef = bfSurf(B.x, B.z);
         if (duckSlot && !isBaby) B.nBab = 3;           // every mother leads exactly 3 ducklings (user)
         if (lilySlot) {                                // PERCHED BIRD init (lily slots repurposed): a random animation phase so they're DESYNCED, + red cardinals / BLUE BIRDS (the reskin) — both grid-stamped by stampCardinal
@@ -11306,8 +11402,28 @@
         lifeSlotSet(slot, 2000 + emitWho[j], emitAnc[j * 3], emitAnc[j * 3 + 1], emitAnc[j * 3 + 2], Math.round(emitBuf[src + 7]), emitAna[j] === 1); }
     }
     if (wormPatchN) { if (CPROF) cpEvt |= 64; gpuPatch(wormPatch, false, wormPatchN); wormPatchN = 0; }   // one light brick-word patch for all worm (un)stamps this frame (incl. any queued by a pickup/toss)
-    { let hs = 0;                                    // ── WHICH SLOT IS THE WOUNDED ANIMAL DRAWN IN? ── the shader matches cSlot against this to
-      if (HURT.slot >= 0 && UF[1871] > 0) {           // paint the flash on its actual pixels. 0 = grid-stamped, and the bounds test covers that case.
+    { // ── HIT FLASH ── the knife-wounded animal blinks red, then stops. Stepped at 24 fps like every
+      // other animation here, so it reads as a deliberate blink rather than a smooth throb.
+      // PUBLISHED HERE, not up with the rest of the uniforms: the four land mammals are grid-stamped and they
+      // re-stamp themselves — walk plus the hit's bounce — in the creature loop just above. Reading their bounds
+      // before that ran left the box a whole frame behind the voxels the GPU was about to shade, and a 1-voxel
+      // lag against a 3-voxel half-height drops the animal's entire top row out of the box (measured: frames
+      // losing 6-83% of the animal to no red at all). Nothing else here moves while grid-stamped, which is why
+      // it was the mammals that broke and the perched birds that did not.
+      const he = (now - HURT.t0) / HURT_MS;
+      let hk = 0;
+      if (he >= 0 && he < 1) { const hf = Math.floor(he * 12);                 // 12 phases over the blink, stepped at 24 fps like every other animation here
+        hk = 1 - hf / 12;                               // ONE flash (user): full at the instant of the hit, fading out across the half second
+        if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
+        const HB = HURT.slot >= 0 ? wbf[HURT.slot] : null;
+        if (HB && HB.init) hurtBox(HB); else hk = 0;      // it died or despawned mid-blink — nothing left to stain
+      }
+      UF[1868] = HURT.cx - winOX; UF[1869] = HURT.cy; UF[1870] = HURT.cz - winOZ; UF[1871] = hk;
+      HURT.k = hk;                                    // …and the wound CASTS light too (user). It cannot write a point-light slot from HERE — the ffLights
+                                                      // publish runs later in this same tick and rewrites all 8 — so it goes into that list instead.
+      UF[1872] = HURT.hx; UF[1873] = HURT.hy; UF[1874] = HURT.hz;
+      let hs = 0;                                     // ── WHICH SLOT IS THE WOUNDED ANIMAL DRAWN IN? ── the shader matches cSlot against this to
+      if (HURT.slot >= 0 && hk > 0) {                 // paint the flash on its actual pixels. 0 = grid-stamped, and the bounds test covers that case.
         const want = 2000 + HURT.slot;                // lifeSlotSet stamps 2000 + the creature's pool slot into the ledger
         for (let s = 0; s < 64; s++) if (lifeUid[s] === want) { hs = s + 1; break; }   // cSlot is the slot index PLUS ONE (0 means 'no creature here')
       }
