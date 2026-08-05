@@ -187,6 +187,20 @@
   #lgtPanel.lit { border-color: #7fd05a; box-shadow: 0 0 0 1px rgba(127,208,90,0.35), 0 6px 18px rgba(0,0,0,0.5); }   /* LIGHT MODE: the panel has the cursor */
   #lgtPanel .lgtHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; }
   #lgtPanel.hidden { display: none; }
+  /* ── ARROW ORIENTATION ── top right, shown whenever the cursor is free; each button turns the arrow on the bow a quarter turn */
+  #arwPanel { position: fixed; top: 10px; right: 12px; z-index: 60; background: rgba(12,16,22,0.82); border: 1px solid #2b3648;
+    border-radius: 10px; padding: 7px 9px 8px; font: 7px/1.6 'px3', Consolas, monospace; letter-spacing: 1px; color: #cfd6e0;
+    display: flex; flex-direction: column; gap: 3px; min-width: 124px; box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
+  #arwPanel .arwHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #8fa0b8; padding-bottom: 3px; border-bottom: 1px solid #223046; margin-bottom: 2px; }
+  #arwPanel .arwRow { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  #arwPanel button { background: #1a2331; border: 1px solid #3d4a60; border-radius: 7px; color: #cfd6e0; font: inherit; padding: 2px 7px; cursor: pointer; min-width: 34px; }
+  #arwPanel button:hover { border-color: #7fd05a; color: #b8ff6e; }
+  #arwPanel .arwSld input[type="range"] { flex: 1; min-width: 0; height: 12px; accent-color: #7fd05a; background: transparent; cursor: pointer; }
+  #arwPanel .arwSld .arwVal { min-width: 14px; text-align: right; color: #9fd07a; }
+  #arwPanel .arwBake { gap: 4px; }
+  #arwPanel .arwBake input { flex: 1; min-width: 0; background: #0c1118; border: 1px solid #33405a; border-radius: 7px; color: #9fd07a; font: inherit; padding: 3px 5px; }
+  #arwPanel .arwHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; text-align: center; }
+  #arwPanel.hidden { display: none; }
   /* ── HELD-STACK COUNT ── top right, shown only when the hand holds more than one (user) */
   #stackN { position: fixed; top: 12px; right: 16px; z-index: 24; font: 22px/1 'px3', Consolas, monospace; letter-spacing: 2px;
     color: #f2e6c8; text-shadow: 0 2px 6px rgba(0,0,0,0.85), 0 0 12px rgba(0,0,0,0.6); pointer-events: none; }
@@ -199,7 +213,12 @@
   #cmpBtn svg { width: 17px; height: 17px; display: block; }   /* fill=currentColor → the icon itself shows the on/off state */
   #cmpBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off → lift only, keeps red/green */
   #cmpBtn.on { border-color: #7fd05a; color: #b8ff6e; }   /* ON = green */
-  #kbPanel, #pkPanel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(6,8,12,0.72); z-index: 30; }
+  #kbPanel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(6,8,12,0.72); z-index: 30; }
+  /* NO scrim on the held-item editor (user): the whole point is watching the item while you tune it.
+     The card sits to the LEFT so the hand, which is on the right, is never behind it. */
+  #pkPanel { position: fixed; inset: 0 auto 0 0; display: flex; align-items: center; justify-content: flex-start;
+    padding-left: 24px; background: none; pointer-events: none; z-index: 30; }
+  #pkCard { pointer-events: auto; }
   #kbWrap { display: flex; gap: 14px; align-items: flex-start; max-width: 94vw; }   /* SETTINGS + KEYBINDS as two separate rounded boxes side by side (user), like the video editor's stacked pieces */
   #kbCard, #kbCard2, #pkCard { background: rgba(16,21,28,0.8); border: 1px solid #2b3646; border-radius: 16px; padding: 22px 26px 18px; min-width: 350px; max-height: 88vh; overflow-y: auto; scrollbar-width: none; font: 8px/2.1 'px3', Consolas, monospace; letter-spacing: 1px; color: #dfe6ee; box-shadow: 0 12px 48px rgba(0,0,0,0.55); }   /* 20% transparent (user); scrollbar-width:none → no scrollbar 'slider' on the right; still scrolls via wheel */
   #kbCard::-webkit-scrollbar, #kbCard2::-webkit-scrollbar, #pkCard::-webkit-scrollbar { display: none; }   /* hide the WebKit scrollbar too */
@@ -221,6 +240,24 @@
   #over h1 { font: 22px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; color: #ff6a3a; }
   #over .ohint { opacity: 0.75; font-size: 7px; }
   .hidden { display: none !important; }
+  /* ── COMMAND LINE ── bottom left, opened with T (user). Deliberately plain: it is a console, not HUD. */
+  /* PILL (user). The radius is well past half the bar's height so the ends stay fully round whatever the
+     line height works out to, and the horizontal padding is opened up so the text clears the curve —
+     the 2px above and below stays as it was. */
+  #cmdBar { position: fixed; left: 14px; bottom: 14px; z-index: 40; display: flex; align-items: center; gap: 7px;
+    background: rgba(12,14,18,0.615); border: 0; border-radius: 999px;   /* 25% more transparent, and NO outline (user) */
+    padding: 2px 16px; overflow: visible; line-height: 0; }
+  /* line-height 0 on the bar + an explicit one on the runs: the row is then exactly as tall as the text
+     and flex centres it, with none of the font's own leading pushing it off centre (user). */
+  #cmdCaret, #cmdTxt, #cmdCur { position: relative; top: -1px; }   /* one pixel up — that is what centres it (user) */
+  #cmdCaret, #cmdTxt { font: 13px/16px 'px3', Consolas, monospace; }
+  #cmdCaret { color: #9fe08a; }
+  #cmdTxt { color: #f2e6c8; white-space: pre; margin-left: -1px; }   /* a pixel closer to the green > (user) */
+  #cmdCur { width: 7px; height: 13px; background: #f2e6c8; animation: cmdBlink 1s steps(1) infinite;
+    margin-left: -7px; }              /* cancel the row's gap: the caret belongs ON the next letter's cell, not a slot past it (user) */
+  @keyframes cmdBlink { 50% { opacity: 0; } }
+  #cmdMsg { position: absolute; left: 0; bottom: 100%; margin-bottom: 6px; white-space: nowrap;
+    color: #ffd9a0; font: 13px/1.2 'px3', Consolas, monospace; text-shadow: 0 2px 6px rgba(0,0,0,0.9); }
   body.noui #cross, body.noui #hud, body.noui #clashHint, body.noui #achv, body.noui #edHud, body.noui #compass { display: none !important; }   /* C toggles all HUD overlays off for clean views */
   #compass { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 240px; height: 22px; overflow: hidden; z-index: 12; pointer-events: none;
     font: 8px/22px 'px3', Consolas, monospace; letter-spacing: 1px; color: #e8eef6; text-shadow: 0 1px 2px rgba(0,0,0,0.85);
@@ -244,8 +281,18 @@
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
 <div id="hud"></div>
+<div id="cmdBar" class="hidden"><span id="cmdCaret">&gt;</span><span id="cmdTxt"></span><span id="cmdCur"></span><div id="cmdMsg"></div></div>
 <div id="stackN" class="hidden"></div>
 <div id="lgtPanel" class="hidden"><div class="lgtHead"><span>light</span><button id="lgtAll" title="all terms back on">reset</button></div></div>
+<div id="arwPanel" class="hidden"><div class="arwHead"><span>arrow</span><button id="arwReset" title="back to the shipped orientation">reset</button></div>
+  <div class="arwRow"><span>x axis</span><button data-ax="0" data-d="1">+90</button><button data-ax="0" data-d="-1">-90</button></div>
+  <div class="arwRow"><span>y axis</span><button data-ax="1" data-d="1">+90</button><button data-ax="1" data-d="-1">-90</button></div>
+  <div class="arwRow"><span>z axis</span><button data-ax="2" data-d="1">+90</button><button data-ax="2" data-d="-1">-90</button></div>
+  <div class="arwRow arwSld"><span>x pos</span><input type="range" data-ax="0" min="-4" max="4" step="1" value="0"><span class="arwVal">0</span></div>
+  <div class="arwRow arwSld"><span>y pos</span><input type="range" data-ax="1" min="-4" max="4" step="1" value="0"><span class="arwVal">0</span></div>
+  <div class="arwRow arwSld"><span>z pos</span><input type="range" data-ax="2" min="-4" max="4" step="1" value="0"><span class="arwVal">0</span></div>
+  <div class="arwRow arwBake"><input type="text" id="arwBake" readonly><button id="arwCopy">copy</button></div>
+  <div class="arwHint" id="arwNow">0 / 0 / 0</div></div>
 <div id="lock" class="hidden">
   <h1><span class="tv">voxel</span><span class="tb">bit</span></h1>
   <div id="btnRow">
@@ -881,7 +928,96 @@
   // Each model gets its OWN palette ids (deduped within the model only) — solid, pickable and walk-through
   // classes can never collide on a shared id. All ids land above DECOR_MIN → walk-through unless marked solid.
   setLoad(22); await stage('loading decorations…');
-  const parseVoxModel = (pv) => {
+  // colour → existing palette id, for SHARE mode below. Built once on first use, so it sees every
+  // colour the world registered before any item model is parsed.
+  let palIdx = null;
+  const palShare = (r, g, b) => {
+    if (!palIdx) { palIdx = new Map();
+      for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (!c) continue;
+        const k = (c[0] << 16) | (c[1] << 8) | c[2]; if (!palIdx.has(k)) palIdx.set(k, i); } }
+    const k = (r << 16) | (g << 8) | b;
+    let id = palIdx.get(k);
+    if (id === undefined) {
+      if (palette.length < 256) { id = addCol(r, g, b); }
+      else {                                           // FULL: nearest existing colour, never a 257th entry —
+        let bd = 1e9; id = 1;                          // an id past 255 wraps and takes a voxel's SOLIDITY with it
+        for (let i = 1; i < palette.length; i++) { const c = palette[i];
+          const d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
+          if (d < bd) { bd = d; id = i; } }
+        console.warn('[vb] palette full — item colour', r, g, b, 'snapped to id', id);
+      }
+      palIdx.set(k, id);
+    }
+    return id;
+  };
+  // the whole SCENE: models plus the transform each shape node places them at. A multi-model .vox is an
+  // animation, and its nTRN/nSHP nodes are where the author's relative placement lives.
+  const parseVoxScene = (pv, share) => {
+    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+    const models = [], shapes = [], trn = new Map(); const ppal = new Uint8Array(1024);
+    const rdStr = (o) => { const n2 = pdv.getUint32(o, true); let t = ''; for (let i = 0; i < n2; i++) t += String.fromCharCode(pv[o + 4 + i]); return [t, o + 4 + n2]; };
+    const rdDict = (o) => { let n2 = pdv.getUint32(o, true); o += 4; const d = {};
+      for (let i = 0; i < n2; i++) { const a = rdStr(o); const b2 = rdStr(a[1]); d[a[0]] = b2[0]; o = b2[1]; } return [d, o]; };
+    const walk = (off, end) => { while (off + 12 <= end) {
+      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
+      let o = off + 12;
+      if (id === 'SIZE') models.push({ sx: pdv.getUint32(o, true), sy: pdv.getUint32(o + 4, true), sz: pdv.getUint32(o + 8, true), raw: null });
+      else if (id === 'XYZI') { const m = models.find((mm) => !mm.raw); if (m) { const cnt = pdv.getUint32(o, true); m.raw = pv.subarray(o + 4, o + 4 + cnt * 4); } }
+      else if (id === 'RGBA') ppal.set(pv.subarray(o, o + 1024));
+      else if (id === 'nTRN') { const nid = pdv.getInt32(o, true); o += 4; const a = rdDict(o); o = a[1];
+        const child = pdv.getInt32(o, true); o += 16; const nfr = pdv.getInt32(o - 4, true);
+        let t = [0, 0, 0];
+        for (let f = 0; f < nfr; f++) { const d = rdDict(o); o = d[1];
+          if (d[0]._t) { const q = d[0]._t.split(' ').map(Number); if (q.length === 3) t = q; } }
+        trn.set(child, t); }
+      else if (id === 'nSHP') { const nid = pdv.getInt32(o, true); o += 4; const a = rdDict(o); o = a[1];
+        const nm = pdv.getInt32(o, true); o += 4; const ids = [];
+        for (let i = 0; i < nm; i++) { ids.push(pdv.getInt32(o, true)); o += 4; const d = rdDict(o); o = d[1]; }
+        shapes.push({ node: nid, ids }); }
+      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+      off += 12 + bsz + csz;
+    } };
+    walk(8, pv.length);
+    const cmap = new Map();
+    const colId = (ci) => { let c = cmap.get(ci); if (c === undefined) {
+      const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
+      c = share ? palShare(cr, cg, cb) : addCol(cr, cg, cb); cmap.set(ci, c); } return c; };
+    for (const sh of shapes) sh.t = trn.get(sh.node) || [0, 0, 0];
+    // world-space origin of a model under a shape: MagicaVoxel translates the model's CENTRE
+    const org = (sh, mi) => { const m = models[mi];
+      return [sh.t[0] - (m.sx >> 1), sh.t[1] - (m.sy >> 1), sh.t[2] - (m.sz >> 1)]; };
+    return { models, shapes, org, colId };
+  };
+  const parseVoxAll = (pv, share) => {
+    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+    const models = []; const ppal = new Uint8Array(1024);
+    const walk = (off, end) => { while (off + 12 <= end) {
+      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
+      if (id === 'SIZE') models.push({ sx: pdv.getUint32(off + 12, true), sy: pdv.getUint32(off + 16, true), sz: pdv.getUint32(off + 20, true), raw: null });
+      else if (id === 'XYZI') { const m = models.find((mm) => !mm.raw); if (m) { const cnt = pdv.getUint32(off + 12, true); m.raw = pv.subarray(off + 16, off + 16 + cnt * 4); } }
+      else if (id === 'RGBA') ppal.set(pv.subarray(off + 12, off + 12 + 1024));
+      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+      off += 12 + bsz + csz;
+    } };
+    walk(8, pv.length);
+    const out = [];
+    for (const m of models) {
+      if (!m.raw) continue;
+      const cmap = new Map(), mvox = [];
+      for (let i = 0; i < m.raw.length; i += 4) {
+        const ci = m.raw[i + 3];
+        let cid = cmap.get(ci);
+        if (cid === undefined) { const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
+          cid = share ? palShare(cr, cg, cb) : addCol(cr, cg, cb); cmap.set(ci, cid); }
+        mvox.push(m.raw[i] | (m.raw[i + 1] << 8) | (m.raw[i + 2] << 16) | (cid << 24));
+      }
+      out.push({ sx: m.sx, sy: m.sy, sz: m.sz, vox: mvox });
+    }
+    return out;
+  };
+  const parseVoxModel = (pv, share) => {                 // share: reuse an existing palette id for an exact colour match — ITEM-ONLY models (see the bow strip)
     const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
     let sx = 0, sy = 0, sz = 0, pvox = null; const ppal = new Uint8Array(1024);
     const walk = (off, end) => { while (off < end) {
@@ -899,13 +1035,106 @@
     for (let i = 0; i < pvox.length; i += 4) {
       const ci = pvox[i + 3];
       let cid = cmap.get(ci);
-      if (cid === undefined) { cid = addCol(ppal[(ci - 1) * 4], ppal[(ci - 1) * 4 + 1], ppal[(ci - 1) * 4 + 2]); cmap.set(ci, cid); }
+      if (cid === undefined) { const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
+        cid = share ? palShare(cr, cg, cb) : addCol(cr, cg, cb); cmap.set(ci, cid); }
       mvox.push(pvox[i] | (pvox[i + 1] << 8) | (pvox[i + 2] << 16) | (cid << 24));   // cid<<24 may flip the sign bit — every reader uses bitwise ops, so that's fine
     }
     return { sx, sy, sz, vox: mvox };
   };
+  // ── ARROW ORIENTATION ── quarter turns about x / y / z, applied to the ARROW ALONE and driven live from
+  // the panel in the top right (user). This is the placement baked from that panel, so a cleared profile
+  // starts where the tuning left off rather than back at the raw file orientation.
+  const ARROW_ROT0 = [0, 2, 2];                        // user bake 2026-08-04
+  let ARROW_ROT = (() => { try { const v = JSON.parse(localStorage.getItem('vb_arrowRot') || 'null');
+    return (Array.isArray(v) && v.length === 3) ? v.map((n) => (n | 0) & 3) : ARROW_ROT0.slice(); } catch (e) { return ARROW_ROT0.slice(); } })();
+  const ARROW_POS_R = 4;                               // how far the position sliders reach, in voxels — the strip's grid is padded for EXACTLY this, so sliding never resizes it
+  const ARROW_POS_DEF = () => [[1, 1, 0], [1, 2, 0], [1, 3, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]];   // ONE OFFSET PER DRAW FRAME (user bake 2026-08-04): across one voxel, and stepping further out as the string draws back
+  const arrowPosClamp = (v) => [0, 1, 2].map((k) => Math.max(-ARROW_POS_R, Math.min(ARROW_POS_R, (v && v[k]) | 0)));
+  let ARROW_POS = (() => { try { const v = JSON.parse(localStorage.getItem('vb_arrowPos') || 'null');
+    if (Array.isArray(v) && typeof v[0] === 'number') { const p = arrowPosClamp(v); return ARROW_POS_DEF().map(() => p.slice()); }   // the earlier single offset applied to every frame — carry it across rather than dropping it
+    if (Array.isArray(v) && Array.isArray(v[0])) return ARROW_POS_DEF().map((q, i) => arrowPosClamp(v[i] || q));
+  } catch (e) {} return ARROW_POS_DEF(); })();
+  let bowLock = -1;                                    // which draw frame the held bow is pinned to (-1 = play it live) — , and . step through them
+  let arwSync = () => {};                              // repaint the arrow panel onto whichever frame is pinned (assigned with the panel)
+  let bowRefit = null;                                 // set once the item table exists: re-cuts the bow strip in place for a new ARROW_ROT / ARROW_POS
+  const arrowRotQ = (d, r) => { let x = d[0], y = d[1], z = d[2];   // right-handed quarter turns in the .vox frame: x across, y along the shaft, z up
+    for (let i = 0; i < r[0]; i++) { const t = y; y = -z; z = t; }
+    for (let i = 0; i < r[1]; i++) { const t = z; z = -x; x = t; }
+    for (let i = 0; i < r[2]; i++) { const t = x; x = -y; y = t; }
+    return [x, y, z]; };
+  // ── THE BOW STRIP ── every frame of the bow, composited with the arrow where the file places it, plus
+  // the same frames WITHOUT the arrow so it can leave on release. Both share one grid: the two strips are
+  // interchangeable frame for frame, so swapping between them cannot shift the bow by even a voxel.
+  const fetchBowStrip = async (url) => {
+    try {
+      const sc = parseVoxScene(new Uint8Array(await (await fetch(url)).arrayBuffer()), true);
+      if (!sc.shapes.length) return null;
+      let bow = sc.shapes[0], arrow = null;            // the ANIMATION is the bow; a lone extra shape is the arrow
+      for (const sh of sc.shapes) if (sh.ids.length > bow.ids.length) bow = sh;
+      for (const sh of sc.shapes) if (sh !== bow && sh.ids.length) { arrow = sh; break; }
+      // the bow's own depth per frame — the draw IS this number growing, so it drives both alignments
+      const depth = bow.ids.map((mi) => sc.models[mi].sy);
+      const d0 = depth[0];
+      const place = (sh, mi, sft) => { const m = sc.models[mi], out = []; if (!m || !m.raw) return out;   // a model's voxels in world coords, with a per-frame shift
+        const o = sc.org(sh, mi);
+        for (let i = 0; i < m.raw.length; i += 4)
+          out.push({ x: o[0] + m.raw[i] + sft[0], y: o[1] + m.raw[i + 1] + sft[1], z: o[2] + m.raw[i + 2] + sft[2], c: sc.colId(m.raw[i + 3]) });
+        return out; };
+      const boxOf = (pts) => { const a = [1e9, 1e9, 1e9], b = [-1e9, -1e9, -1e9];
+        for (const v of pts) { const p = [v.x, v.y, v.z];
+          for (let k = 0; k < 3; k++) { if (p[k] < a[k]) a[k] = p[k]; if (p[k] > b[k]) b[k] = p[k]; } }
+        return [a, b]; };
+      // the arrow turned about its OWN box centre. Doubled coordinates keep a quarter turn exact whichever
+      // way the box's parity falls — rounding only ever splits a genuine half voxel.
+      const spin = (pts, rot) => { const [a, b] = boxOf(pts), c2 = [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+        return pts.map((v) => { const d = arrowRotQ([2 * v.x - c2[0], 2 * v.y - c2[1], 2 * v.z - c2[2]], rot);
+          return { x: Math.round((d[0] + c2[0]) / 2), y: Math.round((d[1] + c2[1]) / 2), z: Math.round((d[2] + c2[2]) / 2), c: v.c, a: true }; }); };
+      const raw = [];                                // per frame: the bow's cells + the arrow's UNTURNED cells, spun on demand
+      for (let fi = 0; fi < bow.ids.length; fi++) {
+        // ── FRONT FIXED ── MagicaVoxel CENTRES each frame on the shared node translation, so a 7-deep frame
+        // reaches 2 further forward than the 3-deep rest pose: the face of the bow creeps away from you as it
+        // draws. Cancel exactly that half-depth growth and the far edge sits still (user):
+        //   far edge = t + ceil(d/2) - 1 + shift   →   constant when shift = ceil(d0/2) - ceil(d/2)
+        // The old shift (d0 - d) was the STRING's travel, not the front's — DOUBLE the correction needed, and
+        // in the wrong place: it dragged the whole bow backwards with the string instead of holding its face.
+        const bv = place(bow, bow.ids[fi], [0, Math.ceil(d0 / 2) - Math.ceil(depth[fi] / 2), 0]).map((v) => ({ x: v.x, y: v.y, z: v.z, c: v.c, a: false }));
+        const av = [];                                 // …and the ARROW rides the near edge, drawn back with the string — (d0 - d) IS that travel — a notch above the bow's centre line (user)
+        if (arrow) for (const ai of arrow.ids) for (const v of place(arrow, ai, [0, d0 - depth[fi], 1])) av.push(v);
+        raw.push({ bv, av });
+      }
+      if (!raw.length) return null;
+      // THE GRID IS FIXED. Its dimensions are compiled into the shader (ITEMD) and the held pose is measured
+      // from its centre, so turning the arrow must not disturb either: size the grid once for the arrow's
+      // WHOLE range of orientations, and keep it centred exactly where the unturned strip's box already was.
+      let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+      const grow = (pts, a0, b0) => { const [a, b] = boxOf(pts);
+        for (let k = 0; k < 3; k++) { if (a[k] < a0[k]) a0[k] = a[k]; if (b[k] > b0[k]) b0[k] = b[k]; } };
+      for (const r of raw) { grow(r.bv, lo, hi); if (r.av.length) grow(spin(r.av, ARROW_ROT0), lo, hi); }
+      const c2 = [lo[0] + hi[0], lo[1] + hi[1], lo[2] + hi[2]];   // TWICE the strip's centre — every baked held pose is measured against this point
+      const nlo = lo.slice(), nhi = hi.slice();
+      for (let rx = 0; rx < 4; rx++) for (let ry = 0; ry < 4; ry++) for (let rz = 0; rz < 4; rz++)
+        for (const r of raw) if (r.av.length) grow(spin(r.av, [rx, ry, rz]), nlo, nhi);
+      for (let k = 0; k < 3; k++) { nlo[k] -= ARROW_POS_R; nhi[k] += ARROW_POS_R;   // …and room for the sliders' whole travel, so dragging one cannot resize the grid either
+        const h = Math.max(c2[k] - 2 * nlo[k], 2 * nhi[k] - c2[k]);                 // doubled half-extent, so the centre cannot drift by half a voxel
+        lo[k] = Math.floor((c2[k] - h) / 2); hi[k] = Math.ceil((c2[k] + h) / 2); }
+      const sx = hi[0] - lo[0] + 1, sy = hi[1] - lo[1] + 1, sz = hi[2] - lo[2] + 1;   // ONE grid for every frame, both strips AND every arrow orientation + offset
+      const build = (rot, pos) => {
+        const mk = (f, keepArrow) => ({ sx, sy, sz, vox: f.filter((v) => keepArrow || !v.a)
+          .map((v) => (v.x - lo[0]) | ((v.y - lo[1]) << 8) | ((v.z - lo[2]) << 16) | (v.c << 24)) });
+        const cells = raw.map((r, fi) => { const p = arrowPosClamp((pos && pos[fi]) || [0, 0, 0]);   // clamped per FRAME: a stray value must never push voxels out of the grid
+          return r.bv.concat(r.av.length
+            ? spin(r.av, rot).map((v) => ({ x: v.x + p[0], y: v.y + p[1], z: v.z + p[2], c: v.c, a: true })) : []); });
+        return { withArrow: cells.map((f) => mk(f, true)), bowOnly: cells.map((f) => mk(f, false)), hasArrow: !!arrow };
+      };
+      const out = build(ARROW_ROT, ARROW_POS);
+      out.rebuild = build; out.dims = [sx, sy, sz];
+      return out;
+    } catch (e) { console.warn('[vb] bow strip', url, e); return null; }
+  };
+  const fetchVoxStrip = async (url) => { try { return parseVoxAll(new Uint8Array(await (await fetch(url)).arrayBuffer()), true); } catch (e) { console.warn('[vb] vox strip', url, e); return []; } };   // …EVERY frame in a multi-model .vox (the bow)
+  const fetchVoxShared = async (url) => { try { return parseVoxModel(new Uint8Array(await (await fetch(url)).arrayBuffer()), true); } catch (e) { console.warn('[vb] vox', url, e); return null; } };   // …in SHARE mode: an item-only model that must not cost palette entries (the bow strip)
   const fetchVoxModel = async (url) => { try { return parseVoxModel(new Uint8Array(await (await fetch(url)).arrayBuffer())); } catch (e) { console.warn('[vb]', url, 'missing — that decoration is skipped', e); return null; } };
-  const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV, SHOVV, BOWV, MEATV] = await Promise.all([        // fetched IN PARALLEL — decoration models no longer block one another on boot
+  const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV, SHOVV, ARROWV, BOWSTRIP, MEATV, HOEV, SPEARV] = await Promise.all([        // fetched IN PARALLEL — decoration models no longer block one another on boot
     fetchVoxModel('assets/decoration/pinecone.vox'),                                        // hangs under pine branches
     fetchVoxModel('assets/decoration/lillypad_small.vox'),                                  // floats on lakes + rivers
     fetchVoxModel('assets/decoration/lillypad_medium.vox'),
@@ -914,10 +1143,14 @@
     fetchVoxModel('assets/decoration/stick_2.vox'),
     fetchVoxModel('assets/decoration/log.vox'),                                             // rare fallen log, solid
     fetchVoxModel('assets/decoration/rock.vox'),                                            // the small stone, pickable
-    fetchVoxModel('assets/stone_tools/stone_pick.vox'),                                     // …and the STONE PICK, the rock-breaking counterpart to the axe (user)
-    fetchVoxModel('assets/stone_tools/stone_shovel.vox'),                                   // …and the STONE SHOVEL, which digs ground and nothing else (user)
-    fetchVoxModel('assets/stone_tools/bow_arrow/bow/00.vox'),                               // …the BOW at rest (user). 00..06 are its draw frames; only the undrawn one is held for now.
-    fetchVoxModel('assets/food/meat/meat.vox')]);                                       // …and RAW MEAT, which a killed land mammal leaves behind (user)
+    fetchVoxShared('assets/stone_tools/stone_pick.vox'),                                     // …and the STONE PICK, the rock-breaking counterpart to the axe (user)
+    fetchVoxShared('assets/stone_tools/stone_shovel.vox'),
+    fetchVoxShared('assets/stone_tools/bow_arrow/arrow.vox'),                                // …and the ARROW that lies on the bow (user)                                   // …and the STONE SHOVEL, which digs ground and nothing else (user)
+    fetchBowStrip('assets/stone_tools/bow_arrow/bow/base.vox'),                              // …the BOW: ONE multi-model file whose models are its DRAW FRAMES (user), parsed in
+                                                                                            // SHARE mode so the frames' shared colours cost no palette entries
+    fetchVoxShared('assets/food/meat/meat.vox'),                                        // …and RAW MEAT, which a killed land mammal leaves behind (user)
+    fetchVoxShared('assets/stone_tools/stone_hoe.vox'),                                 // …and the STONE HOE and STONE SPEAR, carried like the rest of the kit (user)
+    fetchVoxShared('assets/stone_tools/stone_spear.vox')]);
   const CONEVL = CONEV ? { sx: CONEV.sx, sy: CONEV.sz, sz: CONEV.sy,                        // the same cone tipped 90° onto its side — fallen cones lie on the forest floor
     vox: CONEV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((CONEV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
   const LILYV = [lilyS, lilyM, lilyL].filter(Boolean);
@@ -1097,7 +1330,7 @@
   let DUCK_GREEN = [0.03, 0.22, 0.07];                 // the mallard HEAD green (linear) — extracted at load; the black eye voxel blinks to THIS (user)
   let DUCKB_ITEM0 = 0;                                 // duckling (assets/life/duck/baby.vox, 3×7×5) — 1-3 follow each mom in a line (pool slots 18-23, 3 reserved per mom)
   let LILY_ITEM0 = 0, LILY_SZ = [];                    // lily pads (kind 4) drift and rotate OFF-grid on the water; static worldgen stamping retired
-  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0, MEAT_IT = 0;   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
+  let SPARK_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0, BOW_NOCK = 0, BOW_FRAMES = 0, ARROW_IT = 0, MEAT_IT = 0, HOE_IT = 0, SPEAR_IT = 0;   // BOW_NOCK = the same strip WITHOUT the arrow, shown once it is loosed   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
   let BLUEBIRD_ROTATE = [];                            // BLUE BIRD = the cardinal model reskinned (assets/life/blue_bird/rotate/00-10, base.vox ignored) — same 11-frame rotate filmstrip, shown on the editor stage
@@ -1205,9 +1438,25 @@
     // STONE PICK (user) — the rock tool. APPENDED here, after every fixed id: 1-4 are hard-coded in
     // PICK_DEFS/ITEM_NAMES, so slotting it in among them would silently hand the twig the pinecone's pose.
     if (PICKV) { PICK_IT = items.length + 1; items.push(modelToItem(PICKV)); console.log('[vb] stone_pick.vox item', PICK_IT, PICKV.sx, PICKV.sy, PICKV.sz); }
+    if (ARROWV) { ARROW_IT = items.length + 1; items.push(modelToItem(ARROWV)); console.log('[vb] arrow item', ARROW_IT); }
     if (SHOVV) { SHOVEL_IT = items.length + 1; items.push(modelToItem(SHOVV)); console.log('[vb] stone_shovel.vox item', SHOVEL_IT, SHOVV.sx, SHOVV.sy, SHOVV.sz); }
-    if (BOWV) { BOW_IT = items.length + 1; items.push(modelToItem(BOWV)); console.log('[vb] bow item', BOW_IT, BOWV.sx, BOWV.sy, BOWV.sz); }
+    if (BOWSTRIP && BOWSTRIP.withArrow && BOWSTRIP.withArrow.length) {
+      // TWO consecutive runs of the same length: BOW_IT + f is frame f WITH the arrow on it, BOW_NOCK + f
+      // is the identical frame without it. Loosing the arrow is a swap between the two (user).
+      BOW_IT = items.length + 1;
+      for (const bv of BOWSTRIP.withArrow) items.push(modelToItem(bv));
+      BOW_NOCK = items.length + 1;
+      for (const bv of BOWSTRIP.bowOnly) items.push(modelToItem(bv));
+      BOW_FRAMES = BOWSTRIP.withArrow.length;
+      console.log('[vb] bow', BOW_IT, 'nocked strip + bare strip at', BOW_NOCK, 'frames', BOW_FRAMES, 'arrow in file:', BOWSTRIP.hasArrow, 'palette', palette.length);
+    }
+    if (false) { const strip = [];
+      void strip; }                                  // (superseded: the scene builder above already puts every frame in one shared grid)
     if (MEATV) { MEAT_IT = items.length + 1; items.push(modelToItem(MEATV)); console.log('[vb] raw_meat item', MEAT_IT, MEATV.sx, MEATV.sy, MEATV.sz); }   // …appended after the pick, same reason: ids 1-4 are hard-coded elsewhere
+    // …and the HOE and SPEAR (user), appended last of the tools so no existing id moves. Poses are stored
+    // by NAME now, so the table can grow safely, but leaving the bow strip's run where it is costs nothing.
+    if (HOEV) { HOE_IT = items.length + 1; items.push(modelToItem(HOEV)); console.log('[vb] stone_hoe.vox item', HOE_IT, HOEV.sx, HOEV.sy, HOEV.sz); }
+    if (SPEARV) { SPEAR_IT = items.length + 1; items.push(modelToItem(SPEARV)); console.log('[vb] stone_spear.vox item', SPEAR_IT, SPEARV.sx, SPEARV.sy, SPEARV.sz); }
     // ONE loader for every flying songbird strip — the cardinal and the blue bird ship identical 7-frame packs,
     // so the parse, the widest-frame scan and the eye-blink variants are all shared rather than copy-pasted.
     const loadFlight = async (dir, label) => {
@@ -1544,15 +1793,16 @@
       }
       it.cells = out; };
     const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0, BUNNY_ITEM0, ARMADILLO_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
-    const HELD_ITEMS = new Set([1, ROCK_IT, STICK_IT, CONE_IT, KNIFE_IT, PICK_IT, SHOVEL_IT, BOW_IT, MEAT_IT].filter(Boolean));
+    const HELD_ITEMS = new Set([1, ROCK_IT, STICK_IT, CONE_IT, KNIFE_IT, PICK_IT, SHOVEL_IT, BOW_IT, MEAT_IT, HOE_IT, SPEAR_IT].filter(Boolean));
     for (let i = creatureStart - 1; i < items.length; i++) {
       if (!items[i] || !items[i].cells || !items[i].cells.length) continue;
       if (!location.search.includes('bakeao') && HELD_ITEMS.has(i + 1)) continue;   // HELD + DROPPED ITEMS light like static geometry (user): no baked occlusion in the albedo, only the traced term the world gets. ?bakeao restores it for an A/B.
       bakeAO(items[i]);
     }
     itemsRef = items;                                  // publish the finished table to the tick loop (cardinal hitbox size + worm stamp poses)
-    const dims = [], flat = [];
+    const dims = [], flat = [], itemOff = [];          // itemOff = where each item's block starts in ITEMMAP, in vec4s — the bow strip is re-written there live
     for (const it of items) {
+      itemOff.push(flat.length >> 2);
       dims.push(`vec4<i32>(${it.w}, ${it.d}, ${it.h}, ${flat.length >> 2})`);
       for (const c of it.cells) { if (c) flat.push(Math.pow(c[0] / 255, 2.2), Math.pow(c[1] / 255, 2.2), Math.pow(c[2] / 255, 2.2), 1.0); else flat.push(0, 0, 0, 0); }
     }
@@ -1560,6 +1810,28 @@
     itemHalfH = items.map((m) => (m.h || 9) * 0.5);   // …and each item's half height, for the resting pose of a dropped item (see the drop block)
     itemMapF32 = new Float32Array(flat);               // → storage buffer at binding 13 (created with the other GPU buffers)
     const maxSteps = Math.max(...items.map(it => it.w + it.d + it.h + 3));
+    // ── LIVE ARROW TURN ── re-cut the two bow runs for a new orientation and overwrite ONLY their colours.
+    // fetchBowStrip fixed the grid across every orientation, so the dimensions baked into ITEMD above stay
+    // true and nothing has to be recompiled — the change is one buffer write over a contiguous range.
+    bowRefit = (rot, pos) => {
+      if (!BOW_IT || !BOW_NOCK || !BOWSTRIP || !BOWSTRIP.rebuild) return false;
+      const ns = BOWSTRIP.rebuild(rot, pos);
+      for (const [id0, strip] of [[BOW_IT, ns.withArrow], [BOW_NOCK, ns.bowOnly]])
+        for (let f = 0; f < strip.length; f++) {
+          const i = id0 - 1 + f, it = modelToItem(strip[f]);
+          items[i] = it;
+          let o = itemOff[i] * 4;
+          for (const c of it.cells) {
+            if (c) { itemMapF32[o] = Math.pow(c[0] / 255, 2.2); itemMapF32[o + 1] = Math.pow(c[1] / 255, 2.2); itemMapF32[o + 2] = Math.pow(c[2] / 255, 2.2); itemMapF32[o + 3] = 1; }
+            else { itemMapF32[o] = 0; itemMapF32[o + 1] = 0; itemMapF32[o + 2] = 0; itemMapF32[o + 3] = 0; }
+            o += 4;
+          }
+        }
+      const last = BOW_NOCK - 1 + BOW_FRAMES - 1;      // the two runs are consecutive, so one contiguous write covers both
+      const from = itemOff[BOW_IT - 1] * 4, to = itemOff[last] * 4 + items[last].cells.length * 4;
+      device.queue.writeBuffer(itemMapBuf, from * 4, itemMapF32, from, to - from);
+      return true;
+    };
     pickWGSL = `const ITEMN : i32 = ${items.length}; const PICKSTEPS : i32 = ${maxSteps};
     const ITEMD : array<vec4<i32>, ${items.length}> = array<vec4<i32>, ${items.length}>(${dims.join(', ')});
     @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;`;
@@ -1582,7 +1854,10 @@
     // (the ROCK core — the hottest loop in worldgen, ~180 voxels/column — moved to rockRowSpan: writing it per COLUMN
     // strode WX bytes per voxel, a fresh cache line every write; the row-major pass writes contiguous x-runs instead.
     // rockTop was min(h-3, yTop), but yTop ≥ h in every branch, so h-3 exactly — rockRowSpan reproduces it bit-identically.)
-    for (let y = Math.max(0, h - 3); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
+    // ── SOIL ── 15 voxels deep under EVERY column (user), cut out of the rock core rockRowSpan already
+    // wrote. This used to be 2 voxels everywhere plus a deep layer on grass only, which is exactly the
+    // uneven depth the user saw: deep under the meadows, shallow on the beach and the forest floor.
+    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
       const shore = h <= WL + 6;                       // any waterline — lakes AND rivers
@@ -1591,9 +1866,6 @@
       else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(sh * 3) | 0];     // dithered sand-to-forest blend
       else { c = (mossy ? MOSS : NEEDLE)[(sh * 4) | 0]; surfMoss = mossy; }
       W[base + (h - 1) * WX] = c;
-      // ── DEEP SOIL ── grass columns carry 5 MORE voxels of dirt beneath the usual two (user), cut out
-      // of the rock core rockRowSpan already wrote. Grass itself stays the top voxel and nothing else.
-      if (surfMoss) for (let y = Math.max(0, h - 8); y < h - 3; y++) W[base + y * WX] = DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     }
     if (lake) for (let y = h; y <= Math.min(WL, yTop - 1); y++) W[base + y * WX] = y === WL ? WATER_T : WATER_B;
     if (!fresh) { let ia = base + (lake ? WL + 1 : h) * WX; for (let y = lake ? WL + 1 : h; y < WY; y++) { W[ia] = 0; ia += WX; } }
@@ -2797,7 +3069,7 @@
   const palSync = () => { const f = new Float32Array(256 * 4);     // asset-editor imports addCol at RUNTIME — re-upload the whole palette (COPY_DST above exists for this)
     for (let i = 0; i < palette.length; i++) { const p = palette[i]; f[i * 4] = Math.pow(p[0] / 255, 2.2); f[i * 4 + 1] = Math.pow(p[1] / 255, 2.2); f[i * 4 + 2] = Math.pow(p[2] / 255, 2.2); }
     device.queue.writeBuffer(palBuf, 0, f); };
-  const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });   // held/drop item voxel colors — see pickWGSL
+  const itemMapBuf = device.createBuffer({ size: Math.max(16, itemMapF32.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });   // COPY_DST: turning the arrow rewrites the bow strip's block in place (bowRefit)   // held/drop item voxel colors — see pickWGSL
   new Float32Array(itemMapBuf.getMappedRange()).set(itemMapF32); itemMapBuf.unmap();
   const UF = new Float32Array(1876);   // …+ heldCfg 1860..1863 (x = held-item sun visibility) + lgt 1864..1867 (light-debug bitmask) + hurtB 1868..1871 + hurtH 1872..1875 (the knife's red hit-flash box)
   const UF_OLD_LEN = 1860;   // …+ physB 16 bodies x 5 vec4 1532..1851 + physC 1852..1855 + physBound 1856..1859 → 1860 (voxel rigid bodies)                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
@@ -3468,14 +3740,26 @@
         if (bHit) { albedo = bCol * select(1.0, 0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z), LG(9u)); }   // felled chunk: palette colour + genuinely MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
         else if (cSlot != 0u) { albedo = cCell * select(1.0, 0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z), LG(11u)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
         else { albedo = pal[h.vox].rgb * select(1.0, 0.88 + 0.24 * ivhash(vcW), LG(10u)); }
-        if (u.hurtB.w > 0.0) {                                       // ── HIT FLASH ── the animal just hit, blinking through red (user)
-          let dHit = abs(pos - u.hurtB.xyz);
-          if (all(dHit <= u.hurtH.xyz)) {
-            // EMISSIVE, like the impact sparks (user): a red past what any surface can reflect, mixed
-            // rather than replaced so the animal's shape stays legible through it.
-            albedo = mix(albedo, vec3<f32>(2.60, 0.06, 0.05), 0.72 * u.hurtB.w);
-            hurtGlow = u.hurtB.w;                                    // …and it lights itself — see the sun/AO block
+        if (u.hurtB.w > 0.0) {                                       // ── HIT FLASH ── the animal just hit, blinking red (user)
+          // WHOSE pixel is this? A trace-injected creature carries its dynamic-life slot in cSlot, so the
+          // wounded animal is identified exactly, pixel for pixel, however it moves. The old box could
+          // never do that: a worm renders OFF-GRID, so it had no stamped bounds and fell back to a
+          // generous cube that slid around independently of the animal inside it (user).
+          let isMe = (cSlot != 0u && cSlot == u32(u.hurtH.w + 0.5));
+          // Grid-stamped animals (mammals, perched birds) are ordinary world voxels with no cSlot — but
+          // hurtBox hands over their exact stamped bounds, so testing against those hugs the animal.
+          let dHit = abs(pos - u.hurtB.xyz) / max(u.hurtH.xyz, vec3<f32>(0.001));
+          if (isMe || (u.hurtH.w < 0.5 && all(dHit <= vec3<f32>(1.0)))) {   // the WHOLE stamp, not an ellipsoid inside it (user)
+            // SOFT EDGE (user): the box has a voxel of slack so the animal's outer shell lights up, but that
+            // slack also clipped a hard-edged red slab onto whatever it stood against. Fade the last quarter
+            // of the box instead — the animal's own voxels (isMe) stay fully lit, the spill falls away.
+            let fEdge = select(1.0 - smoothstep(0.72, 1.0, max(dHit.x, max(dHit.y, dHit.z))), 1.0, isMe);
+            albedo = mix(albedo, vec3<f32>(2.60, 0.06, 0.05), fEdge);   // REPLACED outright for the half second (user), not tinted
+            hurtGlow = u.hurtB.w * fEdge;                            // …and it lights itself — see the sun/AO block
           }
+          // Nothing else is touched here on purpose: the light this throws on its surroundings is the
+          // point light the wound already puts in the fflies lane, which falls off smoothly. Painting a
+          // second region by hand is what produced the hard-edged red square around it.
         }
         if (skipW && pos.y < WLF + 1.0) {                            // swimming: caustic webs dance on everything below the surface
           albedo = albedo * (1.0 + select(0.0, 1.3, LG(13u)) * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
@@ -4835,10 +5119,12 @@
   // ── HAND SLOTS ── UNLIMITED (user, for now): the hotbar grows as things are picked up and always keeps
   // one trailing empty, so a pickup can never be refused. Scroll wheel cycles the whole list; Q drops
   // from the selected slot. Same-type items still stack rather than taking a new slot each time.
-  const slots = [{ it: 1, n: 1 }, PICK_IT ? { it: PICK_IT, n: 1 } : null, SHOVEL_IT ? { it: SHOVEL_IT, n: 1 } : null, BOW_IT ? { it: BOW_IT, n: 1 } : null].filter(Boolean);   // …and the BOW is back (user)   // stone axe, PICK, SHOVEL — and the last slot stays EMPTY (user), so there is always somewhere for a pickup to land. The BOW is no longer in the starting kit for that reason; __vb.giveIt(__vb.bowId()) puts it in hand to tune.
+  // THE ORDER IS THE USER'S: axe, pick, shovel, hoe, knife, bow, spear. Anything whose .vox is missing
+  // simply drops out of the line rather than leaving a hole.
+  const slots = [1, PICK_IT, SHOVEL_IT, HOE_IT, KNIFE_IT, BOW_IT, SPEAR_IT].filter(Boolean).map((it) => ({ it, n: 1 }));   // the KNIFE is in the rotation too (user)   // …and the BOW is back (user)   // stone axe, PICK, SHOVEL — and the last slot stays EMPTY (user), so there is always somewhere for a pickup to land. The BOW is no longer in the starting kit for that reason; __vb.giveIt(__vb.bowId()) puts it in hand to tune.
   let selSlot = 0;
   const STACK_MAX = 8;                                 // how deep a stackable item goes (user)
-  const stackable = (it) => !(it === 1 || it === KNIFE_IT || it === PICK_IT || it === SHOVEL_IT || it === BOW_IT);   // TOOLS AND WEAPONS DO NOT STACK (user) — each takes its own slot; everything else (raw meat, rocks, twigs, cones) stacks to STACK_MAX
+  const stackable = (it) => !(it === 1 || it === KNIFE_IT || it === PICK_IT || it === SHOVEL_IT || it === BOW_IT || it === HOE_IT || it === SPEAR_IT);   // TOOLS AND WEAPONS DO NOT STACK (user) — each takes its own slot; everything else (raw meat, rocks, twigs, cones) stacks to STACK_MAX
   const canAdd = () => true;                           // …so nothing is ever un-pickable for want of room (see slotTidy)
   const slotTidy = () => {                             // keep EXACTLY one trailing empty: pickups always have a home, and the wheel never lands on a run of blanks
     while (slots.length > 1 && !slots[slots.length - 1] && !slots[slots.length - 2]) slots.pop();
@@ -4901,12 +5187,277 @@
     const lx = Math.round(px), lz = Math.round(pz);
     const aX = toW([cr2 * cy, sr2 * cp2 + cr2 * sy * sp2, sr2 * sp2 - cr2 * sy * cp2]);
     const hl = Math.hypot(aX[0], aX[2]) || 1, Xh = [aX[0] / hl, 0, aX[2] / hl];  // UPRIGHT at release — keep the hand's heading, level everything else
+    // The BOW hovers z-DOWN (its art's +z is the underside — see the drop update). The launch frame has to
+    // agree: released z-UP, the flight slerped a full 180° into the hover, through a degenerate axis, and
+    // the bow thrashed on the way down (user: "severely glitched"). Both ends now share the same up.
+    const upFlip = !!(BOW_IT && it === BOW_IT);
     drops.push({ x: lx, y: hmap[gwrap(lx, WX) + gwrap(lz, WZ) * WX], z: lz, it, ph: Math.random() * 6.28, born: performance.now(),
-      T, sx, sy: sy2, sz, vx, vy: vy0, vz,
+      T, sx, sy: sy2, sz, vx, vy: vy0, vz,   // …the BOW hovers and spins like everything else again (user)
       ex: sx + vx * T, ey: sy2 + vy0 * T + 0.5 * TOSS_G * T * T, ez: sz + vz * T,   // exact arc endpoint — the settle blend starts here
-      q0: m2q(Xh, [Xh[2], 0, -Xh[0]], [0, 1, 0]) });
+      q0: upFlip ? m2q(Xh, [-Xh[2], 0, Xh[0]], [0, -1, 0]) : m2q(Xh, [Xh[2], 0, -Xh[0]], [0, 1, 0]) });
     if (drops.length > 4) drops.shift();               // the composite renders up to 4 at once
   }
+  // ══ COMMAND LINE (user) ══ T opens it, Enter runs, Escape cancels. `/spawn <thing>` puts a creature
+  // or an item in front of the player. While it is open the game's own keyboard is silenced — the binds
+  // read raw key codes, so without that, typing "spawn" would drop the held item on the d and toggle
+  // fly on the f.
+  const CMD_SPECIES = {                                // name → [slot band lo, hi, B.kind]. The bands are the creature pool's own layout.
+    butterfly: [0, 16, 0], moth: [0, 16, 1], duck: [16, 20, 3], worm: [32, 64, 2],
+    fish: [244, 276, 6], bunny: [276, 300, 2], armadillo: [300, 324, 2], skunk: [324, 348, 2], porcupine: [348, 372, 2],
+  };
+  let cmdOpen = false;
+  let cmdEscAt = -1e9;                                 // when Escape last dismissed the line — see the esc-menu suppression below
+  let cmdRelock = 0;                                   // the retry that takes the pointer back once the browser will allow it
+  const cmdBar = $('cmdBar'), cmdTxt = $('cmdTxt'), cmdMsg = $('cmdMsg');
+  let cmdBuf = '';                                     // the line's own text: with the pointer still locked there is nothing to focus, so it keeps its own buffer
+  const cmdDraw = () => { if (cmdTxt) cmdTxt.textContent = cmdBuf; };
+  const cmdSay = (t) => { if (cmdMsg) { cmdMsg.textContent = t; clearTimeout(cmdSay.t); cmdSay.t = setTimeout(() => { if (cmdMsg) cmdMsg.textContent = ''; }, 4000); } };
+  const cmdShow = (on) => {
+    cmdOpen = !!on;
+    if (!cmdBar) return;
+    cmdBar.classList.toggle('hidden', !cmdOpen);
+    if (cmdOpen) {
+      keys.clear();                                  // whatever was held when it opened must not stay held
+      cmdBuf = '/';                                  // just the slash (user) — the command is typed, not assumed
+      cmdDraw();
+      // The pointer stays LOCKED. Releasing it is what shook the view (user): the browser restores the OS
+      // cursor and lays the canvas out around its own lock notice. Keystrokes come from the capture-phase
+      // handler below instead, so nothing needs focus.
+    } else {
+      // Only the Escape path can have cost us the lock — the browser exits it on Escape whatever we do —
+      // so ask for it back, and again once its post-Escape cooldown has lapsed.
+      if (!locked && !dead) {
+        tryLock();
+        clearTimeout(cmdRelock);
+        cmdRelock = setTimeout(() => { if (!locked && !dead && cmdBar.classList.contains('hidden')) tryLock(); }, 1350);
+      }
+    }
+  };
+  // where the thing lands: straight out along the view, on the ground, clear of the player
+  const cmdSpot = () => {
+    const d = 14, x = Math.round(P.x + Math.sin(P.yaw) * d), z = Math.round(P.z + Math.cos(P.yaw) * d);
+    return { x, z, g: hmap[gwrap(x, WX) + gwrap(z, WZ) * WX] };
+  };
+  const cmdSpawn = (what) => {
+    const key = String(what || '').trim().toLowerCase().replace(/\s+/g, '_');
+    if (!key) { cmdSay('spawn what? try /spawn porcupine'); return; }
+    const at = cmdSpot();
+    // ── A CREATURE ──
+    const sp = CMD_SPECIES[key];
+    if (sp) {
+      const [lo, hi, kind] = sp;
+      let slot = -1;
+      for (let j = lo; j < hi; j++) if (!wbf[j].init) { slot = j; break; }
+      if (slot < 0) slot = lo;                         // all busy: take the band's first and recycle it
+      const B = wbf[slot];
+      B.x = at.x + 0.5; B.z = at.z + 0.5; B.gRef = Math.max(at.g, WL); B.y = B.gRef + 1;
+      B.th = Math.random() * 6.283; B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0;
+      B.born = performance.now(); B.kind = kind; B.dieT = 0; B.glow = false; B.glowT = 0;
+      B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined;
+      B.aframe = 0; B.ah = 0; B.rel = true;            // rel: lives past the population cap until it recycles naturally
+      B.init = true;
+      cmdSay('spawned ' + key + ' (slot ' + slot + ')');
+      return;
+    }
+    // ── AN ITEM ── it arrives as a DROP, which is what "levitating in front of the player" already is.
+    // The .vox FILE NAME works as well as the short name (user): /spawn stone_axe and /spawn axe both do.
+    const CMD_FILES = { stone_axe: 1, stone_knife: KNIFE_IT, stone_pick: PICK_IT, stone_shovel: SHOVEL_IT,
+      stone_hoe: HOE_IT, stone_spear: SPEAR_IT,
+      bow: BOW_IT, base: BOW_IT, meat: MEAT_IT, raw_meat: MEAT_IT, rock: ROCK_IT, stick_1: STICK_IT,
+      stick_2: STICK_IT, stick: STICK_IT, pinecone: CONE_IT, twig: STICK_IT };
+    let it = CMD_FILES[key] || 0;
+    if (!it) for (const k in ITEM_NAMES) { const nm = ITEM_NAMES[k]; if (nm && nm.toLowerCase().replace(/\s+/g, '_') === key) { it = +k; break; } }
+    if (!it) { cmdSay('no such thing: ' + key); return; }
+    drops.push({ x: at.x, y: Math.max(at.g, WL + 1), z: at.z, it, ph: Math.random() * 6.28, born: performance.now() });
+    if (drops.length > 32) drops.shift();
+    cmdSay('spawned ' + key + ' (item ' + it + ')');
+  };
+  const cmdRun = (line) => {
+    const t = String(line || '').trim();
+    if (!t) return;
+    const m = t.match(/^\/?(\w+)\s*(.*)$/);
+    if (!m) { cmdSay('?'); return; }
+    if (m[1].toLowerCase() === 'spawn') cmdSpawn(m[2]);
+    else cmdSay('unknown command: ' + m[1] + ' (only /spawn so far)');
+  };
+  // CAPTURE phase, on the document: this has to work even when the input never got focus, or the line
+  // cannot be dismissed and the keyboard stays captured (user: "pressing esc should disable the command line").
+  // A CLICK ANYWHERE dismisses the line and hands the game back (user). The pointer never left, so
+  // there is nothing to re-acquire — and the click that dismissed it must not also swing the tool.
+  document.addEventListener('mousedown', (e) => {
+    if (!cmdOpen) return;
+    e.preventDefault(); e.stopPropagation();
+    cmdShow(false);
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (!cmdOpen) {
+      // …and once it is closed, Escape behaves as it always did. If the re-lock was refused we are still
+      // unlocked with no menu showing, so this second press is what puts the menu up (user).
+      if (e.code === 'Escape' && !locked && !dead && performance.now() - cmdEscAt > 40 && vePanel.classList.contains('hidden')) lockEl.classList.remove('hidden');
+      return;
+    }
+    e.stopPropagation();                               // every keystroke belongs to the line, never to the game's binds
+    if (e.code === 'Escape') { e.preventDefault(); cmdEscAt = performance.now(); cmdShow(false); }
+    else if (e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); const v = cmdBuf; cmdShow(false); cmdRun(v); }
+    else if (e.code === 'Backspace') { e.preventDefault(); cmdBuf = cmdBuf.slice(0, -1); cmdDraw(); }
+    else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); cmdBuf += e.key; cmdDraw(); }
+  }, true);
+  // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
+  // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
+  const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
+  // ── AN ARROW BITES LIKE A TOOL ── it strikes rock or soil and a chunk comes away (user), just smaller
+  // than a swing's: an arrowhead is not an axe. And you do NOT get it from across the clearing — the
+  // chunk lies where it fell until you walk up to it, at a fraction of the usual reach.
+  // ARROW_ABSORB_R: THREE METRES (user). The world runs 10 voxels to the metre — the asset-editor stage
+  // rules its gridlines every 10th voxel, and the 53-voxel melee reach is the "5.3 m" quoted with it — so
+  // 3 m is 30. That is WIDER than the 16 a swing's chunk uses; what still sets the arrow's chunk apart is
+  // that it never flies to you on a timer, it only ever comes when you are inside this radius.
+  const ARROW_CHOP_RAD = 3, ARROW_CHOP_BITE = 10, ARROW_ABSORB_R = 30;
+  const arrowChop = (ix, iy, iz) => {
+    if (!PH.on || ED.on || iy < 1 || iy >= WY) return false;
+    const id = W[gwrap(ix, WX) + iy * WX + gwrap(iz, WZ) * WX * WY];
+    if (!id) return false;
+    for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];   // …and NOTHING alive gets carved (user): a stamped animal's voxels are not terrain
+      if (!B || !B.init || !B.sB || !B.sN) continue;
+      const q = B.sB;
+      if (ix >= q[0] - 1 && ix <= q[3] + 1 && iy >= q[1] - 1 && iy <= q[4] + 1 && iz >= q[2] - 1 && iz <= q[5] + 1) return false;
+    }
+    // …confined to the material it struck, exactly as a swing is: the sphere cannot spill into the next one
+    const okMat = digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]));
+    const n0 = PH.bodies.length;
+    let hit = phChopDecor(ix, iy, iz, ARROW_CHOP_RAD, ARROW_CHOP_BITE, okMat);
+    if (!hit) { const S = treeShapeAt(ix, iz); if (S) hit = physChopAt(ix, iy, iz, ARROW_CHOP_RAD, S, 1, ARROW_CHOP_BITE).hit; }   // …and a trunk gives up a chunk too
+    if (!hit) return false;
+    for (let i = n0; i < PH.bodies.length; i++) { const b = PH.bodies[i];
+      b.absorbAt = 0;                                  // no timed flight into your chest: it has to be COLLECTED
+      b.nearR = ARROW_ABSORB_R;                        // …and only from close up (user)
+    }
+    phFallLoose(ix, iy, iz);                           // whatever that bite was holding up comes down, same as a swing
+    return true;
+  };
+  const ARROWS_ON_FIELD = 3;                         // how many loosed arrows may lie about at once — one drop slot is always kept free for the next shot
+  // LEAVES CATCH ARROWS (user). solid() is the WALKING test and pine needles are deliberately walk-through,
+  // so a shaft flew clean through a canopy. A flying shaft is not a walking player: foliage stops it.
+  const arrowBlocked = (x, y, z) => {
+    if (y < 1) return true;
+    if (y >= WY) return false;
+    const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+    return !!(id && (solidTab[id] === 1 || foliaTab[id])) || phBodySolid(x, y, z);
+  };
+  // ONE launcher for everything thrown point-first: the arrow off the string and the SPEAR out of the hand
+  // (user). They differ only in speed, in what they cost you, and in how hard they land.
+  const launchThrown = (it, V, UPK, kind) => {
+    if (!it || dead || ED.on) return false;
+    const pr = prevCam;
+    // ── IT LEAVES THE BOW ── the viewmodel sits about a unit from the eye, far too close to spawn a
+    // full-size projectile, so take the bow's OWN sideways/vertical offset and carry it out along the
+    // view to where the arrow can be drawn. Same line of sight as the bow, so it reads as leaving it.
+    const LAUNCH_D = 6;
+    const ho = heldOff || [0, 0, 1];
+    const k = LAUNCH_D / Math.max(0.2, ho[2]);
+    const sx = pr.pos[0] + pr.right[0] * ho[0] * k + pr.up[0] * ho[1] * k + pr.fwd[0] * LAUNCH_D,
+          sy2 = pr.pos[1] + pr.right[1] * ho[0] * k + pr.up[1] * ho[1] * k + pr.fwd[1] * LAUNCH_D,
+          sz = pr.pos[2] + pr.right[2] * ho[0] * k + pr.up[2] * ho[1] * k + pr.fwd[2] * LAUNCH_D;
+    // …and it must still go WHERE YOU AIMED. Leaving the bow means leaving from a point ~6 voxels to the
+    // side of the eye, so firing straight down the view direction sends the arrow along a parallel line
+    // that never crosses the crosshair. Aim at a distant point ON the view ray instead: the flight
+    // converges onto the sight line within a few voxels, the way a real bow sight does.
+    const AIM_FAR = 300;
+    const tx3 = pr.pos[0] + pr.fwd[0] * AIM_FAR - sx, ty3 = pr.pos[1] + pr.fwd[1] * AIM_FAR - sy2, tz3 = pr.pos[2] + pr.fwd[2] * AIM_FAR - sz;
+    const tl3 = Math.hypot(tx3, ty3, tz3) || 1;
+    const vx = (tx3 / tl3) * V, vy0 = (ty3 / tl3) * V + UPK, vz = (tz3 / tl3) * V;
+    // ── WHERE IT STICKS ── march the arc against the WORLD, not the height map: an arrow buries itself in
+    // whatever it meets first, be that ground, a trunk or a branch (user). EIGHT samples per 5 ms step —
+    // at 480 vox/s a whole step spans two voxels and would otherwise tunnel clean through a tree.
+    const SUB = 8;
+    // ── AND LIVING THINGS ── an arrow that passes through an animal wounds it exactly as a swing does
+    // (user). Candidates are filtered by distance ONCE, then tested along the arc. Their positions are
+    // read at release, like the rest of the flight: the whole arc is integrated up front.
+    const targets = [];
+    for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];
+      if (!B || !B.init || B.dying) continue;
+      if (Math.abs(B.x - P.x) > 700 || Math.abs(B.z - P.z) > 700) continue;
+      const q = B.sB && B.sN ? ((B.sB[3] - B.sB[0]) + (B.sB[4] - B.sB[1]) + (B.sB[5] - B.sB[2])) / 6 : (AIM_R[B.kind | 0] || 3.0);
+      targets.push({ wk, B, r2: (q + 2) * (q + 2) });   // …a little forgiveness: an arrow has to be able to catch a moving bird
+    }
+    // …and the FLYING songbirds too (user). They live in birds[], not the creature pool, so they need their
+    // own entry in the scan and their own death — but they are shot exactly the same way.
+    const bTargets = [];
+    for (let bi = 0; bi < birds.length; bi++) { const B = birds[bi];
+      if (!B || !B.init) continue;
+      if (Math.abs(B.x - P.x) > 700 || Math.abs(B.z - P.z) > 700) continue;
+      bTargets.push({ bi, B, r2: 36 });                // a songbird is small; 6 voxels of forgiveness makes it shootable without being a magnet
+    }
+    let hitSlot = -1, hitBird = -1;
+    let px = sx, py = sy2, pz = sz, vy = vy0, T = 0;
+    for (let i = 0; i < 900; i++) {
+      const nvy = vy + TOSS_G * 0.005;
+      const dx = vx * 0.005, dy = (vy + nvy) * 0.5 * 0.005, dz = vz * 0.005;
+      let struck = false;
+      for (let s = 1; s <= SUB; s++) {
+        const f = s / SUB, qx = px + dx * f, qy = py + dy * f, qz = pz + dz * f;
+        for (const t of targets) { const B = t.B;
+          const by = (B.kind | 0) === 5 ? (B.perchFeet || 0) + 3 : B.y + 2;
+          const ax = B.x - qx, ay = by - qy, az = B.z - qz;
+          if (ax * ax + ay * ay + az * az <= t.r2) { hitSlot = t.wk; break; }
+        }
+        if (hitSlot < 0) for (const t of bTargets) { const B = t.B;
+          const ax = B.x - qx, ay = B.y - qy, az = B.z - qz;
+          if (ax * ax + ay * ay + az * az <= t.r2) { hitBird = t.bi; break; }
+        }
+        if (hitSlot >= 0 || hitBird >= 0 || (T > 0.02 && arrowBlocked(Math.round(qx), Math.round(qy), Math.round(qz)))) {
+          px = qx; py = qy; pz = qz; T += 0.005 * f; struck = true; break;
+        }
+      }
+      if (struck) break;
+      px += dx; py += dy; pz += dz; vy = nvy; T += 0.005;
+    }
+    // ── NEVER CARVE AN ANIMAL ── a mammal is STAMPED into the world grid, so its voxels read as ordinary
+    // terrain: a shaft that came down on a porcupine's quills (outside the body sphere tested above, but
+    // still its voxels) knocked a CHUNK out of it. Anything landing inside a live creature's stamp is a
+    // hit on that creature, full stop (user).
+    if (hitSlot < 0) {
+      const ix = Math.round(px), iy = Math.round(py), iz = Math.round(pz);
+      for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];
+        if (!B || !B.init || B.dying || !B.sB || !B.sN) continue;
+        const q = B.sB;
+        if (ix >= q[0] - 1 && ix <= q[3] + 1 && iy >= q[1] - 1 && iy <= q[4] + 1 && iz >= q[2] - 1 && iz <= q[5] + 1) { hitSlot = wk; break; }
+      }
+    }
+    const lx = Math.round(px), lz = Math.round(pz);
+    const Xh = [Math.sin(P.yaw), 0, Math.cos(P.yaw)];  // it lands pointing the way it flew
+    // ── ROOM FOR THE NEXT SHOT ── the composite renders only the FIRST FOUR drops, so arrows piling up in
+    // the list silently swallowed every shot after the third: the new one existed but was never drawn, and
+    // the bow looked broken. Retire the OLDEST arrow on the field instead (user).
+    for (let n = drops.reduce((k, d) => k + (d.it === it ? 1 : 0), 0); n >= ARROWS_ON_FIELD; n--) {
+      const i = drops.findIndex((d) => d.it === it);
+      if (i < 0) break;
+      drops.splice(i, 1);
+    }
+    drops.push({ x: lx, y: Math.round(py), z: lz, it, ph: Math.random() * 6.28, born: performance.now(),
+      T, sx, sy: sy2, sz, vx, vy: vy0, vz, aim: true, stick: true, hitSlot, kind,   // aim: it flies POINT-FIRST, nose following the arc; stick: and STAYS where it struck; hitSlot: what it is about to wound (user)
+      hitBird,                                         // …or the songbird it is about to bring down
+      chopAt: hitSlot < 0 && hitBird < 0 && py >= 1 ? [Math.round(px), Math.round(py), Math.round(pz)] : null,   // …or the voxel it is about to knock a chunk out of
+      ex: px, ey: py, ez: pz,                          // the real impact point, not the analytic parabola's guess
+      q0: m2q(Xh, [Xh[2], 0, -Xh[0]], [0, 1, 0]) });
+    if (drops.length > 4) drops.shift();                // …and never more than the composite can draw
+    return true;
+  };
+  // ── THE BOW ── the draw IS the power (user). Loosing is only allowed past half draw, so this runs 0.5 at
+  // the earliest release to 1.0 at a full pull; ARROW_V is what a full draw is worth.
+  const shootArrow = () => { const dk = Math.min(1, Math.max(0, (bowRel - bowT0) / BOW_DRAW_MS));
+    return launchThrown(ARROW_IT, ARROW_V * dk, ARROW_UP * dk, 'arrow'); };
+  // ── THE SPEAR ── heavier and slower than an arrow, and it LEAVES YOUR HAND: the spear is the projectile,
+  // so throwing it costs you the item until you walk over and pick it up again (user).
+  const SPEAR_WIND_MS = 320, SPEAR_V = ARROW_V * 0.62, SPEAR_UP = ARROW_UP;
+  const throwSpear = () => {
+    if (!SPEAR_IT || dead || ED.on) return false;
+    const wk = Math.min(1, Math.max(0, (bowRel - bowT0) / SPEAR_WIND_MS));
+    if (!launchThrown(SPEAR_IT, SPEAR_V * (0.55 + 0.45 * wk), SPEAR_UP * wk, 'spear')) return false;
+    const sel = slots[selSlot];                        // …and it is gone from the hand the instant it flies
+    if (sel && sel.it === SPEAR_IT && --sel.n <= 0) { slots[selSlot] = null; slotTidy(); }
+    return true;
+  };
   const PICK_ROCK = new Set(PEBBLE), PICK_STICK = new Set([STICK_S]), PICK_BOULDER = new Set(BROCK);
   const PICK_CONE = new Set(); if (CONEV) for (const p of CONEV.vox) PICK_CONE.add(p >>> 24);   // pinecone ids (ground cones AND tree-hung ones) → pinecone item
   if (ROCKV) for (const p of ROCKV.vox) PICK_ROCK.add(p >>> 24);                 // the field stone (rock.vox) → rock item
@@ -5674,6 +6225,120 @@
     gpuPatch(out, false);
     return phBuildBody({ bx: x0, gy: y0, bz: z0 }, keys, { sx, sz }, idMap);
   };
+  // ── CHOP LEAVES ── foliage comes off with ANY tool (user). Deliberately NOT routed through
+  // phChopDecor: that runs an orphan sweep afterwards, and a canopy is precisely the shape it misjudges.
+  // Leaves have no hitbox and no physics, so there is nothing to drop — they just go.
+  // ── ANYTHING LEFT IN MID-AIR FALLS ── (user) a general rule, not a foliage special case. After a carve,
+  // every LOOSE voxel nearby — foliage, grass, flowers, twigs, cones — is traced back through its own
+  // kind looking for something that actually holds it up: a branch, a trunk, the ground. A clump that
+  // finds nothing is cut out as a rigid body, so it drops and is then gathered up like any other chunk.
+  //
+  // NO BOUNDING BOX. Two earlier versions used one and both failed the same way: anything touching the
+  // box edge had to be assumed supported, and a canopy is far wider than any box worth scanning, so
+  // essentially every leaf qualified. This follows the component wherever it actually goes and stops on
+  // a size cap instead — a piece that large is a tree, not debris.
+  const FALL_SEED_R = 10;                              // how far from the carve to look for pieces it may have cut loose
+  const FALL_MAX = 3000;                               // past this, stop and assume it is held: it is not debris
+  const phFallLoose = (cx0, cy0, cz0) => {
+    const loose = (v) => v && (foliaTab[v] || floatTab[v]);
+    const seen = new Set();
+    const idxOf = (x, y, z) => gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+    const R = FALL_SEED_R;
+    for (let dy = -R; dy <= R; dy++) for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+      const sy2 = cy0 + dy; if (sy2 < 1 || sy2 >= WY) continue;
+      const sx2 = cx0 + dx, sz2 = cz0 + dz;
+      const si = idxOf(sx2, sy2, sz2);
+      if (seen.has(si) || !loose(W[si])) continue;
+      // ── walk this whole clump ── it is held the moment any voxel of it touches something that is not
+      // loose. Bail out on the cap rather than crawling an entire forest canopy.
+      const comp = [], q = [[sx2, sy2, sz2]], mine = new Set([si]);
+      let held = false, over = false;
+      while (q.length) {
+        const c = q.pop(); comp.push(c);
+        if (comp.length > FALL_MAX) { over = true; break; }
+        for (let d = 0; d < 6; d++) {
+          const nx = c[0] + (d === 0 ? 1 : d === 1 ? -1 : 0), ny = c[1] + (d === 2 ? 1 : d === 3 ? -1 : 0), nz = c[2] + (d === 4 ? 1 : d === 5 ? -1 : 0);
+          if (ny < 1 || ny >= WY) { held = true; continue; }
+          const ni = idxOf(nx, ny, nz), nv = W[ni];
+          if (!nv) continue;
+          if (!loose(nv)) { held = true; continue; }   // a branch, the trunk, the ground — this clump is attached
+          if (!mine.has(ni)) { mine.add(ni); q.push([nx, ny, nz]); }
+        }
+      }
+      for (const i2 of mine) seen.add(i2);             // decided, either way — never walk it twice
+      if (held || over || !comp.length) continue;
+      // …nothing holds it: it falls.
+      if (comp.length < 3 || comp.length > PH.absorbMax || (PH.bodies.length >= PH.maxBodies && !phMakeRoom())) {
+        const gone = [];
+        for (const c of comp) { const ii = idxOf(c[0], c[1], c[2]); if (W[ii]) { W[ii] = 0; gone.push(ii); } }
+        if (gone.length) { gpuPatch(gone, false); PH.stats.dustVox += gone.length; }
+        continue;
+      }
+      const fb = phBodyFromCells(comp);
+      if (!fb) continue;
+      fb.omega[0] = (Math.random() - 0.5) * 1.6;       // it lost its hold rather than being struck: it drops, it does not fly
+      fb.omega[1] = (Math.random() - 0.5) * 1.6;
+      fb.omega[2] = (Math.random() - 0.5) * 1.6;
+      fb.absorbAt = performance.now() + PH.absorbMs;   // …and the player gathers it up like any other chunk (user)
+      PH.bodies.push(fb); PH.stats.chunks++;
+    }
+  };
+  const phChopLeaves = (wx, wy, wz, rad, bite) => {
+    const r2 = rad * rad, ri = Math.ceil(rad), cx0 = Math.round(wx), cy0 = Math.round(wy), cz0 = Math.round(wz);
+    const cD = [], cI = [], cX = [], cY = [], cZ = [];   // world coords too: the chunk is built from cells, not indices
+    for (let dy = -ri; dy <= ri; dy++) for (let dz = -ri; dz <= ri; dz++) for (let dx = -ri; dx <= ri; dx++) {
+      const d2 = dx * dx + dy * dy + dz * dz; if (d2 > r2) continue;
+      const y = cy0 + dy; if (y < 1 || y >= WY) continue;
+      const x = cx0 + dx, z = cz0 + dz;
+      const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+      if (!foliaTab[W[ii]]) continue;
+      cD.push(d2); cI.push(ii); cX.push(x); cY.push(y); cZ.push(z);
+    }
+    if (!cD.length) return false;
+    const ord = new Int32Array(cD.length);               // nearest first, so a swing takes the leaves it was aimed at
+    for (let k = 0; k < ord.length; k++) ord[k] = k;
+    ord.sort((a, b) => cD[a] - cD[b]);
+    const take = Math.min(bite, ord.length), cells = [];
+    for (let k = 0; k < take; k++) { const j = ord[k]; if (W[cI[j]]) cells.push([cX[j], cY[j], cZ[j]]); }
+    if (!cells.length) return false;
+    // ── IT BREAKS OFF ── a clump of leaves comes away as a chunk and falls (user), the same as any other
+    // material. phBodyFromCells clears the cells from the grid and hands back the body.
+    if (PH.bodies.length >= PH.maxBodies && !phMakeRoom()) {   // no room for another body: erase rather than leave it hanging
+      const gone = [];
+      for (const c of cells) { const ii = gwrap(c[0], WX) + c[1] * WX + gwrap(c[2], WZ) * WX * WY; if (W[ii]) { W[ii] = 0; gone.push(ii); } }
+      if (gone.length) { gpuPatch(gone, false); PH.stats.dustVox += gone.length; }
+      return gone.length > 0;
+    }
+    // …and any SCATTER the carve just cut loose — a pinecone hangs from the branch ABOVE it, so it floats
+    // the moment the foliage around it goes (user). Orphaned = no solid neighbour left on any side.
+    const orphan = [];
+    for (const c of cells) {
+      for (let d = 0; d < 6; d++) {
+        const ox = c[0] + (d === 0 ? 1 : d === 1 ? -1 : 0), oy = c[1] + (d === 2 ? 1 : d === 3 ? -1 : 0), oz = c[2] + (d === 4 ? 1 : d === 5 ? -1 : 0);
+        if (oy < 1 || oy >= WY) continue;
+        const oi = gwrap(ox, WX) + oy * WX + gwrap(oz, WZ) * WX * WY;
+        if (!floatTab[W[oi]]) continue;                // only surface scatter can be orphaned this way
+        let held = false;
+        for (let e = 0; e < 6 && !held; e++) {
+          const nx = ox + (e === 0 ? 1 : e === 1 ? -1 : 0), ny = oy + (e === 2 ? 1 : e === 3 ? -1 : 0), nz = oz + (e === 4 ? 1 : e === 5 ? -1 : 0);
+          if (ny < 1 || ny >= WY) continue;
+          const nv = W[gwrap(nx, WX) + ny * WX + gwrap(nz, WZ) * WX * WY];
+          if (nv && !floatTab[nv]) held = true;        // still attached to something real — branch, trunk or ground
+        }
+        if (!held) { W[oi] = 0; orphan.push(oi); }
+      }
+    }
+    if (orphan.length) { gpuPatch(orphan, false); PH.stats.dustVox += orphan.length; }
+    phFallLoose(cx0, cy0, cz0);                        // …and anything this carve left hanging drops (see the sweep)
+    const lb = phBodyFromCells(cells);
+    if (!lb) return false;
+    lb.omega[0] = (Math.random() - 0.5) * 2.2;         // it was knocked loose, not struck: a lazy tumble, not a spin
+    lb.omega[1] = (Math.random() - 0.5) * 2.2;
+    lb.omega[2] = (Math.random() - 0.5) * 2.2;
+    lb.absorbAt = performance.now() + PH.absorbMs;     // …and it can be gathered up like any other chunk
+    PH.bodies.push(lb); PH.stats.chunks++;
+    return true;
+  };
   // ── CHOP DECOR ── a mushroom belongs to no tree, so physChopAt (which works in a pine's model frame)
   // can never reach it. This is the same nearest-first, fixed-count carve done straight in world
   // coordinates, so a bite out of a mushroom is the same size as a bite out of a trunk.
@@ -5773,22 +6438,96 @@
   const AIM_FORGIVE = 1.6;                            // voxels of slack around a creature's own radius in the kill test. Small and ABSOLUTE, so it forgives a shaky hand without ever growing into the fixed 35-degree cone this replaced.
   const AIM_R = [2.2, 2.2, 3.0, 3.0, 5.0, 3.0, 3.0];  // fallback target radius by B.kind (flyer, bird, worm/mammal, duck, lily, perched, fish) — used only when the creature is not grid-stamped, in which case its real stamped bounds are exact
   const REACH_H = 53, REACH_3D = 107, REACH_DOT = 0.82;   // THE melee reach — shared by the stone tools (chopSwing) and the kill test (aimedCreature) so the two can never drift apart (user). +5 voxels 2026-08-02.
-  const PICK_SCALE = 4.0, DIG_SCALE = 8.0;            // the PICK's carve sphere is FOUR times the axe's radius and the SHOVEL's is EIGHT (user) — soil moves in shovelfuls, stone in chunks, wood a bite at a time
-  const KNIFE_SCALE = 0.25, KNIFE_BITE = 0.5;         // the stone knife's carve sphere is a QUARTER of the axe's radius (halved twice, user); the chunk it yields is half. 1.0/1.0 would make it identical to the axe.
+  const AXE_SCALE = 1.0;                              // THE reference sphere — every tool shares it (user)
+  const PICK_SCALE = 1.0, DIG_SCALE = 1.0;            // the pick and the shovel now reach exactly as far as the axe (user)
+  const KNIFE_SCALE = 0.5;                            // …except the KNIFE, which is smaller (user). Off its own material it works at half of this again. stone in chunks, wood a bite at a time
+  const KNIFE_BITE = 0.5;                             // the stone knife BREAKS ANYTHING (user) and takes half the chunk doing it. Its OWN material is wood, so it reaches as far as the axe there. Unl of it.
+  //                                                    A QUARTER of the axe's radius (halved twice, user); the chunk it yields is half. 1.0/1.0 would make it identical to the axe.
   const CHOP_RAD = 5, CHOP_DEEP = 3;   // RAD 5 so a full PH.chopBite is reachable from one impact point; CHOP_DEEP pushes the carve sphere into the wood so the chunk has depth instead of being a surface cap
   const CHOP_MINBITE = 30, CHOP_BODYBITE = 30;        // = PH.chopBite: the swing keeps marching until it finds somewhere that can give a FULL piece
   const CHOP_LAST = 15;                               // last-resort bite for an almost-severed trunk — half a piece, never the 2-3 voxel specks the old `1` produced   // a fallen trunk takes the SAME minimum bite as a standing one: at 4 the ray settled for the fringe of the hole it had just made and every swing after the first shaved 3-4 voxels   // a swing takes at least this many voxels, or it keeps looking
+  // ── TILLING ── the hoe turns the top of the soil over: the surface voxel comes away and what is left is
+  // TILLED EARTH, a lighter brown, across a disc around where you struck. Nothing can be planted in it yet,
+  // so the ground REMEMBERS what it was and goes back to that after a while (user).
+  const TILL_R = 5, TILL_MS = 45000;
+  let TILL_ID = 0;
+  const tilled = [];                                   // {t, ii, prevTop, jj, prevBelow, hi} — everything needed to put it back exactly
+  const hoeTill = () => {
+    if (ED.on || dead) return false;
+    const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
+    const vx = Math.sin(P.yaw) * cp, vy = sp, vz = Math.cos(P.yaw) * cp;
+    const reach = Math.min(REACH_3D, REACH_H / Math.max(0.15, Math.abs(cp)));   // the same reach a swing gets (CHOP_REACH itself is local to chopSwing)
+    let cx = 0, cz = 0, found = false;                 // where the swing lands on the ground
+    for (let t = 1; t < reach; t += 0.5) {
+      const x = Math.round(P.x + vx * t), y = Math.round(smoothEye + vy * t), z = Math.round(P.z + vz * t);
+      if (y < 1 || y >= WY) continue;
+      if (solid(x, y, z)) { cx = x; cz = z; found = true; break; }
+    }
+    if (!found) return false;
+    // ONE palette entry, and only if the hoe is ever actually used — but the table is HARD CAPPED at 256 and
+    // an id past that wraps to 0, which wrote AIR into the ground instead of tilled earth. If there is no
+    // room left, take the nearest colour already in the table rather than corrupting the world.
+    if (!TILL_ID) {
+      if (palette.length < 255) TILL_ID = addCol(198, 154, 94);
+      else {                                           // the table is FULL — pick the closest shade already in it, by hand:
+        let bd = 1e9;                                  // edCol's own match came back near-white, which is not tilled earth
+        for (let i = 0; i < palette.length && i < 255; i++) { const c = palette[i];
+          const d = (c[0] - 198) ** 2 + (c[1] - 154) ** 2 + (c[2] - 94) ** 2;
+          if (d < bd) { bd = d; TILL_ID = i + 1; } }
+      }
+      solidTab[TILL_ID] = 1; digOnlyTab[TILL_ID] = 1; palSync();
+      console.log('[vb] tilled earth id', TILL_ID, 'palette', palette.length, TILL_ID > 255 ? 'OVERFLOW' : '');
+    }
+    const cells = [];
+    for (let dz = -TILL_R; dz <= TILL_R; dz++) for (let dx = -TILL_R; dx <= TILL_R; dx++) {
+      if (dx * dx + dz * dz > TILL_R * TILL_R) continue;
+      const x = cx + dx, z = cz + dz, gx = gwrap(x, WX), gz = gwrap(z, WZ);
+      const hi = gx + gz * WX, h = hmap[hi];           // hmap is the first AIR voxel, so the surface is h-1
+      if (h < 3 || h >= WY - 1) continue;
+      const ii = gx + (h - 1) * WX + gz * WX * WY, jj = gx + (h - 2) * WX + gz * WX * WY;
+      const top = W[ii];
+      if (!top || !digOnlyTab[top]) continue;        // only SOIL turns over
+      if (W[jj] === TILL_ID && top === TILL_ID) continue;   // …and never twice over the same patch
+      tilled.push({ t: performance.now(), ii, prevTop: top, jj, prevBelow: W[jj], hi });
+      W[ii] = 0; cells.push(ii);
+      W[jj] = TILL_ID; cells.push(jj);
+      hmap[hi] = h - 1;
+    }
+    if (!cells.length) return false;
+    gpuPatch(cells, false);
+    return true;
+  };
+  const tillRevert = (nowMs) => {                      // …and it grows back over, since nothing was ever planted in it (user)
+    if (!tilled.length) return;
+    const cells = [];
+    for (let i = tilled.length - 1; i >= 0; i--) {
+      const q = tilled[i];
+      if (nowMs - q.t < TILL_MS) continue;
+      tilled.splice(i, 1);
+      if (W[q.ii] || W[q.jj] !== TILL_ID) continue;    // something was built or dug here since — leave it alone
+      W[q.ii] = q.prevTop; cells.push(q.ii);
+      W[q.jj] = q.prevBelow; cells.push(q.jj);
+      hmap[q.hi] = hmap[q.hi] + 1;
+    }
+    if (cells.length) gpuPatch(cells, false);
+  };
   const chopSwing = () => {
     if (!PH.on || ED.on || dead) return false;
+    if (HOE_IT && heldIt() === HOE_IT) return hoeTill();   // the HOE does not chop — it tills (user)
     // ── WHAT IS IN YOUR HAND ── the axe and the stone knife both CUT; anything else (or nothing) can
     // still knock chunks out of soft decor. The knife works the same way at HALF the sphere (user), and
     // the bite scales with it so the piece stays a full ball rather than a sliver of a big one.
     const it = heldIt(), axe = it === 1, knife = KNIFE_IT > 0 && it === KNIFE_IT, cut = axe || knife;
     const pick = PICK_IT > 0 && it === PICK_IT;      // the PICK breaks stone and nothing else — note it is deliberately NOT part of `cut`, which is what gates every wood path below
     const dig = SHOVEL_IT > 0 && it === SHOVEL_IT;   // …and the SHOVEL moves ground and nothing else, on the same principle
-    const kS = knife ? KNIFE_SCALE : (pick ? PICK_SCALE : (dig ? DIG_SCALE : 1));
-    const C_RAD = CHOP_RAD * kS, C_DEEP = CHOP_DEEP * kS;
-    const C_BITE = knife ? Math.max(4, Math.round(PH.chopBite * KNIFE_BITE)) : Math.round(PH.chopBite * kS);   // the knife takes HALF the axe's chunk (user); the PICK and SHOVEL take proportionally MORE, because a wider sphere that still lifts 30 voxels is just a slower way to dig the same hole
+    // ── HOW FAR THIS TOOL REACHES, PER MATERIAL (user) ── its own material at full sphere, anything else
+    // at half, and WOOD always at the axe's sphere whatever is in hand. `base` is this tool's own.
+    const base = knife ? KNIFE_SCALE : (dig ? DIG_SCALE : (pick ? PICK_SCALE : AXE_SCALE));
+    const ownTab = dig ? digOnlyTab : (pick ? pickOnlyTab : woodTab);   // a cutting edge owns WOOD; the shovel soil, the pick stone and ore
+    const soi = (id) => (ownTab && ownTab[id]) ? base : base * 0.5;     // own material full, anything else half (user)
+    const kS = base;
+    const C_RAD = CHOP_RAD * base, C_DEEP = CHOP_DEEP * base;   // the WOOD paths — this tool's own sphere
+    const C_BITE = knife ? Math.max(4, Math.round(PH.chopBite * KNIFE_BITE * base)) : Math.round(PH.chopBite * base);   // the WOOD chunk, at this tool's sphere   // the knife takes HALF the axe's chunk (user); the PICK and SHOVEL take proportionally MORE, because a wider sphere that still lifts 30 voxels is just a slower way to dig the same hole
     // A minimum bite bigger than the sphere can physically hold makes every swing miss (that is how the
     // knife looked broken before). ~2r^2 is a fair count of solid cells a half-filled sphere of radius r
     // can offer, so the requirement can never exceed what is reachable.
@@ -5800,6 +6539,18 @@
     // aimedCreature does, so the axe reaches precisely as far as a swing that would kill
     const CHOP_REACH = Math.min(REACH_3D, REACH_H / Math.max(0.15, Math.abs(cp)));
     phSetFallDir(vx, vz);                              // fell it AWAY from the player, like a real notch
+    // ── LEAVES ── whatever the crosshair is actually resting on wins, and a leaf yields to ANYTHING
+    // (user). Decided BEFORE the march because the wood path finds its tree with a sparse probe that
+    // fires every 4 voxels through open air — aiming at foliage, the swing was spent on the trunk
+    // behind it before the ray ever reached the leaf.
+    for (let t = 1; t < CHOP_REACH; t += 0.5) {
+      const lx = Math.round(P.x + vx * t), ly = Math.round(smoothEye + vy * t), lz = Math.round(P.z + vz * t);
+      if (ly < 1 || ly >= WY) continue;
+      const lv = W[gwrap(lx, WX) + ly * WX + gwrap(lz, WZ) * WX * WY];
+      if (!lv) continue;                               // still in the air — keep looking for the FIRST thing the crosshair meets
+      if (foliaTab[lv] && phChopLeaves(lx, ly, lz, CHOP_RAD * base * 0.5, Math.max(2, Math.round(C_BITE * 0.5)))) return true;   // FOLIAGE is nobody's own material: half the tool's sphere (user)
+      break;                                           // the first solid thing was not a leaf: the ordinary march decides it
+    }
     let S = null;
     for (let t = 1; t < CHOP_REACH; t += 0.5) {
       const x = Math.round(P.x + vx * t), y = Math.round(smoothEye + vy * t), z = Math.round(P.z + vz * t);
@@ -5810,12 +6561,16 @@
       // ROCK needs the pick, WOOD needs a cutting edge, everything else soft yields to whatever is in hand.
       // …and the carve is confined to that same material, so the sphere cannot spill into the next one.
       const okMat = digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]));
-      if (id && decorTab[id] && !woodTab[id] && (digOnlyTab[id] ? dig : (pickOnlyTab[id] ? pick : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, C_RAD, C_BITE, okMat)) return true;   // …but NOT wood: a standing trunk belongs to the tree path below, which is what fells it   // free gate, the id is already in hand
+      const mS = soi(id);                            // this material's reach for the tool in hand (own = full, anything else = half)
+      // the BITE follows the sphere it came out of — scaled from PH.chopBite, not from C_BITE, which
+      // already carries the tool's own factor and would apply it a second time.
+      const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS)) : Math.max(2, Math.round(PH.chopBite * mS));
+      if (id && decorTab[id] && !woodTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, CHOP_RAD * mS, mBite, okMat)) return true;   // …but NOT wood: a standing trunk belongs to the tree path below, which is what fells it   // free gate, the id is already in hand
       // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
       // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
       // where the trunk was, and a solid-only trigger could never find the tree again — the axe would
       // land exactly one bite and then stop.
-      if (cut && !S && (id !== 0 || t - Math.floor(t / 4) * 4 < 0.5)) S = treeShapeAt(x, z);
+      if (cut && !S && (id !== 0 || t - Math.floor(t / 4) * 4 < 0.5)) S = treeShapeAt(x, z);   // WOOD wants a cutting edge — the axe or the knife
       if (S) {
         // physChopAt cuts everything within CHOP_RAD of the point, so marching through the trunk's
         // airspace WIDENS the notch each swing instead of needing an exact voxel hit. The bite is taken
@@ -5824,7 +6579,7 @@
         // often flat pieces"). If the deeper point has run out the far side, the surface point still gets
         // its turn.
         if (physChopAt(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, S, C_MIN, C_BITE).hit ||
-            physChopAt(x, y, z, C_RAD, S, C_MIN, C_BITE).hit) return true;
+            physChopAt(x, y, z, C_RAD, S, C_MIN, C_BITE).hit) { phFallLoose(x, y, z); return true; }   // …and whatever that branch was holding up drops (user)
         continue;
       }
       // ── ORPHANED WOOD ── a STUMP is wood that belongs to no tree: treeShapeAt stops answering for that
@@ -5832,8 +6587,10 @@
       // SHORT, so the swing that means to hit it usually samples the dirt in FRONT of it and stops there.
       // Hence no test on the sampled voxel: whatever the ray landed on, if wood is within the axe's own
       // sphere it gets cut. ok() confines the carve to wood, so it can never eat the ground it stands in.
-      if (cut && phChopDecor(x, y, z, C_RAD, C_BITE, (v) => !!woodTab[v])) return true;
-      if (id !== 0 && !foliaTab[id]) return false;   // solid and no pine here — a real obstruction stops the swing
+      if (cut && phChopDecor(x, y, z, C_RAD, C_BITE, (v) => !!woodTab[v])) { phFallLoose(x, y, z); return true; }
+      if (id !== 0 && !foliaTab[id] && !floatTab[id]) return false;   // solid and no pine here — a real obstruction stops the swing.
+      // SURFACE SCATTER (grass strands, flowers, twigs, cones) is NOT an obstruction: it has no collision, no
+      // tool takes it, and the crosshair must reach the soil underneath it (user). Passed over exactly like foliage.
     }
     // Nothing along the ray held a full bite (a heavily notched trunk). Take whatever is there rather
     // than letting the swing do nothing at all.
@@ -6075,9 +6832,13 @@
       }
       if (b.n > PH.absorbMax) continue;
       if (!b.absorbAt || tNow < b.absorbAt) {          // no break scheduled it (or not yet) — but a LOOSE one at rest comes in when you walk up to it (user)
-        if (!b.sleeping) continue;                     // …only once it has settled: a chunk mid-tumble keeps its arc
+        // …only once it has settled: a chunk mid-tumble keeps its arc. But a small chunk on uneven ground
+        // can jitter forever without ever formally sleeping — which left ARROW chunks uncollectable no
+        // matter how close you stood (user). Near-stillness counts as settled for those.
+        if (!b.sleeping && !(b.nearR && tNow - b.born > 1500)) continue;   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
         const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
-        if (dxA * dxA + dyA * dyA + dzA * dzA > PH.absorbR * PH.absorbR) continue;
+        const rA = b.nearR || PH.absorbR;               // an ARROW's chunk keeps its own, much shorter reach (user)
+        if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;
       }
       b.absorbing = true; b.absorbT0 = tNow;
       b.absorbP = [b.pos[0], b.pos[1], b.pos[2]];      // where the flight starts
@@ -6094,6 +6855,7 @@
   // always clears the canopy. Pose is written into drop slot 4 each frame (see the drops uniform section) and DDA-raytraced off-grid —
   // smooth rotation, depth-tested, no world-grid writes.
   const BIRD_N = 12;                                   // divisible by 1/2/3/4 — whatever the species count, the round-robin split below comes out exact                                    // a few cardinals in the air, not one (user). Bird 0 owns the dedicated drop slot 4;
+  let birdKills = 0;                                   // songbirds brought down by a shaft — the flock refills itself, so a headcount alone proves nothing
   const birds = Array.from({ length: BIRD_N }, () => ({ th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0, mode: 0, swoopT0: 0, swoopA: 0, swO: 0, edge: false, fi: 0, sp: 0 }));   // the rest ride the compacted creature slots. mode: 0 wander / 1 thermal soar / 2 swoop
   const bird = birds[0];                               // the original singleton name, kept for the editor path + the primary hitbox
   const birdStep = (b, bi, tb, dt) => {                // one bird's flight for this frame → its world pose. Identical maths for every bird; only the seed state differs.
@@ -6507,6 +7269,30 @@
     const restY = itemHalfH ? (itemHalfH[dr.it - 1] || 4.5) : 4.5;
     return 9.0 + (restY - 9.0) * rE + Math.sin(nw * 0.002 + dr.ph) * 1.3 * (1 - rE);
   };
+  // ── BOW DRAW (user) ── the right button down pulls 00→02 and HOLDS at 02; releasing runs 03→06 out
+  // and returns to rest. Stepped at 24 fps like every other animation here — a frame is picked, not
+  // interpolated, so the bow reads as drawn art rather than a tween.
+  const BOW_DRAW_MS = 260;                             // 00 -> 02, the pull
+  const BOW_REL_MS = 130;                              // the loose and the return to rest — TWICE the speed of the pull (user), which is BOW_DRAW_MS
+  let shownIt = 0;                                     // what the hand is actually drawing (see __vb.heldShown)
+  let bowT0 = -1e9, bowRel = -1e9;                     // when the draw started / when it was loosed
+  let bowLoosed = false;                               // true from the loose until the bow settles back to rest — the frames without the arrow
+  const BOW_PULLV = [0, 2, 4, 2, -1, 0];               // the string's travel per draw frame, in VOXELS: base.vox's own depths (3,5,7,5,2,3) minus its resting 3
+  const bowPullV = (now) => {                          // how far back the string has drawn the arrow, in voxels
+    if (!BOW_FRAMES) return 0;
+    const f = bowFrame(now);
+    return BOW_PULLV[Math.min(f, BOW_PULLV.length - 1)] || 0;
+  };
+  const bowAtRest = (now) => !mouse2 && !((now - bowRel) / BOW_REL_MS < 1);   // …the strip is back at frame 0 and the bow is nocked again
+  const bowFrame = (now) => {                          // which frame of the strip to show; 0 is at rest
+    if (!BOW_FRAMES) return 0;
+    if (bowLock >= 0) return Math.min(BOW_FRAMES - 1, bowLock);   // …unless a frame is PINNED for tuning (, and .) — the draw holds still so the arrow can be placed on it (user)
+    if (mouse2) { const k = Math.min(1, (now - bowT0) / BOW_DRAW_MS); return Math.min(2, Math.floor(k * 3)); }   // pull to 02 and HOLD there (user)
+    const e = (now - bowRel) / BOW_REL_MS;
+    if (e < 0 || e >= 1) return 0;                     // long since loosed — back at rest
+    return Math.min(BOW_FRAMES - 1, 3 + Math.floor(e * (BOW_FRAMES - 3)));   // …then run 03..06 out (user)
+  };
+  let fallScan = 0;                                    // which slice the ambient floater pass looks at next
   const AUTO_PICK_R = 16;                              // AUTO-PICKUP radius (vox) — walk this close and a FREE hand slot vacuums the item up
   function autoPickup() {                              // proximity grab: RADIAL, not the view-ray march tryPickup() uses — you never have to aim at it
     if (grabAnim || dead) return;                      // one flight at a time — startGrab would clobber the item already in the air
@@ -6584,6 +7370,13 @@
         born: performance.now(), life: 0.45 + Math.random() * 0.3, ph: Math.random() * 6.283, smoke: false };
     }
   }
+  function spawnHitSparks(wx, wy, wz) {               // a shaft striking flesh throws sparks the way the rocks do — same embers, at the impact rather than the hands (user)
+    for (let i = 0; i < 4; i++) {
+      const a = Math.random() * 6.283, sp3 = 12 + Math.random() * 20;
+      sparks3d[i] = { x: wx, y: wy, z: wz, vx: Math.cos(a) * sp3, vy: 14 + Math.random() * 20, vz: Math.sin(a) * sp3,
+        born: performance.now(), life: 0.4 + Math.random() * 0.3, ph: Math.random() * 6.283, smoke: false };
+    }
+  }
   function spawnDeathBurst(wx, wy, wz) {                // DEATH POOF: 4 bright sparks + 16 INDIVIDUAL smoke voxels fire TOGETHER (user), slots 5-24. Each smoke voxel floats up + twirls independently, like a snowflake.
     const cy = wy + 2;                                  // aim at the body centre
     for (let i = 0; i < 20; i++) {
@@ -6633,27 +7426,43 @@
     return Math.sin(e * Math.PI) * HOP_H;              // up and back down across the window — CONTINUOUS, not stepped: at 500 ms a 24 fps quantisation reads as a stutter rather than a hop (user)
   };
   const HITS_TO_KILL = 3;                              // hits a non-AXE tool needs to kill a life form (user). The axe is the killing tool and ignores this entirely.
+  const ARROW_HITS_TO_KILL = 2;                        // …and an ARROW takes two (user) — between the axe's one blow and every hand tool's three
   const HURT_MS = 500;                                 // ONE blink, half a second (user). Comfortably longer than TAA's ~8-frame colour blend, which is what made an earlier 83 ms flash almost invisible on screen.
   const HURT = { t0: -1e9, hold: false, slot: -1, cx: 0, cy: 0, cz: 0, hx: 0, hy: 0, hz: 0 };   // world coords — rebased to the window at publish time, so a world shift mid-blink cannot drag the box off the animal
   const hurtBox = (B) => {                             // the animal's CURRENT stamped bounds — re-read every frame, because it is still walking while it flashes
     const q = B && B.sB && B.sN ? B.sB : null;
     if (q) { HURT.cx = (q[0] + q[3]) * 0.5; HURT.cy = (q[1] + q[4]) * 0.5; HURT.cz = (q[2] + q[5]) * 0.5;
-             HURT.hx = (q[3] - q[0]) * 0.5 + 0.6; HURT.hy = (q[4] - q[1]) * 0.5 + 0.6; HURT.hz = (q[5] - q[2]) * 0.5 + 0.6; }
+             // …+1 VOXEL of slack on every side (user: "the red doesn't cover every voxel"). The bounds run
+             // centre-to-centre of the outermost voxels, but the tracer tests the point it HIT — a surface,
+             // which sits half a voxel further out — so the whole outer shell of the animal fell outside the
+             // box and stayed unlit. One voxel covers that shell and anything the stamp rounds off.
+             HURT.hx = (q[3] - q[0]) * 0.5 + 1; HURT.hy = (q[4] - q[1]) * 0.5 + 1; HURT.hz = (q[5] - q[2]) * 0.5 + 1; }
     else if (B) { HURT.cx = B.x; HURT.cy = B.y + 3; HURT.cz = B.z; HURT.hx = 5; HURT.hy = 5; HURT.hz = 5; }   // between stamps: a generous box beats no feedback
   };
   const tryKillCreature = () => { const b0 = aimedCreature(); if (b0 >= 0) hitCreature(b0); };   // LEFT-CLICK SWING KILL (user): whatever is under the crosshair takes the hit
-  const hitCreature = (best) => {                       // …and this is the hit itself, on a KNOWN slot — callable from a test without having to aim first
+  const hitCreature = (best, token) => {                // …and this is the hit itself, on a KNOWN slot — callable from a test without having to aim first
     const B = wbf[best];
     if (!B || !B.init) return;
+    const tk = token === undefined ? swingStart : token;   // an ARROW has no swing behind it, so it brings its own token for the one-hit-per-blow guard (user)
     // ── HOW MANY HITS ── the AXE kills outright; everything else takes THREE (user). One rule for every
     // life form and every tool — pick, shovel, knife, bow, a held rock, empty hands all wear it down.
     // …except a BUTTERFLY, which dies to anything in one hit (user): slots 0..15 are the butterfly/moth
     // band, and a creature that size surviving three blows from a shovel reads as absurd.
-    if (B.lastSwing === swingStart) { return; }         // this same swing already landed on this creature — one swing, one hit
-    B.lastSwing = swingStart;
-    if (!B.dying && heldIt() !== 1 && best >= 16) {
+    if (B.lastSwing === tk) { return; }                 // this same swing already landed on this creature — one swing, one hit
+    B.lastSwing = tk;
+    const need = (token !== undefined && String(token).startsWith('arrow')) ? ARROW_HITS_TO_KILL : HITS_TO_KILL;   // an ARROW is a weapon, not a hand tool: TWO and the animal is down (user)
+    // …and the SPEAR kills outright, thrust or thrown — the axe's privilege, for the one tool that is a
+    // weapon first (user). Everything else wears the animal down.
+    const shaft = token !== undefined && (String(token).startsWith('spear') || String(token).startsWith('arrow'));
+    // …and a BIRD drops to a single shaft, arrow or spear (user): kind 5 is the perched songbirds.
+    const oneBlow = heldIt() === 1 || !!(SPEAR_IT && heldIt() === SPEAR_IT) || (token !== undefined && String(token).startsWith('spear'))
+      || (shaft && (B.kind | 0) === 5);
+    // …and slots 32-63 are the WORMS, which now go the same way (user): something that size surviving three
+    // blows reads as absurd for the same reason the butterflies were exempted.
+    const frail = best < 16 || (best >= 32 && best < 64);
+    if (!B.dying && !oneBlow && !frail) {
       B.hits = (B.hits | 0) + 1;
-      if (B.hits < HITS_TO_KILL) {
+      if (B.hits < need) {
         B.hurt = 1;
         B.hopT0 = performance.now();                    // the BOUNCE lands on every hit — it is what shows hits two and three registering
         B.blinked = true;                               // EVERY hit flashes (user): gating this to the first one made hits two and three look like misses.
@@ -6694,7 +7503,7 @@
   };
   document.addEventListener('mousedown', (e) => {
     if (!locked) return;
-    if (e.button === 2) { mouse2 = true; tryPickup(); }   // …and the right button stays HELD as the throw wind-up
+    if (e.button === 2) { if (!mouse2) bowT0 = performance.now(); mouse2 = true; tryPickup(); }   // …the bow starts DRAWING here (user), and the right button stays HELD as the throw wind-up
     if (e.button === 0 && ED.on) {                     // ASSET EDITOR: left-click the stamped cardinal to SELECT it (pause) / click again to resume; then , . scrub the frames
       const n = ED.frames.length;
       if (n) {                                         // AABB slab test against the model's bounding box — forgiving for a small SPARSE model (an exact-voxel ray slips through the gaps)
@@ -6741,7 +7550,11 @@
       if (performance.now() - swingStart >= 570) { swingStart = performance.now(); if (heldIt()) playSwish(); pendKillT = swingStart + 250; }   // a click is IGNORED until the current swing's full 570 ms animation finishes — no mid-swing restart (user; applies to every held item). Holding still auto-repeats via the tick loop. The creature-hit is ARMED here but registers 250 ms in, when the axe visually lands (user).
     }
   });
-  document.addEventListener('mouseup', (e) => { if (e.button === 2) mouse2 = false;
+  document.addEventListener('mouseup', (e) => { if (e.button === 2) { if (mouse2) { bowRel = performance.now();   // …and releasing LOOSES it, running 03→06 (user)
+      if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); }   // …the ARROW LEAVES the bow (user): the bare strip takes over and a projectile flies
+      else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) { throwSpear(); playSwish(); }   // …and the SPEAR flies out of the raised hand (user)
+      }
+    mouse2 = false; }
     if (e.button === 0) { mouse0 = false;
     if (ED.dragAxis >= 0) { ED.dragAxis = -1; edSaveOffsets(); edHudUpd(); }   // let go of a gizmo arrow → AUTOSAVE the new offset
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
@@ -7207,6 +8020,83 @@
         try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} lgtPaint(); });
       lgtPaint();
     }
+    {   // ── THE ADJUST BOX ── quarter turns and voxel nudges for WHATEVER IS IN HAND (user). Holding the
+      // bow it does what it always did — moves the arrow inside the strip, per draw frame. Holding anything
+      // else it turns and shifts that item's own HELD POSE, which is the only thing a plain tool has.
+      const ap = $('arwPanel'), now = $('arwNow');
+      let arwDirty = false;
+      const onBow = () => !!(BOW_IT && heldIt() === BOW_IT);
+      const tgt = () => heldIt() || 1;                   // empty hand tunes the axe, exactly as the slider panel does
+      const nudge = {};                                  // per item: where its three sliders currently sit, so they read as absolute
+      const arwF = () => (bowLock >= 0 ? bowLock : 0);   // the sliders edit the frame you are LOOKING at; unpinned, that is the bow at rest
+      const arwFlush = () => { arwDirty = false; if (bowRefit) bowRefit(ARROW_ROT, ARROW_POS); resetHist = 1; };   // the denoiser holds seconds of history; drop it so the change shows at once
+      const arwQueue = () => { if (arwDirty) return; arwDirty = true; requestAnimationFrame(arwFlush); };   // a slider drag fires dozens of events a second — one re-cut per FRAME is plenty
+      const poseStr = (c) => JSON.stringify(Object.fromEntries(Object.entries(c).map(([k, v]) => [k, +(+v).toFixed(3)])));
+      const arwBakeStr = () => onBow()
+        ? 'rot ' + JSON.stringify(ARROW_ROT) + ' pos ' + JSON.stringify(ARROW_POS)
+        : ITEM_NAMES[tgt()] + ' ' + poseStr(pickCfgs[tgt()] || pickCfgs[1]);
+      // ── POSE MATHS ── the pose is stored as Euler (R = Rx(pitch)·Ry(yaw)·Rz(roll)); a quarter turn is far
+      // easier applied to the axis triple, so build it, turn it, and read the angles back out.
+      const poseAxes = (c) => { const cy = Math.cos(c.yaw), sy = Math.sin(c.yaw), cp = Math.cos(c.pitch), sp = Math.sin(c.pitch), cr = Math.cos(c.roll), sr = Math.sin(c.roll);
+        return [[cr * cy, sr * cp + cr * sy * sp, sr * sp - cr * sy * cp],
+                [-sr * cy, cr * cp - sr * sy * sp, cr * sp + sr * sy * cp],
+                [sy, -cy * sp, cy * cp]]; };
+      const axesToPose = (c, A) => { const [X, Y, Z] = A;
+        c.yaw = Math.asin(Math.max(-1, Math.min(1, Z[0])));
+        c.pitch = Math.atan2(-Z[1], Z[2]);
+        c.roll = Math.atan2(-Y[0], X[0]); };
+      const spinPose = (ax, dir) => { const c = pickCfgs[tgt()]; if (!c) return;   // a quarter turn about the item's OWN axis
+        const A = poseAxes(c), s = dir > 0 ? 1 : -1;
+        const rot = (a, b) => { const na = A[a].map((v, i) => A[b][i] * s), nb = A[b].map((v, i) => -A[a][i] * s); A[a] = na; A[b] = nb; };
+        if (ax === 0) rot(1, 2); else if (ax === 1) rot(2, 0); else rot(0, 1);
+        axesToPose(c, A); pickSave(); };
+      const movePose = (ax, d) => { const c = pickCfgs[tgt()]; if (!c || !d) return;   // ONE VOXEL per notch, along the view's own right / up / forward
+        const k = ['x', 'y', 'z'][ax];
+        c[k] = +(c[k] + d * c.scale).toFixed(4); pickSave(); };
+      const arwPaint = () => {
+        const bow = onBow(), it = tgt(), p = bow ? (ARROW_POS[arwF()] || [0, 0, 0]) : (nudge[it] || (nudge[it] = [0, 0, 0]));
+        now.textContent = bow ? ((bowLock >= 0 ? 'frame ' + String(arwF()).padStart(2, '0') : 'frame 00 · , . to pin') + '  ·  ' + p.join(' '))
+                              : (ITEM_NAMES[it] || 'item') + '  ·  ' + p.join(' ');
+        ap.querySelector('.arwHead span').textContent = bow ? 'arrow' : (ITEM_NAMES[it] || 'held item');
+        $('arwBake').value = arwBakeStr();
+        for (const s of ap.querySelectorAll('input[data-ax]')) { const k = +s.dataset.ax;
+          s.value = p[k]; if (s.nextElementSibling) s.nextElementSibling.textContent = p[k]; } };
+      arwSync = arwPaint;                                // , and . repaint the sliders onto the newly pinned frame
+      let arwWatch = 0;
+      const arwApply = () => { try { localStorage.setItem('vb_arrowRot', JSON.stringify(ARROW_ROT));
+        localStorage.setItem('vb_arrowPos', JSON.stringify(ARROW_POS)); } catch (e) {}
+        arwQueue(); arwPaint(); };
+      for (const b of ap.querySelectorAll('button[data-ax]')) {
+        b.addEventListener('pointerdown', (e) => e.stopPropagation());
+        b.addEventListener('click', (e) => { e.stopPropagation();
+          const ax = +b.dataset.ax, d = +b.dataset.d;
+          if (onBow()) { ARROW_ROT[ax] = (ARROW_ROT[ax] + d + 4) & 3; arwApply(); }
+          else { spinPose(ax, d); resetHist = 1; arwPaint(); } });
+      }
+      for (const s of ap.querySelectorAll('input[data-ax]')) {   // ── POSITION ── one voxel per notch: the arrow within the strip, or the held item in the frame
+        s.addEventListener('pointerdown', (e) => e.stopPropagation());
+        s.addEventListener('input', (e) => { e.stopPropagation();
+          const ax = +s.dataset.ax, v = Math.max(-ARROW_POS_R, Math.min(ARROW_POS_R, parseInt(s.value, 10) || 0));
+          if (onBow()) { const f = arwF(); if (!ARROW_POS[f]) ARROW_POS[f] = [0, 0, 0]; ARROW_POS[f][ax] = v; arwApply(); return; }
+          const it = tgt(), n = nudge[it] || (nudge[it] = [0, 0, 0]);
+          movePose(ax, v - n[ax]); n[ax] = v; resetHist = 1; arwPaint(); });
+      }
+      { const bi = $('arwBake'), bc = $('arwCopy');    // ── BAKE ── the whole placement as one line, ready to paste back into the source
+        bi.addEventListener('pointerdown', (e) => e.stopPropagation());
+        bi.addEventListener('click', (e) => { e.stopPropagation(); bi.select(); });
+        bc.addEventListener('pointerdown', (e) => e.stopPropagation());
+        bc.addEventListener('click', (e) => { e.stopPropagation();
+          const done = () => { bc.textContent = 'copied!'; setTimeout(() => { bc.textContent = 'copy'; }, 1200); };
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(bi.value).then(done, () => { bi.select(); document.execCommand('copy'); done(); });
+          else { bi.select(); document.execCommand('copy'); done(); } }); }
+      $('arwReset').addEventListener('pointerdown', (e) => e.stopPropagation());
+      $('arwReset').addEventListener('click', (e) => { e.stopPropagation();
+        if (onBow()) { ARROW_ROT = ARROW_ROT0.slice(); ARROW_POS = ARROW_POS_DEF(); arwApply(); return; }
+        const it = tgt(); if (pickCfgs[it] && PICK_DEFS[it]) Object.assign(pickCfgs[it], PICK_DEFS[it]);
+        nudge[it] = [0, 0, 0]; pickSave(); resetHist = 1; arwPaint(); });
+      requestAnimationFrame(() => { arwPaint();       // …first paint DEFERRED: heldIt / pickCfgs / ITEM_NAMES are declared below this block, and reading them during init throws (dead zone) and the loader never finishes
+        setInterval(() => { const sig = (onBow() ? 'b' : '') + tgt() + '|' + bowLock; if (sig === arwWatch) return; arwWatch = sig; arwPaint(); }, 200); });   // the hand can change without the panel being touched
+    }
     mkToggle('crdBtn', () => showCoords, (v) => showCoords = v, 'vb_coords');   // COORDS on/off
     mkToggle('fpsBtn', () => showFps, (v) => showFps = v, 'vb_fps');            // FPS on/off
     mkToggle('timeBtn', () => showTime, (v) => showTime = v, 'vb_time');        // TIME on/off
@@ -7332,6 +8222,16 @@
     lockEl.classList.toggle('hidden', locked || dead || lightMode || !vePanel.classList.contains('hidden'));
     cursSync();
   };
+  document.addEventListener('keydown', (e) => {        // ── , / . ── step the held bow through its draw frames and PIN it there, so the arrow can be placed frame by frame (user)
+    if ((e.code !== 'Comma' && e.code !== 'Period') || e.repeat || listenAction || !BOW_FRAMES) return;
+    if (ED.on || cmdOpen || dead || !vePanel.classList.contains('hidden')) return;   // the asset editor owns these two keys while it is up
+    if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    e.preventDefault();
+    const n = BOW_FRAMES;                              // …and one step past the last frame hands the draw back to the game
+    bowLock = e.code === 'Period' ? (bowLock < 0 ? 0 : (bowLock + 1 >= n ? -1 : bowLock + 1))
+                                  : (bowLock < 0 ? n - 1 : (bowLock - 1 < 0 ? -1 : bowLock - 1));
+    arwSync();
+  });
   document.addEventListener('keydown', (e) => {
     if (e.code !== 'KeyL' || e.repeat || listenAction) return;
     if (ED.on || !vePanel.classList.contains('hidden') || dead) return;   // not over the asset editor, the video editor, or the death screen
@@ -7347,7 +8247,7 @@
     if (e.code === 'Escape') lockEl.classList.remove('hidden');   // Esc can't request pointer lock → count it as a button press and just open the esc menu
     else tryLock();
   });
-  document.addEventListener('pointerlockerror', () => { if (!locked) lockEl.classList.remove('hidden'); });   // if a lock request is refused, fall back to the esc menu so the player is never stuck
+  document.addEventListener('pointerlockerror', () => { if (!locked && performance.now() - cmdEscAt > 1600) lockEl.classList.remove('hidden'); });   // …but never right after the command line was dismissed with Escape: the refusal IS the browser's exit cooldown (user)   // if a lock request is refused, fall back to the esc menu so the player is never stuck
   // ── CUSTOM FREE-MOUSE CURSOR ── shown whenever the pointer is NOT locked (menus, the video editor, the death screen).
   // Follows the mouse as a crosshair and morphs to a square over anything clickable; the native cursor is hidden so the
   // two never double up. While locked the game's own centre crosshair takes over and this is hidden.
@@ -7355,6 +8255,7 @@
   const stackEl = $('stackN');                         // the x2..x8 badge; only redrawn when the count actually changes
   let stackShown = -1;
   const cursSync = () => { document.body.classList.toggle('freecur', !locked); if (locked) cursEl.classList.remove('sq');
+    $('arwPanel').classList.toggle('hidden', locked || !$('over').classList.contains('hidden'));   // the arrow buttons are only REACHABLE with a free cursor, so that is exactly when they show — but never over the death screen. (Read from the DOM, not `dead`: cursSync runs once during init, BEFORE that binding exists.)
     $('lgtPanel').classList.toggle('lit', lightMode); };   // the panel highlights while it has the cursor, so the mode is never ambiguous
   const CURS_HIT = 'button, .veTool, .veCtl, a, input:not([type="range"]), select, [role="button"]';   // ONLY genuinely clickable controls square the cursor. RANGE sliders are excluded (user): the cursor stays a cross over them and the KNOB grows on hover instead (see the slider CSS). `#lock` (the whole esc-menu backdrop) used to be in here too, so the cursor was a square across the ENTIRE menu; the buttons/anchors inside already match on their own.
   cursSync();                                        // the game boots UNLOCKED (click-to-enter), so the custom cursor is live from the first frame
@@ -7370,7 +8271,7 @@
     const wasLocked = locked;
     locked = document.pointerLockElement === canvas;
     if (locked && !wasLocked) freshLock = true;
-    lockEl.classList.toggle('hidden', locked || dead || lightMode || !vePanel.classList.contains('hidden'));   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
+    lockEl.classList.toggle('hidden', locked || dead || lightMode || cmdOpen || performance.now() - cmdEscAt < 1600 || !vePanel.classList.contains('hidden'));   // …or while the COMMAND LINE is up, or across the re-lock retry after Escape dismissed it (user)   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
     if (locked) $('playHint').classList.add('hidden');   // taken control → drop the click-to-enter prompt (the esc menu handles re-entry from here)
     crossEl.classList.toggle('hidden', !locked);
     cmpVis();                                    // the compass follows the crosshair, gated by the settings toggle
@@ -7433,7 +8334,9 @@
     selSlot = (selSlot + (e.deltaY > 0 ? 1 : slots.length - 1)) % slots.length;   // wraps the WHOLE list now, however long it has grown
   }, { passive: false });
   document.addEventListener('keydown', (e) => {
+    if (cmdOpen) return;                               // the COMMAND LINE has the keyboard (user)
     if (!locked) return;
+    if (e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }   // ── T ── open the command line (user)
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
     if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }   // toggle fly (user re-added the F keybind 2026-07-22)
@@ -7485,6 +8388,7 @@
   const paceFail = (err) => { vbNoteErr('gpu pacing rejected', err); paceWaited = false; requestAnimationFrame(tick); };
   let gpuPrevDone = Promise.resolve();                 // completion of frame N-1 — pacing on it keeps 2 frames in flight, CPU prep overlaps GPU work
   const prevCam = { pos: [0, 0, 0], right: [1, 0, 0], up: [0, 1, 0], fwd: [0, 0, 1], tanH: 1, aspect: 1, jit: [0, 0] };   // pos in WORLD coords
+  let heldOff = null;                                  // the held item's anchor in CAMERA space (right/up/fwd) — where the bow actually sits, so an arrow can leave from IT and not the player's middle
   const FOV = 72 * Math.PI / 180;
 
   finishLoad();                                        // world ready → sweep the meter to full SMOOTHLY (the trickle owns 0→90; this is the last 90→100)
@@ -7495,33 +8399,57 @@
   const PICK_DEFS = {                                  // PER-ITEM held poses — tuning one item never moves the others (panel copy-pose exports)
     1: { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 },   // stone axe (user bake 2026-07-15)
     2: { x: 0.75, y: -0.24, z: 0.96, yaw: -0.41, pitch: -2.28, roll: 1.52, scale: 0.08 },   // small rock (user bake 2026-07-16)
-    3: { x: 0.75, y: -0.1, z: 0.84, yaw: 0.08, pitch: 0.33, roll: 1.64, scale: 0.08 },   // twig (user bake 2026-07-16)
+    3: { x: 0.75, y: -0.1, z: 0.84, yaw: -0.08, pitch: -2.812, roll: -1.64, scale: 0.08 },   // twig (user bake 2026-08-04)
     4: { x: 0.9, y: -0.24, z: 0.96, yaw: -0.09, pitch: -1.29, roll: 1.52, scale: 0.08 },   // pinecone (user bake 2026-07-16)
   };
   PICK_DEFS[KNIFE_IT] = { x: 0.75, y: -0.1, z: 0.84, yaw: 0.07, pitch: -1.32, roll: 3.13, scale: 0.07 };   // stone knife (user bake 2026-07-16)
   if (PICK_IT) PICK_DEFS[PICK_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 };   // stone pick — starts on the AXE's baked pose (same haft, same swing); tune it live in the held-item panel and re-bake
   if (SHOVEL_IT) PICK_DEFS[SHOVEL_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: 1.72, roll: 3.15, scale: 0.08 };   // stone shovel — the axe's pose with the roll flipped a half-turn, so the SPADE points UP (user)
+  if (HOE_IT) PICK_DEFS[HOE_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: -1.562, scale: 0.08 };   // stone hoe — user bake 2026-08-04
+  if (SPEAR_IT) PICK_DEFS[SPEAR_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 };   // stone spear — likewise
   if (MEAT_IT) PICK_DEFS[MEAT_IT] = { x: 0.8, y: -0.18, z: 0.92, yaw: 0.67, pitch: 0.97, roll: 2.1, scale: 0.07 };   // raw meat — user bake 2026-08-03
-  if (BOW_IT) PICK_DEFS[BOW_IT] = { x: 0.62, y: -0.30, z: 0.95, yaw: -0.20, pitch: 1.57, roll: 0.0, scale: 0.075 };   // bow — held upright across the hand, smaller scale because the model is much longer than a hand tool. Tune live in the held-item panel.
+  // LOOSE ARROW (the one that flies and lands) — the tool family's own anchor and scale, but stood UP with the
+  // STONE HEAD AT THE TOP (user). The art runs tip → shaft → fletching along its depth axis, so pitch π turns
+  // that axis to point straight down and the head ends up highest; the small roll gives it the tools' lean.
+  if (ARROW_IT) PICK_DEFS[ARROW_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0, pitch: 3.14, roll: 0.08, scale: 0.08 };   // arrow — user bake 2026-08-04
+  if (BOW_IT) PICK_DEFS[BOW_IT] = { x: 1.09, y: -0.14, z: 1.02, yaw: 0.01, pitch: 1.57, roll: -0.06, scale: 0.106 };   // bow — user bake 2026-08-04   // the tool family's anchor, but a BOW-sized model (user): its art is 1 voxel wide, so the axe's scale read as a sliver   // bow — user bake 2026-08-04   // bow — held upright across the hand, smaller scale because the model is much longer than a hand tool. Tune live in the held-item panel.
   if (WORM_ITEM0) PICK_DEFS[WORM_ITEM0] = { x: 0.81, y: -0.22, z: 1.13, yaw: 0.3, pitch: -0.14, roll: -3.14, scale: 0.08 };   // live worm (user bake 2026-07-17)
   const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] }, 4: { ...PICK_DEFS[4] } };
   pickCfgs[KNIFE_IT] = { ...PICK_DEFS[KNIFE_IT] };
   if (PICK_IT) pickCfgs[PICK_IT] = { ...PICK_DEFS[PICK_IT] };
   if (SHOVEL_IT) pickCfgs[SHOVEL_IT] = { ...PICK_DEFS[SHOVEL_IT] };
-  if (BOW_IT) pickCfgs[BOW_IT] = { ...PICK_DEFS[BOW_IT] };
+  if (ARROW_IT) pickCfgs[ARROW_IT] = { ...PICK_DEFS[ARROW_IT] };
+  if (BOW_IT) { const bp = { ...PICK_DEFS[BOW_IT] };   // EVERY draw frame carries the SAME pose (user): the bow bends in the hand, the hand does not move
+    for (let f = 0; f < BOW_FRAMES; f++) { PICK_DEFS[BOW_IT + f] = { ...bp }; pickCfgs[BOW_IT + f] = { ...bp }; } }
   if (MEAT_IT) pickCfgs[MEAT_IT] = { ...PICK_DEFS[MEAT_IT] };
+  if (HOE_IT) pickCfgs[HOE_IT] = { ...PICK_DEFS[HOE_IT] };
+  if (SPEAR_IT) pickCfgs[SPEAR_IT] = { ...PICK_DEFS[SPEAR_IT] };
   if (WORM_ITEM0) pickCfgs[WORM_ITEM0] = { ...PICK_DEFS[WORM_ITEM0] };
-  try { const sv = JSON.parse(localStorage.getItem('vb_pick3') || '{}'); for (const k in sv) if (pickCfgs[k]) Object.assign(pickCfgs[k], sv[k]); } catch (e) {}   // key bumped from vb_pick2 — the old value was one shared pose
+  try {                                              // ── SAVED POSES ── keyed by NAME (see below); ids are positional and shift whenever the item list changes
+    const byName = JSON.parse(localStorage.getItem('vb_pick4') || '{}');
+    for (const id in pickCfgs) { const nm = ITEM_NAMES[id]; if (nm && byName[nm]) Object.assign(pickCfgs[id], byName[nm]); }
+    if (!localStorage.getItem('vb_pick4')) {         // one-time migration off the id-keyed store
+      const old = JSON.parse(localStorage.getItem('vb_pick3') || '{}');
+      for (const k in old) { const id = +k;
+        if (!BOW_IT || id < BOW_IT) { if (pickCfgs[id]) Object.assign(pickCfgs[id], old[k]); }   // below the bow the numbering never moved — those are still valid
+      }                                              // …and everything from the bow up is dropped: its number no longer means what it did
+    }
+  } catch (e) {}   // key bumped from vb_pick2 — the old value was one shared pose
   const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
   ITEM_NAMES[KNIFE_IT] = 'knife';
   if (PICK_IT) ITEM_NAMES[PICK_IT] = 'pick';
   if (SHOVEL_IT) ITEM_NAMES[SHOVEL_IT] = 'shovel';
-  if (BOW_IT) ITEM_NAMES[BOW_IT] = 'bow';
+  if (ARROW_IT) ITEM_NAMES[ARROW_IT] = 'arrow';
+  if (HOE_IT) ITEM_NAMES[HOE_IT] = 'hoe';
+  if (SPEAR_IT) ITEM_NAMES[SPEAR_IT] = 'spear';
+  if (BOW_IT) for (let f = 0; f < BOW_FRAMES; f++) ITEM_NAMES[BOW_IT + f] = 'bow';   // every frame answers to the same name in the held-item editor
   if (MEAT_IT) ITEM_NAMES[MEAT_IT] = 'raw meat';
   if (WORM_ITEM0) ITEM_NAMES[WORM_ITEM0] = 'worm';
   const heldIt = () => (grabAnim && !grabAnim.left ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty; left-hand grab flights don't change it)
   const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];
-  const pickSave = () => { try { localStorage.setItem('vb_pick3', JSON.stringify(pickCfgs)); } catch (e) {} };
+  const pickSave = () => { try {                     // …written back BY NAME, so a future item-list change cannot scramble them again
+    const byName = {}; for (const id in pickCfgs) { const nm = ITEM_NAMES[id]; if (nm) byName[nm] = pickCfgs[id]; }
+    localStorage.setItem('vb_pick4', JSON.stringify(byName)); } catch (e) {} };
   {                                                    // ── held-item position panel ── live sliders over the CURRENT item's own pose; the item renders behind the menu as you drag
     const pkPanel = $('pkPanel'), pkRows = $('pkRows');
     const PKDEF = [['x', -1.5, 1.5, 0.01, 'move right'], ['y', -1.5, 0.5, 0.01, 'move up'], ['z', 0.2, 2.5, 0.01, 'move forward'],
@@ -8030,7 +8958,8 @@
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
-    hurtInfo() { return { flash: +UF[1871].toFixed(3), world: [UF[1868] + winOX, UF[1869], UF[1870] + winOZ], half: [UF[1872], UF[1873], UF[1874]] }; },   // the knife hit-flash box the tracer is tinting inside right now
+    palLen() { return { len: palette.length, over: palette.length > 256 }; },   // the 8-bit palette ceiling — breaching it corrupts voxel SOLIDITY, not just colour
+    hurtInfo() { return { flash: +UF[1871].toFixed(3), world: [UF[1868] + winOX, UF[1869], UF[1870] + winOZ], half: [UF[1872], UF[1873], UF[1874]], dyn: UF[1875], slot: HURT.slot }; },   // dyn = the dynamic-life slot the wounded animal is DRAWN in (0 = grid-stamped, matched by bounds instead)   // the knife hit-flash box the tracer is tinting inside right now
     swing(offMs) { swingStart = performance.now() - (offMs || 0); }, drop() { dropHeld(); },
     sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
     clash() { if (dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return true; } return false; },   // same guard as shift+click — headless knife-craft testing
@@ -8069,6 +8998,10 @@
     pal(i) { return i === undefined ? palette.length : palette[i]; },
     treeAt, TCELL, isCone(id) { return PICK_CONE.has(id); },
     treeDims() { return { MSX, MSY, MSZ, rot: MROT.map((R) => ({ sx: R.sx, sz: R.sz })), foliage: foliageIds.slice() }; },
+    dropAxis(i) { const o = 68 + (i | 0) * 16; return UF[o + 7] > 0.5 ? [+UF[o + 4].toFixed(3), +UF[o + 5].toFixed(3), +UF[o + 6].toFixed(3)] : null; },   // a dropped item's X axis in camera space — a spinning drop's changes every frame
+    dropUp(i) { const o = 68 + (i | 0) * 16; return UF[o + 7] > 0.5 ? [+UF[o + 12].toFixed(3), +UF[o + 13].toFixed(3), +UF[o + 14].toFixed(3)] : null; },   // a dropped item's own +z in camera space — which way up it is hovering
+    uf(i) { return UF[i | 0]; },                       // raw uniform slot — lets a test read a drop's whole orientation basis
+    arrowChunks() { return PH.bodies.filter((b) => b.nearR).map((b) => ({ vox: b.n, reach: b.nearR, normalReach: PH.absorbR, timed: !!b.absorbAt, sleeping: !!b.sleeping })); },   // chunks an ARROW knocked loose: they wait to be walked up to
     phys(v) {                                          // ── VOXEL DESTRUCTION ── enable/inspect
       if (v !== undefined) { PH.on = !!v; if (!PH.on) { PH.bodies.length = 0; PH.acc = 0; bodyTop = 0; } }
       return { on: PH.on, dt: PH.dt, iters: PH.iters, bodies: PH.bodies.length, awake: PH.bodies.filter((b) => !b.sleeping).length,
@@ -8087,15 +9020,51 @@
     knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; }, pickId() { return PICK_IT; }, shovelId() { return SHOVEL_IT; }, bowId() { return BOW_IT; }, meatId() { return MEAT_IT; },
     dropMeatAt(x, y, z) { if (!MEAT_IT) return null; dropMeat({ x, y, z }); return __vb.dropsInfo(); },   // drop meat on demand, for tests and for looking at it
     toolTabs() { const d = [], a = [], k = [], g = []; for (let i = 0; i < 256; i++) { if (decorTab[i]) d.push(i); if (axeOnlyTab[i]) a.push(i); if (pickOnlyTab[i]) k.push(i); if (digOnlyTab[i]) g.push(i); } return { choppable: d.length, needsCut: a.length, needsPick: k.length, needsShovel: g.length, pickIds: k, digIds: g }; },
-    dropsInfo() { return drops.map((d) => ({ it: d.it, x: Math.round(d.x), z: Math.round(d.z), flightS: +(d.T || 0).toFixed(2) })); },   // items in flight / lying on the ground — a throw lands one of these far from the player, a lob lands it near
-    mouseR(v) { mouse2 = !!v; return mouse2; },        // hold/release the RIGHT button from a test (the throw's wind-up); CDP mouse events do not reach the game's own handlers under pointer lock
+    dropsInfo() { return drops.map((d) => ({ it: d.it, x: Math.round(d.x), y: Math.round(d.y), z: Math.round(d.z), flightS: +(d.T || 0).toFixed(2),
+      stick: !!d.stick, hitSlot: d.hitSlot === undefined ? -1 : d.hitSlot, hitBird: d.hitBird === undefined ? -1 : d.hitBird, hitDone: !!d.hitDone,
+      end: d.ex === undefined ? null : [+d.ex.toFixed(1), +d.ey.toFixed(1), +d.ez.toFixed(1)] })); },   // items in flight / lying on the ground — a throw lands one of these far from the player, a lob lands it near
+    mouseR(v) { const was = mouse2; mouse2 = !!v;      // …and drives the BOW DRAW exactly as a real right-click does
+      if (mouse2 && !was) bowT0 = performance.now();
+      else if (!mouse2 && was) { bowRel = performance.now();
+        if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); }
+        else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) throwSpear(); }   // …and the SPEAR throw, so a test drives exactly what the mouse does   // …including LOOSING the arrow
+      return mouse2; },
+    heldShown() { return shownIt; },                  // the item id actually DRAWN in the hand — a bow reports its current draw frame
+    itemEdges(id) { const it = itemsRef && itemsRef[(id | 0) - 1]; if (!it || !it.cells) return null;   // [near, far] filled slices along the item's DEPTH — the bow's string and its face
+      let lo = 1e9, hi = -1e9;
+      for (let y = 0; y < it.d; y++) for (let z = 0; z < it.h; z++) for (let x = 0; x < it.w; x++)
+        if (it.cells[x + y * it.w + z * it.w * it.d]) { if (y < lo) lo = y; if (y > hi) hi = y; }
+      return lo > hi ? null : [lo, hi]; },
+    poseOf(id) { const c = pickCfgs[(id | 0)]; return c ? { ...c } : null; },   // an item's live held pose, for checking what the adjust box did
+    killTest(slot) { hitCreature(slot | 0); return __vb.hitsOn(slot | 0); },   // land a hit on a KNOWN creature with whatever is in hand — no aiming in the way
+    aimKill() { const b = aimedCreature(); if (b >= 0) hitCreature(b); return b; },   // exactly what a left click does, without having to drive the mouse
+    birdKills() { return birdKills; },
+    birdCount() { let n = 0; for (const B of birds) if (B && B.init) n++; return n; },   // songbirds actually in the air
+    birdAt(i) { const B = birds[i | 0]; return (B && B.init) ? { x: B.x, y: B.y, z: B.z } : null; },
+    tillInfo() { const q = tilled[0]; return { n: tilled.length, id: TILL_ID, col: TILL_ID ? palette[TILL_ID - 1] : null,
+      sample: q ? { top: W[q.ii], below: W[q.jj], wasTop: q.prevTop, wasBelow: q.prevBelow, h: hmap[q.hi] } : null }; },
+    tillAge(ms) { for (const q of tilled) q.t -= (ms | 0); return tilled.length; },   // fast-forward the regrow clock
+    tillCount() { return tilled.length; },             // soil turned over and still waiting to grow back
+    palAt(id) { const c = palette[(id | 0) - 1]; return c ? [c[0], c[1], c[2]] : null; },
+    isFoliage(id) { return !!foliaTab[id | 0]; },       // is this voxel pine needles? (the arrow's new hitbox)
+    sparkCount() { let n = 0; for (const q of sparks3d) if (q && !q.smoke && performance.now() - q.born < q.life * 1000) n++; return n; },   // live embers right now
+    itemName(id) { return ITEM_NAMES[(id | 0)] || null; },   // what a hotbar slot is actually holding, by name
+    itemVox(id) { const it = itemsRef && itemsRef[(id | 0) - 1]; if (!it) return -1;   // how many cells are actually filled — a slide that pushed voxels off the grid would show up here
+      let n = 0; for (const c of it.cells) if (c) n++; return n; },
+    itemDims(id) { const it = itemsRef && itemsRef[(id | 0) - 1]; return it ? [it.w, it.d, it.h] : null; },   // an item's grid — the numbers the shader was compiled with, so a test can prove a turn left them alone
+    arrowRot(r, p) { if (r) ARROW_ROT = r.map((n) => (n | 0) & 3);                    // the arrow's own orientation + PER-FRAME offsets on the bow — the top-right panel, from a test
+      if (p) ARROW_POS = (typeof p[0] === 'number' ? ARROW_POS_DEF().map(() => arrowPosClamp(p)) : ARROW_POS_DEF().map((q, i) => arrowPosClamp(p[i] || [0, 0, 0])));
+      if (r || p) { if (bowRefit) bowRefit(ARROW_ROT, ARROW_POS); resetHist = 1; arwSync(); }
+      return { rot: ARROW_ROT.slice(), deg: ARROW_ROT.map((q) => q * 90), pos: ARROW_POS.map((q) => q.slice()), frame: bowLock }; },
+    bowLock(n) { if (n !== undefined) { bowLock = (n === null || n < 0) ? -1 : Math.min(BOW_FRAMES - 1, n | 0); arwSync(); } return bowLock; },   // pin the held bow to a draw frame, as , and . do
+    bowInfo() { return { base: BOW_IT, frames: BOW_FRAMES, frame: bowFrame(performance.now()), drawing: !!mouse2 }; },        // hold/release the RIGHT button from a test (the throw's wind-up); CDP mouse events do not reach the game's own handlers under pointer lock
     swingInfo() {                                    // run this WHILE holding the tool — says whether the game sees it as a cutter
       const it = heldIt();
       return { heldItem: it, axeId: 1, knifeId: KNIFE_IT,
                isAxe: it === 1, isKnife: KNIFE_IT > 0 && it === KNIFE_IT,
                cutsWood: it === 1 || (KNIFE_IT > 0 && it === KNIFE_IT),
                isPick: PICK_IT > 0 && it === PICK_IT, isShovel: SHOVEL_IT > 0 && it === SHOVEL_IT,
-               sphere: CHOP_RAD * (KNIFE_IT > 0 && it === KNIFE_IT ? KNIFE_SCALE : (PICK_IT > 0 && it === PICK_IT ? PICK_SCALE : (SHOVEL_IT > 0 && it === SHOVEL_IT ? DIG_SCALE : 1))),   // the tap used to hard-code the axe's radius for everything that was not the knife, so a retuned tool showed up as unchanged
+               sphere: CHOP_RAD * (KNIFE_IT > 0 && it === KNIFE_IT ? KNIFE_SCALE : (PICK_IT > 0 && it === PICK_IT ? PICK_SCALE : (SHOVEL_IT > 0 && it === SHOVEL_IT ? DIG_SCALE : AXE_SCALE))),   // this tool's OWN sphere. Off its own material it works at half of this, and WOOD is always the axe's (user)
                chunk: PH.chopBite, lastChops: PH.stats.chops, lastVoxRemoved: PH.stats.voxRemoved };
     },                     // stone-knife item id — it cuts like the axe at half the sphere
     lifeDump() {                                     // live creatures + how many voxels each model carries — sizing data for the dynamic shadow volume
@@ -8906,6 +9875,7 @@
     UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
     { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; if (heldIt()) playSwish(); pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)
       reapDeaths(now);                                 // creatures whose red flash has run out now actually die (see tryKillCreature)
+      tillRevert(now);                                 // …and untended tilled soil closes back over
       if (pendKillT && now >= pendKillT) { pendKillT = 0;
         const am9 = aimedCreature();                     // ANY tool: whatever the crosshair is genuinely on takes the swing (user)
         if (am9 >= 0) hitCreature(am9);                  // …otherwise chopSwing carves a grid-stamped animal's voxels out of the world and it comes apart in pieces instead of dying
@@ -8935,18 +9905,32 @@
       const swapR = Math.max(0, 1 - (now - swapT0) / SWAP_MS);
       const swapF = swapR * swapR * (3 - 2 * swapR);   // 1 → 0 across the swap, SMOOTHSTEPPED and not quantised: this is a camera move, not a character animation, and stepping it at 24 fps read as a stutter (user)
       const hcfg = heldCfg(heldIt() || 1);             // the shown item's OWN pose (during a grab flight this is the grabbed item's)
-      const swPitch = -0.9 * wind + 1.35 * chop;       // windup tips the head back/up, the strike slams it forward-down
+      // ── SPEAR OVERHEAD ── holding the right button cocks it back over the shoulder, ready to throw; the
+      // release sends it (user). Eased over SPEAR_WIND_MS so it lifts rather than snapping into place.
+      // ── HURRY ── a bow held at full draw shakes, and worse the longer you hold it: the arm is under load
+      // and the shot wants taking (user). Quantised to 24 fps like every other animation here.
+      const bowHold = (BOW_IT && heldIt() === BOW_IT && mouse2) ? Math.min(1, Math.max(0, (now - bowT0 - 90) / 2400)) : 0;   // starts almost as soon as you pull (user), and keeps building
+      const bowShk = bowHold * bowHold * (3 - 2 * bowHold);   // smoothstepped: it eases in rather than switching on
+      const spWind = (SPEAR_IT && heldIt() === SPEAR_IT && mouse2) ? Math.min(1, (now - bowT0) / SPEAR_WIND_MS) : 0;
+      const spE = spWind * spWind * (3 - 2 * spWind);
+      const swPitch = -0.9 * wind + 1.35 * chop + 1.15 * spE;       // windup tips the head back/up, the strike slams it forward-down; the cocked SPEAR levels FORWARD, ready to go (user)
       const cy = Math.cos(hcfg.yaw), sy = Math.sin(hcfg.yaw), cp2 = Math.cos(hcfg.pitch + swPitch), sp2 = Math.sin(hcfg.pitch + swPitch), cr2 = Math.cos(hcfg.roll), sr2 = Math.sin(hcfg.roll);
       // R = Rx(pitch)·Ry(yaw)·Rz(roll) — pitch OUTERMOST, so the gimbal singularity sits at yaw ±90°, far from the default pose (all three sliders stay distinct)
       let hx = hcfg.x * (1 + 0.06 * wind - 0.85 * chop),                       // strike pulls the anchor to the screen CENTRE…
-          hy = hcfg.y + 0.22 * wind - 0.18 * chop,                             // …windup lifts it, the strike drives it down…
-          hz = hcfg.z - 0.05 * wind + 0.18 * chop;                             // …and reaches forward into the blow
+          hy = hcfg.y + 0.22 * wind - 0.18 * chop + 0.46 * spE,                // …windup lifts it, the strike drives it down, and the SPEAR goes up over the head…
+          hz = hcfg.z - 0.05 * wind + 0.18 * chop + 0.16 * spE;                // …and reaches forward into the blow — the cocked spear reaches forward too (user)
       hy -= 0.62 * swapF * swapF;                                              // SWAP: the tool drops out of frame and rises back in. Squared so it leaves fast and settles softly.
       hz -= 0.10 * swapF;
       const spd2 = Math.hypot(P.hvx, P.hvz);           // view-model BOB — phase tied to distance walked (smooth at any speed), amplitude eased in/out
       bobAmp += ((P.onGround && !P.fly ? Math.min(1, spd2 / WALK) : 0) - bobAmp) * (1 - Math.exp(-8 * dt));
       bobPh += spd2 * dt * 0.225;                      // slower phase + wide sweep = long smooth strides
       hx += Math.sin(bobPh) * 0.075 * bobAmp + Math.sin(now * 0.0013) * 0.0069 + Math.sin(now * 0.00073 + 1.7) * 0.0039;       // + idle breathing sway (tripled)
+      // …+ the draw tremble. SLOW and CONTINUOUS (user: smoother, not violent): a held arm drifts, it does
+      // not buzz — so this is two long rates at a third of the old amplitude, and NOT stepped to 24 fps.
+      // Quantising it made a 12 Hz judder, which is exactly what read as violent; the view-model bob above
+      // is left continuous for the same reason.
+      if (bowShk > 0) { hx += (Math.sin(now * 0.0062) + 0.5 * Math.sin(now * 0.0111 + 2.1)) * 0.0150 * bowShk;   // …travel DOUBLED (user) — same slow rates, twice the distance
+                        hy += (Math.sin(now * 0.0049 + 1.1) + 0.5 * Math.sin(now * 0.0093) ) * 0.0120 * bowShk; }
       hy += -Math.abs(Math.cos(bobPh)) * 0.028 * bobAmp + Math.sin(now * 0.0017 + 0.9) * 0.0069 + Math.sin(now * 0.00091) * 0.0036;
       let AX = [cr2 * cy, sr2 * cp2 + cr2 * sy * sp2, sr2 * sp2 - cr2 * sy * cp2];
       let AY = [-sr2 * cy, cr2 * cp2 - sr2 * sy * sp2, cr2 * sp2 + sr2 * sy * cp2];
@@ -8962,21 +9946,36 @@
         const szc = (rx * fwd[0] + ry * fwd[1] + rz * fwd[2]) * hcfg.scale;
         hx = sxc + (hx - sxc) * e2; hy = syc + (hy - syc) * e2; hz = szc + (hz - szc) * e2;
         const ca3 = Math.cos(grabAnim.aPh), sa3 = Math.sin(grabAnim.aPh);       // spin orientation (world) expressed in the camera basis, slerped into the held pose
+        // …and the BOW hovers z-DOWN (its art's +z is the underside). Start the flight from the frame it is
+        // ACTUALLY in: read z-up here and the slerp had to unwind a full half turn through a degenerate
+        // axis, so the bow thrashed on its way into the hand exactly as it did on the way out (user).
+        const gflip = !!(BOW_IT && BOW_NOCK && grabAnim.it >= BOW_IT && grabAnim.it < BOW_NOCK + BOW_FRAMES);
+        const gs = gflip ? -1 : 1;
         const q = qslerp(m2q([ca3 * right[0] + sa3 * right[2], ca3 * up[0] + sa3 * up[2], ca3 * fwd[0] + sa3 * fwd[2]],
-                             [sa3 * right[0] - ca3 * right[2], sa3 * up[0] - ca3 * up[2], sa3 * fwd[0] - ca3 * fwd[2]],   // Y = Z×X — matches the (right-handed) hover frame
-                             [right[1], up[1], fwd[1]]),
+                             [gs * (sa3 * right[0] - ca3 * right[2]), gs * (sa3 * up[0] - ca3 * up[2]), gs * (sa3 * fwd[0] - ca3 * fwd[2])],   // Y = Z×X — matches the (right-handed) hover frame, flipped side included
+                             [gs * right[1], gs * up[1], gs * fwd[1]]),
                          m2q(AX, AY, AZ), e2);
         const M = q2m(q); AX = M[0]; AY = M[1]; AZ = M[2];
         showId = dead ? 0 : grabAnim.it;
         if (k >= 1) { const as = addItem(grabAnim.it); if (as >= 0) selSlot = as; grabAnim = null; }   // SELECT the slot the grab landed in → the newly picked-up item stays in the hand instead of snapping back to whatever was held (user)
       }
       set3(48, [hx, hy, hz], hcfg.scale);
+      heldOff = [hx, hy, hz];                          // published for shootArrow: the bow's own place in the frame
+      if (BOW_IT && showId === BOW_IT) {            // BOW DRAW (user): the strip swaps under the one held pose…
+        const bf = bowFrame(now);                   // …and once the string is loosed the bare strip takes over, so the arrow is GONE from the bow (user)
+        if (bowLoosed && bowAtRest(now)) bowLoosed = false;   // back at rest: the bow is nocked again, ready for the next draw
+        showId = ((BOW_NOCK && bowLoosed && bf > 0) ? BOW_NOCK : BOW_IT) + bf;
+      }
+      shownIt = showId;
       if (WORM_NFRAMES && showId >= WORM_ITEM0 && showId < WORM_ITEM0 + WORM_NFRAMES) showId = WORM_ITEM0 + Math.floor(now * 0.024) % WORM_NFRAMES;   // the caught worm SQUIGGLES — its 24 fps crawl cycle keeps playing in the hand (and through the grab flight)
       set3(52, AX, showId);
       set3(56, AY, snowFallAcc);                     // u.pickY.w = integrated snow fall
       set3(60, AZ, freezeK);                        // u.pickZ.w = gradual freeze 0..1
       { // ── LEFT HAND ── shows the second rock when dual-wielding (selected rock stack n ≥ 2); also hosts a 2nd-rock grab flight
+        //   (The arrow used to be drawn resting here; the user took it back off the bow. It is still
+        //   launched as a projectile on release — see shootArrow.)
         const lgrab = grabAnim && grabAnim.left && !dead;
+        {
         const lid = lgrab ? grabAnim.it : ((!dead && slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2) ? 2 : 0);
         if (!lid) UF[1095] = 0;                      // pick2A.w = 0 → zero bounding radius hides the left hand (pick2 sits after the 64 drop slots: 1092..1107)
         else {
@@ -9009,7 +10008,7 @@
           set3(1096, LAX, lid);
           set3(1100, LAY, 0);
           set3(1104, LAZ, 0);
-        }
+        } }
       }
     }
     UF[64] = ED.on ? Math.max(64, renderDist)            // editor world: nothing stale exists (occupancy is empty beyond the stage) — no rect clamp
@@ -9033,7 +10032,32 @@
       if (!ED.on) for (let ny = Math.max(1, ey - 1); ny <= Math.min(WY - 2, ey + 1) && !eyeFolV; ny++) for (let nx = ex - 1; nx <= ex + 1 && !eyeFolV; nx++) for (let nz = ez - 1; nz <= ez + 1; nz++)
         if (foliaTab[W[gwrap(nx, WX) + ny * WX + gwrap(nz, WZ) * WX * WY]]) { eyeFolV = 1; break; } }
     UF[1268] = vigOn ? Math.max(BASE_VIG, cineBlurK * CINE_VIG) : 0;   // u.misc.x — BASE vignette in normal play, deepening to the cinematic value while the camera flies; max() so leaving cinema eases back to base instead of snapping to zero                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
+    if (!ED.on && !dead && (frame & 15) === 7) {      // ── FLOATERS FALL ── ~4 passes a second, so nothing stays hanging (user)
+      // Centred on the PLAYER and stepped up the column they are standing in: canopies are overhead, and
+      // ring offsets left gaps that a floater could sit in forever. Each pass costs one seed box.
+      const lvl = (fallScan++ % 5) - 1;               // eye level, then upward through the canopy
+      const ay = Math.round(smoothEye) + lvl * 12;
+      if (ay > 1 && ay < WY - 1) phFallLoose(Math.round(P.x), ay, Math.round(P.z));
+    }
     if (!ED.on) autoPickup();                          // AUTO-PICKUP (user): a free hand slot vacuums up nearby floating items — no right-click, no aiming
+    for (const dr of drops) {                          // ── THE ARROW ARRIVES ── the wound (or the carve) registers when it LANDS, not when it was loosed, so the blink and the chunk line up with the impact (user)
+      if (!dr || dr.hitDone || dr.T === undefined) continue;
+      if ((now - dr.born) / 1000 < dr.T) continue;
+      if (dr.hitBird !== undefined && dr.hitBird >= 0) { dr.hitDone = true;   // ── A BIRD OUT OF THE SKY ── one shaft is enough (user)
+        const B = birds[dr.hitBird];
+        if (B && B.init) { spawnDeathBurst(B.x, B.y, B.z); B.init = false; birdKills++; }
+        else spawnHitSparks(dr.ex, dr.ey, dr.ez);
+        dr.gone = true;                                // …and the shaft goes down WITH it: struck in mid-air, `stick` would leave it hanging in the sky (user)
+        continue; }
+      if (dr.hitSlot !== undefined && dr.hitSlot >= 0) { dr.hitDone = true;
+        hitCreature(dr.hitSlot, (dr.kind || 'arrow') + dr.born);
+        spawnHitSparks(dr.ex, dr.ey, dr.ez);           // …and it STRIKES: sparks off the impact (user)
+        continue; }
+      if (!dr.chopAt) continue;
+      dr.hitDone = true;
+      arrowChop(dr.chopAt[0], dr.chopAt[1], dr.chopAt[2]);
+    }
+    for (let i = drops.length - 1; i >= 0; i--) if (drops[i] && drops[i].gone) drops.splice(i, 1);   // …swept up here
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
       const dr = drops[i];
       if (!(WORM_NFRAMES && dr.it === WORM_ITEM0 && dr.T && (now - dr.born) / 1000 > dr.T + 0.24)) continue;
@@ -9064,18 +10088,43 @@
       const restY = itemHalfH ? (itemHalfH[dr.it - 1] || 4.5) : 4.5;   // bottom on the ground: dr.y is the first AIR voxel of the column
       const a2 = dr.spin, ca2 = Math.cos(a2), sa2 = Math.sin(a2);
       let px3 = dr.x + 0.5, py3 = dr.y + (9.0 + (restY - 9.0) * rE) + Math.sin(now * 0.002 + dr.ph) * 1.3 * (1 - rE), pz3 = dr.z + 0.5;   // anchor 9 up while it hovers: the axe (half-height 4.5) bottoms out >= 3 voxels clear of the ground
-      let Xw = [ca2, 0, sa2], Yw = [sa2, 0, -ca2], Zw = [0, 1, 0];   // RIGHT-handed (Y = Z×X) — an improper frame here turns into a bogus quat mid-flight
+      // The BOW's art has its +z on the UNDERSIDE — the held pose (pitch ≈ +90°) turns that face downward,
+      // so a drop that maps +z to world up shows it upside down (user). Flip the rest frame for the strip.
+      const flipUp = !!(BOW_IT && BOW_NOCK && dr.it >= BOW_IT && dr.it < BOW_NOCK + BOW_FRAMES);
+      let Xw = [ca2, 0, sa2], Yw = flipUp ? [-sa2, 0, ca2] : [sa2, 0, -ca2], Zw = flipUp ? [0, -1, 0] : [0, 1, 0];   // RIGHT-handed (Y = Z×X) either way — an improper frame here turns into a bogus quat mid-flight
       const tE = (now - dr.born) / 1000;
-      if (dr.T && tE < dr.T + 0.22) {
-        const spinQ = m2q(Xw, Yw, Zw);
+      const spinQ0 = m2q(Xw, Yw, Zw);
+      // ── POINT-FIRST FLIGHT ── an arrow is not a tumbling drop: its nose tracks the VELOCITY the whole
+      // way down the arc, so the stone head leads and the fletching trails (user). The art runs tip →
+      // fletching along local +y, so -y is what must face the direction of travel.
+      const aimAxes = (t) => {
+        const vyN = dr.vy + TOSS_G * t, L = Math.hypot(dr.vx, vyN, dr.vz) || 1;
+        const F = [dr.vx / L, vyN / L, dr.vz / L];      // where it is going, right now
+        const U = Math.abs(F[1]) > 0.98 ? [1, 0, 0] : [0, 1, 0];   // a straight-up shot needs a different reference or the cross product collapses
+        const cross = (a, b2) => { const c = [a[1] * b2[2] - a[2] * b2[1], a[2] * b2[0] - a[0] * b2[2], a[0] * b2[1] - a[1] * b2[0]];
+          const l = Math.hypot(c[0], c[1], c[2]) || 1; return [c[0] / l, c[1] / l, c[2] / l]; };
+        // THE TWO SHAFTS ARE MODELLED ALONG DIFFERENT AXES: the arrow runs tip→fletching along its y, so -y
+        // leads; the spear runs butt→stone-head along its z, so +z leads. Flying one by the other's rule is
+        // what had the spear leave the hand nose-down (user).
+        if (dr.kind === 'spear') { const Z = F, X = cross(U, Z); return [X, cross(Z, X), Z]; }
+        const Y = [-F[0], -F[1], -F[2]], X = cross(U, Y);
+        return [X, Y, cross(X, Y)];                    // Z = X×Y keeps the frame right-handed (Y = Z×X)
+      };
+      if (dr.stick && dr.T && tE >= dr.T) {            // ── STUCK ── it is buried in whatever it hit: no hover, no bob, no spin, and it keeps the attitude it struck at (user)
+        px3 = dr.ex; py3 = dr.ey; pz3 = dr.ez;
+        const A = aimAxes(dr.T); Xw = A[0]; Yw = A[1]; Zw = A[2];
+      } else if (dr.T && tE < dr.T + 0.22) {
+        const spinQ = spinQ0;
         if (tE < dr.T) {                               // ballistic TOSS: exact parabola from the hand — NO tumble, it keeps its hand
           const k = tE / dr.T;                         // orientation and eases UPRIGHT into the hover pose (user: no wobbling)
           px3 = dr.sx + dr.vx * tE; py3 = dr.sy + dr.vy * tE + 0.5 * TOSS_G * tE * tE; pz3 = dr.sz + dr.vz * tE;
-          const M = q2m(qslerp(dr.q0, spinQ, k * k * (3 - 2 * k)));
+          const M = dr.aim ? aimAxes(tE) : q2m(qslerp(dr.q0, spinQ, k * k * (3 - 2 * k)));
           Xw = M[0]; Yw = M[1]; Zw = M[2];
         } else {                                       // touchdown: ease the arc endpoint into the hover bob
           const e2 = (tE - dr.T) / 0.22, e3 = e2 * e2 * (3 - 2 * e2);
           px3 = dr.ex + (px3 - dr.ex) * e3; py3 = dr.ey + (py3 - dr.ey) * e3; pz3 = dr.ez + (pz3 - dr.ez) * e3;
+          if (dr.aim) { const A = aimAxes(dr.T), M = q2m(qslerp(m2q(A[0], A[1], A[2]), spinQ, e3));   // …and the nose rotates out of its flight attitude only once it has landed
+            Xw = M[0]; Yw = M[1]; Zw = M[2]; }
         }
       }
       const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
@@ -10257,6 +11306,12 @@
         lifeSlotSet(slot, 2000 + emitWho[j], emitAnc[j * 3], emitAnc[j * 3 + 1], emitAnc[j * 3 + 2], Math.round(emitBuf[src + 7]), emitAna[j] === 1); }
     }
     if (wormPatchN) { if (CPROF) cpEvt |= 64; gpuPatch(wormPatch, false, wormPatchN); wormPatchN = 0; }   // one light brick-word patch for all worm (un)stamps this frame (incl. any queued by a pickup/toss)
+    { let hs = 0;                                    // ── WHICH SLOT IS THE WOUNDED ANIMAL DRAWN IN? ── the shader matches cSlot against this to
+      if (HURT.slot >= 0 && UF[1871] > 0) {           // paint the flash on its actual pixels. 0 = grid-stamped, and the bounds test covers that case.
+        const want = 2000 + HURT.slot;                // lifeSlotSet stamps 2000 + the creature's pool slot into the ledger
+        for (let s = 0; s < 64; s++) if (lifeUid[s] === want) { hs = s + 1; break; }   // cSlot is the slot index PLUS ONE (0 means 'no creature here')
+      }
+      UF[1875] = hs; }
     UF[1103] = dropCursor;                             // pick2Y.w = live slot count — the composite loop's bound (always ≥ 9 so drops/cardinal/sparks are covered)
     cshadList.sort((a, b) => a[5] - b[5]);             // nearest 16 ground/water creatures cast shadows (the sun ray tests these boxes)
     for (let ci = 0; ci < 16; ci++) { const o6 = 1140 + ci * 8, C = cshadList[ci];
