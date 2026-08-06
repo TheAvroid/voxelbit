@@ -193,6 +193,10 @@
   #lgtPanel .lgtBake button:hover { border-color: #7fd05a; color: #b8ff6e; }
   #lgtPanel .lgtHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; }
   #lgtPanel.hidden { display: none; }
+  /* ── WATER SETTINGS: OFF SCREEN (user 2026-08-05) ── the panel, its buttons, the reflection slider and the
+     bake row stay wired exactly as they were, so WATER_BAKE still drives the look and __vb.lgt()/__vb.wrefl()
+     still reach it from the console; this one rule keeps it out of sight. Delete to restore. */
+  #lgtPanel { display: none !important; }
   /* ── ARROW ORIENTATION ── top right, shown whenever the cursor is free; each button turns the arrow on the bow a quarter turn */
   #arwPanel { position: fixed; top: 10px; right: 12px; z-index: 60; background: rgba(12,16,22,0.82); border: 1px solid #2b3648;
     border-radius: 10px; padding: 7px 9px 8px; font: 7px/1.6 'px3', Consolas, monospace; letter-spacing: 1px; color: #cfd6e0;
@@ -280,6 +284,12 @@
   @keyframes cmdBlink { 50% { opacity: 0; } }
   #cmdMsg { position: absolute; left: 0; bottom: 100%; margin-bottom: 6px; white-space: nowrap;
     color: #ffd9a0; font: 11px/1.2 'px3', Consolas, monospace; text-shadow: 0 2px 6px rgba(0,0,0,0.9); }   /* the reply line follows the input down to 11px (user) */
+  /* ── /locate's LOADING WORD ── (user 2026-08-05: "just overlay the loading word over gameplay") ── the boot
+     panel is a full-screen video card, and raising it for a teleport hid the very thing the wait is for: the
+     place you are standing. This is text only, no backdrop, drawn over the live frame. */
+  #tpLoad { position: fixed; inset: 0; z-index: 70; pointer-events: none; display: flex; align-items: center; justify-content: center;
+    color: #fff; font: 22px/1.2 'px3', Consolas, monospace; letter-spacing: 1px; text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.9); }
+  #tpLoad.hidden { display: none; }
   body.noui #cross, body.noui #hud, body.noui #clashHint, body.noui #achv, body.noui #edHud, body.noui #compass { display: none !important; }   /* C toggles all HUD overlays off for clean views */
   #compass { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 240px; height: 22px; overflow: hidden; z-index: 12; pointer-events: none;
     font: 8px/22px 'px3', Consolas, monospace; letter-spacing: 1px; color: #e8eef6; text-shadow: 0 1px 2px rgba(0,0,0,0.85);
@@ -303,7 +313,7 @@
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
 <div id="hud"></div>
-<div id="cmdBar" class="hidden"><span id="cmdCaret">&gt;</span><span id="cmdTxt"></span><span id="cmdCur"></span><div id="cmdMsg"></div></div>
+<div id="tpLoad" class="hidden"></div><div id="cmdBar" class="hidden"><span id="cmdCaret">&gt;</span><span id="cmdTxt"></span><span id="cmdCur"></span><div id="cmdMsg"></div></div>
 <div id="stackN" class="hidden"></div>
 <div id="lgtPanel" class="hidden"><div class="lgtHead"><span>water</span><button id="lgtAll" title="water back to stock">reset</button></div></div>
 <div id="arwPanel" class="hidden"><div class="arwHead"><span>arrow</span><button id="arwReset" title="back to the shipped orientation">reset</button></div>
@@ -385,6 +395,7 @@
 (async () => {
   const $ = (id) => document.getElementById(id);
   const loadEl = $('load'), lockEl = $('lock'), hudEl = $('hud'), crossEl = $('cross'), loadMsgEl = $('loadMsg');
+  const tpLoadEl = $('tpLoad');   // the bare 'loading' word /locate shows over live gameplay (see cmdGoTo)
   const fail = (msg) => { loadEl.classList.remove('hidden'); loadMsgEl.textContent = msg; throw new Error(msg); };   // loadMsgEl, not loadEl.textContent — the latter would wipe the background <video>
   // MOBILE DEVICE? — the play prompt tells a phone/tablet to "find a good computer" instead of "press any button" (user).
   const isMobile = (() => {
@@ -3536,7 +3547,22 @@
           for (var wi = 0; wi < 22; wi++) {
             let wxw = f32(cw.x) + u.winO.x; let wzw = f32(cw.y) + u.winO.y;
             let wv = gerstH(wxw, wzw);                                                                   // GERSTNER height field (see PRE) — same sum the JS floater mirror rides
-            let wh = baseTop + floor(wv + 0.5);
+            // ── THE FOAM RING STANDS A VOXEL PROUD (user 2026-08-05) ── done HERE, in the surface march, not
+            // after it. Lifting t once the hit was already found only moved that pixel's DEPTH: the foam
+            // kept the silhouette of the flat water because the pixels it should have grown into were never
+            // tested against the water at all. Raising the column's surface height BEFORE the intersection
+            // test is what gives the band a real edge you can see standing above the swell.
+            // 4 probes, not the shading pass's 8: this only decides WHICH columns are lifted, and the ±3 ring
+            // is the same shoreline the foam itself is drawn on.
+            var lift = 0.0;
+            { let ciL = vec3<i32>(cw.x, i32(baseTop - 0.5), cw.y);
+              for (var s3 = 0; s3 < 4; s3++) {
+                var nb3 = ciL;
+                if (s3 == 0) { nb3.x += 3; } else if (s3 == 1) { nb3.x -= 3; } else if (s3 == 2) { nb3.z += 3; } else { nb3.z -= 3; }
+                let nv3 = voxAt(nb3);
+                if (nv3 != 0u && nv3 != WTv && nv3 != WBv) { lift = 1.0; break; }
+              } }
+            let wh = baseTop + floor(wv + 0.5) + lift;
             let tNext = min(tmx, tmz);
             if (ro.y + rd.y * tq <= wh) { t = tq; wSide = true; wCrest = wv; whF = wh; break; }          // SIDE face of a wave step
             if (ro.y + rd.y * tNext <= wh) { t = (wh - ro.y) / rd.y; wCrest = wv; whF = wh; break; }     // TOP face within this column
@@ -3561,7 +3587,7 @@
                 foam = max(foam, step(0.35, ivhash(ci + vec3<i32>(s2 * 13, 11, 5)) * (0.55 + 0.45 * sin(u.time * 1.6 + f32(ci.x * 7 + ci.z * 5) * 0.7))));
               }
             }
-            if (foam > 0.5) { t = min(t, (whF + 2.0 - ro.y) / rd.y); }                    // foam voxels RISE 2 steps above the surface (user: +1 voxel higher)
+            if (foam > 0.5) { t = min(t, (whF + 2.0 - ro.y) / rd.y); }                    // …and the shaded surface rides on top of that raised column (the +1 now comes from the lift in the march above)
             foamK = clamp(foam, 0.0, 1.0) * 0.8;
             albedo = mix(albedo, FOAM_C, foamK);
           }
@@ -4022,7 +4048,14 @@
               let ph = fract(sin(cell.x * 91.7 + cell.y * 47.3) * 4321.7) * 6.2831853;   // per-voxel random phase
               let tw = sin(u.time * 1.6 + ph) * 0.5 + 0.5;   // glint twinkle halved to match
               let pick = step(0.5, fract(sin(cell.x * 12.9898 + cell.y * 78.233) * 43758.5453));   // ~half the voxels participate — scattered, not a sheet
-              let spark = smoothstep(0.82, 1.0, tw) * pick;          // sharp on/off flash → a discrete voxel glint
+              // ── NO GAPS (user 2026-08-05: "it changes its pattern, removes itself, then changes again") ──
+              // the window used to be smoothstep(0.82, 1.0): a cell sat above 0.82 for only 28% of its 3.9 s
+              // cycle and reached full brightness for a sliver of that, so at any instant barely 5% of the
+              // water carried a glint. The eye reads that as a patch lighting up, going out, and a DIFFERENT
+              // patch lighting up — the gap is simply the off part of a very low duty cycle. Widened to
+              // 0.30-0.85: lit 63% of the cycle instead of 28%, and the long ramp means a cell fades in and
+              // out rather than snapping, so the field is continuously populated and the transitions blend.
+              let spark = smoothstep(0.30, 0.85, tw) * pick;         // a soft rise and fall → a glint that arrives and leaves, never blinks
               let sparkC = select(vec3<f32>(1.35, 1.25, 1.0), vec3<f32>(1.15, 1.18, 1.3), isMoon()) * (0.35 + 0.65 * dayScale());
               col = mix(col, sparkC, spark * column * gk * 0.85 * irr.r);   // translucent voxel glint (mix, not add — reads as a bright cube on the surface)
             }
@@ -5158,20 +5191,37 @@
   // Put the player down on solid ground at a world column, however far away — same sequence respawn() uses:
   // move, recenter (which regenerates around the new spot), THEN read the height, because hmap is wrapped
   // window data and means nothing for a column the window did not cover a moment ago.
+  // ── THE WORLD IS BUILT BEFORE YOU ARRIVE IN IT (user 2026-08-05) ── the move used to happen first and the
+  // destination was generated underneath it, so the player stood at the far end while genRegion ran and the
+  // first thing they saw was a forest assembling around them. recenter() does raise the loading panel, but the
+  // whole sequence — panel up, generate, panel down — runs inside ONE synchronous task, and the browser only
+  // paints between tasks: the panel went up and came down without ever reaching the screen.
+  // So the panel goes up on its own, two animation frames are allowed to pass so it is genuinely drawn while
+  // the player is still standing where they typed the command, and only then is the destination generated and
+  // the player put down in it. What they see is: their own surroundings, "loading", then the finished place.
   const cmdGoTo = (x, z, label) => {
     const d0 = Math.round(Math.hypot(x - P.x, z - P.z));
-    P.x = x + 0.5; P.z = z + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0; P.fly = false;
-    // maybeRecenter only fires past its own distance threshold, and a hop SHORTER than that can still land
-    // outside the built rect — where hmap and W are another column's wrapped data, so the ground reads
-    // wrong and the lift-out-of-solid loop below climbs through garbage (it put the player ~100 voxels in
-    // the air on /locate log). Anything not comfortably inside the rect gets a real regen first.
-    const M = 24;
-    if (x < rect.xlo + M || x > rect.xhi - M || z < rect.zlo + M || z > rect.zhi - M) recenter(x, z);
-    else maybeRecenter();
-    P.y = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
-    for (let g = 0; g < 40 && P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT); g++) P.y += 1;   // never land inside a rock or a trunk — capped, so a bad column drops you rather than launching you
-    P.fallT = 0; smoothEye = P.y + EYE; resetHist = 1;
     cmdSay('→ ' + label + ' — ' + d0 + ' voxels');
+    tpLoadEl.textContent = 'loading....';              // just the word (user 2026-08-05) — the destination is already named in the reply line above the command bar, so repeating it here only made the overlay long and busy   // …over the CURRENT view: nothing has moved yet, and the frame behind stays visible
+    tpLoadEl.classList.remove('hidden');
+    const land = () => {
+      try {
+        P.x = x + 0.5; P.z = z + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0; P.fly = false;
+        // maybeRecenter only fires past its own distance threshold, and a hop SHORTER than that can still land
+        // outside the built rect — where hmap and W are another column's wrapped data, so the ground reads
+        // wrong and the lift-out-of-solid loop below climbs through garbage (it put the player ~100 voxels in
+        // the air on /locate log). Anything not comfortably inside the rect gets a real regen first.
+        const M = 24;
+        if (x < rect.xlo + M || x > rect.xhi - M || z < rect.zlo + M || z > rect.zhi - M) recenter(x, z);
+        else maybeRecenter();
+        P.y = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
+        for (let g = 0; g < 40 && P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT); g++) P.y += 1;   // never land inside a rock or a trunk — capped, so a bad column drops you rather than launching you
+        P.fallT = 0; smoothEye = P.y + EYE; resetHist = 1;
+      } finally { tpLoadEl.classList.add('hidden'); }  // …and down it comes in the SAME task as the landing, so the first frame drawn after it is the finished destination
+    };
+    // Two frames, not one: the first callback still belongs to the frame already in flight, so the panel has
+    // not reached the glass yet. The second runs after that frame has been presented.
+    requestAnimationFrame(() => requestAnimationFrame(land));
   };
   const cmdRun = (line) => {
     const t = String(line || '').trim();
@@ -5211,11 +5261,32 @@
   // ── AN ARROW BITES LIKE A TOOL ── it strikes rock or soil and a chunk comes away (user), just smaller
   // than a swing's: an arrowhead is not an axe. And you do NOT get it from across the clearing — the
   // chunk lies where it fell until you walk up to it, at a fraction of the usual reach.
-  // ARROW_ABSORB_R: THREE METRES (user). The world runs 10 voxels to the metre — the asset-editor stage
-  // rules its gridlines every 10th voxel, and the 53-voxel melee reach is the "5.3 m" quoted with it — so
-  // 3 m is 30. That is WIDER than the 16 a swing's chunk uses; what still sets the arrow's chunk apart is
-  // that it never flies to you on a timer, it only ever comes when you are inside this radius.
-  const ARROW_CHOP_RAD = 3, ARROW_CHOP_BITE = 10, ARROW_ABSORB_R = 30;
+  // ARROW_ABSORB_R was 30 — three metres, and WIDER than the 16 an ordinary chunk uses, which is backwards:
+  // a piece knocked off from across the clearing should be no easier to collect than one you cut standing
+  // over it. Now it is exactly PH.absorbR, the one reach the game already uses for a settled chunk and for
+  // AUTO_PICK_R, so "walk up to it" means the same distance whatever knocked it loose (user 2026-08-05, and
+  // the reason this needed several passes is that the radius was never the leak — see the tagging note below).
+  // ARROW_CHOP_MIN: the smallest bite worth taking, and deliberately well UNDER the bite itself. Setting the
+  // two equal (as the axe does, where C_MIN === C_BITE across a radius-10 sphere) made the arrow useless
+  // exactly where the screenshots show it being used — a treetop, where the trunk is a couple of voxels thick
+  // and a radius-3 sphere simply cannot offer ten wood voxels. MEASURED: every shot from 72% of the way up a
+  // pine returned hit:false and did nothing at all. Four still rules out the single-voxel success this was
+  // added to prevent, and `take` is min(bite, whatever is there), so a thin top yields a smaller chunk rather
+  // than nothing.
+  const ARROW_CHOP_RAD = 3, ARROW_CHOP_BITE = 10, ARROW_CHOP_MIN = 4, ARROW_ABSORB_R = 16;
+  // ── AN ARROW TAKES A CHUNK, IT DOES NOT DEMOLISH THE TREE (user 2026-08-05) ── one shaft used to strip a
+  // pine. MEASURED at a seeded tree, per shot: at the TRUNK 48 wood voxels gone for a bite of 10, at a BRANCH
+  // 28 for a bite of 10, and into pure NEEDLES 35 foliage voxels for a bite the arrow had no business taking
+  // at all. Two independent faults, and the ROUTING below is the larger of them — see the note at the call.
+  // This half is the smaller one: the tree path was handed minBite 1 and no material filter, so a shot into
+  // the canopy carved needles (foliage is deliberately carvable in physChopAt) and could succeed on a single
+  // voxel. The arrow now swings under the axe's own discipline, scaled down: WOOD ONLY, so a shaft in the
+  // needles sticks and nothing else happens, exactly as a swing aimed at a leaf does; and a minimum bite EQUAL
+  // to the bite, the same minBite === bite rule chopSwing uses, so a place that cannot give a full 10-voxel
+  // piece is not chopped at all and the sphere can never spend itself on one load-bearing cell. Felling stays
+  // the axe's job — 10 voxels a shot against a trunk of hundreds is a notch — and the flood keeps its honest
+  // say about anything that genuinely does come free.
+  const arrowWood = (v) => !!woodTab[v];             // bark and branch, never needles — chopSwing's isWood, by another name
   const arrowChop = (ix, iy, iz) => {
     if (!PH.on || ED.on || iy < 1 || iy >= WY) return false;
     const id = W[gwrap(ix, WX) + iy * WX + gwrap(iz, WZ) * WX * WY];
@@ -5227,15 +5298,39 @@
     }
     // …confined to the material it struck, exactly as a swing is: the sphere cannot spill into the next one
     const okMat = digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]));
-    const n0 = PH.bodies.length;
-    let hit = phChopDecor(ix, iy, iz, ARROW_CHOP_RAD, ARROW_CHOP_BITE, okMat);
-    if (!hit) { const S = treeShapeAt(ix, iz); if (S) hit = physChopAt(ix, iy, iz, ARROW_CHOP_RAD, S, 1, ARROW_CHOP_BITE).hit; }   // …and a trunk gives up a chunk too
+    const tArr = performance.now();                   // …not PH.bodies.length: see the tagging loop at the end
+    // ── A STANDING TREE IS NOT DECOR ── and this ordering is the whole of the bug. phChopDecor ran FIRST and
+    // trunk ids are in decorTab, so every shot into a pine was handled as though it were a mushroom: it took
+    // its bite and then ran phDecorOrphans — a sweep written for a cap left hanging over a cut stem — across
+    // tree geometry, where a limb reads as unsupported the moment the cut touches its join. chopSwing has
+    // always guarded against exactly this (`decorTab[id] && !woodTab[id]` — "a standing trunk belongs to the
+    // tree path below"); the arrow simply never inherited the guard. Standing wood now goes to the TREE path,
+    // which knows what holds a pine up, and phChopDecor is left the mushrooms, ferns and fallen logs it was
+    // written for.
+    const S = treeShapeAt(ix, iz);
+    const standing = !!(S && woodTab[id]);            // this voxel belongs to a pine that is still up
+    let hit = standing ? physChopAt(ix, iy, iz, ARROW_CHOP_RAD, S, ARROW_CHOP_MIN, ARROW_CHOP_BITE, arrowWood).hit : false;
+    if (!hit && !standing) hit = phChopDecor(ix, iy, iz, ARROW_CHOP_RAD, ARROW_CHOP_BITE, okMat);   // mushrooms, ferns, ground logs — and soil and stone, which is what okMat is for
     if (!hit) return false;
-    for (let i = n0; i < PH.bodies.length; i++) { const b = PH.bodies[i];
+    phFallLoose(ix, iy, iz);                           // whatever that bite was holding up comes down, same as a swing
+    // ── TAG EVERYTHING THIS SHOT CREATED, AND TAG IT LAST (user 2026-08-05: "the player can still absorb
+    // things at a very far distance when shooting with a bow") ── this loop used to run BEFORE phFallLoose,
+    // so it only ever caught the bodies the carve itself made. Every clump phFallLoose then cut free kept the
+    // ordinary absorbAt timer, and a timed body skips the distance gate entirely (see the absorb step: the
+    // range check lives inside the `no timer yet` branch, and a body whose timer has elapsed falls straight
+    // through to absorbing). MEASURED standing 120 voxels from the tree and never moving: one shot left 8
+    // untagged bodies and 6 chunks flew across the clearing into the player.
+    // …and it walks the list by BIRTH TIME, not by an index range captured beforehand. That was the second
+    // half of the same bug and the reason it survived earlier passes: phMakeRoom and phReclaim splice the
+    // OLDEST body out of the MIDDLE of PH.bodies to stay under the cap, which shifts every later index down,
+    // so a saved `n0` stops pointing at the first new body the moment a carve runs at capacity — exactly when
+    // a shot into a tree makes the most debris. Every body records `born`, and that survives any amount of
+    // splicing. Between the two fixes there is no longer any path from a bowshot to a body that collects itself.
+    for (let i = 0; i < PH.bodies.length; i++) { const b = PH.bodies[i];
+      if (b.born < tArr) continue;                     // it was already lying there before this shot — not ours to re-tag
       b.absorbAt = 0;                                  // no timed flight into your chest: it has to be COLLECTED
       b.nearR = ARROW_ABSORB_R;                        // …and only from close up (user)
     }
-    phFallLoose(ix, iy, iz);                           // whatever that bite was holding up comes down, same as a swing
     return true;
   };
   const ARROWS_ON_FIELD = 3;                         // how many loosed arrows may lie about at once — one drop slot is always kept free for the next shot
@@ -6274,42 +6369,83 @@
   // a size cap instead — a piece that large is a tree, not debris.
   const FALL_SEED_R = 10;                              // how far from the carve to look for pieces it may have cut loose
   const FALL_MAX = 3000;                               // past this, stop and assume it is held: it is not debris
+  // ── BOUNDED SUPPORT (user 2026-08-05) ── "is this clump touching wood anywhere?" is the wrong question and
+  // both adjacencies answered it badly. 6-connected called a diagonally-hung needle clump unheld and dropped
+  // it, which stranded its neighbours; 26-connected merged the whole crown into one blob that touches the
+  // trunk somewhere, so a carved-out branch left its needles hanging. Neither is how a canopy works: needles
+  // hang NEAR a branch, so support is a question of DISTANCE, not of eventual connection.
+  // So: a multi-source 26-connected walk outward from every real support voxel (wood, terrain — anything
+  // occupied that is not itself loose) through loose voxels, stopping at FALL_HOPS. Loose voxels the walk
+  // never reaches are hanging on nothing within reach of anything solid, and those fall.
+  // FALL_HOPS comes from the geometry, not from taste: MEASURED across pines, the furthest a healthy canopy's
+  // own needles sit from their nearest wood is 13-26 hops depending on the tree, so 26 keeps every intact
+  // crown and still catches the masses that end up far beyond it once a branch is gone.
+  const FALL_HOPS = 26;
+  const FALL_BOX = FALL_SEED_R + FALL_HOPS;            // every candidate inside the seed radius has its whole FALL_HOPS neighbourhood inside the box, so the walk can never be cut short by the wall
+  let phFlS = null, phFlD = null, phFlQ = null;
   const phFallLoose = (cx0, cy0, cz0) => { phSrc = 'fallLoose';
     // A creature stamp is never "loose scatter", however its palette ids happen to be shared — a perched
     // bird sitting in needles would otherwise be walked as part of the clump and dropped with it, which is
     // one of the ways animals came apart into chunks (user 2026-08-05). Stamped cells read as EMPTY here:
     // not loose, and not support either, since the animal will move off them on its own.
     const loose = (v, ii) => v && (foliaTab[v] || floatTab[v]) && !stampedIdx.has(ii);
-    const seen = new Set();
-    const idxOf = (x, y, z) => gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+    const B = FALL_BOX, bw = 2 * B + 1;
+    const y0 = Math.max(1, cy0 - B), y1 = Math.min(WY - 1, cy0 + B), bh = y1 - y0 + 1;
+    if (bh < 3) return;
+    const x0 = cx0 - B, z0 = cz0 - B, nAll = bw * bw * bh;
+    if (!phFlS || phFlS.length < nAll) { phFlS = new Uint8Array(nAll); phFlD = new Uint8Array(nAll); phFlQ = new Int32Array(nAll); }
+    else { phFlS.fill(0, 0, nAll); phFlD.fill(0, 0, nAll); }
+    const li = (ix, iy, iz) => ix + iz * bw + iy * bw * bw;
+    const wIdx = (ix, iy, iz) => gwrap(x0 + ix, WX) + (y0 + iy) * WX + gwrap(z0 + iz, WZ) * WX * WY;
+    // 1 = loose (candidate), 2 = SUPPORT (real geometry that can hold something up)
+    let sp = 0;
+    for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bw; iz++) for (let ix = 0; ix < bw; ix++) {
+      const ii = wIdx(ix, iy, iz), v = W[ii];
+      if (!v || stampedIdx.has(ii)) continue;
+      const k = li(ix, iy, iz);
+      if (loose(v, ii)) phFlS[k] = 1; else { phFlS[k] = 2; phFlQ[sp++] = k; }
+    }
+    // …outward from the support, through loose voxels only, FALL_HOPS deep
+    let head = 0;
+    while (head < sp) {
+      const k = phFlQ[head++], d = phFlD[k];
+      if (d >= FALL_HOPS) continue;
+      const ix = k % bw, iz = ((k / bw) | 0) % bw, iy = (k / (bw * bw)) | 0;
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+        if (!dx && !dy && !dz) continue;
+        const nx = ix + dx, ny = iy + dy, nz = iz + dz;
+        if (nx < 0 || nx >= bw || nz < 0 || nz >= bw || ny < 0 || ny >= bh) continue;
+        const nk = li(nx, ny, nz);
+        if (phFlS[nk] !== 1) continue;                 // empty, already claimed, or support
+        phFlS[nk] = 3; phFlD[nk] = d + 1; phFlQ[sp++] = nk;   // 3 = reached, i.e. HELD
+      }
+    }
+    // whatever is still 1 is loose and out of reach of anything solid: group it and drop it
     const R = FALL_SEED_R;
-    for (let dy = -R; dy <= R; dy++) for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
-      const sy2 = cy0 + dy; if (sy2 < 1 || sy2 >= WY) continue;
-      const sx2 = cx0 + dx, sz2 = cz0 + dz;
-      const si = idxOf(sx2, sy2, sz2);
-      if (seen.has(si) || !loose(W[si], si)) continue;
-      // ── walk this whole clump ── it is held the moment any voxel of it touches something that is not
-      // loose. Bail out on the cap rather than crawling an entire forest canopy.
-      const comp = [], q = [[sx2, sy2, sz2]], mine = new Set([si]);
-      let held = false, over = false;
+    for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bw; iz++) for (let ix = 0; ix < bw; ix++) {
+      if (phFlS[li(ix, iy, iz)] !== 1) continue;
+      const comp = [], q = [li(ix, iy, iz)];
+      phFlS[q[0]] = 4;
+      let near = false, wall = false, over = false;
       while (q.length) {
-        const c = q.pop(); comp.push(c);
+        const k = q.pop();
+        const jx = k % bw, jz = ((k / bw) | 0) % bw, jy = (k / (bw * bw)) | 0;
+        comp.push([x0 + jx, y0 + jy, z0 + jz]);
         if (comp.length > FALL_MAX) { over = true; break; }
-        for (let d = 0; d < 6; d++) {
-          const nx = c[0] + (d === 0 ? 1 : d === 1 ? -1 : 0), ny = c[1] + (d === 2 ? 1 : d === 3 ? -1 : 0), nz = c[2] + (d === 4 ? 1 : d === 5 ? -1 : 0);
-          if (ny < 1 || ny >= WY) { held = true; continue; }
-          const ni = idxOf(nx, ny, nz), nv = W[ni];
-          if (!nv || stampedIdx.has(ni)) continue;     // a creature standing there is not geometry: it neither joins the clump nor holds it up
-          if (!loose(nv, ni)) { held = true; continue; }   // a branch, the trunk, the ground — this clump is attached
-          if (!mine.has(ni)) { mine.add(ni); q.push([nx, ny, nz]); }
+        near = true;   // ── ANY unreached component falls, wherever it sits in the box (user: "nothing should be floating") ── this used to require a voxel within FALL_SEED_R of the impact, on the theory that only nearby geometry could have been freed by the carve. That is not true of a canopy: cutting one branch un-foots needles right along it, tens of voxels out, and those were left hanging because they failed this test. Being unreached by the support walk is already the whole proof — it means nothing solid lies within FALL_HOPS in any direction — so the extra proximity condition only ever suppressed correct drops.
+        if (jx === 0 || jx === bw - 1 || jz === 0 || jz === bw - 1 || jy === 0 || jy === bh - 1) wall = true;   // it leaves the box: its support may be outside, so leave it alone
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+          if (!dx && !dy && !dz) continue;
+          const nx = jx + dx, ny = jy + dy, nz = jz + dz;
+          if (nx < 0 || nx >= bw || nz < 0 || nz >= bw || ny < 0 || ny >= bh) continue;
+          const nk = li(nx, ny, nz);
+          if (phFlS[nk] === 1) { phFlS[nk] = 4; q.push(nk); }
         }
       }
-      for (const i2 of mine) seen.add(i2);             // decided, either way — never walk it twice
-      if (held || over || !comp.length) continue;
-      // …nothing holds it: it falls.
+      if (over || wall || !near || !comp.length) continue;
       if (comp.length < 3 || comp.length > PH.absorbMax || (PH.bodies.length >= PH.maxBodies && !phMakeRoom())) {
         const gone = [];
-        for (const c of comp) { const ii = idxOf(c[0], c[1], c[2]); if (W[ii]) { W[ii] = 0; gone.push(ii); } }
+        for (const c of comp) { const ii = gwrap(c[0], WX) + c[1] * WX + gwrap(c[2], WZ) * WX * WY; if (W[ii]) { W[ii] = 0; gone.push(ii); } }
         if (gone.length) { gpuPatch(gone, false); PH.stats.dustVox += gone.length; }
         continue;
       }
@@ -6995,6 +7131,7 @@
   // drifts to a new random target every few seconds (varied, believable arcs — never a fixed circle) and it terrain-follows via hmap so it
   // always clears the canopy. Pose is written into drop slot 4 each frame (see the drops uniform section) and DDA-raytraced off-grid —
   // smooth rotation, depth-tested, no world-grid writes.
+  const BIRD_SLOTS = 5;                                // how many of the flying flock may hold a drop slot at once — the nearest ones (see the emit loop)
   const BIRD_N = 12;                                   // divisible by 1/2/3/4 — whatever the species count, the round-robin split below comes out exact                                    // a few cardinals in the air, not one (user). Bird 0 owns the dedicated drop slot 4;
   let birdKills = 0;                                   // songbirds brought down by a shaft — the flock refills itself, so a headcount alone proves nothing
   const birds = Array.from({ length: BIRD_N }, () => ({ th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0, mode: 0, swoopT0: 0, swoopA: 0, swO: 0, edge: false, fi: 0, sp: 0 }));   // the rest ride the compacted creature slots. mode: 0 wander / 1 thermal soar / 2 swoop
@@ -7129,6 +7266,43 @@
   // fog-bound butterfly is the one dropped. Allocated ONCE — never per frame.
   const EMIT_CAP = 216, emitBuf = new Float32Array(EMIT_CAP * 16), emitDp = new Float64Array(EMIT_CAP), emitIdx = new Int32Array(EMIT_CAP);
   const emitWho = new Int32Array(EMIT_CAP), emitAnc = new Float32Array(EMIT_CAP * 3), emitAna = new Uint8Array(EMIT_CAP);   // staged identity + world anchor + analytic-only flag → the dynamic-life slot ledger (filled in the nearest-first copy)
+  // ── FAIR SHARE BETWEEN THE KINDS (user 2026-08-05: "dragonflies, salmon and ducks keep disappearing") ──
+  // Every trace-injected creature competes for whatever is left of the 64 drop slots once the flying songbirds
+  // have taken theirs: 64 - 25 - 11 = 28. The populations that contend for those 28 are far larger — 16
+  // butterflies + 3 dragonflies + 4 mother ducks + 12 ducklings + 22 worms + 32 fish = up to 89. The surplus
+  // used to be dropped by DISTANCE ALONE, which is not a fair rule when one kind clusters: MEASURED standing at
+  // a lake, fish took 23 of the 28 slots and dragonflies, mother ducks and ducklings were drawn ZERO times out
+  // of six samples, the nearest undrawn duck sitting 300 voxels away in plain view. In the forest the same
+  // thing happened with butterflies and worms taking 28 of 28 and every fish and duck invisible.
+  // So the allocator reserves the nearest LIFE_FLOOR of EVERY kind that has anything on screen before distance
+  // is allowed to decide anything, and only then fills what is left nearest-first. A kind can still lose slots
+  // to a closer crowd — that is the point of a budget — but it can no longer be shut out of the frame entirely.
+  // FISH GET ONE BUCKET PER SPECIES, not one for "fish". There are five of them (bass, blue_gill, catfish,
+  // minnow, salmon) sharing a 32-strong population, and to the player a salmon is as distinct a creature as a
+  // duck is — so pooling them let distance alone decide which species you ever saw. MEASURED at a lake with the
+  // kind-level share alone: bass 4.3 drawn, salmon 2.0; at a river bass 4.5, salmon 1.0. One guaranteed slot per
+  // species costs 5 of the 28 and makes every species reliably present, which is the whole point of the floor.
+  const LIFE_K_FLYER = 0, LIFE_K_DFLY = 1, LIFE_K_DUCK = 2, LIFE_K_BABY = 3, LIFE_K_WORM = 4, LIFE_K_OTHER = 5;
+  const LIFE_K_FISH = 6, LIFE_FISH_MAX = 8, LIFE_KINDS = LIFE_K_FISH + LIFE_FISH_MAX;   // 6..13 = one bucket per loaded fish species
+  const LIFE_FLOOR = 3, LIFE_FLOOR_FISH = 2;           // the general floor, and TWO slots per fish species — one was enough to prove a species was present but not enough to keep it there while it swam (user: "the salmon is still dissapearing")
+  // ── A DUCK FAMILY IS ONE THING (user 2026-08-05: "the ducks are still disappearing") ── MEASURED over 50 s
+  // beside a lake, the mothers never despawned at all: 4 active every frame, ZERO despawn events. What the
+  // player was seeing was the draw budget — 2 of the 4 mothers on screen and 3 ducklings out of 12. A brood is
+  // a mother plus three babies, so three duckling slots across four families means a mother paddling alone or
+  // with one chick behind her, which reads exactly like ducks vanishing. There are only ever 4 mothers and 12
+  // ducklings, so guaranteeing a whole family is cheap and bounded: every mother, and two complete broods.
+  const LIFE_FLOOR_DUCK = 4, LIFE_FLOOR_BABY = 6;
+  const lifeFloorOf = (k) => k >= LIFE_K_FISH ? LIFE_FLOOR_FISH
+    : (k === LIFE_K_DUCK ? LIFE_FLOOR_DUCK : (k === LIFE_K_BABY ? LIFE_FLOOR_BABY : LIFE_FLOOR));
+  // ── AND THE FLOOR ONLY APPLIES WHERE YOU COULD ACTUALLY SEE IT ── a reserved slot spent on a speck is worse
+  // than no reservation at all. Without this gate the fair share did exactly that: MEASURED, a mother duck at
+  // 626 voxels and a fish at 928 held reserved slots while nearer creatures went undrawn. So the guarantee is
+  // scoped to LIFE_DRAW, the one radius every kind is judged by, and anything beyond it competes for the
+  // leftovers on distance alone — which means a far creature is still drawn when the scene is quiet, and never
+  // at the cost of something in front of you. Creatures stay ALIVE out to LIFE_KEEP (~1040) as they always did;
+  // this governs only which of them get one of the 28 slots.
+  const LIFE_DRAW = 420, LIFE_DRAW2 = LIFE_DRAW * LIFE_DRAW;
+  const emitKnd = new Uint8Array(EMIT_CAP), emitTake = new Uint8Array(EMIT_CAP), emitKcnt = new Int32Array(LIFE_KINDS);
   let fishSchoolSeq = 0;                                // rolling id handed to each new fish school so same-school mates recognise each other (3-6 per school; ~28% of fish stay lone)
   // ── FISH 2.0 CONFIG ── every swimmer tunable in ONE bag, live-tweakable from the console (__vb.fishCfg.xxx = …).
   // The AI itself runs in the creature tick (SWIM ⇄ FLEE states + ballistic AIR arcs) on the shared body predicate
@@ -7554,12 +7728,24 @@
   // jump, one splash. The test now runs ONCE, when the arc is committed, and both ends honour that answer.
   // Radius raised 110 -> 150: 110 was cutting leaps that are plainly visible, which is the other half of the
   // same complaint. The far ones this exists to silence sit at 180-420.
-  const FISH_SPLASH_R = 150;
+  // ── THE SPLASH FOLLOWS THE FISH, NOT A RADIUS (user 2026-08-05: "splash particles are showing up, but
+  // theres no fish being rendered") ── a radius was the wrong test twice over. At 150 it silenced two thirds
+  // of the leaps you could see; widened to LIFE_DRAW it started splashing for fish that are inside the radius
+  // but LOST THE SLOT CONTEST, because how far a fish is and whether it is drawn are two different questions —
+  // the budget hands out 28 slots nearest-first, so a fish at 300 can be well inside 420 and still not be on
+  // screen. The only rule that cannot disagree with the renderer is the renderer's own ledger: splash if this
+  // fish is actually in a drop slot. Decided once at launch and honoured at re-entry, so an arc still splashes
+  // at both ends or neither.
+  // lifeUidPrev, not lifeUid: the ledger is wiped at the top of every frame and refilled by the emit, which
+  // runs AFTER the creature loop asks this question — reading the live one gave a splash of exactly zero.
+  // Last frame is the right answer anyway: it is what the player actually saw a sixtieth of a second ago.
+  const lifeIsDrawn = (wk) => { const want = 2000 + wk;
+    for (let s = 0; s < 64; s++) if (lifeUidPrev[s] === want) return true;
+    return false; };
   let splashLast = 0;
   function spawnSplash(wx, wz, k) {
     const now = performance.now();
-    if (now - splashLast < 16) return;                 // same-FRAME guard only — the band holds two overlapping bursts and never steals, so a second fish 40 ms later must still get its own splash
-    splashLast = now;
+    splashLast = now;                                  // …no same-frame guard: with the radius now matching the draw distance, two fish really can break the surface in one frame, and the band already refuses to steal a live droplet, so the second one must get its own burst rather than be swallowed
     const s = k === undefined ? 1 : k;
     let placed = 0;
     for (let i = 0; i < 4; i++) {
@@ -7582,8 +7768,13 @@
   // open water a fish launching, the same fish landing and the player wading all land inside a second, and
   // each burst overwrote the last one MID-FLIGHT. Two bursts' worth of splash slots plus free-slot-first
   // allocation means a droplet now always lives out its full life.
-  const SPLASH_LO = 4, SPLASH_HI = 12;                 // 8 slots = two complete bursts in the air at once
-  const TEAR_LO = 12, TEAR_HI = 20;                    // 8 slots — three ducklings at CRY_GAP never need more
+  // ── REBALANCED (user 2026-08-05) ── once the splash radius grew to the draw distance every visible leap
+  // started asking for a burst, and eight slots could not hold them: MEASURED, 20 of 69 bursts came out short,
+  // averaging 2.8 droplets instead of 4. Tears are the band that can spare them — a brood cries three at a
+  // time at CRY_GAP, so four slots is already more than that effect can ever use, while splashes now overlap
+  // three deep on open water.
+  const SPLASH_LO = 4, SPLASH_HI = 16;                 // 12 slots = three complete bursts in the air at once
+  const TEAR_LO = 16, TEAR_HI = 20;                    // 4 slots — three ducklings at CRY_GAP never need more
   // Take the next slot in a band: FREE first, then the oldest one holding DEATH SMOKE, else -1.
   // ── NEVER STEAL A DROPLET (user 2026-08-05: "some are cut off real short and others are fine") ── the
   // first version fell back to the oldest live slot whatever it held, which is exactly a droplet being
@@ -8619,13 +8810,10 @@
                                   : (bowLock < 0 ? n - 1 : (bowLock - 1 < 0 ? -1 : bowLock - 1));
     arwSync();
   });
-  document.addEventListener('keydown', (e) => {
-    if (e.code !== 'KeyL' || e.repeat || listenAction) return;
-    if (ED.on || !vePanel.classList.contains('hidden') || dead) return;   // not over the asset editor, the video editor, or the death screen
-    if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
-    e.preventDefault();
-    setLightMode(!lightMode);
-  });
+  // ── L DOES NOTHING (user 2026-08-05) ── it used to hand the cursor to the water panel, and with that panel
+  // off screen all it did was take the pointer away mid-game. The listener is gone; setLightMode and
+  // lightMode stay wired (the esc-menu suppression and cursSync still read them, harmlessly false forever),
+  // so restoring the key is re-adding this one listener.
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (!locked) { lightMode = false; tryLock(); } });   // clicking the world takes control back and ends light mode
   document.addEventListener('keydown', (e) => {        // "press any button" — ANY key leaves the start prompt (a click still works via the canvas handler above)
@@ -9397,6 +9585,37 @@
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
     solidAt2(x, y, z) { return solid(x, y, z); },      // what the PLAYER actually collides with (cones exempted) — solidAt reports the raw table
     boxFreeAt(x, y, z) { return boxFree(x, y, z, HEIGHT); },   // can the player's whole box sit here?
+    lifeUidAt(s) { return lifeUid[s | 0]; },           // which pool slot is DRAWN in drop slot s (2000+slot), or -1
+    lifeBudget() { return { base: 25, total: 64, drawn: lifeUid.filter((u) => u >= 2000).length }; },
+    // ── WHO IS ALIVE, AND WHO IS ACTUALLY ON SCREEN ── per kind. The gap between `active` and `drawn` is the
+    // slot famine: the trace-injected creatures share whatever is left of the 64 drop slots after the flying
+    // songbirds, and the surplus is dropped by DISTANCE ALONE, so a dense near kind can starve a far one out
+    // of the frame entirely. dHiddenMin is the closest creature of that kind that did NOT get drawn — the
+    // number that tells you a duck 60 voxels away is invisible. Grid-stamped kinds live in W, not in a slot,
+    // so they report drawn: -1 rather than a misleading 0.
+    lifeCensus() {
+      const STAMPED = { cardinal: 1, bunny: 1, armadillo: 1, skunk: 1, porcupine: 1 };
+      const bandOf = (wk) => wk < 16 ? 'flyer' : wk < 20 ? 'duckMom' : wk < 32 ? 'duckling' : wk < 64 ? 'worm'
+        : wk < 244 ? 'cardinal' : wk < 276 ? 'fish' : wk < 300 ? 'bunny' : wk < 324 ? 'armadillo' : wk < 348 ? 'skunk' : 'porcupine';
+      const shown = new Set();
+      for (let s = 0; s < 64; s++) { const u = lifeUid[s]; if (u >= 2000) shown.add(u - 2000); }
+      const acc = {};
+      for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];
+        if (!B || !B.init || B.slain) continue;
+        let k = bandOf(wk); if (k === 'flyer' && B.dfly) k = 'dragonfly';
+        const a = acc[k] || (acc[k] = { active: 0, drawn: 0, dDrawnMax: 0, dHiddenMin: 1e9, dHiddenMax: 0 });
+        const d = Math.hypot(B.x - P.x, B.z - P.z);
+        a.active++;
+        if (shown.has(wk)) { a.drawn++; if (d > a.dDrawnMax) a.dDrawnMax = d; }
+        else if (!STAMPED[k]) { if (d < a.dHiddenMin) a.dHiddenMin = d; if (d > a.dHiddenMax) a.dHiddenMax = d; }
+      }
+      for (const k in acc) { const a = acc[k];
+        a.dDrawnMax = Math.round(a.dDrawnMax);
+        a.dHiddenMin = a.dHiddenMin > 1e8 ? -1 : Math.round(a.dHiddenMin);
+        a.dHiddenMax = Math.round(a.dHiddenMax);
+        if (STAMPED[k]) { a.drawn = -1; a.dDrawnMax = -1; } }
+      return { slots: { firstCreature: 25, flock: BIRD_N - 1, flockDrawn: BIRD_SLOTS, firstFree: 25 + BIRD_SLOTS, total: 64, forTraced: 64 - (25 + BIRD_SLOTS) }, kinds: acc };
+    },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
     edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; if (ED.giz) ED.rgiz = false; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
     edRgiz(v) { ED.paused = true; ED.rgiz = v === undefined ? !ED.rgiz : !!v; if (ED.rgiz) ED.giz = false; edEnsureRgizCols(); edLayout(); return { rgiz: ED.rgiz, rings: ED.rgizBoxes.map((g) => g.kind) }; },   // rotate-gizmo test tap
@@ -9409,7 +9628,10 @@
     dropAxis(i) { const o = 68 + (i | 0) * 16; return UF[o + 7] > 0.5 ? [+UF[o + 4].toFixed(3), +UF[o + 5].toFixed(3), +UF[o + 6].toFixed(3)] : null; },   // a dropped item's X axis in camera space — a spinning drop's changes every frame
     dropUp(i) { const o = 68 + (i | 0) * 16; return UF[o + 7] > 0.5 ? [+UF[o + 12].toFixed(3), +UF[o + 13].toFixed(3), +UF[o + 14].toFixed(3)] : null; },   // a dropped item's own +z in camera space — which way up it is hovering
     uf(i) { return UF[i | 0]; },                       // raw uniform slot — lets a test read a drop's whole orientation basis
-    arrowChunks() { return PH.bodies.filter((b) => b.nearR).map((b) => ({ vox: b.n, reach: b.nearR, normalReach: PH.absorbR, timed: !!b.absorbAt, sleeping: !!b.sleeping })); },   // chunks an ARROW knocked loose: they wait to be walked up to
+    arrowChunks() { return PH.bodies.filter((b) => b.nearR).map((b) => ({ vox: b.n, reach: b.nearR, normalReach: PH.absorbR, timed: !!b.absorbAt, sleeping: !!b.sleeping, absorbing: !!b.absorbing, d: Math.round(Math.hypot(b.pos[0] - P.x, b.pos[1] - smoothEye, b.pos[2] - P.z)) })); },   // chunks an ARROW knocked loose: they wait to be walked up to. d = how far the player is from each RIGHT NOW — the number the collection radius is actually tested against
+    bodiesNear() { return PH.bodies.map((b) => ({ vox: b.n, arrow: !!b.nearR, timed: !!b.absorbAt, absorbing: !!b.absorbing, src: b.src,
+      y: +b.pos[1].toFixed(1), vy: +b.vel[1].toFixed(2), sleeping: !!b.sleeping, rest: b.restT | 0,
+      d: Math.round(Math.hypot(b.pos[0] - P.x, b.pos[1] - smoothEye, b.pos[2] - P.z)) })); },   // …and the same for EVERY rigid body, so a test can catch one collecting itself from across the map whatever made it — or one that stopped falling in mid-air
     phys(v) {                                          // ── VOXEL DESTRUCTION ── enable/inspect
       if (v !== undefined) { PH.on = !!v; if (!PH.on) { PH.bodies.length = 0; PH.acc = 0; bodyTop = 0; } }
       return { on: PH.on, dt: PH.dt, iters: PH.iters, bodies: PH.bodies.length, awake: PH.bodies.filter((b) => !b.sleeping).length,
@@ -9425,8 +9647,24 @@
           ageMs: Math.round(performance.now() - b.born) })) };
     },
     physChop(x, y, z, r) { return physChopAt(x, y, z, r); },
+    // the full chop signature, so a test can vary ONE parameter at a time — the material filter in particular,
+    // which decides whether the flood is asked about a tree that still has all its needles or one it does not.
+    physChopFull(x, y, z, rad, minBite, bite, woodOnly) {
+      const S = treeShapeAt(x | 0, z | 0); if (!S) return { hit: false, why: 'no pine here' };
+      return physChopAt(x | 0, y | 0, z | 0, rad, S, minBite, bite, woodOnly ? ((v) => !!woodTab[v]) : undefined);
+    },
     physSwing() { return chopSwing(); },
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
+    arrowChopAt(x, y, z) { return arrowChop(x | 0, y | 0, z | 0); },   // the ARROW's carve, at a chosen voxel. Driving it through a real shot is unmeasurable: the shaft picks its own impact, and a creature in the way cancels the chop outright.
+    // Stake an arrow into a chosen creature exactly as a landed shot does, so the "it goes when the animal
+    // goes" sweep can be tested without having to hit a butterfly with a real shaft — which is not a test so
+    // much as a marksmanship contest, and the teleport that would line one up recycles the target anyway.
+    stickArrowIn(slot) { const s = slot | 0, B = wbf[s];
+      if (!ARROW_IT || !B || !B.init) return null;
+      drops.push({ x: Math.round(B.x), y: Math.round(B.y), z: Math.round(B.z), it: ARROW_IT, ph: 0,
+        born: performance.now(), T: 0, stick: true, hitSlot: s, hitDone: true,
+        stuckSlot: s, stuckBorn: B.born, q0: [0, 0, 0, 1] });
+      return { stuckSlot: s, stuckBorn: B.born, drops: drops.length }; },
     cmd(line) { cmdRun(line); return { msg: cmdMsg ? cmdMsg.textContent : '', at: [Math.round(P.x), Math.round(P.y), Math.round(P.z)] }; },   // run a command line exactly as Enter does — /spawn, /locate
     severedFall(x, y, z) { return phSeveredFall(x, y, z); },   // run the severed-from-the-world sweep at a point; returns how many components it dropped
     severedCfg() { return { R: ORPH_R, up: ORPH_UP, maxComp: ORPH_MAX, bodyCap: PH.absorbMax }; },
@@ -10397,10 +10635,24 @@
       if (dr.hitSlot !== undefined && dr.hitSlot >= 0) { dr.hitDone = true;
         hitCreature(dr.hitSlot, (dr.kind || 'arrow') + dr.born);
         spawnHitSparks(dr.ex, dr.ey, dr.ez);           // …and it STRIKES: sparks off the impact (user)
+        // ── THE SHAFT IS IN THE ANIMAL NOW (user 2026-08-05: "make the arrow disappear when the life
+        // disappears") ── a stuck arrow used to outlive whatever it hit, so once the creature died or simply
+        // walked out of range the shaft was left hanging in clear air where the animal had been. Remember the
+        // slot AND the occupant: B.born is stamped fresh on every placement, so it doubles as a generation
+        // number and a recycled slot can never be mistaken for the same animal still carrying the arrow.
+        { const BH = wbf[dr.hitSlot]; if (BH) { dr.stuckSlot = dr.hitSlot; dr.stuckBorn = BH.born; } }
         continue; }
       if (!dr.chopAt) continue;
       dr.hitDone = true;
       arrowChop(dr.chopAt[0], dr.chopAt[1], dr.chopAt[2]);
+    }
+    for (const dr of drops) {                          // ── AND IT GOES WITH IT ── an arrow stuck in a creature dies the moment that creature does
+      if (!dr || dr.stuckSlot === undefined) continue;
+      const BS = wbf[dr.stuckSlot];
+      // !init covers every way life leaves: the death poof at the end of the blink (reapDeaths), a dusk/dawn
+      // handover, and an ordinary recycle out at LIFE_KEEP. born !== stuckBorn catches the one case init misses,
+      // a slot re-filled by a NEW animal in the same frame the old one left.
+      if (!BS || !BS.init || BS.slain || BS.born !== dr.stuckBorn) dr.gone = true;
     }
     for (let i = drops.length - 1; i >= 0; i--) if (drops[i] && drops[i].gone) drops.splice(i, 1);   // …swept up here
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
@@ -10952,14 +11204,24 @@
       }
     }
     let dropCursor = 25;                               // COMPACTION: live creatures emit to consecutive slots from 25; the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists. (5-24 = the 20 fixed death-burst slots: 4 sparks + 16 individual smoke voxels, user)
-    if (!ED.on && FLYERS.length > 0) {                 // ── the rest of the SONGBIRDS ── emitted FIRST so a busy scene drops a far butterfly rather than a bird
+    // ── THE FLOCK NO LONGER TAKES THE WHOLE BUDGET (user 2026-08-05: ducklings, salmon and ducks all missing) ──
+    // all eleven remaining songbirds used to be written unconditionally, ahead of every other creature, which
+    // left 64 - 25 - 11 = 28 slots for the entire rest of the world's life to share. They are also the one kind
+    // that is always overhead and always the same, so they were the cheapest thing to bound. Every bird still
+    // FLIES — birdStep runs for all of them, so the flock and its hitboxes are unchanged — but only the nearest
+    // BIRD_SLOTS are drawn, which hands six slots straight to the creatures the player was losing.
+    if (!ED.on && FLYERS.length > 0) {
       const tbF = now / 1000;
+      const bOrd = [];
       for (let bi = 1; bi < BIRD_N; bi++) {
-        if (dropCursor > 63) break;
-        const ps = birdStep(birds[bi], bi, tbF, dt);
+        const ps = birdStep(birds[bi], bi, tbF, dt);   // stepped for ALL of them, drawn for some
         ps.uid = bi;                                   // stable identity for the dynamic-life temporal reprojection
-        birdWrite(68 + dropCursor * 16, ps, cam, right, up, fwd);
         birdHit(birdBoxes[bi], ps);                    // every cardinal is solid, same as the first
+        bOrd.push({ ps, d: (ps.x - P.x) * (ps.x - P.x) + (ps.z - P.z) * (ps.z - P.z) });
+      }
+      bOrd.sort((a, b) => a.d - b.d);
+      for (let i = 0; i < bOrd.length && i < BIRD_SLOTS && dropCursor <= 63; i++) {
+        birdWrite(68 + dropCursor * 16, bOrd[i].ps, cam, right, up, fwd);
         dropCursor++;
       }
     } else for (let bi = 1; bi < BIRD_N; bi++) birdBoxes[bi].active = false;
@@ -11527,7 +11789,7 @@
                   bfWater(mx9, mz9) && bfSky(mx9, WL + 2, mz9) && fishFits(B, B.th, 8)) {        // …and the mid-arc + immediate exit are clear too
                 B.jumpV = jv; B.spd = FC9.jump.forward; B.spdT = FC9.jump.forward;   // launch, carrying the configured forward speed through the whole arc
                 B.om = 0; B.omT = 0; B.jumpArm = undefined;                          // dead-straight in the air — the validated splash-down must stay where it was aimed
-                B.jumpSpl = dp2 < FISH_SPLASH_R * FISH_SPLASH_R;   // decided HERE, for the whole arc — see FISH_SPLASH_R
+                B.jumpSpl = lifeIsDrawn(wk);       // decided HERE, for the whole arc — see lifeIsDrawn
                 if (B.jumpSpl) spawnSplash(B.x, B.z, 1); if (B.jumpSpl) PH.stats.leapUp = (PH.stats.leapUp|0)+1;   // …and it breaks the surface with a splash (user), if it is near enough to be seen doing it
               } else { B.jumpArm = undefined; B.jumpRe = tb3 + 4 + Math.random() * 6; B.dT = 0.3 + Math.random() * 0.4; }   // the arc lands badly (bank/shallow/roof) — stand down, sink back, try elsewhere
             } else if (tb3 > B.jumpArm) { B.jumpArm = undefined; B.jumpRe = tb3 + 6 + Math.random() * 12; }   // never reached the surface (roofed/penned in) — stand down
@@ -11693,16 +11955,35 @@
         emitBuf[o4 + 12] = right[1]; emitBuf[o4 + 13] = up[1]; emitBuf[o4 + 14] = fwd[1]; emitBuf[o4 + 15] = 0;
       }
       emitWho[emitN] = wk; emitAna[emitN] = B.kind === 1 ? 1 : 0;   // FIREFLIES stay analytic (emissive abdomen + translucent wings need the composite path)
+      // which KIND is contending for a slot — the fair-share allocator's only input besides distance. Ducklings
+      // are counted apart from their mothers on purpose: a brood is a dozen bodies against her one, so pooled
+      // they would spend the whole duck allowance on babies and the mother would never be the one drawn.
+      emitKnd[emitN] = fishSlot ? (LIFE_K_FISH + Math.min(LIFE_FISH_MAX - 1, B.fsp | 0)) : (wormSlot ? LIFE_K_WORM : (isBaby ? LIFE_K_BABY : (duckSlot ? LIFE_K_DUCK
+        : (wk < 16 ? (B.dfly ? LIFE_K_DFLY : LIFE_K_FLYER) : LIFE_K_OTHER))));   // wk < 16 is the flyer band: butterflies by day, fireflies by night, dragonflies at the top of it
       emitAnc[emitN * 3] = px3; emitAnc[emitN * 3 + 1] = py3; emitAnc[emitN * 3 + 2] = pz3;
       emitDp[emitN] = dp2; emitN++;
     }
     if (CPROF) cpMark(5);
-    { const avail = 64 - dropCursor;                   // ── NEAREST-FIRST EMIT ── copy the closest staged poses into the real drop slots; the rest (far, in fog) are the ones dropped
+    { const avail = 64 - dropCursor;                   // ── FAIR-SHARE EMIT ── copy the chosen staged poses into the real drop slots; see LIFE_FLOOR
       const idx = emitIdx.subarray(0, emitN);
       for (let i = 0; i < emitN; i++) idx[i] = i;
-      idx.sort((a, b) => emitDp[a] - emitDp[b]);
-      const nE = Math.min(emitN, avail);
-      for (let i = 0; i < nE; i++) { const j = idx[i], src = j * 16, slot = dropCursor, o4 = 68 + slot * 16; dropCursor++;
+      idx.sort((a, b) => emitDp[a] - emitDp[b]);       // nearest first — both passes below walk this one order
+      emitTake.fill(0, 0, emitN); emitKcnt.fill(0);
+      let nT = 0;
+      for (let i = 0; i < emitN && nT < avail; i++) {  // PASS 1: the nearest LIFE_FLOOR of every kind present, so none can be shut out
+        const j = idx[i], k = emitKnd[j];
+        if (emitDp[j] > LIFE_DRAW2) break;             // sorted by distance, so the first one past the draw radius ends the guarantee for everybody
+        if (emitKcnt[k] >= lifeFloorOf(k)) continue;
+        emitKcnt[k]++; emitTake[j] = 1; nT++;
+      }
+      for (let i = 0; i < emitN && nT < avail; i++) {  // PASS 2: everything still free goes to whatever is closest, kind no longer considered
+        const j = idx[i];
+        if (emitTake[j]) continue;
+        emitTake[j] = 1; nT++;
+      }
+      for (let i = 0; i < emitN; i++) {                // …emitted in distance order regardless of which pass claimed them
+        const j = idx[i]; if (!emitTake[j]) continue;
+        const src = j * 16, slot = dropCursor, o4 = 68 + slot * 16; dropCursor++;
         for (let k = 0; k < 16; k++) UF[o4 + k] = emitBuf[src + k];
         lifeSlotSet(slot, 2000 + emitWho[j], emitAnc[j * 3], emitAnc[j * 3 + 1], emitAnc[j * 3 + 2], Math.round(emitBuf[src + 7]), emitAna[j] === 1); }
     }
