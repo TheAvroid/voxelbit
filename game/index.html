@@ -119,6 +119,11 @@
   .veTool, .veCtl { background: #1a2331; border: 1px solid #33405a; border-radius: 999px; padding: 6px 14px; color: #cfe0f4; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
   .veTool:hover, .veCtl:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → green outline + lift (user) */
   .veTool:disabled, .veCtl:disabled { opacity: 0.4; cursor: default; border-color: #2a3342; }
+  /* the export SIZE cap reads as one more pill in the row — the native select chrome is stripped so it matches the buttons */
+  select.veTool { appearance: none; -webkit-appearance: none; padding-right: 26px; background-image: linear-gradient(45deg, transparent 50%, #7f92ad 50%), linear-gradient(135deg, #7f92ad 50%, transparent 50%); background-position: right 13px top 50%, right 8px top 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+  select.veTool option { background: #1a2331; color: #cfe0f4; }
+  #veEst { align-self: center; color: #7f92ad; white-space: nowrap; }   /* live size estimate — muted so it reads as a caption, not a control */
+  #veEst.over { color: #ffb454; }                                       /* the budget forced the bitrate down to the floor */
   #veRecBtn { border-color: #ff5a6a; color: #ff6a78; }   /* the record button reads red — text + border edges (user) */
   #veRecBtn:hover { border-color: #ff7480; color: #ff8a95; }
   #veRecBtn.on { border-color: #ff3b4d; color: #ff8a95; background: #241016; }   /* deeper red while a capture is running */
@@ -372,6 +377,8 @@
       <button id="veRecBtn" class="veTool" title="start / stop recording the screen">● rec</button>
       <button id="vePen" class="veTool" title="draw on the video in red">✎ draw</button>
       <button id="veErase" class="veTool" title="clear every drawing">clear</button>
+      <select id="veSize" class="veTool" title="cap the size of the exported file — the editor solves for the bitrate that fits the clip's length and resolution"><option value="0">best quality</option><option value="100">under 100 MB</option><option value="250">under 250 MB</option><option value="500">under 500 MB</option><option value="1000">under 1 GB</option></select>
+      <span id="veEst" title="estimated size of the export at the current setting"></span>
       <button id="veExport" class="veTool" title="export the edited clip as .mp4">export</button>
       <button id="veClose" class="veTool" title="close">done</button>
     </div>
@@ -4688,14 +4695,18 @@
       // The anchor IS the viewmodel anchor, so the badge bobs with the hand instead of floating near it.
       if (u.heldCfg.z > 1.5 && u.pickA.z > 0.05) {
         let GLYPH5 = array<u32, 11>(15255086u, 32641252u, 32553487u, 16267791u, 9413964u, 16268335u, 15252526u, 2236959u, 15252014u, 15235630u, 18299345u);
-        let pAB = u.pickA.xyz + vec3<f32>(3.4 * u.pickA.w, 7.4 * u.pickA.w, 0.0);   // offset in the item's OWN voxel size, not screen pixels, so the badge tracks the model's apparent size instead of drifting off it when the item is large. Camera space here has +y DOWN (see the trace ray build: camera y = -ndc.y * tanH), so this is right-and-below the anchor.
+        let pAB = u.pickA.xyz + vec3<f32>(3.4 * u.pickA.w, 4.2 * u.pickA.w, 0.0);   // offset in the item's OWN voxel size, not screen pixels, so the badge tracks the model's apparent size instead of drifting off it when the item is large. Camera space here has +y DOWN (see the trace ray build: camera y = -ndc.y * tanH), so this is right-and-below the anchor.
         let ndcB = vec2<f32>((pAB.x / pAB.z) / (u.tanH * u.aspect), -(pAB.y / pAB.z) / u.tanH);
         let anchorB = vec2<f32>((ndcB.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - ndcB.y * 0.5) * u.canvasRes.y);
-        let pxB = max(2.0, floor(u.canvasRes.y / 240.0));   // one glyph pixel, floored to WHOLE screen pixels so the badge cannot shimmer under TAA
+        let pxB = max(2.0, floor(u.canvasRes.y / 320.0));   // one glyph pixel, floored to WHOLE screen pixels so the badge cannot shimmer under TAA
         let nB = i32(u.heldCfg.z + 0.5);
         let digB = select(1, 2, nB >= 10);
         let orgB = floor(anchorB);   // the voxel-space offset above already places it; no further screen-pixel nudge
-        let relB = (fc.xy - orgB) / pxB;
+        let rel0 = (fc.xy - orgB) / pxB;
+        let BADGE_TILT = -0.26;   // ~15 deg. Tilt + shear so the badge sits IN the scene rather than flat on the screen (user).
+        let cB = cos(BADGE_TILT); let sB = sin(BADGE_TILT);
+        let rotB = vec2<f32>(rel0.x * cB - rel0.y * sB, rel0.x * sB + rel0.y * cB);
+        let relB = vec2<f32>(rotB.x + rotB.y * 0.30, rotB.y);   // shear stands in for the foreshortening of a real angled quad
         let cellB = vec2<i32>(floor(relB));
         if (cellB.y >= 0 && cellB.y < 5 && cellB.x >= 0 && cellB.x < (digB + 1) * 6) {
           let giB = cellB.x / 6;                            // glyph 0 is the x, then the digits
@@ -4705,9 +4716,7 @@
             if (giB == 1) { gB = select(nB, nB / 10, digB == 2); }
             if (giB == 2) { gB = nB % 10; }
             if (((GLYPH5[gB] >> u32(cellB.y * 5 + cxB)) & 1u) == 1u) {
-              col = mix(col, vec3<f32>(0.92, 0.95, 1.0), 0.92);
-            } else {
-              col = mix(col, vec3<f32>(0.0), 0.30);          // soft backing so the digits read against sky as well as dirt
+              col = mix(col, vec3<f32>(0.92, 0.95, 1.0), 0.69);   // 0.92 ink * 0.75 = 25% transparent (user)
             }
           }
         }
@@ -8380,12 +8389,12 @@
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
   // ── keybinds ── rebindable, persisted to localStorage
-  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'CapsLock', drop: 'KeyQ', fly: 'KeyF', vignette: 'KeyK', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // crouch on CAPS LOCK (user 2026-08-05), off Alt   // fly on F restored (user 2026-07-22)
-  const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', vignette: 'vignette', vsync: 'v-sync', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'CapsLock', drop: 'KeyQ', fly: 'KeyF', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // crouch on CAPS LOCK (user 2026-08-05), off Alt   // fly on F restored (user 2026-07-22)
+  const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', vsync: 'v-sync', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
   if (binds.crouch === 'KeyC' || binds.crouch === 'AltLeft') { binds.crouch = 'CapsLock'; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE: crouch went C → left Alt → CAPS LOCK (user 2026-08-05), carrying saved binds with it. Alt is no longer a crouch key at all.
-  if (binds.vignette === 'KeyL') { binds.vignette = DEFBINDS.vignette; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE: L is the light panel now, and it used to toggle the vignette underneath it   // MIGRATE the old default: crouch moved off C (C now hides UI) → left Alt, even for players with a saved keybind
+  if (binds.vignette !== undefined) { delete binds.vignette; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // K IS NOW UNBOUND (user 2026-08-06): the vignette had this key and nothing else does. A saved bind from before still carries it, so drop it on load or the old handler's key would linger in the rebind panel. The vignette itself is unchanged and still toggles from its settings button.
   const prettyKey = (c) => c.replace(/^Key|^Digit/, '').replace('BracketLeft', '[').replace('BracketRight', ']')
     .replace('ShiftLeft', 'L-SHIFT').replace('ShiftRight', 'R-SHIFT').replace('ControlLeft', 'L-CTRL').replace('ControlRight', 'R-CTRL')
     .replace('AltLeft', 'L-ALT').replace('AltRight', 'R-ALT').replace('CapsLock', 'CAPS LOCK')
@@ -8425,7 +8434,62 @@
   const veCaptureMime = () => { for (const m of (location.search.includes('vecap=vp8')
       ? ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/webm']
       : ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm'])) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return ''; };   // LIVE-CAPTURE codec: VP8 webm FIRST. It fixes BOTH complaints — VP8 is 2-5× cheaper to encode than VP9 (no more render-loop lag) AND webm scrubs cleanly in the editor, whereas MediaRecorder's fragmented mp4 has no seek index → the export's frame-by-frame seek stalled and froze the output. mp4 stays only as a last resort for browsers with no webm recording (Safari). The export re-encodes to mp4 regardless, so live quality only needs to be decent.
-  const veBitrate = (w, h) => Math.min(100e6, Math.max(28e6, Math.round((w || 1280) * (h || 720) * 60 * 0.2)));   // QUALITY (user: "download looks lower"): the export is a SECOND encode on top of the recording (trim+annotate needs a re-compress), so 16 Mbps compounded into visible loss. Scale the bitrate to the actual resolution × 60 fps at ~0.2 bpp so BOTH the recording and the re-encode stay near-transparent: ~28 Mbps at 1080p, ~44 at 1440p, capped at 100 for 4K/high-DPI. Bigger files, but the download now matches the preview.
+  const veBitrate = (w, h) => Math.min(100e6, Math.max(28e6, Math.round((w || 1280) * (h || 720) * 60 * 0.2)));   // QUALITY (user: "download looks lower"): the export is a SECOND encode on top of the recording (trim+annotate needs a re-compress), so 16 Mbps compounded into visible loss. Scale the bitrate to the actual resolution × 60 fps at ~0.2 bpp so BOTH the recording and the re-encode stay near-transparent: ~28 Mbps at 1080p, ~44 at 1440p, capped at 100 for 4K/high-DPI. Bigger files, but the download now matches the preview. STILL the RECORDING rate — the master wants to be generous because the export re-encodes it. The EXPORT rate is veExportRate() below.
+
+  // ── EXPORT SIZE BUDGET (user: 45 s of 3822×1890 came out a 906 MB download) ──
+  // MediaRecorder treats videoBitsPerSecond as a SUGGESTION and consistently OVERSHOOTS it. Measured on this
+  // content through this exact pipeline (video → canvas → captureStream(0) → requestFrame → recorder):
+  //   requested 87 → 142 Mbps (1.64×) · 40 → 67.6 (1.69×) · 20 → 36.4 (1.82×) · HEVC 20 → 36.8 · AV1 20 → 34.3
+  // and the real 906 MB export was 168.5 Mbps against an 86.7 Mbps request = 1.94×. So the overshoot GROWS as the
+  // target falls, and any honest size estimate has to divide it out. 1.95 is the conservative end of that range:
+  // a budget then lands UNDER rather than over, which is the correct direction to miss in.
+  // What is NOT true (measured, don't re-derive): the request is otherwise respected — halving it halves the file,
+  // linearly, across every codec. And at a FIXED target bitrate H.264/HEVC/AV1 all produce the SAME size; the codec
+  // only buys quality-per-bit, never size, so switching codecs cannot shrink a budgeted export.
+  // ...and because that factor is really a property of THIS machine's encoder, every finished export folds its own
+  // measured ratio back in (veCalibrate below). 1.95 is only the seed; by the second export the estimate is this
+  // user's own hardware, which is what makes a "under 500 MB" promise keepable rather than a guess.
+  const VE_OVERSHOOT_SEED = 1.95;
+  let veOvershoot = VE_OVERSHOOT_SEED;
+  try { const s = parseFloat(localStorage.getItem('vb_ve_overshoot')); if (isFinite(s) && s >= 1 && s <= 3) veOvershoot = s; } catch (e) {}
+  const VE_EXPORT_BPP = 0.10;              // half the recording's 0.2 — this pass only has to preserve an already-compressed master, so the second generation needs far fewer bits than the first
+  const VE_RATE_FLOOR = 1.5e6;             // below this a budget is unmeetable rather than merely lossy; the estimate turns amber instead of quietly lying
+  const veSizeSel = $('veSize'), veEstEl = $('veEst');
+  const veExportDur = () => VE.clips.reduce((a, c) => a + Math.max(0, c.e - c.s), 0);
+  // Solve the requested bitrate for the chosen cap. No cap → pure quality target. With a cap, take whichever is
+  // SMALLER: spending more than the quality target buys nothing, so a roomy budget still exports the smaller file.
+  const veExportRate = (w, h, dur) => {
+    const q = Math.min(100e6, Math.max(8e6, Math.round((w || 1280) * (h || 720) * 60 * VE_EXPORT_BPP)));
+    const cap = (+veSizeSel.value || 0) * 1e6;
+    if (!cap || dur <= 0) return { rate: q, capped: false, starved: false };
+    const forBudget = (cap * 8 - 192000 * dur) / dur / veOvershoot;   // audio rides at a fixed 192 kbps and comes out of the same budget
+    const rate = Math.min(q, forBudget);
+    return { rate: Math.max(VE_RATE_FLOOR, Math.round(rate)), capped: rate < q, starved: rate < VE_RATE_FLOOR };
+  };
+  // Fold a finished export's REAL ratio back into the estimate. Half-weight EMA so one odd clip cannot swing it,
+  // clamped to the range the encoder can plausibly occupy so a corrupt/aborted export can't poison future budgets.
+  const veCalibrate = (bytes, dur, reqRate) => {
+    if (!(bytes > 0 && dur > 0.5 && reqRate > 0)) return;
+    const seen = (bytes * 8 - 192000 * dur) / dur / reqRate;
+    if (!isFinite(seen) || seen < 1 || seen > 3) return;
+    veOvershoot = Math.round((veOvershoot + seen) / 2 * 1000) / 1000;
+    try { localStorage.setItem('vb_ve_overshoot', String(veOvershoot)); } catch (e) {}
+  };
+  const veUpdateEst = () => {
+    if (!veEstEl) return;
+    const dur = veExportDur();
+    if (dur <= 0) { veEstEl.textContent = ''; veEstEl.classList.remove('over'); return; }
+    const vw = Math.round(veVideo.videoWidth || 1280) & ~1, vh = Math.round(veVideo.videoHeight || 720) & ~1;
+    const r = veExportRate(vw, vh, dur);
+    const mb = (r.rate * veOvershoot + 192000) * dur / 8 / 1e6;
+    veEstEl.textContent = '≈ ' + (mb >= 1000 ? (mb / 1000).toFixed(1) + ' GB' : Math.round(mb) + ' MB');
+    veEstEl.classList.toggle('over', r.starved);
+    veEstEl.title = r.starved ? 'this clip is too long to fit that cap — exporting at the minimum bitrate instead'
+      : 'estimated size at ' + Math.round(r.rate * veOvershoot / 1e6) + ' Mbps' + (r.capped ? ' (held down by the size cap)' : '');
+  };
+  try { veSizeSel.value = localStorage.getItem('vb_ve_size') || '0'; } catch (e) {}
+  veSizeSel.addEventListener('click', (e) => e.stopPropagation());   // the panel sits over the game — don't let the click reach the world
+  veSizeSel.addEventListener('change', () => { try { localStorage.setItem('vb_ve_size', veSizeSel.value); } catch (e) {} veUpdateEst(); });
 
   // ── AUDIO TAP ── every game sound registers through sndReg, so route them all into a MediaStream and mix that into
   // the capture — recordings then carry sound as well as picture. Built lazily on the first capture and wrapped in
@@ -8590,6 +8654,8 @@
     const has = VE.clips.length > 0;
     vePlayBtn.disabled = !has; $('veSplit').disabled = !has; $('veExport').disabled = !has;
     $('veDel').disabled = VE.sel < 0 || !has;
+    veSizeSel.disabled = !has;
+    veUpdateEst();                       // trimming, splitting and deleting all change the exported DURATION, so the estimate has to follow every one of them
   };
 
   // ── EXPORT ── play the kept clips through the <video> and record ITS stream (picture + audio), so the trimmed export
@@ -8671,7 +8737,8 @@
     const wasMuted = veVideo.muted; veVideo.muted = false;
     try { const a = veVideo.captureStream ? veVideo.captureStream() : (veVideo.mozCaptureStream ? veVideo.mozCaptureStream() : null);   // carry the ORIGINAL audio track across
       if (a) for (const t of a.getAudioTracks()) stream.addTrack(t); } catch (e) {}
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: veBitrate(vw, vh), audioBitsPerSecond: 192000 });   // the FINAL encode — resolution-scaled bitrate keeps the re-compress near-transparent so the download matches the preview
+    const expDur = veExportDur(), reqRate = veExportRate(vw, vh, expDur).rate;
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: reqRate, audioBitsPerSecond: 192000 });   // the FINAL encode — rate comes from the size cap in the toolbar, falling back to a quality target when the cap is "best quality"
     const chunks = []; rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     const stopped = new Promise((res) => { rec.onstop = res; });
     let pump = null, alive = true;
@@ -8713,10 +8780,12 @@
     cancelAnimationFrame(pump);
     rec.stop(); await stopped; veVideo.muted = wasMuted; VE.exporting = false;
     try { for (const t of stream.getTracks()) t.stop(); } catch (e) {}   // release the export compositor's capture + the borrowed audio track
-    const url = URL.createObjectURL(new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' })), a2 = document.createElement('a');
+    const out = new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' });
+    veCalibrate(out.size, expDur, reqRate);              // what the encoder ACTUALLY did → next export's estimate is this machine's, not a hardcoded guess
+    const url = URL.createObjectURL(out), a2 = document.createElement('a');
     a2.href = url; a2.download = 'voxelbit-clip.' + ext; document.body.appendChild(a2); a2.click(); a2.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
-    btn.disabled = false; btn.textContent = label0; if (VE.clips.length) veSeek(VE.clips[0].s);
+    btn.disabled = false; btn.textContent = label0; veUpdateEst(); if (VE.clips.length) veSeek(VE.clips[0].s);
   };
   const veSeekAwait = (t) => new Promise((res) => { const on = () => { veVideo.removeEventListener('seeked', on); res(); }; veVideo.addEventListener('seeked', on); veVideo.currentTime = Math.max(0, Math.min(VE.dur - 1e-3, t)); });
 
@@ -9214,7 +9283,6 @@
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
     if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }   // toggle fly (user re-added the F keybind 2026-07-22)
-    if (e.code === binds.vignette) { vigToggle(); }         // same path as the settings button, so the panel label follows
     if (e.code === binds.vsync) { vsyncOn = !vsyncOn; }
     // R-key recording is BACK ON with the #veBtn button (user 2026-08-02, reversing the 2026-07-23 disable).
     if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
@@ -10750,7 +10818,8 @@
   // shared generic would have moved their arithmetic by a rounding step and re-rolled a 240 s soak.
   const NAV_WREACH = 20;                             // the WORM planner's horizon: a 16 vox/s crawler does not need the butterfly's 40, and the DDA cost is linear in it
   const NAV_WUP = 2, NAV_WDN = 2, NAV_WCLR = 3;      // WORM step up / step down / head clearance — the legacy wormOK numbers verbatim (|Δground| ≤ 2, bfObstW probes at +2 and +3), asked of the field instead of the heightmap
-  const NAV_DLOOK = 10, NAV_DBCLR = 1.0, NAV_DBRK2 = 14;   // DUCK brake: sqrt(14 · (10 − 1)) = 11.2 vox/s against a 7 vox/s paddle (10 for a duckling scrambling to heel), so an open lane is full pace and the cap only ramps once the lane is under ~5 voxels — well inside the 7-voxel head buffer the duck already keeps.
+  const NAV_DLOOK = 10, NAV_DBCLR = 1.0, NAV_DBRK2 = 14;
+  const NAV_FLOOK = 14, NAV_FBCLR = 2.0, NAV_FBRK2 = 46;   // FISH brake: sqrt(46 · (14 − 2)) = 23.5 vox/s against a 22 vox/s cruise, so OPEN water is untouched and this only bites as a bank closes in. The fish already fans whiskers to pick a lane; what it lacked was any reason to SLOW as that lane shortened, so it arrived at the bank still at full cruise, ground against it until the trap timer fired, and got re-placed — which reads as a teleport (user 2026-08-06). Braking gives the eased turn time to finish, so it comes about instead.   // DUCK brake: sqrt(14 · (10 − 1)) = 11.2 vox/s against a 7 vox/s paddle (10 for a duckling scrambling to heel), so an open lane is full pace and the cap only ramps once the lane is under ~5 voxels — well inside the 7-voxel head buffer the duck already keeps.
   const NAV_WLOOK = 6, NAV_WBCLR = 1.0, NAV_WBRK2 = 58;   // …and its brake: sqrt(58 · (6 − 1)) = 17.0 vox/s against a 16 vox/s crawl, so an open lane is full pace and the cap withholds nothing until the lane is under ~5 voxels
   const navGroundAt = (x, z) => { const ci = nvIdx(x, z);   // the travel surface a LAND creature stands on: the field's 2×2 max where it is vouched for, the heightmap where it is not. Same fix as the flyer's gAir — a servo riding bfSurf while the predicate measures clearance from nvY is the planner/mover split reintroduced on the vertical axis.
     return (nvF[ci] & NVF_BUILT) ? nvTop(ci) : (navBed(x, z) > WL ? navBed(x, z) : WL); };
@@ -12719,6 +12788,9 @@
       const wormArb = NAVARB && (B.kind | 0) === 2 && !mamSlot;
       const gcW = wormArb ? navGroundAt(B.x, B.z) : 0;   // the worm's OWN travel surface, from the field — one number shared by its brake, its step test and its y servo, so all three agree on where the ground is
       let mv5 = spd5 * dt, nx5, nz5;                 // the frame's step LENGTH as its own variable, so the flyer brake has something to cap
+      if (NAVBRK && (B.kind | 0) === 6 && B.jumpV === undefined) {   // ── FISH, ON THE BRAKE ── airborne is exempt: a salmon's leap was validated at launch and must fly its arc at full speed.
+        mv5 = navBrake2(B, (th7, L7) => fishReach(B, th7, L7), mv5, dt, NAV_FLOOK, NAV_FBCLR, NAV_FBRK2, 6);
+        nx5 = B.x + Hx2 * mv5; nz5 = B.z + Hz2 * mv5; }
       if (NAVBRK && duckArb && !iceLock) {            // ── DUCK, ON THE BRAKE ── the paddle translates along B.th, which lags the planned heading while the eased turn integrator catches up. The head buffer already refuses a step with under 7 voxels of water ahead, so without a cap the duck's only way to honour it is a hard STOP; the ramp turns that into an arrival that is already slow.
         mv5 = navBrake2(B, (th7, L7) => navReach2(duckFit, B.x, B.z, th7, L7), mv5, dt, NAV_DLOOK, NAV_DBCLR, NAV_DBRK2);
         nx5 = B.x + Hx2 * mv5; nz5 = B.z + Hz2 * mv5; }
