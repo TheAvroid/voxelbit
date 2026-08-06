@@ -284,12 +284,6 @@
   @keyframes cmdBlink { 50% { opacity: 0; } }
   #cmdMsg { position: absolute; left: 0; bottom: 100%; margin-bottom: 6px; white-space: nowrap;
     color: #ffd9a0; font: 11px/1.2 'px3', Consolas, monospace; text-shadow: 0 2px 6px rgba(0,0,0,0.9); }   /* the reply line follows the input down to 11px (user) */
-  /* ── /locate's LOADING WORD ── (user 2026-08-05: "just overlay the loading word over gameplay") ── the boot
-     panel is a full-screen video card, and raising it for a teleport hid the very thing the wait is for: the
-     place you are standing. This is text only, no backdrop, drawn over the live frame. */
-  #tpLoad { position: fixed; inset: 0; z-index: 70; pointer-events: none; display: flex; align-items: center; justify-content: center;
-    color: #fff; font: 22px/1.2 'px3', Consolas, monospace; letter-spacing: 1px; text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.9); }
-  #tpLoad.hidden { display: none; }
   body.noui #cross, body.noui #hud, body.noui #clashHint, body.noui #achv, body.noui #edHud, body.noui #compass { display: none !important; }   /* C toggles all HUD overlays off for clean views */
   #compass { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 240px; height: 22px; overflow: hidden; z-index: 12; pointer-events: none;
     font: 8px/22px 'px3', Consolas, monospace; letter-spacing: 1px; color: #e8eef6; text-shadow: 0 1px 2px rgba(0,0,0,0.85);
@@ -313,7 +307,7 @@
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="achv"><div class="a1">discovery</div><div class="a2">sharp edge</div></div>
 <div id="hud"></div>
-<div id="tpLoad" class="hidden"></div><div id="cmdBar" class="hidden"><span id="cmdCaret">&gt;</span><span id="cmdTxt"></span><span id="cmdCur"></span><div id="cmdMsg"></div></div>
+<div id="cmdBar" class="hidden"><span id="cmdCaret">&gt;</span><span id="cmdTxt"></span><span id="cmdCur"></span><div id="cmdMsg"></div></div>
 <div id="stackN" class="hidden"></div>
 <div id="lgtPanel" class="hidden"><div class="lgtHead"><span>water</span><button id="lgtAll" title="water back to stock">reset</button></div></div>
 <div id="arwPanel" class="hidden"><div class="arwHead"><span>arrow</span><button id="arwReset" title="back to the shipped orientation">reset</button></div>
@@ -395,7 +389,6 @@
 (async () => {
   const $ = (id) => document.getElementById(id);
   const loadEl = $('load'), lockEl = $('lock'), hudEl = $('hud'), crossEl = $('cross'), loadMsgEl = $('loadMsg');
-  const tpLoadEl = $('tpLoad');   // the bare 'loading' word /locate shows over live gameplay (see cmdGoTo)
   const fail = (msg) => { loadEl.classList.remove('hidden'); loadMsgEl.textContent = msg; throw new Error(msg); };   // loadMsgEl, not loadEl.textContent — the latter would wipe the background <video>
   // MOBILE DEVICE? — the play prompt tells a phone/tablet to "find a good computer" instead of "press any button" (user).
   const isMobile = (() => {
@@ -1395,6 +1388,87 @@
     PINE_ANCH.sort((a, b) => Math.atan2(((a >> 8) & 255) - MSY * 0.5, (a & 255) - MSX * 0.5) - Math.atan2(((b >> 8) & 255) - MSY * 0.5, (b & 255) - MSX * 0.5)); }   // angle-sorted around the trunk — stampTree slices it into sectors so cones ring the crown evenly
   if (palette.length > 256) console.error('[vb] PALETTE OVERFLOW', palette.length, '— world ids are u8, decoration colors must be quantized harder');
   console.log('[vb] decorations: cone', !!CONEV, 'lily', LILYV.length, 'stick', STICKV.length, 'log', !!LOGV, 'rock', !!ROCKV, 'rocks26', ROCK26.length, 'ferns', FERN2V.length, 'anchors', PINE_ANCH.length, 'palette', palette.length);
+
+  // ── ONE ANCHORED-SUPPORT RULE ──────────────────────────────────────────────────────────────────────
+  // Every runtime mutation of W already funnels through gpuPatch, so THAT is the choke point: the cells
+  // that actually changed drive one resolver instead of four boxes centred on the impact point. What
+  // replaced four disagreeing "support" definitions (buried-model-course, box-floor, any-box-face,
+  // any-non-loose-voxel-within-26-hops) is a single question — CAN THIS CELL REACH THE STATIC GROUND —
+  // answered in O(1) by hmap, plus two floods that deliberately do NOT conduct anchoring to each other.
+  //
+  // THE ASYMMETRY IS THE WHOLE DESIGN. A previous attempt let one flood traverse wood AND needles
+  // interchangeably; that made a crown and its trunk the same component, so a crown was lifted whole and
+  // stranded every branch tip, cone and neighbouring tree's needles resting against it. MEASURED, that
+  // took the floater count from 86 to 1007. Here:
+  //   · the STRUCTURE flood may not ENTER a DRAPE cell — a crown can never join a wood component, so it
+  //     can never be lifted as one, and that failure is structurally impossible rather than tuned away;
+  //   · the DRAPE flood may not enter a STRUCTURE cell — it may only TERMINATE on one that is ITSELF
+  //     anchored, which closes phFallLoose's worst hole (any occupied non-loose voxel used to count as
+  //     support, including one that was itself floating).
+  // DRAPE consumes anchoredness; it never conducts it. That also retires FALL_HOPS: the hop limit only
+  // ever existed because a symmetric graph merged the canopy into one blob, and it was a property of this
+  // one pine asset that would silently mis-tune for any other.
+  //
+  // CONDUIT is the third state creature grid stamps have always needed. stampApply writes only where the
+  // cell is empty or foliage, so a stamped cell was NEVER structure — treating it as empty in the
+  // STRUCTURE flood is exactly right and punches no hole. In the DRAPE flood it is traversable but never
+  // liftable and never an anchor: a perched cardinal conducts support across its own body (no false
+  // orphan behind it) and grants none (a clump hanging off a bird is not held by the bird).
+  //
+  // 26-CONNECTED IN BOTH. Pine needles attach to branches diagonally; a 6-connected test calls attached
+  // clumps unsupported and drops them, which strands their neighbours. 26's failure mode is "a thing
+  // touching at a corner reads anchored" -> one floater left. 6's is "real geometry deleted" -> and THAT
+  // manufactures floaters. The chosen failure mode, everywhere in here, is: leave a rare floater, never
+  // wrongly drop real geometry. A false negative is inert and gets another attempt the moment anything
+  // within 26 cells of it is disturbed; a false positive is irreversible and strands everything that was
+  // resting on what it took.
+  const SUP = {
+    IGNORE: 0, FLUID: 1, STRUCTURE: 2, DRAPE: 3, CONDUIT: 4,
+    CLASS: new Uint8Array(256),                        // palette id -> class. CONDUIT is not in here: it is the stampedIdx lookup, which is per-CELL, not per-id.
+    cap: 2000,                                         // STRUCTURE flood ceiling = PH.absorbMax: past it a component cannot become a body at all, so the only choices are leave it or erase it, and erasing is the destructive failure this refuses
+    drapeCap: 3000,
+    msBudget: 2.0,                                     // ms/frame, checked BETWEEN components — never mid-flood, so a component is always resolved as a whole
+    maxPasses: 4,                                      // cascade rounds per frame: a lift appends its vacated cells to the same queue
+    qMax: 400000,
+    q: [], qh: 0, qs: new Set(),                       // the dirty queue: flat indices, deduped, PERSISTENT — a cell the budget could not reach this frame is still there next frame
+    res: new Set(),                                    // resolved THIS pass: cleared between cascade passes so a lift is honestly re-adjudicated, never within one so a 2000-cell anchored blob is walked once, not once per seed
+    ancS: new Set(), flS: new Set(),                   // per-pass memo of the component verdict, both ways (see supHeld) — a standing pine is walked once, not once per needle
+    busy: new Set(),                                   // components currently on the walk stack: they may not be used as anyone else's anchor, which is what breaks cross-class cycles
+    blocked: 0, blockedNow: 0, on: true,
+    stats: { queued: 0, carried: 0, passes: 0, ms: 0, msMax: 0, structFloods: 0, drapeFloods: 0,
+             capHits: 0, lifted: 0, liftedVox: 0, erasedSmall: 0, erasedBig: 0, blockedFrames: 0,
+             overflow: 0, reclaims: 0, hmapLower: 0, tooBig: 0, liftedDrape: 0, liftedStruct: 0 },
+    log: [],                                           // capped ring of what was lifted, for __vb.support()
+  };
+  { const C = SUP.CLASS;                               // default STRUCTURE: an id that never appears in W is never classified, and a NEW one is far likelier to be terrain than drape
+    C.fill(SUP.STRUCTURE); C[0] = SUP.IGNORE;
+    for (let i = 1; i < 256; i++) if (foliaTab[i] || floatTab[i]) C[i] = SUP.DRAPE;   // needles, grass, blooms, twigs, cones
+    C[SNOW[0]] = SUP.DRAPE; C[SNOW[1]] = SUP.DRAPE;
+    for (const v of [WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y]) C[v] = SUP.FLUID; }   // LAST, so fluid can never be overwritten. Water is FLUID whether or not the ice flag has flipped solidTab[WATER_T]: a lake reaches the ground by construction, and a rule that walked it would flood the whole body and never find an anchor.
+  // ── THE ANCHOR ── O(1), no walk to bedrock. hmap is the first AIR voxel of the STATIC ground column and
+  // it deliberately excludes trees, foliage, mushrooms, snow and creature stamps (stampTree writes W
+  // directly and never touches it; stampModel raises it only for mode 2). That exclusion is what makes it
+  // an anchor oracle rather than a height field. A standing pine is anchored for free: stampTree bases the
+  // model at groundMin - sink with sink in [5,8], so 5-8 trunk courses sit BELOW hmap — the same courses
+  // phFlood seeds on, with no special case. y<=1 is true bedrock: rockRowSpan fills every column from 0 and
+  // stampCave carves from max(1, floorY), so y0/y1 are never carved by anything in worldgen.
+  // The oracle is sound only while hmap is never STALE-HIGH, which is why the choke point below only ever
+  // LOWERS it. Stale-low is harmless (terrain is contiguous, so the flood finds an anchored neighbour in a
+  // few hops); stale-high would wrongly anchor.
+  const supAnchored = (ii) => {
+    const gy = ((ii / WX) | 0) % WY;
+    if (gy <= 1) return true;
+    if (SUP.CLASS[W[ii]] === SUP.FLUID) return true;
+    return gy < hmap[(ii % WX) + (((ii / (WX * WY)) | 0) * WX)];
+  };
+  // Declared HERE, beside SUP rather than beside the resolver, because gpuPatch calls it and gpuPatch sits
+  // several thousand lines above the physics block: a const referenced before its own declaration has run
+  // is the "stuck on uploading world" failure in this file, and there is no reason to court it.
+  const supPush = (ii) => {
+    if (SUP.qs.has(ii)) return;
+    if (SUP.q.length - SUP.qh >= SUP.qMax) { SUP.stats.overflow++; return; }
+    SUP.qs.add(ii); SUP.q.push(ii); SUP.stats.queued++;
+  };
 
   // ── cardinal ── an OFF-GRID animated flyer. Its 8 wing-flap frames (assets/life/cardinal/flight) are loaded into the held-item voxel
   // table below and DDA-raytraced as a drop-style model — arbitrary (sub-voxel, non-grid-snapped) rotation, depth-tested against the scene,
@@ -2855,6 +2929,7 @@
     [-0.416, 0.909, 6.2831853 / 23, 0.72, 0.50, 2.1],
     [0.966, -0.259, 6.2831853 / 11, 0.34, 0.45, 4.4],
     [0.309, -0.951, 6.2831853 / 6.7, 0.20, 0.40, 1.3]];
+  const DUCK_SWAY = 0.5;                               // how much of the swell's rise and fall a DUCK actually rides — halved (user 2026-08-05); see the wave-riding block
   const GWOM = GW.map((w) => 0.21 * Math.sqrt(98 * w[2]));   // dispersion per wave — HALVED (user 2026-08-02: water 50% slower). ONE table drives the shader AND the JS floater mirror, so ducks/lilies stay bit-matched automatically.
   const gerstHJS = (wx, wz, t) => {                    // the JS mirror — ducks/lilies ride EXACTLY the surface the shader draws
     let h = 0; for (let i = 0; i < 4; i++) { const w = GW[i]; h += w[3] * Math.cos(w[2] * (w[0] * wx + w[1] * wz) - GWOM[i] * t + w[5]); } return h; };
@@ -4748,7 +4823,15 @@
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
-    for (let j = 16; j < 244; j++) { const B = wbf[j]; if (B) { B.sN = 0; B.sKey = null; } }   // world was zeroed above — force the PERCHED SONGBIRDS (64-243, the only grid-stamped life) to re-stamp fresh next frame; 16-63 carry no stamps but clearing the fields is free
+    // ── AND THE STAMP INDEX GOES WITH IT ── W.fill(0) wiped the world but stampedIdx kept every stale flat
+    // index, and every support test treats a stamped cell as neither liftable nor support. After one
+    // recentre thousands of scattered cells in the NEW world were permanently exempt from every test.
+    stampedIdx.clear();
+    // …and the reset loop must cover the LAND MAMMALS too. It ran j < 244 while bunnies/armadillos/skunks/
+    // porcupines live in 276-371 (unstampAllWorms walks 16 < 372 for exactly this reason), so one survived
+    // the recentre with B.sN intact and its next unstampWorm wrote old sPrev ids back into freshly
+    // generated terrain at unrelated coordinates — creature-shaped dirt floating in the new world.
+    for (let j = 16; j < 372; j++) { const B = wbf[j]; if (B) { B.sN = 0; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature to re-stamp fresh next frame; the slots that carry no stamps cost nothing to clear
   }
 
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
@@ -4757,7 +4840,15 @@
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
-  const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;   // +20% base speed
+  const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;
+  const SWIM_UP = 9, SWIM_SINK = 6, SWIM_EASE = 2.2;   // rise / sink ceilings in vox/s and how briskly the body eases between them (1/s)
+  // SWIM_DEEP: how deep the water must be over the FEET before the body starts swimming instead of walking.
+  // 10 (waist) was right in principle and wrong in practice — MEASURED, the lakes in this world are only 4-5
+  // voxels deep, so a waist test almost never fired and the bob the user was looking for simply never ran.
+  // 5 is knee-deep: it engages in an ordinary lake while still leaving a shallow wade as walking.
+  const SWIM_DEEP = 5;
+  const SWIM_K = 0.8, SWIM_BOB = 3.2, SWIM_RISE = 7;   // BOB DOUBLED (user: "barely noticable or not happening at all")   // spring gain on the eye-vs-waterline error; amplitude of the idle swell (vox); how far holding Space lifts the float line  // paddling rise / buoyant sink, in vox/s, and how briskly the body eases between them (1/s — 2.6 gives a ~0.4 s turnaround, i.e. the sway)
+  const WATER_SPD = 0.275;                             // HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
   const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: SPYAW, pitch: SPPITCH, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0, sink: 0 };
   P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
@@ -4793,7 +4884,19 @@
     // model shares entries with the bark, so zeroing solidTab for them would take the hitbox off the trunks
     // too. Scoping it to the player's own collision leaves the tool paths, the chop gates and the physics
     // reading exactly what they read before.
-    if (coneTab[id]) return phBodySolid(x, y, z);
+    // ── AND NEITHER DO NEEDLES (user 2026-08-05: "the foliage of the trees … blocks the player sometimes") ──
+    // "sometimes" was the clue and it is a palette collision, not a rule. The canopy is walk-through
+    // everywhere it is described in this file, and MEASURED it very nearly is: of the eight foliage ids
+    // (46-53) exactly ONE, 51, comes back solid from the player's own test — the other seven do not. 51 is
+    // also carried by a model markSolid marks as a real obstacle (logs, rocks and mushrooms all go through
+    // that loop), and the 256-entry palette is full, so the two share the entry. One needle voxel in eight
+    // being an invisible wall at head height is exactly what walking into a crown felt like.
+    // Scoped to the PLAYER's collision for the same reason the cones are: the id is genuinely shared, so
+    // clearing solidTab would take the hitbox off that decor everywhere, while this leaves the tool paths,
+    // the chop gates, the arrow's own blocker and the physics reading precisely what they read before.
+    // The cost is that whatever decor owns 51 is walk-through for the player too; a canopy you cannot push
+    // through is the worse of the two by a long way.
+    if (coneTab[id] || foliaTab[id]) return phBodySolid(x, y, z);
     return solidTab[id] === 1 || phBodySolid(x, y, z);   // a felled tree keeps its hitbox even though it lives off the grid
   };
   const waterAt = (x, y, z) => {
@@ -5191,37 +5294,26 @@
   // Put the player down on solid ground at a world column, however far away — same sequence respawn() uses:
   // move, recenter (which regenerates around the new spot), THEN read the height, because hmap is wrapped
   // window data and means nothing for a column the window did not cover a moment ago.
-  // ── THE WORLD IS BUILT BEFORE YOU ARRIVE IN IT (user 2026-08-05) ── the move used to happen first and the
-  // destination was generated underneath it, so the player stood at the far end while genRegion ran and the
-  // first thing they saw was a forest assembling around them. recenter() does raise the loading panel, but the
-  // whole sequence — panel up, generate, panel down — runs inside ONE synchronous task, and the browser only
-  // paints between tasks: the panel went up and came down without ever reaching the screen.
-  // So the panel goes up on its own, two animation frames are allowed to pass so it is genuinely drawn while
-  // the player is still standing where they typed the command, and only then is the destination generated and
-  // the player put down in it. What they see is: their own surroundings, "loading", then the finished place.
+  // Put the player down on solid ground at a world column, however far away — same sequence respawn() uses:
+  // move, recenter (which regenerates around the new spot), THEN read the height, because hmap is wrapped
+  // window data and means nothing for a column the window did not cover a moment ago.
+  // No loading panel: it was tried and removed (user 2026-08-05). One world window means the old surroundings
+  // cannot be kept on screen while the new ones generate, so the panel could only ever be an opaque cover over
+  // a wait — and the wait is short enough that arriving straight away reads better than being held.
   const cmdGoTo = (x, z, label) => {
     const d0 = Math.round(Math.hypot(x - P.x, z - P.z));
+    P.x = x + 0.5; P.z = z + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0; P.fly = false;
+    // maybeRecenter only fires past its own distance threshold, and a hop SHORTER than that can still land
+    // outside the built rect — where hmap and W are another column's wrapped data, so the ground reads
+    // wrong and the lift-out-of-solid loop below climbs through garbage (it put the player ~100 voxels in
+    // the air on /locate log). Anything not comfortably inside the rect gets a real regen first.
+    const M = 24;
+    if (x < rect.xlo + M || x > rect.xhi - M || z < rect.zlo + M || z > rect.zhi - M) recenter(x, z);
+    else maybeRecenter();
+    P.y = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
+    for (let g = 0; g < 40 && P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT); g++) P.y += 1;   // never land inside a rock or a trunk — capped, so a bad column drops you rather than launching you
+    P.fallT = 0; smoothEye = P.y + EYE; resetHist = 1;
     cmdSay('→ ' + label + ' — ' + d0 + ' voxels');
-    tpLoadEl.textContent = 'loading....';              // just the word (user 2026-08-05) — the destination is already named in the reply line above the command bar, so repeating it here only made the overlay long and busy   // …over the CURRENT view: nothing has moved yet, and the frame behind stays visible
-    tpLoadEl.classList.remove('hidden');
-    const land = () => {
-      try {
-        P.x = x + 0.5; P.z = z + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0; P.fly = false;
-        // maybeRecenter only fires past its own distance threshold, and a hop SHORTER than that can still land
-        // outside the built rect — where hmap and W are another column's wrapped data, so the ground reads
-        // wrong and the lift-out-of-solid loop below climbs through garbage (it put the player ~100 voxels in
-        // the air on /locate log). Anything not comfortably inside the rect gets a real regen first.
-        const M = 24;
-        if (x < rect.xlo + M || x > rect.xhi - M || z < rect.zlo + M || z > rect.zhi - M) recenter(x, z);
-        else maybeRecenter();
-        P.y = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
-        for (let g = 0; g < 40 && P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT); g++) P.y += 1;   // never land inside a rock or a trunk — capped, so a bad column drops you rather than launching you
-        P.fallT = 0; smoothEye = P.y + EYE; resetHist = 1;
-      } finally { tpLoadEl.classList.add('hidden'); }  // …and down it comes in the SAME task as the landing, so the first frame drawn after it is the finished destination
-    };
-    // Two frames, not one: the first callback still belongs to the frame already in flight, so the panel has
-    // not reached the glass yet. The second runs after that frame has been presented.
-    requestAnimationFrame(() => requestAnimationFrame(land));
   };
   const cmdRun = (line) => {
     const t = String(line || '').trim();
@@ -5312,10 +5404,14 @@
     let hit = standing ? physChopAt(ix, iy, iz, ARROW_CHOP_RAD, S, ARROW_CHOP_MIN, ARROW_CHOP_BITE, arrowWood).hit : false;
     if (!hit && !standing) hit = phChopDecor(ix, iy, iz, ARROW_CHOP_RAD, ARROW_CHOP_BITE, okMat);   // mushrooms, ferns, ground logs — and soil and stone, which is what okMat is for
     if (!hit) return false;
-    phFallLoose(ix, iy, iz);                           // whatever that bite was holding up comes down, same as a swing
+    // ── RESOLVE BEFORE TAGGING ── whatever that bite was holding up comes down through supFlush, off the cells the
+    // carve actually changed. It is run to completion HERE, synchronously, rather than left to the frame
+    // loop, because the tagging loop below has to see the bodies it makes — that ordering is load-bearing
+    // and was measured (see the note under it). Bounded, so a storm-sized queue can never stall the frame.
+    supFlush(true, 12);
     // ── TAG EVERYTHING THIS SHOT CREATED, AND TAG IT LAST (user 2026-08-05: "the player can still absorb
-    // things at a very far distance when shooting with a bow") ── this loop used to run BEFORE phFallLoose,
-    // so it only ever caught the bodies the carve itself made. Every clump phFallLoose then cut free kept the
+    // things at a very far distance when shooting with a bow") ── this loop used to run BEFORE the sweep,
+    // so it only ever caught the bodies the carve itself made. Every clump the sweep then cut free kept the
     // ordinary absorbAt timer, and a timed body skips the distance gate entirely (see the absorb step: the
     // range check lives inside the `no timer yet` branch, and a body whose timer has elapsed falls straight
     // through to absorbing). MEASURED standing 120 voxels from the tree and never moving: one shot left 8
@@ -5477,7 +5573,13 @@
     for (const ii of found) W[ii] = 0;
     return found;
   }
-  function gpuPatch(cells, full = true, n = cells.length) {              // few voxels: STAGE the touched words for the frame's patch scatter + refresh the touched brick bits. full=false uploads ONLY the touched brick words (per-frame worm stamps — the whole-buffer re-upload is far too heavy at 60 fps)
+  // ── THE CHOKE POINT ── every runtime mutation of W already passes through here, so this is where the
+  // support resolver is fed: the set of cells that ACTUALLY CHANGED, not a box centred on where the tool
+  // landed. `track` exists because `full` is not a valid discriminator — the pickup paths patch full=true
+  // and the worm stamps patch full=false — and because two callers are genuinely not terrain edits:
+  // creature grid stamps (they are CONDUIT, and re-adjudicating the world every time a bird shifts its feet
+  // would be both wrong and expensive) and the frozen editor stage.
+  function gpuPatch(cells, full = true, n = cells.length, track = true) {              // few voxels: STAGE the touched words for the frame's patch scatter + refresh the touched brick bits. full=false uploads ONLY the touched brick words (per-frame worm stamps — the whole-buffer re-upload is far too heavy at 60 fps)
     const bset = new Set();
     for (let q = 0; q < n; q++) {
       const ii = cells[q];
@@ -5485,6 +5587,16 @@
       patchIdx[patchN++] = ii >> 2;                    // duplicates are fine: patchEncode reads the FINAL word value from W32
       const gx = ii % WX, gy = ((ii / WX) | 0) % WY, gz = (ii / (WX * WY)) | 0;
       bset.add((gx >> 3) + (gy >> 3) * BX + (gz >> 3) * BX * BY);
+      if (track) {
+        supPush(ii);
+        // ── hmap MAINTENANCE, LOWER-ONLY ── the anchor oracle is sound only while hmap is never
+        // STALE-HIGH, and physChopAt, phSeparate and phBodyFromCells have always mutated W without
+        // touching it (so scanTop/landSnowAt worked off a stale surface after a felling, too). Lowering is
+        // the conservative direction: stale-low only means the flood takes a few more hops before it finds
+        // an anchored neighbour, while stale-high would wrongly anchor. Nothing here ever RAISES it — a
+        // retired chip or a landed flake must not make the ground read taller than it is.
+        if (!W[ii] && gy < hmap[gx + gz * WX]) { hmap[gx + gz * WX] = gy < 1 ? 1 : gy; SUP.stats.hmapLower++; }
+      }
     }
     const bWords = full ? null : new Set(), c2Words = full ? null : new Set();
     for (const b of bset) {
@@ -5645,21 +5757,23 @@
     PH.stats.birdsKilled += n;
     return n;
   };
-  // Returns the WORLD PALETTE ID when this local cell still belongs to the tree, else 0. Two kinds qualify:
-  //   · a pine model voxel not since replaced (snow / creature stamps / an earlier chop), and
-  //   · a HUNG PINECONE — cones are a SEPARATE model (stampTree stamps CONEV under canopy anchors) with no
-  //     entry in R.A at all, which is why a felled tree would otherwise leave its cones floating. A cone's
-  //     top voxel sits directly under its anchor foliage, so once cones are in the shape the ordinary
-  //     6-neighbour flood carries them with the crown for free.
-  // The height gate keeps GROUND cones out: fallen CONEVL decor shares the same palette ids but lies at
-  // ground level, and swallowing those would delete pickable items and burn body slots.
+  // Returns the WORLD PALETTE ID when this local cell still belongs to the tree, else 0: a pine model voxel
+  // not since replaced (by snow, a creature stamp or an earlier chop).
+  // ── THE HUNG-PINECONE CLAUSE IS GONE ── it used to claim any PICK_CONE id sitting above sink+12 in a cell
+  // where R.A is empty, so that a felled tree carried its cones with it. But PICK_CONE is a SUBSET of the
+  // pine's own BARK ids, and trees are placed on a 45-voxel grid with jitter while a footprint is ~35 wide
+  // — overlapping footprints are the NORMAL case, and treeShapeAt returns whichever pine it finds first. In
+  // the overlap, tree B's bark sits exactly where tree A's R.A is empty, so this clause called it tree A's
+  // material, found it unreachable from A's roots, and punched it out of tree B.
+  // Hung cones need no special case now: a cone touches needles, the needles touch their branch, the branch
+  // is anchored — so the DRAPE flood holds it as ordinary drape, and when the branch goes the cone goes with
+  // the same component. That is the whole point of not making the two graphs symmetric.
   const phPresent = (S, mx, my, mz) => {
     const y = S.gy + my; if (y < 1 || y >= WY) return 0;
-    const wid = W[phWorldIdx(S, mx, my, mz)];
     const v = S.R.A[mx + mz * S.R.sx + my * S.R.sx * S.R.sz];
-    if (v) return wid === remap[v] ? wid : 0;
-    if (wid && my > S.tr.sink + 12 && PICK_CONE.has(wid)) return wid;
-    return 0;
+    if (!v) return 0;
+    const wid = W[phWorldIdx(S, mx, my, mz)];
+    return wid === remap[v] ? wid : 0;
   };
   // ── 6-NEIGHBOUR CONNECTIVITY over ONE tree ── seeds are the buried courses (my <= sink): the root
   // anchor. Anything the flood cannot reach from the root is detached. Flat mark buffer sized to the
@@ -5929,11 +6043,16 @@
         if (si >= 0 && sn < comp.length) { PH.stats.evicted++; PH.bodies.splice(si, 1); }
       }
       if (PH.bodies.length >= PH.maxBodies) phMakeRoom();   // shed an airborne leaf first — erasing real geometry is the last resort, not the first
-      if (PH.bodies.length >= PH.maxBodies) {         // still full — erase, since a detached voxel left in W hangs in mid-air
+      if (PH.bodies.length >= PH.maxBodies) {         // still full — REQUEUE, never erase (the invariant: no component of >= 3 voxels is ever destroyed by the support system)
+        // This used to delete the whole component outright, which is a silent hole in the world rather
+        // than a floater, and it stranded whatever had been resting on it. The cells stay exactly where
+        // they are and go to the resolver instead: it retries every frame, and after SUP_BLOCK_MAX blocked
+        // frames it forces a slot. A body that lives one second longer than it should is invisible; a
+        // 900-voxel crown deleted because sixteen chips were in flight is not.
         for (const c of comp) { phMark[c] = 3;
           const mx2 = c % f.sx, mz2 = ((c / f.sx) | 0) % f.sz, my2 = (c / (f.sx * f.sz)) | 0;
-          const ii = phWorldIdx(S, mx2, my2, mz2); W[ii] = 0; cellsOut.push(ii); }
-        PH.stats.dustVox += comp.length; continue;
+          supPush(phWorldIdx(S, mx2, my2, mz2)); }
+        continue;
       }
       if (comp.length < 2) {                          // a single detached voxel
         const c0 = comp[0], mxa = c0 % f.sx, mza = ((c0 / f.sx) | 0) % f.sz, mya = (c0 / (f.sx * f.sz)) | 0;
@@ -6163,153 +6282,13 @@
              detached: bodies.length, bodyVox: bodies.map((b) => b.n),
              floodMs: PH.stats.lastFloodMs, sepMs: PH.stats.lastSepMs };
   };
-  // Everything of `tab` type in a box around the impact that no longer has a path down to the terrain.
-  // Returns the orphaned components, largest first, in world coordinates.
-  let phDecM = null, phDecS = null;
-  const phDecorOrphans = (wx, wy, wz, tab) => {
-    // R of 16 covers it however big the tool's sphere is: a swing takes the nearest `bite` cells, not the
-    // whole sphere, so the hole a single swing opens is only a few voxels across whatever the radius says.
-    const R = 16, UP = 22;
-    const x0 = Math.round(wx) - R, z0 = Math.round(wz) - R;
-    const y0 = Math.max(1, Math.round(wy) - R), y1 = Math.min(WY - 1, Math.round(wy) + UP);
-    const bw = 2 * R + 1, bd = 2 * R + 1, bh = y1 - y0 + 1, nAll = bw * bd * bh;
-    if (!phDecM || phDecM.length < nAll) { phDecM = new Uint8Array(nAll); phDecS = new Int32Array(nAll); }
-    else phDecM.fill(0, 0, nAll);
-    const li = (ix, iy, iz) => ix + iz * bw + iy * bw * bd;
-    const wIdx = (ix, iy, iz) => gwrap(x0 + ix, WX) + (y0 + iy) * WX + gwrap(z0 + iz, WZ) * WX * WY;
-    // pass 1: mark occupancy (1), and seed anything standing on solid NON-decor ground
-    let sp = 0;
-    for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bd; iz++) for (let ix = 0; ix < bw; ix++) {
-      const iiD = wIdx(ix, iy, iz);
-      const v = W[iiD];
-      if (!v || !tab[v] || stampedIdx.has(iiD)) continue;   // …and a live animal is never orphaned decor: creature ids SHARE palette entries with decor, so without this a perched bird came apart as "unsupported mushroom" (user 2026-08-05)
-      const k = li(ix, iy, iz); phDecM[k] = 1;
-      if (iy === 0) { phDecM[k] = 2; phDecS[sp++] = k; continue; }   // box floor — treat as supported, never orphan on a clipped box
-      const bv = W[wIdx(ix, iy - 1, iz)];
-      if (bv && !tab[bv] && solidTab[bv] === 1) { phDecM[k] = 2; phDecS[sp++] = k; }   // rooted in the terrain
-    }
-    while (sp > 0) {
-      const k = phDecS[--sp];
-      const ix = k % bw, iz = ((k / bw) | 0) % bd, iy = (k / (bw * bd)) | 0;
-      for (let d = 0; d < 6; d++) {
-        const nx = ix + (d === 0 ? 1 : d === 1 ? -1 : 0);
-        const ny = iy + (d === 2 ? 1 : d === 3 ? -1 : 0);
-        const nz = iz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-        if (nx < 0 || nx >= bw || nz < 0 || nz >= bd || ny < 0 || ny >= bh) continue;
-        const nk = li(nx, ny, nz);
-        if (phDecM[nk] !== 1) continue;
-        phDecM[nk] = 2; phDecS[sp++] = nk;
-      }
-    }
-    const comps = [];
-    for (let k0 = 0; k0 < nAll; k0++) {
-      if (phDecM[k0] !== 1) continue;
-      const comp = []; let q = 0; phDecS[q++] = k0; phDecM[k0] = 3;
-      while (q > 0) {
-        const k = phDecS[--q]; comp.push(k);
-        const ix = k % bw, iz = ((k / bw) | 0) % bd, iy = (k / (bw * bd)) | 0;
-        for (let d = 0; d < 6; d++) {
-          const nx = ix + (d === 0 ? 1 : d === 1 ? -1 : 0);
-          const ny = iy + (d === 2 ? 1 : d === 3 ? -1 : 0);
-          const nz = iz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-          if (nx < 0 || nx >= bw || nz < 0 || nz >= bd || ny < 0 || ny >= bh) continue;
-          const nk = li(nx, ny, nz);
-          if (phDecM[nk] === 1) { phDecM[nk] = 3; phDecS[q++] = nk; }
-        }
-      }
-      comps.push(comp.map((k) => [x0 + (k % bw), y0 + ((k / (bw * bd)) | 0), z0 + (((k / bw) | 0) % bd)]));
-    }
-    comps.sort((a2, b2) => b2.length - a2.length);
-    return comps;
-  };
-  // ── SEVERED FROM THE WORLD (user 2026-08-05: "nothing should be floating on its own") ── phDecorOrphans
-  // above only ever looks at ONE material class and only asks whether it is rooted in the terrain. This is
-  // the general rule for everything else: after a carve, any 6-connected component of SOLID world voxels
-  // near the impact that has no path back to the rest of the world is cut out and dropped as a body.
-  //
-  // Two things make it safe to run per swing:
-  //   · EVERY FACE OF THE BOX IS SUPPORT. A component touching ANY of the six faces is assumed to continue
-  //     outside the region, so only what is wholly enclosed — and therefore PROVABLY detached from
-  //     everything beyond — can fall. That makes a false positive structurally impossible: the sweep can
-  //     never punch a hole in real terrain. The top face counts too, or an arch over a gorge, carved at its
-  //     foot, would leave through the ceiling and be dropped. The failure mode left is a floater bigger than
-  //     the box surviving, which is the harmless direction.
-  //   · A SIZE CAP. Past ORPH_MAX the component is terrain, not debris: bail rather than lift a hillside.
-  //     Nothing is ever erased here either — too big for a rigid body means it stays exactly where it is.
-  //
-  // Foliage and surface scatter are deliberately EXCLUDED: phFallLoose already walks those with its own
-  // rules (a canopy hangs off diagonal neighbours and would fail a 6-connected test while looking fine).
-  let phOrpM = null, phOrpS = null;
-  const ORPH_R = 18, ORPH_UP = 20, ORPH_MAX = 2000;
-  const phSeveredFall = (wx, wy, wz) => { phSrc = 'severed';
-    const x0 = Math.round(wx) - ORPH_R, z0 = Math.round(wz) - ORPH_R;
-    const y0 = Math.max(1, Math.round(wy) - ORPH_R), y1 = Math.min(WY - 1, Math.round(wy) + ORPH_UP);
-    const bw = 2 * ORPH_R + 1, bd = 2 * ORPH_R + 1, bh = y1 - y0 + 1, nAll = bw * bd * bh;
-    if (bh < 3) return 0;
-    if (!phOrpM || phOrpM.length < nAll) { phOrpM = new Uint8Array(nAll); phOrpS = new Int32Array(nAll); }
-    else phOrpM.fill(0, 0, nAll);
-    const li = (ix, iy, iz) => ix + iz * bw + iy * bw * bd;
-    const wIdx = (ix, iy, iz) => gwrap(x0 + ix, WX) + (y0 + iy) * WX + gwrap(z0 + iz, WZ) * WX * WY;
-    // ── A LIVING ANIMAL IS NOT TERRAIN (user 2026-08-05: "chunks seem to break off of them") ── a grid-stamped
-    // creature's voxels are a temporary overlay on the world, and a perched bird rests on FOLIAGE, which this
-    // sweep deliberately ignores. So the bird read as a solid mass touching nothing — wholly enclosed, i.e.
-    // exactly the "severed" shape — and got lifted out of the tree as debris. MEASURED: one sweep at a bird
-    // produced a 42-voxel body of which 30 were the bird. Stamped cells are now INVISIBLE here: never lifted,
-    // and never counted as support either, since they will be gone the moment the animal takes a step.
-    const solidHere = (v, ii) => v && !foliaTab[v] && !floatTab[v] && !stampedIdx.has(ii);   // foliage/scatter belong to phFallLoose
-    let sp = 0;
-    for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bd; iz++) for (let ix = 0; ix < bw; ix++) {
-      const iiH = wIdx(ix, iy, iz);
-      if (!solidHere(W[iiH], iiH)) continue;
-      const k = li(ix, iy, iz);
-      // all six faces are the world continuing past the box — seeds, not candidates
-      if (iy === 0 || iy === bh - 1 || ix === 0 || ix === bw - 1 || iz === 0 || iz === bd - 1) { phOrpM[k] = 2; phOrpS[sp++] = k; }
-      else phOrpM[k] = 1;
-    }
-    while (sp > 0) {
-      const k = phOrpS[--sp];
-      const ix = k % bw, iz = ((k / bw) | 0) % bd, iy = (k / (bw * bd)) | 0;
-      for (let d = 0; d < 6; d++) {
-        const nx = ix + (d === 0 ? 1 : d === 1 ? -1 : 0);
-        const ny = iy + (d === 2 ? 1 : d === 3 ? -1 : 0);
-        const nz = iz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-        if (nx < 0 || nx >= bw || nz < 0 || nz >= bd || ny < 0 || ny >= bh) continue;
-        const nk = li(nx, ny, nz);
-        if (phOrpM[nk] === 1) { phOrpM[nk] = 2; phOrpS[sp++] = nk; }
-      }
-    }
-    let dropped = 0;
-    for (let k0 = 0; k0 < nAll; k0++) {
-      if (phOrpM[k0] !== 1) continue;
-      const comp = []; let q = 0; phOrpS[q++] = k0; phOrpM[k0] = 3;
-      let over = false;
-      while (q > 0) {
-        const k = phOrpS[--q]; comp.push(k);
-        if (comp.length > ORPH_MAX) { over = true; break; }
-        const ix = k % bw, iz = ((k / bw) | 0) % bd, iy = (k / (bw * bd)) | 0;
-        for (let d = 0; d < 6; d++) {
-          const nx = ix + (d === 0 ? 1 : d === 1 ? -1 : 0);
-          const ny = iy + (d === 2 ? 1 : d === 3 ? -1 : 0);
-          const nz = iz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-          if (nx < 0 || nx >= bw || nz < 0 || nz >= bd || ny < 0 || ny >= bh) continue;
-          const nk = li(nx, ny, nz);
-          if (phOrpM[nk] === 1) { phOrpM[nk] = 3; phOrpS[q++] = nk; }
-        }
-      }
-      if (over || comp.length < 1) continue;             // terrain-sized: leave it alone rather than lift a hill
-      if (comp.length > PH.absorbMax) continue;          // too big to BE a rigid body — and erasing real geometry is worse than a floater
-      if (PH.bodies.length >= PH.maxBodies && !phMakeRoom()) break;
-      const fb = phBodyFromCells(comp.map((k) => [x0 + (k % bw), y0 + ((k / (bw * bd)) | 0), z0 + (((k / bw) | 0) % bd)]));
-      if (!fb) continue;
-      fb.omega[0] = (Math.random() - 0.5) * 1.2;         // it lost its footing rather than being struck — it drops, it does not fly
-      fb.omega[1] = (Math.random() - 0.5) * 1.2;
-      fb.omega[2] = (Math.random() - 0.5) * 1.2;
-      fb.absorbAt = performance.now() + PH.absorbMs;     // …and is gathered up like any other chunk
-      PH.bodies.push(fb); PH.stats.chunks++; PH.stats.severed = (PH.stats.severed | 0) + 1;
-      dropped++;
-    }
-    return dropped;
-  };
+  // ── phSeveredFall IS GONE ── it seeded EVERY FACE of a 37x37x39 box as support, which made a false
+  // positive structurally impossible and the sweep itself pointless: any component larger than the box
+  // in any axis — a severed crown, a felled trunk, a mined-out ledge — always touches a face. MEASURED,
+  // it fired 0 times. Its solidHere also admitted WATER, so the day the box rule ever did fire it would
+  // have lifted a lake pocket as a rigid body; and its size guard leaked exactly as phFallLoose’s did.
+  // The unified resolver answers the same question honestly — does this component reach the static
+  // ground — with no box at all, so there is no face to hide behind.
   // ── A BODY FROM EXPLICIT VOXELS ── same build as phBodyFromCells, but the caller supplies the palette id
   // per cell and W is never read or written. That is what a creature needs: a duck is TRACE-INJECTED, so it
   // has no world voxels to lift out — its ragdoll is built from the model it is drawn from.
@@ -6355,109 +6334,190 @@
     gpuPatch(out, false);
     return phBuildBody({ bx: x0, gy: y0, bz: z0 }, keys, { sx, sz }, idMap);
   };
+  // ── SUPPORT FLOOD ── one component out of one seed. Class-restricted, 26-connected, capped, with the
+  // O(1) hmap anchor as an early-out on every pop, so an ordinary ground carve is answered on the FIRST
+  // pop and costs nothing. Visited is a Set of flat indices: measured 300-600 ns/cell and zero extra
+  // memory, against 192 MiB for a full-window bitset at this machine's 2048x384x2048 rung — on top of W's
+  // 1.5 GiB, in a title that ships as a local browser game on players' own hardware.
+  // A CONDUIT cell (a creature grid stamp, whatever its palette id) is traversable in the DRAPE flood but
+  // never lands in `comp`: it is not liftable, and it is never an anchor either.
+  const supWorldX = (gx) => winOX + (((gx - gwrap(winOX, WX)) % WX) + WX) % WX;   // window column -> the world column it currently stands for; bodies live in world space, so a component must be un-wrapped before it becomes one
+  const supWorldZ = (gz) => winOZ + (((gz - gwrap(winOZ, WZ)) % WZ) + WZ) % WZ;
+  const supFlood = (ii0, probe, depth) => {
+    const v0 = W[ii0]; if (!v0) return null;
+    if (stampedIdx.has(ii0)) return null;              // CONDUIT: never liftable, so never a seed either
+    const cls0 = SUP.CLASS[v0];
+    if (cls0 === SUP.FLUID) return null;               // a lake is anchored by construction and is never lifted
+    const drape = cls0 === SUP.DRAPE, cap = drape ? SUP.drapeCap : SUP.cap, dep = (depth | 0) + 1;
+    const seen = new Set([ii0]), st = [ii0], comp = [];
+    SUP.busy.add(ii0);
+    let anchored = false, capped = false;
+    while (st.length) {
+      const ii = st.pop();
+      const icond = stampedIdx.has(ii);
+      if (!icond) {
+        if (supAnchored(ii)) { anchored = true; break; }
+        comp.push(ii);
+        if (comp.length >= cap) { capped = true; break; }
+      }
+      const gx = ii % WX, gy = ((ii / WX) | 0) % WY, gz = (ii / (WX * WY)) | 0;
+      for (let dy = 1; dy >= -1 && !anchored; dy--) {  // DOWNWARD LAST, so a LIFO pop takes it FIRST: the anchor is always below, and diving beats wandering the canopy. Measured on a mid-trunk seed this is the difference between ~960 cells visited and a handful.
+        const ny = gy + dy; if (ny < 1 || ny >= WY) continue;
+        for (let dz = -1; dz <= 1 && !anchored; dz++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy && !dz) continue;
+          const nn = gwrap(gx + dx, WX) + ny * WX + gwrap(gz + dz, WZ) * WX * WY;
+          const nv = W[nn]; if (!nv) continue;
+          const ncls = stampedIdx.has(nn) ? SUP.CONDUIT : SUP.CLASS[nv];
+          if (ncls === SUP.FLUID) { anchored = true; break; }   // fluid terminates BOTH floods
+          if (drape) {
+            if (ncls === SUP.STRUCTURE) { if (supHeld(nn, dep)) { anchored = true; break; } continue; }   // TERMINATE on a held structure; never ENTER one, and never be held up by one that is itself floating
+            if (seen.has(nn)) continue;
+            seen.add(nn); SUP.busy.add(nn); st.push(nn);        // DRAPE and CONDUIT only
+          } else {
+            if (ncls === SUP.DRAPE) { if (supHeld(nn, dep)) { anchored = true; break; } continue; }   // the same rule the other way round: ASK, never enter
+            if (ncls !== SUP.STRUCTURE || seen.has(nn)) continue;   // fluid is handled above; a creature stamp is a hole in this graph, exactly as stampApply guarantees
+            seen.add(nn); SUP.busy.add(nn); st.push(nn);
+          }
+        }
+      }
+      if (anchored) break;
+    }
+    if (drape) SUP.stats.drapeFloods++; else SUP.stats.structFloods++;
+    if (capped) SUP.stats.capHits++;
+    const held = anchored || capped;                   // CAP HIT => ASSUME ANCHORED
+    const dst = held ? SUP.ancS : SUP.flS;             // memoise the verdict for the WHOLE component, both ways, for the rest of this pass
+    for (const s of seen) { SUP.busy.delete(s); dst.add(s); }
+    if (probe) return { cls: drape ? 'drape' : 'structure', anchored, capped, n: comp.length, visited: seen.size };
+    return { anchored: held, capped, drape, comp, seen };   // the caller also marks every visited cell resolved: abandoning a component mid-walk is what let the old passes re-discover the remainder as fresh, SMALLER, droppable components
+  };
+  // ── IS THIS CELL'S COMPONENT HELD? ── the cross-class anchor query, and the one place the two graphs are
+  // allowed to speak to each other.
+  //
+  // TRAVERSAL stays strictly asymmetric: the structure flood never ENTERS a drape cell and the drape flood
+  // never enters a structure cell, so a crown can never join a wood component and can never be LIFTED WHOLE.
+  // That is the mechanism behind the measured 86 -> 1007 blow-up, and it stays structurally impossible.
+  // What crosses is only the VERDICT; each component is still adjudicated, and lifted, entirely on its own.
+  //
+  // It has to cross, because MEASURED the pine model's upper trunk is not one connected wood shape. Walking
+  // a standing trunk with a structure-only flood, every course up to y = ground+84 reached the buried roots
+  // and every course above it came back a 50-voxel island anchored to nothing: the tip is wood embedded in
+  // needles. Without this the resolver decapitated every pine in the world the moment one snowflake landed
+  // in its crown — a false positive, i.e. precisely the failure this whole design refuses.
+  //
+  // Cycles are broken by SUP.busy: a component still being walked cannot serve as anyone else's anchor,
+  // which is both the correct graph answer and what stops wood and needles vouching for each other in a
+  // ring. The depth guard is a backstop only, and it errs ANCHORED — leaving a floater, never destroying
+  // geometry, which is the direction every other choice in here also leans.
+  const SUP_MAX_DEPTH = 32;
+  const supHeld = (ii, depth) => {
+    if (supAnchored(ii)) return true;
+    if (SUP.ancS.has(ii)) return true;
+    if (SUP.flS.has(ii)) return false;
+    if (SUP.busy.has(ii)) return false;                // already on the stack: it cannot vouch for us, because we are what it is waiting on
+    if ((depth | 0) >= SUP_MAX_DEPTH) return true;
+    const r = supFlood(ii, false, depth);
+    return r ? r.anchored : false;
+  };
+  // ── OUTCOME ── one table, replacing four. The only erase path is n < 3.
+  const supResolve = (r) => {
+    const comp = r.comp, n = comp.length;
+    if (n < 3) {                                       // a lone detached voxel is litter, needle or not (the shipped rule)
+      const gone = [];
+      for (const ii of comp) if (W[ii]) { W[ii] = 0; gone.push(ii); }
+      if (gone.length) { gpuPatch(gone, false); PH.stats.dustVox += gone.length; SUP.stats.erasedSmall += gone.length; }
+      return 1;
+    }
+    if (n > PH.absorbMax) { SUP.stats.tooBig = (SUP.stats.tooBig | 0) + 1; return 0; }   // cannot become a rigid body at all, so the only choices are leave it or erase it — and erasing real geometry is worse than a floater
+    if (PH.bodies.length >= PH.maxBodies) {            // no slot: REQUEUE, never erase. SUP.stats.erasedBig must read 0 on every row.
+      SUP.blockedNow = 1; supPush(comp[0]);
+      return 0;
+    }
+    const cells = new Array(n);
+    const id0 = W[comp[0]] || 0;
+    for (let i = 0; i < n; i++) { const ii = comp[i];
+      cells[i] = [supWorldX(ii % WX), ((ii / WX) | 0) % WY, supWorldZ((ii / (WX * WY)) | 0)]; }
+    phSrc = 'support';
+    const fb = phBodyFromCells(cells);
+    if (!fb) return 0;
+    fb.omega[0] = (Math.random() - 0.5) * 1.4;         // it lost its hold rather than being struck: it drops, it does not fly
+    fb.omega[1] = (Math.random() - 0.5) * 1.4;
+    fb.omega[2] = (Math.random() - 0.5) * 1.4;
+    // ── IT FELL, IT WAS NOT CUT: NO FLIGHT INTO YOUR CHEST (user 2026-08-05, pinecones off a felled pine) ──
+    // a body with absorbAt set SKIPS THE DISTANCE GATE ENTIRELY — the range check lives inside the
+    // `no timer yet` branch of the absorb step, so a body whose timer has elapsed falls straight through to
+    // absorbing at any range. Every cone a felled pine shed therefore came flying across the clearing 450 ms
+    // later. The timer is right for a chunk the player CARVED — they aimed at it and it is owed to them — and
+    // wrong for anything that merely lost its support. Same rule the arrow's debris already follows: it lies
+    // where it lands and is collected by walking up to it, inside PH.absorbR.
+    fb.absorbAt = 0;
+    fb.nearR = PH.absorbR;
+    PH.bodies.push(fb); PH.stats.chunks++;
+    SUP.stats.lifted++; SUP.stats.liftedVox += n;
+    if (r.drape) SUP.stats.liftedDrape += n; else SUP.stats.liftedStruct += n;
+    if (SUP.log.length < 64) SUP.log.push([n, id0, cells[0][1], r.drape ? 'D' : 'S']);   // a short, capped ring for __vb.support(): size, palette id, height, class — enough to tell a stranded needle clump from a hillside
+    return 1;
+  };
+  const SUP_BLOCK_MAX = 30;                            // frames the resolver may sit blocked on a full body budget before it forces a slot
+  // ── THE PASS ── seeds are every enqueued cell that is occupied PLUS every occupied 26-neighbour of it.
+  // That is the fix for the deepest defect in the scheme this replaces: all four old tests were boxes
+  // centred on the IMPACT POINT while the geometry that changed is elsewhere — phSeparate removes a crown
+  // 40-90 voxels above the cut, and the two sweeps that followed were centred on the cut.
+  // Lifts append their vacated cells to the same queue (through gpuPatch), so cascades settle inside this
+  // pass or carry to the next frame. The queue is persistent; nothing is ever dropped on the floor.
+  const supFlush = (force, budget) => {
+    if (!SUP.on || SUP.qh >= SUP.q.length) { SUP.blockedNow = 0; return 0; }
+    const t0 = performance.now();
+    let acted = 0, pass = 0;
+    const maxPass = force ? 64 : SUP.maxPasses;
+    const lim = force ? (budget === undefined ? Infinity : budget) : SUP.msBudget;   // a forced flush still takes a ceiling: a caller that needs the answer NOW (see arrowChop) must not be able to stall a frame on a storm-sized queue
+    SUP.blockedNow = 0;
+    while (SUP.qh < SUP.q.length && pass < maxPass) {
+      pass++; SUP.stats.passes++;
+      SUP.res.clear(); SUP.ancS.clear(); SUP.flS.clear(); SUP.busy.clear();   // cleared BETWEEN passes, never within one: dedup inside a pass, honest re-adjudication after a lift
+      const end = SUP.q.length;                        // lifts append beyond this — they are the NEXT cascade round, not this one
+      let out = false;
+      while (SUP.qh < end) {
+        if (performance.now() - t0 > lim) { out = true; break; }   // checked BETWEEN queued cells, never mid-flood: a component is always resolved as a whole
+        const q0 = SUP.q[SUP.qh++]; SUP.qs.delete(q0);
+        const gx = q0 % WX, gy = ((q0 / WX) | 0) % WY, gz = (q0 / (WX * WY)) | 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = gy + dy; if (ny < 1 || ny >= WY) continue;
+          for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+            const ii = gwrap(gx + dx, WX) + ny * WX + gwrap(gz + dz, WZ) * WX * WY;
+            if (!W[ii] || SUP.res.has(ii)) continue;
+            const r = supFlood(ii, false);
+            if (!r) { SUP.res.add(ii); continue; }
+            for (const s of r.seen) SUP.res.add(s);    // anchored, capped or lifted — the whole component has had its answer for this pass
+            if (r.anchored || !r.comp.length) continue;
+            acted += supResolve(r);
+          }
+        }
+      }
+      if (out) break;
+    }
+    if (SUP.qh > 8192) { SUP.q = SUP.q.slice(SUP.qh); SUP.qh = 0; }   // in-place-ish compaction, same shape as the snow queues
+    SUP.stats.carried = SUP.q.length - SUP.qh;
+    if (SUP.blockedNow) { SUP.stats.blockedFrames++;
+      if (++SUP.blocked >= SUP_BLOCK_MAX) { SUP.blocked = 0; if (phMakeRoom()) SUP.stats.reclaims++; } }
+    else SUP.blocked = 0;
+    const ms = performance.now() - t0;
+    SUP.stats.ms = +ms.toFixed(3);
+    if (ms > SUP.stats.msMax) SUP.stats.msMax = +ms.toFixed(3);
+    return acted;
+  };
   // ── CHOP LEAVES ── foliage comes off with ANY tool (user). Deliberately NOT routed through
   // phChopDecor: that runs an orphan sweep afterwards, and a canopy is precisely the shape it misjudges.
   // Leaves have no hitbox and no physics, so there is nothing to drop — they just go.
-  // ── ANYTHING LEFT IN MID-AIR FALLS ── (user) a general rule, not a foliage special case. After a carve,
-  // every LOOSE voxel nearby — foliage, grass, flowers, twigs, cones — is traced back through its own
-  // kind looking for something that actually holds it up: a branch, a trunk, the ground. A clump that
-  // finds nothing is cut out as a rigid body, so it drops and is then gathered up like any other chunk.
-  //
-  // NO BOUNDING BOX. Two earlier versions used one and both failed the same way: anything touching the
-  // box edge had to be assumed supported, and a canopy is far wider than any box worth scanning, so
-  // essentially every leaf qualified. This follows the component wherever it actually goes and stops on
-  // a size cap instead — a piece that large is a tree, not debris.
-  const FALL_SEED_R = 10;                              // how far from the carve to look for pieces it may have cut loose
-  const FALL_MAX = 3000;                               // past this, stop and assume it is held: it is not debris
-  // ── BOUNDED SUPPORT (user 2026-08-05) ── "is this clump touching wood anywhere?" is the wrong question and
-  // both adjacencies answered it badly. 6-connected called a diagonally-hung needle clump unheld and dropped
-  // it, which stranded its neighbours; 26-connected merged the whole crown into one blob that touches the
-  // trunk somewhere, so a carved-out branch left its needles hanging. Neither is how a canopy works: needles
-  // hang NEAR a branch, so support is a question of DISTANCE, not of eventual connection.
-  // So: a multi-source 26-connected walk outward from every real support voxel (wood, terrain — anything
-  // occupied that is not itself loose) through loose voxels, stopping at FALL_HOPS. Loose voxels the walk
-  // never reaches are hanging on nothing within reach of anything solid, and those fall.
-  // FALL_HOPS comes from the geometry, not from taste: MEASURED across pines, the furthest a healthy canopy's
-  // own needles sit from their nearest wood is 13-26 hops depending on the tree, so 26 keeps every intact
-  // crown and still catches the masses that end up far beyond it once a branch is gone.
-  const FALL_HOPS = 26;
-  const FALL_BOX = FALL_SEED_R + FALL_HOPS;            // every candidate inside the seed radius has its whole FALL_HOPS neighbourhood inside the box, so the walk can never be cut short by the wall
-  let phFlS = null, phFlD = null, phFlQ = null;
-  const phFallLoose = (cx0, cy0, cz0) => { phSrc = 'fallLoose';
-    // A creature stamp is never "loose scatter", however its palette ids happen to be shared — a perched
-    // bird sitting in needles would otherwise be walked as part of the clump and dropped with it, which is
-    // one of the ways animals came apart into chunks (user 2026-08-05). Stamped cells read as EMPTY here:
-    // not loose, and not support either, since the animal will move off them on its own.
-    const loose = (v, ii) => v && (foliaTab[v] || floatTab[v]) && !stampedIdx.has(ii);
-    const B = FALL_BOX, bw = 2 * B + 1;
-    const y0 = Math.max(1, cy0 - B), y1 = Math.min(WY - 1, cy0 + B), bh = y1 - y0 + 1;
-    if (bh < 3) return;
-    const x0 = cx0 - B, z0 = cz0 - B, nAll = bw * bw * bh;
-    if (!phFlS || phFlS.length < nAll) { phFlS = new Uint8Array(nAll); phFlD = new Uint8Array(nAll); phFlQ = new Int32Array(nAll); }
-    else { phFlS.fill(0, 0, nAll); phFlD.fill(0, 0, nAll); }
-    const li = (ix, iy, iz) => ix + iz * bw + iy * bw * bw;
-    const wIdx = (ix, iy, iz) => gwrap(x0 + ix, WX) + (y0 + iy) * WX + gwrap(z0 + iz, WZ) * WX * WY;
-    // 1 = loose (candidate), 2 = SUPPORT (real geometry that can hold something up)
-    let sp = 0;
-    for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bw; iz++) for (let ix = 0; ix < bw; ix++) {
-      const ii = wIdx(ix, iy, iz), v = W[ii];
-      if (!v || stampedIdx.has(ii)) continue;
-      const k = li(ix, iy, iz);
-      if (loose(v, ii)) phFlS[k] = 1; else { phFlS[k] = 2; phFlQ[sp++] = k; }
-    }
-    // …outward from the support, through loose voxels only, FALL_HOPS deep
-    let head = 0;
-    while (head < sp) {
-      const k = phFlQ[head++], d = phFlD[k];
-      if (d >= FALL_HOPS) continue;
-      const ix = k % bw, iz = ((k / bw) | 0) % bw, iy = (k / (bw * bw)) | 0;
-      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
-        if (!dx && !dy && !dz) continue;
-        const nx = ix + dx, ny = iy + dy, nz = iz + dz;
-        if (nx < 0 || nx >= bw || nz < 0 || nz >= bw || ny < 0 || ny >= bh) continue;
-        const nk = li(nx, ny, nz);
-        if (phFlS[nk] !== 1) continue;                 // empty, already claimed, or support
-        phFlS[nk] = 3; phFlD[nk] = d + 1; phFlQ[sp++] = nk;   // 3 = reached, i.e. HELD
-      }
-    }
-    // whatever is still 1 is loose and out of reach of anything solid: group it and drop it
-    const R = FALL_SEED_R;
-    for (let iy = 0; iy < bh; iy++) for (let iz = 0; iz < bw; iz++) for (let ix = 0; ix < bw; ix++) {
-      if (phFlS[li(ix, iy, iz)] !== 1) continue;
-      const comp = [], q = [li(ix, iy, iz)];
-      phFlS[q[0]] = 4;
-      let near = false, wall = false, over = false;
-      while (q.length) {
-        const k = q.pop();
-        const jx = k % bw, jz = ((k / bw) | 0) % bw, jy = (k / (bw * bw)) | 0;
-        comp.push([x0 + jx, y0 + jy, z0 + jz]);
-        if (comp.length > FALL_MAX) { over = true; break; }
-        near = true;   // ── ANY unreached component falls, wherever it sits in the box (user: "nothing should be floating") ── this used to require a voxel within FALL_SEED_R of the impact, on the theory that only nearby geometry could have been freed by the carve. That is not true of a canopy: cutting one branch un-foots needles right along it, tens of voxels out, and those were left hanging because they failed this test. Being unreached by the support walk is already the whole proof — it means nothing solid lies within FALL_HOPS in any direction — so the extra proximity condition only ever suppressed correct drops.
-        if (jx === 0 || jx === bw - 1 || jz === 0 || jz === bw - 1 || jy === 0 || jy === bh - 1) wall = true;   // it leaves the box: its support may be outside, so leave it alone
-        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
-          if (!dx && !dy && !dz) continue;
-          const nx = jx + dx, ny = jy + dy, nz = jz + dz;
-          if (nx < 0 || nx >= bw || nz < 0 || nz >= bw || ny < 0 || ny >= bh) continue;
-          const nk = li(nx, ny, nz);
-          if (phFlS[nk] === 1) { phFlS[nk] = 4; q.push(nk); }
-        }
-      }
-      if (over || wall || !near || !comp.length) continue;
-      if (comp.length < 3 || comp.length > PH.absorbMax || (PH.bodies.length >= PH.maxBodies && !phMakeRoom())) {
-        const gone = [];
-        for (const c of comp) { const ii = gwrap(c[0], WX) + c[1] * WX + gwrap(c[2], WZ) * WX * WY; if (W[ii]) { W[ii] = 0; gone.push(ii); } }
-        if (gone.length) { gpuPatch(gone, false); PH.stats.dustVox += gone.length; }
-        continue;
-      }
-      const fb = phBodyFromCells(comp);
-      if (!fb) continue;
-      fb.omega[0] = (Math.random() - 0.5) * 1.6;       // it lost its hold rather than being struck: it drops, it does not fly
-      fb.omega[1] = (Math.random() - 0.5) * 1.6;
-      fb.omega[2] = (Math.random() - 0.5) * 1.6;
-      fb.absorbAt = performance.now() + PH.absorbMs;   // …and the player gathers it up like any other chunk (user)
-      PH.bodies.push(fb); PH.stats.chunks++;
-    }
-  };
+  // ── phFallLoose IS GONE ── it was the PROXIMITY rule: a multi-source 26-connected walk out of every
+  // occupied non-loose voxel, through loose ones, capped at FALL_HOPS = 26. Four things were wrong with
+  // it and none of them was tunable. Its support set was never itself validated, so a needle clump three
+  // hops from a severed HANGING log read as held. It could not see solid material at all — wood, rock,
+  // soil and ferns could only ever BE support, never fall. Its wall and over bail-outs silently left
+  // floaters, and its size guard LEAKED: the break mid-walk left the remainder discoverable as fresh,
+  // smaller, DROPPABLE components. And it erased any 2000-3000 voxel needle mass — a genuine crown — as
+  // a routine path. It cost 1.3 ms of scan plus a 21 ms walk over a 73-cubed box, fired four times a
+  // second whether or not anything had been carved, against a 16.7 ms frame. supFlush replaces all of it
+  // at a 2 ms/frame ceiling that is only ever paid when something actually changed.
   const phChopLeaves = (wx, wy, wz, rad, bite) => { phSrc = 'chopLeaves';
     const r2 = rad * rad, ri = Math.ceil(rad), cx0 = Math.round(wx), cy0 = Math.round(wy), cz0 = Math.round(wz);
     const cD = [], cI = [], cX = [], cY = [], cZ = [];   // world coords too: the chunk is built from cells, not indices
@@ -6484,27 +6544,9 @@
       if (gone.length) { gpuPatch(gone, false); PH.stats.dustVox += gone.length; }
       return gone.length > 0;
     }
-    // …and any SCATTER the carve just cut loose — a pinecone hangs from the branch ABOVE it, so it floats
-    // the moment the foliage around it goes (user). Orphaned = no solid neighbour left on any side.
-    const orphan = [];
-    for (const c of cells) {
-      for (let d = 0; d < 6; d++) {
-        const ox = c[0] + (d === 0 ? 1 : d === 1 ? -1 : 0), oy = c[1] + (d === 2 ? 1 : d === 3 ? -1 : 0), oz = c[2] + (d === 4 ? 1 : d === 5 ? -1 : 0);
-        if (oy < 1 || oy >= WY) continue;
-        const oi = gwrap(ox, WX) + oy * WX + gwrap(oz, WZ) * WX * WY;
-        if (!floatTab[W[oi]]) continue;                // only surface scatter can be orphaned this way
-        let held = false;
-        for (let e = 0; e < 6 && !held; e++) {
-          const nx = ox + (e === 0 ? 1 : e === 1 ? -1 : 0), ny = oy + (e === 2 ? 1 : e === 3 ? -1 : 0), nz = oz + (e === 4 ? 1 : e === 5 ? -1 : 0);
-          if (ny < 1 || ny >= WY) continue;
-          const nv = W[gwrap(nx, WX) + ny * WX + gwrap(nz, WZ) * WX * WY];
-          if (nv && !floatTab[nv]) held = true;        // still attached to something real — branch, trunk or ground
-        }
-        if (!held) { W[oi] = 0; orphan.push(oi); }
-      }
-    }
-    if (orphan.length) { gpuPatch(orphan, false); PH.stats.dustVox += orphan.length; }
-    phFallLoose(cx0, cy0, cz0);                        // …and anything this carve left hanging drops (see the sweep)
+    // (the 1-hop, erase-only scatter pass that used to sit here is gone: it asked only whether a
+    //  neighbour still had ONE occupied non-floatTab 6-neighbour, and erased it outright if not.
+    //  supFlush answers the same question over the whole component and DROPS what it takes.)
     const lb = phBodyFromCells(cells);
     if (!lb) return false;
     lb.omega[0] = (Math.random() - 0.5) * 2.2;         // it was knocked loose, not struck: a lazy tumble, not a spin
@@ -6558,20 +6600,9 @@
       cells.push(kk); idMap.set(kk, cV[j]);
       W[cI[j]] = 0; out.push(cI[j]);
     }
-    // ── SCATTER LEFT HANGING ── grass strands, twigs and pinecones sit ON the surface and carry no
-    // support of their own, so digging the voxel out from under one leaves it in mid-air (user). None of
-    // it is in decorTab, which is why the orphan pass below has never been able to see it.
-    const scat = [], colSeen = new Set();
-    for (let k = 0; k < take; k++) { const j = ord[k];
-      const ck = cX[j] * 65536 + cZ[j]; if (colSeen.has(ck)) continue; colSeen.add(ck);
-      const cb = gwrap(cX[j], WX) + gwrap(cZ[j], WZ) * WX * WY;
-      for (let y = Math.max(1, cY[j]); y < Math.min(WY, cY[j] + 10); y++) {   // UPWARD: erasing the lowest strand un-foots the one above it
-        const v2 = W[cb + y * WX];
-        if (!v2 || !floatTab[v2] || W[cb + (y - 1) * WX]) continue;           // not scatter, or still standing on something
-        W[cb + y * WX] = 0; scat.push(cb + y * WX);
-      }
-    }
-    if (scat.length) { gpuPatch(scat, false); PH.stats.dustVox += scat.length; }
+    // (the upward 10-voxel column scan that used to sit here is gone: it was column-only,
+    //  gravity-only and erase-only, so a strand held up SIDEWAYS by what the bite took was invisible
+    //  to it and a strand it did see was destroyed rather than dropped.)
     if (!cells.length) return false;
     gpuPatch(out, false);
     { const cols = new Set();                        // DIGGING lowers the ground: re-derive the surface of every column this bite emptied
@@ -6589,26 +6620,12 @@
       b.absorbAt = performance.now() + PH.absorbMs;
       PH.bodies.push(b); PH.stats.chunks++;
     }
-    // ── WHAT IS LEFT STANDING? ── a mushroom cap overhangs its stem, so cutting the stem out from under
-    // it leaves the cap with no path down to the ground. This is the decor equivalent of the phFlood /
-    // phSeparate pass a chopped tree gets, and without it the cap simply hung in the air (user).
-    phSrc = 'decorOrphan';
-    for (const comp of phDecorOrphans(wx, wy, wz, decorTab)) {
-      // A two-voxel splinter is not a chunk (user: one piece, not a shower of them) — and a floater is
-      // never acceptable, so anything not worth spawning is erased rather than left standing.
-      if (comp.length < 3 || (PH.bodies.length >= PH.maxBodies && !phMakeRoom())) {
-        const dead = [];
-        for (const c of comp) { const ii = gwrap(c[0], WX) + c[1] * WX + gwrap(c[2], WZ) * WX * WY;
-          if (W[ii]) { W[ii] = 0; dead.push(ii); } }
-        if (dead.length) gpuPatch(dead, false);
-        PH.stats.dustVox += dead.length; continue;
-      }
-      const ob = phBodyFromCells(comp); if (!ob) continue;
-      ob.omega[1] = (Math.random() - 0.5) * 0.6;       // it lost its support rather than being struck: it drops, it does not fly
-      ob.absorbAt = performance.now() + PH.absorbMs;
-      PH.bodies.push(ob); PH.stats.chunks++; PH.stats.decorFalls++;
-    }
-    phSeveredFall(wx, wy, wz);                         // …and ANYTHING ELSE this carve cut free — soil, stone, a stamped rock left with nothing under it (user)
+    // (what a bite left standing is adjudicated by supFlush, off the cells this carve actually
+    //  changed — see the gpuPatch above. The phDecorOrphans sweep that used to run here is gone:
+    //  it seeded ONLY the box floor, so any mass whose path to ground left through a side or the
+    //  top was declared unsupported, and with NO size cap at all it cut gorge arches out of the
+    //  world. And because woodTab is a subset of decorTab while the foliage ids are not, a shovel
+    //  bite at a pine’s base lifted the trunk section and left the crown hanging in the sky.)
     return true;
   };
   // ── AXE SWING -> TRUNK ── melee reach along the view ray, trunk voxels only. Returns true when the
@@ -6681,7 +6698,8 @@
     // an id past that wraps to 0, which wrote AIR into the ground instead of tilled earth. If there is no
     // room left, take the nearest colour already in the table rather than corrupting the world.
     if (!TILL_ID) {
-      if (palette.length < 255) TILL_ID = addCol(150, 116, 76);
+      const fresh = palette.length < 255;              // a BRAND-NEW palette entry, or a shade already owned by something else?
+      if (fresh) TILL_ID = addCol(150, 116, 76);
       else {                                           // the table is FULL — pick the closest shade already in it, by hand:
         let bd = 1e9;                                  // edCol's own match came back near-white, which is not tilled earth
         for (let i = 0; i < palette.length && i < 255; i++) { const c = palette[i];
@@ -6689,6 +6707,13 @@
           if (d < bd) { bd = d; TILL_ID = i + 1; } }
       }
       solidTab[TILL_ID] = 1; digOnlyTab[TILL_ID] = 1; palSync();
+      // ── AND IT NEEDS A SUPPORT CLASS ── this is the one palette id in the game minted at RUNTIME, so the
+      // SUP.CLASS sweep that runs beside the material tables cannot see it. Only when the entry is genuinely
+      // NEW: with a full table TILL_ID is a shade already owned by something else, and stamping STRUCTURE
+      // over it would reclassify every voxel of that shade in the world. (In practice the class barely
+      // matters either way — hoeTill writes tilled earth at h-2 and lowers hmap to h-1, so the cell is inside
+      // the static ground column and supAnchored answers yes on the O(1) test whatever its class.)
+      if (fresh) SUP.CLASS[TILL_ID] = SUP.STRUCTURE;
       console.log('[vb] tilled earth id', TILL_ID, 'palette', palette.length, TILL_ID > 255 ? 'OVERFLOW' : '');
     }
     const cells = [];
@@ -6850,7 +6875,7 @@
         // trunk the player was actually pointing at. Aiming AT foliage still cuts foliage: that is decided
         // before this march and goes to phChopLeaves.
         if (physChopAt(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, S, C_MIN, C_BITE, isWood).hit ||
-            physChopAt(x, y, z, C_RAD, S, C_MIN, C_BITE, isWood).hit) { phFallLoose(x, y, z); phSeveredFall(x, y, z); return 1; }   // …and whatever that branch was holding up drops (user), plus anything the cut severed outright
+            physChopAt(x, y, z, C_RAD, S, C_MIN, C_BITE, isWood).hit) return 1;   // whatever that branch was holding up now drops through supFlush, fed by physChopAt's own gpuPatch
         return 0;
       }
       // ── ORPHANED WOOD ── a STUMP is wood that belongs to no tree: treeShapeAt stops answering for that
@@ -6858,7 +6883,7 @@
       // SHORT, so the swing that means to hit it usually samples the dirt in FRONT of it and stops there.
       // Hence no test on the sampled voxel: whatever the ray landed on, if wood is within the axe's own
       // sphere it gets cut. ok() confines the carve to wood, so it can never eat the ground it stands in.
-      if (cut && phChopDecor(x, y, z, C_RAD, C_BITE, (v) => !!woodTab[v])) { phFallLoose(x, y, z); return 1; }   // phChopDecor runs the severed sweep itself
+      if (cut && phChopDecor(x, y, z, C_RAD, C_BITE, (v) => !!woodTab[v])) return 1;
       // ── WATER IS NOT AN OBSTRUCTION (user 2026-08-05: "let me use tools underwater") ── a water voxel is a
       // non-zero id like any other, so this test used to STOP the swing dead at the surface: the pick bounced
       // off the lake instead of the rock beneath it, and nothing submerged could be worked at all. A FROZEN
@@ -7131,8 +7156,21 @@
   // drifts to a new random target every few seconds (varied, believable arcs — never a fixed circle) and it terrain-follows via hmap so it
   // always clears the canopy. Pose is written into drop slot 4 each frame (see the drops uniform section) and DDA-raytraced off-grid —
   // smooth rotation, depth-tested, no world-grid writes.
-  const BIRD_SLOTS = 5;                                // how many of the flying flock may hold a drop slot at once — the nearest ones (see the emit loop)
-  const BIRD_N = 12;                                   // divisible by 1/2/3/4 — whatever the species count, the round-robin split below comes out exact                                    // a few cardinals in the air, not one (user). Bird 0 owns the dedicated drop slot 4;
+  // ── THE FLOCK IS SIZED TO ITS SLOTS (user 2026-08-05: "flying birds are still dissapearing over the lake") ──
+  // capping the draw at the nearest 5 of 12 freed six slots for the creatures that were being starved, but it
+  // traded one disappearing act for another: a flock is always in motion, so which five are nearest changes
+  // constantly and birds swapped in and out of existence in front of the player — worst over open water, where
+  // there is nothing for them to be hidden behind. A hard cap on a moving set can only ever look like that.
+  // So the flock is sized to the slots instead: BIRD_N - 1 birds share the drop slots (bird 0 has its own,
+  // slot 4), and BIRD_SLOTS covers every one of them. Nothing is selected, so nothing can be deselected.
+  // 12 -> 9 birds costs three of the flock and still leaves the traced creatures 31 slots, up from the 28 they
+  // had before any of this.
+  const BIRD_N = 9;
+  const BIRD_SLOTS = BIRD_N - 1;                       // every flying bird that is not bird 0 gets a slot, always. Bird 0 owns the dedicated drop slot 4
+  // 9 divides by 3, which is the species count today (cardinal / blue_bird / robin) so the round-robin split
+  // below still comes out exact — three of each. It was 12 to divide by 1/2/3/4; if a FOURTH species is ever
+  // added, take this back to 12 and give the traced creatures their slots back some other way, because an
+  // uneven split shows up as one species being rarer than the others rather than as anything subtle.
   let birdKills = 0;                                   // songbirds brought down by a shaft — the flock refills itself, so a headcount alone proves nothing
   const birds = Array.from({ length: BIRD_N }, () => ({ th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0, mode: 0, swoopT0: 0, swoopA: 0, swO: 0, edge: false, fi: 0, sp: 0 }));   // the rest ride the compacted creature slots. mode: 0 wander / 1 thermal soar / 2 swoop
   const bird = birds[0];                               // the original singleton name, kept for the editor path + the primary hitbox
@@ -7617,7 +7655,6 @@
     if (e < 0 || e >= 1) return 0;                     // long since loosed — back at rest
     return Math.min(BOW_FRAMES - 1, 3 + Math.floor(e * (BOW_FRAMES - 3)));   // …then run 03..06 out (user)
   };
-  let fallScan = 0;                                    // which slice the ambient floater pass looks at next
   const AUTO_PICK_R = 16;                              // AUTO-PICKUP radius (vox) — walk this close and a FREE hand slot vacuums the item up
   function autoPickup() {                              // proximity grab: RADIAL, not the view-ray march tryPickup() uses — you never have to aim at it
     if (grabAnim || dead) return;                      // one flight at a time — startGrab would clobber the item already in the air
@@ -7919,9 +7956,18 @@
       const it = itemsRef[(B.ragIt | 0) - 1];
       if (!it || !it.cells) return null;
       const ax = B.ragX, ay = B.ragY, az = B.ragZ, s = B.ragS || 1;
+      // ── THE CORPSE APPEARS WHERE THE ANIMAL WAS (user 2026-08-05: "it teleports to a new location where it
+      // proceeds to fall like a rigid body") ── ragA0/1/2 is the RENDER anchor, and the renderer centres a model
+      // on its anchor (the same half-extents the hitboxes are built from: bdi.w * 0.5 ...). This rebuild walked
+      // the model out from its CORNER instead, so every trace-injected ragdoll was born offset by half its own
+      // body along all three axes. MEASURED on a mother duck: the body appeared 5.4 voxels to the side and 4.4
+      // voxels ABOVE her and fell from there, which is exactly the teleport-then-drop that was reported.
+      // Subtracting half the extent builds the corpse ABOUT the anchor instead of hanging off one corner of it.
+      // This is not duck-specific: it fixes fish, butterflies and every other off-grid creature's death too.
+      const hw = it.w * 0.5, hd = it.d * 0.5, hh = it.h * 0.5;
       for (let z = 0; z < it.h; z++) for (let y = 0; y < it.d; y++) for (let x = 0; x < it.w; x++) {
         const c = it.cells[x + y * it.w + z * it.w * it.d]; if (!c) continue;
-        const mx = (x + 0.5) * s, my = (y + 0.5) * s, mz = (z + 0.5) * s;
+        const mx = (x + 0.5 - hw) * s, my = (y + 0.5 - hd) * s, mz = (z + 0.5 - hh) * s;
         ragCellsBuf.push([Math.round(B.ragA0 + ax[0] * mx + ay[0] * my + az[0] * mz),
                           Math.round(B.ragA1 + ax[1] * mx + ay[1] * my + az[1] * mz),
                           Math.round(B.ragA2 + ax[2] * mx + ay[2] * my + az[2] * mz),
@@ -9156,7 +9202,7 @@
     ED.fcells2 = [];
     for (const r of ED.ring) { const id = edPlaneId(r.x, r.z); if (W[r.ii] !== id) { W[r.ii] = id; cells.push(r.ii); } }
     ED.ring = [];
-    if (cells.length) gpuPatch(cells); };
+    if (cells.length) gpuPatch(cells, true, cells.length, false); };   // track=false: the editor stage is a frozen sky set, not terrain — the support resolver must never adjudicate it
   const edLayout = () => {                             // stamp the current frame of BOTH bunnies as real static objects (world voxels → full lighting): the EDITABLE bunny in the LEFT lane (with gizmos/ring), the PREVIEW bunny in the RIGHT lane. The animation swaps to the next static frame in place; no filmstrip.
     const cells = [];
     for (const ii of ED.fcells) { if (W[ii] !== 0) { W[ii] = 0; cells.push(ii); } }   // vacated model cells clear to EMPTY (not ED.prev) — the play space above the plane must stay empty, else a cell that overlapped a tall-tree voxel would restore & REVEAL that voxel (a "tree piece" left behind by the hopping bunny). ED.prev is untouched → edExit still rebuilds the real world.
@@ -9222,7 +9268,7 @@
       ED.box2 = aX >= ax ? { cx: (ax + aX + 1) / 2, cy: (ay + aY + 1) / 2, cz: (az + aZ + 1) / 2,
         hx: (aX - ax + 1) / 2, hy: (aY - ay + 1) / 2, hz: (aZ - az + 1) / 2 } : null;
     } else ED.box2 = null;
-    gpuPatch(cells);
+    gpuPatch(cells, true, cells.length, false);        // track=false: the editor's frame-advance stamp on the frozen sky stage is not a terrain edit
     edHudUpd();
   };
   const edSwapBunnies = () => {                         // [b] swap the two bunnies between lanes → the OTHER one becomes editable (gizmos/scrub operate on ED.frames). Swap every per-lane field so the machinery follows.
@@ -9500,7 +9546,7 @@
     bricks.fill(0); bricks2.fill(0); wbricks.fill(0);  // SEPARATE LEVEL: empty occupancy = the whole world vanishes from the tracer (W is untouched — exit rebuilds)
     const cells = [];
     for (let z = ED.z0; z < ED.z0 + ED.pd; z++) for (let x = ED.x0; x < ED.x0 + ED.pw; x++) edSet(x, ED.y, z, edPlaneId(x, z), cells);
-    gpuPatch(cells);
+    gpuPatch(cells, true, cells.length, false);        // track=false: entering the editor overwrites real world cells with the stage plane, and none of that is a terrain edit
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = true;   // fly ON so the framing below can't be pulled off by gravity while the world is frozen
     smoothEye = P.y + EYE; resetHist = 1;
     if (!ED.frames.length && PORCUPINE_WALK.length) { edImportBufs(PORCUPINE_WALK, 'vb_edoffsets_porcupine', PORCUPINE_BAKES[0], 'porcupine'); ED.bun = null; ED.bunny = false; ED.arm = { hd: 0, px: 0, pz: 0, tRe: 0 }; ED.bakes = PORCUPINE_BAKES; }   // PORCUPINE walk cycle is now the ASSET-EDITOR object (user: swapped the skunk out of the editor — the skunk still spawns in the WORLD, it's just no longer what you edit). Align ONCE in SOUTH; headings auto-derive via armOffset (its own PORCUPINE_BAKES + 'vb_edoffsets_porcupine' namespace)
@@ -9527,7 +9573,7 @@
     const cells = [];
     for (const [ii, pv] of ED.prev) if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); }
     ED.prev.clear(); ED.frames = []; ED.frames2 = []; ED.sel = -1; ED.fcells = []; ED.fcells2 = []; ED.ring = []; ED.box = null; ED.box2 = null; ED.bun = null; ED.arm = null; bfly.init = false;   // both lanes + creature AI cleared → no stale editor hitbox lingers after exit
-    gpuPatch(cells);
+    gpuPatch(cells, true, cells.length, false);        // track=false: this RESTORES the world the editor borrowed — it is a rollback, not an edit
     rebuildBricks(0, WX, 0, WZ); uploadBricks();       // bring the whole world back from the void (occupancy was zeroed on enter)
     const r = ED.ret; if (r) { P.x = r.x; P.y = r.y; P.z = r.z; P.yaw = r.yaw; P.pitch = r.pitch; P.fly = !!r.fly; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
     edBtnEl.classList.remove('on'); edRowEl.classList.add('hidden'); edHudEl.classList.add('hidden');
@@ -9666,8 +9712,21 @@
         stuckSlot: s, stuckBorn: B.born, q0: [0, 0, 0, 1] });
       return { stuckSlot: s, stuckBorn: B.born, drops: drops.length }; },
     cmd(line) { cmdRun(line); return { msg: cmdMsg ? cmdMsg.textContent : '', at: [Math.round(P.x), Math.round(P.y), Math.round(P.z)] }; },   // run a command line exactly as Enter does — /spawn, /locate
-    severedFall(x, y, z) { return phSeveredFall(x, y, z); },   // run the severed-from-the-world sweep at a point; returns how many components it dropped
-    severedCfg() { return { R: ORPH_R, up: ORPH_UP, maxComp: ORPH_MAX, bodyCap: PH.absorbMax }; },
+    // ── THE UNIFIED SUPPORT RESOLVER ── stats + the three probes it is built out of
+    support() { return { on: SUP.on, queued: SUP.q.length - SUP.qh, blocked: SUP.blocked,
+      cap: SUP.cap, drapeCap: SUP.drapeCap, msBudget: SUP.msBudget, stats: { ...SUP.stats }, log: SUP.log.slice(0, 24) }; },
+    supOn(v) { if (v !== undefined) SUP.on = !!v; return SUP.on; },
+    supReset() { for (const k in SUP.stats) SUP.stats[k] = 0; SUP.log.length = 0; return true; },
+    supClasses() { const n = ['ignore', 'fluid', 'structure', 'drape'], o = { ignore: [], fluid: [], structure: [], drape: [] };
+      for (let i = 1; i < 256; i++) o[n[SUP.CLASS[i]]].push(i);
+      return { counts: { fluid: o.fluid.length, structure: o.structure.length, drape: o.drape.length }, drape: o.drape, fluid: o.fluid }; },
+    supProbe(x, y, z) { const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY, v = W[ii];
+      return { id: v, cls: ['ignore', 'fluid', 'structure', 'drape'][SUP.CLASS[v]], conduit: stampedIdx.has(ii),
+        anchored: supAnchored(ii), hmap: hmap[gwrap(x, WX) + gwrap(z, WZ) * WX], y }; },
+    supTest(x, y, z) { SUP.ancS.clear(); SUP.flS.clear(); SUP.busy.clear();
+      return supFlood(gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY, true); },   // run ONE flood at a cell and report, without acting on it (memo cleared first, so a console probe is never answered from a stale pass)
+    supDirty(x, y, z) { supPush(gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY); return SUP.q.length - SUP.qh; },
+    supFlushNow() { return supFlush(true); },          // run the resolver to completion, ignoring the time slice — tests must not have to guess how many frames a cascade takes
     knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; }, pickId() { return PICK_IT; }, shovelId() { return SHOVEL_IT; }, bowId() { return BOW_IT; }, meatId() { return MEAT_IT; },
     dropMeatAt(x, y, z) { if (!MEAT_IT) return null; dropMeat({ x, y, z }); return __vb.dropsInfo(); },   // drop meat on demand, for tests and for looking at it
     toolTabs() { const d = [], a = [], k = [], g = []; for (let i = 0; i < 256; i++) { if (decorTab[i]) d.push(i); if (axeOnlyTab[i]) a.push(i); if (pickOnlyTab[i]) k.push(i); if (digOnlyTab[i]) g.push(i); } return { choppable: d.length, needsCut: a.length, needsPick: k.length, needsShovel: g.length, pickIds: k, digIds: g }; },
@@ -9774,12 +9833,19 @@
       // normal. There is no absolute threshold that separates that from a real floater — the only
       // sound instrument is a BEFORE/AFTER diff at the same place. __vb.floatBase() records the
       // baseline; everything reported here is what appeared SINCE.
-      const byId = {}, spots = []; let green = 0, other = 0, nearCanopy = 0, fresh = 0;
+      const byId = {}, spots = []; let green = 0, other = 0, nearCanopy = 0, fresh = 0, stampedSkip = 0;
       const base = window.__vbFloatBase, now = new Set();
       for (let k = 0; k < nAll; k++) {
         if (occ[k] !== 1) continue;
         const ix = k % bw, iz = ((k / bw) | 0) % bw, iy = (k / (bw * bw)) | 0;
         if (attached(ix, iy, iz)) { nearCanopy++; continue; }   // touching its tree — authored, not a floater
+        // ── A LIVE ANIMAL IS NOT A FLOATER ── a perched songbird's grid stamp IS 6-disconnected and IS
+        // isolated: it is sitting in a canopy, held up by needles this test cannot see, and it changes pose
+        // at 24 fps so a baseline snapshot never matches. Every support test in the file already treats
+        // stampedIdx cells as invisible; this instrument has to as well, or a still forest reports ~20
+        // permanent floaters that are just birds. (MEASURED: the entire residue after an arrow sweep was
+        // four cells, all four conduit.)
+        if (stampedIdx.has(wIdx(ix, iy, iz))) { stampedSkip++; continue; }
         const v = W[wIdx(ix, iy, iz)];
         const wk = (x0 + ix) + ':' + (y0 + iy) + ':' + (z0 + iz);
         now.add(wk);
@@ -9794,7 +9860,7 @@
       return new Promise((res) => setTimeout(() => {
         const now2 = PH.bodies.filter((b) => b.n <= 60).map((b) => +b.pos[1].toFixed(2));
         res({ baseline: base ? 'set' : 'MISSING - call __vb.floatBase() first, before chopping',
-               newFloatersGreen: green, newFloatersOther: other, newTotal: fresh, byId,
+               newFloatersGreen: green, newFloatersOther: other, newTotal: fresh, byId, liveStamps: stampedSkip,
                stoppedDescending: now2.filter((y, i) => bods[i] !== undefined && Math.abs(y - bods[i]) < 0.05).length,
                smallBodies: now2.length, spots });
       }, 400));
@@ -10098,13 +10164,19 @@
       smoothEye = P.y + eyeH;
     } else {
       const inWater = waterAt(Math.floor(P.x), Math.floor(P.y + 3), Math.floor(P.z));
+      // ── ARE WE ACTUALLY SWIMMING? ── inWater probes 3 voxels above the FEET, which on a 20-voxel person is
+      // ankle height. That is the whole reason holding Space felt like skidding across the surface: the paddle
+      // shut off the moment the ankles cleared the water, so the body was driven up until it stood ON the
+      // waterline with 17 of its 20 voxels in open air. Swimming is a WAIST-DEEP question (user 2026-08-05).
+      // inWater keeps the old probe: it gates horizontal drag and drowning, where ankle-deep is the right call.
+      const swimming = waterAt(Math.floor(P.x), Math.floor(P.y + SWIM_DEEP), Math.floor(P.z));
       // ── THE PLAYER BREAKS THE SURFACE ── same splash a fish throws, either direction (user 2026-08-05).
       // Keyed off the STATE CHANGE, so wading along at the waterline cannot chatter; scaled by how hard the
       // crossing was, so a dive throws spray and stepping in off a beach barely ripples.
       if (P.wasWet === undefined) P.wasWet = inWater;
       if (inWater !== P.wasWet) { P.wasWet = inWater;
         if (!dead) spawnSplash(P.x, P.z, Math.max(0.55, Math.min(1.6, Math.abs(P.vy) / 60 + 0.55))); }
-      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? 0.55 : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
+      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
       moveAxis(0, P.hvx * dt, hh);
@@ -10114,10 +10186,18 @@
         else if (!boxFree(P.x, P.y - 0.05, P.z, hh)) { /* already in contact */ }
         else moveAxis(1, -2.6, hh);                    // sub-stepped, stops exactly at contact
       }
-      if (P.onGround && keys.has(binds.jump) && !inWater && !dead) { P.vy = JUMP; P.onGround = false; P.sprintJump = sprint; }   // sprint-jump carries +20% air speed
-      if (inWater) {                                   // SWIM: buoyant slow sink, Space paddles up
-        P.vy = Math.max(-20, P.vy - GRAVITY * 0.12 * dt);
-        if (keys.has(binds.jump)) P.vy = Math.min(46, P.vy + 320 * dt);
+      if (P.onGround && keys.has(binds.jump) && !swimming && !dead) { P.vy = JUMP; P.onGround = false; P.sprintJump = sprint; }   // a swimmer never gets a standing jump: with the old ankle-height test a held Space re-fired a full JUMP (66) every time the body came back down to the surface, which was the pogo   // sprint-jump carries +20% air speed
+      if (swimming) {
+        // ── FLOAT, THEN SWAY (user 2026-08-05: "have the player bob up and down slowly") ── a damped spring on
+        // the EYE rather than an acceleration on the feet. The body settles with the eye just above the
+        // waterline — which is what floating IS — and SWIM_BOB rocks that line gently so it never sits dead
+        // still. Holding Space lifts the line by SWIM_RISE, so you climb slowly instead of being launched:
+        // the target is a POSITION, so as you approach it the drive falls away by itself and there is nothing
+        // left to fling you clear of the surface.
+        const eyeY = P.y + (crouching ? CR_EYE : EYE);
+        const line = WL + 1 + Math.sin(now * 0.0011) * SWIM_BOB + (keys.has(binds.jump) ? SWIM_RISE : 0);
+        const tgt = Math.max(-SWIM_SINK, Math.min(SWIM_UP, (line - eyeY) * SWIM_K));
+        P.vy += (tgt - P.vy) * (1 - Math.exp(-SWIM_EASE * dt));
       } else {                                       // ── FALLING GAINS MOMENTUM ── (user) a flat GRAVITY into a -160 terminal hit its cap in 0.8 s, so anything
         P.fallT = P.vy < 0 ? P.fallT + dt : 0;         // past a short drop fell at a CONSTANT speed and read as floating. Gravity now ramps with time spent
         const gK = 1 + Math.min(1.125, P.fallT * 0.41); // falling and the terminal is higher, so a long drop keeps visibly winding up until it lands.
@@ -10615,13 +10695,11 @@
       if (!ED.on) for (let ny = Math.max(1, ey - 1); ny <= Math.min(WY - 2, ey + 1) && !eyeFolV; ny++) for (let nx = ex - 1; nx <= ex + 1 && !eyeFolV; nx++) for (let nz = ez - 1; nz <= ez + 1; nz++)
         if (foliaTab[W[gwrap(nx, WX) + ny * WX + gwrap(nz, WZ) * WX * WY]]) { eyeFolV = 1; break; } }
     UF[1268] = vigOn ? Math.max(BASE_VIG, cineBlurK * CINE_VIG) : 0;   // u.misc.x — BASE vignette in normal play, deepening to the cinematic value while the camera flies; max() so leaving cinema eases back to base instead of snapping to zero                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
-    if (!ED.on && !dead && (frame & 15) === 7) {      // ── FLOATERS FALL ── ~4 passes a second, so nothing stays hanging (user)
-      // Centred on the PLAYER and stepped up the column they are standing in: canopies are overhead, and
-      // ring offsets left gaps that a floater could sit in forever. Each pass costs one seed box.
-      const lvl = (fallScan++ % 5) - 1;               // eye level, then upward through the canopy
-      const ay = Math.round(smoothEye) + lvl * 12;
-      if (ay > 1 && ay < WY - 1) phFallLoose(Math.round(P.x), ay, Math.round(P.z));
-    }
+    // ── NOTHING IS LEFT HANGING ── the unified resolver, EVERY frame and time-sliced, driven by the cells
+    // that ACTUALLY CHANGED. It costs nothing on a frame where nothing was carved, which is the overwhelming
+    // majority of them — where the ambient sweep this replaces paid its full ~24 ms four times a second,
+    // centred on the player, whether or not anything had been touched. That hitch class is simply gone.
+    if (!ED.on) supFlush(false);
     if (!ED.on) autoPickup();                          // AUTO-PICKUP (user): a free hand slot vacuums up nearby floating items — no right-click, no aiming
     for (const dr of drops) {                          // ── THE ARROW ARRIVES ── the wound (or the carve) registers when it LANDS, not when it was loosed, so the blink and the chunk line up with the impact (user)
       if (!dr || dr.hitDone || dr.T === undefined) continue;
@@ -10831,14 +10909,30 @@
         birdHit(birdBox, ps);
       } else { UF[o2 + 7] = 0; birdBox.active = false; }
     }
-    const bfObst = (x, y, z) => {                      // butterfly obstacle test — trunks, canopy, rocks, snow all block; soft grass/bloom/fern strands + grid-stamped worms don't
+    // ── NAVIGATION SOLIDITY ── these answer "is this voxel a wall" for every creature, and they must answer it
+    // the SAME WAY the player's own solid() does. They used to decide it from a PALETTE-ID list (CREATURE_IDS),
+    // which is the set of ids the perched songbirds happen to stamp — and because the 256-entry palette is full
+    // and shared, that list aliased 84 of 256 ids. Measured: id 11 alone is ~16% of the solid geometry in a
+    // sampled volume, so roughly a sixth of the world was a wall to the player and INVISIBLE to every creature.
+    // The exclusion a creature actually needs is "don't treat another creature's stamped voxels as terrain",
+    // and that is `stampedIdx` — exact, per-CELL, and already maintained. CREATURE_IDS is no longer a
+    // navigation concept (it survives only as the render/animation flag it always was).
+    const bfObst = (x, y, z) => {                      // obstacle test — anything the PLAYER would collide with, minus soft strands flyers pass through
       const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
-      const id = W[gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY];
-      return id !== 0 && !foliaTab[id] && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !CREATURE_IDS.has(id); };   // LEAVES ARE NOT AN OBSTACLE (user) — flyers pass straight through a crown
+      const ii = gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY;
+      const id = W[ii];
+      if (id === 0 || solidTab[id] !== 1) return false;   // palette truth, exactly as solid() reads it
+      if (foliaTab[id] || coneTab[id]) return false;      // LEAVES ARE NOT AN OBSTACLE (user) — flyers pass straight through a crown; cones have no hitbox for the player either
+      if (SNOW_PASS.has(id) || SNOW_FERN.has(id)) return false;   // soft grass/bloom/fern strands
+      return !stampedIdx.has(ii); };                      // …and another creature's own stamped body is not terrain
     const bfObstW = (x, y, z) => {                     // WORM obstacle test — same as bfObst but also passes small ground clutter (cones/sticks/field stones) so a crawling worm never pins on them
       const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
-      const id = W[gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY];
-      return id !== 0 && !foliaTab[id] && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !CREATURE_IDS.has(id) && !WORM_PASS.has(id); };   // …same for worms
+      const ii = gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY;
+      const id = W[ii];
+      if (id === 0 || solidTab[id] !== 1) return false;
+      if (foliaTab[id] || coneTab[id]) return false;
+      if (SNOW_PASS.has(id) || SNOW_FERN.has(id) || WORM_PASS.has(id)) return false;
+      return !stampedIdx.has(ii); };
     const bfSurf = (x, z) => Math.max(hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], WL);
     const bfGlide = (x, z) => {                        // MAX terrain over a wide stencil → the flight height RIDES THE RIMS, gliding over ravines/gorges instead of diving in
       let m = bfSurf(x, z);
@@ -10863,6 +10957,42 @@
       }
       return w9 >= 7 && w18 >= 5; };
     __vb.bfOpenW = bfOpenW; __vb.bfSurf = bfSurf; __vb.bfWater = bfWater;   // test taps — headless checks must use the game's OWN gates (worldgen H is pre-carve, voxel scans count canopy)
+    __vb.bfObst = bfObst; __vb.bfObstW = bfObstW;
+    __vb.obstAudit = (n) => {                          // how far the CREATURES' notion of a wall has drifted from the PLAYER's. Sampled over the built rect.
+      n = n || 200000;
+      let solidN = 0, obstN = 0, ghost = 0, phantom = 0, sampled = 0;   // ghost = solid to the player, passable to a creature (the bug); phantom = the reverse
+      let ghostOld = 0, phantomOld = 0, obstOld = 0;                    // …and the same three under the PRE-FIX palette-id rule, so before/after come out of one run
+      const bfObstLegacy = (xx, yy2, zz) => { const yv = Math.max(1, Math.min(WY - 1, Math.floor(yy2)));
+        const idv = W[gwrap(Math.floor(xx), WX) + yv * WX + gwrap(Math.floor(zz), WZ) * WX * WY];
+        return idv !== 0 && !foliaTab[idv] && !SNOW_PASS.has(idv) && !SNOW_FERN.has(idv) && !CREATURE_IDS.has(idv); };
+      const byId = {}, byIdOld = {};
+      const x0 = Math.max(rect.xlo + 8, P.x - 320), x1 = Math.min(rect.xhi - 8, P.x + 320);
+      const z0 = Math.max(rect.zlo + 8, P.z - 320), z1 = Math.min(rect.zhi - 8, P.z + 320);
+      if (!(x1 > x0 && z1 > z0)) return null;
+      for (let q = 0; q < n; q++) {
+        const x = x0 + Math.random() * (x1 - x0), z = z0 + Math.random() * (z1 - z0);
+        const g = hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX];
+        const y = Math.max(1, Math.min(WY - 2, Math.floor(g - 20 + Math.random() * 130)));   // the band creatures actually fly/walk/burrow through
+        sampled++;
+        const ii = gwrap(Math.floor(x), WX) + y * WX + gwrap(Math.floor(z), WZ) * WX * WY;
+        const id = W[ii];
+        const sp = solid(Math.floor(x), y, Math.floor(z));   // the PLAYER's own answer
+        const ob = bfObst(x, y, z), obL = bfObstLegacy(x, y, z);
+        if (sp) solidN++;
+        if (ob) obstN++;
+        if (obL) obstOld++;
+        if (sp && !ob) { ghost++; byId[id] = (byId[id] || 0) + 1; }
+        if (ob && !sp) phantom++;
+        if (sp && !obL) { ghostOld++; byIdOld[id] = (byIdOld[id] || 0) + 1; }
+        if (obL && !sp) phantomOld++;
+      }
+      const topOf = (m) => Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => [+k, +(v / Math.max(1, solidN) * 100).toFixed(2)]);
+      return { sampled, solidN, obstN, obstOld, ghost, phantom, ghostOld, phantomOld,
+        ghostPctOfSolid: +(ghost / Math.max(1, solidN) * 100).toFixed(2),
+        ghostPctOfSolidOld: +(ghostOld / Math.max(1, solidN) * 100).toFixed(2),
+        phantomPctOfSolid: +(phantom / Math.max(1, solidN) * 100).toFixed(2),
+        phantomPctOfSolidOld: +(phantomOld / Math.max(1, solidN) * 100).toFixed(2),
+        topGhostIds: topOf(byId), topGhostIdsOld: topOf(byIdOld) }; };
     // ── FISH NAVIGATION PROBES ── ONE feasibility predicate, shared by the swimmer's PLANNER and its BLOCKED-ESCAPE so the
     // two can never disagree. That disagreement was the "endlessly swims against the terrain" bug (user): the planner
     // sampled a SINGLE COLUMN every 4 voxels while the mover tested the whole ~10-voxel body, so it kept picking headings
@@ -11259,7 +11389,7 @@
       if (ED.on || dead || !active || (porcSlot ? !PORCUPINE_WALK.length : (skunkSlot ? !SKUNK_WALK.length : (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length)))))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck/skunk/porcupine) must clear its stamp
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
-      if (B.dieT && now - B.dieT > 700) { B.dieT = 0; B.init = false; }
+      if (B.dieT && now - B.dieT > 700) { B.dieT = 0; if (B.sN) unstampWorm(B); B.init = false; }   // …and the STAMP goes with it: deactivating a grid-stamped creature without unstamping leaves its voxels in W and its cells in stampedIdx, permanently exempt from every support test
       // Perched birds recycle at CARD_KEEP, just past where the 180-slot pool runs out at this density (~375 vox).
       // Because the frontier sits far beyond anything you can pick out, a bird activating there is invisible — which
       // is why this no longer needs the "only spawn behind the player" rule the random placement depended on.
@@ -11420,7 +11550,7 @@
               B.aesc = 0; let best = -1, bgv = -1e9;
               for (let h = 0; h < 4; h++) { const tx = B.x + DIRa[h][0] * 5, tz = B.z + DIRa[h][1] * 5, gA = bfSurf(tx, tz);
                 if (gA > WL + 0.5 && !bfObstW(tx, gA + 2, tz) && !bfObstW(tx, gA + 4, tz) && gA > bgv) { bgv = gA; best = h; } }
-              if (best >= 0) { B.ah = best; B.aTurnT = tb3 + 0.28; B.aRelax = 1.2; } else { B.init = false; continue; }   // arm a RELAXED-ADVANCE window: the picked heading fails walkOK by construction, so without this the creature faced its escape route but the walkOK-gated march never moved — the actual "stuck on terrain" bug (user)
+              if (best >= 0) { B.ah = best; B.aTurnT = tb3 + 0.28; B.aRelax = 1.2; } else { if (B.sN) unstampWorm(B); B.init = false; continue; }   // arm a RELAXED-ADVANCE window: the picked heading fails walkOK by construction, so without this the creature faced its escape route but the walkOK-gated march never moved — the actual "stuck on terrain" bug (user). The wedge EXIT must unstamp, or the creature's voxels stay in W and in stampedIdx for good.
             }
           }
         } else {                                         // ── CLEAR AHEAD ── walk; occasionally re-head (flee away from the player / random whim)
@@ -11808,7 +11938,14 @@
         }
         const base9 = B.kind === 4 ? WL + 1.6 + 0.5 * (LILY_SZ[B.col % Math.max(1, LILY_SZ.length)] || 1)   // lily rests ON the surface with clearance — a 1-voxel-thin pad has NO sacrificial bottom row
           : (isBaby ? WL + 1.9 : WL + 3.4);            // ducks: ONE VOXEL LOWER (user 2026-08-05) — they sat too high on the surface; the bottom row now dips properly   // ducks: ride high — only (part of) the BOTTOM voxel row ever dips
-        const tgt9 = base9 + wvMax;
+        // ── HALF THE SWAY (user 2026-08-05: "reduce the ducks up and down sway by 50%") ── damping wvMax
+        // itself would drop the duck at every crest, because that number carries the renderer's +0.5 floor
+        // that keeps the body AT or ABOVE the drawn surface. So the ride is damped about its OWN slow mean
+        // instead: the average waterline is exactly what it was, only the excursion either side of it halves.
+        // The mean is per-float and self-correcting, so it follows the duck across water of any roughness.
+        B.wvM = B.wvM === undefined ? wvMax : B.wvM + (wvMax - B.wvM) * (1 - Math.exp(-0.08 * dt));  // ~12 s low-pass. It has to be well SLOWER than the swell itself (GWOM puts the four waves at 3-4 s periods) or the mean tracks the very rise and fall it exists to average out — at 2 s the damping came out 43%%, not 50%%
+        const wvUse = B.kind === 3 ? B.wvM + (wvMax - B.wvM) * DUCK_SWAY : wvMax;   // lilies keep the full ride — a pad sits flat ON the surface and reads wrong if it lags the swell
+        const tgt9 = base9 + wvUse;
         const ek9 = B.kind === 4 ? 14 : 5, ec9 = B.kind === 4 ? 10 : 7;   // lily tracks TIGHT (lag ~0.2 vox — it has no draft to hide lag in); ducks keep the lazy bob-along ease
         B.y += Math.max(-ec9 * dt, Math.min(ec9 * dt, (tgt9 - B.y) * (1 - Math.exp(-ek9 * dt))));   // ONE symmetric ease — the swell moves ≤ ~2.5 vox/s, so this tracks it closely and SMOOTHLY
       } else if (B.trap > 0.5) {                       // STUCK: dive for the open understory when there's air below, else flutter up if the sky above is clear
@@ -11987,7 +12124,7 @@
         for (let k = 0; k < 16; k++) UF[o4 + k] = emitBuf[src + k];
         lifeSlotSet(slot, 2000 + emitWho[j], emitAnc[j * 3], emitAnc[j * 3 + 1], emitAnc[j * 3 + 2], Math.round(emitBuf[src + 7]), emitAna[j] === 1); }
     }
-    if (wormPatchN) { if (CPROF) cpEvt |= 64; gpuPatch(wormPatch, false, wormPatchN); wormPatchN = 0; }   // one light brick-word patch for all worm (un)stamps this frame (incl. any queued by a pickup/toss)
+    if (wormPatchN) { if (CPROF) cpEvt |= 64; gpuPatch(wormPatch, false, wormPatchN, false); wormPatchN = 0; }   // track=false: a creature grid stamp is CONDUIT, not terrain (see SUP). Re-adjudicating the world every time a perched bird shifts its feet would be both wrong and, at 24 fps across ~180 stamped creatures, ruinous.   // one light brick-word patch for all worm (un)stamps this frame (incl. any queued by a pickup/toss)
     { // ── HIT FLASH ── the knife-wounded animal blinks red, then stops. Stepped at 24 fps like every
       // other animation here, so it reads as a deliberate blink rather than a smooth throb.
       // PUBLISHED HERE, not up with the rest of the uniforms: the four land mammals are grid-stamped and they
