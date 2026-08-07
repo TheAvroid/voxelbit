@@ -343,7 +343,7 @@
   <h2>settings</h2>
   <div id="optRows">
   <div id="todWrap"><span id="todLabel">07:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="420"></div>
-  <div id="volWrap"><span id="volLabel">volume 0%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="0"></div>
+  <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="100"></div>
   <div id="sensWrap"><span id="sensLabel">sensitivity 30%</span><input type="range" id="sensSlider" min="0" max="100" step="10" value="30"></div>
   <div id="resWrap"><span id="resLabel">resolution 80%</span><input type="range" id="resSlider" min="40" max="100" step="10" value="80"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
@@ -2949,10 +2949,10 @@
   // The array's SECOND HALF (64..127) is appended at the END of the uniform struct as dropsB/lifeMotB —
   // growing `drops` in place would have shifted every hardcoded UF index past it (1092…1875) and fed each
   // field its neighbour's numbers with no error. dropOff/lifeMotOff below are the only places that know.
-  const UNI_BIRDS = false, UNI_SKUNK = false;   // == WHAT ?uni ACTUALLY MOVES (user 2026-08-06) == only the THREE moving land mammals: bunny, armadillo, porcupine.
+  const UNI_BIRDS = false;   // == WHAT ?uni ACTUALLY MOVES (user 2026-08-06) == only the THREE moving land mammals: bunny, armadillo, porcupine.
   // The 180 perched songbirds stay GRID-STAMPED and always will: they never move, so trace-injection buys them nothing, while stamped they get the exact SVGF/GI
   // solution for free. Measured why it matters: tracing them cost 14 slots and took FISH from 32/32 down to 7/32 and dragonflies to 0/3, because 24 traced mammals
-  // plus 14 traced birds is 38 slots of new demand against 17 of headroom. Dropping the birds pays for the mammals outright. The skunk stays stamped for the same
+  // plus 14 traced birds is 38 slots of new demand against 17 of headroom. Dropping the birds pays for the mammals outright. The SKUNK now traces too (user 2026-08-06) - all four land mammals are on the same path, and the songbirds alone pay for it.
   // budget reason - it is the asset-editor object, and the three world mammals are what the player watches move.
   // The line this draws is not ‘all life renders identically’ but ‘everything that MOVES renders identically’, which is the property that was actually producing bugs.
   const LIFE_UNI = !location.search.includes('nouni');   // == UNIFIED LIFE RENDERING: ON (user 2026-08-06, folded in) == was opt-in behind ?uni while it was measured; it now ships. ?nouni turns it off again - kept deliberately, because this is the first change here that alters how the game LOOKS in normal play, and being able to A/B it in one session is exactly how the slot-starvation regression (fish 32/32 -> 7/32) was caught before it shipped.   // == UNIFIED LIFE RENDERING (default OFF) == when set, the perched songbirds and the four land mammals TRACE-INJECT like every other creature and the secondary rays (sun + AO) test creature models, which is what closes the lighting gap the grid stamp was covering. Everything it adds is compiled in from here, so the OFF build is the shader we ship today.
@@ -3374,25 +3374,28 @@
                   h.face = u32(vax) * 2u + select(0u, 1u, (n.x + n.y + n.z) < 0.0);
                   return h;
                 }
-                if (vNext.x <= vNext.y && vNext.x <= vNext.z) { tv = vNext.x; vNext.x += abs(inv.x); vc.x += istep.x; vIdx += istep.x; vax = 0; }
-                else if (vNext.y <= vNext.z) { tv = vNext.y; vNext.y += abs(inv.y); vc.y += istep.y; vIdx += istep.y * WX; vax = 1; }
-                else { tv = vNext.z; vNext.z += abs(inv.z); vc.z += istep.z; vIdx += istep.z * WX * WY; vax = 2; }
+                var oob = false;
+                if (vNext.x <= vNext.y && vNext.x <= vNext.z) { tv = vNext.x; vNext.x += abs(inv.x); vc.x += istep.x; vIdx += istep.x; vax = 0; oob = vc.x < bmin.x || vc.x > bmin.x + 7; }
+                else if (vNext.y <= vNext.z) { tv = vNext.y; vNext.y += abs(inv.y); vc.y += istep.y; vIdx += istep.y * WX; vax = 1; oob = vc.y < bmin.y || vc.y > bmin.y + 7; }
+                else { tv = vNext.z; vNext.z += abs(inv.z); vc.z += istep.z; vIdx += istep.z * WX * WY; vax = 2; oob = vc.z < bmin.z || vc.z > bmin.z + 7; }
                 if (tv > t1) { return h; }
-                if (any(vc < bmin) || any(vc > bmin + 7)) { break; }
+                if (oob) { break; }
               }
             }
-            if (bNext.x <= bNext.y && bNext.x <= bNext.z) { tb2 = bNext.x; bNext.x += bDelta.x; bc.x += istep.x; bIdx += istep.x; bax = 0; }
-            else if (bNext.y <= bNext.z) { tb2 = bNext.y; bNext.y += bDelta.y; bc.y += istep.y; bIdx += istep.y * BX; bax = 1; }
-            else { tb2 = bNext.z; bNext.z += bDelta.z; bc.z += istep.z; bIdx += istep.z * BX * BY; bax = 2; }
+            var oobB = false;
+            if (bNext.x <= bNext.y && bNext.x <= bNext.z) { tb2 = bNext.x; bNext.x += bDelta.x; bc.x += istep.x; bIdx += istep.x; bax = 0; oobB = bc.x < bmin2.x || bc.x > bmin2.x + 3; }
+            else if (bNext.y <= bNext.z) { tb2 = bNext.y; bNext.y += bDelta.y; bc.y += istep.y; bIdx += istep.y * BX; bax = 1; oobB = bc.y < bmin2.y || bc.y > bmin2.y + 3; }
+            else { tb2 = bNext.z; bNext.z += bDelta.z; bc.z += istep.z; bIdx += istep.z * BX * BY; bax = 2; oobB = bc.z < bmin2.z || bc.z > bmin2.z + 3; }
             if (tb2 > t1) { return h; }
-            if (any(bc < bmin2) || any(bc > bmin2 + 3)) { break; }
+            if (oobB) { break; }
           }
         }
-        if (cNext.x <= cNext.y && cNext.x <= cNext.z) { t = cNext.x; cNext.x += cDelta.x; cc.x += istep.x; ax = 0; }
-        else if (cNext.y <= cNext.z) { t = cNext.y; cNext.y += cDelta.y; cc.y += istep.y; ax = 1; }
-        else { t = cNext.z; cNext.z += cDelta.z; cc.z += istep.z; ax = 2; }
+        var oobC = false;
+        if (cNext.x <= cNext.y && cNext.x <= cNext.z) { t = cNext.x; cNext.x += cDelta.x; cc.x += istep.x; ax = 0; oobC = cc.x < 0 || cc.x >= B2X; }
+        else if (cNext.y <= cNext.z) { t = cNext.y; cNext.y += cDelta.y; cc.y += istep.y; ax = 1; oobC = cc.y < 0 || cc.y >= B2Y; }
+        else { t = cNext.z; cNext.z += cDelta.z; cc.z += istep.z; ax = 2; oobC = cc.z < 0 || cc.z >= B2Z; }
         if (t > t1) { return h; }
-        if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(B2X, B2Y, B2Z))) { return h; }
+        if (oobC) { return h; }
       }
       return h;
     }
@@ -3810,7 +3813,7 @@
                 foam = max(foam, step(0.35, ivhash(ci + vec3<i32>(s2 * 13, 11, 5)) * (0.55 + 0.45 * sin(u.time * 1.6 + f32(ci.x * 7 + ci.z * 5) * 0.7))));
               }
             }
-            if (foam > 0.5) { t = min(t, (whF + 2.0 - ro.y) / rd.y); }                    // …and the shaded surface rides on top of that raised column (the +1 now comes from the lift in the march above)
+            if (foam > 0.5) { t = min(t, (whF + 3.0 - ro.y) / rd.y); }                    // …and the shaded surface rides on top of that raised column. +3, not +2 (user 2026-08-06): a SECOND foam voxel stacked on the first, so the surf reads as sitting ON the water with real height rather than painted flat into it.
             foamK = clamp(foam, 0.0, 1.0) * 0.8;
             albedo = mix(albedo, FOAM_C, foamK);
           }
@@ -4229,7 +4232,7 @@
         // comes back is absorbed per-channel over the traveled water path — red dies first, blue carries.
         // PERF: capped at 34 (beyond that Beer–Lambert leaves <3% — invisible), and skipped entirely at grazing angles
         // (fres > 0.8 → the Fresnel split hands nearly everything to the mirror; the in-scatter constant stands in).
-        let sigT = vec3<f32>(0.30, 0.115, 0.052);                    // extinction per voxel (10 cm)
+        let sigT = vec3<f32>(0.240, 0.0920, 0.0416);                 // extinction per voxel (10 cm) — 20% MORE TRANSPARENT (user 2026-08-06): every channel scaled by 0.8, so the RATIO is untouched and the water keeps its colour (red still dies first, blue carries) while you see 25% deeper before the same amount is absorbed. Was (0.30, 0.115, 0.052).
         let scatC = vec3<f32>(0.018, 0.070, 0.092) * (0.30 + 0.70 * sunW) * dayScale() * (0.45 + 0.55 * irr.g);   // single-scatter source — the water's own glow, lit by sun + sky
         var refrC = scatC;                                           // no bed within reach → the column saturates to pure in-scatter
         if (fres < 0.80 && LG(19u)) {                                // bit 19: WATER REFRACTION — off leaves refrC at the pure in-scatter colour, no bed, no Beer-Lambert
@@ -4660,25 +4663,39 @@
             let white = min(s4.r, min(s4.g, s4.b)) / max(b, 0.001);   // 1 = white (the sun disc/halo), low = saturated sky
             glow += s4.rgb * (smoothstep(0.86, 1.0, b) * smoothstep(0.45, 0.8, white) * s4.a * decay);   // only the disc + corona scatter — bright clouds no longer wash a FOG veil over the view
           }
+          else { break; }   // ── EXACT EARLY-OUT ── the march is a straight ray from THIS pixel (fc.xy, which is inside the screen) toward the sun, and the screen rect is convex, so the ray meets it in ONE interval: a tap that lands outside can never be followed by one that lands back inside. Every remaining tap would have been skipped anyway, so breaking is bit-identical — and it is exactly the off-screen-sun case, where the far side of the frame used to pay all 24 taps for nothing.
           decay *= 0.96;
         }
         col += glow * (0.055 * dayK) * select(vec3<f32>(1.0, 0.93, 0.78), vec3<f32>(0.55, 0.65, 1.0) * 1.1, isMoon());   // strong warm sun shafts / cool MOON RAYS — the rays, not the fog
         // ── LENS FLARE: ghosts along the sun→centre axis + streak + bloom, gated by on-screen sun visibility
-        var sv = 0.0;
-        for (var fy = -1; fy <= 1; fy++) { for (var fxx = -1; fxx <= 1; fxx++) {
-          let s5 = textureSampleLevel(src, samp, (sunPix + vec2<f32>(f32(fxx), f32(fy)) * 6.0) / u.canvasRes, 0.0);
-          sv += s5.a * smoothstep(0.72, 0.94, max(s5.r, max(s5.g, s5.b)));
-        } }
-        sv /= 9.0;
-        if (sv > 0.02) {
-          let ctr = u.canvasRes * 0.5;
-          let axis = ctr - sunPix;
-          var K = array<f32, 4>(0.35, 0.65, 1.15, 1.7);
-          var TINT = array<vec3<f32>, 4>(vec3<f32>(1.0, 0.85, 0.6), vec3<f32>(0.6, 1.0, 0.75), vec3<f32>(0.65, 0.75, 1.0), vec3<f32>(1.0, 0.7, 0.85));
-          for (var gi = 0; gi < 4; gi++) {
-            let gp = sunPix + axis * (1.0 + K[gi]);
-            let rr = u.canvasRes.y * (0.014 + 0.030 * K[gi]);
-            col += TINT[gi] * smoothstep(rr, rr * 0.22, length(fc.xy - gp)) * 0.10 * sv * dayK;   // doubled — bold flare ghosts
+        // ── GHOST FOOTPRINT FIRST ── sv is a FRAME CONSTANT (a fixed 3×3 tap around the sun pixel), yet it was
+        // computed on EVERY pixel of the canvas: nine texture fetches per pixel to decide a value that is the same
+        // for all of them. The four ghosts only cover discs of radius ~10–47 px — about 1.3% of a 1280×720 frame —
+        // and outside every disc the contribution is TINT * 0 * 0.10 * sv * dayK, i.e. col is unchanged whatever sv
+        // holds. So weigh the discs first and fetch only when one of them actually covers this pixel. Bit-identical
+        // (x * 0 = 0 for every finite x, and sv is a bounded sum of clamped smoothsteps — never NaN), and it takes
+        // the nine fetches off 98%+ of the frame.
+        let ctr = u.canvasRes * 0.5;
+        let axis = ctr - sunPix;
+        var K = array<f32, 4>(0.35, 0.65, 1.15, 1.7);
+        var TINT = array<vec3<f32>, 4>(vec3<f32>(1.0, 0.85, 0.6), vec3<f32>(0.6, 1.0, 0.75), vec3<f32>(0.65, 0.75, 1.0), vec3<f32>(1.0, 0.7, 0.85));
+        var GHW = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+        var gAny = 0.0;
+        for (var gi = 0; gi < 4; gi++) {
+          let gp = sunPix + axis * (1.0 + K[gi]);
+          let rr = u.canvasRes.y * (0.014 + 0.030 * K[gi]);
+          GHW[gi] = smoothstep(rr, rr * 0.22, length(fc.xy - gp));   // 0 outside rr — smoothstep with e0 > e1 is the decreasing form
+          gAny += GHW[gi];
+        }
+        if (gAny > 0.0) {
+          var sv = 0.0;
+          for (var fy = -1; fy <= 1; fy++) { for (var fxx = -1; fxx <= 1; fxx++) {
+            let s5 = textureSampleLevel(src, samp, (sunPix + vec2<f32>(f32(fxx), f32(fy)) * 6.0) / u.canvasRes, 0.0);
+            sv += s5.a * smoothstep(0.72, 0.94, max(s5.r, max(s5.g, s5.b)));
+          } }
+          sv /= 9.0;
+          if (sv > 0.02) {
+            for (var gi = 0; gi < 4; gi++) { col += TINT[gi] * GHW[gi] * 0.10 * sv * dayK; }   // doubled — bold flare ghosts
           }
         }
       }
@@ -4755,14 +4772,12 @@
           let ex2 = vec3<f32>(f32(ITEMD[it3].x), f32(ITEMD[it3].y), f32(ITEMD[it3].z)) * 0.5;
           let radD = dA.w * (length(ex2) + 1.0);
           let dlen = length(dA.xyz);
+          let cAng = acos(clamp(dot(dA.xyz / max(dlen, 1e-6), cdir), -1.0, 1.0));   // ONE acos per slot. The grown SECONDARY cone test below wants the SAME angle and used to recompute it from scratch; whenever that test runs, dlen > radS + 1 > radD + 1 > 1, so max() is the identity there and this is the identical value.
           var vis = 0u;
           if (dlen <= radD + 1.0) { vis = 1u; }                        // camera inside the sphere — always visible to this tile
-          else {
-            let cAng = acos(clamp(dot(dA.xyz / dlen, cdir), -1.0, 1.0));
-            if (cAng <= tAng + asin(clamp(radD / dlen, 0.0, 1.0)) + 0.01) { vis = 1u; }
-          }
+          else if (cAng <= tAng + asin(clamp(radD / dlen, 0.0, 1.0)) + 0.01) { vis = 1u; }
           if (vis != 0u) { let bit = 1u << (u32(diC) & 31u); if (diC < 32) { m0 |= bit; } else if (diC < 64) { m1 |= bit; } else if (diC < 96) { m2 |= bit; } else { m3 |= bit; } }
-          ${UNI_RAY ? 'var vg = 0u; let radS = radD + SEC_R; if (dlen <= radS + 1.0) { vg = 1u; } else { let cAngS = acos(clamp(dot(dA.xyz / dlen, cdir), -1.0, 1.0)); if (cAngS <= tAng + asin(clamp(radS / dlen, 0.0, 1.0)) + 0.01) { vg = 1u; } } if (vg != 0u) { let bg = 1u << (u32(diC) & 31u); if (diC < 32) { g0 |= bg; } else if (diC < 64) { g1 |= bg; } else if (diC < 96) { g2 |= bg; } else { g3 |= bg; } }' : ''}
+          ${UNI_RAY ? 'var vg = 0u; let radS = radD + SEC_R; if (dlen <= radS + 1.0) { vg = 1u; } else if (cAng <= tAng + asin(clamp(radS / dlen, 0.0, 1.0)) + 0.01) { vg = 1u; } if (vg != 0u) { let bg = 1u << (u32(diC) & 31u); if (diC < 32) { g0 |= bg; } else if (diC < 64) { g1 |= bg; } else if (diC < 96) { g2 |= bg; } else { g3 |= bg; } }' : ''}
         }
       }
       let ti = (gid.y * tX + gid.x) * ${VIS_W}u;
@@ -5553,6 +5568,7 @@
   // pine returned hit:false and did nothing at all. Four still rules out the single-voxel success this was
   // added to prevent, and `take` is min(bite, whatever is there), so a thin top yields a smaller chunk rather
   // than nothing.
+  const ARROW_ROLL = 9.0;                              // rad/s the arrow rolls about its own shaft in flight — ~1.4 turns a second: fast enough to read as a spin, slow enough not to smear into a blur at 24 fps.
   const ARROW_CHOP_RAD = 3, ARROW_CHOP_BITE = 10, ARROW_CHOP_MIN = 4, ARROW_ABSORB_R = 16;
   // ── AN ARROW TAKES A CHUNK, IT DOES NOT DEMOLISH THE TREE (user 2026-08-05) ── one shaft used to strip a
   // pine. MEASURED at a seeded tree, per shot: at the TRUNK 48 wood voxels gone for a bite of 10, at a BRANCH
@@ -7493,6 +7509,8 @@
   const skunkBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 4, hz: 4 }));   // SOLID world-skunk hitboxes — a touch taller than the armadillo (rounder body); nearest few, republished each frame
   const porcBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 4, hz: 4 }));   // SOLID world-porcupine hitboxes (user's 4th land mammal) — same extents as the skunk; nearest few, republished each frame
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
+  const cardSlainPerch = new Set(), CARD_SLAIN_CAP = 512;   // perches whose bird the player KILLED — see findPineCrown. Module scope on purpose: the kill handler and the placement search are ~4000 lines apart.
+  const cardPerchKey = (tx, tz, bi) => tx + '|' + tz + '|' + bi;
   const wbf = Array.from({ length: 372 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the drop budget), 244-275 FISH (kind 6 — off-grid swimmers under the lake/river surface; 16 -> 32 slots, DOUBLED 2026-07-20 at user request), 276-299 BUNNIES (24 — kind 2 ground hoppers reusing the worm machinery, model = BUNNY_ITEM0, added 2026-07-21 at user request), 300-323 ARMADILLOS (24 — kind 2 ground WALKERS, continuous cardinal march, model = ARMADILLO_ITEM0, added 2026-07-21 at user request), 324-347 SKUNKS (24 — kind 2 ground WALKERS, same cardinal-march AI as the armadillo, GRID-STAMPED via SKUNK_POSES, added 2026-07-21 at user request), 348-371 PORCUPINES (24 — kind 2 ground WALKERS, armadillo-style constant march, GRID-STAMPED via PORCUPINE_POSES, re-added 2026-07-22 at user request as a 4th land mammal alongside the skunk)
   // ── DROP-SLOT PRIORITY ── six creature kinds share whatever is left of the drop slots once the 25 fixed ones
   // and the drawn flock have taken theirs (95 of 128 today). Rather than emit in wk order (which
@@ -7926,7 +7944,7 @@
   }
   document.addEventListener('contextmenu', (e) => e.preventDefault());
   // ── MASTER VOLUME ── every sound registers its BASE volume; the menu slider scales them all (persisted vb_vol)
-  let sndVol = 0;   // ALWAYS start MUTED on refresh (user 2026-08-02) — the slider still adjusts it within a session and still writes vb_vol, but a page load NEVER restores it. Was 100% (2026-07-22); before that it restored the persisted value.
+  let sndVol = 1;   // start at FULL VOLUME on refresh (user 2026-08-06). Was 0 (always-muted, 2026-08-02); a page load still does NOT restore vb_vol, it just starts at 100% instead of 0%.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -8326,6 +8344,7 @@
         const bi = PH.bodies.indexOf(B.ragBody); if (bi >= 0) PH.bodies.splice(bi, 1); B.ragBody = null; }
       else spawnDeathBurst(B.x, (B.kind | 0) === 5 ? (B.perchFeet || 0) : B.y, B.z);   // poof at the creature (a PERCHED BIRD's height lives in perchFeet — B.y is stale for kind 5)
       if (B.sN) unstampWorm(B);                           // clear a grid-stamped creature's world voxels (mammals + perched birds)
+      if ((B.kind | 0) === 5 && B.tx !== undefined && cardSlainPerch.size < CARD_SLAIN_CAP) cardSlainPerch.add(cardPerchKey(B.tx, B.tz, B.bi));   // ── PERCH CLEARED ── so the next free slot cannot land another bird on the branch this one just died on (user)
       B.init = false; B.dieT = 0; B.slain = true; B.dying = false;         // SLAIN (user: "when I kill something, it respawns somewhere else — prevent this"): the slot is dead for the rest of the session — the population loop skips it, so nothing re-places it elsewhere
       if (slotD >= 16 && slotD < 20) startCrying(slotD);   // …a MOTHER duck: the brood she leaves behind cries (user). Armed HERE, not at the hit, so a wounded-but-alive mother never sets them off.
     }
@@ -8810,11 +8829,11 @@
   const BASE_VIG = 0.26;                               // always-on vignette in normal play — well under the cinematic 0.55 so it frames the view without reading as an effect
   let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}   // persisted, default ON. MUST be declared here, above the settings-panel wiring below — declaring it beside CINE_VIG put it after its own use and the TDZ error killed boot.
-  let snowOn = false;                                  // ── VOXEL SNOW ── weather-driven: RARE 5-minute snow events; the button forces one on/off
-  let snowEndT = 0, snowNextT = Infinity;   // ── TEMPORARY (user 2026-08-02) ── snow stays OFF on refresh: no storm is ever scheduled.
+  let snowOn = false;                                  // ── VOXEL SNOW ── starts CLEAR, then the first storm arrives 60 s after refresh (user 2026-08-06). Weather-driven; the button (and P) still forces one on/off by hand.
+  let snowEndT = 0, snowNextT = 60000;   // ── FIRST STORM 60 s AFTER REFRESH (user 2026-08-06) ── snowNextT is the arrival, snowEndT the end of the CURRENT storm; the weather tick turns it on at 60 s and runs it 60 s, then re-arms on the normal 5-minute cadence. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one.
   // TO RESTORE the weather cycle, put this back to `performance.now() + 120000` (first storm 2 min after refresh, then every 5 min).
   // The snow button / P key still forces a storm on by hand, and that path re-arms snowNextT normally.
-  const SNOW_AUTO_OFF = true;   // (previously: first snow 2 min after refresh, then every 5 min, each event 60 s — user 2026-07-22)
+  const SNOW_AUTO_OFF = false;   // storms RECUR again (user 2026-08-06): each event 60 s, then every 5 min. true made the first storm the last one — it armed snowNextT to Infinity on the way out.
   let heldSunV = 1;                                    // eased sun visibility at the player — gates the held item's DIRECT term so a tool in shade reads like the world around it (u.heldCfg.x)
   let heldSkyV = 1;                                    // …and eased SKY visibility — gates its AMBIENT + ground bounce, the term the world gets from irr.g (u.heldCfg.y). Without it a tool kept full open-sky ambient under a canopy or in a cave while the world around it went dark.
   const HELD_SKY_DIRS = [[0, 1, 0], [0.707, 0.707, 0], [-0.707, 0.707, 0], [0, 0.707, 0.707], [0, 0.707, -0.707]];   // straight up + four at 45°; each ray's y component IS its cosine weight, so the average is cosine-weighted like the world's hemisphere ray
@@ -9315,6 +9334,13 @@
   let frame = 0, prevT = performance.now(), fpsEma = 60, hudT = 0;
   let profQS = null, profRes = null, profStg = null, profBusy = false, profNew = false;   // per-pass GPU timing — armed via __vb.prof(true)
   const profEma = [0, 0, 0, 0, 0, 0, 0], PROF_NAMES = ['trace', 'temporal', 'spatial', 'composite', 'taa', 'vis', 'blit'];
+  // ── RAW PER-FRAME MINIMUM ── the EMA is unusable as an A/B statistic while ANOTHER process is using the
+  // GPU: a timestamp query measures wall time on the GPU timeline, so a preempted pass reports inflated
+  // duration, and a LONG pass (trace) absorbs far more of that than a short one (blit). Measured on this
+  // box against a byte-identical build under two names: trace swung 0.77 → 3.55 ms while blit held
+  // 0.123-0.125. The MINIMUM over a few hundred readbacks is the pass's uncontended cost — the camera is
+  // static and the only per-frame variation is the AO/sun jitter, so the cheapest frame is the honest one.
+  const profMin = [1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9]; let profSamp = 0;
   function profArm(on) {
     if (on && PROF && !profQS) {
       profQS = device.createQuerySet({ type: 'timestamp', count: 14 });   // 5 run() passes + the VIS prepass (10/11) + the blit render pass (12/13)
@@ -9955,7 +9981,7 @@
     // number that tells you a duck 60 voxels away is invisible. Grid-stamped kinds live in W, not in a slot,
     // so they report drawn: -1 rather than a misleading 0.
     lifeCensus() {
-      const STAMPED = LIFE_UNI ? { cardinal: 1, skunk: 1 } : { cardinal: 1, bunny: 1, armadillo: 1, skunk: 1, porcupine: 1 };   // under ?uni none of the five is stamped any more - they are in the drop-slot ledger like every other creature, so report their real drawn/hidden counts instead of the -1 placeholder
+      const STAMPED = LIFE_UNI ? { cardinal: 1 } : { cardinal: 1, bunny: 1, armadillo: 1, skunk: 1, porcupine: 1 };   // under ?uni none of the five is stamped any more - they are in the drop-slot ledger like every other creature, so report their real drawn/hidden counts instead of the -1 placeholder
       const bandOf = (wk) => wk < 16 ? 'flyer' : wk < 20 ? 'duckMom' : wk < 32 ? 'duckling' : wk < 64 ? 'worm'
         : wk < 244 ? 'cardinal' : wk < 276 ? 'fish' : wk < 300 ? 'bunny' : wk < 324 ? 'armadillo' : wk < 348 ? 'skunk' : 'porcupine';
       const shown = new Set();
@@ -10276,6 +10302,8 @@
     perched() { const o = []; for (let j = 64; j < 244; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: B.sN | 0, want: B.sWant | 0, ids: B.sN ? [...new Set(Array.from(B.sCells.subarray(0, B.sN), (ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
     reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
+    profMin(reset) { const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, profMin[i] > 1e8 ? -1 : +profMin[i].toFixed(3)]));   // uncontended per-pass cost — the A/B statistic (see profMin above)
+      o.n = profSamp; if (reset) { for (let i = 0; i < 7; i++) profMin[i] = 1e9; profSamp = 0; } return o; },
     cprof(on) { if (on !== undefined) cprofArm(on);          // CPU phase timings + per-frame GPU upload volume
       const o = Object.fromEntries(CP_NAMES.map((n, i) => [n, +cpEma[i].toFixed(3)]));
       o.cpuTotal = +CP_NAMES.reduce((a, n, i) => a + cpEma[i], 0).toFixed(3);
@@ -11240,7 +11268,7 @@
         const y = scanTop(wx, wz, buried);
         const gx = gwrap(wx, WX), gz = gwrap(wz, WZ), b2 = gx + gz * WX * WY;
         const top = W[b2 + y * WX];
-        if (!top || y < WL || y >= WY - 2 || SNOW_SKIP.has(top)) return;   // y == WL allowed — ice and waterline beach sand collect snow; lava never does
+        if (!top || y < WL || y >= WY - 2 || SNOW_SKIP.has(top) || foliaTab[top]) return;   // y == WL allowed — ice and waterline beach sand collect snow; lava never does. FOLIAGE REFUSED (user 2026-08-06: “snow seems to be floating”): scanTop breaks on the first non-grass voxel, which in a forest is the pine CANOPY — so a layer was landing on needles, and needles are thin and scattered, so the white sat in mid-air with sky visible under it. Snow now only settles on a surface that reads as solid from below.
         if (top === WATER_T && freezeK < 0.6) return;    // liquid water sheds snow — it only settles once the surface has properly frozen
         if ((top === SNOW[0] || top === SNOW[1]) &&
             (W[b2 + (y - 1) * WX] === SNOW[0] || W[b2 + (y - 1) * WX] === SNOW[1]) &&
@@ -11629,7 +11657,13 @@
       if ((now - dr.born) / 1000 < dr.T) continue;
       if (dr.hitBird !== undefined && dr.hitBird >= 0) { dr.hitDone = true;   // ── A BIRD OUT OF THE SKY ── one shaft is enough (user)
         const B = birds[dr.hitBird];
-        if (B && B.init) { spawnDeathBurst(B.x, B.y, B.z); B.init = false; birdKills++; }
+        if (B && B.init) {                          // ── SAME DEATH AS EVERY OTHER ANIMAL (user 2026-08-06) ── a sky bird used to blink out the instant the shaft touched it:
+          // no red, no beat. Pool creatures set the hurt box and defer the poof by HURT_MS so the flash plays; birds live in birds[], not wbf, so pendDeath (which
+          // indexes the pool) cannot carry them — they get the same clock on their own field instead. The box is re-published each frame below so the red follows it down.
+          B.dying = true; B.dieAt = performance.now() + HURT_MS; birdKills++;
+          HURT.slot = -1; HURT.hold = false; HURT.t0 = performance.now();   // slot -1: no cSlot match, so the shader takes the AABB path — which is what a bird needs anyway
+          HURT.cx = B.x; HURT.cy = B.y; HURT.cz = B.z; HURT.hx = 3.2; HURT.hy = 3.2; HURT.hz = 3.2;
+        }
         else spawnHitSparks(dr.ex, dr.ey, dr.ez);
         dr.gone = true;                                // …and the shaft goes down WITH it: struck in mid-air, `stick` would leave it hanging in the sky (user)
         continue; }
@@ -11717,8 +11751,14 @@
         // leads; the spear runs butt→stone-head along its z, so +z leads. Flying one by the other's rule is
         // what had the spear leave the hand nose-down (user).
         if (dr.kind === 'spear') { const Z = F, X = cross(U, Z); return [X, cross(Z, X), Z]; }
-        const Y = [-F[0], -F[1], -F[2]], X = cross(U, Y);
-        return [X, Y, cross(X, Y)];                    // Z = X×Y keeps the frame right-handed (Y = Z×X)
+        const Y = [-F[0], -F[1], -F[2]], X0 = cross(U, Y), Z0 = cross(X0, Y);   // Z = X×Y keeps the frame right-handed (Y = Z×X)
+        // ── ARROW ROLL (user 2026-08-06: “tumble through the air… spin like a plane”) ── a fletched arrow spins about its OWN shaft, which is Y here.
+        // Rolling X and Z together about Y leaves the nose exactly on the velocity vector, so flight, aim and the stick-on-impact test are all unchanged;
+        // only the roll about the shaft moves. The SPEAR is excluded above and keeps its thrown attitude. The STUCK branch calls this with dr.T, so a
+        // buried arrow freezes at the roll it struck with rather than snapping upright.
+        const rl = t * ARROW_ROLL, cr9 = Math.cos(rl), sr9 = Math.sin(rl);
+        return [[X0[0] * cr9 + Z0[0] * sr9, X0[1] * cr9 + Z0[1] * sr9, X0[2] * cr9 + Z0[2] * sr9], Y,
+                [Z0[0] * cr9 - X0[0] * sr9, Z0[1] * cr9 - X0[1] * sr9, Z0[2] * cr9 - X0[2] * sr9]];
       };
       if (dr.stick && dr.T && tE >= dr.T) {            // ── STUCK ── it is buried in whatever it hit: no hover, no bob, no spin, and it keeps the attitude it struck at (user)
         px3 = dr.ex; py3 = dr.ey; pz3 = dr.ez;
@@ -11804,7 +11844,7 @@
             for (let h = 0; h < 4; h++) { const dot = DIR[h][0] * adx + DIR[h][1] * adz; if (dot > bestDot) { bestDot = dot; bestH = h; } }
             if (bestH !== (A.hd & 3) && now > A.tRe) { A.hd = bestH; A.tRe = now + 400; }   // steer away, cooldown so it doesn't jitter-turn every frame
           } else if (now > A.tRe) { A.tRe = now + 1600 + Math.random() * 2600; if (Math.random() < 0.45) A.hd = (A.hd + (Math.random() < 0.5 ? 1 : 3)) & 3; }   // occasional random 90° turn
-          if (ED.name1 === 'skunk' || ED.name1 === 'porcupine') { const fps = A.flee ? 24 : 12; A.afps = (A.afps === undefined) ? fps : A.afps + (fps - A.afps) * Math.min(1, dt * 6); A.aframe = (A.aframe || 0) + dt * A.afps; }   // SKUNK + PORCUPINE (user): ease 12↔24 fps (double when fleeing) on a frame-position clock — matches the world creature, no frame jump
+          if (ED.name1 === 'skunk' || ED.name1 === 'porcupine') { const fps = (A.flee ? 24 : 12) * (ED.name1 === 'skunk' ? 0.5 : 1); A.afps = (A.afps === undefined) ? fps : A.afps + (fps - A.afps) * Math.min(1, dt * 6); A.aframe = (A.aframe || 0) + dt * A.afps; }   // SKUNK + PORCUPINE (user): ease 12↔24 fps (double when fleeing) on a frame-position clock — matches the world creature, no frame jump   // skunk at HALF rate here too, so the editor preview matches the world (user 2026-08-06)
           const fi = ((ED.name1 === 'skunk' || ED.name1 === 'porcupine') ? Math.floor(A.aframe) : Math.floor(now / frameMs)) % n, blink = (now % 3400) < 160, hx = Math.round(A.px), hz = Math.round(A.pz);
           if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink || hx !== ED.hopX || hz !== ED.hopZ || (A.hd & 3) !== ED.spin) {
             ED.sel = fi; ED.blink = blink; ED.spin = A.hd & 3;   // face the march direction (cardinal)
@@ -12180,6 +12220,10 @@
         for (let i = 0; i < n; i++) if (!owned.has(tr.tx + ',' + tr.tz + ',' + i)) cardCand.push({ tr, bi: i, d2 });
       }
     };
+    // == PERCHES THE PLAYER HAS CLEARED == the clash test below only sees ACTIVE slots, and a slain bird has init=false, so the perch it just
+    // vacated became the NEAREST free candidate again and the next spare slot took it — kill a bird and another lands in the same spot (user 2026-08-06).
+    // Killing one empties that branch for the session, matching the rule the slot itself already follows: a slain creature is gone, not relocated.
+    // Capped so a long session cannot grow it without bound; the cap is far past what anyone shoots in one sitting.
     const findPineCrown = (selfWk) => {                // the NEAREST procedural bird that no slot holds yet
       if (cardCandF !== frame) { cardCandF = frame; buildCardCand(); }
       for (let t = 0; t < 12 && cardCand.length; t++) {
@@ -12187,6 +12231,7 @@
         for (let q = 1; q < cardCand.length; q++) if (cardCand[q].d2 < cardCand[k].d2) k = q;
         const c = cardCand[k];
         cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();
+        if (cardSlainPerch.has(cardPerchKey(c.tr.tx, c.tr.tz, c.bi))) continue;   // a bird was killed on this branch — leave it empty
         const cr = pineEdgePerch(c.tr.tx, c.tr.tz, c.bi); if (!cr) continue;
         let clash = false;                             // the cardinal model is ~7 vox across; two stamps closer than that corrupt each other
         for (let j = 64; j < 244; j++) {
@@ -12267,6 +12312,10 @@
       const bOrd = [];
       for (let bi = 1; bi < BIRD_N; bi++) {
         const ps = birdStep(birds[bi], bi, tbF, dt);   // stepped for ALL of them, drawn for some
+        { const BD = birds[bi];                      // ── DYING SKY BIRD ── the flash tracks it while it finishes the beat, then it poofs like the rest of the life
+          if (BD && BD.init && BD.dying) {
+            if (performance.now() >= BD.dieAt) { spawnDeathBurst(BD.x, BD.y, BD.z); BD.init = false; BD.dying = false; }
+            else { HURT.cx = BD.x; HURT.cy = BD.y; HURT.cz = BD.z; } } }
         ps.uid = bi;                                   // stable identity for the dynamic-life temporal reprojection
         birdHit(birdBoxes[bi], ps);                    // every cardinal is solid, same as the first
         bOrd.push({ ps, d: (ps.x - P.x) * (ps.x - P.x) + (ps.z - P.z) * (ps.z - P.z) });
@@ -12528,7 +12577,7 @@
           B.ah = best; B.aTurnT = tb3 + 0.28; B.aRelax = 1.4;
         }
         B.animClk = (B.animClk || 0) + dt;   // armadillo walk clock (24 fps, read by stampArmadillo)
-        if (skunkSlot || porcSlot) { const fps = B.aflee ? 24 : 12; B.afps = (B.afps === undefined) ? fps : B.afps + (fps - B.afps) * Math.min(1, dt * 6); B.aframe = ((B.aframe || 0) + dt * B.afps) % (skunkSlot ? SKUNK_WALK.length : PORCUPINE_WALK.length); }   // SKUNK + PORCUPINE (user): ease 12↔24 fps (DOUBLE the walk cycle when fleeing, bunny-style) on a frame-position clock so switching rate never jumps a frame; read by stampSkunk/stampPorcupine
+        if (skunkSlot || porcSlot) { const fps = (B.aflee ? 24 : 12) * (skunkSlot ? 0.5 : 1); B.afps = (B.afps === undefined) ? fps : B.afps + (fps - B.afps) * Math.min(1, dt * 6); B.aframe = ((B.aframe || 0) + dt * B.afps) % (skunkSlot ? SKUNK_WALK.length : PORCUPINE_WALK.length); }   // SKUNK + PORCUPINE (user): ease 12↔24 fps (DOUBLE the walk cycle when fleeing, bunny-style) on a frame-position clock so switching rate never jumps a frame; read by stampSkunk/stampPorcupine   // ── SKUNK AT HALF SPEED (user 2026-08-06) ── 6 fps walking, 12 fleeing; it shared this line with the porcupine so the rate is SPLIT, not halved for both. The 24 fps house rule still holds everywhere else.
         B.om = 0; B.omT = 0; B.bspd = 0;                 // kill the shared glide/steering — the march above is the motion. Alignment lives in the GRID-STAMP poses (armOffset baked in), not a render offset — the armadillo grid-stamps again (user).
       } else if (B.kind === 2 && bunnySlot) {          // BUNNY (user): its MOTION IS THE BAKED ANIMATION — I apply no glide or turn of my own. The jump bake carries the −6 forward march; the rotate bake carries the 90° yaw. I only choose which sequence to play + follow the terrain. Cardinal grid, editor-identical.
         const DIRb = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -13087,9 +13136,13 @@
       if (armSlot && dp2 < 30 * 30 && armBoxN < armBoxes.length) { const bx9 = armBoxes[armBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near armadillo
       if (armSlot && (!LIFE_UNI || !uniTraced(B))) { stampArmadillo(B, Math.round(bfSurf(B.x, B.z) + hurtHop(B))); continue; }   // …including the bounce (user)   // ARMADILLO is GRID-STAMPED into W again (editor-identical alignment, user) — stamp instead of trace-emit, skip the emit below
       if (skunkSlot && dp2 < 30 * 30 && skunkBoxN < skunkBoxes.length) { const bx9 = skunkBoxes[skunkBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near skunk
-      if (skunkSlot && (!LIFE_UNI || !UNI_SKUNK)) { stampSkunk(B, Math.round(bfSurf(B.x, B.z) + hurtHop(B)), now); continue; }   // …including the bounce (user)   // SKUNK is GRID-STAMPED into W (editor-identical alignment + blink, user) — stamp instead of trace-emit, skip the emit below
+      if (skunkSlot && (!LIFE_UNI || !uniTraced(B))) { stampSkunk(B, Math.round(bfSurf(B.x, B.z) + hurtHop(B)), now); continue; }   // …including the bounce (user)   // SKUNK is GRID-STAMPED into W (editor-identical alignment + blink, user) — stamp instead of trace-emit, skip the emit below
       if (porcSlot && dp2 < 30 * 30 && porcBoxN < porcBoxes.length) { const bx9 = porcBoxes[porcBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // …and each near porcupine
-      if (porcSlot && (!LIFE_UNI || !uniTraced(B))) { stampPorcupine(B, Math.round(bfSurf(B.x, B.z) + hurtHop(B))); continue; }   // …including the bounce (user)   // PORCUPINE is GRID-STAMPED into W (armadillo-style, user's 4th land mammal) — stamp instead of trace-emit, skip the emit below
+      if (porcSlot && (!LIFE_UNI || !uniTraced(B))) {   // ── PORCUPINE NOSE (user 2026-08-06) ── the stamp height is taken at the creature's CENTRE, but the model's nose reaches ~3 voxels ahead of it.
+        // Walking uphill that nose is over ground that is already higher, so it buries. Lift half a voxel while ASCENDING only — on the flat and downhill the height is untouched,
+        // so the walk cycle keeps its ground contact everywhere the problem does not exist. Heading comes from B.th because the loop's Hx2/Hz2 are not in scope this far down.
+        const gHere = bfSurf(B.x, B.z), gNose = bfSurf(B.x + Math.sin(B.th) * 3, B.z + Math.cos(B.th) * 3);
+        stampPorcupine(B, Math.round(gHere + hurtHop(B) + (gNose > gHere ? 0.5 : 0))); continue; }   // …including the bounce (user)   // PORCUPINE is GRID-STAMPED into W (armadillo-style, user's 4th land mammal) — stamp instead of trace-emit, skip the emit below
       if (emitN >= EMIT_CAP) continue;                 // stage the pose (never emit directly) — the nearest are chosen after the loop
       const o4 = emitN * 16;
       emitBuf[o4] = rx * right[0] + ry * right[1] + rz * right[2]; emitBuf[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; emitBuf[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; emitBuf[o4 + 3] = bScale;
@@ -13329,7 +13382,8 @@
       profNew = false; profBusy = true;
       profStg.mapAsync(GPUMapMode.READ).then(() => {
         const q = new BigInt64Array(profStg.getMappedRange());
-        for (let i = 0; i < 7; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) profEma[i] = profEma[i] * 0.92 + ms * 0.08; }
+        for (let i = 0; i < 7; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) { profEma[i] = profEma[i] * 0.92 + ms * 0.08; if (ms < profMin[i]) profMin[i] = ms; } }
+        profSamp++;
         profStg.unmap(); profBusy = false;
       }).catch(() => { profBusy = false; });
     }
