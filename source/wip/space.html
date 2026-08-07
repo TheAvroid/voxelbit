@@ -1,0 +1,1292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>voxelbit™ — space</title>
+  <link rel="icon" type="image/x-icon" href="../logo.ico">
+  <style>
+    @font-face { font-family: "3x3"; src: url("../3x3-pixel.otf") format("opentype"); font-display: block; }
+    :root { --pixel: "3x3", monospace; --red: #E03030; --lime: #8DC63F; --white: #f0f4f8; --gold: #ffd76a; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; background: #05060d; touch-action: none; }   /* touch-action:none → drags/taps drive the game, not browser scroll/zoom */
+    body { font-family: var(--pixel); text-transform: lowercase; color: var(--white); cursor: crosshair; }
+    a, button { cursor: inherit; }   /* no hand cursor anywhere — links/buttons use the crosshair too */
+    body.controlling { cursor: none; }   /* cursor pinned (pointer lock) → hide the OS cursor, show the reticle instead */
+    #reticle { position: fixed; left: 0; top: 0; width: 24px; height: 24px; z-index: 70; pointer-events: none; display: none; color: #fff; opacity: 0.8; }   /* the "+" cursor — matches earth.html's crosshair (white "+" at 80%, with a dark glow for contrast) */
+    body.controlling #reticle { display: block; }
+    #reticle svg { width: 100%; height: 100%; display: block; filter: drop-shadow(0 0 1px rgba(0,0,0,0.7)); }
+    canvas { display: block; }
+
+    .vignette { position: fixed; inset: 0; z-index: 40; pointer-events: none;
+      box-shadow: inset 0 0 240px 50px rgba(0,0,0,0.78); }
+    .warp { position: fixed; inset: 0; z-index: 42; pointer-events: none; opacity: 0; transition: opacity 0.25s;
+      background: radial-gradient(circle at center, transparent 32%, rgba(90,130,255,0.10) 70%, rgba(140,90,255,0.24) 100%); }
+    .warp.on { opacity: 1; }
+
+    .hud { position: fixed; z-index: 60; pointer-events: none; }
+    body.ui-hidden .hud, body.ui-hidden .back { display: none !important; }
+    body.game-over .hud, body.game-over .back { display: none !important; }   /* game over screen: hide all HUD (back, keybinds, score, etc.) */
+    body.cinematic .hud, body.cinematic .back { display: none !important; }   /* cinematic mode → hide all the HUD */
+    /* cinematic-mode indicator (top-center) — film icon + red label, beeping, shown in-game when cinematic is on */
+    #cineTag { position: fixed; top: 1.2rem; left: 50%; transform: translateX(-50%); z-index: 60; display: none; align-items: center; gap: 0.45em; font-family: var(--pixel); text-transform: lowercase; font-size: 0.55rem; letter-spacing: 0.06em; color: var(--red); pointer-events: none; white-space: nowrap; }
+    #cineTag .cine-ico { width: 1.3rem; height: 1.3rem; display: block; }   /* solid (no blink) */
+    #cineTag .cine-label { position: relative; top: -1px; }
+    @keyframes cineBeep { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+    body.cinematic #cineTag, body.cinematic #fpsTag, body.cinematic #reticle, body.cinematic #planetName { display: none !important; }   /* cinematic: hide the UI */
+    body.ui-hidden { cursor: none; }
+    /* menu backdrop: hide the HUD but keep the crosshair and visible shots so you can fly + shoot */
+    body.menu-bg .hud, body.menu-bg .back { display: none !important; }
+    body.menu-bg .lil-gui { display: none !important; }   /* nebula-glow slider only when asteroids.html is open directly, not as the menu backdrop */
+    body.menu-bg #fpsTag, body.menu-bg #cineTag, body.menu-bg #planetName { display: none !important; }   /* as a backdrop / loading screen: hide the fps counter (+ cinematic/planet tags) too */
+    .head { top: 1.2rem; left: 1.5rem; font-size: 0.9rem; letter-spacing: 0.04em; line-height: 1.1; }   /* below the game-over overlay (70), so it's hidden on the game over screen */
+    .head .wordmark { display: block; margin-bottom: 0.22em; }   /* gap under voxelbit, like the exchange page */
+    .head .voxel { color: var(--red); }
+    .head .bit { color: var(--lime); }
+    .head .ver-sup { font-size: 0.16em; letter-spacing: 0.08em; color: rgba(240,244,248,0.5); vertical-align: top; margin-left: 0.1em; line-height: 1; }
+    /* "asteroids" sits in white underneath the wordmark, like the other pages */
+    .head .crumb { display: block; font-size: 1em; letter-spacing: 0.04em; line-height: 1.3; padding-bottom: 0.08em; color: rgba(240,244,248,0.72); transition: opacity 0.5s ease, transform 0.5s ease; }
+    /* white LED sweeps the "asteroids" letters left→right then right→left (same setup as game over) */
+    .head .crumb span { display: inline-block; }
+    .head .crumb span:nth-child(1) { animation: goa0 2.4s linear infinite; }
+    .head .crumb span:nth-child(2) { animation: goa1 2.4s linear infinite; }
+    .head .crumb span:nth-child(3) { animation: goa2 2.4s linear infinite; }
+    .head .crumb span:nth-child(4) { animation: goa3 2.4s linear infinite; }
+    .head .crumb span:nth-child(5) { animation: goa4 2.4s linear infinite; }
+    .head .crumb span:nth-child(6) { animation: goa5 2.4s linear infinite; }
+    .head .crumb span:nth-child(7) { animation: goa6 2.4s linear infinite; }
+    .head .crumb span:nth-child(8) { animation: goa7 2.4s linear infinite; }
+    .head .crumb span:nth-child(9) { animation: goa8 2.4s linear infinite; }
+    @keyframes goa0 { 0% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 4%,96% { color:rgba(240,244,248,0.72); text-shadow:none; } 100% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } }
+    @keyframes goa1 { 0%,2% { color:rgba(240,244,248,0.72); text-shadow:none; } 6% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 10%,90% { color:rgba(240,244,248,0.72); text-shadow:none; } 94% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 98%,100% { color:rgba(240,244,248,0.72); text-shadow:none; } }
+    @keyframes goa2 { 0%,9% { color:rgba(240,244,248,0.72); text-shadow:none; } 13% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 17%,84% { color:rgba(240,244,248,0.72); text-shadow:none; } 88% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 92%,100% { color:rgba(240,244,248,0.72); text-shadow:none; } }
+    @keyframes goa3 { 0%,15% { color:rgba(240,244,248,0.72); text-shadow:none; } 19% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 23%,77% { color:rgba(240,244,248,0.72); text-shadow:none; } 81% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 85%,100% { color:rgba(240,244,248,0.72); text-shadow:none; } }
+    @keyframes goa4 { 0%,21% { color:rgba(240,244,248,0.72); text-shadow:none; } 25% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 29%,71% { color:rgba(240,244,248,0.72); text-shadow:none; } 75% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 79%,100% { color:rgba(240,244,248,0.72); text-shadow:none; } }
+    @keyframes goa5 { 0%,27% { color:rgba(240,244,248,0.72); text-shadow:none; } 31% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 35%,65% { color:rgba(240,244,248,0.72); text-shadow:none; } 69% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 73%,100% { color:rgba(240,244,248,0.72); text-shadow:none; } }
+    @keyframes goa6 { 0%,34% { color:rgba(240,244,248,0.72); text-shadow:none; } 38% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 42%,58% { color:rgba(240,244,248,0.72); text-shadow:none; } 62% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 66%,100% { color:rgba(240,244,248,0.72); text-shadow:none; } }
+    @keyframes goa7 { 0%,40% { color:rgba(240,244,248,0.72); text-shadow:none; } 44% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 48%,52% { color:rgba(240,244,248,0.72); text-shadow:none; } 56% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 60%,100% { color:rgba(240,244,248,0.72); text-shadow:none; } }
+    @keyframes goa8 { 0%,46% { color:rgba(240,244,248,0.72); text-shadow:none; } 50% { color:#fff; text-shadow:0 0 14px rgba(255,255,255,0.9); } 54%,100% { color:rgba(240,244,248,0.72); text-shadow:none; } }
+    /* the whole HUD title gives a small idle shake (smaller than the big titles, to suit the corner HUD) */
+    @keyframes hudShake {
+      0%{transform:translate(0,0) rotate(0deg);} 15%{transform:translate(-1.5px,0.8px) rotate(-0.4deg);}
+      30%{transform:translate(1.5px,-0.8px) rotate(0.4deg);} 45%{transform:translate(-0.8px,-1.5px) rotate(-0.3deg);}
+      60%{transform:translate(1.2px,1.5px) rotate(0.35deg);} 75%{transform:translate(-1.5px,-0.8px) rotate(-0.35deg);}
+      90%{transform:translate(0.8px,1.2px) rotate(0.3deg);} 100%{transform:translate(0,0) rotate(0deg);}
+    }
+    /* embedded in the menu: the menu's persistent logo is shown as the wordmark; the crumb slides in after */
+    html.embed .head .wordmark { visibility: hidden; }
+    html.embed .head .crumb { display: none; }   /* the menu's flown logo carries its own "asteroids" crumb — don't show the game's LED copy too */
+
+    /* spinning LED border (same as the credits / exchange buttons) */
+    @property --led { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+    @keyframes ledSpin { to { --led: 360deg; } }
+    .led-ring::after {
+      content: ""; position: absolute; inset: 0; border-radius: 999px; padding: 2px;
+      background: conic-gradient(from var(--led), transparent 0deg, transparent 250deg, #ffd76a 300deg, #fff3d0 332deg, transparent 360deg);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude;
+      pointer-events: none; filter: drop-shadow(0 0 4px #ffd76a);
+      animation: ledSpin 3s linear infinite;
+    }
+
+    .back { position: fixed; z-index: 60; top: 1.3rem; right: 1.5rem; pointer-events: auto;
+      font-family: var(--pixel); text-transform: lowercase; font-size: 0.5rem; letter-spacing: 0.08em;
+      color: var(--gold); text-decoration: none; border: 2px solid var(--gold); border-radius: 999px; padding: 0.5rem 1.1rem;
+      transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1), background 0.15s, color 0.15s, box-shadow 0.2s; }
+    .back:hover { transform: translateY(-3px); background: linear-gradient(180deg, #ffe08a, #e0a830);
+      color: #5a3e00; border-color: transparent; box-shadow: 0 10px 22px rgba(255,215,106,0.45); }
+
+    .telem { left: 1.5rem; bottom: 1.2rem; font-size: 0.45rem; letter-spacing: 0.1em; color: rgba(240,244,248,0.55); line-height: 1.95; }
+    .telem .k { color: rgba(240,244,248,0.35); }
+    .telem .v { color: var(--lime); }
+    .telem .v.boost { color: var(--red); }
+    .hint { right: 1.5rem; bottom: 1.2rem; text-align: right; font-size: 0.4rem; letter-spacing: 0.12em; color: #ffd76a; line-height: 1.95; }
+    .hint .led, #fpsTag .led { display: inline-block; animation: hintLed 1.8s linear infinite; animation-delay: calc(var(--i, 0) * 0.05s); }   /* gold LED sweeps letter by letter, like the © 2026 voxelbit footer */
+    @keyframes hintLed { 0%, 12%, 100% { color: #ffd76a; text-shadow: none; } 6% { color: #fff8e0; text-shadow: 0 0 7px rgba(255,248,200,0.95); } }
+    /* on game start a "shift — boost" cue pops up below the cursor, then flies down into its resting
+       spot inside the bottom-right hint (desktop only — touch uses the on-screen boost button). */
+    .shift-cue { z-index: 66; white-space: nowrap; display: none;
+      font-size: 0.4rem; letter-spacing: 0.12em; color: #ffd76a; }
+    .shift-cue .led { display: inline-block; animation: hintLed 1.8s linear infinite; animation-delay: calc(var(--i, 0) * 0.05s); }   /* gold LED sweep, like the keybinds */
+
+    /* ── on-screen touch controls (shown only on touch devices via body.touch) ── */
+    .boost-btn, .joystick { display: none; }
+    /* boost: a round button bottom-right, mirroring the joystick circle bottom-left */
+    body.touch .boost-btn {
+      display: flex; align-items: center; justify-content: center;
+      right: 1.6rem; bottom: 2rem; width: 104px; height: 104px; border-radius: 50%; padding: 0;
+      font-family: var(--pixel); text-transform: lowercase; font-size: 0.55rem; letter-spacing: 0.06em;
+      color: var(--lime); background: rgba(8,12,16,0.4); border: 1px solid rgba(141,198,63,0.4);
+      pointer-events: auto; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; touch-action: none;
+    }
+    body.touch .boost-btn.active { background: linear-gradient(180deg, #b2e06a, #82b73d); color: #fff; border-color: transparent; }
+    /* left-bottom virtual joystick → steer the camera */
+    body.touch .joystick { display: block; left: 1.6rem; bottom: 2rem; width: 104px; height: 104px; border-radius: 50%; background: rgba(8,12,16,0.4); border: 1px solid rgba(141,198,63,0.3); pointer-events: auto; touch-action: none; }
+    .joy-knob { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%; background: rgba(141,198,63,0.45); border: 1px solid rgba(141,198,63,0.7); box-shadow: 0 0 10px rgba(141,198,63,0.4); }
+    body.touch .hint, body.touch .shift-cue { display: none !important; }   /* the keyboard hint is meaningless on touch */
+    /* mobile: center the voxelbit/asteroids title and tuck the score directly beneath it
+       (centering via left/right + text-align so it doesn't fight the hudShake transform or the logo morph) */
+    body.touch .head { left: 0; right: 0; text-align: center; top: calc(1.2rem + 8px); font-size: 1rem; }   /* mobile: nudge the white-crumb title down 8px + slightly bigger */
+    body.touch .score { top: 4rem; }
+    /* hide the on-screen controls when the HUD is hidden (H) or while acting as the menu backdrop */
+    body.touch.ui-hidden .boost-btn, body.touch.ui-hidden .joystick,
+    body.menu-bg .boost-btn, body.menu-bg .joystick { display: none !important; }
+
+
+    .thr { left: 50%; bottom: 1.3rem; transform: translateX(-50%); width: 160px; height: 5px;
+      background: rgba(255,255,255,0.12); border-radius: 999px; overflow: hidden; }
+    .thr i { display: block; height: 100%; width: 40%; background: linear-gradient(90deg, var(--lime), #d4f59a); transition: width 0.1s, background 0.2s; }
+    .thr.boost i { background: linear-gradient(90deg, #f2554b, #ff8a8a); }
+
+    .score { top: 1.2rem; left: 50%; transform: translateX(-50%); font-size: 0.75rem; letter-spacing: 0.12em; color: var(--gold); text-shadow: 0 0 8px rgba(255,215,106,0.5); }
+    .cruisetag { top: 3.0rem; left: 50%; transform: translateX(-50%); font-size: 0.45rem; letter-spacing: 0.2em; color: rgba(141,198,63,0.75); text-shadow: 0 0 8px rgba(141,198,63,0.4); }
+    #fpsTag { display: none !important; position: fixed; z-index: 60; pointer-events: none; top: 0.6rem; left: 1.5rem; font-size: 0.4rem; letter-spacing: 0.12em; color: #ffd76a; line-height: 1.95; }   /* fps counter REMOVED (was top-left) — hidden everywhere via !important so the showFps message can't reveal it */
+    #planetName { position: fixed; left: 50%; top: 45%; transform: translateX(-50%); z-index: 55; pointer-events: none; opacity: 0; transition: opacity 0.6s; white-space: nowrap; font-size: 0.8rem; letter-spacing: 0.12em; line-height: 1.95; color: #ffd76a; }   /* centered; .hint keybind letter styling at 2× the size */
+    #planetName .led { display: inline-block; animation: hintLed 1.8s linear infinite; animation-delay: calc(var(--i, 0) * 0.05s); }   /* per-letter gold LED, identical to .hint */
+    #planetName.on { opacity: 0.8; }   /* fades in to 20%-transparent gold when a planet is near */
+    body.menu-bg #planetName { display: none; }   /* hidden in the menu backdrop */
+    /* #fpsTag visibility is controlled by the fps icon (showFps message), so it can show in the menu backdrop + cinematic too */
+    #earthWarp { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 0.7s ease; z-index: 500; }
+    #earthWarp.on { opacity: 1; }
+    @keyframes scoreBounce {
+      0%   { transform: translateX(-50%) scale(1); }
+      35%  { transform: translateX(-50%) scale(1.45); }
+      100% { transform: translateX(-50%) scale(1); }
+    }
+    .score.bounce { animation: scoreBounce 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); }
+    .score .k { color: rgba(240,244,248,0.4); font-size: 0.45rem; letter-spacing: 0.2em; margin-right: 0.4rem; }
+    /* a bright green LED lights one score digit at a time, sweeping left→right then right→left (like "game over") */
+    #score .d { display: inline-block; transition: color 0.25s ease, text-shadow 0.25s ease; }
+    #score .d.lit { color: #fff3d0; text-shadow: 0 0 10px rgba(255,215,106,0.95); }
+
+    .popup { position: fixed; z-index: 65; transform: translate(-50%,-50%); pointer-events: none; white-space: nowrap;
+      font-family: var(--pixel); text-transform: lowercase; font-size: 0.6rem; letter-spacing: 0.1em;
+      color: var(--gold); text-shadow: 0 0 8px rgba(255,215,106,0.8); animation: popRise 1s ease-out forwards; }
+    @keyframes popRise {
+      0%   { opacity: 0; transform: translate(-50%,-50%) scale(0.7); }
+      15%  { opacity: 1; transform: translate(-50%,-80%) scale(1); }
+      100% { opacity: 0; transform: translate(-50%,-180%) scale(1); }
+    }
+
+    /* the game-over screen now lives in the shell (index.html) — these styles were removed from asteroids */
+
+    .nowebgl { position: fixed; inset: 0; z-index: 100; display: none; align-items: center; justify-content: center;
+      text-align: center; font-size: 0.6rem; letter-spacing: 0.1em; color: var(--red); padding: 2rem; }
+  </style>
+</head>
+<body>
+  <script>
+    // when we're the menu backdrop (?bg) hide the HUD from the very FIRST paint. the module script
+    // below also adds this class, but it's deferred — so without this the HUD flashes for a frame on
+    // every menu refresh before the module runs.
+    if (new URLSearchParams(location.search).has('bg')) document.body.classList.add('menu-bg');
+    try { if (localStorage.getItem('vbCinematic') === '1') document.body.classList.add('cinematic'); } catch (e) {}   // cinematic mode → hide the HUD, show the indicator
+    // ── global SFX volume: scale every sound effect by the menu's sound-effects slider (this page has no music of its own) ──
+    (function () {
+      const proto = HTMLMediaElement.prototype, desc = Object.getOwnPropertyDescriptor(proto, 'volume');
+      if (!desc || !desc.set) return;
+      let sfxVol = 1;
+      try { const v = parseFloat(localStorage.getItem('vbSfxVolume')); if (!isNaN(v)) sfxVol = Math.max(0, Math.min(1, v)); } catch (e) {}
+      const reg = [];
+      Object.defineProperty(proto, 'volume', {
+        configurable: true,
+        get() { return this.__sfxBase !== undefined ? this.__sfxBase : desc.get.call(this); },
+        set(v) { this.__sfxBase = v; if (reg.indexOf(this) < 0) reg.push(this); desc.set.call(this, v * sfxVol * 0.576); }   // ~42% global sfx trim
+      });
+      window.__setSfxVol = (val) => { sfxVol = Math.max(0, Math.min(1, val)); for (const a of reg) { try { a.volume = a.__sfxBase; } catch (e) {} } };
+    })();
+  </script>
+  <h1 class="hud head"><span class="wordmark"><span class="voxel">voxel</span><span class="bit">bit</span><sup class="ver-sup">v0.5</sup></span><span class="crumb"><span>a</span><span>s</span><span>t</span><span>e</span><span>r</span><span>o</span><span>i</span><span>d</span><span>s</span></span></h1>
+  <a class="back led-ring" href="index.html">back</a>
+  <div class="hud score"><span class="k">score</span> <span id="score">0</span></div>
+
+  <div class="hud hint">wasd — look<br>left click — fire<br><span id="hintShift">shift — boost</span><br>scroll — speed</div>
+  <script>(function () { const h = document.querySelector('.hint'); if (!h) return; const ctr = { i: 0 }; (function ledify(node) { for (const n of [...node.childNodes]) { if (n.nodeType === 3) { const frag = document.createDocumentFragment(); for (const ch of n.textContent) { const s = document.createElement('span'); s.style.setProperty('--i', ctr.i++); if (ch === ' ') s.innerHTML = '&nbsp;'; else { s.textContent = ch; s.className = 'led'; } frag.appendChild(s); } node.replaceChild(frag, n); } else if (n.nodeType === 1 && n.tagName !== 'BR') ledify(n); } })(h); })();</script>
+  <div class="hud shift-cue" id="shiftCue">shift — boost</div>
+  <script>(function () { const c = document.getElementById('shiftCue'); if (!c) return; const t = c.textContent; c.textContent = ''; let i = 0; for (const ch of t) { const s = document.createElement('span'); s.style.setProperty('--i', i++); if (ch === ' ') s.innerHTML = '&nbsp;'; else { s.textContent = ch; s.className = 'led'; } c.appendChild(s); } })();</script>
+  <div class="hud cruisetag" id="cruisetag" style="display:none">cruise control</div>
+  <div id="fpsTag">— fps</div>
+  <div id="earthWarp"></div>
+  <div id="reticle"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 11h7v2h-7v7h-2v-7H4v-2h7V4h2v7Z"/></svg></div>
+  <div id="planetName"></div>
+
+  <!-- on-screen controls (mobile only — shown via body.touch) -->
+  <div class="hud joystick" id="joystick"><div class="joy-knob" id="joyKnob"></div></div>
+  <button class="hud touch-btn boost-btn" id="tcBoost">boost</button>
+
+
+  <div class="warp" id="warp"></div>
+  <div class="vignette"></div>
+  <div class="nowebgl" id="nowebgl">webgl not available in this browser :(</div>
+
+  <script src="../assets/v0.5/chicken/chicken/jump/frames.b64.js"></script>   <!-- chicken jump frames (0.vox = idle standing pose) for the floating space chicken -->
+  <script type="importmap">{ "imports": { "three": "./three.module.js" } }</script>   <!-- LOCAL three.js (was unpkg CDN) → loads instantly from disk on every refresh, no network round-trip, works offline -->
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ── minimal MagicaVoxel (.vox) loader (ported from earth.html) — builds the floating chicken from its real model ──
+    function parseVox(buffer) { const dv = new DataView(buffer), td = new TextDecoder(); const tag = (o) => td.decode(new Uint8Array(buffer, o, 4)); if (tag(0) !== 'VOX ') throw new Error('not a .vox file'); const voxels = []; let palette = null, o = 20; while (o + 12 <= dv.byteLength) { const id = tag(o), cs = dv.getInt32(o + 4, true), c = o + 12; if (id === 'XYZI') { const n = dv.getInt32(c, true); for (let i = 0; i < n; i++) { const b = c + 4 + i * 4; voxels.push({ x: dv.getUint8(b), y: dv.getUint8(b + 1), z: dv.getUint8(b + 2), i: dv.getUint8(b + 3) }); } } else if (id === 'RGBA') { palette = []; for (let k = 0; k < 256; k++) { const b = c + k * 4; palette.push([dv.getUint8(b), dv.getUint8(b + 1), dv.getUint8(b + 2)]); } } o = c + cs; } return { voxels, palette }; }
+    function base64ToBuffer(b64) { const bin = atob(b64), bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes.buffer; }
+    function voxMesh({ voxels, palette }) { const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, emissive: 0x222222, fog: false }), voxels.length); inst.frustumCulled = false; const m = new THREE.Matrix4(), col = new THREE.Color(); let eyeIdx = -1; voxels.forEach((v, n) => { m.makeTranslation(v.x + 0.5, v.z + 0.5, -(v.y + 0.5)); inst.setMatrixAt(n, m); const p = (palette && palette[v.i - 1]) || [200, 90, 90]; if (p[0] === 0 && p[1] === 0 && p[2] === 0) eyeIdx = n; col.setRGB(p[0] / 255, p[1] / 255, p[2] / 255, THREE.SRGBColorSpace); inst.setColorAt(n, col); }); inst.userData.eyeIdx = eyeIdx; inst.instanceMatrix.needsUpdate = true; if (inst.instanceColor) inst.instanceColor.needsUpdate = true; return inst; }
+
+    // mobile (touch) gets a lighter renderer + fewer objects — phones are fill-rate and draw-call bound
+    const isTouch = matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window);
+    if (isTouch) document.body.classList.add('touch');
+
+    let renderer;
+    try { renderer = new THREE.WebGLRenderer({ antialias: !isTouch }); }   // MSAA is costly on mobile GPUs
+    catch (e) { document.getElementById('nowebgl').style.display = 'flex'; throw e; }
+    renderer.setPixelRatio(Math.min(devicePixelRatio, isTouch ? 1.5 : 2));  // fewer pixels to shade on hi-DPI phones
+    renderer.setSize(innerWidth, innerHeight);
+    document.body.insertBefore(renderer.domElement, document.body.firstChild);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x070912);
+    scene.fog = new THREE.FogExp2(0x0a0c1a, 0.0007);
+
+    const camera = new THREE.PerspectiveCamera(74, innerWidth / innerHeight, 2.0, 120000);   // far reaches Neptune at 2× spacing (~84k from the sun) even from the far side of the inner system; near bumped to 2.0 to keep depth precision ~unchanged
+    const ship = new THREE.Vector3(0, 0, 12000);   // gameplay / first-person eye position — starts further back so the (now 2× wider) system reads on entry
+    const START_POS = ship.clone();                // remembered for respawn / returning to the backdrop
+    camera.position.copy(ship);
+
+    // ── radial-glow sprite helper ──
+    function radialTexture(stops) {
+      const c = document.createElement('canvas'); c.width = c.height = 128;
+      const x = c.getContext('2d');
+      const g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+      stops.forEach(s => g.addColorStop(s[0], s[1]));
+      x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+      return new THREE.CanvasTexture(c);
+    }
+    const cloudTex = radialTexture([[0,'rgba(255,255,255,0.42)'],[0.45,'rgba(255,255,255,0.10)'],[1,'rgba(255,255,255,0)']]);
+
+    // ── starfield (wraps around the camera for endless flight) ──
+    const SR = 750, STAR_N = 6800;   // mobile now matches desktop's star count (was isTouch ? 2500 : 6800)
+    const sg = new THREE.BufferGeometry();
+    const sp = new Float32Array(STAR_N * 3);
+    const sbase = new Float32Array(STAR_N * 3);  // logical position (the wrapped grid)
+    const sph = new Float32Array(STAR_N);        // per-star sway phase
+    const samp = new Float32Array(STAR_N);       // per-star sway amplitude
+    const scol = new Float32Array(STAR_N * 3);
+    const SC = [[1,1,1],[1,1,1],[0.72,0.82,1],[1,0.86,0.62],[1,0.66,0.6],[0.85,0.92,1]];
+    for (let i = 0; i < STAR_N; i++) {
+      const x=(Math.random()-0.5)*2*SR, y=(Math.random()-0.5)*2*SR, z=(Math.random()-0.5)*2*SR;
+      sp[i*3]=x; sp[i*3+1]=y; sp[i*3+2]=z;
+      sbase[i*3]=x; sbase[i*3+1]=y; sbase[i*3+2]=z;
+      sph[i] = Math.random() * Math.PI * 2; samp[i] = 0.6 + Math.random() * 2.4;
+      const c = SC[(Math.random()*SC.length)|0], b = 0.55 + Math.random() * 0.45;
+      scol[i*3]=c[0]*b; scol[i*3+1]=c[1]*b; scol[i*3+2]=c[2]*b;
+    }
+    sg.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+    sg.setAttribute('color', new THREE.BufferAttribute(scol, 3));
+    const starMat = new THREE.PointsMaterial({ size: 1.7, sizeAttenuation: true, transparent: true, opacity: 0.95, vertexColors: true });
+    const stars = new THREE.Points(sg, starMat);
+    stars.frustumCulled = false;
+    scene.add(stars);
+
+    // ── soft brush nebula clouds (wrap around the camera) ──
+    const NEB_R = 1500;
+    const NEB_COLORS = [0xff4d8a, 0xff5fb0, 0xe0408a, 0xc33aff, 0x9a4ad0, 0x3a5ad0, 0x4a6aff, 0x6a3aff, 0x8a3ad0, 0xe0603a];
+    const nebs = [];
+    for (let i = 0; i < 30; i++) {   // mobile now matches desktop's nebula-cloud count (was isTouch ? 14 : 30) → same background bloom
+      const col = NEB_COLORS[(Math.random()*NEB_COLORS.length)|0];
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex, color: col, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, opacity: 0.14 + Math.random()*0.18 }));
+      s.position.set((Math.random()-0.5)*2*NEB_R, (Math.random()-0.5)*1.3*NEB_R*0.6, (Math.random()-0.5)*2*NEB_R);
+      s.scale.setScalar(600 + Math.random()*1100);
+      scene.add(s); nebs.push(s);
+    }
+    for (let i = 0; i < 3; i++) {
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex, color: 0xfff0dc, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, opacity: 0.2 }));
+      s.position.set((Math.random()-0.5)*2*NEB_R, (Math.random()-0.5)*NEB_R, (Math.random()-0.5)*2*NEB_R);
+      s.scale.setScalar(1100 + Math.random()*700);
+      scene.add(s); nebs.push(s);
+    }
+    // top-right nebula-glow slider removed — the nebulae keep their default opacity
+
+
+    // ── lights (so the rock asteroids read) ──
+    const hemi = new THREE.HemisphereLight(0x8493c4, 0x101018, 0.95); scene.add(hemi);   // sky-dome + ground-bounce ambient
+    const adir = new THREE.DirectionalLight(0xfff0d6, 1.15); adir.position.set(0.5, 0.85, 0.4); scene.add(adir);
+
+    // ── shared planet builders: Earth + Mars use the SAME segment count, so their poly counts always match ──
+    const PLANET_SEG_W = 54, PLANET_SEG_H = 40;   // ~2.7× fewer triangles than 93×68 → the per-triangle land/cloud coloring loop (the heavy synchronous work at load) builds much faster, so the space intro appears sooner. Barely visible at intro distance.
+    function planetGeo(R, oceanHex, landHex, capHex, { nLand = 6, landBase = 0.62, landRange = 0.18, poleCos = 0.80, nCloud = 0, cloudHex = 0xffffff, cloudBase = 0.93, cloudRange = 0.04 } = {}) {   // low-poly faceted globe: continents + polar caps + optional white CLOUD patches baked onto the surface faces
+      const geo = new THREE.SphereGeometry(R, PLANET_SEG_W, PLANET_SEG_H).toNonIndexed();
+      const cols = [], pos = geo.attributes.position, triCount = pos.count / 3;
+      const ocean = new THREE.Color(oceanHex), land = new THREE.Color(landHex), cap = new THREE.Color(capHex), cloud = new THREE.Color(cloudHex);
+      const centers = [], radii = [], cCenters = [], cRadii = [];
+      for (let i = 0; i < nLand; i++) { const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2, s = Math.sqrt(1 - u * u); centers.push(new THREE.Vector3(s * Math.cos(th), u, s * Math.sin(th))); radii.push(landBase + Math.random() * landRange); }
+      for (let i = 0; i < nCloud; i++) { const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2, s = Math.sqrt(1 - u * u); cCenters.push(new THREE.Vector3(s * Math.cos(th), u, s * Math.sin(th))); cRadii.push(cloudBase + Math.random() * cloudRange); }
+      const a = new THREE.Vector3(), b = new THREE.Vector3(), cc = new THREE.Vector3(), dir = new THREE.Vector3();
+      for (let t = 0; t < triCount; t++) {
+        a.fromBufferAttribute(pos, t * 3); b.fromBufferAttribute(pos, t * 3 + 1); cc.fromBufferAttribute(pos, t * 3 + 2);
+        dir.copy(a).add(b).add(cc).normalize();
+        let col;
+        if (dir.y > poleCos || dir.y < -poleCos) col = cap;   // polar caps (skipped when poleCos > 1)
+        else {
+          let isCloud = false; for (let k = 0; k < cCenters.length; k++) if (dir.dot(cCenters[k]) > cRadii[k]) { isCloud = true; break; }   // white pixelated cloud patches, painted right onto the surface
+          if (isCloud) col = cloud;
+          else { let onLand = false; for (let k = 0; k < centers.length; k++) if (dir.dot(centers[k]) > radii[k]) { onLand = true; break; } col = onLand ? land : ocean; }
+        }
+        for (let k = 0; k < 3; k++) cols.push(col.r, col.g, col.b);
+      }
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+      return geo;
+    }
+    function planetAtmosphere(planet, R, stops, hazeHex) {   // soft radial-gradient halo (no hard edge) + a gentle wash over the globe's face
+      const cv = document.createElement('canvas'); cv.width = cv.height = 256; const gx = cv.getContext('2d');
+      const gr = gx.createRadialGradient(128, 128, 0, 128, 128, 128);
+      for (const [stop, rgba] of stops) gr.addColorStop(stop, rgba);
+      gx.fillStyle = gr; gx.fillRect(0, 0, 256, 256);
+      const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, toneMapped: false }));
+      halo.scale.setScalar(R * 2.6); planet.add(halo);   // soft glow, fading gently outward — no crisp ring (kept tighter so it doesn't bleed around foreground asteroids)
+      const haze = new THREE.Mesh(new THREE.SphereGeometry(R * 1.05, 48, 36), new THREE.MeshBasicMaterial({ color: hazeHex, transparent: true, opacity: 0.32, side: THREE.FrontSide, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));   // depth-tested so it's hidden when the planet is behind another body
+      planet.add(haze);   // soft bloom over the globe's face
+    }
+    function pixelLayer(R, nPatches, alpha, colorHex, prMin, prRange, lit, texW) {   // a SMOOTH shell with a low-res PIXEL texture (nearest-filtered) → square pixelated patches (clouds / moon craters)
+      const W = texW || 64, H = W >> 1, cv = document.createElement('canvas'); cv.width = W; cv.height = H; const cx = cv.getContext('2d');   // bigger texW → smaller pixels
+      cx.clearRect(0, 0, W, H);   // fully transparent base
+      const c = new THREE.Color(colorHex), rgb = Math.round(c.r * 255) + ',' + Math.round(c.g * 255) + ',' + Math.round(c.b * 255);
+      for (let i = 0; i < nPatches; i++) {   // scatter blocky patches (kept off the poles to avoid UV pinch)
+        const px = Math.random() * W, py = H * 0.18 + Math.random() * (H * 0.64), pr = prMin + Math.random() * prRange;
+        for (let yy = -Math.ceil(pr); yy <= pr; yy++) for (let xx = -Math.ceil(pr); xx <= pr; xx++) {
+          if (xx * xx + yy * yy <= pr * pr && Math.random() < 0.78) { cx.fillStyle = 'rgba(' + rgb + ',' + alpha + ')'; cx.fillRect(Math.round(px) + xx, Math.round(py) + yy, 1, 1); }   // 1 texel = 1 pixel → blocky
+        }
+      }
+      const tex = new THREE.CanvasTexture(cv);
+      tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false;   // crisp square pixels, no blurring
+      const mat = lit
+        ? new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, roughness: 1, metalness: 0, emissive: c.clone().multiplyScalar(0.05), fog: false })   // OPAQUE pixel cutout (solid); very low emissive so moon craters read DARK (not light) on the night side
+        : new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, fog: false, toneMapped: false });   // soft transparent white clouds
+      return new THREE.Mesh(new THREE.SphereGeometry(R, 48, 32), mat);
+    }
+    function continentLayer(R, landHex, capHex) {   // real continents (lon/lat ellipses) in GREEN + WHITE pixel polar caps, on a 128×64 nearest-filtered texture (same pixel size as the clouds)
+      const W = 128, H = 64, cv = document.createElement('canvas'); cv.width = W; cv.height = H; const cx = cv.getContext('2d');
+      cx.clearRect(0, 0, W, H);
+      const rgb = (hex) => { const c = new THREE.Color(hex); return Math.round(c.r * 255) + ',' + Math.round(c.g * 255) + ',' + Math.round(c.b * 255); };
+      const land = [   // [lonº, latº, halfWidthLonº, halfWidthLatº]
+        [-100, 48, 34, 23], [-88, 33, 18, 13],   // North America (+ its southern bulge)
+        [-62, -16, 16, 27],                       // South America
+        [18, 8, 22, 26], [24, -22, 13, 14],       // Africa (+ its southern part)
+        [16, 50, 30, 12],                         // Europe
+        [95, 50, 62, 26], [80, 24, 22, 14],       // Asia (+ India)
+        [134, -25, 20, 12],                       // Australia
+        [-42, 72, 17, 9]                          // Greenland
+      ];
+      cx.fillStyle = 'rgba(' + rgb(landHex) + ',1)';
+      for (let y = 0; y < H; y++) { const lat = 90 - (y + 0.5) / H * 180;
+        for (let x = 0; x < W; x++) { const lon = -180 + (x + 0.5) / W * 360;
+          let isLand = false;
+          for (const m of land) { let d = lon - m[0]; if (d > 180) d -= 360; else if (d < -180) d += 360; const a = d / m[2], b = (lat - m[1]) / m[3]; if (a * a + b * b < 1.0) { isLand = true; break; } }
+          if (isLand) cx.fillRect(x, y, 1, 1);
+        }
+      }
+      cx.fillStyle = 'rgba(' + rgb(capHex) + ',1)';   // white polar caps as pixels on top (replacing the old polygon caps)
+      const capRows = 5; for (let y = 0; y < capRows; y++) cx.fillRect(0, y, W, 1); for (let y = H - capRows; y < H; y++) cx.fillRect(0, y, W, 1);   // white polar caps as 5 full rows
+      const tex = new THREE.CanvasTexture(cv); tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false;
+      return new THREE.Mesh(new THREE.SphereGeometry(R, 64, 44), new THREE.MeshStandardMaterial({ map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 0.3, alphaTest: 0.5, roughness: 1, metalness: 0, fog: false }));   // per-pixel dim emissive (green stays green, caps stay white) so nothing is black at night
+    }
+
+    // ── the sun sits far ahead and off to the left; Earth + Mars ORBIT it (Mars on the wider orbit) ──
+    const SUN_R = 900, sunPos = new THREE.Vector3(-1700, 500, -6000);   // by far the biggest body; sits far ahead and to the left
+    const EARTH_ORBIT = 18000, MARS_ORBIT = 24000;   // 2× spacing across the whole system; Mars still outside Earth
+    let earthOrbit = 0, marsOrbit = -Math.PI / 2;   // Earth starts on the right of the sun; Mars starts ahead (in view) instead of behind the camera
+
+    // ── a huge low-poly Earth that orbits the sun — fly into it to drop down to the survival world ──
+    const EARTH_R = 520;
+    const earth = new THREE.Mesh(planetGeo(EARTH_R, 0x2767c0, 0x3f9a46, 0xeaf2f8, { nLand: 0, poleCos: 2 }), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0, emissive: 0x244a7a, emissiveIntensity: 0.45, fog: false }));   // all-BLUE polygon ocean (no polygon caps — caps + land are pixel layers on top)
+    earth.position.set(sunPos.x + Math.cos(earthOrbit) * EARTH_ORBIT, sunPos.y, sunPos.z + Math.sin(earthOrbit) * EARTH_ORBIT);   // far away, on the RIGHT side of its orbit
+    earth.rotation.z = 0.41;   // ≈23.5° axial tilt; the spin (rotateY below) then turns it around this tilted pole
+    planetAtmosphere(earth, EARTH_R, [[0.00, 'rgba(80,155,255,0.9)'], [0.46, 'rgba(60,140,255,0.74)'], [0.62, 'rgba(45,125,255,0.4)'], [0.80, 'rgba(35,110,255,0.14)'], [1.00, 'rgba(30,100,255,0)']], 0x3f8fff);   // blue atmosphere
+    const earthLand = continentLayer(EARTH_R * 1.02, 0x3f9a46, 0xeaf2f8);   // GREEN continents + WHITE pixel polar caps on the blue ocean
+    earth.add(earthLand);
+    const earthClouds = pixelLayer(EARTH_R * 1.03, 22, 0.55, 0xffffff, 2.0, 4.4, false, 128);   // white clouds — texW 128 → pixels half the size; pr doubled so the clouds stay the same size
+    earth.add(earthClouds);
+    scene.add(earth);
+    let warping = false;   // true once we've entered the Earth (transition in progress)
+
+    // ── a red planet Mars (same poly count as Earth; red glow/bloom) ──
+    const MARS_R = 280;   // ~0.53× Earth (the real Earth:Mars size ratio)
+    const mars = new THREE.Mesh(planetGeo(MARS_R, 0xa9462a, 0x7a2e18, 0xe6d3b8, { poleCos: 2 }), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0, emissive: 0x5a1d10, emissiveIntensity: 0.45, fog: false }));   // rust surface, darker craters, NO polar caps (poleCos > 1)
+    mars.position.set(sunPos.x + Math.cos(marsOrbit) * MARS_ORBIT, sunPos.y, sunPos.z + Math.sin(marsOrbit) * MARS_ORBIT);   // on its wider orbit
+    mars.rotation.z = 0.45;
+    planetAtmosphere(mars, MARS_R, [[0.00, 'rgba(255,110,70,0.9)'], [0.46, 'rgba(240,90,55,0.7)'], [0.62, 'rgba(210,70,45,0.38)'], [0.80, 'rgba(180,55,40,0.13)'], [1.00, 'rgba(160,50,40,0)']], 0xff6a3f);   // red atmosphere
+    scene.add(mars);
+
+    // ── a small polygon Moon that orbits the Earth (same poly count as Earth; airless → no atmosphere) ──
+    const MOON_R = 140, MOON_ORBIT = 2000; let moonOrbit = 0;   // ~0.27× Earth; orbits just outside Earth's glow halo
+    const moon = new THREE.Mesh(planetGeo(MOON_R, 0x9c9ca0, 0x55555c, 0x808080, { nLand: 0, poleCos: 2 }), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0, emissive: 0x202024, emissiveIntensity: 0.35, fog: false }));   // solid grey base (no caps)
+    moon.add(pixelLayer(MOON_R * 1.02, 26, 0.9, 0x55555c, 1.0, 2.0, true, 96));   // PIXELATED darker-grey craters scattered over it (texW 96 → fine pixels on the small moon)
+    moon.rotation.z = 0.1;
+    moon.position.copy(earth.position).add(new THREE.Vector3(MOON_ORBIT, 0, 0));
+    scene.add(moon);
+
+    // ── Saturn: the outermost planet (biggest globe) — same planetGeo/atmosphere/orbit mechanics as Earth & Mars, plus tilted rings ──
+    const SATURN_R = 1560, SATURN_ORBIT = 50000; let saturnOrbit = -Math.PI * 0.7;   // ~3× Earth; spaced past Jupiter so its big rings never overlap; starts off to the left-ahead
+    const saturn = new THREE.Mesh(planetGeo(SATURN_R, 0xd9c089, 0xc2a85f, 0xe8dcc0, { nLand: 8, landBase: 0.6, landRange: 0.16, poleCos: 2 }), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0, emissive: 0x6b5a2e, emissiveIntensity: 0.45, fog: false }));   // pale gold banded gas giant, no polar caps
+    saturn.position.set(sunPos.x + Math.cos(saturnOrbit) * SATURN_ORBIT, sunPos.y, sunPos.z + Math.sin(saturnOrbit) * SATURN_ORBIT);
+    saturn.rotation.z = 0.47;   // ~26.7° axial tilt — also tilts the rings (they're children)
+    planetAtmosphere(saturn, SATURN_R, [[0.00, 'rgba(240,222,160,0.85)'], [0.46, 'rgba(225,205,140,0.66)'], [0.62, 'rgba(205,185,120,0.36)'], [0.80, 'rgba(185,165,105,0.12)'], [1.00, 'rgba(175,155,100,0)']], 0xe8d59a);   // gold haze
+    const ringTex = (() => {   // concentric gold bands with a Cassini-style gap, on a centred radial canvas
+      const S = 256, cv = document.createElement('canvas'); cv.width = cv.height = S; const x = cv.getContext('2d'); const cx = S / 2, cy = S / 2, outer = S / 2;
+      for (let r = 30; r <= outer; r += 0.5) {
+        const t = r / outer;
+        let a = 0.5 + 0.38 * Math.sin(t * 55.0) * Math.sin(t * 9.0);
+        if (Math.abs(t - 0.80) < 0.03) a = 0.03;   // Cassini division
+        a = Math.max(0.0, Math.min(0.85, a));
+        const lum = 205 + 40 * Math.sin(t * 24.0);
+        x.strokeStyle = 'rgba(' + (lum | 0) + ',' + ((lum * 0.85) | 0) + ',' + ((lum * 0.6) | 0) + ',' + a.toFixed(3) + ')';
+        x.beginPath(); x.arc(cx, cy, r, 0, 6.2832); x.lineWidth = 1.0; x.stroke();
+      }
+      return new THREE.CanvasTexture(cv);
+    })();
+    const saturnRing = new THREE.Mesh(new THREE.RingGeometry(SATURN_R * 1.25, SATURN_R * 2.3, 96), new THREE.MeshStandardMaterial({ map: ringTex, transparent: true, side: THREE.DoubleSide, depthWrite: false, roughness: 1, metalness: 0, emissive: 0x6b5a2e, emissiveIntensity: 0.2, fog: false }));
+    saturnRing.rotation.x = Math.PI / 2;   // lay the ring flat into Saturn's equatorial plane (then the parent's tilt angles it)
+    saturn.add(saturnRing);
+    scene.add(saturn);
+
+    // ── Jupiter: the largest planet — a smooth banded gas giant (procedural zones/belts/festoons + a baked-in Great Red Spot) ──
+    const JUP_R = 1820, JUP_ORBIT = 36000; let jupiterOrbit = -Math.PI * 0.3;   // ~3.5× Earth; sits between Mars and Saturn, starts on the right-ahead
+    const jupTex = (() => {
+      const W = 1024, H = 512, cv = document.createElement('canvas'); cv.width = W; cv.height = H; const x = cv.getContext('2d');
+      const img = x.createImageData(W, H), d = img.data, lerp = (a, b, t) => a + (b - a) * t;
+      const belt = [168, 104, 62], zone = [234, 216, 184], white = [246, 240, 230], blu = [150, 168, 182];
+      for (let yy = 0; yy < H; yy++) {
+        const t = yy / H, pole = Math.pow(Math.abs(t - 0.5) * 2, 3);   // latitude; pole→1 at the poles
+        for (let xx = 0; xx < W; xx++) {
+          const u = xx / W;
+          const turb = Math.sin(u * 6.283 * 3 + t * 22) * 0.012 + Math.sin(u * 6.283 * 8 + t * 40) * 0.006;   // festoon turbulence wavers the band edges
+          const tt = t + turb;
+          let b = 0.5 + 0.42 * Math.sin(tt * Math.PI * 20) + 0.12 * Math.sin(tt * Math.PI * 7 + 1.0);   // ~10 irregular zones/belts
+          b += Math.sin(u * 6.283 * 50 + tt * 130) * 0.05;   // fine horizontal streaks
+          b = Math.max(0, Math.min(1, b));
+          let r = lerp(belt[0], zone[0], b), g = lerp(belt[1], zone[1], b), bl = lerp(belt[2], zone[2], b);
+          if (b > 0.8) { const w = (b - 0.8) / 0.2; r = lerp(r, white[0], w); g = lerp(g, white[1], w); bl = lerp(bl, white[2], w); }                              // bright zone crests
+          else if (b > 0.45 && b < 0.6) { const w = (1 - Math.abs(b - 0.525) / 0.075) * 0.3; r = lerp(r, blu[0], w); g = lerp(g, blu[1], w); bl = lerp(bl, blu[2], w); }   // bluish festoons
+          r = lerp(r, 198, pole * 0.55); g = lerp(g, 186, pole * 0.55); bl = lerp(bl, 164, pole * 0.55);   // muted tan poles
+          const i = (yy * W + xx) * 4; d[i] = r; d[i + 1] = g; d[i + 2] = bl; d[i + 3] = 255;
+        }
+      }
+      x.putImageData(img, 0, 0);
+      x.save(); x.translate(W * 0.5, H * 0.63); x.scale(1, 0.55);   // Great Red Spot — an orange oval in the southern hemisphere
+      const grd = x.createRadialGradient(0, 0, 0, 0, 0, W * 0.06);
+      grd.addColorStop(0, '#cf6038'); grd.addColorStop(0.55, '#bc5530'); grd.addColorStop(0.85, '#9c4828'); grd.addColorStop(1, 'rgba(156,72,40,0)');
+      x.fillStyle = grd; x.beginPath(); x.arc(0, 0, W * 0.06, 0, 6.283); x.fill(); x.restore();
+      const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; return tex;
+    })();
+    const jupiter = new THREE.Mesh(new THREE.SphereGeometry(JUP_R, 96, 64), new THREE.MeshStandardMaterial({ map: jupTex, emissiveMap: jupTex, emissive: 0x6b5630, emissiveIntensity: 0.32, roughness: 1, metalness: 0, fog: false }));   // smooth banded globe; emissiveMap keeps the night side faintly lit with its own bands
+    jupiter.position.set(sunPos.x + Math.cos(jupiterOrbit) * JUP_ORBIT, sunPos.y, sunPos.z + Math.sin(jupiterOrbit) * JUP_ORBIT);
+    jupiter.rotation.z = 0.05;   // ~3° axial tilt (Jupiter is nearly upright)
+    planetAtmosphere(jupiter, JUP_R, [[0.00, 'rgba(235,205,150,0.85)'], [0.46, 'rgba(220,180,125,0.66)'], [0.62, 'rgba(200,160,110,0.36)'], [0.80, 'rgba(180,140,95,0.12)'], [1.00, 'rgba(170,135,90,0)']], 0xe6c89a);   // warm tan haze
+    scene.add(jupiter);
+
+    // ── Mercury, Venus, Uranus, Neptune — the rest of the planets, same planetGeo/atmosphere/orbit mechanics ──
+    const MERC_R = 210, MERC_ORBIT = 8400; let mercOrbit = -Math.PI * 0.15;   // innermost, just clear of the sun's glare
+    const mercury = new THREE.Mesh(planetGeo(MERC_R, 0x8a8580, 0x5c5854, 0x9a9a9a, { nLand: 9, landBase: 0.5, landRange: 0.22, poleCos: 2 }), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0, emissive: 0x2a2826, emissiveIntensity: 0.4, fog: false }));   // grey, cratered, airless (no atmosphere)
+    mercury.position.set(sunPos.x + Math.cos(mercOrbit) * MERC_ORBIT, sunPos.y, sunPos.z + Math.sin(mercOrbit) * MERC_ORBIT);
+    scene.add(mercury);
+
+    const VENUS_R = 500, VENUS_ORBIT = 13200, VENUS_INC = 0.32, VENUS_INC_Z = Math.sqrt(1 - 0.32 * 0.32); let venusOrbit = -Math.PI * 0.55;   // VENUS_INC tilts Venus's orbit out of the (flat) ecliptic so it never sits on top of Earth
+    const venusTex = (() => {   // pale cream-yellow globe with soft horizontal cloud swirls (Venus is featureless + bright)
+      const W = 512, H = 256, cv = document.createElement('canvas'); cv.width = W; cv.height = H; const cx = cv.getContext('2d'); const img = cx.createImageData(W, H), d = img.data;
+      for (let yy = 0; yy < H; yy++) { const t = yy / H, pole = Math.pow(Math.abs(t - 0.5) * 2, 3);
+        for (let xx = 0; xx < W; xx++) { const u = xx / W;
+          const turb = Math.sin(u * 6.283 * 2 + t * 13) * 0.02 + Math.sin(u * 6.283 * 5 + t * 26) * 0.01;
+          let b = 0.5 + 0.2 * Math.sin((t + turb) * Math.PI * 13) + 0.08 * Math.sin(u * 6.283 * 6 - t * 18); b = Math.max(0, Math.min(1, b));
+          let r = 224 + 26 * b, g = 206 + 26 * b, bl = 158 + 28 * b;
+          r += (238 - r) * pole * 0.4; g += (226 - g) * pole * 0.4; bl += (190 - bl) * pole * 0.4;   // paler toward the poles
+          const i = (yy * W + xx) * 4; d[i] = r; d[i + 1] = g; d[i + 2] = bl; d[i + 3] = 255;
+        } }
+      cx.putImageData(img, 0, 0); const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; return tex;
+    })();
+    const venus = new THREE.Mesh(new THREE.SphereGeometry(VENUS_R, 64, 44), new THREE.MeshStandardMaterial({ map: venusTex, emissiveMap: venusTex, emissive: 0x6a5a32, emissiveIntensity: 0.3, roughness: 1, metalness: 0, fog: false }));   // smooth cloudy globe
+    venus.position.set(sunPos.x + Math.cos(venusOrbit) * VENUS_ORBIT, sunPos.y + Math.sin(venusOrbit) * VENUS_ORBIT * VENUS_INC, sunPos.z + Math.sin(venusOrbit) * VENUS_ORBIT * VENUS_INC_Z);
+    venus.rotation.z = 0.05;
+    planetAtmosphere(venus, VENUS_R, [[0.00, 'rgba(240,224,170,0.85)'], [0.46, 'rgba(228,210,150,0.62)'], [0.62, 'rgba(212,192,135,0.34)'], [0.80, 'rgba(196,176,120,0.12)'], [1.00, 'rgba(190,170,115,0)']], 0xead9a4);   // thick golden haze
+    scene.add(venus);
+
+    const URANUS_R = 700, URANUS_ORBIT = 66000; let uranusOrbit = -Math.PI * 0.9;
+    const uranus = new THREE.Mesh(planetGeo(URANUS_R, 0x9fd9e0, 0x86c8d0, 0xc8eef0, { nLand: 3, landBase: 0.72, landRange: 0.07, poleCos: 2 }), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0, emissive: 0x294a50, emissiveIntensity: 0.35, fog: false }));   // pale cyan ice giant
+    uranus.position.set(sunPos.x + Math.cos(uranusOrbit) * URANUS_ORBIT, sunPos.y, sunPos.z + Math.sin(uranusOrbit) * URANUS_ORBIT);
+    uranus.rotation.z = 1.7;   // Uranus rolls on its side (~98° axial tilt) — so its rings stand nearly vertical
+    planetAtmosphere(uranus, URANUS_R, [[0.00, 'rgba(175,225,232,0.8)'], [0.5, 'rgba(150,205,215,0.45)'], [0.78, 'rgba(130,190,200,0.14)'], [1.00, 'rgba(125,185,195,0)']], 0xaee0e6);
+    const uranusRing = new THREE.Mesh(new THREE.RingGeometry(URANUS_R * 1.5, URANUS_R * 2.1, 80), new THREE.MeshStandardMaterial({ map: ringTex, color: 0x8fb8c0, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false, roughness: 1, metalness: 0, emissive: 0x24484e, emissiveIntensity: 0.2, fog: false }));   // faint narrow ring (reuses Saturn's band texture, tinted cyan-grey)
+    uranusRing.rotation.x = Math.PI / 2;   // equatorial plane → the parent's sideways tilt stands it up vertically
+    uranus.add(uranusRing);
+    scene.add(uranus);
+
+    const NEPT_R = 680, NEPT_ORBIT = 84000; let neptOrbit = -Math.PI * 1.2;   // outermost
+    const neptune = new THREE.Mesh(planetGeo(NEPT_R, 0x3a5fd0, 0x2c49b2, 0x8aa2ea, { nLand: 4, landBase: 0.6, landRange: 0.12, poleCos: 2 }), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0, emissive: 0x162552, emissiveIntensity: 0.4, fog: false }));   // deep blue ice giant
+    neptune.position.set(sunPos.x + Math.cos(neptOrbit) * NEPT_ORBIT, sunPos.y, sunPos.z + Math.sin(neptOrbit) * NEPT_ORBIT);
+    neptune.rotation.z = 0.5;
+    planetAtmosphere(neptune, NEPT_R, [[0.00, 'rgba(90,125,240,0.85)'], [0.5, 'rgba(70,105,225,0.5)'], [0.78, 'rgba(55,90,205,0.16)'], [1.00, 'rgba(50,85,200,0)']], 0x4a6ad8);
+    scene.add(neptune);
+
+    // ── planet-name label: shows the name of whichever planet you're near, in gold LED-sweep text ──
+    const planetList = [{ m: mercury, n: 'mercury', r: MERC_R }, { m: venus, n: 'venus', r: VENUS_R }, { m: earth, n: 'earth', r: EARTH_R }, { m: mars, n: 'mars', r: MARS_R }, { m: jupiter, n: 'jupiter', r: JUP_R }, { m: saturn, n: 'saturn', r: SATURN_R }, { m: uranus, n: 'uranus', r: URANUS_R }, { m: neptune, n: 'neptune', r: NEPT_R }];
+    const planetNameEl = document.getElementById('planetName');
+    let _nameTimer = null, _lastNear = null;   // 5-second auto-fade timer + the planet whose name is currently triggered
+
+    // ── the sun's visual (SUN_R / sunPos are defined above; fly into it = game over) ──
+    { const sun = new THREE.Group(); sun.position.copy(sunPos); scene.add(sun);   // sun = soft additive sprites only — NO hard-edged sphere disk
+      const mk = (stops) => { const cv = document.createElement('canvas'); cv.width = cv.height = 256; const g2 = cv.getContext('2d'); const grd = g2.createRadialGradient(128, 128, 0, 128, 128, 128); for (const [s, c] of stops) grd.addColorStop(s, c); g2.fillStyle = grd; g2.fillRect(0, 0, 256, 256); return new THREE.CanvasTexture(cv); };
+      const coreTex = mk([[0, 'rgba(255,250,230,1)'], [0.45, 'rgba(255,242,200,0.95)'], [0.7, 'rgba(255,224,150,0.5)'], [1, 'rgba(255,196,110,0)']]);   // bright but SOFT-edged disk (fades to transparent — no hard rim)
+      const bloomTex = mk([[0, 'rgba(255,240,195,0.7)'], [0.3, 'rgba(255,214,130,0.32)'], [0.65, 'rgba(255,184,95,0.1)'], [1, 'rgba(255,170,80,0)']]);   // wide, gentle outer bloom
+      const core = new THREE.Sprite(new THREE.SpriteMaterial({ map: coreTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, toneMapped: false })); core.scale.setScalar(SUN_R * 2.6); sun.add(core);
+      const bloom = new THREE.Sprite(new THREE.SpriteMaterial({ map: bloomTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, toneMapped: false })); bloom.scale.setScalar(SUN_R * 4); sun.add(bloom);   // soft bloom (tightened from ×7 so Mercury/Venus aren't lost in the glare)
+      adir.position.copy(sunPos).normalize(); adir.intensity = 1.5;
+    }
+
+    // ── lighting v2 (techniques reimplemented, NOT copied) — toggle live with the L key ──
+    let lightingV2 = true;
+    function applyLighting() {
+      if (lightingV2) {
+        renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.25;   // filmic rolloff + grade (three.js's own built-in tonemap)
+        hemi.color.set(0x7390c8); hemi.groundColor.set(0x0a0e18); hemi.intensity = 0.8;             // richer sky-dome ambient + darker ground bounce
+        adir.color.set(0xfff2dc); adir.intensity = 3.0;                                              // stronger warm key for HDR range
+      } else {
+        renderer.toneMapping = THREE.NoToneMapping;                                                 // original look
+        hemi.color.set(0x8493c4); hemi.groundColor.set(0x101018); hemi.intensity = 0.95;
+        adir.color.set(0xfff0d6); adir.intensity = 1.5;
+      }
+      // the ACES tonemap desaturates bright additive colours, so push the nebula saturation back up while lighting is on (restore the originals when off)
+      const _nc = new THREE.Color(), _hsl = {};
+      for (const s of nebs) {
+        if (s.userData.baseColor === undefined) s.userData.baseColor = s.material.color.getHex();
+        _nc.setHex(s.userData.baseColor);
+        _nc.getHSL(_hsl); _nc.setHSL(_hsl.h, Math.min(1, _hsl.s * (lightingV2 ? 0.88 : 0.8)), _hsl.l);   // night colours 20% LESS saturated in BOTH modes (lightingV2 keeps a hair more to offset ACES)
+        s.material.color.copy(_nc);
+      }
+      const lt = document.getElementById('lightTag'); if (lt) ledFps(lt, 'lighting: ' + (lightingV2 ? 'on' : 'off'));
+    }
+    applyLighting();
+    addEventListener('keydown', e => { if (e.key === 'l' || e.key === 'L') { lightingV2 = !lightingV2; applyLighting(); } });   // L = toggle the new lighting
+
+    // ── voxel asteroids (built from cubes) ──
+    const SPAWN_MIN = 900, SPAWN_MAX = 1300; // rocks appear this far ahead — distant specks you can see coming
+    const RECYCLE_DIST = 1600;               // rocks past this get repositioned ahead again
+    const FRONT_COS = 0.92;                  // spawn within ~23° of straight-ahead → spread across the front view
+    const KILL_COS = 0.30;                   // only a rock in FRONT (toRock·forward/dist > this) can kill you
+    const ROCK_SPD_MIN = 0.5, ROCK_SPD_MAX = 1.1; // drift speed — rocks visibly travel through space
+    const BIG_SPD_MUL = 1.6;                 // big (tier-3) asteroids drift a little faster than fragments
+    const ROCK_SPREAD = 0.28;                // directional variety — rocks drift across space, not just dead-on
+    const forward = new THREE.Vector3();     // camera look direction (updated each tick)
+    const _moveFwd = new THREE.Vector3(0, 0, -1);   // the ship's TRAVEL heading (= look dir normally; frozen in cinematic so it flies forward while the camera looks aside)
+    const _odir = new THREE.Vector3(), _opos = new THREE.Vector3(), _ovel = new THREE.Vector3();
+    const ROCK_COLORS = [0x6b6358, 0x7a6f60, 0x5b554e, 0x6a6470, 0x70604f];
+    const voxGeo = new THREE.BoxGeometry(1, 1, 1);
+    const _vdummy = new THREE.Object3D(), _vcol = new THREE.Color();
+
+
+    const rocks = [];
+    // tier 2 = big, 1 = medium, 0 = small
+    function makeVoxelRock(tier, x, y, z, vx, vy, vz) {
+      const n = [3, 4, 6][tier];                          // small / medium / big (more, finer voxels)
+      const cell = [1.2, 1.8, 2.4][tier] * (0.9 + Math.random()*0.2);   // clearly distinct sizes (1.5× bigger across all three tiers; small : medium : big)
+      // irregular shape: a small core + several bump-lobes pushed out near the surface → lumpy, not a smooth sphere
+      const lobes = [];
+      const coreR = n * (0.48 + Math.random()*0.2);                 // smaller core so it doesn't read as one round blob
+      lobes.push({ cx: 0, cy: 0, cz: 0, r: coreR });                // central core keeps the rock in one piece
+      const L = 2 + tier + (Math.random()*(tier+2)|0);              // bigger rocks get more lumps
+      for (let l = 1; l < L; l++) {
+        const theta = Math.random()*Math.PI*2, phi = Math.acos(Math.random()*2-1);   // random direction on the sphere
+        const dist = coreR * (0.6 + Math.random()*0.5);             // out near / just past the core surface → sticks out as a lump
+        lobes.push({
+          cx: Math.sin(phi)*Math.cos(theta)*dist, cy: Math.sin(phi)*Math.sin(theta)*dist, cz: Math.cos(phi)*dist,
+          r: n * (0.26 + Math.random()*0.3)                         // smaller lobes = more distinct bumps
+        });
+      }
+      const ax = 0.65 + Math.random()*0.8, ay = 0.65 + Math.random()*0.8, az = 0.65 + Math.random()*0.8;   // stronger ellipsoid asymmetry
+      const R3 = n + 4, offs = [];                                  // larger grid so the pushed-out lumps aren't clipped flat
+      let maxR = 0;
+      for (let i=-R3;i<=R3;i++) for (let j=-R3;j<=R3;j++) for (let k=-R3;k<=R3;k++) {
+        let inside = false;
+        for (const lo of lobes) {
+          const dx=(i-lo.cx)/ax, dy=(j-lo.cy)/ay, dz=(k-lo.cz)/az;
+          if (dx*dx + dy*dy + dz*dz <= lo.r*lo.r) { inside = true; break; }
+        }
+        if (inside) { offs.push([i, j, k]); const d = Math.hypot(i, j, k); if (d > maxR) maxR = d; }
+      }
+      if (!offs.length) { offs.push([0, 0, 0]); maxR = 0.5; }
+      const base = ROCK_COLORS[(Math.random()*ROCK_COLORS.length)|0];
+      const mesh = new THREE.InstancedMesh(voxGeo, new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, flatShading: true }), offs.length);
+      offs.forEach((o, i) => {
+        _vdummy.position.set(o[0]*cell, o[1]*cell, o[2]*cell);
+        _vdummy.scale.setScalar(cell);
+        _vdummy.rotation.set(0, 0, 0); _vdummy.updateMatrix();
+        mesh.setMatrixAt(i, _vdummy.matrix);
+        _vcol.setHex(base).multiplyScalar(0.78 + Math.random()*0.45);
+        mesh.setColorAt(i, _vcol);
+      });
+      mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true;
+      mesh.position.set(x, y, z);
+      scene.add(mesh);
+      rocks.push({ mesh, radius: (maxR + 0.6) * cell, tier, vx, vy, vz, sx:(Math.random()-0.5)*0.045, sy:(Math.random()-0.5)*0.045, sz:(Math.random()-0.5)*0.045 });
+    }
+    // place a rock far AHEAD, near the center of the view, drifting slowly toward the player.
+    // it grows in your crosshair so you have time to shoot it or steer around — never streaks in from the side.
+    function aimFromAhead(pos, vel, spdMul = 1) {
+      for (let t = 0; t < 40; t++) {
+        _odir.set(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5);
+        if (_odir.lengthSq() < 1e-4) continue;
+        _odir.normalize();
+        if (_odir.dot(forward) >= FRONT_COS) break;   // tight cone straight ahead → appears near screen center
+      }
+      const dist = SPAWN_MIN + Math.random()*(SPAWN_MAX - SPAWN_MIN);
+      pos.copy(ship).addScaledVector(_odir, dist);
+      const s = (ROCK_SPD_MIN + Math.random()*(ROCK_SPD_MAX - ROCK_SPD_MIN)) * spdMul;
+      // gentle drift back toward the player (mostly head-on); your forward flight does the closing
+      vel.copy(ship).sub(pos).normalize();
+      vel.x += (Math.random()-0.5)*ROCK_SPREAD; vel.y += (Math.random()-0.5)*ROCK_SPREAD; vel.z += (Math.random()-0.5)*ROCK_SPREAD;
+      vel.normalize().multiplyScalar(s);
+    }
+    function spawnBig() {
+      aimFromAhead(_opos, _ovel, BIG_SPD_MUL);
+      makeVoxelRock(2, _opos.x, _opos.y, _opos.z, _ovel.x, _ovel.y, _ovel.z);   // tier 2 = big
+    }
+    const hitPool = Array.from({ length: 6 }, () => { const a = new Audio('../sound/sfx/hit.mp4'); a.volume = 0.25; return a; });   // hit.mp4 at QUARTER volume (halved again from 0.5)
+    let hitIdx = 0;
+    function playHit() {
+      // the player clicks to shoot (in-page or embedded as the rt.html loading screen), so this frame HAS user
+      // activation → play the hit locally. (Still notify a parent menu, harmless if unhandled.)
+      if (window.self !== window.top) { try { parent.postMessage({ type: 'asteroidHit' }, '*'); } catch (e) {} }
+      const a = hitPool[hitIdx]; hitIdx = (hitIdx + 1) % hitPool.length; try { a.currentTime = 0; a.play().catch(() => {}); } catch (e) {}
+    }
+    function destroyRock(R) {
+      playHit();
+      explode(R.mesh.position, R.radius);
+      const pts = 100;   // every asteroid is worth the same, regardless of size
+      score += pts;
+      if (scoreEl) {
+        renderScore(score);
+        const box = scoreEl.parentElement;
+        box.classList.remove('bounce'); void box.offsetWidth; box.classList.add('bounce'); // restart the bounce
+      }
+      popup('+' + pts, R.mesh.position);
+      scene.remove(R.mesh);
+      const idx = rocks.indexOf(R); if (idx >= 0) rocks.splice(idx, 1);
+      if (R.tier > 0) { // each rock breaks into 2 of the next size down: big → 2 medium → 4 small (small don't split)
+        for (let c = 0; c < 2; c++) {
+          const dx = Math.random()-0.5, dy = Math.random()-0.5, dz = Math.random()-0.5;
+          const childTier = R.tier - 1;
+          const len = Math.hypot(dx, dy, dz) || 1, off = R.radius * 0.5;
+          const sp = (0.7 + Math.random()*1.0) * (childTier === 0 ? 0.45 : 1); // slower drift; small pieces slowest
+          makeVoxelRock(childTier,
+            R.mesh.position.x + dx/len*off, R.mesh.position.y + dy/len*off, R.mesh.position.z + dz/len*off,
+            dx/len*sp, dy/len*sp, dz/len*sp);
+        }
+      }
+    }
+    forward.set(0, 0, -1).applyQuaternion(camera.quaternion); // so the first batch spawns ahead, not scattered
+    for (let i = 0; i < 8; i++) spawnBig();   // mobile now matches desktop's initial asteroid count (was isTouch ? 5 : 8)
+
+    // ── the real chicken (../assets/v0.5/chicken/chicken/jump/0.vox = idle pose) floating in space like an asteroid (static — no animation, just a slow tumble) ──
+    const spaceChicken = (() => {
+      const g = new THREE.Group();
+      try {
+        const data = parseVox(base64ToBuffer(window.CHICKEN_JUMP_B64[0]));   // frame 0 = the standing/idle jump pose
+        const m = voxMesh(data);
+        let mx = 0, my = 0, mz = 0; for (const v of data.voxels) { if (v.x > mx) mx = v.x; if (v.y > my) my = v.y; if (v.z > mz) mz = v.z; }
+        m.position.set(-(mx + 1) / 2, -(mz + 1) / 2, (my + 1) / 2);   // centre the model in the group so it tumbles about its middle (three-x=vox.x, three-y=vox.z, three-z=-vox.y)
+        g.add(m); g.scale.setScalar(4);   // each voxel = 4 units → a big, clearly-visible floating chicken
+        g.userData.mesh = m; g.userData.radius = Math.max(mx + 1, my + 1, mz + 1) * 4 * 0.6; g.userData.blink = { on: false, next: 1 + Math.random() * 3, until: 0 };   // mesh ref + hit radius (shooting) + blink state
+      } catch (e) { console.warn('floating chicken model failed to load', e); }
+      g.position.set(220, 40, 10200); g.rotation.set(0.2, -0.6, 0.1);   // floats ahead-right of the start point → in view on entry
+      scene.add(g);
+      return g;
+    })();
+    const _eyeWhite = new THREE.Color(1, 1, 1), _eyeBlack = new THREE.Color(0, 0, 0);   // the chicken's eye blinks black↔white (like earth.html)
+    function destroyChicken() { if (!spaceChicken) return; playHit(); explode(spaceChicken.position, spaceChicken.userData.radius || 60); score += 1000; if (scoreEl) { renderScore(score); const box = scoreEl.parentElement; box.classList.remove('bounce'); void box.offsetWidth; box.classList.add('bounce'); } popup('+1000', spaceChicken.position); spaceChicken.position.copy(ship).addScaledVector(forward, 4000 + Math.random() * 4000); spaceChicken.position.x += (Math.random() - 0.5) * 2500; spaceChicken.position.y += (Math.random() - 0.5) * 1200; }   // shoot the floating chicken → +100 + respawn ahead, like an asteroid
+
+    // ── explosions ──
+    const flashTex = radialTexture([[0,'rgba(255,244,200,1)'],[0.3,'rgba(255,150,45,0.8)'],[1,'rgba(255,120,20,0)']]);
+    const debrisGeo = new THREE.BoxGeometry(1.4, 1.4, 1.4);
+    const debrisMat = new THREE.MeshStandardMaterial({ color: 0x7a6f60, roughness: 1, flatShading: true });
+    const fx = [];
+    // reuse spent bullet-trail cubes instead of allocating a fresh mesh+material every frame while firing
+    const trailPool = [];
+    function getTrailCube() {
+      let m = trailPool.pop();
+      if (!m) m = new THREE.Mesh(shootGeo, new THREE.MeshBasicMaterial({ color: 0xff8a1e, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, toneMapped: false }));
+      m.material.opacity = 0.55; m.scale.setScalar(4);   // reset (trail cubes fade + shrink over their life)
+      return m;
+    }
+
+    // ── occasional shooting star (a bright pixel streak across the sky) ──
+    const shootGeo = new THREE.BoxGeometry(1, 1, 1);
+    const shoots = [];
+    const _sr = new THREE.Vector3(), _su = new THREE.Vector3(), _sv = new THREE.Vector3(), _st = new THREE.Vector3();
+    function spawnShootingStar() {
+      _sr.set(1, 0, 0).applyQuaternion(camera.quaternion);   // camera right
+      _su.set(0, 1, 0).applyQuaternion(camera.quaternion);   // camera up
+      const side = Math.random() < 0.5 ? -1 : 1;
+      // one depth roll drives everything: 0 = right up close, 1 = far in the distance
+      const depth = Math.random();
+      const near = 1 - depth;                                // 1 near .. 0 far
+      const dist = 280 + depth * 2200;                       // 280 (near) .. 2480 (far)
+      // closer stars sweep across the view faster (parallax) and dive a touch steeper
+      const speed = 12 + near * 22;
+      _sv.copy(_sr).multiplyScalar(-side * speed).addScaledVector(_su, -speed * (0.4 + Math.random() * 0.2));
+      _st.copy(_sv).normalize();                             // travel direction
+      // cube size grows with distance, but sub-linearly — so near stars still read chunkier
+      // on screen while far ones shrink to faint specks.
+      const cell = 5 + dist * 0.009;
+      // a pixelated comet: a row of cube "pixels" tapering behind the head
+      const g = new THREE.Group();
+      const N = 4 + (Math.random()*9|0), mats = [], bases = [];   // 4–12 pixels: some short, some long tails
+      for (let i = 0; i < N; i++) {
+        const op = (0.5 + near * 0.45) * (1 - i / N);        // near = bright, far = hazy
+        const c = new THREE.Mesh(shootGeo, new THREE.MeshBasicMaterial({ color: 0xff9a3c, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, toneMapped: false }));
+        c.scale.setScalar(cell * (1 - i * 0.09));            // smaller toward the tail
+        c.position.copy(_st).multiplyScalar(-i * cell * 1.5);// stepped trail behind the head
+        g.add(c); mats.push(c.material); bases.push(op);
+      }
+      // scatter placement proportionally to distance so stars spread across the view at every depth
+      g.position.copy(ship).addScaledVector(forward, dist)
+        .addScaledVector(_sr, side * dist * (0.12 + Math.random() * 0.30))
+        .addScaledVector(_su, dist * (0.08 + Math.random() * 0.22));
+      scene.add(g);
+      shoots.push({ mesh: g, vx: _sv.x, vy: _sv.y, vz: _sv.z, ttl: 42, life: 42, mats: mats, bases: bases });
+    }
+
+    function explode(pos, size) {
+      const f = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+      f.position.copy(pos); f.scale.setScalar(size * 2.5);
+      scene.add(f); fx.push({ type: 'flash', obj: f, ttl: 22, grow: size * 0.6 });
+      const n = 12 + (size | 0);
+      for (let i = 0; i < n; i++) {
+        const m = new THREE.Mesh(debrisGeo, debrisMat);
+        m.position.copy(pos);
+        const dx = Math.random()-0.5, dy = Math.random()-0.5, dz = Math.random()-0.5;
+        const L = Math.hypot(dx, dy, dz) || 1, sp = 1.2 + Math.random()*3.2;
+        m.scale.setScalar(0.5 + Math.random()*1.3);
+        scene.add(m);
+        fx.push({ type: 'debris', obj: m, vx: dx/L*sp, vy: dy/L*sp, vz: dz/L*sp, spin: (Math.random()-0.5)*0.25, ttl: 38 + Math.random()*30 });
+      }
+    }
+
+    // ── scoring ──
+    let score = 0;
+    const scoreEl = document.getElementById('score');
+    function renderScore(n) {                  // wrap each digit in a .d span so the LED can sweep them one at a time
+      const s = String(n); scoreEl.textContent = '';
+      for (let i = 0; i < s.length; i++) { const d = document.createElement('span'); d.className = 'd'; d.textContent = s[i]; scoreEl.appendChild(d); }
+      if (window.self !== window.top) { try { parent.postMessage({ type: 'score', value: n }, '*'); } catch (e) {} }   // keep the shell's game-over score in sync
+    }
+    renderScore(0);
+    (function () {                             // LED sweep: one digit lit at a time, left→right then right→left
+      let i = 0, dir = 1;
+      setInterval(() => {
+        const ds = scoreEl.querySelectorAll('.d'); if (!ds.length) return;
+        if (score === 0) { ds.forEach(d => d.classList.remove('lit')); return; }   // no LED while the score is 0
+        if (i > ds.length - 1) i = ds.length - 1;
+        ds.forEach((d, k) => d.classList.toggle('lit', k === i));
+        if (ds.length > 1) { i += dir; if (i >= ds.length - 1) { i = ds.length - 1; dir = -1; } else if (i <= 0) { i = 0; dir = 1; } }
+      }, 300);
+    })();
+    const _v = new THREE.Vector3();
+    function popup(text, pos) {
+      _v.copy(pos).project(camera);
+      if (_v.z > 1) return; // behind the camera
+      const d = document.createElement('div');
+      d.className = 'popup'; d.textContent = text;
+      d.style.left = ((_v.x*0.5 + 0.5) * innerWidth) + 'px';
+      d.style.top  = ((-_v.y*0.5 + 0.5) * innerHeight) + 'px';
+      document.body.appendChild(d);
+      setTimeout(() => d.remove(), 1000);
+    }
+
+    let dead = false, scoreSubmitted = false;   // the game-over screen now lives in the shell (index.html); death just posts to it
+    function gameOver() {
+      dead = true; firing = false;
+      document.exitPointerLock();                    // free the cursor so the game-over screen is clickable
+      explode(ship, 16);
+      document.body.classList.add('game-over');     // hide the HUD — the shell's shared game-over screen takes over
+      if (window.self !== window.top) {
+        try { parent.postMessage({ type: 'uiHidden', hidden: true }, '*'); } catch (e) {}   // hide the flown menu logo
+        try { parent.postMessage({ type: 'stopMusic' }, '*'); } catch (e) {}                 // stop the game music
+        try { parent.postMessage({ type: 'gameOver', score: score }, '*'); } catch (e) {}    // → shell shows the game-over screen + jingle
+      }
+      submitScore();                                        // record the run on the leaderboard (if logged in)
+    }
+    // a player is "logged in" if a username was saved (set by the exchange login)
+    function currentUser() {
+      try { return (localStorage.getItem('vxb_user') || '').trim(); } catch (e) { return ''; }
+    }
+    // POST the run to the leaderboard — only when logged in (skips the backdrop + zero scores)
+    function submitScore() {
+      if (scoreSubmitted || cruise || score <= 0) return;
+      const name = currentUser().slice(0, 24);
+      if (!name) return;                                    // not logged in → don't save automatically (no prompt shown)
+      scoreSubmitted = true;
+      fetch('../highscores.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, score: score })
+      })
+        .then(r => r.json())
+        .then(d => { /* score recorded; the game over screen stays minimal (no rank shown) */ })
+        .catch(() => { scoreSubmitted = false; });          // allow a retry if the request failed
+    }
+
+    const fireCooldown = 28;   // frames between shots
+
+    // ── input ──
+    let throttle = 1.0, turn = 0, vYaw = 0, vPitch = 0;
+    const lookQuat = new THREE.Quaternion(); // accumulated look orientation (no up/down limit)
+    const keys = { w: false, a: false, s: false, d: false, boost: false };
+    const MAXRATE = 0.009, ACC = 0.06; // slower max turn rate + gentler smoothing → cinematic feel
+    let cineYaw = 0, cinePitch = 0, cineYawT = 0, cinePitchT = 0; const _cineLook = new THREE.Quaternion(), CINE_SENS = 0.0016, CINE_DRAG = 0.025;   // cinema: pointer-locked, heavy-drag mouse-look around the frozen flight heading
+    let cineMode = 'auto'; try { cineMode = localStorage.getItem('vbCineMode') === 'manual' ? 'manual' : 'auto'; } catch (e) {}   // cinema sub-mode: 'auto' = slow auto-pan sweep | 'manual' = heavy-drag mouse-look (cursor locked)
+    // cruise mode: peaceful flight with no asteroids (toggle with C)
+    let cruise = false;
+    let cinematic = document.body.classList.contains('cinematic');   // cinematic mode → player is immune to asteroids (set from the menu toggle)
+    let uiHidden = false;   // clean view (toggle with H): hides HUD, cursor, and shots
+    // virtual-joystick steer state (mobile): -1..1 per axis, applied as yaw/pitch in tick()
+    let joyX = 0, joyY = 0, joyId = null;   // (isTouch / body.touch are set up top with the renderer)
+    // ?bg = menu backdrop: hide the HUD but keep flying + shooting; no collisions
+    if (new URLSearchParams(location.search).has('bg')) { document.body.classList.add('menu-bg'); cruise = true; }
+    // embedded in the menu shell → the menu's voxelbit logo morphs in as our HUD wordmark (hide our own copy)
+    if (window.self !== window.top) document.documentElement.classList.add('embed');
+    // ── menu speed slider → time-dilate the whole game (0% = frozen, 100% = 1×, 200% = 2×) ──
+    let gameSpeed = 1;
+    try { const sv = localStorage.getItem('vbSkySpeed'); if (sv != null) gameSpeed = Math.max(0, +sv) / 200; } catch (e) {}   // slider middle (200 = 100%) = 1×, matching survival
+    // the parent menu promotes this backdrop into the real game when Play is pressed
+    addEventListener('message', (e) => {
+      const d = e.data; if (!d) return;
+      if (d.type === 'skySpeed') {                   // speed slider → scale the game's tempo
+        gameSpeed = Math.max(0, +d.value) / 200;
+      } else if (d.type === 'sfxVolume') {           // sound-effects slider → scale every game sound
+        if (window.__setSfxVol) window.__setSfxVol(+d.value);
+      } else if (d.type === 'cinematic') {           // cinematic mode → hide the HUD, show the top indicator, immune to asteroids
+        cinematic = !!d.value; document.body.classList.toggle('cinematic', cinematic);
+        if (cinematic) document.exitPointerLock();   // free the cursor; in manual you click to re-lock (mousedown), in auto it stays free
+      } else if (d.type === 'cineMode') {            // cinema slider → 'auto' (slow auto-pan) | 'manual' (heavy-drag mouse-look)
+        cineMode = d.value === 'manual' ? 'manual' : 'auto';
+        try { localStorage.setItem('vbCineMode', cineMode); } catch (e) {}
+        if (cinematic && cineMode === 'auto' && document.pointerLockElement === canvasEl) document.exitPointerLock();   // → auto: release the cursor and let the camera sweep
+      } else if (d.type === 'vbFreeze') {            // parent (rt.html loading screen) finished loading → STOP the render loop so the heavy WebGPU game gets the whole GPU (the last frame stays on screen for the fade-out)
+        _vbStopped = true;
+      } else if (d.type === 'showFps') {             // fps icon → show/hide the counter
+        const fe = document.getElementById('fpsTag'); if (fe) fe.style.display = d.value ? '' : 'none';
+      } else if (d.type === 'toggleLighting') {      // L from the main menu → toggle the lighting
+        lightingV2 = !lightingV2; applyLighting();
+      } else if (d.type === 'startGame') {
+        document.body.classList.remove('menu-bg', 'game-over');  // reveal the HUD
+        if (dead) {   // RESPAWN after a death → reset to a safe origin + clear the field
+          ship.copy(START_POS); camera.position.copy(ship);
+          lookQuat.identity(); vYaw = 0; vPitch = 0; turn = 0; throttle = 1.0;
+          rocks.forEach(r => scene.remove(r.mesh)); rocks.length = 0;
+          lasers.forEach(L => scene.remove(L.mesh)); lasers.length = 0;
+          fx.forEach(e => scene.remove(e.obj)); fx.length = 0;
+        }
+        // else: fresh insert-coin from the menu → take control right where the backdrop is (seamless, like survival)
+        dead = false; score = 0; if (scoreEl) renderScore(0); warping = false;   // fresh run
+        gameSpeed = 1;                              // play at normal speed — the slider only paces the backdrop
+        if (scoreEl) { const b = scoreEl.parentElement; b.classList.remove('bounce'); void b.offsetWidth; b.classList.add('bounce'); }   // pop the score in
+        cruise = false;                             // enable collisions
+        firing = false;
+        cool = 0;                                   // clear any leftover backdrop cooldown so the first game shot is instant
+        scoreSubmitted = false;                     // fresh run → allow a new leaderboard submission
+        showShiftCue();                             // teach boost: cue pops below the cursor, then flies into the hint
+        try { history.replaceState(null, '', location.pathname); } catch (err) {} // drop ?bg so restart loads the real game
+      } else if (d.type === 'aim') {                // menu cursor position (NDC) → aim
+        mouseNDC.x = d.x; mouseNDC.y = d.y;
+      } else if (d.type === 'fire') {               // menu click → shoot
+        firing = d.down;
+      } else if (d.type === 'morphMeasure') {       // the menu's voxelbit logo flies into the HUD title — hand it the spacer box
+        const measure = () => {
+          document.body.classList.remove('menu-bg');   // make sure the HUD has layout to measure
+          const word = document.querySelector('.head .wordmark');
+          const crumb = document.querySelector('.head .crumb');
+          if (!word) return;
+          word.style.visibility = 'hidden';             // our own voxelbit hides until the flown logo hands off
+          if (crumb) { crumb.style.transition = 'none'; crumb.style.opacity = '0'; crumb.style.transform = 'translateY(6px)'; void crumb.offsetWidth; crumb.style.transition = ''; }
+          // .wordmark is display:block, so its rect spans the whole .head (as wide as the longer
+          // "asteroids" line) and would scale the flown logo too big. measure it shrink-wrapped to its
+          // own glyphs (inline-block) so the box matches the menu logo's box 1:1, like the exchange page.
+          const prevDisplay = word.style.display;
+          word.style.display = 'inline-block';
+          const r = word.getBoundingClientRect();
+          word.style.display = prevDisplay;
+          try { parent.postMessage({ type: 'morphTarget', rect: { left: r.left, top: r.top, width: r.width, height: r.height } }, '*'); } catch (err) {}
+        };
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => requestAnimationFrame(measure));
+        else requestAnimationFrame(measure);
+      } else if (d.type === 'revealWord') {         // logo landed → it STAYS as our wordmark (like the exchange page):
+        // keep our own voxelbit hidden and just slide the "asteroids" crumb in beneath it, wobbling at
+        // the same phase as the menu logo so the two lines move as one (no second copy, no size jump).
+        const crumb = document.querySelector('.head .crumb');
+        if (crumb) { crumb.style.opacity = '1'; crumb.style.transform = 'translateY(0)'; }
+        const head = document.querySelector('.head');
+        if (head) {
+          head.style.animation = 'none'; void head.offsetWidth;
+          head.style.animation = 'hudShake 6s ease-in-out infinite';
+          try { const a = head.getAnimations()[0]; if (a && typeof d.phase === 'number') a.currentTime = d.phase; } catch (e) {}
+        }
+      } else if (d.type === 'returnToMenu') {       // shell game-over "menu" button → reset the run and drop back to the backdrop
+        dead = false; score = 0; scoreSubmitted = false; if (scoreEl) renderScore(0);
+        ship.copy(START_POS); camera.position.copy(ship); lookQuat.identity(); vYaw = 0; vPitch = 0; turn = 0;   // back to the start so the backdrop doesn't sit inside the sun/earth
+        document.body.classList.remove('game-over');
+        document.body.classList.add('menu-bg'); cruise = true;
+      }
+    });
+    const cruiseTag = document.getElementById('cruisetag');
+    function setCruise(on) {
+      cruise = on;                                  // asteroids still appear; they just can't hit you
+      if (cruiseTag) cruiseTag.style.display = on ? 'block' : 'none';
+      uiHidden = on;                                // cruise also gives a clean view (HUD + cursor + shots hidden)
+      document.body.classList.toggle('ui-hidden', on);
+      try { parent.postMessage({ type: 'uiHidden', hidden: uiHidden }, '*'); } catch (e) {}  // hide the menu's flown logo too
+    }
+    // ESC / back: inside the menu iframe → revert to backdrop and tell the menu to reappear; standalone → go to menu
+    function returnToMenu() {
+      document.exitPointerLock();   // free the cursor when leaving the game
+      if (window.self !== window.top) {
+        document.body.classList.add('menu-bg'); cruise = true;  // back to the menu backdrop
+        try { parent.postMessage({ type: 'backToMenu' }, '*'); } catch (e) {}
+      } else {
+        location.href = 'index.html';
+      }
+    }
+    document.querySelector('.back').addEventListener('click', e => { e.preventDefault(); returnToMenu(); });
+    addEventListener('keydown', e => {
+      const k = e.key.toLowerCase();
+      if (e.key === 'Escape') { returnToMenu(); return; }
+      if (k === 'c') { cinematic = !cinematic; document.body.classList.toggle('cinematic', cinematic); if (cinematic) { if (cineMode === 'manual' && !document.body.classList.contains('menu-bg')) canvasEl.requestPointerLock(); } else document.exitPointerLock(); try { localStorage.setItem('vbCinematic', cinematic ? '1' : '0'); } catch (err) {} return; }   // C → toggle cinematic mode (indestructible; pointer-locked heavy-drag camera)
+      if (k in keys) keys[k] = true;
+      /* cruise keybind removed (cruise stays on only for the menu backdrop) */
+      if (e.key === 'Shift' && !keys.boost) { keys.boost = true; playBoost(); }
+    });
+    addEventListener('keyup', e => {
+      const k = e.key.toLowerCase();
+      if (k in keys) keys[k] = false;
+      if (e.key === 'Shift') keys.boost = false;
+    });
+    addEventListener('wheel', e => {
+      if (e.target.closest && e.target.closest('.lil-gui')) return;
+      e.preventDefault();
+      const dir = e.deltaY < 0 ? 1 : -1;
+      if (window.self !== window.top) { try { parent.postMessage({ type: 'wheelSpeed', dir }, '*'); } catch (er) {} }   // wheel (backdrop OR in-game) → nudge the menu's speed slider; the menu sends skySpeed back, which sets the ship speed (gameSpeed)
+      else gameSpeed = Math.max(0, Math.min(2, gameSpeed + dir * 0.08));   // standalone (no menu shell) → adjust the ship speed directly
+    }, { passive: false });
+    addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+    // ── lasers (left click to fire) ──
+    // bullet = a spinning voxel cube with an orange glow
+    const bulletGeo = new THREE.BoxGeometry(1, 1, 1);
+    const bulletMat = new THREE.MeshStandardMaterial({ color: 0xffb43c, emissive: 0xff7a10, emissiveIntensity: 0.5, roughness: 1, metalness: 0, flatShading: true, fog: false });
+    const bulletGlowGeo = new THREE.BoxGeometry(1, 1, 1);
+    const bulletGlowMat = new THREE.MeshBasicMaterial({ color: 0xff7a10, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false });
+    const lasers = [];
+    let firing = false, cool = 0;
+    // shot sound — a small pool so rapid shots overlap
+    const shootPool = Array.from({ length: 6 }, () => { const a = new Audio('../sound/sfx/shoot.mp4'); a.volume = 0.45; return a; });
+    let shootIdx = 0;
+    function playShoot() { const a = shootPool[shootIdx]; shootIdx = (shootIdx + 1) % shootPool.length; try { a.currentTime = 0; a.play(); } catch (e) {} }
+    const boostSound = new Audio('../sound/sfx/boost.mp4'); boostSound.volume = 0.5;
+    function playBoost() { try { boostSound.currentTime = 0; boostSound.play(); } catch (e) {} }
+    const mouseNDC = new THREE.Vector2(0, 0); // cursor in normalized device coords (center default)
+    const ray = new THREE.Raycaster();
+
+    // ── "shift — boost" cue (desktop): on game start it appears a ways below the cursor, holds a few
+    //    seconds, then glides down into its resting place inside the bottom-right hint and fades out. ──
+    const shiftCue = document.getElementById('shiftCue'), hintShift = document.getElementById('hintShift');
+    let shiftCueT1 = null, shiftCueT2 = null;
+    function showShiftCue() {
+      if (isTouch || !shiftCue || !hintShift) return;
+      clearTimeout(shiftCueT1); clearTimeout(shiftCueT2);
+      hintShift.style.transition = 'none';          // remove "shift — boost" from the list until the cue lands
+      hintShift.style.opacity = '0';
+      shiftCue.style.transition = 'none';
+      shiftCue.style.display = 'block';
+      shiftCue.style.left = (innerWidth / 2) + 'px';
+      shiftCue.style.top = (innerHeight * 0.66) + 'px';
+      shiftCue.style.transform = 'translate(-50%, -50%)';  // horizontally centered, lower on the screen
+      shiftCue.style.opacity = '0';
+      void shiftCue.offsetWidth;                    // commit the start state before animating in
+      shiftCue.style.transition = 'opacity 0.35s ease';
+      shiftCue.style.opacity = '1';
+      shiftCueT1 = setTimeout(() => {               // hold, then glide into the hint's shift slot
+        const r = hintShift.getBoundingClientRect();
+        shiftCue.style.transition = 'left 0.9s cubic-bezier(0.4,0,0.2,1), top 0.9s cubic-bezier(0.4,0,0.2,1), transform 0.9s cubic-bezier(0.4,0,0.2,1)';
+        shiftCue.style.left = r.left + 'px';
+        shiftCue.style.top = r.top + 'px';
+        shiftCue.style.transform = 'translate(0, 0)';   // stays fully visible the whole flight — never fades
+        // shared-element handoff (like voxelbit's logo morph between pages): the instant the cue lands on
+        // its identical slot, reveal the static line and hide the flown cue in the SAME frame. No crossfade,
+        // so it reads as one continuous element arriving and staying — no disappear/reappear.
+        shiftCueT2 = setTimeout(() => {
+          hintShift.style.transition = 'none';
+          hintShift.style.opacity = '1';
+          shiftCue.style.display = 'none';
+        }, 900);
+      }, 2600);
+    }
+    // ── pointer lock: click pins the cursor into the screen (like survival.html); the mouse then drives the aim reticle, clamped to the screen ──
+    const canvasEl = renderer.domElement, reticle = document.getElementById('reticle');
+    let locked = false;   // pointer-locked only in cinema (heavy-drag mouse-look); otherwise the mouse free-roams for aim
+    document.addEventListener('pointerlockchange', () => { locked = document.pointerLockElement === canvasEl; });
+    const LOOK = 1.0;
+    const placeReticle = () => { if (reticle) reticle.style.transform = 'translate(' + (((mouseNDC.x + 1) / 2 * innerWidth) - 12) + 'px,' + (((1 - mouseNDC.y) / 2 * innerHeight) - 12) + 'px)'; };
+    addEventListener('mousemove', e => { if (cinematic && locked) { if (cineMode === 'manual') { cineYawT -= e.movementX * CINE_SENS; cinePitchT = Math.max(-1.2, Math.min(1.2, cinePitchT - e.movementY * CINE_SENS)); } return; } mouseNDC.x = (e.clientX / innerWidth) * 2 - 1; mouseNDC.y = -(e.clientY / innerHeight) * 2 + 1; });   // cinema manual (locked) → heavy-drag mouse-look; auto ignores the mouse; otherwise free-roam aim
+    addEventListener('mousedown', e => { if (cinematic) { if (cineMode === 'manual' && e.button === 0 && !locked && !document.body.classList.contains('menu-bg')) canvasEl.requestPointerLock(); return; } if (e.button === 0 && (locked || !document.elementsFromPoint(e.clientX, e.clientY).some(el => el.closest && el.closest('.hud, .back, .go-btn, #cineTag')))) firing = true; });   // cinema → click locks the cursor (no fire); otherwise fire (never on UI)
+    addEventListener('mouseup', e => { if (e.button === 0) firing = false; });
+
+    // ── touch controls (mobile): left joystick steers the camera; tap/drag anywhere else aims + fires ──
+    // left-bottom virtual joystick → steer (yaw/pitch)
+    const joy = document.getElementById('joystick'), joyKnob = document.getElementById('joyKnob');
+    const JOY_R = 38;   // px the knob travels from center = full deflection
+    function updateJoy(t) {
+      const r = joy.getBoundingClientRect();
+      let dx = t.clientX - (r.left + r.width / 2), dy = t.clientY - (r.top + r.height / 2);
+      const len = Math.hypot(dx, dy);
+      if (len > JOY_R) { dx = dx / len * JOY_R; dy = dy / len * JOY_R; }
+      joyKnob.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+      joyX = dx / JOY_R; joyY = dy / JOY_R;     // -1..1 (x right+, y down+)
+    }
+    function resetJoy() { joyId = null; joyX = 0; joyY = 0; if (joyKnob) joyKnob.style.transform = 'translate(0,0)'; }
+    if (joy) {
+      joy.addEventListener('touchstart', e => { e.preventDefault(); e.stopPropagation(); const t = e.changedTouches[0]; joyId = t.identifier; updateJoy(t); }, { passive: false });
+      joy.addEventListener('touchmove', e => { e.preventDefault(); e.stopPropagation(); for (const t of e.changedTouches) if (t.identifier === joyId) updateJoy(t); }, { passive: false });
+      const end = e => { for (const t of e.changedTouches) if (t.identifier === joyId) resetJoy(); };
+      joy.addEventListener('touchend', end); joy.addEventListener('touchcancel', end);
+    }
+    // tap / drag anywhere else: aim the shots AT the finger and fire (skip the joystick + on-screen buttons)
+    const aimAt = t => { mouseNDC.x = (t.clientX / innerWidth) * 2 - 1; mouseNDC.y = -(t.clientY / innerHeight) * 2 + 1; };
+    let fireId = null;
+    addEventListener('touchstart', e => {
+      for (const t of e.changedTouches) {
+        if (t.target && t.target.closest && t.target.closest('.joystick, .touch-btn, .back, .go-btn')) continue;
+        fireId = t.identifier; aimAt(t); firing = true; break;
+      }
+    }, { passive: true });
+    addEventListener('touchmove', e => { for (const t of e.changedTouches) if (t.identifier === fireId) aimAt(t); }, { passive: true });
+    const endFire = e => { for (const t of e.changedTouches) if (t.identifier === fireId) { fireId = null; firing = false; } };
+    addEventListener('touchend', endFire);
+    addEventListener('touchcancel', () => { fireId = null; firing = false; });
+    const holdBtn = (el, on, off) => {   // press-and-hold button (boost / stop)
+      if (!el) return;
+      el.addEventListener('touchstart', e => { e.preventDefault(); e.stopPropagation(); el.classList.add('active'); on(); }, { passive: false });
+      const up = () => { el.classList.remove('active'); off(); };
+      el.addEventListener('touchend', up); el.addEventListener('touchcancel', up);
+    };
+    holdBtn(document.getElementById('tcBoost'), () => { if (!keys.boost) { keys.boost = true; playBoost(); } }, () => keys.boost = false);
+    function fireLasers() {
+      playShoot();
+      ray.setFromCamera(mouseNDC, camera);     // aim toward the cursor
+      const dir = ray.ray.direction;
+      const g = new THREE.Group();
+      const core = new THREE.Mesh(bulletGeo, bulletMat); core.scale.setScalar(2.6); g.add(core);
+      const glow = new THREE.Mesh(bulletGlowGeo, bulletGlowMat); glow.scale.setScalar(5.2); g.add(glow);
+      g.visible = !uiHidden;                   // shots hidden only in clean view (H); visible in normal play
+      g.position.copy(ship).addScaledVector(dir, 16);
+      scene.add(g);
+      lasers.push({ mesh: g, vx: dir.x * 12, vy: dir.y * 12, vz: dir.z * 12, ttl: 100 });
+    }
+
+    const warpEl = document.getElementById('warp');
+    const _zAxis = new THREE.Vector3(0, 0, 1);
+    const _dq = new THREE.Quaternion(), _roll = new THREE.Quaternion(), _eul = new THREE.Euler(0, 0, 0, 'YXZ');
+    const _cineM = new THREE.Matrix4(), _cineQ = new THREE.Quaternion(), _camUp = new THREE.Vector3(0, 1, 0), _fwdT = new THREE.Vector3();   // cinematic camera: looks at a planet only while its name is up, else forward
+    const _panLeft = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.55);   // planet framing panned ~31° left (the planet sits toward the right of the view)
+    { _cineM.lookAt(camera.position, _fwdT.copy(_moveFwd).add(camera.position), _camUp); lookQuat.setFromRotationMatrix(_cineM); camera.quaternion.copy(lookQuat); }   // start looking forward along the flight path (no planet is name-range close yet)
+    let T = 0, _lastT = performance.now(), _fpsFrames = 0, _fpsLast = performance.now();
+
+    function ledFps(el, t) { const chars = [...t]; if (el.childElementCount === chars.length) { for (let i = 0; i < chars.length; i++) el.children[i].textContent = chars[i] === ' ' ? ' ' : chars[i]; return; } el.innerHTML = ''; let i = 0; for (const ch of chars) { const s = document.createElement('span'); s.style.setProperty('--i', i++); if (ch === ' ') s.innerHTML = '&nbsp;'; else { s.textContent = ch; s.className = 'led'; } el.appendChild(s); } }   // gold per-letter LED sweep for the fps counter (reuses spans when the length is unchanged so the sweep keeps looping)
+
+    let _vbStopped = false;   // set via a 'vbFreeze' message from the parent (rt.html) → halt the loop so the WebGPU game isn't starved during the load→game transition
+    function tick() {
+      if (_vbStopped) { return; }   // frozen: hold the last rendered frame, stop scheduling RAF (no more GPU/CPU work)
+      requestAnimationFrame(tick);
+      const _now = performance.now();
+      let fs = (_now - _lastT) / (1000 / 60);   // frames elapsed since last tick (1.0 @ 60fps)
+      _lastT = _now;
+      _fpsFrames++; if (_now - _fpsLast >= 500) { const fe = document.getElementById('fpsTag'); if (fe) ledFps(fe, Math.round(_fpsFrames * 1000 / (_now - _fpsLast)) + ' fps'); _fpsFrames = 0; _fpsLast = _now; }
+      if (fs > 4) fs = 4;                         // clamp big gaps (background tab / hitches)
+      fs *= 1.2;                                  // ×1.2 = asteroids runs 20% faster overall. NOTE: gameSpeed no longer scales the whole sim — it's applied to the SHIP only (below), so asteroids/planets keep moving at their own pace
+      T += 0.016 * fs;
+
+      // WASD or the on-screen joystick steers the view (smoothed turn rate); the joystick only applies
+      // in the real game, never the menu backdrop. joystick right ⇒ turn right, joystick up ⇒ look up.
+      const inBg = document.body.classList.contains('menu-bg');
+      if (cinematic) {   // cinema: ship flies along its frozen heading; the camera does a heavy-drag look around it
+        if (cineMode === 'auto') { cineYawT += 0.0016; cinePitchT = Math.sin(cineYawT * 0.5) * 0.12; }   // AUTO → slow self-driven sweep (gentle yaw drift + pitch bob), eased by the same heavy drag
+        cineYaw += (cineYawT - cineYaw) * CINE_DRAG; cinePitch += (cinePitchT - cinePitch) * CINE_DRAG;   // ease toward the target (mouse in manual, auto-sweep in auto) — heavy drag
+        _cineLook.setFromEuler(_eul.set(cinePitch, cineYaw, 0));
+        camera.quaternion.copy(lookQuat).multiply(_cineLook);
+      } else {
+        cineYaw = cinePitch = cineYawT = cinePitchT = 0;   // recenter so entering cinema starts from the current view
+        const jx = inBg ? 0 : joyX, jy = inBg ? 0 : joyY;   // steering: WASD / joystick turn-rate → lookQuat (the ship's heading)
+        const ty = (((keys.a?1:0) - (keys.d?1:0)) - jx) * MAXRATE;
+        const tp = (((keys.w?1:0) - (keys.s?1:0)) - jy) * MAXRATE;
+        vYaw += (ty - vYaw) * ACC;
+        vPitch += (tp - vPitch) * ACC;
+        _dq.setFromEuler(_eul.set(vPitch, vYaw, 0)); lookQuat.multiply(_dq);
+        turn += (vYaw / MAXRATE - turn) * 0.1; _roll.setFromAxisAngle(_zAxis, turn * 0.45);   // banking from turn rate
+        camera.quaternion.copy(lookQuat).multiply(_roll);
+      }
+
+      // forward flight — throttle controls speed in BOTH modes (cinema does NOT change it); the ship always flies where it's steered
+      const boosting = keys.boost;
+      const speed = dead ? 0 : throttle * (boosting ? 5.625 : 1.8);   // cruise 1.8 + boost 5.625 — both 1.5x faster (from 1.2 / 3.75)
+      forward.set(0, 0, -1).applyQuaternion(lookQuat);
+      _moveFwd.copy(forward);
+      ship.addScaledVector(_moveFwd, speed * fs * gameSpeed);   // the speed slider scales ONLY the ship's travel (gameSpeed); the rest of the world moves regardless
+      camera.position.copy(ship);   // first-person view
+
+      // the Earth turns slowly; flying into it (real game only) fades down to the survival world
+      earth.rotateY(0.0008 * fs); mars.rotateY(0.0006 * fs);   // axial spin (Mars a touch slower), about the LOCAL tilted y-axis so the caps stay tilted
+      earthClouds.rotateY(0.0015 * fs);   // clouds clearly drift over the earth's surface (faster than the surface spin)
+      earthOrbit += 0.00033 * fs; earth.position.set(sunPos.x + Math.cos(earthOrbit) * EARTH_ORBIT, sunPos.y, sunPos.z + Math.sin(earthOrbit) * EARTH_ORBIT);   // Earth orbits the sun (Kepler speeds recomputed for the new wider radii)
+      marsOrbit += 0.00021 * fs; mars.position.set(sunPos.x + Math.cos(marsOrbit) * MARS_ORBIT, sunPos.y, sunPos.z + Math.sin(marsOrbit) * MARS_ORBIT);   // Kepler: slower than Earth (outer orbit)
+      mercOrbit += 0.001 * fs; mercury.position.set(sunPos.x + Math.cos(mercOrbit) * MERC_ORBIT, sunPos.y, sunPos.z + Math.sin(mercOrbit) * MERC_ORBIT); mercury.rotateY(0.0008 * fs);   // innermost → fastest
+      venusOrbit += 0.00052 * fs; venus.position.set(sunPos.x + Math.cos(venusOrbit) * VENUS_ORBIT, sunPos.y + Math.sin(venusOrbit) * VENUS_ORBIT * VENUS_INC, sunPos.z + Math.sin(venusOrbit) * VENUS_ORBIT * VENUS_INC_Z); venus.rotateY(-0.0003 * fs);   // Venus spins retrograde; orbit tilted (VENUS_INC) so it clears Earth
+      moonOrbit += 0.008 * fs; moon.position.set(earth.position.x + Math.cos(moonOrbit) * MOON_ORBIT, earth.position.y, earth.position.z + Math.sin(moonOrbit) * MOON_ORBIT); moon.rotateY(0.001 * fs);   // Moon laps the Earth ~13× per Earth orbit (≈ the real Moon-month : year ratio)
+      saturnOrbit += 0.00007 * fs; saturn.position.set(sunPos.x + Math.cos(saturnOrbit) * SATURN_ORBIT, sunPos.y, sunPos.z + Math.sin(saturnOrbit) * SATURN_ORBIT); saturn.rotateY(0.0005 * fs);   // Kepler: far + slow, spins about its tilted axis
+      jupiterOrbit += 0.000115 * fs; jupiter.position.set(sunPos.x + Math.cos(jupiterOrbit) * JUP_ORBIT, sunPos.y, sunPos.z + Math.sin(jupiterOrbit) * JUP_ORBIT); jupiter.rotateY(0.0011 * fs);   // Kepler; still spins fastest (about its slight tilt)
+      uranusOrbit += 0.000046 * fs; uranus.position.set(sunPos.x + Math.cos(uranusOrbit) * URANUS_ORBIT, sunPos.y, sunPos.z + Math.sin(uranusOrbit) * URANUS_ORBIT); uranus.rotateY(0.0009 * fs);   // Kepler: very slow (far out)
+      neptOrbit += 0.000032 * fs; neptune.position.set(sunPos.x + Math.cos(neptOrbit) * NEPT_ORBIT, sunPos.y, sunPos.z + Math.sin(neptOrbit) * NEPT_ORBIT); neptune.rotateY(0.0009 * fs);   // Kepler: slowest (outermost)
+      if (spaceChicken) { spaceChicken.rotation.y += 0.007 * fs; spaceChicken.rotation.x += 0.003 * fs;   // tumbles like an asteroid (faster now), no walk animation
+        const cm = spaceChicken.userData.mesh, cb = spaceChicken.userData.blink;
+        if (cm && cm.userData.eyeIdx >= 0 && cb && cm.instanceColor) {
+          if (!cb.on && T >= cb.next) { cb.on = true; cb.until = T + 0.12; cm.setColorAt(cm.userData.eyeIdx, _eyeWhite); cm.instanceColor.needsUpdate = true; }   // blink: black eye → white
+          else if (cb.on && T >= cb.until) { cb.on = false; cb.next = T + 2 + Math.random() * 4; cm.setColorAt(cm.userData.eyeIdx, _eyeBlack); cm.instanceColor.needsUpdate = true; }   // → back to black
+        }
+      }
+      if (planetNameEl) {   // show the nearest planet's name only within ~100 of its surface; fade it in, then fade out after 5s
+        let nn = null, nd = Infinity;
+        if (!dead) for (const p of planetList) { const d = ship.distanceTo(p.m.position); if (d < p.r * 3 + 2000 && d < nd) { nn = p.n; nd = d; } }   // name pops up from much further out (scales with planet size) to suit the 2× wider system
+        if (nn !== _lastNear) {
+          _lastNear = nn; clearTimeout(_nameTimer);
+          if (nn) { planetNameEl.innerHTML = ''; [...nn].forEach((ch, i) => { const s = document.createElement('span'); s.className = 'led'; s.style.setProperty('--i', i); s.textContent = ch; planetNameEl.appendChild(s); }); planetNameEl.classList.add('on'); _nameTimer = setTimeout(() => planetNameEl.classList.remove('on'), 5000); }   // fade in + per-letter LED, schedule the 5s fade-out
+          else planetNameEl.classList.remove('on');   // left the radius → fade out
+        }
+      }
+      if (!cruise && !warping && ship.distanceTo(earth.position) < EARTH_R) {
+        warping = true;
+        const w = document.getElementById('earthWarp'); if (w) w.classList.add('on');
+        setTimeout(() => { location.href = 'earth.html'; }, 750);
+      }
+      if (!cruise && !dead && !cinematic && ship.distanceTo(sunPos) < SUN_R) gameOver();   // flying into the sun = death (cinematic is invincible)
+
+      // lasers + collision with asteroids
+      cool--;
+      if (firing && !dead && cool <= 0) { fireLasers(); cool = fireCooldown; }
+      for (let i = lasers.length - 1; i >= 0; i--) {
+        const L = lasers[i];
+        L.mesh.position.x += L.vx; L.mesh.position.y += L.vy; L.mesh.position.z += L.vz;
+        L.mesh.rotation.x += 0.1; L.mesh.rotation.y += 0.08;
+        L.ttl--;
+        if (!uiHidden) {   // pixelated trail cube behind the bullet (skipped in clean view)
+          const tp = getTrailCube();
+          tp.position.copy(L.mesh.position);
+          scene.add(tp); fx.push({ type: 'trail', obj: tp, ttl: 14, life: 14 });
+        }
+        let hit = false;
+        for (const R of rocks) {
+          const ddx = L.mesh.position.x - R.mesh.position.x, ddy = L.mesh.position.y - R.mesh.position.y, ddz = L.mesh.position.z - R.mesh.position.z;
+          const rr = R.radius + 2;
+          if (ddx*ddx + ddy*ddy + ddz*ddz < rr*rr) { destroyRock(R); hit = true; break; }
+        }
+        if (!hit && spaceChicken) { const cdx = L.mesh.position.x - spaceChicken.position.x, cdy = L.mesh.position.y - spaceChicken.position.y, cdz = L.mesh.position.z - spaceChicken.position.z, cr = (spaceChicken.userData.radius || 60) + 2; if (cdx*cdx + cdy*cdy + cdz*cdz < cr*cr) { destroyChicken(); hit = true; } }   // shoot the floating chicken → +100, like an asteroid
+        if (hit || L.ttl <= 0) { scene.remove(L.mesh); lasers.splice(i, 1); }
+      }
+
+      // asteroids: drift + spin; recycle far-off rocks by re-placing them out of view (no pop-in)
+      for (const R of rocks) {
+        R.mesh.position.x += R.vx*fs; R.mesh.position.y += R.vy*fs; R.mesh.position.z += R.vz*fs;
+        R.mesh.rotation.x += R.sx*fs; R.mesh.rotation.y += R.sy*fs; R.mesh.rotation.z += R.sz*fs;
+        const rdx = R.mesh.position.x - ship.x, rdy = R.mesh.position.y - ship.y, rdz = R.mesh.position.z - ship.z;
+        if (rdx*rdx + rdy*rdy + rdz*rdz > RECYCLE_DIST*RECYCLE_DIST) {
+          aimFromAhead(_opos, _ovel, R.tier === 2 ? BIG_SPD_MUL : 1);
+          R.mesh.position.copy(_opos);
+          R.vx = _ovel.x; R.vy = _ovel.y; R.vz = _ovel.z;
+        }
+      }
+      // maintain a baseline of BIG asteroids (the original starting density): only top the field
+      // back up to ~8 bigs, so it never floods at once. the fragments those bigs break into are
+      // never removed (only recycled), so the field gets denser over time the more you shoot —
+      // up to a high safety cap so a long session can't runaway and tank the framerate.
+      let bigCount = 0; for (const R of rocks) if (R.tier === 2) bigCount++;
+      if (bigCount < 8 && rocks.length < 150 && Math.random() < 0.04) spawnBig();   // mobile now matches desktop's asteroid caps (was 5 big / 70 rocks on mobile)
+
+      // ship hits an asteroid → game over, but ONLY if the rock is in front of the ship
+      if (!dead && !cruise && !cinematic) {   // cinematic mode → immune (asteroids pass through)
+        for (const R of rocks) {
+          const ddx = ship.x - R.mesh.position.x, ddy = ship.y - R.mesh.position.y, ddz = ship.z - R.mesh.position.z;
+          const rr = R.radius + 4, d2 = ddx*ddx + ddy*ddy + ddz*ddz;
+          if (d2 < rr*rr) {
+            // toRock·forward / dist = cos(angle from where you're looking); side/back hits pass through
+            const front = -(ddx*forward.x + ddy*forward.y + ddz*forward.z);
+            if (front > KILL_COS * Math.sqrt(d2)) { gameOver(); break; }
+          }
+        }
+      }
+
+      // explosion debris + flashes
+      for (let i = fx.length - 1; i >= 0; i--) {
+        const e = fx[i]; e.ttl--;
+        if (e.type === 'flash') {
+          e.obj.scale.addScalar(e.grow);
+          e.obj.material.opacity = Math.max(0, e.ttl / 22);
+          if (e.ttl <= 0) { scene.remove(e.obj); e.obj.material.dispose(); fx.splice(i, 1); }
+        } else if (e.type === 'trail') {
+          e.obj.material.opacity = Math.max(0, e.ttl / e.life) * 0.55; // fade out
+          e.obj.scale.multiplyScalar(0.9);                              // shrink in place
+          if (e.ttl <= 0) { scene.remove(e.obj); trailPool.push(e.obj); fx.splice(i, 1); }  // recycle, don't dispose
+        } else {
+          e.obj.position.x += e.vx; e.obj.position.y += e.vy; e.obj.position.z += e.vz;
+          e.obj.rotation.x += e.spin; e.obj.rotation.y += e.spin;
+          e.obj.scale.multiplyScalar(0.96);
+          if (e.ttl <= 0) { scene.remove(e.obj); fx.splice(i, 1); }
+        }
+      }
+
+      const fovTarget = boosting ? 102 : 74;
+      camera.fov += (fovTarget - camera.fov) * 0.1; camera.updateProjectionMatrix();
+      starMat.size += (((boosting ? 2.6 : 1.7)) - starMat.size) * 0.1;
+      warpEl.classList.toggle('on', boosting);
+
+      // wrap the star grid around the camera, then add a gentle per-star sway
+      const pos = sg.attributes.position.array;
+      const cx = ship.x, cy = ship.y, cz = ship.z;
+      for (let i = 0; i < STAR_N; i++) {
+        let bx = sbase[i*3], by = sbase[i*3+1], bz = sbase[i*3+2];
+        if (bx - cx > SR) bx -= 2*SR; else if (bx - cx < -SR) bx += 2*SR;
+        if (by - cy > SR) by -= 2*SR; else if (by - cy < -SR) by += 2*SR;
+        if (bz - cz > SR) bz -= 2*SR; else if (bz - cz < -SR) bz += 2*SR;
+        sbase[i*3]=bx; sbase[i*3+1]=by; sbase[i*3+2]=bz;
+        const ph = sph[i], am = samp[i];
+        pos[i*3]   = bx + Math.sin(T * 0.6 + ph) * am;
+        pos[i*3+1] = by + Math.cos(T * 0.5 + ph * 1.3) * am;
+        pos[i*3+2] = bz + Math.sin(T * 0.4 + ph * 0.7) * am;
+      }
+      sg.attributes.position.needsUpdate = true;
+
+      // soft nebula clouds wrap around the camera
+      for (const n of nebs) for (let a = 0; a < 3; a++) {
+        const c = ship.getComponent(a), v = n.position.getComponent(a), dd = v - c;
+        if (dd > NEB_R) n.position.setComponent(a, v - 2*NEB_R);
+        else if (dd < -NEB_R) n.position.setComponent(a, v + 2*NEB_R);
+      }
+
+      // shooting stars: drift fast + fade out, with an occasional new one
+      for (let i = shoots.length - 1; i >= 0; i--) {
+        const s = shoots[i];
+        s.mesh.position.x += s.vx*fs; s.mesh.position.y += s.vy*fs; s.mesh.position.z += s.vz*fs;
+        s.ttl -= fs;
+        const k = Math.max(0, s.ttl / s.life);
+        for (let j = 0; j < s.mats.length; j++) s.mats[j].opacity = s.bases[j] * k;
+        if (s.ttl <= 0) { scene.remove(s.mesh); for (let j = 0; j < s.mats.length; j++) s.mats[j].dispose(); shoots.splice(i, 1); }
+      }
+      if (Math.random() < 0.0025 * fs) spawnShootingStar();
+
+      renderer.render(scene, camera);
+    }
+    tick();
+  </script>
+</body>
+</html>
