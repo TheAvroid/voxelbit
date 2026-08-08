@@ -179,11 +179,10 @@
   .optRows > div { display: flex; gap: 12px; align-items: center; justify-content: space-between; font-size: 8px; color: #cfd6e0; padding: 3px 0; }
   .optRows > div > span:first-child { min-width: 96px; }
   .kbSub { font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; margin: 14px 0 8px; color: #8fa0b8; border-top: 1px solid #222b38; padding-top: 12px; }
-  /* ── TIME OF DAY: OFF THE PANEL (user 2026-08-07) ── the row, its listeners and the clock block that writes
-     to it every frame all stay exactly as they were; this one rule keeps it out of sight. Same treatment as
-     #arwPanel, and for the same reason: deleting the markup would leave the frame loop writing to null once a
-     second. Delete this rule and move #todWrap back into a card to restore it. */
-  #todWrap { display: none !important; }
+  /* ── TIME OF DAY ── back in the visuals card, above resolution (user 2026-08-08). It was parked outside
+     every card and hidden by a display:none rule from 2026-08-07; the row, its listeners and the clock block
+     that rewrites it every second never changed, so restoring it was moving the markup and dropping the rule. */
+  #todWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #todSlider { width: 170px; cursor: pointer; }
   /* ── SLIDER KNOBS ── custom thumbs so the circle can GROW on hover (user: keep the cross cursor over a slider, expand
      the knob instead of squaring the cursor). accent-color can't animate a native thumb, so the track + thumb are drawn
@@ -202,7 +201,6 @@
   #volWrap, #sensWrap, #resWrap, #dofStrWrap, #sfxWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider { width: 170px; cursor: pointer; }
   #vigWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #dofWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #snowWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   /* ── LIGHT DEBUG PANEL ── every lighting term on its own switch, top-right, so the image can be
      bisected live instead of guessed at. Sits above the HUD z-order and ignores pointer-lock clicks. */
@@ -250,9 +248,9 @@
   #stackN { position: fixed; top: 12px; right: 16px; z-index: 24; font: 22px/1 'px3', Consolas, monospace; letter-spacing: 2px;
     color: #f2e6c8; text-shadow: 0 2px 6px rgba(0,0,0,0.85), 0 0 12px rgba(0,0,0,0.6); pointer-events: none; }
   #stackN.hidden { display: none; }
-  #vigBtn, #dofBtn, #snowBtn, #fsBtn, #crdBtn, #fpsBtn, #timeBtn, #resHudBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 4px 16px; color: #ff9077; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red (user) */
-  #vigBtn:hover, #dofBtn:hover, #snowBtn:hover, #fsBtn:hover, #crdBtn:hover, #fpsBtn:hover, #timeBtn:hover, #resHudBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off buttons LIFT on hover but KEEP their red/green colour — no green outline (user) */
-  #vigBtn.on, #dofBtn.on, #snowBtn.on, #fsBtn.on, #crdBtn.on, #fpsBtn.on, #timeBtn.on, #resHudBtn.on { border-color: #7fd05a; color: #b8ff6e; }   /* ON = green (user) */
+  #vigBtn, #snowBtn, #fsBtn, #crdBtn, #fpsBtn, #timeBtn, #resHudBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 4px 16px; color: #ff9077; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red (user) */
+  #vigBtn:hover, #snowBtn:hover, #fsBtn:hover, #crdBtn:hover, #fpsBtn:hover, #timeBtn:hover, #resHudBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off buttons LIFT on hover but KEEP their red/green colour — no green outline (user) */
+  #vigBtn.on, #snowBtn.on, #fsBtn.on, #crdBtn.on, #fpsBtn.on, #timeBtn.on, #resHudBtn.on { border-color: #7fd05a; color: #b8ff6e; }   /* ON = green (user) */
   #fsWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #cmpBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 3px 15px; color: #ff9077; cursor: pointer; display: flex; align-items: center; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red */
   #cmpBtn svg { width: 17px; height: 17px; display: block; }   /* fill=currentColor → the icon itself shows the on/off state */
@@ -373,10 +371,6 @@
 </div>
 <div id="edHud" class="hidden"></div>
 <div id="kbPanel" class="hidden"><div id="kbWrap">
-  <!-- TIME OF DAY lives on, invisibly: the clock block in the frame loop writes todLabel/todSlider every
-       second and the wiring binds them at boot, so the row is parked here and hidden by CSS rather than
-       deleted. It is a direct child of kbWrap, outside every card, so it belongs to no section. -->
-  <div id="todWrap"><span id="todLabel">07:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="420"></div>
 <div id="kbCol">
 <div id="kbCard4">
   <h2>sound</h2>
@@ -388,12 +382,12 @@
 <div id="kbCard3">
   <h2>visuals</h2>
   <div class="optRows">
+  <div id="todWrap"><span id="todLabel">07:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="420"></div>
   <div id="resWrap"><span id="resLabel">resolution 80%</span><input type="range" id="resSlider" min="40" max="100" step="10" value="80"></div>
-  <div id="dofStrWrap"><span id="dofStrLabel">depth of field 40%</span><input type="range" id="dofStrSlider" min="0" max="200" step="10" value="40"></div>
+  <div id="dofStrWrap"><span id="dofStrLabel">depth of field 30%</span><input type="range" id="dofStrSlider" min="0" max="200" step="10" value="30"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
   <div id="fsWrap"><span>fullscreen</span><button id="fsBtn">off</button></div>
   <div id="vigWrap"><span>vignette</span><button id="vigBtn">on</button></div>
-  <div id="dofWrap"><span>depth of field</span><button id="dofBtn">on</button></div>
   </div>
   <h3 class="kbSub">hud</h3>
   <div class="optRows">
@@ -1597,7 +1591,7 @@
     busy: new Set(),                                   // components currently on the walk stack: they may not be used as anyone else's anchor, which is what breaks cross-class cycles
     blocked: 0, blockedNow: 0, on: true,
     stats: { queued: 0, carried: 0, passes: 0, ms: 0, msMax: 0, structFloods: 0, drapeFloods: 0,
-             capHits: 0, lifted: 0, liftedVox: 0, erasedSmall: 0, erasedBig: 0, blockedFrames: 0,
+             capHits: 0, depthHits: 0, lifted: 0, liftedVox: 0, erasedSmall: 0, erasedBig: 0, blockedFrames: 0,
              overflow: 0, reclaims: 0, hmapLower: 0, tooBig: 0, liftedDrape: 0, liftedStruct: 0 },
     log: [],                                           // capped ring of what was lifted, for __vb.support()
     refused: [],                                       // capped ring of components the resolver DECLINED to drop, with where and why. The tooBig branch below leaves real geometry suspended on purpose (erasing it is worse), so when a player reports a floating chunk this is the record that says whether that is what happened.
@@ -1636,15 +1630,33 @@
   // of the world, so the hot path stays O(1). Returning false is not "it is floating": it means "I cannot
   // shortcut", and the flood then finds the real answer through a neighbouring intact column. That keeps the
   // failure direction the same as everywhere else in here — never wrongly drop, only decline to guess.
-  const supCarved = new Uint8Array(WX * WZ);           // per-column: has anything ever been emptied here?
+  // Per-column: is this column's hmap still a PROOF of solid ground all the way down? Cleared by anything
+  // that empties a voxel here, and — since 2026-08-08 — by stampModel mode 2, which raises hmap OVER a
+  // stamped body and so leaves the column describing something it is not standing on.
+  const supCarved = new Uint8Array(WX * WZ);
   let supColMemo = new Map();                          // per-pass cache of the downward scan, so a flood over one boulder pays it once per column
+  // ── WAKE THE RIGID BODIES WHEN THE WORLD MOVES UNDER THEM ── assigned once the physics block exists, several
+  // thousand lines below; gpuPatch sits above it and a const read before its declaration is the "stuck on
+  // uploading world" failure in this file, so it goes through a hook the same way birdDeath does.
+  let phWakeHook = null;
   const supAnchored = (ii) => {
     const gy = ((ii / WX) | 0) % WY;
     if (gy <= 1) return true;
     if (SUP.CLASS[W[ii]] === SUP.FLUID) return true;
     const gx = ii % WX, gz = (ii / (WX * WY)) | 0, col = gx + gz * WX;
     if (gy >= hmap[col]) return false;                 // above the static surface — never trivially anchored, exactly as before
-    if (!supCarved[col]) return true;                  // untouched column: hmap still describes solid ground all the way down
+    // ── THE "UNTOUCHED COLUMN" SHORTCUT IS GONE (2026-08-08) ── it answered ANCHORED for any column nothing
+    // had been emptied from, on the premise that hmap then describes solid ground all the way down. It does
+    // not: stampModel mode 2 RAISES hmap over the body it stamps — that is how every boulder, rock formation,
+    // mushroom cluster and fallen log is placed — so a model's own voxels sit "below the surface" in columns
+    // nobody ever carved. All of them were therefore unconditionally anchored, and severing such a thing left
+    // the part whose columns the player had not personally carved hanging forever: never proven attached,
+    // never asked again, never lifted. MEASURED: a 460-voxel mass with 9 voxels of clear air beneath it,
+    // verdict "supAnchored". That is the floater that applies to EVERYTHING, because everything scenic is
+    // stamped — which is exactly what the reports said and what a dozen fixes aimed at the resolver missed.
+    // Marking the column at stamp time cannot work: stampModel is also serialised into the generation WORKERS,
+    // which have no supCarved (a main-thread array), so it throws at boot. The scan below answers the same
+    // question honestly instead, memoised per column per pass.
     // The LOWEST gap in the column is the one number that answers every height at once: a voxel is standing
     // on solid ground iff no gap lies strictly below it. Cached per pass, so a flood over one boulder pays
     // the walk once per column rather than once per voxel.
@@ -1671,20 +1683,34 @@
     // a void. Set BEFORE the dedupe return, or the second touch of an already-queued cell would miss it.
     if (!W[ii]) {
       supCarved[(ii % WX) + (((ii / (WX * WY)) | 0) * WX)] = 1;
-      // ── A CLEARED VOXEL CAN ONLY ORPHAN WHAT WAS RESTING ON IT ── with nothing at all in the layer above,
-      // there is no question to ask. This matters enormously during a storm: melting snow clears hundreds of
-      // thousands of voxels, each of which used to queue a flood, and the backlog was measured at 368,000
-      // entries against a 2 ms/frame budget. A genuine floater then waited MINUTES behind it, which is exactly
-      // why cones and snow hung in the air only after it had snowed (user 2026-08-07).
+      // ── A CLEARED VOXEL CAN ONLY ORPHAN SOMETHING THAT TOUCHED IT ── with nothing at all in the 26
+      // neighbourhood there is no question to ask, and the walk would find an empty component anyway. That
+      // early-out matters enormously during a storm: clearing snow used to queue a flood per cell and the
+      // backlog was measured at 368,000 entries against a 2 ms/frame budget.
+      //
+      // ── BUT THE PROBE HAS TO BE ALL 26, NOT THE LAYER ABOVE (2026-08-08) ── it read only the 3x3 directly
+      // OVERHEAD, on the reasoning that a cleared voxel can only orphan what was RESTING on it. That is
+      // gravity's intuition and it is not this graph's rule: support here is 26-connected REACHABILITY to an
+      // anchor, so a cell's path to the ground can run sideways or downwards through the cleared voxel just as
+      // easily as a load can sit on top of it. Cut the one link holding a spur that reaches out horizontally —
+      // an arch, a cantilever, a branch of a rock formation, a ledge — and with open sky overhead the removal
+      // queued NOTHING. Not "answered wrongly": never asked, so no later pass would ever revisit it and the
+      // spur hung there permanently. MEASURED with a built test case: severing the single load-bearing voxel
+      // of a lateral arm queued 0 cells. This is the floater that survived a dozen fixes, because every one of
+      // them was aimed at the resolver's verdict and the resolver was never consulted.
+      // Cost is 26 array reads instead of 9 on cleared cells only, and the two big sources of cleared cells —
+      // a thaw and a landing — are already handled above and below this by exact rules of their own.
       const uy = ((ii / WX) | 0) % WY;
-      if (uy < WY - 1) {
-        const ux = ii % WX, uz = (ii / (WX * WY)) | 0;
-        var anyUp = false;
-        for (let ax = -1; ax <= 1 && !anyUp; ax++) for (let az = -1; az <= 1; az++) {
-          if (W[gwrap(ux + ax, WX) + (uy + 1) * WX + gwrap(uz + az, WZ) * WX * WY]) { anyUp = true; break; }
+      const ux = ii % WX, uz = (ii / (WX * WY)) | 0;
+      var anyNb = false;
+      for (let ay = -1; ay <= 1 && !anyNb; ay++) {
+        const ny = uy + ay; if (ny < 1 || ny >= WY) continue;
+        for (let az = -1; az <= 1 && !anyNb; az++) for (let ax = -1; ax <= 1; ax++) {
+          if (!ax && !ay && !az) continue;
+          if (W[gwrap(ux + ax, WX) + ny * WX + gwrap(uz + az, WZ) * WX * WY]) { anyNb = true; break; }
         }
-        if (!anyUp) return;
       }
+      if (!anyNb) return;
     }
     // ── A LANDED FLAKE IS ANCHORED BY CONSTRUCTION ── landSnowAt only ever lays snow on a surface that already
     // read as solid from below, so queueing it asks the resolver a question with a known answer. It was doing that
@@ -2367,7 +2393,7 @@
       if (mode === 3 && cur !== 0 && cur !== WATER_T && cur !== WATER_B) continue;
       if (mode === 4 && (cur !== 0 || W[gx + (wy - 1) * WX + gz * WX * WY] !== WATER_T)) continue;
       W[ii] = p >>> 24;
-      if (mode === 2 && ay >= hmap[gx + gz * WX]) hmap[gx + gz * WX] = ay + 1;
+      if (mode === 2 && ay >= hmap[gx + gz * WX]) hmap[gx + gz * WX] = ay + 1;   // …and see supAnchored: raising hmap over a stamped body is exactly why that column's hmap can no longer be trusted as a proof of solid ground
     }
   }
   const BCELL = 34;                                    // one rock candidate per 3.4 m cell (2× the 48-cell density, 4× the original)
@@ -3491,6 +3517,13 @@
     // ── SECOND MASK (u.lgt.z) ── lgt.x is FULL: it carries 24 terms and an f32 holds integers exactly only
     // to 2^24, so a 25th bit there would start rounding and flip its neighbours. Extra switches live here.
     fn LG2(b : u32) -> bool { return (u32(u.lgt.z + 0.5) & (1u << b)) != 0u; }
+    // ── BACK-LIT FOLIAGE ── BAKED IN at 30% of the swept strength (user 2026-08-08), so these are constants
+    // and not a uniform: no slider, no keybind, no per-frame float. FOL_LOBE is the forward-lobe exponent and
+    // it matters more than the strength does — it sets how wide an arc around the sun the glow fires over, and
+    // dropping it 4 → 2 did more than doubling strength did. ?nofol compiles the whole thing out for an A/B.
+    const FOLBACK : bool = ${location.search.includes('nofol') ? 'false' : 'true'};
+    const FOL_STR : f32 = 1.2;                                      // 30% of the tuned 4.0
+    const FOL_LOBE : f32 = 2.0;
     // 9 body grain (felled chunks), 10 terrain grain, 11 creature grain, 12 sun penumbra,
     // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading, 17 volumetric light.
     fn rand(s : ptr<function, u32>) -> f32 {
@@ -4174,15 +4207,23 @@
         // Beer–Lambert absorption — the G-buffer albedo stays the pure surface color + foam.)
         var seed = ((gid.x * 1973u) ^ (gid.y * 9277u) ^ (u32(u.frame) * 26699u)) | 1u;
         let sp = pos + h.n * 0.02;
-        if (${location.search.includes('nosun') ? 0 : 1} == 1 && dot(h.n, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night (?nosun disables for A/B)
+        if (${location.search.includes('nosun') ? 0 : 1} == 1 && (dot(h.n, u.sunDir) > 0.0 || (FOLBACK && isFol(h.vox))) && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night (?nosun disables for A/B)
           let st = onbT(u.sunDir); let sb = cross(u.sunDir, st);
           let jitK = select(0.0, 0.028, LG(12u));                   // bit 12: sun PENUMBRA — off = a pin-sharp, perfectly hard shadow edge
           let sdir = normalize(u.sunDir + st * ((rand(&seed) * 2.0 - 1.0) * jitK) + sb * ((rand(&seed) * 2.0 - 1.0) * jitK));
+          // -- BACK-LIT LEAF -- sp sits 0.02 along the NORMAL, which on a face the sun is BEHIND is the dark
+          // side: the ray then walks straight back through the leaf's own voxel, hits it, and the pixel reads
+          // as fully shadowed. sunV was therefore 0 on every pixel the transmission term targets, which is
+          // exactly why it looked dead. Start on the sun side of the cell instead (1.25 voxels clears it), so
+          // sunV answers the question transmission actually asks: does the sun reach the FAR face?
+          // select() is false for every non-foliage surface here (the gate above only admits dot > 0 unless it
+          // is a leaf), so ordinary shadows are bit-identical.
+          let sunOrg = select(sp, pos + u.sunDir * 1.25, dot(h.n, u.sunDir) <= 0.0);
           let ceilY = f32((u32(u.fx) >> 8u) & 31u) * 32.0;           // world ceiling (u.fx bits 8+): no solid above it → a climbing ray is clear once past it
-          let sCap = select(1200.0, min(1200.0, (ceilY - sp.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
+          let sCap = select(1200.0, min(1200.0, (ceilY - sunOrg.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
           if (sCap <= 0.0) { sunV = 1.0; }                           // already above everything and going up — full sun, no ray
           else {
-          if (LG(0u)) { let sh = traceAll(sp, sdir, sCap, skipW);   // bodies included → a felled tree casts a REAL shadow
+          if (LG(0u)) { let sh = traceAll(sunOrg, sdir, sCap, skipW);   // bodies included → a felled tree casts a REAL shadow
                         sunV = select(1.0, 0.0, sh.t >= 0.0); }
           else { sunV = 1.0; }                        // sun shadows OFF — every sunward surface fully lit
           }
@@ -4295,7 +4336,7 @@
         if (dot(dc2, dc2) < aoR * aoR) { reactive = max(reactive, u.physC.y); }
       }
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, reactive));
-      textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 8u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction
+      textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 8u) | (select(0u, 1u, t >= 0.0 && isFol(h.vox)) << 11u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction   // ...and bit 11 = IS THIS A LEAF. It rides here because the word had 21 unused bits and there is no spare g-buffer channel (gIrr is sun/sky/distance/history, gAlbedo is rgb + face); the composite cannot know a needle from bark otherwise. Every existing reader masks (& 255u, >> 8u & 7u), so this is invisible to them.
     }
   `;
 
@@ -4683,6 +4724,20 @@
         let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
         let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
         col = alb * (direct + (skyIrr + bounce) * irr.g + vec3<f32>(0.012, 0.013, 0.016));   // faint cave ambient
+        // ── BACK-LIT FOLIAGE ── a needle is thin enough to pass light, and the whole reason a forest reads as
+        // a forest when you look toward the sun is that the canopy GLOWS rather than silhouetting flat. Land
+        // shading is pure lambert, so until now a leaf facing away from the sun was simply dark.
+        // Two factors, and both have to be present: tr is the forward-scatter lobe, so this only fires when
+        // you are looking INTO the sun, and wrap is how far the face is turned AWAY from it, which is exactly
+        // the side light has to travel through. irr.r carries whether the sun actually reaches the far side —
+        // the TRACE gate above was widened to shoot that ray for leaves, or it would be zero on every one of
+        // these pixels and nothing would ever glow. So a leaf deep inside a crown stays dark and only the
+        // canopy edge lights up, which is the real behaviour.
+        if (FOLBACK && ((slRaw >> 11u) & 1u) != 0u) {
+          let tr = pow(max(dot(rd, u.sunDir), 0.0), FOL_LOBE);      // rd runs FROM the eye INTO the scene, so looking toward the sun is dot(rd, sunDir) -> 1. Do NOT flip this: dot(-rd, ...) peaks when the sun is BEHIND you, which is exactly when wrap is 0, so the two factors can never both be large and the whole term goes dead.
+          let wrap = clamp(-dot(n, u.sunDir), 0.0, 1.0);            // …how far the face is turned AWAY from the sun, which is the side the light has to travel through
+          col += alb * vec3<f32>(1.15, 1.35, 0.70) * sunTint() * (tr * wrap * irr.r * FOL_STR);   // transmitted light is warmer and more saturated than the reflected colour — it has been filtered by the leaf. irr.r is what keeps a leaf deep inside a crown dark: see the sunOrg note in TRACE, without which that term is zero on every pixel this fires on.
+        }
         let glowY = u.camPos.y + rd.y * irr.b;                                                   // the shared 4-bit glow field: bedrock hits = LAVA orange, surface hits = FIREFLY warm yellow
         if (glowY < 28.0) { col += alb * lavaG * vec3<f32>(1.0, 0.44, 0.13) * 3.6; }             // lava: linear decode, unchanged
         else { col += alb * lavaG * lavaG * vec3<f32>(1.0, 0.82, 0.30) * 4.6; }                  // firefly: sqrt-encoded in TRACE → SQUARED decode restores the physical falloff curve
@@ -5475,6 +5530,7 @@
     const bh = Math.min(224, HALF >> 1);
     rect.xlo = Math.round(x / 8) * 8 - bh; rect.xhi = rect.xlo + bh * 2;
     rect.zlo = Math.round(z / 8) * 8 - bh; rect.zhi = rect.zlo + bh * 2;
+    supCarved.fill(0);                                 // BEFORE genRegion, never after: worldgen re-stamps the models and each one re-marks its own columns (see stampModel mode 2). Clearing this afterwards would wipe exactly the marks the new world just earned.
     genRegion(rect.xlo, rect.xhi, rect.zlo, rect.zhi, true);
     orphQueueRect(rect.xlo, rect.xhi, rect.zlo, rect.zhi);   // the pool never saw this rect - sweep it here, on a budget
     rebuildBricks(0, WX, 0, WZ);
@@ -5490,11 +5546,9 @@
     // the WRAPPED WINDOW, and the window has just been re-pointed at different world columns. Every pending
     // seed now names a cell somewhere else entirely, so the resolver spends its 2 ms/frame budget
     // adjudicating freshly generated terrain that nothing has touched — while a genuine floater queued behind
-    // it waits. supCarved goes too: it is the per-column "something was emptied here" flag that switches off
-    // the O(1) anchor shortcut, and after a recentre it describes columns that no longer exist.
+    // it waits. (supCarved is cleared UP THERE, before genRegion — see the note at the fill.)
     SUP.q.length = 0; SUP.qh = 0; SUP.qs.clear(); SUP.retry.length = 0;
     SUP.res.clear(); SUP.ancS.clear(); SUP.flS.clear(); SUP.busy.clear(); supColMemo = new Map();
-    supCarved.fill(0);
     // …and the reset loop must cover the LAND MAMMALS too. It ran j < 244 while bunnies/armadillos/skunks/
     // porcupines live in 276-371 (unstampAllWorms walks 16 < 372 for exactly this reason), so one survived
     // the recentre with B.sN intact and its next unstampWorm wrote old sPrev ids back into freshly
@@ -6305,6 +6359,7 @@
   // would be both wrong and expensive) and the frozen editor stage.
   function gpuPatch(cells, full = true, n = cells.length, track = true) {              // few voxels: STAGE the touched words for the frame's patch scatter + refresh the touched brick bits. full=false uploads ONLY the touched brick words (per-frame worm stamps — the whole-buffer re-upload is far too heavy at 60 fps)
     const bset = new Set();
+    let cx0 = 1e9, cx1 = -1e9, cy0 = 1e9, cy1 = -1e9, cz0 = 1e9, cz1 = -1e9;   // bbox of the cells this batch EMPTIED — see phWakeNear
     for (let q = 0; q < n; q++) {
       const ii = cells[q];
       if (patchN >= PATCHMAX) patchFlush();            // stage full mid-frame → dispatch what we have and keep going (bounded memory, unchanged result)
@@ -6322,8 +6377,17 @@
         // an anchored neighbour, while stale-high would wrongly anchor. Nothing here ever RAISES it — a
         // retired chip or a landed flake must not make the ground read taller than it is.
         if (!W[ii] && gy < hmap[gx + gz * WX]) { hmap[gx + gz * WX] = gy < 1 ? 1 : gy; SUP.stats.hmapLower++; }
+        if (!W[ii]) {                                  // a cell this batch emptied — the rigid bodies overhead need to hear about it
+          if (gx < cx0) cx0 = gx; if (gx > cx1) cx1 = gx;
+          if (gy < cy0) cy0 = gy; if (gy > cy1) cy1 = gy;
+          if (gz < cz0) cz0 = gz; if (gz > cz1) cz1 = gz;
+        }
       }
     }
+    // ── …AND WAKE ANY SLEEPING BODY OVER IT ── once per batch, against at most PH.maxBodies bodies. A body
+    // that dozed off on ground the player then carved away had nothing else in the game to tell it (see
+    // phWakeNear). The box is in WINDOW coords; phWakeNear un-wraps it to world before testing the bodies.
+    if (track && phWakeHook && cx1 >= cx0) phWakeHook(cx0, cx1, cy0, cy1, cz0, cz1);
     const bWords = full ? null : new Set(), c2Words = full ? null : new Set();
     for (const b of bset) {
       const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
@@ -6430,6 +6494,39 @@
     }
     PH.stats.sparks++;
   };
+  // ── A SLEEPING BODY MUST NOT OUTLIVE ITS SUPPORT (2026-08-08) ── phStep returns immediately for a sleeping
+  // body, and NOTHING in the game re-examined one when the world changed: gpuPatch told the support queue and
+  // the navfield and never PH.bodies. So a chunk that fell, landed and dozed off stayed exactly where it was
+  // when the player carved away whatever it had been resting on — hanging in the air, permanently.
+  //
+  // That is the floater every audit in this file is blind to, and the reason the reports never matched the
+  // measurements: `floatAudit` reads W, `whyFloating` marches W, and a rigid body is NOT IN W — that is the
+  // whole point of the off-grid representation. Aimed at one of these, whyFloating answers "the view ray hit
+  // nothing solid within 120 voxels", which is exactly what came back from the player's session.
+  //
+  // Cheap by construction: one call per gpuPatch BATCH (not per cell) against at most PH.maxBodies bodies,
+  // and only when that batch actually cleared something. Waking is free — the solver re-tests contacts on the
+  // next step and puts it straight back to sleep if it really was supported.
+  // The box arrives in WINDOW coordinates (gpuPatch derives them from the flat index) and the bodies live in
+  // WORLD space, so the x/z bounds are un-wrapped first — the same arithmetic supWorldX/supWorldZ use, inlined
+  // because those are declared with the resolver, further down. y needs no conversion.
+  const phWakeNear = (gx0, gx1, y0, y1, gz0, gz1) => {
+    if (!PH.bodies.length) return;
+    const ox = winOX - gwrap(winOX, WX), oz = winOZ - gwrap(winOZ, WZ);
+    const x0 = gx0 + ox, x1 = gx1 + ox, z0 = gz0 + oz, z1 = gz1 + oz;
+    let woke = 0;
+    for (let i = 0; i < PH.bodies.length; i++) {
+      const b = PH.bodies[i];
+      if (!b.sleeping) continue;
+      const r = b.rMax + 2;                            // the body's own reach, plus a voxel of contact slop
+      if (b.pos[0] + r < x0 || b.pos[0] - r > x1) continue;
+      if (b.pos[1] + r < y0 || b.pos[1] - r > y1) continue;
+      if (b.pos[2] + r < z0 || b.pos[2] - r > z1) continue;
+      b.sleeping = false; b.sleepT = 0; woke++;
+    }
+    if (woke) PH.stats.woken = (PH.stats.woken | 0) + woke;
+  };
+  phWakeHook = phWakeNear;                             // gpuPatch sits above this block — see the hook's declaration
   const phWorldIdx = (S, mx, my, mz) => gwrap(S.bx + mx, WX) + (S.gy + my) * WX + gwrap(S.bz + mz, WZ) * WX * WY;
   // Kill every perched songbird in this pine (see the block comment above phFlushBirds' first use).
   // Slots 64-243 are the perched birds; kind 5 is the perched-bird kind. Runs ONLY on the swing that
@@ -6631,7 +6728,7 @@
     }
     const bw = x1 - x0 + 1, bh = y1 - y0 + 1, bd = z1 - z0 + 1, cells2 = bw * bh * bd;
     phReclaim(cells2);                               // make room by retiring the oldest fallen debris (see phReclaim)
-    if (bodyTop + cells2 > BODYCAP) { b.gpu = null; return b; }   // still no room (one body larger than the whole buffer) — simulates but is not drawn
+    if (bodyTop + cells2 > BODYCAP) { b.gpu = null; PH.stats.noGpu = (PH.stats.noGpu | 0) + 1; return b; }   // still no room (one body larger than the whole buffer) — simulates but is NOT DRAWN, which on screen is indistinguishable from the chunk vanishing. Counted so that case can be told apart from a body that was genuinely lost.
     const grid = new Uint32Array(cells2);
     for (let i = 0; i < N; i++) grid[(lx[i] - x0) + (ly[i] - y0) * bw + (lz[i] - z0) * bw * bh] = id[i];
     device.queue.writeBuffer(bodyBuf, bodyTop * 4, grid.buffer, 0, cells2 * 4);
@@ -6653,13 +6750,22 @@
   // out of existence. A body over absorbSize is too big to pick up, which is exactly the line between "a chip
   // in flight" and "a log lying in the forest the player made": scrap goes first, and a trunk is only ever
   // touched when there is nothing else left at all.
+  // ── A CHUNK ALREADY FLYING INTO YOUR HAND IS OWED TO YOU (user 2026-08-08: "dig a chunk, but if another
+  // chunk is dug before the first is fully absorbed, it disappears") ── this evicts the OLDEST body that is
+  // small enough to count as scrap, and a chunk mid-flight is exactly that: small, and the oldest, because it
+  // was dug first. So the second dig deleted the first one out of the air. The absorb loop already refuses to
+  // expire a flying chunk for the same reason ("one already flying into the player finishes its flight"); the
+  // eviction paths simply never learned it. b.absorbing means the simulation has already let go of it and it
+  // is on a curve into the chest — there is no state left to reclaim, only a promise to keep.
   const phMakeRoom = () => {
     if (PH.bodies.length < PH.maxBodies) return true;
     let oi = -1;
     for (let i = 0; i < PH.bodies.length; i++) { const b = PH.bodies[i];
+      if (b.absorbing) continue;                       // in flight to the player — never
       if (b.n > PH.absorbSize) continue;               // scenery — skip it on this pass
       if (oi < 0 || b.born < PH.bodies[oi].born) oi = i; }
-    if (oi < 0) for (let i = 0; i < PH.bodies.length; i++) if (oi < 0 || PH.bodies[i].born < PH.bodies[oi].born) oi = i;   // nothing but scenery left: the budget is genuinely exhausted, so fall back to the oldest as before
+    if (oi < 0) for (let i = 0; i < PH.bodies.length; i++) { if (PH.bodies[i].absorbing) continue;
+      if (oi < 0 || PH.bodies[i].born < PH.bodies[oi].born) oi = i; }   // nothing but scenery left: the budget is genuinely exhausted, so fall back to the oldest — still never one in flight
     if (oi < 0) return false;
     PH.bodies.splice(oi, 1); PH.stats.reclaimed++;
     return true;
@@ -6667,8 +6773,10 @@
   const phReclaim = (need) => {
     let guard = 0;
     while (PH.bodies.length && BODYCAP - bodyTop < need && guard++ < 64) {
-      let oi = 0;
-      for (let i = 1; i < PH.bodies.length; i++) if (PH.bodies[i].born < PH.bodies[oi].born) oi = i;
+      let oi = -1;                                     // …and the same rule here: a chunk in flight is never the one retired (see phMakeRoom)
+      for (let i = 0; i < PH.bodies.length; i++) { if (PH.bodies[i].absorbing) continue;
+        if (oi < 0 || PH.bodies[i].born < PH.bodies[oi].born) oi = i; }
+      if (oi < 0) break;
       PH.bodies.splice(oi, 1);
       PH.stats.reclaimed++;
       bodyTop = 0;                                   // repack the survivors from the start of the buffer
@@ -6899,6 +7007,7 @@
       while (PH.bodies.length >= PH.maxBodies && shed9 < 6) {
         let si = -1, sn = Infinity;
         for (let q2 = 0; q2 < PH.bodies.length; q2++) { const b2 = PH.bodies[q2];
+          if (b2.absorbing) continue;                  // …nor a chunk already on its way to the player (see phMakeRoom)
           if (b2.n > PH.absorbSize) continue;          // never trade a felled log for another one
           if (b2.n < sn) { sn = b2.n; si = q2; } }
         if (si >= 0 && sn < comp.length) { PH.stats.evicted++; PH.bodies.splice(si, 1); shed9++; continue; }
@@ -7080,16 +7189,44 @@
       }
       comps.sort((a2, b2) => b2.length - a2.length);
       if (comps.length > 1) PH.stats.bodySplits++;
+      // ── A CHUNK MUST BEHAVE LIKE ANY OTHER MATERIAL (user 2026-08-08: "sometimes when hitting the tree
+      // chunk, the chunk disappears" / "make the tree chunks behave like everything else") ── and this is the
+      // one place in the game where it could not, because a chunk is the one thing you can hit that is NOT in
+      // the world grid. Chopping terrain CLEARS voxels and the rest of the world simply stays; chopping a chunk
+      // DESTROYS THE BODY AND REBUILDS IT — the splice above has already removed the original — so a failure to
+      // rebuild is not a lost edit, it is lost matter. The old loop `break`ed the instant the body budget was
+      // exhausted and silently discarded every piece it had not reached, which is the chunk vanishing under the
+      // tool. (The absorbing guard added alongside this makes phMakeRoom refuse more often, so without this it
+      // would have got worse, not better.)
+      //
+      // Every piece is now given a home BEFORE anything is built: whatever cannot have its own slot — a
+      // homeless component, a one-voxel sliver, even the bite itself — is folded into the largest piece rather
+      // than dropped. Folded pieces travel as one body, which is slightly wrong and enormously better than
+      // evaporating, and it restores the invariant the world grid has always had: what you hit stays in the
+      // world. The first piece always has a slot, because the original vacated one on its way in.
+      const keep = [];
       for (const comp of comps) {
-        if (comp.length < 2) continue;                 // a lone splinter left by the carve is litter
-        if (PH.bodies.length >= PH.maxBodies && !phMakeRoom()) break;
+        if (keep.length && (comp.length < 2 || !(PH.bodies.length + keep.length < PH.maxBodies || phMakeRoom()))) {
+          keep[0] = keep[0].concat(comp);
+          PH.stats.chopMerged = (PH.stats.chopMerged | 0) + comp.length;
+          continue;
+        }
+        keep.push(comp);
+      }
+      // the BITE is the thing the player just carved and is owed to them, so it gets the last slot if there is
+      // one; if there is not, its voxels ride with the main piece instead of ceasing to exist.
+      let chipC = cutC;
+      if (chipC.length && !(PH.bodies.length + keep.length < PH.maxBodies || phMakeRoom())) {
+        if (keep.length) { keep[0] = keep[0].concat(chipC); PH.stats.chopMerged = (PH.stats.chopMerged | 0) + chipC.length; chipC = null; }
+      }
+      for (const comp of keep) {
         const nb = phSubBody(b, comp, idMap);
         nb.sleeping = false; nb.sleepT = 0;            // the shape changed under it — let it re-settle
         PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(nb);
       }
       // ── the bite ── one chunk, thrown clear along the swing, collected like every other chip
-      if (PH.bodies.length < PH.maxBodies || phMakeRoom()) {
-        const chip = phSubBody(b, cutC, idMap);
+      if (chipC && chipC.length) {
+        const chip = phSubBody(b, chipC, idMap);
         chip.vel[0] += phFallDir[0] * 6 + (Math.random() - 0.5) * 4;
         chip.vel[1] += 4 + Math.random() * 3;
         chip.vel[2] += phFallDir[2] * 6 + (Math.random() - 0.5) * 4;
@@ -7242,6 +7379,23 @@
   // never lands in `comp`: it is not liftable, and it is never an anchor either.
   const supWorldX = (gx) => winOX + (((gx - gwrap(winOX, WX)) % WX) + WX) % WX;   // window column -> the world column it currently stands for; bodies live in world space, so a component must be un-wrapped before it becomes one
   const supWorldZ = (gz) => winOZ + (((gz - gwrap(winOZ, WZ)) % WZ) + WZ) % WZ;
+  // ── OBJECT IDENTITY: TRIED 2026-08-08, REVERTED, KEEP THE MEASUREMENTS ─────────────────────────────────
+  // The plan was to give the support graph OBJECT identity (which model owns this voxel, derived from the
+  // placement grids — W is ~1.5 GiB, a per-voxel id array is not affordable) and to refuse drape edges between
+  // two different trees, so a severed trunk could not be held up by the neighbouring canopy.
+  // It works as far as it goes and it is NOT enough, twice over:
+  //   * A crown also reaches DOWN past the cut to its own stump, so foliage still carries support across a
+  //     structural break inside ONE tree. Object identity cannot see that; only the tree's own root flood can.
+  //   * Cutting cross-tree edges splits every interlocked canopy into its own component, which multiplies the
+  //     drape floods. MEASURED on the regression gate: queue `carried` 0 -> 39,442 after a storm alone and
+  //     61,455 after felling, resolution 2.5 s -> never, and 3 real floaters left standing. Net worse.
+  // Pairing it with a tree re-flood on any wood removal (stage 2) did fix the severed trunk — 401 wood voxels
+  // above the cut -> 0, deterministic over two runs, with standing pines intact (13 wood / 19,790 foliage lost)
+  // — but it also fragmented felling: a trunk came loose in 25 swings instead of ~90, as three bodies, and the
+  // drape carry stopped (snow on the trunk 290 -> 0).
+  // CONCLUSION: the direction is right and the cost lives in the DRAPE flood being per-component. Doing this
+  // properly needs the canopy to stop being a flood at all — foliage should be resolved by the object that
+  // owns it, not by walking it — which is a bigger change than a gate on one edge.
   const SUPWHY = { why: '-', d: 0 };                    // WHICH branch declared a component anchored — diagnostic for the probe
   const supFlood = (ii0, probe, depth) => {
     const v0 = W[ii0]; if (!v0) return null;
@@ -7337,13 +7491,22 @@
   // which is both the correct graph answer and what stops wood and needles vouching for each other in a
   // ring. The depth guard is a backstop only, and it errs ANCHORED — leaving a floater, never destroying
   // geometry, which is the direction every other choice in here also leans.
+  //
+  // ── DO NOT TRY TO "UN-MEMOISE" THE GUESS (tried and reverted 2026-08-08) ── erring anchored is durable: the
+  // verdict is written into SUP.ancS for every cell the walk visited, so one recursion-limited guess makes the
+  // whole component attached for the rest of the pass. Treating that like a cap hit — memoise nothing, report
+  // undecided, re-ask next pass — looks obviously right and is catastrophic, because the anchored memo is what
+  // makes supHeld affordable at all: without it every cross-class query re-floods from scratch, recursion runs
+  // straight to the limit, and each new guess suppresses more memoisation. MEASURED on that version:
+  // depthHits 2,264,153 and a single supFlush taking 3,399 ms. The memo is load-bearing. If the false anchor
+  // ever proves to matter, the fix is a cheaper anchor oracle, not a weaker memo.
   const SUP_MAX_DEPTH = 32;
   const supHeld = (ii, depth) => {
     if (supAnchored(ii)) return true;
     if (SUP.ancS.has(ii)) return true;
     if (SUP.flS.has(ii)) return false;
     if (SUP.busy.has(ii)) return false;                // already on the stack: it cannot vouch for us, because we are what it is waiting on
-    if ((depth | 0) >= SUP_MAX_DEPTH) { SUPWHY.d++; return true; }
+    if ((depth | 0) >= SUP_MAX_DEPTH) { SUPWHY.d++; SUP.stats.depthHits++; return true; }
     const r = supFlood(ii, false, depth);
     return r ? r.anchored : false;
   };
@@ -7447,8 +7610,14 @@
       for (const pc of parts) did += supDrop(pc, r.drape);
       if (did) return did;
       SUP.stats.tooBig = (SUP.stats.tooBig | 0) + 1;
+      // ── A REFUSAL IS NOT AN ANSWER: PUT IT BACK IN THE QUEUE (2026-08-08) ── every part failed to become a
+      // body, which in practice means the body budget was exhausted at this instant. Returning 0 and walking
+      // away left a component the resolver had PROVEN detached sitting in W with nothing scheduled to look at
+      // it again: its seed had already been consumed, and no later pass revisits a cell unless something within
+      // 26 of it is disturbed. Re-seeding costs one queue entry and turns a permanent floater into a late one.
+      supPush(comp[0]);
       if (SUP.refused.length < 32) SUP.refused.push({ n, id: W[comp[0]] || 0, x: supWorldX(comp[0] % WX), y: ((comp[0] / WX) | 0) % WY, z: supWorldZ((comp[0] / (WX * WY)) | 0), why: 'tooBig', cap: PH.absorbMax });
-      return 0; }   // cannot become a rigid body at all, so the only choices are leave it or erase it — and erasing real geometry is worse than a floater   // cannot become a rigid body at all, so the only choices are leave it or erase it — and erasing real geometry is worse than a floater
+      return 0; }   // cannot become a rigid body at all, so the only choices are leave it or erase it — and erasing real geometry is worse than a floater
     return supDrop(comp, r.drape);
   };
   const SUP_BLOCK_MAX = 30;                            // frames the resolver may sit blocked on a full body budget before it forces a slot
@@ -8281,6 +8450,7 @@
         if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;
       }
       b.absorbing = true; b.absorbT0 = tNow;
+      PH.stats.flights = (PH.stats.flights | 0) + 1;   // ── THE INVARIANT ── every flight STARTED must finish: flights === absorbed + in-flight. Any shortfall is a chunk deleted out of the air on its way to the player, which is invisible on screen except as the thing you dug never arriving.
       b.absorbP = [b.pos[0], b.pos[1], b.pos[2]];      // where the flight starts
       b.sleeping = false;                              // a settled chunk must still be able to fly in
     }
@@ -9586,12 +9756,17 @@
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
   // ── keybinds ── rebindable, persisted to localStorage
-  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'CapsLock', drop: 'KeyQ', fly: 'KeyF', vsync: 'KeyV', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight', dof: 'KeyL' };   // L was free: it used to hand the cursor to the light panel and that listener was deleted 2026-08-05   // crouch on CAPS LOCK (user 2026-08-05), off Alt   // fly on F restored (user 2026-07-22)
-  const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', vsync: 'v-sync', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +', dof: 'depth of field' };
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'CapsLock', drop: 'KeyQ', fly: 'KeyF', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // L AND V ARE BOTH UNBOUND: sun shafts were removed for cost (user 2026-08-08, +2.76 ms worst case) and v-sync was removed outright. Back-lit foliage is baked in and needs no key.   // crouch on CAPS LOCK (user 2026-08-05), off Alt   // fly on F restored (user 2026-07-22)
+  const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
   if (binds.crouch === 'KeyC' || binds.crouch === 'AltLeft') { binds.crouch = 'CapsLock'; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // MIGRATE: crouch went C → left Alt → CAPS LOCK (user 2026-08-05), carrying saved binds with it. Alt is no longer a crouch key at all.
   if (binds.vignette !== undefined) { delete binds.vignette; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // K IS NOW UNBOUND (user 2026-08-06): the vignette had this key and nothing else does. A saved bind from before still carries it, so drop it on load or the old handler's key would linger in the rebind panel. The vignette itself is unchanged and still toggles from its settings button.
+  if (binds.shaft !== undefined) { delete binds.shaft; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // L IS UNBOUND AGAIN (user 2026-08-08): the sun shafts it opened were removed for cost. Prune a saved bind or the dead key survives.
+  if (binds.fol !== undefined) { delete binds.fol; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // L IS UNBOUND AGAIN (user 2026-08-08): back-lit foliage is baked in at a fixed 30%, so there is nothing to toggle. Prune a saved bind or the dead key survives.
+  if (binds.vsync !== undefined) { delete binds.vsync; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // V IS NOW UNBOUND (user 2026-08-08): v-sync was removed outright — the frame loop always pipelines off the previous frame's GPU completion now. Same case as the two below: prune a saved bind so no dead key survives.
+  if (binds.lit !== undefined) { delete binds.lit; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // L IS NOW UNBOUND (user 2026-08-08): the atmospheric sky it opened was removed.
+  if (binds.dof !== undefined) { delete binds.dof; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (e) {} }   // L IS NOW UNBOUND (user 2026-08-08): same case as the vignette above — a bind saved before this carries dof, so drop it on load or the dead key lingers in the rebind panel. Depth of field itself is unchanged and still toggles from its settings button.
   const prettyKey = (c) => c.replace(/^Key|^Digit/, '').replace('BracketLeft', '[').replace('BracketRight', ']')
     .replace('ShiftLeft', 'L-SHIFT').replace('ShiftRight', 'R-SHIFT').replace('ControlLeft', 'L-CTRL').replace('ControlRight', 'R-CTRL')
     .replace('AltLeft', 'L-ALT').replace('AltRight', 'R-ALT').replace('CapsLock', 'CAPS LOCK')
@@ -10012,7 +10187,6 @@
   let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
   // ── DEPTH OF FIELD ── persisted (vb_dof), default ON, and declared HERE for the same reason vigOn is: the
   // settings-panel wiring further down reads it, so a declaration below that point is a TDZ error at boot.
-  let dofOn = true; try { dofOn = localStorage.getItem('vb_dof') !== '0'; } catch (e) {}
   const DOF_COC = 0.0105;                              // max circle of confusion as a fraction of the canvas HEIGHT (~11 px at 1080p) — a fraction, not a pixel count, so the look is identical at every resolution and render scale
   const DOF_RACK = 0.13;                               // autofocus time constant, seconds. A lens racks, it does not cut: focus that snapped the instant the view moved read as the picture breathing
   let dofInv = 1 / 24;                                 // the eased focal distance, carried as 1/d — see the autofocus block in tickBody
@@ -10020,11 +10194,11 @@
   // radius, so 100% is always the tuned default whatever the number behind it becomes, and the slider stays
   // meaningful if DOF_COC is ever re-tuned. 0% is the same picture as the toggle being off; 200% is roughly a
   // 22 px circle at 1080p, which is as shallow as this scene takes before the far field stops reading as depth.
-  let dofStr = 0.4; try { const v9 = parseFloat(localStorage.getItem('vb_dofstr')); if (v9 >= 0 && v9 <= 2) dofStr = v9; } catch (e) {}   // 40% of DOF_COC (user 2026-08-07) — ~4 px at 1080p: enough that distance reads as distance, well short of the shallow look the top of the slider gives
+  let dofStr = 0.3; try { const v9 = parseFloat(localStorage.getItem('vb_dofstr2')); if (v9 >= 0 && v9 <= 2) dofStr = v9; } catch (e) {}   // 30% of DOF_COC (user 2026-08-08) — ~3 px at 1080p: enough that distance reads as distance, well short of the shallow look the top of the slider gives
   const DOF_TAPS = 1.6;                                // gather taps per PIXEL of blur radius — see the loop in BLIT. 1.6 x the 21 px widest circle = the 32 taps the effect was tuned at, so the top of the strength slider is unchanged and everything below it costs what its own area is worth.
   let dofTapK = DOF_TAPS;                              // …pinnable with __vb.dof({taps: k}) to A/B the sampling against the old flat 32 (k = 40 forces 32 everywhere)
   let dofLock = 0, dofCocK = DOF_COC * dofStr;         // __vb.dof() overrides: pin the focal plane / the aperture to A/B the effect at a fixed strength (0 = autofocus)
-  let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}   // persisted, default ON. MUST be declared here, above the settings-panel wiring below — declaring it beside CINE_VIG put it after its own use and the TDZ error killed boot.
+  let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}
   let snowOn = false;                                  // ── VOXEL SNOW ── starts CLEAR, then the first storm arrives 60 s after refresh (user 2026-08-06). Weather-driven; the button (and P) still forces one on/off by hand.
   let snowEndT = 0, snowNextT = 60000;   // ── FIRST STORM 60 s AFTER REFRESH (user 2026-08-06) ── snowNextT is the arrival, snowEndT the end of the CURRENT storm; the weather tick turns it on at 60 s and runs it 60 s, then re-arms on the normal 5-minute cadence. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one.
   // TO RESTORE the weather cycle, put this back to `performance.now() + 120000` (first storm 2 min after refresh, then every 5 min).
@@ -10036,8 +10210,6 @@
   const HELD_SKY_R = 24;                               // …and the SAME 24-voxel range the world normalises its AO ray against (clamp(ah.t / 24)), so the two terms mean the same thing
   let freezeK = 0, iceSolid = false;                   // lakes freeze/thaw GRADUALLY — freezeK eases 0..1 (u.pickZ.w), physics flips at 0.6
   let snowBtnSync = () => {};
-  let dofBtnSync = () => {};                           // set by the settings-panel wiring below — repaints the depth-of-field button when something other than a click flips it
-  let dofToggle = () => {};                            // …and the flip itself, so the L keybind and the button share one path
   let vigToggle = () => {};                            // set by the settings-panel wiring below; the L keybind calls the SAME path so the button label stays in sync
   // FIFO as parallel TYPED arrays (cell idx / melt time) — object entries at 1.6M live voxels were ~10× the memory.
   // These were plain Arrays compacted with .slice(head); at ~450k live voxels each slice copied the whole queue and
@@ -10258,16 +10430,8 @@
     mkToggle('fpsBtn', () => showFps, (v) => showFps = v, 'vb_fps');            // FPS on/off
     mkToggle('timeBtn', () => showTime, (v) => showTime = v, 'vb_time');        // TIME on/off
     mkToggle('resHudBtn', () => showRes, (v) => showRes = v, 'vb_res');         // RESOLUTION readout on/off
-    const dofBtn = $('dofBtn');
-    const dofShow = () => { dofBtn.textContent = dofOn ? 'on' : 'off'; dofBtn.classList.toggle('on', dofOn); };
-    dofBtnSync = dofShow;                              // hand the label to __vb.dof({on}) — same trick vigToggle uses, so a headless flip is visible in the panel
-    dofToggle = () => { dofOn = !dofOn;                // THE one flip: the L keybind calls this, not its own copy, so the settings button can never disagree with what the screen is doing
-      try { localStorage.setItem('vb_dof', dofOn ? '1' : '0'); } catch (e2) {}
-      if (dofOn) dofInv = 1 / 24;                      // switched back on after a while looking at the horizon, the stored 1/d would otherwise rack the lens in from infinity in front of the player
-      dofShow(); };
-    dofBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
-    dofBtn.addEventListener('click', (e) => { e.stopPropagation(); dofToggle(); });
-    dofShow();
+    // ── BACK-LIT FOLIAGE ── L is the only control, so the readout is the only feedback: it flashes the new
+    // state and fades. One timer, restarted on every press, so holding L cannot stack fades.
     const vigBtn = $('vigBtn');
     const vigShow = () => { vigBtn.textContent = vigOn ? 'on' : 'off'; vigBtn.classList.toggle('on', vigOn); };
     vigBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -10348,8 +10512,11 @@
   dofStrSync();
   dofStrSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
   dofStrSlider.addEventListener('click', (e) => e.stopPropagation());
-  dofStrSlider.addEventListener('input', (e) => { e.stopPropagation(); dofStr = parseFloat(dofStrSlider.value) / 100; dofCocK = DOF_COC * dofStr; dofStrShow(); sliderFill(dofStrSlider);
-    try { localStorage.setItem('vb_dofstr', String(dofStr)); } catch (err) {} });
+  dofStrSlider.addEventListener('input', (e) => { e.stopPropagation();
+    const wasOff = dofStr <= 0;
+    dofStr = parseFloat(dofStrSlider.value) / 100; dofCocK = DOF_COC * dofStr; dofStrShow(); sliderFill(dofStrSlider);
+    if (wasOff && dofStr > 0) { dofInv = 1 / 24; }    // coming back up off zero, the STORED 1/d would rack the lens in from wherever it was parked — usually infinity after a spell looking at the horizon. This is the one thing the on/off button used to do that the slider has to inherit.
+    try { localStorage.setItem('vb_dofstr2', String(dofStr)); } catch (err) {} });
   let todDrag = false;
   const todSlider = $('todSlider'), todLabel = $('todLabel');
   sliderFill(todSlider);
@@ -10520,7 +10687,7 @@
   };
   $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); if (ED.on) edExit();   // NEVER respawn in the asset editor (user) — force-exit it, and lock straight back into the GAME rather than the menu, so a respawn-click can't land on the editor button
     respawn(); tryLock(); });
-  let tday = 7 / 24, cycleSpeed = 1, godRays = true, vsyncOn = false;   // day/night cycle: 20-min day at 1x; STARTS AT 7:00 am on load (user); v-sync off by default (pause-time removed — user)
+  let tday = 7 / 24, cycleSpeed = 1, godRays = true;   // day/night cycle: 20-min day at 1x; STARTS AT 7:00 am on load (user)
   let moonDay = 4;                                     // moon PHASE day counter — starts at 4/8 = full moon; each in-game day advances the phase
   // ── THE SCROLL-UP HINT (user 2026-08-07) ── shown once, ten seconds into a session, and retired the first
   // time the player scrolls up. `shArmT` is set when they actually take control rather than at page load, so
@@ -10566,14 +10733,12 @@
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
     if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }   // toggle fly (user re-added the F keybind 2026-07-22)
-    if (e.code === binds.vsync) { vsyncOn = !vsyncOn; }
     // R-key recording is BACK ON with the #veBtn button (user 2026-08-02, reversing the 2026-07-23 disable).
     if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
     if (e.code === 'KeyP') { snowOn = !snowOn;               // P — toggle the snow storm (user); mirrors the settings snow button EXACTLY so the two stay in sync
       if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 300000; }
       snowBtnSync(); }
-    if (e.code === binds.dof) { dofToggle(); }         // L — the same path the settings button takes, so its label never lies about what the screen is doing
     if (e.code === binds.scaledown) { resNudge(-1); }   // [ and ] — one 10% step on the same grid the settings slider uses (see resNudge)
     if (e.code === binds.scaleup) { resNudge(1); }
     if (e.code === 'KeyC' && !ED.on) { cineMode = !cineMode; document.body.classList.toggle('noui', cineMode);   // C — CINEMATIC still hold: freezes the camera + hides the HUD for a clean framed view; press again to exit + regain control
@@ -11241,12 +11406,12 @@
       return { species: FISHES.map((f) => f.name + '(' + f.n + 'f@' + f.item0 + ')'), live: o }; },   // fish test tap
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW, SAND, DIRT, NEEDLE }, slots, LILY_SZ, WL, fishCfg: FISH_CFG,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint; fishCfg: LIVE fish tunables (speed/flee/jump/pitch)
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
-    dof(o) { if (o) { if (o.on !== undefined) { dofOn = !!o.on; dofBtnSync(); }
+    dof(o) { if (o) { if (o.on !== undefined) { dofStr = o.on ? Math.max(dofStr, 0.3) : 0; dofCocK = DOF_COC * dofStr; dofStrSync(); }   // there is no on/off state any more — the slider IS the switch, so {on:false} parks it at 0 and {on:true} restores at least the default 30%
                       if (o.focus !== undefined) dofLock = o.focus;
                       if (o.strength !== undefined) { dofStr = o.strength; dofCocK = DOF_COC * dofStr; dofStrSync(); }   // the settings slider's own lane, panel and all
                       if (o.taps !== undefined) dofTapK = o.taps;                                                       // taps per pixel of radius — 40 reproduces the flat 32 the effect shipped with
                       if (o.coc !== undefined) dofCocK = o.coc; }                                                       // …and the raw aperture underneath it, which deliberately does NOT move the slider: it is for A/B-ing a radius the slider cannot reach
-             return { on: dofOn, strength: dofStr, focus: +UF[UF_DOF].toFixed(2), maxCocPx: +UF[UF_DOF + 1].toFixed(2),
+             return { on: dofStr > 0, strength: dofStr, focus: +UF[UF_DOF].toFixed(2), maxCocPx: +UF[UF_DOF + 1].toFixed(2),
                       taps: dofTapK, tapsAtMax: Math.max(8, Math.min(32, Math.ceil(UF[UF_DOF + 1] * dofTapK))), lockedFocus: dofLock, cocFrac: dofCocK }; },   // tapsAtMax mirrors the shader's own clamp, FLOOR included, or the report undercounts every small disc   // depth-of-field tap: read the live focal plane, or PIN focus/aperture to A/B the effect at a fixed strength (__vb.dof({focus: 20, coc: 0.02}), {focus: 0} hands it back to autofocus)
     snd() { const eff = [], amb = [];                  // AUDIO BUS census: every registered sound's LIVE element volume, split by bus. The elements are `new Audio()` and never enter the DOM, so a test has no other way to see that the sfx slider actually reached them.
             for (const s9 of sndReg) (s9.sfx ? eff : amb).push(+s9.a.volume.toFixed(4));
@@ -11450,6 +11615,21 @@
     supTest(x, y, z) { SUP.ancS.clear(); SUP.flS.clear(); SUP.busy.clear(); supColMemo = new Map();
       return supFlood(gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY, true); },   // run ONE flood at a cell and report, without acting on it (memo cleared first, so a console probe is never answered from a stale pass)
     supDirty(x, y, z) { supPush(gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY); return SUP.q.length - SUP.qh; },
+    // ── TEST HOOK: WRITE VOXELS THE WAY A REAL EDIT DOES ── every floater investigation so far has had to
+    // chop real scenery and hope the geometry it needed happened to be there, which is why the awkward cases
+    // (a spur held sideways, an arch, a cantilever) were never actually tested. This builds an exact one.
+    // Goes through gpuPatch, so it takes the identical path a chop takes: brick occupancy, the scanTop cache,
+    // the navfield and — unless `track` is false — the support queue.
+    setVox(list, track) {
+      const cells = [];
+      for (const q of list) {
+        const y = q[1] | 0; if (y < 1 || y >= WY) continue;
+        const ii = gwrap(q[0] | 0, WX) + y * WX + gwrap(q[2] | 0, WZ) * WX * WY;
+        W[ii] = q[3] | 0; cells.push(ii);
+      }
+      if (cells.length) gpuPatch(cells, false, cells.length, track === undefined ? true : !!track);
+      return cells.length;
+    },
     supFlushNow() { return supFlush(true); },          // run the resolver to completion, ignoring the time slice — tests must not have to guess how many frames a cascade takes
     eat() { return tryEat(); },                      // one bite, exactly what a right-click does
     knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; }, pickId() { return PICK_IT; }, shovelId() { return SHOVEL_IT; }, bowId() { return BOW_IT; }, meatId() { return MEAT_IT; }, hoeId() { return HOE_IT; }, spearId() { return SPEAR_IT; },
@@ -11676,17 +11856,133 @@
     // ── THE OTHER HALF OF THE FLOATER QUESTION ── floatAudit reads W, and a severed chunk is NOT in W: it is an
     // off-grid rigid body. A body that stops descending with air under it looks exactly like a floating rock and
     // is invisible to every grid-based check. Reports the drop from each body to the first solid voxel beneath it.
+    // ── THE GAP MUST BE MEASURED FROM THE BODY'S LOWEST VOXEL (2026-08-08) ── it compared the COM against the
+    // ground under the COM's own column, so a large body reported a gap of 4-6 while sitting perfectly on the
+    // floor: its underside reaches rMax BELOW its centre. Two separate investigations chased "a 625-voxel body
+    // floating 5.8 above the ground" that was simply resting. `gap` is now the true clearance beneath the
+    // lowest voxel, so 0 means touching and a positive number means genuinely airborne.
     bodyAudit() {
+      const p = [0, 0, 0], o = [0, 0, 0];
       return PH.bodies.map((b) => {
         const x = b.pos[0], y = b.pos[1], z = b.pos[2];
-        const gx = gwrap(Math.floor(x), WX), gz = gwrap(Math.floor(z), WZ) * WX * WY;
+        let lowY = 1e9, lowX = x, lowZ = z;
+        for (let i = 0; i < b.n; i++) {                // body frame -> world, the same transform phBodySolid uses
+          p[0] = b.lx[i] + 0.5 - b.com[0]; p[1] = b.ly[i] + 0.5 - b.com[1]; p[2] = b.lz[i] + 0.5 - b.com[2];
+          phQRot(b.q, p, o);
+          const wy = y + o[1];
+          if (wy < lowY) { lowY = wy; lowX = x + o[0]; lowZ = z + o[2]; }
+        }
+        const gx = gwrap(Math.floor(lowX), WX), gz = gwrap(Math.floor(lowZ), WZ) * WX * WY;
         let g = 1;
-        for (let yy = Math.min(WY - 1, Math.round(y)); yy >= 1; yy--) { const id = W[gx + yy * WX + gz]; if (id && solidTab[id]) { g = yy + 1; break; } }
-        return { n: b.n, pos: [+x.toFixed(1), +y.toFixed(1), +z.toFixed(1)], ground: g, gap: +(y - g).toFixed(1),
+        for (let yy = Math.min(WY - 1, Math.round(lowY)); yy >= 1; yy--) { const id = W[gx + yy * WX + gz]; if (id && solidTab[id]) { g = yy + 1; break; } }
+        return { n: b.n, pos: [+x.toFixed(1), +y.toFixed(1), +z.toFixed(1)],
+                 low: +lowY.toFixed(1), ground: g, gap: +(lowY - g).toFixed(1),
                  vel: +Math.hypot(b.vel[0], b.vel[1], b.vel[2]).toFixed(2),
                  spin: +Math.hypot(b.omega[0], b.omega[1], b.omega[2]).toFixed(2),
+                 sleeping: !!b.sleeping, contacts: b.contacts | 0, src: b.src,
                  rag: !!b.rag, timed: (b.absorbAt || 0) > 0 };
       });
+    },
+    // ── whyFloating's MISSING HALF ── whyFloating marches W, and a rigid body is NOT in W. Aimed at one it
+    // answers "the view ray hit nothing solid within 120 voxels" — which is exactly what came back from a
+    // session where the player was looking straight at a floating rock. This marches the same ray against the
+    // BODY grids, using the collision test the player's own feet use, and reports what that body is doing.
+    // ── ONE COMMAND: "WHAT AM I LOOKING AT?" ── whyFloating marches W and whyBody marches the rigid bodies,
+    // and a live session answered "nothing" to BOTH while the player was staring at a floating rock. Only so
+    // many things can put voxels on screen, so this checks every one instead of guessing: world grid, rigid
+    // body, grid-stamped creature, trace-injected creature, dropped item, flying bird. It also reaches much
+    // further — the other two stop at 120 and 160 voxels, and something across a valley is simply past them,
+    // which on its own produces exactly the pair of "nothing found" answers that came back from the session.
+    lookingAt(maxT) {
+      const T = Math.max(40, maxT === undefined ? 500 : maxT);
+      const cp = Math.cos(P.pitch), d3 = [Math.sin(P.yaw) * cp, Math.sin(P.pitch), Math.cos(P.yaw) * cp];
+      const eye = [P.x, smoothEye, P.z];
+      for (let t = 0.6; t < T; t += 0.25) {            // 1. the two things that own real voxels
+        const fx = P.x + d3[0] * t, fy = smoothEye + d3[1] * t, fz = P.z + d3[2] * t;
+        if (fy < 1 || fy >= WY) break;
+        const x = Math.floor(fx), y = Math.floor(fy), z = Math.floor(fz);
+        const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY, v = W[ii];
+        if (v) {
+          const stamped = stampedIdx.has(ii);
+          SUP.res.clear(); SUP.ancS.clear(); SUP.flS.clear(); SUP.busy.clear(); supColMemo = new Map();
+          const fr = supFlood(ii, true);
+          // ── AND SHOW THE COLUMN ── the verdict almost always comes down to supAnchored on the very first
+          // pop (visited: 1), and that oracle is pure column arithmetic. Print the arithmetic so the answer
+          // is checkable instead of trusted: how much clear air is directly under this voxel, where the
+          // lowest gap in the column actually is, and what hmap claims. If airBelow > 0 while anchoredO is
+          // true, the oracle is provably wrong and that is the whole bug, in one line.
+          const col = gwrap(x, WX) + gwrap(z, WZ) * WX;
+          let airBelow = 0;
+          for (let yy = y - 1; yy > 1 && !W[gwrap(x, WX) + yy * WX + gwrap(z, WZ) * WX * WY]; yy--) airBelow++;
+          let lowGap = -1;
+          for (let yy = 1; yy < Math.min(WY - 1, hmap[col]); yy++) if (!W[gwrap(x, WX) + yy * WX + gwrap(z, WZ) * WX * WY]) { lowGap = yy; break; }
+          const colProf = [];
+          for (let yy = Math.max(1, y - 14); yy <= y + 2; yy++) colProf.push(W[gwrap(x, WX) + yy * WX + gwrap(z, WZ) * WX * WY] ? 'X' : '.');
+          return { kind: stamped ? 'creature (grid-stamped)' : 'world voxel', at: [x, y, z], id: v, dist: Math.round(t),
+                   cls: ['ignore', 'fluid', 'structure', 'drape'][SUP.CLASS[v]], anchoredO: supAnchored(ii),
+                   airBelow, lowGap, hmap: hmap[col], carved: !!supCarved[col],
+                   column: 'y' + Math.max(1, y - 14) + ' ' + colProf.join('') + ' (X=solid, the hit is 3rd from the right)',
+                   oracleWrong: airBelow > 0 && supAnchored(ii),
+                   flood: fr, why: SUPWHY.why,
+                   verdict: stamped ? 'an ANIMAL, not terrain - it is meant to be off the ground'
+                     : (!fr ? 'fluid or conduit - never lifted, by design'
+                     : (fr.anchored ? (airBelow > 0
+                         ? 'ORACLE IS WRONG: ' + airBelow + ' voxels of clear air directly beneath this, and supAnchored still says attached (' + SUPWHY.why + '). hmap=' + hmap[col] + ' lowGap=' + lowGap + ' carved=' + !!supCarved[col]
+                         : 'ATTACHED, and correctly so - the column under this is solid (' + SUPWHY.why + '). The ray hit terrain, not the floating thing: re-aim, or raise the reach.')
+                     : 'the resolver says DETACHED - it should be lifting; check __vb.support().refused and the body budget')) };
+        }
+        const bid = phBodyIdAt(x, y, z);
+        if (bid) return Object.assign({ kind: 'rigid body', at: [x, y, z], id: bid, dist: Math.round(t) }, __vb.whyBody());
+      }
+      // 2. nothing with voxels on the ray - so it is drawn by a path that owns no grid at all. Report the
+      //    nearest candidate of each kind by perpendicular distance to the view line.
+      const perp = (px, py, pz) => {
+        if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) return null;   // a perched bird carries its height in perchFeet, not y — a NaN here sailed through the radius test
+        const ax = px - eye[0], ay = py - eye[1], az = pz - eye[2];
+        const tt = ax * d3[0] + ay * d3[1] + az * d3[2];
+        if (tt < 0) return null;
+        const ex = ax - d3[0] * tt, ey = ay - d3[1] * tt, ez = az - d3[2] * tt;
+        return { off: Math.hypot(ex, ey, ez), t: tt };
+      };
+      let bestC = null, bestD = null, bestB = null;
+      for (let j = 0; j < wbf.length; j++) { const B = wbf[j];
+        if (!B || !B.init) continue;
+        const r = perp(B.x, B.y === undefined ? B.perchFeet : B.y, B.z); if (!r || r.off > 14) continue;
+        if (!bestC || r.off < bestC.off) bestC = { slot: j, kind: B.kind | 0, off: +r.off.toFixed(1), t: Math.round(r.t), pos: [Math.round(B.x), Math.round(B.y === undefined ? B.perchFeet : B.y), Math.round(B.z)], stamped: !!B.sN };
+      }
+      for (let j = 0; j < birds.length; j++) { const b = birds[j];
+        if (!b || !b.init) continue;
+        const r = perp(b.x, b.y, b.z); if (!r || r.off > 14) continue;
+        if (!bestB || r.off < bestB.off) bestB = { bird: j, off: +r.off.toFixed(1), t: Math.round(r.t), pos: [Math.round(b.x), Math.round(b.y), Math.round(b.z)] };
+      }
+      for (let j = 0; j < drops.length; j++) { const d = drops[j];
+        if (!d) continue;
+        const r = perp(d.x, d.y, d.z); if (!r || r.off > 14) continue;
+        if (!bestD || r.off < bestD.off) bestD = { it: d.it, off: +r.off.toFixed(1), t: Math.round(r.t), pos: [Math.round(d.x), Math.round(d.y), Math.round(d.z)] };
+      }
+      return { kind: bestD ? 'dropped item' : (bestC ? 'creature (trace-injected)' : (bestB ? 'flying bird' : 'nothing found')),
+               nearestDrop: bestD, nearestCreature: bestC, nearestBird: bestB, reach: T,
+               verdict: bestD ? 'a DROPPED ITEM - those hover and spin on purpose; not floating terrain'
+                 : (bestC || bestB ? 'an ANIMAL drawn straight into the trace - it owns no world voxels and is meant to be airborne'
+                 : 'nothing within ' + T + ' voxels on this ray owns voxels, and no creature or item is near it - so it is drawn by the particle/flake field (snow, sparks, splashes). Say so and I will look there.') };
+    },
+    whyBody() {
+      const cp = Math.cos(P.pitch), d3 = [Math.sin(P.yaw) * cp, Math.sin(P.pitch), Math.cos(P.yaw) * cp];
+      for (let t = 0.6; t < 160; t += 0.25) {
+        const x = P.x + d3[0] * t, y = smoothEye + d3[1] * t, z = P.z + d3[2] * t;
+        if (y < 1 || y >= WY) break;
+        const id = phBodyIdAt(Math.floor(x), Math.floor(y), Math.floor(z));
+        if (!id) continue;
+        const all = __vb.bodyAudit();
+        let best = null, bd = 1e9;
+        for (const q of all) { const d = (q.pos[0] - x) * (q.pos[0] - x) + (q.pos[1] - y) * (q.pos[1] - y) + (q.pos[2] - z) * (q.pos[2] - z); if (d < bd) { bd = d; best = q; } }
+        return { hit: [Math.floor(x), Math.floor(y), Math.floor(z)], id, body: best,
+                 verdict: !best ? 'a body voxel with no matching body - report this'
+                   : (best.gap <= 0.6 ? 'RESTING - its lowest voxel is on the ground, not floating'
+                   : (best.sleeping ? 'ASLEEP IN MID-AIR - ' + best.gap + ' voxels of clear air under its lowest voxel, and the solver skips it entirely'
+                   : 'AWAKE AND NOT FALLING - ' + best.gap + ' voxels of air beneath it, vel ' + best.vel + ', contacts ' + best.contacts)) };
+      }
+      return { hit: null, verdict: 'no rigid body on the view ray within 160 voxels - try __vb.whyFloating() for world voxels' };
     },
     orphStats() { return Object.assign({ queued: ORPHQ.length >> 2 }, ORPH); },   // did the generation sweep run, and did it cut anything?
     // ── VISUALLY FLOATING ROCK ── floatAudit answers the SUPPORT question (26-connected to bedrock), and a
@@ -13393,7 +13689,7 @@
     // the treeline is lazy, and a voxel of error at the far end (where the blur has saturated anyway) costs
     // nothing. Thin decor is stepped THROUGH for the same reason the aim ray steps through it: a grass strand a
     // metre away must not seize the focus and soften the whole valley behind it.
-    if (dofOn && !ED.on && CH * dofCocK >= 0.5) {                    // a strength of 0 (or so near it that the blit would skip every pixel anyway) is the same picture as the toggle being off — and this way it costs the aim ray nothing either
+    if (!ED.on && CH * dofCocK >= 0.5) {                    // a strength of 0 (or so near it that the blit would skip every pixel anyway) is the same picture as the toggle being off — and this way it costs the aim ray nothing either
       const cpD = Math.cos(P.pitch);
       const dxD = Math.sin(P.yaw) * cpD, dyD = Math.sin(P.pitch), dzD = Math.cos(P.yaw) * cpD;
       const FMAX = Math.max(48, Math.min(renderDist, 320));          // past this the circle of confusion has saturated, so a longer march buys nothing
@@ -13408,7 +13704,8 @@
       UF[UF_DOF] = dofLock > 0 ? dofLock : 1 / Math.max(1e-4, dofInv);
       UF[UF_DOF + 2] = dofTapK;                                      // gather taps per pixel of radius (see the BLIT loop)
       UF[UF_DOF + 1] = CH * dofCocK;                                 // max circle of confusion in CANVAS pixels (the blit gathers in canvas space, not render space) — a fraction of the HEIGHT, so the strength setting means the same thing at every resolution
-    } else { UF[UF_DOF] = 0; UF[UF_DOF + 1] = 0; }                   // 0 = off: the composite writes a flat CoC and the blit's gather never runs
+    } else { UF[UF_DOF] = 0; UF[UF_DOF + 1] = 0; }
+                   // 0 = off: the composite writes a flat CoC and the blit's gather never runs
     UF[1268] = vigOn ? Math.max(BASE_VIG, cineBlurK * CINE_VIG) : 0;   // u.misc.x — BASE vignette in normal play, deepening to the cinematic value while the camera flies; max() so leaving cinema eases back to base instead of snapping to zero                   // u.misc.x — cinematic VIGNETTE depth (written unconditionally; the blit reads it every frame)
     // ── NOTHING IS LEFT HANGING ── the unified resolver, EVERY frame and time-sliced, driven by the cells
     // that ACTUALLY CHANGED. It costs nothing on a frame where nothing was carved, which is the overwhelming
@@ -15293,10 +15590,11 @@
       if (showTime) hudParts.push(`${clock}${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}${cycleSpeed !== 1 ? '  x' + cycleSpeed.toFixed(1) : ''}`);
       hudEl.textContent = hudParts.join('\n\n');
     }
-    // V-SYNC OFF: pace frames off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the
-    // CPU's frame prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it.
-    // When frames get expensive (long view distances), drop to same-frame pacing — pipelining latency reads as input LAG there.
-    if (vsyncOn || document.hidden) { paceWaited = false; tickReq = true; requestAnimationFrame(tick); }   // hidden tab always idles via rAF
+    // FRAME PACING: off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the CPU's frame
+    // prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it. This used to
+    // be the v-sync-off half of a branch; v-sync was removed (user 2026-08-08) and it defaulted off anyway, so
+    // this is now the only pacing mode and a hidden tab is the sole reason to fall back to rAF.
+    if (document.hidden) { paceWaited = false; tickReq = true; requestAnimationFrame(tick); }   // hidden tab always idles via rAF
     else { const wait = gpuPrevDone; gpuPrevDone = device.queue.onSubmittedWorkDone(); paceTs = performance.now();   // ONE pacing mode — no threshold flip-flop, so gen throughput is CONSISTENT
       tickReq = true;
       wait.then(paceOk, paceFail); }   // HOISTED handlers (see above): the inline arrow pair allocated two closures EVERY frame — the top entry in the steady-state heap profile
