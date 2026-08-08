@@ -3496,6 +3496,10 @@
     const ZENITH  : vec3<f32> = vec3<f32>(0.118, 0.302, 0.663);   // deep clear blue
     const HORIZON : vec3<f32> = vec3<f32>(0.402, 0.567, 0.769);   // blue haze, not grey
     const BOUNCE  : vec3<f32> = vec3<f32>(0.238, 0.207, 0.156);
+    // ── WATER EXTINCTION ── per voxel (10 cm), for EVERY through-water path. It is a named constant because
+    // it was two separate literals: the bed was scaled to 0.8 on 2026-08-06 ("20% more transparent") and the
+    // creature path was missed, so a fish faded 25% faster than the lakebed directly behind it.
+    const WATER_SIG : vec3<f32> = vec3<f32>(0.240, 0.0920, 0.0416);
     const HURT_RED : vec3<f32> = vec3<f32>(2.1, 0.07, 0.055);   // the wound red — used by BOTH the hit flash on the animal and the blood voxels it throws, so they always match exactly (user 2026-08-05)
     fn rayDir(px : vec2<f32>) -> vec3<f32> {
       let ndc = (px / u.res) * 2.0 - 1.0;
@@ -4556,6 +4560,15 @@
       let face = u32(alb4.a * 255.0 + 0.5) & 15u;
       let lavaG = f32(u32(alb4.a * 255.0 + 0.5) >> 4u) / 14.0;
       var col : vec3<f32>;
+      // ── SURFACE TERMS, HOISTED ── the creature/drop path far below composites submerged hits through the
+      // water, and to do that the way the BED does it needs the same three numbers the bed uses: the water's
+      // own in-scatter glow, the mirror, and the Fresnel split between them. Without them it was faking the
+      // whole thing by fading the creature toward the finished SURFACE colour, which already has the sky
+      // reflection mixed in -- so a fish saturated toward a bright grey and read as a pale blob, brighter
+      // than the water it was supposedly inside.
+      var waterScat = vec3<f32>(0.0);
+      var waterRefl = vec3<f32>(0.0);
+      var waterFres = 0.0;
       if (u.misc.w > 0.5) {                                          // ── EYE INSIDE A VOXEL ── show the MATERIAL you are buried in as chunky pixels, not a black void
         let pk = u32(u.misc.w + 0.5) - 1u;                           // packed sRGB of that voxel: stone, needle green, trunk brown…
         let base = pow(vec3<f32>(f32(pk & 255u), f32((pk >> 8u) & 255u), f32((pk >> 16u) & 255u)) / 255.0, vec3<f32>(2.2));
@@ -4644,7 +4657,7 @@
         // comes back is absorbed per-channel over the traveled water path — red dies first, blue carries.
         // PERF: capped at 34 (beyond that Beer–Lambert leaves <3% — invisible), and skipped entirely at grazing angles
         // (fres > 0.8 → the Fresnel split hands nearly everything to the mirror; the in-scatter constant stands in).
-        let sigT = vec3<f32>(0.240, 0.0920, 0.0416);                 // extinction per voxel (10 cm) — 20% MORE TRANSPARENT (user 2026-08-06): every channel scaled by 0.8, so the RATIO is untouched and the water keeps its colour (red still dies first, blue carries) while you see 25% deeper before the same amount is absorbed. Was (0.30, 0.115, 0.052).
+        let sigT = WATER_SIG;                                        // extinction per voxel (10 cm) — 20% MORE TRANSPARENT (user 2026-08-06): every channel scaled by 0.8, so the RATIO is untouched and the water keeps its colour (red still dies first, blue carries) while you see 25% deeper before the same amount is absorbed. Was (0.30, 0.115, 0.052).
         let scatC = vec3<f32>(0.018, 0.070, 0.092) * (0.30 + 0.70 * sunW) * dayScale() * (0.45 + 0.55 * irr.g);   // single-scatter source — the water's own glow, lit by sun + sky
         var refrC = scatC;                                           // no bed within reach → the column saturates to pure in-scatter
         if (fres < 0.80 && LG(19u)) {                                // bit 19: WATER REFRACTION — off leaves refrC at the pure in-scatter colour, no bed, no Beer-Lambert
@@ -4661,6 +4674,8 @@
             refrC = balb * blit * trB + scatC * (vec3<f32>(1.0) - trB);
           }
         }
+        waterScat = scatC; waterRefl = reflC;                        // …the creature path below composites against these, so a fish sits in the same water the bed sits in
+        waterFres = clamp(select(0.0, fres * u.lgt.y, LG(18u)), 0.0, 1.0);
         // energy split by Fresnel — transmission vs mirror. Bit 18: WATER REFLECTION — off hands the whole
         // surface to refraction. u.lgt.y is the panel's REFLECTION STRENGTH slider (1 = physical Schlick).
         col = mix(refrC, reflC, clamp(select(0.0, fres * u.lgt.y, LG(18u)), 0.0, 1.0));
@@ -4815,7 +4830,12 @@
                     let cCap = select(900.0, min(900.0, (cCeil - cSp.y) / max(u.sunDir.y, 1e-4)), u.sunDir.y > 1e-4);
                     if (cCap <= 0.0) { sunC = 1.0; }
                     else {
-                    let shC = trace(cSp, u.sunDir, cCap, false);
+                    // skipW was hardcoded false, so for a creature UNDER the surface the first thing this ray
+                    // hit was the water itself and every fish came back fully shadowed -- no direct term at all,
+                    // lit by sky alone. Water is not an occluder for sunlight; the bed under it is lit through
+                    // the surface by its own blit term. The select is false for anything above water, so a duck
+                    // still takes tree shade exactly as before.
+                    let shC = trace(cSp, u.sunDir, cCap, waterT > 0.0 && bestT > waterT);
                     sunC = select(1.0, 0.0, shC.t >= 0.0);
                     }
                   } else if (${location.search.includes('noshadow') ? 1 : 0} == 1) { sunC = 1.0; }
@@ -4886,9 +4906,20 @@
                 // 2026-08-07 and REVERTED — with no surface pixel to borrow a colour from it saturated toward a
                 // stand-in tint that is brighter than the water, turning every fish into a pale cyan blob. Any
                 // retry needs a real water colour for that case, not a scaled constant.
-                if (waterT > 0.0 && bestT > waterT) {                // the hit sits UNDER the water surface, seen THROUGH it: per-channel Beer-Lambert
-                  let trF = exp(-vec3<f32>(0.30, 0.115, 0.052) * (bestT - waterT));   // UNCHANGED from above the surface (user 2026-07-20)
-                  col = waterCol * (vec3<f32>(1.0) - trF) + col * trF;
+                if (waterT > 0.0 && bestT > waterT) {                // the hit sits UNDER the water surface, seen THROUGH it
+                  // ── COMPOSITED LIKE THE BED, NOT LIKE A DECAL ── the lakebed reads correctly through this
+                  // exact water, so a fish in front of it should be built the same way, and it was not:
+                  //   · it faded toward waterCol, the FINISHED surface colour with the sky mirror already
+                  //     mixed in, so depth pushed it toward a bright grey instead of into the water;
+                  //   · it never took the Fresnel split at all, so the mirror arrived as a function of DEPTH
+                  //     rather than of viewing angle;
+                  //   · and its extinction was a second literal that missed the 2026-08-06 re-tune.
+                  // Now: Beer-Lambert on the shared constant, fade into the in-scatter the bed fades into,
+                  // then the same Fresnel mix against the same mirror. Straight down the fish is clear; at a
+                  // grazing angle the reflection covers it, which is what water actually does.
+                  let trF = exp(-WATER_SIG * (bestT - waterT));
+                  let through = col * trF + waterScat * (vec3<f32>(1.0) - trF);
+                  col = mix(through, waterRefl, waterFres);
                 }
                 // ── AND THE DISTANCE FOG, WHICH THE SCENE GETS AND THIS DID NOT ── the fog block above runs on
                 // the g-buffer BEFORE this DDA and uses the SCENE's depth, so every creature and drop was
