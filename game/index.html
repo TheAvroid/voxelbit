@@ -56,13 +56,37 @@
   #achv .a1 { font-size: 14px; letter-spacing: 6px; color: #ffd76a; }
   #achv .a2 { font-size: 26px; letter-spacing: 4px; color: #fff; margin-top: 10px; }
   #lock { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; background: rgba(8,10,14,0.55); color: #e8edf4; font: 8px/1.8 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; backdrop-filter: blur(2px); }   /* no text-shadow (user 2026-08-07): the esc menu's own text sits over a blurred backdrop that already separates it, and the shadow it inherited to "click to enter" + the key hints read as smudge. The WORDMARK is shadowless too (user 2026-08-07) — see the next rule. */
-  #lock h1, #loadTitle { position: relative; font: 60px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; text-shadow: none; filter: none; }   /* NO SHADOW (user 2026-08-07): text-shadow can't touch gradient-clipped text, so the wordmark's shadow was a drop-shadow FILTER — that is the one to null out, and it must stay `none` or the letters pick it up again. */
+  #lock h1, #loadTitle { position: relative; font: 60px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; text-shadow: none; filter: drop-shadow(5px 6px 4px rgba(0,0,0,0.60)); }   /* DROP SHADOW, bottom-right shifted (user 2026-08-08 — it had been nulled out on 2026-08-07 and is now wanted back). It has to be a `filter`, not `text-shadow`: a text-shadow is painted ABOVE its own element's background, and the wordmark's faces ARE backgrounds (background-clip:text), so an offset text-shadow would sit on top of the crimson/lime instead of behind the glyphs. The filter composites the whole three-layer stack — gold bevel, face, version badge — and drops one shadow behind all of it. `text-shadow: none` must STAY: #load sets one on the container and the wordmark would otherwise inherit it. */
   #lock h1 .tv, #loadTitle .tv { background: linear-gradient(180deg, #ff7a8a 0%, #8e0e20 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* crimson, light→dark */
   #lock h1 .tb, #loadTitle .tb { background: linear-gradient(180deg, #b8ff6e 0%, #2f8a12 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* lime, light→dark */
   #lock h1 .tver, #loadTitle .tver { position: absolute; left: 100%; top: calc(2.4167em - 2px); margin-left: calc(0.35em - 3px); white-space: nowrap; font-size: 0.2em; letter-spacing: 2px; line-height: 2; background: linear-gradient(180deg, #c6ced8 0%, #6d757f 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* VERSION, tacked onto the top-right of the wordmark — grey, matching source/wip/space.html's .ver-sup. ABSOLUTE on purpose (user): in flow it widened the h1 and shoved 'voxelbit' ~29px left of centre, and the WORDMARK is what has to be centred. left:100% hangs it off the title's right edge at zero layout width. white-space:nowrap is required — an abspos box at left:100% shrink-to-fits against 0 remaining width and would otherwise wrap to one glyph per line. top is 2.94em of the BADGE (35.3px), which is FLUSH: px3 declares a 2.0em content box so the glyphs float mid-box and neither vertical-align nor line-height can place this — the number is measured, not guessed (ink top = rect top + fontBoundingBoxAscent − actualBoundingBoxAscent; at 60px that is +36, at 12px +7, so a naive top-alignment sits 11.3px high). Grey gradient light→dark like .tv/.tb, and it needs its OWN background-clip because it sits outside those spans (nested in one it would inherit color:transparent with no gradient of its own and vanish). line-height MUST be 2, not 1: background-clip:text clips to the element's BOX, and px3's ink overflows a 1.0 box — at line-height 1 the glyph bottoms had no background behind them and rendered transparent, which read as the tag being cut off. Restoring the 2.0 box moves the ink down half a leading (6px), hence top 2.94em → 2.4167em. The trailing −2px is an OPTICAL nudge on top of that (user): the computed value aligns the two ink tops exactly (measured identical to 0.01px), but at 12px the pixel font's rows snap a hair low against 60px glyphs, so the arithmetic answer and the one that LOOKS flush differ by a pixel. Same reason margin-left carries a −3px term. */
   #loadTitle .tver .vd { display: inline-block; overflow: hidden; vertical-align: top; }   /* ROLLING DRUM (user) — one window per digit; the strip inside it slides by exactly one cell so the old number leaves as the new one arrives. overflow:hidden is what makes it a window rather than a list. */
   #loadTitle .tver .vdr { display: block; will-change: transform; }
   #loadTitle .tver .vdr i { display: block; font-style: normal; background: linear-gradient(180deg, #c6ced8 0%, #6d757f 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* the gradient lives on each DIGIT, not the parent: background-clip:text clips to the element's own box, and a digit halfway through the window would otherwise be masked by the parent's box instead of its own. */
+  /* ── GOLD-BEVELLED WORDMARK (user 2026-08-08) ── an Endgame-style metallic gold edge around each glyph, with the brand
+     crimson/lime kept as the front FACE. Applied to BOTH copies of the wordmark, the esc menu and the loading screen.
+     No extrusion behind the letters and no dark contour around them (user): both were tried and removed, so this is a
+     gold OUTLINE plus the drop shadow on the h1 rule above, which is what now separates the gold from bright terrain.
+     Built as a TWO-LAYER STACK per word rather than one styled span, because the two effects need different fills, and
+     because a text-shadow paints ABOVE its own element's background — put the ring on the span itself and its offset
+     copies would cover the face gradient instead of sitting behind it:
+       ::before  the bevel. `color:transparent`, so ONLY its text-shadows paint: eight offset copies at r=4, graded from
+                 bright gold on the top-left arc to bronze on the bottom-right, so the edge reads as lit metal.
+       ::after   the front face: brand gradient + a diagonal sheen band, background-clip:text, stacked above by z-index.
+     Both duplicate the word via `content: attr(data-t)`, so BOTH sets of spans must carry data-t — a span without it
+     renders an empty string and loses its bevel and its face at once.
+     The 8-direction ring at ±r is a COMPLETE r-px outline here, not a dotted one: px3's glyphs are axis-aligned blocks
+     ~20px thick at this size, so translations spaced r=4 apart overlap and their union is the full dilated shape.
+     NO -webkit-text-stroke anywhere — a stroke follows every contour, including the seams where px3's internal pixel
+     squares abut, which quilted a grid across the letter faces.
+     Per-word rules must use `background-image`, NOT the `background` shorthand: the shorthand resets background-clip
+     back to border-box and the face floods its whole box as a solid rectangle. */
+  #lock h1 .tv, #lock h1 .tb, #loadTitle .tv, #loadTitle .tb { position: relative; display: inline-block; background: none; color: transparent; }
+  #lock h1 .tv::before, #lock h1 .tb::before, #lock h1 .tv::after, #lock h1 .tb::after, #loadTitle .tv::before, #loadTitle .tb::before, #loadTitle .tv::after, #loadTitle .tb::after { content: attr(data-t); position: absolute; left: 0; top: 0; white-space: pre; }
+  #lock h1 .tv::before, #lock h1 .tb::before, #loadTitle .tv::before, #loadTitle .tb::before { z-index: 1; color: transparent; text-shadow: 0px -4px 0 #ffe6a8, -4px -4px 0 #ffeec2, 4px -4px 0 #f7d288, -4px 0px 0 #eec684, 4px 0px 0 #d2a453, -4px 4px 0 #ab7d31, 0px 4px 0 #916522, 4px 4px 0 #754e17; }
+  #lock h1 .tv::after, #lock h1 .tb::after, #loadTitle .tv::after, #loadTitle .tb::after { z-index: 2; color: transparent; -webkit-background-clip: text; background-clip: text; }
+  #lock h1 .tv::after, #loadTitle .tv::after { background-image: linear-gradient(104deg,rgba(255,255,255,0) 34%,rgba(255,255,255,0.30) 46%,rgba(255,255,255,0) 56%),linear-gradient(180deg,#ffc8ce 0%,#ff7a8a 16%,#c8263a 58%,#7d0c1c 100%); }
+  #lock h1 .tb::after, #loadTitle .tb::after { background-image: linear-gradient(104deg,rgba(255,255,255,0) 34%,rgba(255,255,255,0.30) 46%,rgba(255,255,255,0) 56%),linear-gradient(180deg,#e6ffbe 0%,#b8ff6e 16%,#5cbc26 58%,#2a7d10 100%); }
   #lock .keys { opacity: 0.75; font-size: 6px; }
   #load { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #0b0e12; color: #cfdae8; font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; z-index: 10; overflow: hidden; text-shadow: 0 2px 6px rgba(0,0,0,0.9); }
   /* the loading screen carries the voxelbit title above the status text. When the world is ready the whole overlay is
@@ -187,19 +211,19 @@
   /* ── SLIDER KNOBS ── custom thumbs so the circle can GROW on hover (user: keep the cross cursor over a slider, expand
      the knob instead of squaring the cursor). accent-color can't animate a native thumb, so the track + thumb are drawn
      by hand: a thin rail and a green disc that scales up (and gets a soft ring) while hovered or dragged. */
-  #todSlider, #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; outline: none;
+  #todSlider, #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider, #musSlider { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; outline: none;
     background: linear-gradient(to right, #7fd05a 0%, #7fd05a var(--fill, 50%), #2a3342 var(--fill, 50%), #2a3342 100%); }   /* --fill (JS-driven) is the GREEN LINE to the left of the knob (user) */
-  #todSlider::-webkit-slider-thumb, #volSlider::-webkit-slider-thumb, #sensSlider::-webkit-slider-thumb, #resSlider::-webkit-slider-thumb, #dofStrSlider::-webkit-slider-thumb, #sfxSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
-  #todSlider:hover::-webkit-slider-thumb, #volSlider:hover::-webkit-slider-thumb, #sensSlider:hover::-webkit-slider-thumb, #resSlider:hover::-webkit-slider-thumb, #dofStrSlider:hover::-webkit-slider-thumb, #sfxSlider:hover::-webkit-slider-thumb,
-  #todSlider:active::-webkit-slider-thumb, #volSlider:active::-webkit-slider-thumb, #sensSlider:active::-webkit-slider-thumb, #resSlider:active::-webkit-slider-thumb, #dofStrSlider:active::-webkit-slider-thumb, #sfxSlider:active::-webkit-slider-thumb { transform: scale(1.65); }   /* knob grows on hover — NO halo (user removed the box-shadow ring) */
-  #todSlider::-moz-range-thumb, #volSlider::-moz-range-thumb, #sensSlider::-moz-range-thumb, #resSlider::-moz-range-thumb, #dofStrSlider::-moz-range-thumb, #sfxSlider::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
-  #todSlider:hover::-moz-range-thumb, #volSlider:hover::-moz-range-thumb, #sensSlider:hover::-moz-range-thumb, #resSlider:hover::-moz-range-thumb, #dofStrSlider:hover::-moz-range-thumb, #sfxSlider:hover::-moz-range-thumb,
-  #todSlider:active::-moz-range-thumb, #volSlider:active::-moz-range-thumb, #sensSlider:active::-moz-range-thumb, #resSlider:active::-moz-range-thumb, #dofStrSlider:active::-moz-range-thumb, #sfxSlider:active::-moz-range-thumb { transform: scale(1.65); }
-  #todSlider::-moz-range-track, #volSlider::-moz-range-track, #sensSlider::-moz-range-track, #resSlider::-moz-range-track, #dofStrSlider::-moz-range-track, #sfxSlider::-moz-range-track { height: 5px; border-radius: 3px; background: #2a3342; }
-  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress, #sensSlider::-moz-range-progress, #resSlider::-moz-range-progress, #dofStrSlider::-moz-range-progress, #sfxSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: #7fd05a; }   /* Firefox draws the filled-left portion natively */
+  #todSlider::-webkit-slider-thumb, #volSlider::-webkit-slider-thumb, #sensSlider::-webkit-slider-thumb, #resSlider::-webkit-slider-thumb, #dofStrSlider::-webkit-slider-thumb, #sfxSlider::-webkit-slider-thumb, #musSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
+  #todSlider:hover::-webkit-slider-thumb, #volSlider:hover::-webkit-slider-thumb, #sensSlider:hover::-webkit-slider-thumb, #resSlider:hover::-webkit-slider-thumb, #dofStrSlider:hover::-webkit-slider-thumb, #sfxSlider:hover::-webkit-slider-thumb, #musSlider:hover::-webkit-slider-thumb,
+  #todSlider:active::-webkit-slider-thumb, #volSlider:active::-webkit-slider-thumb, #sensSlider:active::-webkit-slider-thumb, #resSlider:active::-webkit-slider-thumb, #dofStrSlider:active::-webkit-slider-thumb, #sfxSlider:active::-webkit-slider-thumb, #musSlider:active::-webkit-slider-thumb { transform: scale(1.65); }   /* knob grows on hover — NO halo (user removed the box-shadow ring) */
+  #todSlider::-moz-range-thumb, #volSlider::-moz-range-thumb, #sensSlider::-moz-range-thumb, #resSlider::-moz-range-thumb, #dofStrSlider::-moz-range-thumb, #sfxSlider::-moz-range-thumb, #musSlider::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
+  #todSlider:hover::-moz-range-thumb, #volSlider:hover::-moz-range-thumb, #sensSlider:hover::-moz-range-thumb, #resSlider:hover::-moz-range-thumb, #dofStrSlider:hover::-moz-range-thumb, #sfxSlider:hover::-moz-range-thumb, #musSlider:hover::-moz-range-thumb,
+  #todSlider:active::-moz-range-thumb, #volSlider:active::-moz-range-thumb, #sensSlider:active::-moz-range-thumb, #resSlider:active::-moz-range-thumb, #dofStrSlider:active::-moz-range-thumb, #sfxSlider:active::-moz-range-thumb, #musSlider:active::-moz-range-thumb { transform: scale(1.65); }
+  #todSlider::-moz-range-track, #volSlider::-moz-range-track, #sensSlider::-moz-range-track, #resSlider::-moz-range-track, #dofStrSlider::-moz-range-track, #sfxSlider::-moz-range-track, #musSlider::-moz-range-track { height: 5px; border-radius: 3px; background: #2a3342; }
+  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress, #sensSlider::-moz-range-progress, #resSlider::-moz-range-progress, #dofStrSlider::-moz-range-progress, #sfxSlider::-moz-range-progress, #musSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: #7fd05a; }   /* Firefox draws the filled-left portion natively */
   #rdWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #volWrap, #sensWrap, #resWrap, #dofStrWrap, #sfxWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider { width: 170px; cursor: pointer; }
+  #volWrap, #sensWrap, #resWrap, #dofStrWrap, #sfxWrap, #musWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider, #musSlider { width: 170px; cursor: pointer; }
   #vigWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #snowWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   /* ── LIGHT DEBUG PANEL ── every lighting term on its own switch, top-right, so the image can be
@@ -360,7 +384,7 @@
   <div class="arwRow arwBake"><input type="text" id="arwBake" readonly><button id="arwCopy">copy</button></div>
   <div class="arwHint" id="arwNow">0 / 0 / 0</div></div>
 <div id="lock" class="hidden">
-  <h1><span class="tv">voxel</span><span class="tb">bit</span><sup class="tver">v1.0</sup></h1>
+  <h1><span class="tv" data-t="voxel">voxel</span><span class="tb" data-t="bit">bit</span><sup class="tver">v1.0</sup></h1>
   <div id="btnRow">
     <button id="kbBtn" aria-label="settings" data-lbl="settings"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
     <button id="edBtn" aria-label="asset editor" data-lbl="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
@@ -377,6 +401,7 @@
   <div class="optRows">
   <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="100"></div>
   <div id="sfxWrap"><span id="sfxLabel">sfx 100%</span><input type="range" id="sfxSlider" min="0" max="100" step="1" value="100"></div>
+  <div id="musWrap"><span id="musLabel">music 100%</span><input type="range" id="musSlider" min="0" max="100" step="1" value="100"></div>
   </div>
 </div>
 <div id="kbCard3">
@@ -412,7 +437,7 @@
   <div id="pkRows"></div>
   <div style="text-align:center"><button id="pkReset">reset</button><button id="pkClose">done</button></div>
 </div></div>
-<div id="load"><video id="loadVid" autoplay loop muted playsinline preload="auto" poster="assets/loadposter.jpg"><source src="loading.mp4" type="video/mp4"></video><h1 id="loadTitle"><span class="tv">voxel</span><span class="tb">bit</span><sup class="tver">v<span class="vd"><span class="vdr"><i>0</i></span></span>.<span class="vd"><span class="vdr"><i>0</i></span></span></sup></h1><span id="loadMsg">generating forest…</span><div id="loadMeter"><div id="loadBar"><div id="loadFill"></div><div id="loadGloss"></div></div><span id="loadPct">0%</span></div></div>
+<div id="load"><video id="loadVid" autoplay loop muted playsinline preload="auto" poster="assets/loadposter.jpg"><source src="loading.mp4" type="video/mp4"></video><h1 id="loadTitle"><span class="tv" data-t="voxel">voxel</span><span class="tb" data-t="bit">bit</span><sup class="tver">v<span class="vd"><span class="vdr"><i>0</i></span></span>.<span class="vd"><span class="vdr"><i>0</i></span></span></sup></h1><span id="loadMsg">generating forest…</span><div id="loadMeter"><div id="loadBar"><div id="loadFill"></div><div id="loadGloss"></div></div><span id="loadPct">0%</span></div></div>
 <div id="over" class="hidden"><h1>game over</h1><div id="overWhy">you fell into the lava</div><div class="ohint">click to respawn</div></div>
 <div id="playHint" class="hidden">press any button</div>
 <div id="veRec" class="hidden"><span class="dot"></span>recording</div>
@@ -4845,7 +4870,29 @@
                   var alb2 = cell.rgb;                                 // DUCK EYE BLINK: the black eye voxel flashes the head-GREEN when the slot's blink lane (dYv.w) is lit (user)
                   if (${DUCK_ITEM0 > 0 ? 1 : 0} == 1 && dYv.w > 0.5 && (dit == ${DUCK_ITEM0 || 9999} || dit == ${DUCKB_ITEM0 || 9998}) && alb2.r < 0.02 && alb2.g < 0.02 && alb2.b < 0.02) { alb2 = vec3<f32>(${DUCK_GREEN[0].toFixed(4)}, ${DUCK_GREEN[1].toFixed(4)}, ${DUCK_GREEN[2].toFixed(4)}); }
                   let grain = 0.95 + 0.10 * ih3(vcD.x, vcD.y, vcD.z);   // per-voxel texture — GENTLE (±5%) so authored colour transitions dominate the noise (user); hashed on the MODEL-local voxel so it's stable as the creature drifts/rotates
-                  col = alb2 * (direct + (skyIrr + bounceC) * 0.85 + vec3<f32>(0.012, 0.013, 0.016)) * grain;   // 0.85 ≈ the terrain's typical open-air AO term — same formula as the static world (irr coupling stays banned: it read as translucent)
+                  // ── CAUSTIC WEBS ON A SUBMERGED CREATURE (user 2026-08-08: "increase the quality of the fish
+                  // through the water") ── the lakebed under this same water gets caustics multiplied into its
+                  // albedo (see the refraction block); a fish swimming just above that bed got none, so the one
+                  // cue that most says "this is underwater" was missing from the animal and present on the
+                  // ground behind it. Same caust() call, same 1.6 gain, keyed on the creature's OWN sun
+                  // visibility rather than the surface's, so a fish under a tree's shadow is not painted with
+                  // sunlit webs. Gated on being submerged: a duck, a bird and every land animal are untouched.
+                  //
+                  // ── AND THE LIGHT REACHING IT IS *NOT* ATTENUATED HERE (tried twice, rejected by eye) ──
+                  // it looks obviously right on paper: the sun crosses the water column before it reaches the
+                  // fish, so absorb it over depth/sinAlt. Both a full-strength version and a 0.35-scaled one
+                  // turned the fish into a black silhouette, because the composite further down ALREADY
+                  // absorbs the view path back to the eye — the depth was being paid for twice — and the slant
+                  // path multiplies it again at a low sun. The bed does not attenuate its own incoming term
+                  // either, for exactly this reason. If this is revisited, the missing piece is a scattered
+                  // in-water light term to fade toward, not a bigger exponent.
+                  var alb3 = alb2;
+                  if (waterT > 0.0 && bestT > waterT) {
+                    let wpC = u.camPos + rd * bestT;
+                    let caC = caust(floor(vec2<f32>(wpC.x + u.winO.x, wpC.z + u.winO.y)) + vec2<f32>(0.5));
+                    alb3 = alb2 * (1.0 + 1.6 * caC * smoothstep(-0.02, 0.12, u.sunDir.y) * sunC);
+                  }
+                  col = alb3 * (direct + (skyIrr + bounceC) * 0.85 + vec3<f32>(0.012, 0.013, 0.016)) * grain;   // 0.85 ≈ the terrain's typical open-air AO term — same formula as the static world (irr coupling stays banned: it read as translucent)
                   if (${WORM_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${WORM_ITEM0 || 9999} && dit < ${(WORM_ITEM0 || 9999) + (WORM_NFRAMES || 1)}) {   // WORM fake-AO — the smooth off-grid worm's stand-in for the grid-stamped cardinal's REAL contact AO (user chose 'fake AO, stay smooth'): darken the underside + lower body so it reads GROUNDED, no grid-stamp shimmer
                     let upN = clamp(0.5 + 0.5 * nw.y, 0.0, 1.0);              // 1 = top-facing, 0 = down-facing (the shaded underside against the ground)
                     let hN = f32(vcD.z) / max(1.0, f32(eH - 1));             // 0 = ground side of the body, 1 = its top
@@ -5612,12 +5659,50 @@
   // off-grid representation — so without this the player walks straight through a felled trunk. Cheap:
   // one sphere reject per body, then a direct grid lookup. No search, the same property Teardown relies
   // on for voxel-vs-voxel collision.
+  // ── BROAD PHASE: A REAL WORLD AABB, NOT A SPHERE ── phBodySolid is the single hottest function in the
+  // game: MEASURED at 26.6% of all JS samples (~1.5 ms/frame) in a calm forest, because every solidity
+  // query in the game — player collision, creature nav, fish, mammal seating — walked all 16 bodies, and the
+  // only reject was a sphere of rMax + 2. rMax is the distance to the FARTHEST voxel, so for a felled pine
+  // it is ~60 and that sphere encloses ~113,000 voxels of volume around a 7,800-voxel trunk: near a felled
+  // tree it essentially never rejected, and every query paid the full transform on every body.
+  //
+  // b.ab is the exact world-space box of the body's own grid, from the standard rotated-extent identity
+  // (half-extent along world axis k = |ax[k]|·ex + |ay[k]|·ey + |az[k]|·ez), so it is tight rather than
+  // conservative and costs 6 compares instead of a transform. PH.abAll is their union: a query nowhere near
+  // any body — which is nearly all of them — now exits on 6 compares total instead of 16 sphere tests.
+  // Rebuilt once per frame for every body (see phAabbAll), which is 16 boxes against thousands of queries.
+  const phAabb = (b) => {
+    const g = b.gpu;
+    if (!g) { b.ab = null; return; }
+    const ex = g.bw * 0.5, ey = g.bh * 0.5, ez = g.bd * 0.5;
+    const cx = ex - g.comL[0], cy = ey - g.comL[1], cz = ez - g.comL[2];   // box centre, relative to the COM, in the body's own frame
+    const ax = b.ax, ay = b.ay, az = b.az;
+    const ab = b.ab || (b.ab = new Float64Array(6));
+    for (let k = 0; k < 3; k++) {
+      const c = b.pos[k] + cx * ax[k] + cy * ay[k] + cz * az[k];
+      const h = Math.abs(ax[k]) * ex + Math.abs(ay[k]) * ey + Math.abs(az[k]) * ez + 1.0;   // +1: the query tests a voxel CENTRE against a box measured in whole voxels
+      ab[k] = c - h; ab[k + 3] = c + h;
+    }
+  };
+  const phAabbAll = () => {                          // once per frame: every body's box, and their union
+    const A = PH.abAll;
+    A[0] = A[1] = A[2] = 1e30; A[3] = A[4] = A[5] = -1e30;
+    for (let i = 0; i < PH.bodies.length; i++) {
+      const b = PH.bodies[i];
+      phAabb(b);
+      const ab = b.ab; if (!ab || b.absorbing) continue;
+      for (let k = 0; k < 3; k++) { if (ab[k] < A[k]) A[k] = ab[k]; if (ab[k + 3] > A[k + 3]) A[k + 3] = ab[k + 3]; }
+    }
+  };
   const phBodySolid = (x, y, z) => {
     if (!PH.on) return false;
+    const A = PH.abAll, px = x + 0.5, py = y + 0.5, pz = z + 0.5;
+    if (px < A[0] || px > A[3] || py < A[1] || py > A[4] || pz < A[2] || pz > A[5]) return false;   // nowhere near ANY body
     for (let i = 0; i < PH.bodies.length; i++) {
       const b = PH.bodies[i], g = b.cpuGrid; if (!g || !b.gpu || b.absorbing) continue;   // a chunk on its way into the player must not shove them
+      const ab = b.ab;
+      if (ab && (px < ab[0] || px > ab[3] || py < ab[1] || py > ab[4] || pz < ab[2] || pz > ab[5])) continue;
       const dx = x + 0.5 - b.pos[0], dy = y + 0.5 - b.pos[1], dz = z + 0.5 - b.pos[2];
-      if (dx * dx + dy * dy + dz * dz > (b.rMax + 2) * (b.rMax + 2)) continue;
       const lx2 = Math.floor(dx * b.ax[0] + dy * b.ax[1] + dz * b.ax[2] + b.gpu.comL[0]);
       const ly2 = Math.floor(dx * b.ay[0] + dy * b.ay[1] + dz * b.ay[2] + b.gpu.comL[1]);
       const lz2 = Math.floor(dx * b.az[0] + dy * b.az[1] + dz * b.az[2] + b.gpu.comL[2]);
@@ -5639,8 +5724,9 @@
     for (let i = 0; i < PH.bodies.length; i++) {
       const b = PH.bodies[i], g = b.cpuGrid;
       if (!g || !b.gpu || b.absorbing || b.rag || b.n < PH.chopMinBody) continue;
+      const ab = b.ab;                               // …the same tight box the collision path uses (see phAabb)
+      if (ab && (x + 0.5 < ab[0] || x + 0.5 > ab[3] || y + 0.5 < ab[1] || y + 0.5 > ab[4] || z + 0.5 < ab[2] || z + 0.5 > ab[5])) continue;
       const dx = x + 0.5 - b.pos[0], dy = y + 0.5 - b.pos[1], dz = z + 0.5 - b.pos[2];
-      if (dx * dx + dy * dy + dz * dz > (b.rMax + 2) * (b.rMax + 2)) continue;
       const lx2 = Math.floor(dx * b.ax[0] + dy * b.ax[1] + dz * b.ax[2] + b.gpu.comL[0]);
       const ly2 = Math.floor(dx * b.ay[0] + dy * b.ay[1] + dz * b.ay[2] + b.gpu.comL[1]);
       const lz2 = Math.floor(dx * b.az[0] + dy * b.az[1] + dz * b.az[2] + b.gpu.comL[2]);
@@ -6473,6 +6559,10 @@
     gravity: 200,                                    // matches the player's GRAVITY so falls read at the same scale
     linDamp: 0.05, angDamp: 0.18, restitution: 0.0, friction: 0.6,
     sleepLin: 1.2, sleepAng: 0.30, sleepFrames: 40,
+    abAll: new Float64Array([1e30, 1e30, 1e30, -1e30, -1e30, -1e30]),   // union of every live body's world AABB — phBodySolid's O(1) "nowhere near anything" reject
+    sleepAngFree: 24,                                // at or under this many voxels, rest is judged on LINEAR motion alone — a cone is 13 and its spin is solver noise, not motion
+    retireFar: 64,                                   // …and a SETTLED body up to this size is baked back too, once it is further than retireFarR away — see the sleep site. 64 covers a cone (13) and a needle tuft without touching anything the player would call a log.
+    retireFarR: 48,                                  // 3x absorbR: far enough that nobody is mid-walk toward it
     retireMax: 6,                                    // a settled body this small is written back into the grid and its slot freed
     maxProbes: 512, maxContacts: 96, maxCCD: 12,     // maxCCD caps the adaptive substepping (see physStep).
     //   maxProbes was 160, but an 8-voxel bucketing of a 35x93x36 crown yields ~300 buckets — so barely
@@ -6766,6 +6856,8 @@
     b.cpuGrid = grid;                              // CPU copy so player collision can query the body (see phBodySolid)
     b.gpu = { off: bodyTop, bw, bh, bd, cells: cells2, comL: [com[0] - x0, com[1] - y0, com[2] - z0] };
     bodyTop += cells2;
+    phAabb(b);                                     // a body queried before its first physStep still needs a valid broad-phase box
+    if (b.ab) { const A = PH.abAll; for (let k = 0; k < 3; k++) { if (b.ab[k] < A[k]) A[k] = b.ab[k]; if (b.ab[k + 3] > A[k + 3]) A[k + 3] = b.ab[k + 3]; } }
     return b;
   };
   // Evict the OLDEST bodies until `need` cells fit, compacting the shape buffer as we go. The user's
@@ -7480,6 +7572,37 @@
             if (seen.has(nn)) continue;
             seen.add(nn); SUP.busy.add(nn); st.push(nn);        // DRAPE and CONDUIT only
           } else {
+            // ── FOLIAGE HOLDING UP STRUCTURE: TRIED TO REMOVE THIS, MEASURED, PUT BACK (2026-08-08) ──
+            // This bridge is the mechanism behind the floating trunk: cut a pine anywhere and its own crown
+            // reaches down past the cut to the stump, so the severed section is "attached" through needles.
+            // MEASURED with supWhy on a trunk severed outside the chop path: `struct->heldDrape id50`, 401
+            // wood voxels above the cut, still there after a forced flush. Deleting the line does fix exactly
+            // that — the trunk falls, 401 -> 0 — and a forest census over a full storm came back 0 wood, 0
+            // foliage, 0 cones lost, which looks like a clean win and is not one.
+            // The census was the wrong instrument: lifted wood LEAVES W, falls, and physRetire bakes it back,
+            // so the net count is unchanged while the churn is enormous. The honest numbers, calm forest:
+            //     liftedVox 1783 -> 8091   (4.5x more geometry torn loose)
+            //     frame      4.60 -> 11.60 ms      storm 13.40 -> 11.40, thaw 5.10 -> 11.20
+            // That is pine tips coming loose and raining down continuously, because a pine's upper trunk
+            // genuinely is not one connected WOOD shape — its tip is wood embedded in needles. The crutch is
+            // still load-bearing.
+            //
+            // ── AND EVERY GRAPH-LEVEL REPAIR IS DEAD, MEASURED (2026-08-08) ── four were built and priced;
+            // none can work, because the cause is in the ASSET rather than in this graph:
+            //   * remove this bridge          -> pine tips decapitate; liftedVox 1783 -> 8091, 4.6 -> 11.6 ms
+            //   * object identity (refuse     -> interlocked canopies fragment into separate components,
+            //     drape edges between trees)     SUP queue 0 -> 40k, frame 28-41 ms
+            //   * let the tree's OWN root      -> it does not sever either: after 25 axe swings through a
+            //     flood decide (phFlood)          trunk phFlood still reaches 8204 of 8286 voxels, because it
+            //                                     walks the model INCLUDING foliage and the crown spans the
+            //                                     cut. It also costs 3.70 ms/call against a 2 ms budget.
+            //   * wood-only structural flood  -> MEASURED on a standing pine: 26-connected, wood only, from
+            //                                     the buried base, it reaches 2638 of 2784 wood voxels and
+            //                                     stops 23 VOXELS SHORT OF THE TOP.
+            // That last number is the whole story: pine5.vox's bole is discontinuous near the tip, so needles
+            // are load-bearing there by construction, and any rule that stops foliage carrying wood takes the
+            // tree's point off. The fix belongs in the MODEL — make the bole continuous wood to the apex —
+            // after which this bridge can simply be deleted and a severed trunk falls on its own.
             if (ncls === SUP.DRAPE) { if (supHeld(nn, dep)) { anchored = true; SUPWHY.why = 'struct->heldDrape id' + W[nn]; break; } continue; }   // the same rule the other way round: ASK, never enter
             if (ncls !== SUP.STRUCTURE || seen.has(nn)) continue;   // fluid is handled above; a creature stamp is a hole in this graph, exactly as stampApply guarantees
             seen.add(nn); SUP.busy.add(nn); st.push(nn);
@@ -8123,7 +8246,23 @@
     // those two: anything else (stone, soil, a chunk of something) keeps the old unfiltered behaviour, so
     // nothing outside the tree paths changes. This is the off-grid twin of the `isWood` filter physChopAt
     // already gets, and of okMat on the W path.
-    const okBody = woodTab[aimId] ? ((v) => !!woodTab[v]) : (foliaTab[aimId] ? ((v) => !!foliaTab[v]) : null);
+    // ── AND A BODY IS CONFINED TO ITS AIMED MATERIAL THE WAY THE WORLD IS ── wood and foliage had their own
+    // filters; everything else fell through to null, i.e. the sphere took whatever was nearest. Mirrors okMat
+    // below so a bite out of a toppled rock cannot spill into the moss riding on it.
+    const okBody = woodTab[aimId] ? ((v) => !!woodTab[v])
+      : (foliaTab[aimId] ? ((v) => !!foliaTab[v])
+      : (aimId ? (digOnlyTab[aimId] ? ((v) => !!digOnlyTab[v])
+                : (pickOnlyTab[aimId] ? ((v) => !!pickOnlyTab[v])
+                : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]))) : null));
+    // ── WHICH TOOL MAY CUT THIS BODY (user 2026-08-08: "when a rock topples over from cutting it in half, now
+    // I cant keep taking chunks out of the rigid body… the same with the rigid mushroom… the tree still works
+    // fine") ── the whole rigid-body branch was gated on `cut`, i.e. on holding a cutting edge. That is right
+    // for WOOD and wrong for everything else, and it is exactly why a felled tree stayed choppable while a
+    // toppled rock and a felled mushroom did not: a rock wants the PICK and a mushroom yields to anything, and
+    // neither is `cut`, so the branch was skipped and the swing fell through to the world path — which finds
+    // nothing, because a rigid body is not in W. The material's own rule is the one that should decide, and
+    // that rule already exists a few lines below for the same materials while they are still in the ground.
+    const bodyTool = (v) => digOnlyTab[v] ? (dig || knife) : (pickOnlyTab[v] ? (pick || knife) : (axeOnlyTab[v] ? cut : true));
     // ── THE ONE GATE (user 2026-08-07: "I'm aiming and clicking with the axe on the dirt, the axe registers the
     // nearby tree") ── the crosshair is resting on GRID wood. treeShapeAt is a bare XZ bounding-box test over a
     // pine's ~35-voxel footprint, so S latches for ANY ground column within ~17 voxels of the bole; physChopAt
@@ -8165,7 +8304,7 @@
       // and small `treeChunk` pieces appeared off a tree nobody was pointing at. The bAt gate makes this test
       // exact on its own, so it no longer needs S to stand aside for it.
       const bAt = phBodyIdAt(x, y, z);
-      if (cut && bAt && (!okBody || okBody(bAt)) &&
+      if (bAt && bodyTool(bAt) && (!okBody || okBody(bAt)) &&
           (phChopBody(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, C_MIN, C_BITE, okBody) ||
            phChopBody(x, y, z, C_RAD, C_MIN, C_BITE, okBody))) return 1;   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
       const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
@@ -8236,7 +8375,7 @@
     // than letting the swing do nothing at all.
     if (voxRay(P.x, smoothEye, P.z, vx, vy, vz, CHOP_REACH, (x2, y2, z2) => {
       if (y2 < 1 || y2 >= WY) return false;
-      if (cut && aimBody && phBodyIdAt(x2, y2, z2) && phChopBody(x2, y2, z2, C_RAD, C_LAST, C_BITE, okBody)) return true;   // the crosshair must be ON a body and the sampled voxel INSIDE one — the same exactness the main march gets from its bAt gate. Ungated, this took a 15-voxel bite out of any felled log within radius 10 of ANY voxel on a 107-long ray.   // …and a reduced bite off a fallen trunk still counts   // still the aimed material only: the whole point of the safety net is a notched TRUNK, and letting it fall back to needles is the bug it would be papering over
+      if (aimBody && phBodyIdAt(x2, y2, z2) && bodyTool(phBodyIdAt(x2, y2, z2)) && phChopBody(x2, y2, z2, C_RAD, C_LAST, C_BITE, okBody)) return true;   // the crosshair must be ON a body and the sampled voxel INSIDE one — the same exactness the main march gets from its bAt gate. Ungated, this took a 15-voxel bite out of any felled log within radius 10 of ANY voxel on a 107-long ray.   // …and a reduced bite off a fallen trunk still counts   // still the aimed material only: the whole point of the safety net is a notched TRUNK, and letting it fall back to needles is the bug it would be papering over
       if (aimWood && S && physChopAt(x2, y2, z2, C_RAD, S, C_LAST, C_BITE, isWood).hit) return true;   // …still wood only, for the same reason the main march is
       if (cut && aimWood && woodTab[W[gwrap(x2, WX) + y2 * WX + gwrap(z2, WZ) * WX * WY]] && phChopDecor(x2, y2, z2, C_RAD, C_LAST, (v) => !!woodTab[v])) return true;   // …and the last splinters of a stump   // same rule as the main pass: the crosshair has to be on wood
       return false;
@@ -8375,14 +8514,36 @@
     const lin = Math.hypot(b.vel[0], b.vel[1], b.vel[2]), ang = Math.hypot(b.omega[0], b.omega[1], b.omega[2]);
     // A chip of a few voxels has inertia ~0.33, so any impulse spins it past a sensible angular
     // threshold — yet its orientation is meaningless at that size. Judge those on linear rest alone.
-    const angOK = b.n <= PH.retireMax ? true : ang < PH.sleepAng;
+    // ── …AND "A FEW VOXELS" MEANS MORE THAN SIX (2026-08-08) ── this reused retireMax (6) as the cutoff for
+    // judging rest on linear motion alone, which left a PINECONE (13 voxels) and a needle tuft needing the
+    // full angular test. MEASURED, in a calm forest with nothing chopped: PH.bodies pinned at 16/16, and the
+    // occupants were 7-15 voxel scraps sitting at a FIXED position with sleep:false — linearly at rest and
+    // still spinning on solver jitter, so they never slept, never retired, and held slots for the whole 60 s
+    // chunkLifeMs. A saturated budget is what forces the eviction paths to run at all, and it is why a chunk
+    // the player was carrying could be thrown away to make room for a cone nobody will ever see.
+    // The original rationale is unchanged, only its threshold: at this size the orientation is meaningless,
+    // and a body that has stopped MOVING has stopped. Linear rest is still required either way.
+    const angOK = b.n <= PH.sleepAngFree ? true : ang < PH.sleepAng;
     // Sleep on LOW MOTION alone, not on having a contact this step. Contacts flicker in and out as a
     // resting body micro-settles, and requiring one meant the countdown decayed faster than it grew —
     // a body that had visibly stopped stayed awake forever. Free fall cannot false-trigger it: one step
     // of gravity is already 3.3 vox/s, well over sleepLin.
     if (lin < PH.sleepLin && angOK) {
       if (!b.tipping && ++b.sleepT >= PH.sleepFrames) { b.sleeping = true; b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0;
-        if (b.n <= PH.retireMax) b.retire = true; }
+        if (b.n <= PH.retireMax) b.retire = true;
+        // ── AND SETTLED SCRAP FAR FROM THE PLAYER GOES BACK IN THE GRID TOO ── MEASURED: PH.bodies sits
+        // pinned at 16/16 in ordinary play with nothing being chopped, because the support resolver sheds a
+        // needle or a cone here and there and each one holds a slot for the full 60 s chunkLifeMs. A saturated
+        // budget is what forces the eviction paths to run at all, and every live body is a box the tracer
+        // steps and the broad phase tests. Baking is not destruction — physRetire writes the voxels back into
+        // W at their resting pose, where they cost nothing per query and look identical.
+        // Gated on DISTANCE so it can never take a chunk out from under someone about to collect it: inside
+        // this radius a settled chunk still vacuums up by walking to it, exactly as before. noAbsorb (a felled
+        // trunk) is scenery the player may still want to chop, so it is never baked out from under them.
+        else if (!b.noAbsorb && !b.nearR && b.n <= PH.retireFar) {
+          const rdx = b.pos[0] - P.x, rdy = b.pos[1] - smoothEye, rdz = b.pos[2] - P.z;
+          if (rdx * rdx + rdy * rdy + rdz * rdz > PH.retireFarR * PH.retireFarR) b.retire = true;
+        } }
     } else b.sleepT = Math.max(0, b.sleepT - 1);     // DECAY, don't reset: one jittery step must not restart the countdown
     phQRot(b.q, PHX, b.ax); phQRot(b.q, PHY, b.ay); phQRot(b.q, PHZ, b.az);   // keep the collision axes in step with the pose
   };
@@ -8404,7 +8565,7 @@
     return false;
   };
   const physRetire = (b) => {
-    if (!phOnGround(b)) { PH.stats.dropped++; return; }   // came to rest up a tree — do NOT bake it into the grid (see phOnGround)
+    if (!phOnGround(b)) { PH.stats.dropped++; return false; }   // came to rest up a tree — do NOT bake it into the grid (see phOnGround)
     const cells = [];
     for (let i = 0; i < b.n; i++) {
       phTmp[0] = b.lx[i] + 0.5 - b.com[0]; phTmp[1] = b.ly[i] + 0.5 - b.com[1]; phTmp[2] = b.lz[i] + 0.5 - b.com[2];
@@ -8417,6 +8578,7 @@
     }
     if (cells.length) gpuPatch(cells, false);
     PH.stats.retired++;
+    return true;
   };
   const physStep = (dtR) => {                        // fixed-rate accumulator, capped so a stall cannot spiral
     if (!PH.on || !PH.bodies.length) { PH.acc = 0; return; }
@@ -8450,6 +8612,21 @@
       if (!b.absorbing && tNow - b.born > (b.noAbsorb ? PH.treeLifeMs : PH.chunkLifeMs)) {
         PH.bodies.splice(i, 1); PH.stats.expired = (PH.stats.expired | 0) + 1;   // ── EXPIRED (user) ── see treeLifeMs / chunkLifeMs
         continue;                                      // one already flying into the player finishes its flight — it is about to be gone anyway
+      }
+      // ── A BODY OUTSIDE THE GENERATED RECT CAN NEVER LAND ── and until it times out it holds a slot.
+      // MEASURED, in a calm forest with nothing being chopped: PH.bodies pinned at 16/16, and 15 of the 16
+      // were 600-1100 voxels away with sleep:false. They are cones and needle tufts the support resolver
+      // sheds out at the edge of the loaded window, where W is empty — so phSolidAt finds no ground, they
+      // fall forever, never settle, never retire, and sit on the budget for the full 60 s chunkLifeMs. That
+      // saturation is what forces the eviction paths to run at all, and it is why a chunk the player was
+      // actually holding could be evicted to make room for debris nobody will ever see.
+      // Nothing here is observable: it is outside the built world, in free fall, at 60-110 m.
+      if (!b.absorbing && !b.noAbsorb && b.pos[1] < 1) {   // fell out of the world entirely
+        PH.bodies.splice(i, 1); PH.stats.voidFall = (PH.stats.voidFall | 0) + 1; continue;
+      }
+      if (!b.absorbing && !b.noAbsorb && !b.sleeping && tNow - b.born > 2000 &&
+          (b.pos[0] < rect.xlo || b.pos[0] > rect.xhi || b.pos[2] < rect.zlo || b.pos[2] > rect.zhi)) {
+        PH.bodies.splice(i, 1); PH.stats.offRect = (PH.stats.offRect | 0) + 1; continue;   // 2 s of grace so a chunk thrown toward the edge still gets its arc
       }
       if (b.absorbing) {
         const k = Math.min(1, (tNow - b.absorbT0) / PH.absorbFly);
@@ -8485,7 +8662,13 @@
       b.absorbP = [b.pos[0], b.pos[1], b.pos[2]];      // where the flight starts
       b.sleeping = false;                              // a settled chunk must still be able to fly in
     }
-    for (let i = PH.bodies.length - 1; i >= 0; i--) if (PH.bodies[i].retire) { physRetire(PH.bodies[i]); PH.bodies.splice(i, 1); }
+    for (let i = PH.bodies.length - 1; i >= 0; i--) { const rb = PH.bodies[i]; if (!rb.retire) continue;
+      // A speck that settled up a tree is still dropped — losing it is invisible and leaving it welded into
+      // the canopy is not (see phOnGround). Anything BIGGER that could not be baked keeps its slot instead:
+      // the distant-scrap path below hands this loop 7-64 voxel pieces, and silently destroying one of those
+      // would be exactly the "hit it and it disappeared" class of bug.
+      if (physRetire(rb) || rb.n <= PH.retireMax) PH.bodies.splice(i, 1); else rb.retire = false; }
+    phAabbAll();                                     // …and refresh the broad-phase boxes LAST, after integration, the absorb flight and any retire have all moved or removed bodies (see phAabb)
     if (!PH.bodies.length) bodyTop = 0;              // no body references the shape buffer — reclaim it whole
     PH.stats.substeps += k;
     PH.stats.stepMs = +(performance.now() - t0).toFixed(3);
@@ -8939,7 +9122,8 @@
   const waterSpots = [];                              // detected WATER of any width — lakes AND rivers. Dragonflies home here; ducks still use lakeSpots (a river is too narrow for a family)
   const BIRD_SPD = 55, BIRD_ALT = 140, BIRD_FLAP = 24, BIRD_VS = 1.0;   // ground speed (vox/s, constant); min height above (smoothed) local GROUND — must beat the tallest pine (116 vox) + bob or it clips foliage; wing-flap fps (24); voxel scale — 1.0 = each model voxel is exactly one 10 cm world voxel (same resolution as the trees)
 
-  const startGrab = (it, wx, wy, wz, aPh) => {         // EVERY pickup flies to the hand — never an instant swap; a 2nd rock flies to the LEFT hand
+  const startGrab = (it, wx, wy, wz, aPh, lev) => {    // EVERY pickup flies to the hand — never an instant swap; a 2nd rock flies to the LEFT hand
+    if (lev) playPickUp();                             // ── THE SNATCH, NOT THE LANDING (user 2026-08-08) ── this fired from the two ARRIVAL branches at first, which put it a full GRAB_MS (measured: 365 ms) after the grab, and the pickup read as late. It belongs HERE: the item leaves the air on this frame, the flight is just it travelling to the hand. Only the two drop grabs pass lev — a rock in a wall or a worm in the dirt is not levitating.
     grabAnim = { t0: performance.now(), it, x: wx, y: wy, z: wz, aPh: aPh !== undefined ? aPh : performance.now() * 0.0012,
       left: it === 2 && !!(slots[selSlot] && slots[selSlot].it === 2) };
   };
@@ -8956,7 +9140,7 @@
       if (tq < 0 || tq > 55) continue;
       const qx = ox - d[0] * tq, qy = oy - d[1] * tq, qz = oz - d[2] * tq;
       if (qx * qx + qy * qy + qz * qz < 42) {
-        startGrab(dr.it, dr.x + 0.5, dr.y + dropAnchor(dr), dr.z + 0.5, dr.spin === undefined ? performance.now() * 0.0012 + dr.ph : dr.spin);   // …from its CURRENT height: a settled drop is not where the hover pose was
+        startGrab(dr.it, dr.x + 0.5, dr.y + dropAnchor(dr), dr.z + 0.5, dr.spin === undefined ? performance.now() * 0.0012 + dr.ph : dr.spin, dropLevitating(dr));   // …from its CURRENT height: a settled drop is not where the hover pose was
         drops.splice(i, 1);
         return;
       }
@@ -9049,6 +9233,10 @@
     const restY = itemHalfH ? (itemHalfH[dr.it - 1] || 4.5) : 4.5;
     return 9.0 + (restY - 9.0) * rE + Math.sin(nw * 0.002 + dr.ph) * 1.3 * (1 - rE);
   };
+  // Is this drop still LEVITATING? Exactly dropAnchor's rK < 1, spelled out against the same two constants
+  // rather than re-derived: the hover ends when the settle ease completes, and that is the one moment the
+  // item stops being something you pick out of the air. Drives the pickup sound (see playPickUp).
+  const dropLevitating = (dr) => performance.now() - dr.born < DROP_REST_MS + DROP_REST_EASE;
   // ── BOW DRAW (user) ── the right button down pulls 00→02 and HOLDS at 02; releasing runs 03→06 out
   // and returns to rest. Stepped at 24 fps like every other animation here — a frame is picked, not
   // interpolated, so the bow reads as drawn art rather than a tween.
@@ -9087,7 +9275,7 @@
     }
     if (bi < 0) return;
     const dr = drops[bi];
-    startGrab(dr.it, dr.x + 0.5, dr.y + dropAnchor(dr), dr.z + 0.5, dr.spin === undefined ? tNow * 0.0012 + dr.ph : dr.spin);
+    startGrab(dr.it, dr.x + 0.5, dr.y + dropAnchor(dr), dr.z + 0.5, dr.spin === undefined ? tNow * 0.0012 + dr.ph : dr.spin, dropLevitating(dr));
     drops.splice(bi, 1);
   }
   document.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -9097,6 +9285,9 @@
                     // touch — an SFX slider that also rode the ambience would just be the master slider twice over.
                     // Resets to 100% on refresh and persists to vb_sfx, matching sndVol exactly rather than inventing a
                     // second rule for two sliders sitting in the same box (see the volume-resets-to-100 note below).
+  let musVol = 1;   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
+                    // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
+                    // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
   let sndVol = 1;   // start at FULL VOLUME on refresh (user 2026-08-06). Was 0 (always-muted, 2026-08-02); a page load still does NOT restore vb_vol, it just starts at 100% instead of 0%.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
@@ -9105,11 +9296,17 @@
   const SND_GAIN = 1.25;                               // master loudness trim — every registered sound, +25% overall (user 2026-07-17); clamp keeps HTMLAudio's 0..1 legal
   // ── ONE LEVEL FUNCTION ── three places used to spell the same product out by hand (register, re-apply,
   // and the pool's per-play recompute), so a second bus would have had to be remembered in all three. Now the
-  // chain lives once: base x master trim x volume slider x sfx slider x this shot's own gain.
-  const sndLevel = (base, sfx, gain) => Math.min(1, base * SND_GAIN * sndVol * (sfx ? sfxVol : 1) * (gain === undefined ? 1 : gain));
-  const regSnd = (a, base, sfx) => { const isSfx = sfx !== false;   // SFX unless a caller opts out — a new sound is an effect until someone says otherwise, so nothing can silently escape the slider
-    a.volume = sndLevel(base, isSfx); sndReg.push({ a, base, sfx: isSfx }); return a; };
-  const applyVol = () => { for (const s of sndReg) s.a.volume = sndLevel(s.base, s.sfx); };
+  // chain lives once: base x master trim x volume slider x this sound's own bus x this shot's own gain.
+  // ── AND THE BUS IS A NUMBER, NOT A SECOND BOOLEAN (user 2026-08-08, adding music) ── with two flags
+  // "not sfx" would have meant the forest bed AND the score at once, and applyVol could no longer tell which
+  // slider owns a sound. Every registered sound names exactly one bus instead.
+  const BUS_AMB = 0, BUS_SFX = 1, BUS_MUS = 2;
+  const busVol = (bus) => bus === BUS_SFX ? sfxVol : bus === BUS_MUS ? musVol : 1;   // BUS_AMB rides the master alone
+  const sndLevel = (base, bus, gain) => Math.min(1, base * SND_GAIN * sndVol * busVol(bus) * (gain === undefined ? 1 : gain));
+  const regBus = (a, base, bus) => { a.volume = sndLevel(base, bus); sndReg.push({ a, base, bus }); return a; };
+  const regSnd = (a, base, sfx) => regBus(a, base, sfx === false ? BUS_AMB : BUS_SFX);   // SFX unless a caller opts out — a new sound is an effect until someone says otherwise, so nothing can silently escape the slider
+  const regMus = (a, base) => regBus(a, base, BUS_MUS);   // …and music says so outright: master x music slider, never the sfx one
+  const applyVol = () => { for (const s of sndReg) s.a.volume = sndLevel(s.base, s.bus); };
   // ── ONE AudioContext FOR THE WHOLE GAME ── createMediaElementSource may be called ONCE per media element,
   // ever. The video-editor tap (veTapEl) already claims every registered sound, so a second context for effects
   // would win the race on some elements and lose it on others — and whichever lost would go MISSING from
@@ -9150,6 +9347,39 @@
     document.addEventListener('pointerdown', kick);
     document.addEventListener('keydown', kick);
   }
+  // ── THE ANTHEM (user 2026-08-08) ── sound/music/red_carpet.mp4, built from source/audio/anthem/red carpet.wav
+  // by the recipe every other sound ships under (AAC-LC 320k, 48 kHz stereo, .mp4 container): the 19 MB of 24-bit
+  // PCM it started as would otherwise be the largest single file the game downloads, by a factor of seven.
+  // BASE 0.14 — measured, the track is -15.2 LUFS integrated, within 0.1 dB of high_score.mp4's -15.1, so the
+  // achievement jingle's own twice-tuned 0.09 is the anchor: this sits ~4 dB over it (a moment, not a cue) and
+  // still under the tool hits. On the MUSIC bus, so nothing but the master and the new slider can move it.
+  const ANTHEM_AT = 60;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-08: was 120)
+  const ANTHEM_GAP = 60;                               // …and a minute of gameplay of SILENCE between one track ending and the next starting (user)
+  // ── THE SET (user 2026-08-08) ── all four anthem cuts, in rotation, then silence for the rest of the
+  // session. Built from source/audio/anthem/*.wav by the same recipe as the first one and each other sound in
+  // the game: AAC-LC 320k, 48 kHz stereo, .mp4 — the four together are 13 MB against 95 MB of source PCM.
+  // The per-track GAIN is not a guess: every file was measured with ebur128 and levelled against red carpet,
+  // which is the anchor at 0.14 because its own 0.14 was tuned by ear against high_score.mp4. Integrated
+  // loudness, and the gain that lands each at the same perceived level:
+  //     red carpet  -15.1 LUFS -> 0.140   (the anchor)
+  //     achievement -14.1      -> 0.125   (1 dB hotter, so 1 dB down)
+  //     to glory    -14.1      -> 0.125
+  //     award       -19.1      -> 0.222   (4 dB quieter, so 4 dB up)
+  const ANTHEM_SET = [['red_carpet', 0.140], ['achievement', 0.125], ['award', 0.222], ['to_glory', 0.125]];
+  const anthemSnds = ANTHEM_SET.map(([n9, g9]) => regMus(new Audio('sound/music/' + n9 + '.mp4'), g9));
+  const anthemSnd = anthemSnds[0];                     // the first cut, still named for the taps that read it
+  let playSecs = 0, anthemDone = false;                // the play clock, and the set-is-finished latch
+  let anthemIdx = 0, anthemNextAt = ANTHEM_AT;         // which cut comes next, and the play-clock time it is due
+  const playAnthem = () => {
+    const a9 = anthemSnds[anthemIdx++];
+    anthemNextAt = Infinity;                           // nothing is due while one is playing — the ended handler below schedules the next
+    if (anthemIdx >= anthemSnds.length) anthemDone = true;   // that was the fourth: the set is spent and the clock can stop
+    try { a9.currentTime = 0; const p9 = a9.play(); if (p9) p9.catch(() => { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; }); } catch (e) { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; }
+  };
+  // A refused or failed play must not stall the set: the catch above re-arms the next one on the same gap it
+  // would have got anyway. `ended` is the normal path — the gap is measured from the moment a track FINISHES,
+  // so it is a minute of silence rather than a minute of overlap.
+  for (const a9 of anthemSnds) a9.addEventListener('ended', () => { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; });
   const SWAP_MS = 240;                                 // how long a tool swap takes to rise back into frame — short enough that it never delays a swing
   let swapT0 = -1e9, prevHeldIt = -1;                  // …and when the current one started (see the view-model block)
   let swingStart = -1e9, mouse0 = false, mouse2 = false;   // mouse2: RIGHT button HELD — the wind-up for a rock throw (right-hold, then left-click)               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
@@ -9165,7 +9395,7 @@
     let k8 = 0;
     return (gain) => { const a8 = v8[k8++ % v8.length];
       try { a8.currentTime = 0;
-        a8.volume = sndLevel(base, true, gain);
+        a8.volume = sndLevel(base, BUS_SFX, gain);
         const p8 = a8.play(); if (p8) p8.catch(() => {}); } catch (e) {} }; };
   // ── SOMETHING BROKE (user 2026-08-07) ── the sound of a swing that actually bites: chopped wood,
   // mined stone, dug soil, tilled earth, a fern knocked apart. It replaces the swish that used to fire on
@@ -9240,6 +9470,18 @@
   let eatT = -1e9;
   const EDIBLE = () => new Set([MEAT_IT].filter(Boolean));   // the raw steak today; the next food is one entry
   const eatSnd = regSnd(new Audio('sound/eat.mp4'), 0.42);   // 0.7 −40% (user 2026-08-07)
+  // ── SNATCHED OUT OF THE AIR (user 2026-08-08) ── sound/pick_up.mp4 is the file that shipped as sound/hit.mp4
+  // until the four-take tool_hit pool replaced it as the swing sound; it has been unused since and is now the
+  // pickup. It plays for a LEVITATING drop only — raw steak off a kill, a Q-tossed item, a loosed arrow, while
+  // each is still hovering and spinning — and stays silent for one that has already settled onto the ground.
+  // BASE 0.043945312: the 0.1171875 it was tuned to as hit.mp4, HALVED (user), and then DOWN A FURTHER 25%
+  // (user 2026-08-08) — read as amplitude like every other percentage in this file, so -6 dB and then -2.5 dB,
+  // 0.1171875 -> 0.05859375 -> 0.043945312. One voice is enough — only one grab flight is ever in the air.
+  // It fires the instant the item is SNATCHED (see startGrab), not when the flight lands in the hand.
+  const pickUpSnd = regSnd(new Audio('sound/pick_up.mp4'), 0.043945312);
+  let pickUpPlays = 0;                                 // fired count — currentTime rewinds on every play, so a test has nothing else to count
+  const playPickUp = () => { pickUpPlays++;
+    try { pickUpSnd.currentTime = 0; const p7 = pickUpSnd.play(); if (p7) p7.catch(() => {}); } catch (err) {} };
   const tryEat = () => {
     const sel = slots[selSlot];
     if (dead || ED.on || grabAnim || !sel || !EDIBLE().has(sel.it)) return false;
@@ -9269,6 +9511,25 @@
   const playArrowHit = (wx, wy, wz) => {
     const d8 = Math.hypot(wx - P.x, wy - smoothEye, wz - P.z);
     playBowImpact(Math.max(0.14, Math.min(1, 1 - (d8 - 12) / 190))); };
+  // ── ONE VOICE FOR EVERY BLOW THAT LANDS ON A LIVING THING (user 2026-08-08) ── sound/life_hit.mp4, built
+  // from the .wav that was sitting unconverted in sound/ by the recipe every other cue ships under (AAC-LC,
+  // 48 kHz stereo; the source now lives with the rest of the animal audio in source/audio/life/). It fires
+  // for the tool, the weapon, the arrow, the spear, a thrown rock and bare hands alike — the tool decides how
+  // much damage lands, not whether the blow is audible.
+  // BASE 0.1032, measured rather than guessed, and measured against what tool_hit ACTUALLY PLAYS AT rather
+  // than against its declared base: the pool is registered at 0.2715 but playToolHit passes a 0.75 gain, so
+  // the element goes out at 0.2545 (verified live). life_hit is -13.9 LUFS integrated against those takes'
+  // -19.8, so matching perceived level wants -13.9 + 20log10(V) = -19.8 + 20log10(0.2545), i.e. V = 0.129 at
+  // full gain, i.e. a base of 0.129 / 1.25 (SND_GAIN) = 0.1032. Hitting an animal and hitting a tree then land
+  // as the same weight of blow. Reading the declared base instead put this 2.5 dB hot.
+  // POOLED THREE DEEP for the same reason the bow's impact is: arrows land in twos and threes, and a held
+  // chop repeats every 570 ms, so one element would keep cutting its own transient short.
+  // Distance-faded on the SAME curve as the arrow's impact, so a shaft that finds a bird a hundred voxels out
+  // is heard as a distant tick rather than at point-blank.
+  const lifeHitPool = sndPool('sound/life_hit.mp4', 0.1032, 3);
+  const playLifeHit = (wx, wy, wz) => {
+    const d9 = Math.hypot(wx - P.x, wy - smoothEye, wz - P.z);
+    lifeHitPool(Math.max(0.14, Math.min(1, 1 - (d9 - 12) / 190))); };
   let bobPh = 0, bobAmp = 0;                           // walk/sprint view-model bob state
   // ── DUAL-WIELD rock clash ── shift + left click with a rock in EACH hand: both rocks accelerate to screen centre,
   // collide with a spark burst, and the first collision unlocks the "sharp edge" discovery achievement.
@@ -9647,7 +9908,9 @@
     // band, and a creature that size surviving three blows from a shovel reads as absurd.
     if (B.lastSwing === tk) { return; }                 // this same swing already landed on this creature — one swing, one hit
     B.lastSwing = tk;
-    spawnHitSparks(...hitSpot(B));                      // SPARKS ON EVERY BLOW (user) — the same embers a shaft already threw, now on any hit, wounding or killing. Fired here, before the wound/kill split, so hits one, two and three all show it.
+    const hs9 = hitSpot(B);
+    spawnHitSparks(hs9[0], hs9[1], hs9[2]);             // SPARKS ON EVERY BLOW (user) — the same embers a shaft already threw, now on any hit, wounding or killing. Fired here, before the wound/kill split, so hits one, two and three all show it.
+    playLifeHit(hs9[0], hs9[1], hs9[2]);                // …and the SAME rule for the sound (user 2026-08-08): every blow that lands on a living thing is heard, whatever swung it. Here, above the wound/kill split and below the one-hit-per-swing guard, so it is exactly once per blow — hits one, two and three included, and a held swing cannot machine-gun it.
     const need = (token !== undefined && String(token).startsWith('arrow')) ? ARROW_HITS_TO_KILL : HITS_TO_KILL;   // an ARROW is a weapon, not a hand tool: TWO and the animal is down (user)
     // …and the SPEAR kills outright, thrust or thrown — the axe's privilege, for the one tool that is a
     // weapon first (user). Everything else wears the animal down.
@@ -10511,6 +10774,14 @@
   sfxSlider.addEventListener('click', (e) => e.stopPropagation());
   sfxSlider.addEventListener('input', (e) => { e.stopPropagation(); sfxVol = parseFloat(sfxSlider.value) / 100; applyVol(); sfxShow(); sliderFill(sfxSlider);
     try { localStorage.setItem('vb_sfx', String(sfxVol)); } catch (err) {} });
+  const musSlider = $('musSlider'), musLabel = $('musLabel');   // MUSIC — the third audio bus (persisted vb_mus, reset to 100% on load like the two above it). applyVol() re-levels every registered sound, so dragging this mid-anthem moves the track that is ALREADY playing, not just the next one.
+  musSlider.value = Math.round(musVol * 100); sliderFill(musSlider);
+  const musShow = () => { musLabel.textContent = 'music ' + Math.round(musVol * 100) + '%'; };
+  musShow();
+  musSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
+  musSlider.addEventListener('click', (e) => e.stopPropagation());
+  musSlider.addEventListener('input', (e) => { e.stopPropagation(); musVol = parseFloat(musSlider.value) / 100; applyVol(); musShow(); sliderFill(musSlider);
+    try { localStorage.setItem('vb_mus', String(musVol)); } catch (err) {} });
   const sensSlider = $('sensSlider'), sensLabel = $('sensLabel');   // MOUSE LOOK SENSITIVITY — scales the yaw/pitch multiplier (persisted vb_sens)
   sensSlider.value = Math.round(lookSens * 100); sliderFill(sensSlider);
   const sensShow = () => { sensLabel.textContent = 'sensitivity ' + Math.round(lookSens * 100) + '%'; };
@@ -11444,11 +11715,18 @@
                       if (o.coc !== undefined) dofCocK = o.coc; }                                                       // …and the raw aperture underneath it, which deliberately does NOT move the slider: it is for A/B-ing a radius the slider cannot reach
              return { on: dofStr > 0, strength: dofStr, focus: +UF[UF_DOF].toFixed(2), maxCocPx: +UF[UF_DOF + 1].toFixed(2),
                       taps: dofTapK, tapsAtMax: Math.max(8, Math.min(32, Math.ceil(UF[UF_DOF + 1] * dofTapK))), lockedFocus: dofLock, cocFrac: dofCocK }; },   // tapsAtMax mirrors the shader's own clamp, FLOOR included, or the report undercounts every small disc   // depth-of-field tap: read the live focal plane, or PIN focus/aperture to A/B the effect at a fixed strength (__vb.dof({focus: 20, coc: 0.02}), {focus: 0} hands it back to autofocus)
-    snd() { const eff = [], amb = [];                  // AUDIO BUS census: every registered sound's LIVE element volume, split by bus. The elements are `new Audio()` and never enter the DOM, so a test has no other way to see that the sfx slider actually reached them.
-            for (const s9 of sndReg) (s9.sfx ? eff : amb).push(+s9.a.volume.toFixed(4));
-            return { vol: sndVol, sfx: sfxVol, gain: SND_GAIN, n: sndReg.length,
+    snd() { const eff = [], amb = [], mus = [];        // AUDIO BUS census: every registered sound's LIVE element volume, split by bus. The elements are `new Audio()` and never enter the DOM, so a test has no other way to see that the sfx slider actually reached them.
+            for (const s9 of sndReg) (s9.bus === BUS_SFX ? eff : s9.bus === BUS_MUS ? mus : amb).push(+s9.a.volume.toFixed(4));
+            return { vol: sndVol, sfx: sfxVol, mus: musVol, gain: SND_GAIN, n: sndReg.length,
                      effects: { n: eff.length, min: eff.length ? Math.min.apply(null, eff) : null, max: eff.length ? Math.max.apply(null, eff) : null },
-                     ambience: amb }; },
+                     music: mus, ambience: amb }; },
+    anthem(sec) { if (sec !== undefined) { playSecs = sec; if (anthemIdx < anthemSnds.length) anthemDone = false; }   // jump the PLAY CLOCK (__vb.anthem(59.5)) and let the next tick fire it — waiting out a minute of real gameplay is not a test
+                  const cur = anthemSnds.findIndex((a9) => !a9.paused);
+                  return { at: ANTHEM_AT, gap: ANTHEM_GAP, played: +playSecs.toFixed(2), nextAt: anthemNextAt, nextIdx: anthemIdx,
+                           setDone: anthemDone, playing: cur >= 0 ? ANTHEM_SET[cur][0] : null,
+                           t: cur >= 0 ? +anthemSnds[cur].currentTime.toFixed(2) : 0,
+                           tracks: ANTHEM_SET.map(([n9, g9], i9) => ({ name: n9, gain: g9, vol: +anthemSnds[i9].volume.toFixed(4), playing: !anthemSnds[i9].paused })),
+                           bus: 'mus' }; },
     vig(v) { if (v !== undefined) { cineBlurK = v; blurLock = true; } return { uniform: UF[1268], on: vigOn, cineWeight: cineBlurK }; },   // cinematic vignette tap: read the live weight, or PIN it (blurLock) to A/B the effect at a fixed strength
     vigFree() { blurLock = false; }, get swingStart() { return swingStart; }, get locked() { return locked; }, edFrameBox() { const n = ED.frames.length; if (!n) return null; const f = ED.frames[((ED.sel % n) + n) % n]; return { bx: f.bx, bz: f.bz, sx: f.sx, sy: f.sy, sz: f.sz, y: ED.y }; },   // test taps
     solidAt(x, y, z) { const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; return !!(id && solidTab[id]); },
@@ -11598,6 +11876,9 @@
     // goes" sweep can be tested without having to hit a butterfly with a real shaft — which is not a test so
     // much as a marksmanship contest, and the teleport that would line one up recycles the target anyway.
     maxBodies(v) { if (v !== undefined) PH.maxBodies = Math.max(1, v | 0); return PH.maxBodies; },   // squeeze the rigid-body budget so a test can force the RARE path where phSeparate cannot seat a severed tree and hands it to the support resolver instead
+    pickUp() { return { vol: +pickUpSnd.volume.toFixed(5), plays: pickUpPlays, playing: !pickUpSnd.paused,
+                        t: +pickUpSnd.currentTime.toFixed(2), flight: !!grabAnim,
+                        drops: drops.map((d) => ({ it: d.it, lev: dropLevitating(d), age: +((performance.now() - d.born) / 1000).toFixed(1) })) }; },   // levitating-pickup tap: which drops are still in the air, and whether the sound has fired
     dropPush(o) { drops.push(o); return drops.length; },   // push a raw drop so a test can drive the REAL arrival branch (hitSlot -> stick) instead of a stand-in
     dropRaw(i) { const d = drops[(i | 0) < 0 ? drops.length + (i | 0) : (i | 0)]; if (!d) return null;
       return { stuckSlot: d.stuckSlot, stTh: d.stTh, stOx: d.stOx, stOy: d.stOy, stOz: d.stOz,
@@ -13070,6 +13351,7 @@
     if (VE.recording && now - veLastPaint < VE_CAP_MS) { tickReq = true; paceWaited = false; requestAnimationFrame(tick); return; }
     if (VE.recording) veLastPaint = now - Math.min(VE_CAP_MS * 0.5, (now - veLastPaint) - VE_CAP_MS);   // carry the overshoot so the cadence cannot drift slow
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
+    if (locked && !anthemDone) { playSecs += dt; if (playSecs >= anthemNextAt) playAnthem(); }   // ── PLAY CLOCK ── counts only while the player HAS THE CONTROLS: the loading screen, the press-any-button prompt, the esc menu and the death screen are not gameplay, and a backgrounded tab stops rAF outright. Two minutes of PLAYING, not two minutes of the page being open.
     fpsEma = fpsEma * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
     FT[ftI] = dt * 1000;                               // frame-time ring (1% lows / spike hunting); FTB is filled at the end of the body
     if (CPROF) { cpLast = performance.now(); tbT0 = cpLast; upN = 0; upB = 0; cpEvt = 0;
@@ -13751,6 +14033,7 @@
       const shaft8 = dr.kind === 'arrow' || dr.kind === 'spear';   // `drops` also carries items flying to the hand — those have no impact and must stay silent
       if (dr.hitBird !== undefined && dr.hitBird >= 0) { dr.hitDone = true;   // ── A BIRD OUT OF THE SKY ── one shaft is enough (user)
         if (shaft8) playArrowHit(dr.ex, dr.ey, dr.ez);
+        playLifeHit(dr.ex, dr.ey, dr.ez);              // a flying bird lives in birds[], not the creature pool, so it never reaches hitCreature — it still got hit (user 2026-08-08)
         const B = birds[dr.hitBird];
         if (B && B.init) {                          // ── SAME DEATH AS EVERY OTHER ANIMAL (user 2026-08-06) ── a sky bird used to blink out the instant the shaft touched it:
           // no red, no beat. Pool creatures set the hurt box and defer the poof by HURT_MS so the flash plays; birds live in birds[], not wbf, so pendDeath (which
