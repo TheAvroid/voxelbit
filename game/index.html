@@ -1496,6 +1496,16 @@
   const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
   if (MUSHV) for (const q of MUSHV.vox) decorTab[q >>> 24] = 1;                             // ── CHOPPABLE DECOR ── mushrooms…
   for (const i of FERNIDS) decorTab[i] = 1;                                                 // …and ferns (user): any tool takes chunks out of both
+  // ── …AND THE LILY PADS (user 2026-08-08: "have the lilly pads able to be broken with a tool") ── a pad is a
+  // soft plant like a fern, so it yields to WHATEVER is in hand: no axeOnly/pickOnly/digOnly entry, which is
+  // what makes the swing gate's (axeOnlyTab[id] ? cut : true) branch answer true for every tool. Two things
+  // this deliberately does NOT need: the pads stay walk-through (solidTab untouched — a pad never had a hitbox
+  // and breaking one should not give it one), and the REMAINDER of a bitten pad stays put on its own, because
+  // supFlood terminates both floods on a FLUID neighbour and every pad voxel is stamped at WL+1 with the lake
+  // directly beneath it. The GIANT pad's ids are folded in too: it is not stamped today, but it is the same
+  // plant and its ids are its own (addCol above), so this can never leak onto anything else.
+  const LILYIDS = [...new Set([...LILYV, ...(LILYPAD_GIGV ? [LILYPAD_GIGV] : [])].flatMap((m) => m.vox.map((p) => p >>> 24)))];
+  for (const i of LILYIDS) decorTab[i] = 1;
   // ── THE GROUND LOG IS MADE OF THE PINE'S OWN BARK (user 2026-08-07: "make the log that's in the terrain
   // match the texture of the pine tree trunks") ── log.vox arrives with its own authored shades, minted as
   // their own palette entries, so a fallen log read as a different wood from the trunks around it. Every log
@@ -6370,10 +6380,24 @@
       bTargets.push({ bi, B, r2: bR * bR });
     }
     let hitSlot = -1, hitBird = -1;
-    let px = sx, py = sy2, pz = sz, vy = vy0, T = 0;
-    for (let i = 0; i < 900; i++) {
+    // ── THE ARC IS MARCHED TO ITS END, NOT TO A BUDGET (user 2026-08-08: an arrow loosed straight up stopped
+    // dead in mid-air on the way back down — an "invisible ceiling") ── this loop ran a flat 900 steps, i.e.
+    // 4.5 s of flight, and whatever the arrow was doing when the count ran out got written out as the
+    // IMPACT: T, ex/ey/ez and stick:true all came from a point in open sky, so the shaft hung there for
+    // good. A full draw is 498 vox/s straight up — 2.9 s to the apex, 5.9 s back down to the eye — so every
+    // steep shot outlived the budget, while a 3/4 draw (4.4 s) landed fine; the height it froze at moved
+    // with the draw, which is exactly what made it read as a ceiling. The march now covers the whole
+    // ballistic flight, and the part of it spent ABOVE the world is nearly free: nothing up there can be
+    // struck, so the eight-sample subdivision is skipped until the arrow falls back within reach.
+    const STEPS = 4000;                                // 20 s — a runaway guard rather than a real limit: far past the ~6 s a full-draw vertical shot needs
+    let yCeil = WY;                                    // above this there is nothing to hit at all: the grid ends, and every animal lives inside it
+    for (const t of targets) yCeil = Math.max(yCeil, t.by + t.hy + 1);
+    for (const t of bTargets) yCeil = Math.max(yCeil, t.B.y + Math.sqrt(t.r2) + 1);
+    let px = sx, py = sy2, pz = sz, vy = vy0, T = 0, landed = false;
+    for (let i = 0; i < STEPS; i++) {
       const nvy = vy + TOSS_G * 0.005;
       const dx = vx * 0.005, dy = (vy + nvy) * 0.5 * 0.005, dz = vz * 0.005;
+      if (py >= yCeil && py + dy >= yCeil) { px += dx; py += dy; pz += dz; vy = nvy; T += 0.005; continue; }   // the whole step is out over the top of the world — skip the hit tests, they cannot connect
       let struck = false;
       for (let s = 1; s <= SUB; s++) {
         const f = s / SUB, qx = px + dx * f, qy = py + dy * f, qz = pz + dz * f;
@@ -6396,8 +6420,13 @@
           px = qx; py = qy; pz = qz; T += 0.005 * f; struck = true; break;
         }
       }
-      if (struck) break;
+      if (struck) { landed = true; break; }
       px += dx; py += dy; pz += dz; vy = nvy; T += 0.005;
+    }
+    // …and if even THAT ran out (it cannot on any real shot), set it down on the ground under wherever it
+    // got to rather than leaving it hanging: a stuck arrow with nothing under it is the bug just fixed.
+    if (!landed) { const ix9 = Math.round(px), iz9 = Math.round(pz);
+      for (let y9 = Math.min(WY - 1, Math.round(py)); y9 >= 0; y9--) if (arrowBlocked(ix9, y9, iz9)) { py = y9 + 1; break; }
     }
     // ── NEVER CARVE AN ANIMAL ── a mammal is STAMPED into the world grid, so its voxels read as ordinary
     // terrain: a shaft that came down on a porcupine's quills (outside the body sphere tested above, but
@@ -11824,6 +11853,7 @@
       const ids = [...new Set(LOGV.vox.map((p) => p >>> 24))];
       return ids.map((i) => ({ id: i, col: palette[i], isTrunkBark: woodIds.indexOf(i) >= 0, wood: !!woodTab[i] })); },
     barkIds() { return woodIds.map((i) => ({ id: i, col: palette[i] })); },
+    lilyIds() { return LILYIDS.map((i) => ({ id: i, col: palette[i], decor: !!decorTab[i], solid: !!solidTab[i], folia: !!foliaTab[i], wood: !!woodTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i], sup: SUP.CLASS[i] })); },   // the LILY PAD palette ids and what every material table says about each — the pads are parsed in SHARE mode, so this is the one honest read that marking them choppable did not also mark something else
     isWoodId(id) { return !!woodTab[id | 0]; },
     isRockId(id) { return isRockSurf(id | 0); },     // is THIS id stone (strata, boulder or ore)? — lets a test find rock buried under a snow blanket, which isRockTop cannot (it stops at the snow)
     isSnowId(id) { return !!snowTab[id | 0]; },
