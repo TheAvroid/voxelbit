@@ -8,6 +8,14 @@
 <style>
   @font-face { font-family: 'px3'; src: url('3x3-pixel.otf') format('opentype'); }
   * { cursor: crosshair !important; }   /* in-game crosshair cursor EVERYWHERE, including the video editor + menus (user) */
+  /* ── NOTHING IN THE UI IS SELECTABLE TEXT (user 2026-08-09) ── clicking the wordmark started an ordinary text
+     selection and the browser painted the whole <h1> with its blue highlight, which is what "the title turns blue"
+     is. It is not a style on the title and no colour change can suppress it — the selection has to not happen.
+     A game has no prose to select, so the document opts out wholesale and the real text fields opt back in: the
+     bake rows call .select() before execCommand('copy'), and the command line is typed into. `*` rather than body
+     because the highlight is painted per-element, and a descendant that re-enables it would show through. */
+  * { -webkit-user-select: none; user-select: none; }
+  input, textarea { -webkit-user-select: text; user-select: text; }
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0b0e12; overflow: hidden; }
   canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
   #hud { position: fixed; top: 10px; left: 12px; color: #cfd6e0; font: 7px/1.7 'px3', Consolas, monospace; letter-spacing: 1px; text-shadow: 0 1px 2px #000; pointer-events: none; white-space: pre; opacity: 0.9; }
@@ -212,7 +220,32 @@
      the knob instead of squaring the cursor). accent-color can't animate a native thumb, so the track + thumb are drawn
      by hand: a thin rail and a green disc that scales up (and gets a soft ring) while hovered or dragged. */
   #todSlider, #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider, #musSlider { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; outline: none;
-    background: linear-gradient(to right, #d2a453 0%, #d2a453 var(--fill, 50%), #2a3342 var(--fill, 50%), #2a3342 100%); }   /* --fill (JS-driven) is the GOLD LINE to the left of the knob (user); the KNOB is WHITE (user 2026-08-08) */
+    background: linear-gradient(to right,
+      #ffeec2 0                             calc(var(--fill, 50%) * 0.125),
+      #ffe7aa calc(var(--fill, 50%) * 0.125) calc(var(--fill, 50%) * 0.25),
+      #f8d899 calc(var(--fill, 50%) * 0.25)  calc(var(--fill, 50%) * 0.375),
+      #efc98a calc(var(--fill, 50%) * 0.375) calc(var(--fill, 50%) * 0.5),
+      #debd82 calc(var(--fill, 50%) * 0.5)   calc(var(--fill, 50%) * 0.625),
+      #d7b172 calc(var(--fill, 50%) * 0.625) calc(var(--fill, 50%) * 0.75),
+      #d8a559 calc(var(--fill, 50%) * 0.75)  calc(var(--fill, 50%) * 0.875),
+      #d9993f calc(var(--fill, 50%) * 0.875) var(--fill, 50%),
+      #2a3342 var(--fill, 50%) 100%); }   /* --fill (JS-driven) is the GOLD LINE to the left of the knob (user); the KNOB is WHITE (user 2026-08-08) */
+  /* ── THE RAIL WEARS THE WORDMARK'S GOLD (user 2026-08-09: "a gold pixel gradient like what is shown on the voxelbit
+     title outlines", then: run it ALONG the bar, then: lighter, "especially towards the darker side") ── the eight
+     stops are the title bevel's ENTIRE ring, one per facet, with each facet's HUE AND SATURATION kept exactly and only
+     its LIGHTNESS re-spaced: the bright end sits where the top-left facet already was and the floor is lifted to 0.55,
+     so the bottom-right facet reads #d9993f instead of its original #754e17. Lightness, NOT a blend toward white —
+     white-lerping the dark end desaturates it to #c8b8a2, which is beige, and a beige rail beside a gold wordmark reads
+     as a different material rather than a lighter one. Doubled stop positions make them HARD bands rather than a
+     gradient — the same discrete-facet look the bevel gets from eight offset copies, and the reason this reads as pixel
+     art next to px3 instead of as a web gradient.
+     THE RAMP IS SCALED TO --fill, NOT TO THE TRACK. Every stop is a fraction of the fill percentage, so the full
+     eight-colour run always lands between the left cap and the knob whatever the value is. Anchoring the stops to the
+     track instead would show only the pale end at low volume and only the bronze end at high, i.e. the bar would change
+     COLOUR as you dragged it rather than change LENGTH. calc() on a percentage is what makes this possible in one
+     gradient: the same pass does the ramp and the fill split, so no mask layer is needed.
+     An earlier pass ran this ramp vertically, across the rail's 5px thickness, one band per pixel row. It was correct
+     and invisible — five pixels is no room for eight facets (user: "what did you change?"). */
   #todSlider::-webkit-slider-thumb, #volSlider::-webkit-slider-thumb, #sensSlider::-webkit-slider-thumb, #resSlider::-webkit-slider-thumb, #dofStrSlider::-webkit-slider-thumb, #sfxSlider::-webkit-slider-thumb, #musSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #ffffff; border: none; transition: transform 0.14s ease-out; }
   #todSlider:hover::-webkit-slider-thumb, #volSlider:hover::-webkit-slider-thumb, #sensSlider:hover::-webkit-slider-thumb, #resSlider:hover::-webkit-slider-thumb, #dofStrSlider:hover::-webkit-slider-thumb, #sfxSlider:hover::-webkit-slider-thumb, #musSlider:hover::-webkit-slider-thumb,
   #todSlider:active::-webkit-slider-thumb, #volSlider:active::-webkit-slider-thumb, #sensSlider:active::-webkit-slider-thumb, #resSlider:active::-webkit-slider-thumb, #dofStrSlider:active::-webkit-slider-thumb, #sfxSlider:active::-webkit-slider-thumb, #musSlider:active::-webkit-slider-thumb { transform: scale(1.65); }   /* knob grows on hover — NO halo (user removed the box-shadow ring) */
@@ -220,7 +253,7 @@
   #todSlider:hover::-moz-range-thumb, #volSlider:hover::-moz-range-thumb, #sensSlider:hover::-moz-range-thumb, #resSlider:hover::-moz-range-thumb, #dofStrSlider:hover::-moz-range-thumb, #sfxSlider:hover::-moz-range-thumb, #musSlider:hover::-moz-range-thumb,
   #todSlider:active::-moz-range-thumb, #volSlider:active::-moz-range-thumb, #sensSlider:active::-moz-range-thumb, #resSlider:active::-moz-range-thumb, #dofStrSlider:active::-moz-range-thumb, #sfxSlider:active::-moz-range-thumb, #musSlider:active::-moz-range-thumb { transform: scale(1.65); }
   #todSlider::-moz-range-track, #volSlider::-moz-range-track, #sensSlider::-moz-range-track, #resSlider::-moz-range-track, #dofStrSlider::-moz-range-track, #sfxSlider::-moz-range-track, #musSlider::-moz-range-track { height: 5px; border-radius: 3px; background: #2a3342; }
-  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress, #sensSlider::-moz-range-progress, #resSlider::-moz-range-progress, #dofStrSlider::-moz-range-progress, #sfxSlider::-moz-range-progress, #musSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: #d2a453; }   /* Firefox draws the filled-left portion natively */
+  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress, #sensSlider::-moz-range-progress, #resSlider::-moz-range-progress, #dofStrSlider::-moz-range-progress, #sfxSlider::-moz-range-progress, #musSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: linear-gradient(to right, #ffeec2 0 12.5%, #ffe7aa 12.5% 25%, #f8d899 25% 37.5%, #efc98a 37.5% 50%, #debd82 50% 62.5%, #d7b172 62.5% 75%, #d8a559 75% 87.5%, #d9993f 87.5% 100%); }   /* Firefox draws the filled-left portion natively, so this element IS the filled run and plain 0-100% stops already scale to it — the calc(--fill) arithmetic the webkit rail needs would be wrong here, not merely redundant */
   #rdWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #volWrap, #sensWrap, #resWrap, #dofStrWrap, #sfxWrap, #musWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider, #musSlider { width: 170px; cursor: pointer; }
@@ -247,9 +280,10 @@
   #lgtPanel .lgtBake button:hover { border-color: #7fd05a; color: #b8ff6e; }
   #lgtPanel .lgtHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; }
   #lgtPanel.hidden { display: none; }
-  /* ── WATER SETTINGS: OFF SCREEN (user 2026-08-05) ── the panel, its buttons, the reflection slider and the
-     bake row stay wired exactly as they were, so WATER_BAKE still drives the look and __vb.lgt()/__vb.wrefl()
-     still reach it from the console; this one rule keeps it out of sight. Delete to restore. */
+  /* ── WATER SETTINGS: OFF SCREEN ── the panel, its buttons, the reflection slider and the bake row stay wired
+     exactly as they are, so WATER_BAKE still drives the look and __vb.lgt()/__vb.wrefl() still reach it from the
+     console; this one rule keeps it out of sight. It has been brought back twice to carry a group of graphics
+     toggles and retired again both times when that group was removed. Delete to restore. */
   #lgtPanel { display: none !important; }
   /* ── ARROW ORIENTATION ── top right, shown whenever the cursor is free; each button turns the arrow on the bow a quarter turn */
   #arwPanel { position: fixed; top: 10px; right: 12px; z-index: 60; background: rgba(12,16,22,0.82); border: 1px solid #2b3648;
@@ -399,17 +433,17 @@
 <div id="kbCard4">
   <h2>sound</h2>
   <div class="optRows">
-  <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="1" value="100"></div>
-  <div id="sfxWrap"><span id="sfxLabel">sfx 100%</span><input type="range" id="sfxSlider" min="0" max="100" step="1" value="100"></div>
-  <div id="musWrap"><span id="musLabel">music 100%</span><input type="range" id="musSlider" min="0" max="100" step="1" value="100"></div>
+  <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="10" value="100"></div>
+  <div id="sfxWrap"><span id="sfxLabel">sfx 100%</span><input type="range" id="sfxSlider" min="0" max="100" step="10" value="100"></div>
+  <div id="musWrap"><span id="musLabel">music 100%</span><input type="range" id="musSlider" min="0" max="100" step="10" value="100"></div>
   </div>
 </div>
 <div id="kbCard3">
   <h2>visuals</h2>
   <div class="optRows">
-  <div id="todWrap"><span id="todLabel">07:00</span><input type="range" id="todSlider" min="0" max="1439" step="1" value="420"></div>
+  <div id="todWrap"><span id="todLabel">07:00</span><input type="range" id="todSlider" min="0" max="1430" step="10" value="420"></div>
   <div id="resWrap"><span id="resLabel">resolution 80%</span><input type="range" id="resSlider" min="40" max="100" step="10" value="80"></div>
-  <div id="dofStrWrap"><span id="dofStrLabel">depth of field 30%</span><input type="range" id="dofStrSlider" min="0" max="200" step="10" value="30"></div>
+  <div id="dofStrWrap"><span id="dofStrLabel">depth of field 30%</span><input type="range" id="dofStrSlider" min="0" max="100" step="10" value="30"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
   <div id="fsWrap"><span>fullscreen</span><button id="fsBtn">off</button></div>
   <div id="vigWrap"><span>vignette</span><button id="vigBtn">on</button></div>
@@ -660,23 +694,23 @@
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
   const LGT_ALL = 0xffffff;                            // 24 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader). Bits 18-23 are the WATER group (user 2026-08-05). Stays exact in the f32 uniform: integers are exact to 2^24.
   const LGT_WATER = 0xfc0000;                          // bits 18-23 — the WATER group, and the only terms the panel exposes (user 2026-08-05: "I only want buttons that change the water")
-  const LGT2_ALL = 0x1;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits and an f32 is only exact to 2^24, so a 25th bit there would round. Bit 0 = WATER SOFT GLISTEN, split off from the pixel glisten (lgt.x bit 22).
+  const LGT2_ALL = 0x0;                                // ── SECOND TERM MASK (u.lgt.z) ── EMPTY. lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term would go. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). LG2() stays wired for whatever is next.
   // ══ WATER BAKE (user 2026-08-05) ══ THE defaults for every water control. Tune with the top-right panel,
   // hit `copy` on its bake row, and paste the line it gives you OVER this one — that is the whole workflow.
   // A player who has never touched the panel gets exactly what is written here; `reset` in the panel puts a
   // live session back to it. `reflection` is the Fresnel mirror weight (1 = physical Schlick), the rest are
   // on/off. Anything the player HAS changed is remembered in localStorage and wins until they hit reset.
-  const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, softGlisten: 0, pixelGlisten: 1, waves: 0, reflection: 0.45 };
-  const WBIT = { reflect: 18, refract: 19, foam: 20, ice: 21, pixelGlisten: 22, waves: 23 };   // …their bits in u.lgt.x; softGlisten is bit 0 of u.lgt.z
+  const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, pixelGlisten: 1, waves: 0, reflection: 0.45 };
+  const WBIT = { reflect: 18, refract: 19, foam: 20, ice: 21, pixelGlisten: 22, waves: 23 };   // …their bits in u.lgt.x
   const wBakeMask = () => { let m = LGT_ALL & ~LGT_WATER; for (const k in WBIT) if (WATER_BAKE[k]) m |= (1 << WBIT[k]); return m; };
-  const wBakeMask2 = () => (WATER_BAKE.softGlisten ? 1 : 0);
+  const wBakeMask2 = () => 0;                          // nothing lives in the second mask (see LGT2_ALL)
   const wBakeRefl = () => { const v = +WATER_BAKE.reflection; return (isFinite(v) && v >= 0 && v <= 2) ? v : 1; };
   // Everything OUTSIDE the water group is FORCED ON at load. The panel used to carry all 24 terms, so a
   // saved mask can have sun shadow / AO / fog / TAA switched off from an earlier bisection — and with those
   // rows gone there would be no way left to switch them back. Only the water bits are restored from storage.
   let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt');
     return v === null ? wBakeMask() : (((parseInt(v, 10) & LGT_WATER) | (LGT_ALL & ~LGT_WATER)) & LGT_ALL); } catch (e) { return wBakeMask(); } })();
-  let lgtMask2 = (() => { try { const v = localStorage.getItem('vb_lgt2'); return v === null ? wBakeMask2() : (parseInt(v, 10) & LGT2_ALL); } catch (e) { return wBakeMask2(); } })();
+  let lgtMask2 = 0;                                    // …so this is 0 and stays 0. Kept as a variable because the frame still writes it to u.lgt.z (UF[1866]) and __vb.lgt2() still reads it.
   // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
   // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
   let wReflK = (() => { try { const v = parseFloat(localStorage.getItem('vb_wrefl')); return (isFinite(v) && v >= 0 && v <= 2) ? v : wBakeRefl(); } catch (e) { return wBakeRefl(); } })();
@@ -4725,34 +4759,27 @@
           waterIceC = iceC; waterIceK = min(1.0, u.pickZ.w * 1.12);   // ── AND THE CREATURE PATH BELOW MUST SEE THIS ── the ice used to be mixed into the surface AFTER waterScat/waterRefl/waterFres were captured, so a fish under a frozen lake was still composited through LIQUID water: at 12 voxels' depth Beer-Lambert ate it down to the water's own in-scatter blue and painted that fish-shaped patch of lake over a white ice sheet. It read as a hole punched in the ice (user 2026-08-08: "the visuals are messed up when the fish are frozen"). The bed is fully hidden at freezeK 1, so the fish must be too.
           col = mix(col, iceC, waterIceK);
         }
-        // ── TWO SEPARATE EFFECTS (user 2026-08-05) ── one switch used to carry both, so there was no way to
-        // see which of them was doing what. They share only the light COLUMN they live inside:
-        //   · SOFT GLISTEN  (lgt.z bit 0) — a smooth continuous sheen toward the light, ADDED to the surface.
-        //   · PIXEL GLISTEN (lgt.x bit 22) — discrete 10 cm cubes flashing on and off (the engine.html look).
-        if (u.pickZ.w < 0.4 && (LG(22u) || LG2(0u))) {
+        // ── PIXEL GLISTEN (lgt.x bit 22) ── discrete 10 cm cubes flashing on and off (the engine.html look).
+        // It used to have a companion, a smooth SOFT sheen on lgt.z bit 0, sharing this same light column;
+        // that one is gone (user 2026-08-09) and the column now serves the pixel glint alone.
+        if (u.pickZ.w < 0.4 && LG(22u)) {
           let gk = select(smoothstep(-0.02, 0.10, u.sunDir.y), 0.6, isMoon());
           if (gk > 0.01) {
-            let column = pow(max(dot(refl, u.sunDir), 0.0), 26.0);   // reflection column toward the light — both glistens live ONLY inside this
-            if (LG2(0u)) {                                          // ── SOFT ── broad sheen, no structure
-              let shimC = select(vec3<f32>(1.05, 0.92, 0.72), vec3<f32>(0.72, 0.82, 1.05), isMoon());
-              col += shimC * pow(max(dot(refl, u.sunDir), 0.0), 64.0) * (0.5 * gk) * irr.r * dayScale();
-            }
-            if (LG(22u)) {                                          // ── PIXEL ── discrete twinkling voxels
-              let cell = floor(vec2<f32>(wx2, wz2));                 // one glint cell = one 10 cm voxel
-              let ph = fract(sin(cell.x * 91.7 + cell.y * 47.3) * 4321.7) * 6.2831853;   // per-voxel random phase
-              let tw = sin(u.time * 1.6 + ph) * 0.5 + 0.5;   // glint twinkle halved to match
-              let pick = step(0.5, fract(sin(cell.x * 12.9898 + cell.y * 78.233) * 43758.5453));   // ~half the voxels participate — scattered, not a sheet
-              // ── NO GAPS (user 2026-08-05: "it changes its pattern, removes itself, then changes again") ──
-              // the window used to be smoothstep(0.82, 1.0): a cell sat above 0.82 for only 28% of its 3.9 s
-              // cycle and reached full brightness for a sliver of that, so at any instant barely 5% of the
-              // water carried a glint. The eye reads that as a patch lighting up, going out, and a DIFFERENT
-              // patch lighting up — the gap is simply the off part of a very low duty cycle. Widened to
-              // 0.30-0.85: lit 63% of the cycle instead of 28%, and the long ramp means a cell fades in and
-              // out rather than snapping, so the field is continuously populated and the transitions blend.
-              let spark = smoothstep(0.30, 0.85, tw) * pick;         // a soft rise and fall → a glint that arrives and leaves, never blinks
-              let sparkC = select(vec3<f32>(1.35, 1.25, 1.0), vec3<f32>(1.15, 1.18, 1.3), isMoon()) * (0.35 + 0.65 * dayScale());
-              col = mix(col, sparkC, spark * column * gk * 0.85 * irr.r);   // translucent voxel glint (mix, not add — reads as a bright cube on the surface)
-            }
+            let column = pow(max(dot(refl, u.sunDir), 0.0), 26.0);   // reflection column toward the light — the glint lives ONLY inside this
+            let cell = floor(vec2<f32>(wx2, wz2));                 // one glint cell = one 10 cm voxel
+            let ph = fract(sin(cell.x * 91.7 + cell.y * 47.3) * 4321.7) * 6.2831853;   // per-voxel random phase
+            let tw = sin(u.time * 1.6 + ph) * 0.5 + 0.5;   // glint twinkle halved to match
+            let pick = step(0.5, fract(sin(cell.x * 12.9898 + cell.y * 78.233) * 43758.5453));   // ~half the voxels participate — scattered, not a sheet
+            // ── NO GAPS (user 2026-08-05: "it changes its pattern, removes itself, then changes again") ──
+            // the window used to be smoothstep(0.82, 1.0): a cell sat above 0.82 for only 28% of its 3.9 s
+            // cycle and reached full brightness for a sliver of that, so at any instant barely 5% of the
+            // water carried a glint. The eye reads that as a patch lighting up, going out, and a DIFFERENT
+            // patch lighting up — the gap is simply the off part of a very low duty cycle. Widened to
+            // 0.30-0.85: lit 63% of the cycle instead of 28%, and the long ramp means a cell fades in and
+            // out rather than snapping, so the field is continuously populated and the transitions blend.
+            let spark = smoothstep(0.30, 0.85, tw) * pick;         // a soft rise and fall → a glint that arrives and leaves, never blinks
+            let sparkC = select(vec3<f32>(1.35, 1.25, 1.0), vec3<f32>(1.15, 1.18, 1.3), isMoon()) * (0.35 + 0.65 * dayScale());
+            col = mix(col, sparkC, spark * column * gk * 0.85 * irr.r);   // translucent voxel glint (mix, not add — reads as a bright cube on the surface)
           }
         }
         var fogA = 1.0 - exp(-irr.b * 0.0006);
@@ -4796,7 +4823,7 @@
         else { col += alb * lavaG * lavaG * vec3<f32>(1.0, 0.82, 0.30) * 4.6; }                  // firefly: sqrt-encoded in TRACE → SQUARED decode restores the physical falloff curve
         var fogA = 1.0 - exp(-irr.b * 0.0006);
         fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
-        if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog   // soft CIRCULAR horizon
+        if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
         col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
       }
       // Distance to the nearest FOREGROUND surface drawn over the g-buffer (creature, drop, held item), or -1 if the scene
@@ -4912,8 +4939,9 @@
                     col = col * mix(0.5, 1.0, 0.65 * upN + 0.35 * smoothstep(0.0, 0.9, hN));   // contact shadow: darkest at the bottom + underside, full-lit on top
                   }
                   if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} && dYv.w > 0.0 && cell.r > 0.6 && cell.g > 0.4 && cell.b < 0.1) { col = cell.rgb * (0.4 + dYv.w); }   // FIREFLY abdomen — yellow voxel EMISSIVE (FFLY-range-gated so a blinking duckling's yellow doesn't glow)
-                  var fogB = 1.0 - exp(-bestT * 0.0006);             // the SAME distance haze + view-edge ring the world gets — a far bird melts into the haze instead of popping crisp
+                  var fogB = 1.0 - exp(-bestT * 0.0006);
                   fogB = max(fogB, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
+                  if (!LG(5u)) { fogB = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
                   col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogB);
                   if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} &&
                       cell.r > 0.88 && cell.g > 0.88 && cell.b > 0.88) { col = mix(behind, col, 0.6); }   // FIREFLY WINGS (the white voxels) — 40% translucent
@@ -4989,7 +5017,7 @@
                 // distance. The held tool is centimetres away, so its fog term is zero and it is unaffected.
                 var fogC = 1.0 - exp(-bestT * 0.0006);
                 fogC = max(fogC, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
-                if (!LG(5u)) { fogC = 0.0; }
+                if (!LG(5u)) { fogC = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
                 col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogC);
                 // (No submerged tint here: the UNDERWATER block at the end of main now absorbs this pixel over fgT — the
                 //  creature's OWN in-water path — so it dims exactly like the world does, with no double attenuation.)
@@ -5164,17 +5192,63 @@
     @group(0) @binding(5) var colorHistOut : texture_storage_2d<rgba8unorm, write>;
     @group(0) @binding(7) var dofOut : texture_storage_2d<rgba8unorm, write>;   // ── DEPTH OF FIELD ── {resolved colour, circle of confusion}: a SECOND target so colHist.a keeps carrying the sky mask the god rays read, and so the blit's gather costs one fetch per tap instead of two
     @group(0) @binding(6) var slotT : texture_2d<u32>;               // dynamic-life ids — creature pixels reproject through their slot's rigid motion (kills color-history ghost trails)
+    // ── YCoCg ── a rotation, not a tone curve: exactly invertible, one dot product each way. Variance in this
+    // space separates "this pixel got brighter" from "this pixel changed hue", which is the distinction an RGB
+    // box cannot make and the reason chroma ghosts survive one.
+    fn rgb2ycocg(c : vec3<f32>) -> vec3<f32> {
+      return vec3<f32>(dot(c, vec3<f32>(0.25, 0.5, 0.25)), dot(c, vec3<f32>(0.5, 0.0, -0.5)), dot(c, vec3<f32>(-0.25, 0.5, -0.25)));
+    }
+    fn ycocg2rgb(c : vec3<f32>) -> vec3<f32> {
+      let t = c.x - c.z;
+      return vec3<f32>(t + c.y, c.x + c.z, t - c.y);
+    }
+    // Walk the history sample along the line toward the box centre until it is inside, and convert back. Note
+    // it is ONE scale for all three channels — clamping them independently is what lets a rejected sample land
+    // on a colour that appears nowhere in the neighbourhood, which reads as a coloured fringe on moving edges.
+    fn clipToAABB(prevY : vec3<f32>, lo : vec3<f32>, hi : vec3<f32>) -> vec3<f32> {
+      let ctr = 0.5 * (hi + lo);
+      let ext = max(0.5 * (hi - lo), vec3<f32>(1e-5));
+      let dv = prevY - ctr;
+      let r = abs(dv / ext);
+      let m = max(r.x, max(r.y, r.z));
+      return ycocg2rgb(select(prevY, ctr + dv / m, m > 1.0));
+    }
+    // Catmull-Rom over a 4x4 footprint, evaluated in 5 bilinear fetches: each pair of adjacent taps is folded
+    // into one sample placed off-centre so the hardware's own interpolation weights them. It reads colorPrev
+    // and samp from module scope on purpose — the sampler must be LINEAR for the fold to be exact.
+    fn catmullRomPrev(uv : vec2<f32>, res : vec2<f32>) -> vec3<f32> {
+      let sp = uv * res;
+      let tp1 = floor(sp - 0.5) + 0.5;
+      let f = sp - tp1;
+      let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+      let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+      let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+      let w3 = f * f * (-0.5 + 0.5 * f);
+      let w12 = w1 + w2;
+      let tp0 = (tp1 - 1.0) / res;
+      let tp3 = (tp1 + 2.0) / res;
+      let tp12 = (tp1 + w2 / max(w12, vec2<f32>(1e-5))) / res;
+      var acc = textureSampleLevel(colorPrev, samp, vec2<f32>(tp12.x, tp0.y), 0.0).rgb * (w12.x * w0.y);
+      acc += textureSampleLevel(colorPrev, samp, vec2<f32>(tp0.x, tp12.y), 0.0).rgb * (w0.x * w12.y);
+      acc += textureSampleLevel(colorPrev, samp, vec2<f32>(tp12.x, tp12.y), 0.0).rgb * (w12.x * w12.y);
+      acc += textureSampleLevel(colorPrev, samp, vec2<f32>(tp3.x, tp12.y), 0.0).rgb * (w3.x * w12.y);
+      acc += textureSampleLevel(colorPrev, samp, vec2<f32>(tp12.x, tp3.y), 0.0).rgb * (w12.x * w3.y);
+      return acc;
+    }
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
       let p = vec2<i32>(gid.xy);
       let cur4 = textureLoad(colorCur, p, 0);
       let cur = cur4.rgb;                                            // …alpha is the composite's circle of confusion, passed straight through to dofOut below
-      var mn = cur; var mx = cur;
+      // ── NEIGHBOURHOOD ── first and second moments of the 3x3 in YCoCg. These 9 taps used to build a min/max
+      // box; the moments cost one multiply-add per tap on top of the fetch and buy a far tighter rejection
+      // test (see below), so the box is gone rather than computed alongside.
+      var m1 = vec3<f32>(0.0); var m2 = vec3<f32>(0.0);
       for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) {
         let q = clamp(p + vec2<i32>(dx, dy), vec2<i32>(0), vec2<i32>(i32(u.res.x) - 1, i32(u.res.y) - 1));
-        let s = textureLoad(colorCur, q, 0).rgb;
-        mn = min(mn, s); mx = max(mx, s);
+        let yc = rgb2ycocg(textureLoad(colorCur, q, 0).rgb);
+        m1 += yc; m2 += yc * yc;
       } }
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let rd = rayDir(px);
@@ -5189,7 +5263,25 @@
       let uv = prevUVd(d);
       var outc = cur;
       if (u.reset < 0.5 && uv.x > 0.001 && uv.y > 0.001 && uv.x < 0.999 && uv.y < 0.999) {
-        let prev = clamp(textureSampleLevel(colorPrev, samp, uv, 0.0).rgb, mn, mx);
+        // ── HISTORY REJECTION ── two independent sources of TAA blur, both addressed here, neither costing
+        // a new tap:
+        //   · the FETCH. A bilinear sample of the history is a box the width of a pixel, and reprojection
+        //     resamples it EVERY frame, so a converged pixel has been through that filter dozens of times and
+        //     a voxel edge is soft for no reason but repeated resampling. Catmull-Rom is the standard answer:
+        //     a 4x4 bicubic collapsed to 5 bilinear fetches by riding the hardware's own interpolation, with
+        //     a mildly negative lobe that puts back what the box took out. Clamped to non-negative afterwards
+        //     because that same lobe can undershoot into black on a hard edge and leave a dark rim.
+        //   · the CLAMP. Clamping to the 3x3 min/max is the loosest possible box: one bright speck anywhere in
+        //     the neighbourhood widens it, so stale history walks through and shows up as a ghost trail, and
+        //     the usual reflex is to raise the blend rate — which is more blur. Variance CLIPPING instead
+        //     builds the box from the mean and standard deviation (mu +/- 1.25 sigma) and CLIPS toward the
+        //     current colour along the line joining them rather than squashing each channel on its own,
+        //     which is what stops the clamp from inventing a colour that was never in the neighbourhood.
+        //     In YCoCg because luma and chroma get their own variance there — the ghost that survives an RGB
+        //     box is usually a chroma one.
+        let mu = m1 / 9.0;
+        let sg = sqrt(max(m2 / 9.0 - mu * mu, vec3<f32>(0.0)));
+        let prev = clipToAABB(rgb2ycocg(max(catmullRomPrev(uv, u.res), vec3<f32>(0.0))), mu - sg * 1.25, mu + sg * 1.25);
         outc = mix(prev, cur, select(1.0, 0.12, LG(8u)));           // bit 8 off → no colour history (raw, jittery, but instant)
       }
       textureStore(dofOut, vec2<i32>(gid.xy), vec4<f32>(outc, cur4.a));   // the CoC is deliberately NOT temporally blended: it is a depth-derived field, and mixing this frame's against a reprojected one would drag a stale blur radius across every silhouette
@@ -8746,6 +8838,7 @@
           b.z = Math.max(rect.zlo + 60, Math.min(rect.zhi - 60, b.z));
           b.g = hmap[gwrap(Math.floor(b.x), WX) + gwrap(Math.floor(b.z), WZ) * WX] || P.y;
           b.th = Math.random() * Math.PI * 2; b.pyPrev = b.g + BIRD_ALT; b.init = true;
+          b.dying = false; b.rag = false; b.ragBody = null; b.ragParts = null; b.ragIt = 0;   // a recycled slot must not inherit the last bird's death: `rag` would keep it from ever being drawn, and a stale ragIt would build the next corpse from the wrong pose
           b.altO = Math.random() * 30; b.tRe = tb + Math.random() * 3;   // staggered whim timers → independent behaviour
           b.flapT0 = tb - Math.random() * 0.5;         // desynced wingbeats
           b.om = 0; b.vyS = 0; b.swO = 0; b.mode = 0; b.glid = false;
@@ -8835,6 +8928,59 @@
     UF[o2 + 4] = ps.Xw[0] * right[0] + ps.Xw[1] * right[1] + ps.Xw[2] * right[2]; UF[o2 + 5] = ps.Xw[0] * up[0] + ps.Xw[1] * up[1] + ps.Xw[2] * up[2]; UF[o2 + 6] = ps.Xw[0] * fwd[0] + ps.Xw[1] * fwd[1] + ps.Xw[2] * fwd[2]; UF[o2 + 7] = ps.item;
     UF[o2 + 8] = ps.Yw[0] * right[0] + ps.Yw[1] * right[1] + ps.Yw[2] * right[2]; UF[o2 + 9] = ps.Yw[0] * up[0] + ps.Yw[1] * up[1] + ps.Yw[2] * up[2]; UF[o2 + 10] = ps.Yw[0] * fwd[0] + ps.Yw[1] * fwd[1] + ps.Yw[2] * fwd[2]; UF[o2 + 11] = 0;
     UF[o2 + 12] = ps.Zw[0] * right[0] + ps.Zw[1] * right[1] + ps.Zw[2] * right[2]; UF[o2 + 13] = ps.Zw[0] * up[0] + ps.Zw[1] * up[1] + ps.Zw[2] * up[2]; UF[o2 + 14] = ps.Zw[0] * fwd[0] + ps.Zw[1] * fwd[1] + ps.Zw[2] * fwd[2]; UF[o2 + 15] = 0;
+  };
+  // ── A SHOT SKY BIRD DIES LIKE EVERYTHING ELSE (user 2026-08-09: "it just appears to disappear with the
+  // sparks") ── it was the last creature without a ragdoll: it set the red flash and the clock, but nothing
+  // ever converted it, so at the end of HURT_MS it stopped being drawn and the poof fired in empty air.
+  // Two helpers because there are two flight paths — bird 0 rides a dedicated drop slot, the other eleven ride
+  // the compacted band — and copying this into both is how they drift apart.
+  //   birdRagTick: true means "this bird IS a rigid body now, do not step or draw it". Same rule the wbf loop
+  //     applies with `if (B.rag) continue`, and for the same reason: drawing it again puts a second copy in
+  //     the air where the corpse used to be.
+  //   birdPose:    caches the pose the renderer just used, so creatureRagdoll's trace-injected branch can
+  //     rebuild the bird's voxels in world space at the instant it dies — exactly what the wbf emit caches for
+  //     ducks and fish. birdStep returns fresh Xw/Yw/Zw arrays per call, so holding the references is free and
+  //     cannot go stale under the next bird.
+  // ── SAME DEATH AS EVERY OTHER ANIMAL (user 2026-08-06) ── a sky bird used to blink out the instant the shaft
+  // touched it: no red, no beat. Pool creatures set the hurt box and defer the poof by HURT_MS so the flash
+  // plays; birds live in birds[], not wbf, so pendDeath (which indexes the pool) cannot carry them — they get
+  // the same clock on their own field instead, and the box is re-published each frame so the red follows it.
+  // Its own function so __vb.birdKill() can reach it: landing an arrow on a bird 140 voxels up is not a thing
+  // a test can do reliably, and this is the only way to exercise the death at all.
+  const birdShot = (B) => {
+    if (!B || !B.init || B.dying) return false;
+    B.dying = true; B.dieAt = performance.now() + HURT_MS; birdKills++;
+    // ── GO RIGID (user 2026-08-09: "it just appears to disappear with the sparks") ── the sky bird was the one
+    // creature left without a ragdoll. Everything needed was already here: creatureRagdoll's trace-injected
+    // branch rebuilds a body from the item model at the pose the renderer last drew, and birdPose now caches
+    // that pose per frame the way the wbf emit does for ducks and fish. Same call, same shatter, same
+    // red-while-falling. If it cannot convert (physics off, model too big, no body slot) B.rag stays false and
+    // the old death plays out untouched.
+    if (creatureRagdoll(B)) B.rag = true;
+    HURT.slot = -1; HURT.hold = false; HURT.t0 = performance.now();   // slot -1: no cSlot match, so the shader takes the AABB path — which is what a bird needs anyway
+    if (B.rag) hurtBox(B);                             // the flash boxes the PIECES from here on, so it falls with them
+    else { HURT.cx = B.x; HURT.cy = B.y; HURT.cz = B.z; HURT.hx = 3.2; HURT.hy = 3.2; HURT.hz = 3.2; }
+    return true;
+  };
+  const birdRagTick = (BD) => {
+    if (!BD || !BD.init || !BD.rag) return false;
+    if (performance.now() >= BD.dieAt) {
+      // The poof goes where the BODY is, not where the bird was flying half a second ago, and the pieces go
+      // with it — the sparks are the death, so nothing is left behind to collect. reapDeaths does the same.
+      spawnDeathBurst(BD.ragBody ? BD.ragBody.pos[0] : BD.x, BD.ragBody ? BD.ragBody.pos[1] : BD.y, BD.ragBody ? BD.ragBody.pos[2] : BD.z);
+      for (const pb of (BD.ragParts || [])) { const pi = PH.bodies.indexOf(pb); if (pi >= 0) PH.bodies.splice(pi, 1); }
+      BD.ragBody = null; BD.ragParts = null; BD.init = false; BD.dying = false; BD.rag = false;
+    } else hurtBox(BD);                                // red on every piece, all the way down
+    return true;
+  };
+  const birdPose = (BD, ps) => {
+    if (!BD || !BD.init) return;
+    BD.ragIt = ps.item; BD.ragA0 = ps.x; BD.ragA1 = ps.y; BD.ragA2 = ps.z;
+    BD.ragX = ps.Xw; BD.ragY = ps.Yw; BD.ragZ = ps.Zw; BD.ragS = BIRD_VS;
+    if (BD.dying) {                                    // dying but NOT rigid (physics off, or no body slot free): the old death, unchanged
+      if (performance.now() >= BD.dieAt) { spawnDeathBurst(BD.x, BD.y, BD.z); BD.init = false; BD.dying = false; }
+      else { HURT.cx = BD.x; HURT.cy = BD.y; HURT.cz = BD.z; }
+    }
   };
   const birdHit = (box, ps) => {                       // SOLID hitbox: project the glide-frame extents onto the world axes for a snug, stable AABB
     const bdi = (itemsRef && itemsRef[ps.glideItem]) || { w: 14, d: 6, h: 10 };   // this bird's own glide frame — the two species are the same size, but keep it honest
@@ -9779,6 +9925,16 @@
   };
   const HITS_TO_KILL = 3;                              // hits a non-AXE tool needs to kill a life form (user). The axe is the killing tool and ignores this entirely.
   const ARROW_HITS_TO_KILL = 2;                        // …and an ARROW takes two (user) — between the axe's one blow and every hand tool's three
+  // ── STRUCK = SPOOKED (user 2026-08-09) ── every family that has a flee state already enters it on
+  // PROXIMITY and runs its animation at double rate there: the bunny 24→48 fps (B.bflee), the land mammals
+  // 12→24 (B.aflee), the fish ×fleeMult with its animation scaled to match (B.fleeT). Being SHOT did none of
+  // that — an arrow could land on a rabbit and it would carry on ambling at walking pace. One window, set on
+  // the blow in hitCreature and ORed into all three tests, so a hit reads the way proximity already does.
+  // 5 s, not the fish's 1.2 s fleeHold: that number exists to stop flicker at the edge of the threat radius,
+  // where the animal is deciding moment to moment. A wound is not a decision, and an animal that shrugs it off
+  // in a second reads as not having noticed.
+  const HIT_SPOOK_MS = 5000;
+  const spooked = (B) => performance.now() < (B.spookT || 0);
   const HURT_MS = 500;                                 // ONE blink, half a second (user). Comfortably longer than TAA's ~8-frame colour blend, which is what made an earlier 83 ms flash almost invisible on screen.
   const HURT = { t0: -1e9, hold: false, slot: -1, cx: 0, cy: 0, cz: 0, hx: 0, hy: 0, hz: 0 };   // world coords — rebased to the window at publish time, so a world shift mid-blink cannot drag the box off the animal
   const hurtBox = (B) => {                             // the animal's CURRENT stamped bounds — re-read every frame, because it is still walking while it flashes
@@ -9943,6 +10099,8 @@
     const hs9 = hitSpot(B);
     spawnHitSparks(hs9[0], hs9[1], hs9[2]);             // SPARKS ON EVERY BLOW (user) — the same embers a shaft already threw, now on any hit, wounding or killing. Fired here, before the wound/kill split, so hits one, two and three all show it.
     playLifeHit(hs9[0], hs9[1], hs9[2]);                // …and the SAME rule for the sound (user 2026-08-08): every blow that lands on a living thing is heard, whatever swung it. Here, above the wound/kill split and below the one-hit-per-swing guard, so it is exactly once per blow — hits one, two and three included, and a held swing cannot machine-gun it.
+    B.spookT = performance.now() + HIT_SPOOK_MS;        // …and it BOLTS (user 2026-08-09) — same place and same rule as the two above, so every blow spooks it, arrow or axe or bare hand, wounding or fatal
+    B.thrX = P.x; B.thrZ = P.z;                         // …away from the PLAYER: the fish flee angles off a remembered threat position, and the one that just shot it is the threat
     const need = (token !== undefined && String(token).startsWith('arrow')) ? ARROW_HITS_TO_KILL : HITS_TO_KILL;   // an ARROW is a weapon, not a hand tool: TWO and the animal is down (user)
     // …and the SPEAR kills outright, thrust or thrown — the axe's privilege, for the one tool that is a
     // weapon first (user). Everything else wears the animal down.
@@ -10082,7 +10240,7 @@
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
   // ── keybinds ── rebindable, persisted to localStorage
-  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'CapsLock', drop: 'KeyQ', fly: 'KeyF', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // L AND V ARE BOTH UNBOUND: sun shafts were removed for cost (user 2026-08-08, +2.76 ms worst case) and v-sync was removed outright. Back-lit foliage is baked in and needs no key.   // crouch on CAPS LOCK (user 2026-08-05), off Alt   // fly on F restored (user 2026-07-22)
+  const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'CapsLock', drop: 'KeyQ', fly: 'KeyF', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // L AND V ARE BOTH UNBOUND: the water panel L used to open is off screen and v-sync was removed outright. Back-lit foliage is baked in and needs no key.   // crouch on CAPS LOCK (user 2026-08-05), off Alt   // fly on F restored (user 2026-07-22)
   const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
   const binds = { ...DEFBINDS };
   try { const sv = JSON.parse(localStorage.getItem('vb_binds') || '{}'); for (const k in sv) if (k in binds) binds[k] = sv[k]; } catch (e) {}
@@ -10520,7 +10678,7 @@
   // radius, so 100% is always the tuned default whatever the number behind it becomes, and the slider stays
   // meaningful if DOF_COC is ever re-tuned. 0% is the same picture as the toggle being off; 200% is roughly a
   // 22 px circle at 1080p, which is as shallow as this scene takes before the far field stops reading as depth.
-  let dofStr = 0.3; try { const v9 = parseFloat(localStorage.getItem('vb_dofstr2')); if (v9 >= 0 && v9 <= 2) dofStr = v9; } catch (e) {}   // 30% of DOF_COC (user 2026-08-08) — ~3 px at 1080p: enough that distance reads as distance, well short of the shallow look the top of the slider gives
+  let dofStr = 0.3; try { const v9 = parseFloat(localStorage.getItem('vb_dofstr2')); if (v9 >= 0 && v9 <= 2) dofStr = Math.min(v9, 1); } catch (e) {}   // …CLAMPED TO 1 (user 2026-08-09: the slider stops at 100%): the range used to run to 200%, so a saved 1.5 would otherwise leave the knob parked at the end of a bar that no longer means what the value does   // 30% of DOF_COC (user 2026-08-08) — ~3 px at 1080p: enough that distance reads as distance, well short of the shallow look the top of the slider gives
   const DOF_TAPS = 1.6;                                // gather taps per PIXEL of blur radius — see the loop in BLIT. 1.6 x the 21 px widest circle = the 32 taps the effect was tuned at, so the top of the strength slider is unchanged and everything below it costs what its own area is worth.
   let dofTapK = DOF_TAPS;                              // …pinnable with __vb.dof({taps: k}) to A/B the sampling against the old flat 32 (k = 40 forces 32 everywhere)
   let dofLock = 0, dofCocK = DOF_COC * dofStr;         // __vb.dof() overrides: pin the focal plane / the aperture to A/B the effect at a fixed strength (0 = autofocus)
@@ -10541,9 +10699,9 @@
   // These were plain Arrays compacted with .slice(head); at ~450k live voxels each slice copied the whole queue and
   // the pushes re-grew it, which the heap profiler put at ~99% of ALL snowfall garbage. Now capacity doubles on
   // demand (bounded by SNOW_MAX) and compaction is an in-place copyWithin — zero allocation in steady state.
-  let snowQI = new Int32Array(1 << 16), snowQT = new Float64Array(1 << 16), snowQN = 0, snowHead = 0;
+  let snowQI = new Int32Array(1 << 16), snowQN = 0, snowHead = 0;   // GROUND snow, in landing order. No per-voxel expiry any more (user 2026-08-09): the whole queue drains at one steady rate once the thaw starts — see snowGMelting.
   let snowWI = new Int32Array(1 << 14), snowWN = 0, snowWHead = 0;   // snow that landed on WATER/ICE — drained in one continuous sweep after the storm (snowWMeltAt), no per-voxel timers
-  const snowCompactQ = () => { if (snowHead <= 0) return; snowQI.copyWithin(0, snowHead, snowQN); snowQT.copyWithin(0, snowHead, snowQN); snowQN -= snowHead; snowHead = 0; };
+  const snowCompactQ = () => { if (snowHead <= 0) return; snowQI.copyWithin(0, snowHead, snowQN); snowQN -= snowHead; snowHead = 0; };
   const snowCompactW = () => { if (snowWHead <= 0) return; snowWI.copyWithin(0, snowWHead, snowWN); snowWN -= snowWHead; snowWHead = 0; };
   const snowRoomQ = () => {                            // ensure one free slot; compact first, grow only if that is not enough
     if (snowQN < snowQI.length) return true;
@@ -10552,7 +10710,6 @@
     const cap = Math.min(SNOW_MAX + 4096, snowQI.length * 2);
     if (cap <= snowQI.length) return false;
     const a = new Int32Array(cap); a.set(snowQI.subarray(0, snowQN)); snowQI = a;
-    const b = new Float64Array(cap); b.set(snowQT.subarray(0, snowQN)); snowQT = b;
     return true;
   };
   const snowRoomW = () => {
@@ -10567,6 +10724,7 @@
   const SNOW_WATER_GRACE = 6000;                       // ms after a storm ends before the frozen lake starts shedding its snow
   const SNOW_WATER_RATE = 9000;                        // voxels/s the water blanket drains at once it starts — rapid + steady, ~8 s for a full lake (user)
   let snowWMelting = false, snowWMeltAt = Infinity;    // latched into ONE continuous drain once SNOW_WATER_GRACE has passed since the storm (user: no per-voxel-timed bursts)
+  let snowGMelting = false, snowGMeltAt = Infinity;    // …and the GROUND blanket does exactly the same, on its own longer clock (user 2026-08-09: "melt at a consistent rate until it is completely gone")
   let snowFreezeAt = Infinity;                         // ── FREEZE DELAY ── water may not start freezing until this moment. Gating on "a flake has landed"
   const SNOW_FREEZE_DELAY = 10000;                     // looked instant (1.6 s) because the far statistical SPRINKLE ring lands the moment the storm flag flips,
                                                        // while the flakes you can actually SEE are still falling from the cloud deck. A flat 10 s wall-clock delay
@@ -10585,7 +10743,8 @@
     return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
   };
   const frac9 = (v) => v - Math.floor(v);
-  const SNOW_MAX = 1600000, SNOW_MELT = 95000;         // cap on live snow voxels — at the cap NEW landings are DROPPED (the blanket must never be deleted mid-storm; the old force-melt-oldest WAS the 'snow deletes while snowing' bug); ms until a layer melts
+  const SNOW_MAX = 1600000, SNOW_MELT = 95000;         // cap on live snow voxels — at the cap NEW landings are DROPPED (the blanket must never be deleted mid-storm; the old force-melt-oldest WAS the 'snow deletes while snowing' bug); ms the blanket LIES before the thaw begins
+  const SNOW_GROUND_RATE = 24000;                      // voxels/s the ground blanket drains at once it starts — the same ceiling the old per-voxel drain used, but now it is the ACTUAL rate rather than a cap the timers rarely reached
   let SNOW_ROLL_MAX = 1;                               // how far the settle-roll may DROP a flake (0 = unlimited). At a crown's edge the lowest neighbour is the forest floor, so an unlimited roll tips canopy snow off the tree — measured 18% canopy coverage against 44% ground
   let SNOW_SHELF = 0;                                  // how many of a crown voxel's 4 sides must also carry crown before snow may settle. DEFAULT 0 = the v0.9 gate. A/B measured 2026-08-07: shelf 2 halved canopy coverage (38.7%% -> 17.0%%) and cut snow-with-nothing-under-it only from 2 to 1 in a 61x61 sample, i.e. it costs most of the crown snow and buys nothing. Kept as a knob, off.
   let SNOW_ON_CROWN = 1;                               // runtime A/B switch for canopy snow — the only honest way to price it is in ONE session
@@ -10614,14 +10773,14 @@
     // effects sharing one light column (user 2026-08-05): a smooth added SHEEN and discrete flashing
     // VOXELS. One button could not tell you which of them you were looking at, so they are two.
     const LGT = [['reflect', 18, 1], ['refract', 19, 1], ['foam', 20, 1], ['ice', 21, 1],
-                 ['soft glisten', 0, 2], ['pixel glisten', 22, 1], ['waves', 23, 1]];
+                 ['pixel glisten', 22, 1], ['waves', 23, 1]];
     const lgtGet = (b, m) => ((m === 2 ? lgtMask2 : lgtMask) & (1 << b)) !== 0;
     {
       const panel = $('lgtPanel');
       const bid = (b, m) => 'lgtB' + m + '_' + b;
       lgtPaint = () => { for (const [, b, m] of LGT) { const btn = $(bid(b, m));
         const on = lgtGet(b, m); btn.textContent = on ? 'on' : 'off'; btn.classList.toggle('on', on); } };
-      for (const [label, b, m] of LGT) {
+      const addRows = (list) => { for (const [label, b, m] of list) {
         const row = document.createElement('div'); row.className = 'lgtRow';
         row.innerHTML = '<span></span><button id="' + bid(b, m) + '">on</button>';
         row.firstChild.textContent = label;
@@ -10629,10 +10788,11 @@
         const btn = row.lastChild;
         btn.addEventListener('pointerdown', (e) => e.stopPropagation());
         btn.addEventListener('click', (e) => { e.stopPropagation(); resetHist = 1;   // the filters hold seconds of history; drop it so the change is visible immediately
-          if (m === 2) { lgtMask2 ^= (1 << b); try { localStorage.setItem('vb_lgt2', String(lgtMask2)); } catch (e2) {} }
+          if (m === 2) { lgtMask2 ^= (1 << b); }             // no row uses the second mask today; kept so adding one needs no wiring
           else { lgtMask ^= (1 << b); try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} }
           lgtPaint(); });
-      }
+      } };
+      addRows(LGT);
       // ── REFLECTION STRENGTH (user 2026-08-05) ── how much of the Fresnel split goes to the mirror.
       // 1.00 is physical Schlick (the look it has always had); 0 kills the mirror, 2 doubles it. Lives in
       // u.lgt.y, so it costs nothing extra — the reflection ray is traced either way, this only weights it.
@@ -10647,24 +10807,26 @@
       reflPaint();
       // ── BAKE ── the whole water setup as ONE line, ready to paste over the WATER_BAKE declaration in the
       // source (same idea as the arrow panel's bake row). What is written there is what a fresh player gets.
-      const bake = document.createElement('div'); bake.className = 'lgtRow lgtBake';
-      bake.innerHTML = '<input type="text" id="lgtBake" readonly><button id="lgtCopy">copy</button>';
-      panel.appendChild(bake);
-      const bakeIn = $('lgtBake'), bakeBtn = $('lgtCopy');
-      const bakeStr = () => 'const WATER_BAKE = { ' + [
+      const addBake = (id, strFn) => {
+        const bake = document.createElement('div'); bake.className = 'lgtRow lgtBake';
+        bake.innerHTML = '<input type="text" id="' + id + '" readonly><button id="' + id + 'C">copy</button>';
+        panel.appendChild(bake);
+        const bakeIn = $(id), bakeBtn = $(id + 'C');
+        bakeIn.addEventListener('pointerdown', (e) => e.stopPropagation());
+        bakeIn.addEventListener('click', (e) => { e.stopPropagation(); bakeIn.select(); });
+        bakeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+        bakeBtn.addEventListener('click', (e) => { e.stopPropagation();
+          const done = () => { bakeBtn.textContent = 'copied!'; setTimeout(() => { bakeBtn.textContent = 'copy'; }, 1200); };
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(bakeIn.value).then(done, () => { bakeIn.select(); document.execCommand('copy'); done(); });
+          else { bakeIn.select(); document.execCommand('copy'); done(); } });
+        return () => { bakeIn.value = strFn(); };
+      };
+      const bakePaint = addBake('lgtBake', () => 'const WATER_BAKE = { ' + [
         'reflect: ' + (lgtGet(18, 1) ? 1 : 0), 'refract: ' + (lgtGet(19, 1) ? 1 : 0),
         'foam: ' + (lgtGet(20, 1) ? 1 : 0), 'ice: ' + (lgtGet(21, 1) ? 1 : 0),
-        'softGlisten: ' + (lgtGet(0, 2) ? 1 : 0), 'pixelGlisten: ' + (lgtGet(22, 1) ? 1 : 0),
+        'pixelGlisten: ' + (lgtGet(22, 1) ? 1 : 0),
         'waves: ' + (lgtGet(23, 1) ? 1 : 0), 'reflection: ' + (+wReflK).toFixed(2),
-      ].join(', ') + ' };';
-      const bakePaint = () => { bakeIn.value = bakeStr(); };
-      bakeIn.addEventListener('pointerdown', (e) => e.stopPropagation());
-      bakeIn.addEventListener('click', (e) => { e.stopPropagation(); bakeIn.select(); });
-      bakeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
-      bakeBtn.addEventListener('click', (e) => { e.stopPropagation();
-        const done = () => { bakeBtn.textContent = 'copied!'; setTimeout(() => { bakeBtn.textContent = 'copy'; }, 1200); };
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(bakeIn.value).then(done, () => { bakeIn.select(); document.execCommand('copy'); done(); });
-        else { bakeIn.select(); document.execCommand('copy'); done(); } });
+      ].join(', ') + ' };');
       { const base = lgtPaint; lgtPaint = () => { base(); reflPaint(); bakePaint(); }; }   // one repaint covers buttons, slider AND the bake line, so __vb.wrefl()/__vb.lgt() from the console can never disagree with what is drawn
       const hint = document.createElement('div'); hint.className = 'lgtHint';
       hint.textContent = 'L — cursor on/off';   // the panel says how to reach it; nothing else in the HUD would
@@ -10672,7 +10834,7 @@
       $('lgtAll').addEventListener('pointerdown', (e) => e.stopPropagation());
       $('lgtAll').addEventListener('click', (e) => { e.stopPropagation();   // reset = back to whatever is BAKED in the source, not to all-on
         lgtMask = wBakeMask(); lgtMask2 = wBakeMask2(); wReflK = wBakeRefl(); resetHist = 1;
-        try { localStorage.setItem('vb_lgt', String(lgtMask)); localStorage.setItem('vb_lgt2', String(lgtMask2)); localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} lgtPaint(); });
+        try { localStorage.setItem('vb_lgt', String(lgtMask)); localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} lgtPaint(); });
       lgtPaint();
     }
     {   // ── THE ADJUST BOX ── quarter turns and voxel nudges for WHATEVER IS IN HAND (user). Holding the
@@ -10926,10 +11088,10 @@
                                   : (bowLock < 0 ? n - 1 : (bowLock - 1 < 0 ? -1 : bowLock - 1));
     arwSync();
   });
-  // ── L DOES NOTHING (user 2026-08-05) ── it used to hand the cursor to the water panel, and with that panel
-  // off screen all it did was take the pointer away mid-game. The listener is gone; setLightMode and
-  // lightMode stay wired (the esc-menu suppression and cursSync still read them, harmlessly false forever),
-  // so restoring the key is re-adding this one listener.
+  // ── L DOES NOTHING ── it hands the cursor to the water panel, and with that panel off screen all it does is
+  // take the pointer away mid-game. The listener is gone; setLightMode and lightMode stay wired (the esc-menu
+  // suppression and cursSync still read them, harmlessly false forever), so restoring the key is re-adding
+  // this one listener.
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (!locked) { lightMode = false; tryLock(); } });   // clicking the world takes control back and ends light mode
   document.addEventListener('keydown', (e) => {        // "press any button" — ANY key leaves the start prompt (a click still works via the canvas handler above)
@@ -10947,14 +11109,9 @@
   let stackShown = -1;
   const cursSync = () => { document.body.classList.toggle('freecur', !locked); if (locked) cursEl.classList.remove('sq');
     $('arwPanel').classList.toggle('hidden', locked || !$('over').classList.contains('hidden'));   // the arrow buttons are only REACHABLE with a free cursor, so that is exactly when they show — but never over the death screen. (Read from the DOM, not `dead`: cursSync runs once during init, BEFORE that binding exists.)
-    // ── THE LIGHT PANEL SHOWS ON THE SAME RULE ── it is authored `hidden` and nothing ever took that class
-    // off, so the water/lighting switches could not appear at all and L handed the cursor to a panel that
-    // was display:none (user 2026-08-05: "I don't see the water visual buttons"). Same reachability test as
-    // the arrow panel — free cursor, never over the death screen — plus the video editor, which owns the
-    // screen outright and sits above this panel's z-order.
-    // `locked && !lightMode`, not plain `locked`: L calls setLightMode -> cursSync BEFORE the browser has
-    // fired pointerlockchange, so `locked` is still true on that first pass and the panel L exists to open
-    // would flash hidden until the event landed. lightMode IS the cursor being free, so say so outright.
+    // ── THE WATER PANEL SHOWS ON THE SAME RULE ── free cursor, never over the death screen, plus the video
+    // editor, which owns the screen outright. Moot while the CSS keeps it off screen, but the class stays
+    // honest so deleting that one rule is all it takes to bring it back.
     $('lgtPanel').classList.toggle('hidden', (locked && !lightMode) || !$('over').classList.contains('hidden') || !vePanel.classList.contains('hidden'));
     $('lgtPanel').classList.toggle('lit', lightMode); };   // the panel highlights while it has the cursor, so the mode is never ambiguous
   const CURS_HIT = 'button, .veTool, .veCtl, a, input:not([type="range"]), select, [role="button"]';   // ONLY genuinely clickable controls square the cursor. RANGE sliders are excluded (user): the cursor stays a cross over them and the KNOB grows on hover instead (see the slider CSS). `#lock` (the whole esc-menu backdrop) used to be in here too, so the cursor was a square across the ENTIRE menu; the buttons/anchors inside already match on their own.
@@ -11736,7 +11893,7 @@
       deficit: { xlo: rect.xlo - t.xlo, xhi: t.xhi - rect.xhi, zlo: rect.zlo - t.zlo, zhi: t.zhi - rect.zhi },   // how far the built rect lags its target on each side (0 = fully caught up)
       pool: poolOk, q: poolQueue.length, busy: genPool ? genPool.filter((w) => w.busyId).length : 0 }; },   // streaming-gen telemetry tap
     fish() { const o = []; const bodyClip = (B) => { const hx = Math.sin(B.th), hz = Math.cos(B.th), ay = Math.floor(B.y), hf = B.fhalf || 5; for (const a of [hf, hf * 0.5, 0, -hf * 0.5, -hf]) { const bx = Math.floor(B.x + hx * a), bz = Math.floor(B.z + hz * a); for (let yy = ay - 1; yy <= ay + 2; yy++) if (solid(bx, yy, bz)) return true; } return false; };   // per-species body length — the old fixed ±5 reported every short minnow as clipping
-      for (let j = 244; j < 276; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), air: B.jumpV !== undefined, arm: B.jumpArm !== undefined, flee: (B.fleeT || 0) * 1000 > performance.now(), vyS: +(B.vyS || 0).toFixed(1) }); }
+      for (let j = 244; j < 276; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), air: B.jumpV !== undefined, arm: B.jumpArm !== undefined, flee: ((B.fleeT || 0) * 1000 > performance.now()) || spooked(B), vyS: +(B.vyS || 0).toFixed(1) }); }
       return { species: FISHES.map((f) => f.name + '(' + f.n + 'f@' + f.item0 + ')'), live: o }; },   // fish test tap
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW, SAND, DIRT, NEEDLE }, slots, LILY_SZ, WL, fishCfg: FISH_CFG,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint; fishCfg: LIVE fish tunables (speed/flee/jump/pitch)
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
@@ -12001,10 +12158,12 @@
         if (it.cells[x + y * it.w + z * it.w * it.d]) { if (y < lo) lo = y; if (y > hi) hi = y; }
       return lo > hi ? null : [lo, hi]; },
     poseOf(id) { const c = pickCfgs[(id | 0)]; return c ? { ...c } : null; },   // an item's live held pose, for checking what the adjust box did
-    killTest(slot) { hitCreature(slot | 0); return __vb.hitsOn(slot | 0); },   // land a hit on a KNOWN creature with whatever is in hand — no aiming in the way
+    killTest(slot) { hitCreature(slot | 0); return __vb.hitsOn(slot | 0); },
+    spookOn(slot) { const B = wbf[slot | 0]; return B ? { spooked: spooked(B), msLeft: Math.max(0, Math.round((B.spookT || 0) - performance.now())), bflee: !!B.bflee, aflee: !!B.aflee, bfps: +(B.bfps || 0).toFixed(1), afps: +(B.afps || 0).toFixed(1) } : null; },   // is this creature in its double-speed panic, and how much of the window is left   // land a hit on a KNOWN creature with whatever is in hand — no aiming in the way
     hitAt(slot, token) { hitCreature(slot | 0, token); return __vb.hitsOn(slot | 0); },   // …and with an explicit swing token, so a test can land SUCCESSIVE blows (one swing = one hit is enforced on the token)
     aimKill() { const b = aimedCreature(); if (b >= 0) hitCreature(b); return b; },   // exactly what a left click does, without having to drive the mouse
     birdKills() { return birdKills; },
+    birdKill(i) { const B = birds[i | 0]; const ok = birdShot(B); return { hit: ok, rag: !!(B && B.rag), parts: (B && B.ragParts) ? B.ragParts.length : 0, bodies: PH.bodies.length }; },   // test tap: kill a FLYING bird outright (arrowing one at 140 voxels is not repeatable)
     birdCount() { let n = 0; for (const B of birds) if (B && B.init) n++; return n; },   // songbirds actually in the air
     birdAt(i) { const B = birds[i | 0]; return (B && B.init) ? { x: B.x, y: B.y, z: B.z } : null; },
     tillInfo() { const q = tilled[0]; return { n: tilled.length, id: TILL_ID, col: TILL_ID ? palette[TILL_ID - 1] : null,
@@ -12454,7 +12613,7 @@
     idAt(x, y, z) { return W[gwrap(Math.floor(x), WX) + (y | 0) * WX + gwrap(Math.floor(z), WZ) * WX * WY]; },   // raw voxel id — colTop/colTopId are solidTab-gated and go blind to water the moment it thaws
     supCap(v) { if (v !== undefined) SUP.cap = Math.max(16, v | 0); return { cap: SUP.cap, drapeCap: SUP.drapeCap, capHits: SUP.stats.capHits, structFloods: SUP.stats.structFloods, dropped: SUP.stats.dropped }; },   // squeeze the STRUCTURE flood ceiling so a test can force the cap-hit path on a small rock
     wrefl(v) { if (v !== undefined) { wReflK = Math.max(0, Math.min(2, +v)); resetHist = 1; try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e) {} lgtPaint(); } return wReflK; },   // WATER REFLECTION STRENGTH — the panel's slider, from the console
-    lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; try { localStorage.setItem('vb_lgt2', String(lgtMask2)); } catch (e) {} lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: { waterSoftGlisten: 1 } }; },   // the SECOND mask (u.lgt.z) — lgt.x is full at 24 bits
+    lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: {} }; },   // the SECOND mask (u.lgt.z) — currently EMPTY (see LGT2_ALL); left wired so a 25th term has somewhere to go
     lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, water: LGT_WATER, mask2: lgtMask2, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536, volumetric: 131072,
       waterReflect: 262144, waterRefract: 524288, waterFoam: 1048576, waterIce: 2097152, waterGlisten: 4194304, waterWaves: 8388608 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
@@ -13447,19 +13606,28 @@
       }
       if (P.onGround && keys.has(binds.jump) && !swimming && !dead) { P.vy = JUMP; P.onGround = false; P.sprintJump = sprint; }   // a swimmer never gets a standing jump: with the old ankle-height test a held Space re-fired a full JUMP (66) every time the body came back down to the surface, which was the pogo   // sprint-jump carries +20% air speed
       if (swimming) {
-        // ── FLOAT STILL, RISE ON SPACE (user 2026-08-07: "dont make the player automatically bob up and down
-        // in the water, but only when the player presses spacebar") ── a damped spring on the EYE rather than
-        // an acceleration on the feet. The body settles with the eye just above the waterline, which is what
-        // floating IS, and now HOLDS there: the idle `sin(now) * SWIM_BOB` swell this used to add is gone, so
-        // the only thing that ever moves the float line is Space. Holding it lifts the line by SWIM_RISE, so
-        // you climb slowly instead of being launched: the target is a POSITION, so as you approach it the
-        // drive falls away by itself and there is nothing left to fling you clear of the surface.
+        // ── SPACE IS THE ONLY THING HOLDING YOU UP (user 2026-08-09: "the player seems to be floating
+        // automatically in the water… if the player is not pressing spacebar, just have the player sink all the
+        // way to the bottom to the sea floor") ── the body no longer has a resting depth at all. There is no
+        // buoyancy term left: releasing Space is releasing the ONLY upward force, so you go down.
+        //
+        // WHAT THIS REPLACED, and why the old shape could not simply be re-tuned: the target used to be a damped
+        // spring on the EYE against a float line at WL + 1, i.e. a POSITION the body was pulled back to from
+        // either side. Below the line that error is positive and the spring pushes UP — that push IS the
+        // automatic floating, and it is not a stray constant that could be turned down. It is the whole
+        // mechanism, and any gain above zero re-creates it, which is why the spring is gone on the release
+        // branch rather than weakened.
+        // Holding Space keeps its spring, unchanged, because that half still wants a resting position: it is
+        // what makes you climb in strokes and settle AT the surface instead of launching clear of it, and the
+        // sin() rock on the line is what makes the climb read as swimming rather than as a lift.
         const eyeY = P.y + (crouching ? CR_EYE : EYE);
-        // Holding Space both LIFTS the line and rocks it, so you climb in visible strokes instead of gliding up
-        // a ramp (user 2026-08-07: "have the player bob up and down… look to minecraft"). Let go and the swell
-        // goes with it: the float line is dead still again, which is the other half of what was asked for.
-        const line = WL + 1 + (keys.has(binds.jump) ? SWIM_RISE + Math.sin(now * 0.009) * SWIM_BOB : 0);
-        const tgt = Math.max(-SWIM_SINK, Math.min(SWIM_UP, (line - eyeY) * SWIM_K));
+        const rising = keys.has(binds.jump);
+        // SINK is a plain terminal velocity, not an acceleration: a body in water reaches its settling speed
+        // almost at once, and SWIM_EASE below is already the ramp onto it. Gravity is deliberately NOT used —
+        // it winds up to -345 and would drop the player through 4-5 voxels of lake like a stone through air.
+        const tgt = rising
+          ? Math.max(-SWIM_SINK, Math.min(SWIM_UP, (WL + 1 + SWIM_RISE + Math.sin(now * 0.009) * SWIM_BOB - eyeY) * SWIM_K))
+          : -SWIM_SINK;
         P.vy += (tgt - P.vy) * (1 - Math.exp(-SWIM_EASE * dt));
       } else {                                       // ── FALLING GAINS MOMENTUM ── (user) a flat GRAVITY into a -160 terminal hit its cap in 0.8 s, so anything
         P.fallT = P.vy < 0 ? P.fallT + dt : 0;         // past a short drop fell at a CONSTANT speed and read as floating. Gravity now ramps with time spent
@@ -13550,9 +13718,9 @@
     { const cells = snowCells; cells.length = 0; const meltCells = snowMeltCells; meltCells.length = 0;   // meltCells: the thaw's own list, patched WITHOUT a support seed (see the melt block below). Pooled the same way.
       stopF = (stopF + 1) & 0xffff; if (stopF === 0) { stopF = 1; stopS.fill(0); }       // POOLED across frames — this list reaches thousands of entries during a storm
       if (snowOn !== snowPrevOn) { snowPrevOn = snowOn;   // storm edges: no time-melt DURING a storm (the blanket must not thin while flakes still fall)
-        if (snowOn) { snowOnT0 = now; snowFreezeAt = now + SNOW_FREEZE_DELAY; snowWMelting = false; snowWMeltAt = Infinity; }   // the water may not skin over until 10 s in (user); a new storm re-arms the water melt
-        else { snowOffT0 = now; snowFreezeAt = Infinity; snowWMeltAt = now + SNOW_WATER_GRACE;   // WATER snow starts its one continuous drain a few seconds after the storm ends — NOT gated on the huge per-voxel SNOW_MELT timer (that pushed the lake's first melt ~97 s out; user wants it to clear rapidly and steadily)
-          for (let qi = snowHead; qi < snowQN; qi++) snowQT[qi] += now - snowOnT0; }
+        if (snowOn) { snowOnT0 = now; snowFreezeAt = now + SNOW_FREEZE_DELAY; snowWMelting = false; snowWMeltAt = Infinity; snowGMelting = false; snowGMeltAt = Infinity; }   // the water may not skin over until 10 s in (user); a new storm re-arms BOTH melts — snow falling on a thawing blanket must stop it thawing, or the two fight and the ground never settles either way
+        else { snowOffT0 = now; snowFreezeAt = Infinity; snowWMeltAt = now + SNOW_WATER_GRACE;   // WATER snow starts its one continuous drain a few seconds after the storm ends
+          snowGMeltAt = now + SNOW_MELT; }                      // …and the GROUND starts its own, SNOW_MELT after the storm ends. One clock for the whole blanket instead of one per voxel: the old per-voxel expiries were set at LANDING time and had to be rebased by the storm's length here, so a blanket laid over a five-minute storm melted in the order it fell and in visible bursts. Now it lies for SNOW_MELT and then drains steadily to nothing.
       }
       {                                              // ── STORM EDGES ── both sweep DOWN from just off the top of the screen at SNOW_SWEEP.
         const topY = P.y + SNOW_HEAD;                  // Runs EVERY frame but must sit after the transition block above, which is what sets
@@ -13651,7 +13819,7 @@
         stopY[gx + gz * WX] = y + 1; stopS[gx + gz * WX] = stopF;   // the new top is known exactly; gpuPatch only runs at the end of the tick, and until then the settle-roll and the 3-layer cap must not read the old surface
         cells.push(ii);
         if (waterAt(wx, WL, wz)) { if (snowRoomW()) snowWI[snowWN++] = ii; }   // landed on the frozen surface — drained continuously after the storm, not on a per-voxel timer
-        else if (snowRoomQ()) { snowQI[snowQN] = ii; snowQT[snowQN] = now + SNOW_MELT; snowQN++; }
+        else if (snowRoomQ()) { snowQI[snowQN++] = ii; }   // landed on GROUND — no expiry stamp; the whole queue drains together once the thaw latches
       };
       if (snowOn && !dead && !ED.on) {                 // no weather inside the asset-editor void
         const t3 = now / 1000;                         // ── EXACT LANDINGS ── mirror of the shader flake field (u.time = now/1000)
@@ -13687,7 +13855,7 @@
         }
       }
       let melted = 0;                                  // drain expired snow — dt-scaled so melt pace is fps-independent too; ONLY time-based and ONLY between storms (the cap drops landings instead)
-      const meltCap = Math.max(8, Math.round(dt * 24000));
+      const meltCap = Math.max(8, Math.round(dt * SNOW_GROUND_RATE));
       // ── WATER SNOW: ONE CONTINUOUS MELT (user) ── the per-voxel expiry timers made the lake melt in STAGGERED BURSTS
       // and only START ~97 s after the storm (SNOW_MELT rebased by the storm length). Instead, SNOW_WATER_GRACE seconds
       // after the storm ends we latch `snowWMelting` and drain the WHOLE water queue at a steady rate with NO per-voxel
@@ -13708,24 +13876,47 @@
       // just created hang around for a minute instead of a second, and why it only ever happens after snow.
       // These cells go through gpuPatch exactly as before — brick occupancy, the scanTop cache and the
       // navfield all still get told. It is only the support queue that is spared the question.
+      // ── ONE ENTRY MELTS ONE LAYER (bug, fixed 2026-08-09) ── every landed flake queues exactly one entry, so
+      // N entries must clear N voxels or the blanket cannot reach zero. Climbing to the column's TOP is right —
+      // it is what stops a lower layer vanishing under an upper one — but it means the entry queued for layer 1
+      // clears layer 2, and when layer 2's own entry comes up its cell is already empty, so it cleared NOTHING.
+      // Two entries, one layer gone: every column that ever held two or more layers kept its bottom one for
+      // good. MEASURED on a lake: 404 voxels over 171 columns at storm end (4 one-deep, 101 two, 66 three) drained
+      // to exactly 167 columns of exactly 1 layer and stayed there — 101 + 66, i.e. precisely the columns that had
+      // stacked. That is the residue left floating on the water (user 2026-08-09).
+      // The fix is to resolve the entry to whatever snow the column still HAS rather than to the cell it was
+      // queued for: step DOWN to the first snow at or below it, then climb to the top of that stack as before.
+      // Order is unchanged (still strictly top-down, still no floating snow) and the pairing is now 1:1.
+      const meltTop = (jj) => {                        // → the index actually cleared, or -1 if this column is already bare
+        if (!(W[jj] === SNOW[0] || W[jj] === SNOW[1])) {
+          let d = 0;
+          while (d < 4 && jj >= WX && !(W[jj] === SNOW[0] || W[jj] === SNOW[1])) { jj -= WX; d++; }
+          if (!(W[jj] === SNOW[0] || W[jj] === SNOW[1])) return -1;
+        }
+        for (let up = 0; up < 4 && jj + WX < W.length && (W[jj + WX] === SNOW[0] || W[jj + WX] === SNOW[1]); up++) jj += WX;   // climb to the column's TOP snow voxel
+        W[jj] = 0;                                     // melt TOP-DOWN — a lower layer never vanishes under an upper one, so no floating snow
+        return jj;
+      };
       if (snowWMelting) { let wMelt = 0;
         while (snowWHead < snowWN && wMelt < wCap) {
-          let jj = snowWI[snowWHead++];
-          if (W[jj] === SNOW[0] || W[jj] === SNOW[1]) {
-            for (let up = 0; up < 4 && jj + WX < W.length && (W[jj + WX] === SNOW[0] || W[jj + WX] === SNOW[1]); up++) jj += WX;
-            W[jj] = 0; meltCells.push(jj);
-          }
+          const got = meltTop(snowWI[snowWHead++]);
+          if (got >= 0) meltCells.push(got);
           wMelt++;
         }
         if (snowWHead >= snowWN) { snowWMelting = false; snowWMeltAt = Infinity; }   // queue emptied — stand down until the next storm
       }
-      while (snowHead < snowQN && !snowOn && snowQT[snowHead] < now && melted < meltCap) {
-        let jj = snowQI[snowHead++];
-        if (W[jj] === SNOW[0] || W[jj] === SNOW[1]) {
-          for (let up = 0; up < 4 && jj + WX < W.length && (W[jj + WX] === SNOW[0] || W[jj + WX] === SNOW[1]); up++) jj += WX;   // climb to the column's TOP snow voxel
-          W[jj] = 0; meltCells.push(jj);               // melt TOP-DOWN — a lower layer never vanishes under an upper one, so no floating snow
+      // ── GROUND: ONE CONTINUOUS MELT (user 2026-08-09) ── the same shape as the water drain above, on a longer
+      // clock. It latches once, empties the whole queue at a fixed voxels-per-second, and stands down only when
+      // the queue is actually empty — so "melting" is a single steady sweep with a beginning and an end, and
+      // there is no state in which some of the blanket has expired and the rest has not.
+      if (!snowOn && !snowGMelting && now >= snowGMeltAt) snowGMelting = true;
+      if (snowGMelting && !snowOn) {
+        while (snowHead < snowQN && melted < meltCap) {
+          const got = meltTop(snowQI[snowHead++]);
+          if (got >= 0) meltCells.push(got);
+          melted++;
         }
-        melted++;
+        if (snowHead >= snowQN) { snowGMelting = false; snowGMeltAt = Infinity; }   // queue emptied — stand down until the next storm
       }
       if (snowWHead > 8192) snowCompactW();            // in-place, no reallocation (was .slice() of a multi-hundred-thousand-entry array)
       if (snowHead > 8192) snowCompactQ();
@@ -14067,15 +14258,7 @@
       if (dr.hitBird !== undefined && dr.hitBird >= 0) { dr.hitDone = true;   // ── A BIRD OUT OF THE SKY ── one shaft is enough (user)
         if (shaft8) playArrowHit(dr.ex, dr.ey, dr.ez);
         playLifeHit(dr.ex, dr.ey, dr.ez);              // a flying bird lives in birds[], not the creature pool, so it never reaches hitCreature — it still got hit (user 2026-08-08)
-        const B = birds[dr.hitBird];
-        if (B && B.init) {                          // ── SAME DEATH AS EVERY OTHER ANIMAL (user 2026-08-06) ── a sky bird used to blink out the instant the shaft touched it:
-          // no red, no beat. Pool creatures set the hurt box and defer the poof by HURT_MS so the flash plays; birds live in birds[], not wbf, so pendDeath (which
-          // indexes the pool) cannot carry them — they get the same clock on their own field instead. The box is re-published each frame below so the red follows it down.
-          B.dying = true; B.dieAt = performance.now() + HURT_MS; birdKills++;
-          HURT.slot = -1; HURT.hold = false; HURT.t0 = performance.now();   // slot -1: no cSlot match, so the shader takes the AABB path — which is what a bird needs anyway
-          HURT.cx = B.x; HURT.cy = B.y; HURT.cz = B.z; HURT.hx = 3.2; HURT.hy = 3.2; HURT.hz = 3.2;
-        }
-        else spawnHitSparks(dr.ex, dr.ey, dr.ez);
+        if (!birdShot(birds[dr.hitBird])) spawnHitSparks(dr.ex, dr.ey, dr.ez);
         dr.gone = true;                                // …and the shaft goes down WITH it: struck in mid-air, `stick` would leave it hanging in the sky (user)
         continue; }
       if (dr.hitSlot !== undefined && dr.hitSlot >= 0) { dr.hitDone = true;
@@ -14301,8 +14484,9 @@
         }
         if (ED.box) { birdBox.cx = ED.box.cx; birdBox.cy = ED.box.cy; birdBox.cz = ED.box.cz; birdBox.hx = ED.box.hx; birdBox.hy = ED.box.hy; birdBox.hz = ED.box.hz; birdBox.active = true; }   // SOLID hitbox for the EDITABLE bunny — republished every frame from the last edLayout AABB; boxFree() already tests every birdBox
         if (ED.box2) { const B3 = birdBoxes[1]; B3.cx = ED.box2.cx; B3.cy = ED.box2.cy; B3.cz = ED.box2.cz; B3.hx = ED.box2.hx; B3.hy = ED.box2.hy; B3.hz = ED.box2.hz; B3.active = true; }   // …and the PREVIEW bunny (slot 1) so you can't walk through either
-      } else if (FLYERS.length > 0) {                    // the WORLD bird (only when NOT in the editor)
+      } else if (FLYERS.length > 0 && !birdRagTick(bird)) {   // the WORLD bird (only when NOT in the editor) — and not while its corpse is falling
         const ps = birdStep(bird, 0, now / 1000, dt);    // bird 0 keeps the dedicated slot; the rest are emitted with the creatures below
+        birdPose(bird, ps);                              // …the pose the ragdoll will be rebuilt from
         ps.uid = 0;                                      // stable identity for the dynamic-life temporal reprojection
         birdWrite(o2, ps, cam, right, up, fwd);
         birdHit(birdBox, ps);
@@ -14747,11 +14931,9 @@
       const tbF = now / 1000;
       const bOrd = [];
       for (let bi = 1; bi < BIRD_N; bi++) {
+        if (birdRagTick(birds[bi])) { birdBoxes[bi].active = false; continue; }   // it is the rigid body now — not stepped, not drawn
         const ps = birdStep(birds[bi], bi, tbF, dt);   // stepped for ALL of them, drawn for some
-        { const BD = birds[bi];                      // ── DYING SKY BIRD ── the flash tracks it while it finishes the beat, then it poofs like the rest of the life
-          if (BD && BD.init && BD.dying) {
-            if (performance.now() >= BD.dieAt) { spawnDeathBurst(BD.x, BD.y, BD.z); BD.init = false; BD.dying = false; }
-            else { HURT.cx = BD.x; HURT.cy = BD.y; HURT.cz = BD.z; } } }
+        birdPose(birds[bi], ps);                       // …and the pose it was drawn at, for the ragdoll
         ps.uid = bi;                                   // stable identity for the dynamic-life temporal reprojection
         birdHit(birdBoxes[bi], ps);                    // every cardinal is solid, same as the first
         bOrd.push({ ps, d: (ps.x - P.x) * (ps.x - P.x) + (ps.z - P.z) * (ps.z - P.z) });
@@ -14931,7 +15113,7 @@
           { const sn = (FISHES[B.fsp] || {}).name;                // per-species LEAP frequency multiplier from the config (unlisted species get a modest default)
             B.jumpMul = FISH_CFG.jump.species[sn] !== undefined ? FISH_CFG.jump.species[sn] : 0.25;
             B.schools = FISH_CFG.schoolSpecies.indexOf(sn) >= 0; }   // …and whether this species shoals at all
-          B.jumpV = undefined; B.jumpArm = undefined; B.fleeT = 0;   // a recycled slot must never inherit a live arc or a stale flee window
+          B.jumpV = undefined; B.jumpArm = undefined; B.fleeT = 0; B.spookT = 0;   // a recycled slot must never inherit a live arc, a stale flee window or the last occupant's wound-panic
           B.jumpRe = tb3 + (3 + Math.random() * 14) / Math.max(0.05, B.jumpMul);
           // ── SCHOOL ── join a same-species school that still has room (spawning right beside it), else start a fresh school of 3-6, else swim alone (~28%)
           B.school = -1; B.schoolCap = 0;
@@ -14941,7 +15123,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined;   // fresh occupant — never inherits the last one's knife wound, pending death or spent flash
+        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0;   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash or panic
         // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading.
         // THIS LINE WAS DEAD: it used to sit after a `//` on the line above, so the trailing comment ate it. The
         // bunny is the one creature whose position is ASSIGNED rather than integrated (B.x = B.bpx + bake offset),
@@ -14989,7 +15171,7 @@
           return gA > WL + 0.5 && (gA - cur) <= 3 && (cur - gA) <= 4 && !bfObstW(tx, gA + 2, tz) && !bfObstW(tx, gA + 4, tz); };   // STEP UP ≤3 blocks (raised from 2 — the ≤2-over-5-vox gate stalled every marcher on ordinary pine-forest slopes, user; matches the bunny's ±3 hopOK) + drop ≤4 so it doesn't get boxed at a ledge
         if (B.ah === undefined) { B.ah = ((Math.round(B.th / (Math.PI / 2)) % 4) + 4) % 4; B.aWhim = 0; B.aesc = 0; B.aTurnT = 0; }
         const adx = B.x - P.x, adz = B.z - P.z, ady = P.y - B.y;
-        B.aflee = (adx * adx + ady * ady + adz * adz) < (B.aflee ? 46 * 46 : 30 * 30);   // SPHERE flee — flying overhead won't spook it
+        B.aflee = spooked(B) || (adx * adx + ady * ady + adz * adz) < (B.aflee ? 46 * 46 : 30 * 30);   // SPHERE flee — flying overhead won't spook it, but a hit does, at any range
         if (!walkOK(B.ah)) {                            // ── BLOCKED AHEAD ── stop, turn 90° in a COMMITTED direction (can't oscillate), spaced by a cooldown so it never spins
           if (tb3 > B.aTurnT) {
             if (walkOK(B.ah + 1) || walkOK(B.ah + 2) || walkOK(B.ah + 3)) {
@@ -15054,7 +15236,7 @@
         if (B.bh === undefined) { B.bh = ((Math.round(B.th / (Math.PI / 2)) % 4) + 4) % 4; B.bst = 0; B.bfclk = 0; B.bpx = B.x; B.bpz = B.z; B.bg = navWalkStand(B.x, B.z); B.bWhim = 0; B.bfps = 24; B.besc = 0; }   // bpx/bpz = base cell; bst: 0 jump | 1 rotate-left | 2 rotate-right; besc = committed escape-turn direction
         const NFR = 11;                                 // frames per baked sequence (00-10)
         const adx = B.bpx - P.x, adz = B.bpz - P.z, ady = P.y - (B.bg !== undefined ? B.bg : B.y);   // ady = vertical gap → the flee radius is now a SPHERE, not a ground circle: flying high overhead no longer spooks it (user)
-        B.bflee = (adx * adx + ady * ady + adz * adz) < (B.bflee ? 55 * 55 : 40 * 40);
+        B.bflee = spooked(B) || (adx * adx + ady * ady + adz * adz) < (B.bflee ? 55 * 55 : 40 * 40);   // …or it has just been hit, which spooks it wherever the player is standing
         B.bfps += ((B.bflee ? 48 : 24) - B.bfps) * Math.min(1, dt * 6);   // ease the PLAY SPEED (flee = 2×) — the only thing I vary; the animation does the moving
         B.bfclk += dt * B.bfps;
         if (B.bfclk >= NFR) { B.bfclk -= NFR;           // a baked sequence just finished → commit its motion, pick the next
@@ -15176,7 +15358,7 @@
             const q2 = (B.x - O.x) * (B.x - O.x) + (B.z - O.z) * (B.z - O.z) + (B.y - O.y) * (B.y - O.y);
             if (q2 < td2) { td2 = q2; tx9 = O.x; tz9 = O.z; } }
           if (td2 < FC.threatR * FC.threatR) { B.fleeT = tb3 + FC.fleeHold; B.thrX = tx9; B.thrZ = tz9; }
-          if (tb3 < (B.fleeT || 0)) {                  // ── FLEE ── EXACTLY fleeMult × base speed, angling away along the CLEAREST open water (never bolt into a bank)
+          if (tb3 < (B.fleeT || 0) || spooked(B)) {    // ── FLEE ── EXACTLY fleeMult × base speed, angling away along the CLEAREST open water (never bolt into a bank)   // …or struck: hitCreature sets the spook window AND thrX/thrZ, so a shot fish bolts off the player exactly as it bolts off a duck
             if (tb3 > (B.flRe || 0)) {                 // the escape-heading FAN re-plans at 8 Hz, not per render frame — at 700 fps the every-frame fan was most of the fish AI cost for zero behavioural gain (the om ease bridges 125 ms invisibly)
               B.flRe = tb3 + 0.125;
               const away = Math.atan2(B.x - (B.thrX !== undefined ? B.thrX : P.x), B.z - (B.thrZ !== undefined ? B.thrZ : P.z));
