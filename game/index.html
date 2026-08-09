@@ -122,7 +122,7 @@
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
   #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn, #edCopy { position: relative; top: 0; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, top 0.15s ease-out, box-shadow 0.15s; will-change: transform; }   /* subtle resting drop shadow (user) — deepens on hover below. Explicit top:0 so the hover-lift TRANSITIONS (top:auto→-4px can't interpolate → would jump). */
   #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg, #edCopy svg { width: 22px; height: 22px; }
-  #kbBtn:hover, #pkBtn:hover, #edBtn:hover, #dcBtn:hover, #veBtn:hover, #edCopy:hover { border-color: #7fd05a; color: #b8ff6e; top: -4px; box-shadow: 0 7px 16px rgba(0,0,0,0.5); }   /* hover LIFT via `top` — leaves `transform` free for the wave, which the compositor runs smoothly even while the game renders */
+  #kbBtn:hover, #pkBtn:hover, #edBtn:hover, #dcBtn:hover, #veBtn:hover, #edCopy:hover { border-color: #d2a453; color: #ffd76a; top: -4px; box-shadow: 0 7px 16px rgba(0,0,0,0.5); }   /* hover LIFT via `top` — leaves `transform` free for the wave, which the compositor runs smoothly even while the game renders */
   /* subtle up/down WAVE across the esc-menu icons (user) — driven by TRANSFORM so it runs on the GPU compositor (no main-thread jank while the game's WebGPU frame is busy); hover-lift uses `top` so the two never fight. Staggered delays make the wave travel along the row. */
   @keyframes escWave { 0%, 100% { transform: translate3d(0, 3px, 0); } 50% { transform: translate3d(0, -3px, 0); } }
   #kbBtn { animation: escWave 2.6s ease-in-out infinite; animation-delay: 0s; }
@@ -134,9 +134,9 @@
      becomes a flex item and shoves the glyph off-centre; pointer-events off so it can't steal the hover from the tile. */
   #kbBtn::after, #pkBtn::after, #edBtn::after, #dcBtn::after, #veBtn::after, #edCopy::after {
     content: attr(data-lbl); position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 9px;
-    font: 7px/1 'px3', Consolas, monospace; letter-spacing: 1px; color: #b8ff6e; white-space: nowrap;
+    font: 7px/1 'px3', Consolas, monospace; letter-spacing: 1px; color: #ffd76a; white-space: nowrap;
     text-shadow: 0 1px 3px rgba(0,0,0,0.9); opacity: 0; transition: opacity 0.18s ease-out; pointer-events: none; }
-  #kbBtn:hover::after, #pkBtn:hover::after, #edBtn:hover::after, #dcBtn:hover::after, #veBtn:hover::after, #edCopy:hover::after { opacity: 1; }   /* HOVER (user): the tile lifts and the icon goes green — same green as the settings toggles' on-state (svg fill is currentColor, so the colour carries) */
+  #kbBtn:hover::after, #pkBtn:hover::after, #edBtn:hover::after, #dcBtn:hover::after, #veBtn:hover::after, #edCopy:hover::after { opacity: 1; }   /* HOVER (user): the tile lifts and the icon goes GOLD (user 2026-08-08 — was green) (svg fill is currentColor, so the colour carries) */
   #edBtn.on { border-color: #7fd05a; color: #b8ff6e; }
   #edCopy.copied { border-color: #7fd05a; color: #b8ff6e; }   /* green pulse on export → confirms the copy without replacing the icon */
   #edCopy.copied::after { opacity: 1; }                        /* …and surface the "copied ✓" label even if the cursor isn't on it */
@@ -159,7 +159,7 @@
   #veTitle { font-size: 11px; letter-spacing: 2px; color: #e8edf4; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
   #veTools { display: flex; gap: 8px; }
   .veTool, .veCtl { background: #1a2331; border: 1px solid #33405a; border-radius: 999px; padding: 6px 14px; color: #cfe0f4; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
-  .veTool:hover, .veCtl:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → green outline + lift (user) */
+  .veTool:hover, .veCtl:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift (user) */
   .veTool:disabled, .veCtl:disabled { opacity: 0.4; cursor: default; border-color: #2a3342; }
   /* the export SIZE cap reads as one more pill in the row — the native select chrome is stripped so it matches the buttons */
   select.veTool { appearance: none; -webkit-appearance: none; padding-right: 26px; background-image: linear-gradient(45deg, transparent 50%, #7f92ad 50%), linear-gradient(135deg, #7f92ad 50%, transparent 50%); background-position: right 13px top 50%, right 8px top 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
@@ -212,15 +212,15 @@
      the knob instead of squaring the cursor). accent-color can't animate a native thumb, so the track + thumb are drawn
      by hand: a thin rail and a green disc that scales up (and gets a soft ring) while hovered or dragged. */
   #todSlider, #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider, #musSlider { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; outline: none;
-    background: linear-gradient(to right, #7fd05a 0%, #7fd05a var(--fill, 50%), #2a3342 var(--fill, 50%), #2a3342 100%); }   /* --fill (JS-driven) is the GREEN LINE to the left of the knob (user) */
-  #todSlider::-webkit-slider-thumb, #volSlider::-webkit-slider-thumb, #sensSlider::-webkit-slider-thumb, #resSlider::-webkit-slider-thumb, #dofStrSlider::-webkit-slider-thumb, #sfxSlider::-webkit-slider-thumb, #musSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
+    background: linear-gradient(to right, #d2a453 0%, #d2a453 var(--fill, 50%), #2a3342 var(--fill, 50%), #2a3342 100%); }   /* --fill (JS-driven) is the GOLD LINE to the left of the knob (user); the KNOB is WHITE (user 2026-08-08) */
+  #todSlider::-webkit-slider-thumb, #volSlider::-webkit-slider-thumb, #sensSlider::-webkit-slider-thumb, #resSlider::-webkit-slider-thumb, #dofStrSlider::-webkit-slider-thumb, #sfxSlider::-webkit-slider-thumb, #musSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #ffffff; border: none; transition: transform 0.14s ease-out; }
   #todSlider:hover::-webkit-slider-thumb, #volSlider:hover::-webkit-slider-thumb, #sensSlider:hover::-webkit-slider-thumb, #resSlider:hover::-webkit-slider-thumb, #dofStrSlider:hover::-webkit-slider-thumb, #sfxSlider:hover::-webkit-slider-thumb, #musSlider:hover::-webkit-slider-thumb,
   #todSlider:active::-webkit-slider-thumb, #volSlider:active::-webkit-slider-thumb, #sensSlider:active::-webkit-slider-thumb, #resSlider:active::-webkit-slider-thumb, #dofStrSlider:active::-webkit-slider-thumb, #sfxSlider:active::-webkit-slider-thumb, #musSlider:active::-webkit-slider-thumb { transform: scale(1.65); }   /* knob grows on hover — NO halo (user removed the box-shadow ring) */
-  #todSlider::-moz-range-thumb, #volSlider::-moz-range-thumb, #sensSlider::-moz-range-thumb, #resSlider::-moz-range-thumb, #dofStrSlider::-moz-range-thumb, #sfxSlider::-moz-range-thumb, #musSlider::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #7fd05a; border: none; transition: transform 0.14s ease-out; }
+  #todSlider::-moz-range-thumb, #volSlider::-moz-range-thumb, #sensSlider::-moz-range-thumb, #resSlider::-moz-range-thumb, #dofStrSlider::-moz-range-thumb, #sfxSlider::-moz-range-thumb, #musSlider::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #ffffff; border: none; transition: transform 0.14s ease-out; }
   #todSlider:hover::-moz-range-thumb, #volSlider:hover::-moz-range-thumb, #sensSlider:hover::-moz-range-thumb, #resSlider:hover::-moz-range-thumb, #dofStrSlider:hover::-moz-range-thumb, #sfxSlider:hover::-moz-range-thumb, #musSlider:hover::-moz-range-thumb,
   #todSlider:active::-moz-range-thumb, #volSlider:active::-moz-range-thumb, #sensSlider:active::-moz-range-thumb, #resSlider:active::-moz-range-thumb, #dofStrSlider:active::-moz-range-thumb, #sfxSlider:active::-moz-range-thumb, #musSlider:active::-moz-range-thumb { transform: scale(1.65); }
   #todSlider::-moz-range-track, #volSlider::-moz-range-track, #sensSlider::-moz-range-track, #resSlider::-moz-range-track, #dofStrSlider::-moz-range-track, #sfxSlider::-moz-range-track, #musSlider::-moz-range-track { height: 5px; border-radius: 3px; background: #2a3342; }
-  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress, #sensSlider::-moz-range-progress, #resSlider::-moz-range-progress, #dofStrSlider::-moz-range-progress, #sfxSlider::-moz-range-progress, #musSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: #7fd05a; }   /* Firefox draws the filled-left portion natively */
+  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress, #sensSlider::-moz-range-progress, #resSlider::-moz-range-progress, #dofStrSlider::-moz-range-progress, #sfxSlider::-moz-range-progress, #musSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: #d2a453; }   /* Firefox draws the filled-left portion natively */
   #rdWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #volWrap, #sensWrap, #resWrap, #dofStrWrap, #sfxWrap, #musWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
   #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider, #musSlider { width: 170px; cursor: pointer; }
@@ -272,14 +272,14 @@
   #stackN { position: fixed; top: 12px; right: 16px; z-index: 24; font: 22px/1 'px3', Consolas, monospace; letter-spacing: 2px;
     color: #f2e6c8; text-shadow: 0 2px 6px rgba(0,0,0,0.85), 0 0 12px rgba(0,0,0,0.6); pointer-events: none; }
   #stackN.hidden { display: none; }
-  #vigBtn, #snowBtn, #fsBtn, #crdBtn, #fpsBtn, #timeBtn, #resHudBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 4px 16px; color: #ff9077; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red (user) */
-  #vigBtn:hover, #snowBtn:hover, #fsBtn:hover, #crdBtn:hover, #fpsBtn:hover, #timeBtn:hover, #resHudBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off buttons LIFT on hover but KEEP their red/green colour — no green outline (user) */
-  #vigBtn.on, #snowBtn.on, #fsBtn.on, #crdBtn.on, #fpsBtn.on, #timeBtn.on, #resHudBtn.on { border-color: #7fd05a; color: #b8ff6e; }   /* ON = green (user) */
+  #vigBtn, #snowBtn, #fsBtn, #crdBtn, #fpsBtn, #timeBtn, #resHudBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = NO COLOUR (user 2026-08-08 — was red): a toggle that is off reads as a plain neutral pill, same slate as the other resting buttons in the panel */
+  #vigBtn:hover, #snowBtn:hover, #fsBtn:hover, #crdBtn:hover, #fpsBtn:hover, #timeBtn:hover, #resHudBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off buttons LIFT on hover but KEEP their own on/off colour — no gold hover outline (user) */
+  #vigBtn.on, #snowBtn.on, #fsBtn.on, #crdBtn.on, #fpsBtn.on, #timeBtn.on, #resHudBtn.on { border-color: #d2a453; color: #ffd76a; }   /* ON = GOLD (user 2026-08-08 — was green) */
   #fsWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
-  #cmpBtn { background: #1a2331; border: 1px solid #d9553f; border-radius: 9px; padding: 3px 15px; color: #ff9077; cursor: pointer; display: flex; align-items: center; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = red */
+  #cmpBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 3px 15px; color: #dfe6ee; cursor: pointer; display: flex; align-items: center; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = no colour */
   #cmpBtn svg { width: 17px; height: 17px; display: block; }   /* fill=currentColor → the icon itself shows the on/off state */
-  #cmpBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off → lift only, keeps red/green */
-  #cmpBtn.on { border-color: #7fd05a; color: #b8ff6e; }   /* ON = green */
+  #cmpBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off → lift only, keeps its on/off colour */
+  #cmpBtn.on { border-color: #d2a453; color: #ffd76a; }   /* ON = gold */
   #kbPanel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; overflow-y: auto; background: rgba(6,8,12,0.72); z-index: 30; }
   /* NO scrim on the held-item editor (user): the whole point is watching the item while you tune it.
      The card sits to the LEFT so the hand, which is on the right, is never behind it. */
@@ -301,17 +301,17 @@
   #kbCard2 h2, #kbCard3 h2, #kbCard4 h2, #pkCard h2 { font: 12px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0 0 12px; color: #fff; }
   .pkRow { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
   .pkRow:last-child { border-bottom: none; }
-  .pkRow input { width: 150px; accent-color: #7fd05a; cursor: pointer; }
-  .pkVal { min-width: 52px; text-align: right; color: #9fd07a; }
+  .pkRow input { width: 150px; accent-color: #d2a453; cursor: pointer; }
+  .pkVal { min-width: 52px; text-align: right; color: #d2a453; }
   #pkClose, #pkReset { margin: 14px 6px 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 22px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
-  #pkClose:hover, #pkReset:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → green outline + lift */
+  #pkClose:hover, #pkReset:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
   .kbRow { display: flex; justify-content: space-between; align-items: center; gap: 34px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
   .kbRow:last-child { border-bottom: none; }
   .kbKey { min-width: 96px; text-align: center; background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 5px 10px; color: #cfe0f4; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.12s, color 0.12s; }
-  .kbKey:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → green outline + lift */
+  .kbKey:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
   .kbKey.listen { border-color: #7fd05a; color: #b8ff6e; }
   #kbClose { display: block; margin: 14px auto 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
-  #kbClose:hover { border-color: #7fd05a; color: #b8ff6e; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → green outline + lift */
+  #kbClose:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
   #over { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; background: rgba(26,6,2,0.82); color: #ffd9c0; font: 9px/2 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; z-index: 25; }
   #over h1 { font: 22px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; color: #ff6a3a; }
   #over .ohint { opacity: 0.75; font-size: 7px; }
@@ -4594,6 +4594,8 @@
       var waterScat = vec3<f32>(0.0);
       var waterRefl = vec3<f32>(0.0);
       var waterFres = 0.0;
+      var waterIceC = vec3<f32>(0.0);                                // …and the ICE the surface turned into, with the amount of it: a submerged fish has to hide behind the SAME sheet the lakebed hides behind (user 2026-08-08)
+      var waterIceK = 0.0;
       if (u.misc.w > 0.5) {                                          // ── EYE INSIDE A VOXEL ── show the MATERIAL you are buried in as chunky pixels, not a black void
         let pk = u32(u.misc.w + 0.5) - 1u;                           // packed sRGB of that voxel: stone, needle green, trunk brown…
         let base = pow(vec3<f32>(f32(pk & 255u), f32((pk >> 8u) & 255u), f32((pk >> 16u) & 255u)) / 255.0, vec3<f32>(2.2));
@@ -4710,7 +4712,8 @@
           let fresI = 0.03 + 0.22 * pow(1.0 - clamp(-dot(rd, nI), 0.0, 1.0), 4.0);
           let frost = 0.9 + 0.2 * fract(sin(floor(wx2) * 12.9898 + floor(wz2) * 78.233) * 43758.5453);
           let iceC = mix(alb, vec3<f32>(0.74, 0.81, 0.90), 0.62) * frost * (0.5 + 0.5 * irr.g) * dayScale() + skyBase(reflect(rd, nI)) * fresI;
-          col = mix(col, iceC, min(1.0, u.pickZ.w * 1.12));
+          waterIceC = iceC; waterIceK = min(1.0, u.pickZ.w * 1.12);   // ── AND THE CREATURE PATH BELOW MUST SEE THIS ── the ice used to be mixed into the surface AFTER waterScat/waterRefl/waterFres were captured, so a fish under a frozen lake was still composited through LIQUID water: at 12 voxels' depth Beer-Lambert ate it down to the water's own in-scatter blue and painted that fish-shaped patch of lake over a white ice sheet. It read as a hole punched in the ice (user 2026-08-08: "the visuals are messed up when the fish are frozen"). The bed is fully hidden at freezeK 1, so the fish must be too.
+          col = mix(col, iceC, waterIceK);
         }
         // ── TWO SEPARATE EFFECTS (user 2026-08-05) ── one switch used to carry both, so there was no way to
         // see which of them was doing what. They share only the light COLUMN they live inside:
@@ -4890,7 +4893,7 @@
                   if (waterT > 0.0 && bestT > waterT) {
                     let wpC = u.camPos + rd * bestT;
                     let caC = caust(floor(vec2<f32>(wpC.x + u.winO.x, wpC.z + u.winO.y)) + vec2<f32>(0.5));
-                    alb3 = alb2 * (1.0 + 1.6 * caC * smoothstep(-0.02, 0.12, u.sunDir.y) * sunC);
+                    alb3 = alb2 * (1.0 + 1.6 * caC * smoothstep(-0.02, 0.12, u.sunDir.y) * sunC * (1.0 - waterIceK));   // …and the webs stop as the lid closes: caustics need a moving surface to focus the sun through
                   }
                   col = alb3 * (direct + (skyIrr + bounceC) * 0.85 + vec3<f32>(0.012, 0.013, 0.016)) * grain;   // 0.85 ≈ the terrain's typical open-air AO term — same formula as the static world (irr coupling stays banned: it read as translucent)
                   if (${WORM_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${WORM_ITEM0 || 9999} && dit < ${(WORM_ITEM0 || 9999) + (WORM_NFRAMES || 1)}) {   // WORM fake-AO — the smooth off-grid worm's stand-in for the grid-stamped cardinal's REAL contact AO (user chose 'fake AO, stay smooth'): darken the underside + lower body so it reads GROUNDED, no grid-stamp shimmer
@@ -4966,7 +4969,7 @@
                   // grazing angle the reflection covers it, which is what water actually does.
                   let trF = exp(-WATER_SIG * (bestT - waterT));
                   let through = col * trF + waterScat * (vec3<f32>(1.0) - trF);
-                  col = mix(through, waterRefl, waterFres);
+                  col = mix(mix(through, waterRefl, waterFres), waterIceC, waterIceK);   // …then the ICE goes over the top, exactly as it goes over the surface, so a freezing lake closes over the fish on the same 5 s ramp instead of leaving them printed on it
                 }
                 // ── AND THE DISTANCE FOG, WHICH THE SCENE GETS AND THIS DID NOT ── the fog block above runs on
                 // the g-buffer BEFORE this DDA and uses the SCENE's depth, so every creature and drop was
