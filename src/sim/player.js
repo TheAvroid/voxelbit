@@ -134,41 +134,48 @@
     const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
     return v === LAVA_T || v === LAVA_B || v === LAVA_R || v === LAVA_Y;
   };
-  const boxFree = (px, py, pz, hh) => {
-    for (let bb = 0; bb < birdBoxes.length; bb++) {                        // SOLID cardinals (Task 2): the player's box may not overlap any bird's world-AABB
+  // ── WHAT REFUSED THE LAST boxFree ── a creature's AABB, or a solid voxel? The two want different answers
+  // from moveAxis (see the clamp there), and boxFree's bare `false` cannot tell them apart. Written on every
+  // call, so it is only meaningful immediately after one.
+  let boxBodyHit = false;
+  // `noBody` asks the VOXEL GRID only, skipping the creature boxes — moveAxis needs that one question to work
+  // out whether a player an animal has walked into can move without being shoved into terrain.
+  const boxFree = (px, py, pz, hh, noBody) => {
+    boxBodyHit = false;
+    for (let bb = 0; !noBody && bb < birdBoxes.length; bb++) {             // SOLID cardinals (Task 2): the player's box may not overlap any bird's world-AABB
       const B2 = birdBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
-    for (let bb = 0; bb < bunnyBoxes.length; bb++) {                       // SOLID BUNNIES (user): the player can't run through a nearby world bunny
+    for (let bb = 0; !noBody && bb < bunnyBoxes.length; bb++) {            // SOLID BUNNIES (user): the player can't run through a nearby world bunny
       const B2 = bunnyBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
-    for (let bb = 0; bb < armBoxes.length; bb++) {                         // SOLID ARMADILLOS: the player can't run through a nearby world armadillo
+    for (let bb = 0; !noBody && bb < armBoxes.length; bb++) {              // SOLID ARMADILLOS: the player can't run through a nearby world armadillo
       const B2 = armBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
-    for (let bb = 0; bb < skunkBoxes.length; bb++) {                        // SOLID SKUNKS: the player can't run through a nearby world skunk
+    for (let bb = 0; !noBody && bb < skunkBoxes.length; bb++) {             // SOLID SKUNKS: the player can't run through a nearby world skunk
       const B2 = skunkBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
-    for (let bb = 0; bb < porcBoxes.length; bb++) {                        // SOLID PORCUPINES: the player can't run through a nearby world porcupine
+    for (let bb = 0; !noBody && bb < porcBoxes.length; bb++) {             // SOLID PORCUPINES: the player can't run through a nearby world porcupine
       const B2 = porcBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
     const x0 = Math.floor(px - HW), x1 = Math.floor(px + HW), z0 = Math.floor(pz - HW), z1 = Math.floor(pz + HW);
     const y0 = Math.floor(py + 0.001), y1 = Math.floor(py + hh - 0.001);
@@ -237,10 +244,29 @@
     for (let s = 0; s < steps; s++) {
       if (axis === 0) P.x += dd; else if (axis === 1) P.y += dd; else P.z += dd;
       if (boxFree(P.x, P.y, P.z, hh)) continue;
+      const bodyBlk = boxBodyHit;                      // WHAT refused, captured NOW: every boxFree below overwrites the flag
       if (axis !== 1 && (P.onGround || !boxFree(P.x, P.y - 1.4, P.z, hh))) {   // step-up even during downhill micro-air — no brief catches
         let stepped = false;
         for (let up = 1; up <= 5; up++) if (boxFree(P.x, P.y + up, P.z, hh)) { P.y += up; stepped = true; break; }   // auto-step up to 5 voxels / 50 cm (user; was 3)
         if (stepped) continue;
+      }
+      // ── A CREATURE'S BOX IS NOT THE VOXEL GRID (2026-08-10) ── the clamps below resolve against
+      // Math.floor(P.x ± HW) / Math.floor(P.y), which is the right answer for a solid voxel and an arbitrary
+      // one for an animal's AABB: those boxes are deliberately wider than the voxels the creature stamps, so a
+      // refusal can come from a box with no solid cell anywhere near the face the clamp snaps to. That snapped
+      // point is then a FIXED POINT in both directions — every later move clamps straight back onto it — the
+      // step-up above cannot clear a box that spans more than 5 voxels, and the axis-1 clamp cancels the jump
+      // that would have escaped, so the player stood locked in x, z AND y until the animal wandered off.
+      // A box refusal now simply backs the sub-step out, which is a position that was free a moment ago. And
+      // if the animal has already walked INTO us — the spot we came from is inside its box too — the move is
+      // let THROUGH instead, provided the voxel grid ahead is clear, so an animal can never be the reason the
+      // player cannot move. Solid geometry keeps the clamp exactly as it was.
+      if (bodyBlk) {
+        const bx = axis === 0 ? P.x - dd : P.x, by = axis === 1 ? P.y - dd : P.y, bz = axis === 2 ? P.z - dd : P.z;   // where this sub-step started
+        const engulf = !boxFree(bx, by, bz, hh) && boxBodyHit;   // …and it was already inside a creature box before we moved
+        if (engulf && boxFree(P.x, P.y, P.z, hh, true)) continue;   // walk out through the animal rather than stand pinned — the grid ahead is empty, so this cannot push anyone into terrain
+        P.x = bx; P.y = by; P.z = bz;                  // ordinary contact: stop AT the animal, no snap to a voxel face
+        hit = true; break;
       }
       if (axis === 0) { P.x = dd > 0 ? Math.floor(P.x + HW) - HW - 0.001 : Math.floor(P.x - HW) + 1 + HW + 0.001; }
       else if (axis === 2) { P.z = dd > 0 ? Math.floor(P.z + HW) - HW - 0.001 : Math.floor(P.z - HW) + 1 + HW + 0.001; }

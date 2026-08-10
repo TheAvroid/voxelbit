@@ -216,7 +216,7 @@
       // …and the thaw's cells the same way, but with the support seed muted. NOT gpuPatch's `track=false`,
       // which would also drop nvTouch and the hmap lower — a melting blanket does change what a creature can
       // walk on. Only the SUP queue is skipped, for the reason set out at the melt itself.
-      if (meltCells.length) { supMute = true; gpuPatch(meltCells, false); supMute = false; }
+      if (meltCells.length) { supMute = true; try { gpuPatch(meltCells, false); } finally { supMute = false; } }   // try/finally, NOT two bare statements: tick.js deliberately keeps the loop alive after a throw, so one exception in here would latch the mute for the whole session — no terrain edit ever seeds the support queue again, chopped trees stop falling, carved rock leaves floating slabs, and nothing reports why
     }
     if (CPROF) cpMark(3);
 

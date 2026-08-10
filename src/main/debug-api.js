@@ -138,7 +138,7 @@
     sndRouting() {                                   // which registered sounds are routed through an effect, and whether the RECORDER could tap them
       const out = sndReg.map((s) => ({ src: (s.a.src || '').split('/').slice(-2).join('/'),
         fx: !!s.a._sfxOut, veTapped: !!s.a._veTap, vol: +s.a.volume.toFixed(3) }));
-      return { sounds: out.filter((o) => o.fx || o.src.indexOf('hit.mp4') >= 0), sharedCtx: !!sfxAC, veCtxIsShared: veAC === null || veAC === sfxAC }; },
+      return { sounds: out.filter((o) => o.fx || o.src.indexOf('hit.mp4') >= 0), sharedCtx: !!sfxAC, veCtxIsShared: VE.ac === null || VE.ac === sfxAC }; },
     veTapAll() { const d = veAudioDest(); for (const s of sndReg) veTapEl(s.a);   // force the recorder's tap exactly as starting a capture does
       return { dest: !!d, tapped: sndReg.filter((s) => s.a._veTap).length, total: sndReg.length,
         fxTapped: sndReg.filter((s) => s.a._sfxOut && s.a._veTap).length, fxTotal: sndReg.filter((s) => s.a._sfxOut).length }; },

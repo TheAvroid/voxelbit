@@ -46,7 +46,7 @@
   };
   document.addEventListener('keydown', (e) => {        // ── , / . ── step the held bow through its draw frames and PIN it there, so the arrow can be placed frame by frame (user)
     if ((e.code !== 'Comma' && e.code !== 'Period') || e.repeat || listenAction || !BOW_FRAMES) return;
-    if (ED.on || cmdOpen || dead || !vePanel.classList.contains('hidden')) return;   // the asset editor owns these two keys while it is up
+    if (ED.on || CMD.open || dead || !vePanel.classList.contains('hidden')) return;   // the asset editor owns these two keys while it is up
     if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
     e.preventDefault();
     const n = BOW_FRAMES;                              // …and one step past the last frame hands the draw back to the game
@@ -66,7 +66,7 @@
     if (e.code === 'Escape') lockEl.classList.remove('hidden');   // Esc can't request pointer lock → count it as a button press and just open the esc menu
     else tryLock();
   });
-  document.addEventListener('pointerlockerror', () => { if (!locked && performance.now() - cmdEscAt > 1600) lockEl.classList.remove('hidden'); });   // …but never right after the command line was dismissed with Escape: the refusal IS the browser's exit cooldown (user)   // if a lock request is refused, fall back to the esc menu so the player is never stuck
+  document.addEventListener('pointerlockerror', () => { if (!locked && performance.now() - CMD.escAt > 1600) lockEl.classList.remove('hidden'); });   // …but never right after the command line was dismissed with Escape: the refusal IS the browser's exit cooldown (user)   // if a lock request is refused, fall back to the esc menu so the player is never stuck
   // ── CUSTOM FREE-MOUSE CURSOR ── shown whenever the pointer is NOT locked (menus, the video editor, the death screen).
   // Follows the mouse as a crosshair and morphs to a square over anything clickable; the native cursor is hidden so the
   // two never double up. While locked the game's own centre crosshair takes over and this is hidden.
@@ -94,7 +94,7 @@
     const wasLocked = locked;
     locked = document.pointerLockElement === canvas;
     if (locked && !wasLocked) freshLock = true;
-    lockEl.classList.toggle('hidden', locked || dead || lightMode || cmdOpen || performance.now() - cmdEscAt < 1600 || !vePanel.classList.contains('hidden'));   // …or while the COMMAND LINE is up, or across the re-lock retry after Escape dismissed it (user)   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
+    lockEl.classList.toggle('hidden', locked || dead || lightMode || CMD.open || performance.now() - CMD.escAt < 1600 || !vePanel.classList.contains('hidden'));   // …or while the COMMAND LINE is up, or across the re-lock retry after Escape dismissed it (user)   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
     if (locked) $('playHint').classList.add('hidden');   // taken control → drop the click-to-enter prompt (the esc menu handles re-entry from here)
     crossEl.classList.toggle('hidden', !locked);
     cmpVis();                                    // the compass follows the crosshair, gated by the settings toggle
@@ -184,7 +184,7 @@
     selSlot = (selSlot + (e.deltaY < 0 ? 1 : slots.length - 1)) % slots.length;   // wraps the WHOLE list now, however long it has grown   // SCROLL UP ADVANCES (user 2026-08-07): up from the axe reaches the pick, then the shovel — the direction the on-screen hint is pointing
   }, { passive: false });
   document.addEventListener('keydown', (e) => {
-    if (cmdOpen) return;                               // the COMMAND LINE has the keyboard (user)
+    if (CMD.open) return;                               // the COMMAND LINE has the keyboard (user)
     if (!locked) return;
     if (e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }   // ── T ── open the command line (user)
     keys.add(e.code);

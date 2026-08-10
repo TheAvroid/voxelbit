@@ -183,7 +183,7 @@
     }
     if (CPROF) cpMark(4);
     lifeUid.fill(-1); lifeAna.fill(1);                 // ── dynamic-life ledger reset ── slots not claimed this frame stay analytic-only/empty
-    { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
+    { const bSlot = 4, o2 = dropOff(bSlot);             // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player). ONE slot number, stitched to its float offset by the one function that knows how: the raw UF writes below want the offset, birdWrite wants the INDEX
       if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is ALWAYS GRID-STAMPED (real world voxels → full lighting), exactly like every other model — NO trace-inject exception (user)
         UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot (no trace-inject in the editor)
         if (ED.frames.length && !ED.paused && ED.bun) {  // ── BEHAVIOR state machine: wander (75% HOP / 25% ROTATE 50-50) at 24 fps; FLEE the player at 48 fps when near. Whole-hop-per-action INTEGER position, baked rotation (ED.spin=0). ──
@@ -266,7 +266,7 @@
         const ps = birdStep(bird, 0, now / 1000, dt);    // bird 0 keeps the dedicated slot; the rest are emitted with the creatures below
         birdPose(bird, ps);                              // …the pose the ragdoll will be rebuilt from
         ps.uid = 0;                                      // stable identity for the dynamic-life temporal reprojection
-        birdWrite(o2, ps, cam, right, up, fwd);
+        birdWrite(bSlot, ps, cam, right, up, fwd);       // the SLOT INDEX, never o2: birdWrite derives the offset itself, so passing 132 wrote dropOff(132) — deep inside lifeMotB — and left drop slot 4's item id at 0, i.e. bird 0 flew invisible while still solid and still shootable (tick-life.js's call site already passed dropCursor; this one was missed when the signature changed)
         birdHit(birdBox, ps);
       } else { UF[o2 + 7] = 0; birdBox.active = false; }
     }

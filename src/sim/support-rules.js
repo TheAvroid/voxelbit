@@ -40,7 +40,7 @@
     msBudget: 2.0,                                     // ms/frame, checked BETWEEN components — never mid-flood, so a component is always resolved as a whole
     maxPasses: 4,                                      // cascade rounds per frame: a lift appends its vacated cells to the same queue
     qMax: 400000,
-    q: [], qh: 0, qs: new Set(),                       // the dirty queue: flat indices, deduped, PERSISTENT — a cell the budget could not reach this frame is still there next frame
+    q: [], qh: 0, qs: new Set(),                       // the dirty queue: flat indices, deduped, PERSISTENT UP TO qMax — a cell the budget could not reach this frame is still there next frame, but a cell that arrives when qMax are already pending is DROPPED and never re-seeded. That is a real hole and the one place in this system where a question is lost rather than deferred; see the overflow branch in supPush, which counts every one and records the first few.
     res: new Set(),                                    // resolved THIS pass: cleared between cascade passes so a lift is honestly re-adjudicated, never within one so a 2000-cell anchored blob is walked once, not once per seed
     ancS: new Set(), flS: new Set(),                   // per-pass memo of the component verdict, both ways (see supHeld) — a standing pine is walked once, not once per needle
     busy: new Set(),                                   // components currently on the walk stack: they may not be used as anyone else's anchor, which is what breaks cross-class cycles
@@ -90,6 +90,14 @@
   // stamped body and so leaves the column describing something it is not standing on.
   const supCarved = new Uint8Array(WX * WZ);
   let supColMemo = new Map();                          // per-pass cache of the downward scan, so a flood over one boulder pays it once per column
+  // ── WINDOW COLUMN -> WORLD COLUMN ── the window is a WX-wide torus over the world columns [winOX, winOX+WX),
+  // so a window index must be un-wrapped before it can be compared with anything that lives in WORLD space (a
+  // rigid body, the player). Declared HERE, above every consumer, rather than beside the resolver several
+  // thousand lines down: phWakeNear used to inline "the same arithmetic" exactly because these were below it,
+  // and the inlined copy dropped the modulo — wrong for every column left of the wrap point, which is half the
+  // window and includes the player's own feet whenever the seam sits in the near half (see phWakeNear).
+  const supWorldX = (gx) => winOX + (((gx - gwrap(winOX, WX)) % WX) + WX) % WX;
+  const supWorldZ = (gz) => winOZ + (((gz - gwrap(winOZ, WZ)) % WZ) + WZ) % WZ;
   // ── WAKE THE RIGID BODIES WHEN THE WORLD MOVES UNDER THEM ── assigned once the physics block exists, several
   // thousand lines below; gpuPatch sits above it and a const read before its declaration is the "stuck on
   // uploading world" failure in this file, so it goes through a hook the same way birdDeath does.
@@ -181,7 +189,14 @@
     // drape up from below exactly as before, so this opens no route to a floater.
     if (snowTab[W[ii]] && W[ii - WX]) { SUP.stats.snowSkip = (SUP.stats.snowSkip || 0) + 1; return; }
     if (SUP.qs.has(ii)) return;
-    if (SUP.q.length - SUP.qh >= SUP.qMax) { SUP.stats.overflow++; return; }
+    // ── THE ONE PLACE A QUESTION IS THROWN AWAY ── qMax is a real bound (the dedupe Set, not the array, is what
+    // costs), so a seed arriving on a full queue cannot be kept and nothing re-seeds it later: whatever that cell
+    // was holding up stays unasked until something else within 26 of it is disturbed. It is not persistent, and
+    // the declaration above no longer claims it is. Counted always, and the first few are recorded with WHERE, so
+    // a reported floater can be matched against a drop instead of being hunted in the resolver's verdict logic.
+    if (SUP.q.length - SUP.qh >= SUP.qMax) { SUP.stats.overflow++;
+      if (SUP.stats.overflow <= 8 && SUP.refused.length < 32) SUP.refused.push({ n: 0, id: W[ii] || 0, x: supWorldX(ii % WX), y: ((ii / WX) | 0) % WY, z: supWorldZ((ii / (WX * WY)) | 0), why: 'queueOverflow', cap: SUP.qMax });   // capped at 8 so a storm cannot crowd the tooBig refusals out of the ring
+      return; }
     SUP.qs.add(ii); SUP.q.push(ii); SUP.stats.queued++;
   };
 

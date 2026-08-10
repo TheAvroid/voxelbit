@@ -11,8 +11,12 @@
   // expire a flying chunk for the same reason ("one already flying into the player finishes its flight"); the
   // eviction paths simply never learned it. b.absorbing means the simulation has already let go of it and it
   // is on a curve into the chest — there is no state left to reclaim, only a promise to keep.
-  const phMakeRoom = () => {
-    if (PH.bodies.length < PH.maxBodies) return true;
+  // `pending` = slots the caller has already promised to pieces it has built up but not yet pushed. Without it
+  // this answered "there is room" for a list that is only under the cap because those pieces are still in the
+  // caller's hand — which is what made phChopBody's fold-into-the-largest-piece safety net dead code and let
+  // PH.bodies grow past PH.maxBodies (see the keep loop there).
+  const phMakeRoom = (pending) => {
+    if (PH.bodies.length + (pending | 0) < PH.maxBodies) return true;
     let oi = -1;
     for (let i = 0; i < PH.bodies.length; i++) { const b = PH.bodies[i];
       if (b.absorbing) continue;                       // in flight to the player — never
@@ -24,7 +28,27 @@
     PH.bodies.splice(oi, 1); PH.stats.reclaimed++;
     return true;
   };
+  // ── THE ONLY THING THAT GIVES SHAPE MEMORY BACK ── bodyTop is a bump allocator and nothing decrements it, so
+  // every PH.bodies.splice() in the game — expiry, voidFall, offRect, a finished absorb, phMakeRoom above, the
+  // target splice in phChopBody — abandons that body's cells in bodyBuf forever. Repacking the live list from
+  // the front is what recovers them, and it is O(live bodies) uploads, so it is only ever run on demand.
+  const phPack = () => {
+    bodyTop = 0;                                     // repack the survivors from the start of the buffer
+    for (const b2 of PH.bodies) {
+      if (!b2.gpu || !b2.cpuGrid) continue;
+      device.queue.writeBuffer(bodyBuf, bodyTop * 4, b2.cpuGrid.buffer, 0, b2.cpuGrid.length * 4);
+      b2.gpu.off = bodyTop; bodyTop += b2.cpuGrid.length;
+    }
+  };
+  // ── COMPACT BEFORE EVICTING ── this used to splice a LIVE body first and only then repack, so it destroyed
+  // settled chunks beside the player to make room that the abandoned allocations above would have yielded on
+  // their own. Worse, its `PH.bodies.length &&` guard meant that when phChopBody had just spliced out the ONLY
+  // live body — which it does on every swing at a felled log — nothing ran at all, bodyTop still held the
+  // stale allocation, and phBuildBody's ceiling test then handed back a body with gpu = null and no cpuGrid:
+  // the log the player was chopping was not drawn, not solid and not hittable, while still holding a slot.
   const phReclaim = (need) => {
+    if (BODYCAP - bodyTop >= need) return;           // fits as the buffer stands — no upload, and nothing is ever evicted for a body that already had room
+    phPack();                                        // …then take back what the splices abandoned BEFORE destroying anything the player can see
     let guard = 0;
     while (PH.bodies.length && BODYCAP - bodyTop < need && guard++ < 64) {
       let oi = -1;                                     // …and the same rule here: a chunk in flight is never the one retired (see phMakeRoom)
@@ -33,12 +57,7 @@
       if (oi < 0) break;
       PH.bodies.splice(oi, 1);
       PH.stats.reclaimed++;
-      bodyTop = 0;                                   // repack the survivors from the start of the buffer
-      for (const b2 of PH.bodies) {
-        if (!b2.gpu || !b2.cpuGrid) continue;
-        device.queue.writeBuffer(bodyBuf, bodyTop * 4, b2.cpuGrid.buffer, 0, b2.cpuGrid.length * 4);
-        b2.gpu.off = bodyTop; bodyTop += b2.cpuGrid.length;
-      }
+      phPack();
     }
   };
   const phQRot = (q, v, o) => {                      // o = q * v * q^-1
@@ -246,6 +265,13 @@
     }
     comps.sort((a, b2) => b2.length - a.length);     // LARGEST FIRST — a shower of chips must never starve the trunk of a slot
     for (const comp of comps) {
+      if (comp.length < 2) {                          // ── LITTER FIRST, AND IT NEVER COSTS A SLOT ── this sat BELOW the shedding loop, where a one-voxel component can only ever fail `sn < comp.length` (sn < 1 is false for any size) and fall through to phMakeRoom, which splices a LIVE body. So a single detached needle destroyed a settled chunk to buy a slot it was never going to use — the voxel is erased as litter three lines later. Comps arrive largest-first, so these are all at the tail anyway.
+        const c0 = comp[0], mxa = c0 % f.sx, mza = ((c0 / f.sx) | 0) % f.sz, mya = (c0 / (f.sx * f.sz)) | 0;
+        const ii0 = phWorldIdx(S, mxa, mya, mza);
+        phMark[c0] = 3;
+        W[ii0] = 0; cellsOut.push(ii0); PH.stats.dustVox++;   // a lone detached voxel is litter, needle or not — no falling leaves (user 2026-08-02)
+        continue;
+      }
       // ── A SEVERED TREE MUST GET A SLOT (user 2026-08-07: "a pine tree floating entirely from the base where
       // it was broken") ── this used to try ONE eviction and ONE phMakeRoom and then give up, leaving the whole
       // component in W and handing it to the support resolver. That is a dead end for anything tree-sized: the
@@ -277,13 +303,6 @@
         for (const c of comp) { phMark[c] = 3;
           const mx2 = c % f.sx, mz2 = ((c / f.sx) | 0) % f.sz, my2 = (c / (f.sx * f.sz)) | 0;
           supPush(phWorldIdx(S, mx2, my2, mz2)); }
-        continue;
-      }
-      if (comp.length < 2) {                          // a single detached voxel
-        const c0 = comp[0], mxa = c0 % f.sx, mza = ((c0 / f.sx) | 0) % f.sz, mya = (c0 / (f.sx * f.sz)) | 0;
-        const ii0 = phWorldIdx(S, mxa, mya, mza), v0 = W[ii0];
-        phMark[c0] = 3;
-        W[ii0] = 0; cellsOut.push(ii0); PH.stats.dustVox++;   // a lone detached voxel is litter, needle or not — no falling leaves (user 2026-08-02)
         continue;
       }
       const compS = phDrapeWith(S, comp, f, snowClaim);   // …and it takes its drape with it: snow above, cones below (see phDrapeWith). AFTER the slot machinery above, which prices a component by its own material

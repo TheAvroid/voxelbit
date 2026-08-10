@@ -93,12 +93,20 @@
   // and only when that batch actually cleared something. Waking is free — the solver re-tests contacts on the
   // next step and puts it straight back to sleep if it really was supported.
   // The box arrives in WINDOW coordinates (gpuPatch derives them from the flat index) and the bodies live in
-  // WORLD space, so the x/z bounds are un-wrapped first — the same arithmetic supWorldX/supWorldZ use, inlined
-  // because those are declared with the resolver, further down. y needs no conversion.
+  // WORLD space, so the x/z bounds are un-wrapped through supWorldX/supWorldZ themselves. y needs no conversion.
+  // ── IT USED TO INLINE THEM AND GET IT WRONG ── the inlined form was `gx + (winOX - gwrap(winOX, WX))`, which
+  // drops the modulo and so only agrees with supWorldX for columns at or right of the wrap point. With WX 768
+  // and winOX 800 the wrap point is 32, so window column 10 is world column 1546 and this answered 778: outside
+  // the window entirely, matching no body. The player stands at window column (wrap + HALF) mod WX, which is in
+  // the broken half whenever the wrap point is past the middle — so digging under your own feet woke nothing,
+  // and since this is the game's ONLY world-change wake path, a settled chunk whose support you removed hung
+  // there for good. Waking a body that did not need it is free (the solver re-tests contacts and puts it
+  // straight back to sleep); failing to wake one is permanent, so the seam case widens rather than guesses.
   const phWakeNear = (gx0, gx1, y0, y1, gz0, gz1) => {
     if (!PH.bodies.length) return;
-    const ox = winOX - gwrap(winOX, WX), oz = winOZ - gwrap(winOZ, WZ);
-    const x0 = gx0 + ox, x1 = gx1 + ox, z0 = gz0 + oz, z1 = gz1 + oz;
+    let x0 = supWorldX(gx0), x1 = supWorldX(gx1), z0 = supWorldZ(gz0), z1 = supWorldZ(gz1);
+    if (x1 < x0) { x0 = winOX; x1 = winOX + WX - 1; }   // the batch straddles the window's wrap seam: in world space that is TWO intervals, so take the whole span rather than the empty one between them
+    if (z1 < z0) { z0 = winOZ; z1 = winOZ + WZ - 1; }
     let woke = 0;
     for (let i = 0; i < PH.bodies.length; i++) {
       const b = PH.bodies[i];

@@ -135,6 +135,7 @@
     nvF[ci] = f; };
   const nvIdx = (x, z) => (gwrap(Math.floor(x), WX) >> NVSH) + (gwrap(Math.floor(z), WZ) >> NVSH) * NVX;
   const nvTop = (ci) => { const g = nvY[ci]; return ((nvF[ci] & NVF_WATER) && g < WL) ? WL : g; };   // the travel surface this cell's clearance was measured from
+  const nvTopAir = (ci) => { const g = nvY[ci] + 1; return ((nvF[ci] & NVF_WATER) && g < WL) ? WL : g; };   // …the same surface in HMAP UNITS: +1 because nvY is the topmost SOLID voxel while hmap/bfSurf is the FIRST AIR above it. Mixing the two is a silent one-voxel bias — see navWalkGround.
   const nvClutD = (ci) => (nvK[ci >> 1] >>> ((ci & 1) << 2)) & 15;   // how far BELOW nvY a walker's foot actually lands here. Subtract it from nvY for the walker's ground; ADD it to nvC for the walker's headroom — the voxels between the two tops are, by the definition of "topmost non-clutter voxel", clutter or air, so they are free to a walker and the sum is the exact clearance above its own ground.
   // ── OPENNESS ── a chamfer distance transform per MEDIUM: within a region of one class, distance grows
   // normally; any neighbour of a DIFFERENT class (including wall) is a zero-distance boundary. So a fish
@@ -365,13 +366,15 @@
   const NAV_FLOOK = 14, NAV_FBCLR = 2.0, NAV_FBRK2 = 46;   // FISH brake: sqrt(46 · (14 − 2)) = 23.5 vox/s against a 22 vox/s cruise, so OPEN water is untouched and this only bites as a bank closes in. The fish already fans whiskers to pick a lane; what it lacked was any reason to SLOW as that lane shortened, so it arrived at the bank still at full cruise, ground against it until the trap timer fired, and got re-placed — which reads as a teleport (user 2026-08-06). Braking gives the eased turn time to finish, so it comes about instead.   // DUCK brake: sqrt(14 · (10 − 1)) = 11.2 vox/s against a 7 vox/s paddle (10 for a duckling scrambling to heel), so an open lane is full pace and the cap only ramps once the lane is under ~5 voxels — well inside the 7-voxel head buffer the duck already keeps.
   const NAV_WLOOK = 6, NAV_WBCLR = 1.0, NAV_WBRK2 = 58;   // …and its brake: sqrt(58 · (6 − 1)) = 17.0 vox/s against a 16 vox/s crawl, so an open lane is full pace and the cap withholds nothing until the lane is under ~5 voxels
   const navGroundAt = (x, z) => { const ci = nvIdx(x, z);   // the travel surface a LAND creature stands on: the field's 2×2 max where it is vouched for, the heightmap where it is not. Same fix as the flyer's gAir — a servo riding bfSurf while the predicate measures clearance from nvY is the planner/mover split reintroduced on the vertical axis.
-    return (nvF[ci] & NVF_BUILT) ? nvTop(ci) : (navBed(x, z) > WL ? navBed(x, z) : WL); };
+    if (!(nvF[ci] & NVF_BUILT)) return navBed(x, z) > WL ? navBed(x, z) : WL;
+    const g = nvY[ci] + 1;                           // ── UNITS ── exactly navWalkGround's +1, and for exactly its reason: nvY is the topmost SOLID voxel while hmap is the FIRST AIR voxel above it, and hmap is what the unvouched branch one line up returns, what bfSurf returns, and what every worm step limit and probe offset was authored against. Without it the two branches disagreed by a voxel at every streaming frontier — a legitimate 2-voxel step read as 3 and the lane was refused — and the worm's y servo (tick-creatures gcW) sat a voxel below the pre-arbiter bfSurf target everywhere else.
+    return ((nvF[ci] & NVF_WATER) && g < WL) ? WL : g; };   // nvTop's own water clamp, kept: a wet cell's travel surface is the waterline
   const navLandOK = (x, z, gc, up, down, clr) => {   // THE land answer. The step limits and head clearance passed in are the marchers' OWN legacy numbers (±2 for a worm, +3/−4 for a mammal; the bfObstW probe heights) — measured against the field instead of the heightmap, so the decor and rock hmap never saw are finally in the test.
     const ci = nvIdx(x, z), f = nvF[ci];
     if (!(f & NVF_BUILT)) { const g = navBed(x, z);   // UNVOUCHED → the honest point probe the marcher used before. Never a blanket refusal: a creature at the streaming frontier must not freeze waiting for a cell to be built.
       return !navWet(x, z) && g > WL && g - gc <= up && gc - g <= down && !nvObst(x, g + 2, z) && !nvObst(x, g + clr, z); }
     if (f & NVF_WATER) return false;                 // any water in the 2×2 — a land creature stops AT the waterline, not one step past it
-    const g = nvY[ci];
+    const g = nvY[ci] + 1;                           // …and the SAME +1 as navGroundAt above, so gc (which comes from it) and g are the same quantity on both branches. nvC is already measured from here — nvBuildCell counts free voxels from ts + 1 — so only the step comparison and the `g > WL` land test move, and both move ONTO the unvouched branch's answer rather than away from it.
     return g > WL && g - gc <= up && gc - g <= down && nvC[ci] >= clr; };
   // (no navSurfOK: a field-gated surface-water predicate was built for the ducks and measured off —
   //  see the duckFit comment in the tick body. The swim band is consumed by the FISH, via navFitsSwim.)

@@ -278,6 +278,7 @@
         perH.push(list); }
       poses.push(perH); }
     ARMADILLO_POSES = poses;
+    palSync();                                             // upload the palette ids edParseVox allocated + the CREA_FLAG bits set above — the same contract every other pose builder keeps (see buffers.js: "every pose builder re-syncs after registering its ids"). Without it a beyond-420-voxel armadillo — which is where the mammals normally spawn — grid-stamped as a solid black silhouette on the wrong hit-flash path until some other builder happened to sync.
   };
   const stampArmadillo = (B, gsurf) => {                  // stamp the armadillo's current frame into W at its position — clear-then-restamp via stampApply (foliage restore), like the perched cardinal
     buildArmPoses(); if (!ARMADILLO_POSES) return;
@@ -467,8 +468,7 @@
     const list = [];
     for (const f of [...edFileEl.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
       list.push({ name: f.name, u8: new Uint8Array(await f.arrayBuffer()) });
-    if (list.length) { ED.frames2 = []; ED.box2 = null; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows
+    if (list.length) { edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows. edClearStamp runs FIRST, as its comment says: edImportBufs ends in edLayout, which stamps the new model, so clearing afterwards erased what had just been laid out and the import stayed invisible until the next repaint (up to 3.4 s).
     edFileEl.value = '';
-    edClearStamp();
   });
 

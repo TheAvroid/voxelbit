@@ -1,3 +1,5 @@
+  // @module — the voxel-accurate melee ray, the stone tools’ reach/bite constants, and the hoe’s tilled earth
+  // @exports AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay
   // ── AXE SWING -> TRUNK ── melee reach along the view ray, trunk voxels only. Returns true when the
   // swing bit wood so the caller can spend the swing on the tree rather than also registering a kill.
   const AIM_FORGIVE = 1.6;                            // voxels of slack around a creature's own radius in the kill test. Small and ABSOLUTE, so it forgives a shaky hand without ever growing into the fixed 35-degree cone this replaced.
@@ -56,7 +58,8 @@
   // TILLED EARTH, a lighter brown, across a disc around where you struck. Nothing can be planted in it yet,
   // so the ground REMEMBERS what it was and goes back to that after a while (user).
   const TILL_R = 5, TILL_MS = 45000;
-  let TILL_ID = 0;
+  // TILL_ID lives in sim/hands.js, not here: this fragment is a module, and a module can only export a const
+  // snapshot of a name, so a `let` minted in here would read as 0 everywhere outside (see the note there).
   const tilled = [];                                   // {t, ii, prevTop, jj, prevBelow, hi} — everything needed to put it back exactly
   const tillSet = new Set();                           // the voxels that ARE tilled earth, by index — the one-layer rule tests this, not the colour
   const hoeTill = () => {
@@ -84,14 +87,19 @@
           const d = (c[0] - 150) ** 2 + (c[1] - 116) ** 2 + (c[2] - 76) ** 2;
           if (d < bd) { bd = d; TILL_ID = i + 1; } }
       }
-      solidTab[TILL_ID] = 1; digOnlyTab[TILL_ID] = 1; palSync();
-      // ── AND IT NEEDS A SUPPORT CLASS ── this is the one palette id in the game minted at RUNTIME, so the
-      // SUP.CLASS sweep that runs beside the material tables cannot see it. Only when the entry is genuinely
-      // NEW: with a full table TILL_ID is a shade already owned by something else, and stamping STRUCTURE
-      // over it would reclassify every voxel of that shade in the world. (In practice the class barely
-      // matters either way — hoeTill writes tilled earth at h-2 and lowers hmap to h-1, so the cell is inside
-      // the static ground column and supAnchored answers yes on the O(1) test whatever its class.)
-      if (fresh) SUP.CLASS[TILL_ID] = SUP.STRUCTURE;
+      // ── THE MATERIAL TABLES AND THE SUPPORT CLASS ARE BOTH FOR A NEW ENTRY ONLY ── this is the one palette
+      // id in the game minted at RUNTIME, so the sweeps that fill solidTab/digOnlyTab/SUP.CLASS beside the
+      // material tables cannot see it and it has to write its own. But ONLY when the entry is genuinely NEW:
+      // with a full table TILL_ID is a shade already owned by something else, and every write here is by
+      // PALETTE ID, so it re-describes that material everywhere in the world for the rest of the session.
+      // SUP.CLASS was already guarded; the two table writes were not, and digOnlyTab is the more expensive
+      // mistake of the two because it is tested BEFORE pickOnlyTab in every tool gate — the nearest source
+      // literal to (150,116,76) is OREIRON[0], so one hoe swing could turn iron ore shovel/knife-only and
+      // make it un-mineable with the pick. palSync goes with them: nothing was added to the palette either.
+      // (The support class barely matters even when it is written — hoeTill puts tilled earth at h-2 and
+      // lowers hmap to h-1, so the cell is inside the static ground column and supAnchored answers yes on
+      // the O(1) test whatever its class.)
+      if (fresh) { solidTab[TILL_ID] = 1; digOnlyTab[TILL_ID] = 1; SUP.CLASS[TILL_ID] = SUP.STRUCTURE; palSync(); }
       console.log('[vb] tilled earth id', TILL_ID, 'palette', palette.length, TILL_ID > 255 ? 'OVERFLOW' : '');
     }
     const cells = [];

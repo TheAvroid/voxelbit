@@ -63,16 +63,6 @@
   if (HOE_IT) pickCfgs[HOE_IT] = { ...PICK_DEFS[HOE_IT] };
   if (SPEAR_IT) pickCfgs[SPEAR_IT] = { ...PICK_DEFS[SPEAR_IT] };
   if (WORM_ITEM0) pickCfgs[WORM_ITEM0] = { ...PICK_DEFS[WORM_ITEM0] };
-  try {                                              // ── SAVED POSES ── keyed by NAME (see below); ids are positional and shift whenever the item list changes
-    const byName = JSON.parse(localStorage.getItem('vb_pick4') || '{}');
-    for (const id in pickCfgs) { const nm = ITEM_NAMES[id]; if (nm && byName[nm]) Object.assign(pickCfgs[id], byName[nm]); }
-    if (!localStorage.getItem('vb_pick4')) {         // one-time migration off the id-keyed store
-      const old = JSON.parse(localStorage.getItem('vb_pick3') || '{}');
-      for (const k in old) { const id = +k;
-        if (!BOW_IT || id < BOW_IT) { if (pickCfgs[id]) Object.assign(pickCfgs[id], old[k]); }   // below the bow the numbering never moved — those are still valid
-      }                                              // …and everything from the bow up is dropped: its number no longer means what it did
-    }
-  } catch (e) {}   // key bumped from vb_pick2 — the old value was one shared pose
   const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
   ITEM_NAMES[KNIFE_IT] = 'knife';
   if (PICK_IT) ITEM_NAMES[PICK_IT] = 'pick';
@@ -83,6 +73,16 @@
   if (BOW_IT) for (let f = 0; f < BOW_FRAMES; f++) ITEM_NAMES[BOW_IT + f] = 'bow';   // every frame answers to the same name in the held-item editor
   if (MEAT_IT) ITEM_NAMES[MEAT_IT] = 'raw meat';
   if (WORM_ITEM0) ITEM_NAMES[WORM_ITEM0] = 'worm';
+  try {                                              // ── SAVED POSES ── keyed by NAME (see ITEM_NAMES above); ids are positional and shift whenever the item list changes
+    const byName = JSON.parse(localStorage.getItem('vb_pick4') || '{}');   // MUST stay BELOW the ITEM_NAMES block: this loop reads it, and above the declaration every restore threw a dead-zone ReferenceError into the catch — every tuned pose silently lost on refresh, and the vb_pick3 migration never ran (settings.js defers its own first paint for exactly this hazard)
+    for (const id in pickCfgs) { const nm = ITEM_NAMES[id]; if (nm && byName[nm]) Object.assign(pickCfgs[id], byName[nm]); }
+    if (!localStorage.getItem('vb_pick4')) {         // one-time migration off the id-keyed store
+      const old = JSON.parse(localStorage.getItem('vb_pick3') || '{}');
+      for (const k in old) { const id = +k;
+        if (!BOW_IT || id < BOW_IT) { if (pickCfgs[id]) Object.assign(pickCfgs[id], old[k]); }   // below the bow the numbering never moved — those are still valid
+      }                                              // …and everything from the bow up is dropped: its number no longer means what it did
+    }
+  } catch (e) { console.warn('[vb] held-item poses could not be restored', e); }   // key bumped from vb_pick2 — the old value was one shared pose. NOT silent any more: a bare catch here is what hid the dead-zone bug above for as long as it existed; a blocked/corrupt localStorage still degrades to the baked defaults, it just says so.
   const heldIt = () => (grabAnim && !grabAnim.left && !slots[selSlot] ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty). A grab flight into a FULL hand does not borrow it (user): that pickup flies as its own world object so your tool stays out — see grabGhost. An EMPTY hand borrows it again, the way it did originally, so the incoming item flies into the HELD POSE itself and there is no tool to lose.
   let grabGhost = null;                                // the item mid-flight, drawn through the DROP path instead of the hand
   const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];

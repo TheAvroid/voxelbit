@@ -154,10 +154,10 @@
       // composite path (emissive + translucency), as does any creature seen THROUGH a water surface (Beer–Lambert).
       var cSlot = 0u; var cCell = vec3<f32>(0.0); var cVc = vec3<i32>(0); var cAxis = 0u; var cN = vec3<f32>(0.0, 1.0, 0.0);
       var bHit = false; var bCol = vec3<f32>(0.0); var bN = vec3<f32>(0.0, 1.0, 0.0); var bVc = vec3<i32>(0);   // rigid-body (felled chunk) hit
+      var bestT = select(1e9, h.t, h.t >= 0.0);                      // nearest hit so far (world / flake) — SHARED by the creature loop and the rigid-body trace below, which is why it lives outside the dynamic-life gate
       if (ITEMN > 0 && u.lifeCfg.y > 0.5) {
         let ndc3 = (px / u.res) * 2.0 - 1.0;
         let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));   // camera-space twin of rd — the drop transforms live in camera space
-        var bestT = select(1e9, h.t, h.t >= 0.0);
         let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, DROP_N);
         let tiV = (wgid.y * ((u32(u.res.x) + 7u) / 8u) + wgid.x) * ${VIS_W}u;   // this workgroup IS one 8×8 tile — read its four prepass mask words (under ?uni the stride is 8: words 0-3 primary, 4-7 the grown SECONDARY mask)
         let visM0 = visb[tiV]; let visM1 = visb[tiV + 1u]; let visM2 = visb[tiV + 2u]; let visM3 = visb[tiV + 3u];   // FOUR words now (128 slots) and all four stay in REGISTERS: re-fetching the word from storage per iteration measured 4× the per-slot cost
@@ -218,22 +218,29 @@
             if (any(vcD < vec3<i32>(0)) || any(vcD >= vec3<i32>(eW, eD, eH))) { break; }
           }
         }
-        {                                                            // ── RIGID BODIES ── same traversal the shadow/AO rays use, so what you see and what the light sees can never disagree
-          let bh2 = bodyTrace(ro, rd, bestT);
-          if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bN = bh2.n;
-            bVc = bh2.vc; }                                        // BODY-LOCAL cell (see Hit.vc): the grain rides with the wood instead of the trunk sliding through a world-anchored noise field
-        }
-        if (bHit) {                                                  // a felled chunk is the primary hit — terrain-identical shading from here on
-          h.t = bestT; h.vox = 0u; h.n = bN;
-          if (abs(bN.y) >= abs(bN.x) && abs(bN.y) >= abs(bN.z)) { h.face = select(2u, 3u, bN.y < 0.0); }
-          else if (abs(bN.x) >= abs(bN.z)) { h.face = select(0u, 1u, bN.x < 0.0); }
-          else { h.face = select(4u, 5u, bN.z < 0.0); }
-        } else if (cSlot != 0u) {                                    // the creature IS the primary hit from here on
-          h.t = bestT; h.vox = 0u; h.n = cN;                         // vox 0 → the water/lava id checks below can't misfire
-          if (abs(cN.y) >= abs(cN.x) && abs(cN.y) >= abs(cN.z)) { h.face = select(2u, 3u, cN.y < 0.0); }
-          else if (abs(cN.x) >= abs(cN.z)) { h.face = select(0u, 1u, cN.x < 0.0); }
-          else { h.face = select(4u, 5u, cN.z < 0.0); }              // nearest-axis face: the denoiser's edge tests + a composite fallback; true shading normal comes from the axis bits
-        }
+      }                                                              // …end of the DYNAMIC-LIFE gate. The rigid-body trace below is deliberately OUTSIDE it.
+      {                                                              // ── RIGID BODIES ── same traversal the shadow/AO rays use, so what you see and what the light sees can never disagree.
+        // NOT gated on dynamic life (u.lifeCfg.y / ITEMN): a felled chunk has nothing to do with creature
+        // trace-injection, and the secondary rays call traceAll unconditionally. While this sat inside that
+        // gate, ?oldlife (or a failed .vox fetch leaving ITEMN == 0) made a chunk INVISIBLE to the camera while
+        // it still cast a shadow, occluded AO and appeared in the water reflection — the exact disagreement the
+        // line above says is impossible. Free when there is nothing to hit: bodyTrace returns on one compare
+        // while physC.x is 0, which is every frame no tree has been felled.
+        let bh2 = bodyTrace(ro, rd, bestT);
+        if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bN = bh2.n;
+          bVc = bh2.vc; }                                          // BODY-LOCAL cell (see Hit.vc): the grain rides with the wood instead of the trunk sliding through a world-anchored noise field
+      }
+      if (bHit) {                                                    // a felled chunk is the primary hit — terrain-identical shading from here on
+        h.t = bestT; h.vox = 0u; h.n = bN;
+        cSlot = 0u; cAxis = 0u;                                      // …and this pixel is NOT a creature any more, however the creature loop above left it. bodyTrace ran with maxT = bestT, so a chunk only wins by being strictly NEARER — but cSlot survived, and slotOut then told COMPOSITE to rebuild the normal from that animal's model axes and told DENOISE/TAA to reproject the pixel by the animal's motion. Fell a pine across a bird and the trunk pixels were lit with the bird's normal and smeared temporally.
+        if (abs(bN.y) >= abs(bN.x) && abs(bN.y) >= abs(bN.z)) { h.face = select(2u, 3u, bN.y < 0.0); }
+        else if (abs(bN.x) >= abs(bN.z)) { h.face = select(0u, 1u, bN.x < 0.0); }
+        else { h.face = select(4u, 5u, bN.z < 0.0); }
+      } else if (cSlot != 0u) {                                      // the creature IS the primary hit from here on
+        h.t = bestT; h.vox = 0u; h.n = cN;                           // vox 0 → the water/lava id checks below can't misfire
+        if (abs(cN.y) >= abs(cN.x) && abs(cN.y) >= abs(cN.z)) { h.face = select(2u, 3u, cN.y < 0.0); }
+        else if (abs(cN.x) >= abs(cN.z)) { h.face = select(0u, 1u, cN.x < 0.0); }
+        else { h.face = select(4u, 5u, cN.z < 0.0); }                // nearest-axis face: the denoiser's edge tests + a composite fallback; true shading normal comes from the axis bits
       }
       var albedo = vec3<f32>(0.0);
       var faceId = 7u; var t = -1.0;
@@ -263,7 +270,8 @@
           // under its belly — painting those was the red square on the terrain (user). With the flag the
           // grid-stamped test is as exact as the trace-injected one: creature voxels only, terrain never.
           // …and a RAGDOLL is neither: on the killing blow the animal becomes a rigid BODY (bHit), which
-          // carries no cSlot and no palette flag. hurtBox tracks that body's live centre while it falls, so
+          // carries no palette flag and — because the bHit branch above now clears it — no cSlot either
+          // (it used to keep whatever slot the creature loop had just set). hurtBox tracks that body's live centre while it falls, so
           // testing a body pixel against the box is what keeps it red the whole way down (user 2026-08-05:
           // "red and rigid at the same time"). Only bodies INSIDE the box are touched, and the box is the
           // dead animal's own radius, so an ordinary chopped chunk lying elsewhere is never painted.
@@ -344,7 +352,7 @@
                 foam = max(foam, step(0.35, ivhash(ci + vec3<i32>(s2 * 13, 11, 5)) * (0.55 + 0.45 * sin(u.time * 1.6 + f32(ci.x * 7 + ci.z * 5) * 0.7))));
               }
             }
-            if (foam > 0.5) { t = min(t, (whF + 2.0 - ro.y) / rd.y); }                    // …and the shaded surface rides on top of that raised column (the +1 now comes from the lift in the march above)
+            if (foam > 0.5) { let tFo = (whF + 2.0 - ro.y) / rd.y; if (tFo > 0.0) { t = min(t, tFo); } }   // …and the shaded surface rides on top of that raised column (the +1 now comes from the lift in the march above). GUARDED: this block only runs for rd.y < -0.01, so an eye BELOW that plane (whF is baseTop + floor(wv+0.5) + lift, i.e. up to ~6 voxels above the water — where the swim spring parks you) makes the quotient NEGATIVE and min() took it. A t behind the camera made TEMPORAL drop the pixel, COMPOSITE shade it as unlit water and the reflection ray start behind the eye: dark blotches trailing the shoreline foam ring while swimming. Below the plane there is nothing to clamp to — the ray is already under it.
             foamK = clamp(foam, 0.0, 1.0) * 0.8;
             albedo = mix(albedo, FOAM_C, foamK);
           }

@@ -1,3 +1,5 @@
+  // @module — the tile visibility-cull WGSL, and the one place every shader factory is built into a pipeline
+  // @exports DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush
   const VIS_SRC = () => /* wgsl */`
     ${pickWGSL}
     @group(0) @binding(1) var<storage, read_write> visb : array<u32>;   // 4×u32 bitmask per 8×8 screen tile: bit di = drop slot di's bounding sphere may touch this tile (128 slots = four words)

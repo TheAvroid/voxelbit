@@ -21,7 +21,7 @@
       pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
       fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
       cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
-      misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w spare
+      misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w = EYE-INSIDE-A-VOXEL fill: the packed sRGB of the voxel the camera is buried in, PLUS 1 so that 0 means 'not buried' (written in tick-camera, read by COMPOSITE). NOT spare — take this lane for something else and the whole screen becomes the buried-in-rock fill.
       lifeMot : array<vec4<f32>, 64>,                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
       lifeCfg : vec4<f32>,                                           // x = life debug view (0 off, 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO), y = trace-injection enabled (0 under ?oldlife → full analytic fallback), z/w spare
       physB : array<vec4<f32>, 80>,                                  // ── RIGID BODIES ── 16 x 5 vec4, appended LAST so no existing offset moves:
@@ -29,7 +29,7 @@
                                                                      // [2] local Y axis + dimY · [3] local Z axis + dimZ · [4] comLocal.xyz + buffer offset
       physC : vec4<f32>,                                             // x = ACTIVE body count (0 = the whole path is one compare), y = REACTIVE STRENGTH 0..1 (1 while a body is moving, eased to 0 over ~0.45 s after it stops — a binary here made a settling trunk pulse its own shadow noise on and off), z/w spare. Was: how many are AWAKE (the reactive mask keys off y; tracing keys off x)
       physBound : vec4<f32>,                                         // xyz = centre (window coords) of a sphere enclosing EVERY body, w = its radius — one test rejects a ray that cannot touch any of them
-      heldCfg : vec4<f32>,                                           // x = SUN visibility at the player (gates the held item's DIRECT term), y = its SKY visibility (gates the ambient + ground bounce, standing in for the irr.g the world gets), z/w spare
+      heldCfg : vec4<f32>,                                           // x = SUN visibility at the player (gates the held item's DIRECT term), y = its SKY visibility (gates the ambient + ground bounce, standing in for the irr.g the world gets), z = STACKBADGE: how many of the held item you are carrying, drawn beside the hand by BLIT (NOT spare — see UF_HELDCFG), w spare but ACTIVELY ZEROED every frame by the tick-camera line that writes x/y/z, so a value written to it anywhere else is gone by the time the GPU sees it
       // ── APPENDED TAIL ── these MUST stay in the same order as the UF writes at the end of the frame
       // (heldCfg 1860, lgt 1864, hurtB 1868, hurtH 1872). WGSL lays a struct out in declaration order,
       // so re-ordering these silently feeds each field its neighbour's numbers instead of erroring.
@@ -62,7 +62,7 @@
     // it was two separate literals: the bed was scaled to 0.8 on 2026-08-06 ("20% more transparent") and the
     // creature path was missed, so a fish faded 25% faster than the lakebed directly behind it.
     const WATER_SIG : vec3<f32> = vec3<f32>(0.240, 0.0920, 0.0416);
-    const HURT_RED : vec3<f32> = vec3<f32>(2.1, 0.07, 0.055);   // the wound red — used by BOTH the hit flash on the animal and the blood voxels it throws, so they always match exactly (user 2026-08-05)
+    const HURT_RED : vec3<f32> = vec3<f32>(1.0, 0.07, 0.055);   // the wound red — used by BOTH the hit flash on the animal and the blood voxels it throws, so they always match exactly (user 2026-08-05). It has to stay <= 1 in every channel for that claim to hold: the animal path (TRACE) writes sqrt(albedo) into gAlbedo, which is rgba8unorm, so any component above 1 is CLAMPED there and decodes as 1.0 — while the blood path (COMPOSITE) multiplies this constant directly and kept the full value. At 2.1 the flash showed 1.0 and the spray carried 2.1x the red, which read as a brighter material in shade. 1.0 is what the flash has always actually displayed, so the animal's pixels are unchanged and the blood now matches them.
     fn rayDir(px : vec2<f32>) -> vec3<f32> {
       let ndc = (px / u.res) * 2.0 - 1.0;
       return normalize(u.fwd + u.right * (ndc.x * u.tanH * u.aspect) - u.up * (ndc.y * u.tanH));
@@ -76,8 +76,10 @@
       return (uv * u.res - u.pJit) / u.res;
     }
     // LIGHT DEBUG — is term n enabled? Bits, in panel order: 0 sun shadow, 1 ambient occlusion,
-    // 2 creature shadow boxes, 3 firefly/lava glow, 4 water reflect+refract, 5 fog,
+    // 2 creature shadow boxes, 3 firefly/lava glow, 4 SVGF REACTIVE MASK (TRACE caps the history of pixels a
+    // moving body/shadow touches — NOT water; water reflect/refract are bits 18/19 below), 5 fog,
     // 6 irradiance history, 7 spatial filter, 8 TAA. Everything on = the normal image.
+    // The authoritative list is the terms map in debug-api's lgt().
     const FOAM_C = vec3<f32>(${FOAM_RGB[0]}, ${FOAM_RGB[1]}, ${FOAM_RGB[2]});   // shoreline foam AND the splash droplet — one constant so the two can never drift apart (see FOAM_RGB)
     fn LG(b : u32) -> bool { return (u32(u.lgt.x + 0.5) & (1u << b)) != 0u; }
     // ── SECOND MASK (u.lgt.z) ── lgt.x is FULL: it carries 24 terms and an f32 holds integers exactly only
@@ -91,7 +93,8 @@
     const FOL_STR : f32 = 1.2;                                      // 30% of the tuned 4.0
     const FOL_LOBE : f32 = 2.0;
     // 9 body grain (felled chunks), 10 terrain grain, 11 creature grain, 12 sun penumbra,
-    // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading, 17 volumetric light.
+    // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading, 17 volumetric light,
+    // 18 water reflect, 19 water refract, 20 water foam, 21 water ice, 22 water glisten, 23 water waves.
     fn rand(s : ptr<function, u32>) -> f32 {
       *s = *s * 747796405u + 2891336453u;
       let w = ((*s >> ((*s >> 28u) + 4u)) ^ *s) * 277803737u;

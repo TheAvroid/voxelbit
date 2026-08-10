@@ -14,7 +14,10 @@
     fleeYawRate: 6.0,       // …and while fleeing (double speed needs sharper banking to keep clear of banks)
     pitchMax: 0.30,         // SUBTLE nose pitch cap (rad, ~17°) for climbs/dives — yaw is free, roll is impossible by construction
     pitchGain: 1.6,         // how strongly vertical velocity tips the nose
-    replanS: 1.3,           // s between channel re-aims (jittered per fish so the pods don't re-plan in lockstep)
+    // (NO replanS here on purpose: it advertised a 1.3 s channel re-aim cadence that nothing read — the field it was
+    //  meant to drive, B.chRe, is assigned and never consulted. The real cadence is the ~14 Hz sense tick, B.senseRe,
+    //  hard-coded in the creature tick's fish branch. Anything added to this bag must have a reader, or it is a dial
+    //  wired to nothing and a tuner turns it for hours with no effect.)
     lookMin: 12,            // reactive wall-backstop lookahead floor (scales up with speed)
     turnCost: 2.0,          // ── HOW DEARLY THE PROBE PRICES A TURN (user 2026-08-07: "it keeps running into the banks") ── was 5 hard-coded. A fish cruises at 22 vox/s and banks at yawRate 2.2 rad/s, so a 90° turn costs it ~16 voxels of travel: in a river, the open lane is often only a few voxels longer than the blocked one, and at 5 the turn penalty ate that difference whole. The fish under-turned, closed on the bank, and the backstop then took over. At 2.0 it commits to the open lane while the bank is still far off, which is the whole point of a long-range probe.
     jump: {                 // ── LEAP ── frequency / height / distance / cooldown all here (user)

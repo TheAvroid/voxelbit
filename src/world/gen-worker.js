@@ -1,7 +1,9 @@
   // ── GEN WORKER ── the height + moss math (the heaviest part of a fill) runs CONCURRENTLY on a worker thread.
   // The worker is built from THE SAME function source (fn.toString()) — bit-exact by construction, zero divergence
   // risk. Bands prefetch their rows a band ahead, so the main thread almost never waits; if the worker is missing
-  // or slow, generation falls back to the identical inline path.
+  // or slow, generation falls back to the identical inline path. Shared source is only half the contract: the
+  // TRANSFER buffers must carry the same precision as the inline arrays they stand in for (hs/Int16Array against
+  // hM/hC/hP, ms/Float64Array against mossRow/mossCol) or the identical math still lands on a different answer.
   let genWorker = null, genWorkerOk = false;
   const rowJobs = new Map();                           // key → {done, hs, ms}
   try {
@@ -17,12 +19,12 @@
       '  let hs, ms;\n' +
       '  if (!tr) {\n' +
       '    const w = (x1 - x0) + 2, rows = (z1 - z0) + 2;\n' +
-      '    hs = new Int16Array(w * rows); ms = new Float32Array((x1 - x0) * (z1 - z0));\n' +
+      '    hs = new Int16Array(w * rows); ms = new Float64Array((x1 - x0) * (z1 - z0));\n' +   // moss is f64, NOT f32 — these rows stand in for genRegionGen's own mossRow, which is a Float64Array (and the gen POOL stubs takeRows to null, so its workers always compute moss inline at f64). mossV feeds one threshold, mossy = mossV > 0.52, so an f32 round here flipped the surface material of any column within ~3e-8 of it: ?nopool and the pool-stall fallback disagreed with the pooled path, and ?nopool exists precisely to be bit-comparable.
       '    for (let r = 0; r < rows; r++) { const f = makeHRow(z0 - 1 + r); for (let i = 0; i < w; i++) hs[r * w + i] = f(x0 - 1 + i); }\n' +
       '    for (let r = 0; r < z1 - z0; r++) { const f = makeMossRow(z0 + r); for (let i = 0; i < x1 - x0; i++) ms[r * (x1 - x0) + i] = f(x0 + i); }\n' +
       '  } else {\n' +
       '    const w = (z1 - z0) + 2, cols = (x1 - x0) + 2;\n' +
-      '    hs = new Int16Array(w * cols); ms = new Float32Array((z1 - z0) * (x1 - x0));\n' +
+      '    hs = new Int16Array(w * cols); ms = new Float64Array((z1 - z0) * (x1 - x0));\n' +   // …and the transposed path likewise, against mossCol
       '    for (let c = 0; c < cols; c++) { const f = makeHCol(x0 - 1 + c); for (let i = 0; i < w; i++) hs[c * w + i] = f(z0 - 1 + i); }\n' +
       '    for (let c = 0; c < x1 - x0; c++) { const f = makeMossCol(x0 + c); for (let i = 0; i < z1 - z0; i++) ms[c * (z1 - z0) + i] = f(z0 + i); }\n' +
       '  }\n' +

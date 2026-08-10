@@ -98,9 +98,15 @@
       // than dropped. Folded pieces travel as one body, which is slightly wrong and enormously better than
       // evaporating, and it restores the invariant the world grid has always had: what you hit stays in the
       // world. The first piece always has a slot, because the original vacated one on its way in.
+      // ── AND THE GUARD HAS TO COUNT THE PIECES STILL IN OUR HAND ── the splice above already took the chopped
+      // body out, and nothing is pushed until the build loop below, so PH.bodies.length is ALWAYS under the cap
+      // here: the old `PH.bodies.length + keep.length < PH.maxBodies || phMakeRoom()` fell through to a
+      // phMakeRoom that made its own decision on PH.bodies.length alone, returned true without freeing anything,
+      // and let keep grow without limit — so this net never fired once and PH.bodies simply overran maxBodies.
+      // phMakeRoom now takes the pending count, which is the only number that makes the question answerable.
       const keep = [];
       for (const comp of comps) {
-        if (keep.length && (comp.length < 2 || !(PH.bodies.length + keep.length < PH.maxBodies || phMakeRoom()))) {
+        if (keep.length && (comp.length < 2 || !phMakeRoom(keep.length))) {
           keep[0] = keep[0].concat(comp);
           PH.stats.chopMerged = (PH.stats.chopMerged | 0) + comp.length;
           continue;
@@ -110,7 +116,7 @@
       // the BITE is the thing the player just carved and is owed to them, so it gets the last slot if there is
       // one; if there is not, its voxels ride with the main piece instead of ceasing to exist.
       let chipC = cutC;
-      if (chipC.length && !(PH.bodies.length + keep.length < PH.maxBodies || phMakeRoom())) {
+      if (chipC.length && !phMakeRoom(keep.length)) {   // …counting the keep pieces that are still waiting to be pushed (see above)
         if (keep.length) { keep[0] = keep[0].concat(chipC); PH.stats.chopMerged = (PH.stats.chopMerged | 0) + chipC.length; chipC = null; }
       }
       for (const comp of keep) {

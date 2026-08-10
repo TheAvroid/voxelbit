@@ -198,6 +198,7 @@
   }
   const CAVE_CELL = 640, CAVE_MARGIN = 900;            // RAVINES -> CAVES: sparser, VAST gorges (1/4 the old frequency)
   const CAVE_WMAX = 52;                                // the half-extent stampCave carves around its axis. Shared with caveHitsBox: if these two ever disagree the orphan sweep starts skipping real gorges.
+  const CAVE_FLOOR_MAX = 6;                            // the largest value stampCave's floorY can take (2 + round(fbm*4), fbm in 0..1) — and floorY is EXACTLY what it drops a carved column's hmap to, so hmap <= this is the signature of a gorge tile. Read by both copies of the brick sky-cap (rebuildBricks here, the pool worker's own scan in gen-pool.js); if floorY's formula changes, this must too.
   const caveCache = new Map();
   function caveAt(cx, cz) {
     const key = cx * 100003 + cz;
@@ -629,8 +630,9 @@
   function genRegion(x0, x1, z0, z1, fresh) { const g = genRegionGen(x0, x1, z0, z1, fresh); for (let r = g.next(); !r.done; r = g.next()) {} }
   function rebuildBricks(gx0, gx1, gz0, gz1) {         // grid coords, 8-aligned
     for (let bz = gz0 >> 3; bz < gz1 >> 3; bz++) for (let bx = gx0 >> 3; bx < gx1 >> 3; bx++) {
-      let maxH = 0;                                    // nothing exists above terrain + the tallest pine — sky bricks clear without a single voxel read
-      for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) { const hv = hmap[x + z * WX]; if (hv > maxH) maxH = hv; }
+      let maxH = 0, cav = 0;                           // nothing exists above terrain + the tallest pine — sky bricks clear without a single voxel read
+      for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) { const hv = hmap[x + z * WX]; if (hv > maxH) maxH = hv; if (hv <= CAVE_FLOOR_MAX) cav = 1; }
+      if (cav && maxH < HMAX) maxH = HMAX;             // ── GORGE TILE ── stampCave drops a carved column's hmap to the gorge FLOOR while its per-4-voxel-band wall jag deliberately leaves wall standing all the way back up to the pristine surface, so hmap is no longer an upper bound on that column's contents. The cap force-CLEARS every brick above it and the DDA reads an unset brick as air, so intact stone went invisible (it still collided, chopped and anchored support). H() is clamped to HMAX, so that is the honest ceiling for a column whose real height the carve erased. Must stay identical to the copy in gen-pool.js — __vb.gtest diffs the two.
       const byCap = Math.min(BY, ((maxH + 122) >> 3) + 1);
       for (let by = 0; by < BY; by++) {
         let occ = 0;

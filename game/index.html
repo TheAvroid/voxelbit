@@ -969,7 +969,9 @@
   // ── GEN WORKER ── the height + moss math (the heaviest part of a fill) runs CONCURRENTLY on a worker thread.
   // The worker is built from THE SAME function source (fn.toString()) — bit-exact by construction, zero divergence
   // risk. Bands prefetch their rows a band ahead, so the main thread almost never waits; if the worker is missing
-  // or slow, generation falls back to the identical inline path.
+  // or slow, generation falls back to the identical inline path. Shared source is only half the contract: the
+  // TRANSFER buffers must carry the same precision as the inline arrays they stand in for (hs/Int16Array against
+  // hM/hC/hP, ms/Float64Array against mossRow/mossCol) or the identical math still lands on a different answer.
   let genWorker = null, genWorkerOk = false;
   const rowJobs = new Map();                           // key → {done, hs, ms}
   try {
@@ -985,12 +987,12 @@
       '  let hs, ms;\n' +
       '  if (!tr) {\n' +
       '    const w = (x1 - x0) + 2, rows = (z1 - z0) + 2;\n' +
-      '    hs = new Int16Array(w * rows); ms = new Float32Array((x1 - x0) * (z1 - z0));\n' +
+      '    hs = new Int16Array(w * rows); ms = new Float64Array((x1 - x0) * (z1 - z0));\n' +   // moss is f64, NOT f32 — these rows stand in for genRegionGen's own mossRow, which is a Float64Array (and the gen POOL stubs takeRows to null, so its workers always compute moss inline at f64). mossV feeds one threshold, mossy = mossV > 0.52, so an f32 round here flipped the surface material of any column within ~3e-8 of it: ?nopool and the pool-stall fallback disagreed with the pooled path, and ?nopool exists precisely to be bit-comparable.
       '    for (let r = 0; r < rows; r++) { const f = makeHRow(z0 - 1 + r); for (let i = 0; i < w; i++) hs[r * w + i] = f(x0 - 1 + i); }\n' +
       '    for (let r = 0; r < z1 - z0; r++) { const f = makeMossRow(z0 + r); for (let i = 0; i < x1 - x0; i++) ms[r * (x1 - x0) + i] = f(x0 + i); }\n' +
       '  } else {\n' +
       '    const w = (z1 - z0) + 2, cols = (x1 - x0) + 2;\n' +
-      '    hs = new Int16Array(w * cols); ms = new Float32Array((z1 - z0) * (x1 - x0));\n' +
+      '    hs = new Int16Array(w * cols); ms = new Float64Array((z1 - z0) * (x1 - x0));\n' +   // …and the transposed path likewise, against mossCol
       '    for (let c = 0; c < cols; c++) { const f = makeHCol(x0 - 1 + c); for (let i = 0; i < w; i++) hs[c * w + i] = f(z0 - 1 + i); }\n' +
       '    for (let c = 0; c < x1 - x0; c++) { const f = makeMossCol(x0 + c); for (let i = 0; i < z1 - z0; i++) ms[c * (z1 - z0) + i] = f(z0 + i); }\n' +
       '  }\n' +
@@ -1660,7 +1662,7 @@
     msBudget: 2.0,                                     // ms/frame, checked BETWEEN components — never mid-flood, so a component is always resolved as a whole
     maxPasses: 4,                                      // cascade rounds per frame: a lift appends its vacated cells to the same queue
     qMax: 400000,
-    q: [], qh: 0, qs: new Set(),                       // the dirty queue: flat indices, deduped, PERSISTENT — a cell the budget could not reach this frame is still there next frame
+    q: [], qh: 0, qs: new Set(),                       // the dirty queue: flat indices, deduped, PERSISTENT UP TO qMax — a cell the budget could not reach this frame is still there next frame, but a cell that arrives when qMax are already pending is DROPPED and never re-seeded. That is a real hole and the one place in this system where a question is lost rather than deferred; see the overflow branch in supPush, which counts every one and records the first few.
     res: new Set(),                                    // resolved THIS pass: cleared between cascade passes so a lift is honestly re-adjudicated, never within one so a 2000-cell anchored blob is walked once, not once per seed
     ancS: new Set(), flS: new Set(),                   // per-pass memo of the component verdict, both ways (see supHeld) — a standing pine is walked once, not once per needle
     busy: new Set(),                                   // components currently on the walk stack: they may not be used as anyone else's anchor, which is what breaks cross-class cycles
@@ -1710,6 +1712,14 @@
   // stamped body and so leaves the column describing something it is not standing on.
   const supCarved = new Uint8Array(WX * WZ);
   let supColMemo = new Map();                          // per-pass cache of the downward scan, so a flood over one boulder pays it once per column
+  // ── WINDOW COLUMN -> WORLD COLUMN ── the window is a WX-wide torus over the world columns [winOX, winOX+WX),
+  // so a window index must be un-wrapped before it can be compared with anything that lives in WORLD space (a
+  // rigid body, the player). Declared HERE, above every consumer, rather than beside the resolver several
+  // thousand lines down: phWakeNear used to inline "the same arithmetic" exactly because these were below it,
+  // and the inlined copy dropped the modulo — wrong for every column left of the wrap point, which is half the
+  // window and includes the player's own feet whenever the seam sits in the near half (see phWakeNear).
+  const supWorldX = (gx) => winOX + (((gx - gwrap(winOX, WX)) % WX) + WX) % WX;
+  const supWorldZ = (gz) => winOZ + (((gz - gwrap(winOZ, WZ)) % WZ) + WZ) % WZ;
   // ── WAKE THE RIGID BODIES WHEN THE WORLD MOVES UNDER THEM ── assigned once the physics block exists, several
   // thousand lines below; gpuPatch sits above it and a const read before its declaration is the "stuck on
   // uploading world" failure in this file, so it goes through a hook the same way birdDeath does.
@@ -1801,7 +1811,14 @@
     // drape up from below exactly as before, so this opens no route to a floater.
     if (snowTab[W[ii]] && W[ii - WX]) { SUP.stats.snowSkip = (SUP.stats.snowSkip || 0) + 1; return; }
     if (SUP.qs.has(ii)) return;
-    if (SUP.q.length - SUP.qh >= SUP.qMax) { SUP.stats.overflow++; return; }
+    // ── THE ONE PLACE A QUESTION IS THROWN AWAY ── qMax is a real bound (the dedupe Set, not the array, is what
+    // costs), so a seed arriving on a full queue cannot be kept and nothing re-seeds it later: whatever that cell
+    // was holding up stays unasked until something else within 26 of it is disturbed. It is not persistent, and
+    // the declaration above no longer claims it is. Counted always, and the first few are recorded with WHERE, so
+    // a reported floater can be matched against a drop instead of being hunted in the resolver's verdict logic.
+    if (SUP.q.length - SUP.qh >= SUP.qMax) { SUP.stats.overflow++;
+      if (SUP.stats.overflow <= 8 && SUP.refused.length < 32) SUP.refused.push({ n: 0, id: W[ii] || 0, x: supWorldX(ii % WX), y: ((ii / WX) | 0) % WY, z: supWorldZ((ii / (WX * WY)) | 0), why: 'queueOverflow', cap: SUP.qMax });   // capped at 8 so a storm cannot crowd the tooBig refusals out of the ring
+      return; }
     SUP.qs.add(ii); SUP.q.push(ii); SUP.stats.queued++;
   };
 
@@ -2356,7 +2373,7 @@
       // its haft, and the recesses hold shadow — instead of sitting flat under whatever the world lights it
       // with. ?flatheld goes back to the traced-only look for an A/B.
       if (location.search.includes('flatheld') && HELD_ITEMS.has(i + 1)) continue;
-      if (location.search.includes('uni') && !HELD_ITEMS.has(i + 1)) continue;   // ?uni: real AO rays replace the bake for creatures (see the note above); held tools keep theirs
+      if (/[?&]uni\b/.test(location.search) && !HELD_ITEMS.has(i + 1)) continue;   // ?uni: real AO rays replace the bake for creatures (see the note above); held tools keep theirs. MATCHED AS A WHOLE FLAG, not a substring: includes('uni') also fired on ?nouni (buffers.js LIFE_UNI), so booting the pre-unified A/B silently dropped bakeAO from every creature item too — two changes at once, which is the exact comparison ?nouni exists to make valid.
       bakeAO(items[i]);
     }
     itemsRef = items;                                  // publish the finished table to the tick loop (cardinal hitbox size + worm stamp poses)
@@ -2597,6 +2614,7 @@
   }
   const CAVE_CELL = 640, CAVE_MARGIN = 900;            // RAVINES -> CAVES: sparser, VAST gorges (1/4 the old frequency)
   const CAVE_WMAX = 52;                                // the half-extent stampCave carves around its axis. Shared with caveHitsBox: if these two ever disagree the orphan sweep starts skipping real gorges.
+  const CAVE_FLOOR_MAX = 6;                            // the largest value stampCave's floorY can take (2 + round(fbm*4), fbm in 0..1) — and floorY is EXACTLY what it drops a carved column's hmap to, so hmap <= this is the signature of a gorge tile. Read by both copies of the brick sky-cap (rebuildBricks here, the pool worker's own scan in gen-pool.js); if floorY's formula changes, this must too.
   const caveCache = new Map();
   function caveAt(cx, cz) {
     const key = cx * 100003 + cz;
@@ -3028,8 +3046,9 @@
   function genRegion(x0, x1, z0, z1, fresh) { const g = genRegionGen(x0, x1, z0, z1, fresh); for (let r = g.next(); !r.done; r = g.next()) {} }
   function rebuildBricks(gx0, gx1, gz0, gz1) {         // grid coords, 8-aligned
     for (let bz = gz0 >> 3; bz < gz1 >> 3; bz++) for (let bx = gx0 >> 3; bx < gx1 >> 3; bx++) {
-      let maxH = 0;                                    // nothing exists above terrain + the tallest pine — sky bricks clear without a single voxel read
-      for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) { const hv = hmap[x + z * WX]; if (hv > maxH) maxH = hv; }
+      let maxH = 0, cav = 0;                           // nothing exists above terrain + the tallest pine — sky bricks clear without a single voxel read
+      for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) { const hv = hmap[x + z * WX]; if (hv > maxH) maxH = hv; if (hv <= CAVE_FLOOR_MAX) cav = 1; }
+      if (cav && maxH < HMAX) maxH = HMAX;             // ── GORGE TILE ── stampCave drops a carved column's hmap to the gorge FLOOR while its per-4-voxel-band wall jag deliberately leaves wall standing all the way back up to the pristine surface, so hmap is no longer an upper bound on that column's contents. The cap force-CLEARS every brick above it and the DDA reads an unset brick as air, so intact stone went invisible (it still collided, chopped and anchored support). H() is clamped to HMAX, so that is the honest ceiling for a column whose real height the carve erased. Must stay identical to the copy in gen-pool.js — __vb.gtest diffs the two.
       const byCap = Math.min(BY, ((maxH + 122) >> 3) + 1);
       for (let by = 0; by < BY; by++) {
         let occ = 0;
@@ -3088,7 +3107,7 @@
             if (W[ii]) { supPush(ii); ORPH.seeded++; }
           }
         }
-        jobById.delete(j.id);
+        jobById.delete(j.id); j.msg = null;            // …and DROP the slab. `jobs` outlives the loop, so the map delete alone freed nothing: msg owns the transferred W/hmap/bb/wb, and this rect is the whole window, so every slab held to the end summed to a second complete copy of the world buffer (~226 MB) for the entire boot. Blitted and its orphan seeds read (oq is captured above) — nothing reads it again. Same release poolFree does for the streaming path.
       }
       built = poolOk;
       if (!built) { poolQueue.length = 0; jobById.clear(); }
@@ -3194,7 +3213,7 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
     const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
@@ -3221,8 +3240,9 @@
       '  const wb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +       // parallel WATER-ONLY bits (skipW brick striding)
       '  const W32b = new Uint32Array(W.buffer);\n' +
       '  for (let bz = 0; bz < nbz; bz++) for (let bx = 0; bx < nbx; bx++) {\n' +
-      '    let maxH = 0;\n' +
-      '    for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) { const hv = hmap[x + z * WX]; if (hv > maxH) maxH = hv; }\n' +
+      '    let maxH = 0, cav = 0;\n' +
+      '    for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) { const hv = hmap[x + z * WX]; if (hv > maxH) maxH = hv; if (hv <= CAVE_FLOOR_MAX) cav = 1; }\n' +
+      '    if (cav && maxH < HMAX) maxH = HMAX;\n' +                           // GORGE TILE: hmap is the carved floor, but stampCave's wall jag leaves wall standing to the pristine surface — cap off the terrain ceiling instead or the intact wall is force-cleared and rays pass straight through it. Identical to rebuildBricks in terrain.js; __vb.gtest diffs the two.
       '    const byCap = Math.min(nby, ((maxH + 122) >> 3) + 1);\n' +          // sky-cap: nothing exists above terrain + the tallest pine
       '    for (let by = 0; by < byCap; by++) {\n' +
       '      let occ = 0;\n' +
@@ -3584,7 +3604,7 @@
       pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
       fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
       cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
-      misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w spare
+      misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w = EYE-INSIDE-A-VOXEL fill: the packed sRGB of the voxel the camera is buried in, PLUS 1 so that 0 means 'not buried' (written in tick-camera, read by COMPOSITE). NOT spare — take this lane for something else and the whole screen becomes the buried-in-rock fill.
       lifeMot : array<vec4<f32>, 64>,                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
       lifeCfg : vec4<f32>,                                           // x = life debug view (0 off, 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO), y = trace-injection enabled (0 under ?oldlife → full analytic fallback), z/w spare
       physB : array<vec4<f32>, 80>,                                  // ── RIGID BODIES ── 16 x 5 vec4, appended LAST so no existing offset moves:
@@ -3592,7 +3612,7 @@
                                                                      // [2] local Y axis + dimY · [3] local Z axis + dimZ · [4] comLocal.xyz + buffer offset
       physC : vec4<f32>,                                             // x = ACTIVE body count (0 = the whole path is one compare), y = REACTIVE STRENGTH 0..1 (1 while a body is moving, eased to 0 over ~0.45 s after it stops — a binary here made a settling trunk pulse its own shadow noise on and off), z/w spare. Was: how many are AWAKE (the reactive mask keys off y; tracing keys off x)
       physBound : vec4<f32>,                                         // xyz = centre (window coords) of a sphere enclosing EVERY body, w = its radius — one test rejects a ray that cannot touch any of them
-      heldCfg : vec4<f32>,                                           // x = SUN visibility at the player (gates the held item's DIRECT term), y = its SKY visibility (gates the ambient + ground bounce, standing in for the irr.g the world gets), z/w spare
+      heldCfg : vec4<f32>,                                           // x = SUN visibility at the player (gates the held item's DIRECT term), y = its SKY visibility (gates the ambient + ground bounce, standing in for the irr.g the world gets), z = STACKBADGE: how many of the held item you are carrying, drawn beside the hand by BLIT (NOT spare — see UF_HELDCFG), w spare but ACTIVELY ZEROED every frame by the tick-camera line that writes x/y/z, so a value written to it anywhere else is gone by the time the GPU sees it
       // ── APPENDED TAIL ── these MUST stay in the same order as the UF writes at the end of the frame
       // (heldCfg 1860, lgt 1864, hurtB 1868, hurtH 1872). WGSL lays a struct out in declaration order,
       // so re-ordering these silently feeds each field its neighbour's numbers instead of erroring.
@@ -3625,7 +3645,7 @@
     // it was two separate literals: the bed was scaled to 0.8 on 2026-08-06 ("20% more transparent") and the
     // creature path was missed, so a fish faded 25% faster than the lakebed directly behind it.
     const WATER_SIG : vec3<f32> = vec3<f32>(0.240, 0.0920, 0.0416);
-    const HURT_RED : vec3<f32> = vec3<f32>(2.1, 0.07, 0.055);   // the wound red — used by BOTH the hit flash on the animal and the blood voxels it throws, so they always match exactly (user 2026-08-05)
+    const HURT_RED : vec3<f32> = vec3<f32>(1.0, 0.07, 0.055);   // the wound red — used by BOTH the hit flash on the animal and the blood voxels it throws, so they always match exactly (user 2026-08-05). It has to stay <= 1 in every channel for that claim to hold: the animal path (TRACE) writes sqrt(albedo) into gAlbedo, which is rgba8unorm, so any component above 1 is CLAMPED there and decodes as 1.0 — while the blood path (COMPOSITE) multiplies this constant directly and kept the full value. At 2.1 the flash showed 1.0 and the spray carried 2.1x the red, which read as a brighter material in shade. 1.0 is what the flash has always actually displayed, so the animal's pixels are unchanged and the blood now matches them.
     fn rayDir(px : vec2<f32>) -> vec3<f32> {
       let ndc = (px / u.res) * 2.0 - 1.0;
       return normalize(u.fwd + u.right * (ndc.x * u.tanH * u.aspect) - u.up * (ndc.y * u.tanH));
@@ -3639,8 +3659,10 @@
       return (uv * u.res - u.pJit) / u.res;
     }
     // LIGHT DEBUG — is term n enabled? Bits, in panel order: 0 sun shadow, 1 ambient occlusion,
-    // 2 creature shadow boxes, 3 firefly/lava glow, 4 water reflect+refract, 5 fog,
+    // 2 creature shadow boxes, 3 firefly/lava glow, 4 SVGF REACTIVE MASK (TRACE caps the history of pixels a
+    // moving body/shadow touches — NOT water; water reflect/refract are bits 18/19 below), 5 fog,
     // 6 irradiance history, 7 spatial filter, 8 TAA. Everything on = the normal image.
+    // The authoritative list is the terms map in debug-api's lgt().
     const FOAM_C = vec3<f32>(${FOAM_RGB[0]}, ${FOAM_RGB[1]}, ${FOAM_RGB[2]});   // shoreline foam AND the splash droplet — one constant so the two can never drift apart (see FOAM_RGB)
     fn LG(b : u32) -> bool { return (u32(u.lgt.x + 0.5) & (1u << b)) != 0u; }
     // ── SECOND MASK (u.lgt.z) ── lgt.x is FULL: it carries 24 terms and an f32 holds integers exactly only
@@ -3654,7 +3676,8 @@
     const FOL_STR : f32 = 1.2;                                      // 30% of the tuned 4.0
     const FOL_LOBE : f32 = 2.0;
     // 9 body grain (felled chunks), 10 terrain grain, 11 creature grain, 12 sun penumbra,
-    // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading, 17 volumetric light.
+    // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading, 17 volumetric light,
+    // 18 water reflect, 19 water refract, 20 water foam, 21 water ice, 22 water glisten, 23 water waves.
     fn rand(s : ptr<function, u32>) -> f32 {
       *s = *s * 747796405u + 2891336453u;
       let w = ((*s >> ((*s >> 28u) + 4u)) ^ *s) * 277803737u;
@@ -4137,10 +4160,10 @@
       // composite path (emissive + translucency), as does any creature seen THROUGH a water surface (Beer–Lambert).
       var cSlot = 0u; var cCell = vec3<f32>(0.0); var cVc = vec3<i32>(0); var cAxis = 0u; var cN = vec3<f32>(0.0, 1.0, 0.0);
       var bHit = false; var bCol = vec3<f32>(0.0); var bN = vec3<f32>(0.0, 1.0, 0.0); var bVc = vec3<i32>(0);   // rigid-body (felled chunk) hit
+      var bestT = select(1e9, h.t, h.t >= 0.0);                      // nearest hit so far (world / flake) — SHARED by the creature loop and the rigid-body trace below, which is why it lives outside the dynamic-life gate
       if (ITEMN > 0 && u.lifeCfg.y > 0.5) {
         let ndc3 = (px / u.res) * 2.0 - 1.0;
         let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));   // camera-space twin of rd — the drop transforms live in camera space
-        var bestT = select(1e9, h.t, h.t >= 0.0);
         let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, DROP_N);
         let tiV = (wgid.y * ((u32(u.res.x) + 7u) / 8u) + wgid.x) * ${VIS_W}u;   // this workgroup IS one 8×8 tile — read its four prepass mask words (under ?uni the stride is 8: words 0-3 primary, 4-7 the grown SECONDARY mask)
         let visM0 = visb[tiV]; let visM1 = visb[tiV + 1u]; let visM2 = visb[tiV + 2u]; let visM3 = visb[tiV + 3u];   // FOUR words now (128 slots) and all four stay in REGISTERS: re-fetching the word from storage per iteration measured 4× the per-slot cost
@@ -4201,22 +4224,29 @@
             if (any(vcD < vec3<i32>(0)) || any(vcD >= vec3<i32>(eW, eD, eH))) { break; }
           }
         }
-        {                                                            // ── RIGID BODIES ── same traversal the shadow/AO rays use, so what you see and what the light sees can never disagree
-          let bh2 = bodyTrace(ro, rd, bestT);
-          if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bN = bh2.n;
-            bVc = bh2.vc; }                                        // BODY-LOCAL cell (see Hit.vc): the grain rides with the wood instead of the trunk sliding through a world-anchored noise field
-        }
-        if (bHit) {                                                  // a felled chunk is the primary hit — terrain-identical shading from here on
-          h.t = bestT; h.vox = 0u; h.n = bN;
-          if (abs(bN.y) >= abs(bN.x) && abs(bN.y) >= abs(bN.z)) { h.face = select(2u, 3u, bN.y < 0.0); }
-          else if (abs(bN.x) >= abs(bN.z)) { h.face = select(0u, 1u, bN.x < 0.0); }
-          else { h.face = select(4u, 5u, bN.z < 0.0); }
-        } else if (cSlot != 0u) {                                    // the creature IS the primary hit from here on
-          h.t = bestT; h.vox = 0u; h.n = cN;                         // vox 0 → the water/lava id checks below can't misfire
-          if (abs(cN.y) >= abs(cN.x) && abs(cN.y) >= abs(cN.z)) { h.face = select(2u, 3u, cN.y < 0.0); }
-          else if (abs(cN.x) >= abs(cN.z)) { h.face = select(0u, 1u, cN.x < 0.0); }
-          else { h.face = select(4u, 5u, cN.z < 0.0); }              // nearest-axis face: the denoiser's edge tests + a composite fallback; true shading normal comes from the axis bits
-        }
+      }                                                              // …end of the DYNAMIC-LIFE gate. The rigid-body trace below is deliberately OUTSIDE it.
+      {                                                              // ── RIGID BODIES ── same traversal the shadow/AO rays use, so what you see and what the light sees can never disagree.
+        // NOT gated on dynamic life (u.lifeCfg.y / ITEMN): a felled chunk has nothing to do with creature
+        // trace-injection, and the secondary rays call traceAll unconditionally. While this sat inside that
+        // gate, ?oldlife (or a failed .vox fetch leaving ITEMN == 0) made a chunk INVISIBLE to the camera while
+        // it still cast a shadow, occluded AO and appeared in the water reflection — the exact disagreement the
+        // line above says is impossible. Free when there is nothing to hit: bodyTrace returns on one compare
+        // while physC.x is 0, which is every frame no tree has been felled.
+        let bh2 = bodyTrace(ro, rd, bestT);
+        if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bN = bh2.n;
+          bVc = bh2.vc; }                                          // BODY-LOCAL cell (see Hit.vc): the grain rides with the wood instead of the trunk sliding through a world-anchored noise field
+      }
+      if (bHit) {                                                    // a felled chunk is the primary hit — terrain-identical shading from here on
+        h.t = bestT; h.vox = 0u; h.n = bN;
+        cSlot = 0u; cAxis = 0u;                                      // …and this pixel is NOT a creature any more, however the creature loop above left it. bodyTrace ran with maxT = bestT, so a chunk only wins by being strictly NEARER — but cSlot survived, and slotOut then told COMPOSITE to rebuild the normal from that animal's model axes and told DENOISE/TAA to reproject the pixel by the animal's motion. Fell a pine across a bird and the trunk pixels were lit with the bird's normal and smeared temporally.
+        if (abs(bN.y) >= abs(bN.x) && abs(bN.y) >= abs(bN.z)) { h.face = select(2u, 3u, bN.y < 0.0); }
+        else if (abs(bN.x) >= abs(bN.z)) { h.face = select(0u, 1u, bN.x < 0.0); }
+        else { h.face = select(4u, 5u, bN.z < 0.0); }
+      } else if (cSlot != 0u) {                                      // the creature IS the primary hit from here on
+        h.t = bestT; h.vox = 0u; h.n = cN;                           // vox 0 → the water/lava id checks below can't misfire
+        if (abs(cN.y) >= abs(cN.x) && abs(cN.y) >= abs(cN.z)) { h.face = select(2u, 3u, cN.y < 0.0); }
+        else if (abs(cN.x) >= abs(cN.z)) { h.face = select(0u, 1u, cN.x < 0.0); }
+        else { h.face = select(4u, 5u, cN.z < 0.0); }                // nearest-axis face: the denoiser's edge tests + a composite fallback; true shading normal comes from the axis bits
       }
       var albedo = vec3<f32>(0.0);
       var faceId = 7u; var t = -1.0;
@@ -4246,7 +4276,8 @@
           // under its belly — painting those was the red square on the terrain (user). With the flag the
           // grid-stamped test is as exact as the trace-injected one: creature voxels only, terrain never.
           // …and a RAGDOLL is neither: on the killing blow the animal becomes a rigid BODY (bHit), which
-          // carries no cSlot and no palette flag. hurtBox tracks that body's live centre while it falls, so
+          // carries no palette flag and — because the bHit branch above now clears it — no cSlot either
+          // (it used to keep whatever slot the creature loop had just set). hurtBox tracks that body's live centre while it falls, so
           // testing a body pixel against the box is what keeps it red the whole way down (user 2026-08-05:
           // "red and rigid at the same time"). Only bodies INSIDE the box are touched, and the box is the
           // dead animal's own radius, so an ordinary chopped chunk lying elsewhere is never painted.
@@ -4327,7 +4358,7 @@
                 foam = max(foam, step(0.35, ivhash(ci + vec3<i32>(s2 * 13, 11, 5)) * (0.55 + 0.45 * sin(u.time * 1.6 + f32(ci.x * 7 + ci.z * 5) * 0.7))));
               }
             }
-            if (foam > 0.5) { t = min(t, (whF + 2.0 - ro.y) / rd.y); }                    // …and the shaded surface rides on top of that raised column (the +1 now comes from the lift in the march above)
+            if (foam > 0.5) { let tFo = (whF + 2.0 - ro.y) / rd.y; if (tFo > 0.0) { t = min(t, tFo); } }   // …and the shaded surface rides on top of that raised column (the +1 now comes from the lift in the march above). GUARDED: this block only runs for rd.y < -0.01, so an eye BELOW that plane (whF is baseTop + floor(wv+0.5) + lift, i.e. up to ~6 voxels above the water — where the swim spring parks you) makes the quotient NEGATIVE and min() took it. A t behind the camera made TEMPORAL drop the pixel, COMPOSITE shade it as unlit water and the reflection ray start behind the eye: dark blotches trailing the shoreline foam ring while swimming. Below the plane there is nothing to clamp to — the ray is already under it.
             foamK = clamp(foam, 0.0, 1.0) * 0.8;
             albedo = mix(albedo, FOAM_C, foamK);
           }
@@ -5512,6 +5543,9 @@
     }
   `;
 
+  const __m_render_wgsl_vis = (() => {
+  // @module — the tile visibility-cull WGSL, and the one place every shader factory is built into a pipeline
+  // @exports DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush
   const VIS_SRC = () => /* wgsl */`
     ${pickWGSL}
     @group(0) @binding(1) var<storage, read_write> visb : array<u32>;   // 4×u32 bitmask per 8×8 screen tile: bit di = drop slot di's bounding sphere may touch this tile (128 slots = four words)
@@ -5607,6 +5641,9 @@
   const pBlit = device.createRenderPipeline({ layout: 'auto', vertex: { module: blitModule, entryPoint: 'vs' }, fragment: { module: blitModule, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } });
   const linSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
+    return { DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush };
+  })();
+  const { DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush } = __m_render_wgsl_vis;
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
   let renderScale = 0.8;                               // default resolution scale (user 2026-08-02: 80%, was 90%); the settings slider AND the [ ] keys both step 40..100% in 10s (persisted vb_scale). The 0.375 floor below is what an older build could persist and what __vb.res() still accepts — neither control offers it.
   try { const v = parseFloat(localStorage.getItem('vb_scale')); if (v >= 0.375 && v <= 1.0) renderScale = v; } catch (e) {}
@@ -5984,41 +6021,48 @@
     const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
     return v === LAVA_T || v === LAVA_B || v === LAVA_R || v === LAVA_Y;
   };
-  const boxFree = (px, py, pz, hh) => {
-    for (let bb = 0; bb < birdBoxes.length; bb++) {                        // SOLID cardinals (Task 2): the player's box may not overlap any bird's world-AABB
+  // ── WHAT REFUSED THE LAST boxFree ── a creature's AABB, or a solid voxel? The two want different answers
+  // from moveAxis (see the clamp there), and boxFree's bare `false` cannot tell them apart. Written on every
+  // call, so it is only meaningful immediately after one.
+  let boxBodyHit = false;
+  // `noBody` asks the VOXEL GRID only, skipping the creature boxes — moveAxis needs that one question to work
+  // out whether a player an animal has walked into can move without being shoved into terrain.
+  const boxFree = (px, py, pz, hh, noBody) => {
+    boxBodyHit = false;
+    for (let bb = 0; !noBody && bb < birdBoxes.length; bb++) {             // SOLID cardinals (Task 2): the player's box may not overlap any bird's world-AABB
       const B2 = birdBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
-    for (let bb = 0; bb < bunnyBoxes.length; bb++) {                       // SOLID BUNNIES (user): the player can't run through a nearby world bunny
+    for (let bb = 0; !noBody && bb < bunnyBoxes.length; bb++) {            // SOLID BUNNIES (user): the player can't run through a nearby world bunny
       const B2 = bunnyBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
-    for (let bb = 0; bb < armBoxes.length; bb++) {                         // SOLID ARMADILLOS: the player can't run through a nearby world armadillo
+    for (let bb = 0; !noBody && bb < armBoxes.length; bb++) {              // SOLID ARMADILLOS: the player can't run through a nearby world armadillo
       const B2 = armBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
-    for (let bb = 0; bb < skunkBoxes.length; bb++) {                        // SOLID SKUNKS: the player can't run through a nearby world skunk
+    for (let bb = 0; !noBody && bb < skunkBoxes.length; bb++) {             // SOLID SKUNKS: the player can't run through a nearby world skunk
       const B2 = skunkBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
-    for (let bb = 0; bb < porcBoxes.length; bb++) {                        // SOLID PORCUPINES: the player can't run through a nearby world porcupine
+    for (let bb = 0; !noBody && bb < porcBoxes.length; bb++) {             // SOLID PORCUPINES: the player can't run through a nearby world porcupine
       const B2 = porcBoxes[bb];
       if (B2.active
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
-        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) return false;
+        && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
     }
     const x0 = Math.floor(px - HW), x1 = Math.floor(px + HW), z0 = Math.floor(pz - HW), z1 = Math.floor(pz + HW);
     const y0 = Math.floor(py + 0.001), y1 = Math.floor(py + hh - 0.001);
@@ -6087,10 +6131,29 @@
     for (let s = 0; s < steps; s++) {
       if (axis === 0) P.x += dd; else if (axis === 1) P.y += dd; else P.z += dd;
       if (boxFree(P.x, P.y, P.z, hh)) continue;
+      const bodyBlk = boxBodyHit;                      // WHAT refused, captured NOW: every boxFree below overwrites the flag
       if (axis !== 1 && (P.onGround || !boxFree(P.x, P.y - 1.4, P.z, hh))) {   // step-up even during downhill micro-air — no brief catches
         let stepped = false;
         for (let up = 1; up <= 5; up++) if (boxFree(P.x, P.y + up, P.z, hh)) { P.y += up; stepped = true; break; }   // auto-step up to 5 voxels / 50 cm (user; was 3)
         if (stepped) continue;
+      }
+      // ── A CREATURE'S BOX IS NOT THE VOXEL GRID (2026-08-10) ── the clamps below resolve against
+      // Math.floor(P.x ± HW) / Math.floor(P.y), which is the right answer for a solid voxel and an arbitrary
+      // one for an animal's AABB: those boxes are deliberately wider than the voxels the creature stamps, so a
+      // refusal can come from a box with no solid cell anywhere near the face the clamp snaps to. That snapped
+      // point is then a FIXED POINT in both directions — every later move clamps straight back onto it — the
+      // step-up above cannot clear a box that spans more than 5 voxels, and the axis-1 clamp cancels the jump
+      // that would have escaped, so the player stood locked in x, z AND y until the animal wandered off.
+      // A box refusal now simply backs the sub-step out, which is a position that was free a moment ago. And
+      // if the animal has already walked INTO us — the spot we came from is inside its box too — the move is
+      // let THROUGH instead, provided the voxel grid ahead is clear, so an animal can never be the reason the
+      // player cannot move. Solid geometry keeps the clamp exactly as it was.
+      if (bodyBlk) {
+        const bx = axis === 0 ? P.x - dd : P.x, by = axis === 1 ? P.y - dd : P.y, bz = axis === 2 ? P.z - dd : P.z;   // where this sub-step started
+        const engulf = !boxFree(bx, by, bz, hh) && boxBodyHit;   // …and it was already inside a creature box before we moved
+        if (engulf && boxFree(P.x, P.y, P.z, hh, true)) continue;   // walk out through the animal rather than stand pinned — the grid ahead is empty, so this cannot push anyone into terrain
+        P.x = bx; P.y = by; P.z = bz;                  // ordinary contact: stop AT the animal, no snap to a voxel face
+        hit = true; break;
       }
       if (axis === 0) { P.x = dd > 0 ? Math.floor(P.x + HW) - HW - 0.001 : Math.floor(P.x - HW) + 1 + HW + 0.001; }
       else if (axis === 2) { P.z = dd > 0 ? Math.floor(P.z + HW) - HW - 0.001 : Math.floor(P.z - HW) + 1 + HW + 0.001; }
@@ -6146,6 +6209,14 @@
     for (let i = 0; i < slots.length; i++) if (!slots[i]) { slots[i] = { it, n: 1 }; slotTidy(); return i; }
     slots.push({ it, n: 1 }); slotTidy(); return slots.length - 2;   // grew the hotbar (user) — -2 because slotTidy has just appended the next empty
   }
+  // ── THE HOE'S TILLED-EARTH ID, DECLARED HERE AND NOWHERE ELSE ── it is minted at RUNTIME by hoeTill
+  // (sim/tools.js) the first time the hoe is swung, and read by main/debug-api.js's tillInfo. It cannot live
+  // in sim/tools.js: that fragment is a `// @module`, and a module hands the shared scope a CONST SNAPSHOT
+  // taken at module-init — a `let` the module assigns ITSELF would leave every reader outside frozen at the
+  // 0 it started as, silently (tillInfo reported id 0 / col null forever, and lint-vb check 10 refuses the
+  // export for exactly that reason). Declared in a plain fragment above tools.js, the write lands on the one
+  // binding everybody holds. hoeTill is the only writer.
+  let TILL_ID = 0;
   // quaternion helpers — item orientations interpolate as ROTATIONS (slerp), never as three independently
   // lerped axis vectors (that collapses mid-flight and reads as the item flipping/glitching)
   const m2q = (X, Y, Z) => { const t = X[0] + Y[1] + Z[2];                      // columns of local→space matrix, [x,y,z,w]
@@ -6180,7 +6251,7 @@
     const sel = slots[selSlot];
     if (!sel || dead) return;
     const it = sel.it;
-    if (--sel.n <= 0) slots[selSlot] = null;           // (a Q-tossed WORM flies the normal ballistic arc like the axe — it converts to a LIVE worm when it LANDS, see the drops update)
+    if (--sel.n <= 0) { slots[selSlot] = null; slotTidy(); }   // …and slotTidy, like every other consumer (projectiles.js, ui/audio.js): emptying a slot without it broke the "exactly one trailing empty" invariant, so Q-dropping two middle slots left three blanks in a row for the scroll wheel to cycle through   // (a Q-tossed WORM flies the normal ballistic arc like the axe — it converts to a LIVE worm when it LANDS, see the drops update)
     // launch from the held item's true world spot (held units ÷ scale = voxels), with the held orientation — it FLIES out of the hand
     const cfg = heldCfg(it);
     const s = 1 / cfg.scale, pr = prevCam;
@@ -6214,7 +6285,7 @@
   }
   const __m_ui_console = (() => {
   // @module — the in-game command line (T)
-  // @exports cmdEscAt, cmdMsg, cmdOpen, cmdRun, cmdShow
+  // @exports CMD, cmdMsg, cmdRun, cmdShow
   // ══ COMMAND LINE (user) ══ T opens it, Enter runs, Escape cancels. `/spawn <thing>` puts a creature
   // or an item in front of the player. While it is open the game's own keyboard is silenced — the binds
   // read raw key codes, so without that, typing "spawn" would drop the held item on the d and toggle
@@ -6223,18 +6294,20 @@
     butterfly: [0, 16, 0], moth: [0, 16, 1], duck: [16, 20, 3], worm: [32, 64, 2],
     fish: [244, 276, 6], bunny: [276, 300, 2], armadillo: [300, 324, 2], skunk: [324, 348, 2], porcupine: [348, 372, 2],
   };
-  let cmdOpen = false;
-  let cmdEscAt = -1e9;                                 // when Escape last dismissed the line — see the esc-menu suppression below
+  // Fields on a bag, NOT two exported `let`s: a module exports a const snapshot taken at
+  // module-init, so `CMD.open` read from outside would have been frozen `false` for ever and
+  // ui/input.js would have kept feeding the game keystrokes while the command line was open.
+  const CMD = { open: false, escAt: -1e9 };                                 // when Escape last dismissed the line — see the esc-menu suppression below
   let cmdRelock = 0;                                   // the retry that takes the pointer back once the browser will allow it
   const cmdBar = $('cmdBar'), cmdTxt = $('cmdTxt'), cmdMsg = $('cmdMsg');
   let cmdBuf = '';                                     // the line's own text: with the pointer still locked there is nothing to focus, so it keeps its own buffer
   const cmdDraw = () => { if (cmdTxt) cmdTxt.textContent = cmdBuf; };
   const cmdSay = (t) => { if (cmdMsg) { cmdMsg.textContent = t; clearTimeout(cmdSay.t); cmdSay.t = setTimeout(() => { if (cmdMsg) cmdMsg.textContent = ''; }, 4000); } };
   const cmdShow = (on) => {
-    cmdOpen = !!on;
+    CMD.open = !!on;
     if (!cmdBar) return;
-    cmdBar.classList.toggle('hidden', !cmdOpen);
-    if (cmdOpen) {
+    cmdBar.classList.toggle('hidden', !CMD.open);
+    if (CMD.open) {
       keys.clear();                                  // whatever was held when it opened must not stay held
       cmdBuf = '/';                                  // just the slash (user) — the command is typed, not assumed
       cmdDraw();
@@ -6408,26 +6481,29 @@
   // A CLICK ANYWHERE dismisses the line and hands the game back (user). The pointer never left, so
   // there is nothing to re-acquire — and the click that dismissed it must not also swing the tool.
   document.addEventListener('mousedown', (e) => {
-    if (!cmdOpen) return;
+    if (!CMD.open) return;
     e.preventDefault(); e.stopPropagation();
     cmdShow(false);
   }, true);
   document.addEventListener('keydown', (e) => {
-    if (!cmdOpen) {
+    if (!CMD.open) {
       // …and once it is closed, Escape behaves as it always did. If the re-lock was refused we are still
       // unlocked with no menu showing, so this second press is what puts the menu up (user).
-      if (e.code === 'Escape' && !locked && !dead && performance.now() - cmdEscAt > 40 && vePanel.classList.contains('hidden')) lockEl.classList.remove('hidden');
+      if (e.code === 'Escape' && !locked && !dead && performance.now() - CMD.escAt > 40 && vePanel.classList.contains('hidden')) lockEl.classList.remove('hidden');
       return;
     }
     e.stopPropagation();                               // every keystroke belongs to the line, never to the game's binds
-    if (e.code === 'Escape') { e.preventDefault(); cmdEscAt = performance.now(); cmdShow(false); }
+    if (e.code === 'Escape') { e.preventDefault(); CMD.escAt = performance.now(); cmdShow(false); }
     else if (e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); const v = cmdBuf; cmdShow(false); cmdRun(v); }
     else if (e.code === 'Backspace') { e.preventDefault(); cmdBuf = cmdBuf.slice(0, -1); cmdDraw(); }
     else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); cmdBuf += e.key; cmdDraw(); }
   }, true);
-    return { cmdEscAt, cmdMsg, cmdOpen, cmdRun, cmdShow };
+    return { CMD, cmdMsg, cmdRun, cmdShow };
   })();
-  const { cmdEscAt, cmdMsg, cmdOpen, cmdRun, cmdShow } = __m_ui_console;
+  const { CMD, cmdMsg, cmdRun, cmdShow } = __m_ui_console;
+  const __m_sim_projectiles = (() => {
+  // @module — arrows and spears: launch, arc, impact, and the pick-up flood
+  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, PASSTHRU, PICK_BOULDER, PICK_CONE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, WORM_PASS, arrowChop, floodRemove, floodScan, launchThrown, shootArrow, throwSpear
   // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
   // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
   const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
@@ -6599,6 +6675,18 @@
     let yCeil = WY;                                    // above this there is nothing to hit at all: the grid ends, and every animal lives inside it
     for (const t of targets) yCeil = Math.max(yCeil, t.by + t.hy + 1);
     for (const t of bTargets) yCeil = Math.max(yCeil, t.B.y + Math.sqrt(t.r2) + 1);
+    // ── AND IT COLLIDES WITH THE WORLD FROM THE FIRST STEP (2026-08-10) ── the impact test below was gated on
+    // `T > 0.02`, and T is the flight time at the START of a 5 ms step, so the first FIVE steps were never
+    // tested at all. At a full draw that is 12 voxels, on top of the 6 the shaft already spawns ahead of the
+    // eye: nothing within ~18 voxels could stop an arrow, so a boulder at 1.5 m was passed clean through and
+    // the carve landed on whatever the shaft eventually met across the clearing. Creature hits were never
+    // gated this way, which is why only the world half of it was wrong.
+    // What that gate was really protecting is the MUZZLE, and that part is real: the launch point sits
+    // LAUNCH_D = 6 voxels out along the view (see above), so it can start life inside a trunk, a wall or the
+    // ground, and an ungated test would then stick the arrow instantly at arm's length. Ask that question
+    // directly instead of buying it with a blanket head start — is the SPAWN POINT itself blocked, and has the
+    // arc reached open air since — and the first two metres come back with the guard intact.
+    let muzzleFree = !arrowBlocked(Math.round(sx), Math.round(sy2), Math.round(sz));   // false = launched from inside something: no impact until the arc is out in the open
     let px = sx, py = sy2, pz = sz, vy = vy0, T = 0, landed = false;
     for (let i = 0; i < STEPS; i++) {
       const nvy = vy + TOSS_G * 0.005;
@@ -6622,7 +6710,9 @@
           const ax = B.x - qx, ay = B.y - qy, az = B.z - qz;
           if (ax * ax + ay * ay + az * az <= t.r2) { hitBird = t.bi; break; }
         }
-        if (hitSlot >= 0 || hitBird >= 0 || (T > 0.02 && arrowBlocked(Math.round(qx), Math.round(qy), Math.round(qz)))) {
+        const blk = arrowBlocked(Math.round(qx), Math.round(qy), Math.round(qz));
+        if (!blk) muzzleFree = true;                   // out in the open — everything solid from here on is a real impact, however close it is
+        if (hitSlot >= 0 || hitBird >= 0 || (muzzleFree && blk)) {
           px = qx; py = qy; pz = qz; T += 0.005 * f; struck = true; break;
         }
       }
@@ -6675,10 +6765,17 @@
   const SPEAR_WIND_MS = 320, SPEAR_V = ARROW_V * 0.62, SPEAR_UP = ARROW_UP;
   const throwSpear = () => {
     if (!SPEAR_IT || dead || ED.on) return false;
+    // ── A THROW HAS TO BE PAID FOR BEFORE IT HAPPENS ── the spear IS the projectile, so the launch and the
+    // `--sel.n` are one transaction. Launching first and checking the slot after meant a throw that could not
+    // be paid for still flew: heldIt() answers with grabAnim.it while a pickup is still FLYING toward an empty
+    // hand (ui/hud.js), so right-clicking a spear off the ground and releasing past the 90 ms threshold threw a
+    // spear the hand did not hold yet — one landed in the world and the original arrived 360 ms later, turning
+    // one spear into two, repeatably. Checked up front, like dropHeld's own `if (!sel) return`.
+    const sel = slots[selSlot];
+    if (!sel || sel.it !== SPEAR_IT) return false;
     const wk = Math.min(1, Math.max(0, (bowRel - bowT0) / SPEAR_WIND_MS));
     if (!launchThrown(SPEAR_IT, SPEAR_V * (0.55 + 0.45 * wk), SPEAR_UP * wk, 'spear')) return false;
-    const sel = slots[selSlot];                        // …and it is gone from the hand the instant it flies
-    if (sel && sel.it === SPEAR_IT && --sel.n <= 0) { slots[selSlot] = null; slotTidy(); }
+    if (--sel.n <= 0) { slots[selSlot] = null; slotTidy(); }   // …and it is gone from the hand the instant it flies
     return true;
   };
   const PICK_ROCK = new Set(PEBBLE), PICK_STICK = new Set([STICK_S]), PICK_BOULDER = new Set(BROCK);
@@ -6706,6 +6803,9 @@
     for (const ii of found) W[ii] = 0;
     return found;
   }
+    return { ARROW_ROLL, ARROW_UP, ARROW_V, PASSTHRU, PICK_BOULDER, PICK_CONE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, WORM_PASS, arrowChop, floodRemove, floodScan, launchThrown, shootArrow, throwSpear };
+  })();
+  const { ARROW_ROLL, ARROW_UP, ARROW_V, PASSTHRU, PICK_BOULDER, PICK_CONE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, WORM_PASS, arrowChop, floodRemove, floodScan, launchThrown, shootArrow, throwSpear } = __m_sim_projectiles;
   // ── THE CHOKE POINT ── every runtime mutation of W already passes through here, so this is where the
   // support resolver is fed: the set of cells that ACTUALLY CHANGED, not a box centred on where the tool
   // landed. `track` exists because `full` is not a valid discriminator — the pickup paths patch full=true
@@ -6865,12 +6965,20 @@
   // and only when that batch actually cleared something. Waking is free — the solver re-tests contacts on the
   // next step and puts it straight back to sleep if it really was supported.
   // The box arrives in WINDOW coordinates (gpuPatch derives them from the flat index) and the bodies live in
-  // WORLD space, so the x/z bounds are un-wrapped first — the same arithmetic supWorldX/supWorldZ use, inlined
-  // because those are declared with the resolver, further down. y needs no conversion.
+  // WORLD space, so the x/z bounds are un-wrapped through supWorldX/supWorldZ themselves. y needs no conversion.
+  // ── IT USED TO INLINE THEM AND GET IT WRONG ── the inlined form was `gx + (winOX - gwrap(winOX, WX))`, which
+  // drops the modulo and so only agrees with supWorldX for columns at or right of the wrap point. With WX 768
+  // and winOX 800 the wrap point is 32, so window column 10 is world column 1546 and this answered 778: outside
+  // the window entirely, matching no body. The player stands at window column (wrap + HALF) mod WX, which is in
+  // the broken half whenever the wrap point is past the middle — so digging under your own feet woke nothing,
+  // and since this is the game's ONLY world-change wake path, a settled chunk whose support you removed hung
+  // there for good. Waking a body that did not need it is free (the solver re-tests contacts and puts it
+  // straight back to sleep); failing to wake one is permanent, so the seam case widens rather than guesses.
   const phWakeNear = (gx0, gx1, y0, y1, gz0, gz1) => {
     if (!PH.bodies.length) return;
-    const ox = winOX - gwrap(winOX, WX), oz = winOZ - gwrap(winOZ, WZ);
-    const x0 = gx0 + ox, x1 = gx1 + ox, z0 = gz0 + oz, z1 = gz1 + oz;
+    let x0 = supWorldX(gx0), x1 = supWorldX(gx1), z0 = supWorldZ(gz0), z1 = supWorldZ(gz1);
+    if (x1 < x0) { x0 = winOX; x1 = winOX + WX - 1; }   // the batch straddles the window's wrap seam: in world space that is TWO intervals, so take the whole span rather than the empty one between them
+    if (z1 < z0) { z0 = winOZ; z1 = winOZ + WZ - 1; }
     let woke = 0;
     for (let i = 0; i < PH.bodies.length; i++) {
       const b = PH.bodies[i];
@@ -7116,8 +7224,12 @@
   // expire a flying chunk for the same reason ("one already flying into the player finishes its flight"); the
   // eviction paths simply never learned it. b.absorbing means the simulation has already let go of it and it
   // is on a curve into the chest — there is no state left to reclaim, only a promise to keep.
-  const phMakeRoom = () => {
-    if (PH.bodies.length < PH.maxBodies) return true;
+  // `pending` = slots the caller has already promised to pieces it has built up but not yet pushed. Without it
+  // this answered "there is room" for a list that is only under the cap because those pieces are still in the
+  // caller's hand — which is what made phChopBody's fold-into-the-largest-piece safety net dead code and let
+  // PH.bodies grow past PH.maxBodies (see the keep loop there).
+  const phMakeRoom = (pending) => {
+    if (PH.bodies.length + (pending | 0) < PH.maxBodies) return true;
     let oi = -1;
     for (let i = 0; i < PH.bodies.length; i++) { const b = PH.bodies[i];
       if (b.absorbing) continue;                       // in flight to the player — never
@@ -7129,7 +7241,27 @@
     PH.bodies.splice(oi, 1); PH.stats.reclaimed++;
     return true;
   };
+  // ── THE ONLY THING THAT GIVES SHAPE MEMORY BACK ── bodyTop is a bump allocator and nothing decrements it, so
+  // every PH.bodies.splice() in the game — expiry, voidFall, offRect, a finished absorb, phMakeRoom above, the
+  // target splice in phChopBody — abandons that body's cells in bodyBuf forever. Repacking the live list from
+  // the front is what recovers them, and it is O(live bodies) uploads, so it is only ever run on demand.
+  const phPack = () => {
+    bodyTop = 0;                                     // repack the survivors from the start of the buffer
+    for (const b2 of PH.bodies) {
+      if (!b2.gpu || !b2.cpuGrid) continue;
+      device.queue.writeBuffer(bodyBuf, bodyTop * 4, b2.cpuGrid.buffer, 0, b2.cpuGrid.length * 4);
+      b2.gpu.off = bodyTop; bodyTop += b2.cpuGrid.length;
+    }
+  };
+  // ── COMPACT BEFORE EVICTING ── this used to splice a LIVE body first and only then repack, so it destroyed
+  // settled chunks beside the player to make room that the abandoned allocations above would have yielded on
+  // their own. Worse, its `PH.bodies.length &&` guard meant that when phChopBody had just spliced out the ONLY
+  // live body — which it does on every swing at a felled log — nothing ran at all, bodyTop still held the
+  // stale allocation, and phBuildBody's ceiling test then handed back a body with gpu = null and no cpuGrid:
+  // the log the player was chopping was not drawn, not solid and not hittable, while still holding a slot.
   const phReclaim = (need) => {
+    if (BODYCAP - bodyTop >= need) return;           // fits as the buffer stands — no upload, and nothing is ever evicted for a body that already had room
+    phPack();                                        // …then take back what the splices abandoned BEFORE destroying anything the player can see
     let guard = 0;
     while (PH.bodies.length && BODYCAP - bodyTop < need && guard++ < 64) {
       let oi = -1;                                     // …and the same rule here: a chunk in flight is never the one retired (see phMakeRoom)
@@ -7138,12 +7270,7 @@
       if (oi < 0) break;
       PH.bodies.splice(oi, 1);
       PH.stats.reclaimed++;
-      bodyTop = 0;                                   // repack the survivors from the start of the buffer
-      for (const b2 of PH.bodies) {
-        if (!b2.gpu || !b2.cpuGrid) continue;
-        device.queue.writeBuffer(bodyBuf, bodyTop * 4, b2.cpuGrid.buffer, 0, b2.cpuGrid.length * 4);
-        b2.gpu.off = bodyTop; bodyTop += b2.cpuGrid.length;
-      }
+      phPack();
     }
   };
   const phQRot = (q, v, o) => {                      // o = q * v * q^-1
@@ -7351,6 +7478,13 @@
     }
     comps.sort((a, b2) => b2.length - a.length);     // LARGEST FIRST — a shower of chips must never starve the trunk of a slot
     for (const comp of comps) {
+      if (comp.length < 2) {                          // ── LITTER FIRST, AND IT NEVER COSTS A SLOT ── this sat BELOW the shedding loop, where a one-voxel component can only ever fail `sn < comp.length` (sn < 1 is false for any size) and fall through to phMakeRoom, which splices a LIVE body. So a single detached needle destroyed a settled chunk to buy a slot it was never going to use — the voxel is erased as litter three lines later. Comps arrive largest-first, so these are all at the tail anyway.
+        const c0 = comp[0], mxa = c0 % f.sx, mza = ((c0 / f.sx) | 0) % f.sz, mya = (c0 / (f.sx * f.sz)) | 0;
+        const ii0 = phWorldIdx(S, mxa, mya, mza);
+        phMark[c0] = 3;
+        W[ii0] = 0; cellsOut.push(ii0); PH.stats.dustVox++;   // a lone detached voxel is litter, needle or not — no falling leaves (user 2026-08-02)
+        continue;
+      }
       // ── A SEVERED TREE MUST GET A SLOT (user 2026-08-07: "a pine tree floating entirely from the base where
       // it was broken") ── this used to try ONE eviction and ONE phMakeRoom and then give up, leaving the whole
       // component in W and handing it to the support resolver. That is a dead end for anything tree-sized: the
@@ -7382,13 +7516,6 @@
         for (const c of comp) { phMark[c] = 3;
           const mx2 = c % f.sx, mz2 = ((c / f.sx) | 0) % f.sz, my2 = (c / (f.sx * f.sz)) | 0;
           supPush(phWorldIdx(S, mx2, my2, mz2)); }
-        continue;
-      }
-      if (comp.length < 2) {                          // a single detached voxel
-        const c0 = comp[0], mxa = c0 % f.sx, mza = ((c0 / f.sx) | 0) % f.sz, mya = (c0 / (f.sx * f.sz)) | 0;
-        const ii0 = phWorldIdx(S, mxa, mya, mza), v0 = W[ii0];
-        phMark[c0] = 3;
-        W[ii0] = 0; cellsOut.push(ii0); PH.stats.dustVox++;   // a lone detached voxel is litter, needle or not — no falling leaves (user 2026-08-02)
         continue;
       }
       const compS = phDrapeWith(S, comp, f, snowClaim);   // …and it takes its drape with it: snow above, cones below (see phDrapeWith). AFTER the slot machinery above, which prices a component by its own material
@@ -7563,9 +7690,15 @@
       // than dropped. Folded pieces travel as one body, which is slightly wrong and enormously better than
       // evaporating, and it restores the invariant the world grid has always had: what you hit stays in the
       // world. The first piece always has a slot, because the original vacated one on its way in.
+      // ── AND THE GUARD HAS TO COUNT THE PIECES STILL IN OUR HAND ── the splice above already took the chopped
+      // body out, and nothing is pushed until the build loop below, so PH.bodies.length is ALWAYS under the cap
+      // here: the old `PH.bodies.length + keep.length < PH.maxBodies || phMakeRoom()` fell through to a
+      // phMakeRoom that made its own decision on PH.bodies.length alone, returned true without freeing anything,
+      // and let keep grow without limit — so this net never fired once and PH.bodies simply overran maxBodies.
+      // phMakeRoom now takes the pending count, which is the only number that makes the question answerable.
       const keep = [];
       for (const comp of comps) {
-        if (keep.length && (comp.length < 2 || !(PH.bodies.length + keep.length < PH.maxBodies || phMakeRoom()))) {
+        if (keep.length && (comp.length < 2 || !phMakeRoom(keep.length))) {
           keep[0] = keep[0].concat(comp);
           PH.stats.chopMerged = (PH.stats.chopMerged | 0) + comp.length;
           continue;
@@ -7575,7 +7708,7 @@
       // the BITE is the thing the player just carved and is owed to them, so it gets the last slot if there is
       // one; if there is not, its voxels ride with the main piece instead of ceasing to exist.
       let chipC = cutC;
-      if (chipC.length && !(PH.bodies.length + keep.length < PH.maxBodies || phMakeRoom())) {
+      if (chipC.length && !phMakeRoom(keep.length)) {   // …counting the keep pieces that are still waiting to be pushed (see above)
         if (keep.length) { keep[0] = keep[0].concat(chipC); PH.stats.chopMerged = (PH.stats.chopMerged | 0) + chipC.length; chipC = null; }
       }
       for (const comp of keep) {
@@ -7736,8 +7869,8 @@
   // 1.5 GiB, in a title that ships as a local browser game on players' own hardware.
   // A CONDUIT cell (a creature grid stamp, whatever its palette id) is traversable in the DRAPE flood but
   // never lands in `comp`: it is not liftable, and it is never an anchor either.
-  const supWorldX = (gx) => winOX + (((gx - gwrap(winOX, WX)) % WX) + WX) % WX;   // window column -> the world column it currently stands for; bodies live in world space, so a component must be un-wrapped before it becomes one
-  const supWorldZ = (gz) => winOZ + (((gz - gwrap(winOZ, WZ)) % WZ) + WZ) % WZ;
+  // (supWorldX / supWorldZ — window column -> the world column it currently stands for — now live in
+  //  sim/support-rules.js, above every consumer, so phWakeNear can call them instead of inlining them.)
   // ── OBJECT IDENTITY: TRIED 2026-08-08, REVERTED, KEEP THE MEASUREMENTS ─────────────────────────────────
   // The plan was to give the support graph OBJECT identity (which model owns this voxel, derived from the
   // placement grids — W is ~1.5 GiB, a per-voxel id array is not affordable) and to refuse drape edges between
@@ -8016,7 +8149,9 @@
   // centred on the IMPACT POINT while the geometry that changed is elsewhere — phSeparate removes a crown
   // 40-90 voxels above the cut, and the two sweeps that followed were centred on the cut.
   // Lifts append their vacated cells to the same queue (through gpuPatch), so cascades settle inside this
-  // pass or carry to the next frame. The queue is persistent; nothing is ever dropped on the floor.
+  // pass or carry to the next frame. The queue is persistent: nothing is dropped on the floor by anything in
+  // HERE — an undecided flood is re-seeded through SUP.retry, a refused component re-seeds itself. The single
+  // exception is upstream, at the qMax cap in supPush, which drops the seed outright and counts it.
   const supFlush = (force, budget) => {
     if (!SUP.on || SUP.qh >= SUP.q.length) { SUP.blockedNow = 0; return 0; }
     const t0 = performance.now();
@@ -8221,6 +8356,9 @@
     //  bite at a pine’s base lifted the trunk section and left the crown hanging in the sky.)
     return true;
   };
+  const __m_sim_tools = (() => {
+  // @module — the voxel-accurate melee ray, the stone tools’ reach/bite constants, and the hoe’s tilled earth
+  // @exports AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay
   // ── AXE SWING -> TRUNK ── melee reach along the view ray, trunk voxels only. Returns true when the
   // swing bit wood so the caller can spend the swing on the tree rather than also registering a kill.
   const AIM_FORGIVE = 1.6;                            // voxels of slack around a creature's own radius in the kill test. Small and ABSOLUTE, so it forgives a shaky hand without ever growing into the fixed 35-degree cone this replaced.
@@ -8279,7 +8417,8 @@
   // TILLED EARTH, a lighter brown, across a disc around where you struck. Nothing can be planted in it yet,
   // so the ground REMEMBERS what it was and goes back to that after a while (user).
   const TILL_R = 5, TILL_MS = 45000;
-  let TILL_ID = 0;
+  // TILL_ID lives in sim/hands.js, not here: this fragment is a module, and a module can only export a const
+  // snapshot of a name, so a `let` minted in here would read as 0 everywhere outside (see the note there).
   const tilled = [];                                   // {t, ii, prevTop, jj, prevBelow, hi} — everything needed to put it back exactly
   const tillSet = new Set();                           // the voxels that ARE tilled earth, by index — the one-layer rule tests this, not the colour
   const hoeTill = () => {
@@ -8307,14 +8446,19 @@
           const d = (c[0] - 150) ** 2 + (c[1] - 116) ** 2 + (c[2] - 76) ** 2;
           if (d < bd) { bd = d; TILL_ID = i + 1; } }
       }
-      solidTab[TILL_ID] = 1; digOnlyTab[TILL_ID] = 1; palSync();
-      // ── AND IT NEEDS A SUPPORT CLASS ── this is the one palette id in the game minted at RUNTIME, so the
-      // SUP.CLASS sweep that runs beside the material tables cannot see it. Only when the entry is genuinely
-      // NEW: with a full table TILL_ID is a shade already owned by something else, and stamping STRUCTURE
-      // over it would reclassify every voxel of that shade in the world. (In practice the class barely
-      // matters either way — hoeTill writes tilled earth at h-2 and lowers hmap to h-1, so the cell is inside
-      // the static ground column and supAnchored answers yes on the O(1) test whatever its class.)
-      if (fresh) SUP.CLASS[TILL_ID] = SUP.STRUCTURE;
+      // ── THE MATERIAL TABLES AND THE SUPPORT CLASS ARE BOTH FOR A NEW ENTRY ONLY ── this is the one palette
+      // id in the game minted at RUNTIME, so the sweeps that fill solidTab/digOnlyTab/SUP.CLASS beside the
+      // material tables cannot see it and it has to write its own. But ONLY when the entry is genuinely NEW:
+      // with a full table TILL_ID is a shade already owned by something else, and every write here is by
+      // PALETTE ID, so it re-describes that material everywhere in the world for the rest of the session.
+      // SUP.CLASS was already guarded; the two table writes were not, and digOnlyTab is the more expensive
+      // mistake of the two because it is tested BEFORE pickOnlyTab in every tool gate — the nearest source
+      // literal to (150,116,76) is OREIRON[0], so one hoe swing could turn iron ore shovel/knife-only and
+      // make it un-mineable with the pick. palSync goes with them: nothing was added to the palette either.
+      // (The support class barely matters even when it is written — hoeTill puts tilled earth at h-2 and
+      // lowers hmap to h-1, so the cell is inside the static ground column and supAnchored answers yes on
+      // the O(1) test whatever its class.)
+      if (fresh) { solidTab[TILL_ID] = 1; digOnlyTab[TILL_ID] = 1; SUP.CLASS[TILL_ID] = SUP.STRUCTURE; palSync(); }
       console.log('[vb] tilled earth id', TILL_ID, 'palette', palette.length, TILL_ID > 255 ? 'OVERFLOW' : '');
     }
     const cells = [];
@@ -8618,6 +8762,9 @@
     })) return true;
     return false;                                     // the swing never bit anything
   };
+    return { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay };
+  })();
+  const { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay } = __m_sim_tools;
   // ── SOLVER ── sequential impulse / PGS, fixed 60 Hz, PH.iters iterations, no pair state between steps.
   const phStep = (b, h) => {
     if (b.sleeping || b.absorbing) return;             // an absorbing chunk is driven by its flight curve, not by physics
@@ -8776,7 +8923,14 @@
         // Gated on DISTANCE so it can never take a chunk out from under someone about to collect it: inside
         // this radius a settled chunk still vacuums up by walking to it, exactly as before. noAbsorb (a felled
         // trunk) is scenery the player may still want to chop, so it is never baked out from under them.
-        else if (!b.noAbsorb && !b.nearR && b.n <= PH.retireFar) {
+        // ── AND IT USED TO EXCLUDE EXACTLY THE BODIES IT WAS WRITTEN FOR ── a `!b.nearR` term sat here, but
+        // supDrop sets nearR = PH.absorbR unconditionally on every body the support resolver sheds, so 100% of
+        // resolver scrap — the cones and needle tufts named above as the reason this path exists — failed the
+        // guard and was never baked back. PH.bodies then sat pinned at 16/16 in ordinary play and the eviction
+        // paths ran on chunks the player was walking toward. The distance gate alone already covers the concern:
+        // retireFarR is 48 and the largest nearR anything sets is 16 (absorbR, and the arrow's is the same), so
+        // a body eligible here is three times further away than any reach that could collect it.
+        else if (!b.noAbsorb && b.n <= PH.retireFar) {
           const rdx = b.pos[0] - P.x, rdy = b.pos[1] - smoothEye, rdz = b.pos[2] - P.z;
           if (rdx * rdx + rdy * rdy + rdz * rdz > PH.retireFarR * PH.retireFarR) b.retire = true;
         } }
@@ -9184,7 +9338,10 @@
     fleeYawRate: 6.0,       // …and while fleeing (double speed needs sharper banking to keep clear of banks)
     pitchMax: 0.30,         // SUBTLE nose pitch cap (rad, ~17°) for climbs/dives — yaw is free, roll is impossible by construction
     pitchGain: 1.6,         // how strongly vertical velocity tips the nose
-    replanS: 1.3,           // s between channel re-aims (jittered per fish so the pods don't re-plan in lockstep)
+    // (NO replanS here on purpose: it advertised a 1.3 s channel re-aim cadence that nothing read — the field it was
+    //  meant to drive, B.chRe, is assigned and never consulted. The real cadence is the ~14 Hz sense tick, B.senseRe,
+    //  hard-coded in the creature tick's fish branch. Anything added to this bag must have a reader, or it is a dial
+    //  wired to nothing and a tuner turns it for hours with no effect.)
     lookMin: 12,            // reactive wall-backstop lookahead floor (scales up with speed)
     turnCost: 2.0,          // ── HOW DEARLY THE PROBE PRICES A TURN (user 2026-08-07: "it keeps running into the banks") ── was 5 hard-coded. A fish cruises at 22 vox/s and banks at yawRate 2.2 rad/s, so a 90° turn costs it ~16 voxels of travel: in a river, the open lane is often only a few voxels longer than the blocked one, and at 5 the turn penalty ate that difference whole. The fish under-turned, closed on the bank, and the backstop then took over. At 2.0 it commits to the open lane while the bank is still far off, which is the whole point of a long-range probe.
     jump: {                 // ── LEAP ── frequency / height / distance / cooldown all here (user)
@@ -10344,7 +10501,7 @@
   document.addEventListener('mouseup', (e) => { if (e.button === 2) { if (mouse2) { bowRel = performance.now();   // …and releasing LOOSES it, running 03→06 (user)
       if (BOW_IT && heldIt() === BOW_IT) stopBowStretch();   // the pull is over — a half-draw must not leave the creak ringing over the release
       if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); playSwish(); }   // …and the shaft leaves with the whoosh (user)   // …the ARROW LEAVES the bow (user): the bare strip takes over and a projectile flies
-      else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) { throwSpear(); playSwish(); }   // …and the SPEAR flies out of the raised hand (user)
+      else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) { if (throwSpear()) playSwish(); }   // …and the SPEAR flies out of the raised hand (user)
       }
     mouse2 = false; }
     if (e.button === 0) { mouse0 = false;
@@ -10384,12 +10541,12 @@
 
   const __m_ui_video_editor = (() => {
   // @module — screen recording, the clip timeline, red annotations, the export
-  // @exports BASE_VIG, VE, VE_CAP_MS, renderDist, veAC, veAudioDest, vePanel, veTapEl, veToggleRec
+  // @exports BASE_VIG, VE, VE_CAP_MS, renderDist, veAudioDest, vePanel, veTapEl, veToggleRec
   // ═══════════════ VIDEO EDITOR + SCREEN RECORDER ═══════════════ (user)
   // Capture the game canvas to a .webm with MediaRecorder, then trim / cut / delete / resize clips on a timeline and
   // export the result. Entirely self-contained DOM + MediaRecorder work — nothing here touches the WebGPU render loop.
   // The "recording" banner is a DOM element (never drawn on the canvas), so it can never appear in the capture/export.
-  const VE = { clips: [], dur: 0, sel: -1, blobUrl: null, thumb: '', playing: false, lastPaint: 0,
+  const VE = { clips: [], dur: 0, sel: -1, blobUrl: null, thumb: '', playing: false, lastPaint: 0, ac: null,
                rec: null, chunks: [], recording: false, drag: null,
                strokes: [], undone: [], pen: false, drawing: false, exporting: false };   // strokes: red annotation polylines in NORMALISED video space; undone: redo stack for Ctrl+Z; exporting: suspends the game's render work
   const veBtnEl = $('veBtn'), vePanel = $('vePanel'), veStage = $('veStage'), veVideo = $('veVideo'),
@@ -10466,17 +10623,17 @@
   // the capture — recordings then carry sound as well as picture. Built lazily on the first capture and wrapped in
   // try/catch, so any failure degrades to video-only rather than breaking playback. createMediaElementSource is
   // one-shot per element, so each is tapped once and also re-connected to the speakers so normal audio still plays.
-  let veAC = null, veGameDest = null;
-  const veTapEl = (a) => { if (!veAC || a._veTap) return;
+  let veGameDest = null;                                 // VE.ac, not a `let`: see the CMD note in ui/console.js — an exported `let` is a dead snapshot outside the module
+  const veTapEl = (a) => { if (!VE.ac || a._veTap) return;
     try {
       if (a._sfxOut) { a._sfxOut.connect(veGameDest); a._veTap = true; return; }   // already routed through an effect (see bassTap) — tap its OUTPUT, or the recorder would capture the dry element twice and the filtered one never
-      const s = veAC.createMediaElementSource(a); s.connect(veAC.destination); s.connect(veGameDest); a._veTap = true;
+      const s = VE.ac.createMediaElementSource(a); s.connect(VE.ac.destination); s.connect(veGameDest); a._veTap = true;
     } catch (e) {} };
   const veAudioDest = () => {
     try {
-      if (!veAC) { veAC = audioCtx(); if (!veAC) return null; veGameDest = veAC.createMediaStreamDestination(); }   // the SHARED context — see audioCtx
+      if (!VE.ac) { VE.ac = audioCtx(); if (!VE.ac) return null; veGameDest = VE.ac.createMediaStreamDestination(); }   // the SHARED context — see audioCtx
       if (typeof sndReg !== 'undefined') for (const s of sndReg) veTapEl(s.a);
-      if (veAC.state === 'suspended') veAC.resume();
+      if (VE.ac.state === 'suspended') VE.ac.resume();
       return veGameDest;
     } catch (e) { console.warn('[vb] audio tap failed', e); return null; }
   };
@@ -10709,59 +10866,78 @@
     try { stream = cvs.captureStream(0); track = stream.getVideoTracks()[0]; }   // 0 = MANUAL push, one per PRESENTED source frame (rVFC pump below) + a hold-last-frame watchdog; seeks spliced out via rec.pause()/resume(). Rejected alternatives: (1) captureStream(60) auto-sampling emits NOTHING while the canvas is static → ~1 s frozen gap at the head; (2) a wall-clock fixed-rate pump BEAT against the media clock → periodic dup/drop stutter; (3) an rAF media-clock pump RACED the decoder's presentation by ±1 frame → content dup/skip (the "still slightly jittery" bug). rVFC is safe now that EXPORT QUIET MODE stops the game from contending the decoder — the pre-gate rVFC attempt failed only because of that contention.
     catch (e) { console.warn('[vb] export captureStream failed', e); btn.disabled = false; btn.textContent = label0; return; }
     const wasMuted = veVideo.muted; veVideo.muted = false;
-    try { const a = veVideo.captureStream ? veVideo.captureStream() : (veVideo.mozCaptureStream ? veVideo.mozCaptureStream() : null);   // carry the ORIGINAL audio track across
-      if (a) for (const t of a.getAudioTracks()) stream.addTrack(t); } catch (e) {}
-    const expDur = veExportDur(), reqRate = veExportRate(vw, vh, expDur).rate;
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: reqRate, audioBitsPerSecond: 192000 });   // the FINAL encode — rate comes from the size cap in the toolbar, falling back to a quality target when the cap is "best quality"
-    const chunks = []; rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-    const stopped = new Promise((res) => { rec.onstop = res; });
-    let pump = null, alive = true;
-    const pushFrame = () => {                              // composite the CURRENT video frame + the red annotations, then PUSH it to the recorder
-      g.drawImage(veVideo, 0, 0, vw, vh);
-      if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
-      if (track.requestFrame) track.requestFrame();
-    };
-    VE.exporting = true;                                   // suspends the game's render work (see the frame loop) so the pump runs uncontended and playback cannot hitch
-    await veSeekAwait(VE.clips[0].s);
-    pushFrame(); rec.start();
-    let lastPush = 0;                                      // wall-clock of the last pushed frame — the watchdog's baseline
-    const onVF = () => { if (!alive) return;               // ── PRESENTATION-LOCKED PUMP (user: "still slightly jittery — only after download") ── any rAF-timed pump samples the video on ITS OWN tick, racing the decoder's presentation by ±1 frame: sometimes it grabs frame N, sometimes still N-1 → content dup/skip in the file even with even timestamps. rVFC fires exactly ONCE per PRESENTED frame, so every push is the frame the decoder actually showed, on the compositor's even 60 Hz cadence. Safe now that the render loop is fully gated during export (EXPORT QUIET MODE) — the old rVFC rejection predates that gate, when the game contended the decoder into irregular presentation.
-      g.drawImage(veVideo, 0, 0, vw, vh);
-      if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
-      if (!veVideo.paused && !veVideo.seeking && rec.state === 'recording' && track.requestFrame) { track.requestFrame(); lastPush = performance.now(); }
-      veVideo.requestVideoFrameCallback(onVF); };
-    const RVFC = !!veVideo.requestVideoFrameCallback;
-    if (RVFC) veVideo.requestVideoFrameCallback(onVF);
-    let clipBase = 0, clipPushed = 0;                      // fallback media-clock pump state (no-rVFC browsers only)
-    const drive = () => { if (!alive) return;
-      if (!veVideo.paused && !veVideo.seeking && rec.state === 'recording') {
-        if (RVFC) { if (performance.now() - lastPush > 50 && track.requestFrame) { lastPush = performance.now(); track.requestFrame(); } }   // WATCHDOG: a gap recorded at CAPTURE time presents nothing during playback — re-push the held frame so the file never has a timestamp hole
-        else { const target = Math.floor((veVideo.currentTime - clipBase) * EXPORT_FPS);
-          if (target > clipPushed) { pushFrame(); clipPushed = target; } }   // no-rVFC fallback: push when the MEDIA clock crosses a 1/60 boundary; resync on a miss (a dropped frame is invisible, duplicate-then-catch-up is the stutter)
+    let pump = null, alive = true, rec = null, aborted = false;   // hoisted ABOVE the try/finally below, so the teardown can always reach them however the run ends
+    try {
+      try { const a = veVideo.captureStream ? veVideo.captureStream() : (veVideo.mozCaptureStream ? veVideo.mozCaptureStream() : null);   // carry the ORIGINAL audio track across
+        if (a) for (const t of a.getAudioTracks()) stream.addTrack(t); } catch (e) {}
+      const expDur = veExportDur(), reqRate = veExportRate(vw, vh, expDur).rate;
+      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: reqRate, audioBitsPerSecond: 192000 });   // the FINAL encode — rate comes from the size cap in the toolbar, falling back to a quality target when the cap is "best quality"
+      const chunks = []; rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      const stopped = new Promise((res) => { rec.onstop = res; });
+      const pushFrame = () => {                              // composite the CURRENT video frame + the red annotations, then PUSH it to the recorder
+        g.drawImage(veVideo, 0, 0, vw, vh);
+        if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
+        if (track.requestFrame) track.requestFrame();
+      };
+      VE.exporting = true;                                   // suspends the game's render work (see the frame loop) so the pump runs uncontended and playback cannot hitch
+      await veSeekAwait(VE.clips[0].s);
+      pushFrame(); rec.start();
+      let lastPush = 0;                                      // wall-clock of the last pushed frame — the watchdog's baseline
+      const onVF = () => { if (!alive) return;               // ── PRESENTATION-LOCKED PUMP (user: "still slightly jittery — only after download") ── any rAF-timed pump samples the video on ITS OWN tick, racing the decoder's presentation by ±1 frame: sometimes it grabs frame N, sometimes still N-1 → content dup/skip in the file even with even timestamps. rVFC fires exactly ONCE per PRESENTED frame, so every push is the frame the decoder actually showed, on the compositor's even 60 Hz cadence. Safe now that the render loop is fully gated during export (EXPORT QUIET MODE) — the old rVFC rejection predates that gate, when the game contended the decoder into irregular presentation.
+        g.drawImage(veVideo, 0, 0, vw, vh);
+        if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
+        if (!veVideo.paused && !veVideo.seeking && rec.state === 'recording' && track.requestFrame) { track.requestFrame(); lastPush = performance.now(); }
+        veVideo.requestVideoFrameCallback(onVF); };
+      const RVFC = !!veVideo.requestVideoFrameCallback;
+      if (RVFC) veVideo.requestVideoFrameCallback(onVF);
+      let clipBase = 0, clipPushed = 0;                      // fallback media-clock pump state (no-rVFC browsers only)
+      const drive = () => { if (!alive) return;
+        if (!veVideo.paused && !veVideo.seeking && rec.state === 'recording') {
+          if (RVFC) { if (performance.now() - lastPush > 50 && track.requestFrame) { lastPush = performance.now(); track.requestFrame(); } }   // WATCHDOG: a gap recorded at CAPTURE time presents nothing during playback — re-push the held frame so the file never has a timestamp hole
+          else { const target = Math.floor((veVideo.currentTime - clipBase) * EXPORT_FPS);
+            if (target > clipPushed) { pushFrame(); clipPushed = target; } }   // no-rVFC fallback: push when the MEDIA clock crosses a 1/60 boundary; resync on a miss (a dropped frame is invisible, duplicate-then-catch-up is the stutter)
+        }
+        pump = requestAnimationFrame(drive); };
+      pump = requestAnimationFrame(drive);
+      for (const clip of VE.clips) {
+        if (rec.state === 'recording') rec.pause();          // SPLICE the seek out of the file — the old pump filled every clip boundary with ~0.5 s of frozen duplicate frames; pausing the recorder stops its clock so the next clip butts on seamlessly
+        await veSeekAwait(clip.s); clipBase = clip.s; clipPushed = 0;
+        await veVideo.play().catch(() => {});
+        if (rec.state === 'paused') rec.resume();
+        if (!RVFC) pushFrame();                              // fallback only: land the clip's first frame now (the media clock hasn't crossed a boundary yet). On the rVFC path the seek's own presentation already drew it — pushing here could emit the PREVIOUS clip's stale canvas
+        // …and TERMINATE THE MOMENT PLAYBACK STOPS. Nothing disables the close paths during an export: Escape, the ✕ and a
+        // backdrop click all reach veClose → vePause → veVideo.pause(), and paused mid-clip `currentTime >= clip.e` can never
+        // become true — the loop spun forever, VE.exporting was never cleared, and the frame loop skipped every frame after
+        // that, so the game froze on its last presented frame until the page was reloaded.
+        await new Promise((res) => { const chk = () => { if (!alive || veVideo.paused || veVideo.ended || veVideo.currentTime >= clip.e - 0.02) res(); else requestAnimationFrame(chk); }; requestAnimationFrame(chk); });
+        aborted = veVideo.paused && !veVideo.ended && veVideo.currentTime < clip.e - 0.02;   // stopped SHORT of the clip's end = someone closed the panel (or hit ❚❚) mid-run; reaching the end pauses too, hence the position test
+        veVideo.pause();
+        if (aborted) break;
       }
-      pump = requestAnimationFrame(drive); };
-    pump = requestAnimationFrame(drive);
-    for (const clip of VE.clips) {
-      if (rec.state === 'recording') rec.pause();          // SPLICE the seek out of the file — the old pump filled every clip boundary with ~0.5 s of frozen duplicate frames; pausing the recorder stops its clock so the next clip butts on seamlessly
-      await veSeekAwait(clip.s); clipBase = clip.s; clipPushed = 0;
-      await veVideo.play().catch(() => {});
-      if (rec.state === 'paused') rec.resume();
-      if (!RVFC) pushFrame();                              // fallback only: land the clip's first frame now (the media clock hasn't crossed a boundary yet). On the rVFC path the seek's own presentation already drew it — pushing here could emit the PREVIOUS clip's stale canvas
-      await new Promise((res) => { const chk = () => { if (veVideo.currentTime >= clip.e - 0.02 || veVideo.ended) res(); else requestAnimationFrame(chk); }; requestAnimationFrame(chk); });
-      veVideo.pause();
+      alive = false;
+      cancelAnimationFrame(pump); pump = null;
+      rec.stop(); await stopped;
+      if (aborted) return;                                 // closed mid-run: no truncated download the player never asked for, and no veCalibrate off a part-length file (the finally still releases VE.exporting and the button)
+      const out = new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' });
+      veCalibrate(out.size, expDur, reqRate);              // what the encoder ACTUALLY did → next export's estimate is this machine's, not a hardcoded guess
+      const url = URL.createObjectURL(out), a2 = document.createElement('a');
+      a2.href = url; a2.download = 'voxelbit-clip.' + ext; document.body.appendChild(a2); a2.click(); a2.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      veUpdateEst(); if (VE.clips.length) veSeek(VE.clips[0].s);
+    } finally {                                        // ── ALWAYS RELEASE ── VE.exporting gates the ENTIRE frame loop, so any throw above (a MediaRecorder that refuses the mime, a lost blob, a device reset) left the game frozen on its last presented frame with the export button stuck disabled. Every exit path now lands here.
+      alive = false; if (pump) cancelAnimationFrame(pump);
+      try { if (rec && rec.state !== 'inactive') rec.stop(); } catch (e) {}
+      try { for (const t of stream.getTracks()) t.stop(); } catch (e) {}   // release the export compositor's capture + the borrowed audio track
+      veVideo.muted = wasMuted; VE.exporting = false;   // the two pieces of state that MUST NOT survive the call
+      btn.disabled = false; btn.textContent = label0;
     }
-    alive = false;
-    cancelAnimationFrame(pump);
-    rec.stop(); await stopped; veVideo.muted = wasMuted; VE.exporting = false;
-    try { for (const t of stream.getTracks()) t.stop(); } catch (e) {}   // release the export compositor's capture + the borrowed audio track
-    const out = new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' });
-    veCalibrate(out.size, expDur, reqRate);              // what the encoder ACTUALLY did → next export's estimate is this machine's, not a hardcoded guess
-    const url = URL.createObjectURL(out), a2 = document.createElement('a');
-    a2.href = url; a2.download = 'voxelbit-clip.' + ext; document.body.appendChild(a2); a2.click(); a2.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
-    btn.disabled = false; btn.textContent = label0; veUpdateEst(); if (VE.clips.length) veSeek(VE.clips[0].s);
   };
-  const veSeekAwait = (t) => new Promise((res) => { const on = () => { veVideo.removeEventListener('seeked', on); res(); }; veVideo.addEventListener('seeked', on); veVideo.currentTime = Math.max(0, Math.min(VE.dur - 1e-3, t)); });
+  const veSeekAwait = (t) => new Promise((res) => {   // ── THE LAST UNBOUNDED WAIT ── every other await in veExport now terminates on pause/abort, and this one
+    let done = false;                                //  must too: if the element never fires 'seeked' (a src swapped out from under it, a decode stall) the export's
+    const fin = () => { if (done) return; done = true; clearTimeout(tm); veVideo.removeEventListener('seeked', fin); res(); };   //  try/finally never runs and VE.exporting stays latched, which freezes the frame loop for the session.
+    const tm = setTimeout(fin, 3000);                 // 3 s is ~30x a normal seek on a local blob; giving up and pushing on beats hanging for ever
+    veVideo.addEventListener('seeked', fin);
+    veVideo.currentTime = Math.max(0, Math.min(VE.dur - 1e-3, t)); });
 
   // ── OPEN / CLOSE + BUTTON WIRING ──
   const veOpen = () => { vePanel.classList.remove('hidden'); lockEl.classList.add('hidden');   // the editor takes over the screen: hide the esc menu behind it and RELEASE the pointer so the mouse drives the UI, not the camera (the R-stop path leaves the game pointer-locked — user: "the mouse is still connected to the player camera in the background")
@@ -10782,9 +10958,9 @@
 
   const renderDist = RD_FIXED;                         // FIXED 100 m — the slider is gone (user), so nothing reassigns this
   const BASE_VIG = 0.26;                               // always-on vignette in normal play — well under the cinematic 0.55 so it frames the view without reading as an effect
-    return { BASE_VIG, VE, VE_CAP_MS, renderDist, veAC, veAudioDest, vePanel, veTapEl, veToggleRec };
+    return { BASE_VIG, VE, VE_CAP_MS, renderDist, veAudioDest, vePanel, veTapEl, veToggleRec };
   })();
-  const { BASE_VIG, VE, VE_CAP_MS, renderDist, veAC, veAudioDest, vePanel, veTapEl, veToggleRec } = __m_ui_video_editor;
+  const { BASE_VIG, VE, VE_CAP_MS, renderDist, veAudioDest, vePanel, veTapEl, veToggleRec } = __m_ui_video_editor;
   // ── DEPTH OF FIELD ── persisted (vb_dof), default ON, and declared HERE for the same reason vigOn is: the
   // settings-panel wiring further down reads it, so a declaration below that point is a TDZ error at boot.
   const DOF_COC = 0.0105;                              // max circle of confusion as a fraction of the canvas HEIGHT (~11 px at 1080p) — a fraction, not a pixel count, so the look is identical at every resolution and render scale
@@ -11197,7 +11373,7 @@
   };
   document.addEventListener('keydown', (e) => {        // ── , / . ── step the held bow through its draw frames and PIN it there, so the arrow can be placed frame by frame (user)
     if ((e.code !== 'Comma' && e.code !== 'Period') || e.repeat || listenAction || !BOW_FRAMES) return;
-    if (ED.on || cmdOpen || dead || !vePanel.classList.contains('hidden')) return;   // the asset editor owns these two keys while it is up
+    if (ED.on || CMD.open || dead || !vePanel.classList.contains('hidden')) return;   // the asset editor owns these two keys while it is up
     if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
     e.preventDefault();
     const n = BOW_FRAMES;                              // …and one step past the last frame hands the draw back to the game
@@ -11217,7 +11393,7 @@
     if (e.code === 'Escape') lockEl.classList.remove('hidden');   // Esc can't request pointer lock → count it as a button press and just open the esc menu
     else tryLock();
   });
-  document.addEventListener('pointerlockerror', () => { if (!locked && performance.now() - cmdEscAt > 1600) lockEl.classList.remove('hidden'); });   // …but never right after the command line was dismissed with Escape: the refusal IS the browser's exit cooldown (user)   // if a lock request is refused, fall back to the esc menu so the player is never stuck
+  document.addEventListener('pointerlockerror', () => { if (!locked && performance.now() - CMD.escAt > 1600) lockEl.classList.remove('hidden'); });   // …but never right after the command line was dismissed with Escape: the refusal IS the browser's exit cooldown (user)   // if a lock request is refused, fall back to the esc menu so the player is never stuck
   // ── CUSTOM FREE-MOUSE CURSOR ── shown whenever the pointer is NOT locked (menus, the video editor, the death screen).
   // Follows the mouse as a crosshair and morphs to a square over anything clickable; the native cursor is hidden so the
   // two never double up. While locked the game's own centre crosshair takes over and this is hidden.
@@ -11245,7 +11421,7 @@
     const wasLocked = locked;
     locked = document.pointerLockElement === canvas;
     if (locked && !wasLocked) freshLock = true;
-    lockEl.classList.toggle('hidden', locked || dead || lightMode || cmdOpen || performance.now() - cmdEscAt < 1600 || !vePanel.classList.contains('hidden'));   // …or while the COMMAND LINE is up, or across the re-lock retry after Escape dismissed it (user)   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
+    lockEl.classList.toggle('hidden', locked || dead || lightMode || CMD.open || performance.now() - CMD.escAt < 1600 || !vePanel.classList.contains('hidden'));   // …or while the COMMAND LINE is up, or across the re-lock retry after Escape dismissed it (user)   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
     if (locked) $('playHint').classList.add('hidden');   // taken control → drop the click-to-enter prompt (the esc menu handles re-entry from here)
     crossEl.classList.toggle('hidden', !locked);
     cmpVis();                                    // the compass follows the crosshair, gated by the settings toggle
@@ -11335,7 +11511,7 @@
     selSlot = (selSlot + (e.deltaY < 0 ? 1 : slots.length - 1)) % slots.length;   // wraps the WHOLE list now, however long it has grown   // SCROLL UP ADVANCES (user 2026-08-07): up from the axe reaches the pick, then the shovel — the direction the on-screen hint is pointing
   }, { passive: false });
   document.addEventListener('keydown', (e) => {
-    if (cmdOpen) return;                               // the COMMAND LINE has the keyboard (user)
+    if (CMD.open) return;                               // the COMMAND LINE has the keyboard (user)
     if (!locked) return;
     if (e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }   // ── T ── open the command line (user)
     keys.add(e.code);
@@ -11431,16 +11607,6 @@
   if (HOE_IT) pickCfgs[HOE_IT] = { ...PICK_DEFS[HOE_IT] };
   if (SPEAR_IT) pickCfgs[SPEAR_IT] = { ...PICK_DEFS[SPEAR_IT] };
   if (WORM_ITEM0) pickCfgs[WORM_ITEM0] = { ...PICK_DEFS[WORM_ITEM0] };
-  try {                                              // ── SAVED POSES ── keyed by NAME (see below); ids are positional and shift whenever the item list changes
-    const byName = JSON.parse(localStorage.getItem('vb_pick4') || '{}');
-    for (const id in pickCfgs) { const nm = ITEM_NAMES[id]; if (nm && byName[nm]) Object.assign(pickCfgs[id], byName[nm]); }
-    if (!localStorage.getItem('vb_pick4')) {         // one-time migration off the id-keyed store
-      const old = JSON.parse(localStorage.getItem('vb_pick3') || '{}');
-      for (const k in old) { const id = +k;
-        if (!BOW_IT || id < BOW_IT) { if (pickCfgs[id]) Object.assign(pickCfgs[id], old[k]); }   // below the bow the numbering never moved — those are still valid
-      }                                              // …and everything from the bow up is dropped: its number no longer means what it did
-    }
-  } catch (e) {}   // key bumped from vb_pick2 — the old value was one shared pose
   const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
   ITEM_NAMES[KNIFE_IT] = 'knife';
   if (PICK_IT) ITEM_NAMES[PICK_IT] = 'pick';
@@ -11451,6 +11617,16 @@
   if (BOW_IT) for (let f = 0; f < BOW_FRAMES; f++) ITEM_NAMES[BOW_IT + f] = 'bow';   // every frame answers to the same name in the held-item editor
   if (MEAT_IT) ITEM_NAMES[MEAT_IT] = 'raw meat';
   if (WORM_ITEM0) ITEM_NAMES[WORM_ITEM0] = 'worm';
+  try {                                              // ── SAVED POSES ── keyed by NAME (see ITEM_NAMES above); ids are positional and shift whenever the item list changes
+    const byName = JSON.parse(localStorage.getItem('vb_pick4') || '{}');   // MUST stay BELOW the ITEM_NAMES block: this loop reads it, and above the declaration every restore threw a dead-zone ReferenceError into the catch — every tuned pose silently lost on refresh, and the vb_pick3 migration never ran (settings.js defers its own first paint for exactly this hazard)
+    for (const id in pickCfgs) { const nm = ITEM_NAMES[id]; if (nm && byName[nm]) Object.assign(pickCfgs[id], byName[nm]); }
+    if (!localStorage.getItem('vb_pick4')) {         // one-time migration off the id-keyed store
+      const old = JSON.parse(localStorage.getItem('vb_pick3') || '{}');
+      for (const k in old) { const id = +k;
+        if (!BOW_IT || id < BOW_IT) { if (pickCfgs[id]) Object.assign(pickCfgs[id], old[k]); }   // below the bow the numbering never moved — those are still valid
+      }                                              // …and everything from the bow up is dropped: its number no longer means what it did
+    }
+  } catch (e) { console.warn('[vb] held-item poses could not be restored', e); }   // key bumped from vb_pick2 — the old value was one shared pose. NOT silent any more: a bare catch here is what hid the dead-zone bug above for as long as it existed; a blocked/corrupt localStorage still degrades to the baked defaults, it just says so.
   const heldIt = () => (grabAnim && !grabAnim.left && !slots[selSlot] ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty). A grab flight into a FULL hand does not borrow it (user): that pickup flies as its own world object so your tool stays out — see grabGhost. An EMPTY hand borrows it again, the way it did originally, so the incoming item flies into the HELD POSE itself and there is no tool to lose.
   let grabGhost = null;                                // the item mid-flight, drawn through the DROP path instead of the hand
   const heldCfg = (it) => pickCfgs[it] || pickCfgs[1];
@@ -11779,6 +11955,7 @@
         perH.push(list); }
       poses.push(perH); }
     ARMADILLO_POSES = poses;
+    palSync();                                             // upload the palette ids edParseVox allocated + the CREA_FLAG bits set above — the same contract every other pose builder keeps (see buffers.js: "every pose builder re-syncs after registering its ids"). Without it a beyond-420-voxel armadillo — which is where the mammals normally spawn — grid-stamped as a solid black silhouette on the wrong hit-flash path until some other builder happened to sync.
   };
   const stampArmadillo = (B, gsurf) => {                  // stamp the armadillo's current frame into W at its position — clear-then-restamp via stampApply (foliage restore), like the perched cardinal
     buildArmPoses(); if (!ARMADILLO_POSES) return;
@@ -11968,9 +12145,8 @@
     const list = [];
     for (const f of [...edFileEl.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
       list.push({ name: f.name, u8: new Uint8Array(await f.arrayBuffer()) });
-    if (list.length) { ED.frames2 = []; ED.box2 = null; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows
+    if (list.length) { edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows. edClearStamp runs FIRST, as its comment says: edImportBufs ends in edLayout, which stamps the new model, so clearing afterwards erased what had just been laid out and the import stayed invisible until the next repaint (up to 3.4 s).
     edFileEl.value = '';
-    edClearStamp();
   });
 
     return { BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edLayout, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk };
@@ -12116,7 +12292,7 @@
     sndRouting() {                                   // which registered sounds are routed through an effect, and whether the RECORDER could tap them
       const out = sndReg.map((s) => ({ src: (s.a.src || '').split('/').slice(-2).join('/'),
         fx: !!s.a._sfxOut, veTapped: !!s.a._veTap, vol: +s.a.volume.toFixed(3) }));
-      return { sounds: out.filter((o) => o.fx || o.src.indexOf('hit.mp4') >= 0), sharedCtx: !!sfxAC, veCtxIsShared: veAC === null || veAC === sfxAC }; },
+      return { sounds: out.filter((o) => o.fx || o.src.indexOf('hit.mp4') >= 0), sharedCtx: !!sfxAC, veCtxIsShared: VE.ac === null || VE.ac === sfxAC }; },
     veTapAll() { const d = veAudioDest(); for (const s of sndReg) veTapEl(s.a);   // force the recorder's tap exactly as starting a capture does
       return { dest: !!d, tapped: sndReg.filter((s) => s.a._veTap).length, total: sndReg.length,
         fxTapped: sndReg.filter((s) => s.a._sfxOut && s.a._veTap).length, fxTotal: sndReg.filter((s) => s.a._sfxOut).length }; },
@@ -13176,6 +13352,7 @@
     nvF[ci] = f; };
   const nvIdx = (x, z) => (gwrap(Math.floor(x), WX) >> NVSH) + (gwrap(Math.floor(z), WZ) >> NVSH) * NVX;
   const nvTop = (ci) => { const g = nvY[ci]; return ((nvF[ci] & NVF_WATER) && g < WL) ? WL : g; };   // the travel surface this cell's clearance was measured from
+  const nvTopAir = (ci) => { const g = nvY[ci] + 1; return ((nvF[ci] & NVF_WATER) && g < WL) ? WL : g; };   // …the same surface in HMAP UNITS: +1 because nvY is the topmost SOLID voxel while hmap/bfSurf is the FIRST AIR above it. Mixing the two is a silent one-voxel bias — see navWalkGround.
   const nvClutD = (ci) => (nvK[ci >> 1] >>> ((ci & 1) << 2)) & 15;   // how far BELOW nvY a walker's foot actually lands here. Subtract it from nvY for the walker's ground; ADD it to nvC for the walker's headroom — the voxels between the two tops are, by the definition of "topmost non-clutter voxel", clutter or air, so they are free to a walker and the sum is the exact clearance above its own ground.
   // ── OPENNESS ── a chamfer distance transform per MEDIUM: within a region of one class, distance grows
   // normally; any neighbour of a DIFFERENT class (including wall) is a zero-distance boundary. So a fish
@@ -13406,13 +13583,15 @@
   const NAV_FLOOK = 14, NAV_FBCLR = 2.0, NAV_FBRK2 = 46;   // FISH brake: sqrt(46 · (14 − 2)) = 23.5 vox/s against a 22 vox/s cruise, so OPEN water is untouched and this only bites as a bank closes in. The fish already fans whiskers to pick a lane; what it lacked was any reason to SLOW as that lane shortened, so it arrived at the bank still at full cruise, ground against it until the trap timer fired, and got re-placed — which reads as a teleport (user 2026-08-06). Braking gives the eased turn time to finish, so it comes about instead.   // DUCK brake: sqrt(14 · (10 − 1)) = 11.2 vox/s against a 7 vox/s paddle (10 for a duckling scrambling to heel), so an open lane is full pace and the cap only ramps once the lane is under ~5 voxels — well inside the 7-voxel head buffer the duck already keeps.
   const NAV_WLOOK = 6, NAV_WBCLR = 1.0, NAV_WBRK2 = 58;   // …and its brake: sqrt(58 · (6 − 1)) = 17.0 vox/s against a 16 vox/s crawl, so an open lane is full pace and the cap withholds nothing until the lane is under ~5 voxels
   const navGroundAt = (x, z) => { const ci = nvIdx(x, z);   // the travel surface a LAND creature stands on: the field's 2×2 max where it is vouched for, the heightmap where it is not. Same fix as the flyer's gAir — a servo riding bfSurf while the predicate measures clearance from nvY is the planner/mover split reintroduced on the vertical axis.
-    return (nvF[ci] & NVF_BUILT) ? nvTop(ci) : (navBed(x, z) > WL ? navBed(x, z) : WL); };
+    if (!(nvF[ci] & NVF_BUILT)) return navBed(x, z) > WL ? navBed(x, z) : WL;
+    const g = nvY[ci] + 1;                           // ── UNITS ── exactly navWalkGround's +1, and for exactly its reason: nvY is the topmost SOLID voxel while hmap is the FIRST AIR voxel above it, and hmap is what the unvouched branch one line up returns, what bfSurf returns, and what every worm step limit and probe offset was authored against. Without it the two branches disagreed by a voxel at every streaming frontier — a legitimate 2-voxel step read as 3 and the lane was refused — and the worm's y servo (tick-creatures gcW) sat a voxel below the pre-arbiter bfSurf target everywhere else.
+    return ((nvF[ci] & NVF_WATER) && g < WL) ? WL : g; };   // nvTop's own water clamp, kept: a wet cell's travel surface is the waterline
   const navLandOK = (x, z, gc, up, down, clr) => {   // THE land answer. The step limits and head clearance passed in are the marchers' OWN legacy numbers (±2 for a worm, +3/−4 for a mammal; the bfObstW probe heights) — measured against the field instead of the heightmap, so the decor and rock hmap never saw are finally in the test.
     const ci = nvIdx(x, z), f = nvF[ci];
     if (!(f & NVF_BUILT)) { const g = navBed(x, z);   // UNVOUCHED → the honest point probe the marcher used before. Never a blanket refusal: a creature at the streaming frontier must not freeze waiting for a cell to be built.
       return !navWet(x, z) && g > WL && g - gc <= up && gc - g <= down && !nvObst(x, g + 2, z) && !nvObst(x, g + clr, z); }
     if (f & NVF_WATER) return false;                 // any water in the 2×2 — a land creature stops AT the waterline, not one step past it
-    const g = nvY[ci];
+    const g = nvY[ci] + 1;                           // …and the SAME +1 as navGroundAt above, so gc (which comes from it) and g are the same quantity on both branches. nvC is already measured from here — nvBuildCell counts free voxels from ts + 1 — so only the step comparison and the `g > WL` land test move, and both move ONTO the unvouched branch's answer rather than away from it.
     return g > WL && g - gc <= up && gc - g <= down && nvC[ci] >= clr; };
   // (no navSurfOK: a field-gated surface-water predicate was built for the ducks and measured off —
   //  see the duckFit comment in the tick body. The swim band is consumed by the FISH, via navFitsSwim.)
@@ -14047,7 +14226,7 @@
       // …and the thaw's cells the same way, but with the support seed muted. NOT gpuPatch's `track=false`,
       // which would also drop nvTouch and the hmap lower — a melting blanket does change what a creature can
       // walk on. Only the SUP queue is skipped, for the reason set out at the melt itself.
-      if (meltCells.length) { supMute = true; gpuPatch(meltCells, false); supMute = false; }
+      if (meltCells.length) { supMute = true; try { gpuPatch(meltCells, false); } finally { supMute = false; } }   // try/finally, NOT two bare statements: tick.js deliberately keeps the loop alive after a throw, so one exception in here would latch the mute for the whole session — no terrain edit ever seeds the support queue again, chopped trees stop falling, carved rock leaves floating slabs, and nothing reports why
     }
     if (CPROF) cpMark(3);
 
@@ -14528,7 +14707,7 @@
     }
     if (CPROF) cpMark(4);
     lifeUid.fill(-1); lifeAna.fill(1);                 // ── dynamic-life ledger reset ── slots not claimed this frame stay analytic-only/empty
-    { const o2 = 68 + 4 * 16;                           // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player)
+    { const bSlot = 4, o2 = dropOff(bSlot);             // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player). ONE slot number, stitched to its float offset by the one function that knows how: the raw UF writes below want the offset, birdWrite wants the INDEX
       if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is ALWAYS GRID-STAMPED (real world voxels → full lighting), exactly like every other model — NO trace-inject exception (user)
         UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot (no trace-inject in the editor)
         if (ED.frames.length && !ED.paused && ED.bun) {  // ── BEHAVIOR state machine: wander (75% HOP / 25% ROTATE 50-50) at 24 fps; FLEE the player at 48 fps when near. Whole-hop-per-action INTEGER position, baked rotation (ED.spin=0). ──
@@ -14611,7 +14790,7 @@
         const ps = birdStep(bird, 0, now / 1000, dt);    // bird 0 keeps the dedicated slot; the rest are emitted with the creatures below
         birdPose(bird, ps);                              // …the pose the ragdoll will be rebuilt from
         ps.uid = 0;                                      // stable identity for the dynamic-life temporal reprojection
-        birdWrite(o2, ps, cam, right, up, fwd);
+        birdWrite(bSlot, ps, cam, right, up, fwd);       // the SLOT INDEX, never o2: birdWrite derives the offset itself, so passing 132 wrote dropOff(132) — deep inside lifeMotB — and left drop slot 4's item id at 0, i.e. bird 0 flew invisible while still solid and still shootable (tick-life.js's call site already passed dropCursor; this one was missed when the signature changed)
         birdHit(birdBox, ps);
       } else { UF[o2 + 7] = 0; birdBox.active = false; }
     }
@@ -15230,7 +15409,7 @@
         if (!placed) { if (B.sN) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
         if (wantK === 0 || wantK === 2 || wantK === 6) { B.hx = sx7; B.hz = sz7; B.hcx = hcx; B.hcz = hcz; } else { B.hcx = undefined; }
         B.dfly = (wantK === 0 && isDfly); B.dfMis = 0;              // the strip + frame count key off this; everything else about the creature is butterfly
-        if (wantK === 6) { B.spd = FISH_CFG.baseSpeed * 0.8; B.spdT = FISH_CFG.baseSpeed; B.chRe = 0; B.dT = 0.3 + Math.random() * 0.5; B.dRe = 0; B.animClk = Math.random() * 40; B.cx = B.x; B.cy = B.y; B.cz = B.z; B.vyS = 0;   // FISH: ease up into the configured cruise + desynced tail-beat; chRe=0 → pick a channel heading on frame 1; cx/cy/cz = last body-clear pose (terrain hitbox revert)
+        if (wantK === 6) { B.spd = FISH_CFG.baseSpeed * 0.8; B.spdT = FISH_CFG.baseSpeed; B.dT = 0.3 + Math.random() * 0.5; B.dRe = 0; B.animClk = Math.random() * 40; B.cx = B.x; B.cy = B.y; B.cz = B.z; B.vyS = 0;   // FISH: ease up into the configured cruise + desynced tail-beat; cx/cy/cz = last body-clear pose (terrain hitbox revert)
           B.fsp = wk % Math.max(1, FISHES.length);     // species fixed by SLOT (like the songbirds) — an exact even split that never drifts as fish recycle
           B.fhalf = (FISHES[B.fsp] || {}).half || 5;              // body half-length for every navigation probe — per species, not a salmon-sized guess
           { const sn = (FISHES[B.fsp] || {}).name;                // per-species LEAP frequency multiplier from the config (unlisted species get a modest default)
@@ -15246,7 +15425,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0;   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash or panic
+        B.om = 0; B.omT = 0; B.turnAcc = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0;   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash, panic or wound-up yaw (turnAcc: a recycled duck inheriting most of a circle reads its very first bank as an over-wound spin and unwinds the long way round for nothing)
         // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading.
         // THIS LINE WAS DEAD: it used to sit after a `//` on the line above, so the trailing comment ate it. The
         // bunny is the one creature whose position is ASSIGNED rather than integrated (B.x = B.bpx + bake offset),
@@ -15454,7 +15633,7 @@
             B.omT = Math.max(-2.8, Math.min(2.8, dth * 2.8));
           } else if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.0; B.tRe = tb3 + 2 + Math.random() * 3; }   // open water — gentle wander
           // signed yaw carried over the last several seconds: ~±6.3 means a full circle one way
-          B.turnAcc = (B.turnAcc || 0) * 0.992 + (B.om || 0) * dt;
+          B.turnAcc = (B.turnAcc || 0) * Math.exp(-0.48193 * dt) + (B.om || 0) * dt;   // PER-SECOND leak (0.48193 = −60·ln 0.992), IDENTICAL at 60 fps and unchanged in character. The old 0.992 was applied once per FRAME against a per-second input, so the steady value was 125·om·dt — ~5.8 at 60 fps but only 1.2-2.4 at the 185-400 fps this ships at, which left BOTH thresholds below (4.0 and 2.5) permanently dead: a mother duck circling a small bay never got the unwind-the-long-way-round correction or the reverse-direction penalty and orbited forever, on a fast machine only.
           if (!duckOK(B.th, 13) || !duckOK(B.th, 7)) {  // imminent bank ahead — turn down the LONGEST open lane (backs up the soft repulsion; earlier lookahead so it never reaches the shore)
             const duckReach = (th6) => { for (let d = 5; d <= 26; d += 3) if (!duckOK(th6, d)) return d; return 26; };
             const spin = Math.abs(B.turnAcc) > 2.5 ? Math.sign(B.turnAcc) : 0;   // already part-way round? penalise going further that way
@@ -15716,7 +15895,7 @@
         }
       }
       const gLoc = bfSurf(B.x, B.z);                   // the actual ground right here
-      const gAir = (NAVARB && B.kind < 2 && nvOn) ? Math.max(gLoc, nvTop(nvIdx(B.x, B.z))) : gLoc;   // ── FLYERS TAKE THEIR GROUND FROM THE FIELD ── bfSurf is ONE column of hmap clamped to sea level; the field's travel surface is the MAX over the 2×2 and counts decor and rock the heightmap never saw. Leaving the altitude servo on bfSurf floored butterflies BELOW the surface the predicate measures clearance from, so every frame the mover refused a move the planner had just approved — the exact planner/mover split the arbiter exists to close, reintroduced on the vertical axis.
+      const gAir = (NAVARB && B.kind < 2 && nvOn) ? Math.max(gLoc, nvTopAir(nvIdx(B.x, B.z))) : gLoc;   // ── FLYERS TAKE THEIR GROUND FROM THE FIELD ── bfSurf is ONE column of hmap clamped to sea level; the field's travel surface is the MAX over the 2×2 and counts decor and rock the heightmap never saw. Leaving the altitude servo on bfSurf floored butterflies BELOW the surface the predicate measures clearance from, so every frame the mover refused a move the planner had just approved — the exact planner/mover split the arbiter exists to close, reintroduced on the vertical axis.
       const yPrev5 = B.y;                            // total vertical motion this frame is budget-capped below — branches must never STACK into a visible jump
       if (B.kind === 2) {                              // WORM / BUNNY: rides the terrain SMOOTHLY — target blends the ground AHEAD (starts the ramp before a step) and eases at a gentle rate
         // ── ONE SEAT FOR ALL FOUR LAND MAMMALS (user 2026-08-07: "do they all behave the same way?") ── they did
@@ -15876,7 +16055,7 @@
             if (!fishBodyAt(qx, qz, a8, Math.floor(qy), B.fhalf)) continue;
             B.x = qx; B.z = qz; B.y = qy; B.th = a8; B.om = 0; B.omT = 0; B.dT = 0.5;
             B.cx = qx; B.cy = qy; B.cz = qz; B.cth = a8; B.hx = qx; B.hz = qz;   // re-home too, or the leash drags it straight back into the pocket
-            B.noMove = 0; B.trap = 0; B.chRe = 0; B.bkOn = false; B.senseRe = 0;
+            B.noMove = 0; B.trap = 0; B.bkOn = false; B.senseRe = 0;
             B.stallT = tb3; B.stallX = qx; B.stallZ = qz; done = true; break; }
         }
         if (!done) { B.init = false; B.noMove = 0; B.stallT = undefined; }   // nowhere within 4 m works — recycle rather than leave a fish parked in the scenery
@@ -16049,8 +16228,7 @@
       if (he >= 0 && he < 1) { const hf = Math.floor(he * 12);                 // 12 phases over the blink, stepped at 24 fps like every other animation here
         hk = 1 - hf / 12;                               // ONE flash (user): full at the instant of the hit, fading out across the half second
         if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
-        const HB = HURT.slot >= 0 ? wbf[HURT.slot] : null;
-        if (HB && HB.init) hurtBox(HB); else hk = 0;      // it died or despawned mid-blink — nothing left to stain
+        if (HURT.slot >= 0) { const HB = wbf[HURT.slot]; if (HB && HB.init) hurtBox(HB); else hk = 0; }   // it died or despawned mid-blink — nothing left to stain. SLOT -1 IS NOT THAT CASE: it is the deliberate AABB path a shot SKY BIRD takes (birds live in birds[], not the pool, so there is no wbf entry to re-read — birdShot sets the box and birdRagTick re-publishes it every frame). Zeroing hk here made hurtB.w 0, which is the shader's whole gate, so a shot bird never flashed red and the HURT.k wound light below never lit either
       }
       UF[1868] = HURT.cx - winOX; UF[1869] = HURT.cy; UF[1870] = HURT.cz - winOZ; UF[1871] = hk;
       HURT.k = hk;                                    // …and the wound CASTS light too (user). It cannot write a point-light slot from HERE — the ffLights
@@ -16160,10 +16338,16 @@
     if (CPROF) cpMark(6);
 
     // ── passes ──
-    if (VE.exporting) { tickReq = true; paceWaited = false; requestAnimationFrame(tick); return; }   // ── EXPORT QUIET MODE ── while the video editor is writing a file, skip the frame entirely: the
-    // tracer runs at 200+ fps behind the panel and its GPU/CPU contention is what made the exported clip judder
-    // (the editor preview looked fine because dropped frames only show up in the recorded timeline). The loop keeps
-    // pumping so playback, seeking and the recorder all continue normally.
+    // ── EXPORT QUIET MODE ── while the video editor is writing a file the TRACE is skipped: it runs at 200+ fps
+    // behind the panel and its GPU/CPU contention is what made the exported clip judder (the editor preview looked
+    // fine because dropped frames only show up in the recorded timeline). The loop keeps pumping so playback,
+    // seeking and the recorder all continue normally. ONLY the render passes are skipped — this used to be a
+    // mid-body return right here, which is precisely the exit tick-body.js warns about. It left xStripPending
+    // set, so stream.js parked its band generator on its wait-for-scatter yield loop and stepShifts burned
+    // its whole 3-18 ms budget busy-waiting every frame with terrain streaming frozen; and it skipped patchEncode,
+    // which is what zeroes patchN, so staged words climbed to PATCHMAX (well under a second with snow falling) and
+    // patchFlush then submitted a patch while a scatter was still pending — inverting the very ordering below.
+    const veQuiet = VE.exporting;
     const par = frame & 1;
     const enc = device.createCommandEncoder();
     if (xStripPending >= 0) {                          // strip scatter runs before this frame's trace
@@ -16174,26 +16358,28 @@
     // ⚠ ORDERING: the voxel patch goes AFTER the strip scatter. The scatter carries a PRE-band snapshot of a
     // whole x-strip; applying creature/snow/edit words first would let it stomp them with stale wrapped terrain.
     patchEncode(enc);
-    const gw = Math.ceil(RW / 8), gh = Math.ceil(RH / 8);
-    let qi = 0;
-    const run = (pipe, bg) => {
-      const p = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: qi++, endOfPassWriteIndex: qi++ } } : {});
-      p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(gw, gh); p.end(); };
-    { const p = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 10, endOfPassWriteIndex: 11 } } : {});   // ── VIS prepass ── one thread per 8×8 TILE (~1/64th of a screen pass): the creature/drop tile-cull bitmask, computed once and shared by TRACE + COMPOSITE
-      p.setPipeline(pVis); p.setBindGroup(0, bgVis);
-      p.dispatchWorkgroups(Math.ceil(gw / 8), Math.ceil(gh / 8)); p.end(); }
-    run(pTraceV[eyeFolV], bgTrace[eyeFolV][par]);
-    run(pTemporal, bgTemporal[par]);
-    run(pSpatial, bgSpatial[par]);
-    run(pComposite, bgComposite[par]);
-    run(pTaa, bgTaa[par]);
-    if (profQS) {                                      // resolve + read back pass timings (only while __vb.prof polling has it armed)
-      enc.resolveQuerySet(profQS, 0, 14, profRes, 0);
-      if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 112); profNew = true; }
+    if (!veQuiet) {                                    // ── the render, and only the render ── everything above and below this brace is frame bookkeeping the export must not skip
+      const gw = Math.ceil(RW / 8), gh = Math.ceil(RH / 8);
+      let qi = 0;
+      const run = (pipe, bg) => {
+        const p = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: qi++, endOfPassWriteIndex: qi++ } } : {});
+        p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(gw, gh); p.end(); };
+      { const p = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 10, endOfPassWriteIndex: 11 } } : {});   // ── VIS prepass ── one thread per 8×8 TILE (~1/64th of a screen pass): the creature/drop tile-cull bitmask, computed once and shared by TRACE + COMPOSITE
+        p.setPipeline(pVis); p.setBindGroup(0, bgVis);
+        p.dispatchWorkgroups(Math.ceil(gw / 8), Math.ceil(gh / 8)); p.end(); }
+      run(pTraceV[eyeFolV], bgTrace[eyeFolV][par]);
+      run(pTemporal, bgTemporal[par]);
+      run(pSpatial, bgSpatial[par]);
+      run(pComposite, bgComposite[par]);
+      run(pTaa, bgTaa[par]);
+      if (profQS) {                                    // resolve + read back pass timings (only while __vb.prof polling has it armed)
+        enc.resolveQuerySet(profQS, 0, 14, profRes, 0);
+        if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 112); profNew = true; }
+      }
+      const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
+      rp.setPipeline(pBlit); rp.setBindGroup(0, bgBlit[par]); rp.draw(3); rp.end();
     }
-    const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
-    rp.setPipeline(pBlit); rp.setBindGroup(0, bgBlit[par]); rp.draw(3); rp.end();
-    device.queue.submit([enc.finish()]);
+    device.queue.submit([enc.finish()]);               // a quiet frame still submits: the scatter + patch above are the encoder's whole payload, and they must land in THIS frame's order
     if (profNew && !profBusy) {
       profNew = false; profBusy = true;
       profStg.mapAsync(GPUMapMode.READ).then(() => {
@@ -16216,8 +16402,8 @@
     // ── save prev cam (world coords) ──
     prevCam.pos = cam; prevCam.right = right; prevCam.up = up; prevCam.fwd = fwd;
     prevCam.tanH = tanH; prevCam.aspect = aspect; prevCam.jit = j;
-    resetHist = 0;
-    frame++;
+    if (!veQuiet) resetHist = 0;                       // the TRACE is what consumes the flag, so a quiet frame must NOT clear it — a teleport during an export would otherwise lose its history flush and come back ghosting
+    frame++;                                           // never skipped: tick-creatures reads ((frame + wk) & 63) to recycle off-water slots, and a frozen counter makes that fire every frame for one slot in 64 and never for the rest
 
     // ── dual-wield overlays ── the shift+left-click hint shows until the discovery is earned
     if (achHideT && now > achHideT) { achEl.style.opacity = 0; achHideT = 0; }
@@ -16246,7 +16432,7 @@
     // prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it. This used to
     // be the v-sync-off half of a branch; v-sync was removed (user 2026-08-08) and it defaulted off anyway, so
     // this is now the only pacing mode and a hidden tab is the sole reason to fall back to rAF.
-    if (document.hidden) { paceWaited = false; tickReq = true; requestAnimationFrame(tick); }   // hidden tab always idles via rAF
+    if (document.hidden || veQuiet) { paceWaited = false; tickReq = true; requestAnimationFrame(tick); }   // hidden tab — or an export in progress — always idles via rAF: a quiet frame submits only a patch, so the GPU-completion pace would resolve instantly and spin the sim at thousands of fps, which is the contention the quiet mode exists to remove
     else { const wait = gpuPrevDone; gpuPrevDone = device.queue.onSubmittedWorkDone(); paceTs = performance.now();   // ONE pacing mode — no threshold flip-flop, so gen throughput is CONSISTENT
       tickReq = true;
       wait.then(paceOk, paceFail); }   // HOISTED handlers (see above): the inline arrow pair allocated two closures EVERY frame — the top entry in the steady-state heap profile

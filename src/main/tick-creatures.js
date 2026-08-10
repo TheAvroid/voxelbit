@@ -153,7 +153,7 @@
         if (!placed) { if (B.sN) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
         if (wantK === 0 || wantK === 2 || wantK === 6) { B.hx = sx7; B.hz = sz7; B.hcx = hcx; B.hcz = hcz; } else { B.hcx = undefined; }
         B.dfly = (wantK === 0 && isDfly); B.dfMis = 0;              // the strip + frame count key off this; everything else about the creature is butterfly
-        if (wantK === 6) { B.spd = FISH_CFG.baseSpeed * 0.8; B.spdT = FISH_CFG.baseSpeed; B.chRe = 0; B.dT = 0.3 + Math.random() * 0.5; B.dRe = 0; B.animClk = Math.random() * 40; B.cx = B.x; B.cy = B.y; B.cz = B.z; B.vyS = 0;   // FISH: ease up into the configured cruise + desynced tail-beat; chRe=0 → pick a channel heading on frame 1; cx/cy/cz = last body-clear pose (terrain hitbox revert)
+        if (wantK === 6) { B.spd = FISH_CFG.baseSpeed * 0.8; B.spdT = FISH_CFG.baseSpeed; B.dT = 0.3 + Math.random() * 0.5; B.dRe = 0; B.animClk = Math.random() * 40; B.cx = B.x; B.cy = B.y; B.cz = B.z; B.vyS = 0;   // FISH: ease up into the configured cruise + desynced tail-beat; cx/cy/cz = last body-clear pose (terrain hitbox revert)
           B.fsp = wk % Math.max(1, FISHES.length);     // species fixed by SLOT (like the songbirds) — an exact even split that never drifts as fish recycle
           B.fhalf = (FISHES[B.fsp] || {}).half || 5;              // body half-length for every navigation probe — per species, not a salmon-sized guess
           { const sn = (FISHES[B.fsp] || {}).name;                // per-species LEAP frequency multiplier from the config (unlisted species get a modest default)
@@ -169,7 +169,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0;   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash or panic
+        B.om = 0; B.omT = 0; B.turnAcc = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0;   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash, panic or wound-up yaw (turnAcc: a recycled duck inheriting most of a circle reads its very first bank as an over-wound spin and unwinds the long way round for nothing)
         // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading.
         // THIS LINE WAS DEAD: it used to sit after a `//` on the line above, so the trailing comment ate it. The
         // bunny is the one creature whose position is ASSIGNED rather than integrated (B.x = B.bpx + bake offset),
@@ -377,7 +377,7 @@
             B.omT = Math.max(-2.8, Math.min(2.8, dth * 2.8));
           } else if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.0; B.tRe = tb3 + 2 + Math.random() * 3; }   // open water — gentle wander
           // signed yaw carried over the last several seconds: ~±6.3 means a full circle one way
-          B.turnAcc = (B.turnAcc || 0) * 0.992 + (B.om || 0) * dt;
+          B.turnAcc = (B.turnAcc || 0) * Math.exp(-0.48193 * dt) + (B.om || 0) * dt;   // PER-SECOND leak (0.48193 = −60·ln 0.992), IDENTICAL at 60 fps and unchanged in character. The old 0.992 was applied once per FRAME against a per-second input, so the steady value was 125·om·dt — ~5.8 at 60 fps but only 1.2-2.4 at the 185-400 fps this ships at, which left BOTH thresholds below (4.0 and 2.5) permanently dead: a mother duck circling a small bay never got the unwind-the-long-way-round correction or the reverse-direction penalty and orbited forever, on a fast machine only.
           if (!duckOK(B.th, 13) || !duckOK(B.th, 7)) {  // imminent bank ahead — turn down the LONGEST open lane (backs up the soft repulsion; earlier lookahead so it never reaches the shore)
             const duckReach = (th6) => { for (let d = 5; d <= 26; d += 3) if (!duckOK(th6, d)) return d; return 26; };
             const spin = Math.abs(B.turnAcc) > 2.5 ? Math.sign(B.turnAcc) : 0;   // already part-way round? penalise going further that way
@@ -639,7 +639,7 @@
         }
       }
       const gLoc = bfSurf(B.x, B.z);                   // the actual ground right here
-      const gAir = (NAVARB && B.kind < 2 && nvOn) ? Math.max(gLoc, nvTop(nvIdx(B.x, B.z))) : gLoc;   // ── FLYERS TAKE THEIR GROUND FROM THE FIELD ── bfSurf is ONE column of hmap clamped to sea level; the field's travel surface is the MAX over the 2×2 and counts decor and rock the heightmap never saw. Leaving the altitude servo on bfSurf floored butterflies BELOW the surface the predicate measures clearance from, so every frame the mover refused a move the planner had just approved — the exact planner/mover split the arbiter exists to close, reintroduced on the vertical axis.
+      const gAir = (NAVARB && B.kind < 2 && nvOn) ? Math.max(gLoc, nvTopAir(nvIdx(B.x, B.z))) : gLoc;   // ── FLYERS TAKE THEIR GROUND FROM THE FIELD ── bfSurf is ONE column of hmap clamped to sea level; the field's travel surface is the MAX over the 2×2 and counts decor and rock the heightmap never saw. Leaving the altitude servo on bfSurf floored butterflies BELOW the surface the predicate measures clearance from, so every frame the mover refused a move the planner had just approved — the exact planner/mover split the arbiter exists to close, reintroduced on the vertical axis.
       const yPrev5 = B.y;                            // total vertical motion this frame is budget-capped below — branches must never STACK into a visible jump
       if (B.kind === 2) {                              // WORM / BUNNY: rides the terrain SMOOTHLY — target blends the ground AHEAD (starts the ramp before a step) and eases at a gentle rate
         // ── ONE SEAT FOR ALL FOUR LAND MAMMALS (user 2026-08-07: "do they all behave the same way?") ── they did
@@ -799,7 +799,7 @@
             if (!fishBodyAt(qx, qz, a8, Math.floor(qy), B.fhalf)) continue;
             B.x = qx; B.z = qz; B.y = qy; B.th = a8; B.om = 0; B.omT = 0; B.dT = 0.5;
             B.cx = qx; B.cy = qy; B.cz = qz; B.cth = a8; B.hx = qx; B.hz = qz;   // re-home too, or the leash drags it straight back into the pocket
-            B.noMove = 0; B.trap = 0; B.chRe = 0; B.bkOn = false; B.senseRe = 0;
+            B.noMove = 0; B.trap = 0; B.bkOn = false; B.senseRe = 0;
             B.stallT = tb3; B.stallX = qx; B.stallZ = qz; done = true; break; }
         }
         if (!done) { B.init = false; B.noMove = 0; B.stallT = undefined; }   // nowhere within 4 m works — recycle rather than leave a fish parked in the scenery

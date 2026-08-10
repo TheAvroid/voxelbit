@@ -156,7 +156,14 @@
         // Gated on DISTANCE so it can never take a chunk out from under someone about to collect it: inside
         // this radius a settled chunk still vacuums up by walking to it, exactly as before. noAbsorb (a felled
         // trunk) is scenery the player may still want to chop, so it is never baked out from under them.
-        else if (!b.noAbsorb && !b.nearR && b.n <= PH.retireFar) {
+        // ── AND IT USED TO EXCLUDE EXACTLY THE BODIES IT WAS WRITTEN FOR ── a `!b.nearR` term sat here, but
+        // supDrop sets nearR = PH.absorbR unconditionally on every body the support resolver sheds, so 100% of
+        // resolver scrap — the cones and needle tufts named above as the reason this path exists — failed the
+        // guard and was never baked back. PH.bodies then sat pinned at 16/16 in ordinary play and the eviction
+        // paths ran on chunks the player was walking toward. The distance gate alone already covers the concern:
+        // retireFarR is 48 and the largest nearR anything sets is 16 (absorbR, and the arrow's is the same), so
+        // a body eligible here is three times further away than any reach that could collect it.
+        else if (!b.noAbsorb && b.n <= PH.retireFar) {
           const rdx = b.pos[0] - P.x, rdy = b.pos[1] - smoothEye, rdz = b.pos[2] - P.z;
           if (rdx * rdx + rdy * rdy + rdz * rdz > PH.retireFarR * PH.retireFarR) b.retire = true;
         } }

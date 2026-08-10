@@ -1,3 +1,5 @@
+  // @module — arrows and spears: launch, arc, impact, and the pick-up flood
+  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, PASSTHRU, PICK_BOULDER, PICK_CONE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, WORM_PASS, arrowChop, floodRemove, floodScan, launchThrown, shootArrow, throwSpear
   // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
   // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
   const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
@@ -169,6 +171,18 @@
     let yCeil = WY;                                    // above this there is nothing to hit at all: the grid ends, and every animal lives inside it
     for (const t of targets) yCeil = Math.max(yCeil, t.by + t.hy + 1);
     for (const t of bTargets) yCeil = Math.max(yCeil, t.B.y + Math.sqrt(t.r2) + 1);
+    // ── AND IT COLLIDES WITH THE WORLD FROM THE FIRST STEP (2026-08-10) ── the impact test below was gated on
+    // `T > 0.02`, and T is the flight time at the START of a 5 ms step, so the first FIVE steps were never
+    // tested at all. At a full draw that is 12 voxels, on top of the 6 the shaft already spawns ahead of the
+    // eye: nothing within ~18 voxels could stop an arrow, so a boulder at 1.5 m was passed clean through and
+    // the carve landed on whatever the shaft eventually met across the clearing. Creature hits were never
+    // gated this way, which is why only the world half of it was wrong.
+    // What that gate was really protecting is the MUZZLE, and that part is real: the launch point sits
+    // LAUNCH_D = 6 voxels out along the view (see above), so it can start life inside a trunk, a wall or the
+    // ground, and an ungated test would then stick the arrow instantly at arm's length. Ask that question
+    // directly instead of buying it with a blanket head start — is the SPAWN POINT itself blocked, and has the
+    // arc reached open air since — and the first two metres come back with the guard intact.
+    let muzzleFree = !arrowBlocked(Math.round(sx), Math.round(sy2), Math.round(sz));   // false = launched from inside something: no impact until the arc is out in the open
     let px = sx, py = sy2, pz = sz, vy = vy0, T = 0, landed = false;
     for (let i = 0; i < STEPS; i++) {
       const nvy = vy + TOSS_G * 0.005;
@@ -192,7 +206,9 @@
           const ax = B.x - qx, ay = B.y - qy, az = B.z - qz;
           if (ax * ax + ay * ay + az * az <= t.r2) { hitBird = t.bi; break; }
         }
-        if (hitSlot >= 0 || hitBird >= 0 || (T > 0.02 && arrowBlocked(Math.round(qx), Math.round(qy), Math.round(qz)))) {
+        const blk = arrowBlocked(Math.round(qx), Math.round(qy), Math.round(qz));
+        if (!blk) muzzleFree = true;                   // out in the open — everything solid from here on is a real impact, however close it is
+        if (hitSlot >= 0 || hitBird >= 0 || (muzzleFree && blk)) {
           px = qx; py = qy; pz = qz; T += 0.005 * f; struck = true; break;
         }
       }
@@ -245,10 +261,17 @@
   const SPEAR_WIND_MS = 320, SPEAR_V = ARROW_V * 0.62, SPEAR_UP = ARROW_UP;
   const throwSpear = () => {
     if (!SPEAR_IT || dead || ED.on) return false;
+    // ── A THROW HAS TO BE PAID FOR BEFORE IT HAPPENS ── the spear IS the projectile, so the launch and the
+    // `--sel.n` are one transaction. Launching first and checking the slot after meant a throw that could not
+    // be paid for still flew: heldIt() answers with grabAnim.it while a pickup is still FLYING toward an empty
+    // hand (ui/hud.js), so right-clicking a spear off the ground and releasing past the 90 ms threshold threw a
+    // spear the hand did not hold yet — one landed in the world and the original arrived 360 ms later, turning
+    // one spear into two, repeatably. Checked up front, like dropHeld's own `if (!sel) return`.
+    const sel = slots[selSlot];
+    if (!sel || sel.it !== SPEAR_IT) return false;
     const wk = Math.min(1, Math.max(0, (bowRel - bowT0) / SPEAR_WIND_MS));
     if (!launchThrown(SPEAR_IT, SPEAR_V * (0.55 + 0.45 * wk), SPEAR_UP * wk, 'spear')) return false;
-    const sel = slots[selSlot];                        // …and it is gone from the hand the instant it flies
-    if (sel && sel.it === SPEAR_IT && --sel.n <= 0) { slots[selSlot] = null; slotTidy(); }
+    if (--sel.n <= 0) { slots[selSlot] = null; slotTidy(); }   // …and it is gone from the hand the instant it flies
     return true;
   };
   const PICK_ROCK = new Set(PEBBLE), PICK_STICK = new Set([STICK_S]), PICK_BOULDER = new Set(BROCK);

@@ -305,7 +305,7 @@
   document.addEventListener('mouseup', (e) => { if (e.button === 2) { if (mouse2) { bowRel = performance.now();   // …and releasing LOOSES it, running 03→06 (user)
       if (BOW_IT && heldIt() === BOW_IT) stopBowStretch();   // the pull is over — a half-draw must not leave the creak ringing over the release
       if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); playSwish(); }   // …and the shaft leaves with the whoosh (user)   // …the ARROW LEAVES the bow (user): the bare strip takes over and a projectile flies
-      else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) { throwSpear(); playSwish(); }   // …and the SPEAR flies out of the raised hand (user)
+      else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) { if (throwSpear()) playSwish(); }   // …and the SPEAR flies out of the raised hand (user)
       }
     mouse2 = false; }
     if (e.button === 0) { mouse0 = false;

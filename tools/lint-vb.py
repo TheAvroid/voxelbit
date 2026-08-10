@@ -448,19 +448,33 @@ def check_modules(masked, offsets, mods, where):
             err(rel, '@exports lists "%s" but nothing outside this module uses it - drop '
                      'it and the name stays private' % n)
 
-        # an exported `let` that someone else writes cannot survive the const copy
+        # An exported `let` cannot survive the const copy - and the writer does not have
+        # to be another fragment. `cmdOpen` is a `let` that ui/console.js assigns ITSELF
+        # and ui/input.js only reads; the shared scope still gets a snapshot taken at
+        # module-init, so the console silently stopped taking the keyboard. Checking only
+        # for writes from OTHER fragments missed that and shipped it.
         for n in sorted(exports & mine):
             if not re.search(r'^  let\s[^;]*(?<![.\w$])' + re.escape(n) + r'(?![\w$])',
                              masked[a:b], re.M):
                 continue
             w = re.compile(r'(?<![.\w$])' + re.escape(n)
                            + r'\s*(?:=(?!=)|[-+*/|&^%]=|\+\+|--)')
+            writers = []
             for a2, b2, rel2 in offsets:
-                if rel2 != rel and w.search(masked[a2:b2]):
-                    err(rel, '"%s" is a `let` that %s assigns. A module exports a const '
-                             'copy, so that write would be lost. Move it out of the '
-                             'module, or expose a setter.' % (n, rel2))
-                    break
+                seg2 = masked[a2:b2]
+                if rel2 == rel:
+                    # skip the declaration itself; any later write still counts
+                    hits = [m for m in w.finditer(seg2)
+                            if not re.match(r'^  let\s', seg2[seg2.rfind(chr(10), 0, m.start()) + 1:])]
+                    if hits:
+                        writers.append(rel2 + ' (itself)')
+                elif w.search(seg2):
+                    writers.append(rel2)
+            if writers:
+                err(rel, '"%s" is an exported `let`, assigned by %s. A module exports a '
+                         'CONST SNAPSHOT taken at module-init, so every later write is '
+                         'invisible outside. Fold it into an exported object, or move the '
+                         'declaration out of the module.' % (n, ', '.join(writers[:3])))
     if VERBOSE:
         print('  exports:  every @exports list matches what the build actually needs')
 

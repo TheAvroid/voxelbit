@@ -21,7 +21,7 @@
             if (W[ii]) { supPush(ii); ORPH.seeded++; }
           }
         }
-        jobById.delete(j.id);
+        jobById.delete(j.id); j.msg = null;            // …and DROP the slab. `jobs` outlives the loop, so the map delete alone freed nothing: msg owns the transferred W/hmap/bb/wb, and this rect is the whole window, so every slab held to the end summed to a second complete copy of the world buffer (~226 MB) for the entire boot. Blitted and its orphan seeds read (oq is captured above) — nothing reads it again. Same release poolFree does for the streaming path.
       }
       built = poolOk;
       if (!built) { poolQueue.length = 0; jobById.clear(); }

@@ -1,10 +1,10 @@
   // @module — screen recording, the clip timeline, red annotations, the export
-  // @exports BASE_VIG, VE, VE_CAP_MS, renderDist, veAC, veAudioDest, vePanel, veTapEl, veToggleRec
+  // @exports BASE_VIG, VE, VE_CAP_MS, renderDist, veAudioDest, vePanel, veTapEl, veToggleRec
   // ═══════════════ VIDEO EDITOR + SCREEN RECORDER ═══════════════ (user)
   // Capture the game canvas to a .webm with MediaRecorder, then trim / cut / delete / resize clips on a timeline and
   // export the result. Entirely self-contained DOM + MediaRecorder work — nothing here touches the WebGPU render loop.
   // The "recording" banner is a DOM element (never drawn on the canvas), so it can never appear in the capture/export.
-  const VE = { clips: [], dur: 0, sel: -1, blobUrl: null, thumb: '', playing: false, lastPaint: 0,
+  const VE = { clips: [], dur: 0, sel: -1, blobUrl: null, thumb: '', playing: false, lastPaint: 0, ac: null,
                rec: null, chunks: [], recording: false, drag: null,
                strokes: [], undone: [], pen: false, drawing: false, exporting: false };   // strokes: red annotation polylines in NORMALISED video space; undone: redo stack for Ctrl+Z; exporting: suspends the game's render work
   const veBtnEl = $('veBtn'), vePanel = $('vePanel'), veStage = $('veStage'), veVideo = $('veVideo'),
@@ -81,17 +81,17 @@
   // the capture — recordings then carry sound as well as picture. Built lazily on the first capture and wrapped in
   // try/catch, so any failure degrades to video-only rather than breaking playback. createMediaElementSource is
   // one-shot per element, so each is tapped once and also re-connected to the speakers so normal audio still plays.
-  let veAC = null, veGameDest = null;
-  const veTapEl = (a) => { if (!veAC || a._veTap) return;
+  let veGameDest = null;                                 // VE.ac, not a `let`: see the CMD note in ui/console.js — an exported `let` is a dead snapshot outside the module
+  const veTapEl = (a) => { if (!VE.ac || a._veTap) return;
     try {
       if (a._sfxOut) { a._sfxOut.connect(veGameDest); a._veTap = true; return; }   // already routed through an effect (see bassTap) — tap its OUTPUT, or the recorder would capture the dry element twice and the filtered one never
-      const s = veAC.createMediaElementSource(a); s.connect(veAC.destination); s.connect(veGameDest); a._veTap = true;
+      const s = VE.ac.createMediaElementSource(a); s.connect(VE.ac.destination); s.connect(veGameDest); a._veTap = true;
     } catch (e) {} };
   const veAudioDest = () => {
     try {
-      if (!veAC) { veAC = audioCtx(); if (!veAC) return null; veGameDest = veAC.createMediaStreamDestination(); }   // the SHARED context — see audioCtx
+      if (!VE.ac) { VE.ac = audioCtx(); if (!VE.ac) return null; veGameDest = VE.ac.createMediaStreamDestination(); }   // the SHARED context — see audioCtx
       if (typeof sndReg !== 'undefined') for (const s of sndReg) veTapEl(s.a);
-      if (veAC.state === 'suspended') veAC.resume();
+      if (VE.ac.state === 'suspended') VE.ac.resume();
       return veGameDest;
     } catch (e) { console.warn('[vb] audio tap failed', e); return null; }
   };
@@ -324,59 +324,78 @@
     try { stream = cvs.captureStream(0); track = stream.getVideoTracks()[0]; }   // 0 = MANUAL push, one per PRESENTED source frame (rVFC pump below) + a hold-last-frame watchdog; seeks spliced out via rec.pause()/resume(). Rejected alternatives: (1) captureStream(60) auto-sampling emits NOTHING while the canvas is static → ~1 s frozen gap at the head; (2) a wall-clock fixed-rate pump BEAT against the media clock → periodic dup/drop stutter; (3) an rAF media-clock pump RACED the decoder's presentation by ±1 frame → content dup/skip (the "still slightly jittery" bug). rVFC is safe now that EXPORT QUIET MODE stops the game from contending the decoder — the pre-gate rVFC attempt failed only because of that contention.
     catch (e) { console.warn('[vb] export captureStream failed', e); btn.disabled = false; btn.textContent = label0; return; }
     const wasMuted = veVideo.muted; veVideo.muted = false;
-    try { const a = veVideo.captureStream ? veVideo.captureStream() : (veVideo.mozCaptureStream ? veVideo.mozCaptureStream() : null);   // carry the ORIGINAL audio track across
-      if (a) for (const t of a.getAudioTracks()) stream.addTrack(t); } catch (e) {}
-    const expDur = veExportDur(), reqRate = veExportRate(vw, vh, expDur).rate;
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: reqRate, audioBitsPerSecond: 192000 });   // the FINAL encode — rate comes from the size cap in the toolbar, falling back to a quality target when the cap is "best quality"
-    const chunks = []; rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-    const stopped = new Promise((res) => { rec.onstop = res; });
-    let pump = null, alive = true;
-    const pushFrame = () => {                              // composite the CURRENT video frame + the red annotations, then PUSH it to the recorder
-      g.drawImage(veVideo, 0, 0, vw, vh);
-      if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
-      if (track.requestFrame) track.requestFrame();
-    };
-    VE.exporting = true;                                   // suspends the game's render work (see the frame loop) so the pump runs uncontended and playback cannot hitch
-    await veSeekAwait(VE.clips[0].s);
-    pushFrame(); rec.start();
-    let lastPush = 0;                                      // wall-clock of the last pushed frame — the watchdog's baseline
-    const onVF = () => { if (!alive) return;               // ── PRESENTATION-LOCKED PUMP (user: "still slightly jittery — only after download") ── any rAF-timed pump samples the video on ITS OWN tick, racing the decoder's presentation by ±1 frame: sometimes it grabs frame N, sometimes still N-1 → content dup/skip in the file even with even timestamps. rVFC fires exactly ONCE per PRESENTED frame, so every push is the frame the decoder actually showed, on the compositor's even 60 Hz cadence. Safe now that the render loop is fully gated during export (EXPORT QUIET MODE) — the old rVFC rejection predates that gate, when the game contended the decoder into irregular presentation.
-      g.drawImage(veVideo, 0, 0, vw, vh);
-      if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
-      if (!veVideo.paused && !veVideo.seeking && rec.state === 'recording' && track.requestFrame) { track.requestFrame(); lastPush = performance.now(); }
-      veVideo.requestVideoFrameCallback(onVF); };
-    const RVFC = !!veVideo.requestVideoFrameCallback;
-    if (RVFC) veVideo.requestVideoFrameCallback(onVF);
-    let clipBase = 0, clipPushed = 0;                      // fallback media-clock pump state (no-rVFC browsers only)
-    const drive = () => { if (!alive) return;
-      if (!veVideo.paused && !veVideo.seeking && rec.state === 'recording') {
-        if (RVFC) { if (performance.now() - lastPush > 50 && track.requestFrame) { lastPush = performance.now(); track.requestFrame(); } }   // WATCHDOG: a gap recorded at CAPTURE time presents nothing during playback — re-push the held frame so the file never has a timestamp hole
-        else { const target = Math.floor((veVideo.currentTime - clipBase) * EXPORT_FPS);
-          if (target > clipPushed) { pushFrame(); clipPushed = target; } }   // no-rVFC fallback: push when the MEDIA clock crosses a 1/60 boundary; resync on a miss (a dropped frame is invisible, duplicate-then-catch-up is the stutter)
+    let pump = null, alive = true, rec = null, aborted = false;   // hoisted ABOVE the try/finally below, so the teardown can always reach them however the run ends
+    try {
+      try { const a = veVideo.captureStream ? veVideo.captureStream() : (veVideo.mozCaptureStream ? veVideo.mozCaptureStream() : null);   // carry the ORIGINAL audio track across
+        if (a) for (const t of a.getAudioTracks()) stream.addTrack(t); } catch (e) {}
+      const expDur = veExportDur(), reqRate = veExportRate(vw, vh, expDur).rate;
+      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: reqRate, audioBitsPerSecond: 192000 });   // the FINAL encode — rate comes from the size cap in the toolbar, falling back to a quality target when the cap is "best quality"
+      const chunks = []; rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      const stopped = new Promise((res) => { rec.onstop = res; });
+      const pushFrame = () => {                              // composite the CURRENT video frame + the red annotations, then PUSH it to the recorder
+        g.drawImage(veVideo, 0, 0, vw, vh);
+        if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
+        if (track.requestFrame) track.requestFrame();
+      };
+      VE.exporting = true;                                   // suspends the game's render work (see the frame loop) so the pump runs uncontended and playback cannot hitch
+      await veSeekAwait(VE.clips[0].s);
+      pushFrame(); rec.start();
+      let lastPush = 0;                                      // wall-clock of the last pushed frame — the watchdog's baseline
+      const onVF = () => { if (!alive) return;               // ── PRESENTATION-LOCKED PUMP (user: "still slightly jittery — only after download") ── any rAF-timed pump samples the video on ITS OWN tick, racing the decoder's presentation by ±1 frame: sometimes it grabs frame N, sometimes still N-1 → content dup/skip in the file even with even timestamps. rVFC fires exactly ONCE per PRESENTED frame, so every push is the frame the decoder actually showed, on the compositor's even 60 Hz cadence. Safe now that the render loop is fully gated during export (EXPORT QUIET MODE) — the old rVFC rejection predates that gate, when the game contended the decoder into irregular presentation.
+        g.drawImage(veVideo, 0, 0, vw, vh);
+        if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
+        if (!veVideo.paused && !veVideo.seeking && rec.state === 'recording' && track.requestFrame) { track.requestFrame(); lastPush = performance.now(); }
+        veVideo.requestVideoFrameCallback(onVF); };
+      const RVFC = !!veVideo.requestVideoFrameCallback;
+      if (RVFC) veVideo.requestVideoFrameCallback(onVF);
+      let clipBase = 0, clipPushed = 0;                      // fallback media-clock pump state (no-rVFC browsers only)
+      const drive = () => { if (!alive) return;
+        if (!veVideo.paused && !veVideo.seeking && rec.state === 'recording') {
+          if (RVFC) { if (performance.now() - lastPush > 50 && track.requestFrame) { lastPush = performance.now(); track.requestFrame(); } }   // WATCHDOG: a gap recorded at CAPTURE time presents nothing during playback — re-push the held frame so the file never has a timestamp hole
+          else { const target = Math.floor((veVideo.currentTime - clipBase) * EXPORT_FPS);
+            if (target > clipPushed) { pushFrame(); clipPushed = target; } }   // no-rVFC fallback: push when the MEDIA clock crosses a 1/60 boundary; resync on a miss (a dropped frame is invisible, duplicate-then-catch-up is the stutter)
+        }
+        pump = requestAnimationFrame(drive); };
+      pump = requestAnimationFrame(drive);
+      for (const clip of VE.clips) {
+        if (rec.state === 'recording') rec.pause();          // SPLICE the seek out of the file — the old pump filled every clip boundary with ~0.5 s of frozen duplicate frames; pausing the recorder stops its clock so the next clip butts on seamlessly
+        await veSeekAwait(clip.s); clipBase = clip.s; clipPushed = 0;
+        await veVideo.play().catch(() => {});
+        if (rec.state === 'paused') rec.resume();
+        if (!RVFC) pushFrame();                              // fallback only: land the clip's first frame now (the media clock hasn't crossed a boundary yet). On the rVFC path the seek's own presentation already drew it — pushing here could emit the PREVIOUS clip's stale canvas
+        // …and TERMINATE THE MOMENT PLAYBACK STOPS. Nothing disables the close paths during an export: Escape, the ✕ and a
+        // backdrop click all reach veClose → vePause → veVideo.pause(), and paused mid-clip `currentTime >= clip.e` can never
+        // become true — the loop spun forever, VE.exporting was never cleared, and the frame loop skipped every frame after
+        // that, so the game froze on its last presented frame until the page was reloaded.
+        await new Promise((res) => { const chk = () => { if (!alive || veVideo.paused || veVideo.ended || veVideo.currentTime >= clip.e - 0.02) res(); else requestAnimationFrame(chk); }; requestAnimationFrame(chk); });
+        aborted = veVideo.paused && !veVideo.ended && veVideo.currentTime < clip.e - 0.02;   // stopped SHORT of the clip's end = someone closed the panel (or hit ❚❚) mid-run; reaching the end pauses too, hence the position test
+        veVideo.pause();
+        if (aborted) break;
       }
-      pump = requestAnimationFrame(drive); };
-    pump = requestAnimationFrame(drive);
-    for (const clip of VE.clips) {
-      if (rec.state === 'recording') rec.pause();          // SPLICE the seek out of the file — the old pump filled every clip boundary with ~0.5 s of frozen duplicate frames; pausing the recorder stops its clock so the next clip butts on seamlessly
-      await veSeekAwait(clip.s); clipBase = clip.s; clipPushed = 0;
-      await veVideo.play().catch(() => {});
-      if (rec.state === 'paused') rec.resume();
-      if (!RVFC) pushFrame();                              // fallback only: land the clip's first frame now (the media clock hasn't crossed a boundary yet). On the rVFC path the seek's own presentation already drew it — pushing here could emit the PREVIOUS clip's stale canvas
-      await new Promise((res) => { const chk = () => { if (veVideo.currentTime >= clip.e - 0.02 || veVideo.ended) res(); else requestAnimationFrame(chk); }; requestAnimationFrame(chk); });
-      veVideo.pause();
+      alive = false;
+      cancelAnimationFrame(pump); pump = null;
+      rec.stop(); await stopped;
+      if (aborted) return;                                 // closed mid-run: no truncated download the player never asked for, and no veCalibrate off a part-length file (the finally still releases VE.exporting and the button)
+      const out = new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' });
+      veCalibrate(out.size, expDur, reqRate);              // what the encoder ACTUALLY did → next export's estimate is this machine's, not a hardcoded guess
+      const url = URL.createObjectURL(out), a2 = document.createElement('a');
+      a2.href = url; a2.download = 'voxelbit-clip.' + ext; document.body.appendChild(a2); a2.click(); a2.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      veUpdateEst(); if (VE.clips.length) veSeek(VE.clips[0].s);
+    } finally {                                        // ── ALWAYS RELEASE ── VE.exporting gates the ENTIRE frame loop, so any throw above (a MediaRecorder that refuses the mime, a lost blob, a device reset) left the game frozen on its last presented frame with the export button stuck disabled. Every exit path now lands here.
+      alive = false; if (pump) cancelAnimationFrame(pump);
+      try { if (rec && rec.state !== 'inactive') rec.stop(); } catch (e) {}
+      try { for (const t of stream.getTracks()) t.stop(); } catch (e) {}   // release the export compositor's capture + the borrowed audio track
+      veVideo.muted = wasMuted; VE.exporting = false;   // the two pieces of state that MUST NOT survive the call
+      btn.disabled = false; btn.textContent = label0;
     }
-    alive = false;
-    cancelAnimationFrame(pump);
-    rec.stop(); await stopped; veVideo.muted = wasMuted; VE.exporting = false;
-    try { for (const t of stream.getTracks()) t.stop(); } catch (e) {}   // release the export compositor's capture + the borrowed audio track
-    const out = new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' });
-    veCalibrate(out.size, expDur, reqRate);              // what the encoder ACTUALLY did → next export's estimate is this machine's, not a hardcoded guess
-    const url = URL.createObjectURL(out), a2 = document.createElement('a');
-    a2.href = url; a2.download = 'voxelbit-clip.' + ext; document.body.appendChild(a2); a2.click(); a2.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
-    btn.disabled = false; btn.textContent = label0; veUpdateEst(); if (VE.clips.length) veSeek(VE.clips[0].s);
   };
-  const veSeekAwait = (t) => new Promise((res) => { const on = () => { veVideo.removeEventListener('seeked', on); res(); }; veVideo.addEventListener('seeked', on); veVideo.currentTime = Math.max(0, Math.min(VE.dur - 1e-3, t)); });
+  const veSeekAwait = (t) => new Promise((res) => {   // ── THE LAST UNBOUNDED WAIT ── every other await in veExport now terminates on pause/abort, and this one
+    let done = false;                                //  must too: if the element never fires 'seeked' (a src swapped out from under it, a decode stall) the export's
+    const fin = () => { if (done) return; done = true; clearTimeout(tm); veVideo.removeEventListener('seeked', fin); res(); };   //  try/finally never runs and VE.exporting stays latched, which freezes the frame loop for the session.
+    const tm = setTimeout(fin, 3000);                 // 3 s is ~30x a normal seek on a local blob; giving up and pushing on beats hanging for ever
+    veVideo.addEventListener('seeked', fin);
+    veVideo.currentTime = Math.max(0, Math.min(VE.dur - 1e-3, t)); });
 
   // ── OPEN / CLOSE + BUTTON WIRING ──
   const veOpen = () => { vePanel.classList.remove('hidden'); lockEl.classList.add('hidden');   // the editor takes over the screen: hide the esc menu behind it and RELEASE the pointer so the mouse drives the UI, not the camera (the R-stop path leaves the game pointer-locked — user: "the mouse is still connected to the player camera in the background")

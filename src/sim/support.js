@@ -5,8 +5,8 @@
   // 1.5 GiB, in a title that ships as a local browser game on players' own hardware.
   // A CONDUIT cell (a creature grid stamp, whatever its palette id) is traversable in the DRAPE flood but
   // never lands in `comp`: it is not liftable, and it is never an anchor either.
-  const supWorldX = (gx) => winOX + (((gx - gwrap(winOX, WX)) % WX) + WX) % WX;   // window column -> the world column it currently stands for; bodies live in world space, so a component must be un-wrapped before it becomes one
-  const supWorldZ = (gz) => winOZ + (((gz - gwrap(winOZ, WZ)) % WZ) + WZ) % WZ;
+  // (supWorldX / supWorldZ — window column -> the world column it currently stands for — now live in
+  //  sim/support-rules.js, above every consumer, so phWakeNear can call them instead of inlining them.)
   // ── OBJECT IDENTITY: TRIED 2026-08-08, REVERTED, KEEP THE MEASUREMENTS ─────────────────────────────────
   // The plan was to give the support graph OBJECT identity (which model owns this voxel, derived from the
   // placement grids — W is ~1.5 GiB, a per-voxel id array is not affordable) and to refuse drape edges between
@@ -285,7 +285,9 @@
   // centred on the IMPACT POINT while the geometry that changed is elsewhere — phSeparate removes a crown
   // 40-90 voxels above the cut, and the two sweeps that followed were centred on the cut.
   // Lifts append their vacated cells to the same queue (through gpuPatch), so cascades settle inside this
-  // pass or carry to the next frame. The queue is persistent; nothing is ever dropped on the floor.
+  // pass or carry to the next frame. The queue is persistent: nothing is dropped on the floor by anything in
+  // HERE — an undecided flood is re-seeded through SUP.retry, a refused component re-seeds itself. The single
+  // exception is upstream, at the qMax cap in supPush, which drops the seed outright and counts it.
   const supFlush = (force, budget) => {
     if (!SUP.on || SUP.qh >= SUP.q.length) { SUP.blockedNow = 0; return 0; }
     const t0 = performance.now();

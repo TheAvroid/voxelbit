@@ -1,5 +1,5 @@
   // @module — the in-game command line (T)
-  // @exports cmdEscAt, cmdMsg, cmdOpen, cmdRun, cmdShow
+  // @exports CMD, cmdMsg, cmdRun, cmdShow
   // ══ COMMAND LINE (user) ══ T opens it, Enter runs, Escape cancels. `/spawn <thing>` puts a creature
   // or an item in front of the player. While it is open the game's own keyboard is silenced — the binds
   // read raw key codes, so without that, typing "spawn" would drop the held item on the d and toggle
@@ -8,18 +8,20 @@
     butterfly: [0, 16, 0], moth: [0, 16, 1], duck: [16, 20, 3], worm: [32, 64, 2],
     fish: [244, 276, 6], bunny: [276, 300, 2], armadillo: [300, 324, 2], skunk: [324, 348, 2], porcupine: [348, 372, 2],
   };
-  let cmdOpen = false;
-  let cmdEscAt = -1e9;                                 // when Escape last dismissed the line — see the esc-menu suppression below
+  // Fields on a bag, NOT two exported `let`s: a module exports a const snapshot taken at
+  // module-init, so `CMD.open` read from outside would have been frozen `false` for ever and
+  // ui/input.js would have kept feeding the game keystrokes while the command line was open.
+  const CMD = { open: false, escAt: -1e9 };                                 // when Escape last dismissed the line — see the esc-menu suppression below
   let cmdRelock = 0;                                   // the retry that takes the pointer back once the browser will allow it
   const cmdBar = $('cmdBar'), cmdTxt = $('cmdTxt'), cmdMsg = $('cmdMsg');
   let cmdBuf = '';                                     // the line's own text: with the pointer still locked there is nothing to focus, so it keeps its own buffer
   const cmdDraw = () => { if (cmdTxt) cmdTxt.textContent = cmdBuf; };
   const cmdSay = (t) => { if (cmdMsg) { cmdMsg.textContent = t; clearTimeout(cmdSay.t); cmdSay.t = setTimeout(() => { if (cmdMsg) cmdMsg.textContent = ''; }, 4000); } };
   const cmdShow = (on) => {
-    cmdOpen = !!on;
+    CMD.open = !!on;
     if (!cmdBar) return;
-    cmdBar.classList.toggle('hidden', !cmdOpen);
-    if (cmdOpen) {
+    cmdBar.classList.toggle('hidden', !CMD.open);
+    if (CMD.open) {
       keys.clear();                                  // whatever was held when it opened must not stay held
       cmdBuf = '/';                                  // just the slash (user) — the command is typed, not assumed
       cmdDraw();
@@ -193,19 +195,19 @@
   // A CLICK ANYWHERE dismisses the line and hands the game back (user). The pointer never left, so
   // there is nothing to re-acquire — and the click that dismissed it must not also swing the tool.
   document.addEventListener('mousedown', (e) => {
-    if (!cmdOpen) return;
+    if (!CMD.open) return;
     e.preventDefault(); e.stopPropagation();
     cmdShow(false);
   }, true);
   document.addEventListener('keydown', (e) => {
-    if (!cmdOpen) {
+    if (!CMD.open) {
       // …and once it is closed, Escape behaves as it always did. If the re-lock was refused we are still
       // unlocked with no menu showing, so this second press is what puts the menu up (user).
-      if (e.code === 'Escape' && !locked && !dead && performance.now() - cmdEscAt > 40 && vePanel.classList.contains('hidden')) lockEl.classList.remove('hidden');
+      if (e.code === 'Escape' && !locked && !dead && performance.now() - CMD.escAt > 40 && vePanel.classList.contains('hidden')) lockEl.classList.remove('hidden');
       return;
     }
     e.stopPropagation();                               // every keystroke belongs to the line, never to the game's binds
-    if (e.code === 'Escape') { e.preventDefault(); cmdEscAt = performance.now(); cmdShow(false); }
+    if (e.code === 'Escape') { e.preventDefault(); CMD.escAt = performance.now(); cmdShow(false); }
     else if (e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); const v = cmdBuf; cmdShow(false); cmdRun(v); }
     else if (e.code === 'Backspace') { e.preventDefault(); cmdBuf = cmdBuf.slice(0, -1); cmdDraw(); }
     else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); cmdBuf += e.key; cmdDraw(); }

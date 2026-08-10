@@ -484,7 +484,7 @@
       // its haft, and the recesses hold shadow — instead of sitting flat under whatever the world lights it
       // with. ?flatheld goes back to the traced-only look for an A/B.
       if (location.search.includes('flatheld') && HELD_ITEMS.has(i + 1)) continue;
-      if (location.search.includes('uni') && !HELD_ITEMS.has(i + 1)) continue;   // ?uni: real AO rays replace the bake for creatures (see the note above); held tools keep theirs
+      if (/[?&]uni\b/.test(location.search) && !HELD_ITEMS.has(i + 1)) continue;   // ?uni: real AO rays replace the bake for creatures (see the note above); held tools keep theirs. MATCHED AS A WHOLE FLAG, not a substring: includes('uni') also fired on ?nouni (buffers.js LIFE_UNI), so booting the pre-unified A/B silently dropped bakeAO from every creature item too — two changes at once, which is the exact comparison ?nouni exists to make valid.
       bakeAO(items[i]);
     }
     itemsRef = items;                                  // publish the finished table to the tick loop (cardinal hitbox size + worm stamp poses)

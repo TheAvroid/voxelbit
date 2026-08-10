@@ -21,6 +21,14 @@
     for (let i = 0; i < slots.length; i++) if (!slots[i]) { slots[i] = { it, n: 1 }; slotTidy(); return i; }
     slots.push({ it, n: 1 }); slotTidy(); return slots.length - 2;   // grew the hotbar (user) — -2 because slotTidy has just appended the next empty
   }
+  // ── THE HOE'S TILLED-EARTH ID, DECLARED HERE AND NOWHERE ELSE ── it is minted at RUNTIME by hoeTill
+  // (sim/tools.js) the first time the hoe is swung, and read by main/debug-api.js's tillInfo. It cannot live
+  // in sim/tools.js: that fragment is a `// @module`, and a module hands the shared scope a CONST SNAPSHOT
+  // taken at module-init — a `let` the module assigns ITSELF would leave every reader outside frozen at the
+  // 0 it started as, silently (tillInfo reported id 0 / col null forever, and lint-vb check 10 refuses the
+  // export for exactly that reason). Declared in a plain fragment above tools.js, the write lands on the one
+  // binding everybody holds. hoeTill is the only writer.
+  let TILL_ID = 0;
   // quaternion helpers — item orientations interpolate as ROTATIONS (slerp), never as three independently
   // lerped axis vectors (that collapses mid-flight and reads as the item flipping/glitching)
   const m2q = (X, Y, Z) => { const t = X[0] + Y[1] + Z[2];                      // columns of local→space matrix, [x,y,z,w]
@@ -55,7 +63,7 @@
     const sel = slots[selSlot];
     if (!sel || dead) return;
     const it = sel.it;
-    if (--sel.n <= 0) slots[selSlot] = null;           // (a Q-tossed WORM flies the normal ballistic arc like the axe — it converts to a LIVE worm when it LANDS, see the drops update)
+    if (--sel.n <= 0) { slots[selSlot] = null; slotTidy(); }   // …and slotTidy, like every other consumer (projectiles.js, ui/audio.js): emptying a slot without it broke the "exactly one trailing empty" invariant, so Q-dropping two middle slots left three blanks in a row for the scroll wheel to cycle through   // (a Q-tossed WORM flies the normal ballistic arc like the axe — it converts to a LIVE worm when it LANDS, see the drops update)
     // launch from the held item's true world spot (held units ÷ scale = voxels), with the held orientation — it FLIES out of the hand
     const cfg = heldCfg(it);
     const s = 1 / cfg.scale, pr = prevCam;
