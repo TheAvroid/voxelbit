@@ -29,6 +29,9 @@ source/audio/
 # kept out of game/ so it never deploys, but still tracked so it has a backup.
 
 # ── legacy / scratch ──
+# tools/frames/ is the frame-capture dump the video export writes (snap<timestamp> (NNNN).png).
+# 120 stills of one clip is ~29 MB and it regenerates on demand — same reasoning as _snapshots/.
+tools/frames/
 art/
 .vox/
 website_old/

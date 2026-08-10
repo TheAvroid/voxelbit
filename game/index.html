@@ -560,7 +560,13 @@
     verRoll(verCells[0], vs[0]); verRoll(verCells[1], vs[2]);
   };
   { loadFillEl.style.transform = 'scaleX(0)'; void loadFillEl.offsetWidth;   // commit 0 first so the transition actually runs from empty
-    loadFillEl.style.transition = 'transform 9s cubic-bezier(0.05, 0.7, 0.2, 1)';   // front-loaded ease-out: quick, responsive start that decelerates and lingers
+    // 9s -> 3s (2026-08-09): the ease was tuned when boot took ~10 s. Boot is now ~2 s, so the bar was only
+    // reaching 58-68% before the world landed and finishLoad had to glide the last 33-40 points — the same
+    // lurch the 0.85 s glide was added to remove, just at the other end. Measured bar position at finishLoad
+    // across two pinned worlds: 9s -> 60/67%, 3.8s -> 78/83%, 3s -> 81/86%, 2.2s -> 86/90%. 3 s halves the
+    // jump on a fast machine while still giving a slow one three seconds of CLIMBING bar before the crawl
+    // below takes over — going shorter buys a little more on fast boxes and parks slow ones in the crawl.
+    loadFillEl.style.transition = 'transform 3s cubic-bezier(0.05, 0.7, 0.2, 1)';   // front-loaded ease-out: quick, responsive start that decelerates and lingers
     loadFillEl.style.transform = 'scaleX(0.9)';
     // ── AND THEN IT KEEPS CREEPING ── the ease above ENDS at 90% and used to sit there until finishLoad, so any
     // world that took longer than nine seconds showed a bar parked at 90% for the rest of the wait (user
@@ -572,7 +578,7 @@
       if (loadDone || loadFinishing) return;           // proved unreliable to hook here, and this cannot be missed
       loadFillEl.style.transition = 'transform 75s cubic-bezier(0.12, 0.62, 0.3, 1)';
       loadFillEl.style.transform = 'scaleX(0.995)';
-    }, 9050);
+    }, 3050);
     requestAnimationFrame(loadNumStep); }
   const setLoad = () => {};                              // real progress no longer drives the BAR (the trickle owns it); kept as a no-op so the phase calls below stay harmless
   const finishLoad = () => { loadFinishing = true; loadFillEl.style.transition = 'transform 0.85s cubic-bezier(0.25, 0.9, 0.3, 1)'; loadFillEl.style.transform = 'scaleX(1)'; setTimeout(() => { loadDone = true; loadPctEl.textContent = '100%'; verSet('1.0'); loadGlossEl.style.width = '100%'; }, 850); };   // verSet, NOT textContent: assigning text here destroyed the drum markup (the .vd cells) and left plain text behind.   // world ready → GLIDE the last stretch to full over 0.85 s so it never snaps (user: "jumps from 80% to 100%"); the % follows the compositor the whole way, then pins to a true 100% once the glide has actually arrived
@@ -2527,7 +2533,9 @@
     let near = false;
     const c0x = Math.floor((x0 - CAVE_MARGIN) / CAVE_CELL), c1x = Math.floor((x1 + CAVE_MARGIN) / CAVE_CELL);
     const c0z = Math.floor((z0 - CAVE_MARGIN) / CAVE_CELL), c1z = Math.floor((z1 + CAVE_MARGIN) / CAVE_CELL);
-    for (let cz = c0z; cz <= c1z && !near; cz++) for (let cx = c0x; cx <= c1x; cx++) if (caveAt(cx, cz)) { near = true; break; }
+    for (let cz = c0z; cz <= c1z && !near; cz++) for (let cx = c0x; cx <= c1x; cx++) {   // ── THE GATE IS THE WHOLE COST OF THIS FUNCTION ──
+      const c = caveAt(cx, cz); if (c && caveHitsBox(c, x0, x1, z0, z1)) { near = true; break; }   // ...so it has to be EXACT, not merely conservative
+    }
     if (!near) return null;                          // null = no gorge in this slab, distinct from 'swept and found nothing'
     const sx = x1 - x0, sz = z1 - z0, n = sx * WY * sz;
     const li = (ix, iy, iz) => ix + iy * sx + iz * sx * WY;
@@ -2588,6 +2596,7 @@
     stampModel(m, b.rot, b.bx, gy, b.bz, x0, x1, z0, z1, 2);   // overwrite + hmap raise — a REAL rock you collide with
   }
   const CAVE_CELL = 640, CAVE_MARGIN = 900;            // RAVINES -> CAVES: sparser, VAST gorges (1/4 the old frequency)
+  const CAVE_WMAX = 52;                                // the half-extent stampCave carves around its axis. Shared with caveHitsBox: if these two ever disagree the orphan sweep starts skipping real gorges.
   const caveCache = new Map();
   function caveAt(cx, cz) {
     const key = cx * 100003 + cz;
@@ -2624,7 +2633,7 @@
     const dxr = Math.cos(c.ang), dzr = Math.sin(c.ang);
     const nx = -dzr, nz = dxr;
     const ex2 = c.sx + dxr * c.len, ez2 = c.sz + dzr * c.len;
-    const WMAX = 52;                                    // vast gorge: pointy ends, near-vertical walls, noisy bedrock floor
+    const WMAX = CAVE_WMAX;                             // vast gorge: pointy ends, near-vertical walls, noisy bedrock floor
     const bx0 = Math.max(x0, Math.floor(Math.min(c.sx, ex2) - WMAX)), bx1 = Math.min(x1, Math.ceil(Math.max(c.sx, ex2) + WMAX) + 1);
     const bz0 = Math.max(z0, Math.floor(Math.min(c.sz, ez2) - WMAX)), bz1 = Math.min(z1, Math.ceil(Math.max(c.sz, ez2) + WMAX) + 1);
     for (let z = bz0; z < bz1; z++) for (let x = bx0; x < bx1; x++) {
@@ -2684,6 +2693,15 @@
         }
       }
     }
+  }
+  // Would stampCave write ANYTHING inside this box? Its carve loop and its ore-nodule loop are both bounded by
+  // the segment AABB grown by CAVE_WMAX, so an AABB miss means the gorge cannot have touched the box. Used to
+  // gate the orphan sweep, whose old gate asked the far weaker question 'is a gorge CELL within CAVE_MARGIN'
+  // -- a 900-voxel skirt around a 640-voxel cell grid, which ~90% of slabs passed. See sweepOrphans.
+  function caveHitsBox(c, x0, x1, z0, z1) {
+    const ex = c.sx + Math.cos(c.ang) * c.len, ez = c.sz + Math.sin(c.ang) * c.len;
+    return Math.min(c.sx, ex) - CAVE_WMAX < x1 && Math.max(c.sx, ex) + CAVE_WMAX + 1 > x0
+        && Math.min(c.sz, ez) - CAVE_WMAX < z1 && Math.max(c.sz, ez) + CAVE_WMAX + 1 > z0;
   }
   function nearCave(x, z, r = 56) {                    // surface decor keeps off the ravine line (r widens for big features like domes)
     for (let cz = Math.floor((z - CAVE_MARGIN) / CAVE_CELL); cz <= Math.floor((z + CAVE_MARGIN) / CAVE_CELL); cz++)
@@ -3059,7 +3077,7 @@
       for (const j of jobs) {
         while (poolOk && !j.done) {
           if (withStages) { const pct = (done * 100 / jobs.length) | 0; if (pct !== lastPct) { lastPct = pct; loadMsgEl.textContent = 'growing forest…'; setLoad(22 + done / jobs.length * 60); } }
-          await new Promise(r => setTimeout(r, 2));
+          await poolAwait();                       // wakes on the next finished slab, not on a clamped timer
         }
         if (!poolOk) break;
         const oq = j.msg && j.msg.orph;
@@ -3080,7 +3098,12 @@
       genRegion(rect.xlo, rect.xhi, rect.zlo + (((bh * 2) * s) >> 5), rect.zlo + (((bh * 2) * (s + 1)) >> 5), true);
     }
     if (withStages) { setLoad(86); await stage('baking occupancy…'); }
-    rebuildBricks(0, WX, 0, WZ);
+    // ── L2 ONLY AFTER A POOLED BUILD ── every gen worker scans its own slab's 8-cube occupancy and blitSlab
+    // merges those bits, so the L1 tables are already complete here; the closing full-world rebuildBricks was
+    // re-deriving them from 226 MB of voxels for nothing. Measured over two boots: 244 ms and 273 ms for ZERO
+    // changed bits in either bricks or wbricks. L2 is NOT worker-computed, so it still has to be built — which
+    // is exactly what the pooled BAND path at rebuildBricks2W already does after its own slab merges.
+    if (built) rebuildBricks2(0, WX, 0, WZ); else rebuildBricks(0, WX, 0, WZ);
   }
   // ── SPAWN BESIDE A LAKE (user 2026-07-20) ── walk the river systems for the nearest reservoir/tail lake, then step out
   // along a ray from its centre to the first DRY column past the shoreline and stand a few voxels inland. Purely analytic
@@ -3160,12 +3183,20 @@
     }
   };
   let genPool = null, poolOk = false, poolWait = false, poolSeq = 0;
+  // ── SLAB-READY DOORBELL ── buildWorld used to wait on `setTimeout(…, 2)`, which Chrome clamps once the
+  // chain is a few levels deep: measured 181 sleeps averaging 4.78 ms for a 2 ms request. With the workers
+  // ~89% saturated that is mostly honest waiting, but it also means every finished slab sits unblitted for
+  // up to a clamp tick, and those add up over 512 of them. Wake on the message instead. The 20 ms fallback
+  // exists only so a dropped message can never hang the boot — the doorbell is what normally fires.
+  let poolWake = null;
+  const poolNotify = () => { if (poolWake) { const f = poolWake; poolWake = null; f(); } };
+  const poolAwait = () => new Promise((r) => { poolWake = r; setTimeout(poolNotify, 20); });
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
-    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, caveAt, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
+    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
@@ -3219,7 +3250,7 @@
     for (let i = 0; i < NPOOL; i++) {
       const w = new Worker(purl);
       w.busyId = 0;
-      w.onmessage = (e) => { w.busyId = 0; if (e.data.orph !== undefined) { ORPH.slabs++; if (!e.data.orph) ORPH.skipped++; else { ORPH.swept++; ORPH.cut += e.data.orph.cut; } } const j = jobById.get(e.data.id); if (j) { j.msg = e.data; j.done = true; } poolPump(); };
+      w.onmessage = (e) => { w.busyId = 0; if (e.data.orph !== undefined) { ORPH.slabs++; if (!e.data.orph) ORPH.skipped++; else { ORPH.swept++; ORPH.cut += e.data.orph.cut; } } const j = jobById.get(e.data.id); if (j) { j.msg = e.data; j.done = true; } poolPump(); poolNotify(); };
       w.onerror = (e) => { console.warn('[vb] gen pool error — inline generation', e.message || e); poolOk = false; };
       w.postMessage({ init: 1, MROT, remap });
       genPool.push(w);
@@ -3357,6 +3388,30 @@
     }
     device.queue.writeBuffer(buf, s * 4, src, s * 4, (e - s) * 4);
   };
+  // ── FRAME-LEVEL BRICK UPLOAD BATCHING ── gpuPatch used to run writeWordRuns three times PER CALL, and
+  // gpuPatch fires from ~20 sites a frame (snow landing, worm stamps, chop, dig, pickups, melt), so the
+  // same buffers were re-visited over and over. The touched words now accumulate across the WHOLE frame
+  // and coalesce ONCE, in patchEncode, ahead of the trace that reads them. Identical bytes and identical
+  // bits reach the GPU — only the call count changes: 47 → 37 a frame walking, 223 → 85 in a snowstorm.
+  //
+  // Measured honestly: that call reduction is NOT worth any frame time. A seeded, uncontended A/B put
+  // tick p50 at 2.20 ms both before and after, with the other percentiles moving in both directions —
+  // i.e. noise. Dawn's per-writeBuffer overhead is evidently far below the 1-3 µs that would have made
+  // 138 calls matter. A follow-up that bridged the gaps BETWEEN runs to cut calls further was tried and
+  // removed: it cost 7× the bandwidth (27 → 184 KB a frame) and bought nothing measurable. This is kept
+  // only because one flush per frame is simpler than three per call, not because it is faster.
+  const dirtyBW = new Set(), dirtyC2W = new Set();
+  const brickFlush = () => {
+    if (dirtyBW.size) { writeWordRuns(brickBuf, bricks.buffer, dirtyBW); writeWordRuns(wbrickBuf, wbricks.buffer, dirtyBW); dirtyBW.clear(); }
+    if (dirtyC2W.size) { writeWordRuns(brick2Buf, bricks2.buffer, dirtyC2W); dirtyC2W.clear(); }
+  };
+  // Scratch sets reused by gpuPatch, which used to allocate four Sets per call. Do NOT read this as a GC
+  // fix: Chrome's sampling heap profiler puts the engine's REAL JS garbage at ~0.6 MB per 20 s, and only
+  // 1 of 40 logged frame spikes was GC-attributed (36 were the terrain-stream budget). __vb.ft()'s
+  // allocMBs/gcFrames look alarming but derive from usedJSHeapSize, which counts WebGPU staging memory,
+  // so they mostly report upload traffic rather than garbage. This is tidiness, not a measured win.
+  // Verified non-reentrant first: supPush, nvTouch and phWakeNear never call back into gpuPatch.
+  const pgBset = new Set(), pgC2set = new Set();
   // Which palette ids belong to a GRID-STAMPED creature (mammals + perched songbirds). Rides in the unused
   // 4th float of each palette entry, so the tracer can ask "is this voxel part of an animal?" for free. The
   // hit flash needs it: its box is an AABB, and an AABB around an animal also contains the grass between its
@@ -3476,6 +3531,7 @@
   const patchIdx = new Uint32Array(PATCHMAX);          // staged word indices (duplicates allowed — see below)
   const patchPairs = new Uint32Array(PATCHMAX * 2);    // (index, value) upload image, packed at FLUSH time
   let patchN = 0;
+  const patchCntTmp = new Uint32Array(4);              // reused every frame: the count upload used to allocate a fresh Uint32Array per dispatch
   const patchBuf = device.createBuffer({ size: patchPairs.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const patchCnt = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   // ── RIGID BODY VOXELS ── one dense grid per live body (palette id per cell, 0 = empty), sub-allocated
@@ -4755,14 +4811,35 @@
           let nI = vec3<f32>(0.0, 1.0, 0.0);
           let fresI = 0.03 + 0.22 * pow(1.0 - clamp(-dot(rd, nI), 0.0, 1.0), 4.0);
           let frost = 0.9 + 0.2 * fract(sin(floor(wx2) * 12.9898 + floor(wz2) * 78.233) * 43758.5453);
-          let iceC = mix(alb, vec3<f32>(0.74, 0.81, 0.90), 0.62) * frost * (0.5 + 0.5 * irr.g) * dayScale() + skyBase(reflect(rd, nI)) * fresI;
+          var iceC = mix(alb, vec3<f32>(0.74, 0.81, 0.90), 0.62) * frost * (0.5 + 0.5 * irr.g) * dayScale() + skyBase(reflect(rd, nI)) * fresI;
+          // -- ICE GLISTEN (same lgt.x bit 22 as the liquid one) -- the frozen surface wears the SAME discrete 10 cm cube
+          // glint the water wears (user 2026-08-09: "make the ice glisten like the water does"). Same cell grid, same phase
+          // and pick hashes, same duty window, same reflection column off the same flat surface normal -- so as a lake skins
+          // over, the glitter path stays exactly where it was and only its brightness key changes (see sparkCI). Folded into
+          // iceC BEFORE waterIceC is captured, so a fish sealed under the sheet is covered by GLINTING ice rather than by a
+          // dull fish-shaped patch of it -- the same trap the 2026-08-08 refraction bug fell into.
+          // A per-cell frost-facet tilt was tried here first and removed: scattering the mirror ray by +-30 deg drops
+          // pow(., 26) to a few percent on every cell but the untilted ones, leaving a sparse speckle, not a glitter path.
+          if (LG(22u)) {
+            let gkI = select(smoothstep(-0.02, 0.10, u.sunDir.y), 0.6, isMoon());
+            if (gkI > 0.01) {
+              let cellI = floor(vec2<f32>(wx2, wz2));                 // one glint cell = one 10 cm voxel, exactly as on water
+              let columnI = pow(max(dot(reflect(rd, nI), u.sunDir), 0.0), 26.0);   // the liquid glint's reflection column, unchanged -- and nI is the same flat normal the ice above is shaded with
+              let phI = fract(sin(cellI.x * 91.7 + cellI.y * 47.3) * 4321.7) * 6.2831853;   // SAME phase + pick hashes as the liquid glint, so the crossfade below hands the surface over without the lit cells jumping to a different set
+              let twI = sin(u.time * 1.6 + phI) * 0.5 + 0.5;
+              let pickI = step(0.5, fract(sin(cellI.x * 12.9898 + cellI.y * 78.233) * 43758.5453));
+              let sparkI = smoothstep(0.30, 0.85, twI) * pickI;       // the same wide 0.30-0.85 duty window: a glint that arrives and leaves, never blinks
+              let sparkCI = max(select(vec3<f32>(1.30, 1.34, 1.42), vec3<f32>(1.15, 1.18, 1.30), isMoon()) * (0.35 + 0.65 * dayScale()), iceC * 3.4);   // -- THE WATER GLINT COLOUR, FLOORED UP TO 3.4x THE ICE UNDER IT -- the liquid glint mixes ~1.35 into a DARK blue surface, so it pops. Daylight ice is already ~1.8 linear (206/255 after ACES, essentially clipped white) and mixing 1.35 into that is invisible: measured p99 210 -> 210, the term did nothing. Keying the spark to the surface fixes both ends at once. In daylight it rises to ~6 and the glitter path reads as bright cubes on white; by moonlight the ice is dark again, the floor takes over, and it lands on the water's own night value instead of the blizzard of white static a fixed daylight constant produced there.
+              iceC = mix(iceC, sparkCI, sparkI * columnI * gkI * 0.85 * irr.r);
+            }
+          }
           waterIceC = iceC; waterIceK = min(1.0, u.pickZ.w * 1.12);   // ── AND THE CREATURE PATH BELOW MUST SEE THIS ── the ice used to be mixed into the surface AFTER waterScat/waterRefl/waterFres were captured, so a fish under a frozen lake was still composited through LIQUID water: at 12 voxels' depth Beer-Lambert ate it down to the water's own in-scatter blue and painted that fish-shaped patch of lake over a white ice sheet. It read as a hole punched in the ice (user 2026-08-08: "the visuals are messed up when the fish are frozen"). The bed is fully hidden at freezeK 1, so the fish must be too.
           col = mix(col, iceC, waterIceK);
         }
         // ── PIXEL GLISTEN (lgt.x bit 22) ── discrete 10 cm cubes flashing on and off (the engine.html look).
         // It used to have a companion, a smooth SOFT sheen on lgt.z bit 0, sharing this same light column;
         // that one is gone (user 2026-08-09) and the column now serves the pixel glint alone.
-        if (u.pickZ.w < 0.4 && LG(22u)) {
+        if (waterIceK < 0.998 && LG(22u)) {                            // ...and the LIQUID glint fades out exactly as fast as the ice glint above fades in (1 - waterIceK), so a freezing lake never loses its sparkle for a moment. It used to hard-cut at freezeK 0.4 and go dead until the thaw.
           let gk = select(smoothstep(-0.02, 0.10, u.sunDir.y), 0.6, isMoon());
           if (gk > 0.01) {
             let column = pow(max(dot(refl, u.sunDir), 0.0), 26.0);   // reflection column toward the light — the glint lives ONLY inside this
@@ -4779,7 +4856,7 @@
             // out rather than snapping, so the field is continuously populated and the transitions blend.
             let spark = smoothstep(0.30, 0.85, tw) * pick;         // a soft rise and fall → a glint that arrives and leaves, never blinks
             let sparkC = select(vec3<f32>(1.35, 1.25, 1.0), vec3<f32>(1.15, 1.18, 1.3), isMoon()) * (0.35 + 0.65 * dayScale());
-            col = mix(col, sparkC, spark * column * gk * 0.85 * irr.r);   // translucent voxel glint (mix, not add — reads as a bright cube on the surface)
+            col = mix(col, sparkC, spark * column * gk * 0.85 * irr.r * (1.0 - waterIceK));   // translucent voxel glint (mix, not add — reads as a bright cube on the surface)
           }
         }
         var fogA = 1.0 - exp(-irr.b * 0.0006);
@@ -5490,10 +5567,12 @@
   // Encode the staged patch into `enc`. Values are read from W32 HERE, so a word edited several times
   // this frame uploads its final state exactly once. Returns the pair count (0 = nothing to do).
   function patchEncode(enc) {
+    brickFlush();                                      // the frame's accumulated brick/L2 bits, coalesced once — queued here so they land ahead of the trace that reads them
     if (!patchN) return 0;
     for (let i = 0; i < patchN; i++) { const w = patchIdx[i]; patchPairs[i * 2] = w; patchPairs[i * 2 + 1] = W32[w]; }
     device.queue.writeBuffer(patchBuf, 0, patchPairs.buffer, 0, patchN * 8);
-    device.queue.writeBuffer(patchCnt, 0, new Uint32Array([patchN, 0, 0, 0]));
+    patchCntTmp[0] = patchN;
+    device.queue.writeBuffer(patchCnt, 0, patchCntTmp);
     const p = enc.beginComputePass(); p.setPipeline(pPatch); p.setBindGroup(0, bgPatch);
     p.dispatchWorkgroups(Math.ceil(patchN / 64)); p.end();
     const n = patchN; patchN = 0; return n;
@@ -5691,11 +5770,23 @@
     const tT = rectTarget();
     const deficit = Math.max(rect.xlo - tT.xlo, tT.xhi - rect.xhi, rect.zlo - tT.zlo, tT.zhi - rect.zhi);
     if (!genJob && deficit <= 0) return;
-    // budget = the MEASURED CPU idle time inside the frame pipeline, but never below a 7 ms floor while terrain
-    // is owed — expansion speed is worth a transient fps dip, and the early-return above means the floor only
-    // applies while there is actually work to do. A LARGE deficit (teleport / sustained sprint) raises the floor
-    // further: the user prioritizes terrain CATCH-UP RATE over fps while the frontier is behind.
-    const budget = Math.max(deficit >= 128 ? 18 : 7, paceWaited ? Math.min(14, waitEma * 0.85) : Math.min(4, 250 / Math.max(fpsEma, 30)));
+    // budget = the MEASURED CPU idle time inside the frame pipeline, but never below a floor while terrain is
+    // owed — the early-return above means the floor only applies while there is actually work to do. A LARGE
+    // deficit (teleport / recenter) still raises it to 18: the user prioritizes terrain CATCH-UP RATE over fps
+    // while the frontier is far behind, and that path already shows the regen flash.
+    //
+    // STEADY-STATE FLOOR 7 -> 3 (user 2026-08-09: "there seems to be some stuttering"). The 7 ms floor was
+    // buying NOTHING. Seeded A/B, identical spawn/world/walk, 45 s scripted sprint, snow pinned off, deficit
+    // sampled every frame (floor / tickP99 = the JS spike this budget controls / max deficit reached):
+    //     7 -> 11.0, 11.0, 11.6, 11.0 ms | 32       5 -> 8.5 ms | 32       4 -> 8.4 ms | 32
+    //     3 ->  6.2,  6.9,  6.8,  8.2 ms | 32       2 -> falls behind | 64  0.5 -> falls behind | 64
+    // The deficit NEVER exceeds 32 (one band quantum) at any floor >= 3 — i.e. the streamer is not throughput
+    // limited here, it was just doing the same work in bigger, burstier chunks. Only ~13-19% of frames stream
+    // at all, so the identical work spread over more frames costs no catch-up and cuts the worst-case JS frame
+    // by ~40%. Below 3 the deficit doubles to 64 AND frame times get worse, so 3 is the floor of the sweet spot.
+    // Measured with vsync OFF: when the adapter DOES have headroom the paceWaited arm below already grants up to
+    // 14 ms, so this floor only governs the no-headroom case — which is exactly when forcing 7 ms drops a frame.
+    const budget = Math.max(deficit >= 128 ? 18 : 3, paceWaited ? Math.min(14, waitEma * 0.85) : Math.min(4, 250 / Math.max(fpsEma, 30)));
     const t0 = performance.now();
     while (performance.now() - t0 < budget) {          // chain bands back-to-back — no budget goes unused
       if (!genJob) { const t2 = rectTarget(); if (rect.xlo <= t2.xlo && rect.xhi >= t2.xhi && rect.zlo <= t2.zlo && rect.zhi >= t2.zhi) break; genJob = genBandGen(); }
@@ -6599,7 +6690,7 @@
   // creature grid stamps (they are CONDUIT, and re-adjudicating the world every time a bird shifts its feet
   // would be both wrong and expensive) and the frozen editor stage.
   function gpuPatch(cells, full = true, n = cells.length, track = true) {              // few voxels: STAGE the touched words for the frame's patch scatter + refresh the touched brick bits. full=false uploads ONLY the touched brick words (per-frame worm stamps — the whole-buffer re-upload is far too heavy at 60 fps)
-    const bset = new Set();
+    const bset = pgBset; bset.clear();
     let cx0 = 1e9, cx1 = -1e9, cy0 = 1e9, cy1 = -1e9, cz0 = 1e9, cz1 = -1e9;   // bbox of the cells this batch EMPTIED — see phWakeNear
     for (let q = 0; q < n; q++) {
       const ii = cells[q];
@@ -6629,7 +6720,6 @@
     // that dozed off on ground the player then carved away had nothing else in the game to tell it (see
     // phWakeNear). The box is in WINDOW coords; phWakeNear un-wraps it to world before testing the bodies.
     if (track && phWakeHook && cx1 >= cx0) phWakeHook(cx0, cx1, cy0, cy1, cz0, cz1);
-    const bWords = full ? null : new Set(), c2Words = full ? null : new Set();
     for (const b of bset) {
       const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
       let occ = 0;
@@ -6639,9 +6729,9 @@
       }
       if (occ) bricks[b >> 5] |= 1 << (b & 31); else bricks[b >> 5] &= ~(1 << (b & 31));
       wbricks[b >> 5] &= ~(1 << (b & 31));             // any runtime edit (snow landing, worm stamp, editor…) CLEARS the water-only bit — conservative and lossless: the brick just falls back to fine-stepping
-      if (!full) bWords.add(b >> 5);
+      if (!full) dirtyBW.add(b >> 5);
     }
-    const c2set = new Set();                           // refresh the touched L2 super-cells too
+    const c2set = pgC2set; c2set.clear();              // refresh the touched L2 super-cells too
     for (const b of bset) { const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0; c2set.add((bx >> 2) + (by >> 2) * B2X + (bz >> 2) * B2X * B2Y); }
     for (const c of c2set) {
       const cx = c % B2X, cy = ((c / B2X) | 0) % B2Y, cz = (c / (B2X * B2Y)) | 0;
@@ -6651,10 +6741,9 @@
         if ((bricks[b >> 5] >>> (b & 31)) & 1) { occ = 1; break scan2; }
       }
       if (occ) bricks2[c >> 5] |= 1 << (c & 31); else bricks2[c >> 5] &= ~(1 << (c & 31));
-      if (!full) c2Words.add(c >> 5);
+      if (!full) dirtyC2W.add(c >> 5);
     }
-    if (full) uploadBricks();
-    else { writeWordRuns(brickBuf, bricks.buffer, bWords); writeWordRuns(wbrickBuf, wbricks.buffer, bWords); writeWordRuns(brick2Buf, bricks2.buffer, c2Words); }
+    if (full) { uploadBricks(); dirtyBW.clear(); dirtyC2W.clear(); }   // a whole-array upload supersedes every word pending from earlier this frame
   }
 
 
@@ -14895,7 +14984,7 @@
     const nDfly = (DFLY_NFRAMES && waterSpots.length) ? Math.min(3, 1 + (waterSpots.length >> 2)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before. RATE HALVED 2026-07-20 (user): cap 6→3, per-spot growth >>1→>>2 — half as many at every water amount
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
-    const nFish = (FISHES.length && waterSpots.length) ? Math.min(32, 8 + waterSpots.length * 8) : 0;   // FISH scale with how much water is in view (lakes AND rivers). DOUBLED AGAIN 2026-07-21 (user): base 4→8, per-spot 4→8, ceiling 24→32 (fills the whole 32-slot band); per-pool cap below doubles too
+    const nFish = (FISHES.length && waterSpots.length) ? Math.min(24, 6 + waterSpots.length * 6) : 0;   // FISH scale with how much water is in view (lakes AND rivers). CUT 25% (user 2026-08-09): ceiling 32→24, base 8→6, per-spot 8→6 — a uniform quarter off the WHOLE curve, so the cut is the same at every water amount rather than only biting where the ceiling clamped. The per-pool density cap below (~1 fish per 3 census samples) is deliberately UNTOUCHED: it is the anti-cramming ceiling, not the population, and lowering it too would thin small ponds twice. Slot band 244-275 now runs 244-267; species stays an even split (wk % FISHES.length). Was DOUBLED 2026-07-21: base 4→8, per-spot 4→8, ceiling 24→32
     // Count scales with the AREA the birds have to cover. The 60 cap was set when the spawn ring was ~331 vox; the
     // ring is now ~406, which is 1.5x the area, so the same 60 birds read as a thinner, patchier forest. This keeps
     // the ORIGINAL density over the larger disc (~90 at the default view) and is still inside the 180-slot pool.
