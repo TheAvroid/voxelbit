@@ -1,0 +1,23 @@
+  /* ══ HIDDEN ESC BUTTONS (user 2026-07-22): the ASSET-EDITOR (#edBtn) + ITEM-POSITION (#pkBtn) buttons are disabled from the esc menu. All their HTML + JS is left intact — this ONE rule just hides them. TO BRING THEM BACK: delete (or comment out) this single rule. ══ */
+  #edBtn { display: none !important; }   /* the ASSET-EDITOR button stays hidden; the ITEM-POSITION one (#pkBtn) is back in the esc menu (user) — it is how a held pose gets tuned */
+  #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
+  #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn, #edCopy { position: relative; top: 0; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, top 0.15s ease-out, box-shadow 0.15s; will-change: transform; }   /* subtle resting drop shadow (user) — deepens on hover below. Explicit top:0 so the hover-lift TRANSITIONS (top:auto→-4px can't interpolate → would jump). */
+  #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg, #edCopy svg { width: 22px; height: 22px; }
+  #kbBtn:hover, #pkBtn:hover, #edBtn:hover, #dcBtn:hover, #veBtn:hover, #edCopy:hover { border-color: #d2a453; color: #ffd76a; top: -4px; box-shadow: 0 7px 16px rgba(0,0,0,0.5); }   /* hover LIFT via `top` — leaves `transform` free for the wave, which the compositor runs smoothly even while the game renders */
+  /* subtle up/down WAVE across the esc-menu icons (user) — driven by TRANSFORM so it runs on the GPU compositor (no main-thread jank while the game's WebGPU frame is busy); hover-lift uses `top` so the two never fight. Staggered delays make the wave travel along the row. */
+  @keyframes escWave { 0%, 100% { transform: translate3d(0, 3px, 0); } 50% { transform: translate3d(0, -3px, 0); } }
+  #kbBtn { animation: escWave 2.6s ease-in-out infinite; animation-delay: 0s; }
+  #pkBtn { animation: escWave 2.6s ease-in-out infinite; animation-delay: -0.22s; }
+  #edBtn, #edCopy { animation: escWave 2.6s ease-in-out infinite; animation-delay: -0.44s; }   /* the export button shares the asset-editor button's phase → they bob up/down together (user) */
+  #veBtn { animation: escWave 2.6s ease-in-out infinite; animation-delay: -0.66s; }
+  #dcBtn { animation: escWave 2.6s ease-in-out infinite; animation-delay: -0.88s; }
+  /* HOVER LABEL (user): the icon's name, centred under the tile, fading both ways. Absolutely positioned so it never
+     becomes a flex item and shoves the glyph off-centre; pointer-events off so it can't steal the hover from the tile. */
+  #kbBtn::after, #pkBtn::after, #edBtn::after, #dcBtn::after, #veBtn::after, #edCopy::after {
+    content: attr(data-lbl); position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 9px;
+    font: 7px/1 'px3', Consolas, monospace; letter-spacing: 1px; color: #ffd76a; white-space: nowrap;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9); opacity: 0; transition: opacity 0.18s ease-out; pointer-events: none; }
+  #kbBtn:hover::after, #pkBtn:hover::after, #edBtn:hover::after, #dcBtn:hover::after, #veBtn:hover::after, #edCopy:hover::after { opacity: 1; }   /* HOVER (user): the tile lifts and the icon goes GOLD (user 2026-08-08 — was green) (svg fill is currentColor, so the colour carries) */
+  #edBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  #edCopy.copied { border-color: #7fd05a; color: #b8ff6e; }   /* green pulse on export → confirms the copy without replacing the icon */
+  #edCopy.copied::after { opacity: 1; }                        /* …and surface the "copied ✓" label even if the cursor isn't on it */

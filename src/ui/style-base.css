@@ -1,0 +1,92 @@
+<style>
+  @font-face { font-family: 'px3'; src: url('3x3-pixel.otf') format('opentype'); }
+  * { cursor: crosshair !important; }   /* in-game crosshair cursor EVERYWHERE, including the video editor + menus (user) */
+  /* ── NOTHING IN THE UI IS SELECTABLE TEXT (user 2026-08-09) ── clicking the wordmark started an ordinary text
+     selection and the browser painted the whole <h1> with its blue highlight, which is what "the title turns blue"
+     is. It is not a style on the title and no colour change can suppress it — the selection has to not happen.
+     A game has no prose to select, so the document opts out wholesale and the real text fields opt back in: the
+     bake rows call .select() before execCommand('copy'), and the command line is typed into. `*` rather than body
+     because the highlight is painted per-element, and a descendant that re-enables it would show through. */
+  * { -webkit-user-select: none; user-select: none; }
+  input, textarea { -webkit-user-select: text; user-select: text; }
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0b0e12; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+  #hud { position: fixed; top: 10px; left: 12px; color: #cfd6e0; font: 7px/1.7 'px3', Consolas, monospace; letter-spacing: 1px; text-shadow: 0 1px 2px #000; pointer-events: none; white-space: pre; opacity: 0.9; }
+  #cross { position: fixed; left: 50%; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; mix-blend-mode: difference; pointer-events: none; }
+  #cross i { position: absolute; background: #fff; transition: transform 0.19s cubic-bezier(0.4, 0, 0.2, 1); }   /* 4 bars: a + that morphs into a □, smoothly, like the free-mouse cursor */
+  #cross .h { left: 0; right: 0; height: 2px; top: 7px; }
+  #cross .v { top: 0; bottom: 0; width: 2px; left: 7px; }
+  #cross.sq .h1 { transform: translateY(-7px); }   /* .sq = resting on a pickup → the bars split out into a SQUARE outline (matches the main-menu cursor) */
+  #cross.sq .h2 { transform: translateY(7px); }
+  #cross.sq .v1 { transform: translateX(-7px); }
+  #cross.sq .v2 { transform: translateX(7px); }
+  /* ── FREE-MOUSE CURSOR ── the same 2px difference-blended bars as #cross, but built from FOUR of them: the two
+     horizontals sit on top of each other on the centre line (reading as one bar) and the two verticals likewise, so at
+     rest it is an ordinary crosshair. Over a button they slide apart to the four edges and it becomes a square — one
+     smooth transform transition, same lines, nothing added or removed. Native cursors cannot tween, hence the DOM. */
+  #curs { position: fixed; left: 0; top: 0; width: 16px; height: 16px; margin: -8px 0 0 -8px; mix-blend-mode: difference; pointer-events: none; z-index: 9999; display: none; }
+  body.freecur #curs { display: block; }
+  body.freecur, body.freecur * { cursor: none !important; }   /* beats the global `* { cursor: crosshair }` while the mouse is free */
+  #curs i { position: absolute; background: #fff; transition: transform 0.19s cubic-bezier(0.4, 0, 0.2, 1); }
+  #curs .h { left: 0; right: 0; height: 2px; top: 7px; }
+  #curs .v { top: 0; bottom: 0; width: 2px; left: 7px; }
+  #curs.sq .h1 { transform: translateY(-7px); }
+  #curs.sq .h2 { transform: translateY(7px); }
+  #curs.sq .v1 { transform: translateX(-7px); }
+  #curs.sq .v2 { transform: translateX(7px); }
+  #clashHint { position: fixed; left: 50%; top: 57%; transform: translateX(-50%); color: #fff; font: 10px/1.6 'px3', Consolas, monospace; letter-spacing: 2px; text-shadow: 0 1px 3px #000; pointer-events: none; opacity: 0.85; }
+  /* ── SCROLL-UP HINT (user 2026-08-07) ── gold, with a sheen that travels across the letters to read as a
+     polished metal surface. The gradient is painted through the glyphs (background-clip: text) and slid by
+     animating background-position, which is the only way to get a moving highlight on text without a second
+     layer. The SYMBOL rides its own bob so the motion reads as "scroll up" rather than as a flashing label.
+     No transition on `display`, so the fade-out is opacity-only and the element then stops being painted. */
+  #scrollHint { position: fixed; left: 50%; top: calc(50% + 56px); transform: translate(-50%, -50%); display: flex;   /* pushed DOWN off the crosshair (user 2026-08-07): dead-centre the arrow's tip sat on top of the cursor */
+    flex-direction: column; align-items: center; gap: 8px; pointer-events: none; z-index: 12;
+    opacity: 0; transition: opacity 0.6s ease; }
+  #scrollHint.show { opacity: 0.75; }   /* 25% transparent (user 2026-08-07) — it sits over the middle of the view, so it reads as an overlay rather than part of the world */
+  #scrollHint svg { width: 30px; height: 30px; color: #ffcf47; animation: shBob 1.9s ease-in-out infinite;
+    filter: drop-shadow(0 0 6px rgba(255,190,60,0.55)) drop-shadow(0 1px 2px rgba(0,0,0,0.85)); }
+  /* the LABEL matches the ICON exactly (user 2026-08-07): same flat gold and the same warm glow, rather than
+     the gradient sheen it had — two different golds sitting on top of each other read as two elements. */
+  #scrollHint span { font: 11px/1.8 'px3', Consolas, monospace; letter-spacing: 4px; position: relative; top: -0.1em;
+    color: #ffcf47;
+    filter: drop-shadow(0 0 6px rgba(255,190,60,0.55)) drop-shadow(0 1px 2px rgba(0,0,0,0.85)); }
+  @keyframes shBob { 0%, 100% { transform: translateY(4px); } 50% { transform: translateY(-5px); } }
+  body.noui #scrollHint { display: none !important; }
+  #achv { position: fixed; left: 50%; top: calc(50% - 350px); transform: translate(-50%, -50%); text-align: center; pointer-events: none; opacity: 0; transition: opacity 0.9s ease; font-family: 'px3', Consolas, monospace; text-shadow: 0 1px 3px #000; }
+  #achv .a1 { font-size: 14px; letter-spacing: 6px; color: #ffd76a; }
+  #achv .a2 { font-size: 26px; letter-spacing: 4px; color: #fff; margin-top: 10px; }
+  #lock { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; background: rgba(8,10,14,0.55); color: #e8edf4; font: 8px/1.8 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; backdrop-filter: blur(2px); }   /* no text-shadow (user 2026-08-07): the esc menu's own text sits over a blurred backdrop that already separates it, and the shadow it inherited to "click to enter" + the key hints read as smudge. The WORDMARK is shadowless too (user 2026-08-07) — see the next rule. */
+  #lock h1, #loadTitle { position: relative; font: 60px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; text-shadow: none; filter: drop-shadow(5px 6px 4px rgba(0,0,0,0.60)); }   /* DROP SHADOW, bottom-right shifted (user 2026-08-08 — it had been nulled out on 2026-08-07 and is now wanted back). It has to be a `filter`, not `text-shadow`: a text-shadow is painted ABOVE its own element's background, and the wordmark's faces ARE backgrounds (background-clip:text), so an offset text-shadow would sit on top of the crimson/lime instead of behind the glyphs. The filter composites the whole three-layer stack — gold bevel, face, version badge — and drops one shadow behind all of it. `text-shadow: none` must STAY: #load sets one on the container and the wordmark would otherwise inherit it. */
+  #lock h1 .tv, #loadTitle .tv { background: linear-gradient(180deg, #ff7a8a 0%, #8e0e20 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* crimson, light→dark */
+  #lock h1 .tb, #loadTitle .tb { background: linear-gradient(180deg, #b8ff6e 0%, #2f8a12 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* lime, light→dark */
+  #lock h1 .tver, #loadTitle .tver { position: absolute; left: 100%; top: calc(2.4167em - 2px); margin-left: calc(0.35em - 3px); white-space: nowrap; font-size: 0.2em; letter-spacing: 2px; line-height: 2; background: linear-gradient(180deg, #c6ced8 0%, #6d757f 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* VERSION, tacked onto the top-right of the wordmark — grey, matching source/wip/space.html's .ver-sup. ABSOLUTE on purpose (user): in flow it widened the h1 and shoved 'voxelbit' ~29px left of centre, and the WORDMARK is what has to be centred. left:100% hangs it off the title's right edge at zero layout width. white-space:nowrap is required — an abspos box at left:100% shrink-to-fits against 0 remaining width and would otherwise wrap to one glyph per line. top is 2.94em of the BADGE (35.3px), which is FLUSH: px3 declares a 2.0em content box so the glyphs float mid-box and neither vertical-align nor line-height can place this — the number is measured, not guessed (ink top = rect top + fontBoundingBoxAscent − actualBoundingBoxAscent; at 60px that is +36, at 12px +7, so a naive top-alignment sits 11.3px high). Grey gradient light→dark like .tv/.tb, and it needs its OWN background-clip because it sits outside those spans (nested in one it would inherit color:transparent with no gradient of its own and vanish). line-height MUST be 2, not 1: background-clip:text clips to the element's BOX, and px3's ink overflows a 1.0 box — at line-height 1 the glyph bottoms had no background behind them and rendered transparent, which read as the tag being cut off. Restoring the 2.0 box moves the ink down half a leading (6px), hence top 2.94em → 2.4167em. The trailing −2px is an OPTICAL nudge on top of that (user): the computed value aligns the two ink tops exactly (measured identical to 0.01px), but at 12px the pixel font's rows snap a hair low against 60px glyphs, so the arithmetic answer and the one that LOOKS flush differ by a pixel. Same reason margin-left carries a −3px term. */
+  #loadTitle .tver .vd { display: inline-block; overflow: hidden; vertical-align: top; }   /* ROLLING DRUM (user) — one window per digit; the strip inside it slides by exactly one cell so the old number leaves as the new one arrives. overflow:hidden is what makes it a window rather than a list. */
+  #loadTitle .tver .vdr { display: block; will-change: transform; }
+  #loadTitle .tver .vdr i { display: block; font-style: normal; background: linear-gradient(180deg, #c6ced8 0%, #6d757f 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }   /* the gradient lives on each DIGIT, not the parent: background-clip:text clips to the element's own box, and a digit halfway through the window would otherwise be masked by the parent's box instead of its own. */
+  /* ── GOLD-BEVELLED WORDMARK (user 2026-08-08) ── an Endgame-style metallic gold edge around each glyph, with the brand
+     crimson/lime kept as the front FACE. Applied to BOTH copies of the wordmark, the esc menu and the loading screen.
+     No extrusion behind the letters and no dark contour around them (user): both were tried and removed, so this is a
+     gold OUTLINE plus the drop shadow on the h1 rule above, which is what now separates the gold from bright terrain.
+     Built as a TWO-LAYER STACK per word rather than one styled span, because the two effects need different fills, and
+     because a text-shadow paints ABOVE its own element's background — put the ring on the span itself and its offset
+     copies would cover the face gradient instead of sitting behind it:
+       ::before  the bevel. `color:transparent`, so ONLY its text-shadows paint: eight offset copies at r=4, graded from
+                 bright gold on the top-left arc to bronze on the bottom-right, so the edge reads as lit metal.
+       ::after   the front face: brand gradient + a diagonal sheen band, background-clip:text, stacked above by z-index.
+     Both duplicate the word via `content: attr(data-t)`, so BOTH sets of spans must carry data-t — a span without it
+     renders an empty string and loses its bevel and its face at once.
+     The 8-direction ring at ±r is a COMPLETE r-px outline here, not a dotted one: px3's glyphs are axis-aligned blocks
+     ~20px thick at this size, so translations spaced r=4 apart overlap and their union is the full dilated shape.
+     NO -webkit-text-stroke anywhere — a stroke follows every contour, including the seams where px3's internal pixel
+     squares abut, which quilted a grid across the letter faces.
+     Per-word rules must use `background-image`, NOT the `background` shorthand: the shorthand resets background-clip
+     back to border-box and the face floods its whole box as a solid rectangle. */
+  #lock h1 .tv, #lock h1 .tb, #loadTitle .tv, #loadTitle .tb { position: relative; display: inline-block; background: none; color: transparent; }
+  #lock h1 .tv::before, #lock h1 .tb::before, #lock h1 .tv::after, #lock h1 .tb::after, #loadTitle .tv::before, #loadTitle .tb::before, #loadTitle .tv::after, #loadTitle .tb::after { content: attr(data-t); position: absolute; left: 0; top: 0; white-space: pre; }
+  #lock h1 .tv::before, #lock h1 .tb::before, #loadTitle .tv::before, #loadTitle .tb::before { z-index: 1; color: transparent; text-shadow: 0px -4px 0 #ffe6a8, -4px -4px 0 #ffeec2, 4px -4px 0 #f7d288, -4px 0px 0 #eec684, 4px 0px 0 #d2a453, -4px 4px 0 #ab7d31, 0px 4px 0 #916522, 4px 4px 0 #754e17; }
+  #lock h1 .tv::after, #lock h1 .tb::after, #loadTitle .tv::after, #loadTitle .tb::after { z-index: 2; color: transparent; -webkit-background-clip: text; background-clip: text; }
+  #lock h1 .tv::after, #loadTitle .tv::after { background-image: linear-gradient(104deg,rgba(255,255,255,0) 34%,rgba(255,255,255,0.30) 46%,rgba(255,255,255,0) 56%),linear-gradient(180deg,#ffc8ce 0%,#ff7a8a 16%,#c8263a 58%,#7d0c1c 100%); }
+  #lock h1 .tb::after, #loadTitle .tb::after { background-image: linear-gradient(104deg,rgba(255,255,255,0) 34%,rgba(255,255,255,0.30) 46%,rgba(255,255,255,0) 56%),linear-gradient(180deg,#e6ffbe 0%,#b8ff6e 16%,#5cbc26 58%,#2a7d10 100%); }
+  #lock .keys { opacity: 0.75; font-size: 6px; }
+  #load { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #0b0e12; color: #cfdae8; font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; z-index: 10; overflow: hidden; text-shadow: 0 2px 6px rgba(0,0,0,0.9); }

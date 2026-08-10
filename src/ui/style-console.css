@@ -1,0 +1,41 @@
+  /* ── COMMAND LINE ── bottom left, opened with T (user). Deliberately plain: it is a console, not HUD. */
+  /* PILL (user). The radius is well past half the bar's height so the ends stay fully round whatever the
+     line height works out to, and the horizontal padding is opened up so the text clears the curve —
+     the 2px above and below stays as it was. */
+  #cmdBar { position: fixed; left: 14px; bottom: 14px; z-index: 40; display: flex; align-items: center; gap: 7px;
+    background: rgba(12,14,18,0.615); border: 0; border-radius: 999px;   /* 25% more transparent, and NO outline (user) */
+    padding: 3px 16px; overflow: visible; line-height: 0; }
+  /* line-height 0 on the bar + an explicit one on the runs: the row is then exactly as tall as the text
+     and flex centres it, with none of the font's own leading pushing it off centre (user). */
+  /* ── WHY THE LETTERS SAT LOW (user 2026-08-05 — MEASURED off the font, not guessed) ── px3 is 640 units
+     to the em but declares ascent 1024 / descent 256, so the CONTENT BOX flexbox centres is 2.0em tall and
+     the ink is nowhere near the middle of it. Work it through and the baseline lands a flat 0.6em BELOW
+     the bar's centre WHATEVER the line-height is (the line-height cancels out) — which is exactly why
+     every previous attempt to fix this by retuning the line-height only ever moved the pill's height and
+     never the text inside it. Caps are 1.0em and descenders 0.4em, so a centred cap band wants the
+     baseline 0.5em below centre: the correction is a flat 0.1em UP, in em so it survives a size change.
+     The pill must also clear cap + 2x descender (1.8em = 19.8px) or the tail of a 'p' hangs out under the
+     curve — 15px line + 3px padding = 21px, which it does. 11px (user 2026-08-05: 2px smaller); the caret
+     is 6px because that is the px3 glyph advance at 11px (7px at 13px), and its negative margin must MATCH
+     the bar's gap so it lands on the next letter's cell. #cmdCur deliberately keeps top:0 — an 11px block
+     centred in a 21px bar IS the centred cap band, so the blink lines up with the letters only while the
+     nudge is NOT applied to it too. */
+  #cmdCaret, #cmdTxt, #cmdCur { position: relative; top: 0; }
+  #cmdCaret, #cmdTxt { font: 11px/15px 'px3', Consolas, monospace; top: -0.1em; }
+  #cmdCaret { color: #9fe08a; }
+  #cmdTxt { color: #f2e6c8; white-space: pre; margin-left: -1px; }   /* a pixel closer to the green > (user) */
+  #cmdCur { width: 6px; height: 11px; background: #f2e6c8; animation: cmdBlink 1s steps(1) infinite;
+    margin-left: -7px; }              /* cancel the row's gap: the caret belongs ON the next letter's cell, not a slot past it (user) */
+  @keyframes cmdBlink { 50% { opacity: 0; } }
+  #cmdMsg { position: absolute; left: 0; bottom: 100%; margin-bottom: 6px; white-space: nowrap;
+    color: #ffd9a0; font: 11px/1.2 'px3', Consolas, monospace; text-shadow: 0 2px 6px rgba(0,0,0,0.9); }   /* the reply line follows the input down to 11px (user) */
+  body.noui #cross, body.noui #hud, body.noui #clashHint, body.noui #achv, body.noui #edHud, body.noui #compass { display: none !important; }   /* C toggles all HUD overlays off for clean views */
+  #compass { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 240px; height: 22px; overflow: hidden; z-index: 12; pointer-events: none;
+    font: 8px/22px 'px3', Consolas, monospace; letter-spacing: 1px; color: #e8eef6; text-shadow: 0 1px 2px rgba(0,0,0,0.85);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); }
+  #cmpTrack { position: absolute; top: 0; left: 0; height: 22px; white-space: nowrap; will-change: transform; }
+  #cmpTrack span { position: absolute; top: 0; transform: translateX(-50%); }
+  #cmpTrack span.tick { color: #93a3b8; }
+  #copyr { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 11; pointer-events: none; color: #fff; opacity: 0.8; font: 5.25px/1.6 'px3', Consolas, monospace; letter-spacing: 2px; text-shadow: 0 1px 2px rgba(0,0,0,0.6); white-space: nowrap; display: flex; align-items: center; justify-content: center; }   /* bottom-centre copyright watermark (user): white, 20% transparent, text 25% smaller (5.25px), bumped up to bottom:10px. Top-level (not inside any overlay) + z-index 11 (above the #load overlay's 10) so it stays visible on the loading screen, during gameplay, AND on the esc menu — user */
+  #copyr .cmark { display: inline-flex; align-items: center; justify-content: center; width: 1.6em; height: 1.6em; font-size: 1em; line-height: 1; box-sizing: border-box; margin-right: 6px; letter-spacing: 0; text-align: center; position: relative; top: 0; }   /* top:0 (was 1) → the c moves up 1px (user); the ring's top compensates so the circle stays where it was */
+  #copyr .cmark::before { content: ''; position: absolute; left: 0; top: 1px; width: 100%; height: 100%; border: 0.14em solid currentColor; border-radius: 50%; box-sizing: border-box; }   /* the RING only. top:1 (was 0) cancels the badge's −1px shift so the circle holds its position while the c alone moves up (user) */   /* © built from a px3 "c" + a CSS ring so the letter matches the pixel text exactly (the 3x3 font has no © glyph). font-size:1em → the c is the SAME size as the text (user); flex align+justify centre the c inside the ring */

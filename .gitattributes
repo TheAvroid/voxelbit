@@ -1,0 +1,12 @@
+# src/ concatenates BYTE-FOR-BYTE into game/index.html (tools/bundle.py). core.autocrlf
+# is on for this user, so without these lines a fresh clone would check the fragments
+# out as CRLF, the rebuild would produce a CRLF index.html, and every one of the 16,226
+# lines would read as changed. -text = store and check out exactly as committed.
+src/**          -text
+game/index.html -text
+tools/*.py      -text
+
+# game/index.html is generated. Two people editing different fragments will still both
+# rebuild it, so it conflicts on merge every time and the diff is never worth reading.
+# Resolve by taking either side and re-running `python tools/bundle.py`.
+game/index.html -diff merge=ours

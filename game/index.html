@@ -3562,7 +3562,7 @@
         let s_ = sin(ph); nx_ += ${(w[0] * w[2] * w[3]).toFixed(7)} * s_; nz_ += ${(w[1] * w[2] * w[3]).toFixed(7)} * s_; ny_ -= ${(w[4] * w[2] * w[3]).toFixed(7)} * cos(ph); }`).join('\n      ');
 
   // ── WGSL ────────────────────────────────────────────────────────────────────
-  const PRE = /* wgsl */`
+  const PRE_SRC = () => /* wgsl */`
     struct U {
       camPos : vec3<f32>, tanH : f32,
       right  : vec3<f32>, aspect : f32,
@@ -3759,7 +3759,7 @@
   // ── shared hierarchical DDA ── (window space, toroidal lookups — one conditional subtract per axis, no modulo). Included by TRACE
   // and by COMPOSITE (creature pixels trace a REAL sun-occlusion ray so moving things sit in tree shade exactly like the terrain).
   // The including module must declare storage buffers named `world`, `bricks`, `bricks2` (any binding slots — WGSL module scope is order-free).
-  const FLAKEBLK = /* wgsl */`
+  const FLAKEBLK_SRC = () => /* wgsl */`
     fn flakeBlocked(cw : vec3<f32>) -> bool {                       // a falling flake may exist ONLY in truly open air:
       // ── STORM EDGES ── snow ARRIVES from the sky and LEAVES from the sky. u.misc.y is the leading edge, sweeping
       // down at the storm's onset so flakes enter from the top of the screen instead of the whole column switching on
@@ -3791,7 +3791,7 @@
     }
   `;
 
-  const DDAW = /* wgsl */`
+  const DDAW_SRC = () => /* wgsl */`
     const B2X : i32 = ${BX >> 2}; const B2Y : i32 = ${BY >> 2}; const B2Z : i32 = ${BZ >> 2};
     const WTv : u32 = ${WATER_T}u; const WBv : u32 = ${WATER_B}u;   // lake surface / body voxel ids
     // ── FOLIAGE SEE-THROUGH ── when the camera clips INTO leaves, the primary ray treats foliage within folSkipD of the
@@ -3981,7 +3981,7 @@
       return h;
     }
   `;
-  const TRACE = /* wgsl */`
+  const TRACE_SRC = ({ DDAW, FLAKEBLK, pickWGSL }) => /* wgsl */`
     @group(0) @binding(1) var<storage, read> world : array<u32>;
     @group(0) @binding(2) var<storage, read> bricks : array<u32>;
     @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
@@ -4470,7 +4470,7 @@
   `;
 
   // strip scatter — copies a repacked 8-voxel X-strip from staging into its strided home in the world buffer
-  const SCATTER = /* wgsl */`
+  const SCATTER_SRC = () => /* wgsl */`
     struct SP { g0 : u32, pad0 : u32, pad1 : u32, pad2 : u32 }
     @group(0) @binding(0) var<uniform> sp : SP;
     @group(0) @binding(1) var<storage, read> stag : array<u32>;
@@ -4488,7 +4488,7 @@
   // voxel patch scatter — applies a staged (wordIndex, value) list to the world buffer in one dispatch.
   // Duplicate indices are harmless: values are read from the CPU world at flush time, so every writer of
   // a given address stores the SAME final word (a benign race, not a nondeterministic one).
-  const PATCHW = /* wgsl */`
+  const PATCHW_SRC = () => /* wgsl */`
     struct PC { n : u32, pad0 : u32, pad1 : u32, pad2 : u32 }
     @group(0) @binding(0) var<uniform> pc : PC;
     @group(0) @binding(1) var<storage, read> pdata : array<u32>;   // NOT named 'patch': that is a RESERVED WGSL keyword, and the failed
@@ -4501,7 +4501,7 @@
     }
   `;
 
-  const TEMPORAL = /* wgsl */`
+  const TEMPORAL_SRC = () => /* wgsl */`
     @group(0) @binding(1) var gIrr : texture_2d<f32>;
     @group(0) @binding(2) var histPrev : texture_2d<f32>;
     @group(0) @binding(3) var samp : sampler;
@@ -4545,7 +4545,7 @@
     }
   `;
 
-  const SPATIAL = /* wgsl */`
+  const SPATIAL_SRC = () => /* wgsl */`
     @group(0) @binding(1) var hist : texture_2d<f32>;
     @group(0) @binding(2) var gAlbedo : texture_2d<f32>;
     @group(0) @binding(3) var irrOut : texture_storage_2d<rgba16float, write>;
@@ -4582,7 +4582,7 @@
     }
   `;
 
-  const COMPOSITE = /* wgsl */`
+  const COMPOSITE_SRC = ({ DDAW, pickWGSL }) => /* wgsl */`
     @group(0) @binding(1) var gAlbedo : texture_2d<f32>;
     @group(0) @binding(2) var irrF : texture_2d<f32>;
     @group(0) @binding(3) var colorOut : texture_storage_2d<rgba8unorm, write>;
@@ -5261,7 +5261,7 @@
     }
   `;
 
-  const TAA = /* wgsl */`
+  const TAA_SRC = () => /* wgsl */`
     @group(0) @binding(1) var colorCur : texture_2d<f32>;
     @group(0) @binding(2) var gIrr : texture_2d<f32>;
     @group(0) @binding(3) var colorPrev : texture_2d<f32>;
@@ -5366,7 +5366,7 @@
     }
   `;
 
-  const BLIT = /* wgsl */`
+  const BLIT_SRC = () => /* wgsl */`
     @group(0) @binding(1) var src : texture_2d<f32>;
     @group(0) @binding(2) var samp : sampler;
     @group(0) @binding(3) var dofT : texture_2d<f32>;                // ── DEPTH OF FIELD ── {resolved colour, signed CoC} from the TAA pass
@@ -5512,7 +5512,7 @@
     }
   `;
 
-  const VIS = /* wgsl */`
+  const VIS_SRC = () => /* wgsl */`
     ${pickWGSL}
     @group(0) @binding(1) var<storage, read_write> visb : array<u32>;   // 4×u32 bitmask per 8×8 screen tile: bit di = drop slot di's bounding sphere may touch this tile (128 slots = four words)
     @compute @workgroup_size(8, 8)
@@ -5554,6 +5554,23 @@
       visb[ti] = m0; visb[ti + 1u] = m1; visb[ti + 2u] = m2; visb[ti + 3u] = m3;
       ${UNI_RAY ? 'visb[ti + 4u] = g0; visb[ti + 5u] = g1; visb[ti + 6u] = g2; visb[ti + 7u] = g3;' : ''}
     }`;
+
+  // ── SHADER BUILD ── Every WGSL literal in render/wgsl/ is a FACTORY, and this is the
+  // ONE place any of them is called. A function body evaluates when it is CALLED, so by
+  // the time any `${…}` is read, every fragment above has finished running — which makes
+  // the "a const read before its declaration inside an earlier shader literal" black
+  // screen structurally impossible rather than something to remember. It cost a session.
+  //
+  // Shader-to-shader dependencies are passed EXPLICITLY. The destructured names shadow
+  // the outer ones, so each shader body is byte-for-byte what it always was, while the
+  // signature now states what that shader is composed from. A missing argument shows up
+  // as the literal text "undefined" in the WGSL, which fails compilation loudly, instead
+  // of a silent TDZ that only ever renders black.
+  const PRE = PRE_SRC(), FLAKEBLK = FLAKEBLK_SRC(), DDAW = DDAW_SRC(), VIS = VIS_SRC();
+  const TRACE = TRACE_SRC({ DDAW, FLAKEBLK, pickWGSL });
+  const COMPOSITE = COMPOSITE_SRC({ DDAW, pickWGSL });
+  const SCATTER = SCATTER_SRC(), PATCHW = PATCHW_SRC(), TEMPORAL = TEMPORAL_SRC(),
+        SPATIAL = SPATIAL_SRC(), TAA = TAA_SRC(), BLIT = BLIT_SRC();
 
   const mkCompute = (code, fol) => device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: (PRE + code).replaceAll('§FOL§', fol ? 'true' : 'false') }), entryPoint: 'main' } });
   const pTraceV = [mkCompute(TRACE, 0), mkCompute(TRACE, 1)];          // FOLIAGE SPECIALIZATION: variant 0 = normal play (see-through check compiled OUT of the hot DDA loop), variant 1 = eye near foliage
@@ -6195,6 +6212,9 @@
       q0: upFlip ? m2q(Xh, [-Xh[2], 0, Xh[0]], [0, -1, 0]) : m2q(Xh, [Xh[2], 0, -Xh[0]], [0, 1, 0]) });
     if (drops.length > 4) drops.shift();               // the composite renders up to 4 at once
   }
+  const __m_ui_console = (() => {
+  // @module — the in-game command line (T)
+  // @exports cmdEscAt, cmdMsg, cmdOpen, cmdRun, cmdShow
   // ══ COMMAND LINE (user) ══ T opens it, Enter runs, Escape cancels. `/spawn <thing>` puts a creature
   // or an item in front of the player. While it is open the game's own keyboard is silenced — the binds
   // read raw key codes, so without that, typing "spawn" would drop the held item on the d and toggle
@@ -6405,6 +6425,9 @@
     else if (e.code === 'Backspace') { e.preventDefault(); cmdBuf = cmdBuf.slice(0, -1); cmdDraw(); }
     else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); cmdBuf += e.key; cmdDraw(); }
   }, true);
+    return { cmdEscAt, cmdMsg, cmdOpen, cmdRun, cmdShow };
+  })();
+  const { cmdEscAt, cmdMsg, cmdOpen, cmdRun, cmdShow } = __m_ui_console;
   // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
   // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
   const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
@@ -10359,11 +10382,14 @@
   }
   $('kbBtn').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.remove('hidden'); kbRefresh(); });
 
+  const __m_ui_video_editor = (() => {
+  // @module — screen recording, the clip timeline, red annotations, the export
+  // @exports BASE_VIG, VE, VE_CAP_MS, renderDist, veAC, veAudioDest, vePanel, veTapEl, veToggleRec
   // ═══════════════ VIDEO EDITOR + SCREEN RECORDER ═══════════════ (user)
   // Capture the game canvas to a .webm with MediaRecorder, then trim / cut / delete / resize clips on a timeline and
   // export the result. Entirely self-contained DOM + MediaRecorder work — nothing here touches the WebGPU render loop.
   // The "recording" banner is a DOM element (never drawn on the canvas), so it can never appear in the capture/export.
-  const VE = { clips: [], dur: 0, sel: -1, blobUrl: null, thumb: '', playing: false,
+  const VE = { clips: [], dur: 0, sel: -1, blobUrl: null, thumb: '', playing: false, lastPaint: 0,
                rec: null, chunks: [], recording: false, drag: null,
                strokes: [], undone: [], pen: false, drawing: false, exporting: false };   // strokes: red annotation polylines in NORMALISED video space; undone: redo stack for Ctrl+Z; exporting: suspends the game's render work
   const veBtnEl = $('veBtn'), vePanel = $('vePanel'), veStage = $('veStage'), veVideo = $('veVideo'),
@@ -10463,7 +10489,6 @@
   // by experiment), so it cannot be corrected downstream - the paint cadence has to be even at the
   // source, which is what VE_CAP_MS does in the render loop.
   const VE_CAP_MS = 1000 / 60 - 0.6;                   // one paint per capture slot, a hair under so a slot is never missed
-  let veLastPaint = 0;
   const veStartRec = () => {
     if (VE.recording) return;
     const mime = veCaptureMime(); if (!mime) { console.warn('[vb] MediaRecorder unsupported'); return; }   // hardware H.264 first → doesn't contend with the render loop the way software VP9 did
@@ -10475,7 +10500,7 @@
     catch (e) { console.warn('[vb] MediaRecorder ctor failed', e); return; }
     VE.rec.ondataavailable = (e) => { if (e.data && e.data.size) VE.chunks.push(e.data); };
     VE.rec.onstop = () => veLoadBlob(new Blob(VE.chunks, { type: mime.indexOf('mp4') >= 0 ? 'video/mp4' : 'video/webm' }));   // blob container follows the codec actually recorded (mp4 for H.264, else webm) — a mismatched type made the editor <video> refuse H.264 chunks
-    veLastPaint = performance.now() - VE_CAP_MS;     // first frame paints immediately
+    VE.lastPaint = performance.now() - VE_CAP_MS;     // first frame paints immediately
     VE.rec.start();
     VE.recording = true;
     veRecEl.classList.remove('hidden');                // ← the "recording" banner (DOM only → never captured)
@@ -10757,7 +10782,9 @@
 
   const renderDist = RD_FIXED;                         // FIXED 100 m — the slider is gone (user), so nothing reassigns this
   const BASE_VIG = 0.26;                               // always-on vignette in normal play — well under the cinematic 0.55 so it frames the view without reading as an effect
-  let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
+    return { BASE_VIG, VE, VE_CAP_MS, renderDist, veAC, veAudioDest, vePanel, veTapEl, veToggleRec };
+  })();
+  const { BASE_VIG, VE, VE_CAP_MS, renderDist, veAC, veAudioDest, vePanel, veTapEl, veToggleRec } = __m_ui_video_editor;
   // ── DEPTH OF FIELD ── persisted (vb_dof), default ON, and declared HERE for the same reason vigOn is: the
   // settings-panel wiring further down reads it, so a declaration below that point is a TDZ error at boot.
   const DOF_COC = 0.0105;                              // max circle of confusion as a fraction of the canvas HEIGHT (~11 px at 1080p) — a fraction, not a pixel count, so the look is identical at every resolution and render scale
@@ -11123,6 +11150,7 @@
   smoothEye = P.y + EYE;
 
   // ── input ──────────────────────────────────────────────────────────────────
+  let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
   let lightMode = false;                               // L: cursor released for the light panel only — no esc menu, no camera drift
   let locked = false;
   // lockEl (the esc menu) stays hidden at boot — after loading, the overlay is removed to reveal the live game and a
@@ -11470,6 +11498,9 @@
       if (e.target === pkPanel) pkPanel.classList.add('hidden'); });   // backdrop click closes it too, matching the settings panel
   }
 
+  const __m_ui_editor = (() => {
+  // @module — the asset editor: platform, gizmos, .vox parse, pose bakes
+  // @exports BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edLayout, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk
   // ── ASSET EDITOR PLATFORM ── a floating white stage (1-voxel-thick plane, 1 m grid in light grey) stamped just above
   // the tallest content near the player. Import .vox frames (multi-file or multi-model), they line up left→right in
   // sequence order; , / . cycle the selected frame (amber ring), ←/→ move it within the sequence. Every voxel write goes
@@ -11942,6 +11973,9 @@
     edClearStamp();
   });
 
+    return { BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edLayout, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk };
+  })();
+  const { BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edLayout, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk } = __m_ui_editor;
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
@@ -13629,8 +13663,8 @@
     // 120 Hz paint. This gate is at the TOP on purpose: skipping a WHOLE frame is safe, but returning
     // part-way through skips the strip-scatter dispatch with xStripPending still set and breaks the
     // streaming order (that mistake threw a tick exception).
-    if (VE.recording && now - veLastPaint < VE_CAP_MS) { tickReq = true; paceWaited = false; requestAnimationFrame(tick); return; }
-    if (VE.recording) veLastPaint = now - Math.min(VE_CAP_MS * 0.5, (now - veLastPaint) - VE_CAP_MS);   // carry the overshoot so the cadence cannot drift slow
+    if (VE.recording && now - VE.lastPaint < VE_CAP_MS) { tickReq = true; paceWaited = false; requestAnimationFrame(tick); return; }
+    if (VE.recording) VE.lastPaint = now - Math.min(VE_CAP_MS * 0.5, (now - VE.lastPaint) - VE_CAP_MS);   // carry the overshoot so the cadence cannot drift slow
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
     if (locked && !anthemDone) { playSecs += dt; if (playSecs >= anthemNextAt) playAnthem(); }   // ── PLAY CLOCK ── counts only while the player HAS THE CONTROLS: the loading screen, the press-any-button prompt, the esc menu and the death screen are not gameplay, and a backgrounded tab stops rAF outright. Two minutes of PLAYING, not two minutes of the page being open.
     fpsEma = fpsEma * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;

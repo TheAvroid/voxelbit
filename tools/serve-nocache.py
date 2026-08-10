@@ -18,8 +18,21 @@ itself stays clean - none of this dev-only plumbing exists in the file you deplo
 A refresh also drops the connection, so the shutdown waits GRACE seconds for a
 reconnect before exiting, and only ever arms after the first tab has connected (that
 way starting the server before opening a browser doesn't exit instantly).
+
+index.html is BUILT, not read
+-----------------------------
+The game's source lives in src/ as ~78 ordered fragments (see tools/bundle.py). This
+server concatenates them in memory on every request for /, so editing a fragment and
+hitting refresh shows the change with no build step - exactly the loop the single file
+had. game/index.html on disk is only rebuilt when you run tools/bundle.py, which keeps
+the artifact out of the way while several people edit different fragments at once.
+
+If src/ is missing (someone unpacked only game/), it falls back to the file on disk.
 """
 import http.server, socketserver, functools, os, sys, time, threading
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bundle   # tools/bundle.py - src/ fragments -> one index.html
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'game'))   # serve game/ - this script lives in tools/. Derived from __file__ rather than hardcoded, so moving or renaming the project never breaks the server (an earlier version pinned r'c:\voxelbit\website', which stopped existing the moment the site moved).
 
@@ -57,12 +70,24 @@ class NoCache(http.server.SimpleHTTPRequestHandler):
         return super().do_HEAD()
 
     def _index(self):
-        """Serve index.html with the tab-alive beacon injected (file on disk untouched)."""
+        """Build src/ -> index.html in memory, inject the tab-alive beacon, serve it.
+
+        Rebuilt PER REQUEST rather than cached: the whole point of the fragment layout is
+        that an edit shows up on refresh, and 78 small reads are ~2 ms - far below the
+        cost of the world the page is about to generate. A fragment with a syntax error
+        still bundles fine (this is text concatenation); the browser console is where you
+        find out, same as before the split.
+        """
         try:
-            with open(os.path.join(ROOT, 'index.html'), 'rb') as f:
-                body = f.read()
+            body = bundle.build()
+        except SystemExit as e:                # a fragment listed in the manifest is missing
+            self.send_error(500, str(e)); return
         except OSError:
-            self.send_error(404, 'index.html not found in ' + ROOT); return
+            try:                               # no src/ - serve whatever was last built
+                with open(os.path.join(ROOT, 'index.html'), 'rb') as f:
+                    body = f.read()
+            except OSError:
+                self.send_error(404, 'no src/ to build and no index.html in ' + ROOT); return
         body = (body.replace(b'</body>', _BEACON + b'</body>', 1)
                 if b'</body>' in body else body + _BEACON)
         self.send_response(200)
@@ -124,10 +149,20 @@ class ThreadingServer(socketserver.ThreadingTCPServer):
 
 
 if __name__ == '__main__':
-    threading.Thread(target=watchdog, daemon=True).start()
+    # --port lets a test harness serve on its own port instead of fighting the game the
+    # user is actually playing on 8080, and lets two agents test at the same time.
+    # --no-watchdog keeps the server up for a run that opens and closes tabs.
+    port = 8080
+    for i, a in enumerate(sys.argv):
+        if a == '--port' and i + 1 < len(sys.argv):
+            port = int(sys.argv[i + 1])
+    if '--no-watchdog' not in sys.argv:
+        threading.Thread(target=watchdog, daemon=True).start()
     handler = functools.partial(NoCache, directory=ROOT)
-    with ThreadingServer(('', 8080), handler) as httpd:
-        print('no-cache server (threaded) on http://localhost:8080')
+    with ThreadingServer(('', port), handler) as httpd:
+        print('no-cache server (threaded) on http://localhost:%d' % port)
         print('serving', ROOT)
-        print('closes automatically when the last game tab is closed')
+        print('building from', os.path.join(os.path.dirname(ROOT), 'src'))
+        if '--no-watchdog' not in sys.argv:
+            print('closes automatically when the last game tab is closed')
         httpd.serve_forever()

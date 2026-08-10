@@ -1,0 +1,59 @@
+  // ── FREEZE FORENSICS ── (user: "sometimes the game freezes") every way the render loop can die is now caught,
+  // logged with a stack (window.__vbErr — paste it to be fixed), and where possible the loop is restarted instead
+  // of hanging. A LOST GPU DEVICE (driver reset/timeout — the classic mid-walk freeze) shows a visible banner.
+  window.__vbErr = null;
+  const vbNoteErr = (tag, e) => { window.__vbErr = tag + ': ' + ((e && (e.stack || e.message)) || e); console.error('[vb]', tag, e); };
+  // ── CPU PHASE TELEMETRY ── (dev) armed with __vb.cprof(true). When disarmed this costs exactly one
+  // predictable `if (CPROF)` test per phase boundary — no performance.now() calls, no allocation — so it
+  // is safe to leave compiled into normal play. Armed, it EMAs the ms spent in each tickBody phase.
+  let CPROF = 0, cpLast = 0;
+  const CP_NAMES = ['physics', 'stream', 'weather', 'snowvox', 'camera', 'life', 'emit', 'encode'];
+  const cpEma = new Float64Array(CP_NAMES.length);
+  const cpCur = new Float64Array(CP_NAMES.length);     // THIS frame's phase costs (the EMA hides spikes)
+  const cpMark = (i) => { const t = performance.now(); cpCur[i] = t - cpLast; cpEma[i] += (cpCur[i] - cpEma[i]) * 0.08; cpLast = t; };
+  // ── FRAME-TIME RING ── always on (two float stores per frame) so 1% lows / spikes can be read at any moment.
+  // FT = the wall gap between frames; FTB = time actually spent INSIDE tickBody. The pair is the whole
+  // diagnosis: FT >> FTB means the stall is outside our code (GPU pacing / present / GC), FT ≈ FTB means it is ours.
+  const FTR = 4096;                                  // ~13 s at 300 fps — a 1024 ring covered only 3.4 s, so ft() and spikes() reported different windows
+  const FT = new Float32Array(FTR), FTB = new Float32Array(FTR); let ftI = 0, ftN = 0;
+  let heapPrev = 0, heapDrops = 0, heapAlloc = 0;    // GC discrimination: a frame where the JS heap SHRINKS is a collection
+  // ── SPIKE LOG ── worst frames with their phase breakdown + which heavy subsystems ran that frame.
+  const CPE_NAMES = ['census', 'band', 'upBricks', 'recenter', 'targets', 'snowPatch', 'stampPatch', 'heapShrank', 'navFlush'];
+  let cpEvt = 0, cpSpikeTh = 12;
+  const cpSpikes = [];
+  // ── GPU UPLOAD ACCOUNTING ── installed only while armed: writeBuffer is wrapped to tally calls + bytes.
+  let upN = 0, upB = 0, upWrapped = null, cpUpN = 0, cpUpB = 0, tbT0 = 0;
+  function cprofArm(on) {
+    if (on && !upWrapped) { const q = device.queue, orig = q.writeBuffer.bind(q);
+      upWrapped = orig;
+      q.writeBuffer = function (buf, off, data, dOff, size) {
+        upN++; upB += (size !== undefined ? size * (data.BYTES_PER_ELEMENT || 1) : (data.byteLength || 0) - (dOff || 0) * (data.BYTES_PER_ELEMENT || 1));
+        return dOff === undefined ? orig(buf, off, data) : (size === undefined ? orig(buf, off, data, dOff) : orig(buf, off, data, dOff, size)); };
+    } else if (!on && upWrapped) { device.queue.writeBuffer = upWrapped; upWrapped = null; }
+    CPROF = on ? 1 : 0;
+  }
+  window.addEventListener('error', (e) => vbNoteErr('uncaught', e.error || e.message));
+  window.addEventListener('unhandledrejection', (e) => vbNoteErr('rejection', e.reason));
+  device.lost.then((info) => {                         // device lost = the picture freezes at the last frame with no error anywhere — now it says so
+    vbNoteErr('gpu device lost', info.reason + ' — ' + info.message);
+    loadEl.classList.add('hidden');
+    const b = document.createElement('div');
+    b.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;align-items:center;justify-content:center;background:rgba(8,10,14,0.88);color:#ff8a95;font:10px "px3",Consolas,monospace;letter-spacing:2px;text-align:center;line-height:2';
+    b.textContent = 'gpu device lost (' + info.reason + ') — reload the page';
+    document.body.appendChild(b);
+  }).catch(() => {});
+  const canvas = $('c');
+  const ctx = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+  let moonTex = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+  device.queue.writeTexture({ texture: moonTex }, new Uint8Array([205, 210, 220, 255]), {}, [1, 1]);   // flat fallback if the photo is missing
+  try {                                                // REAL moon — NASA SVS full-moon photograph mapped onto the disc
+    const mimg = await createImageBitmap(await (await fetch('assets/moon.jpg')).blob());
+    const moonFallback = moonTex;                      // the 1x1 placeholder is superseded here — destroy it once the real photo is in place
+    moonTex = device.createTexture({ size: [mimg.width, mimg.height], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+    device.queue.copyExternalImageToTexture({ source: mimg }, { texture: moonTex }, [mimg.width, mimg.height]);
+    mimg.close();                                      // release the decoded bitmap immediately — the texture owns the pixels now
+    try { moonFallback.destroy(); } catch (e) {}       // no bind group has been built yet (makeTargets runs later), so nothing references it
+  } catch (e) { console.warn('[vb] moon.jpg missing — flat moon disc', e); }
+

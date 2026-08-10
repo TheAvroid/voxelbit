@@ -1,0 +1,91 @@
+  /* ── LIGHT DEBUG PANEL ── every lighting term on its own switch, top-right, so the image can be
+     bisected live instead of guessed at. Sits above the HUD z-order and ignores pointer-lock clicks. */
+  #lgtPanel { position: fixed; top: 10px; right: 12px; z-index: 30; background: rgba(12,16,22,0.82); border: 1px solid #2b3648;
+    border-radius: 10px; padding: 7px 9px 8px; font: 7px/1.6 'px3', Consolas, monospace; letter-spacing: 1px; color: #cfd6e0;
+    display: flex; flex-direction: column; gap: 3px; min-width: 132px; box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
+  #lgtPanel .lgtHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #8fa0b8; padding-bottom: 3px; border-bottom: 1px solid #223046; margin-bottom: 2px; }
+  #lgtPanel .lgtHead button { background: #1a2331; border: 1px solid #3d4a60; border-radius: 7px; color: #cfd6e0; font: inherit; padding: 2px 7px; cursor: pointer; }
+  #lgtPanel .lgtHead button:hover { border-color: #7fd05a; color: #b8ff6e; }
+  #lgtPanel .lgtRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  #lgtPanel .lgtRow button { background: #1a2331; border: 1px solid #d9553f; border-radius: 7px; color: #f0b8ac; font: inherit;
+    padding: 2px 9px; cursor: pointer; min-width: 34px; }
+  #lgtPanel .lgtRow button.on { border-color: #7fd05a; color: #b8ff6e; }
+  #lgtPanel.lit { border-color: #7fd05a; box-shadow: 0 0 0 1px rgba(127,208,90,0.35), 0 6px 18px rgba(0,0,0,0.5); }   /* LIGHT MODE: the panel has the cursor */
+  #lgtPanel .lgtSld input[type="range"] { flex: 1; min-width: 0; height: 12px; accent-color: #7fd05a; background: transparent; cursor: pointer; }   /* reflection-strength slider — same treatment as the arrow panel's */
+  #lgtPanel .lgtSld .lgtVal { min-width: 22px; text-align: right; color: #9fd07a; }
+  #lgtPanel .lgtBake { gap: 4px; }                     /* the bake line + its copy button — mirrors #arwPanel .arwBake */
+  #lgtPanel .lgtBake input { flex: 1; min-width: 0; background: #0c1118; border: 1px solid #33405a; border-radius: 7px; color: #9fd07a; font: inherit; padding: 3px 5px; }
+  #lgtPanel .lgtBake button { background: #1a2331; border: 1px solid #3d4a60; border-radius: 7px; color: #cfd6e0; font: inherit; padding: 2px 7px; cursor: pointer; }
+  #lgtPanel .lgtBake button:hover { border-color: #7fd05a; color: #b8ff6e; }
+  #lgtPanel .lgtHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; }
+  #lgtPanel.hidden { display: none; }
+  /* ── WATER SETTINGS: OFF SCREEN ── the panel, its buttons, the reflection slider and the bake row stay wired
+     exactly as they are, so WATER_BAKE still drives the look and __vb.lgt()/__vb.wrefl() still reach it from the
+     console; this one rule keeps it out of sight. It has been brought back twice to carry a group of graphics
+     toggles and retired again both times when that group was removed. Delete to restore. */
+  #lgtPanel { display: none !important; }
+  /* ── ARROW ORIENTATION ── top right, shown whenever the cursor is free; each button turns the arrow on the bow a quarter turn */
+  #arwPanel { position: fixed; top: 10px; right: 12px; z-index: 60; background: rgba(12,16,22,0.82); border: 1px solid #2b3648;
+    border-radius: 10px; padding: 7px 9px 8px; font: 7px/1.6 'px3', Consolas, monospace; letter-spacing: 1px; color: #cfd6e0;
+    display: flex; flex-direction: column; gap: 3px; min-width: 124px; box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
+  #arwPanel .arwHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #8fa0b8; padding-bottom: 3px; border-bottom: 1px solid #223046; margin-bottom: 2px; }
+  #arwPanel .arwRow { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  #arwPanel button { background: #1a2331; border: 1px solid #3d4a60; border-radius: 7px; color: #cfd6e0; font: inherit; padding: 2px 7px; cursor: pointer; min-width: 34px; }
+  #arwPanel button:hover { border-color: #7fd05a; color: #b8ff6e; }
+  #arwPanel .arwSld input[type="range"] { flex: 1; min-width: 0; height: 12px; accent-color: #7fd05a; background: transparent; cursor: pointer; }
+  #arwPanel .arwSld .arwVal { min-width: 14px; text-align: right; color: #9fd07a; }
+  #arwPanel .arwBake { gap: 4px; }
+  #arwPanel .arwBake input { flex: 1; min-width: 0; background: #0c1118; border: 1px solid #33405a; border-radius: 7px; color: #9fd07a; font: inherit; padding: 3px 5px; }
+  #arwPanel .arwHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; text-align: center; }
+  #arwPanel.hidden { display: none; }
+  /* ── HAND SETTINGS: OFF SCREEN (user 2026-08-05) ── the panel, its sliders and every listener stay wired
+     exactly as they were, so nothing else has to change; this one rule keeps it out of sight. Delete to restore. */
+  #arwPanel { display: none !important; }
+  /* ── HELD-STACK COUNT ── top right, shown only when the hand holds more than one (user) */
+  #stackN { position: fixed; top: 12px; right: 16px; z-index: 24; font: 22px/1 'px3', Consolas, monospace; letter-spacing: 2px;
+    color: #f2e6c8; text-shadow: 0 2px 6px rgba(0,0,0,0.85), 0 0 12px rgba(0,0,0,0.6); pointer-events: none; }
+  #stackN.hidden { display: none; }
+  #vigBtn, #snowBtn, #fsBtn, #crdBtn, #fpsBtn, #timeBtn, #resHudBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 16px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = NO COLOUR (user 2026-08-08 — was red): a toggle that is off reads as a plain neutral pill, same slate as the other resting buttons in the panel */
+  #vigBtn:hover, #snowBtn:hover, #fsBtn:hover, #crdBtn:hover, #fpsBtn:hover, #timeBtn:hover, #resHudBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off buttons LIFT on hover but KEEP their own on/off colour — no gold hover outline (user) */
+  #vigBtn.on, #snowBtn.on, #fsBtn.on, #crdBtn.on, #fpsBtn.on, #timeBtn.on, #resHudBtn.on { border-color: #d2a453; color: #ffd76a; }   /* ON = GOLD (user 2026-08-08 — was green) */
+  #fsWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #cmpBtn { background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 3px 15px; color: #dfe6ee; cursor: pointer; display: flex; align-items: center; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = no colour */
+  #cmpBtn svg { width: 17px; height: 17px; display: block; }   /* fill=currentColor → the icon itself shows the on/off state */
+  #cmpBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* on-off → lift only, keeps its on/off colour */
+  #cmpBtn.on { border-color: #d2a453; color: #ffd76a; }   /* ON = gold */
+  #kbPanel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; overflow-y: auto; background: rgba(6,8,12,0.72); z-index: 30; }
+  /* NO scrim on the held-item editor (user): the whole point is watching the item while you tune it.
+     The card sits to the LEFT so the hand, which is on the right, is never behind it. */
+  #pkPanel { position: fixed; inset: 0 auto 0 0; display: flex; align-items: center; justify-content: flex-start;
+    padding-left: 24px; background: none; pointer-events: none; z-index: 30; }
+  #pkCard { pointer-events: auto; }
+  /* margin:auto rather than the parent's align-items alone: a centred flex CHILD that outgrows its box
+     overflows equally in both directions and the top of it becomes unscrollable, which is the classic way a
+     wrapped row loses its last card off the bottom of a short window. margin:auto centres it while leaving
+     the overflow scrollable, and the padding keeps the outermost cards off the screen edges. */
+  #kbWrap { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; align-items: flex-start; max-width: 94vw; margin: auto; padding: 16px 0; }
+  /* SOUND stacked ON TOP OF VISUALS (user 2026-08-07) as one column, with CONTROLS alongside. align-items:
+     stretch so the two share the column's width and their left and right edges line up as one block. The
+     column is not a card: a click landing in the gap between them falls through to the backdrop rule and
+     closes the panel, exactly as the gap between two side-by-side boxes always has. */
+  #kbCol { display: flex; flex-direction: column; align-items: stretch; gap: 14px; }   /* VISUALS + SOUND + CONTROLS as separate rounded boxes side by side (user), like the video editor's stacked pieces. FOUR boxes at a 350 px minimum overrun a narrow window, so the row WRAPS rather than pushing the far card off screen — max-width alone would only have clipped it. */
+  #kbCard2, #kbCard3, #kbCard4, #pkCard { background: rgba(16,21,28,0.8); border: 1px solid #2b3646; border-radius: 16px; padding: 22px 26px 18px; min-width: 350px; max-height: 88vh; overflow-y: auto; scrollbar-width: none; font: 8px/2.1 'px3', Consolas, monospace; letter-spacing: 1px; color: #dfe6ee; box-shadow: 0 12px 48px rgba(0,0,0,0.55); }   /* 20% transparent (user); scrollbar-width:none → no scrollbar 'slider' on the right; still scrolls via wheel */
+  #kbCard2::-webkit-scrollbar, #kbCard3::-webkit-scrollbar, #kbCard4::-webkit-scrollbar, #pkCard::-webkit-scrollbar { display: none; }   /* hide the WebKit scrollbar too */
+  #kbCard2 h2, #kbCard3 h2, #kbCard4 h2, #pkCard h2 { font: 12px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0 0 12px; color: #fff; }
+  .pkRow { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
+  .pkRow:last-child { border-bottom: none; }
+  .pkRow input { width: 150px; accent-color: #d2a453; cursor: pointer; }
+  .pkVal { min-width: 52px; text-align: right; color: #d2a453; }
+  #pkClose, #pkReset { margin: 14px 6px 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 22px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
+  #pkClose:hover, #pkReset:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
+  .kbRow { display: flex; justify-content: space-between; align-items: center; gap: 34px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
+  .kbRow:last-child { border-bottom: none; }
+  .kbKey { min-width: 96px; text-align: center; background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 5px 10px; color: #cfe0f4; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.12s, color 0.12s; }
+  .kbKey:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
+  .kbKey.listen { border-color: #7fd05a; color: #b8ff6e; }
+  #kbClose { display: block; margin: 14px auto 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
+  #kbClose:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
+  #over { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; background: rgba(26,6,2,0.82); color: #ffd9c0; font: 9px/2 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; z-index: 25; }
+  #over h1 { font: 22px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; color: #ff6a3a; }
+  #over .ohint { opacity: 0.75; font-size: 7px; }
+  .hidden { display: none !important; }

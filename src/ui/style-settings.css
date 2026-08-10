@@ -1,0 +1,54 @@
+  /* the four option rows used to be pinned to the top-right of the ESC menu; they now live inside the settings
+     panel, so they are plain rows. Each keeps its id — every listener binds by id, so nothing else has to change. */
+  .optRows { margin: 0 0 4px; }
+  .optRows > div { display: flex; gap: 12px; align-items: center; justify-content: space-between; font-size: 8px; color: #cfd6e0; padding: 3px 0; }
+  .optRows > div > span:first-child { min-width: 96px; }
+  .kbSub { font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; margin: 14px 0 8px; color: #8fa0b8; border-top: 1px solid #222b38; padding-top: 12px; }
+  /* ── TIME OF DAY ── back in the visuals card, above resolution (user 2026-08-08). It was parked outside
+     every card and hidden by a display:none rule from 2026-08-07; the row, its listeners and the clock block
+     that rewrites it every second never changed, so restoring it was moving the markup and dropping the rule. */
+  #todWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #todSlider { width: 170px; cursor: pointer; }
+  /* ── SLIDER KNOBS ── custom thumbs so the circle can GROW on hover (user: keep the cross cursor over a slider, expand
+     the knob instead of squaring the cursor). accent-color can't animate a native thumb, so the track + thumb are drawn
+     by hand: a thin rail and a green disc that scales up (and gets a soft ring) while hovered or dragged. */
+  #todSlider, #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider, #musSlider { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; outline: none;
+    background: linear-gradient(to right,
+      #ffeec2 0                             calc(var(--fill, 50%) * 0.125),
+      #ffe7aa calc(var(--fill, 50%) * 0.125) calc(var(--fill, 50%) * 0.25),
+      #f8d899 calc(var(--fill, 50%) * 0.25)  calc(var(--fill, 50%) * 0.375),
+      #efc98a calc(var(--fill, 50%) * 0.375) calc(var(--fill, 50%) * 0.5),
+      #debd82 calc(var(--fill, 50%) * 0.5)   calc(var(--fill, 50%) * 0.625),
+      #d7b172 calc(var(--fill, 50%) * 0.625) calc(var(--fill, 50%) * 0.75),
+      #d8a559 calc(var(--fill, 50%) * 0.75)  calc(var(--fill, 50%) * 0.875),
+      #d9993f calc(var(--fill, 50%) * 0.875) var(--fill, 50%),
+      #2a3342 var(--fill, 50%) 100%); }   /* --fill (JS-driven) is the GOLD LINE to the left of the knob (user); the KNOB is WHITE (user 2026-08-08) */
+  /* ── THE RAIL WEARS THE WORDMARK'S GOLD (user 2026-08-09: "a gold pixel gradient like what is shown on the voxelbit
+     title outlines", then: run it ALONG the bar, then: lighter, "especially towards the darker side") ── the eight
+     stops are the title bevel's ENTIRE ring, one per facet, with each facet's HUE AND SATURATION kept exactly and only
+     its LIGHTNESS re-spaced: the bright end sits where the top-left facet already was and the floor is lifted to 0.55,
+     so the bottom-right facet reads #d9993f instead of its original #754e17. Lightness, NOT a blend toward white —
+     white-lerping the dark end desaturates it to #c8b8a2, which is beige, and a beige rail beside a gold wordmark reads
+     as a different material rather than a lighter one. Doubled stop positions make them HARD bands rather than a
+     gradient — the same discrete-facet look the bevel gets from eight offset copies, and the reason this reads as pixel
+     art next to px3 instead of as a web gradient.
+     THE RAMP IS SCALED TO --fill, NOT TO THE TRACK. Every stop is a fraction of the fill percentage, so the full
+     eight-colour run always lands between the left cap and the knob whatever the value is. Anchoring the stops to the
+     track instead would show only the pale end at low volume and only the bronze end at high, i.e. the bar would change
+     COLOUR as you dragged it rather than change LENGTH. calc() on a percentage is what makes this possible in one
+     gradient: the same pass does the ramp and the fill split, so no mask layer is needed.
+     An earlier pass ran this ramp vertically, across the rail's 5px thickness, one band per pixel row. It was correct
+     and invisible — five pixels is no room for eight facets (user: "what did you change?"). */
+  #todSlider::-webkit-slider-thumb, #volSlider::-webkit-slider-thumb, #sensSlider::-webkit-slider-thumb, #resSlider::-webkit-slider-thumb, #dofStrSlider::-webkit-slider-thumb, #sfxSlider::-webkit-slider-thumb, #musSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #ffffff; border: none; transition: transform 0.14s ease-out; }
+  #todSlider:hover::-webkit-slider-thumb, #volSlider:hover::-webkit-slider-thumb, #sensSlider:hover::-webkit-slider-thumb, #resSlider:hover::-webkit-slider-thumb, #dofStrSlider:hover::-webkit-slider-thumb, #sfxSlider:hover::-webkit-slider-thumb, #musSlider:hover::-webkit-slider-thumb,
+  #todSlider:active::-webkit-slider-thumb, #volSlider:active::-webkit-slider-thumb, #sensSlider:active::-webkit-slider-thumb, #resSlider:active::-webkit-slider-thumb, #dofStrSlider:active::-webkit-slider-thumb, #sfxSlider:active::-webkit-slider-thumb, #musSlider:active::-webkit-slider-thumb { transform: scale(1.65); }   /* knob grows on hover — NO halo (user removed the box-shadow ring) */
+  #todSlider::-moz-range-thumb, #volSlider::-moz-range-thumb, #sensSlider::-moz-range-thumb, #resSlider::-moz-range-thumb, #dofStrSlider::-moz-range-thumb, #sfxSlider::-moz-range-thumb, #musSlider::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: #ffffff; border: none; transition: transform 0.14s ease-out; }
+  #todSlider:hover::-moz-range-thumb, #volSlider:hover::-moz-range-thumb, #sensSlider:hover::-moz-range-thumb, #resSlider:hover::-moz-range-thumb, #dofStrSlider:hover::-moz-range-thumb, #sfxSlider:hover::-moz-range-thumb, #musSlider:hover::-moz-range-thumb,
+  #todSlider:active::-moz-range-thumb, #volSlider:active::-moz-range-thumb, #sensSlider:active::-moz-range-thumb, #resSlider:active::-moz-range-thumb, #dofStrSlider:active::-moz-range-thumb, #sfxSlider:active::-moz-range-thumb, #musSlider:active::-moz-range-thumb { transform: scale(1.65); }
+  #todSlider::-moz-range-track, #volSlider::-moz-range-track, #sensSlider::-moz-range-track, #resSlider::-moz-range-track, #dofStrSlider::-moz-range-track, #sfxSlider::-moz-range-track, #musSlider::-moz-range-track { height: 5px; border-radius: 3px; background: #2a3342; }
+  #todSlider::-moz-range-progress, #volSlider::-moz-range-progress, #sensSlider::-moz-range-progress, #resSlider::-moz-range-progress, #dofStrSlider::-moz-range-progress, #sfxSlider::-moz-range-progress, #musSlider::-moz-range-progress { height: 5px; border-radius: 3px; background: linear-gradient(to right, #ffeec2 0 12.5%, #ffe7aa 12.5% 25%, #f8d899 25% 37.5%, #efc98a 37.5% 50%, #debd82 50% 62.5%, #d7b172 62.5% 75%, #d8a559 75% 87.5%, #d9993f 87.5% 100%); }   /* Firefox draws the filled-left portion natively, so this element IS the filled run and plain 0-100% stops already scale to it — the calc(--fill) arithmetic the webkit rail needs would be wrong here, not merely redundant */
+  #rdWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #volWrap, #sensWrap, #resWrap, #dofStrWrap, #sfxWrap, #musWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #volSlider, #sensSlider, #resSlider, #dofStrSlider, #sfxSlider, #musSlider { width: 170px; cursor: pointer; }
+  #vigWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }
+  #snowWrap { display: flex; gap: 12px; align-items: center; font-size: 8px; color: #cfd6e0; }

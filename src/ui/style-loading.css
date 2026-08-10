@@ -1,0 +1,28 @@
+  /* the loading screen carries the voxelbit title above the status text. When the world is ready the whole overlay is
+     removed, revealing the LIVE game running underneath — one click on it locks the mouse and takes control (user). */
+  /* LOADING VIDEO (user) — loading.mp4 plays full-bleed behind the status text; the video's OWN first frame
+     (loadposter.jpg, extracted from the clip) is the poster while it buffers, so poster→video is a seamless start, not a swap. A dark gradient scrim keeps the text legible over any frame. #load is display:none when dismissed, so the
+     video stops the instant the game starts. */
+  #loadVid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -2; }
+  /* ── SMOOTH PROGRESS METER (user) ── the fill's scaleX and the % are eased toward each phase's target by one rAF loop,
+     so the bar glides 0→100 instead of stepping as chunks land. */
+  #loadMeter { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  #loadBar { position: relative; width: 240px; max-width: 62vw; height: 16px; background: rgba(255,255,255,0.14); border-radius: 8px; overflow: hidden; }   /* thickness doubled 8→16 (user 2026-07-22); position:relative so the absolute bubble overlay sizes to the BAR, not the fullscreen overlay */
+  #loadFill { width: 100%; height: 100%; transform-origin: left center; transform: scaleX(0); border-radius: 7px; background: linear-gradient(180deg, #b8ff6e, #7fd05a); will-change: transform; }   /* TOP→BOTTOM gradient (user): lighter lime #b8ff6e at the top, darker green #7fd05a at the bottom. The fill TRANSITION is set from JS (a long time-based trickle, then a quick finish) — see the loading meter */
+  /* ── GLOSS REFLECTION (user) ── a glassy highlight on the fill: a STATIONARY bright band across the top third + a diagonal GLINT that sweeps left→right. A separate overlay (its width tracks the fill in JS) so the fill's scaleX can't smear the highlight. */
+  #loadGloss { position: absolute; left: 0; top: 0; height: 100%; width: 0%; overflow: hidden; pointer-events: none; border-radius: 7px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.50) 0%, rgba(255,255,255,0.12) 36%, transparent 58%); }   /* fixed top-gloss — a glossy sheen on the upper part of the bar */
+  #loadGloss::before { content: ''; position: absolute; top: 0; left: 0; height: 100%; width: 90px;
+    background: linear-gradient(105deg, transparent 15%, rgba(255,255,255,0.65) 50%, transparent 85%);
+    animation: loadGlint 2.4s ease-in-out infinite; }   /* the travelling specular streak */
+  @keyframes loadGlint { 0% { transform: translateX(-110px); } 55%, 100% { transform: translateX(330px); } }   /* streak sweeps across, pauses, repeats (clipped to the fill by overflow:hidden) */
+  #loadPct { font-size: 8px; opacity: 0.82; letter-spacing: 3px; }
+  #load::before { content: ''; position: absolute; inset: 0; z-index: -1;
+    background: linear-gradient(rgba(9,12,16,0.34), rgba(9,12,16,0.5)); }
+  /* CLICK-TO-ENTER prompt (user) — centred over the LIVE game after loading; transparent + pointer-events:none so the
+     click lands on the canvas underneath (which locks the mouse). Hidden the moment the player takes control. */
+  #playHint { position: fixed; inset: 0; z-index: 11; display: flex; align-items: center; justify-content: center;
+    color: #e8edf4; font: 11px 'px3', Consolas, monospace; letter-spacing: 3px; text-shadow: 0 2px 6px rgba(0,0,0,0.85);
+    pointer-events: none; animation: playHintPulse 1.8s ease-in-out infinite; }
+  @keyframes playHintPulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.45; } }
+  #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; transform: translateY(-28px); }   /* icons nudged up under the logo (user) */

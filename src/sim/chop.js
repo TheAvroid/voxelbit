@@ -1,0 +1,360 @@
+  // ── SHED SCRAP, NOT SCENERY (user 2026-08-07: "when I break into a new tree, the old tree that fell
+  // completely disappears") ── this took the OLDEST body, full stop, and after one felling the oldest body in
+  // the world is that tree's trunk. Starting a second tree then called it repeatedly and stripped the first one
+  // out of existence. A body over absorbSize is too big to pick up, which is exactly the line between "a chip
+  // in flight" and "a log lying in the forest the player made": scrap goes first, and a trunk is only ever
+  // touched when there is nothing else left at all.
+  // ── A CHUNK ALREADY FLYING INTO YOUR HAND IS OWED TO YOU (user 2026-08-08: "dig a chunk, but if another
+  // chunk is dug before the first is fully absorbed, it disappears") ── this evicts the OLDEST body that is
+  // small enough to count as scrap, and a chunk mid-flight is exactly that: small, and the oldest, because it
+  // was dug first. So the second dig deleted the first one out of the air. The absorb loop already refuses to
+  // expire a flying chunk for the same reason ("one already flying into the player finishes its flight"); the
+  // eviction paths simply never learned it. b.absorbing means the simulation has already let go of it and it
+  // is on a curve into the chest — there is no state left to reclaim, only a promise to keep.
+  const phMakeRoom = () => {
+    if (PH.bodies.length < PH.maxBodies) return true;
+    let oi = -1;
+    for (let i = 0; i < PH.bodies.length; i++) { const b = PH.bodies[i];
+      if (b.absorbing) continue;                       // in flight to the player — never
+      if (b.n > PH.absorbSize) continue;               // scenery — skip it on this pass
+      if (oi < 0 || b.born < PH.bodies[oi].born) oi = i; }
+    if (oi < 0) for (let i = 0; i < PH.bodies.length; i++) { if (PH.bodies[i].absorbing) continue;
+      if (oi < 0 || PH.bodies[i].born < PH.bodies[oi].born) oi = i; }   // nothing but scenery left: the budget is genuinely exhausted, so fall back to the oldest — still never one in flight
+    if (oi < 0) return false;
+    PH.bodies.splice(oi, 1); PH.stats.reclaimed++;
+    return true;
+  };
+  const phReclaim = (need) => {
+    let guard = 0;
+    while (PH.bodies.length && BODYCAP - bodyTop < need && guard++ < 64) {
+      let oi = -1;                                     // …and the same rule here: a chunk in flight is never the one retired (see phMakeRoom)
+      for (let i = 0; i < PH.bodies.length; i++) { if (PH.bodies[i].absorbing) continue;
+        if (oi < 0 || PH.bodies[i].born < PH.bodies[oi].born) oi = i; }
+      if (oi < 0) break;
+      PH.bodies.splice(oi, 1);
+      PH.stats.reclaimed++;
+      bodyTop = 0;                                   // repack the survivors from the start of the buffer
+      for (const b2 of PH.bodies) {
+        if (!b2.gpu || !b2.cpuGrid) continue;
+        device.queue.writeBuffer(bodyBuf, bodyTop * 4, b2.cpuGrid.buffer, 0, b2.cpuGrid.length * 4);
+        b2.gpu.off = bodyTop; bodyTop += b2.cpuGrid.length;
+      }
+    }
+  };
+  const phQRot = (q, v, o) => {                      // o = q * v * q^-1
+    const x = q[0], y = q[1], z = q[2], w = q[3];
+    const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+    o[0] = v[0] + w * tx + (y * tz - z * ty);
+    o[1] = v[1] + w * ty + (z * tx - x * tz);
+    o[2] = v[2] + w * tz + (x * ty - y * tx);
+    return o;
+  };
+  const phQNorm = (q) => { const l = Math.hypot(q[0], q[1], q[2], q[3]) || 1; q[0] /= l; q[1] /= l; q[2] /= l; q[3] /= l; };
+  const phTmp = [0, 0, 0], phTmp2 = [0, 0, 0], phNrm = [0, 0, 0];
+  const PHX = [1, 0, 0], PHY = [0, 1, 0], PHZ = [0, 0, 1], PHAX = [0, 0, 0], PHAY = [0, 0, 0], PHAZ = [0, 0, 0];
+  // STATIC terrain only — bodies do not collide with each other in this pass.
+  // FOLIAGE COUNTS HERE (user 2026-08-02: "leaves have hitboxes for everything but the player"). The
+  // canopy is walk-through for the PLAYER via solidTab, and stays that way — this is a separate test used
+  // only by the rigid-body solver, so a falling trunk now catches on neighbouring branches the way a real
+  // one hangs up, while you can still walk through the crown.
+  const phSolidAt = (x, y, z) => {
+    if (y < 0) return true;
+    if (y >= WY) return false;
+    const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+    return solidTab[id] === 1;                       // FOLIAGE IS NOT SOLID (user): leaves have no hitbox, so a crown swings through the next tree's needles and a chunk falls past them to the ground rather than hanging in mid-air
+  };
+  // Outward normal of a solid cell: point toward whichever faces are open. Gives real normals on slopes
+  // and walls instead of assuming the ground is flat.
+  const phNormalAt = (x, y, z, out) => {
+    let nx = 0, ny = 0, nz = 0;
+    if (!phSolidAt(x + 1, y, z)) nx += 1; if (!phSolidAt(x - 1, y, z)) nx -= 1;
+    if (!phSolidAt(x, y + 1, z)) ny += 1; if (!phSolidAt(x, y - 1, z)) ny -= 1;
+    if (!phSolidAt(x, y, z + 1)) nz += 1; if (!phSolidAt(x, y, z - 1)) nz -= 1;
+    const l = Math.hypot(nx, ny, nz);
+    if (l < 1e-6) { out[0] = 0; out[1] = 1; out[2] = 0; return out; }   // fully buried — push straight up
+    out[0] = nx / l; out[1] = ny / l; out[2] = nz / l; return out;
+  };
+  // Contact scratch (preallocated; the solver carries NO state between steps, like Teardown)
+  const cR = new Float64Array(PH.maxContacts * 3), cN = new Float64Array(PH.maxContacts * 3), cD = new Float64Array(PH.maxContacts);
+  // Direction a newly severed piece should fall. Set from the swing (you fell a tree away from
+  // yourself); falls back to "away from the player" when chopped programmatically.
+  const phFallDir = [0, 0, 1];
+  const phSetFallDir = (dx, dz) => { const l = Math.hypot(dx, dz); if (l > 1e-4) { phFallDir[0] = dx / l; phFallDir[2] = dz / l; } };
+  // ── AXE BITE -> FALLING CHUNK ── the voxels the axe carves out used to be deleted outright, so a hit
+  // just made material vanish. They are now kept: split into 6-connected pieces and thrown clear as real
+  // bodies. A LONE TRUNK voxel is dropped rather than spawned (single brown specks tumbling off every
+  // swing read as litter, not debris); a lone FOLIAGE voxel is kept, because scattered green flecks
+  // falling out of the canopy is exactly what a struck tree should shed.
+  const PHSRC = {};                                    // how many bodies each path built — which one actually fells a tree?
+  let phSrc = '?';   // which path built the body — stamped onto it below. Cheap, and it is what identified a sweep that was tearing perched birds into debris (user 2026-08-05).
+  const phSpawnChunk = (S, quads) => { phSrc = 'treeChunk';
+    if (!quads.length) return;
+    const sx = S.R.sx, sz = S.R.sz;
+    const key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
+    const idMap = new Map();
+    for (let i = 0; i < quads.length; i += 4) idMap.set(key(quads[i], quads[i + 1], quads[i + 2]), quads[i + 3]);
+    const left = new Set(idMap.keys());
+    const f = { sx, sz };
+    // One body per 6-CONNECTED PIECE of the bite (user reverted the single-body version): a cut that
+    // clips two branches throws two chunks, which is what it looks like it should do.
+    while (left.size) {
+      const start = left.values().next().value;
+      const comp = []; const st = [start]; left.delete(start);
+      while (st.length) {
+        const k = st.pop(); comp.push(k);
+        const mx = k % sx, mz = ((k / sx) | 0) % sz, my = (k / (sx * sz)) | 0;
+        for (let d = 0; d < 6; d++) {
+          const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+          const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
+          const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
+          if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+          const nk = key(nx, ny, nz);
+          if (left.has(nk)) { left.delete(nk); st.push(nk); }
+        }
+      }
+      if (comp.length < 2) continue;                   // a lone speck is litter, not a chunk
+      if (PH.bodies.length >= PH.maxBodies && !phMakeRoom()) continue;
+      const b = phBuildBody(S, comp, f, idMap);
+      b.vel[0] = phFallDir[0] * 6 + (Math.random() - 0.5) * 4;     // thrown clear of the cut
+      b.vel[1] = 4 + Math.random() * 3;
+      b.vel[2] = phFallDir[2] * 6 + (Math.random() - 0.5) * 4;
+      b.omega[0] = (Math.random() - 0.5) * 3; b.omega[1] = (Math.random() - 0.5) * 3; b.omega[2] = (Math.random() - 0.5) * 3;
+      b.absorbAt = performance.now() + PH.absorbMs;
+      PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(b);
+      PH.stats.chunks++;
+    }
+  };
+  // ── WAKE EVERY HANGER-ON AROUND SOMETHING THAT JUST LEFT ── a pinecone hangs from ONE anchor, and it is stamped
+  // CENTRED on that anchor, so what it actually rests against is usually DIAGONAL and often more than one voxel
+  // away. Hooks keyed on "a neighbour of a cleared voxel" therefore keep missing them. This asks a blunter
+  // question instead: whatever just came out of the world, hand the resolver every cone standing in its volume
+  // widened by a CROWN RADIUS, and let the flood judge each cluster as a whole. Bounded by the component's own
+  // bounding box and it runs once, at the moment of the lift.
+  const CONE_WAKE_PAD = 26;                            // a crown radius, for a LIFT whose bbox is only the trunk
+  const coneWake = (x0, x1, y0, y1, z0, z1, pad) => {
+    const PADW = pad === undefined ? CONE_WAKE_PAD : pad;   // cones AND canopy snow — both hang off a crown and both are stranded when it goes
+    for (let z2 = z0 - PADW; z2 <= z1 + PADW; z2++)
+      for (let y2 = Math.max(1, y0 - PADW); y2 <= Math.min(WY - 1, y1 + PADW); y2++)
+        for (let x2 = x0 - PADW; x2 <= x1 + PADW; x2++) {
+          const jj = gwrap(x2, WX) + y2 * WX + gwrap(z2, WZ) * WX * WY;
+          const v2 = W[jj]; if (!v2 || !(coneTab[v2] || snowTab[v2])) continue;
+          // ── ONLY WAKE WHAT COULD ACTUALLY BE HANGING ── waking every cone and snow voxel in the box pushed
+          // HUNDREDS OF THOUSANDS of cells during a storm (measured: 400k queued, a 368k backlog against a
+          // 2 ms/frame budget). The resolver then took minutes to reach a genuine floater, so cones and snow sat
+          // in mid-air — and only ever when it had snowed, because snow is what filled the queue. Anything
+          // resting on something is not a candidate, and that is almost all of it.
+          if (y2 > 1 && W[jj - WX]) continue;
+          supPush(jj);
+        }
+  };
+  // Every path that ERASES world voxels can strand what was hanging on them. A chop that takes NEEDLES is the
+  // worst of them: cones and canopy snow both rest on needles, and phChopLeaves runs on every swing that grazes
+  // foliage. Small pad for a bite (the removed voxels ARE the anchors), crown-wide only for a LIFT, whose bbox
+  // is just the trunk while its cones ring the whole crown.
+  const wakeFrom = (cleared, pad) => {
+    if (!cleared || !cleared.length) return;
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (const ii of cleared) {
+      const gx2 = ii % WX, gy2 = ((ii / WX) | 0) % WY, gz2 = (ii / (WX * WY)) | 0;
+      if (gx2 < x0) x0 = gx2; if (gx2 > x1) x1 = gx2;
+      if (gy2 < y0) y0 = gy2; if (gy2 > y1) y1 = gy2;
+      if (gz2 < z0) z0 = gz2; if (gz2 > z1) z1 = gz2;
+    }
+    coneWake(x0, x1, y0, y1, z0, z1, pad);
+  };
+  // ── THE BLANKET COMES DOWN WITH THE TREE (user 2026-08-08: "make the snow stay with the pine tree as it
+  // falls") ── canopy snow is a SEPARATE voxel resting one course above the needles it settled on, and it
+  // belongs to no tree model: phPresent answers 0 for it, so the tree flood never sees it and the severed crown
+  // lifted out from under its own blanket. What stayed behind was a VERTICAL COLUMN of at most 3 snow voxels
+  // (supFlood forbids horizontal links through snow — the cantilever rule), i.e. a component of n < 3, which
+  // supResolve erases as litter. That is why the snow used to hang and now vanishes the instant the tree moves.
+  // Hand those cells to the BODY instead — the same thing supDrop already does for a drape lift — so the snow
+  // rides the trunk down and lands with it.
+  //
+  // Walk straight UP from every non-snow cell of the component; landSnowAt caps a stack at 3, so the loop is
+  // never more than a few steps. `claimed` stops two components of the same fell taking the same voxel twice.
+  // The head room past the model box is what carries the snow on the very APEX: the pine fills its .vox box to
+  // the last course (z 115 of 116), so its topmost cap sits outside. Nothing indexes phMark or R.A with these
+  // cells — they are body-local coordinates from here on — and phBuildBody only ever bounds-checks them.
+  // ── …AND SO DO THE PINECONES (user 2026-08-08, with a photograph of them hanging in open sky) ── the exact
+  // mirror. Snow RESTS ON the crown, so it is found by walking UP; a cone HANGS FROM it, so it is found by
+  // walking DOWN. Both are the drape flood's own rules, applied at the moment of the lift instead of after it.
+  // MEASURED before this: felling one pine left `floaters 5 (64 vox) — cone x13, cone x13, cone x13, cone x13`
+  // in the air, cleared by the resolver about 3 seconds later. Three seconds is long enough to see, long
+  // enough to photograph, and behind a post-storm thaw backlog it was very much longer. Carrying them costs
+  // nothing and removes ~20 rigid-body slot demands from every felling as well.
+  //
+  // A cone is one cluster hanging from ONE overhead anchor, so the whole cluster is taken or none of it is:
+  // flood it 26-connected through cone ids, and require every non-cone voxel sitting directly on top of any
+  // cluster cell to be leaving with us. If ANY overhead anchor stays — a neighbouring pine's needle in the
+  // overlap, a branch on the standing stump — the cone still has a hanger and must stay where it is. Anything
+  // that does not fit the box, the size cap, or that test is simply left to the resolver, exactly as before.
+  const SNOW_CAP_HEAD = 3;                             // courses above the model box a carried stack may reach — landSnowAt's own 3-layer cap
+  const CONE_CLUSTER_MAX = 64;                         // a pinecone is ~13 voxels; this is a runaway guard, not a tuning knob
+  const phDrapeWith = (S, comp, f, claimed) => {
+    const add = [], sx = f.sx, sz = f.sz;
+    const li = (mx, my, mz) => mx + mz * sx + my * sx * sz;
+    const inComp = new Set(comp);
+    const inBox = (mx, my, mz) => mx >= 0 && mx < sx && mz >= 0 && mz < sz && my >= 0 && my < MSZ + SNOW_CAP_HEAD && S.gy + my > 0 && S.gy + my < WY - 1;
+    let nSnow = 0, nCone = 0;
+    for (const k of comp) {
+      const mx = k % sx, mz = ((k / sx) | 0) % sz, my = (k / (sx * sz)) | 0;
+      // ── IT RESTS ON US: SNOW, STRAIGHT UP ── landSnowAt caps a stack at 3, so this is a few steps at most
+      if (!snowTab[W[phWorldIdx(S, mx, my, mz)]]) {     // a snow voxel's own stack is already in here
+        for (let y2 = my + 1; y2 < MSZ + SNOW_CAP_HEAD && S.gy + y2 < WY - 1; y2++) {
+          const ii = phWorldIdx(S, mx, y2, mz);
+          if (!snowTab[W[ii]] || claimed.has(ii)) break;
+          claimed.add(ii); add.push(li(mx, y2, mz)); nSnow++;
+        }
+      }
+      // ── IT HANGS FROM US: A CONE, STRAIGHT DOWN ── one cell below, then the whole cluster it belongs to
+      if (my < 1 || !inBox(mx, my - 1, mz)) continue;
+      const j0 = phWorldIdx(S, mx, my - 1, mz);
+      if (!coneTab[W[j0]] || claimed.has(j0)) continue;
+      const cl = [], st = [[mx, my - 1, mz]], seenC = new Set([li(mx, my - 1, mz)]);
+      let ok = true;
+      while (st.length && ok) {
+        const cur = st.pop(), cx = cur[0], cy = cur[1], cz = cur[2];
+        if (cl.length >= CONE_CLUSTER_MAX) { ok = false; break; }
+        if (claimed.has(phWorldIdx(S, cx, cy, cz))) { ok = false; break; }   // another component already took it
+        cl.push(cur);
+        for (let d = 0; d < 27 && ok; d++) {
+          const nx = cx + (d % 3) - 1, ny = cy + (((d / 3) | 0) % 3) - 1, nz = cz + ((d / 9) | 0) - 1;
+          if (nx === cx && ny === cy && nz === cz) continue;
+          if (!inBox(nx, ny, nz)) { ok = false; break; }   // the cluster runs out of the model frame — not ours to carry
+          const nv = W[phWorldIdx(S, nx, ny, nz)];
+          if (!nv) continue;
+          if (coneTab[nv]) { const nk = li(nx, ny, nz); if (!seenC.has(nk)) { seenC.add(nk); st.push([nx, ny, nz]); } continue; }
+          // a NON-cone voxel directly overhead is a hanger: it has to be one of ours, or the cone stays put
+          if (ny === cy + 1 && nx === cx && nz === cz && !inComp.has(li(nx, ny, nz))) ok = false;
+        }
+      }
+      if (!ok) continue;
+      for (const q of cl) { claimed.add(phWorldIdx(S, q[0], q[1], q[2])); add.push(li(q[0], q[1], q[2])); nCone++; }
+    }
+    PH.stats.snowCarried += nSnow; PH.stats.coneCarried += nCone;
+    return add.length ? comp.concat(add) : comp;
+  };
+  const phSeparate = (S, f) => { phSrc = 'treeSeparate';                     // orphans -> rigid bodies; the SAME cell list drives the world erase, so a voxel is in exactly one state
+    const t0 = performance.now();
+    const made = [], cellsOut = [], comps = [], snowClaim = new Set();
+    for (let k = 0; k < phMark.length; k++) {
+      if (phMark[k] !== 0) continue;
+      const mx0 = k % f.sx, mz0 = ((k / f.sx) | 0) % f.sz, my0 = (k / (f.sx * f.sz)) | 0;
+      if (!phPresent(S, mx0, my0, mz0)) continue;
+      comps.push(phComponent(S, f, k));
+    }
+    comps.sort((a, b2) => b2.length - a.length);     // LARGEST FIRST — a shower of chips must never starve the trunk of a slot
+    for (const comp of comps) {
+      // ── A SEVERED TREE MUST GET A SLOT (user 2026-08-07: "a pine tree floating entirely from the base where
+      // it was broken") ── this used to try ONE eviction and ONE phMakeRoom and then give up, leaving the whole
+      // component in W and handing it to the support resolver. That is a dead end for anything tree-sized: the
+      // resolver's structure flood caps at SUP.cap (2000) and reads "capped" as ANCHORED, so a 7000-voxel pine
+      // it was asked to rescue is declared attached and hangs off its own cut base forever. Rare precisely
+      // because it needs all 16 slots busy at the instant of the fell. Now it keeps shedding — the smallest
+      // live body first while that body is smaller than this component, then the oldest airborne debris — until
+      // there is room or there is genuinely nothing left to shed. Components arrive largest-first, so the trunk
+      // gets first refusal and a shower of chips can never outbid it.
+      // …and it sheds SCRAP only (see phMakeRoom): evicting by size alone made the first felled tree the prize
+      // the second one paid for, since a trunk is smaller than nothing and larger than every chip.
+      let shed9 = 0;
+      while (PH.bodies.length >= PH.maxBodies && shed9 < 6) {
+        let si = -1, sn = Infinity;
+        for (let q2 = 0; q2 < PH.bodies.length; q2++) { const b2 = PH.bodies[q2];
+          if (b2.absorbing) continue;                  // …nor a chunk already on its way to the player (see phMakeRoom)
+          if (b2.n > PH.absorbSize) continue;          // never trade a felled log for another one
+          if (b2.n < sn) { sn = b2.n; si = q2; } }
+        if (si >= 0 && sn < comp.length) { PH.stats.evicted++; PH.bodies.splice(si, 1); shed9++; continue; }
+        if (phMakeRoom()) { shed9++; continue; }        // shed an airborne leaf — erasing real geometry is the last resort, not the first
+        break;                                         // nothing left to shed: fall through to the requeue below, which still never erases
+      }
+      if (PH.bodies.length >= PH.maxBodies) {         // still full — REQUEUE, never erase (the invariant: no component of >= 3 voxels is ever destroyed by the support system)
+        // This used to delete the whole component outright, which is a silent hole in the world rather
+        // than a floater, and it stranded whatever had been resting on it. The cells stay exactly where
+        // they are and go to the resolver instead: it retries every frame, and after SUP_BLOCK_MAX blocked
+        // frames it forces a slot. A body that lives one second longer than it should is invisible; a
+        // 900-voxel crown deleted because sixteen chips were in flight is not.
+        for (const c of comp) { phMark[c] = 3;
+          const mx2 = c % f.sx, mz2 = ((c / f.sx) | 0) % f.sz, my2 = (c / (f.sx * f.sz)) | 0;
+          supPush(phWorldIdx(S, mx2, my2, mz2)); }
+        continue;
+      }
+      if (comp.length < 2) {                          // a single detached voxel
+        const c0 = comp[0], mxa = c0 % f.sx, mza = ((c0 / f.sx) | 0) % f.sz, mya = (c0 / (f.sx * f.sz)) | 0;
+        const ii0 = phWorldIdx(S, mxa, mya, mza), v0 = W[ii0];
+        phMark[c0] = 3;
+        W[ii0] = 0; cellsOut.push(ii0); PH.stats.dustVox++;   // a lone detached voxel is litter, needle or not — no falling leaves (user 2026-08-02)
+        continue;
+      }
+      const compS = phDrapeWith(S, comp, f, snowClaim);   // …and it takes its drape with it: snow above, cones below (see phDrapeWith). AFTER the slot machinery above, which prices a component by its own material
+      const b = phBuildBody(S, compS, f);
+      for (const c of compS) {
+        const mx2 = c % f.sx, mz2 = ((c / f.sx) | 0) % f.sz, my2 = (c / (f.sx * f.sz)) | 0;
+        const ii = phWorldIdx(S, mx2, my2, mz2); W[ii] = 0; cellsOut.push(ii);
+      }
+      for (let lift = 0; lift < 32; lift++) {        // spawn de-penetration: a component cut near the ground can be born inside terrain
+        let inside = 0;
+        for (let i = 0; i < b.probes.length && !inside; i++) { const pi = b.probes[i];
+          if (phSolidAt(Math.floor(b.pos[0] + b.lx[pi] + 0.5 - b.com[0]), Math.floor(b.pos[1] + b.ly[pi] + 0.5 - b.com[1]),
+                        Math.floor(b.pos[2] + b.lz[pi] + 0.5 - b.com[2]))) inside = 1; }
+        if (!inside) break;
+        b.pos[1] += 1;
+      }
+      // ── TOPPLE ── a trunk cut through sits with its centre of mass directly over the stump: that is
+      // unstable equilibrium, and with no nudge it just drops vertically THROUGH the stump. Give it an
+      // initial spin about the horizontal axis perpendicular to the fall direction, which tips the top
+      // toward the cut. omega = normalize(up x d) makes the point at +up move toward +d, so the crown
+      // leans the way the notch faces and gravity takes over from there. Only pieces tall enough to
+      // topple get it — chips just fall.
+      if (b.n > PH.retireMax * 4) {
+        // scatter the drop line about the notch direction, so felling from the same spot twice does not
+        // lay both trunks along the same line (user)
+        const sa = Math.atan2(phFallDir[0], phFallDir[2]) + (Math.random() * 2 - 1) * PH.fellSpread;
+        phFallDir[0] = Math.sin(sa); phFallDir[2] = Math.cos(sa);
+        PH.stats.lastFellDeg = Math.round(sa * 57.2958);
+        const ax = -phFallDir[2], az = phFallDir[0];   // up x d — makes the point at +up move toward +d
+        const al = Math.hypot(ax, az) || 1;
+        b.tipAx = ax / al; b.tipAz = az / al;          // the topple axis, held for the whole fall (see phStep)
+        // ── ARMED, NOT DRIVING ── the drive PRESCRIBES rotation, which the contact solver cannot argue
+        // with, so starting it at the cut let the trunk rotate straight through its own stump (user).
+        // Drop cleanly onto the cut face first; phStep starts the topple once it has actually landed.
+        b.tipArm = 1; b.tipArmT = performance.now();
+        b.noAbsorb = true;                           // the TOPPLING TRUNK is the tree falling, not debris — it must never fly into the player
+        b.slowFall = PH.fallSlow;                    // the trunk falls in the slowed time base (see PH.fallSlow); everything else keeps normal gravity
+        b.omega[0] = b.omega[1] = b.omega[2] = 0;    // no spin at all until it is down
+        b.vel[0] = b.vel[2] = 0;                     // …and straight down, so it meets the stump square
+      }
+      if (!b.noAbsorb) b.absorbAt = performance.now() + PH.absorbMs;   // BROKEN PIECES are collectable too (user): before this only swing-carved chunks had a timer, so separated pieces lay on the ground forever
+      PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(b); made.push(b);
+    }
+    if (cellsOut.length) gpuPatch(cellsOut, false);
+    if (cellsOut.length) {                           // whatever came off the body takes its cones with it
+      let bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9, bz0 = 1e9, bz1 = -1e9;
+      for (const ii of cellsOut) {
+        const gx2 = ii % WX, gy2 = ((ii / WX) | 0) % WY, gz2 = (ii / (WX * WY)) | 0;
+        if (gx2 < bx0) bx0 = gx2; if (gx2 > bx1) bx1 = gx2;
+        if (gy2 < by0) by0 = gy2; if (gy2 > by1) by1 = gy2;
+        if (gz2 < bz0) bz0 = gz2; if (gz2 > bz1) bz1 = gz2;
+      }
+      coneWake(bx0, bx1, by0, by1, bz0, bz1);
+    }
+    PH.stats.separations += made.length;
+    PH.stats.lastSepMs = +(performance.now() - t0).toFixed(2);
+    return made;
+  };
+  // Build a body out of a subset of ANOTHER body's voxels, keeping the parent's pose. phBuildBody works
+  // in the tree-model frame the parent's lx/ly/lz are still expressed in, so replaying the parent's
+  // origin as a pseudo-shape is enough to reuse it wholesale. The new COM sits somewhere else in that
+  // frame, so the world position has to be carried across through the parent's rotation — otherwise the
+  // piece teleports back to where the tree originally grew.
+  const phSubBody = (b, cells, idMap) => { phSrc = 'subBody';
+    const nb = phBuildBody({ bx: b.origin[0], gy: b.origin[1], bz: b.origin[2] }, cells, { sx: b.sx, sz: b.sz }, idMap);
+    phTmp[0] = nb.com[0] - b.com[0]; phTmp[1] = nb.com[1] - b.com[1]; phTmp[2] = nb.com[2] - b.com[2];
+    phQRot(b.q, phTmp, phTmp2);
+    nb.pos[0] = b.pos[0] + phTmp2[0]; nb.pos[1] = b.pos[1] + phTmp2[1]; nb.pos[2] = b.pos[2] + phTmp2[2];
+    nb.q = [b.q[0], b.q[1], b.q[2], b.q[3]];
+    phQRot(nb.q, PHX, nb.ax); phQRot(nb.q, PHY, nb.ay); phQRot(nb.q, PHZ, nb.az);
+    nb.vel[0] = b.vel[0]; nb.vel[1] = b.vel[1]; nb.vel[2] = b.vel[2];
+    nb.omega[0] = b.omega[0]; nb.omega[1] = b.omega[1]; nb.omega[2] = b.omega[2];
+    return nb;
+  };
