@@ -1033,7 +1033,26 @@
   const palette = [[0, 0, 0]];
   const palOwn = new Set();                           // ids minted by an OWN-IDS model (parseVoxModel/parseVoxScene share=false). palShare must never hand one of these to anybody else — a model asks for its own ids precisely so a set built from them IDENTIFIES it, and sharing them silently destroys that. Measured: the pinecone's 7 ids were all re-issued to stick_1/stick_2, which made PICK_CONE a strict subset of PICK_STICK and every pinecone pick up as a stick (user).
   let palIdx = null;                                   // colour → first palette id, for palShare. Declared HERE, above addCol, because addCol now keeps it current and the named tables below call addCol long before palShare is defined — leaving it further down put it in the temporal dead zone.
-  const addCol = (r, g, b) => { const id = (palette.push([r, g, b]), palette.length - 1);
+  // ── THE 256 CEILING ── a voxel's id is 8 bits, so entry 256 does not exist: it wraps, and
+  // it takes the voxel's SOLIDITY with it, not just its colour. palShare has guarded this
+  // for a while; addCol did NOT, and addCol is the path every named table and all three
+  // .json decor loaders use. The table currently ends at exactly 256 with zero headroom,
+  // so the next shade anybody adds through addCol was a silent corruption at load time.
+  // Now it snaps to the nearest existing colour instead and says so, loudly and once —
+  // the wrong colour is a bug you can see, and a wrapped id is one you cannot.
+  const palNearest = (r, g, b) => { let bd = 1e9, id = 1;   // closest colour already in the table, skipping RESERVED ids for the reason palShare skips them
+    for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (!c || palOwn.has(i)) continue;
+      const d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
+      if (d < bd) { bd = d; id = i; } }
+    return id; };
+  let palOver = 0;                                     // how many colours the ceiling turned away — __vb.palAudit() reports it
+  const addCol = (r, g, b) => {
+    if (palette.length >= 256) { const id = palNearest(r, g, b); palOver++;
+      if (palOver === 1) console.error('[vb] PALETTE FULL (256/256) — colour', r, g, b, 'snapped to id', id,
+        '- every colour added from here on is a SUBSTITUTE. Run __vb.palAudit() to see what is left to reclaim.');
+      if (palIdx) { const k = (r << 16) | (g << 8) | b; if (!palIdx.has(k)) palIdx.set(k, id); }
+      return id; }
+    const id = (palette.push([r, g, b]), palette.length - 1);
     if (palIdx) { const k = (r << 16) | (g << 8) | b; if (!palIdx.has(k)) palIdx.set(k, id); }   // …so a colour added by a NON-share loader is still found by the next share lookup. palIdx used to be built once and never updated, which let share mode mint a second copy of a colour someone else had already added.
     return id; };
   const NEEDLE = [addCol(97, 74, 50), addCol(88, 67, 45), addCol(106, 82, 56), addCol(80, 61, 41)];      // 1..4 (shader far-field relies on these slots)
@@ -1162,11 +1181,8 @@
     if (id !== undefined && palOwn.has(id)) id = undefined;   // an exact colour match on a RESERVED id is not a match — fall through and mint (or snap to) something this model may legitimately share
     if (id === undefined) {
       if (palette.length < 256) { id = addCol(r, g, b); }
-      else {                                           // FULL: nearest existing colour, never a 257th entry —
-        let bd = 1e9; id = 1;                          // an id past 255 wraps and takes a voxel's SOLIDITY with it
-        for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (palOwn.has(i)) continue;   // …and the nearest-colour fallback must skip reserved ids too, or a full palette re-creates the collision it just refused
-          const d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
-          if (d < bd) { bd = d; id = i; } }
+      else {                                           // FULL: nearest existing colour, never a 257th entry — an id past 255 wraps and takes a voxel's SOLIDITY with it. palNearest (assets/palette.js) is the same walk addCol's ceiling uses, and it skips reserved ids for the same reason: a full palette must not re-create the collision palOwn just refused.
+        id = palNearest(r, g, b);
         console.warn('[vb] palette full — item colour', r, g, b, 'snapped to id', id);
       }
       palIdx.set(k, id);
@@ -4383,8 +4399,11 @@
           let sCap = select(1200.0, min(1200.0, (ceilY - sunOrg.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
           if (sCap <= 0.0) { sunV = 1.0; }                           // already above everything and going up — full sun, no ray
           else {
-          if (LG(0u)) { let sh = traceAll(sunOrg, sdir, sCap, skipW);   // bodies included → a felled tree casts a REAL shadow
-                        sunV = select(1.0, 0.0, sh.t >= 0.0); }
+          if (LG(0u)) { let shT = trace(sunOrg, sdir, sCap, skipW);   // ── OCCLUSION, NOT NEAREST HIT ── this ray only ever asks "is anything in the way".
+                        var occ = shT.t >= 0.0;                            // traceAll walks the terrain AND then bodyTrace to find which of the two is CLOSER,
+                        if (!occ) { let shB = bodyTrace(sunOrg, sdir, sCap); occ = shB.t >= 0.0; }   // which this caller throws away. Once terrain has blocked the ray the answer
+                        sunV = select(1.0, 0.0, occ); }                    // cannot change, so the body walk is pure waste. Bit-identical: occluded is occluded.
+                        // (bodies included → a felled tree still casts a REAL shadow)
           else { sunV = 1.0; }                        // sun shadows OFF — every sunward surface fully lit
           }
           ${!(LIFE_UNI && (UNI_SEC & 1)) ? '' : 'if (sunV > 0.0) { let cs = creaSec(sp, sdir, SEC_R, sg0, sg1, sg2, sg3, secN); if (cs.x >= 0.0) { sunV = 0.0; creReact = max(creReact, cs.y); } }'}
@@ -5397,10 +5416,59 @@
     }
   `;
 
+  // ── GOD RAYS AT HALF RESOLUTION ── The 24-tap radial march used to run in BLIT, per CANVAS pixel: 7.3M
+  // pixels x 24 fetches = 175M samples a frame, which measured as 85% of the whole blit pass and 20 fps at
+  // 3834x1904. The effect itself is a broad radial smear of the sun's halo — there is no detail in it finer
+  // than a few pixels — so computing it at half resolution (a quarter of the work) and letting the bilinear
+  // sampler put it back is where the cost goes without the look changing.
+  //
+  // Halving the TAP COUNT instead was tried and measured: 12 taps with the stride, decay and scale re-derived
+  // to the same integral came back 1.735 ms against a 1.627 ms baseline — no gain, because doubling the stride
+  // costs as much cache locality as the halved count saves. The pixels are the cost, not the iterations.
+  //
+  // Only the march lives here. The tint, the daylight factor and the lens flare stay in BLIT: the flare is
+  // already gated to the ~1.3% of pixels its ghosts actually cover, and it needs full-resolution positions.
+  const GOD_SRC = () => /* wgsl */`
+    @group(0) @binding(1) var src : texture_2d<f32>;
+    @group(0) @binding(2) var samp : sampler;
+    @group(0) @binding(3) var godOut : texture_storage_2d<rgba16float, write>;
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+      let gw = u32(ceil(u.canvasRes.x * 0.5)); let gh = u32(ceil(u.canvasRes.y * 0.5));
+      if (gid.x >= gw || gid.y >= gh) { return; }
+      let fc = (vec2<f32>(f32(gid.x), f32(gid.y)) + vec2<f32>(0.5)) * 2.0;   // centre of the 2x2 canvas block this texel stands for
+      let sf = dot(u.sunDir, u.fwd);
+      let dayK = clamp(u.sunDir.y * 3.0, 0.0, 1.0);
+      var glow = vec3<f32>(0.0);
+      if (sf > 0.05 && dayK > 0.0 && (u32(u.fx) & 1u) != 0u) {
+        let sunNDC = vec2<f32>(dot(u.sunDir, u.right) / (sf * u.tanH * u.aspect), dot(u.sunDir, u.up) / (sf * u.tanH));
+        let sunPix = vec2<f32>((sunNDC.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - sunNDC.y * 0.5) * u.canvasRes.y);
+        var sp = fc;
+        let delta = (sunPix - sp) * (0.7 / 24.0);                  // rays reach ~70% of the way to the sun
+        sp += delta * fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y));   // the same IGN start jitter — at half res it still breaks the 24 discrete steps into a smooth shaft
+        var decay = 1.0;
+        for (var i = 0; i < 24; i++) {
+          sp += delta;
+          let suv = sp / u.canvasRes;
+          if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) {
+            let s4 = textureSampleLevel(src, samp, suv, 0.0);
+            let b = max(s4.r, max(s4.g, s4.b));
+            let white = min(s4.r, min(s4.g, s4.b)) / max(b, 0.001);   // 1 = white (the sun disc/halo), low = saturated sky
+            glow += s4.rgb * (smoothstep(0.86, 1.0, b) * smoothstep(0.45, 0.8, white) * s4.a * decay);
+          }
+          else { break; }                                          // exact early-out, unchanged: a straight ray leaving the screen never comes back
+          decay *= 0.96;
+        }
+      }
+      textureStore(godOut, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(glow, 1.0));
+    }
+  `;
+
   const BLIT_SRC = () => /* wgsl */`
     @group(0) @binding(1) var src : texture_2d<f32>;
     @group(0) @binding(2) var samp : sampler;
-    @group(0) @binding(3) var dofT : texture_2d<f32>;                // ── DEPTH OF FIELD ── {resolved colour, signed CoC} from the TAA pass
+    @group(0) @binding(3) var dofT : texture_2d<f32>;
+    @group(0) @binding(4) var godT : texture_2d<f32>;                // half-res god-ray glow (see GOD_SRC above) — bilinear on the way back up                // ── DEPTH OF FIELD ── {resolved colour, signed CoC} from the TAA pass
     @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4<f32> {
       var P = array<vec2<f32>, 3>(vec2<f32>(-1.0, -3.0), vec2<f32>(3.0, 1.0), vec2<f32>(-1.0, 1.0));
       return vec4<f32>(P[vi], 0.0, 1.0);
@@ -5450,23 +5518,7 @@
       if (sf > 0.05 && dayK > 0.0 && (u32(u.fx) & 1u) != 0u) {
         let sunNDC = vec2<f32>(dot(u.sunDir, u.right) / (sf * u.tanH * u.aspect), dot(u.sunDir, u.up) / (sf * u.tanH));
         let sunPix = vec2<f32>((sunNDC.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - sunNDC.y * 0.5) * u.canvasRes.y);
-        var sp = fc.xy;
-        let delta = (sunPix - sp) * (0.7 / 24.0);                  // rays reach ~70% of the way to the sun
-        sp += delta * fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y));   // per-pixel start jitter (IGN) — without it the 24 discrete taps ghost bright edges (the cloud deck) into evenly-spaced banded stripes when the sun is far off-screen
-        var glow = vec3<f32>(0.0);
-        var decay = 1.0;
-        for (var i = 0; i < 24; i++) {
-          sp += delta;
-          let suv = sp / u.canvasRes;
-          if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) {
-            let s4 = textureSampleLevel(src, samp, suv, 0.0);
-            let b = max(s4.r, max(s4.g, s4.b));
-            let white = min(s4.r, min(s4.g, s4.b)) / max(b, 0.001);   // 1 = white (the sun disc/halo), low = saturated sky
-            glow += s4.rgb * (smoothstep(0.86, 1.0, b) * smoothstep(0.45, 0.8, white) * s4.a * decay);   // only the disc + corona scatter — bright clouds no longer wash a FOG veil over the view
-          }
-          else { break; }   // ── EXACT EARLY-OUT ── the march is a straight ray from THIS pixel (fc.xy, which is inside the screen) toward the sun, and the screen rect is convex, so the ray meets it in ONE interval: a tap that lands outside can never be followed by one that lands back inside. Every remaining tap would have been skipped anyway, so breaking is bit-identical — and it is exactly the off-screen-sun case, where the far side of the frame used to pay all 24 taps for nothing.
-          decay *= 0.96;
-        }
+        let glow = textureSampleLevel(godT, samp, uv, 0.0).rgb;   // ── the march now happens once per 2x2 block in GOD_SRC ── bilinear back up; the effect has no detail this loses
         col += glow * (0.055 * dayK) * select(vec3<f32>(1.0, 0.93, 0.78), vec3<f32>(0.55, 0.65, 1.0) * 1.1, isMoon());   // strong warm sun shafts / cool MOON RAYS — the rays, not the fog
         // ── LENS FLARE: ghosts along the sun→centre axis + streak + bloom, gated by on-screen sun visibility
         // ── GHOST FOOTPRINT FIRST ── sv is a FRAME CONSTANT (a fixed 3×3 tap around the sun pixel), yet it was
@@ -5545,7 +5597,7 @@
 
   const __m_render_wgsl_vis = (() => {
   // @module — the tile visibility-cull WGSL, and the one place every shader factory is built into a pipeline
-  // @exports DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush
+  // @exports DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pGod, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush
   const VIS_SRC = () => /* wgsl */`
     ${pickWGSL}
     @group(0) @binding(1) var<storage, read_write> visb : array<u32>;   // 4×u32 bitmask per 8×8 screen tile: bit di = drop slot di's bounding sphere may touch this tile (128 slots = four words)
@@ -5603,12 +5655,14 @@
   const PRE = PRE_SRC(), FLAKEBLK = FLAKEBLK_SRC(), DDAW = DDAW_SRC(), VIS = VIS_SRC();
   const TRACE = TRACE_SRC({ DDAW, FLAKEBLK, pickWGSL });
   const COMPOSITE = COMPOSITE_SRC({ DDAW, pickWGSL });
+  const GOD = GOD_SRC();
   const SCATTER = SCATTER_SRC(), PATCHW = PATCHW_SRC(), TEMPORAL = TEMPORAL_SRC(),
         SPATIAL = SPATIAL_SRC(), TAA = TAA_SRC(), BLIT = BLIT_SRC();
 
   const mkCompute = (code, fol) => device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: (PRE + code).replaceAll('§FOL§', fol ? 'true' : 'false') }), entryPoint: 'main' } });
   const pTraceV = [mkCompute(TRACE, 0), mkCompute(TRACE, 1)];          // FOLIAGE SPECIALIZATION: variant 0 = normal play (see-through check compiled OUT of the hot DDA loop), variant 1 = eye near foliage
   const pVis = mkCompute(VIS), pTemporal = mkCompute(TEMPORAL), pSpatial = mkCompute(SPATIAL), pComposite = mkCompute(COMPOSITE), pTaa = mkCompute(TAA);
+  const pGod = mkCompute(GOD);                         // half-res god rays — a quarter of the pixels the blit used to march
   const pScatter = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: SCATTER }), entryPoint: 'main' } });
   const bgScatter = device.createBindGroup({ layout: pScatter.getBindGroupLayout(0), entries: [
     { binding: 0, resource: { buffer: scatBuf } }, { binding: 1, resource: { buffer: stagBuf } }, { binding: 2, resource: { buffer: worldBuf } }] });
@@ -5641,14 +5695,15 @@
   const pBlit = device.createRenderPipeline({ layout: 'auto', vertex: { module: blitModule, entryPoint: 'vs' }, fragment: { module: blitModule, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } });
   const linSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
-    return { DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush };
+    return { DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pGod, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush };
   })();
-  const { DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush } = __m_render_wgsl_vis;
+  const { DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pGod, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush } = __m_render_wgsl_vis;
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
-  let renderScale = 0.8;                               // default resolution scale (user 2026-08-02: 80%, was 90%); the settings slider AND the [ ] keys both step 40..100% in 10s (persisted vb_scale). The 0.375 floor below is what an older build could persist and what __vb.res() still accepts — neither control offers it.
+  let renderScale = 0.7;                               // default resolution scale (user 2026-08-10: 70%, was 80%, was 90%); the settings slider AND the [ ] keys both step 40..100% in 10s (persisted vb_scale). The 0.375 floor below is what an older build could persist and what __vb.res() still accepts — neither control offers it.
   try { const v = parseFloat(localStorage.getItem('vb_scale')); if (v >= 0.375 && v <= 1.0) renderScale = v; } catch (e) {}
   let RW = 0, RH = 0, CW = 0, CH = 0;
-  let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, visBuf = null;
+  let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, bgGod, visBuf = null;
+  let godW = 0, godH = 0;                                // the god-ray target is HALF the canvas on each axis — a quarter of the marches
   let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline
   let resetHist = 1;
   let liveTargets = null;                              // textures the CURRENT bind groups reference — destroyed only after the GPU is done with them
@@ -5665,13 +5720,16 @@
     const histA = tex('rgba16float'), histB = tex('rgba16float'), irrF = tex('rgba16float');
     const colorCur = tex('rgba8unorm'), colHistA = tex('rgba8unorm'), colHistB = tex('rgba8unorm');
     const dofTex = tex('rgba8unorm');                    // ── DEPTH OF FIELD ── TAA's resolved colour + the composite's circle of confusion. NOT ping-ponged: it is written and read inside the same frame and carries no history.
+    godW = Math.max(2, Math.ceil(CW / 2)); godH = Math.max(2, Math.ceil(CH / 2));
+    const godTex = device.createTexture({ size: [godW, godH], format: 'rgba16float',   // NOT tex(): that sizes to RW/RH, and the god march works in CANVAS space
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
     const slotA = tex('r32uint'), slotB = tex('r32uint');   // ── DYNAMIC LIFE ── per-pixel creature id + hit-axis bits, ping-ponged (temporal needs LAST frame's ids for identity checks). cur for frame parity par = par ? slotB : slotA — mirrors the hist ping-pong.
     const v = (t) => t.createView();
     // ── LIFETIME ── the superseded set is released only after every submitted frame that still references it
     // has completed; destroying at swap time would pull textures out from under in-flight GPU work. Before this,
     // nothing was ever destroyed and each resize/scale change leaked a full screen-texture set until GC noticed.
     const oldT = liveTargets, oldVis = visBuf;
-    liveTargets = [gAlbedo, gIrr, histA, histB, irrF, colorCur, colHistA, colHistB, slotA, slotB, dofTex];
+    liveTargets = [gAlbedo, gIrr, histA, histB, irrF, colorCur, colHistA, colHistB, slotA, slotB, dofTex, godTex];
     if (oldT || oldVis) device.queue.onSubmittedWorkDone().then(() => {
       if (oldT) for (const t of oldT) { try { t.destroy(); } catch (e) {} }
       if (oldVis) { try { oldVis.destroy(); } catch (e) {} }
@@ -5709,9 +5767,12 @@
       { binding: 2, resource: v(gIrr) }, { binding: 3, resource: v(par ? colHistA : colHistB) },
       { binding: 4, resource: linSamp }, { binding: 5, resource: v(par ? colHistB : colHistA) },
       { binding: 6, resource: v(par ? slotB : slotA) }, { binding: 7, resource: v(dofTex) }] }));
+    bgGod = [0, 1].map(par => device.createBindGroup({ layout: pGod.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? colHistB : colHistA) },
+      { binding: 2, resource: linSamp }, { binding: 3, resource: v(godTex) }] }));   // reads the SAME TAA colour blit samples, one frame's parity
     bgBlit = [0, 1].map(par => device.createBindGroup({ layout: pBlit.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? colHistB : colHistA) },
-      { binding: 2, resource: linSamp }, { binding: 3, resource: v(dofTex) }] }));
+      { binding: 2, resource: linSamp }, { binding: 3, resource: v(dofTex) }, { binding: 4, resource: v(godTex) }] }));
     resetHist = 1;
   }
   makeTargets(true);
@@ -7386,11 +7447,15 @@
   const wakeFrom = (cleared, pad) => {
     if (!cleared || !cleared.length) return;
     let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, z0 = 1e9, z1 = -1e9;
+    // ── WORLD COORDS, NOT GRID COORDS ── x/z are toroidal, so a raw min/max over grid indices gives a
+    // 2048-WIDE box for any cleared set that straddles the wrap, and coneWake iterates the box VOLUME.
+    // Same defect, same fix as supDrop (2026-08-10, measured there at 88.3 ms in one call).
     for (const ii of cleared) {
-      const gx2 = ii % WX, gy2 = ((ii / WX) | 0) % WY, gz2 = (ii / (WX * WY)) | 0;
-      if (gx2 < x0) x0 = gx2; if (gx2 > x1) x1 = gx2;
+      const gy2 = ((ii / WX) | 0) % WY;
+      const wx2 = supWorldX(ii % WX), wz2 = supWorldZ((ii / (WX * WY)) | 0);
+      if (wx2 < x0) x0 = wx2; if (wx2 > x1) x1 = wx2;
       if (gy2 < y0) y0 = gy2; if (gy2 > y1) y1 = gy2;
-      if (gz2 < z0) z0 = gz2; if (gz2 > z1) z1 = gz2;
+      if (wz2 < z0) z0 = wz2; if (wz2 > z1) z1 = wz2;
     }
     coneWake(x0, x1, y0, y1, z0, z1, pad);
   };
@@ -7562,11 +7627,15 @@
     if (cellsOut.length) gpuPatch(cellsOut, false);
     if (cellsOut.length) {                           // whatever came off the body takes its cones with it
       let bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9, bz0 = 1e9, bz1 = -1e9;
+      // ── WORLD COORDS, NOT GRID COORDS ── x/z are toroidal, so a raw min/max over grid indices gives a
+      // 2048-WIDE box for any cleared set that straddles the wrap, and coneWake iterates the box VOLUME.
+      // Same defect, same fix as supDrop (2026-08-10, measured there at 88.3 ms in one call).
       for (const ii of cellsOut) {
-        const gx2 = ii % WX, gy2 = ((ii / WX) | 0) % WY, gz2 = (ii / (WX * WY)) | 0;
-        if (gx2 < bx0) bx0 = gx2; if (gx2 > bx1) bx1 = gx2;
+        const gy2 = ((ii / WX) | 0) % WY;
+        const wx2 = supWorldX(ii % WX), wz2 = supWorldZ((ii / (WX * WY)) | 0);
+        if (wx2 < bx0) bx0 = wx2; if (wx2 > bx1) bx1 = wx2;
         if (gy2 < by0) by0 = gy2; if (gy2 > by1) by1 = gy2;
-        if (gz2 < bz0) bz0 = gz2; if (gz2 > bz1) bz1 = gz2;
+        if (wz2 < bz0) bz0 = wz2; if (wz2 > bz1) bz1 = wz2;
       }
       coneWake(bx0, bx1, by0, by1, bz0, bz1);
     }
@@ -7972,7 +8041,25 @@
             // are load-bearing there by construction, and any rule that stops foliage carrying wood takes the
             // tree's point off. The fix belongs in the MODEL — make the bole continuous wood to the apex —
             // after which this bridge can simply be deleted and a severed trunk falls on its own.
-            if (ncls === SUP.DRAPE) { if (supHeld(nn, dep)) { anchored = true; SUPWHY.why = 'struct->heldDrape id' + W[nn]; break; } continue; }   // the same rule the other way round: ASK, never enter
+            // ── …BUT ONLY WOOD MAY BE HELD BY FOLIAGE (user 2026-08-10: "mushrooms float after the player
+            // breaks it — there should be no floaters in the game at all") ── the crutch above is justified by
+            // exactly one measured fact: pine5.vox's bole is discontinuous near the tip, so NEEDLES carry WOOD
+            // there. Nothing in that argument licenses grass carrying a mushroom. Ungated, this line said any
+            // structure touching any held drape is attached — and a mushroom only ever grows under a pine (see
+            // mushAt's pine-forest gate), so every cap sits in needles and ground litter: cut the stalk through
+            // and the cap hung there permanently, held by a blade of grass.
+            // MEASURED with a constructed case — two identical 75-voxel mushroom blocks in clear air ten voxels
+            // up, one with a drape column running to the ground and one with nothing beneath it at all: the
+            // bare block fell (lifted 3, 98 vox) and the one merely TOUCHING drape stayed, 75/75, verdict
+            // `struct->heldDrape id46`. Across four real clusters cut through every stalk at once, 3 of 4 left
+            // the caps hanging. Both drape families do it: id 54 is GRASS (83,108,54 = GRASS[0]) and id 46/48
+            // are pine needles.
+            // The gate is on the STRUCTURE side because that is where the justification lives, and it keeps the
+            // pine case intact: a standing forest still reports liftedStruct 0 and treeAudit floating 0, where
+            // DELETING this line outright took liftedVox 1783 -> 8091 and decapitated pine tips.
+            // foliaTab rather than "any drape", so snow and cones cannot vouch for a trunk either — both rest
+            // ON things and hold nothing up, which is the rule the drape branch above already applies to snow.
+            if (ncls === SUP.DRAPE) { if (woodTab[W[ii]] && foliaTab[nv] && supHeld(nn, dep)) { anchored = true; SUPWHY.why = 'wood->heldNeedles id' + W[nn]; break; } continue; }   // the same rule the other way round: ASK, never enter
             if (ncls !== SUP.STRUCTURE || seen.has(nn)) continue;   // fluid is handled above; a creature stamp is a hole in this graph, exactly as stampApply guarantees
             seen.add(nn); SUP.busy.add(nn); st.push(nn);
           }
@@ -8067,7 +8154,9 @@
     }
     const cells = new Array(n);
     const id0 = W[comp[0]] || 0;
+    let woody = false;                                 // read BEFORE phBodyFromCells, which takes these voxels out of W
     for (let i = 0; i < n; i++) { const ii = comp[i];
+      if (woodTab[W[ii]]) woody = true;
       cells[i] = [supWorldX(ii % WX), ((ii / WX) | 0) % WY, supWorldZ((ii / (WX * WY)) | 0)]; }
     phSrc = 'support';
     const fb = phBodyFromCells(cells);
@@ -8086,13 +8175,31 @@
     fb.nearR = PH.absorbR;
     PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(fb); PH.stats.chunks++;
     { let dx0 = 1e9, dx1 = -1e9, dy0 = 1e9, dy1 = -1e9, dz0 = 1e9, dz1 = -1e9;   // the FELL itself comes through here
+      // ── THE BOX IS BUILT IN WORLD COORDS, NOT GRID COORDS (2026-08-10) ── x and z are TOROIDAL, so a plain
+      // min/max over grid indices is wrong for any component that straddles the wrap: the two ends of a
+      // perfectly ordinary 16-voxel clump land at gx 2047 and gx 0, and the box comes out 2048 WIDE. coneWake
+      // then walks x0-PAD..x1+PAD — the entire window — at ~150,000 gwrapped probes. MEASURED at 88.3 ms in
+      // one call, which is the snow stutter: a storm knocks small drape components loose all over the window,
+      // so sooner or later one of them lands on the seam. supWorldX/supWorldZ are the existing unwrap and are
+      // exact here (gwrap(supWorldX(gx)) === gx, and coneWake gwraps its inputs), so the box is contiguous
+      // whatever the window origin is. y is not toroidal and is left alone.
       for (const ii of comp) {
-        const gx2 = ii % WX, gy2 = ((ii / WX) | 0) % WY, gz2 = (ii / (WX * WY)) | 0;
-        if (gx2 < dx0) dx0 = gx2; if (gx2 > dx1) dx1 = gx2;
+        const gy2 = ((ii / WX) | 0) % WY;
+        const wx2 = supWorldX(ii % WX), wz2 = supWorldZ((ii / (WX * WY)) | 0);
+        if (wx2 < dx0) dx0 = wx2; if (wx2 > dx1) dx1 = wx2;
         if (gy2 < dy0) dy0 = gy2; if (gy2 > dy1) dy1 = gy2;
-        if (gz2 < dz0) dz0 = gz2; if (gz2 > dz1) dz1 = gz2;
+        if (wz2 < dz0) dz0 = wz2; if (wz2 > dz1) dz1 = wz2;
       }
-      coneWake(dx0, dx1, dy0, dy1, dz0, dz1); }
+      // ── THE CROWN PAD IS FOR A CROWN (user 2026-08-10: stuttering while moving, worst while snowing) ──
+      // CONE_WAKE_PAD is 26 because a felled TRUNK's bbox is the bole while the cones it stranded ring the
+      // whole crown. It was applied to every lift, and coneWake iterates the box VOLUME: a 3-voxel snow clump
+      // coming loose became a 55x53x55 = ~160,000-cell scan, ~10 ms, in one frame. MEASURED over a 20 s
+      // scripted sprint with the storm pinned, coneWake was 658 ms of self time across ~60 lifts — and a storm
+      // is exactly what knocks small drape clumps loose all over the window, which is why the stutter tracked
+      // the snow. Nothing but a tree needs the crown radius, so pay it only for a component that actually
+      // carries WOOD; everything else gets the same small pad a chop bite already uses, whose anchors are the
+      // removed voxels themselves. This narrows WHERE the resolver is re-asked, never what it decides.
+      coneWake(dx0, dx1, dy0, dy1, dz0, dz1, woody ? undefined : 6); }
     SUP.stats.lifted++; SUP.stats.liftedVox += n;
     if (drape) SUP.stats.liftedDrape += n; else SUP.stats.liftedStruct += n;
     if (SUP.log.length < 64) SUP.log.push([n, id0, cells[0][1], drape ? 'D' : 'S']);   // a short, capped ring for __vb.support(): size, palette id, height, class — enough to tell a stranded needle clump from a hillside
@@ -8765,6 +8872,9 @@
     return { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay };
   })();
   const { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay } = __m_sim_tools;
+  const __m_sim_solver = (() => {
+  // @module - the positional constraint solver shared by ragdolls and dropped items
+  // @exports physStep
   // ── SOLVER ── sequential impulse / PGS, fixed 60 Hz, PH.iters iterations, no pair state between steps.
   const phStep = (b, h) => {
     if (b.sleeping || b.absorbing) return;             // an absorbing chunk is driven by its flight curve, not by physics
@@ -9064,6 +9174,9 @@
     PH.stats.stepMs = +(performance.now() - t0).toFixed(3);
   };
 
+    return { physStep };
+  })();
+  const { physStep } = __m_sim_solver;
   // ── flying cardinal ── free WANDERING flight (no home, no leash — it goes where it goes; it does NOT follow the player): the turn rate
   // drifts to a new random target every few seconds (varied, believable arcs — never a fixed circle) and it terrain-follows via hmap so it
   // always clears the canopy. Pose is written into drop slot 4 each frame (see the drops uniform section) and DDA-raytraced off-grid —
@@ -9361,6 +9474,7 @@
   // POOLED: this used to be a plain Array push-ed thousands of times per frame and truncated with .length = 0,
   // which churns its backing store every frame. A grown-once Int32Array + count allocates nothing in steady state.
   const buriedTmp = [], snowCells = [], snowMeltCells = [];   // pooled scratch for the snow settle scan + this frame's snow voxel edits; snowMeltCells is the THAW's own list, uploaded with no support seed (a melted flake orphans nothing — see the melt block)
+  const snowStopCols = [];                             // (column, newTop) pairs a landing computed EXACTLY — replayed after gpuPatch blanket-clears the scanTop cache. Pooled like the two above; see the restore in tick-snow.
   let wormPatch = new Int32Array(1 << 15), wormPatchN = 0;
   const wormPatchPush = (ii) => {
     if (wormPatchN >= wormPatch.length) { const g = new Int32Array(wormPatch.length * 2); g.set(wormPatch); wormPatch = g; }
@@ -10025,6 +10139,9 @@
         born: performance.now(), life: 0.4 + Math.random() * 0.3, ph: Math.random() * 6.283, smoke: false, red: true };   // red: the HIT colour (user) — spawnDeathBurst leaves it unset, so a kill still throws the 4 ordinary sparks
     }
   }
+  const __m_sim_particles = (() => {
+  // @module - splash, spark and debris particle pools and their per-frame step
+  // @exports ARROW_HITS_TO_KILL, CRY_GAP, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, spawnDeathBurst, spawnSplash, spawnTear, startCrying
   // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
   // something breaks the surface — a fish launching, the same fish coming back down, and the player going
   // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is
@@ -10194,6 +10311,9 @@
   };
   const HITS_TO_KILL = 3;                              // hits a non-AXE tool needs to kill a life form (user). The axe is the killing tool and ignores this entirely.
   const ARROW_HITS_TO_KILL = 2;                        // …and an ARROW takes two (user) — between the axe's one blow and every hand tool's three
+    return { ARROW_HITS_TO_KILL, CRY_GAP, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, spawnDeathBurst, spawnSplash, spawnTear, startCrying };
+  })();
+  const { ARROW_HITS_TO_KILL, CRY_GAP, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, spawnDeathBurst, spawnSplash, spawnTear, startCrying } = __m_sim_particles;
   // ── STRUCK = SPOOKED (user 2026-08-09) ── every family that has a flee state already enters it on
   // PROXIMITY and runs its animation at double rate there: the bunny 24→48 fps (B.bflee), the land mammals
   // 12→24 (B.aflee), the fish ×fleeMult with its animation scaled to match (B.fleeT). Being SHOT did none of
@@ -11547,19 +11667,22 @@
   const JIT = Array.from({ length: 8 }, (_, i) => [halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5]);
   let frame = 0, prevT = performance.now(), fpsEma = 60, hudT = 0;
   let profQS = null, profRes = null, profStg = null, profBusy = false, profNew = false;   // per-pass GPU timing — armed via __vb.prof(true)
-  const profEma = [0, 0, 0, 0, 0, 0, 0], PROF_NAMES = ['trace', 'temporal', 'spatial', 'composite', 'taa', 'vis', 'blit'];
+  const profEma = [0, 0, 0, 0, 0, 0, 0, 0], PROF_NAMES = ['trace', 'temporal', 'spatial', 'composite', 'taa', 'vis', 'blit', 'god'];
   // ── RAW PER-FRAME MINIMUM ── the EMA is unusable as an A/B statistic while ANOTHER process is using the
   // GPU: a timestamp query measures wall time on the GPU timeline, so a preempted pass reports inflated
   // duration, and a LONG pass (trace) absorbs far more of that than a short one (blit). Measured on this
   // box against a byte-identical build under two names: trace swung 0.77 → 3.55 ms while blit held
   // 0.123-0.125. The MINIMUM over a few hundred readbacks is the pass's uncontended cost — the camera is
   // static and the only per-frame variation is the AO/sun jitter, so the cheapest frame is the honest one.
-  const profMin = [1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9]; let profSamp = 0;
+  const profMin = [1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9]; let profSamp = 0;
   function profArm(on) {
     if (on && PROF && !profQS) {
-      profQS = device.createQuerySet({ type: 'timestamp', count: 14 });   // 5 run() passes + the VIS prepass (10/11) + the blit render pass (12/13)
-      profRes = device.createBuffer({ size: 112, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
-      profStg = device.createBuffer({ size: 112, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      profQS = device.createQuerySet({ type: 'timestamp', count: 16 });   // 5 run() passes + the VIS prepass (10/11) + the blit render pass (12/13) + the half-res god rays (14/15).
+      // A pass with no query pair is INVISIBLE here while still costing frame time: when the god march moved out of BLIT it took 1.3 ms of
+      // measured cost with it and reappeared nowhere, so __vb.prof()'s total silently understated the frame. Index i reads q[2i], q[2i+1] —
+      // adding a pass means a name, a query pair, the count, both buffer sizes, the resolve length and the readback bound, or the totals lie.
+      profRes = device.createBuffer({ size: 128, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+      profStg = device.createBuffer({ size: 128, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     } else if (!on && profQS) { profQS.destroy(); profRes.destroy(); profStg.destroy(); profQS = profRes = profStg = null; }
   }
   let waitEma = 4, paceWaited = true, paceTs = 0;      // measured pipeline-wait (CPU idle) — sizes the worldgen budget precisely
@@ -11872,7 +11995,7 @@
         if (q[0] === r && q[1] === g && q[2] === b) cid = i; }
       if (cid !== undefined) { /* found one already in the table */ }
       else if (palette.length < 256) cid = addCol(r, g, b);
-      else { let bd = 1e9; cid = 1; for (let i = 1; i < palette.length; i++) { const p = palette[i], d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b); if (d < bd) { bd = d; cid = i; } } }
+      else cid = palNearest(r, g, b);                  // was a THIRD copy of the nearest-colour walk, and the only one that did not skip RESERVED ids — so a full palette could snap imported art onto a pinecone id and every stamp of it would right-click up as a pinecone. palNearest (assets/palette.js) is the one addCol and palShare use.
       edColCache.set(key, cid);
     }
     return cid; };
@@ -12157,6 +12280,41 @@
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
     palLen() { return { len: palette.length, over: palette.length > 256 }; },
+    palAudit() {                                     // WHICH ids are exact-colour duplicates, and is each one safe to reclaim. addCol() pushes unconditionally, so a loader that calls it directly (the .json decor palettes do) mints a fresh id for a colour the table already holds — but a duplicate is only REDUNDANT if nothing tells the two ids apart, and an id carries material flags and pickup-set membership as well as a colour.
+      const flags = (i) => [solidTab[i], foliaTab[i], woodTab[i], mushTab[i], rockTopTab[i], decorTab[i], axeOnlyTab[i], pickOnlyTab[i], digOnlyTab[i], sandTab[i], coneTab[i], SUP.CLASS[i] | 0].join(',');
+      const picks = (i) => [PICK_ROCK.has(i), PICK_STICK.has(i), PICK_BOULDER.has(i), PICK_CONE.has(i)].map((b) => (b ? 1 : 0)).join(',');
+      const by = new Map();
+      for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (!c) continue;
+        const k = (c[0] << 16) | (c[1] << 8) | c[2]; if (!by.has(k)) by.set(k, []); by.get(k).push(i); }
+      const dup = [], safe = [];
+      for (const [k, ids] of by) { if (ids.length < 2) continue;
+        const rec = { col: [(k >> 16) & 255, (k >> 8) & 255, k & 255], ids,
+          own: ids.map((i) => palOwn.has(i)), flags: ids.map(flags), picks: ids.map(picks) };
+        // Redundant means: same colour, same material flags, same pickup membership, and not
+        // RESERVED — palOwn ids exist precisely so a set built from them identifies one model.
+        rec.redundant = rec.flags.every((f) => f === rec.flags[0]) && rec.picks.every((q) => q === rec.picks[0]) && !rec.own.some(Boolean);
+        dup.push(rec); if (rec.redundant) safe.push(...ids.slice(1)); }
+      // EXACT duplicates turn out to be all deliberate, so the only slack left is
+      // NEAR-duplicates: two ids a player cannot tell apart. Merging those is a real
+      // colour change, so it is reported per-threshold (max channel delta out of 255)
+      // rather than acted on — and only inside a bucket that already agrees on every
+      // material flag and every pickup set, because those are what make an id mean
+      // something beyond its colour.
+      const bucket = new Map();
+      for (let i = 1; i < palette.length; i++) { if (!palette[i] || palOwn.has(i)) continue;
+        const k = flags(i) + '|' + picks(i); if (!bucket.has(k)) bucket.set(k, []); bucket.get(k).push(i); }
+      const near = {};
+      for (const t of [1, 2, 3, 4, 6, 8, 12, 16]) { let gone = 0; const ex = [];
+        for (const ids of bucket.values()) { const dead = new Set();
+          for (let a2 = 0; a2 < ids.length; a2++) { if (dead.has(ids[a2])) continue;
+            for (let b2 = a2 + 1; b2 < ids.length; b2++) { if (dead.has(ids[b2])) continue;
+              const c1 = palette[ids[a2]], c2 = palette[ids[b2]];
+              const d = Math.max(Math.abs(c1[0] - c2[0]), Math.abs(c1[1] - c2[1]), Math.abs(c1[2] - c2[2]));
+              if (d <= t) { dead.add(ids[b2]); gone++; if (ex.length < 8) ex.push([ids[a2], ids[b2], d, c1, c2]); } } } }
+        near[t] = { reclaimable: gone, examples: ex }; }
+      return { len: palette.length, free: 256 - palette.length, over: palOver, groups: dup.length,
+        wasted: dup.reduce((n, d) => n + d.ids.length - 1, 0), reclaimable: safe.length,
+        buckets: bucket.size, near, safe, dup }; },
     uniInfo() { return { on: LIFE_UNI, visW: VIS_W, sec: UF[1530], blue: BLUEB_ITEM0, robin: ROBIN_ITEM0, birdsDrawn: uniBirdN, birdsWant: uniBirdWant, cursor: UF[1103] }; },
     itemInfo() { return { n: itemsRef ? itemsRef.length : 0, cells: itemMapF32.length >> 2, card: CARD_ITEM0, bunny: BUNNY_ITEM0, arm: ARMADILLO_ITEM0, armN: ARMADILLO_NFRAMES, skunk: SKUNK_ITEM0, skunkN: SKUNK_NFRAMES, porc: PORCUPINE_ITEM0, porcN: PORCUPINE_NFRAMES, worm: WORM_ITEM0 }; },   // item-table census for the unification tests
    // the 8-bit palette ceiling — breaching it corrupts voxel SOLIDITY, not just colour
@@ -14018,6 +14176,7 @@
       if (P.z < bz0) { P.z = bz0; P.hvz = Math.max(0, P.hvz); } else if (P.z > bz1) { P.z = bz1; P.hvz = Math.min(0, P.hvz); }
     }
     { const cells = snowCells; cells.length = 0; const meltCells = snowMeltCells; meltCells.length = 0;   // meltCells: the thaw's own list, patched WITHOUT a support seed (see the melt block below). Pooled the same way.
+      const stopCols = snowStopCols; stopCols.length = 0;   // columns whose new top a landing already knows exactly — see the replay after this tick's gpuPatch
       stopF = (stopF + 1) & 0xffff; if (stopF === 0) { stopF = 1; stopS.fill(0); }       // POOLED across frames — this list reaches thousands of entries during a storm
       if (snowOn !== snowPrevOn) { snowPrevOn = snowOn;   // storm edges: no time-melt DURING a storm (the blanket must not thin while flakes still fall)
         if (snowOn) { snowOnT0 = now; snowFreezeAt = now + SNOW_FREEZE_DELAY; snowWMelting = false; snowWMeltAt = Infinity; snowGMelting = false; snowGMeltAt = Infinity; }   // the water may not skin over until 10 s in (user); a new storm re-arms BOTH melts — snow falling on a thawing blanket must stop it thawing, or the two fight and the ground never settles either way
@@ -14119,6 +14278,7 @@
         const ii = b2 + (y + 1) * WX;
         W[ii] = SNOW[(wx ^ wz) & 1];
         stopY[gx + gz * WX] = y + 1; stopS[gx + gz * WX] = stopF;   // the new top is known exactly; gpuPatch only runs at the end of the tick, and until then the settle-roll and the 3-layer cap must not read the old surface
+        stopCols.push(gx + gz * WX, y + 1);            // …and it must SURVIVE that gpuPatch — see the replay below
         cells.push(ii);
         if (waterAt(wx, WL, wz)) { if (snowRoomW()) snowWI[snowWN++] = ii; }   // landed on the frozen surface — drained continuously after the storm, not on a per-voxel timer
         else if (snowRoomQ()) { snowQI[snowQN++] = ii; }   // landed on GROUND — no expiry stamp; the whole queue drains together once the thaw latches
@@ -14223,6 +14383,20 @@
       if (snowWHead > 8192) snowCompactW();            // in-place, no reallocation (was .slice() of a multi-hundred-thousand-entry array)
       if (snowHead > 8192) snowCompactQ();
       if (cells.length) { if (CPROF) cpEvt |= 32; gpuPatch(cells, false); }   // dirty-word brick upload, not the 774 KB whole-table re-upload — same bits, ~1000x less traffic (verified by __vb.bdiff())
+      // ── AND GIVE THE scanTop CACHE BACK WHAT THE PATCH JUST TOOK (user 2026-08-10: "stuttering when moving
+      // and the world is generating, especially when its snowing") ── the landing above computes the column's
+      // new top EXACTLY and writes it to stopY/stopS. gpuPatch is the one funnel every W mutation goes through,
+      // so it conservatively clears stopS for every cell it stages — including the flake that just told it the
+      // answer. Every landed flake therefore destroyed its own cache entry, and the next frame's sweep paid a
+      // full downward column scan for it. That is why scanTop stayed the single largest cost in a storm even
+      // WITH the cache: MEASURED over a 20 s scripted sprint with the storm pinned, scanTop self-time was
+      // 1576 ms with the cache on and 1747 ms with __vb.stopCache(0) — the cache was buying 10%, against the
+      // 7.3x it was built for. It was never broken standing still; a moving player also streams terrain and
+      // re-stamps creatures through the same funnel, so the invalidation reaches most of the 120-radius disc.
+      // Replayed only where stopS is still 0, i.e. only where THIS patch is what cleared it — anything that
+      // wrote the column afterwards keeps its own answer, and a stale-high top can never be reinstated.
+      for (let q = 0; q < stopCols.length; q += 2) { const c = stopCols[q];
+        if (stopS[c] === 0) { stopY[c] = stopCols[q + 1]; stopS[c] = stopF; } }
       // …and the thaw's cells the same way, but with the support seed muted. NOT gpuPatch's `track=false`,
       // which would also drop nvTouch and the hmap lower — a melting blanket does change what a creature can
       // walk on. Only the SUP queue is skipped, for the reason set out at the melt itself.
@@ -16372,9 +16546,14 @@
       run(pSpatial, bgSpatial[par]);
       run(pComposite, bgComposite[par]);
       run(pTaa, bgTaa[par]);
+      // ── GOD RAYS ── AFTER TAA, because the march reads TAA's resolved colour + sky mask, and BEFORE the blit
+      // that samples the result. Half the canvas on each axis, so a quarter of the marches the blit used to do.
+      { const gp = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 14, endOfPassWriteIndex: 15 } } : {});
+        gp.setPipeline(pGod); gp.setBindGroup(0, bgGod[par]);
+        gp.dispatchWorkgroups(Math.ceil(godW / 8), Math.ceil(godH / 8)); gp.end(); }
       if (profQS) {                                    // resolve + read back pass timings (only while __vb.prof polling has it armed)
-        enc.resolveQuerySet(profQS, 0, 14, profRes, 0);
-        if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 112); profNew = true; }
+        enc.resolveQuerySet(profQS, 0, 16, profRes, 0);
+        if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 128); profNew = true; }
       }
       const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
       rp.setPipeline(pBlit); rp.setBindGroup(0, bgBlit[par]); rp.draw(3); rp.end();
@@ -16384,7 +16563,7 @@
       profNew = false; profBusy = true;
       profStg.mapAsync(GPUMapMode.READ).then(() => {
         const q = new BigInt64Array(profStg.getMappedRange());
-        for (let i = 0; i < 7; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) { profEma[i] = profEma[i] * 0.92 + ms * 0.08; if (ms < profMin[i]) profMin[i] = ms; } }
+        for (let i = 0; i < 8; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) { profEma[i] = profEma[i] * 0.92 + ms * 0.08; if (ms < profMin[i]) profMin[i] = ms; } }
         profSamp++;
         profStg.unmap(); profBusy = false;
       }).catch(() => { profBusy = false; });

@@ -33,9 +33,14 @@
       run(pSpatial, bgSpatial[par]);
       run(pComposite, bgComposite[par]);
       run(pTaa, bgTaa[par]);
+      // ── GOD RAYS ── AFTER TAA, because the march reads TAA's resolved colour + sky mask, and BEFORE the blit
+      // that samples the result. Half the canvas on each axis, so a quarter of the marches the blit used to do.
+      { const gp = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 14, endOfPassWriteIndex: 15 } } : {});
+        gp.setPipeline(pGod); gp.setBindGroup(0, bgGod[par]);
+        gp.dispatchWorkgroups(Math.ceil(godW / 8), Math.ceil(godH / 8)); gp.end(); }
       if (profQS) {                                    // resolve + read back pass timings (only while __vb.prof polling has it armed)
-        enc.resolveQuerySet(profQS, 0, 14, profRes, 0);
-        if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 112); profNew = true; }
+        enc.resolveQuerySet(profQS, 0, 16, profRes, 0);
+        if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 128); profNew = true; }
       }
       const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
       rp.setPipeline(pBlit); rp.setBindGroup(0, bgBlit[par]); rp.draw(3); rp.end();
@@ -45,7 +50,7 @@
       profNew = false; profBusy = true;
       profStg.mapAsync(GPUMapMode.READ).then(() => {
         const q = new BigInt64Array(profStg.getMappedRange());
-        for (let i = 0; i < 7; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) { profEma[i] = profEma[i] * 0.92 + ms * 0.08; if (ms < profMin[i]) profMin[i] = ms; } }
+        for (let i = 0; i < 8; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) { profEma[i] = profEma[i] * 0.92 + ms * 0.08; if (ms < profMin[i]) profMin[i] = ms; } }
         profSamp++;
         profStg.unmap(); profBusy = false;
       }).catch(() => { profBusy = false; });

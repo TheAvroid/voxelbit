@@ -195,7 +195,7 @@
         if (q[0] === r && q[1] === g && q[2] === b) cid = i; }
       if (cid !== undefined) { /* found one already in the table */ }
       else if (palette.length < 256) cid = addCol(r, g, b);
-      else { let bd = 1e9; cid = 1; for (let i = 1; i < palette.length; i++) { const p = palette[i], d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b); if (d < bd) { bd = d; cid = i; } } }
+      else cid = palNearest(r, g, b);                  // was a THIRD copy of the nearest-colour walk, and the only one that did not skip RESERVED ids — so a full palette could snap imported art onto a pinecone id and every stamp of it would right-click up as a pinecone. palNearest (assets/palette.js) is the one addCol and palShare use.
       edColCache.set(key, cid);
     }
     return cid; };

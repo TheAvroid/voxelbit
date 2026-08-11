@@ -1,0 +1,55 @@
+#!/bin/sh
+# voxelbit post-merge -- the one moment pre-commit cannot cover.
+#
+# git does not run pre-commit for an automatic merge commit. That commit is
+# therefore the only one in the repo that skips the rebuild AND all eleven
+# checks -- and it is exactly the commit where parallel work combines, so it is
+# the only place a cross-branch collision can first exist:
+#
+#   * game/index.html carries `merge=ours`, so the merge keeps THIS side's
+#     bundle and the branch you just merged is missing from the artifact. The
+#     game then runs without the work you merged, which reads as "my change did
+#     nothing" rather than as a build problem.
+#   * two fragments that each declared the same top-level name passed lint
+#     separately in their own worktree. Merged, they are a SyntaxError and a
+#     black screen that nothing has reported yet.
+#
+# pre-push refuses to send either one, so neither can escape the machine. This
+# hook exists so you find out now instead of after debugging a stale build.
+#
+# The merge commit already exists by the time this runs, so this cannot repair
+# it silently -- and amending on your behalf would rewrite a commit you have not
+# looked at. It rebuilds, stages, and hands you the one command.
+cd "$(git rev-parse --show-toplevel)" || exit 0
+
+[ "$1" = "1" ] && exit 0           # squash merge: nothing committed yet, pre-commit still runs
+
+PY=$(command -v python || command -v python3 || command -v py)
+if [ -z "$PY" ]; then
+  echo "post-merge: no python on PATH - game/index.html NOT verified against src/" >&2
+  exit 0
+fi
+
+# --check first, so the test is "does the artifact disagree with src/" and not "is the
+# tree dirty". A fast-forward pull already carries the correct bundle, and a merge into a
+# tree with uncommitted fragment edits is still consistent - both stay silent here. Only
+# a merge that actually left the bundle behind gets past this.
+if ! "$PY" tools/bundle.py --check >/dev/null; then
+  "$PY" tools/bundle.py >/dev/null || { echo "post-merge: bundle.py failed - src/ is broken, see above" >&2; exit 0; }
+  git add game/index.html
+  echo ""
+  echo "post-merge: game/index.html was stale after the merge - rebuilt and staged."
+  echo "            the merge commit still has the old bundle. fix it with:"
+  echo ""
+  echo "              git commit --amend --no-edit"
+  echo ""
+fi
+
+if ! "$PY" tools/lint-vb.py; then
+  echo ""
+  echo "post-merge: the MERGED tree fails lint - most likely two branches declared" >&2
+  echo "            the same top-level name. this is a black screen at boot." >&2
+  echo "            fix src/, then:  git add -A && git commit --amend --no-edit" >&2
+  echo ""
+fi
+exit 0

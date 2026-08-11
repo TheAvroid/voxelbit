@@ -108,7 +108,25 @@
             // are load-bearing there by construction, and any rule that stops foliage carrying wood takes the
             // tree's point off. The fix belongs in the MODEL — make the bole continuous wood to the apex —
             // after which this bridge can simply be deleted and a severed trunk falls on its own.
-            if (ncls === SUP.DRAPE) { if (supHeld(nn, dep)) { anchored = true; SUPWHY.why = 'struct->heldDrape id' + W[nn]; break; } continue; }   // the same rule the other way round: ASK, never enter
+            // ── …BUT ONLY WOOD MAY BE HELD BY FOLIAGE (user 2026-08-10: "mushrooms float after the player
+            // breaks it — there should be no floaters in the game at all") ── the crutch above is justified by
+            // exactly one measured fact: pine5.vox's bole is discontinuous near the tip, so NEEDLES carry WOOD
+            // there. Nothing in that argument licenses grass carrying a mushroom. Ungated, this line said any
+            // structure touching any held drape is attached — and a mushroom only ever grows under a pine (see
+            // mushAt's pine-forest gate), so every cap sits in needles and ground litter: cut the stalk through
+            // and the cap hung there permanently, held by a blade of grass.
+            // MEASURED with a constructed case — two identical 75-voxel mushroom blocks in clear air ten voxels
+            // up, one with a drape column running to the ground and one with nothing beneath it at all: the
+            // bare block fell (lifted 3, 98 vox) and the one merely TOUCHING drape stayed, 75/75, verdict
+            // `struct->heldDrape id46`. Across four real clusters cut through every stalk at once, 3 of 4 left
+            // the caps hanging. Both drape families do it: id 54 is GRASS (83,108,54 = GRASS[0]) and id 46/48
+            // are pine needles.
+            // The gate is on the STRUCTURE side because that is where the justification lives, and it keeps the
+            // pine case intact: a standing forest still reports liftedStruct 0 and treeAudit floating 0, where
+            // DELETING this line outright took liftedVox 1783 -> 8091 and decapitated pine tips.
+            // foliaTab rather than "any drape", so snow and cones cannot vouch for a trunk either — both rest
+            // ON things and hold nothing up, which is the rule the drape branch above already applies to snow.
+            if (ncls === SUP.DRAPE) { if (woodTab[W[ii]] && foliaTab[nv] && supHeld(nn, dep)) { anchored = true; SUPWHY.why = 'wood->heldNeedles id' + W[nn]; break; } continue; }   // the same rule the other way round: ASK, never enter
             if (ncls !== SUP.STRUCTURE || seen.has(nn)) continue;   // fluid is handled above; a creature stamp is a hole in this graph, exactly as stampApply guarantees
             seen.add(nn); SUP.busy.add(nn); st.push(nn);
           }
@@ -203,7 +221,9 @@
     }
     const cells = new Array(n);
     const id0 = W[comp[0]] || 0;
+    let woody = false;                                 // read BEFORE phBodyFromCells, which takes these voxels out of W
     for (let i = 0; i < n; i++) { const ii = comp[i];
+      if (woodTab[W[ii]]) woody = true;
       cells[i] = [supWorldX(ii % WX), ((ii / WX) | 0) % WY, supWorldZ((ii / (WX * WY)) | 0)]; }
     phSrc = 'support';
     const fb = phBodyFromCells(cells);
@@ -222,13 +242,31 @@
     fb.nearR = PH.absorbR;
     PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(fb); PH.stats.chunks++;
     { let dx0 = 1e9, dx1 = -1e9, dy0 = 1e9, dy1 = -1e9, dz0 = 1e9, dz1 = -1e9;   // the FELL itself comes through here
+      // ── THE BOX IS BUILT IN WORLD COORDS, NOT GRID COORDS (2026-08-10) ── x and z are TOROIDAL, so a plain
+      // min/max over grid indices is wrong for any component that straddles the wrap: the two ends of a
+      // perfectly ordinary 16-voxel clump land at gx 2047 and gx 0, and the box comes out 2048 WIDE. coneWake
+      // then walks x0-PAD..x1+PAD — the entire window — at ~150,000 gwrapped probes. MEASURED at 88.3 ms in
+      // one call, which is the snow stutter: a storm knocks small drape components loose all over the window,
+      // so sooner or later one of them lands on the seam. supWorldX/supWorldZ are the existing unwrap and are
+      // exact here (gwrap(supWorldX(gx)) === gx, and coneWake gwraps its inputs), so the box is contiguous
+      // whatever the window origin is. y is not toroidal and is left alone.
       for (const ii of comp) {
-        const gx2 = ii % WX, gy2 = ((ii / WX) | 0) % WY, gz2 = (ii / (WX * WY)) | 0;
-        if (gx2 < dx0) dx0 = gx2; if (gx2 > dx1) dx1 = gx2;
+        const gy2 = ((ii / WX) | 0) % WY;
+        const wx2 = supWorldX(ii % WX), wz2 = supWorldZ((ii / (WX * WY)) | 0);
+        if (wx2 < dx0) dx0 = wx2; if (wx2 > dx1) dx1 = wx2;
         if (gy2 < dy0) dy0 = gy2; if (gy2 > dy1) dy1 = gy2;
-        if (gz2 < dz0) dz0 = gz2; if (gz2 > dz1) dz1 = gz2;
+        if (wz2 < dz0) dz0 = wz2; if (wz2 > dz1) dz1 = wz2;
       }
-      coneWake(dx0, dx1, dy0, dy1, dz0, dz1); }
+      // ── THE CROWN PAD IS FOR A CROWN (user 2026-08-10: stuttering while moving, worst while snowing) ──
+      // CONE_WAKE_PAD is 26 because a felled TRUNK's bbox is the bole while the cones it stranded ring the
+      // whole crown. It was applied to every lift, and coneWake iterates the box VOLUME: a 3-voxel snow clump
+      // coming loose became a 55x53x55 = ~160,000-cell scan, ~10 ms, in one frame. MEASURED over a 20 s
+      // scripted sprint with the storm pinned, coneWake was 658 ms of self time across ~60 lifts — and a storm
+      // is exactly what knocks small drape clumps loose all over the window, which is why the stutter tracked
+      // the snow. Nothing but a tree needs the crown radius, so pay it only for a component that actually
+      // carries WOOD; everything else gets the same small pad a chop bite already uses, whose anchors are the
+      // removed voxels themselves. This narrows WHERE the resolver is re-asked, never what it decides.
+      coneWake(dx0, dx1, dy0, dy1, dz0, dz1, woody ? undefined : 6); }
     SUP.stats.lifted++; SUP.stats.liftedVox += n;
     if (drape) SUP.stats.liftedDrape += n; else SUP.stats.liftedStruct += n;
     if (SUP.log.length < 64) SUP.log.push([n, id0, cells[0][1], drape ? 'D' : 'S']);   // a short, capped ring for __vb.support(): size, palette id, height, class — enough to tell a stranded needle clump from a hillside

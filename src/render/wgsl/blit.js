@@ -1,7 +1,56 @@
+  // ── GOD RAYS AT HALF RESOLUTION ── The 24-tap radial march used to run in BLIT, per CANVAS pixel: 7.3M
+  // pixels x 24 fetches = 175M samples a frame, which measured as 85% of the whole blit pass and 20 fps at
+  // 3834x1904. The effect itself is a broad radial smear of the sun's halo — there is no detail in it finer
+  // than a few pixels — so computing it at half resolution (a quarter of the work) and letting the bilinear
+  // sampler put it back is where the cost goes without the look changing.
+  //
+  // Halving the TAP COUNT instead was tried and measured: 12 taps with the stride, decay and scale re-derived
+  // to the same integral came back 1.735 ms against a 1.627 ms baseline — no gain, because doubling the stride
+  // costs as much cache locality as the halved count saves. The pixels are the cost, not the iterations.
+  //
+  // Only the march lives here. The tint, the daylight factor and the lens flare stay in BLIT: the flare is
+  // already gated to the ~1.3% of pixels its ghosts actually cover, and it needs full-resolution positions.
+  const GOD_SRC = () => /* wgsl */`
+    @group(0) @binding(1) var src : texture_2d<f32>;
+    @group(0) @binding(2) var samp : sampler;
+    @group(0) @binding(3) var godOut : texture_storage_2d<rgba16float, write>;
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+      let gw = u32(ceil(u.canvasRes.x * 0.5)); let gh = u32(ceil(u.canvasRes.y * 0.5));
+      if (gid.x >= gw || gid.y >= gh) { return; }
+      let fc = (vec2<f32>(f32(gid.x), f32(gid.y)) + vec2<f32>(0.5)) * 2.0;   // centre of the 2x2 canvas block this texel stands for
+      let sf = dot(u.sunDir, u.fwd);
+      let dayK = clamp(u.sunDir.y * 3.0, 0.0, 1.0);
+      var glow = vec3<f32>(0.0);
+      if (sf > 0.05 && dayK > 0.0 && (u32(u.fx) & 1u) != 0u) {
+        let sunNDC = vec2<f32>(dot(u.sunDir, u.right) / (sf * u.tanH * u.aspect), dot(u.sunDir, u.up) / (sf * u.tanH));
+        let sunPix = vec2<f32>((sunNDC.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - sunNDC.y * 0.5) * u.canvasRes.y);
+        var sp = fc;
+        let delta = (sunPix - sp) * (0.7 / 24.0);                  // rays reach ~70% of the way to the sun
+        sp += delta * fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y));   // the same IGN start jitter — at half res it still breaks the 24 discrete steps into a smooth shaft
+        var decay = 1.0;
+        for (var i = 0; i < 24; i++) {
+          sp += delta;
+          let suv = sp / u.canvasRes;
+          if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) {
+            let s4 = textureSampleLevel(src, samp, suv, 0.0);
+            let b = max(s4.r, max(s4.g, s4.b));
+            let white = min(s4.r, min(s4.g, s4.b)) / max(b, 0.001);   // 1 = white (the sun disc/halo), low = saturated sky
+            glow += s4.rgb * (smoothstep(0.86, 1.0, b) * smoothstep(0.45, 0.8, white) * s4.a * decay);
+          }
+          else { break; }                                          // exact early-out, unchanged: a straight ray leaving the screen never comes back
+          decay *= 0.96;
+        }
+      }
+      textureStore(godOut, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(glow, 1.0));
+    }
+  `;
+
   const BLIT_SRC = () => /* wgsl */`
     @group(0) @binding(1) var src : texture_2d<f32>;
     @group(0) @binding(2) var samp : sampler;
-    @group(0) @binding(3) var dofT : texture_2d<f32>;                // ── DEPTH OF FIELD ── {resolved colour, signed CoC} from the TAA pass
+    @group(0) @binding(3) var dofT : texture_2d<f32>;
+    @group(0) @binding(4) var godT : texture_2d<f32>;                // half-res god-ray glow (see GOD_SRC above) — bilinear on the way back up                // ── DEPTH OF FIELD ── {resolved colour, signed CoC} from the TAA pass
     @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4<f32> {
       var P = array<vec2<f32>, 3>(vec2<f32>(-1.0, -3.0), vec2<f32>(3.0, 1.0), vec2<f32>(-1.0, 1.0));
       return vec4<f32>(P[vi], 0.0, 1.0);
@@ -51,23 +100,7 @@
       if (sf > 0.05 && dayK > 0.0 && (u32(u.fx) & 1u) != 0u) {
         let sunNDC = vec2<f32>(dot(u.sunDir, u.right) / (sf * u.tanH * u.aspect), dot(u.sunDir, u.up) / (sf * u.tanH));
         let sunPix = vec2<f32>((sunNDC.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - sunNDC.y * 0.5) * u.canvasRes.y);
-        var sp = fc.xy;
-        let delta = (sunPix - sp) * (0.7 / 24.0);                  // rays reach ~70% of the way to the sun
-        sp += delta * fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y));   // per-pixel start jitter (IGN) — without it the 24 discrete taps ghost bright edges (the cloud deck) into evenly-spaced banded stripes when the sun is far off-screen
-        var glow = vec3<f32>(0.0);
-        var decay = 1.0;
-        for (var i = 0; i < 24; i++) {
-          sp += delta;
-          let suv = sp / u.canvasRes;
-          if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) {
-            let s4 = textureSampleLevel(src, samp, suv, 0.0);
-            let b = max(s4.r, max(s4.g, s4.b));
-            let white = min(s4.r, min(s4.g, s4.b)) / max(b, 0.001);   // 1 = white (the sun disc/halo), low = saturated sky
-            glow += s4.rgb * (smoothstep(0.86, 1.0, b) * smoothstep(0.45, 0.8, white) * s4.a * decay);   // only the disc + corona scatter — bright clouds no longer wash a FOG veil over the view
-          }
-          else { break; }   // ── EXACT EARLY-OUT ── the march is a straight ray from THIS pixel (fc.xy, which is inside the screen) toward the sun, and the screen rect is convex, so the ray meets it in ONE interval: a tap that lands outside can never be followed by one that lands back inside. Every remaining tap would have been skipped anyway, so breaking is bit-identical — and it is exactly the off-screen-sun case, where the far side of the frame used to pay all 24 taps for nothing.
-          decay *= 0.96;
-        }
+        let glow = textureSampleLevel(godT, samp, uv, 0.0).rgb;   // ── the march now happens once per 2x2 block in GOD_SRC ── bilinear back up; the effect has no detail this loses
         col += glow * (0.055 * dayK) * select(vec3<f32>(1.0, 0.93, 0.78), vec3<f32>(0.55, 0.65, 1.0) * 1.1, isMoon());   // strong warm sun shafts / cool MOON RAYS — the rays, not the fog
         // ── LENS FLARE: ghosts along the sun→centre axis + streak + bloom, gated by on-screen sun visibility
         // ── GHOST FOOTPRINT FIRST ── sv is a FRAME CONSTANT (a fixed 3×3 tap around the sun pixel), yet it was

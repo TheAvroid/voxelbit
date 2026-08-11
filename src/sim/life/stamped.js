@@ -5,6 +5,7 @@
   // POOLED: this used to be a plain Array push-ed thousands of times per frame and truncated with .length = 0,
   // which churns its backing store every frame. A grown-once Int32Array + count allocates nothing in steady state.
   const buriedTmp = [], snowCells = [], snowMeltCells = [];   // pooled scratch for the snow settle scan + this frame's snow voxel edits; snowMeltCells is the THAW's own list, uploaded with no support seed (a melted flake orphans nothing — see the melt block)
+  const snowStopCols = [];                             // (column, newTop) pairs a landing computed EXACTLY — replayed after gpuPatch blanket-clears the scanTop cache. Pooled like the two above; see the restore in tick-snow.
   let wormPatch = new Int32Array(1 << 15), wormPatchN = 0;
   const wormPatchPush = (ii) => {
     if (wormPatchN >= wormPatch.length) { const g = new Int32Array(wormPatch.length * 2); g.set(wormPatch); wormPatch = g; }

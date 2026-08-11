@@ -1,0 +1,21 @@
+#!/bin/sh
+# voxelbit pre-push -- backstop only.
+#
+# By push time the commits exist, so this cannot repair anything; it refuses to
+# send a bundle that does not match src/. That normally means a commit was made
+# with --no-verify, or a rebase/merge replayed src/ without rebuilding.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+PY=$(command -v python || command -v python3 || command -v py)
+[ -z "$PY" ] && exit 0            # no python: do not block a push we cannot verify
+
+if ! "$PY" tools/bundle.py --check; then
+  echo "" >&2
+  echo "pre-push: game/index.html does not match src/ - push refused." >&2
+  echo "          fix with:  python tools/bundle.py  then commit the artifact" >&2
+  exit 1
+fi
+# --push adds the one question pre-commit cannot ask: are the hooks in a COMMIT, not
+# just staged? A staged-only tools/hooks/ reaches no other worktree.
+"$PY" tools/lint-vb.py --push || { echo "pre-push: lint-vb.py failed - push refused" >&2; exit 1; }
+exit 0

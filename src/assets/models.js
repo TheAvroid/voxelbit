@@ -14,11 +14,8 @@
     if (id !== undefined && palOwn.has(id)) id = undefined;   // an exact colour match on a RESERVED id is not a match — fall through and mint (or snap to) something this model may legitimately share
     if (id === undefined) {
       if (palette.length < 256) { id = addCol(r, g, b); }
-      else {                                           // FULL: nearest existing colour, never a 257th entry —
-        let bd = 1e9; id = 1;                          // an id past 255 wraps and takes a voxel's SOLIDITY with it
-        for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (palOwn.has(i)) continue;   // …and the nearest-colour fallback must skip reserved ids too, or a full palette re-creates the collision it just refused
-          const d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
-          if (d < bd) { bd = d; id = i; } }
+      else {                                           // FULL: nearest existing colour, never a 257th entry — an id past 255 wraps and takes a voxel's SOLIDITY with it. palNearest (assets/palette.js) is the same walk addCol's ceiling uses, and it skips reserved ids for the same reason: a full palette must not re-create the collision palOwn just refused.
+        id = palNearest(r, g, b);
         console.warn('[vb] palette full — item colour', r, g, b, 'snapped to id', id);
       }
       palIdx.set(k, id);

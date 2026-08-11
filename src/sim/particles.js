@@ -1,3 +1,5 @@
+  // @module - splash, spark and debris particle pools and their per-frame step
+  // @exports ARROW_HITS_TO_KILL, CRY_GAP, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, spawnDeathBurst, spawnSplash, spawnTear, startCrying
   // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
   // something breaks the surface — a fish launching, the same fish coming back down, and the player going
   // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is

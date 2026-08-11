@@ -1,3 +1,5 @@
+  // @module - the positional constraint solver shared by ragdolls and dropped items
+  // @exports physStep
   // ── SOLVER ── sequential impulse / PGS, fixed 60 Hz, PH.iters iterations, no pair state between steps.
   const phStep = (b, h) => {
     if (b.sleeping || b.absorbing) return;             // an absorbing chunk is driven by its flight curve, not by physics

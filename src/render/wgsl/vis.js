@@ -1,5 +1,5 @@
   // @module — the tile visibility-cull WGSL, and the one place every shader factory is built into a pipeline
-  // @exports DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush
+  // @exports DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pGod, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush
   const VIS_SRC = () => /* wgsl */`
     ${pickWGSL}
     @group(0) @binding(1) var<storage, read_write> visb : array<u32>;   // 4×u32 bitmask per 8×8 screen tile: bit di = drop slot di's bounding sphere may touch this tile (128 slots = four words)
@@ -57,12 +57,14 @@
   const PRE = PRE_SRC(), FLAKEBLK = FLAKEBLK_SRC(), DDAW = DDAW_SRC(), VIS = VIS_SRC();
   const TRACE = TRACE_SRC({ DDAW, FLAKEBLK, pickWGSL });
   const COMPOSITE = COMPOSITE_SRC({ DDAW, pickWGSL });
+  const GOD = GOD_SRC();
   const SCATTER = SCATTER_SRC(), PATCHW = PATCHW_SRC(), TEMPORAL = TEMPORAL_SRC(),
         SPATIAL = SPATIAL_SRC(), TAA = TAA_SRC(), BLIT = BLIT_SRC();
 
   const mkCompute = (code, fol) => device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: (PRE + code).replaceAll('§FOL§', fol ? 'true' : 'false') }), entryPoint: 'main' } });
   const pTraceV = [mkCompute(TRACE, 0), mkCompute(TRACE, 1)];          // FOLIAGE SPECIALIZATION: variant 0 = normal play (see-through check compiled OUT of the hot DDA loop), variant 1 = eye near foliage
   const pVis = mkCompute(VIS), pTemporal = mkCompute(TEMPORAL), pSpatial = mkCompute(SPATIAL), pComposite = mkCompute(COMPOSITE), pTaa = mkCompute(TAA);
+  const pGod = mkCompute(GOD);                         // half-res god rays — a quarter of the pixels the blit used to march
   const pScatter = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: SCATTER }), entryPoint: 'main' } });
   const bgScatter = device.createBindGroup({ layout: pScatter.getBindGroupLayout(0), entries: [
     { binding: 0, resource: { buffer: scatBuf } }, { binding: 1, resource: { buffer: stagBuf } }, { binding: 2, resource: { buffer: worldBuf } }] });

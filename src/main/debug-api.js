@@ -3,6 +3,41 @@
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
     palLen() { return { len: palette.length, over: palette.length > 256 }; },
+    palAudit() {                                     // WHICH ids are exact-colour duplicates, and is each one safe to reclaim. addCol() pushes unconditionally, so a loader that calls it directly (the .json decor palettes do) mints a fresh id for a colour the table already holds — but a duplicate is only REDUNDANT if nothing tells the two ids apart, and an id carries material flags and pickup-set membership as well as a colour.
+      const flags = (i) => [solidTab[i], foliaTab[i], woodTab[i], mushTab[i], rockTopTab[i], decorTab[i], axeOnlyTab[i], pickOnlyTab[i], digOnlyTab[i], sandTab[i], coneTab[i], SUP.CLASS[i] | 0].join(',');
+      const picks = (i) => [PICK_ROCK.has(i), PICK_STICK.has(i), PICK_BOULDER.has(i), PICK_CONE.has(i)].map((b) => (b ? 1 : 0)).join(',');
+      const by = new Map();
+      for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (!c) continue;
+        const k = (c[0] << 16) | (c[1] << 8) | c[2]; if (!by.has(k)) by.set(k, []); by.get(k).push(i); }
+      const dup = [], safe = [];
+      for (const [k, ids] of by) { if (ids.length < 2) continue;
+        const rec = { col: [(k >> 16) & 255, (k >> 8) & 255, k & 255], ids,
+          own: ids.map((i) => palOwn.has(i)), flags: ids.map(flags), picks: ids.map(picks) };
+        // Redundant means: same colour, same material flags, same pickup membership, and not
+        // RESERVED — palOwn ids exist precisely so a set built from them identifies one model.
+        rec.redundant = rec.flags.every((f) => f === rec.flags[0]) && rec.picks.every((q) => q === rec.picks[0]) && !rec.own.some(Boolean);
+        dup.push(rec); if (rec.redundant) safe.push(...ids.slice(1)); }
+      // EXACT duplicates turn out to be all deliberate, so the only slack left is
+      // NEAR-duplicates: two ids a player cannot tell apart. Merging those is a real
+      // colour change, so it is reported per-threshold (max channel delta out of 255)
+      // rather than acted on — and only inside a bucket that already agrees on every
+      // material flag and every pickup set, because those are what make an id mean
+      // something beyond its colour.
+      const bucket = new Map();
+      for (let i = 1; i < palette.length; i++) { if (!palette[i] || palOwn.has(i)) continue;
+        const k = flags(i) + '|' + picks(i); if (!bucket.has(k)) bucket.set(k, []); bucket.get(k).push(i); }
+      const near = {};
+      for (const t of [1, 2, 3, 4, 6, 8, 12, 16]) { let gone = 0; const ex = [];
+        for (const ids of bucket.values()) { const dead = new Set();
+          for (let a2 = 0; a2 < ids.length; a2++) { if (dead.has(ids[a2])) continue;
+            for (let b2 = a2 + 1; b2 < ids.length; b2++) { if (dead.has(ids[b2])) continue;
+              const c1 = palette[ids[a2]], c2 = palette[ids[b2]];
+              const d = Math.max(Math.abs(c1[0] - c2[0]), Math.abs(c1[1] - c2[1]), Math.abs(c1[2] - c2[2]));
+              if (d <= t) { dead.add(ids[b2]); gone++; if (ex.length < 8) ex.push([ids[a2], ids[b2], d, c1, c2]); } } } }
+        near[t] = { reclaimable: gone, examples: ex }; }
+      return { len: palette.length, free: 256 - palette.length, over: palOver, groups: dup.length,
+        wasted: dup.reduce((n, d) => n + d.ids.length - 1, 0), reclaimable: safe.length,
+        buckets: bucket.size, near, safe, dup }; },
     uniInfo() { return { on: LIFE_UNI, visW: VIS_W, sec: UF[1530], blue: BLUEB_ITEM0, robin: ROBIN_ITEM0, birdsDrawn: uniBirdN, birdsWant: uniBirdWant, cursor: UF[1103] }; },
     itemInfo() { return { n: itemsRef ? itemsRef.length : 0, cells: itemMapF32.length >> 2, card: CARD_ITEM0, bunny: BUNNY_ITEM0, arm: ARMADILLO_ITEM0, armN: ARMADILLO_NFRAMES, skunk: SKUNK_ITEM0, skunkN: SKUNK_NFRAMES, porc: PORCUPINE_ITEM0, porcN: PORCUPINE_NFRAMES, worm: WORM_ITEM0 }; },   // item-table census for the unification tests
    // the 8-bit palette ceiling — breaching it corrupts voxel SOLIDITY, not just colour

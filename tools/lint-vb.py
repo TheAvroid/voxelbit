@@ -30,15 +30,22 @@ Each check below is here because that class of bug has already cost a session:
                           function may only name identifiers the worker re-declares
  10. module interface     a `// @module` fragment gets its own scope, so its @exports list
                           must be exactly what the rest of the build reaches for
+ 11. hooks installed      git runs NOTHING, silently, when core.hooksPath names a
+                          directory that is not there - so an uncommitted tools/hooks/
+                          leaves every other worktree unchecked while looking checked.
+                          --push additionally requires the hooks to be in a COMMIT, which
+                          only pre-push can ask without refusing the commit that adds them
 
   python tools/lint-vb.py          check
   python tools/lint-vb.py -v       check, and print what passed
+  python tools/lint-vb.py --push   check, and require tools/hooks/ to be committed
 """
 import os, sys, re
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 SRC = os.path.join(ROOT, 'src')
 VERBOSE = '-v' in sys.argv
+PUSHED = '--push' in sys.argv        # pre-push: the commits exist, so check 11 can ask more
 ERRORS = []
 
 
@@ -689,6 +696,75 @@ def check_fresh(_unused):
         print('  artifact: game/index.html matches src/')
 
 
+def check_hooks():
+    # The bundle+lint rule is enforced by tools/hooks/, and git enforces nothing at all
+    # when core.hooksPath names a directory that is not there: no warning, no error, a
+    # clean exit code. That is how three worktrees came to have hooksPath set and no hook
+    # files - the directory was never committed, so it existed only in the working tree it
+    # was written in, and commits made in the other three ran no checks while looking
+    # exactly like commits that had.
+    #
+    # Three separate questions, and only the third one protects a worktree other than this
+    # one: the files are here, git is pointed at them, and they are TRACKED.
+    import subprocess
+
+    def git(*a):
+        try:
+            r = subprocess.Popen(('git',) + a, cwd=ROOT, stdout=subprocess.PIPE,
+                                 stderr=open(os.devnull, 'wb'))
+            out = r.communicate()[0]
+        except OSError:
+            return None
+        return out.decode('utf-8', 'replace').strip() if r.returncode == 0 else None
+
+    if git('rev-parse', '--git-dir') is None:
+        if VERBOSE:
+            print('  hooks:    not a git repo, skipped')
+        return
+
+    names = ('pre-commit', 'pre-push', 'post-merge')
+    missing = [n for n in names
+               if not os.path.exists(os.path.join(ROOT, 'tools', 'hooks', n))]
+    if missing:
+        err('tools/hooks', 'missing {} in this working tree - commits made HERE run no '
+            'checks at all. Merge the branch that carries tools/hooks/'
+            .format(', '.join(missing)))
+
+    if git('config', 'core.hooksPath') != 'tools/hooks':
+        err('core.hooksPath', 'not set to tools/hooks, so the hooks are inert here. Run '
+            'once per clone and per worktree: git config core.hooksPath tools/hooks')
+
+    untracked = [n for n in names
+                 if git('ls-files', '--error-unmatch', 'tools/hooks/' + n) is None]
+    if untracked:
+        err('tools/hooks', '{} not tracked by git - it exists only in THIS working tree, '
+            'so every other worktree points core.hooksPath at a directory that is not '
+            'there and commits made in them are unchecked. Run: git add tools/hooks/'
+            .format(', '.join(untracked)))
+
+    # ls-files reports the INDEX, where a `git add`-ed file already counts as tracked - and
+    # a hook that is only staged still reaches no other worktree. The stricter question,
+    # is it in a COMMIT, cannot be asked here: the commit that ADDS the hooks would be
+    # refused by its own check, because HEAD cannot contain them yet. At push time the
+    # commits exist and the deadlock is gone, so pre-push passes --push. This is the exact
+    # hole tools/hooks/ fell through - staged on 2026-08-10, committed 2026-08-11, and for
+    # a day every worktree ran no checks while this check reported clean.
+    if PUSHED:
+        uncommitted = [n for n in names
+                       if git('cat-file', '-e', 'HEAD:tools/hooks/' + n) is None]
+        if uncommitted:
+            err('tools/hooks', '{} {} staged but in no commit, so {} only in THIS '
+                'working tree. Every other worktree still points core.hooksPath at a '
+                'directory that is not there and commits made in them run nothing at all. '
+                'Commit tools/hooks/ before pushing.'
+                .format(', '.join(uncommitted),
+                        'is' if len(uncommitted) == 1 else 'are',
+                        'it exists' if len(uncommitted) == 1 else 'they exist'))
+
+    if not missing and not untracked and VERBOSE:
+        print('  hooks:    {} present, tracked, and wired up'.format(', '.join(names)))
+
+
 if __name__ == '__main__':
     listed = check_manifest()
     whole, offsets, masked, toplevel, where, mods = check_bundle(listed)
@@ -697,6 +773,7 @@ if __name__ == '__main__':
     check_modules(masked, offsets, mods, where)
     check_uniforms()
     check_fresh(whole)
+    check_hooks()
     if ERRORS:
         print('lint-vb: {} problem(s)\n'.format(len(ERRORS)))
         for e in ERRORS:

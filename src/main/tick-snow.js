@@ -8,6 +8,7 @@
       if (P.z < bz0) { P.z = bz0; P.hvz = Math.max(0, P.hvz); } else if (P.z > bz1) { P.z = bz1; P.hvz = Math.min(0, P.hvz); }
     }
     { const cells = snowCells; cells.length = 0; const meltCells = snowMeltCells; meltCells.length = 0;   // meltCells: the thaw's own list, patched WITHOUT a support seed (see the melt block below). Pooled the same way.
+      const stopCols = snowStopCols; stopCols.length = 0;   // columns whose new top a landing already knows exactly — see the replay after this tick's gpuPatch
       stopF = (stopF + 1) & 0xffff; if (stopF === 0) { stopF = 1; stopS.fill(0); }       // POOLED across frames — this list reaches thousands of entries during a storm
       if (snowOn !== snowPrevOn) { snowPrevOn = snowOn;   // storm edges: no time-melt DURING a storm (the blanket must not thin while flakes still fall)
         if (snowOn) { snowOnT0 = now; snowFreezeAt = now + SNOW_FREEZE_DELAY; snowWMelting = false; snowWMeltAt = Infinity; snowGMelting = false; snowGMeltAt = Infinity; }   // the water may not skin over until 10 s in (user); a new storm re-arms BOTH melts — snow falling on a thawing blanket must stop it thawing, or the two fight and the ground never settles either way
@@ -109,6 +110,7 @@
         const ii = b2 + (y + 1) * WX;
         W[ii] = SNOW[(wx ^ wz) & 1];
         stopY[gx + gz * WX] = y + 1; stopS[gx + gz * WX] = stopF;   // the new top is known exactly; gpuPatch only runs at the end of the tick, and until then the settle-roll and the 3-layer cap must not read the old surface
+        stopCols.push(gx + gz * WX, y + 1);            // …and it must SURVIVE that gpuPatch — see the replay below
         cells.push(ii);
         if (waterAt(wx, WL, wz)) { if (snowRoomW()) snowWI[snowWN++] = ii; }   // landed on the frozen surface — drained continuously after the storm, not on a per-voxel timer
         else if (snowRoomQ()) { snowQI[snowQN++] = ii; }   // landed on GROUND — no expiry stamp; the whole queue drains together once the thaw latches
@@ -213,6 +215,20 @@
       if (snowWHead > 8192) snowCompactW();            // in-place, no reallocation (was .slice() of a multi-hundred-thousand-entry array)
       if (snowHead > 8192) snowCompactQ();
       if (cells.length) { if (CPROF) cpEvt |= 32; gpuPatch(cells, false); }   // dirty-word brick upload, not the 774 KB whole-table re-upload — same bits, ~1000x less traffic (verified by __vb.bdiff())
+      // ── AND GIVE THE scanTop CACHE BACK WHAT THE PATCH JUST TOOK (user 2026-08-10: "stuttering when moving
+      // and the world is generating, especially when its snowing") ── the landing above computes the column's
+      // new top EXACTLY and writes it to stopY/stopS. gpuPatch is the one funnel every W mutation goes through,
+      // so it conservatively clears stopS for every cell it stages — including the flake that just told it the
+      // answer. Every landed flake therefore destroyed its own cache entry, and the next frame's sweep paid a
+      // full downward column scan for it. That is why scanTop stayed the single largest cost in a storm even
+      // WITH the cache: MEASURED over a 20 s scripted sprint with the storm pinned, scanTop self-time was
+      // 1576 ms with the cache on and 1747 ms with __vb.stopCache(0) — the cache was buying 10%, against the
+      // 7.3x it was built for. It was never broken standing still; a moving player also streams terrain and
+      // re-stamps creatures through the same funnel, so the invalidation reaches most of the 120-radius disc.
+      // Replayed only where stopS is still 0, i.e. only where THIS patch is what cleared it — anything that
+      // wrote the column afterwards keeps its own answer, and a stale-high top can never be reinstated.
+      for (let q = 0; q < stopCols.length; q += 2) { const c = stopCols[q];
+        if (stopS[c] === 0) { stopY[c] = stopCols[q + 1]; stopS[c] = stopF; } }
       // …and the thaw's cells the same way, but with the support seed muted. NOT gpuPatch's `track=false`,
       // which would also drop nvTouch and the hmap lower — a melting blanket does change what a creature can
       // walk on. Only the SUP queue is skipped, for the reason set out at the melt itself.

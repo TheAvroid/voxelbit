@@ -2,7 +2,26 @@
   const palette = [[0, 0, 0]];
   const palOwn = new Set();                           // ids minted by an OWN-IDS model (parseVoxModel/parseVoxScene share=false). palShare must never hand one of these to anybody else — a model asks for its own ids precisely so a set built from them IDENTIFIES it, and sharing them silently destroys that. Measured: the pinecone's 7 ids were all re-issued to stick_1/stick_2, which made PICK_CONE a strict subset of PICK_STICK and every pinecone pick up as a stick (user).
   let palIdx = null;                                   // colour → first palette id, for palShare. Declared HERE, above addCol, because addCol now keeps it current and the named tables below call addCol long before palShare is defined — leaving it further down put it in the temporal dead zone.
-  const addCol = (r, g, b) => { const id = (palette.push([r, g, b]), palette.length - 1);
+  // ── THE 256 CEILING ── a voxel's id is 8 bits, so entry 256 does not exist: it wraps, and
+  // it takes the voxel's SOLIDITY with it, not just its colour. palShare has guarded this
+  // for a while; addCol did NOT, and addCol is the path every named table and all three
+  // .json decor loaders use. The table currently ends at exactly 256 with zero headroom,
+  // so the next shade anybody adds through addCol was a silent corruption at load time.
+  // Now it snaps to the nearest existing colour instead and says so, loudly and once —
+  // the wrong colour is a bug you can see, and a wrapped id is one you cannot.
+  const palNearest = (r, g, b) => { let bd = 1e9, id = 1;   // closest colour already in the table, skipping RESERVED ids for the reason palShare skips them
+    for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (!c || palOwn.has(i)) continue;
+      const d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
+      if (d < bd) { bd = d; id = i; } }
+    return id; };
+  let palOver = 0;                                     // how many colours the ceiling turned away — __vb.palAudit() reports it
+  const addCol = (r, g, b) => {
+    if (palette.length >= 256) { const id = palNearest(r, g, b); palOver++;
+      if (palOver === 1) console.error('[vb] PALETTE FULL (256/256) — colour', r, g, b, 'snapped to id', id,
+        '- every colour added from here on is a SUBSTITUTE. Run __vb.palAudit() to see what is left to reclaim.');
+      if (palIdx) { const k = (r << 16) | (g << 8) | b; if (!palIdx.has(k)) palIdx.set(k, id); }
+      return id; }
+    const id = (palette.push([r, g, b]), palette.length - 1);
     if (palIdx) { const k = (r << 16) | (g << 8) | b; if (!palIdx.has(k)) palIdx.set(k, id); }   // …so a colour added by a NON-share loader is still found by the next share lookup. palIdx used to be built once and never updated, which let share mode mint a second copy of a colour someone else had already added.
     return id; };
   const NEEDLE = [addCol(97, 74, 50), addCol(88, 67, 45), addCol(106, 82, 56), addCol(80, 61, 41)];      // 1..4 (shader far-field relies on these slots)

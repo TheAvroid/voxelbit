@@ -173,11 +173,15 @@
   const wakeFrom = (cleared, pad) => {
     if (!cleared || !cleared.length) return;
     let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, z0 = 1e9, z1 = -1e9;
+    // ── WORLD COORDS, NOT GRID COORDS ── x/z are toroidal, so a raw min/max over grid indices gives a
+    // 2048-WIDE box for any cleared set that straddles the wrap, and coneWake iterates the box VOLUME.
+    // Same defect, same fix as supDrop (2026-08-10, measured there at 88.3 ms in one call).
     for (const ii of cleared) {
-      const gx2 = ii % WX, gy2 = ((ii / WX) | 0) % WY, gz2 = (ii / (WX * WY)) | 0;
-      if (gx2 < x0) x0 = gx2; if (gx2 > x1) x1 = gx2;
+      const gy2 = ((ii / WX) | 0) % WY;
+      const wx2 = supWorldX(ii % WX), wz2 = supWorldZ((ii / (WX * WY)) | 0);
+      if (wx2 < x0) x0 = wx2; if (wx2 > x1) x1 = wx2;
       if (gy2 < y0) y0 = gy2; if (gy2 > y1) y1 = gy2;
-      if (gz2 < z0) z0 = gz2; if (gz2 > z1) z1 = gz2;
+      if (wz2 < z0) z0 = wz2; if (wz2 > z1) z1 = wz2;
     }
     coneWake(x0, x1, y0, y1, z0, z1, pad);
   };
@@ -349,11 +353,15 @@
     if (cellsOut.length) gpuPatch(cellsOut, false);
     if (cellsOut.length) {                           // whatever came off the body takes its cones with it
       let bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9, bz0 = 1e9, bz1 = -1e9;
+      // ── WORLD COORDS, NOT GRID COORDS ── x/z are toroidal, so a raw min/max over grid indices gives a
+      // 2048-WIDE box for any cleared set that straddles the wrap, and coneWake iterates the box VOLUME.
+      // Same defect, same fix as supDrop (2026-08-10, measured there at 88.3 ms in one call).
       for (const ii of cellsOut) {
-        const gx2 = ii % WX, gy2 = ((ii / WX) | 0) % WY, gz2 = (ii / (WX * WY)) | 0;
-        if (gx2 < bx0) bx0 = gx2; if (gx2 > bx1) bx1 = gx2;
+        const gy2 = ((ii / WX) | 0) % WY;
+        const wx2 = supWorldX(ii % WX), wz2 = supWorldZ((ii / (WX * WY)) | 0);
+        if (wx2 < bx0) bx0 = wx2; if (wx2 > bx1) bx1 = wx2;
         if (gy2 < by0) by0 = gy2; if (gy2 > by1) by1 = gy2;
-        if (gz2 < bz0) bz0 = gz2; if (gz2 > bz1) bz1 = gz2;
+        if (wz2 < bz0) bz0 = wz2; if (wz2 > bz1) bz1 = wz2;
       }
       coneWake(bx0, bx1, by0, by1, bz0, bz1);
     }

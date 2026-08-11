@@ -1,0 +1,27 @@
+#!/bin/sh
+# voxelbit pre-commit -- game/index.html is a BUILD ARTIFACT, never hand-edited.
+#
+# Rebuild it from src/ and stage it, so no commit can ever carry a bundle that
+# disagrees with the fragments it was built from. Then lint, and refuse the
+# commit if any of the eleven checks fire -- most of them are a black screen at
+# boot that the browser reports as nothing at all.
+#
+# Skip in an emergency with: git commit --no-verify
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+PY=$(command -v python || command -v python3 || command -v py)
+if [ -z "$PY" ]; then
+  echo "pre-commit: no python on PATH - cannot rebuild game/index.html" >&2
+  echo "            commit with --no-verify only if you rebuilt it by hand." >&2
+  exit 1
+fi
+
+"$PY" tools/bundle.py || { echo "pre-commit: bundle.py failed - commit aborted" >&2; exit 1; }
+"$PY" tools/lint-vb.py || { echo "pre-commit: lint-vb.py failed - commit aborted" >&2; exit 1; }
+
+# Stage the artifact only if the rebuild actually moved it.
+if ! git diff --quiet -- game/index.html || ! git diff --cached --quiet -- game/index.html; then
+  git add game/index.html || exit 1
+  echo "pre-commit: rebuilt and staged game/index.html"
+fi
+exit 0

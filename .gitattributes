@@ -6,6 +6,11 @@ src/**          -text
 game/index.html -text
 tools/*.py      -text
 
+# The hooks are /bin/sh scripts. core.autocrlf would check them out as CRLF, and sh reads
+# the CR as part of the shebang path and every command after it - the hook then fails or,
+# worse, exits 0 having done nothing. -text keeps them LF in every worktree.
+tools/hooks/*   -text
+
 # game/index.html is generated. Two people editing different fragments will still both
 # rebuild it, so it conflicts on merge every time and the diff is never worth reading.
 # Resolve by taking either side and re-running `python tools/bundle.py`.

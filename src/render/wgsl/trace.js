@@ -377,8 +377,11 @@
           let sCap = select(1200.0, min(1200.0, (ceilY - sunOrg.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
           if (sCap <= 0.0) { sunV = 1.0; }                           // already above everything and going up — full sun, no ray
           else {
-          if (LG(0u)) { let sh = traceAll(sunOrg, sdir, sCap, skipW);   // bodies included → a felled tree casts a REAL shadow
-                        sunV = select(1.0, 0.0, sh.t >= 0.0); }
+          if (LG(0u)) { let shT = trace(sunOrg, sdir, sCap, skipW);   // ── OCCLUSION, NOT NEAREST HIT ── this ray only ever asks "is anything in the way".
+                        var occ = shT.t >= 0.0;                            // traceAll walks the terrain AND then bodyTrace to find which of the two is CLOSER,
+                        if (!occ) { let shB = bodyTrace(sunOrg, sdir, sCap); occ = shB.t >= 0.0; }   // which this caller throws away. Once terrain has blocked the ray the answer
+                        sunV = select(1.0, 0.0, occ); }                    // cannot change, so the body walk is pure waste. Bit-identical: occluded is occluded.
+                        // (bodies included → a felled tree still casts a REAL shadow)
           else { sunV = 1.0; }                        // sun shadows OFF — every sunward surface fully lit
           }
           ${!(LIFE_UNI && (UNI_SEC & 1)) ? '' : 'if (sunV > 0.0) { let cs = creaSec(sp, sdir, SEC_R, sg0, sg1, sg2, sg3, secN); if (cs.x >= 0.0) { sunV = 0.0; creReact = max(creReact, cs.y); } }'}

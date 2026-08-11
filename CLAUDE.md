@@ -13,8 +13,9 @@ silently, and will not be in the game.
 src/manifest.txt        the build order. This file IS the architecture.
 src/<area>/<name>.js    a fragment
 tools/bundle.py         src/ -> game/index.html
-tools/lint-vb.py        the 10 checks that catch a black screen before the browser does
+tools/lint-vb.py        the 11 checks that catch a black screen before the browser does
 tools/vbtest.py         boots the real game and diffs it against a baseline
+tools/where.py          an index.html line -> the fragment that wrote it, and back
 docs/architecture.md    what lives in which fragment
 ```
 
@@ -32,8 +33,37 @@ Before you commit:
 
 ```
 python tools/bundle.py       # refresh the artifact
-python tools/lint-vb.py      # 9 static checks; exit 1 on any problem
+python tools/lint-vb.py      # 11 static checks; exit 1 on any problem
 ```
+
+**This is enforced, not remembered.** `tools/hooks/pre-commit` runs both of the above and
+stages the rebuilt `game/index.html` into the commit; a failing lint aborts the commit.
+`tools/hooks/pre-push` re-checks and refuses to push a bundle that disagrees with `src/`.
+`tools/hooks/post-merge` covers the one commit the other two cannot: git does not run
+`pre-commit` for an automatic merge, and `game/index.html` carries `merge=ours`, so a
+merge keeps THIS side's bundle and the branch you just merged is missing from the
+artifact - the game then runs without the work you merged. It rebuilds, stages, and asks
+you for a `git commit --amend --no-edit`.
+Both are verified to fire: a deliberately stale artifact is rejected with the first
+differing line. So the rule is simply **edit `src/`, commit, push** — never run
+`bundle.py` by hand and never edit `game/index.html`.
+
+Hooks live in the repo but `core.hooksPath` is local config, so **a fresh clone or a new
+worktree must run this once**:
+
+```
+git config core.hooksPath tools/hooks
+```
+
+The hook FILES are tracked, so a worktree created before they landed still has none —
+`hooksPath` then points at a directory that is not there and git runs nothing, silently,
+with a clean exit code. Merge `main` into each existing worktree once; `lint-vb.py`
+check 11 is what tells you a worktree is in that state.
+
+`git commit --no-verify` skips them. Do that only when you already rebuilt by hand — the
+pre-push backstop will catch you if you did not. One caveat: the pre-commit hook builds
+from the **working tree**, so a partial commit (`git commit <paths>`) can stage an
+artifact built from fragments the commit does not include. Commit `src/` wholesale.
 
 If you changed anything the linter cannot reason about - worldgen, the frame loop, a
 shader, the uniform buffer - boot the real game and compare against a baseline:
