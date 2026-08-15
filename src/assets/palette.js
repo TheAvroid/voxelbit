@@ -41,7 +41,7 @@
   // ── pine5.vox ── MagicaVoxel, Z-up (model z → world y)
   setLoad(12); await stage('loading pine5.vox…');
   let vox;
-  try { vox = new Uint8Array(await (await fetch('assets/tree/pine5.vox')).arrayBuffer()); } catch (e) { fail('failed to fetch assets/tree/pine5.vox — serve over http (start.bat)'); }
+  try { vox = new Uint8Array(await (await fetch('assets/foilage/pine5.vox')).arrayBuffer()); } catch (e) { fail('failed to fetch assets/foilage/pine5.vox — serve over http (start.bat)'); }
   const dv = new DataView(vox.buffer);
   let MSX = 0, MSY = 0, MSZ = 0, voxels = null; const vpal = new Uint8Array(1024);
   { const walk = (off, end) => { while (off < end) {

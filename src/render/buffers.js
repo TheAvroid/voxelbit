@@ -164,13 +164,21 @@
     }
   `;
   const DROP_SLOTS = 128, DROP_HALF = 64;             // DROP_HALF = how many slots live in the original 'drops' array; every slot at or above it lives in 'dropsB'
-  const UF_DROPSB = 1876, UF_LIFEMOTB = UF_DROPSB + (DROP_SLOTS - DROP_HALF) * 16;
-  const UF_HELDCFG = 1860;   // heldCfg base: x = sun visibility, y = sky visibility, z = STACKBADGE count (was spare). Named, not inlined, so the badge does not depend on counting floats in a struct other work is actively appending to.
+  const PHYS_MAX = 24;                                // ── RIGID BODY CAPACITY (user 2026-08-11, was 16) ── the ONE number. PH.maxBodies takes it, physB's WGSL length is 5 vec4 x it, and EVERY offset below is derived from it.
+  //   physB sits in the MIDDLE of the struct, so raising this moves the entire tail (physC, physBound, heldCfg, lgt, hurtB, hurtH, dropsB, lifeMot, dof). Those used to be literals in tick-emit/tick-camera/debug-api; they are named now, because a
+  //   missed literal here does not throw - it silently feeds each field its neighbour's numbers (a wrong hit-flash box, held-item lighting reading the light-debug mask). Never write a literal float index at or past UF_PHYSB again.
+  const UF_PHYSB = 1532;                              // physB base - everything BEFORE it is fixed history (see UF_OLD_LEN)
+  const UF_PHYSC = UF_PHYSB + PHYS_MAX * 20;          // x = live body count, y = reactive strength
+  const UF_PHYSBOUND = UF_PHYSC + 4;                  // sphere enclosing every live body - the one-compare reject
+  const UF_HELDCFG = UF_PHYSBOUND + 4;   // heldCfg base: x = sun visibility, y = sky visibility, z = STACKBADGE count (was spare). Named, not inlined, so the badge does not depend on counting floats in a struct other work is actively appending to.
+  const UF_LGT = UF_HELDCFG + 4;                      // light-debug bitmask / water reflection strength
+  const UF_HURTB = UF_LGT + 4, UF_HURTH = UF_HURTB + 4;   // the knife's red hit-flash box, then its half-extents (+3 = the drop slot the wounded animal is drawn in)
+  const UF_DROPSB = UF_HURTH + 4, UF_LIFEMOTB = UF_DROPSB + (DROP_SLOTS - DROP_HALF) * 16;
   const UF_DOF = UF_LIFEMOTB + (DROP_SLOTS - DROP_HALF) * 4;   // ── DEPTH OF FIELD ── x = focus distance (voxels; 0 = off), y = max CoC radius in canvas px. LAST in the struct, so no existing offset moves.
-  const UF = new Float32Array(UF_DOF + 4);   // …+ dof 3156..3159   // …+ heldCfg 1860..1863 (x = held-item sun visibility, y = its SKY visibility) + lgt 1864..1867 (light-debug bitmask) + hurtB 1868..1871 + hurtH 1872..1875 (the knife's red hit-flash box) + dropsB 1876..2899 + lifeMotB 2900..3155
+  const UF = new Float32Array(UF_DOF + 4);   // …+ dof 3316..3319   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
-  const UF_OLD_LEN = 1860;   // …+ physB 16 bodies x 5 vec4 1532..1851 + physC 1852..1855 + physBound 1856..1859 → 1860 (voxel rigid bodies)                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
+  const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);

@@ -1,3 +1,5 @@
+  // @module - the four land mammals' ground seat and their walking navigation
+  // @exports mamSeatG, mamSeatN, mamSeatSteps, navBrake2, navReachWalk, navSteer2, navWalkFree, navWalkOK
   // ── THE ONE SEAT EVERY LAND MAMMAL USES ── one function, called by BOTH render paths, so a bunny and a
   // skunk cannot disagree about where the ground is and neither can the same animal before and after it
   // crosses the trace radius. It is the model's own occupied footprint (MAMFIT), oriented by heading, sampled

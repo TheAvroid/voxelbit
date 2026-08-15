@@ -1,3 +1,5 @@
+  // @module - the gen worker's row-job queue - the main thread's half of the worker contract
+  // @exports reqRows, rowsPending, takeRows
   // ── GEN WORKER ── the height + moss math (the heaviest part of a fill) runs CONCURRENTLY on a worker thread.
   // The worker is built from THE SAME function source (fn.toString()) — bit-exact by construction, zero divergence
   // risk. Bands prefetch their rows a band ahead, so the main thread almost never waits; if the worker is missing

@@ -45,9 +45,10 @@
     ancS: new Set(), flS: new Set(),                   // per-pass memo of the component verdict, both ways (see supHeld) — a standing pine is walked once, not once per needle
     busy: new Set(),                                   // components currently on the walk stack: they may not be used as anyone else's anchor, which is what breaks cross-class cycles
     blocked: 0, blockedNow: 0, on: true,
+    guessed: false,                                    // raised when supHeld answered ANCHORED off a NESTED CAP HIT — a walk that ran out of budget rather than one that found an anchor. supFlush clears it per SEED and re-seeds that seed when it is set, which is the same treatment a top-level undecided flood already gets, so erring anchored stays a delay instead of becoming permanent. Deliberately NOT raised by the recursion-depth guard beside it: that one fires structurally on every pine and re-seeding it builds a queue backlog (measured — see the note there).
     stats: { queued: 0, carried: 0, passes: 0, ms: 0, msMax: 0, structFloods: 0, drapeFloods: 0,
              capHits: 0, depthHits: 0, lifted: 0, liftedVox: 0, erasedSmall: 0, erasedBig: 0, blockedFrames: 0,
-             overflow: 0, reclaims: 0, hmapLower: 0, tooBig: 0, liftedDrape: 0, liftedStruct: 0 },
+             overflow: 0, reclaims: 0, hmapLower: 0, tooBig: 0, liftedDrape: 0, liftedStruct: 0, guessRedo: 0 },
     log: [],                                           // capped ring of what was lifted, for __vb.support()
     refused: [],                                       // capped ring of components the resolver DECLINED to drop, with where and why. The tooBig branch below leaves real geometry suspended on purpose (erasing it is worse), so when a player reports a floating chunk this is the record that says whether that is what happened.
   };

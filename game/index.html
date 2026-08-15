@@ -716,7 +716,7 @@
   // rows gone there would be no way left to switch them back. Only the water bits are restored from storage.
   let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt');
     return v === null ? wBakeMask() : (((parseInt(v, 10) & LGT_WATER) | (LGT_ALL & ~LGT_WATER)) & LGT_ALL); } catch (e) { return wBakeMask(); } })();
-  let lgtMask2 = 0;                                    // …so this is 0 and stays 0. Kept as a variable because the frame still writes it to u.lgt.z (UF[1866]) and __vb.lgt2() still reads it.
+  let lgtMask2 = 0;                                    // …so this is 0 and stays 0. Kept as a variable because the frame still writes it to u.lgt.z (UF[UF_LGT + 2]) and __vb.lgt2() still reads it.
   // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
   // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
   let wReflK = (() => { try { const v = parseFloat(localStorage.getItem('vb_wrefl')); return (isFinite(v) && v >= 0 && v <= 2) ? v : wBakeRefl(); } catch (e) { return wBakeRefl(); } })();
@@ -966,6 +966,9 @@
     return (wz) => { const zm = wz * 0.031 + 17.2; return m1(zm) * 0.55 + m2(zm * 2.13 + 5.3) * 0.27 + m3(zm * 4.41 + 23.8) * 0.18; };
   }
 
+  const __m_world_gen_worker = (() => {
+  // @module - the gen worker's row-job queue - the main thread's half of the worker contract
+  // @exports reqRows, rowsPending, takeRows
   // ── GEN WORKER ── the height + moss math (the heaviest part of a fill) runs CONCURRENTLY on a worker thread.
   // The worker is built from THE SAME function source (fn.toString()) — bit-exact by construction, zero divergence
   // risk. Bands prefetch their rows a band ahead, so the main thread almost never waits; if the worker is missing
@@ -1029,6 +1032,9 @@
   }
   const nearLake = (x, z) => basinM(x, z) > 0.03;
 
+    return { reqRows, rowsPending, takeRows };
+  })();
+  const { reqRows, rowsPending, takeRows } = __m_world_gen_worker;
   // ── palette ── slot 0 = empty. Ground grain variants + remapped tree palette with per-tree tints.
   const palette = [[0, 0, 0]];
   const palOwn = new Set();                           // ids minted by an OWN-IDS model (parseVoxModel/parseVoxScene share=false). palShare must never hand one of these to anybody else — a model asks for its own ids precisely so a set built from them IDENTIFIES it, and sharing them silently destroys that. Measured: the pinecone's 7 ids were all re-issued to stick_1/stick_2, which made PICK_CONE a strict subset of PICK_STICK and every pinecone pick up as a stick (user).
@@ -1072,7 +1078,7 @@
   // ── pine5.vox ── MagicaVoxel, Z-up (model z → world y)
   setLoad(12); await stage('loading pine5.vox…');
   let vox;
-  try { vox = new Uint8Array(await (await fetch('assets/tree/pine5.vox')).arrayBuffer()); } catch (e) { fail('failed to fetch assets/tree/pine5.vox — serve over http (start.bat)'); }
+  try { vox = new Uint8Array(await (await fetch('assets/foilage/pine5.vox')).arrayBuffer()); } catch (e) { fail('failed to fetch assets/foilage/pine5.vox — serve over http (start.bat)'); }
   const dv = new DataView(vox.buffer);
   let MSX = 0, MSY = 0, MSZ = 0, voxels = null; const vpal = new Uint8Array(1024);
   { const walk = (off, end) => { while (off < end) {
@@ -1683,9 +1689,10 @@
     ancS: new Set(), flS: new Set(),                   // per-pass memo of the component verdict, both ways (see supHeld) — a standing pine is walked once, not once per needle
     busy: new Set(),                                   // components currently on the walk stack: they may not be used as anyone else's anchor, which is what breaks cross-class cycles
     blocked: 0, blockedNow: 0, on: true,
+    guessed: false,                                    // raised when supHeld answered ANCHORED off a NESTED CAP HIT — a walk that ran out of budget rather than one that found an anchor. supFlush clears it per SEED and re-seeds that seed when it is set, which is the same treatment a top-level undecided flood already gets, so erring anchored stays a delay instead of becoming permanent. Deliberately NOT raised by the recursion-depth guard beside it: that one fires structurally on every pine and re-seeding it builds a queue backlog (measured — see the note there).
     stats: { queued: 0, carried: 0, passes: 0, ms: 0, msMax: 0, structFloods: 0, drapeFloods: 0,
              capHits: 0, depthHits: 0, lifted: 0, liftedVox: 0, erasedSmall: 0, erasedBig: 0, blockedFrames: 0,
-             overflow: 0, reclaims: 0, hmapLower: 0, tooBig: 0, liftedDrape: 0, liftedStruct: 0 },
+             overflow: 0, reclaims: 0, hmapLower: 0, tooBig: 0, liftedDrape: 0, liftedStruct: 0, guessRedo: 0 },
     log: [],                                           // capped ring of what was lifted, for __vb.support()
     refused: [],                                       // capped ring of components the resolver DECLINED to drop, with where and why. The tooBig branch below leaves real geometry suspended on purpose (erasing it is worse), so when a player reports a floating chunk this is the record that says whether that is what happened.
   };
@@ -2430,6 +2437,9 @@
     @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;`;
   }
 
+  const __m_world_terrain = (() => {
+  // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
+  // @exports BCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, F2CELL, LGCELL, LGIGCELL, LILYCELL, MUCELL, OCELL, PCCELL, SCELL, TCELL, TMARGIN, boulderAt, caveAt, caveHitsBox, fern2At, fillColumn, genRegion, genRegionGen, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, stampBoulder, stampCave, stampCellsGen, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOre, stampPcone, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -3100,6 +3110,9 @@
       if (occ) bricks2[c >> 5] |= 1 << (c & 31); else bricks2[c >> 5] &= ~(1 << (c & 31));
     }
   }
+    return { BCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, F2CELL, LGCELL, LGIGCELL, LILYCELL, MUCELL, OCELL, PCCELL, SCELL, TCELL, TMARGIN, boulderAt, caveAt, caveHitsBox, fern2At, fillColumn, genRegion, genRegionGen, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, stampBoulder, stampCave, stampCellsGen, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOre, stampPcone, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion };
+  })();
+  const { BCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, F2CELL, LGCELL, LGIGCELL, LILYCELL, MUCELL, OCELL, PCCELL, SCELL, TCELL, TMARGIN, boulderAt, caveAt, caveHitsBox, fern2At, fillColumn, genRegion, genRegionGen, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, stampBoulder, stampCave, stampCellsGen, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOre, stampPcone, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion } = __m_world_terrain;
   async function buildWorld(withStages) {             // boot builds EVERYTHING the saved view distance can reach — no in-game waiting, like the classic full builds
     const bh = Math.min(HALF, Math.ceil((RD_FIXED + 96) / 8) * 8);
     const cx = winOX + HALF, cz = winOZ + HALF;
@@ -3544,13 +3557,21 @@
     }
   `;
   const DROP_SLOTS = 128, DROP_HALF = 64;             // DROP_HALF = how many slots live in the original 'drops' array; every slot at or above it lives in 'dropsB'
-  const UF_DROPSB = 1876, UF_LIFEMOTB = UF_DROPSB + (DROP_SLOTS - DROP_HALF) * 16;
-  const UF_HELDCFG = 1860;   // heldCfg base: x = sun visibility, y = sky visibility, z = STACKBADGE count (was spare). Named, not inlined, so the badge does not depend on counting floats in a struct other work is actively appending to.
+  const PHYS_MAX = 24;                                // ── RIGID BODY CAPACITY (user 2026-08-11, was 16) ── the ONE number. PH.maxBodies takes it, physB's WGSL length is 5 vec4 x it, and EVERY offset below is derived from it.
+  //   physB sits in the MIDDLE of the struct, so raising this moves the entire tail (physC, physBound, heldCfg, lgt, hurtB, hurtH, dropsB, lifeMot, dof). Those used to be literals in tick-emit/tick-camera/debug-api; they are named now, because a
+  //   missed literal here does not throw - it silently feeds each field its neighbour's numbers (a wrong hit-flash box, held-item lighting reading the light-debug mask). Never write a literal float index at or past UF_PHYSB again.
+  const UF_PHYSB = 1532;                              // physB base - everything BEFORE it is fixed history (see UF_OLD_LEN)
+  const UF_PHYSC = UF_PHYSB + PHYS_MAX * 20;          // x = live body count, y = reactive strength
+  const UF_PHYSBOUND = UF_PHYSC + 4;                  // sphere enclosing every live body - the one-compare reject
+  const UF_HELDCFG = UF_PHYSBOUND + 4;   // heldCfg base: x = sun visibility, y = sky visibility, z = STACKBADGE count (was spare). Named, not inlined, so the badge does not depend on counting floats in a struct other work is actively appending to.
+  const UF_LGT = UF_HELDCFG + 4;                      // light-debug bitmask / water reflection strength
+  const UF_HURTB = UF_LGT + 4, UF_HURTH = UF_HURTB + 4;   // the knife's red hit-flash box, then its half-extents (+3 = the drop slot the wounded animal is drawn in)
+  const UF_DROPSB = UF_HURTH + 4, UF_LIFEMOTB = UF_DROPSB + (DROP_SLOTS - DROP_HALF) * 16;
   const UF_DOF = UF_LIFEMOTB + (DROP_SLOTS - DROP_HALF) * 4;   // ── DEPTH OF FIELD ── x = focus distance (voxels; 0 = off), y = max CoC radius in canvas px. LAST in the struct, so no existing offset moves.
-  const UF = new Float32Array(UF_DOF + 4);   // …+ dof 3156..3159   // …+ heldCfg 1860..1863 (x = held-item sun visibility, y = its SKY visibility) + lgt 1864..1867 (light-debug bitmask) + hurtB 1868..1871 + hurtH 1872..1875 (the knife's red hit-flash box) + dropsB 1876..2899 + lifeMotB 2900..3155
+  const UF = new Float32Array(UF_DOF + 4);   // …+ dof 3316..3319   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
-  const UF_OLD_LEN = 1860;   // …+ physB 16 bodies x 5 vec4 1532..1851 + physC 1852..1855 + physBound 1856..1859 → 1860 (voxel rigid bodies)                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
+  const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
   const stag = new Uint32Array(STRIPW);
@@ -3623,20 +3644,20 @@
       misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w = EYE-INSIDE-A-VOXEL fill: the packed sRGB of the voxel the camera is buried in, PLUS 1 so that 0 means 'not buried' (written in tick-camera, read by COMPOSITE). NOT spare — take this lane for something else and the whole screen becomes the buried-in-rock fill.
       lifeMot : array<vec4<f32>, 64>,                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
       lifeCfg : vec4<f32>,                                           // x = life debug view (0 off, 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO), y = trace-injection enabled (0 under ?oldlife → full analytic fallback), z/w spare
-      physB : array<vec4<f32>, 80>,                                  // ── RIGID BODIES ── 16 x 5 vec4, appended LAST so no existing offset moves:
+      physB : array<vec4<f32>, ${PHYS_MAX * 5}>,                       // ── RIGID BODIES ── PHYS_MAX x 5 vec4 (24 today, was a hardcoded 16) — the length is INTERPOLATED from the JS constant so the shader can never disagree with the offsets buffers.js derives:
                                                                      // [0] anchor.xyz (camera space, at the COM) + voxel scale · [1] local X axis in camera space + dimX
                                                                      // [2] local Y axis + dimY · [3] local Z axis + dimZ · [4] comLocal.xyz + buffer offset
       physC : vec4<f32>,                                             // x = ACTIVE body count (0 = the whole path is one compare), y = REACTIVE STRENGTH 0..1 (1 while a body is moving, eased to 0 over ~0.45 s after it stops — a binary here made a settling trunk pulse its own shadow noise on and off), z/w spare. Was: how many are AWAKE (the reactive mask keys off y; tracing keys off x)
       physBound : vec4<f32>,                                         // xyz = centre (window coords) of a sphere enclosing EVERY body, w = its radius — one test rejects a ray that cannot touch any of them
       heldCfg : vec4<f32>,                                           // x = SUN visibility at the player (gates the held item's DIRECT term), y = its SKY visibility (gates the ambient + ground bounce, standing in for the irr.g the world gets), z = STACKBADGE: how many of the held item you are carrying, drawn beside the hand by BLIT (NOT spare — see UF_HELDCFG), w spare but ACTIVELY ZEROED every frame by the tick-camera line that writes x/y/z, so a value written to it anywhere else is gone by the time the GPU sees it
       // ── APPENDED TAIL ── these MUST stay in the same order as the UF writes at the end of the frame
-      // (heldCfg 1860, lgt 1864, hurtB 1868, hurtH 1872). WGSL lays a struct out in declaration order,
+      // (UF_HELDCFG, UF_LGT, UF_HURTB, UF_HURTH — all derived from PHYS_MAX). WGSL lays a struct out in declaration order,
       // so re-ordering these silently feeds each field its neighbour's numbers instead of erroring.
       lgt : vec4<f32>,                                               // ── LIGHT DEBUG ── x = bitmask of which lighting terms are enabled (see LG / the top-right panel). All bits set = the normal image.
       hurtB : vec4<f32>,                                             // ── HIT FLASH ── xyz = centre (window coords) of the animal the knife just wounded, w = flash strength (0 = nothing showing, the usual case)
       hurtH : vec4<f32>,                                             // …and its half-extents. Snug: taken from the voxels the animal actually stamped, so the ground it stands on stays its own colour.                                           // x = SUN VISIBILITY at the player (0 = the tool in your hands is in shade, 1 = open sun). Held items had no visibility term at all and were lit as if always in the open.
       // ── SECOND HALF OF THE DROP ARRAY (slots 64..127) ── APPENDED, never inserted. Every JS write past
-      // 'drops' is a hardcoded float index (1092…1875): growing it in place would have shifted all of
+      // 'drops' is a hardcoded float index (1092…UF_HURTH+3): growing it in place would have shifted all of
       // them and silently fed each field its neighbour's numbers. So the extra capacity lands here at the
       // very end, and dropV()/lifeMotV() below stitch the two halves into one logical 128-slot array.
       dropsB : array<vec4<f32>, ${(DROP_SLOTS - DROP_HALF) * 4}>,                                // drop slots 64..127, same 4-vec4 layout as 'drops' above
@@ -6952,7 +6973,7 @@
     on: !location.search.includes('nophys'),
     dt: 1 / 60,                                      // FIXED 60 Hz, like Teardown — the sim must not vary with render fps
     iters: 8,                                        // sequential-impulse iterations per step (Teardown ships 8)
-    acc: 0, bodies: [], maxBodies: 16,
+    acc: 0, bodies: [], maxBodies: PHYS_MAX,   // 24 (user 2026-08-11, was 16) — MUST come from the uniform capacity: physB has room for exactly PHYS_MAX bodies and the emit loop clips to it, so a larger sim cap would simply never be drawn
     gravity: 200,                                    // matches the player's GRAVITY so falls read at the same scale
     linDamp: 0.05, angDamp: 0.18, restitution: 0.0, friction: 0.6,
     sleepLin: 1.2, sleepAng: 0.30, sleepFrames: 40,
@@ -6965,7 +6986,7 @@
     //   maxProbes was 160, but an 8-voxel bucketing of a 35x93x36 crown yields ~300 buckets — so barely
     //   half the body's surface cells carried a probe, and a narrow stump could pass clean between them.
     //   Probes only cost a grid lookup during contact GENERATION (once per substep), so 512 is cheap.
-    treeLifeMs: 300000, chunkLifeMs: 60000,          // ── LIFETIMES (user) ── a felled tree is gone after 5 min, any chunk the player never absorbed after 60 s.
+    treeLifeMs: 600000, chunkLifeMs: 600000,         // ── LIFETIMES (user 2026-08-11) ── EVERYTHING the player made unstatic is deleted 10 min after it broke loose — a felled trunk and a chop chunk alike (was 5 min / 60 s). Two knobs so the trunk can still be retuned apart from the debris, but they are deliberately equal now.
     //                                                 Told apart by noAbsorb, which marks the toppling trunk and nothing else.
     absorbR: 16,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
     absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
@@ -7931,6 +7952,9 @@
     wakeFrom(out, 6);
     return phBuildBody({ bx: x0, gy: y0, bz: z0 }, keys, { sx, sz }, idMap);
   };
+  const __m_sim_support = (() => {
+  // @module - the support resolver: what is anchored, what comes loose, and the chop entry points
+  // @exports SUPWHY, phChopDecor, phChopLeaves, supFlood, supFlush
   // ── SUPPORT FLOOD ── one component out of one seed. Class-restricted, 26-connected, capped, with the
   // O(1) hmap anchor as an early-out on every pop, so an ordinary ground carve is answered on the FIRST
   // pop and costs nothing. Visited is a Set of flat indices: measured 300-600 ns/cell and zero extra
@@ -8116,8 +8140,34 @@
     if (SUP.ancS.has(ii)) return true;
     if (SUP.flS.has(ii)) return false;
     if (SUP.busy.has(ii)) return false;                // already on the stack: it cannot vouch for us, because we are what it is waiting on
+    // ── DO NOT RE-SEED ON THIS ONE. TRIED IT, MEASURED IT, IT IS THE TREADMILL THE MEMO NOTE WARNS ABOUT ──
+    // raising SUP.guessed here (so supFlush re-asks the component on a later pass) looks like the honest
+    // completion of the cap fix below, and it is not: the depth limit is not a rare backstop, it is a
+    // STRUCTURAL property of this asset. A pine's bole alternates wood and needles all the way up, so a
+    // crown query recurses deep every single time. MEASURED over three fells in a calm forest, re-seeding
+    // took depthHits from 160 to 19,560 and grew a support queue that had been draining to 0 every frame
+    // (0 -> 5 -> 15 -> 51 and climbing) — a component that always hits the limit is re-queued forever and
+    // starves the real questions behind it, which is exactly how post-storm floaters used to sit in the air
+    // for minutes. The memo is load-bearing; see the block comment above. Err anchored and let it stand.
     if ((depth | 0) >= SUP_MAX_DEPTH) { SUPWHY.d++; SUP.stats.depthHits++; return true; }
     const r = supFlood(ii, false, depth);
+    // ── A CAP HIT IS NOT A "NO" HERE EITHER ── supFlood reports an unfinished walk as
+    // {anchored:false, undecided:true}, and the top-level pass in supFlush honours that: it re-seeds and
+    // asks again rather than acting on it. Reading `.anchored` alone threw the distinction away and turned
+    // "I ran out of budget" into a definite "that neighbour does not hold you" — on which the CALLER may
+    // then be declared unanchored and LIFTED. That is the destructive direction this whole file refuses,
+    // reached from the one place that had not been told. The depth guard four lines up is the same backstop
+    // and already errs ANCHORED for the same reason, so this now matches it: leave a rare floater, never
+    // drop real geometry on a question that was never answered.
+    // Inert in measured play — capHits is 0 in a forest, felling or not, because a flood exits on its FIRST
+    // anchored cell and only a genuinely detached component is ever walked to the end. This is the backstop
+    // for when it is not, and drapeCap is only 3000.
+    // SUP.guessed is the other half, and it is safe HERE precisely because this branch is the rare one:
+    // erring anchored must not also mean erring silently, so the flag tells supFlush to re-seed the
+    // component and ask again on a later pass rather than let the guess stand in ancS unchallenged. The
+    // depth guard above deliberately does NOT raise it — see the note there for the measurement that says
+    // why. capHits is 0 in a forest, so this costs one queue entry on a path nothing currently takes.
+    if (r && r.undecided) { SUP.guessed = true; return true; }
     return r ? r.anchored : false;
   };
   // ── ONE COMPONENT, ONE BODY ── extracted from supResolve so the OVERSIZE path can call it per part: a
@@ -8275,6 +8325,7 @@
         if (performance.now() - t0 > lim) { out = true; break; }   // checked BETWEEN queued cells, never mid-flood: a component is always resolved as a whole
         const q0 = SUP.q[SUP.qh++]; SUP.qs.delete(q0);
         let redo = false;                            // any undecided flood off this seed -> ask again on a later flush
+        SUP.guessed = false;                         // …and so does any flood whose verdict rested on supHeld's nested-cap backstop (see SUP.guessed)
         const gx = q0 % WX, gy = ((q0 / WX) | 0) % WY, gz = (q0 / (WX * WY)) | 0;
         for (let dy = -1; dy <= 1; dy++) {
           const ny = gy + dy; if (ny < 1 || ny >= WY) continue;
@@ -8289,7 +8340,13 @@
             acted += supResolve(r);
           }
         }
-        if (redo && SUP.retry.length < 4096) SUP.retry.push(q0);
+        // A GUESSED ANCHOR IS NOT AN ANSWER EITHER. supHeld's nested-cap backstop reports ANCHORED for a walk
+        // that never finished, which is the right direction (never drop geometry on a question nobody
+        // answered) but was previously also the LAST word: the guess went straight into the ancS memo and no
+        // later pass revisited the component. Re-seeding costs one queue entry and is what makes
+        // erring-anchored a DELAY rather than a permanent floater — the same bargain the undecided branch
+        // above already strikes. The DEPTH guard is excluded on purpose; the note in supHeld has the numbers.
+        if ((redo || SUP.guessed) && SUP.retry.length < 4096) { if (SUP.guessed && !redo) SUP.stats.guessRedo++; SUP.retry.push(q0); }
       }
       if (out) break;
     }
@@ -8463,6 +8520,9 @@
     //  bite at a pine’s base lifted the trunk section and left the crown hanging in the sky.)
     return true;
   };
+    return { SUPWHY, phChopDecor, phChopLeaves, supFlood, supFlush };
+  })();
+  const { SUPWHY, phChopDecor, phChopLeaves, supFlood, supFlush } = __m_sim_support;
   const __m_sim_tools = (() => {
   // @module — the voxel-accurate melee ray, the stone tools’ reach/bite constants, and the hoe’s tilled earth
   // @exports AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay
@@ -9011,7 +9071,7 @@
     // judging rest on linear motion alone, which left a PINECONE (13 voxels) and a needle tuft needing the
     // full angular test. MEASURED, in a calm forest with nothing chopped: PH.bodies pinned at 16/16, and the
     // occupants were 7-15 voxel scraps sitting at a FIXED position with sleep:false — linearly at rest and
-    // still spinning on solver jitter, so they never slept, never retired, and held slots for the whole 60 s
+    // still spinning on solver jitter, so they never slept, never retired, and held slots for the whole
     // chunkLifeMs. A saturated budget is what forces the eviction paths to run at all, and it is why a chunk
     // the player was carrying could be thrown away to make room for a cone nobody will ever see.
     // The original rationale is unchanged, only its threshold: at this size the orientation is meaningless,
@@ -9026,7 +9086,7 @@
         if (b.n <= PH.retireMax) b.retire = true;
         // ── AND SETTLED SCRAP FAR FROM THE PLAYER GOES BACK IN THE GRID TOO ── MEASURED: PH.bodies sits
         // pinned at 16/16 in ordinary play with nothing being chopped, because the support resolver sheds a
-        // needle or a cone here and there and each one holds a slot for the full 60 s chunkLifeMs. A saturated
+        // needle or a cone here and there and each one holds a slot for the full chunkLifeMs. A saturated
         // budget is what forces the eviction paths to run at all, and every live body is a box the tracer
         // steps and the broad phase tests. Baking is not destruction — physRetire writes the voxels back into
         // W at their resting pose, where they cost nothing per query and look identical.
@@ -9117,7 +9177,7 @@
       // MEASURED, in a calm forest with nothing being chopped: PH.bodies pinned at 16/16, and 15 of the 16
       // were 600-1100 voxels away with sleep:false. They are cones and needle tufts the support resolver
       // sheds out at the edge of the loaded window, where W is empty — so phSolidAt finds no ground, they
-      // fall forever, never settle, never retire, and sit on the budget for the full 60 s chunkLifeMs. That
+      // fall forever, never settle, never retire, and sit on the budget for the full chunkLifeMs. That
       // saturation is what forces the eviction paths to run at all, and it is why a chunk the player was
       // actually holding could be evicted to make room for debris nobody will ever see.
       // Nothing here is observable: it is outside the built world, in free fall, at 60-110 m.
@@ -10026,11 +10086,13 @@
   // eaten: raw meat could be picked up, held and dropped, and that was all. So this is the smallest consume
   // action that gives the sound a cause — RIGHT-CLICK with food in hand takes one bite off the stack. It is
   // second in line behind the pickup, so right-clicking a rock at your feet still grabs the rock rather than
-  // silently eating your dinner; `grabAnim` is the flag that says the pickup claimed the click.
-  const EAT_MS = 900;                                  // one bite per click, with a floor — a fast click must not run through a whole stack in a second
+  // silently eating your dinner; `grabAnim` is the flag that says the pickup claimed the click. HOLDING the
+  // button keeps eating (user 2026-08-11), one bite per EAT_MS, exactly as holding the left button keeps swinging.
+  const EAT_MS = 900;                                  // ── THE BITE FLOOR ── one bite per 900 ms, and it is now the EATING CADENCE as well as a click limiter: a fast click must not run through a whole stack in a second, and neither must a HELD right button (user 2026-08-11 — see the auto-repeat in the tick loop). tryEat is the single gate for both paths, so a bite costs the same wherever the call came from.
   let eatT = -1e9;
+  let eatHold = false;                                 // ── IS THE HELD RIGHT BUTTON AN EATING HOLD? ── armed at mousedown ONLY when the pickup did not claim that click, cleared at mouseup. Without it the hold path would quietly overrule the pickup-wins rule above: `grabAnim` is only true while the item is IN FLIGHT, so a right-hold on a rock at your feet would grab the rock and then start eating the meat still in your hand the moment the flight landed. One press = one decision, grab or eat, for as long as it is held.
   const EDIBLE = () => new Set([MEAT_IT].filter(Boolean));   // the raw steak today; the next food is one entry
-  const eatSnd = regSnd(new Audio('sound/eat.mp4'), 0.42);   // 0.7 −40% (user 2026-08-07)
+  const eatSnd = regSnd(new Audio('sound/eat.mp4'), 0.105);   // 0.7 −40% (user 2026-08-07), then −50% and another −50% (user 2026-08-11)
   // ── SNATCHED OUT OF THE AIR (user 2026-08-08) ── sound/pick_up.mp4 is the file that shipped as sound/hit.mp4
   // until the four-take tool_hit pool replaced it as the swing sound; it has been unused since and is now the
   // pickup. It plays for a LEVITATING drop only — raw steak off a kill, a Q-tossed item, a loosed arrow, while
@@ -10314,6 +10376,9 @@
     return { ARROW_HITS_TO_KILL, CRY_GAP, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, spawnDeathBurst, spawnSplash, spawnTear, startCrying };
   })();
   const { ARROW_HITS_TO_KILL, CRY_GAP, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, spawnDeathBurst, spawnSplash, spawnTear, startCrying } = __m_sim_particles;
+  const __m_sim_life_reactions = (() => {
+  // @module - what a creature does when it is hit: hurt, spook, ragdoll, death and the meat it drops
+  // @exports HURT, HURT_MS, RAG_UP, creatureRagdoll, dropMeat, hitCreature, hurtBox, reapDeaths, spooked, tryKillCreature
   // ── STRUCK = SPOOKED (user 2026-08-09) ── every family that has a flee state already enters it on
   // PROXIMITY and runs its animation at double rate there: the bunny 24→48 fps (B.bflee), the land mammals
   // 12→24 (B.aflee), the fish ×fleeMult with its animation scaled to match (B.fleeT). Being SHOT did none of
@@ -10571,7 +10636,7 @@
   };
   document.addEventListener('mousedown', (e) => {
     if (!locked) return;
-    if (e.button === 2) { if (!mouse2) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); } mouse2 = true; tryPickup(); if (!grabAnim) tryEat(); }   // …and with food in hand and nothing to grab, you EAT it (user)   // …and the string starts creaking under the pull (user)   // …the bow starts DRAWING here (user), and the right button stays HELD as the throw wind-up
+    if (e.button === 2) { if (!mouse2) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); } mouse2 = true; tryPickup(); eatHold = !grabAnim; if (eatHold) tryEat(); }   // …and with food in hand and nothing to grab, you EAT it (user)   // …and the string starts creaking under the pull (user)   // …the bow starts DRAWING here (user), and the right button stays HELD as the throw wind-up
     if (e.button === 0 && ED.on) {                     // ASSET EDITOR: left-click the stamped cardinal to SELECT it (pause) / click again to resume; then , . scrub the frames
       const n = ED.frames.length;
       if (n) {                                         // AABB slab test against the model's bounding box — forgiving for a small SPARSE model (an exact-voxel ray slips through the gaps)
@@ -10623,11 +10688,14 @@
       if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); playSwish(); }   // …and the shaft leaves with the whoosh (user)   // …the ARROW LEAVES the bow (user): the bare strip takes over and a projectile flies
       else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) { if (throwSpear()) playSwish(); }   // …and the SPEAR flies out of the raised hand (user)
       }
-    mouse2 = false; }
+    mouse2 = false; eatHold = false; }
     if (e.button === 0) { mouse0 = false;
     if (ED.dragAxis >= 0) { ED.dragAxis = -1; edSaveOffsets(); edHudUpd(); }   // let go of a gizmo arrow → AUTOSAVE the new offset
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring
 
+    return { HURT, HURT_MS, RAG_UP, creatureRagdoll, dropMeat, hitCreature, hurtBox, reapDeaths, spooked, tryKillCreature };
+  })();
+  const { HURT, HURT_MS, RAG_UP, creatureRagdoll, dropMeat, hitCreature, hurtBox, reapDeaths, spooked, tryKillCreature } = __m_sim_life_reactions;
   // ── keybinds ── rebindable, persisted to localStorage
   const DEFBINDS = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft', crouch: 'CapsLock', drop: 'KeyQ', fly: 'KeyF', record: 'KeyR', scaledown: 'BracketLeft', scaleup: 'BracketRight' };   // L AND V ARE BOTH UNBOUND: the water panel L used to open is off screen and v-sync was removed outright. Back-lit foliage is baked in and needs no key.   // crouch on CAPS LOCK (user 2026-08-05), off Alt   // fly on F restored (user 2026-07-22)
   const BINDNAMES = { forward: 'walk forward', back: 'walk back', left: 'strafe left', right: 'strafe right', jump: 'jump / swim up', sprint: 'sprint', crouch: 'crouch / fly down', drop: 'drop item', fly: 'toggle fly', record: 'record screen', scaledown: 'render scale -', scaleup: 'render scale +' };
@@ -12318,9 +12386,10 @@
     uniInfo() { return { on: LIFE_UNI, visW: VIS_W, sec: UF[1530], blue: BLUEB_ITEM0, robin: ROBIN_ITEM0, birdsDrawn: uniBirdN, birdsWant: uniBirdWant, cursor: UF[1103] }; },
     itemInfo() { return { n: itemsRef ? itemsRef.length : 0, cells: itemMapF32.length >> 2, card: CARD_ITEM0, bunny: BUNNY_ITEM0, arm: ARMADILLO_ITEM0, armN: ARMADILLO_NFRAMES, skunk: SKUNK_ITEM0, skunkN: SKUNK_NFRAMES, porc: PORCUPINE_ITEM0, porcN: PORCUPINE_NFRAMES, worm: WORM_ITEM0 }; },   // item-table census for the unification tests
    // the 8-bit palette ceiling — breaching it corrupts voxel SOLIDITY, not just colour
-    hurtInfo() { return { flash: +UF[1871].toFixed(3), world: [UF[1868] + winOX, UF[1869], UF[1870] + winOZ], half: [UF[1872], UF[1873], UF[1874]], dyn: UF[1875], slot: HURT.slot }; },   // dyn = the dynamic-life slot the wounded animal is DRAWN in (0 = grid-stamped, matched by bounds instead)   // the knife hit-flash box the tracer is tinting inside right now
+    hurtInfo() { return { flash: +UF[UF_HURTB + 3].toFixed(3), world: [UF[UF_HURTB] + winOX, UF[UF_HURTB + 1], UF[UF_HURTB + 2] + winOZ], half: [UF[UF_HURTH], UF[UF_HURTH + 1], UF[UF_HURTH + 2]], dyn: UF[UF_HURTH + 3], slot: HURT.slot }; },   // dyn = the dynamic-life slot the wounded animal is DRAWN in (0 = grid-stamped, matched by bounds instead)   // the knife hit-flash box the tracer is tinting inside right now
     swing(offMs) { swingStart = performance.now() - (offMs || 0); }, drop() { dropHeld(); },
     sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
+    hand() { const h = slots[selSlot]; return h ? { it: h.it, n: h.n | 0, name: ITEM_NAMES[h.it] || null, slot: selSlot } : null; },   // WHAT IS IN THE HAND, and how many of it — the hotbar is inside the game's closure, so a test that watches a stack go down (eating through one, crafting out of one) has no other way to read it
     clash() { if (dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return true; } return false; },   // same guard as shift+click — headless knife-craft testing
     KNIFE_IT,
     snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); },
@@ -12602,11 +12671,11 @@
       stick: !!d.stick, hitSlot: d.hitSlot === undefined ? -1 : d.hitSlot, hitBird: d.hitBird === undefined ? -1 : d.hitBird, hitDone: !!d.hitDone,
       end: d.ex === undefined ? null : [+d.ex.toFixed(1), +d.ey.toFixed(1), +d.ez.toFixed(1)] })); },   // items in flight / lying on the ground — a throw lands one of these far from the player, a lob lands it near
     mouseR(v) { const was = mouse2; mouse2 = !!v;      // …and drives the BOW DRAW exactly as a real right-click does
-      if (mouse2 && !was) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); }
+      if (mouse2 && !was) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); eatHold = true; }   // …and ARMS THE EATING HOLD, so a test can hold the button down and watch a stack go bite by bite. The real handler arms it from the pickup outcome; there is no pickup on this path, so a press here is always the eat-or-nothing case.
       else if (!mouse2 && was) { bowRel = performance.now();
         if (BOW_IT && heldIt() === BOW_IT) stopBowStretch();
         if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); playSwish(); }
-        else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) throwSpear(); }   // …and the SPEAR throw, so a test drives exactly what the mouse does   // …including LOOSING the arrow
+        else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) throwSpear(); eatHold = false; }   // …and the SPEAR throw, so a test drives exactly what the mouse does   // …including LOOSING the arrow
       return mouse2; },
     heldShown() { return shownIt; },                  // the item id actually DRAWN in the hand — a bow reports its current draw frame
     itemEdges(id) { const it = itemsRef && itemsRef[(id | 0) - 1]; if (!it || !it.cells) return null;   // [near, far] filled slices along the item's DEPTH — the bow's string and its face
@@ -12822,6 +12891,45 @@
     // floor: its underside reaches rMax BELOW its centre. Two separate investigations chased "a 625-voxel body
     // floating 5.8 above the ground" that was simply resting. `gap` is now the true clearance beneath the
     // lowest voxel, so 0 means touching and a positive number means genuinely airborne.
+    // ── IS THIS BODY ACTUALLY FLOATING? ── `gap` below is the clearance under the body's single LOWEST
+    // voxel, scanned in that ONE column, and that is not the same question. A felled pine lies at an angle,
+    // so its lowest voxel is usually a branch tip out over a dip while the bole rests solidly on higher
+    // ground somewhere else entirely — which reads as a 5-voxel gap on a tree that is plainly on the floor.
+    // That is the same false positive the note above records, one refinement further in, and it is what a
+    // forest-clearing run reports three of.
+    // A body is RESTING iff ANY of its voxels has solid world within `tol` beneath it — the same solidTab
+    // test phSolidAt uses, so this agrees with the contact generator by construction rather than by a second
+    // guess. `clear` is the true minimum clearance over EVERY voxel, not one of them.
+    bodySupport(tol) {
+      const T = tol === undefined ? 1.5 : tol, p2 = [0, 0, 0], o2 = [0, 0, 0];
+      return PH.bodies.map((b, bi) => {
+        let best = 1e9, seated = 0;
+        for (let i = 0; i < b.n; i++) {
+          p2[0] = b.lx[i] + 0.5 - b.com[0]; p2[1] = b.ly[i] + 0.5 - b.com[1]; p2[2] = b.lz[i] + 0.5 - b.com[2];
+          phQRot(b.q, p2, o2);
+          const wx = b.pos[0] + o2[0], wy = b.pos[1] + o2[1], wz = b.pos[2] + o2[2];
+          const gx = gwrap(Math.floor(wx), WX), gz = gwrap(Math.floor(wz), WZ) * WX * WY;
+          for (let yy = Math.min(WY - 1, Math.floor(wy)); yy >= 1; yy--) {
+            const id = W[gx + yy * WX + gz];
+            if (!id || !solidTab[id]) continue;
+            const c = wy - (yy + 1); if (c < best) best = c;
+            if (c <= T) seated++;
+            break;
+          }
+        }
+        return { i: bi, n: b.n, src: b.src, sleeping: !!b.sleeping, contacts: b.contacts | 0,
+                 pos: b.pos.map((q) => +q.toFixed(1)),
+                 clear: best > 1e8 ? -1 : +best.toFixed(2), seated, floating: seated === 0,
+                 vel: +Math.hypot(b.vel[0], b.vel[1], b.vel[2]).toFixed(2),
+                 // ── THE TOPPLE STATE MATTERS MORE THAN THE POSE ── tipArm is the window between severing and
+                 // the tilt starting, and it is the one phase that deliberately ZEROES the body's velocity. A
+                 // trunk found sleeping with tipArm still set never toppled at all: it went to sleep waiting.
+                 tipArm: !!b.tipArm, tipping: !!b.tipping, seatT: !!b.tipSeatT, sleepT: b.sleepT | 0,
+                 up: +(b.ay ? b.ay[1] : 1).toFixed(3),   // 1 = still upright, 0 = flat on its side (see PH.tipDone)
+                 noAbsorb: !!b.noAbsorb, ageS: +((performance.now() - b.born) / 1000).toFixed(1) };
+      });
+    },
+    phWakeAll() { let n = 0; for (const b of PH.bodies) if (b.sleeping) { b.sleeping = false; b.sleepT = 0; n++; } return n; },   // wake every sleeping body — the A/B that separates "asleep in mid-air" from "resting on ground its lowest voxel does not sit over": a body that FALLS when woken was never supported
     bodyAudit() {
       const p = [0, 0, 0], o = [0, 0, 0];
       return PH.bodies.map((b) => {
@@ -13801,6 +13909,9 @@
   const navWalkStand = (x, z) => {                    // the surface a walker's FEET are on — which is NOT the surface it judges the world ahead with. navWalkGround is the 2×2 MAX, and that is exactly right for "can I go there": it can only ever refuse too much. But a cell straddling a TREE TRUNK reports the trunk's top, and a body seated on that number is standing in mid-air — measured on live mammals, 0.33% of frames and up to 16 voxels of lift. A walker's feet can only rest on something it could have stepped onto, so anything more than one step-up above the heightmap column is the field describing the neighbour that EXCLUDED this cell, not the floor under this animal.
     const h = navBed(x, z) > WL ? navBed(x, z) : WL, g = navWalkGround(x, z);
     return g - h > NAV_MUP ? h : g; };
+  const __m_sim_life_mammals = (() => {
+  // @module - the four land mammals' ground seat and their walking navigation
+  // @exports mamSeatG, mamSeatN, mamSeatSteps, navBrake2, navReachWalk, navSteer2, navWalkFree, navWalkOK
   // ── THE ONE SEAT EVERY LAND MAMMAL USES ── one function, called by BOTH render paths, so a bunny and a
   // skunk cannot disagree about where the ground is and neither can the same animal before and after it
   // crosses the trace radius. It is the model's own occupied footprint (MAMFIT), oriented by heading, sampled
@@ -13993,6 +14104,9 @@
     return { ci, y: nvY[ci], ts: nvTop(ci), c: nvC[ci], d: nvD[ci], k: nvClutD(ci), walkY: navWalkGround(x === undefined ? P.x : x, z === undefined ? P.z : z), standY: navWalkStand(x === undefined ? P.x : x, z === undefined ? P.z : z), o: nvO[ci], f: nvF[ci], cls: nvClassOf(ci),
       water: !!(nvF[ci] & NVF_WATER), swim: !!(nvF[ci] & NVF_SWIM), land: !!(nvF[ci] & NVF_LAND), roof: !!(nvF[ci] & NVF_ROOF), built: !!(nvF[ci] & NVF_BUILT) }; };
 
+    return { mamSeatG, mamSeatN, mamSeatSteps, navBrake2, navReachWalk, navSteer2, navWalkFree, navWalkOK };
+  })();
+  const { mamSeatG, mamSeatN, mamSeatSteps, navBrake2, navReachWalk, navSteer2, navWalkFree, navWalkOK } = __m_sim_life_mammals;
   function tickBody(now) {
     tickReq = false;
     // ── RECORDING CADENCE ── (see the block above veStartRec) hold the paint rate to the capture rate
@@ -14437,13 +14551,10 @@
         stackEl.classList.add('hidden'); } }   // the old top-right HTML badge is retired — the count is drawn in the image now (user)
     crossEl.classList.toggle('sq', locked && !ED.on && pickAim());   // crosshair morphs + → □ ONLY over something RIGHT-CLICK can pick up (user 2026-08-02 — it used to include aimedCreature(), so it also lit up on anything killable, which is a LEFT-click action and made the square mean two different things)
     const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera
-    if (!locked && !lightMode) {                       // ESC menu: the whole CAMERA drifts gently — the entire image sways.
-                                                       // NOT in light mode: comparing two lighting terms needs the camera to hold perfectly still.
-      const ts = now * 0.001;
-      cam[0] += Math.sin(ts * 0.42) * 0.9;
-      cam[1] += Math.sin(ts * 0.61 + 1.7) * 0.55;
-      cam[2] += Math.cos(ts * 0.37) * 0.9;
-    }
+    // ── NO MENU DRIFT (user 2026-08-11: "keep the camera still") ── the esc menu used to sway the whole camera
+    // on a sine (±0.9 vox in x/z, ±0.55 in y). Because the sine is sampled from the wall clock, the frame Esc
+    // was pressed picked it up mid-cycle, so the image JUMPED to wherever the wave happened to be and then
+    // wandered. Unlocking now changes nothing about the view: the menu opens over exactly the frame you paused.
     const tanH = Math.tan(FOV / 2), aspect = RW / RH;
     const j = JIT[frame & 7];
 
@@ -14504,9 +14615,9 @@
           acc += (reach / HELD_SKY_R) * wgt; wsum += wgt;
         }
         heldSkyV += ((wsum > 0 ? acc / wsum : 1) - heldSkyV) * (1 - Math.exp(-8 * dt)); }   // the SAME ~0.15 s ease the sun term uses — walking under a crown must fade, not strobe
-      UF[1860] = heldSunV; UF[1861] = heldSkyV; UF[UF_HELDCFG + 2] = Math.max(0, stackShown); UF[1863] = 0;   // ── STACKBADGE ── z is the held stack count the BLIT draws beside the hand. It MUST be written here: this line runs every frame and used to zero z, which silently clobbered a write made earlier in the frame. “Spare” meant actively zeroed, not unused.
-      UF[1864] = lgtMask; UF[1865] = wReflK; UF[1866] = lgtMask2; UF[1867] = 0;   // ── WATER PANEL ── x = term mask (LG), y = the REFLECTION STRENGTH slider, z = the SECOND term mask (LG2 — lgt.x is full at 24 bits)
-      // ── HIT FLASH ── published AFTER the creature stamps (see the block by UF[1875] further down), because a
+      UF[UF_HELDCFG] = heldSunV; UF[UF_HELDCFG + 1] = heldSkyV; UF[UF_HELDCFG + 2] = Math.max(0, stackShown); UF[UF_HELDCFG + 3] = 0;   // ── STACKBADGE ── z is the held stack count the BLIT draws beside the hand. It MUST be written here: this line runs every frame and used to zero z, which silently clobbered a write made earlier in the frame. “Spare” meant actively zeroed, not unused.
+      UF[UF_LGT] = lgtMask; UF[UF_LGT + 1] = wReflK; UF[UF_LGT + 2] = lgtMask2; UF[UF_LGT + 3] = 0;   // ── WATER PANEL ── x = term mask (LG), y = the REFLECTION STRENGTH slider, z = the SECOND term mask (LG2 — lgt.x is full at 24 bits)
+      // ── HIT FLASH ── published AFTER the creature stamps (see the block by UF[UF_HURTH + 3] further down), because a
       // land mammal re-stamps itself later in this same tick — bounce included — and a box measured here would
       // describe where it WAS last frame while the GPU shades where it IS now.
     }
@@ -14515,6 +14626,7 @@
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
     UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
     { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)
+      if (mouse2 && eatHold && locked) tryEat();                  // ── HOLD RIGHT CLICK TO KEEP EATING (user 2026-08-11) ── the mousedown takes the first bite; from here the held button takes another every EAT_MS until the stack is gone. tryEat itself carries the rest of the rule (dead / editor / mid-pickup / nothing edible in hand / the bite floor), so holding a bow or a rock still just draws or winds up; `eatHold` is the one thing it cannot know — whether this press was a grab or a bite. Same auto-repeat the left button has had.
       reapDeaths(now);                                 // creatures whose red flash has run out now actually die (see tryKillCreature)
       shTick(now);                                     // …and the scroll-up hint appears ten seconds into play, and rides the esc menu (see shTick)
       if (shHideT && now >= shHideT) { shHideT = 0; if (!shVis) shEl.classList.add('hidden'); }   // its fade-out has finished — stop painting it
@@ -16404,10 +16516,10 @@
         if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
         if (HURT.slot >= 0) { const HB = wbf[HURT.slot]; if (HB && HB.init) hurtBox(HB); else hk = 0; }   // it died or despawned mid-blink — nothing left to stain. SLOT -1 IS NOT THAT CASE: it is the deliberate AABB path a shot SKY BIRD takes (birds live in birds[], not the pool, so there is no wbf entry to re-read — birdShot sets the box and birdRagTick re-publishes it every frame). Zeroing hk here made hurtB.w 0, which is the shader's whole gate, so a shot bird never flashed red and the HURT.k wound light below never lit either
       }
-      UF[1868] = HURT.cx - winOX; UF[1869] = HURT.cy; UF[1870] = HURT.cz - winOZ; UF[1871] = hk;
+      UF[UF_HURTB] = HURT.cx - winOX; UF[UF_HURTB + 1] = HURT.cy; UF[UF_HURTB + 2] = HURT.cz - winOZ; UF[UF_HURTB + 3] = hk;
       HURT.k = hk;                                    // …and the wound CASTS light too (user). It cannot write a point-light slot from HERE — the ffLights
                                                       // publish runs later in this same tick and rewrites all 8 — so it goes into that list instead.
-      UF[1872] = HURT.hx; UF[1873] = HURT.hy; UF[1874] = HURT.hz;
+      UF[UF_HURTH] = HURT.hx; UF[UF_HURTH + 1] = HURT.hy; UF[UF_HURTH + 2] = HURT.hz;
       let hs = 0;                                     // ── WHICH SLOT IS THE WOUNDED ANIMAL DRAWN IN? ── the shader matches cSlot against this to
       // A RAGDOLL is drawn in NO slot — it is a rigid body now — so it must report 0 and be matched by the
       // box instead. Left to the search below, a ledger entry left over from the frame before it died would
@@ -16416,7 +16528,7 @@
         const want = 2000 + HURT.slot;                // lifeSlotSet stamps 2000 + the creature's pool slot into the ledger
         for (let s = 0; s < DROP_SLOTS; s++) if (lifeUid[s] === want) { hs = s + 1; break; }   // cSlot is the slot index PLUS ONE (0 means 'no creature here'). It is 8 bits wide in the SVGF slot texture, so slot 127 -> 128 still fits.
       }
-      UF[1875] = hs; }
+      UF[UF_HURTH + 3] = hs; }
     UF[1103] = dropCursor;                             // pick2Y.w = live slot count — the composite loop's bound (always ≥ 9 so drops/cardinal/sparks are covered)
     cshadList.sort((a, b) => a[5] - b[5]);             // nearest 16 ground/water creatures cast shadows (the sun ray tests these boxes)
     for (let ci = 0; ci < 16; ci++) { const o6 = 1140 + ci * 8, C = cshadList[ci];
@@ -16485,9 +16597,9 @@
       // rays that cannot touch any body reject in a single compare.
       let nb = 0, bcx = 0, bcy = 0, bcz = 0, brad = 0;
       for (const b of PH.bodies) {
-        if (nb >= 16 || !b.gpu) continue;
+        if (nb >= PHYS_MAX || !b.gpu) continue;
         phQRot(b.q, PHX, PHAX); phQRot(b.q, PHY, PHAY); phQRot(b.q, PHZ, PHAZ);   // local axes → world
-        const o = 1532 + nb * 20, g = b.gpu;
+        const o = UF_PHYSB + nb * 20, g = b.gpu;
         const ax = b.pos[0] - winOX, ay = b.pos[1], az = b.pos[2] - winOZ;        // window-relative, matching u.camPos
         UF[o] = ax; UF[o + 1] = ay; UF[o + 2] = az; UF[o + 3] = b.scale === undefined ? 1.0 : b.scale;   // absorbing chunks shrink as they arrive
         UF[o + 4] = PHAX[0]; UF[o + 5] = PHAX[1]; UF[o + 6] = PHAX[2]; UF[o + 7] = g.bw;
@@ -16505,8 +16617,8 @@
           const d = Math.hypot(ax - bcx, ay - bcy, az - bcz) + half;
           if (d > brad) brad = d;
         } }
-      UF[1856] = bcx; UF[1857] = bcy; UF[1858] = bcz; UF[1859] = brad;
-      UF[1852] = nb; UF[1853] = Math.max(0, 1 - (now - reactT0) / REACT_FADE); UF[1854] = 0; UF[1855] = 0;   // y = REACTIVE STRENGTH, eased — the mask keys off this, not off nb
+      UF[UF_PHYSBOUND] = bcx; UF[UF_PHYSBOUND + 1] = bcy; UF[UF_PHYSBOUND + 2] = bcz; UF[UF_PHYSBOUND + 3] = brad;
+      UF[UF_PHYSC] = nb; UF[UF_PHYSC + 1] = Math.max(0, 1 - (now - reactT0) / REACT_FADE); UF[UF_PHYSC + 2] = 0; UF[UF_PHYSC + 3] = 0;   // y = REACTIVE STRENGTH, eased — the mask keys off this, not off nb
     }
     device.queue.writeBuffer(uniBuf, 0, UF);
     if (CPROF) cpMark(6);

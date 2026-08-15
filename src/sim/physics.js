@@ -19,7 +19,7 @@
     on: !location.search.includes('nophys'),
     dt: 1 / 60,                                      // FIXED 60 Hz, like Teardown — the sim must not vary with render fps
     iters: 8,                                        // sequential-impulse iterations per step (Teardown ships 8)
-    acc: 0, bodies: [], maxBodies: 16,
+    acc: 0, bodies: [], maxBodies: PHYS_MAX,   // 24 (user 2026-08-11, was 16) — MUST come from the uniform capacity: physB has room for exactly PHYS_MAX bodies and the emit loop clips to it, so a larger sim cap would simply never be drawn
     gravity: 200,                                    // matches the player's GRAVITY so falls read at the same scale
     linDamp: 0.05, angDamp: 0.18, restitution: 0.0, friction: 0.6,
     sleepLin: 1.2, sleepAng: 0.30, sleepFrames: 40,
@@ -32,7 +32,7 @@
     //   maxProbes was 160, but an 8-voxel bucketing of a 35x93x36 crown yields ~300 buckets — so barely
     //   half the body's surface cells carried a probe, and a narrow stump could pass clean between them.
     //   Probes only cost a grid lookup during contact GENERATION (once per substep), so 512 is cheap.
-    treeLifeMs: 300000, chunkLifeMs: 60000,          // ── LIFETIMES (user) ── a felled tree is gone after 5 min, any chunk the player never absorbed after 60 s.
+    treeLifeMs: 600000, chunkLifeMs: 600000,         // ── LIFETIMES (user 2026-08-11) ── EVERYTHING the player made unstatic is deleted 10 min after it broke loose — a felled trunk and a chop chunk alike (was 5 min / 60 s). Two knobs so the trunk can still be retuned apart from the debris, but they are deliberately equal now.
     //                                                 Told apart by noAbsorb, which marks the toppling trunk and nothing else.
     absorbR: 16,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
     absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);

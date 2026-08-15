@@ -41,7 +41,7 @@
   // rows gone there would be no way left to switch them back. Only the water bits are restored from storage.
   let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt');
     return v === null ? wBakeMask() : (((parseInt(v, 10) & LGT_WATER) | (LGT_ALL & ~LGT_WATER)) & LGT_ALL); } catch (e) { return wBakeMask(); } })();
-  let lgtMask2 = 0;                                    // …so this is 0 and stays 0. Kept as a variable because the frame still writes it to u.lgt.z (UF[1866]) and __vb.lgt2() still reads it.
+  let lgtMask2 = 0;                                    // …so this is 0 and stays 0. Kept as a variable because the frame still writes it to u.lgt.z (UF[UF_LGT + 2]) and __vb.lgt2() still reads it.
   // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
   // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
   let wReflK = (() => { try { const v = parseFloat(localStorage.getItem('vb_wrefl')); return (isFinite(v) && v >= 0 && v <= 2) ? v : wBakeRefl(); } catch (e) { return wBakeRefl(); } })();

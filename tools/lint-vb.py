@@ -39,6 +39,13 @@ Each check below is here because that class of bug has already cost a session:
   python tools/lint-vb.py          check
   python tools/lint-vb.py -v       check, and print what passed
   python tools/lint-vb.py --push   check, and require tools/hooks/ to be committed
+  python tools/lint-vb.py --name foo,bar
+                                   ask whether a top-level name is free BEFORE you
+                                   write it. Exit 1 if any is taken. This is the one
+                                   check worth running while you type rather than at
+                                   merge: two agents in different fragments can both
+                                   declare `const rad` and neither lint sees it until
+                                   the branches meet.
 """
 import os, sys, re
 
@@ -46,6 +53,8 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 SRC = os.path.join(ROOT, 'src')
 VERBOSE = '-v' in sys.argv
 PUSHED = '--push' in sys.argv        # pre-push: the commits exist, so check 11 can ask more
+NAMES = [n for i, a in enumerate(sys.argv) if a == '--name' and i + 1 < len(sys.argv)
+         for n in sys.argv[i + 1].split(',') if n.strip()]
 ERRORS = []
 
 
@@ -371,6 +380,23 @@ def _is_member(text, pos):
     return head.endswith('.') and not head.endswith('...')
 
 
+def _at_depth0(span, pat):
+    """Where `pat` matches at brace depth 0 of this fragment - i.e. in code that RUNS
+    when the fragment is reached, rather than inside some function body.
+
+    A fragment sits at depth 0 inside the program-wide async IIFE, so depth 0 here is the
+    fragment's own top level.
+    """
+    depth, d = [], 0
+    for c in span:
+        depth.append(d)
+        if c in '([{':
+            d += 1
+        elif c in ')]}':
+            d -= 1
+    return [m.start() for m in pat.finditer(span) if depth[m.start()] == 0]
+
+
 def _declared_names(span):
     """Every name a masked source span declares at indent 2, multi-declarators included.
 
@@ -436,6 +462,26 @@ def check_modules(masked, offsets, mods, where):
         if missing_decl:
             err(rel, '@exports names nothing this module declares: %s'
                 % ', '.join(sorted(missing_decl)))
+
+        # -- a module may not `await` at its top level ------------------------------
+        # The whole program is one `(async () => {` opened in core/boot.js and closed in
+        # main/99-close.js, so a fragment's top level is an ASYNC context and `await`
+        # there is perfectly legal. wrap_module's IIFE is NOT async, so scoping such a
+        # fragment turns that line into `SyntaxError: Unexpected reserved word`.
+        #
+        # Nothing else catches it. The bundle builds, every other check passes, and the
+        # failure is a page that never finishes booting - vbtest reports only "game never
+        # became ready within 180s", naming neither the file nor the word. Measured on
+        # assets/models.js, whose line 7 is `await stage('loading decorations...')`: that
+        # one line is the entire reason that fragment cannot be a module, and finding it
+        # by hand cost a 180 s timeout and a bisect.
+        aw = _at_depth0(masked[a:b], re.compile(r'(?<![\w$.])await(?![\w$])'))
+        if aw:
+            err(rel, 'has a top-level `await` (fragment line %d), but a module is wrapped '
+                     'in a NON-async IIFE - bundling this is "SyntaxError: Unexpected '
+                     'reserved word" and a page that never boots. Move the await inside an '
+                     'async function, or leave the fragment unscoped.'
+                % (masked[a:a + aw[0]].count('\n') + 1))
 
         # what the rest of the build actually reaches for
         needed = set()
@@ -600,12 +646,41 @@ WGSL_SZ = {'f32': (4, 4), 'vec2': (8, 8), 'vec3': (16, 12), 'vec4': (16, 16)}
 
 # Fields the JS addresses as BARE NUMERIC LITERALS, so nothing else can catch them
 # moving. Deliberately pinned: changing a number here is a decision, not a typo.
+# Everything from physC on came OFF this list when PHYS_MAX arrived (2026-08-11): those
+# offsets are now derived in buffers.js and are checked against the struct by name below,
+# which is strictly stronger - the pin catches a field that moved, the derivation check
+# catches a field that moved AND the JS constant that failed to follow it.
 UF_PINNED = {'drops': 68, 'pick2A': 1092, 'fflies': 1108, 'cshad': 1140, 'misc': 1268,
-             'lifeMot': 1272, 'lifeCfg': 1528, 'physB': 1532, 'physC': 1852,
-             'physBound': 1856, 'lgt': 1864, 'hurtB': 1868, 'hurtH': 1872}
+             'lifeMot': 1272, 'lifeCfg': 1528, 'physB': 1532}
+
+# JS offset constant -> the struct field it addresses. Every one is verified against the
+# real layout, whether it is written as a literal or derived from PHYS_MAX.
+UF_DERIVED = {'UF_PHYSB': 'physB', 'UF_PHYSC': 'physC', 'UF_PHYSBOUND': 'physBound',
+              'UF_HELDCFG': 'heldCfg', 'UF_LGT': 'lgt', 'UF_HURTB': 'hurtB',
+              'UF_HURTH': 'hurtH', 'UF_DROPSB': 'dropsB', 'UF_LIFEMOTB': 'lifeMotB',
+              'UF_DOF': 'dof'}
 
 
-def uf_layout(struct_body):
+def js_ints(js):
+    """Top-level int constants of buffers.js, resolved in declaration order.
+
+    The uniform layout is arithmetic over PHYS_MAX now, so both the WGSL array lengths
+    and the JS offsets have to be evaluated rather than read as digits. Only names that
+    are pure integer arithmetic over already-known names resolve; anything else (a
+    string, a call, a lowercase local) is skipped, so this can never invent a number.
+    """
+    env = {}
+    # the terminator is a LOOKAHEAD: `const A = 1, B = 2;` declares two, and consuming
+    # the comma would hide every one but the first from the next match.
+    for m in re.finditer(r'(?:const|,)\s+([A-Z][A-Z0-9_]*)\s*=\s*([0-9A-Z_ ()*+-]+?)\s*(?=[,;])', js):
+        try:
+            env[m.group(1)] = int(eval(m.group(2), {'__builtins__': {}}, dict(env)))
+        except Exception:
+            pass
+    return env
+
+
+def uf_layout(struct_body, env):
     """{field: float index} for a WGSL uniform struct, in declaration order."""
     off, out = 0, {}
     pat = r'(\w+)\s*:\s*(?:array<(vec4)<f32>,\s*([^>]+)>|(\w+)<f32>)'
@@ -613,11 +688,12 @@ def uf_layout(struct_body):
         name, arrty, arrn, ty = m.groups()
         if arrty:
             n = arrn.strip()
-            if n.startswith('${'):                    # an interpolated count
-                n = {'${(DROP_SLOTS - DROP_HALF) * 4}': 256,
-                     '${DROP_SLOTS - DROP_HALF}': 64}.get(n)
-                if n is None:
-                    return None, 'struct has an array length this check cannot evaluate'
+            if n.startswith('${'):                    # interpolated from a JS constant
+                try:
+                    n = int(eval(n[2:-1], {'__builtins__': {}}, dict(env)))
+                except Exception:
+                    return None, ('struct array length %s does not evaluate from the '
+                                  'constants in buffers.js' % n)
             a, s = 16, 16 * int(n)
         else:
             if ty not in WGSL_SZ:
@@ -641,7 +717,9 @@ def check_uniforms():
         return
     body = t[t.index('struct U {') + 10:]
     body = body[:body.index('\n    }\n')]
-    lay, total = uf_layout(body)
+    js = open(buf, encoding='utf8').read()
+    env = js_ints(js)
+    lay, total = uf_layout(body, env)
     if lay is None:
         err('render/wgsl/pre.js', total)
         return
@@ -658,13 +736,13 @@ def check_uniforms():
                                       'instead.' % (name, want, got))
 
     # the named JS constants must agree with the struct they describe
-    js = open(buf, encoding='utf8').read()
-    for m in re.finditer(r'const (UF_[A-Z0-9]+) = (\d+)[,;]', js):
-        field = {'UF_DROPSB': 'dropsB', 'UF_HELDCFG': 'heldCfg', 'UF_DOF': 'dof',
-                 'UF_LIFEMOTB': 'lifeMotB'}.get(m.group(1))
-        if field and lay.get(field) is not None and lay[field] != int(m.group(2)):
-            err('render/buffers.js', '%s is %s but struct U puts %s at %d'
-                % (m.group(1), m.group(2), field, lay[field]))
+    for name, field in sorted(UF_DERIVED.items()):
+        if name not in env:
+            err('render/buffers.js', '%s is gone or no longer resolves to an integer - '
+                                     'the JS offset for "%s" is unverifiable' % (name, field))
+        elif lay.get(field) is not None and lay[field] != env[name]:
+            err('render/buffers.js', '%s is %d but struct U puts %s at %d'
+                % (name, env[name], field, lay[field]))
 
     m = re.search(r'new Float32Array\(UF_DOF \+ 4\)', js)
     if m and lay.get('dof') is not None and lay['dof'] + 4 != total:
@@ -672,8 +750,9 @@ def check_uniforms():
                                  'last field is not the end of the struct'
             % (lay['dof'] + 4, total))
     if VERBOSE:
-        print('  uniforms: struct U = %d floats, %d pinned offsets all where the JS expects'
-              % (total, len(UF_PINNED)))
+        print('  uniforms: struct U = %d floats, %d pinned + %d derived offsets all '
+              'where the JS expects (PHYS_MAX = %s)'
+              % (total, len(UF_PINNED), len(UF_DERIVED), env.get('PHYS_MAX', '?')))
 
 
 # -- 7: the committed artifact must match the source it was built from ---------
@@ -765,9 +844,44 @@ def check_hooks():
         print('  hooks:    {} present, tracked, and wired up'.format(', '.join(names)))
 
 
+# -- --name: is this name free? ------------------------------------------------
+# Every other check answers "did we already break it". This one answers "will this break
+# it", which is the question an agent has while it is still choosing a name - and the only
+# point at which the answer is cheap. A top-level collision between two fragments does not
+# exist until the branches merge, so check 5 cannot fire for either agent alone; it fires
+# once, later, at the merge, on someone who did not write either line.
+#
+# Three answers, because "taken" is not the only useful one. A name that is PRIVATE to a
+# module is free to reuse elsewhere - that is precisely what scoping bought - and saying so
+# stops an agent renaming around a collision that does not exist.
+def check_name(names, masked, offsets, mods, toplevel):
+    priv = {}
+    for a, b, rel in offsets:
+        is_mod, exports = mods.get(rel, (False, set()))
+        if not is_mod:
+            continue
+        for n in _declared_names(masked[a:b]) - exports:
+            priv.setdefault(n, []).append(rel)
+
+    taken = 0
+    for n in names:
+        if n in toplevel:
+            taken += 1
+            print('  %-26s TAKEN - shared scope, declared at %s' % (n, toplevel[n]))
+        elif n in priv:
+            print('  %-26s free here; private to %s (reusing it is exactly what scoping is for)'
+                  % (n, ', '.join(sorted(set(priv[n])))))
+        else:
+            print('  %-26s free' % n)
+    print('\n%d of %d taken' % (taken, len(names)))
+    return taken
+
+
 if __name__ == '__main__':
     listed = check_manifest()
     whole, offsets, masked, toplevel, where, mods = check_bundle(listed)
+    if NAMES:
+        sys.exit(1 if check_name(NAMES, masked, offsets, mods, toplevel) else 0)
     check_wgsl(whole, offsets)
     check_worker(whole, masked, toplevel, where)
     check_modules(masked, offsets, mods, where)

@@ -226,11 +226,13 @@
   // eaten: raw meat could be picked up, held and dropped, and that was all. So this is the smallest consume
   // action that gives the sound a cause — RIGHT-CLICK with food in hand takes one bite off the stack. It is
   // second in line behind the pickup, so right-clicking a rock at your feet still grabs the rock rather than
-  // silently eating your dinner; `grabAnim` is the flag that says the pickup claimed the click.
-  const EAT_MS = 900;                                  // one bite per click, with a floor — a fast click must not run through a whole stack in a second
+  // silently eating your dinner; `grabAnim` is the flag that says the pickup claimed the click. HOLDING the
+  // button keeps eating (user 2026-08-11), one bite per EAT_MS, exactly as holding the left button keeps swinging.
+  const EAT_MS = 900;                                  // ── THE BITE FLOOR ── one bite per 900 ms, and it is now the EATING CADENCE as well as a click limiter: a fast click must not run through a whole stack in a second, and neither must a HELD right button (user 2026-08-11 — see the auto-repeat in the tick loop). tryEat is the single gate for both paths, so a bite costs the same wherever the call came from.
   let eatT = -1e9;
+  let eatHold = false;                                 // ── IS THE HELD RIGHT BUTTON AN EATING HOLD? ── armed at mousedown ONLY when the pickup did not claim that click, cleared at mouseup. Without it the hold path would quietly overrule the pickup-wins rule above: `grabAnim` is only true while the item is IN FLIGHT, so a right-hold on a rock at your feet would grab the rock and then start eating the meat still in your hand the moment the flight landed. One press = one decision, grab or eat, for as long as it is held.
   const EDIBLE = () => new Set([MEAT_IT].filter(Boolean));   // the raw steak today; the next food is one entry
-  const eatSnd = regSnd(new Audio('sound/eat.mp4'), 0.42);   // 0.7 −40% (user 2026-08-07)
+  const eatSnd = regSnd(new Audio('sound/eat.mp4'), 0.105);   // 0.7 −40% (user 2026-08-07), then −50% and another −50% (user 2026-08-11)
   // ── SNATCHED OUT OF THE AIR (user 2026-08-08) ── sound/pick_up.mp4 is the file that shipped as sound/hit.mp4
   // until the four-take tool_hit pool replaced it as the swing sound; it has been unused since and is now the
   // pickup. It plays for a LEVITATING drop only — raw steak off a kill, a Q-tossed item, a loosed arrow, while

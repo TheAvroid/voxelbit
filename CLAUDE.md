@@ -90,14 +90,14 @@ Two things about it are worth knowing before you trust a red result:
 ## A fragment is a slice of text, not a module
 
 Everything from `core/boot.js` to `main/99-close.js` lives inside the single
-`(async () => { ... })()` that `core/boot.js` opens and `main/99-close.js` closes. Three
-fragments have their own scope (see "Making a fragment a module"); the other 75 do not, and
+`(async () => { ... })()` that `core/boot.js` opens and `main/99-close.js` closes. Thirteen
+fragments have their own scope (see "Making a fragment a module"); the other 55 do not, and
 none of them use `import`/`export`. Three consequences that matter every time you edit:
 
 - **A fragment may use anything declared in a fragment above it**, exactly as the one big
   file did. Order is `src/manifest.txt`, top to bottom — not alphabetical, not inferred
   from the directory names.
-- **One lexical scope spans the 75 non-module fragments.** `const rad` in `sim/tools.js`
+- **One lexical scope spans the 55 non-module fragments.** `const rad` in `sim/tools.js`
   collides with `const rad` in `ui/hud.js`; the whole game is then a SyntaxError and a
   black screen. Check 5 catches it, and it is the failure this layout newly makes possible
   — run the linter. Converting a fragment to a module removes its private names from that
@@ -112,10 +112,24 @@ none of them use `import`/`export`. Three consequences that matter every time yo
 One agent per fragment. `docs/architecture.md` maps subsystem to file; pick disjoint files
 and the *edits* cannot collide. Four things are still shared, and they are the whole list:
 
-- **The lexical scope**, for the 75 fragments that are not yet modules: two agents can pick
+- **The lexical scope**, for the 55 fragments that are not yet modules: two agents can pick
   the same top-level name in different files and neither will see it. That is a SyntaxError and a
   black screen, and it only surfaces when the two branches meet. `lint-vb.py` check 5 is
   what catches it — run it after merging, not just before pushing.
+
+  **Ask before you invent a name**, while it is still cheap to pick another:
+
+  ```
+  python tools/lint-vb.py --name tmpBox,rad
+  ```
+
+  Three answers, and the third matters: `TAKEN` with the file and line, `free`, or *free
+  here but private to `ui/editor.js`* — a module's private names are yours to reuse, which
+  is the whole point of scoping, and knowing that stops you renaming around a collision
+  that does not exist. Exits 1 if any name is taken, so a script can gate on it. This is
+  the only check worth running as you type; every other one answers "did we already break
+  it", and check 5 cannot fire for either agent alone — it fires once, at the merge, on
+  whoever happens to be doing the merging.
 - **`game/index.html`** is generated. Both agents will rebuild it, so it conflicts on every
   merge; take either side and re-run `tools/bundle.py`. Check 7 refuses a stale artifact,
   so a bad resolution cannot survive a lint.
@@ -126,40 +140,57 @@ and the *edits* cannot collide. Four things are still shared, and they are the w
 
 Two fragments are big enough to be contention points on their own —
 `main/tick-creatures.js` (916 lines, one indivisible `for`) and `main/debug-api.js`
-(1,031 lines, `window.__vb`). Expect to queue on those rather than parallelise them.
+(1,066 lines, `window.__vb`). Expect to queue on those rather than parallelise them.
 
-## Worktrees — one per parallel workstream
+## Worktrees — one per TASK, not one per directory
 
-Three exist, each a full working copy on its own branch:
+A worktree is created for a job and removed when that job merges. It is **not** a standing
+home for a directory. Six standing per-directory trees (`wt-main`, `wt-render`, `wt-sim`,
+`wt-ui`, `wt-world`, `wt-assets`) were tried and removed on 2026-08-11, because ownership
+by directory does not match how this codebase changes:
+
+- Every commit that has touched `src/` since the fragment split touched **more than one**
+  directory — 5 of 5, averaging 5.0 of the 6.
+- Structurally there are 486 cross-fragment reference edges, 8.2 per fragment on average.
+- Worked example: a four-line "hold right-click to keep eating" change touched
+  `ui/audio.js`, `sim/life/reactions.js`, `main/tick-camera.js` and `main/debug-api.js`.
+  Under directory ownership that is three trees for one small feature, and none of the
+  three can boot the game to test its own third.
+
+A feature here is state + simulation + render + UI by nature. Directory is the one axis it
+never respects, so a per-directory tree either idles or forces a three-way merge for a
+four-line change. **Give an agent every file its job needs, and give that job its own
+tree.** The unit of isolation is the task; the file list comes from `docs/architecture.md`.
 
 ```
-C:/voxelbit-wt/sim      wt-sim
-C:/voxelbit-wt/ui       wt-ui
-C:/voxelbit-wt/render   wt-render
+git worktree add C:/voxelbit-wt/<task> -b task/<task>
+...work, commit...                # hooks need NO setup: core.hooksPath lives in the
+                                  # shared config, so a fresh worktree inherits it
+git merge task/<task>          # from C:/voxelbit
+python tools/bundle.py         # game/index.html conflicts every time; regenerate, never merge it
+python tools/lint-vb.py        # RUN AFTER THE MERGE — see below
+git worktree remove C:/voxelbit-wt/<task> && git branch -d task/<task>
+git worktree list              # what is currently live
 ```
+
+The Agent tool's `isolation: "worktree"` does the create/remove half automatically, one
+tree per agent, cleaned up if the agent changed nothing. Prefer it over standing trees.
+
+The lint matters here specifically: two branches can each declare `const rad` in different
+fragments and both pass their own lint, because the clash does not exist until the edits
+are in one tree. Ask first with `python tools/lint-vb.py --name rad` while picking another
+name is still free.
 
 **Never run two agents or two Claude tabs against the same directory.** They share a
 filesystem with no coordination — both editing `src/`, both running `bundle.py`, both
 overwriting `game/index.html` — and the damage happens before anything is committed, where
-no check can see it. One worktree per workstream is what makes that impossible.
+no check can see it. One worktree per task is what makes that impossible.
 
-```
-git worktree add C:/voxelbit-wt/<name> -b wt-<name>    # new one
-git worktree remove C:/voxelbit-wt/<name>              # when done
-git worktree list
-```
+**Two agents can edit in parallel more easily than they can verify in parallel.** A booted
+game costs ~1.7 GB (measured: 1744 MB JS heap, a 1.5 GB CPU world plus its GPU copy), so
+the machine takes 2–3 concurrent `vbtest.py`/CDP runs regardless of how many agents are
+typing. Serialise the verification, not the editing.
 
-Merging back, from `C:/voxelbit`:
-
-```
-git merge wt-sim
-python tools/bundle.py       # game/index.html conflicts every time; regenerate, don't merge it
-python tools/lint-vb.py      # RUN THIS AFTER THE MERGE - see below
-```
-
-The lint matters here specifically: two branches can each declare `const rad` in different
-fragments and both pass their own lint, because the clash does not exist until the edits
-are in one tree.
 
 ## Working rule: parallelise independent subsystem tasks
 
@@ -168,10 +199,12 @@ subagents rather than in sequence (user's standing instruction, 2026-08-09).
 
 - **Assign by FILE, not by topic.** "Improve the fish" wanders into `tick-creatures.js` and
   `nav.js` and collides with whoever else is working. "You own `sim/life/fish.js` and
-  `sim/nav.js`, edit nothing else" is what the map above is for.
+  `sim/nav.js`, edit nothing else" is the briefing that works — derive that file list from
+  `docs/architecture.md` before launching, and hand the agent ALL of it, across directories
+  if that is where the job goes. The file list IS the task boundary.
 - **Launch them in one message** so they actually run concurrently.
-- **Isolate anything that writes** — a git worktree each, or they fight over the generated
-  `game/index.html`.
+- **Isolate anything that writes** — one worktree per task (see above), or they fight over
+  the generated `game/index.html`.
 - **Run `tools/lint-vb.py` after merging their work.** Each agent's own lint passes; a
   duplicate top-level name between two of them only exists once both edits are in one tree.
 - **`tools/vbtest.py` is a per-machine resource**, not per agent: ~2 concurrent runs before
@@ -183,7 +216,7 @@ agent costs more than doing the work.
 
 ## Making a fragment a module
 
-Three fragments now have their own scope. Put these two lines at the very top of a
+Thirteen fragments now have their own scope. Put these two lines at the very top of a
 fragment and `tools/bundle.py` wraps it in an IIFE that returns exactly the named list:
 
 ```js
@@ -211,8 +244,36 @@ silently. Check 10 refuses it and names the writer. Two fixes, both real:
   `veLastPaint` became `VE.lastPaint`, so the frame loop's write lands on the object both
   sides hold.
 
-Currently modules: `ui/console.js`, `ui/editor.js`, `ui/video-editor.js` — 105 names out of
-the shared scope. The other 75 fragments still share one scope, so check 5 still matters.
+**A module may not `await` at its top level.** The program is one `(async () => {` opened
+in `core/boot.js`, so `await` is legal at a fragment's top level — but `wrap_module`'s IIFE
+is *not* async, and scoping such a fragment makes that line
+`SyntaxError: Unexpected reserved word`. Every other check passes, the bundle builds, and
+the only symptom is a page that never boots: vbtest says just "game never became ready
+within 180s". Check 10 now catches it and names the file and line. `assets/models.js` is
+the live case — line 7 is `await stage('loading decorations…')`, and that one line is the
+whole reason it cannot be a module.
+
+Currently modules (13): `render/wgsl/vis.js`, `sim/life/mammals.js`, `sim/life/reactions.js`,
+`sim/particles.js`, `sim/projectiles.js`, `sim/solver.js`, `sim/support.js`, `sim/tools.js`,
+`ui/console.js`, `ui/editor.js`, `ui/video-editor.js`, `world/gen-worker.js`,
+`world/terrain.js`. The other 55 fragments share one scope, so check 5 still matters.
+
+**Scoping is close to exhausted, and that is a finding rather than a to-do.** Every
+fragment was measured against the three gates; the shared surface is 993 names and only
+about 18 more could be removed by scoping what is left:
+
+| why not | count | what it means |
+|---|---|---|
+| already a module | 13 | done |
+| exported `let` that something assigns | 28 | **the real blocker** — shared mutable state |
+| exports everything it declares | 22 | a pure interface; scoping hides nothing |
+| opens/closes a brace across fragments | 4 | all of `src/main/`, plus `core/boot.js` |
+| top-level `await` | 1 | `assets/models.js` |
+
+The 28 are the same wall the original ES-modules analysis hit: 211 of 334 top-level `let`s
+are assigned from a fragment other than the one declaring them. Until that shared mutable
+state is folded into objects, no amount of `// @module` will shrink the scope much further
+— so treat check 5 and check 10 at merge time as the real defence, not scoping.
 
 ## Adding a fragment
 

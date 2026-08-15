@@ -41,9 +41,10 @@
     uniInfo() { return { on: LIFE_UNI, visW: VIS_W, sec: UF[1530], blue: BLUEB_ITEM0, robin: ROBIN_ITEM0, birdsDrawn: uniBirdN, birdsWant: uniBirdWant, cursor: UF[1103] }; },
     itemInfo() { return { n: itemsRef ? itemsRef.length : 0, cells: itemMapF32.length >> 2, card: CARD_ITEM0, bunny: BUNNY_ITEM0, arm: ARMADILLO_ITEM0, armN: ARMADILLO_NFRAMES, skunk: SKUNK_ITEM0, skunkN: SKUNK_NFRAMES, porc: PORCUPINE_ITEM0, porcN: PORCUPINE_NFRAMES, worm: WORM_ITEM0 }; },   // item-table census for the unification tests
    // the 8-bit palette ceiling — breaching it corrupts voxel SOLIDITY, not just colour
-    hurtInfo() { return { flash: +UF[1871].toFixed(3), world: [UF[1868] + winOX, UF[1869], UF[1870] + winOZ], half: [UF[1872], UF[1873], UF[1874]], dyn: UF[1875], slot: HURT.slot }; },   // dyn = the dynamic-life slot the wounded animal is DRAWN in (0 = grid-stamped, matched by bounds instead)   // the knife hit-flash box the tracer is tinting inside right now
+    hurtInfo() { return { flash: +UF[UF_HURTB + 3].toFixed(3), world: [UF[UF_HURTB] + winOX, UF[UF_HURTB + 1], UF[UF_HURTB + 2] + winOZ], half: [UF[UF_HURTH], UF[UF_HURTH + 1], UF[UF_HURTH + 2]], dyn: UF[UF_HURTH + 3], slot: HURT.slot }; },   // dyn = the dynamic-life slot the wounded animal is DRAWN in (0 = grid-stamped, matched by bounds instead)   // the knife hit-flash box the tracer is tinting inside right now
     swing(offMs) { swingStart = performance.now() - (offMs || 0); }, drop() { dropHeld(); },
     sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
+    hand() { const h = slots[selSlot]; return h ? { it: h.it, n: h.n | 0, name: ITEM_NAMES[h.it] || null, slot: selSlot } : null; },   // WHAT IS IN THE HAND, and how many of it — the hotbar is inside the game's closure, so a test that watches a stack go down (eating through one, crafting out of one) has no other way to read it
     clash() { if (dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return true; } return false; },   // same guard as shift+click — headless knife-craft testing
     KNIFE_IT,
     snow(v2) { snowOn = v2 === undefined ? !snowOn : !!v2; if (snowOn) snowEndT = performance.now() + 60000; snowBtnSync(); },
@@ -325,11 +326,11 @@
       stick: !!d.stick, hitSlot: d.hitSlot === undefined ? -1 : d.hitSlot, hitBird: d.hitBird === undefined ? -1 : d.hitBird, hitDone: !!d.hitDone,
       end: d.ex === undefined ? null : [+d.ex.toFixed(1), +d.ey.toFixed(1), +d.ez.toFixed(1)] })); },   // items in flight / lying on the ground — a throw lands one of these far from the player, a lob lands it near
     mouseR(v) { const was = mouse2; mouse2 = !!v;      // …and drives the BOW DRAW exactly as a real right-click does
-      if (mouse2 && !was) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); }
+      if (mouse2 && !was) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); eatHold = true; }   // …and ARMS THE EATING HOLD, so a test can hold the button down and watch a stack go bite by bite. The real handler arms it from the pickup outcome; there is no pickup on this path, so a press here is always the eat-or-nothing case.
       else if (!mouse2 && was) { bowRel = performance.now();
         if (BOW_IT && heldIt() === BOW_IT) stopBowStretch();
         if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); playSwish(); }
-        else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) throwSpear(); }   // …and the SPEAR throw, so a test drives exactly what the mouse does   // …including LOOSING the arrow
+        else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) throwSpear(); eatHold = false; }   // …and the SPEAR throw, so a test drives exactly what the mouse does   // …including LOOSING the arrow
       return mouse2; },
     heldShown() { return shownIt; },                  // the item id actually DRAWN in the hand — a bow reports its current draw frame
     itemEdges(id) { const it = itemsRef && itemsRef[(id | 0) - 1]; if (!it || !it.cells) return null;   // [near, far] filled slices along the item's DEPTH — the bow's string and its face
@@ -545,6 +546,45 @@
     // floor: its underside reaches rMax BELOW its centre. Two separate investigations chased "a 625-voxel body
     // floating 5.8 above the ground" that was simply resting. `gap` is now the true clearance beneath the
     // lowest voxel, so 0 means touching and a positive number means genuinely airborne.
+    // ── IS THIS BODY ACTUALLY FLOATING? ── `gap` below is the clearance under the body's single LOWEST
+    // voxel, scanned in that ONE column, and that is not the same question. A felled pine lies at an angle,
+    // so its lowest voxel is usually a branch tip out over a dip while the bole rests solidly on higher
+    // ground somewhere else entirely — which reads as a 5-voxel gap on a tree that is plainly on the floor.
+    // That is the same false positive the note above records, one refinement further in, and it is what a
+    // forest-clearing run reports three of.
+    // A body is RESTING iff ANY of its voxels has solid world within `tol` beneath it — the same solidTab
+    // test phSolidAt uses, so this agrees with the contact generator by construction rather than by a second
+    // guess. `clear` is the true minimum clearance over EVERY voxel, not one of them.
+    bodySupport(tol) {
+      const T = tol === undefined ? 1.5 : tol, p2 = [0, 0, 0], o2 = [0, 0, 0];
+      return PH.bodies.map((b, bi) => {
+        let best = 1e9, seated = 0;
+        for (let i = 0; i < b.n; i++) {
+          p2[0] = b.lx[i] + 0.5 - b.com[0]; p2[1] = b.ly[i] + 0.5 - b.com[1]; p2[2] = b.lz[i] + 0.5 - b.com[2];
+          phQRot(b.q, p2, o2);
+          const wx = b.pos[0] + o2[0], wy = b.pos[1] + o2[1], wz = b.pos[2] + o2[2];
+          const gx = gwrap(Math.floor(wx), WX), gz = gwrap(Math.floor(wz), WZ) * WX * WY;
+          for (let yy = Math.min(WY - 1, Math.floor(wy)); yy >= 1; yy--) {
+            const id = W[gx + yy * WX + gz];
+            if (!id || !solidTab[id]) continue;
+            const c = wy - (yy + 1); if (c < best) best = c;
+            if (c <= T) seated++;
+            break;
+          }
+        }
+        return { i: bi, n: b.n, src: b.src, sleeping: !!b.sleeping, contacts: b.contacts | 0,
+                 pos: b.pos.map((q) => +q.toFixed(1)),
+                 clear: best > 1e8 ? -1 : +best.toFixed(2), seated, floating: seated === 0,
+                 vel: +Math.hypot(b.vel[0], b.vel[1], b.vel[2]).toFixed(2),
+                 // ── THE TOPPLE STATE MATTERS MORE THAN THE POSE ── tipArm is the window between severing and
+                 // the tilt starting, and it is the one phase that deliberately ZEROES the body's velocity. A
+                 // trunk found sleeping with tipArm still set never toppled at all: it went to sleep waiting.
+                 tipArm: !!b.tipArm, tipping: !!b.tipping, seatT: !!b.tipSeatT, sleepT: b.sleepT | 0,
+                 up: +(b.ay ? b.ay[1] : 1).toFixed(3),   // 1 = still upright, 0 = flat on its side (see PH.tipDone)
+                 noAbsorb: !!b.noAbsorb, ageS: +((performance.now() - b.born) / 1000).toFixed(1) };
+      });
+    },
+    phWakeAll() { let n = 0; for (const b of PH.bodies) if (b.sleeping) { b.sleeping = false; b.sleepT = 0; n++; } return n; },   // wake every sleeping body — the A/B that separates "asleep in mid-air" from "resting on ground its lowest voxel does not sit over": a body that FALLS when woken was never supported
     bodyAudit() {
       const p = [0, 0, 0], o = [0, 0, 0];
       return PH.bodies.map((b) => {

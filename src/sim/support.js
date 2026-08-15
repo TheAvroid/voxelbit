@@ -1,3 +1,5 @@
+  // @module - the support resolver: what is anchored, what comes loose, and the chop entry points
+  // @exports SUPWHY, phChopDecor, phChopLeaves, supFlood, supFlush
   // ── SUPPORT FLOOD ── one component out of one seed. Class-restricted, 26-connected, capped, with the
   // O(1) hmap anchor as an early-out on every pop, so an ordinary ground carve is answered on the FIRST
   // pop and costs nothing. Visited is a Set of flat indices: measured 300-600 ns/cell and zero extra
@@ -183,8 +185,34 @@
     if (SUP.ancS.has(ii)) return true;
     if (SUP.flS.has(ii)) return false;
     if (SUP.busy.has(ii)) return false;                // already on the stack: it cannot vouch for us, because we are what it is waiting on
+    // ── DO NOT RE-SEED ON THIS ONE. TRIED IT, MEASURED IT, IT IS THE TREADMILL THE MEMO NOTE WARNS ABOUT ──
+    // raising SUP.guessed here (so supFlush re-asks the component on a later pass) looks like the honest
+    // completion of the cap fix below, and it is not: the depth limit is not a rare backstop, it is a
+    // STRUCTURAL property of this asset. A pine's bole alternates wood and needles all the way up, so a
+    // crown query recurses deep every single time. MEASURED over three fells in a calm forest, re-seeding
+    // took depthHits from 160 to 19,560 and grew a support queue that had been draining to 0 every frame
+    // (0 -> 5 -> 15 -> 51 and climbing) — a component that always hits the limit is re-queued forever and
+    // starves the real questions behind it, which is exactly how post-storm floaters used to sit in the air
+    // for minutes. The memo is load-bearing; see the block comment above. Err anchored and let it stand.
     if ((depth | 0) >= SUP_MAX_DEPTH) { SUPWHY.d++; SUP.stats.depthHits++; return true; }
     const r = supFlood(ii, false, depth);
+    // ── A CAP HIT IS NOT A "NO" HERE EITHER ── supFlood reports an unfinished walk as
+    // {anchored:false, undecided:true}, and the top-level pass in supFlush honours that: it re-seeds and
+    // asks again rather than acting on it. Reading `.anchored` alone threw the distinction away and turned
+    // "I ran out of budget" into a definite "that neighbour does not hold you" — on which the CALLER may
+    // then be declared unanchored and LIFTED. That is the destructive direction this whole file refuses,
+    // reached from the one place that had not been told. The depth guard four lines up is the same backstop
+    // and already errs ANCHORED for the same reason, so this now matches it: leave a rare floater, never
+    // drop real geometry on a question that was never answered.
+    // Inert in measured play — capHits is 0 in a forest, felling or not, because a flood exits on its FIRST
+    // anchored cell and only a genuinely detached component is ever walked to the end. This is the backstop
+    // for when it is not, and drapeCap is only 3000.
+    // SUP.guessed is the other half, and it is safe HERE precisely because this branch is the rare one:
+    // erring anchored must not also mean erring silently, so the flag tells supFlush to re-seed the
+    // component and ask again on a later pass rather than let the guess stand in ancS unchallenged. The
+    // depth guard above deliberately does NOT raise it — see the note there for the measurement that says
+    // why. capHits is 0 in a forest, so this costs one queue entry on a path nothing currently takes.
+    if (r && r.undecided) { SUP.guessed = true; return true; }
     return r ? r.anchored : false;
   };
   // ── ONE COMPONENT, ONE BODY ── extracted from supResolve so the OVERSIZE path can call it per part: a
@@ -342,6 +370,7 @@
         if (performance.now() - t0 > lim) { out = true; break; }   // checked BETWEEN queued cells, never mid-flood: a component is always resolved as a whole
         const q0 = SUP.q[SUP.qh++]; SUP.qs.delete(q0);
         let redo = false;                            // any undecided flood off this seed -> ask again on a later flush
+        SUP.guessed = false;                         // …and so does any flood whose verdict rested on supHeld's nested-cap backstop (see SUP.guessed)
         const gx = q0 % WX, gy = ((q0 / WX) | 0) % WY, gz = (q0 / (WX * WY)) | 0;
         for (let dy = -1; dy <= 1; dy++) {
           const ny = gy + dy; if (ny < 1 || ny >= WY) continue;
@@ -356,7 +385,13 @@
             acted += supResolve(r);
           }
         }
-        if (redo && SUP.retry.length < 4096) SUP.retry.push(q0);
+        // A GUESSED ANCHOR IS NOT AN ANSWER EITHER. supHeld's nested-cap backstop reports ANCHORED for a walk
+        // that never finished, which is the right direction (never drop geometry on a question nobody
+        // answered) but was previously also the LAST word: the guess went straight into the ancS memo and no
+        // later pass revisited the component. Re-seeding costs one queue entry and is what makes
+        // erring-anchored a DELAY rather than a permanent floater — the same bargain the undecided branch
+        // above already strikes. The DEPTH guard is excluded on purpose; the note in supHeld has the numbers.
+        if ((redo || SUP.guessed) && SUP.retry.length < 4096) { if (SUP.guessed && !redo) SUP.stats.guessRedo++; SUP.retry.push(q0); }
       }
       if (out) break;
     }

@@ -58,10 +58,10 @@
         if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
         if (HURT.slot >= 0) { const HB = wbf[HURT.slot]; if (HB && HB.init) hurtBox(HB); else hk = 0; }   // it died or despawned mid-blink — nothing left to stain. SLOT -1 IS NOT THAT CASE: it is the deliberate AABB path a shot SKY BIRD takes (birds live in birds[], not the pool, so there is no wbf entry to re-read — birdShot sets the box and birdRagTick re-publishes it every frame). Zeroing hk here made hurtB.w 0, which is the shader's whole gate, so a shot bird never flashed red and the HURT.k wound light below never lit either
       }
-      UF[1868] = HURT.cx - winOX; UF[1869] = HURT.cy; UF[1870] = HURT.cz - winOZ; UF[1871] = hk;
+      UF[UF_HURTB] = HURT.cx - winOX; UF[UF_HURTB + 1] = HURT.cy; UF[UF_HURTB + 2] = HURT.cz - winOZ; UF[UF_HURTB + 3] = hk;
       HURT.k = hk;                                    // …and the wound CASTS light too (user). It cannot write a point-light slot from HERE — the ffLights
                                                       // publish runs later in this same tick and rewrites all 8 — so it goes into that list instead.
-      UF[1872] = HURT.hx; UF[1873] = HURT.hy; UF[1874] = HURT.hz;
+      UF[UF_HURTH] = HURT.hx; UF[UF_HURTH + 1] = HURT.hy; UF[UF_HURTH + 2] = HURT.hz;
       let hs = 0;                                     // ── WHICH SLOT IS THE WOUNDED ANIMAL DRAWN IN? ── the shader matches cSlot against this to
       // A RAGDOLL is drawn in NO slot — it is a rigid body now — so it must report 0 and be matched by the
       // box instead. Left to the search below, a ledger entry left over from the frame before it died would
@@ -70,7 +70,7 @@
         const want = 2000 + HURT.slot;                // lifeSlotSet stamps 2000 + the creature's pool slot into the ledger
         for (let s = 0; s < DROP_SLOTS; s++) if (lifeUid[s] === want) { hs = s + 1; break; }   // cSlot is the slot index PLUS ONE (0 means 'no creature here'). It is 8 bits wide in the SVGF slot texture, so slot 127 -> 128 still fits.
       }
-      UF[1875] = hs; }
+      UF[UF_HURTH + 3] = hs; }
     UF[1103] = dropCursor;                             // pick2Y.w = live slot count — the composite loop's bound (always ≥ 9 so drops/cardinal/sparks are covered)
     cshadList.sort((a, b) => a[5] - b[5]);             // nearest 16 ground/water creatures cast shadows (the sun ray tests these boxes)
     for (let ci = 0; ci < 16; ci++) { const o6 = 1140 + ci * 8, C = cshadList[ci];
@@ -139,9 +139,9 @@
       // rays that cannot touch any body reject in a single compare.
       let nb = 0, bcx = 0, bcy = 0, bcz = 0, brad = 0;
       for (const b of PH.bodies) {
-        if (nb >= 16 || !b.gpu) continue;
+        if (nb >= PHYS_MAX || !b.gpu) continue;
         phQRot(b.q, PHX, PHAX); phQRot(b.q, PHY, PHAY); phQRot(b.q, PHZ, PHAZ);   // local axes → world
-        const o = 1532 + nb * 20, g = b.gpu;
+        const o = UF_PHYSB + nb * 20, g = b.gpu;
         const ax = b.pos[0] - winOX, ay = b.pos[1], az = b.pos[2] - winOZ;        // window-relative, matching u.camPos
         UF[o] = ax; UF[o + 1] = ay; UF[o + 2] = az; UF[o + 3] = b.scale === undefined ? 1.0 : b.scale;   // absorbing chunks shrink as they arrive
         UF[o + 4] = PHAX[0]; UF[o + 5] = PHAX[1]; UF[o + 6] = PHAX[2]; UF[o + 7] = g.bw;
@@ -159,8 +159,8 @@
           const d = Math.hypot(ax - bcx, ay - bcy, az - bcz) + half;
           if (d > brad) brad = d;
         } }
-      UF[1856] = bcx; UF[1857] = bcy; UF[1858] = bcz; UF[1859] = brad;
-      UF[1852] = nb; UF[1853] = Math.max(0, 1 - (now - reactT0) / REACT_FADE); UF[1854] = 0; UF[1855] = 0;   // y = REACTIVE STRENGTH, eased — the mask keys off this, not off nb
+      UF[UF_PHYSBOUND] = bcx; UF[UF_PHYSBOUND + 1] = bcy; UF[UF_PHYSBOUND + 2] = bcz; UF[UF_PHYSBOUND + 3] = brad;
+      UF[UF_PHYSC] = nb; UF[UF_PHYSC + 1] = Math.max(0, 1 - (now - reactT0) / REACT_FADE); UF[UF_PHYSC + 2] = 0; UF[UF_PHYSC + 3] = 0;   // y = REACTIVE STRENGTH, eased — the mask keys off this, not off nb
     }
     device.queue.writeBuffer(uniBuf, 0, UF);
     if (CPROF) cpMark(6);

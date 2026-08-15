@@ -136,7 +136,7 @@
     // judging rest on linear motion alone, which left a PINECONE (13 voxels) and a needle tuft needing the
     // full angular test. MEASURED, in a calm forest with nothing chopped: PH.bodies pinned at 16/16, and the
     // occupants were 7-15 voxel scraps sitting at a FIXED position with sleep:false — linearly at rest and
-    // still spinning on solver jitter, so they never slept, never retired, and held slots for the whole 60 s
+    // still spinning on solver jitter, so they never slept, never retired, and held slots for the whole
     // chunkLifeMs. A saturated budget is what forces the eviction paths to run at all, and it is why a chunk
     // the player was carrying could be thrown away to make room for a cone nobody will ever see.
     // The original rationale is unchanged, only its threshold: at this size the orientation is meaningless,
@@ -151,7 +151,7 @@
         if (b.n <= PH.retireMax) b.retire = true;
         // ── AND SETTLED SCRAP FAR FROM THE PLAYER GOES BACK IN THE GRID TOO ── MEASURED: PH.bodies sits
         // pinned at 16/16 in ordinary play with nothing being chopped, because the support resolver sheds a
-        // needle or a cone here and there and each one holds a slot for the full 60 s chunkLifeMs. A saturated
+        // needle or a cone here and there and each one holds a slot for the full chunkLifeMs. A saturated
         // budget is what forces the eviction paths to run at all, and every live body is a box the tracer
         // steps and the broad phase tests. Baking is not destruction — physRetire writes the voxels back into
         // W at their resting pose, where they cost nothing per query and look identical.
@@ -242,7 +242,7 @@
       // MEASURED, in a calm forest with nothing being chopped: PH.bodies pinned at 16/16, and 15 of the 16
       // were 600-1100 voxels away with sleep:false. They are cones and needle tufts the support resolver
       // sheds out at the edge of the loaded window, where W is empty — so phSolidAt finds no ground, they
-      // fall forever, never settle, never retire, and sit on the budget for the full 60 s chunkLifeMs. That
+      // fall forever, never settle, never retire, and sit on the budget for the full chunkLifeMs. That
       // saturation is what forces the eviction paths to run at all, and it is why a chunk the player was
       // actually holding could be evicted to make room for debris nobody will ever see.
       // Nothing here is observable: it is outside the built world, in free fall, at 60-110 m.

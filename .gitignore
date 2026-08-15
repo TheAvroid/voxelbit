@@ -41,3 +41,7 @@ _snapshots/
 *.bak
 *.log
 node_modules/
+
+# floatshots/ is the float-audit screenshot dump (__vb.floatAudit runs). 46 MB of
+# regenerable test stills — same reasoning as tools/frames/ and _snapshots/ above.
+floatshots/

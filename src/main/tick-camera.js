@@ -31,13 +31,10 @@
         stackEl.classList.add('hidden'); } }   // the old top-right HTML badge is retired — the count is drawn in the image now (user)
     crossEl.classList.toggle('sq', locked && !ED.on && pickAim());   // crosshair morphs + → □ ONLY over something RIGHT-CLICK can pick up (user 2026-08-02 — it used to include aimedCreature(), so it also lit up on anything killable, which is a LEFT-click action and made the square mean two different things)
     const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera
-    if (!locked && !lightMode) {                       // ESC menu: the whole CAMERA drifts gently — the entire image sways.
-                                                       // NOT in light mode: comparing two lighting terms needs the camera to hold perfectly still.
-      const ts = now * 0.001;
-      cam[0] += Math.sin(ts * 0.42) * 0.9;
-      cam[1] += Math.sin(ts * 0.61 + 1.7) * 0.55;
-      cam[2] += Math.cos(ts * 0.37) * 0.9;
-    }
+    // ── NO MENU DRIFT (user 2026-08-11: "keep the camera still") ── the esc menu used to sway the whole camera
+    // on a sine (±0.9 vox in x/z, ±0.55 in y). Because the sine is sampled from the wall clock, the frame Esc
+    // was pressed picked it up mid-cycle, so the image JUMPED to wherever the wave happened to be and then
+    // wandered. Unlocking now changes nothing about the view: the menu opens over exactly the frame you paused.
     const tanH = Math.tan(FOV / 2), aspect = RW / RH;
     const j = JIT[frame & 7];
 
@@ -98,9 +95,9 @@
           acc += (reach / HELD_SKY_R) * wgt; wsum += wgt;
         }
         heldSkyV += ((wsum > 0 ? acc / wsum : 1) - heldSkyV) * (1 - Math.exp(-8 * dt)); }   // the SAME ~0.15 s ease the sun term uses — walking under a crown must fade, not strobe
-      UF[1860] = heldSunV; UF[1861] = heldSkyV; UF[UF_HELDCFG + 2] = Math.max(0, stackShown); UF[1863] = 0;   // ── STACKBADGE ── z is the held stack count the BLIT draws beside the hand. It MUST be written here: this line runs every frame and used to zero z, which silently clobbered a write made earlier in the frame. “Spare” meant actively zeroed, not unused.
-      UF[1864] = lgtMask; UF[1865] = wReflK; UF[1866] = lgtMask2; UF[1867] = 0;   // ── WATER PANEL ── x = term mask (LG), y = the REFLECTION STRENGTH slider, z = the SECOND term mask (LG2 — lgt.x is full at 24 bits)
-      // ── HIT FLASH ── published AFTER the creature stamps (see the block by UF[1875] further down), because a
+      UF[UF_HELDCFG] = heldSunV; UF[UF_HELDCFG + 1] = heldSkyV; UF[UF_HELDCFG + 2] = Math.max(0, stackShown); UF[UF_HELDCFG + 3] = 0;   // ── STACKBADGE ── z is the held stack count the BLIT draws beside the hand. It MUST be written here: this line runs every frame and used to zero z, which silently clobbered a write made earlier in the frame. “Spare” meant actively zeroed, not unused.
+      UF[UF_LGT] = lgtMask; UF[UF_LGT + 1] = wReflK; UF[UF_LGT + 2] = lgtMask2; UF[UF_LGT + 3] = 0;   // ── WATER PANEL ── x = term mask (LG), y = the REFLECTION STRENGTH slider, z = the SECOND term mask (LG2 — lgt.x is full at 24 bits)
+      // ── HIT FLASH ── published AFTER the creature stamps (see the block by UF[UF_HURTH + 3] further down), because a
       // land mammal re-stamps itself later in this same tick — bounce included — and a box measured here would
       // describe where it WAS last frame while the GPU shades where it IS now.
     }
@@ -109,6 +106,7 @@
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
     UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
     { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)
+      if (mouse2 && eatHold && locked) tryEat();                  // ── HOLD RIGHT CLICK TO KEEP EATING (user 2026-08-11) ── the mousedown takes the first bite; from here the held button takes another every EAT_MS until the stack is gone. tryEat itself carries the rest of the rule (dead / editor / mid-pickup / nothing edible in hand / the bite floor), so holding a bow or a rock still just draws or winds up; `eatHold` is the one thing it cannot know — whether this press was a grab or a bite. Same auto-repeat the left button has had.
       reapDeaths(now);                                 // creatures whose red flash has run out now actually die (see tryKillCreature)
       shTick(now);                                     // …and the scroll-up hint appears ten seconds into play, and rides the esc menu (see shTick)
       if (shHideT && now >= shHideT) { shHideT = 0; if (!shVis) shEl.classList.add('hidden'); }   // its fade-out has finished — stop painting it

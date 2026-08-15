@@ -1,3 +1,5 @@
+  // @module - what a creature does when it is hit: hurt, spook, ragdoll, death and the meat it drops
+  // @exports HURT, HURT_MS, RAG_UP, creatureRagdoll, dropMeat, hitCreature, hurtBox, reapDeaths, spooked, tryKillCreature
   // ── STRUCK = SPOOKED (user 2026-08-09) ── every family that has a flee state already enters it on
   // PROXIMITY and runs its animation at double rate there: the bunny 24→48 fps (B.bflee), the land mammals
   // 12→24 (B.aflee), the fish ×fleeMult with its animation scaled to match (B.fleeT). Being SHOT did none of
@@ -255,7 +257,7 @@
   };
   document.addEventListener('mousedown', (e) => {
     if (!locked) return;
-    if (e.button === 2) { if (!mouse2) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); } mouse2 = true; tryPickup(); if (!grabAnim) tryEat(); }   // …and with food in hand and nothing to grab, you EAT it (user)   // …and the string starts creaking under the pull (user)   // …the bow starts DRAWING here (user), and the right button stays HELD as the throw wind-up
+    if (e.button === 2) { if (!mouse2) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); } mouse2 = true; tryPickup(); eatHold = !grabAnim; if (eatHold) tryEat(); }   // …and with food in hand and nothing to grab, you EAT it (user)   // …and the string starts creaking under the pull (user)   // …the bow starts DRAWING here (user), and the right button stays HELD as the throw wind-up
     if (e.button === 0 && ED.on) {                     // ASSET EDITOR: left-click the stamped cardinal to SELECT it (pause) / click again to resume; then , . scrub the frames
       const n = ED.frames.length;
       if (n) {                                         // AABB slab test against the model's bounding box — forgiving for a small SPARSE model (an exact-voxel ray slips through the gaps)
@@ -307,7 +309,7 @@
       if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); playSwish(); }   // …and the shaft leaves with the whoosh (user)   // …the ARROW LEAVES the bow (user): the bare strip takes over and a projectile flies
       else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) { if (throwSpear()) playSwish(); }   // …and the SPEAR flies out of the raised hand (user)
       }
-    mouse2 = false; }
+    mouse2 = false; eatHold = false; }
     if (e.button === 0) { mouse0 = false;
     if (ED.dragAxis >= 0) { ED.dragAxis = -1; edSaveOffsets(); edHudUpd(); }   // let go of a gizmo arrow → AUTOSAVE the new offset
     if (ED.dragRing >= 0) { ED.dragRing = -1; edHudUpd(); } } });   // let go of a rotation ring

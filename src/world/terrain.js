@@ -1,3 +1,5 @@
+  // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
+  // @exports BCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, F2CELL, LGCELL, LGIGCELL, LILYCELL, MUCELL, OCELL, PCCELL, SCELL, TCELL, TMARGIN, boulderAt, caveAt, caveHitsBox, fern2At, fillColumn, genRegion, genRegionGen, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, stampBoulder, stampCave, stampCellsGen, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOre, stampPcone, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
