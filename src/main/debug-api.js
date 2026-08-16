@@ -3,6 +3,8 @@
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
     palLen() { return { len: palette.length, over: palette.length > 256 }; },
+    palMints(lo) { return palMintLog.filter((m) => m[0] >= (lo || 0)); },
+    palTrace() { const out = []; for (let i = 0; i < palTrace.length; i++) out.push({ stage: palTrace[i][0], len: palTrace[i][1], spent: (i ? palTrace[i][1] - palTrace[i - 1][1] : palTrace[i][1]) }); return out; },   // slots each load stage cost
     palAudit() {                                     // WHICH ids are exact-colour duplicates, and is each one safe to reclaim. addCol() pushes unconditionally, so a loader that calls it directly (the .json decor palettes do) mints a fresh id for a colour the table already holds — but a duplicate is only REDUNDANT if nothing tells the two ids apart, and an id carries material flags and pickup-set membership as well as a colour.
       const flags = (i) => [solidTab[i], foliaTab[i], woodTab[i], mushTab[i], rockTopTab[i], decorTab[i], axeOnlyTab[i], pickOnlyTab[i], digOnlyTab[i], sandTab[i], coneTab[i], SUP.CLASS[i] | 0].join(',');
       const picks = (i) => [PICK_ROCK.has(i), PICK_STICK.has(i), PICK_BOULDER.has(i), PICK_CONE.has(i)].map((b) => (b ? 1 : 0)).join(',');
@@ -35,7 +37,7 @@
               const d = Math.max(Math.abs(c1[0] - c2[0]), Math.abs(c1[1] - c2[1]), Math.abs(c1[2] - c2[2]));
               if (d <= t) { dead.add(ids[b2]); gone++; if (ex.length < 8) ex.push([ids[a2], ids[b2], d, c1, c2]); } } } }
         near[t] = { reclaimable: gone, examples: ex }; }
-      return { len: palette.length, free: 256 - palette.length, over: palOver, groups: dup.length,
+      return { len: palette.length, free: 256 - palette.length, over: palOver, tol: PAL_TOL, tolHits: palTolHits, tolErr: palTolErr, snaps: palSnaps, edSubs: edSnapCount(), edSubErr: edSnapErrs(), groups: dup.length,
         wasted: dup.reduce((n, d) => n + d.ids.length - 1, 0), reclaimable: safe.length,
         buckets: bucket.size, near, safe, dup }; },
     uniInfo() { return { on: LIFE_UNI, visW: VIS_W, sec: UF[1530], blue: BLUEB_ITEM0, robin: ROBIN_ITEM0, birdsDrawn: uniBirdN, birdsWant: uniBirdWant, cursor: UF[1103] }; },
@@ -60,6 +62,15 @@
       if (B && B.init) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), trap: +(B.trap || 0).toFixed(2) }); } return o; },   // worm stuck-test tap
     flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
+    modelIds(kind) { const m = { drock: DROCK, cactus: CACTI, shrub: SHRUBV, rock26: ROCK26 }[kind] || []; const o = new Set(); for (const q of m) for (const p of q.vox) o.add(p >>> 24); return [...o].sort((a, b) => a - b); },   // the palette ids a model set actually uses — colour heuristics cannot tell desert rock from desert sand. NOT `ids`: this object already has an `ids` key of a different shape further down, and a duplicate silently loses (the later one wins). 276 keys in one literal makes that easy to do — check before adding a name.
+    win() { return { xlo: winOX, xhi: winOX + WX, zlo: winOZ, zhi: winOZ + WZ }; },   // the loaded window in WORLD coords. Sampling voxels outside it reads a ring-buffer slot holding a different world location entirely — which reads as forest terrain appearing in the desert
+    desBand() { const o = []; for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
+      o.push({ j, sp: ((j - MAM_END) / DES_PER) | 0, idx: (j - MAM_END) % DES_PER, init: !!(B && B.init), kind: B ? (B.kind | 0) : -1 }); }
+      return { species: DESERTS.map((d) => d.name + '@' + d.item0 + 'x' + d.n), nDesert: (typeof nDesert === 'undefined' ? 'UNDEFINED' : nDesert), perSpecies: (typeof nDesertOf === 'undefined' ? 'OUT-OF-SCOPE (tick-local)' : DESERTS.map((d, i) => d.name + ':' + nDesertOf(i))), DES_PER, MAM_END, DES_END, slots: o }; },   // why a desert slot is or is not live
+    dm(x, z) { return +desertM(x, z).toFixed(3); },   // biome weight at a world point: 0 = pine forest, 1 = open desert. The gates all key on this, so a test that wants to say "in the desert" has to be able to ask
+    lifeAll() { const o = []; for (let j = 0; j < DES_END; j++) { const B = wbf[j];   // DES_END, not a literal: this read 380 and silently hid six of the seven desert species behind its own bound   // EVERY live creature body with a position, across all the slot bands (flyers, worms, fish, mammals) — the biome spawn gates need one census, not four taps
+      if (B && B.init && typeof B.x === 'number') o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(1), y: +(B.y || 0).toFixed(1), z: +B.z.toFixed(1), dm: +desertM(B.x, B.z).toFixed(2),
+        hdm: (B.hx !== undefined && B.hz !== undefined) ? +desertM(B.hx, B.hz).toFixed(2) : null }); } return o; },   // dm = where it IS, hdm = where its HOME is. A spawn gate can only be judged by the home: a creature that was placed legally in the forest and has since walked or swum across a BLENDED border is not a spawn leak.
     snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: (snowQN - snowHead) + (snowWN - snowWHead), liveWater: snowWN - snowWHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT, freezeAt: snowFreezeAt }; },
     worldDump(wx0, wz0, n) { const out = new Uint8Array(n * n * WY); let k = 0;   // raw voxel block dump (base64) — lets a test DIFF two builds voxel-by-voxel
       for (let z = wz0; z < wz0 + n; z++) for (let x = wx0; x < wx0 + n; x++) { const b9 = gwrap(z, WZ) * WX * WY + gwrap(x, WX);
@@ -117,7 +128,7 @@
       const shown = new Set();
       for (let s = 0; s < DROP_SLOTS; s++) { const u = lifeUid[s]; if (u >= 2000) shown.add(u - 2000); }
       const acc = {};
-      for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];
+      for (let wk = 0; wk < DES_END; wk++) { const B = wbf[wk];
         if (!B || !B.init || B.slain) continue;
         let k = bandOf(wk); if (k === 'flyer' && B.dfly) k = 'dragonfly';
         const a = acc[k] || (acc[k] = { active: 0, drawn: 0, grid: 0, dDrawnMax: 0, dGridMin: 1e9, dHiddenMin: 1e9, dHiddenMax: 0 });
@@ -171,6 +182,16 @@
           oldG: Math.round(__vb.bfSurf(B.x, B.z)), newG: +mamSeatG(B, fit).toFixed(2),
           navCtr: +navWalkStand(B.x, B.z).toFixed(2), surfCtr: +__vb.bfSurf(B.x, B.z).toFixed(2) }); }
       return o; },
+    desSeat() { const o = [];                        // WHICH TERM LIFTS A DESERT CREATURE. Its seat is max(mamSeatG, gFwd) and the two read DIFFERENT planes: mamSeatG goes through navWalkStand (which refuses a surface more than one step-up above the column) while the forward probe reads navGroundAt raw, so a cactus or a rock wall 3 voxels ahead is a legal answer to "how high is my floor". Reported side by side, against H = the PRISTINE generated sand column, so a lift can be attributed rather than guessed at.
+      for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j]; if (!B || !B.init || (B.kind | 0) !== 2 || typeof B.x !== 'number') continue;
+        const sp = ((j - MAM_END) / DES_PER) | 0, nm = DESERTS[sp] ? DESERTS[sp].name : '?', fit = MAMFIT[nm]; if (!fit) continue;
+        const hx = Math.sin(B.th || 0), hz = Math.cos(B.th || 0);
+        o.push({ j, sp: nm, x: +B.x.toFixed(1), z: +B.z.toFixed(1), y: +B.y.toFixed(2), seat: fit.seat,
+          foot: +(B.y - fit.seat).toFixed(2), seatG: +mamSeatG(B, fit).toFixed(2),
+          gFwd: +navGroundAt(B.x + hx * 3, B.z + hz * 3).toFixed(2), fwdStand: +navWalkStand(B.x + hx * 3, B.z + hz * 3).toFixed(2),
+          stand: +navWalkStand(B.x, B.z).toFixed(2), ground: +navGroundAt(B.x, B.z).toFixed(2), H: H(Math.round(B.x), Math.round(B.z)),
+          seatSand: +mamSeatG(B, fit, 1).toFixed(2), sand: navSand(B.x, B.z), sandFwd: navSand(B.x + hx * 3, B.z + hz * 3) }); }
+      return o; },
     sndRouting() {                                   // which registered sounds are routed through an effect, and whether the RECORDER could tap them
       const out = sndReg.map((s) => ({ src: (s.a.src || '').split('/').slice(-2).join('/'),
         fx: !!s.a._sfxOut, veTapped: !!s.a._veTap, vol: +s.a.volume.toFixed(3) }));
@@ -185,12 +206,61 @@
         o.push({ kind: j >= 348 ? 'porc' : (j >= 324 ? 'skunk' : (j >= 300 ? 'arm' : 'bunny')),
           steps: st, s3: mamSeatN(B, fit, 1, 1), sD: mamSeatN(B, fit, st[0], st[1]), sT: mamSeatN(B, fit, 6, 6) }); }
       return o; },
+    desSeat() { const o = [];                       // DESERT ground-seat decomposition: every term the y servo feeds on, so a float can be blamed on the term that actually produced it
+      for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j]; if (!B || !B.init || (B.kind | 0) !== 2) continue;
+        const spD = DESERTS[((j - MAM_END) / DES_PER) | 0]; if (!spD) continue;
+        const fit = MAMFIT[spD.name]; if (!fit) continue;
+        const th = B.th || 0, hx = Math.sin(th), hz = Math.cos(th);
+        let gF = -1e9, gN = 1e9, gS = -1e9;           // FINE scan (13x13) of the WHOLE footprint (gF/gN) and of the WEIGHT-BEARING middle MAM_SPAN of it (gS) — the clip/float ground truth the coarse seat is an approximation of
+        for (let u = -6; u <= 6; u++) for (let v = -6; v <= 6; v++) {
+          const sa = fit.hd * u / 6, sc = fit.hw * v / 6;
+          const q = navWalkStand(B.x + hx * sa + hz * sc, B.z + hz * sa - hx * sc);
+          if (q > gF) gF = q; if (q < gN) gN = q;
+          if (Math.abs(u) <= 6 * MAM_SPAN && q > gS) gS = q; }
+        const seatG = mamSeatG(B, fit), fwd = navGroundAt(B.x + hx * 3, B.z + hz * 3);
+        const bot = B.y - fit.seat;                  // world y of the model's LOWEST occupied layer (see mamFitOf: seat = h/2 - z0)
+        let vinS = 0, vinF = 0;                      // model voxels vs terrain voxels, the honest clip test — the model's lowest 3 layers against the real column
+        for (let u = -2; u <= 2; u++) for (let v = -1; v <= 1; v++) {
+          const wb = Math.abs(u) <= 1;               // |u| <= 1 maps to the weight-bearing middle; |u| = 2 is the overhang the seat deliberately lets graze
+          const sa = fit.hd * (wb ? MAM_SPAN * u : u / 2), sc = fit.hw * (wb ? MAM_SPAN * v : v);
+          const px = B.x + hx * sa + hz * sc, pz = B.z + hz * sa - hx * sc;
+          const bx = gwrap(Math.floor(px), WX), bz = gwrap(Math.floor(pz), WZ) * WX * WY;
+          let hit = 0;
+          for (let y = Math.round(bot); y <= Math.round(bot) + 2 && y < WY; y++) { const w = W[bx + y * WX + bz]; if (w && solidTab[w] === 1) { hit = 1; break; } }
+          if (hit) { vinF++; if (wb) vinS++; } }
+        let vg = -1e9;                               // …and the SAME question asked of the VOXELS: navWalkStand deliberately refuses a surface more than one step above the heightmap, so a body standing on a boulder top reads as floating to any nav-based metric. This one cannot be fooled that way.
+        for (let u = -2; u <= 2; u++) for (let v = -1; v <= 1; v++) {
+          const px = B.x + hx * (fit.hd * u / 2) + hz * (fit.hw * v), pz = B.z + hz * (fit.hd * u / 2) - hx * (fit.hw * v);
+          const bx = gwrap(Math.floor(px), WX), bz = gwrap(Math.floor(pz), WZ) * WX * WY;
+          for (let y = Math.min(WY - 2, Math.round(bot) + 2); y >= 1; y--) {
+            const w = W[bx + y * WX + bz]; if (!w || solidTab[w] !== 1) continue;
+            if (y + 1 > vg) vg = y + 1; break; } }
+        o.push({ j, sp: spD.name, x: +B.x.toFixed(2), y: +B.y.toFixed(2), z: +B.z.toFixed(2), th: +th.toFixed(2),
+          bot: +bot.toFixed(2), seatG: +seatG.toFixed(2), fwd: +fwd.toFixed(2), tgt: +Math.max(seatG, fwd).toFixed(2),
+          lag: +(bot - Math.max(seatG, fwd)).toFixed(2),
+          fwdLift: +(Math.max(seatG, fwd) - seatG).toFixed(2),
+          floatF: +(bot - gF).toFixed(2),
+          floatN: +(bot - gN).toFixed(2),
+          floatS: +(bot - gS).toFixed(2),          // …over the weight-bearing span only: negative here is real sinking, not the deliberate nose/tail graze
+          sl: +((navWalkStand(B.x + hx * 4, B.z + hz * 4) - navWalkStand(B.x - hx * 4, B.z - hz * 4)) / 8).toFixed(3),
+          vg: vg, vfloat: +(bot - vg).toFixed(2),   // vfloat = the VOXEL gap under the model's lowest layer: > 0 is real air
+          vinS: vinS, vinF: vinF,                  // …and the CLIP question asked directly and without saturation: how many footprint columns have a SOLID voxel inside the model's own lowest three layers. vinS counts only the weight-bearing middle, because the nose/tail overhang is deliberately allowed to graze (see MAM_SPAN) and counting it would score the design as a bug
+          gF: +gF.toFixed(2), gN: +gN.toFixed(2), gS: +gS.toFixed(2), steps: mamSeatSteps(fit), hd: fit.hd, hw: fit.hw, seat: fit.seat,
+          dp: +Math.hypot(B.x - P.x, B.z - P.z).toFixed(1) }); }
+      return o; },
     mushAt, MUCELL, boulderAt, BCELL,                // …and the mushroom and boulder placers, for the same reason: a floater test has to be able to stand in front of one
     logAt, LGCELL,                             // the generator's own fallen-log placement, so a test can drive straight to one instead of hunting the forest for a 14%-per-96m candidate
     logIds() { if (!LOGV) return null;              // which palette ids the ground log is built from, and whether each is one the PINE TRUNK uses
       const ids = [...new Set(LOGV.vox.map((p) => p >>> 24))];
       return ids.map((i) => ({ id: i, col: palette[i], isTrunkBark: woodIds.indexOf(i) >= 0, wood: !!woodTab[i] })); },
     barkIds() { return woodIds.map((i) => ({ id: i, col: palette[i] })); },
+    shrubIds() { return SHRUBC.concat(SHRUBF).map((i) => ({ id: i, col: palette[i], solid: !!solidTab[i], decor: !!decorTab[i], wood: !!woodTab[i], axe: !!axeOnlyTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i], cactus: !!cactusTab[i], isTrunkBark: woodIds.indexOf(i) >= 0, models: SHRUBV.length })); },   // the SHRUB pair and what every material table says about each. These are LOW ids (the first two RECLAIMED, the rest minted beside them), inside the blanket solidity sweep's range, so `solid:false` is the assertion that the sweep really was undone. The first four are the GREEN ramp and the last six the FLOWER ramp, and both quote CACTUS colours on the shrubs' own ids: diff col against __vb.modelIds('cactus') mapped through the palette to check that, and `cactus:false` is the assertion that quoting those colours did not also hand a bush a saguaro's sting. Compare against __vb.modelIds('shrub') — anything the models wear that is not listed here is a colour that escaped the loader's map
+    shrubCount(x, z, r) { let n = 0, lo = 1e9, hi = -1e9; const R = r || 512;   // how many shrub CANDIDATES survive in a world-space square around (x,z) — the honest density read, independent of what has actually streamed in. It also reports the desertM range it sampled, because a count of 0 means nothing unless you know you were standing in the desert
+      for (let cz = Math.floor((z - R) / SHCELL); cz <= Math.floor((z + R) / SHCELL); cz++)
+        for (let cx = Math.floor((x - R) / SHCELL); cx <= Math.floor((x + R) / SHCELL); cx++) if (shrubAt(cx, cz)) n++;
+      for (let dz = -R; dz <= R; dz += R >> 2) for (let dx = -R; dx <= R; dx += R >> 2) { const d = desertM(x + dx, z + dz); if (d < lo) lo = d; if (d > hi) hi = d; }
+      const side = R * 2 / 10;
+      return { n, sideM: side, perHa: +(n / (side * side / 10000)).toFixed(1), everyM: n ? +Math.sqrt(side * side / n).toFixed(1) : null, dmMin: +lo.toFixed(2), dmMax: +hi.toFixed(2), models: SHRUBV.length }; },
     lilyIds() { return LILYIDS.map((i) => ({ id: i, col: palette[i], decor: !!decorTab[i], solid: !!solidTab[i], folia: !!foliaTab[i], wood: !!woodTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i], sup: SUP.CLASS[i] })); },   // the LILY PAD palette ids and what every material table says about each — the pads are parsed in SHARE mode, so this is the one honest read that marking them choppable did not also mark something else
     isWoodId(id) { return !!woodTab[id | 0]; },
     isRockId(id) { return isRockSurf(id | 0); },     // is THIS id stone (strata, boulder or ore)? — lets a test find rock buried under a snow blanket, which isRockTop cannot (it stops at the snow)
@@ -314,7 +384,42 @@
       return cells.length;
     },
     supFlushNow() { return supFlush(true); },          // run the resolver to completion, ignoring the time slice — tests must not have to guess how many frames a cascade takes
-    eat() { return tryEat(); },                      // one bite, exactly what a right-click does
+    eat() { return tryEat(); },
+    // ── THE DESERT BED (2026-08-15) ── the palindrome loop has no element and fires no events, so nothing in
+    // snd() above can see it and there is no `ended` a test could count. This is the whole state: how far the
+    // load got, which PASS of the palindrome is sounding and which way that pass runs, the live gain against
+    // the forest bed it hands over with, and what the rebuilt buffer cost.
+    desAmb(probe) { return desAmbState(probe); },   // desAmb(64) also SAMPLES the rebuilt buffer for the reflection that makes it a palindrome
+    cactProbe(x, y, z) { return cactusHurtAt(x, y, z); },
+    cactNear() {                                          // how far IS the nearest cactus voxel from where the player can actually stand, at body height?
+      // `gap` is the number the hurt test actually asks about: the clearance between the player's COLLISION
+      // BOX and the voxel's own cube, not centre-to-centre. Centre-to-centre reads ~HW (2.6) too large and was
+      // what made three earlier reaches look plausible; a gap of ~0 is a body pressed against the plant, and
+      // anything <= CACT_MARGIN stings. `chebyshev` is kept beside it purely so old measurements still compare.
+      const cid = new Set(__vb.modelIds('cactus')); let best = 1e9, bestC = 1e9, at = null;
+      const y0 = Math.floor(P.y), y1 = Math.floor(P.y + HEIGHT - 0.1);
+      for (let dx = -8; dx <= 8; dx++) for (let dz = -8; dz <= 8; dz++) for (let yy = y0; yy <= y1; yy++) {
+        const x = Math.floor(P.x) + dx, z = Math.floor(P.z) + dz;
+        if (!cid.has(W[gwrap(x, WX) + yy * WX + gwrap(z, WZ) * WX * WY])) continue;
+        const g = Math.max(Math.max(x - (P.x + HW), (P.x - HW) - (x + 1), 0), Math.max(z - (P.z + HW), (P.z - HW) - (z + 1), 0));
+        if (g < best) { best = g; bestC = Math.max(Math.abs(P.x - (x + 0.5)), Math.abs(P.z - (z + 0.5))); at = [x, yy, z]; }
+      }
+      return { gap: best > 1e8 ? -1 : +best.toFixed(3), chebyshev: bestC > 1e8 ? -1 : +bestC.toFixed(2), margin: CACT_MARGIN, at, playerY: +P.y.toFixed(2) };
+    },   // test the CONTACT TEST itself, without moving the player (tp gets resolved upward)
+    cactDbg() { let n = 0; for (let i = 0; i < 256; i++) if (cactusTab[i]) n++;
+      return { tabbed: n, hitHere: cactusHurtAt(P.x, P.y, P.z, P.crouch ? CR_HEIGHT : HEIGHT), pos: [+P.x.toFixed(1), +P.y.toFixed(1), +P.z.toFixed(1)], idHere: W[gwrap(Math.floor(P.x), WX) + (P.y | 0) * WX + gwrap(Math.floor(P.z), WZ) * WX * WY] }; },
+    geckoDbg() { const o = []; for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
+      if (!B || !B.init) continue; const sp = ((j - MAM_END) / DES_PER) | 0;
+      if (!DESERTS[sp] || DESERTS[sp].name !== 'gecko') continue;
+      o.push({ j, d: +Math.hypot(P.x - B.x, P.z - B.z).toFixed(1), chase: +(B.chase || 0).toFixed(1) }); } return o; },
+    meatFor(j) { return dropsMeat(j | 0); },              // does a kill in this slot leave meat? the drop path's own predicate
+    meatSpecies() { const o = {}; for (let i = 0; i < DESERTS.length; i++) o[DESERTS[i].name] = dropsMeat(MAM_END + i * DES_PER); return o; },
+    vit() { return { hp: +VIT.hp.toFixed(3), food: VIT.food, sat: +VIT.sat.toFixed(3), exh: +VIT.exh.toFixed(3), timer: VIT.timer,
+      hits: VIT.hits, calm: +VIT.calm.toFixed(1), hpMax: VIT_HP_MAX, foodMax: VIT_FOOD_MAX, sprintOK: vitSprintOK(), foods: Object.keys(vitFoods()).length }; },
+    vitSet(hp, food, sat) { if (hp !== undefined) VIT.hp = hp; if (food !== undefined) VIT.food = food; if (sat !== undefined) VIT.sat = sat; return __vb.vit(); },
+    hearts(v) { if (v !== undefined) heartShow = v ? 1 : 0; return { shown: !!heartShow, item: HEART_IT, n: HEART_N, hp: VIT.hp, hearts: +(VIT.hp / (VIT_HP_MAX / HEART_N)).toFixed(3), pose: { ...HEART_POSE } }; },   // the floating health voxels: read the state, or pass false to hide them (the A/B lever for the composite block's cost)
+    vitHurt(n, why) { vitHurt(n, why || 'a test'); return __vb.vit(); },
+    vitGive(it) { const k = addItem(it || MEAT_IT); for (let i = 0; i < slots.length; i++) if (slots[i] && slots[i].it === (it || MEAT_IT)) { selSlot = i; break; } return { added: k, hand: __vb.hand() }; },                      // one bite, exactly what a right-click does
     knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; }, pickId() { return PICK_IT; }, shovelId() { return SHOVEL_IT; }, bowId() { return BOW_IT; }, meatId() { return MEAT_IT; }, hoeId() { return HOE_IT; }, spearId() { return SPEAR_IT; },
     escMenu(v) { locked = !v; lockEl.classList.toggle('hidden', locked); cursSync(); return { locked }; },   // drive the esc menu headlessly: under ?cdp there is no pointer lock, so pointerlockchange never fires and this path is otherwise untestable
     dropMeatAt(x, y, z) { if (!MEAT_IT) return null; dropMeat({ x, y, z }); return __vb.dropsInfo(); },   // drop meat on demand, for tests and for looking at it
@@ -375,7 +480,7 @@
     },                     // stone-knife item id — it cuts like the axe at half the sphere
     lifeDump() {                                     // live creatures + how many voxels each model carries — sizing data for the dynamic shadow volume
       const o = [];
-      for (let j = 0; j < 372; j++) { const B = wbf[j]; if (!B || !B.init) continue;
+      for (let j = 0; j < DES_END; j++) { const B = wbf[j]; if (!B || !B.init) continue;
         o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(1), y: +((B.kind|0)===5 ? (B.perchFeet||0) : B.y).toFixed(1), z: +B.z.toFixed(1),
                  stamped: B.sN | 0 }); }
       return o;
@@ -1008,7 +1113,7 @@
     kill() { tryKillCreature(); return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: force a kill-attempt from the current camera*/
     testBurst() { const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch), fx = Math.sin(P.yaw) * cp, fy = sp, fz = Math.cos(P.yaw) * cp; spawnDeathBurst(P.x + fx * 12, smoothEye + fy * 12 - 2, P.z + fz * 12); return true; },   /*TEMP-DEBUG: fire a death poof 12 vox ahead of the camera*/
     killProbe() { const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch), vx = Math.sin(P.yaw) * cp, vy = sp, vz = Math.cos(P.yaw) * cp; let best = null;   /*TEMP-DEBUG*/
-      for (let wk = 0; wk < 372; wk++) { const B = wbf[wk]; if (!B || !B.init) continue; const dx = B.x - P.x, dy = (B.y + 2) - smoothEye, dz = B.z - P.z, dh = Math.hypot(dx, dz), d3 = Math.hypot(dx, dy, dz);
+      for (let wk = 0; wk < DES_END; wk++) { const B = wbf[wk]; if (!B || !B.init) continue; const dx = B.x - P.x, dy = (B.y + 2) - smoothEye, dz = B.z - P.z, dh = Math.hypot(dx, dz), d3 = Math.hypot(dx, dy, dz);
         if (!best || d3 < best.d3) best = { wk, dh: Math.round(dh), d3: Math.round(d3), dot: +((dx * vx + dy * vy + dz * vz) / d3).toFixed(2), by: Math.round(B.y) }; }
       return { player: [Math.round(P.x), Math.round(smoothEye), Math.round(P.z)], nearest: best }; },
     mamBox(it0) { const it = itemsRef && itemsRef[(it0 | 0) - 1]; if (!it || !it.cells) return null;   // the OCCUPIED extent of a model, which is not its box: a .vox frame is padded, and seating a body on the padding is how it ends up hovering

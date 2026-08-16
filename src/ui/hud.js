@@ -30,6 +30,7 @@
   let gpuPrevDone = Promise.resolve();                 // completion of frame N-1 — pacing on it keeps 2 frames in flight, CPU prep overlaps GPU work
   const prevCam = { pos: [0, 0, 0], right: [1, 0, 0], up: [0, 1, 0], fwd: [0, 0, 1], tanH: 1, aspect: 1, jit: [0, 0] };   // pos in WORLD coords
   let heldOff = null;                                  // the held item's anchor in CAMERA space (right/up/fwd) — where the bow actually sits, so an arrow can leave from IT and not the player's middle
+  const heldBob = [0, 0];                              // …and the VIEW-MODEL BOB alone (walk sway + idle breathing, x/y in the same camera units), split out of that anchor so the health row can ride the same rig without inheriting the tool's pose, swing or swap. Written once per frame in tick-camera, read by the heart block below it — one expression, so the row and the hand can never sway differently.
   const FOV = 72 * Math.PI / 180;
 
   finishLoad();                                        // world ready → sweep the meter to full SMOOTHLY (the trickle owns 0→90; this is the last 90→100)

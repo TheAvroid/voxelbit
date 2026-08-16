@@ -1,8 +1,19 @@
-    for (let wk = 0; wk < 372; wk++) {
+    for (let wk = 0; wk < DES_END; wk++) {
       const B = wbf[wk];
       if (B.slain) continue;                           // KILLED BY THE PLAYER (user): a slain slot never recycles or re-places — the creature is gone for the session (kill already cleared its stamp; init=false keeps it out of every emit/census)
       if (B.rag) continue;                             // RAGDOLLED: the rigid body IS the animal now. Steering, animating or emitting it again would draw a second copy standing where it used to be while the real one falls.
-      const porcSlot = wk >= 348, skunkSlot = wk >= 324 && wk < 348, armSlot = wk >= 300 && wk < 324, bunnySlot = wk >= 276 && wk < 300, fishSlot = wk >= 244 && wk < 276, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
+      const desSlot = wk >= MAM_END, desSp = desSlot ? ((wk - MAM_END) / DES_PER) | 0 : 0;
+      const DES_FPS = { scorpion: 12 };                   // ── PER-SPECIES ANIMATION RATE ── unlisted species keep the 24 fps house rule
+      const DES_SPD = { desert_mouse: 32, gecko: 32 };    // ── PER-SPECIES TRAVEL SPEED ── doubled from the shared 16 (user). Purely spatial: animClk accumulates raw dt and never reads speed, so the animation rate is unchanged
+      // ── WHO BOLTS WHEN YOU GET CLOSE (user 2026-08-15) ── doubles its travel speed inside DES_DASH_R. Applied
+      // to the SPEED, not to the animation rate, so the gecko keeps its 24 fps gait and simply covers ground
+      // faster — the same split the mouse's speed doubling used.
+      const DES_DASH = { gecko: 2, desert_mouse: 2 }, DES_DASH_R = 70;   // the mouse bolts too (user 2026-08-16), on the same radius and the same x2 the gecko uses
+      const DES_HUNT = { cobra: 1, scorpion: 1 };         // ── WHO HUNTS THE PLAYER ── (user 2026-08-15)                   // ── PER-SPECIES ANIMATION RATE ── the scorpion reads slow at the house 24 (user 2026-08-15); everything unlisted stays 24
+      const antLead = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) === 0;   // ── THE ANT COLUMN'S HEAD ── slot 0 of the ant band is the only ant that decides anything: it marches on the compass (its own branch in the steering chain below), and every other ant is PLACED on the path it recorded. Keyed on the NAME like desFly, so re-ordering the load list cannot promote some other animal to leader.
+      const desFly = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'fly';   // ── THE FLY FLIES (user 2026-08-15) ── keyed on the NAME, not the index, so re-ordering the load list cannot silently turn some other animal into a flyer
+      const DES_FLY_UP = 16;                             // …and rides this much higher than a butterfly's glide line   // ── DESERT CREATURES ── appended after the mammals, DES_PER slots per species, species index off the slot the same way the fish take B.fsp
+      const porcSlot = wk >= 348 && wk < MAM_END, skunkSlot = wk >= 324 && wk < 348, armSlot = wk >= 300 && wk < 324, bunnySlot = wk >= 276 && wk < 300, fishSlot = wk >= 244 && wk < 276, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
       const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
       const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
       // ── ORPHANED (user 2026-08-05: "killing the mom kills all the baby ducks — each duck has to be killed")
@@ -12,9 +23,10 @@
       // A merely RECYCLED mother (walked out of range, window recentred) still takes her babies with her —
       // that is population churn far from the player, not a kill, and the pair must recycle together.
       const orphan = isBaby && !!mom5.slain;
-      const wantK = (bunnySlot || armSlot || skunkSlot || porcSlot) ? 2 : (fishSlot ? 6 : (lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)))));   // BUNNIES + ARMADILLOS + SKUNKS + PORCUPINES are kind 2 (worm machinery) — the slot band, not the kind, tells them apart at emit/AI
-      const isDfly = wantK === 0 && nDfly > 0 && waterSpots.length > 0 && wk >= nAct - nDfly;   // DRAGONFLIES take the TOP of the active flyer band — butterflies only give up slots when there is water in view   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-243 PERCHED SONGBIRDS (180), 244-259 FISH
-      const active = porcSlot ? (wk - 348 < nPorcupine)
+      const wantK = desFly ? 0 : desSlot ? 2 : (bunnySlot || armSlot || skunkSlot || porcSlot) ? 2 : (fishSlot ? 6 : (lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)))));   // BUNNIES + ARMADILLOS + SKUNKS + PORCUPINES are kind 2 (worm machinery) — the slot band, not the kind, tells them apart at emit/AI
+      const isDfly = !desSlot && wantK === 0 && nDfly > 0 && waterSpots.length > 0 && wk >= nAct - nDfly;   // !desSlot: a desert slot number is far above nAct, so this would call the fly a dragonfly and then refuse to place it anywhere but water   // DRAGONFLIES take the TOP of the active flyer band — butterflies only give up slots when there is water in view   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-243 PERCHED SONGBIRDS (180), 244-259 FISH
+      const active = desSlot ? (desSp < DESERTS.length && ((wk - MAM_END) % DES_PER) < nDesertOf(desSp))
+        : (porcSlot ? (wk - 348 < nPorcupine)
         : (skunkSlot ? (wk - 324 < nSkunk)
         : (armSlot ? (wk - 300 < nArmadillo)
         : (bunnySlot ? (wk - 276 < nBunny)
@@ -22,7 +34,7 @@
         : (lilySlot ? (wk - 64 < nCard)
         : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && (orphan ? B.init : (mom5.init && sib < (mom5.nBab || 0))))   // a duckling exists only while its mother does, up to her brood size — unless she was KILLED, in which case it carries on alone until it is killed too
-        : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct)))))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles  [three extra ) close the porcSlot + skunkSlot + armSlot branches]
+        : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct))))))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles  [three extra ) close the porcSlot + skunkSlot + armSlot branches]
       if (ED.on || dead || !active || (porcSlot ? !PORCUPINE_WALK.length : (skunkSlot ? !SKUNK_WALK.length : (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length)))))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck/skunk/porcupine) must clear its stamp
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
@@ -88,7 +100,7 @@
             if (!L9) break;                            // every pool already holds its size-capped share → add no more fish
             sx = L9.x + (Math.random() - 0.5) * 24; sz = L9.z + (Math.random() - 0.5) * 24;
             hcx = Math.floor(sx / FLY_CELL); hcz = Math.floor(sz / FLY_CELL);   // a home cell → the leash keeps it in its pool, the recycle judges by home like a butterfly's
-          } else if (wantK === 0 || wantK === 2) {     // BUTTERFLY / WORM: take a procedural home rather than a random point on the ring
+          } else if (!desSlot && (wantK === 0 || wantK === 2)) {   // desSlot deliberately falls through to the ANNULUS below: the home-finders (findWormHome/findSkunkHome/…) pick from procedural grids that do no biome test, so a desert creature routed through one is placed in the forest and then rejected by the gate on every retry — it would simply never spawn     // BUTTERFLY / WORM: take a procedural home rather than a random point on the ring
             const h = wantK === 0 ? findFlyHome(wk) : (porcSlot ? findPorcHome() : (skunkSlot ? findSkunkHome() : (armSlot ? findArmHome() : (bunnySlot ? findBunnyHome() : findWormHome(wk))))); if (!h) break;
           if (wantK === 2) {                           // a home inside a trunk is unreachable, and the leash below would grind the worm against it forever
             const tc = treeAt(Math.floor(h.x / TCELL), Math.floor(h.z / TCELL));
@@ -100,10 +112,43 @@
             const d5 = Math.sqrt(LIFE_IN * LIFE_IN + Math.random() * (LIFE_OUT * LIFE_OUT - LIFE_IN * LIFE_IN));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
             sx = P.x + Math.sin(a5) * d5; sz = P.z + Math.cos(a5) * d5;
           }
+          const antHeel = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) > 0;
+          if (antHeel) {
+            const ld = wbf[wk - 1];                    // hatch behind the ant ahead, in line order — the duckling spawn, minus the water tests
+            if (!ld || !ld.init) continue;             // …and NEVER anywhere else. Falling through to the annulus put followers 130-600 voxels from
+            sx = ld.x - Math.sin(ld.th) * 3.2 + (Math.random() - 0.5) * 1.2;   // their leader, and at 16 vox/s they never closed it before being recycled.
+            sz = ld.z - Math.cos(ld.th) * 3.2 + (Math.random() - 0.5) * 1.2;   // Waiting a frame for the leader is free — the retry loop comes straight back.
+          }
+          if ((desertM(sx, sz) > 0.85) !== desSlot) continue;   // ── BIOME GATE, BOTH WAYS ── the desert band wants open desert and nothing else does. 0.85 (not 0.5) is an ADMIT test for the desert creatures, so none of them stands in the dithered treeline; for every other band it is the original reject, one notch stricter.  // was: NO LIFE IN THE DESERT (user) ── placed on the ONE annulus every land, flying and worm spawn funnels through, after both the home-finder and the fallback branch have chosen a point, so no species can route around it
           if (sx <= rect.xlo + 4 || sx >= rect.xhi - 4 || sz <= rect.zlo + 4 || sz >= rect.zhi - 4) continue;   // NEVER spawn outside the GENERATED rect — hmap there is garbage (the snow-landing guard; embedded 'cave' creatures after recenters)
           sx7 = sx; sz7 = sz;
           const gS = bfSurf(sx, sz);
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
+          // ── DESERT LIFE SPREADS OUT (user 2026-08-15: "there shouldnt be geckos right next to each other") ──
+          // The desert band was the ONE band with no spacing floor: every other kind has had a tooClose gate for
+          // ages (mammals 70, ducks 200, fireflies 40, fish 14) and desSlot was simply never wired into any of
+          // them, so its 42 creatures were placed by uniform random darts. Uniform random is not even — it
+          // CLUMPS (Poisson), which is exactly the pair of touching geckos. There is no shortage of room: the
+          // annulus is ~934k vox², so the mean gap is already ~105 vox overall and ~280 within a species. The
+          // floors below are about a HALF of those means, which is the usual Poisson-disc working point.
+          // TWO floors, because one cannot do both jobs: the same-species one is what the user actually sees
+          // (six geckos reading as a litter), the cross-species one just stops a pile-up of mixed bugs.
+          if (desSlot && !antHeel) {
+            // RELAXED BY TRY, so a floor can never STARVE a slot. Near the biome edge only a slice of the
+            // annulus passes the desertM gate, and a hard floor there would leave slots permanently uninit —
+            // i.e. fewer creatures, a worse bug than the one being fixed. Try 0 demands the full gap and the
+            // last try demands nothing, so a cramped spot still fills, just less evenly.
+            // CUBIC, and it now bottoms out at HALF rather than at zero. Cubic because a linear decay had
+            // already given away half the gap by try 5. The floor under it is the newer part: letting spread
+            // reach 0 meant the last try placed with NO spacing at all, which is how a pair ends up touching.
+            // With the desert thinned to ~31 bodies in a ~934k vox² annulus even the full 160 is easy to
+            // satisfy, so half of it is never a starvation risk — measured, the population still fills.
+            const spread = 1 - 0.5 * Math.pow(tries / 11, 3);
+            const sp0 = MAM_END + desSp * DES_PER;
+            if (tooClose(sp0, sp0 + DES_PER, DES_APART * spread)) continue;
+            if (tooClose(MAM_END, DES_END, DES_APART_ANY * spread)) continue;
+          }
+          if (desSlot && wantK === 2 && !navSand(sx, sz)) continue;   // ── NO DESERT WALKER STARTS ON A ROCK OR A CACTUS (user 2026-08-16) ── the same rule its every step is judged by, asked once at placement. Without it a body placed on stone spends its whole life in the egress path, which is the one branch that moves without asking. The forest's own version of this test (isRockSurf over the MAMFIT footprint, below) is deliberately left where it is: it answers a different question, about worldgen strata, for a band this change does not touch.
           if ((bunnySlot || armSlot || skunkSlot || porcSlot) && tooClose(276, 372, 70)) continue;   // CROSS-SPECIES floor: never spawn a land mammal within 70 vox of ANY live mammal (bunny/armadillo/skunk/porcupine) — breaks up the multi-species KNOTS (user: skunk 24 vox from a bunny etc.). 70 was count-starving under NEAREST-FIRST (even 24 left skunk 2 short — rejects had nowhere else to go), but the HASH-ORDER scatter retries land anywhere in the disc, so counts hold (measured 14/14/14/14).
           // ── NO LAND MAMMAL STARTS ON STONE (user 2026-08-07) ── this used to sample ONE column, at the spawn
           // point, and reject only when it found GREY three voxels deep. Two ways through it: a boulder or a
@@ -143,7 +188,7 @@
           // (worms no longer use tooClose: their homes are already 160 vox apart by the cell grid, and testing against other worms' CRAWLING positions made placement depend on where they had got to)          // worms spread WIDE — never bunched (user, doubled with the population)
           if (wantK === 3 && tooClose(16, 20, 200)) continue;         // mother ducks spawn ≥200 vox apart → at most ~2 families fit on a typical lake (user: 'only 1-2 per lake')
           if (wantK === 4 && tooClose(40, 55, 12)) continue;          // lilies scatter
-          const sy = wantK === 6 ? (bfBed(sx, sz) + WL) * 0.5 : (wantK === 2 ? gS + 2 : (wantK === 3 ? WL + 4 : (wantK === 4 ? WL + 1.4 : bfGlide(sx, sz) + (wantK ? 9 : 14))));   // fish hang at MID-DEPTH; ducks/lilies float; duck FEET sit inside the water voxel layer
+          const sy = wantK === 6 ? (bfBed(sx, sz) + WL) * 0.5 : (wantK === 2 ? gS + ((desSlot && DESERTS[desSp] && MAMFIT[DESERTS[desSp].name]) ? MAMFIT[DESERTS[desSp].name].seat : 2) : (wantK === 3 ? WL + 4 : (wantK === 4 ? WL + 1.4 : (desFly ? DES_FLY_UP : 0) + bfGlide(sx, sz) + (wantK ? 9 : 14))));   // fish hang at MID-DEPTH; ducks/lilies float; duck FEET sit inside the water voxel layer
           if (wantK === 6 || ((wantK === 2 || !bfRoofed(sx, sy, sz)) && !bfObst(sx, sy, sz))) {   // a fish spot was already fully validated (real deep water) — bfObst would see the WATER voxels as solid and reject every one; worms live happily UNDER the canopy — the roof test starved dense-forest placement ('worms only near spawn')
             B.x = sx; B.z = sz; B.y = sy; placed = true;
             const cx = Math.floor(sx / 64), cz = Math.floor(sz / 64);   // color = spatial hash of the 64-vox cell → world-anchored variety, all 3 colors present
@@ -169,7 +214,7 @@
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.turnAcc = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0;   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash, panic or wound-up yaw (turnAcc: a recycled duck inheriting most of a circle reads its very first bank as an over-wound spin and unwinds the long way round for nothing)
+        B.om = 0; B.omT = 0; B.turnAcc = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0; B.trail = undefined;   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash, panic, wound-up yaw or (ant leader) RECORDED PATH: a stale trail is a line of followers snapped back to where the previous occupant walked (turnAcc: a recycled duck inheriting most of a circle reads its very first bank as an over-wound spin and unwinds the long way round for nothing)
         // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading.
         // THIS LINE WAS DEAD: it used to sit after a `//` on the line above, so the trailing comment ate it. The
         // bunny is the one creature whose position is ASSIGNED rather than integrated (B.x = B.bpx + bake offset),
@@ -321,6 +366,36 @@
         B.x = B.bpx + lx; B.z = B.bpz + lz; B.bOy = off[1] || 0;   // baked bob (oy) is lifted in the emit
         B.th = (B.bst !== 0 && off[3] && off[3].length) ? cardTh(B.bst === 1 ? B.bh + 1 : B.bh + 3) : cardTh(B.bh);   // the baked 90° yaw sits on frames 6-10 → the facing SNAPS there, exactly like the editor (no manual interp)
         B.om = 0; B.omT = 0; B.bspd = 0; B.animClk = B.bfclk / 24;   // kill the shared glide/steering; animClk (=frames/24) feeds the emit's frame index
+      } else if (antLead) {                          // ── THE ANT MARCHES ON THE COMPASS (user 2026-08-16: "just have it move forward. when it want to turn, rotate the ant 90 degrees") ──
+        // The leader's whole controller, and it REPLACES the worm arbiter's scored heading fan for this one
+        // slot rather than post-processing it. Rounding the fan's output was tried on paper and cannot work:
+        // the fan re-rolls a wander of ±0.7 rad ABOUT THE CURRENT HEADING, which is narrower than the 0.785
+        // a quarter turn needs, so a quantised fan marches dead straight forever — and widening it to reach
+        // the boundary puts the ant back to flickering across it. An INTEGER heading is the honest way to say
+        // "cardinal": B.ah indexes ANT_DIR, a turn is ±1 on it, and a diagonal is not expressible.
+        // The MOVER below is deliberately untouched — it still translates along B.th and still gates the step
+        // on navLandOK — so the ant keeps the band's brake, step rule and egress. Only the choosing changed.
+        B.animClk = (B.animClk || 0) + dt;
+        if (B.ah === undefined) { B.ah = ((Math.round(B.th / (Math.PI / 2)) % 4) + 4) % 4; B.aTurnT = 0; B.aesc = 0; B.aWhim = tb3 + ANT_WHIM; }   // the spawn heading, snapped to the nearest cardinal once
+        const antOK = (h) => { const tx = B.x + ANT_DIR[h & 3][0] * ANT_LOOK, tz = B.z + ANT_DIR[h & 3][1] * ANT_LOOK, gA = bfSurf(tx, tz);
+          return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObstW(tx, gA + 2, tz) && !bfObstW(tx, gA + 3, tz); };   // the WORM'S OWN step rule, asked ANT_LOOK voxels down a cardinal — so a heading the ant picks is one the mover will accept
+        const antTurn = (d) => {                       // ── THE QUARTER TURN ── instant (one frame), and it pins a crumb AT THE CORNER first…
+          if (B.trail && B.trail.length) B.trail.unshift({ x: B.x, z: B.z, th: B.th });   // …so the recorded path stays a polyline of exactly axis-aligned segments: every follower then turns on the same spot the leader did instead of cutting the corner across one 0.75-voxel diagonal chord
+          B.ah = (B.ah + d) & 3; B.aTurnT = tb3 + ANT_TURN_HOLD;
+        };
+        if (!antOK(B.ah) || B.antBlk) {                // BLOCKED — either the lookahead refuses the lane, or the mover refused the actual step last frame (the backstop: the two predicates are close but not identical, and an ant that cannot move must never just grind)
+          if (tb3 > B.aTurnT) {                        // commit to ONE side and hold it for ANT_TURN_HOLD, exactly as the marching mammals do, so a corner can never become a spin
+            if (!B.aesc) B.aesc = antOK(B.ah + 1) ? 1 : (antOK(B.ah + 3) ? 3 : 1);
+            antTurn(B.aesc);
+          }
+        } else {
+          B.aesc = 0;                                  // clear again — the next block gets a fresh choice of side
+          if (tb3 > B.aWhim) { B.aWhim = tb3 + ANT_WHIM + Math.random() * ANT_WHIM;
+            if (Math.random() < ANT_WHIM_P) { const t = Math.random() < 0.5 ? 1 : 3; if (antOK(B.ah + t)) antTurn(t); } }   // …and an unblocked ant still turns now and then, 50/50 left or right, but only onto a lane it can actually walk
+        }
+        B.antBlk = 0;
+        B.th = Math.atan2(ANT_DIR[B.ah][0], ANT_DIR[B.ah][1]);   // the ONE writer of B.th for this ant, and always exactly a cardinal — so the mover's step, the render yaw and every crumb it records are axis-aligned by construction
+        B.om = 0; B.omT = 0;                           // kill the eased turn integrator: it is the continuous controller this branch exists to replace, and any non-zero om would drift B.th back off the compass one frame later
       } else if (B.kind === 2 && NAVARB) {              // ── WORM, ON THE ARBITER ── the crawl had FOUR writers of B.th: a random wander, a keep-apart push, a two-probe obstacle turn, and the home leash further down. Three of them used bfSurf — the HEIGHTMAP — while the mover's step rule used it at a different distance, so the planner could commit to a heading the mover then refused every frame, which is the whole of the 6 s/creature-min the band was losing. One scored fan at 12 Hz on ONE predicate replaces all four.
         B.animClk = (B.animClk || 0) + dt;
         if (tb3 > B.tRe) { B.navWander = B.th + (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }   // the WANDER survives as a score term instead of a direct omT write. Same two RNG draws at the same cadence as the line it replaces, so a seeded A/B still lines up.
@@ -335,12 +410,18 @@
             if (l2 > WORM_LEASH * WORM_LEASH) { const il = 1.6 / Math.sqrt(l2); gx8 -= lx * il; gz8 -= lz * il; } }
           const gOn = gx8 * gx8 + gz8 * gz8 > 0.01;
           const gc8 = navGroundAt(B.x, B.z);
-          navSteer2(B, navLandOK(B.x, B.z, gc8, NAV_WUP, NAV_WDN, NAV_WCLR),
-            (th7, L7) => navReachLand(B.x, B.z, th7, L7, gc8, NAV_WUP, NAV_WDN, NAV_WCLR),
+          navSteer2(B, navLandOK(B.x, B.z, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot),
+            (th7, L7) => navReachLand(B.x, B.z, th7, L7, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot),
             NAV_WREACH, 2 * NAV_WN, gOn ? Math.atan2(gx8, gz8) : 0, gOn, 2.6, 2.4);   // the same ±2.6 clamp and 2.4 gain the keep-apart push used, so the crawl's turn character is unchanged
         }
       } else if (B.kind === 2) {                       // WORM: smooth continuous meandering crawl (the random pause was removed — user)
         B.animClk = (B.animClk || 0) + dt;
+        // ── ANT LINES (user 2026-08-15) ── the duckling follow-chain, reused whole. Slot 0 of a species is the
+        // leader and 1..DES_PER-1 heel behind it, each steering for a point just behind the one AHEAD rather
+        // than all at the leader — a chain, not a star — and falling back up the chain when a link dies. This
+        // works here only because two things do NOT apply to the desert band: the keep-apart repulsion below
+        // scans slots 32..64 (worms) so ants never shove each other out of line, and the home leash is gated on
+        // B.hcx, which the annulus spawn never sets for them. Either would have fought the formation.
         const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
           return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObstW(ax, gA + 2, az) && !bfObstW(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance (bfObstW passes small ground clutter)
         if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }
@@ -534,8 +615,57 @@
       if (B.kind === 4) { B.th += B.spin * dt; Hx2 = Math.sin(B.mth); Hz2 = Math.cos(B.mth); }   // lily: spin the MODEL (th) freely while drifting along mth
       else { Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }
       const spd5 = iceLock ? 0 : (B.kind === 6 ? (B.spd || 6) : (B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? (B.chase > 9 ? 10 : (B.chase > 3.5 ? 7 : 1.5)) : 7)   // fish ride their live burst-glide speed; lilies drift; ducklings hustle when behind, dawdle at heel
-        : (B.kind === 2 ? ((bunnySlot || armSlot || skunkSlot || porcSlot) ? (B.bspd || 0) : 16) : (B.kind === 1 ? 26 : 56)))));   // bunny/armadillo/skunk/porcupine drive their OWN motion (bspd 0 → no shared glide); worm 1.6 m/s (continuous), firefly 2.6, butterfly 5.6  [extra ) closes the iceLock ternary]
+        : (B.kind === 2 ? ((bunnySlot || armSlot || skunkSlot || porcSlot) ? (B.bspd || 0) : (desSlot && DESERTS[desSp] ? ((B.chase > 6 ? 34 : (B.chase > 3.6 ? 22 : (B.chase > 0 ? 13 : 0))) || DES_SPD[DESERTS[desSp].name] || 16) * ((DES_DASH[DESERTS[desSp].name] && ((P.x - B.x) * (P.x - B.x) + (P.z - B.z) * (P.z - B.z)) < DES_DASH_R * DES_DASH_R) ? DES_DASH[DESERTS[desSp].name] : 1) : 16)) : (B.kind === 1 ? 26 : 56)))));   // bunny/armadillo/skunk/porcupine drive their OWN motion (bspd 0 → no shared glide); worm 1.6 m/s (continuous), firefly 2.6, butterfly 5.6  [extra ) closes the iceLock ternary]
       const mamSlot = bunnySlot || armSlot || skunkSlot || porcSlot;   // the LAND MAMMALS share B.kind 2 with the worm but drive their own march; the worm's arbiter wiring is theirs alone
+      // ── DESERT STEERING OVERRIDE ── runs AFTER both kind-2 branches have chosen a heading, because the
+      // desert creatures take the NAV-ARBITER branch (wormArb below is true for them) and anything written
+      // into the plain worm branch never executes for them at all. Setting B.omT here wins either way.
+      if (desSlot && (B.kind | 0) === 2) {
+        const desLine = DESERTS[desSp] && DESERTS[desSp].name === 'ant';
+        const desIdx = (wk - MAM_END) % DES_PER;
+        // ── ANT FOLLOWERS ARE NO LONGER STEERED AT ALL ── they are PLACED on the leader's own path, after the
+        // move, further down this loop. Steering them could not work and the measurements say why: a follower
+        // aimed at a point behind the leader's INSTANTANEOUS heading, and its turn-rate cap gives it a minimum
+        // turn radius of 4.6-12.1 voxels against a 3.2 voxel spacing. Since each ant's own jittery heading was
+        // the reference for the next one, the error amplified down the chain — a string instability. Measured
+        // gaps ran 6.8 / 17.4 / 25.5 / 29.4 / 30.9 against an intended 3.2, they overtook each other (slot
+        // order matched travel order in only 20% of frames) and passed straight through one another.
+        if (desLine && desIdx > 0) B.chase = 0;
+        // ── THE HUNTERS ── cobra and scorpion steer AT the player instead of wandering. The mammals' flee
+        // maths inverted: they maximise the dot with the away vector, this maximises it with the toward one.
+        if (desSlot && DESERTS[desSp] && DES_HUNT[DESERTS[desSp].name]) {
+          const hdx = P.x - B.x, hdz = P.z - B.z, hd2 = hdx * hdx + hdz * hdz;
+          if (hd2 < 90 * 90) {
+            let dth8 = Math.atan2(hdx, hdz) - B.th; dth8 = Math.atan2(Math.sin(dth8), Math.cos(dth8));
+            B.omT = Math.max(-2.8, Math.min(2.8, dth8 * 2.2));
+            B.tRe = tb3 + 1e9;
+            // CONTACT. This used to call die() outright — the comment here noted that the moment a health
+            // counter existed this is where it would be decremented instead, and that is now what happens.
+            // A cobra bites harder than a scorpion, and both have a cooldown so standing in one cannot drain
+            // the whole bar in a single second.
+            // ── 6.5, NOT 2.2, AND THE OLD NUMBER WAS UNREACHABLE ── hd2 is CENTRE to CENTRE, and the player's
+            // own half-width is HW = 2.6, so a snake pressed against the player is already 2.6+ away before
+            // its own body is counted: the 2.2 test could never be true and the cobra never bit at all. The
+            // scorpion only ever landed the one hit it got while closing head-on. 6.5 is the player's half
+            // width plus the attacker's, plus a little, so a creature CIRCLING at contact range keeps testing
+            // true and keeps biting on the cooldown — which is what the user asked for. Exactly the same
+            // mistake the cactus contact test made; see cactusHurtAt, where the fix was a box sweep.
+            // ── THE REACH IS THE ANIMAL'S OWN SIZE, NOT A CONSTANT ── measured: at contact the SCORPION sits
+            // 4.7 away with its centre 3.7 above the player's feet, but the COBRA sits 12.2 away with its
+            // centre 8.4 up. It is a 19-segment model, so its bulk holds it further out and its seat lifts
+            // its centre far higher — a single pair of constants cannot cover both, and every constant tried
+            // so far (2.2, then 6.5) simply excluded the cobra, which is why it never bit ONCE while the
+            // scorpion stung fine. Both bounds now scale with the creature's own MAMFIT footprint and seat.
+            const fB = DESERTS[desSp] ? MAMFIT[DESERTS[desSp].name] : null;
+            const bReach = 5.0 + (fB ? fB.hd : 2), bRise = 4.0 + (fB ? fB.seat : 2);
+            if (!dead && !P.fly && hd2 < bReach * bReach && Math.abs(P.y - B.y) < bRise && tb3 > (B.bitT || 0)) {
+              B.bitT = tb3 + 1.0;
+              const cobra = DESERTS[desSp].name === 'cobra';
+              vitHurt(cobra ? 5 : 3, cobra ? 'a cobra struck you' : 'a scorpion stung you');
+            }
+          }
+        }
+      }
       const wormArb = NAVARB && (B.kind | 0) === 2 && !mamSlot;
       const gcW = wormArb ? navGroundAt(B.x, B.z) : 0;   // the worm's OWN travel surface, from the field — one number shared by its brake, its step test and its y servo, so all three agree on where the ground is
       let mv5 = spd5 * dt, nx5, nz5;                 // the frame's step LENGTH as its own variable, so the flyer brake has something to cap
@@ -546,7 +676,7 @@
         mv5 = navBrake2(B, (th7, L7) => navReach2(duckFit, B.x, B.z, th7, L7), mv5, dt, NAV_DLOOK, NAV_DBCLR, NAV_DBRK2);
         nx5 = B.x + Hx2 * mv5; nz5 = B.z + Hz2 * mv5; }
       else if (NAVBRK && wormArb) {                   // ── WORM, ON THE BRAKE ── the mover translates along B.th, which lags the planned heading while the eased turn integrator catches up; capping the step by the reach of the lane actually being crawled means the step can no longer END past it
-        mv5 = navBrake2(B, (th7, L7) => navReachLand(B.x, B.z, th7, L7, gcW, NAV_WUP, NAV_WDN, NAV_WCLR), mv5, dt, NAV_WLOOK, NAV_WBCLR, NAV_WBRK2);
+        mv5 = navBrake2(B, (th7, L7) => navReachLand(B.x, B.z, th7, L7, gcW, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot), mv5, dt, NAV_WLOOK, NAV_WBCLR, NAV_WBRK2);
         if (B.navClear < NAV_WLOOK && B.navRe - tb3 > 0.034) B.navRe = tb3 + 0.034;   // a braking worm re-plans at 30 Hz instead of 12 — a slowed creature must not creep at the obstacle for the rest of an 83 ms tick
         nx5 = B.x + Hx2 * mv5; nz5 = B.z + Hz2 * mv5; }
       else if (NAVBRK && B.kind < 2) { mv5 = navBrakeAir(B, mv5, dt);
@@ -555,9 +685,9 @@
       else { nx5 = B.x + Hx2 * spd5 * dt; nz5 = B.z + Hz2 * spd5 * dt; }   // EVERY OTHER BAND KEEPS THE ORIGINAL EXPRESSION, CHARACTER FOR CHARACTER. `Hx2 * mv5` is not `Hx2 * spd5 * dt`: float multiply does not reassociate, and routing a worm through the flyer's variable moved its step by 1 ULP a frame — enough to send a 240 s soak down a different trajectory and make a chaotic re-roll look like a regression in a band this change does not touch. ?nobrake is now bit-exact for kinds 2-6.
       let stepOK;
       if (B.kind === 2 && NAVARB && !mamSlot) {        // ── WORM, THE SAME ANSWER THE FAN SCORED WITH ── so "the planner chose a move the mover refuses" is not expressible
-        navMoveK[2]++; stepOK = navLandOK(nx5, nz5, gcW, NAV_WUP, NAV_WDN, NAV_WCLR);
+        navMoveK[2]++; stepOK = navLandOK(nx5, nz5, gcW, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot);   // …and for the DESERT band the same predicate also refuses a rock or a cactus outright, so it walks around one instead of up it (user 2026-08-16)
         if (!stepOK) { navRejK[2]++; B.navRe = 0;       // a rejection can only mean the world moved under the worm between sense ticks, so it forces an immediate re-plan
-          if (!navLandOK(B.x, B.z, gcW, NAV_WUP, NAV_WDN, NAV_WCLR)) { stepOK = true; navEgrK[2]++; } }   // ── EGRESS ── the worm is already OUTSIDE the travelable set (a tree landed on it, it streamed in beside rock). Refusing the step would pin it there until the mercy recycle; it crawls out along its heading instead. Displacement, never a teleport.
+          if (!navLandOK(B.x, B.z, gcW, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot)) { stepOK = true; navEgrK[2]++; } }   // ── EGRESS ── the worm is already OUTSIDE the travelable set (a tree landed on it, it streamed in beside rock). Refusing the step would pin it there until the mercy recycle; it crawls out along its heading instead. Displacement, never a teleport.
       } else if (B.kind === 2) {                        // STEP-AWARE crawl: accept the move if the destination surface is land, within a 2-voxel step, and clear at ITS height AND above the body
         const gN = bfSurf(nx5, nz5);
         stepOK = gN > WL + 0.5 && Math.abs(gN - bfSurf(B.x, B.z)) <= 2 && !bfObstW(nx5, gN + 2, nz5) && !bfObstW(nx5, gN + 3, nz5);
@@ -592,9 +722,72 @@
           Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
         }
       }
-      if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; B.noMove = 0; }   // fast trap decay: only SUSTAINED blockage accumulates toward a recycle
-      else {
+      // ── NEITHER BIOME'S LIFE WALKS INTO THE OTHER'S (user 2026-08-16) ── the SPAWN gate further up already
+      // admits desert species only where desertM > 0.85 and everything else only outside it, but that is a
+      // one-time test: nothing stopped a bunny strolling east into the sand or a scorpion into the pines.
+      // This refuses the STEP itself, at the midline rather than at the spawn threshold, so a creature turns
+      // back at the boundary instead of being trapped inside the narrower band it was born in. Only walkers
+      // are gated (kind 2): fish and ducks live in water that crosses the border, and flyers are not the
+      // complaint. A creature that somehow starts on the wrong side is NOT frozen — the test only refuses a
+      // step that would move it further in, so it can always walk home.
+      if (stepOK && (B.kind | 0) === 2) {
+        // 0.85, the SAME threshold the spawn gate admits on — not 0.5. Measured at 0.5, forest walkers showed
+        // up on the "desert" side in 15% of samples, and they were not trespassing: forest life legally spawns
+        // anywhere up to dm 0.85, so a midline test called a large legal band wrong and the creatures were
+        // simply standing where they were born. Matching the spawn threshold makes the two agree.
+        const dmN = desertM(nx5, nz5) > 0.85;
+        if (dmN !== !!desSlot && dmN !== (desertM(B.x, B.z) > 0.85)) stepOK = false;
+      }
+      if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; B.noMove = 0; }
+      // ── THE ANT COLUMN ── a breadcrumb snake. The LEADER walks normally and drops a crumb every ANT_CRUMB
+      // voxels; each follower is then placed at a fixed ARC LENGTH back along that recorded path, facing along
+      // it. Following the leader's PATH rather than its current heading is the whole fix — the path is what a
+      // real column walks, and it cannot oscillate because it is history, not a moving target.
+      // Placed kinematically (B.x/B.z/B.th written directly) rather than steered, which also puts the ants out
+      // of the nav arbiter's reach — the arbiter used to rewrite their heading 12 times a second.
+      if (desSlot && (B.kind | 0) === 2 && DESERTS[desSp] && DESERTS[desSp].name === 'ant') {
+        const aIdx = (wk - MAM_END) % DES_PER;
+        if (aIdx === 0) {
+          if (!B.trail) B.trail = [{ x: B.x, z: B.z, th: B.th }];
+          const t0 = B.trail[0];
+          const md = Math.hypot(B.x - t0.x, B.z - t0.z);
+          if (md >= ANT_CRUMB) {
+            B.trail.unshift({ x: B.x, z: B.z, th: B.th });   // the heading rides ALONG WITH the crumb: it is the cardinal the leader walked to reach this point, so a follower can wear it verbatim instead of re-deriving it from the chord
+            // enough crumbs to cover the whole column with room to spare, and no more: an unbounded trail on a
+            // creature that lives for minutes is a slow leak.
+            const need = Math.ceil((DES_PER * ANT_GAP) / ANT_CRUMB) + 4;
+            if (B.trail.length > need) B.trail.length = need;
+          }
+        } else {
+          const lead = wbf[wk - aIdx];
+          if (lead && lead.init && lead.trail && lead.trail.length > 1) {
+            // ── THE PATH STARTS AT THE LEADER'S LIVE POSITION, NOT AT ITS LAST CRUMB ── this walked from
+            // tr[0], and a crumb is only pushed once the leader has moved a whole ANT_CRUMB (0.75) from the
+            // previous one. So the head of the measured path JUMPED forward 0.75 at a time while the leader
+            // itself glided, and every follower inherited that stutter: the leader read as moving smoothly
+            // off-grid and the line behind it as stepping from cell to cell (user 2026-08-16). Prepending the
+            // leader's live x/z makes the arc length continuous, and costs one array entry per frame.
+            let want = aIdx * ANT_GAP, k = 0, acc = 0;
+            const tr = [{ x: lead.x, z: lead.z, th: lead.th }, ...lead.trail];
+            while (k < tr.length - 1) {
+              const seg = Math.hypot(tr[k + 1].x - tr[k].x, tr[k + 1].z - tr[k].z);
+              if (acc + seg >= want) break;
+              acc += seg; k++;
+            }
+            if (k < tr.length - 1) {
+              const seg = Math.max(1e-4, Math.hypot(tr[k + 1].x - tr[k].x, tr[k + 1].z - tr[k].z));
+              const f = Math.max(0, Math.min(1, (want - acc) / seg));
+              B.x = tr[k].x + (tr[k + 1].x - tr[k].x) * f;
+              B.z = tr[k].z + (tr[k + 1].z - tr[k].z) * f;
+              B.th = tr[k].th !== undefined ? tr[k].th : Math.atan2(tr[k].x - tr[k + 1].x, tr[k].z - tr[k + 1].z);   // face the way the leader WENT — the crumb's OWN recorded heading, not the chord between two crumbs. They agree to the last bit on a straight run, but the chord across a corner crumb is a diagonal, and reading it would have been the one place a follower ever pointed off the compass.
+              B.trap = 0; B.stuck = 0; B.noMove = 0;   // it is riding a path the leader already proved walkable
+            }
+          }
+        }
+      }
+      if (!stepOK) {                                 // ── THE STEP WAS REFUSED ── written as its own test, NOT as an `else`: the ant-column block above was inserted between `if (stepOK)` and this branch, which silently re-bound the `else` to the ANT test — so every non-ant creature in the pool ran the blocked path on every frame, escape probes and all, however well its step had gone.
         B.trap = (B.trap || 0) + dt;                   // blocked (cornered) — count it
+        if (antLead) B.antBlk = 1;                     // …and the ant's compass reads this next frame as "turn": its lookahead and the mover's gate are close but not the same predicate, so this is what guarantees a leader can never grind at a wall the lookahead called clear
         // ── HARD ANTI-STALL (user: "fish are still getting stuck on rocks and terrain") ── `trap` is NOT a reliable
         // stuck signal for a fish: the escape below clears it whenever it finds *somewhere* to nudge toward, so a fish
         // wedged where its 10-voxel body fits NO heading jiggles on the spot with trap pinned at 0 and never reaches
@@ -641,6 +834,7 @@
       const gLoc = bfSurf(B.x, B.z);                   // the actual ground right here
       const gAir = (NAVARB && B.kind < 2 && nvOn) ? Math.max(gLoc, nvTopAir(nvIdx(B.x, B.z))) : gLoc;   // ── FLYERS TAKE THEIR GROUND FROM THE FIELD ── bfSurf is ONE column of hmap clamped to sea level; the field's travel surface is the MAX over the 2×2 and counts decor and rock the heightmap never saw. Leaving the altitude servo on bfSurf floored butterflies BELOW the surface the predicate measures clearance from, so every frame the mover refused a move the planner had just approved — the exact planner/mover split the arbiter exists to close, reintroduced on the vertical axis.
       const yPrev5 = B.y;                            // total vertical motion this frame is budget-capped below — branches must never STACK into a visible jump
+      let yBudD = 0;                                 // …and a SEATED creature may raise that budget to its own pace (see the desert servo below); 0 leaves the shared 30/34 exactly as it was
       if (B.kind === 2) {                              // WORM / BUNNY: rides the terrain SMOOTHLY — target blends the ground AHEAD (starts the ramp before a step) and eases at a gentle rate
         // ── ONE SEAT FOR ALL FOUR LAND MAMMALS (user 2026-08-07: "do they all behave the same way?") ── they did
         // not. The ground SOURCE was tied to arbiter membership: `mamArb ? navWalkStand : bfSurf`, and the bunny is
@@ -649,9 +843,16 @@
         // frames, by up to 3 voxels — bfSurf is blind to the rock and decor stamped on top of it, which is precisely
         // what a body gets seated inside. Which planner an animal uses and which surface its feet rest on are
         // different questions; only the second one belongs here, and it is now the same answer for every mammal.
-        const fitM = bunnySlot ? MAMFIT.bunny : (armSlot ? MAMFIT.arm : (skunkSlot ? MAMFIT.skunk : (porcSlot ? MAMFIT.porc : null)));
+        const fitM = desSlot ? (DESERTS[desSp] ? MAMFIT[DESERTS[desSp].name] : null) : bunnySlot ? MAMFIT.bunny : (armSlot ? MAMFIT.arm : (skunkSlot ? MAMFIT.skunk : (porcSlot ? MAMFIT.porc : null)));   // …and the desert band, or its measured seat is dead data: without a branch here every one of them falls to the worm default (yoff = 2), which is 1.5 voxels of air under a 1-voxel ant and buries the lower half of a 9-voxel cobra
         const gW = wormArb ? gcW : (fitM ? navWalkStand(B.x, B.z) : gLoc);
-        const gFwd = wormArb ? navGroundAt(B.x + Hx2 * 3, B.z + Hz2 * 3) : (fitM ? navWalkStand(B.x + Hx2 * 3, B.z + Hz2 * 3) : bfSurf(B.x + Hx2 * 3, B.z + Hz2 * 3));
+        // ── THE FORWARD LOOK IS A SEAT, SO IT READS THE SEAT'S SURFACE ── it used to be keyed on arbiter
+        // membership rather than on having a footprint at all, which sent the desert band (wormArb) to
+        // navGroundAt: the RAW 2x2 cell top, with no clutter subtracted and none of navWalkStand's step-up
+        // sanity. A saguaro three voxels ahead was therefore a legal answer to "how high is my floor", and the
+        // creature rose 20 voxels up its side without ever stepping onto it. Anything with a MAMFIT now takes
+        // this from the same plane mamSeatG does — and, in the desert, under the same sand rule.
+        const gFwd = fitM ? mamStandAt(B.x + Hx2 * 3, B.z + Hz2 * 3, desSlot)
+          : (wormArb ? navGroundAt(B.x + Hx2 * 3, B.z + Hz2 * 3) : bfSurf(B.x + Hx2 * 3, B.z + Hz2 * 3));
         const yoff = fitM ? fitM.seat : 2, yflr = fitM ? fitM.seat : 1.6;   // the lift is the MODEL's own half-height above its lowest occupied layer (see MAMFIT), so a new animal can never inherit another's by accident
         // ── A BODY IS NOT A COLUMN (user 2026-08-07: "it appears to clip through the terrain") ── mamSeatG scans
         // the model's own occupied footprint, oriented by heading, and reduces with MAX; the forward look folds
@@ -659,7 +860,7 @@
         // that lands between two ground heights. The WORM keeps its 2:1 blend below: it is 3 voxels long, so its
         // body really is a column.
         let gBody = gW;
-        if (fitM) { gBody = mamSeatG(B, fitM); if (gFwd > gBody) gBody = gFwd; }
+        if (fitM) { gBody = mamSeatG(B, fitM, desSlot); if (gFwd > gBody) gBody = gFwd; }
         const gT7 = (fitM ? gBody : (gW * 2 + gFwd) / 3) + yoff;   // the WORM keeps its blend: it is 3 voxels long, so its body really is a column
         // ── THE SERVO IS PACED IN VOXELS TRAVELLED, NOT SECONDS (user 2026-08-07: "still not making contact when
         // going DOWN steeper terrain") ── 12 vox/s and tau = 1/7 s were authored against a 9 vox/s armadillo. The
@@ -672,7 +873,23 @@
         // voxels of TRAVEL for every mammal instead of 3.4 for a walking skunk and 6.9 for a fleeing one.
         // aspd is 9 for the armadillo/porcupine and undefined for the bunny and the worm, so kV7 is exactly 1.0
         // there and every product is bit-identical: x * 1.0 === x, and (7 * 1.0) * dt is the same double as 7 * dt.
-        const kV7 = fitM ? Math.max(1, (B.aspd || 9) / 9) : 1;
+        // The DESERT band never had a pace to scale by: B.aspd is written only by the land mammals' own marcher, so
+        // every one of the seven fell to the 9 vox/s default and rode the armadillo's servo at 32 vox/s (64 when a
+        // gecko bolts inside DES_DASH_R). That is the SAME defect this line was written to fix for the skunk, and it
+        // is why the float got worse the faster the animal moved. Their pace is spd5, the shared glide they are
+        // actually advanced by. Bit-identical everywhere else: a mammal short-circuits on B.aspd, and the bunny and
+        // the worm are not desSlot, so `0 || 9` is the same 9 the old expression produced.
+        const kV7 = fitM ? Math.max(1, (B.aspd || (desSlot ? spd5 : 0) || 9) / 9) : 1;
+        // ── AND THE GLOBAL BUDGET IS PART OF THE SERVO ── the 30/34 vox/s clamp below is applied to every creature
+        // AFTER these branches, so raising the servo's own rate alone changed almost nothing on a steep descent: a
+        // gecko bolting at 64 vox/s down a 1:2 slope needs 32 vox/s of drop and the clamp only allowed 30, which is
+        // where the last of the float lived (measured: 10 voxels of air, held for ~0.5 s at a time). The CLIMB side is
+        // the same defect pointing the other way — it undoes the hard body floor one line below, which is why the
+        // dashing gecko was also SINKING into steep ascents. The raised budget is 1.33x the animal's own travel speed,
+        // so the vertical rate can never outrun the horizontal one and a teleport stays unreachable. Scoped to the
+        // desert band: the fleeing skunk at 48 vox/s clips this same ceiling more mildly, and it is a shipped,
+        // signed-off animal — leaving yBudD at 0 keeps every other creature's arithmetic character for character.
+        if (desSlot) yBudD = 12 * kV7;
         B.y += Math.max(-12 * kV7 * dt, Math.min(12 * kV7 * dt, (gT7 - B.y) * (1 - Math.exp(-7 * kV7 * dt)) + Math.sign(gT7 - B.y) * 2 * kV7 * dt));
         if (B.y < gBody + yflr) B.y = gBody + yflr;    // hard body floor — the ease could lag uphill and sink it INTO the slope ('clips through the ground')
         if (bfObst(B.x, B.y, B.z)) B.y = gBody + yoff; // body ended up inside something (streamed terrain/step edge) — re-seat on the local surface instead of hiding+vanishing
@@ -750,11 +967,12 @@
         let stepY = (cruise - B.y) * (1 - Math.exp(-4 * dt)); // the old terrain-max stencil pinned cruise AT canopy height on any slope)
         stepY = Math.max(-26 * dt, Math.min(30 * dt, stepY)); // RATE-CAPPED — a reference jump must never become a visible teleport
         if (!(stepY > 0 && (bfObst(B.x, B.y + 3, B.z) || bfObst(B.x, B.y + 6, B.z)))) B.y += stepY;   // never ease UP into foliage overhead (two probes — gappy pine crowns fooled one)
-        if (B.y < B.gRef + 7) B.y = Math.min(B.gRef + 7, B.y + 34 * dt);   // floors are APPROACHED at climb speed, never snapped
+        if (B.y < B.gRef + 7 + (desFly ? DES_FLY_UP : 0)) B.y = Math.min(B.gRef + 7 + (desFly ? DES_FLY_UP : 0), B.y + 34 * dt);   // floors are APPROACHED at climb speed, never snapped
       }
-      if (B.kind < 2 && B.y < gAir + 6) B.y = Math.min(gAir + 6, B.y + 34 * dt);   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline); gAir so the floor and the feasibility predicate agree on where the ground is
+      if (B.kind < 2 && B.y < gAir + 6 + (desFly ? DES_FLY_UP : 0)) B.y = Math.min(gAir + 6 + (desFly ? DES_FLY_UP : 0), B.y + 34 * dt);   // the fly's floor rides DES_FLY_UP above every other flyer's   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline); gAir so the floor and the feasibility predicate agree on where the ground is
       if (NAVARB && B.kind < 2 && B.y !== yPrev5 && !navFitsAir(B.x, B.y, B.z) && navFitsAir(B.x, yPrev5, B.z)) { B.y = yPrev5; navVetoY++; }   // ── VERTICAL, SAME PREDICATE ── the altitude servo is the flyer's other motion axis and it used to write y with no feasibility test at all. It is not a teleport, so it is not rewritten here; it is VETOED by navFitsAir, so both axes now answer to one predicate.
-      if (B.jumpV === undefined) B.y = Math.max(yPrev5 - 30 * dt, Math.min(yPrev5 + 34 * dt, B.y));   // GLOBAL vertical budget: whatever the branches above did, the frame's total climb/descent stays at flutter speed — teleports impossible. A LEAPING salmon is exempt: its arc is real ballistics and this cap would flatten the rise and make the fall float.
+      if (B.jumpV === undefined) { const yDn9 = yBudD > 30 ? yBudD : 30, yUp9 = yBudD > 34 ? yBudD : 34;
+        B.y = Math.max(yPrev5 - yDn9 * dt, Math.min(yPrev5 + yUp9 * dt, B.y)); }   // GLOBAL vertical budget: whatever the branches above did, the frame's total climb/descent stays at flutter speed — teleports impossible. A LEAPING salmon is exempt: its arc is real ballistics and this cap would flatten the rise and make the fall float.
       if (B.kind === 6) {                              // ── FISH TERRAIN HITBOX ── a hard guarantee: never render with the body in terrain. If any part of the long body overlaps solid, RESOLVE it — push the centre out to the nearest clear spot (works WITH the repulsion, not against it); only if there's no clear spot within reach does it fall back to the last clear pose. This is the "hitbox for terrain, not for the player" the user asked for.
         const bodyClear6 = (cx6, cz6) => fishBodyAt(cx6, cz6, B.th, Math.floor(B.y), B.fhalf);   // same single body test as the planner and stepOK
         if (bodyClear6(B.x, B.z)) { if (B.jumpV === undefined) { B.cx = B.x; B.cy = B.y; B.cz = B.z; B.cth = B.th; } }   // clear → remember this pose AND ITS HEADING (never an AIRBORNE one: a later revert would teleport the fish back into the sky)
@@ -847,7 +1065,7 @@
                     pz3 + (Xw[2] * ex + Yw[2] * e[1] + zW[2] * e[2]) * bScale);
         }
       }
-      const nfr = B.kind === 6 ? FISHES[B.fsp || 0].n : (B.kind >= 3 ? 1 : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_NFRAMES : BUNNY_JUMP_NFRAMES) : (armSlot ? ARMADILLO_NFRAMES : (skunkSlot ? SKUNK_NFRAMES : (porcSlot ? PORCUPINE_NFRAMES : WORM_NFRAMES)))) : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES))));
+      const nfr = desSlot ? (DESERTS[desSp] ? DESERTS[desSp].n : 1) : B.kind === 6 ? FISHES[B.fsp || 0].n : (B.kind >= 3 ? 1 : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_NFRAMES : BUNNY_JUMP_NFRAMES) : (armSlot ? ARMADILLO_NFRAMES : (skunkSlot ? SKUNK_NFRAMES : (porcSlot ? PORCUPINE_NFRAMES : WORM_NFRAMES)))) : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES))));
       // ── THE SKUNK AND PORCUPINE RUN OFF THE SAME CLOCK IN BOTH RENDER PATHS (user 2026-08-07: "cut the
       // skunk's animation speed in half") ── it already had been, once, and it never showed: the GRID-STAMPED
       // path reads B.aframe, which carries the eased 12↔24 fps rate and the skunk's own ×0.5 on top, while
@@ -855,8 +1073,8 @@
       // and the animal the player was actually looking at ran at 24 fps — and jumped 4× the moment it crossed
       // the boundary. Same clock now, so the rate is what the marcher set, near and far alike.
       const fi3 = (B.kind === 2 && (skunkSlot || porcSlot)) ? (Math.floor(B.aframe || 0) % nfr)
-        : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * 24) % nfr)   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
-        : Math.floor((tb3 + wk * 0.37) * 24) % nfr;                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
+        : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * (desSlot && DESERTS[desSp] ? (DES_FPS[DESERTS[desSp].name] || 24) : 24)) % nfr)   // …and the desert rate applies HERE, which is the branch a kind-2 creature actually takes — putting it only on the line below meant the scorpion silently stayed at 24   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
+        : Math.floor((tb3 + wk * 0.37) * (desSlot && DESERTS[desSp] ? (DES_FPS[DESERTS[desSp].name] || 24) : 24)) % nfr;   // per-species rate for the desert set; everything else keeps the 24 fps house rule                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
       let glow = 0;
       if (B.kind === 1) {                              // GLOW (fireflies only): random dark spell, then the yellow abdomen holds BRIGHT for a full 2 s
         if (!B.glowT || now > B.glowT) { B.glow = !B.glow; B.glowT = now + (B.glow ? 2000 : 1500 + Math.random() * 3500); }
@@ -885,7 +1103,7 @@
       if (emitN >= EMIT_CAP) continue;                 // stage the pose (never emit directly) — the nearest are chosen after the loop
       const o4 = emitN * 16;
       emitBuf[o4] = rx * right[0] + ry * right[1] + rz * right[2]; emitBuf[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; emitBuf[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; emitBuf[o4 + 3] = bScale;
-      emitBuf[o4 + 7] = (B.kind === 6 ? FISHES[B.fsp || 0].item0 : (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_ITEM0 : BUNNY_JUMP_ITEM0) : (armSlot ? ARMADILLO_ITEM0 : (skunkSlot ? SKUNK_ITEM0 : (porcSlot ? PORCUPINE_ITEM0 : WORM_ITEM0)))) : (B.kind === 1 ? FFLY_ITEM0 : (B.dfly ? DFLY_ITEM0 : BFLY_COLS[B.col])))))) + fi3;
+      emitBuf[o4 + 7] = (desSlot ? (DESERTS[desSp] ? DESERTS[desSp].item0 : 0) : B.kind === 6 ? FISHES[B.fsp || 0].item0 : (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_ITEM0 : BUNNY_JUMP_ITEM0) : (armSlot ? ARMADILLO_ITEM0 : (skunkSlot ? SKUNK_ITEM0 : (porcSlot ? PORCUPINE_ITEM0 : WORM_ITEM0)))) : (B.kind === 1 ? FFLY_ITEM0 : (B.dfly ? DFLY_ITEM0 : BFLY_COLS[B.col])))))) + fi3;
       emitBuf[o4 + 11] = glow;
       // ── THE POSE THE RENDERER USED ── cached so the RAGDOLL can rebuild this creature's voxels in world
       // space at the instant it dies. Nothing extra is allocated: Xw/Yw/Zw are this frame's own arrays, and

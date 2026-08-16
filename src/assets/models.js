@@ -5,18 +5,71 @@
   setLoad(22); await stage('loading decorations…');
   // colour → existing palette id, for SHARE mode below. Built once on first use, so it sees every
   // colour the world registered before any item model is parsed.
-  const palShare = (r, g, b) => {
+  // ── TOLERANCE SHARE ── how near is "the same colour". A max-channel delta of 2/255 is under a
+  // percent and invisible on textured voxel art; the point is to stop minting a fresh slot for a
+  // shade the table already holds. Two rules make it safe, and both matter:
+  //   * DECOR_MIN floor — a loader must never be handed a SOLID id it did not ask for. solidTab is a
+  //     RANGE test (i < DECOR_MIN), so sharing downward would silently make a model's voxels collide.
+  //     The exact-match path above predates this and is left exactly as it was; only the new
+  //     tolerance path is restricted, so nothing that works today changes.
+  //   * palOwn skipped — for the reason it is skipped everywhere else: an own-ids model's set of ids
+  //     IDENTIFIES it (the pinecone/stick pickup bug).
+  // RAISED 6 -> 8 (2026-08-15, after the desert content landed). Same argument as below, one notch further and
+  // for the same reason: at 6 the table was full again and SIX colours were falling through to palNearest with
+  // NO bound, worst 15/255. At 8 nothing is substituted at all, 62 colours are reused instead of minted, 12
+  // slots stay free, and no colour anywhere is more than 8/255 from what the artist authored. Worst case 15 -> 8.
+  // ?paltol=6 puts it back.
+  // WHY 6 AND NOT 2 (measured 2026-08-15). This is not a quality sacrifice, it is the opposite, and the
+  // numbers are the argument. At tol=0 the table saturates and 19 colours fall through to palNearest, which
+  // is bounded by NOTHING — worst error 15/255 at boot alone, and far worse in play, where a porcupine brown
+  // once came back as a mushroom's olive. At tol=6 nothing is substituted at all (edSubs 0), 51 colours are
+  // reused instead of minted, and NO colour anywhere is more than 6/255 from what the artist authored. Worst
+  // case goes 15 -> 6 while 32 slots come free. Terrain is untouched at any tolerance: this only decides which
+  // id a NEW model colour gets, never what an existing id looks like, and it is floored at DECOR_MIN.
+  // ?paltol=N overrides for A/B; 0 restores the old exact-only behaviour.
+  const PAL_TOL = (() => { const m = /[?&]paltol=(\d+)/.exec(location.search); return m ? +m[1] : 8; })();
+  let palTolHits = 0;                                  // slots this saved — __vb.palAudit() reports it
+  const palTolErr = {};                                // max-channel delta -> how many colours landed there
+  const palTolIdx = new Map();                         // colour -> the id a TOLERANCE reuse gave it. Deliberately not palIdx: see the note at the call site
+  let palSnaps = 0;                                    // colours the FULL table turned away and substituted — the overflow depth
+  const palNearShare = (r, g, b) => {
+    let bd = 1e9, best = -1;
+    for (let i = DECOR_MIN; i < palette.length; i++) {
+      const c = palette[i]; if (!c || palOwn.has(i)) continue;
+      const d = Math.max(Math.abs(c[0] - r), Math.abs(c[1] - g), Math.abs(c[2] - b));
+      if (d <= PAL_TOL && d < bd) { bd = d; best = i; }
+    }
+    if (best < 0) return undefined;
+    palTolHits++; palTolErr[bd] = (palTolErr[bd] || 0) + 1;   // the error histogram is the whole quality argument: every reuse is bounded by PAL_TOL, while the palNearest substitution it REPLACES had no bound at all                                      // counts SLOTS saved, not queries — the caller caches the hit into palIdx below, so the same colour never walks this loop twice
+    return best;
+  };
+  // ── noTol: SHARE, BUT ONLY ON AN EXACT MATCH ── the tolerance below is right for scenery a player sees at
+  // 20 m and wrong for the thing in their hand. Measured 2026-08-15: at PAL_TOL 6, seven of the stone kit's 19
+  // authored colours were reused off by up to 6/255 (the user's "slightly off"). A held tool fills a third of
+  // the screen and is stared at constantly, so it mints its own id instead. Costs a handful of slots out of the
+  // headroom the tolerance itself freed - that is what the headroom is FOR.
+  const palShare = (r, g, b, noTol) => {
     if (!palIdx) { palIdx = new Map();
       for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (!c) continue;
         const k = (c[0] << 16) | (c[1] << 8) | c[2]; if (!palIdx.has(k)) palIdx.set(k, i); } }
     const k = (r << 16) | (g << 8) | b;
     let id = palIdx.get(k);
     if (id !== undefined && palOwn.has(id)) id = undefined;   // an exact colour match on a RESERVED id is not a match — fall through and mint (or snap to) something this model may legitimately share
+    if (id === undefined && PAL_TOL > 0 && !noTol) {   // ── TOLERANCE SHARE ── exact match was the ONLY way to reuse a slot, so a model colour one unit off a colour the table already held minted a whole new id. Measured: that is where the 256 ceiling actually went — the accidental near-duplicates are all up in the loader-minted decor range, not in the hand-authored ramps.
+      // The hit is cached in palTolIdx and NOT in palIdx, and that separation is the whole point. palIdx means
+      // "this exact colour is at this id". Writing a tolerance substitute into it made it lie, and the lie then
+      // defeated the noTol exemption below: the stone kit asked for its exact colour, hit the poisoned entry on
+      // the EXACT path, and got the substitute anyway. Measured as still 7/19 tools wrong after the exemption
+      // was added. Two maps, two meanings.
+      id = palTolIdx.get(k);
+      if (id === undefined) { id = palNearShare(r, g, b); if (id !== undefined) palTolIdx.set(k, id); }
+    }
     if (id === undefined) {
       if (palette.length < 256) { id = addCol(r, g, b); }
       else {                                           // FULL: nearest existing colour, never a 257th entry — an id past 255 wraps and takes a voxel's SOLIDITY with it. palNearest (assets/palette.js) is the same walk addCol's ceiling uses, and it skips reserved ids for the same reason: a full palette must not re-create the collision palOwn just refused.
         id = palNearest(r, g, b);
-        console.warn('[vb] palette full — item colour', r, g, b, 'snapped to id', id);
+        palSnaps++;                                    // ── HOW OVERSUBSCRIBED ── this path was a bare console.warn and did NOT feed palOver, so the table has been running past its ceiling silently: every colour here is a SUBSTITUTE the player is already looking at. Counting it is what tells you how many slots a new material actually has to find.
+        if (palSnaps <= 3) console.warn('[vb] palette full — item colour', r, g, b, 'snapped to id', id);
       }
       palIdx.set(k, id);
     }
@@ -24,7 +77,7 @@
   };
   // the whole SCENE: models plus the transform each shape node places them at. A multi-model .vox is an
   // animation, and its nTRN/nSHP nodes are where the author's relative placement lives.
-  const parseVoxScene = (pv, share) => {
+  const parseVoxScene = (pv, share, noTol) => {
     const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
     const models = [], shapes = [], trn = new Map(); const ppal = new Uint8Array(1024);
     const rdStr = (o) => { const n2 = pdv.getUint32(o, true); let t = ''; for (let i = 0; i < n2; i++) t += String.fromCharCode(pv[o + 4 + i]); return [t, o + 4 + n2]; };
@@ -54,14 +107,14 @@
     const cmap = new Map();
     const colId = (ci) => { let c = cmap.get(ci); if (c === undefined) {
       const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
-      c = share ? palShare(cr, cg, cb) : addCol(cr, cg, cb); cmap.set(ci, c); } return c; };
+      c = share ? palShare(cr, cg, cb, noTol) : addCol(cr, cg, cb); cmap.set(ci, c); } return c; };
     for (const sh of shapes) sh.t = trn.get(sh.node) || [0, 0, 0];
     // world-space origin of a model under a shape: MagicaVoxel translates the model's CENTRE
     const org = (sh, mi) => { const m = models[mi];
       return [sh.t[0] - (m.sx >> 1), sh.t[1] - (m.sy >> 1), sh.t[2] - (m.sz >> 1)]; };
     return { models, shapes, org, colId };
   };
-  const parseVoxAll = (pv, share) => {
+  const parseVoxAll = (pv, share, noTol) => {
     const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
     const models = []; const ppal = new Uint8Array(1024);
     const walk = (off, end) => { while (off + 12 <= end) {
@@ -82,7 +135,7 @@
         const ci = m.raw[i + 3];
         let cid = cmap.get(ci);
         if (cid === undefined) { const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
-          if (share) { cid = palShare(cr, cg, cb); } else { cid = addCol(cr, cg, cb); palOwn.add(cid); }   // own ids are RESERVED — see palOwn
+          if (share) { cid = palShare(cr, cg, cb, noTol); } else { cid = addCol(cr, cg, cb); palOwn.add(cid); }   // own ids are RESERVED — see palOwn
         cmap.set(ci, cid); }
         mvox.push(m.raw[i] | (m.raw[i + 1] << 8) | (m.raw[i + 2] << 16) | (cid << 24));
       }
@@ -90,7 +143,7 @@
     }
     return out;
   };
-  const parseVoxModel = (pv, share) => {                 // share: reuse an existing palette id for an exact colour match — ITEM-ONLY models (see the bow strip)
+  const parseVoxModel = (pv, share, noTol, colMap) => {  // share: reuse an existing palette id for an exact colour match — ITEM-ONLY models (see the bow strip). noTol: exact matches only, no tolerance reuse (held items)
     const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
     let sx = 0, sy = 0, sz = 0, pvox = null; const ppal = new Uint8Array(1024);
     const walk = (off, end) => { while (off < end) {
@@ -109,9 +162,44 @@
       const ci = pvox[i + 3];
       let cid = cmap.get(ci);
       if (cid === undefined) { const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
-        if (share) { cid = palShare(cr, cg, cb); } else { cid = addCol(cr, cg, cb); palOwn.add(cid); }   // own ids are RESERVED — see palOwn
+        // ── colMap: ONE SET OF OWN IDS ACROSS SEVERAL FILES ── cmap above only dedupes within a model, and
+        // own-ids deliberately never share, so N files carrying the same authored palette minted N copies of
+        // it (measured: two shrub .vox took 10 ids for 5 colours). Pass the same Map to each parse and the
+        // first file's ids are reused by the rest. It is filled on the way through, so the caller does not
+        // have to know the colours in advance.
+        const ck = (cr << 16) | (cg << 8) | cb;
+        if (colMap && colMap.has(ck)) { cid = colMap.get(ck); }
+        else if (share) { cid = palShare(cr, cg, cb, noTol); }
+        else { cid = addCol(cr, cg, cb); palOwn.add(cid); }   // own ids are RESERVED — see palOwn
+        if (colMap && !colMap.has(ck)) colMap.set(ck, cid);
         cmap.set(ci, cid); }
       mvox.push(pvox[i] | (pvox[i + 1] << 8) | (pvox[i + 2] << 16) | (cid << 24));   // cid<<24 may flip the sign bit — every reader uses bitwise ops, so that's fine
     }
     return { sx, sy, sz, vox: mvox };
+  };
+  // ── WHAT COLOURS DOES THIS .vox ACTUALLY USE ── the distinct RGBs its voxels reference, and NOTHING ELSE:
+  // no palette id is minted, shared or reserved by looking. That is the whole point. parseVoxModel decides an
+  // id the moment it meets a colour, so a caller that wants to choose the mapping itself — quantize a ramp,
+  // refuse a stray shade, spend a fixed budget — has to see every colour in every file BEFORE the first parse.
+  // Pre-reading is also what lets a hand-authored asset change shade count without the loader minting on a
+  // full table (the desert shrubs, assets/bow.js). A .vox palette holds 256 entries whatever the model uses,
+  // so the XYZI indices are read, not the RGBA chunk: an unused swatch left in the file is not a colour.
+  const voxColsUsed = (pv) => {
+    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+    let pvox = null; const ppal = new Uint8Array(1024);
+    const walk = (off, end) => { while (off < end) {
+      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
+      if (id === 'XYZI' && !pvox) { const n = pdv.getUint32(off + 12, true); pvox = pv.subarray(off + 16, off + 16 + n * 4); }
+      else if (id === 'RGBA') ppal.set(pv.subarray(off + 12, off + 12 + 1024));
+      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+      off += 12 + bsz + csz;
+    } };
+    walk(8, pv.length);
+    const seen = new Uint8Array(256), out = [];
+    if (pvox) for (let i = 3; i < pvox.length; i += 4) { const ci = pvox[i];
+      if (seen[ci]) continue; seen[ci] = 1;
+      out.push([ppal[(ci - 1) * 4], ppal[(ci - 1) * 4 + 1], ppal[(ci - 1) * 4 + 2]]);   // MagicaVoxel indices are 1-based and the RGBA chunk is not, exactly as parseVoxModel reads it
+    }
+    return out;
   };

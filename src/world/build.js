@@ -27,7 +27,7 @@
       if (!built) { poolQueue.length = 0; jobById.clear(); }
     }
     if (!built) for (let s = 0; s < 32; s++) {         // no pool (or it died mid-build) — the inline path regenerates everything identically
-      if (withStages) { setLoad(22 + s / 32 * 60); await stage('growing forest…'); }
+      if (withStages) { setLoad(22 + s / 32 * 60); await stage('growing desert…'); }
       genRegion(rect.xlo, rect.xhi, rect.zlo + (((bh * 2) * s) >> 5), rect.zlo + (((bh * 2) * (s + 1)) >> 5), true);
     }
     if (withStages) { setLoad(86); await stage('baking occupancy…'); }
@@ -76,6 +76,6 @@
     SPWZ = Math.round((Math.random() - 0.5) * 400000);
     console.log('[vb] spawn RANDOM', SPWX, SPWZ);
   }
-  { let g = 0; while ((H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random point over a huge basin can't loop forever
+  { let g = 0; while ((H(SPWX, SPWZ) <= WL + 6 || nearCave(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random point over a huge basin can't loop forever   // …and never onto SAND: quicksand (tick-body.js) swallows the player on any sandTab voxel, and fillColumn lays beach/lakebed sand on every `shore` column — h <= WL + 6, plus a dithered band above. The world is not built yet at this point so there is no voxel to read, but H is analytic and it is the same condition the surface branch uses, so WL + 6 rejects exactly the columns that could come up sand.
   winOX = Math.round(SPWX / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
 

@@ -37,7 +37,7 @@
     if (!PH.on || ED.on || iy < 1 || iy >= WY) return false;
     const id = W[gwrap(ix, WX) + iy * WX + gwrap(iz, WZ) * WX * WY];
     if (!id) return false;
-    for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];   // …and NOTHING alive gets carved (user): a stamped animal's voxels are not terrain
+    for (let wk = 0; wk < DES_END; wk++) { const B = wbf[wk];   // …and NOTHING alive gets carved (user): a stamped animal's voxels are not terrain
       if (!B || !B.init || !B.sB || !B.sN) continue;
       const q = B.sB;
       if (ix >= q[0] - 1 && ix <= q[3] + 1 && iy >= q[1] - 1 && iy <= q[4] + 1 && iz >= q[2] - 1 && iz <= q[5] + 1) return false;
@@ -122,7 +122,7 @@
     // (user). Candidates are filtered by distance ONCE, then tested along the arc. Their positions are
     // read at release, like the rest of the flight: the whole arc is integrated up front.
     const targets = [];
-    for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];
+    for (let wk = 0; wk < DES_END; wk++) { const B = wbf[wk];
       if (!B || !B.init || B.dying) continue;
       if (Math.abs(B.x - P.x) > 700 || Math.abs(B.z - P.z) > 700) continue;
       // ── AN ORIENTED BOX THE SIZE OF THE ANIMAL (user 2026-08-07: "improve the hitbox of the arrow against
@@ -226,7 +226,7 @@
     // hit on that creature, full stop (user).
     if (hitSlot < 0) {
       const ix = Math.round(px), iy = Math.round(py), iz = Math.round(pz);
-      for (let wk = 0; wk < 372; wk++) { const B = wbf[wk];
+      for (let wk = 0; wk < DES_END; wk++) { const B = wbf[wk];
         if (!B || !B.init || B.dying || !B.sB || !B.sN) continue;
         const q = B.sB;
         if (ix >= q[0] - 1 && ix <= q[3] + 1 && iy >= q[1] - 1 && iy <= q[4] + 1 && iz >= q[2] - 1 && iz <= q[5] + 1) { hitSlot = wk; break; }
@@ -279,7 +279,13 @@
   if (ROCKV) for (const p of ROCKV.vox) PICK_ROCK.add(p >>> 24);                 // the field stone (rock.vox) → rock item
   for (const sm of STICKV) for (const p of sm.vox) PICK_STICK.add(p >>> 24);     // stick_1/stick_2 → twig item
   const PICK_TWIG = new Set([...PICK_STICK, ...PICK_CONE]);   // the one set the right-click flood walks: a stick and a pinecone are told apart by the ids the COMPONENT turns out to contain, not by which set the first voxel matched. Kept as a union so the classifier still works if the two ever share ids again (they did — see palOwn).
-  const WORM_PASS = new Set([...PICK_CONE, ...PICK_STICK, ...PICK_ROCK]);        // worms crawl OVER small ground clutter (pinecones/sticks/field stones) instead of tripping on it → getting stuck → teleporting (user)
+  // ── SHRUBS ARE PASSABLE TO WILDLIFE, SOLID TO THE PLAYER (user 2026-08-16: "the cobra got stuck on a
+  // shrub") ── giving the shrubs a hitbox an hour earlier was the user's own request, and it immediately
+  // snagged a 19-segment snake on a knee-high bush. Both wants are satisfiable at once because they read
+  // DIFFERENT tables: the player collides through `solid()` on solidTab, while a walking creature asks
+  // nvClut/WORM_PASS. Listing the shrub ids here leaves the player's hitbox exactly as asked and lets the
+  // animals walk through, which is also what they did for the whole time the shrubs were soft.
+  const WORM_PASS = new Set([...PICK_CONE, ...PICK_STICK, ...PICK_ROCK, ...SHRUBC, ...SHRUBF]);        // worms crawl OVER small ground clutter (pinecones/sticks/field stones) instead of tripping on it → getting stuck → teleporting (user)
   const PASSTHRU = new Set([...GRASS, ...FERNIDS, WATER_T, WATER_B]);   // the pick ray sees through soft decor + water
   function floodScan(x, y, z, ids, cap) {              // READ-ONLY half of floodRemove: which cells the region covers, and which ids it is MADE of.
     const found = []; const kinds = new Set(); const q = [[x, y, z]]; const seen = new Set();   // `kinds` is what lets a caller tell two decorations apart when they share palette ids

@@ -207,7 +207,7 @@
     if (LIFE_UNI && UNI_BIRDS && uniTraced(B)) { if (B.sN) unstampWorm(B); uniBird(B, wk9, fiC, q, gx, gy, gz); return; }   // ?uni: same frame, same 4-way turn, same anchor - injected instead of stamped. Forked HERE, below the perch-support check, so both paths recycle a bird whose crown was felled on exactly the same rule. The unstamp is what makes the hybrid safe to cross INWARD: without it the bird would be drawn twice, once out of W and once out of its slot.
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
-  const unstampAllWorms = () => { for (let j = 16; j < 372; j++) { const B = wbf[j]; if (B && B.sN) {   // ALL grid-stamped creatures: perched songbirds (64-243) + BUNNIES/ARMADILLOS/SKUNKS/PORCUPINES (276-371). Must cover the mammals too, or their stamps get unstamped one-by-one AFTER the editor's bricks.fill(0) and re-patch as floating chunks (user bug)
+  const unstampAllWorms = () => { for (let j = 16; j < DES_END; j++) { const B = wbf[j]; if (B && B.sN) {   // ALL grid-stamped creatures: perched songbirds (64-243) + BUNNIES/ARMADILLOS/SKUNKS/PORCUPINES (276-371). Must cover the mammals too, or their stamps get unstamped one-by-one AFTER the editor's bricks.fill(0) and re-patch as floating chunks (user bug)
     for (let i = 0; i < B.sN; i++) { const ii = B.sCells[i]; stampedIdx.delete(ii); if (W[ii] !== 0) W[ii] = B.sPrev[i]; }   // restore, same reason as unstampWorm
     B.sN = 0; B.sKey = null; } } };   // hard clear (editor freeze) — caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family

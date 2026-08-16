@@ -1,7 +1,7 @@
   // ── HELD ITEMS ── everything carried renders through ONE system: TRUE 3D voxel grids (never flattened,
   // the old engine's buildHeldFrames approach) DDA-raytraced in camera space. Item ids in u.pickX.w:
   // 0 = empty hand, 1 = stone axe (.vox), 2 = pebble rock, 3 = twig. Add future pickups to `items`.
-  let pickWGSL = 'const ITEMN : i32 = 0; const PICKSTEPS : i32 = 1;\n    const ITEMD : array<vec4<i32>, 1> = array<vec4<i32>, 1>(vec4<i32>(0));\n    @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;';
+  let pickWGSL = 'const ITEMN : i32 = 0; const PICKSTEPS : i32 = 1; const TRA_LO : i32 = 536870912; const TRA_HI : i32 = -1; const TRA2_LO : i32 = 536870912; const TRA2_HI : i32 = -1;\n    const ITEMD : array<vec4<i32>, 1> = array<vec4<i32>, 1>(vec4<i32>(0));\n    @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;';
   let itemHalfH = null;                              // per-item half height in voxels — a settled drop rests its BOTTOM on the ground, so it needs its own size
   let itemMapF32 = new Float32Array(4);                // ITEMMAP lives in a STORAGE BUFFER (binding 13) — as a var<private> constant array it silently broke past ~2.6k entries (the butterfly frames pushed it over; FXC-side limit, no compile error)
   {
@@ -10,7 +10,7 @@
     const AB = {};                                     // url → Promise<ArrayBuffer|null>; the parse loops below just `await AB[url]` (already in flight) and still append in deterministic item-id order.
     const pf = (u) => { AB[u] = fetch(u).then((r) => r.ok ? r.arrayBuffer() : null).catch(() => null); return u; };
     const abuf = async (u) => new Uint8Array((AB[u] ? await AB[u] : await (await fetch(u).catch(() => ({ arrayBuffer: () => null }))).arrayBuffer()) || new ArrayBuffer(0));
-    pf('assets/stone_tools/stone_axe.vox'); pf('assets/stone_tools/stone_knife.vox');
+    pf('assets/stone_tools/stone_axe.vox'); pf('assets/stone_tools/stone_knife.vox'); pf('assets/single.vox');
     for (let f = 0; f < 8; f++) pf('assets/life/cardinal/flight/0' + f + '.vox');
     for (const c of ['orange', 'red', 'blue', 'lime', 'pink', 'purple']) for (let f = 0; f < 8; f++) pf('assets/life/butterfly/' + c + '/0' + f + '.vox');   // prefetch must list the SAME colours as the loader below or the new ones stall on a cold fetch
     for (let f = 0; f < 6; f++) pf('assets/life/dragonfly/0' + f + '.vox');   // dragonfly ships 6 frames (base.vox is the source art, not a frame — skipped)
@@ -19,6 +19,16 @@
     for (const sp of ['salmon', 'minnow']) for (let f = 0; f < 12; f++) pf('assets/life/' + sp + '/' + String(f).padStart(2, '0') + '.vox');   // fish swim strips (base.vox is source art, skipped); species without frames simply don't join
     for (let f = 0; f < 11; f++) pf('assets/life/cardinal/rotate/' + String(f).padStart(2, '0') + '.vox');
     pf('assets/life/duck/base.vox'); pf('assets/life/duck/baby.vox');
+    // ── THE DESERT SET, BY MANIFEST ── this used to prefetch a blind 20 frames per species. Only 58 of those
+    // 140 files exist, so every boot spent 82 round-trips collecting 404s — and they were also the bulk of the
+    // 97 "expected" console errors that made every test's console check unreadable. tools/bake_desert_life.py
+    // now writes desert_frames.json beside the frames it bakes, so the count cannot drift from the files.
+    // The manifest is ONE extra request and it is awaited, because the prefetch below needs its numbers; if it
+    // is missing we fall straight back to the old blind 20 and nothing breaks.
+    let desFrames = null;
+    try { desFrames = await (await fetch('assets/life/desert_frames.json')).json(); } catch (e) { desFrames = null; }
+    for (const sp of ['ant', 'cobra', 'desert_mouse', 'fly', 'gecko', 'scorpion', 'spider'])
+      for (let f = 0, nf = (desFrames && desFrames[sp]) || 20; f < nf; f++) pf('assets/life/' + sp + '/' + String(f).padStart(2, '0') + '.vox');   // the desert set — the prefetch must list the same names the loader walks or every frame stalls on a cold fetch
     try {
       const pv = await abuf('assets/stone_tools/stone_axe.vox');
       const pdv = new DataView(pv.buffer);
@@ -39,6 +49,20 @@
         cells3[pvox[i] + pvox[i + 1] * psx + pvox[i + 2] * psx * psy] = [ppal[(ci - 1) * 4], ppal[(ci - 1) * 4 + 1], ppal[(ci - 1) * 4 + 2]];
       }
       items.push({ w: psx, d: psy, h: psz, cells: cells3 });
+      // ── PIN THE HELD TOOL'S COLOURS INTO THE PALETTE, EXACTLY ── this model is stored as RAW RGB cells and
+      // never goes through palShare, so the noTol exemption that keeps the rest of the stone kit exact cannot
+      // reach it: its colours only enter the table later, through edCol, which DOES apply the tolerance. At
+      // PAL_TOL 8 that put one axe shade 7/255 off. Minting them here, before any loader can tolerance-match
+      // them, means edCol's exact lookup finds them and the tool the player stares at stays byte-accurate.
+      // Only colours the table does not already hold cost anything — usually one or two.
+      { const seen = new Set();
+        for (const c3 of cells3) { if (!c3) continue;
+          const k3 = (c3[0] << 16) | (c3[1] << 8) | c3[2]; if (seen.has(k3)) continue; seen.add(k3);
+          let have = false;
+          for (let i3 = 1; i3 < palette.length && !have; i3++) { const q3 = palette[i3];
+            if (q3 && q3[0] === c3[0] && q3[1] === c3[1] && q3[2] === c3[2]) have = true; }
+          if (!have && palette.length < 256) addCol(c3[0], c3[1], c3[2]);
+        } }
       console.log('[vb] stone_axe.vox', psx, psy, psz, 'voxels', pvox.length / 4);
     } catch (e) { console.warn('[vb] stone_axe.vox missing — held tool disabled', e); items.push({ w: 0, d: 0, h: 0, cells: [] }); }
     const modelToItem = (m) => { const cells = new Array(m.sx * m.sy * m.sz).fill(null);   // sparse decoration model → dense item grid (held/drop DDA wants the raw RGB)
@@ -109,6 +133,36 @@
     // by NAME now, so the table can grow safely, but leaving the bow strip's run where it is costs nothing.
     if (HOEV) { HOE_IT = items.length + 1; items.push(modelToItem(HOEV)); console.log('[vb] stone_hoe.vox item', HOE_IT, HOEV.sx, HOEV.sy, HOEV.sz); }
     if (SPEARV) { SPEAR_IT = items.length + 1; items.push(modelToItem(SPEARV)); console.log('[vb] stone_spear.vox item', SPEAR_IT, SPEARV.sx, SPEARV.sy, SPEARV.sz); }
+    // ── THE HEART (user 2026-08-15: "theres a file called single.vox. use this for the hearts") ── the file is
+    // exactly what its name says: a 1x1x1 model holding ONE voxel, colour 255/67/67. Five of them float in front
+    // of the eye as the health readout (see the heart block in COMPOSITE); this is only where the model becomes
+    // an item id. Parsed from the raw .vox the way the axe and the knife are, NOT through modelToItem, for one
+    // reason: modelToItem resolves colours through `palette`, and palShare is allowed to hand back a shade up to
+    // PAL_TOL off. That trade is right for scenery and wrong for a health colour, which has to be the same red
+    // every session and can never drift toward some neighbouring decor brown. Registered here, ahead of the
+    // creature strips, so it stays outside the bakeAO loop below (creatureStart marks that boundary) — a lone
+    // voxel has no neighbours to occlude it, so the bake would be a no-op, but the heart is not a creature.
+    try {
+      const hv = await abuf('assets/single.vox');
+      const hdv = new DataView(hv.buffer);
+      let hsx = 0, hsy = 0, hsz = 0, hvox = null; const hpal = new Uint8Array(1024);
+      const hwalk = (off, end) => { while (off < end) {
+        const id = String.fromCharCode(hv[off], hv[off + 1], hv[off + 2], hv[off + 3]);
+        const sz = hdv.getUint32(off + 4, true), csz = hdv.getUint32(off + 8, true);
+        if (id === 'SIZE' && !hsx) { hsx = hdv.getUint32(off + 12, true); hsy = hdv.getUint32(off + 16, true); hsz = hdv.getUint32(off + 20, true); }
+        else if (id === 'XYZI' && !hvox) { const n = hdv.getUint32(off + 12, true); hvox = hv.subarray(off + 16, off + 16 + n * 4); }
+        else if (id === 'RGBA') hpal.set(hv.subarray(off + 12, off + 12 + 1024));
+        else if (id === 'MAIN') { hwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+        off += 12 + sz + csz;
+      } };
+      hwalk(8, hv.length);
+      if (hsx && hvox && hvox.length) {
+        const hcells = new Array(hsx * hsy * hsz).fill(null);
+        for (let i = 0; i < hvox.length; i += 4) { const ci = hvox[i + 3]; hcells[hvox[i] + hvox[i + 1] * hsx + hvox[i + 2] * hsx * hsy] = [hpal[(ci - 1) * 4], hpal[(ci - 1) * 4 + 1], hpal[(ci - 1) * 4 + 2]]; }
+        HEART_IT = items.length + 1; items.push({ w: hsx, d: hsy, h: hsz, cells: hcells });
+        console.log('[vb] single.vox heart item', HEART_IT, hsx, hsy, hsz, 'voxels', hvox.length / 4);
+      }
+    } catch (e) { console.warn('[vb] single.vox missing — the floating hearts are disabled', e); }   // HEART_IT stays 0 and the composite block never runs; nothing else in the game depends on it
     // ONE loader for every flying songbird strip — the cardinal and the blue bird ship identical 7-frame packs,
     // so the parse, the widest-frame scan and the eye-blink variants are all shared rather than copy-pasted.
     const loadFlight = async (dir, label) => {
@@ -160,13 +214,28 @@
       console.log('[vb] ' + label + ' flight', nf, 'frames -> items', it0, '.. glide pose', gl);
       return { item0: it0, n: nf, glide: gl };
     };
-    for (const sp of ['cardinal', 'blue_bird', 'robin']) {   // every songbird that ships a flight/ strip joins the flock automatically
+    // ── NO BIRDS IN THE SKY (user 2026-08-15) ── emptied at the SOURCE rather than by zeroing BIRD_N: both draw
+    // paths (tick-life for the flock, tick-support for bird 0) already gate on FLYERS.length, and so do the
+    // hitboxes, so an empty list is a route the code was written to handle. BIRD_N cannot go to 0 — `bird` is
+    // birds[0] and the editor and the primary hitbox both reference it. The flight frames are still on disk;
+    // put the species back in this array to restore the flock. PERCHED songbirds are a different system
+    // (uniBirds, stamped.js) and are untouched.
+    for (const sp of []) {   // was ['cardinal', 'blue_bird', 'robin'] — every songbird that ships a flight/ strip joins the flock automatically
       try { const r0 = await loadFlight(sp, sp); FLYERS.push({ name: sp, item0: r0.item0, n: r0.n, glide: r0.glide }); }
       catch (e) { console.warn('[vb] ' + sp + ' flight frames missing - species skipped', e); }
     }
     if (FLYERS.length) { BIRD_ITEM0 = FLYERS[0].item0; BIRD_NFRAMES = FLYERS[0].n; BIRD_GLIDE = FLYERS[0].glide; }   // legacy handles = the first species
     if (FLYERS.length > 1) { BLUEF_ITEM0 = FLYERS[1].item0; BLUEF_NFRAMES = FLYERS[1].n; BLUEF_GLIDE = FLYERS[1].glide; }
     console.log('[vb] flying songbirds:', FLYERS.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');
+    // ── TRANSPARENT WINGS ON THE BUTTERFLY + DRAGONFLY (user 2026-08-16: "like the fly") ── the same
+    // per-voxel ALPHA lane the desert fly rides (ITEMMAP.w — see the note in the desert loader below and the
+    // readers in TRACE, creaSec and the composite). Two different numbers because the two wings are not the
+    // same object: a dragonfly's are bare membrane over 6 pure-white voxels beside a 5-voxel body, so they take
+    // the fly's own 0.5 and read as glass; a butterfly's wings ARE the animal — 6 of its 10 voxels and the only
+    // thing that carries its colour — and at 0.5 it washes out over a bright meadow into a coloured ghost with
+    // no silhouette left. 0.72 is thin enough that the ground moves visibly through the wing while the colour
+    // still reads as that butterfly's colour at flying distance.
+    const BFLY_WING_A = 0.72, DFLY_WING_A = 0.5;
     if (!location.search.includes('nobfly'))                          // BUTTERFLY flap frames → item table, same treatment as the cardinal (raw .vox palette, full 3D grids)
       for (const cname of ['orange', 'red', 'blue', 'lime', 'pink', 'purple']) {   // one 8-frame set per user-authored color subfolder; a missing color just skips
         try {
@@ -188,6 +257,12 @@
             if (!bvox) throw new Error('butterfly ' + cname + ' frame 0' + f + ' has no voxels');
             const cells = new Array(bsx * bsy * bsz).fill(null);
             for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+            // ── THE BUTTERFLY'S WINGS ARE SOLID AGAIN (user 2026-08-16: "in the pine forest the butterflys
+            // wings seem to be transparent, revert that change, they should be solid") ── the tagging that
+            // marked every non-dark-grey cell with alpha 0.72 is removed. A butterfly's wings ARE the animal,
+            // 6 of its 10 voxels and the only thing carrying its colour, so translucency read as a ghost over
+            // the forest rather than as a wing. The FLY and the DRAGONFLY keep theirs: bare membrane over a
+            // small dark body is the case the effect was built for, and neither was complained about.
             loaded.push({ w: bsx, d: bsy, h: bsz, cells });
           }
           BFLY_COLS.push(items.length + 1);                           // all 8 frames parsed OK — commit the whole color at once (no orphan half-sets)
@@ -215,6 +290,10 @@
         if (!bvox) throw new Error('dragonfly frame 0' + f + ' has no voxels');
         const cells = new Array(bsx * bsy * bsz).fill(null);
         for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+        // ── THE DRAGONFLY IS THE FLY'S OWN CASE ── 6 PURE WHITE voxels (three per side) against a five-voxel
+        // blue abdomen gradient and two black eyes: no other voxel in any of the six frames is even close to
+        // white, so the fly's exact colour test transfers unchanged and survives a palette re-index.
+        if (!location.search.includes('opaquewings')) for (const c9 of cells) { if (c9 && c9[0] > 250 && c9[1] > 250 && c9[2] > 250) c9.push(DFLY_WING_A); }
         dloaded.push({ w: bsx, d: bsy, h: bsz, cells });
       }
       DFLY_ITEM0 = items.length + 1;                                  // commit all 6 at once — no orphan half-set
@@ -307,6 +386,55 @@
         console.log('[vb] fish ' + sp, loaded.length, 'frames -> items', it0, '..', items.length);
       } catch (e) { if (!String(e).includes('no frames')) console.warn('[vb] fish ' + sp + ' skipped', e); }
     }
+    // ── DESERT CREATURES ── the same loader shape as the fish above, and deliberately so. These seven are
+    // authored as SCENE-GRAPH animations (cobra is 19 keyframed segments, scorpion 6 parts, and so on), which
+    // nothing here could read; tools/bake_desert_life.py composites each animation frame into a flat numbered
+    // .vox offline, so by the time the game sees them they are ordinary frame strips and need no new parsing.
+    // Cells are raw sRGB like every other creature, so these cost ZERO of the 256-entry world palette — which
+    // matters: the seven hold 69 distinct authored colours and the table has ~15 slots left.
+    for (const sp of ['ant', 'cobra', 'desert_mouse', 'fly', 'gecko', 'scorpion', 'spider']) {
+      try {
+        const loaded = [];
+        for (let f = 0; f < 96; f++) {                 // gecko is 67 frames (its tongue keyframes run to _f 66)
+          const bv = await abuf('assets/life/' + sp + '/' + String(f).padStart(2, '0') + '.vox');
+          if (!bv.length) break;
+          const bdv = new DataView(bv.buffer);
+          let bsx = 0, bsy = 0, bsz = 0, bvox = null; const bpal = new Uint8Array(1024);
+          const bwalk = (off, end) => { while (off < end) {
+            const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+            const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+            if (id === 'SIZE' && !bsx) { bsx = bdv.getUint32(off + 12, true); bsy = bdv.getUint32(off + 16, true); bsz = bdv.getUint32(off + 20, true); }
+            else if (id === 'XYZI' && !bvox) { const n = bdv.getUint32(off + 12, true); bvox = bv.subarray(off + 16, off + 16 + n * 4); }
+            else if (id === 'RGBA') bpal.set(bv.subarray(off + 12, off + 12 + 1024));
+            else if (id === 'MAIN') { bwalk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+            off += 12 + sz + csz;
+          } };
+          bwalk(8, bv.length);
+          if (!bvox) break;
+          const cells = new Array(bsx * bsy * bsz).fill(null);
+          for (let i = 0; i < bvox.length; i += 4) { const ci = bvox[i + 3]; cells[bvox[i] + bvox[i + 1] * bsx + bvox[i + 2] * bsx * bsy] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+          // ── THE FLY'S WINGS ARE HALF TRANSPARENT (user 2026-08-15) ── a cell may carry a FOURTH
+          // number, its ALPHA, which rides into ITEMMAP.w — a lane that was a 1/0 occupancy flag and is now
+          // the real coverage (see the readers in TRACE, creaSec and the composite). Keyed on the COLOUR, not
+          // on a palette index: the fly is one dark body voxel (23,23,23) between two PURE WHITE wings, so
+          // white is unambiguous here and survives the artist re-indexing the authored .vox palette.
+          // ?opaquewings puts the wings back to solid for an A/B: it drops the alpha at the SOURCE, so the
+          // measured id range below comes back empty and every downstream test folds to its old behaviour.
+          if (sp === 'fly' && !location.search.includes('opaquewings')) for (const c9 of cells) { if (c9 && c9[0] > 250 && c9[1] > 250 && c9[2] > 250) c9.push(0.5); }
+          loaded.push({ w: bsx, d: bsy, h: bsz, cells });
+        }
+        if (!loaded.length) throw new Error('no frames');
+        const it0 = items.length + 1;
+        for (const it of loaded) items.push(it);
+        DESERTS.push({ name: sp, item0: it0, n: loaded.length });
+        // mamFitOf takes (itemsTable, ONE-BASED id) — passing the item object alone made it index loaded[0][-1],
+        // come back undefined and return null for all seven, silently. The guard mirrors the land-mammal call
+        // site: a null must never overwrite, or the seat falls back to a constant that fits nothing.
+        const fitD = mamFitOf(items, it0); if (fitD) MAMFIT[sp] = fitD;
+        console.log('[vb] desert ' + sp, loaded.length, 'frames -> items', it0, '..', items.length);
+      } catch (e) { if (!String(e).includes('no frames')) console.warn('[vb] desert ' + sp + ' skipped', e); }
+    }
+    console.log('[vb] desert creatures:', DESERTS.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');
     console.log('[vb] fish species:', FISHES.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');
     try {                                                             // DUCK — one static model (5×8×8): orange feet z0, brown body, white ring, green head; floats on lakes
       if (location.search.includes('nobfly')) throw new Error('disabled by ?nobfly flag');
@@ -472,7 +600,7 @@
         let occ = 0;                                                  // count filled neighbours in the UPPER hemisphere + same level (17 cells) — these block ambient sky; the support voxels BELOW don't darken a lit top
         for (let dz = 0; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { if ((dx || dy || dz) && sol(x + dx, y + dy, z + dz)) occ++; }
         const ao = 1 - 0.5 * (occ / 17);                              // exposed tip ~1.0, tucked crease ~0.7
-        out[x + y * w + z * w * d] = [c[0] * ao, c[1] * ao, c[2] * ao];
+        out[x + y * w + z * w * d] = c.length > 3 ? [c[0] * ao, c[1] * ao, c[2] * ao, c[3]] : [c[0] * ao, c[1] * ao, c[2] * ao];   // …carrying a per-voxel ALPHA straight through: occlusion darkens a wing, it must never make it solid
       }
       it.cells = out; };
     const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0, BUNNY_ITEM0, ARMADILLO_ITEM0, SKUNK_ITEM0, PORCUPINE_ITEM0, BLUEB_ITEM0, ROBIN_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
@@ -492,12 +620,35 @@
     for (const it of items) {
       itemOff.push(flat.length >> 2);
       dims.push(`vec4<i32>(${it.w}, ${it.d}, ${it.h}, ${flat.length >> 2})`);
-      for (const c of it.cells) { if (c) flat.push(Math.pow(c[0] / 255, 2.2), Math.pow(c[1] / 255, 2.2), Math.pow(c[2] / 255, 2.2), 1.0); else flat.push(0, 0, 0, 0); }
+      for (const c of it.cells) { if (c) flat.push(Math.pow(c[0] / 255, 2.2), Math.pow(c[1] / 255, 2.2), Math.pow(c[2] / 255, 2.2), c.length > 3 ? c[3] : 1.0); else flat.push(0, 0, 0, 0); }   // .w is ALPHA now, not occupancy: 1 = solid, 0 = empty, anything between = translucent (the fly's wings)
     }
     if (!flat.length) flat.push(0, 0, 0, 0);
     itemHalfH = items.map((m) => (m.h || 9) * 0.5);   // …and each item's half height, for the resting pose of a dropped item (see the drop block)
     itemMapF32 = new Float32Array(flat);               // → storage buffer at binding 13 (created with the other GPU buffers)
     const maxSteps = Math.max(...items.map(it => it.w + it.d + it.h + 3));
+    // ── WHICH ITEMS HOLD A TRANSLUCENT VOXEL ── the composite has to walk a trace-injected creature's model a
+    // SECOND time to draw the voxels TRACE deliberately looked straight through, and doing that for every
+    // creature would spend a whole extra DDA per pixel on animals with nothing translucent about them. So the
+    // ids that actually carry a sub-1.0 alpha are measured once here and the shaders test them by RANGE.
+    // Nothing translucent → LO > HI → the test is dead and the second walk is never entered.
+    //
+    // TWO ranges, not one, and that is the whole reason this is not a plain min/max any more: the butterflies
+    // and the dragonfly load back to back near the HEAD of the item table (48 + 6 consecutive ids) while the
+    // desert fly lands far down it, past the fireflies, worms, songbirds, ducks, lilies, cardinals, the four
+    // land mammals and every fish. One min..max span would drag all of those through the second DDA per pixel
+    // for nothing — a whole wasted model walk on animals with no translucent voxel in them to find. So the
+    // RUNS are measured: run 1 is the leading block, run 2 spans everything after the first gap (exactly the
+    // fly today; a third block added later WIDENS range 2 rather than being silently dropped).
+    const traIds = [];
+    for (let i = 0; i < items.length; i++) { const it = items[i]; if (!it || !it.cells) continue;
+      for (const c of it.cells) { if (c && c.length > 3 && c[3] < 0.999) { traIds.push(i + 1); break; } } }
+    let traLo = 536870912, traHi = -1, tra2Lo = 536870912, tra2Hi = -1;
+    for (const id9 of traIds) {
+      if (traHi < 0) { traLo = id9; traHi = id9; }                    // the first translucent id opens run 1
+      else if (tra2Hi < 0 && id9 === traHi + 1) { traHi = id9; }      // still contiguous with run 1 - extend it
+      else { if (tra2Hi < 0) tra2Lo = id9; tra2Hi = id9; }            // past the first gap - run 2, widening
+    }
+    console.log('[vb] translucent item ids', traHi > 0 ? traLo + '..' + traHi : 'none', tra2Hi > 0 ? '+ ' + tra2Lo + '..' + tra2Hi : '');
     // ── LIVE ARROW TURN ── re-cut the two bow runs for a new orientation and overwrite ONLY their colours.
     // fetchBowStrip fixed the grid across every orientation, so the dimensions baked into ITEMD above stay
     // true and nothing has to be recompiled — the change is one buffer write over a contiguous range.
@@ -520,7 +671,7 @@
       device.queue.writeBuffer(itemMapBuf, from * 4, itemMapF32, from, to - from);
       return true;
     };
-    pickWGSL = `const ITEMN : i32 = ${items.length}; const PICKSTEPS : i32 = ${maxSteps};
+    pickWGSL = `const ITEMN : i32 = ${items.length}; const PICKSTEPS : i32 = ${maxSteps}; const TRA_LO : i32 = ${traLo}; const TRA_HI : i32 = ${traHi}; const TRA2_LO : i32 = ${tra2Lo}; const TRA2_HI : i32 = ${tra2Hi};
     const ITEMD : array<vec4<i32>, ${items.length}> = array<vec4<i32>, ${items.length}>(${dims.join(', ')});
     @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;`;
   }

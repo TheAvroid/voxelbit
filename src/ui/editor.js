@@ -1,5 +1,5 @@
   // @module — the asset editor: platform, gizmos, .vox parse, pose bakes
-  // @exports BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edLayout, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk
+  // @exports BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edLayout, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSnapCount, edSnapErrs, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk
   // ── ASSET EDITOR PLATFORM ── a floating white stage (1-voxel-thick plane, 1 m grid in light grey) stamped just above
   // the tallest content near the player. Import .vox frames (multi-file or multi-model), they line up left→right in
   // sequence order; , / . cycle the selected frame (amber ring), ←/→ move it within the sequence. Every voxel write goes
@@ -183,6 +183,10 @@
     (f.rot = f.rot || []).push(kind[0] + (dir > 0 ? '+' : '-'));   // 'y+' 'y-' 'p+' 'p-' — the ordered step list; replaying it reproduces the exact orientation
     edSaveOffsets(); edLayout(); };                    // autosave (incl. rot) like the move-gizmo does
   const edRotate = () => edApplyRot('yaw', 1);         // legacy tap: one 90° yaw step
+  const edSnapErr = [];                                // per-substitution max-channel error
+  let edSnaps = 0;                                     // colours the FULL table substituted for imported/creature art — __vb.palAudit() reports it
+  const edSnapCount = () => edSnaps;
+  const edSnapErrs = () => edSnapErr.slice();          // getter for the same reason edSnapCount is one                   // a GETTER, not the number: the module wrapper returns its exports by value, so exporting the counter itself would hand every reader a frozen 0
   const edColCache = new Map();                        // runtime color → palette id; nearest-match once the 256-entry palette is full
   const edCol = (r, g, b) => { const key = (r << 16) | (g << 8) | b;
     let cid = edColCache.get(key);
@@ -194,8 +198,10 @@
       for (let i = 1; i < palette.length && cid === undefined; i++) { const q = palette[i];
         if (q[0] === r && q[1] === g && q[2] === b) cid = i; }
       if (cid !== undefined) { /* found one already in the table */ }
+      else if (PAL_TOL > 0 && (cid = palNearShare(r, g, b)) !== undefined) { /* ── TOLERANCE REUSE ── the same lever palShare got, on the path that actually fills the table. edCol mints creature colours LAZILY, the first time a species is stamped or ragdolled, and it had exact-match-or-mint only: a shade one unit off an existing one cost a whole id, and the ids ran out mid-session. Floored at DECOR_MIN and skipping palOwn for the reasons palNearShare documents. */ }
       else if (palette.length < 256) cid = addCol(r, g, b);
-      else cid = palNearest(r, g, b);                  // was a THIRD copy of the nearest-colour walk, and the only one that did not skip RESERVED ids — so a full palette could snap imported art onto a pinecone id and every stamp of it would right-click up as a pinecone. palNearest (assets/palette.js) is the one addCol and palShare use.
+      else { cid = palNearest(r, g, b); edSnaps++;
+        const q = palette[cid]; edSnapErr.push(Math.max(Math.abs(q[0] - r), Math.abs(q[1] - g), Math.abs(q[2] - b))); }   // HOW WRONG the substitute is. This is the number the tolerance share is measured against: a reuse is bounded by PAL_TOL, a substitution is bounded by nothing   // ── COUNTED (2026-08-15) ── this path is where the palette ACTUALLY runs out: creature colours arrive lazily, the first time a species is stamped or ragdolled, so the table fills during PLAY and every colour past 256 is silently substituted. It reported nothing at all before, which is why the ceiling read as "exactly full, nothing turned away". __vb.palAudit().edSnaps                  // was a THIRD copy of the nearest-colour walk, and the only one that did not skip RESERVED ids — so a full palette could snap imported art onto a pinecone id and every stamp of it would right-click up as a pinecone. palNearest (assets/palette.js) is the one addCol and palShare use.
       edColCache.set(key, cid);
     }
     return cid; };

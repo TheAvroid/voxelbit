@@ -134,6 +134,32 @@
     const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
     return v === LAVA_T || v === LAVA_B || v === LAVA_R || v === LAVA_Y;
   };
+  // ── CONTACT MARGIN ── how close the player's own COLLISION BOX has to come to a cactus voxel to be stung.
+  // The three reaches before this (0.45 → 0.95 → 1.6) all sampled a 3x3 of columns at x ± reach and could
+  // NOT fire, for a reason that is arithmetic rather than tuning: cacti are markSolid, so the body never
+  // gets inside one — moveAxis parks it at floor(x + HW) - HW - 0.001, i.e. the box FACE 1 mm off the
+  // cactus's face and the box CENTRE a full HW (2.6) further back. A probe that only ever looks 1.6 out
+  // from the centre is still ~1.5 voxels short of the column it is standing against, so "walked into a
+  // saguaro" measured false every single time. Widening the reach was never going to reach it either:
+  // a 3-point sample SKIPS columns (from x = 100.4, floor(x + 1.6) = 102 — column 101 is never read at all).
+  // So the test is now the collision box itself, swept over the CONTIGUOUS columns it overlaps. No distance
+  // guess is left in it: touching is touching. The margin is under half a voxel, which the 1 mm resting gap
+  // clears easily while a player standing even one clear voxel off is plainly outside it.
+  const CACT_MARGIN = 0.4;
+  // ── A CACTUS STINGS (user 2026-08-15: "take away health if the player rubs up against it") ── the player's
+  // whole body brushes it, not just the eye: a saguaro arm at knee height must count, so this walks the
+  // body's live height (crouched or standing — tick-body passes the same hh collision uses) over the whole
+  // footprint. Feet-up only: a cactus BURIED in the sand beside you sits below floor(y) and must not sting.
+  const cactusHurtAt = (x, y, z, hh) => {   // NOT cactusAt - that name is terrain.js's scatter function
+    const h = hh || HEIGHT, r = HW + CACT_MARGIN;
+    const x0 = Math.floor(x - r), x1 = Math.floor(x + r), z0 = Math.floor(z - r), z1 = Math.floor(z + r);
+    const y0 = Math.max(0, Math.floor(y)), y1 = Math.min(WY - 1, Math.floor(y + h - 0.1));
+    for (let yy = y0; yy <= y1; yy++) for (let zz = z0; zz <= z1; zz++) for (let xx = x0; xx <= x1; xx++) {
+      const v = W[gwrap(xx, WX) + yy * WX + gwrap(zz, WZ) * WX * WY];
+      if (v && cactusTab[v]) return true;
+    }
+    return false;
+  };
   // ── WHAT REFUSED THE LAST boxFree ── a creature's AABB, or a solid voxel? The two want different answers
   // from moveAxis (see the clamp there), and boxFree's bare `false` cannot tell them apart. Written on every
   // call, so it is only meaningful immediately after one.
@@ -191,7 +217,7 @@
   // Cheap by construction: onMushroom() runs on a LANDING, not per frame, and the radius test rejects
   // every creature that cannot be under the player's feet before touching its cell list.
   const cellStamped = (ii) => {
-    for (let j = 64; j < 372; j++) {
+    for (let j = 64; j < DES_END; j++) {
       const B = wbf[j];
       if (!B || !B.sN) continue;
       const dx = B.x - P.x, dz = B.z - P.z;
@@ -286,6 +312,7 @@
     P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
     P.fallT = 0; uwT = 0;                               // fresh lungs on respawn
+    vitReset();                                         // …and a full bar of hearts and hunger
     smoothEye = P.y + EYE;
   }
   let spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
@@ -293,7 +320,7 @@
     SPWX = Math.round((Math.random() - 0.5) * 400000);
     SPWZ = Math.round((Math.random() - 0.5) * 400000);
     let g = 0;
-    while ((H(SPWX, SPWZ) <= WL + 1 || nearCave(SPWX, SPWZ)) && g++ < 6000) SPWX += 16;   // valid land, off water/gorges (H and nearCave are both deterministic → work anywhere)
+    while ((H(SPWX, SPWZ) <= WL + 6 || nearCave(SPWX, SPWZ)) && g++ < 6000) SPWX += 16;   // valid land, off water/gorges/SAND (H and nearCave are both deterministic → work anywhere). WL + 6 is the quicksand guard — see the note in world/build.js
     respawn();                                          // teleport + maybeRecenter regenerates the world at the new spawn
     spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
     console.log('[vb] SPAWN RESET [H] → paste this over line ~156 to BAKE it:   ' + spawnBake);

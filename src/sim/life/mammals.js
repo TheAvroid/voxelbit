@@ -1,5 +1,5 @@
   // @module - the four land mammals' ground seat and their walking navigation
-  // @exports mamSeatG, mamSeatN, mamSeatSteps, navBrake2, navReachWalk, navSteer2, navWalkFree, navWalkOK
+  // @exports MAM_SPAN, mamSeatG, mamSeatN, mamSeatSteps, mamStandAt, navBrake2, navReachWalk, navSteer2, navWalkFree, navWalkOK
   // ── THE ONE SEAT EVERY LAND MAMMAL USES ── one function, called by BOTH render paths, so a bunny and a
   // skunk cannot disagree about where the ground is and neither can the same animal before and after it
   // crosses the trace radius. It is the model's own occupied footprint (MAMFIT), oriented by heading, sampled
@@ -21,19 +21,31 @@
   // is mostly walk-through clutter. 0.55 was tried and overshot — it sank into real ground on 46% of frames.
   const MAM_SPAN = 0.75;
   const MAM_STEP = 2.0;                                // target spacing between contact points, in voxels
-  const mamSeatN = (B, fit, nA, nC) => {                // …at an explicit resolution, so a test can compare densities on ONE pose instead of across two wandering runs
+  // ── AND, FOR THE DESERT BAND ONLY, NOT ON A ROCK OR A CACTUS (user 2026-08-16) ── the MAX is what makes
+  // clipping unrepresentable, but it is a max over navWalkStand, and navWalkStand cannot see through a mode-2
+  // stamp: a desert rock RAISES the heightmap, so the clamp that normally refuses a surface more than one
+  // step-up above the column is comparing the rock against itself and always passes. The result is that a
+  // creature standing on the sand BESIDE a boulder, with one footprint sample over it, is seated on the
+  // boulder's top and rides up its flank without ever stepping onto it — measured at 36% of frames and up to
+  // 22 voxels. With `sand` set the max is taken over the samples that are on SAND, and the full max is kept
+  // only as the fallback for a body that is entirely over stone (it was placed there, or the world changed
+  // under it) — that one still needs a floor, and the floor it has is the rock.
+  const mamSeatN = (B, fit, nA, nC, sand) => {                // …at an explicit resolution, so a test can compare densities on ONE pose instead of across two wandering runs
     const th = B.th || 0, hx = Math.sin(th), hz = Math.cos(th);
     const hd = fit ? fit.hd : 3, hw = fit ? fit.hw : 2;
-    let g = -1e9;
+    let g = -1e9, gs = -1e9;
     for (let u = -nA; u <= nA; u++) for (let v = -nC; v <= nC; v++) {
       const sa = hd * MAM_SPAN * (u / nA), sc = hw * (v / nC);    // the extremes stay exactly on the footprint edge; the extra points fill in between
-      const q = navWalkStand(B.x + hx * sa + hz * sc, B.z + hz * sa - hx * sc);
-      if (q > g) g = q; }
-    return g;
+      const px = B.x + hx * sa + hz * sc, pz = B.z + hz * sa - hx * sc;
+      const q = navWalkStand(px, pz);
+      if (q > g) g = q;
+      if (sand && q > gs && navSand(px, pz)) gs = q; }   // the sand-only max, built alongside. Every other band passes no flag, so the second test is never even reached and their seat is the same number to the last bit.
+    return (sand && gs > -1e8) ? gs : g;
   };
+  const mamStandAt = (x, z, sand) => (sand && !navSand(x, z)) ? -1e9 : navWalkStand(x, z);   // ONE point of the same surface, under the same rule — the forward look that starts a walker's ramp before a step reads this, so it cannot ramp onto something the seat has just refused to sit on
   const mamSeatSteps = (fit) => [Math.max(1, Math.min(3, Math.ceil((fit ? fit.hd : 3) / MAM_STEP))),
                                  Math.max(1, Math.min(3, Math.ceil((fit ? fit.hw : 2) / MAM_STEP)))];
-  const mamSeatG = (B, fit) => { const st = mamSeatSteps(fit); return mamSeatN(B, fit, st[0], st[1]); };
+  const mamSeatG = (B, fit, sand) => { const st = mamSeatSteps(fit); return mamSeatN(B, fit, st[0], st[1], sand); };
   const navWalkOK = (x, z, gc, up, down, clr) => {   // THE walker answer — navLandOK with the clutter exemption the marchers' own bfObstW has always carried
     const ci = nvIdx(x, z), f = nvF[ci];
     if (!(f & NVF_BUILT)) { const g = navBed(x, z);   // UNVOUCHED → the honest point probe the marcher used before, on ITS obstacle rule (nvObstW). Never a blanket refusal: a mammal at the streaming frontier must not freeze waiting for a cell to be built.

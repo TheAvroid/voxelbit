@@ -10,6 +10,7 @@
   let FFLY_ITEM0 = 0, FFLY_NFRAMES = 0;                // firefly frames (assets/life/firefly) — replaces the butterflies AT NIGHT; the yellow abdomen voxel glows via the drops dYv.w lane
   let WORM_ITEM0 = 0, WORM_NFRAMES = 0;                // inchworm crawl frames (assets/life/worm) — a GROUND crawler, active day and night (pool slots 24+)
   const FISHES = [];                                   // every loaded FISH strip: { name, item0, n } (assets/life/<species>/00..NN.vox — salmon today, minnow etc. join automatically
+  const DESERTS = [];                                  // every loaded DESERT creature: { name, item0, n }. Frames are baked flat by tools/bake_desert_life.py from the scene-graph .vox — see the loader in held-items.js
                                                        // when their numbered frames ship). Fish are kind-6 wbf creatures: OFF-GRID swimmers under the water surface of lakes AND rivers,
                                                        // burst-glide pacing (dart → coast), free y-axis rotation with pitch/bank, and a fast bolt away from a too-close player.
   let DUCK_ITEM0 = 0;                                  // duck (assets/life/duck/base.vox) — floats on lakes with its orange feet below the waterline (pool slots 16-19 = moms)
@@ -23,7 +24,7 @@
   const FOAM_RGB = [0.82, 0.87, 0.90];
   const FOAM_SRGB = FOAM_RGB.map((v) => Math.round(Math.pow(v, 1 / 2.2) * 255));
   let FOAM_IT = 0;                                     // …its item id (one 10 cm voxel, the splash particle)
-  let SPARK_IT = 0, HITRED_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0, BOW_NOCK = 0, BOW_FRAMES = 0, ARROW_IT = 0, MEAT_IT = 0, HOE_IT = 0, SPEAR_IT = 0;   // BOW_NOCK = the same strip WITHOUT the arrow, shown once it is loosed   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
+  let SPARK_IT = 0, HITRED_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0, BOW_NOCK = 0, BOW_FRAMES = 0, ARROW_IT = 0, MEAT_IT = 0, HOE_IT = 0, SPEAR_IT = 0, HEART_IT = 0;   // BOW_NOCK = the same strip WITHOUT the arrow, shown once it is loosed   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
   let BLUEB_ITEM0 = 0, ROBIN_ITEM0 = 0;               // the two songbird RESKINS in the item table (trace path). Identical geometry to the cardinal, so they reuse CARD_NFRAMES / CARD_OFF / CARD_FOOTZ untouched.
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation

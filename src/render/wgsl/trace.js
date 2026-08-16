@@ -11,6 +11,32 @@
     @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;   // 32-voxel SUPER-brick occupancy (window origin is 32-aligned, so off>>5 is exact)
     const SNV : u32 = ${location.search.includes('flakedbg') ? LAVA_T : SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits (?flakedbg paints them as emissive lava to bisect trace-vs-downstream)
     const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
+    // ── THE DESERT, ON THE GPU ── falling flakes are traced voxels in a world-space lattice, not particles the
+    // CPU places, so the JS gate that keeps the BLANKET off the sand cannot reach them: without this it snows
+    // over the desert and simply never settles. desertM is ported here rather than passed as a uniform because
+    // it is pure (x, z) and the spawn it is anchored to is already fixed by the time this template runs
+    // (build.js is manifest line 24, this is line 29). f32 instead of the CPU's f64 is fine — half a voxel of
+    // disagreement at the border is invisible, and nothing downstream compares the two.
+    fn dHash(x : i32, z : i32) -> f32 {                // the JS ihash, same mix, same constants
+      var h : u32 = u32(x) * 374761393u + u32(z) * 668265263u;
+      h = (h ^ (h >> 13u)) * 1274126177u;
+      return f32(h ^ (h >> 16u)) / 4294967296.0;
+    }
+    fn dSstep(t : f32) -> f32 { return t * t * (3.0 - 2.0 * t); }
+    fn dVnoise(x : f32, z : f32) -> f32 {
+      let ix = i32(floor(x)); let iz = i32(floor(z));
+      let fx = dSstep(x - floor(x)); let fz = dSstep(z - floor(z));
+      return (dHash(ix, iz) * (1.0 - fx) + dHash(ix + 1, iz) * fx) * (1.0 - fz)
+           + (dHash(ix, iz + 1) * (1.0 - fx) + dHash(ix + 1, iz + 1) * fx) * fz;
+    }
+    fn desertMask(x : f32, z : f32) -> f32 {
+      let b = ${SPWX + DESOFF - desWob(SPWZ)} + (dVnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * ${DESW}.0
+                                 + (dVnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * ${DESW * 0.35};
+      let t = 0.5 + (x - b) / ${DESB}.0;
+      if (t >= 1.0) { return 1.0; }
+      if (t <= 0.0) { return 0.0; }
+      return dSstep(t);
+    }
     ${FLAKEBLK}
     fn onbT(n : vec3<f32>) -> vec3<f32> {
       return normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
@@ -119,7 +145,8 @@
               let tn = min(ta2, tb2); let tf = max(ta2, tb2);
               let te = max(max(tn.x, tn.y), max(tn.z, 0.3));
               let tl = min(min(tf.x, tf.y), tf.z);
-              if (te > 1.0 && te < tl && te < maxNear && !flakeBlocked(ctr - offR)) {   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike. ctr is window-local now — minus the small remainder = the window position (exact at any world coordinate)
+              let fwp = ctr - offR + winOf;                          // window-local -> world, for the biome test
+              if (te > 1.0 && te < tl && te < maxNear && desertMask(fwp.x, fwp.z) <= 0.5 && !flakeBlocked(ctr - offR)) {   // ── NO SNOW OVER THE DESERT (user) ── ordered deliberately: after the cheap slab/rotation rejects, before flakeBlocked's scattered loads, so it only costs anything on a ray that already struck a flake   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike. ctr is window-local now — minus the small remainder = the window position (exact at any world coordinate)
                 fte = te; fkAw = fkA; fkUw = fkUnder;
                 var nl = vec3<f32>(0.0);
                 if (tn.x >= tn.y && tn.x >= tn.z) { nl.x = -sign(rdL.x); }
@@ -198,7 +225,7 @@
           var iMapD = eOff + vcD.x + vcD.y * eW + vcD.z * eW * eD;
           for (var i = 0; i < PICKSTEPS; i++) {
             let cell = ITEMMAP[u32(iMapD)];
-            if (cell.w > 0.5) {
+            if (cell.w > 0.99) {                                     // OPAQUE only. ITEMMAP.w is per-voxel ALPHA, and a translucent voxel (the fly's wings) is deliberately INVISIBLE to the primary ray: the ray carries on to whatever is behind it, that surface lands in the g-buffer with its own normal/slot/motion, and the COMPOSITE blends the wing over the finished pixel. Blending here is not possible - this pass resolves ONE surface and its lighting - and dithering the wing away on a hash was the alternative, which the denoiser's history rejection turns into a crawling sparkle on a moving animal.
               if (tHit * vsD < bestT) {
                 bestT = tHit * vsD;
                 cSlot = u32(di + 1);
@@ -251,6 +278,7 @@
         t = h.t; faceId = h.face;
         if ((h.vox == WTv || h.vox == WBv) && h.face == 2u) { faceId = 6u; }   // water top → reflective shading in the composite
         if (h.vox == LVT || h.vox == LVB || h.vox == LVR || h.vox == LVY) { faceId = 8u; }   // lava → emissive
+        if (h.face == 2u && isSandV(h.vox)) { faceId = SANDF; }   // sand TOP face → the composite's sun glisten (see SANDF in PRE). Top only: a glinting vertical dune face or pit wall would read as wrong.
         let pos = ro + rd * t;
         let vcW = vec3<i32>(floor(pos - h.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));   // WORLD coords — grain must not swim when the window shifts
         if (bHit) { albedo = bCol * select(1.0, 0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z), LG(9u)); }   // felled chunk: palette colour + genuinely MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one

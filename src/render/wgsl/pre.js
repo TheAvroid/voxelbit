@@ -46,6 +46,9 @@
       // every JS write past 'drops' is a hardcoded float index, so a field inserted anywhere above would shift
       // them all and silently feed each one its neighbour's numbers. See UF_DOF on the JS side.
       dof : vec4<f32>,                                               // x = FOCUS distance in voxels (0 = the effect is OFF — one compare skips the whole gather), y = max circle-of-confusion radius in CANVAS pixels, z = gather taps per pixel of radius, w spare
+      // ── FLOATING HEARTS ── appended after dof for the same reason dof was appended after the drop halves.
+      heart  : vec4<f32>,                                            // xyz = the FIRST heart's anchor in CAMERA space (voxel units, the same space the held item's pickA lives in), w = its voxel scale at full health
+      heartC : vec4<f32>,                                            // x = the heart model's item id (0 = single.vox never loaded → the whole block compiles to one compare and draws nothing), y = health in HEARTS (hp / 4, so 5.0 is a full bar), z = the gap between two hearts in the same camera units, w = HURT KICK 0..1 (VIT.hurtT — the row swells and brightens for the half second after a hit)
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}
@@ -119,6 +122,25 @@
       if (isMoon()) { return vec3<f32>(0.40, 0.50, 0.78) * 0.198 * smoothstep(0.0, 0.15, u.sunDir.y); }   // moonlight follows the darker nights: 0.44 → 0.352 → 0.264 → 0.198
       let warm = mix(vec3<f32>(1.0, 0.42, 0.18), vec3<f32>(1.0, 1.0, 1.0), smoothstep(0.02, 0.38, u.sunDir.y));
       return SUN_COL * warm * smoothstep(-0.05, 0.10, u.sunDir.y);
+    }
+    // ── VIEW-MODEL LIGHT ── ONE shading model for everything carried in front of the eye: the stone tools in
+    // both hands, and the health row. It is the WORLD's own light — sun, sky and the warm ground bounce — with
+    // the two visibility scalars JS marches from the eye standing in for the traced irradiance this path has
+    // none of (it is composited past the g-buffer). u.heldCfg.x gates the DIRECT term, so a tool in shade goes
+    // dark like the ground it stands over; u.heldCfg.y gates the AMBIENT + bounce, doing the job irr.g does for
+    // a world voxel — without it a tool kept the full open-sky value under a canopy or underground.
+    // NOTE what is deliberately absent: per-voxel grain. It is ±12% per voxel out in the world and it scrambles
+    // hand-authored .vox gradients (the axe handle steps by ~5%).
+    // SHARED, and that is the point. The hearts used to carry a key light of their own invention, fixed in
+    // CAMERA space, identical at noon, at midnight and underground — which is exactly what made them read as a
+    // sticker over the game rather than an object in it. One definition means the row and the axe can never
+    // drift apart again.
+    fn heldLight(nw : vec3<f32>) -> vec3<f32> {
+      let direct = sunTint() * max(dot(nw, u.sunDir), 0.0) * u.heldCfg.x * select(0.0, 1.0, LG(16u));   // bit 16: the held item's DIRECT sun term
+      let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();
+      let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // warm ground bounce on side/under faces — without it side faces are sky-only (cool + dark) and the axe handle read grey-brown
+      let skyOcc = select(1.0, u.heldCfg.y, LG(1u));                 // gated on the AO debug bit so it switches WITH the world's AO rather than against it
+      return direct + (skyIrr + bounce) * skyOcc + vec3<f32>(0.012, 0.013, 0.016);
     }
     @group(0) @binding(14) var moonTex : texture_2d<f32>;            // sampled only by skyColor — pipelines that never call it drop these bindings
     @group(0) @binding(15) var moonSamp : sampler;
@@ -194,5 +216,14 @@
       x = (x ^ (x >> 13u)) * 1274126177u;
       return f32((x ^ (x >> 16u)) & 1023u) / 1023.0;
     }
+    // == SAND, ON THE G-BUFFER == the composite needs to know a sand TOP face to glisten it (user 2026-08-15:
+    // "make the sand glisten from the sun like the water"), and the only channel it has is gAlbedo.a. That byte
+    // is (faceId | lavaG << 4): faceId runs 0-5 face, 6 water, 7 sky, 8 lava, and lavaG is a FOUR-bit 0-14 glow
+    // field, so bits 4-7 are NOT spare -- the room is in the low nibble, at faceId 9-15. SANDF is a top face
+    // (composite maps it straight back to 2u for faceN, and gbFace does the same for the denoiser's edge test),
+    // so nothing downstream can tell the difference except the code that asks.
+    const SANDF : u32 = 9u;
+    fn isSandV(v : u32) -> bool { return ${[...SAND, ...DSAND].map((i) => 'v == ' + i + 'u').join(' || ')}; }   // beach/lakebed SAND + desert DSAND -- ids listed one by one rather than as a range, so a future palette reorder cannot silently widen it
+    fn gbFace(a : f32) -> u32 { let r = u32(a * 255.0 + 0.5) & 15u; return select(r, 2u, r == SANDF); }   // ...the plain face, sand folded back into TOP: the denoiser rejects a neighbour whose face differs, and without this a sand/grass boundary would stop sharing irradiance samples
   `;
 

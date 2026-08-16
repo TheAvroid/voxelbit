@@ -8,6 +8,11 @@
     if (VE.recording && now - VE.lastPaint < VE_CAP_MS) { tickReq = true; paceWaited = false; requestAnimationFrame(tick); return; }
     if (VE.recording) VE.lastPaint = now - Math.min(VE_CAP_MS * 0.5, (now - VE.lastPaint) - VE_CAP_MS);   // carry the overshoot so the cadence cannot drift slow
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
+    // ── VITALS ── UNCONDITIONAL, and that matters: this first sat further down beside the hazard checks, which
+    // are inside the `if (P.fly) … else` movement branch, so hunger silently stopped the moment fly mode
+    // engaged (measured: it ran exactly twice, then never again). Health is not part of movement.
+    // Per-metre exhaustion still reads correctly from here — it diffs against the position stored last frame.
+    vitTick(dt);
     if (locked && !anthemDone) { playSecs += dt; if (playSecs >= anthemNextAt) playAnthem(); }   // ── PLAY CLOCK ── counts only while the player HAS THE CONTROLS: the loading screen, the press-any-button prompt, the esc menu and the death screen are not gameplay, and a backgrounded tab stops rAF outright. Two minutes of PLAYING, not two minutes of the page being open.
     fpsEma = fpsEma * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
     FT[ftI] = dt * 1000;                               // frame-time ring (1% lows / spike hunting); FTB is filled at the end of the body
@@ -27,6 +32,12 @@
     else {
       if (!blurLock) cineBlurK = cineBlurK < 0.002 ? 0 : cineBlurK * Math.exp(-5 * dt);   // fade the blur out with the roll — an instant cut back to a sharp image is as jarring as popping it on
       if (P.roll) P.roll = Math.abs(P.roll) < 0.002 ? 0 : P.roll * Math.exp(-7 * dt);   // leaving cine mode (or dying in it) levels the horizon out smoothly instead of snapping upright
+    // ── SPRINT IS NOT GATED ON HUNGER ANY MORE (user 2026-08-16: "the sprint button stop working randomly") ──
+    // it was `&& vitSprintOK()`, i.e. Minecraft's "no sprinting at hunger 6 or below". Faithful, and wrong here:
+    // sprinting COSTS 0.1 exhaustion per metre, so a long sprint drains hunger past the threshold and switches
+    // itself off — and with the hunger bar removed at the user's request there is nothing on screen that could
+    // explain why. A hidden rule that disables a movement key is a bug however correct the rule is. `vitSprintOK`
+    // is kept (and still reported by __vb.vit()) so the gate can come back the day hunger is visible again.
     const sprint = keys.has(binds.sprint) && !crouching;
     const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
     let mx = 0, mz = 0;
@@ -112,13 +123,32 @@
           P.vy = 0;
         }
       }
-      if (!dead && !P.fly && (lavaAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z)) || lavaAt(Math.floor(P.x), Math.floor(P.y + 1), Math.floor(P.z)))) die('you fell into the lava');
+      // LAVA no longer kills on contact: 4 damage twice a second, which is Minecraft's rate and gives a player
+      // who steps in the edge of a pool about two and a half seconds to get out again.
+      if (!dead && !P.fly && (lavaAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z)) || lavaAt(Math.floor(P.x), Math.floor(P.y + 1), Math.floor(P.z)))) {
+        vbLavaT += dt;
+        if (vbLavaT >= 0.5) { vbLavaT = 0; vitHurt(4, 'you burned in the lava', true); }
+      } else vbLavaT = 0;
       // ── QUICKSAND ── a sand flat swallows you a little more every second you stand on it. The sink is applied to the
       // EYE, not to P.y: the player still stands on solid ground for collision, so nothing here can shove them through
       // the world — the camera simply slides down into the sand. Once the sand closes over the eye, that's the death.
       if (!dead && !P.fly && P.onGround && onFlatSand()) P.sink = Math.min(eyeH + 2, P.sink + SINK_IN * dt);
       else P.sink = Math.max(0, P.sink - SINK_OUT * dt);   // stepped off / jumped / flying → haul yourself back out
-      if (!dead && !P.fly && P.sink >= eyeH) die('you sank into the quicksand');
+      // …and the sand suffocates rather than swallowing you whole: once it closes over the eye it takes a
+      // point a second, so there is a window to jump clear if you notice the screen going under.
+      if (!dead && !P.fly && P.sink >= eyeH) {
+        vbSandT += dt;
+        if (vbSandT >= 1.0) { vbSandT = 0; vitHurt(1, 'you sank into the quicksand', true); }
+      } else vbSandT = 0;
+      // ── CACTUS SPINES (user 2026-08-15) ── leaning on one costs a point, on a cooldown so standing against
+      // a saguaro drains you steadily rather than instantly. `hh` is the same live collision height moveAxis
+      // is given above, so a crouched player is tested at 13 voxels and not 20 — the test asks about the body
+      // that is actually there. Cacti are markSolid, so the usual way to earn this is to WALK INTO one: the
+      // collision clamp leaves the box 1 mm off the trunk and cactusHurtAt's margin covers exactly that.
+      if (!dead && !P.fly && cactusHurtAt(P.x, P.y, P.z, hh)) {
+        vbCactT += dt;
+        if (vbCactT >= 0.9) { vbCactT = 0; vitHurt(1, 'the cactus spines got you'); }
+      } else vbCactT = 0;
       if (P.y < -60) respawn();
       // eye smoothing — step-ups AND stick-downs ease over ~80 ms instead of popping; exact tracking while airborne
       const targetEye = P.y + eyeH - P.sink;           // …minus how far the quicksand has swallowed us

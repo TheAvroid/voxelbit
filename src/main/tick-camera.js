@@ -1,3 +1,4 @@
+    ambBiomeTick();                                    // fade the FOREST ambience bed out over the desert — see ui/audio.js
     // ── day/night cycle ── 20-minute full cycle at 1x; tday 0 = midnight, 0.5 = noon; ALT+scroll scales speed, L pauses
     { const ntd = window.__TFREEZE ? tday : (tday + dt * cycleSpeed / 1200) % 1;   // __TFREEZE pins the sun for perf A/Bs (the cycle moved measured trace cost 45% over one 7-minute run). Not __vb.tod(): that also sets resetHist, so pinning with it would measure a permanently-cold denoiser.
       if (ntd < tday) moonDay++;                       // a day rolled over → the moon advances one phase step (8-day cycle)
@@ -47,8 +48,9 @@
     const uw = waterAt(Math.floor(cam[0]), Math.floor(cam[1]), Math.floor(cam[2]));
     if (uw && !dead && !P.fly && !ED.on && !cineMode && locked) {   // ── DROWNING ── head submerged while actively swimming → lungs run out after DROWN_T
       uwT += dt;
-      if (uwT >= DROWN_T) die('you drowned');
-    } else if (!uw || P.fly) { uwT = 0; }              // surfaced or flew out → catch your breath (menu/editor/cinematic just FREEZE the clock — they don't refill it)
+      // out of breath = 2 damage a second, not instant death, so surfacing late is survivable
+      if (uwT >= DROWN_T) { vbDrownT += dt; if (vbDrownT >= 1.0) { vbDrownT = 0; vitHurt(2, 'you drowned', true); } }
+    } else if (!uw || P.fly) { uwT = 0; vbDrownT = 0; }              // surfaced or flew out → catch your breath (menu/editor/cinematic just FREEZE the clock — they don't refill it)
     // WORLD CEILING for shadow rays: nothing solid exists above the highest occupied 32-voxel slab, so a sun ray
     // can stop the moment it climbs past it instead of marching its full range through empty sky. Scanned top-down
     // over the L2 occupancy (a few hundred u32 reads — the top slabs are empty and OR to zero fast); exact by
@@ -114,7 +116,7 @@
       if (pendKillT && now >= pendKillT) { pendKillT = 0;
         const am9 = aimedCreature();                     // ANY tool: whatever the crosshair is genuinely on takes the swing (user)
         if (am9 >= 0) hitCreature(am9);                  // …otherwise chopSwing carves a grid-stamped animal's voxels out of the world and it comes apart in pieces instead of dying
-        else if (chopSwing()) playToolHit(); else { tryKillCreature(); if (aimHitId()) playBlocked(); } }   // …and if it bit NOTHING but the crosshair was on something solid, it BOUNCED — the thud (user 2026-08-07). Nothing under the crosshair at all stays silent: a whiff is not a bounce   // it BIT something — one of the four break takes (user)   // an axe that bites a trunk spends the swing on the tree; otherwise it can still kill   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
+        else if (chopSwing()) { playToolHit(); vitOnMine(); } else { tryKillCreature(); if (aimHitId()) playBlocked(); } }   // …and if it bit NOTHING but the crosshair was on something solid, it BOUNCED — the thud (user 2026-08-07). Nothing under the crosshair at all stays silent: a whiff is not a bounce   // it BIT something — one of the four break takes (user)   // an axe that bites a trunk spends the swing on the tree; otherwise it can still kill   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
       // SWING — Teardown-style 3 phases over 570 ms (user-tuned): WINDUP raises the tool up-back (0–35%),
       // the STRIKE slams it down to the MIDDLE of the screen (35–55%, accelerating), then it eases back to rest (55–100%).
       const swT = (now - swingStart) / 570;
@@ -159,14 +161,19 @@
       const spd2 = Math.hypot(P.hvx, P.hvz);           // view-model BOB — phase tied to distance walked (smooth at any speed), amplitude eased in/out
       bobAmp += ((P.onGround && !P.fly ? Math.min(1, spd2 / WALK) : 0) - bobAmp) * (1 - Math.exp(-8 * dt));
       bobPh += spd2 * dt * 0.225;                      // slower phase + wide sweep = long smooth strides
-      hx += Math.sin(bobPh) * 0.075 * bobAmp + Math.sin(now * 0.0013) * 0.0069 + Math.sin(now * 0.00073 + 1.7) * 0.0039;       // + idle breathing sway (tripled)
+      // …computed ONCE, into heldBob, because the health row rides it too (see the heart lane at the foot of
+      // this file). Written as its own pair rather than read back out of hx/hy: those carry the tool's pose,
+      // swing, swap and bow tremble as well, and the row wants the BOB and nothing else.
+      heldBob[0] = Math.sin(bobPh) * 0.075 * bobAmp + Math.sin(now * 0.0013) * 0.0069 + Math.sin(now * 0.00073 + 1.7) * 0.0039;   // + idle breathing sway (tripled)
+      heldBob[1] = -Math.abs(Math.cos(bobPh)) * 0.028 * bobAmp + Math.sin(now * 0.0017 + 0.9) * 0.0069 + Math.sin(now * 0.00091) * 0.0036;
+      hx += heldBob[0];
       // …+ the draw tremble. SLOW and CONTINUOUS (user: smoother, not violent): a held arm drifts, it does
       // not buzz — so this is two long rates at a third of the old amplitude, and NOT stepped to 24 fps.
       // Quantising it made a 12 Hz judder, which is exactly what read as violent; the view-model bob above
       // is left continuous for the same reason.
       if (bowShk > 0) { hx += (Math.sin(now * 0.0062) + 0.5 * Math.sin(now * 0.0111 + 2.1)) * 0.0150 * bowShk;   // …travel DOUBLED (user) — same slow rates, twice the distance
                         hy += (Math.sin(now * 0.0049 + 1.1) + 0.5 * Math.sin(now * 0.0093) ) * 0.0120 * bowShk; }
-      hy += -Math.abs(Math.cos(bobPh)) * 0.028 * bobAmp + Math.sin(now * 0.0017 + 0.9) * 0.0069 + Math.sin(now * 0.00091) * 0.0036;
+      hy += heldBob[1];
       let AX = [cr2 * cy, sr2 * cp2 + cr2 * sy * sp2, sr2 * sp2 - cr2 * sy * cp2];
       let AY = [-sr2 * cy, cr2 * cp2 - sr2 * sy * sp2, cr2 * sp2 + sr2 * sy * cp2];
       let AZ = [sy, -cy * sp2, cy * cp2];
@@ -268,6 +275,21 @@
         } }
       }
     }
+    { // -- THE HEALTH ROW -> u.heart / u.heartC -- five real voxels carried in front of the eye, drawn by the
+      // held item's own DDA and lit by the held item's own light (see heldLight in PRE and the heart block in
+      // COMPOSITE). The REST POSE is constant, so this publishes three live things: where the hand happens to
+      // be in its bob, how much health is left, and how recently you were hit. Written every frame anyway
+      // rather than on change, because the lane is otherwise untouched and a stale item id after an asset
+      // reload would leave the bar drawn from nothing. HIDDEN in the asset editor (the stage is not the world
+      // and ED.on freezes the sim) and while DEAD, the two cases the held item hides for as well.
+      // ── ONE ANCHOR FOR THE WHOLE ROW ── the bob is added HERE, to the anchor the shader offsets each heart
+      // from, never to the hearts individually: the row moves as one rigid object, which is the rule every
+      // view-model animation in this engine follows.
+      const hpH = VIT.hp / (VIT_HP_MAX / HEART_N);   // 20 hp over 5 hearts = 4 hp each, so this is "hearts remaining" with the partial one as a fraction
+      UF[UF_HEART] = HEART_POSE.x0 + heldBob[0] * HEART_POSE.rig; UF[UF_HEART + 1] = HEART_POSE.y + heldBob[1] * HEART_POSE.rig; UF[UF_HEART + 2] = HEART_POSE.z; UF[UF_HEART + 3] = HEART_POSE.vs;
+      UF[UF_HEART + 4] = (HEART_IT && heartShow && !ED.on && !dead) ? HEART_IT : 0;   // 0 = the whole shader block is one compare and draws nothing
+      UF[UF_HEART + 5] = hpH; UF[UF_HEART + 6] = HEART_POSE.gap;
+      UF[UF_HEART + 7] = Math.round(VIT.hurtT * 13) / 13; }   // the hit kick, STEPPED: VIT.hurtT falls 1 -> 0 over 0.55 s, and 13 steps across it is 24 fps - the rate every animation in this game runs at
     UF[64] = ED.on ? Math.max(64, renderDist)            // editor world: nothing stale exists (occupancy is empty beyond the stage) — no rect clamp
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));

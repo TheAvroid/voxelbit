@@ -51,7 +51,7 @@
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
   const gwrap = (v, n) => ((v % n) + n) % n;
   let SPWX = 0, SPWZ = 0;                              // world spawn — placeholder; RANDOMISED on every refresh at boot (user 2026-07-20), see the spawn block below
-  let SPYAW = -1.517; const SPPITCH = -0.044;          // spawn CAMERA facing baked with the position (same T export); the lake-side spawn below re-aims the yaw at the water
+  let SPYAW = 1.5708; const SPPITCH = -0.044;   // FACING THE DESERT (user 2026-08-15): the biome split runs north-south with sand to the EAST, and heading = (sin(yaw), cos(yaw)), so +pi/2 looks down +x straight at the treeline's far side          // spawn CAMERA facing baked with the position (same T export); the lake-side spawn below re-aims the yaw at the water
 
   // deterministic integer hash — the shader ports this bit-for-bit for the far-field terrain
   const ihash = (x, z) => { let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263)) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
@@ -80,6 +80,66 @@
     if (b >= 0.065) return 0;
     return sstep(Math.min(1, (0.065 - b) / 0.06));
   };
+  // ── THE DESERT ── a flat sand basin centred on the spawn, so the player always starts in it and walks
+  // OUT into the pine forest. Anchored to SPWX/SPWZ rather than fixed coordinates because spawn is
+  // re-randomised on every refresh (see build.js) - a fixed centre would land in a different place
+  // relative to the player every session, or nowhere near them at all.
+  // The rim is a distance field wobbled by low-frequency noise, never a circle, and it BLENDS over DESB
+  // rather than switching: H is continuous noise, so a hard mask would cut a cliff along the border. That
+  // is the same reason the sand-to-forest surface transition below dithers instead of snapping.
+  const DESOFF = 80, DESB = 450, DESW = 320;          // how far the boundary sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each)
+  // 500 -> 300 (user 2026-08-15): at 500 the player spawned in the forest facing the desert correctly, but 50 m
+  // of dense pine stood between them and it, so the thing they were aimed at was invisible. 300 puts the sand
+  // inside view from the spawn point while still landing them solidly in the trees.
+  const DESY = WL + 7;                                 // the flat: high enough that no basin or river bed can flood it
+  // ── DUNE RELIEF, ON A 1-10 SCALE (user 2026-08-15) ── the rest of the terrain is NOT on a scale: its
+  // amplitudes are raw voxel counts buried in the noise expressions (the forest is `88 * fbm` for the base plus
+  // `9 * fbm` for detail, i.e. about +-44 voxels). This is the one knob that is, and the unit is plain: DESREL
+  // is the PEAK-TO-PEAK height of the dunes in voxels, so 1 is a billiard table, 10 is +-5 voxels of roll. It
+  // was effectively 4 before this. Putting the FOREST on the same 1-10 scale would need a different unit —
+  // +-44 vs +-3 is two orders of magnitude, so one linear scale leaves the desert no usable resolution.
+  const DESREL = 24;                                   // FIXED at 24 (user 2026-08-15). The ?desrel override and the L knob that drove it are both gone — this is the shipped relief, not a tuning dial.
+  // ── DUNES (user 2026-08-15: "hilly, like with dunes") ── a SECOND, much longer-wavelength field on top of
+  // the fine relief. DESREL alone could never make dunes however high it went: its wavelength is ~83 voxels
+  // (8 m), so raising it just made the ripples taller and read as squiggly contour noise. Dunes need distance
+  // between crests, so this runs at 0.0022 (~450 voxels, 45 m) with a half-amplitude second octave for shape.
+  // It is deliberately POSITIVE-ONLY (fbm, not fbm-0.5): dunes are relief piled ON a plain, and keeping the
+  // term above zero means the sand floor never drops toward the waterline - which is half of the no-water
+  // guarantee below. ?desdune=N overrides live, same as ?desrel.
+  const DESDUNE = (() => { const m = /[?&]desdune=(\d+(?:\.\d+)?)/.exec(location.search); return m ? +m[1] : 26; })();
+  const duneH = (x, z) => {
+    const a = fbm(x * 0.0022 + 61.3, z * 0.0022 + 17.9);
+    const b = fbm(x * 0.0051 + 12.7, z * 0.0051 + 73.1);
+    // ── ROUNDED, NOT NOISY (user 2026-08-15: "more curvy... more round") ── two changes, both about SHAPE
+    // rather than height. The fine octave drops 0.28 -> 0.16 because it was the part adding wobble to a crest
+    // instead of adding a crest. Then the combined field is smoothstepped TWICE: sstep flattens a signal near
+    // 0 and 1 and steepens it through the middle, so applying it to the dune height domes the tops, flattens
+    // the interdune floors, and rounds the shoulders between them. fbm on its own is linear-ish through its
+    // range, which is exactly what reads as lumpy noise rather than as dunes.
+    const n = a * 0.84 + b * 0.16;
+    return sstep(sstep(n)) * DESDUNE;                  // 0 .. DESDUNE, never negative
+  };
+  // ── THE DESERT ── a HALF-AND-HALF split, not an island: one wandering boundary line with open sand on the
+  // east side of it and pine forest on the west, both running to the horizon. (The first pass made the desert a
+  // disc, which meant the forest encircled it — not what was asked for.)
+  // The line is anchored to SPWX/SPWZ rather than to fixed coordinates because spawn is re-randomised on every
+  // refresh (see build.js) - a fixed boundary would land somewhere different relative to the player each session,
+  // or nowhere near them at all. DESOFF puts the player 50 m inside the sand, and the spawn camera faces west, so
+  // the treeline is straight ahead at boot with the desert running away behind.
+  // It BLENDS across DESB rather than switching: H is continuous noise, so a hard edge would cut a cliff along
+  // the whole border. Same reason the surface colour dithers on the mask weight instead of snapping.
+  const desWob = (z) => (vnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * DESW
+                      + (vnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * DESW * 0.35;   // two octaves so the border meanders instead of ruling a straight line
+  const desertM = (x, z) => {                          // 0 = pine forest (west), 1 = open desert (east)
+    // The wobble is subtracted AT THE SPAWN'S OWN z. Without that it swings +-188 voxels against a DESOFF of
+    // 80, so how far the player starts from the sand was a lottery: measured 380 voxels one session where the
+    // constant implies 305, and a big enough swing would have spawned them PAST the boundary, in the desert.
+    // Pinning it costs nothing — the border still meanders exactly as before, it just passes DESOFF from
+    // spawn at the spawn's own latitude, so "how far to the desert" is the same every session.
+    const b = SPWX + DESOFF + desWob(z) - desWob(SPWZ);
+    const t = 0.5 + (x - b) / DESB;
+    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
+  };
   const H = (x, z) => {
     let h = baseH(x, z);
     const bm = basinM(x, z);
@@ -89,6 +149,7 @@
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
     if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
     if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
+    const dm = desertM(x, z); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.
     return h;
   };
   const RIVCELL = 768, RIVINF = 6200;                  // WATERSHEDS — one candidate per ~77 m cell, rare roll; each hit is a whole dendritic system (influence radius must cover the longest possible chain)

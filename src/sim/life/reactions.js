@@ -1,5 +1,5 @@
   // @module - what a creature does when it is hit: hurt, spook, ragdoll, death and the meat it drops
-  // @exports HURT, HURT_MS, RAG_UP, creatureRagdoll, dropMeat, hitCreature, hurtBox, reapDeaths, spooked, tryKillCreature
+  // @exports HURT, HURT_MS, RAG_UP, creatureRagdoll, dropMeat, dropsMeat, hitCreature, hurtBox, reapDeaths, spooked, tryKillCreature
   // ── STRUCK = SPOOKED (user 2026-08-09) ── every family that has a flee state already enters it on
   // PROXIMITY and runs its animation at double rate there: the bunny 24→48 fps (B.bflee), the land mammals
   // 12→24 (B.aflee), the fish ×fleeMult with its animation scaled to match (B.fleeT). Being SHOT did none of
@@ -8,6 +8,17 @@
   // 5 s, not the fish's 1.2 s fleeHold: that number exists to stop flicker at the edge of the threat radius,
   // where the animal is deciding moment to moment. A wound is not a decision, and an animal that shrugs it off
   // in a second reads as not having noticed.
+  // ── DOES THIS KILL LEAVE A CARCASS? ── the land mammals always have, and the DESERT band now does for the
+  // four species the user named; ant, fly and spider leave nothing, the same line they drew asking for no
+  // drops off the bugs. A named predicate rather than an inline test because it is the only way to check the
+  // rule without a kill: `__vb.meatFor(slot)` calls exactly this, so the test and the game cannot disagree.
+  // Keyed by NAME so re-ordering DESERTS cannot silently re-assign which creature bleeds.
+  const dropsMeat = (j) => {
+    if (j >= 276 && j < MAM_END) return true;
+    if (j < MAM_END || j >= DES_END) return false;
+    const d = DESERTS[((j - MAM_END) / DES_PER) | 0];
+    return !!(d && DES_MEAT[d.name]);
+  };
   const HIT_SPOOK_MS = 5000;
   const spooked = (B) => performance.now() < (B.spookT || 0);
   const HURT_MS = 500;                                 // ONE blink, half a second (user). Comfortably longer than TAA's ~8-frame colour blend, which is what made an earlier 83 ms flash almost invisible on screen.
@@ -172,6 +183,7 @@
     if (B.lastSwing === tk) { return; }                 // this same swing already landed on this creature — one swing, one hit
     B.lastSwing = tk;
     const hs9 = hitSpot(B);
+    vitOnAttack();                                      // a landed blow costs exhaustion, like Minecraft's 0.1
     spawnHitSparks(hs9[0], hs9[1], hs9[2]);             // SPARKS ON EVERY BLOW (user) — the same embers a shaft already threw, now on any hit, wounding or killing. Fired here, before the wound/kill split, so hits one, two and three all show it.
     playLifeHit(hs9[0], hs9[1], hs9[2]);                // …and the SAME rule for the sound (user 2026-08-08): every blow that lands on a living thing is heard, whatever swung it. Here, above the wound/kill split and below the one-hit-per-swing guard, so it is exactly once per blow — hits one, two and three included, and a held swing cannot machine-gun it.
     B.spookT = performance.now() + HIT_SPOOK_MS;        // …and it BOLTS (user 2026-08-09) — same place and same rule as the two above, so every blow spooks it, arrow or axe or bare hand, wounding or fatal
@@ -201,7 +213,7 @@
     // so the hit reads on the animal itself rather than the animal simply vanishing into smoke.
     if (B.dying) return;                                // already flashing its way out — a second click must not double-kill or restart the blink
     B.dying = true;
-    if (best >= 276) B.mammal = true;                   // remember WHAT it was: by the time it dies the slot is only a bag of stale numbers
+    if (dropsMeat(best)) B.mammal = true;   // …and BELOW the mammal band's end. This was open-ended because 276.. WAS the whole band and the pool stopped at 372; the desert creatures now live above it and were inheriting the land mammals' meat drop (user: 'the bugs shouldnt drop anything').                   // remember WHAT it was: by the time it dies the slot is only a bag of stale numbers
     const blink = true;                                 // the KILLING blow flashes too (user) — it used to be skipped whenever an earlier hit had already flashed,
     B.blinked = true;                                   // which left the third and fatal swing with no feedback of its own at all.
     // ── GO RIGID (user 2026-08-05) ── ONLY here, on the blow that kills: the animal becomes a rigid body and

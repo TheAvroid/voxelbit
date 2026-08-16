@@ -3,7 +3,38 @@
   /* LOADING VIDEO (user) — loading.mp4 plays full-bleed behind the status text; the video's OWN first frame
      (loadposter.jpg, extracted from the clip) is the poster while it buffers, so poster→video is a seamless start, not a swap. A dark gradient scrim keeps the text legible over any frame. #load is display:none when dismissed, so the
      video stops the instant the game starts. */
-  #loadVid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -2; }
+  /* ── THE LOADING WALLPAPER IS A STILL NOW (user 2026-08-16: "make loading.png the loading screen wallpaper")
+     ── loading.png replaces the loading.mp4 clip and its extracted poster. The element stays a div rather than
+     an <img> so the image is a BACKGROUND: cover-fitting a background cannot letterbox, and there is no
+     intrinsic size for the shake transform to fight. Nothing in src/ ever drove the old <video>, so removing
+     it costs no JS. */
+  /* TWO NESTED ELEMENTS, and that nesting is load-bearing: two animations on ONE element that both write
+     `transform` do NOT compose — the later one silently wins, which would have thrown away the 1.06 overscan
+     and let the drift pull the image off its own frame. Nesting multiplies the two transforms instead, which
+     is the composition CSS will not do on a single node. */
+  #loadVid { position: absolute; inset: 0; z-index: -2; overflow: hidden;
+    animation: loadDrift 21s ease-in-out infinite; will-change: transform; }
+  #loadVid > i { position: absolute; inset: 0; display: block;
+    background: url(loading.png) center / cover no-repeat; will-change: transform;
+    animation: loadJitter 5.5s ease-in-out infinite; }
+  /* ── A CONTINUOUS CAMERA SHAKE (user: "subtle… looped so it is continious") ── TWO animations on one element
+     rather than one: a long lazy DRIFT plus a short JITTER whose periods (21 s and 5.5 s) do not divide into
+     each other, so the pair never visibly repeats even though both loop forever. Both start and end on the
+     same transform, which is what makes each loop seamless. The 1.06 scale is what buys the headroom: at ~3%
+     overscan per edge no translation can ever pull the image off its own frame and show a seam. */
+  @keyframes loadDrift {
+    0%   { transform: translate(0, 0); }
+    30%  { transform: translate(-0.55%, 0.35%); }
+    62%  { transform: translate(0.45%, -0.45%); }
+    100% { transform: translate(0, 0); }
+  }
+  @keyframes loadJitter {
+    0%   { transform: scale(1.06) translate(0, 0) rotate(0deg); }
+    22%  { transform: scale(1.06) translate(0.12%, -0.10%) rotate(0.06deg); }
+    48%  { transform: scale(1.06) translate(-0.10%, 0.12%) rotate(-0.05deg); }
+    74%  { transform: scale(1.06) translate(0.08%, 0.09%) rotate(0.04deg); }
+    100% { transform: scale(1.06) translate(0, 0) rotate(0deg); }
+  }
   /* ── SMOOTH PROGRESS METER (user) ── the fill's scaleX and the % are eased toward each phase's target by one rAF loop,
      so the bar glides 0→100 instead of stepping as chunks land. */
   #loadMeter { display: flex; flex-direction: column; align-items: center; gap: 7px; }

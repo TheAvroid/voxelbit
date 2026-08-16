@@ -41,12 +41,16 @@
         while (strip.children.length > 1) strip.removeChild(strip.firstElementChild);   // the arrived digit becomes the resting row
         delete strip.dataset.busy; }, 95); });   // the roll must finish well inside the 150 ms tick: at 140 ms it occasionally straddled one and the gate dropped that number (measured — the drum skipped 0.6)
   };   // the version tag counts v0.0 → v1.0 on its OWN steady clock (user: "irrelevant of the loading bar"). Tying it to the bar made it tick unevenly, because the bar is a 9 s ease-out whose rate is deliberately front-loaded. Only the LOADING one animates — the esc menu's is static.
+  const VER_TO = 1.1;                                  // ── WHAT THE DRUM COUNTS UP TO ── the shipped version, and the ONE place it is written for the animation
+  // (the static tag on the lock screen is in 10-body.html). Scaling the ramp by it rather than hardcoding 1
+  // keeps the tick even: the counter is linear in TIME over LOAD_VER_MS, so 1.1 is simply twelve steps
+  // instead of eleven at the same cadence, and toFixed(1) still yields the two digits verSet rolls.
   let loadDone = false, loadFinishing = false;   // loadFinishing guards the crawl below: finishLoad's OWN transitionend must not restart it and drag the bar back off 100%                                 // set by finishLoad → the readout is pinned to 100% so it can't under-read the compositor mid finish-sweep (user: "the loading bar never reaches 100%")
   const readScale = () => { const t = getComputedStyle(loadFillEl).transform; return t && t !== 'none' ? (new DOMMatrixReadOnly(t)).a : 0; };
   const loadNumStep = () => {                            // the % text + sheen mirror whatever the compositor has the bar at right now
     const s = loadDone ? 1 : Math.max(0, Math.min(1, readScale()));
     loadPctEl.textContent = Math.round(s * 100) + '%';
-    if (verCells.length) { const vs = (loadDone ? 1 : Math.min(1, (performance.now() - loadVerT0) / LOAD_VER_MS)).toFixed(1); verSet(vs); }   // linear in TIME → an even v0.0, v0.1 … v1.0 tick, each digit rolled onto its drum; clamps at v1.0 however long the load takes
+    if (verCells.length) { const vs = (loadDone ? VER_TO : Math.min(VER_TO, (performance.now() - loadVerT0) / LOAD_VER_MS * VER_TO)).toFixed(1); verSet(vs); }   // linear in TIME → an even v0.0, v0.1 … tick up to VER_TO, each digit rolled onto its drum; clamps there however long the load takes
     loadGlossEl.style.width = (s * 100) + '%';
     if (!loadEl.classList.contains('hidden')) requestAnimationFrame(loadNumStep);
   };
@@ -78,5 +82,6 @@
     requestAnimationFrame(loadNumStep); }
   const setLoad = () => {};                              // real progress no longer drives the BAR (the trickle owns it); kept as a no-op so the phase calls below stay harmless
   const finishLoad = () => { loadFinishing = true; loadFillEl.style.transition = 'transform 0.85s cubic-bezier(0.25, 0.9, 0.3, 1)'; loadFillEl.style.transform = 'scaleX(1)'; setTimeout(() => { loadDone = true; loadPctEl.textContent = '100%'; verSet('1.0'); loadGlossEl.style.width = '100%'; }, 850); };   // verSet, NOT textContent: assigning text here destroyed the drum markup (the .vd cells) and left plain text behind.   // world ready → GLIDE the last stretch to full over 0.85 s so it never snaps (user: "jumps from 80% to 100%"); the % follows the compositor the whole way, then pins to a true 100% once the glide has actually arrived
-  const stage = async (msg) => { loadMsgEl.textContent = msg; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); };
+  const palTrace = [];                                 // ── WHERE THE 256 WENT ── palette.length sampled at every load stage, so the ceiling can be attributed to a LOADER instead of guessed at. __vb.palTrace() reads it.
+  const stage = async (msg) => { try { palTrace.push([msg, palette.length]); } catch (e) {} loadMsgEl.textContent = msg; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); };
 

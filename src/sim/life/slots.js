@@ -88,7 +88,39 @@
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
   const cardSlainPerch = new Set(), CARD_SLAIN_CAP = 512;   // perches whose bird the player KILLED — see findPineCrown. Module scope on purpose: the kill handler and the placement search are ~4000 lines apart.
   const cardPerchKey = (tx, tz, bi) => tx + '|' + tz + '|' + bi;
-  const wbf = Array.from({ length: 372 }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the drop budget), 244-275 FISH (kind 6 — off-grid swimmers under the lake/river surface; 16 -> 32 slots, DOUBLED 2026-07-20 at user request), 276-299 BUNNIES (24 — kind 2 ground hoppers reusing the worm machinery, model = BUNNY_ITEM0, added 2026-07-21 at user request), 300-323 ARMADILLOS (24 — kind 2 ground WALKERS, continuous cardinal march, model = ARMADILLO_ITEM0, added 2026-07-21 at user request), 324-347 SKUNKS (24 — kind 2 ground WALKERS, same cardinal-march AI as the armadillo, GRID-STAMPED via SKUNK_POSES, added 2026-07-21 at user request), 348-371 PORCUPINES (24 — kind 2 ground WALKERS, armadillo-style constant march, GRID-STAMPED via PORCUPINE_POSES, re-added 2026-07-22 at user request as a 4th land mammal alongside the skunk)
+  // ── DESERT CREATURES (user 2026-08-15) ── seven species, DES_PER slots each, appended after the land
+  // mammals. Appended rather than carved out of an existing band because every band is fully claimed.
+  // MAM_END is kept as its own name: the mammal loops elsewhere mean "end of the mammal band", which is
+  // still 372, while the full-pool loops mean "end of the pool", which is not. Those two happened to be
+  // the same number until now, and every one of the seventeen literals had to be read to tell which it was.
+  const MAM_END = 372, DES_N = 7, DES_PER = 8, DES_END = MAM_END + DES_N * DES_PER;
+  // ── DESERT SPAWN SPACING ── Poisson-disc floors for the desert band, enforced in tick-creatures' spawn retry.
+  // Sized off the annulus the creatures actually land in (~934k vox² at LIFE_KEEP 1040): 42 bodies means a mean
+  // gap of ~105 vox, and 6-of-a-species means ~280, so these sit near the half-of-mean that dart-throwing can
+  // still satisfy quickly. They are RELAXED per retry at the call site — never let a floor starve a slot.
+  const DES_APART = 160;        // between two of the SAME species — the one the eye reads as "geckos in a litter"
+  const DES_APART_ANY = 64;     // between any two desert creatures — stops a mixed pile-up in one patch of sand
+  // ── ANT COLUMN ── spacing along the leader's path, and how often the leader drops a crumb. The gap is 6, not
+  // the 3.2 the old steering aimed for: the baked ant model's box is 5 x 2 x 1, so at 3.2 the models would
+  // interpenetrate even in a geometrically perfect line. The crumb step sets how faithfully a follower traces a
+  // tight turn — finer is smoother and costs only array entries.
+  const ANT_GAP = 6.0, ANT_CRUMB = 0.75;
+  // ── AND THE ANT WALKS ON THE COMPASS (user 2026-08-16: "just have it move forward. when it want to turn,
+  // rotate the ant 90 degrees") ── the leader's heading is an INTEGER 0-3 into ANT_DIR, never an angle, so a
+  // diagonal is not expressible; a turn is +/-1 on that integer and lands in one frame. This is the same
+  // shape the armadillo/skunk/porcupine march already uses (see walkOK/B.ah in tick-creatures), which is why
+  // it is written the same way here: cardinal table, a lookahead of ANT_LOOK voxels along a candidate
+  // heading, and a COMMITTED turn side held for ANT_TURN_HOLD so a corner can never become a spin.
+  const ANT_DIR = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+  const ANT_LOOK = 5;           // voxels of clear ground a heading must offer before the ant will walk it — the same 5 the marching mammals probe
+  const ANT_TURN_HOLD = 0.35;   // seconds a turn is held before another may fire. Below ~0.2 a wedged ant reads as a twitch; this is one body-length of travel at 16 vox/s
+  const ANT_WHIM = 1.5;         // an unblocked ant rolls for a turn every ANT_WHIM..2*ANT_WHIM seconds
+  const ANT_WHIM_P = 0.35;      // …and turns on 35% of those rolls. Together that is a corner every ~6.4 s, or ~100 voxels of straight march at the band's 16 vox/s. MEASURED at 2.5/0.30 first and it was too sparse to be the behaviour the user asked for: one turn per 12.5 s is 200 voxels, so a player watching the column for ten seconds would usually never see the quarter turn at all.
+  // ── WHICH DESERT KILLS LEAVE MEAT (user 2026-08-15) ── the four the user named. The other three — ant, fly
+  // and spider — leave nothing, which is the same distinction they drew earlier asking for no drops off the
+  // bugs. Keyed by NAME, not by slot number, so re-ordering DESERTS cannot silently re-assign it.
+  const DES_MEAT = { desert_mouse: 1, cobra: 1, scorpion: 1, gecko: 1 };
+  const wbf = Array.from({ length: DES_END }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the drop budget), 244-275 FISH (kind 6 — off-grid swimmers under the lake/river surface; 16 -> 32 slots, DOUBLED 2026-07-20 at user request), 276-299 BUNNIES (24 — kind 2 ground hoppers reusing the worm machinery, model = BUNNY_ITEM0, added 2026-07-21 at user request), 300-323 ARMADILLOS (24 — kind 2 ground WALKERS, continuous cardinal march, model = ARMADILLO_ITEM0, added 2026-07-21 at user request), 324-347 SKUNKS (24 — kind 2 ground WALKERS, same cardinal-march AI as the armadillo, GRID-STAMPED via SKUNK_POSES, added 2026-07-21 at user request), 348-371 PORCUPINES (24 — kind 2 ground WALKERS, armadillo-style constant march, GRID-STAMPED via PORCUPINE_POSES, re-added 2026-07-22 at user request as a 4th land mammal alongside the skunk)
   // ── DROP-SLOT PRIORITY ── six creature kinds share whatever is left of the drop slots once the 25 fixed ones
   // and the drawn flock have taken theirs (95 of 128 today). Rather than emit in wk order (which
   // starved whatever came last — fish, then worms), each wbf creature's 16-float pose is staged here with its distance²,

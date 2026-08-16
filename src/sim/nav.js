@@ -37,17 +37,35 @@
   //               15 ceiling is ~4x headroom; and a clamp there degrades to nvY itself, which is exactly
   //               today's behaviour (a conservative REFUSAL), never to a claim of room that is not there.
   const nvK = new Uint8Array((NVN + 1) >> 1);
+  //   nvStone 1 bit  is the surface a WALKER stands on in this cell a stamped rock or a cactus? nvF has no free
+  //               bit left (all eight NVF_* are spoken for), and a whole byte per cell would be 1 MB for one
+  //               boolean, so this is its own bitset at 128 KB. Set from the SAME column scan that finds the
+  //               walker top, off the id of the column that WON the max — i.e. the exact voxel a foot would
+  //               land on here, not a guess from the heightmap, which a mode-2 stamp has already lied about.
+  const nvStone = new Uint32Array((NVN + 31) >> 5);
   const nvDirtyBits = new Uint32Array((NVN + 31) >> 5);
-  const NV_BYTES = nvY.byteLength + nvC.byteLength + nvD.byteLength + nvO.byteLength + nvF.byteLength + nvK.byteLength + nvDirtyBits.byteLength;
+  const NV_BYTES = nvY.byteLength + nvC.byteLength + nvD.byteLength + nvO.byteLength + nvF.byteLength + nvK.byteLength + nvStone.byteLength + nvDirtyBits.byteLength;
   const NAVOFF = location.search.includes('nonav');  // ?nonav — the field is never built and every consumer falls back to the point probes it used before
   const NAVARB = !NAVOFF && !location.search.includes('noarb');   // ?noarb — field ON, arbiter OFF (the A/B that separates the field's COST from the arbiter's EFFECT)
   const nvPass = new Uint8Array(256);                // per palette id: 1 = a creature passes straight through this voxel. Mirrors bfObst's id rule exactly.
   let nvPassWater = -1;                              // solidTab[WATER_T] as of the last table build — it FLIPS to 1 when a lake freezes, which collapses every swim band
   const nvClut = new Uint8Array(256);                // per palette id: 1 = an OBSTACLE voxel a WALKER steps straight over. Exactly the WORM_PASS set bfObstW passes (pinecones, sticks, field stones) minus whatever nvPass already lets through, so this table only ever fires on ids that are walls to everything else.
+  // ── WHAT A DESERT CREATURE WILL NOT STAND ON ── per palette id: 1 = a STAMPED rock or a cactus, i.e. the
+  // two things the user watched the desert life walk up. Read only by navSand below, which only the desert
+  // band consults, so marking an id here can never change where anything else in the world can go — a forest
+  // boulder wears the same ROCK26 ids and the forest mammals are deliberately untouched by all of this.
+  // Built from the MODEL SETS rather than from a material table on purpose: pickOnlyTab is the tool gate and
+  // also covers the stone strata and the ore, so keying on it would have refused a desert gorge floor as well
+  // as the boulders sitting on the sand, and stranded anything that walked into one.
+  const nvStoneTab = new Uint8Array(256);
   const nvInitTabs = () => {
     for (let id = 0; id < 256; id++) nvPass[id] = (solidTab[id] !== 1 || foliaTab[id] || coneTab[id] || SNOW_PASS.has(id) || SNOW_FERN.has(id)) ? 1 : 0;
     nvPass[0] = 1;
     for (let id = 0; id < 256; id++) nvClut[id] = (nvPass[id] === 0 && WORM_PASS.has(id)) ? 1 : 0;   // the Set is read ONCE per table build, never per voxel — the column scan below indexes this array
+    nvStoneTab.fill(0);
+    for (const r of ROCK26) for (const q of r.vox) nvStoneTab[q >>> 24] = 1;   // the desert's boulders (stampDrock) AND the forest's — one shared 12-shade palette, so this is every rock in the world
+    for (const r of DROCK) for (const q of r.vox) nvStoneTab[q >>> 24] = 1;    // …and the desert_rocks.glb set, whichever of the two the scatter is currently drawing from
+    for (const c of CACTI) for (const q of c.vox) nvStoneTab[q >>> 24] = 1;    // …and the saguaros. The SHRUBS are deliberately absent: scrub is walk-through decor and a creature should pass straight through it.
     nvPassWater = solidTab[WATER_T];
   };
   const nvSolidII = (ii) => {                        // the one per-voxel obstacle rule the field is built from
@@ -61,6 +79,7 @@
     const yy = y < 1 ? 1 : (y > WY - 1 ? WY - 1 : Math.floor(y));
     const ii = gwrap(Math.floor(x), WX) + yy * WX + gwrap(Math.floor(z), WZ) * WX * WY;
     return nvClut[W[ii]] === 0 && nvSolidII(ii); };
+  let nvColWId = 0;                                  // …and the ID of that voxel, out of the same scan and for the same reason: the id is what says whether the thing under a foot is sand or a boulder, and finding it later would mean a second read of a voxel this loop has already touched.
   let nvColW = 0;                                    // OUT-PARAMETER of nvColTop: the same column's WALKER top, found in the SAME downward scan. A second scan would have doubled the most expensive part of a rebuild; instead, because the walker top is always at or below the obstacle top, one pass finds both — and the 98% of columns with no clutter stop on exactly the voxel they stop on today.
   const nvColTop = (gx, gz) => {                     // topmost obstacle voxel in the band around the heightmap hint. Empty 8³ BRICKS are skipped whole, so open air above the terrain costs one bit test per 8 voxels.
     const hm = hmap[gx + gz * WX];
@@ -74,9 +93,9 @@
       for (; y >= yb; y--) { const ii = base + y * WX;
         if (!nvSolidII(ii)) continue;
         if (top === -30000) top = y;                 // the OBSTACLE top — what nvY has always stored, unchanged
-        if (nvClut[W[ii]] === 0) { nvColW = y; return top; } }   // …and the first voxel a WALKER cannot pass is its ground. Both found, one scan, and the common column returns on its first solid voxel exactly as before.
+        if (nvClut[W[ii]] === 0) { nvColW = y; nvColWId = W[ii]; return top; } }   // …and the first voxel a WALKER cannot pass is its ground. Both found, one scan, and the common column returns on its first solid voxel exactly as before.
     }
-    nvColW = lo - 1;
+    nvColW = lo - 1; nvColWId = 0;
     return top === -30000 ? lo - 1 : top; };
   const nvFreeAbove = (gx, gz, y0, cap) => {         // free voxels upward from y0, stopping at the first obstacle or the cap
     if (y0 < 1) y0 = 1;
@@ -98,11 +117,11 @@
   const nvCtA = new Int32Array(4), nvWetA = new Uint8Array(4);   // preallocated — a rebuild must not allocate
   const nvBuildCell = (ci) => {
     const cx = ci % NVX, cz = (ci - cx) / NVX, gx0 = cx << NVSH, gz0 = cz << NVSH;
-    let top = -30000, low = 30000, wetN = 0, wtop = -30000;
+    let top = -30000, low = 30000, wetN = 0, wtop = -30000, wid = 0;
     for (let q = 0; q < 4; q++) {
       const gx = gx0 + (q & 1), gz = gz0 + (q >> 1);
       const ct = nvColTop(gx, gz);
-      if (nvColW > wtop) wtop = nvColW;              // MAX of the four walker tops, the same reduction and the same direction of error as `top` — a walker is never told a step is smaller than it is
+      if (nvColW > wtop) { wtop = nvColW; wid = nvColWId; }   // MAX of the four walker tops, the same reduction and the same direction of error as `top` — a walker is never told a step is smaller than it is   // …and the id of THAT column's top voxel travels with it: the cell's walking surface is whatever the winning column put there
       nvCtA[q] = ct;
       const wv = W[gx + WL * WX + gz * WX * WY];
       const wet = (wv === WATER_T || wv === WATER_B) ? 1 : 0;
@@ -132,10 +151,12 @@
     nvD[ci] = dmin > 255 ? 255 : dmin;
     let cd = top - wtop; if (cd < 0) cd = 0; if (cd > 15) cd = 15;   // ≥ 0 by construction; the clamp is a belt, and it fails toward nvY — i.e. toward today's answer
     nvK[ci >> 1] = (nvK[ci >> 1] & ((ci & 1) ? 0x0f : 0xf0)) | (cd << ((ci & 1) << 2));   // read-modify-write is safe: every write to this plane comes from nvBuildCell, and nvBuildCell only ever runs on the main thread
+    if (nvStoneTab[wid]) nvStone[ci >> 5] |= (1 << (ci & 31)); else nvStone[ci >> 5] &= ~(1 << (ci & 31));   // …and the same read-modify-write, for the same reason. CLEARED as well as set: a chopped-away boulder must give its cell back to the sand on the very next rebuild.
     nvF[ci] = f; };
   const nvIdx = (x, z) => (gwrap(Math.floor(x), WX) >> NVSH) + (gwrap(Math.floor(z), WZ) >> NVSH) * NVX;
   const nvTop = (ci) => { const g = nvY[ci]; return ((nvF[ci] & NVF_WATER) && g < WL) ? WL : g; };   // the travel surface this cell's clearance was measured from
   const nvTopAir = (ci) => { const g = nvY[ci] + 1; return ((nvF[ci] & NVF_WATER) && g < WL) ? WL : g; };   // …the same surface in HMAP UNITS: +1 because nvY is the topmost SOLID voxel while hmap/bfSurf is the FIRST AIR above it. Mixing the two is a silent one-voxel bias — see navWalkGround.
+  const nvIsStone = (ci) => ((nvStone[ci >> 5] >>> (ci & 31)) & 1) !== 0;   // is this cell's walking surface a stamped rock or a cactus?
   const nvClutD = (ci) => (nvK[ci >> 1] >>> ((ci & 1) << 2)) & 15;   // how far BELOW nvY a walker's foot actually lands here. Subtract it from nvY for the walker's ground; ADD it to nvC for the walker's headroom — the voxels between the two tops are, by the definition of "topmost non-clutter voxel", clutter or air, so they are free to a walker and the sum is the exact clearance above its own ground.
   // ── OPENNESS ── a chamfer distance transform per MEDIUM: within a region of one class, distance grows
   // normally; any neighbour of a DIFFERENT class (including wall) is a zero-distance boundary. So a fish
@@ -369,7 +390,26 @@
     if (!(nvF[ci] & NVF_BUILT)) return navBed(x, z) > WL ? navBed(x, z) : WL;
     const g = nvY[ci] + 1;                           // ── UNITS ── exactly navWalkGround's +1, and for exactly its reason: nvY is the topmost SOLID voxel while hmap is the FIRST AIR voxel above it, and hmap is what the unvouched branch one line up returns, what bfSurf returns, and what every worm step limit and probe offset was authored against. Without it the two branches disagreed by a voxel at every streaming frontier — a legitimate 2-voxel step read as 3 and the lane was refused — and the worm's y servo (tick-creatures gcW) sat a voxel below the pre-arbiter bfSurf target everywhere else.
     return ((nvF[ci] & NVF_WATER) && g < WL) ? WL : g; };   // nvTop's own water clamp, kept: a wet cell's travel surface is the waterline
-  const navLandOK = (x, z, gc, up, down, clr) => {   // THE land answer. The step limits and head clearance passed in are the marchers' OWN legacy numbers (±2 for a worm, +3/−4 for a mammal; the bfObstW probe heights) — measured against the field instead of the heightmap, so the decor and rock hmap never saw are finally in the test.
+  // ── THE DESERT BAND STAYS ON THE SAND (user 2026-08-16: "life seems to travel up rocks and cactus. prevent
+  // this from happening. the life needs to stay on the sand") ── a desert rock stamps in MODE 2, which raises
+  // the heightmap, so its top is legitimate ground to every surface probe in the game and navWalkStand's own
+  // "more than one step-up above this column" sanity clamp can never fire on it: the rock IS the column. That
+  // makes a boulder's flank a staircase to the ±2 step limit and, worse, makes its top a legal answer to "how
+  // high is the floor under my footprint" for a creature standing on the sand BESIDE it — which is the lift the
+  // user was watching. Rather than change what the stamp does (the forest boulders use the same mode, and
+  // walking over one there is deliberate), the DESERT BAND alone asks this extra question, of the same field
+  // every other predicate reads, and refuses the cell outright: it goes around.
+  const navSand = (x, z) => {
+    const ci = nvIdx(x, z);
+    if (!(nvF[ci] & NVF_BUILT)) {                    // UNVOUCHED → an honest column probe, never a blanket refusal: a creature at the streaming frontier must not freeze waiting for a cell to be built. Scans UPWARD from the surface because a cactus does NOT raise the heightmap (mode 1) — reading hmap alone would see the sand a saguaro is planted in and call it clear.
+      const gx = gwrap(Math.floor(x), WX), gb = gwrap(Math.floor(z), WZ) * WX * WY;
+      let y = navBed(x, z) - 1; if (y < 1) y = 1;
+      const yh = y + 5 > WY - 1 ? WY - 1 : y + 5;
+      for (; y <= yh; y++) if (nvStoneTab[W[gx + y * WX + gb]]) return false;
+      return true; }
+    return !nvIsStone(ci); };
+  const navLandOK = (x, z, gc, up, down, clr, sand) => {   // THE land answer. The step limits and head clearance passed in are the marchers' OWN legacy numbers (±2 for a worm, +3/−4 for a mammal; the bfObstW probe heights) — measured against the field instead of the heightmap, so the decor and rock hmap never saw are finally in the test.
+    if (sand && !navSand(x, z)) return false;         // …and the desert band's extra clause, ahead of everything else so it costs nothing at all for the worm, which passes no flag
     const ci = nvIdx(x, z), f = nvF[ci];
     if (!(f & NVF_BUILT)) { const g = navBed(x, z);   // UNVOUCHED → the honest point probe the marcher used before. Never a blanket refusal: a creature at the streaming frontier must not freeze waiting for a cell to be built.
       return !navWet(x, z) && g > WL && g - gc <= up && gc - g <= down && !nvObst(x, g + 2, z) && !nvObst(x, g + clr, z); }
@@ -393,7 +433,7 @@
       if (!fit(x + dx * (t + 0.02), z + dz * (t + 0.02))) return t;   // the clear run ends AT this boundary
     }
     return t; };
-  const navReachLand = (x, z, th, maxD, gc, up, down, clr) => {   // how far a WALKER can actually travel along a heading. Same cell DDA, one difference that matters: the step limit is carried FORWARD from cell to cell instead of being measured from the origin. A worm climbs a long slope two voxels at a time, and a reach anchored on where it started would have called every hill a wall and left the planner with no lane anywhere but flat ground.
+  const navReachLand = (x, z, th, maxD, gc, up, down, clr, sand) => {   // how far a WALKER can actually travel along a heading. Same cell DDA, one difference that matters: the step limit is carried FORWARD from cell to cell instead of being measured from the origin. A worm climbs a long slope two voxels at a time, and a reach anchored on where it started would have called every hill a wall and left the planner with no lane anywhere but flat ground.
     const dx = Math.sin(th), dz = Math.cos(th), CS = 1 << NVSH;
     const adx = dx < 0 ? -dx : dx, adz = dz < 0 ? -dz : dz;
     const cx = Math.floor(x / CS), cz = Math.floor(z / CS);
@@ -406,7 +446,7 @@
       if (t >= maxD) return maxD;
       if (tX <= tZ) tX += dtX; else tZ += dtZ;
       const px = x + dx * (t + 0.02), pz = z + dz * (t + 0.02);
-      if (!navLandOK(px, pz, g, up, down, clr)) return t;   // the walkable run ends AT this boundary
+      if (!navLandOK(px, pz, g, up, down, clr, sand)) return t;   // the walkable run ends AT this boundary   // …carrying the sand rule with it, so a heading into a boulder scores as the SHORT lane it is and the fan steers around instead of the mover refusing a step the planner had approved
       g = navGroundAt(px, pz);                          // …and the next cell is judged from THIS one's surface
     }
     return t; };

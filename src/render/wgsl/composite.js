@@ -20,6 +20,79 @@
     // rather than as depth.
     const DOF_DEAD : f32 = 0.16;                                     // fraction of the 0..1 range that stays sharp either side of the focal plane
     const DOF_NEAR : f32 = 0.55;                                     // foreground blur as a fraction of the background's
+    // ── THE SAND GLINT IS A CHROMA EFFECT, NOT A BRIGHTNESS ONE ── (user 2026-08-16: "rework the sun
+    // reflections on the sand. it just looks white.") Everything below is measured in the real desert with
+    // the camera aimed analytically down the MIRRORED sun (yaw atan2(sun.x, sun.z), pitch -asin(sun.y)) —
+    // the glint exists only inside that column, so a framing chosen for "most sand on screen" proves nothing.
+    //
+    // WHY IT LOOKED WHITE, and it is not the obvious answer: the spark was never clipping. ACES compresses the
+    // biggest channel hardest, so a spark that multiplies all three roughly evenly comes OUT of the curve LESS
+    // saturated than the sand it sits on — the lift is a wash toward grey. Measured on the version this one
+    // replaced: sand saturation 0.369 -> glint 0.184 at noon, with 34.5% of the lit pixels landing inside 12%
+    // of neutral, and of the 400 pixels it changed most, exactly ONE came out warmer than the sand under it.
+    //
+    // …and why GAIN cannot fix it. Sunlit sand at noon already renders sRGB 190-243: a 3.4x spark on a softer
+    // tint (1.30/1.00/0.55) was tried and measured WORSE than the version being replaced — 60.7% of its lit
+    // pixels near-neutral, because all the extra energy went into the channel that had room, which is blue.
+    // The tonemapper has no headroom left for brightness up here. It has plenty for COLOUR.
+    //
+    // So the spark is tinted hard toward the sun instead of lifted: R x3.8, G x2.6, B x0.94 — blue is the one
+    // channel it does NOT raise. Measured after: at a low sun the lit cells go 0.185 -> 0.237 saturation
+    // (it RISES above the sand now), R:B 1.223 -> 1.310, blue flat to within a unit (181.0 -> 181.2) while red
+    // and green climb 16, and 1.5% near-neutral instead of 13.4%. At noon 0.204 -> 0.191 and 11.6% neutral.
+    // It reads as warm sunlight on sand, which is the one thing a snow-white dot can never be mistaken for.
+    const SAND_GLINT : bool = false;                                 // the sun glisten on sand: OFF (user 2026-08-16)
+    const SAND_GAIN : f32 = 2.6;                                     // how far above the sand under it a lit cell sits, before the tint. Deliberately modest: past ~2.6 the curve returns luminance the eye cannot see and blue the eye reads as white — see the 3.4x control above
+    const SAND_TINT : vec3<f32> = vec3<f32>(1.45, 1.00, 0.36);       // the sun's own bias, exaggerated to survive the tonemapper. B BELOW 1 ON PURPOSE: 0.36 x 2.6 = 0.94, so the spark leaves blue where it found it and the cell reads gold against cream instead of white against cream
+    // ── AND THE SAME COMPLAINT AT NIGHT ── the moon branch is a FLOOR, not a keyed spark: below a certain
+    // light there is no sand colour left to tint, so a fixed value has to take over or the glint dies with
+    // the sun. It was 0.52/0.53/0.59, inherited from the liquid glint, and on water that is right because
+    // water is dark. On sand it measured as the worst case in the whole effect: moonlit sand renders sRGB
+    // 56/52/42 and the floor put the lit cells at 196 — BRIGHTER, in absolute terms, than the noon glint, and
+    // near-neutral with it. A field of white dots on dark ground is a snowfield, which is the exact reading
+    // the user has objected to twice — measured 62.0% of the lit pixels inside 12% of neutral, and the
+    // brightest tenth of them at 157/158/162, saturation 0.03. Quartered, and biased COOL rather than
+    // neutral (B/R 1.38, was 1.13). After: 8.9% near-neutral, lit saturation 0.104 -> 0.179, and the lit
+    // cells sit at luminance 73 against the daytime spark's 201 — a third of it, where they were half
+    // again as bright. What is left is a dim blue-silver glitter path that cannot read as a snowfield.
+    const SAND_MOON : vec3<f32> = vec3<f32>(0.13, 0.14, 0.18);
+    // ── ONE CELL IN FIVE, NOT ONE IN TWO ── the density is half the complaint. The water's hash keeps HALF the
+    // cells, and at the shared 0.30-0.85 duty window that is about a third of the sand lifting at once: on water
+    // it reads as points because the base is dark, but on bright sand a third of the surface rising together IS
+    // the white. MEASURED at the same colour, 0.50 against 0.80 at noon: the lit cells FUSE — 77 blobs averaging
+    // 129 px against 266 blobs averaging 24 px — and near-neutral pixels double, 11.6% -> 23.5%. Thinning is not
+    // a brightness cut; the surviving cells are identical, they simply have sand between them again.
+    // The TEMPORAL window is deliberately left alone at 0.30-0.85: narrowing it is what made the water read as
+    // "it changes its pattern, removes itself, then changes again" (user 2026-08-05). Population is the safe lever.
+    const SAND_PICK : f32 = 0.80;
+    // -- THE FLOATING HEARTS -- (user 2026-08-15: "use this for the hearts. have this voxel float in front of the
+    // players screen") every number the health readout is drawn with. They live up here, as constants, rather
+    // than in the uniform, because only two things about the hearts actually change while the game runs -- how
+    // much health is left and whether you were just hit -- and both of those already have a lane in u.heartC.
+    //
+    // -- THE LIGHT IS THE WORLD'S, THE SAME ONE THE STONE TOOLS GET -- (user 2026-08-16: "the hearts shouldnt
+    // be in html. they need to be actually in the game. like the stone tools for example.") They never WERE
+    // html, and that is the point of the note: what the user is describing is the LOOK. The row used to carry a
+    // key light of its own invention, fixed in CAMERA space, deliberately untouched by sunDir, dayScale,
+    // irradiance or heldCfg -- so it painted the identical picture at noon, at midnight and underground. That is
+    // what a UI layer does, and no amount of per-face shading rescues an object whose light does not belong to
+    // the scene it is standing in. The row now calls heldLight() in PRE, the ONE view-model shading model, which
+    // is literally what the axe in the other hand is shaded by.
+    //
+    // -- ...AND WHY IT IS STILL READABLE AT MIDNIGHT -- the tension the old constant light existed to dodge is
+    // real: the axe DOES go near-black in a gorge, and a health readout may not. The answer is not a second
+    // invented light, it is a FLOOR. HEART_FLOOR is the least luminance a heart may be lit by; whatever the
+    // world light falls short of it is topped up ISOTROPICALLY, so the top-up carries no direction of its own
+    // and cannot pretend to be a lamp. In open daylight the shortfall is zero and the row is lit by nothing but
+    // the sun, the sky and the ground bounce. Underground the world term is ~0.013 and the floor does all the
+    // work: the heart lands near sRGB 118/17/17 against a near-black cave, which counts.
+    const HEART_FLOOR : f32 = 0.14;                                  // ...in LINEAR luminance, before aces() and the 1/2.2. Chosen as the least value that keeps five hearts countable buried in stone at midnight -- raise it and the row starts to glow at dusk, which is the fake it replaced
+    const HEART_LUMA : vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);   // Rec.709 weights: the floor is compared against the LIGHT's luminance, never the heart's own colour, so a red albedo cannot pull the lift up
+    const HEART_MIN : f32 = 0.58;                                    // a heart drained to nothing is this fraction of full size - it SHRINKS as it empties, which is how a partial heart reads on a model with no sub-voxel geometry to fill
+    const HEART_SPENT : f32 = 0.085;                                 // ...and a spent one keeps its place in the row as a dark socket at that size, so the bar's LENGTH never changes and "one heart left" can never be mistaken for "a full bar of one". A MULTIPLIER ON ALBEDO, not on light, so the socket stays ~12x darker than a live heart under any sun
+    const HEART_BOB : f32 = 0.010;                                   // how far it hovers, in camera units. Stepped to 24 fps in the block itself, like every other animation in the game
+    const HEART_KICK : f32 = 0.20;                                   // ...and how much the whole row swells on a hit (u.heartC.w rides VIT.hurtT down over ~0.55 s)
+    const HEART_YAW : vec2<f32> = vec2<f32>(0.85252, 0.52269);       // cos/sin of the row's 31.5 deg turn about camera-up. A PURE yaw: the eye already looks DOWN on a row this far below the crosshair, so the third face comes for free, and a pitch on top of it turned the cube edge-on to its own top face
     fn dofCoc(d : f32) -> f32 {
       if (u.dof.x <= 0.0) { return 0.0; }
       let dd = select(u.dof.x * 64.0, d, d > 0.0);                   // d < 0 is SKY: infinitely far, so it sits at the far stop
@@ -37,8 +110,13 @@
       let d = mix(ih3(i.x, i.y + 1, i.z + 1), ih3(i.x + 1, i.y + 1, i.z + 1), w.x);
       return mix(mix(a, b, w.z), mix(c, d, w.z), w.y);
     }
-    fn cloudDen(p : vec3<f32>) -> f32 {                              // cumulus deck between y 480–800, wind-drifted
-      let hf = clamp((p.y - 480.0) / 320.0, 0.0, 1.0);
+    // ── CLOUD DECK ALTITUDE (user 2026-08-15: higher) ── was 480-800. Named because the figure appeared in
+    // THREE places - the density ramp and both slab entry/exit distances - and moving one without the others
+    // either flattens the deck or makes the raymarch miss it entirely.
+    const CLOUD_LO : f32 = 760.0;
+    const CLOUD_HI : f32 = 1080.0;
+    fn cloudDen(p : vec3<f32>) -> f32 {                              // cumulus deck between CLOUD_LO and CLOUD_HI, wind-drifted
+      let hf = clamp((p.y - CLOUD_LO) / (CLOUD_HI - CLOUD_LO), 0.0, 1.0);
       let q = vec3<f32>(p.x + u.time * 9.0, p.y, p.z + u.time * 3.5) * 0.0021;
       let o1 = vn3(q * vec3<f32>(1.0, 2.4, 1.0));
       if (o1 * 0.60 + 0.40 < 0.565) { return 0.0; }                  // EXACT short-circuit: octaves 2+3 sum to at most 0.28+0.12, so below this bound the
@@ -98,7 +176,9 @@
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let rd = rayDir(px);
       let alb4 = textureLoad(gAlbedo, vec2<i32>(gid.xy), 0);
-      let face = u32(alb4.a * 255.0 + 0.5) & 15u;
+      let faceRaw = u32(alb4.a * 255.0 + 0.5) & 15u;
+      let isSandTop = (faceRaw == SANDF);                             // ── SAND TOP FACE ── TRACE tags it (see SANDF in PRE); the sun glisten in the land branch is the only thing that asks
+      let face = select(faceRaw, 2u, isSandTop);                      // …and to every other reader it is an ordinary TOP face, so faceN, the water/lava branches and the depth logic are untouched
       let lavaG = f32(u32(alb4.a * 255.0 + 0.5) >> 4u) / 14.0;
       var col : vec3<f32>;
       // ── SURFACE TERMS, HOISTED ── the creature/drop path far below composites submerged hits through the
@@ -130,8 +210,8 @@
         col = skyColor(rd);
         if (rd.y > 0.02) {                                           // VOLUMETRIC CLOUDS — raymarched slab, beer-lambert with a sun tap
           let camY = u.camPos.y;
-          let t0c = (480.0 - camY) / rd.y;
-          let t1c = (800.0 - camY) / rd.y;
+          let t0c = (CLOUD_LO - camY) / rd.y;
+          let t1c = (CLOUD_HI - camY) / rd.y;
           let ta = max(min(t0c, t1c), 0.0);
           let tb = min(max(t0c, t1c), 12000.0);
           if (tb > ta) {
@@ -297,6 +377,43 @@
         let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
         let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
         col = alb * (direct + (skyIrr + bounce) * irr.g + vec3<f32>(0.012, 0.013, 0.016));   // faint cave ambient
+        // ── SAND GLISTEN (the same lgt.x bit 22 the water and the ice glint wear) ── user 2026-08-15: "make the
+        // sand glisten from the sun like the water". This is the WATER's column, not a new effect: the same one-glint-
+        // cell-per-10-cm-voxel grid, the same phase and pick hashes, the same 0.30–0.85 duty window, the same pow(., 26)
+        // reflection lobe off the same FLAT surface normal. Water ships with waves: 0 (see WATER_BAKE), so its normal is
+        // the flat plane too — reusing it verbatim is exactly what "like the water" asks for, and it puts the glitter in
+        // the same place: a path along the mirrored sun rather than a speckle spread over the whole biome. A per-cell
+        // hash-jittered micro-normal was considered and NOT used: at pow(., 26) a few degrees of scatter is the difference
+        // between a lit cell and a dead one, so jitter trades the coherent path for sparse static — the same finding that
+        // removed the ice's frost-facet tilt, and the opposite of what the rejected snow sparkle wanted.
+        // TOP faces only, and that is enforced upstream in TRACE (h.face == 2u), so a dune's vertical wall never glints.
+        // ── SAND GLISTEN OFF (user 2026-08-16: "remove the sand glisten") ── SAND_GLINT gates the whole block
+        // rather than the code being deleted, because the tuning underneath it was expensive to arrive at: the
+        // ACES-desaturation finding, the (1.45, 1.00, 0.36) tint that survives the curve, the 1-in-5 cell
+        // density that stops the sparks fusing into a wash, and the separate moon value. Flip SAND_GLINT to
+        // true to get all of that back. The sand face id, its denoise.js decode and the trace tag stay live —
+        // they are harmless and removing them would be the part that is hard to undo.
+        if (SAND_GLINT && isSandTop && LG(22u) && (u32(u.fx) & 2u) == 0u) {   // …and not from INSIDE the water: a sun specular off a submerged lakebed is seen through a refracting interface, so the mirror direction the column is built on is simply wrong there (the same reason the liquid glint lives on the surface pixel, not the bed)
+          let gkS = select(smoothstep(-0.02, 0.10, u.sunDir.y), 0.6, isMoon());
+          if (gkS > 0.01) {
+            let pS = u.camPos + rd * irr.b;
+            let cellS = floor(vec2<f32>(pS.x + u.winO.x, pS.z + u.winO.y));   // WORLD-space cell, like the water's — the grid must not crawl when the streaming window shifts under it
+            let columnS = pow(max(dot(reflect(rd, n), u.sunDir), 0.0), 26.0);
+            let phS = fract(sin(cellS.x * 91.7 + cellS.y * 47.3) * 4321.7) * 6.2831853;
+            let twS = sin(u.time * 1.6 + phS) * 0.5 + 0.5;
+            let pickS = step(SAND_PICK, fract(sin(cellS.x * 12.9898 + cellS.y * 78.233) * 43758.5453));   // ...the water's hash, read at a HIGHER threshold: see SAND_PICK
+            let sparkS = smoothstep(0.30, 0.85, twS) * pickS;
+            // ── THE SPARK COLOUR IS KEYED TO THE SAND UNDER IT ── the same trap the ice glisten fell into first. The liquid
+            // glint mixes a FIXED ~1.35 into a base of ~0.1, so it pops; DAYLIT SAND is already 1.9 linear and mixing
+            // 1.35 into that measured as nothing at all — worse, it pulled R and G DOWN and B UP, which is a wash toward
+            // grey. Keying to the surface fixes both ends: full sun raises the spark with the sand, and by moonlight the
+            // sand is dark again so the floor — the water's own night value — takes over instead of white static.
+            // The TINT is the part that actually reads: see SAND_TINT for why the answer at noon is colour, not gain.
+            let daySparkS = col * SAND_GAIN * SAND_TINT;
+            let sparkCS = select(daySparkS, max(daySparkS, SAND_MOON), isMoon());
+            col = mix(col, sparkCS, sparkS * columnS * gkS * 0.85 * irr.r);
+          }
+        }
         // ── BACK-LIT FOLIAGE ── a needle is thin enough to pass light, and the whole reason a forest reads as
         // a forest when you look toward the sun is that the canopy GLOWS rather than silhouetting flat. Land
         // shading is pure lambert, so until now a leaf facing away from the sun was simply dark.
@@ -337,10 +454,19 @@
         let visM0 = visb[tiV]; let visM1 = visb[tiV + 1u]; let visM2 = visb[tiV + 2u]; let visM3 = visb[tiV + 3u];   // FOUR words now (128 slots) and all four stay in REGISTERS: re-fetching the word from storage per iteration measured 4× the per-slot cost
         for (var di = 0; di < dropN; di++) {                         // slots 0..3 = dropped items, slot 4 = the flying cardinal, slots 5..8 = clash sparks, 9+ = live creatures (compacted)
           { let mw = select(select(visM0, visM1, di >= 32), select(visM2, visM3, di >= 96), di >= 64); let mrem = mw >> (u32(di) & 31u); if (mrem == 0u) { di = i32(u32(di) | 31u); continue; } if ((mrem & 1u) == 0u) { di += i32(countTrailingZeros(mrem)) - 1; continue; } }   // ── TILE CULL, BIT-SCANNED ── same mask, same slots visited, but the loop JUMPS to the next slot whose sphere touches this 8×8 tile rather than testing them one at a time. The mask words stay in registers on purpose: re-fetching the word from storage each iteration measured 4× the per-slot cost.
-          if (u.lifeCfg.y > 0.5 && (di == 4 || di >= 25) && face != 6u && (u32(lifeMotV(di).w + 0.5) & 1u) == 0u) { continue; }   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies). Creature base → 25 (20 death-burst slots 5-24: 4 sparks + 16 individual smoke voxels, user).
           let dXv = dropV(di * 4 + 1);
           let dit = i32(dXv.w + 0.5);
           if (dit < 1) { continue; }                                 // itemId checked FIRST — an empty slot costs one uniform load, not four
+          let tInj = u.lifeCfg.y > 0.5 && (di == 4 || di >= 25) && face != 6u && (u32(lifeMotV(di).w + 0.5) & 1u) == 0u;   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies). Creature base → 25 (20 death-burst slots 5-24: 4 sparks + 16 individual smoke voxels, user).
+          // …with ONE exception: a model that carries TRANSLUCENT voxels still comes down here, because TRACE
+          // walked straight past them (see the alpha test there) and something has to draw them over the pixel
+          // it left behind. Only the translucent voxels are drawn on that pass — the opaque body is already in
+          // the g-buffer, and re-shading it analytically would double it with a different lighting model. The
+          // id ranges are measured at load, so every other creature keeps skipping this loop on two compares.
+          // TWO ranges because the translucent models are not one block in the item table: the butterflies and
+          // the dragonfly sit together near its head and the desert fly sits far down it, and spanning that gap
+          // with a single range would send every duck, fish, songbird and land mammal in between down this DDA.
+          if (tInj && (dit < TRA_LO || dit > TRA_HI) && (dit < TRA2_LO || dit > TRA2_HI)) { continue; }
           let dA = dropV(di * 4); let dYv = dropV(di * 4 + 2); let dZv = dropV(di * 4 + 3);
           let it3 = clamp(dit - 1, 0, ITEMN - 1);
           let eW = ITEMD[it3].x; let eD = ITEMD[it3].y; let eH = ITEMD[it3].z; let eOff = ITEMD[it3].w;
@@ -371,16 +497,16 @@
           var iMapD = eOff + vcD.x + vcD.y * eW + vcD.z * eW * eD;   // running flat index — one add per DDA step
           for (var i = 0; i < PICKSTEPS; i++) {
             let cell = ITEMMAP[u32(iMapD)];
-            if (cell.w > 0.5) {
+            if (cell.w > 0.0 && !(tInj && cell.w > 0.99)) {           // any COVERED voxel stops the walk — .w is alpha, so a plain greater-than-zero is the occupancy test. On the translucent second pass the OPAQUE voxels are stepped over instead: TRACE already put them in the g-buffer, and the depth test below (bestT = that same g-buffer distance) is what keeps a wing BEHIND the body from being drawn through it.
               if (tHit * vsD < bestT) {                              // scene + nearer-drop occlusion
                 bestT = tHit * vsD;
                 fgT = bestT;                                         // this pixel now shows a creature/drop — the underwater pass must absorb over THIS distance
+                let behind = col;                                    // …and what the scene had here BEFORE it: the translucent blend at the end of this block mixes back toward exactly this
                 var nl = vec3<f32>(0.0);
                 if (vaxD == 0) { nl.x = -f32(istD.x); } else if (vaxD == 1) { nl.y = -f32(istD.y); } else { nl.z = -f32(istD.z); }
                 let nc = dXv.xyz * nl.x + dYv.xyz * nl.y + dZv.xyz * nl.z;
                 let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
                 if (di == 4 || di >= 25) {                           // the CARDINAL + ALL WORLD CREATURES incl. worms + lily pads — the EXACT world surface model (shadowed sun + sky + bounce + fog). Creature base → 25 (20 death-burst slots 5-24).
-                  let behind = col;                                  // scene color behind this creature — the translucent wing blend needs it
                   var sunC = 0.0;                                    // REAL sun occlusion: a creature under the canopy sits in tree shade exactly like the ground below it
                   if (${location.search.includes('noshadow') ? 0 : 1} == 1 && dot(nw, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {   // (deterministic un-jittered ray, no denoiser in the path — none of the irr-coupling translucency/shimmer; ?noshadow disables for A/B)
                     let cSp = u.camPos + rd * bestT + nw * 0.6;
@@ -514,6 +640,12 @@
                 col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogC);
                 // (No submerged tint here: the UNDERWATER block at the end of main now absorbs this pixel over fgT — the
                 //  creature's OWN in-water path — so it dims exactly like the world does, with no double attenuation.)
+                // ── PER-VOXEL ALPHA (the fly's wings 50%, the dragonfly's 50%, the butterfly's 72%) ── LAST, after water and fog, so the wing and the scene
+                // behind it have had the same terms applied and the mix is a true coverage blend rather than a
+                // blend of two differently-hazed images. It is a real average of two colours, not a stochastic
+                // or dithered cutout, so there is nothing for the denoiser or TAA to resolve and the wing
+                // cannot sparkle as the fly moves. Opaque voxels have .w = 1 and the mix is the identity.
+                if (cell.w < 0.99) { col = mix(behind, col, cell.w); }
               }
               break;
             }
@@ -570,9 +702,6 @@
                     if (vax == 0) { nl.x = -f32(istep.x); } else if (vax == 1) { nl.y = -f32(istep.y); } else { nl.z = -f32(istep.z); }
                     let nc = pX.xyz * nl.x + pY.xyz * nl.y + pZ.xyz * nl.z;
                     let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
-                    let direct = sunTint() * max(dot(nw, u.sunDir), 0.0) * u.heldCfg.x * select(0.0, 1.0, LG(16u));   // bit 16: the held item's DIRECT sun term    // world-matched LIGHTING (sun + sky + ground bounce + ambient) INCLUDING the sun-visibility term the world gets (u.heldCfg.x) — without it a tool stayed fully lit in shade. No per-voxel grain though —
-                    let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();   // grain is ±12% per voxel and scrambles hand-authored .vox gradients (~5% steps on the axe handle)
-                    let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // warm ground bounce on side/under faces — without it side faces are sky-only (cool + dark), the axe handle read grey-brown
                     var aoF = 1.0;
                     if (i32(pX.w + 0.5) == 1) {                     // AXE ONLY (user): cheap voxel cavity AO — the exposed face darkens where the 4 in-plane neighbours are solid (head↔handle join + crevices). Geometry-based, so it adds depth WITHOUT scrambling the hand-authored gradient like grain would
                       var nlo = vec3<i32>(0);
@@ -589,14 +718,7 @@
                       }
                       aoF = 1.0 - 0.14 * f32(occ);    // up to ~0.44 in a full crevice; ~0.86–0.72 for typical creases
                     }
-                    // …and OCCLUDE the ambient exactly as the world does. The static path multiplies its own
-                    // (skyIrr + bounce) by irr.g; the held item had no irr.g at all
-                    // (it is composited past the g-buffer, so it has no traced irradiance of its own) and so kept
-                    // the full open-sky term wherever it went. u.heldCfg.y is the eye's own sky visibility, marched
-                    // in JS alongside the sun ray, and it stands in for irr.g here. Gated on the AO debug bit so
-                    // it switches with the world's AO rather than against it.
-                    let skyOcc = select(1.0, u.heldCfg.y, LG(1u));
-                    col = cell.rgb * (direct + (skyIrr + bounce) * skyOcc + vec3<f32>(0.012, 0.013, 0.016)) * aoF;
+                    col = cell.rgb * heldLight(nw) * aoF;             // world-matched sun + sky + ground bounce, gated by the eye's own marched sun/sky visibility — see heldLight in PRE. The health row calls the SAME function, which is the whole reason it lives there and not here.
                   }
                   break;
                 }
@@ -609,6 +731,26 @@
           }
         }
       }
+      // -- HEALTH: FIVE VOXELS CARRIED IN FRONT OF THE EYE --
+      // single.vox, five times, hanging below the crosshair and riding the same view-model frame the tools do
+      // (tick-camera adds heldBob to the anchor). The DDA below is the held item's, one instance per heart, and
+      // the shading is heldLight() -- the stone tools' own. Three things about WHERE this block sits are
+      // load-bearing:
+      //   * AFTER the held items, so a heart is never buried under the axe when a swing drives it to centre;
+      //   * with its OWN depth bound (bestH), never the scene's bestT, so the readout cannot be occluded by a
+      //     wall you walk into - a health bar a hillside can hide is not a health bar;
+      //   * in COMPOSITE at all, rather than trace-injected like the creatures. This is where the STONE TOOLS
+      //     are drawn too, so "in the game like the stone tools" means HERE, not in the tracer. It also has to
+      //     be: trace-injected geometry goes through SVGF, and a surface pinned to the camera moves in WORLD
+      //     space every frame, which is the one thing that makes the denoiser throw its history away - that is
+      //     the shimmer the held viewmodel had. Analytic pixels are drawn after the denoiser and never enter
+      //     it, so there is no history to lose and the hearts are as steady as the axe.
+      // ── THE HEART ROW IS GONE (user 2026-08-16: "remove the voxel hearts. keep the mechanics but
+      // remove the hearts.") ── the DRAW is what went; sim/vitals.js is untouched and still ticks health,
+      // hunger, saturation, exhaustion, regen and starvation exactly as before. __vb.vit() reads them.
+      // The uniform lane and the HEART_* constants above are left in place and tick-camera still fills them
+      // every frame — nothing now READS them, which costs one lane and no shader work. Restoring the row means
+      // re-adding this block, not rebuilding the feature.
       if (u.lifeCfg.x > 0.5) {                                       // ── DYNAMIC-LIFE DEBUG VIEWS (__vb.lifedbg) ── 1: slot ids (occupancy/object identity) · 2: history confidence (red = rejected/fresh, green = converged) · 3: per-slot motion vectors · 4: raw denoised AO
         let dbgm = i32(u.lifeCfg.x + 0.5);
         let slD = textureLoad(slotT, vec2<i32>(gid.xy), 0).r & 255u;

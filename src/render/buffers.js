@@ -148,7 +148,7 @@
         var tHit = teD;
         var iMapD = eOff + vcD.x + vcD.y * eW + vcD.z * eW * eD;
         for (var i = 0; i < PICKSTEPS; i++) {
-          if (ITEMMAP[u32(iMapD)].w > 0.5) {
+          if (ITEMMAP[u32(iMapD)].w > 0.99) {   // OPAQUE only, exactly as in the primary trace - a half-transparent wing does not stop a sun or AO ray either, so what you see and what the light sees still agree
             let tw = tHit * vsD;
             if (tw > vsD * 0.5 && tw < bt) { bt = tw; best = tw; mov = select(0.0, 1.0, dot(mvv.xyz, mvv.xyz) > 4e-4); }
             break;
@@ -175,7 +175,32 @@
   const UF_HURTB = UF_LGT + 4, UF_HURTH = UF_HURTB + 4;   // the knife's red hit-flash box, then its half-extents (+3 = the drop slot the wounded animal is drawn in)
   const UF_DROPSB = UF_HURTH + 4, UF_LIFEMOTB = UF_DROPSB + (DROP_SLOTS - DROP_HALF) * 16;
   const UF_DOF = UF_LIFEMOTB + (DROP_SLOTS - DROP_HALF) * 4;   // ── DEPTH OF FIELD ── x = focus distance (voxels; 0 = off), y = max CoC radius in canvas px. LAST in the struct, so no existing offset moves.
-  const UF = new Float32Array(UF_DOF + 4);   // …+ dof 3316..3319   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
+  // ── FLOATING HEARTS ── the health readout is five real voxels hanging in front of the eye (see the heart
+  // block in COMPOSITE), so it needs a lane of its own: heart = {anchor.xyz in CAMERA space, voxel scale},
+  // heartC = {item id, health in hearts, the gap between two of them, hurt kick 0..1}. Appended at the very
+  // END, after dof, for the reason every field back here is: the JS writes this buffer at fixed float
+  // indices, so a field inserted anywhere above silently feeds every one below it its neighbour's numbers.
+  const UF_HEART = UF_DOF + 4;
+  // HOW MANY HEARTS THE BAR IS. Five, which is what the removed DOM readout drew and therefore what the
+  // player already knows: VIT_HP_MAX is 20, so one heart is 4 HP. Read by BOTH sides — tick-camera turns
+  // hp into hearts with it, and COMPOSITE's loop bound is interpolated from it — so the two cannot disagree.
+  const HEART_N = 5;
+  // WHERE THE ROW HANGS, in CAMERA space and voxel units - the same space the held item's pickA lives in, so
+  // z 1.10 means "11 cm in front of the eye" exactly as the axe's 0.96 does. Centred under the crosshair and
+  // low, which is the one part of the frame nothing else claims: the right hand sits at x +0.91, the second
+  // rock at -0.75, and a swing drives the tool to the MIDDLE of the screen, well above this. At vs 0.055 and
+  // z 1.10 a heart subtends ~3.4% of the window height (~30 px at 865) and the whole bar ~12% of its width -
+  // big enough to read without a glance, small enough that the view is untouched.
+  // `rig` = the SHARE OF THE HAND'S BOB the row rides (heldBob, written in tick-camera). It is the other half
+  // of "in the game like the stone tools": a readout nailed dead still to the screen while the tool beside it
+  // sways is a HUD layer no matter how it is lit. Not 1.0, and the reason is geometric rather than taste — the
+  // hand's walk sway is +-0.075 in x, and on a row five hearts wide that is 1.5 whole heart-gaps of side-to-side
+  // slosh; on a single tool the same number reads as a stride. Half of it keeps the row plainly attached to the
+  // player and still readable at a sprint. The idle breathing term is inside heldBob too, and at +-0.011 it is
+  // untouched by the halving either way.
+  const HEART_POSE = { x0: -0.200, y: -0.52, z: 1.10, vs: 0.055, gap: 0.100, rig: 0.5 };   // x0 = the FIRST heart, so x0 = -gap*(HEART_N-1)/2 keeps the row centred
+  let heartShow = 1;                                  // __vb.hearts(false) hides the row - the A/B lever for what the block costs, and the only way to take a clean screenshot of the frame without it
+  const UF = new Float32Array(UF_HEART + 8);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532

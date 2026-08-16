@@ -36,7 +36,7 @@
   for (const i of [...ROCK, ...ROCKX, ...ORECOAL, ...OREIRON]) { decorTab[i] = 1; pickOnlyTab[i] = 1; }   // …and COAL + IRON (user): ore belongs to the pick like the stone it sits in   // …the STONE STRATA under the soil (user) belong to the PICK, not the shovel: dig down with the shovel, then swap and keep going
   const woodTab = new Uint8Array(256);                 // ── WOOD ── the axe takes chunks out of anything made of wood voxels (user), including a stump the
   for (const i of woodIds) { woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }   // felled tree left behind, which belongs to no tree shape any more
-  for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the SOIL (user): dirt, the mossy grass on top of it, the brown pine litter that covers most of the forest floor, and beach sand. NOT the stone strata underneath — the shovel stops at rock (user).   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
+  for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND, ...DSAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the SOIL (user): dirt, the mossy grass on top of it, the brown pine litter that covers most of the forest floor, and beach sand. NOT the stone strata underneath — the shovel stops at rock (user).   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
   // ── SURFACE SCATTER ── grass strands, flowers, twigs and pinecones. None of it is choppable decor, so
   // none of it is in decorTab — but all of it needs something underneath, which is what floatTab marks.
   // ── SNOW IS COVER, NOT A TARGET (user 2026-08-07: "the tool shouldn't register the snow, but the material
@@ -68,7 +68,32 @@
     markSolid(MUSHV);                                                                        // mushroom clusters collide (its ids are its own — addCol never dedupes)
     if (MUSHV) for (const p of MUSHV.vox) mushTab[p >>> 24] = 1;                             // …and they're BOUNCY: landing on one trampolines the player (progressively higher)
     markSolid(LILYPAD_GIGV);                                                                 // GIANT lilypads are solid — the player can stand on them (user: 'give it a hitbox')
-    for (const r of ROCK26) markSolid(r); }
+    for (const r of ROCK26) markSolid(r);
+
+    for (const r of DROCK) { markSolid(r); for (const p of r.vox) { decorTab[p >>> 24] = 1; pickOnlyTab[p >>> 24] = 1; } }   // desert rocks are STONE: solid, and choppable only with the pick — the same pairing ROCK26 gets below, so an axe bounces off them
+    for (const c of CACTI) markSolid(c);
+    // ── AND CHOPPABLE BY ANYTHING, ARROWS INCLUDED (user 2026-08-15) ── decorTab is the admission ticket; the
+    // three *OnlyTab tables are RESTRICTIONS on top of it. Listing the cacti here and in NOTHING else is exactly
+    // what makes the swing gate's `(axeOnlyTab[id] ? cut : true)` branch answer true for every tool, the same
+    // way the lily pads and ferns do it. The arrow needs no code at all: arrowChop already routes a non-wood
+    // hit into phChopDecor and deliberately ignores axeOnlyTab, so decorTab alone is what it was waiting on.
+    // markSolid STAYS — arrowBlocked tests solidTab, so without it a shaft would fly straight through the plant.
+    for (const c of CACTI) for (const p of c.vox) decorTab[p >>> 24] = 1;
+    for (const c of CACTI) for (const p of c.vox) cactusTab[p >>> 24] = 1;   // …and the SAME ids sting: one table, so a cactus can never be choppable-but-harmless
+    // ── SHRUBS ── soft desert scrub, so NOT markSolid: you walk through them the way you walk through a fern.
+    // decorTab and nothing else — no axeOnly / pickOnly / digOnly entry is exactly what makes the swing gate's
+    // `(axeOnlyTab[id] ? cut : true)` branch answer true for every tool, arrows included, the same way the ferns
+    // and the lily pads do it. Marked by SHRUBC + SHRUBF rather than by walking SHRUBV because the loader
+    // resolves every shade in the .vox files onto exactly those ids, so it is the honest set either way and it
+    // stays right when the artist re-authors the files with a different shade count — which is precisely what
+    // happened. THE FLOWER IDS MUST BE HERE TOO: models 1-4 bloom, and marking only the greens would leave a
+    // bush whose leaves chop away and whose flowers hang in the air. solidTab for all ten is cleared back in
+    // palette.js, where the blanket below-DECOR_MIN sweep would otherwise have handed a knee-high bush the
+    // hitbox a boulder gets. NOTE the shrubs quote the CACTUS's colours — same RGB, different ids, deliberately
+    // (palette.js): markSolid(CACTI) and cactusTab two lines up are exactly what a shared id would have
+    // dragged onto them, and that goes for the bloom's cream as much as for the body green.
+    for (const i of SHRUBC) decorTab[i] = 1;
+    for (const i of SHRUBF) decorTab[i] = 1; }                                                 // a 4 m saguaro is an obstacle, not scenery. Safe to mark by id because the cacti carry their OWN 16 ids (their .json palette goes through addCol, which never dedupes), so nothing else in the world wears them
   solidTab[ED_WHITE] = solidTab[ED_GREY] = solidTab[ED_HLITE] = 1;                          // the editor stage is walkable floor
   const PINE_ANCH = [];                                // pinecone anchors: canopy foliage voxels with open air below, ≥2 in from the model edge (base rotation)
   { const fol = new Uint8Array(256); for (const f of foliageIds) fol[f] = 1;
@@ -78,5 +103,5 @@
     }
     PINE_ANCH.sort((a, b) => Math.atan2(((a >> 8) & 255) - MSY * 0.5, (a & 255) - MSX * 0.5) - Math.atan2(((b >> 8) & 255) - MSY * 0.5, (b & 255) - MSX * 0.5)); }   // angle-sorted around the trunk — stampTree slices it into sectors so cones ring the crown evenly
   if (palette.length > 256) console.error('[vb] PALETTE OVERFLOW', palette.length, '— world ids are u8, decoration colors must be quantized harder');
-  console.log('[vb] decorations: cone', !!CONEV, 'lily', LILYV.length, 'stick', STICKV.length, 'log', !!LOGV, 'rock', !!ROCKV, 'rocks26', ROCK26.length, 'ferns', FERN2V.length, 'anchors', PINE_ANCH.length, 'palette', palette.length);
+  console.log('[vb] decorations: cone', !!CONEV, 'lily', LILYV.length, 'stick', STICKV.length, 'log', !!LOGV, 'rock', !!ROCKV, 'rocks26', ROCK26.length, 'ferns', FERN2V.length, 'shrubs', SHRUBV.length, 'anchors', PINE_ANCH.length, 'palette', palette.length);
 

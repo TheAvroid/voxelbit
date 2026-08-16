@@ -131,6 +131,7 @@
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - dy * ls));
   });
   let dead = false;
+  let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = 0;   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
   let uwT = 0;                                          // ── DROWN CLOCK ── seconds the EYE has been continuously submerged; hits DROWN_T → game over. Reset on surfacing/respawn; frozen (not reset) while paused/editor.
   const DROWN_T = 10;                                  // you can hold your breath for 10 s underwater (user)
   const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it
@@ -142,6 +143,7 @@
     lockEl.classList.add('hidden');                    // never show the ESC menu under the game-over screen
     try { document.exitPointerLock(); } catch (e) {}
   };
+  VIT.onDeath = die;                                   // the vitals own mortality now; die() is just the game-over screen
   $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); if (ED.on) edExit();   // NEVER respawn in the asset editor (user) — force-exit it, and lock straight back into the GAME rather than the menu, so a respawn-click can't land on the editor button
     respawn(); tryLock(); });
   let tday = 7 / 24, cycleSpeed = 1, godRays = true;   // day/night cycle: 20-min day at 1x; STARTS AT 7:00 am on load (user)
@@ -154,7 +156,10 @@
   // ── AND IT BELONGS TO THE GAME, NOT THE MENU (user 2026-08-07) ── pressing Esc takes it off screen and
   // coming back brings it straight back. The ten seconds is PLAYTIME, so the clock only accumulates while the
   // player actually has control: time spent reading the esc menu does not bring the hint any closer.
-  let shElapsed = 0, shLast = 0, shShown = false, shDone = false, shVis = false, shHideT = 0;
+  // DISABLED (user 2026-08-15). shDone is the flag the hint already uses to mean "retired, never show again",
+  // so starting it true retires it before it can arm - no other branch has to change, and re-enabling is
+  // flipping this one word back to false. The element and its timer logic are left intact below.
+  let shElapsed = 0, shLast = 0, shShown = false, shDone = true, shVis = false, shHideT = 0;
   const shTick = (nowMs) => {
     if (shDone) return;
     if (locked) { if (shLast) shElapsed += nowMs - shLast; shLast = nowMs; } else shLast = 0;
@@ -183,6 +188,8 @@
     e.preventDefault();
     selSlot = (selSlot + (e.deltaY < 0 ? 1 : slots.length - 1)) % slots.length;   // wraps the WHOLE list now, however long it has grown   // SCROLL UP ADVANCES (user 2026-08-07): up from the axe reaches the pick, then the shovel — the direction the on-screen hint is pointing
   }, { passive: false });
+  // (The L relief knob is GONE — the desert relief is fixed at DESREL = 24 in world/window.js, so there is
+  //  nothing left to tune. It set ?desrel and reloaded; both the flag and the panel were removed together.)
   document.addEventListener('keydown', (e) => {
     if (CMD.open) return;                               // the COMMAND LINE has the keyboard (user)
     if (!locked) return;

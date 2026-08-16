@@ -161,7 +161,7 @@
     // porcupines live in 276-371 (unstampAllWorms walks 16 < 372 for exactly this reason), so one survived
     // the recentre with B.sN intact and its next unstampWorm wrote old sPrev ids back into freshly
     // generated terrain at unrelated coordinates — creature-shaped dirt floating in the new world.
-    for (let j = 16; j < 372; j++) { const B = wbf[j]; if (B) { B.sN = 0; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature to re-stamp fresh next frame; the slots that carry no stamps cost nothing to clear
+    for (let j = 16; j < DES_END; j++) { const B = wbf[j]; if (B) { B.sN = 0; B.sKey = null; } }   // world was zeroed above — force every grid-stamped creature to re-stamp fresh next frame; the slots that carry no stamps cost nothing to clear
     if (nvOn) nvBoot();                                // ── AND THE NAVFIELD GOES WITH IT ── W.fill(0) invalidated every cell; nvBoot clears NVF_BUILT (so the field vouches for nothing until rebuilt), rebuilds the player's neighbourhood and re-arms the background sweep
   }
 

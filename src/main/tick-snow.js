@@ -46,6 +46,7 @@
         return y;
       };
       const landSnowAt = (wx0, wz0) => {
+        if (desertM(wx0, wz0) > 0.5) return;           // ── NO SNOW IN THE DESERT (user) ── first test in the function, before the queue cap and the sweep gate, so desert columns never consume a slot of the SNOW_MAX budget either: the blanket over the forest stays as deep as it was rather than being rationed against sand that will not hold it
         if ((snowQN - snowHead) + (snowWN - snowWHead) >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
         // ORDER (user): the FLAKES arrive first, the blanket second. The leading edge sweeps down from the sky, so
         // until it has passed THIS column's surface no flake has reached the ground here yet — laying snow before

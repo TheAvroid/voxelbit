@@ -90,3 +90,17 @@
   #lock h1 .tb::after, #loadTitle .tb::after { background-image: linear-gradient(104deg,rgba(255,255,255,0) 34%,rgba(255,255,255,0.30) 46%,rgba(255,255,255,0) 56%),linear-gradient(180deg,#e6ffbe 0%,#b8ff6e 16%,#5cbc26 58%,#2a7d10 100%); }
   #lock .keys { opacity: 0.75; font-size: 6px; }
   #load { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #0b0e12; color: #cfdae8; font: 9px 'px3', Consolas, monospace; letter-spacing: 2px; z-index: 10; overflow: hidden; text-shadow: 0 2px 6px rgba(0,0,0,0.9); }
+  /* ── THE VITALS BAR IS GONE (user 2026-08-15: "remove the hunger/hearts ui. keep the mechanics") ──
+     Only the hurt flash survives here. The hearts/hunger rules that used to sit above this comment were
+     deleted whole rather than hidden, so nothing is left styling elements that no longer exist. */
+  #hurtFx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5;
+    image-rendering: pixelated; opacity: 0; }
+  /* ── AN ANIMATION, NOT A TWO-FRAME CLASS TOGGLE ── this was `opacity: 0` with a transition and an `.on`
+     class added for two rAF. It flashed on the FIRST hit only, because that hit also removed `.hidden`: the
+     display change forced a style recalc, so the transition had a start value to run from. Every later hit
+     added and removed `.on` inside two frames, which the browser coalesces into no visible change at all
+     (user 2026-08-16: "this only happens once, on the first time"). A keyframe animation restarted by
+     remove -> reflow -> add plays in full every single time, which is the same trick the heart row's jolt
+     already used. 0.42s to match the fade it replaces. */
+  @keyframes hurtFlash { 0% { opacity: 1; } 100% { opacity: 0; } }
+  #hurtFx.on { animation: hurtFlash 0.42s linear 1; }

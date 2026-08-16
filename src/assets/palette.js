@@ -14,6 +14,7 @@
       const d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
       if (d < bd) { bd = d; id = i; } }
     return id; };
+  const palMintLog = [];                               // ?palmint only — [id, r, g, b, caller stack]
   let palOver = 0;                                     // how many colours the ceiling turned away — __vb.palAudit() reports it
   const addCol = (r, g, b) => {
     if (palette.length >= 256) { const id = palNearest(r, g, b); palOver++;
@@ -22,6 +23,7 @@
       if (palIdx) { const k = (r << 16) | (g << 8) | b; if (!palIdx.has(k)) palIdx.set(k, id); }
       return id; }
     const id = (palette.push([r, g, b]), palette.length - 1);
+    if (location.search.includes('palmint')) { try { throw new Error(); } catch (e) { palMintLog.push([id, r, g, b, String(e.stack || '').slice(0, 220)]); } }   // ?palmint - attribute every mint to its caller while chasing load-order races
     if (palIdx) { const k = (r << 16) | (g << 8) | b; if (!palIdx.has(k)) palIdx.set(k, id); }   // …so a colour added by a NON-share loader is still found by the next share lookup. palIdx used to be built once and never updated, which let share mode mint a second copy of a colour someone else had already added.
     return id; };
   const NEEDLE = [addCol(97, 74, 50), addCol(88, 67, 45), addCol(106, 82, 56), addCol(80, 61, 41)];      // 1..4 (shader far-field relies on these slots)
@@ -30,8 +32,42 @@
   const ROCK   = [addCol(124, 122, 116), addCol(106, 104, 100), addCol(90, 89, 86)];
   const ROCKX  = [addCol(138, 136, 130), addCol(99, 98, 94), addCol(74, 73, 70)];                        // partner shades — each formation layer is a blended two-tone swatch
   const BROCK  = [addCol(124, 122, 116), addCol(106, 104, 100), addCol(90, 89, 86)];                     // MEDIUM boulder — ROCK's exact colors on DEDICATED ids so right-click pickup can flood them without eating terrain
-  const LOGC   = [addCol(121, 91, 57), addCol(105, 78, 49)];                                             // fallen LOG — pine-trunk browns, solid
+  // ── DESERT SHRUBS ── the shrubs' OWN palette: a 4-step GREEN ramp and 6 FLOWER shades.
+  // THE SIX .vox FILES ARE HAND-AUTHORED (user 2026-08-16: "I made modifications and renamed the files").
+  // They are no longer a bake, so tools/voxelize_desert_shrubs.py's old "PALN pinned to len(SHRUBC)" contract
+  // is dead — there is nothing to keep in step with, and assets/bow.js resolves whatever the files contain
+  // onto the ten ids below instead. Between them the six files use 14 distinct shades: an EIGHT-step green
+  // ramp whose two ends are still literal cactus_1.vox body greens, and 6 flower shades resampled off the
+  // cactus flower ramp (three of them exact cactus entries, the rest steps in between).
+  // WHY 4 GREENS AND NOT 8. Honouring all 14 costs 12 MORE ids on a table with 16 free, and the green ramp does not
+  // earn them: the whole 8-step ramp spans 23/255 in red and 16 in green, so consecutive shades differ by 3.
+  // These four are four of the artist's OWN shades, chosen so every one of the eight is within 3/255 per
+  // channel of the one it resolves to — inside PAL_TOL, the distance this module already treats as the same
+  // colour everywhere else. The FLOWERS are not quantized at all: that ramp spans 69/255 in green alone, it is
+  // the detail the user actually added, and it is a handful of voxels at the top of each plant where any
+  // banding would show. Ten ids in all (2 already held, 8 new), worst error 3/255, and 7 slots still free
+  // (measured 249/256 at boot — palAudit's len wobbles by one between boots, so read that as 7-8).
+  // WHY NOT JUST WEAR THE CACTUS'S OWN IDS AND SPEND NOTHING AT ALL: an id carries material identity, not only
+  // colour. material-tabs.js runs markSolid(CACTI) and cactusTab over every cactus id — FLOWERS INCLUDED — so
+  // a shrub sharing one would get a 4 m saguaro's hitbox AND sting the player who brushed a knee-high bush.
+  // Same colour, own ids — the arrangement BROCK already uses to repeat ROCK's exact greys.
+  // The first two green ids are the RECLAIMED dead LOGC pair; the other eight are the first real palette spend
+  // the shrubs have ever made. __vb.shrubIds() prints all ten and what every material table says about each.
+  const SHRUBC = [addCol(83, 107, 36), addCol(90, 112, 39), addCol(99, 118, 43), addCol(106, 123, 46)];   // dark→light. ORDER is documentation only now — bow.js resolves by nearest colour, not by rank, so a re-authored file cannot silently shift every shade one step along the ramp
+  const SHRUBF = [addCol(227, 61, 89), addCol(232, 81, 107), addCol(234, 91, 116), addCol(238, 110, 135), addCol(243, 130, 153), addCol(255, 203, 127)];   // the flower ramp, EXACT: five pinks dark→light and the cream highlight at the centre of the bloom
+  // ── AND RESERVED, WHICH IS WHAT KEEPS THE CACTI OFF THEM ── quoting a colour the cacti also use is only
+  // safe in ONE direction. These ids are minted here, long before assets/bow.js parses cactus_*.vox in SHARE
+  // mode, so palShare's exact-match lookup would hand the cactus id 21 for its darkest green — and then
+  // markSolid/cactusTab would come back through that id and make every shrub in the desert solid and spiky.
+  // palOwn is the existing mechanism for exactly this: palShare treats an exact match on a reserved id as no
+  // match and mints instead, so the cacti keep their own private ids and the shrubs keep theirs.
+  // THE FLOWERS NEED THIS MORE THAN THE GREENS DO: (255,203,127) is the cactus bloom's cream and it is ALREADY
+  // in the table twice (__vb.palAudit() lists 96/195 as an exact pair), and cactusTab covers a cactus flower
+  // exactly as it covers a spine — so an unreserved match here is the one that would have made a bush sting.
+  for (const i of SHRUBC) palOwn.add(i);
+  for (const i of SHRUBF) palOwn.add(i);
   const SAND   = [addCol(203, 183, 145), addCol(191, 171, 133), addCol(213, 193, 155)];                  // lake beaches + lakebed
+  const DSAND  = [addCol(214, 188, 132), addCol(205, 178, 122), addCol(222, 197, 143), addCol(196, 169, 115)];   // ── DESERT SAND ── warmer and more saturated than the lake SAND above, and on DEDICATED ids for a reason that is not aesthetic: sandTab slows the player (beach sand pits), and sharing ids would make an entire biome wade. These are deliberately NOT in sandTab.
   const REDROCK = [addCol(193, 111, 72), addCol(171, 94, 60), addCol(147, 79, 52), addCol(209, 167, 127)];   // Colorado sandstone strata (last = cream band)
   const ORECOAL = [addCol(52, 52, 56), addCol(44, 44, 48)];                                                // minerals - seen in cave walls
   const OREIRON = [addCol(150, 106, 74), addCol(134, 94, 66)];
@@ -106,7 +142,14 @@
   const WATER_T = addCol(58, 128, 154), WATER_B = addCol(43, 106, 134);
   const isWater = (v) => v === WATER_T || v === WATER_B;   // the lake surface / body ids — a swing walks straight through these (see chopSwing)
   const LAVA_T = addCol(255, 122, 22), LAVA_B = addCol(198, 44, 6), LAVA_R = addCol(226, 58, 10), LAVA_Y = addCol(255, 206, 46);   // gorge-floor lava — blended red/orange/yellow, emissive, deadly                                  // pond surface / body, close shades (walk-through — you swim)
-  const PEBBLE  = [addCol(122, 120, 114), addCol(103, 101, 97)];                                         // SMALL rock — right-click to pick up
+  // ── SMALL ROCK (rock.vox) — right-click to pick up ── THREE NEUTRAL greys, matching what the model is
+  // actually authored with. It was two WARM greys (122,120,114) and (103,101,97), and rock.vox paints five
+  // pure neutrals (147/140/134/127/120, every one r=g=b): so the stone lost its shading to two tones AND
+  // picked up a brown cast. Invisible on forest loam, obvious on pale sand once the same stone was scattered
+  // in the desert (user 2026-08-16: "the colors on the rock.vox do not look right"). Three shades spanning
+  // the authored range cost one net palette id and put the ramp back; the five source greys resolve onto them
+  // with at most 7/255 of error, inside PAL_TOL.
+  const PEBBLE  = [addCol(147, 147, 147), addCol(134, 134, 134), addCol(120, 120, 120)];
   const SNOW = [addCol(234, 238, 246), addCol(221, 227, 239)];                                           // fallen snow — strictly 1-voxel (10 cm) layers, walk-through decor
   const ED_WHITE = addCol(250, 250, 252), ED_GREY = addCol(202, 207, 216), ED_HLITE = addCol(255, 186, 64);   // asset-editor stage: white plane, 1 m gridline grey, amber selection ring (all marked solid below)
   const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);                                    // twig (pickable) / stick — pine-trunk browns
@@ -114,7 +157,12 @@
   const solidTab = new Uint8Array(256);                // per-id collision: terrain/trunks/logs solid; decor + FOLIAGE walk-through
   for (let i = 1; i < DECOR_MIN; i++) solidTab[i] = 1;
   for (const f of foliageIds) solidTab[f] = 0;
-  const foliaTab = new Uint8Array(256);                // per-id CANOPY flag. Leaves collide with NOTHING (user): not the player, not rigid bodies, not creature navigation. What is left of this flag is rendering (see-through when the eye is inside a crown), the perched-bird SUPPORT test (which is placement, not collision — birds have to be able to sit in a canopy), and letting a stamp overwrite needles. Was: walk-through for the player, but the cinematic camera must still steer around it or it flies straight through pine crowns
+  // ── THE SHRUBS ARE SOLID NOW (user 2026-08-16: "give hitboxes to the shrubs, so the player cant just walk
+  // through it") ── these two loops used to CLEAR solidTab for the shrub greens and flower shades, because the
+  // ids are reclaimed and sit below DECOR_MIN where a blanket sweep marks everything solid. Letting that sweep
+  // stand is the whole hitbox: `solid()` reads solidTab and nothing else. They keep decorTab, so they are still
+  // soft to any tool and still choppable — only walking through them stops.
+  const foliaTab = new Uint8Array(256);              // per-id CANOPY flag. Leaves collide with NOTHING (user): not the player, not rigid bodies, not creature navigation. What is left of this flag is rendering (see-through when the eye is inside a crown), the perched-bird SUPPORT test (which is placement, not collision — birds have to be able to sit in a canopy), and letting a stamp overwrite needles. Was: walk-through for the player, but the cinematic camera must still steer around it or it flies straight through pine crowns
   for (const f of foliageIds) foliaTab[f] = 1;
   const mushTab = new Uint8Array(256);                 // per-id BOUNCY flag — mushroom voxels trampoline the player (filled once MUSHV loads)
   const rockTopTab = new Uint8Array(256);              // per-id ROCK flag for the WORLDGEN stone — see the fill below
@@ -129,6 +177,7 @@
   const isRockSurf = (v) => !!v && (!!rockTopTab[v] || rockCol(palette[v]));
   const decorTab = new Uint8Array(256);                // per-id CHOPPABLE-DECOR flag — mushrooms, ferns and ground logs yield chunks (see phChopDecor). Deliberately NOT mushTab: choppable and bouncy are different properties, and reusing it would make every fern a trampoline.
   const axeOnlyTab = new Uint8Array(256);              // …and of those, which need a CUTTING tool (axe/knife) rather than any held tool. Wood does; mushrooms and ferns do not.
+  const cactusTab = new Uint8Array(256);               // per-id CACTUS flag — spines hurt on contact (user 2026-08-15), filled in material-tabs
   const pickOnlyTab = new Uint8Array(256);             // …and which need the PICK. Stone does: an axe bounces off a boulder, and the pick is no use against a tree (see the swing gate).
   const digOnlyTab = new Uint8Array(256);              // …and which need the SHOVEL. Ground does — the dirt and mossy grass the terrain is made of, and nothing else.
   const sandTab = new Uint8Array(256); for (const s of SAND) sandTab[s] = 1;   // per-id SAND flag — walking on beach/lakebed sand slows the player (sand pits)

@@ -1,5 +1,5 @@
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, F2CELL, LGCELL, LGIGCELL, LILYCELL, MUCELL, OCELL, PCCELL, SCELL, TCELL, TMARGIN, boulderAt, caveAt, caveHitsBox, fern2At, fillColumn, genRegion, genRegionGen, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, stampBoulder, stampCave, stampCellsGen, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOre, stampPcone, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, LGCELL, LGIGCELL, LILYCELL, MUCELL, OCELL, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -11,6 +11,7 @@
     if (!lake && h <= WL) h = WL + 1;                  // dry land NEVER sits below the water plane — beach tops meet the surface FLUSH
     hmap[gx + gz * WX] = h;                            // hmap = the GROUND (lakebeds included — you walk on them, underwater)
     const mossy = !lake && mossV > 0.52;               // 0.56 → 0.52 ≈ +30% moss coverage
+    const dm = desertM(wx, wz);                        // biome weight for this column: 0 = pine forest, 1 = open desert
     const base = gx + gz * WX * WY;
     let surfMoss = false;                              // grass only grows where a MOSS surface voxel actually landed
     const yTop = fresh ? (lake ? WL + 1 : h) : WY;     // fresh columns skip writing the empty sky — ~40% faster world builds
@@ -25,8 +26,17 @@
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
       const shore = h <= WL + 6;                       // any waterline — lakes AND rivers
       let c;
-      if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                                  // waterline beach + sandy lakebed
+      if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
+      else if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
       else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(sh * 3) | 0];     // dithered sand-to-forest blend
+      // ── NO FOREST FLOOR ON THE DESERT SIDE, BUT ONLY NEAR WATER ── the DESERT branch above is dithered
+      // against the mask, so a fraction (1 - dm) of columns miss it by design; inland those misses are the
+      // gradient, which is the whole point. Near a WATERLINE they were landing on moss instead, and clustered
+      // into the green patch on the lake's desert shore. This catches exactly that case. An earlier version
+      // of this fix dropped the `shore` test and sent EVERY dm > 0.5 column to sand — which cured the lake and
+      // replaced the gradient with a hard edge running down the biome line (user: "can you blend this biome
+      // transtion line better"). Keeping `shore` is what lets the dither go on doing its job on dry land.
+      else if (shore && dm > 0.5) c = SAND[(sh * 3) | 0];
       else { c = (mossy ? MOSS : NEEDLE)[(sh * 4) | 0]; surfMoss = mossy; }
       W[base + (h - 1) * WX] = c;
     }
@@ -39,7 +49,7 @@
         for (let k = 0; k < gh; k++) { const ii = base + (h + k) * WX; if (W[ii]) break; W[ii] = gc; }
       }
     }
-    if (!lake && h > WL + 4 && h + 3 < WY) {           // FLOWERS: everywhere except beaches/water; stems match the grass
+    if (!lake && h > WL + 4 && h + 3 < WY && dm < 0.5) {   // FLOWERS: everywhere except beaches/water — and not in the desert (grass needs no gate: it only grows where a MOSS surface landed, which the sand branch never sets)
       if (ihash(wx * 9 + 71, wz * 5 + 29) < 0.005) {   // uniform spread — no clustering
         const s0 = base + h * WX;
         if (!W[s0] && !W[s0 + WX]) {
@@ -79,10 +89,21 @@
     if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.5) return null;   // the much larger rocks are much rarer
     const bx = Math.round(cx * BCELL + 4 + ihash(cx * 3 + 40, cz * 7 + 90) * (BCELL - 8));
     const bz = Math.round(cz * BCELL + 4 + ihash(cx * 13 + 6, cz * 5 + 44) * (BCELL - 8));
+    // ── THE HAND STONE IS ALLOWED IN THE DESERT, THE BOULDERS ARE NOT (user 2026-08-16: "scatter the rock.vox
+    // around the desert") ── this used to reject all four tiers on one line. It now reads the tier FIRST and
+    // lets only tier 0 through, which is rock.vox itself: the small pickable field stone. The three boulder
+    // tiers stay excluded, because "remove the rocks from the desert" was about those, and the desert has its
+    // own boulder pass (drockAt) with its own stock of rocks26 models and its own rate.
+    const inDesert = desertM(bx, bz) > 0.5;
     if (nearCave(bx, bz)) return null;                 // rocks DO grow underwater — scattered seafloor boulders
     const sr = ihash(cx * 17 + 9, cz * 19 + 2);
     if (sr >= 0.275 && sr < 0.55) return null;         // the dropped half of the old 55% stone share — field stone rate halved
     const size = sr < 0.275 ? 0 : (sr < 0.93 ? 1 : (sr < 0.985 ? 2 : 3));   // stone 27.5% / small 38% / mid 5.5% / big 1.5%
+    if (inDesert && size !== 0) return null;           // boulders: forest only. Tier 0 falls through and scatters on the sand.
+    // ── AND HALF AS MANY OF THEM ON THE SAND (user 2026-08-16: "decrease the rock.vox by 50%") ── gated on
+    // inDesert, because this tier is ALSO the pine forest's field stone and the user is looking at the desert.
+    // A separate salt so it thins independently of the tier roll above rather than re-cutting the same order.
+    if (inDesert && ihash(cx * 53 + 31, cz * 59 + 13) > 0.375) return null;   // another -25% (user 2026-08-16): 0.5 -> 0.375, so a quarter of the original desert hand stones remain
     const rot = (ihash(cx * 23 + 2, cz * 7 + 11) * 3.99) | 0;
     // Boulders stamp AFTER the cave carve, off the PRISTINE height, so one overhanging the mouth pit hangs in the
     // air. The old guard tested the rock's CENTRE against a flat 52, but the pit measures 42-52 across and the widest
@@ -225,7 +246,7 @@
         const px2 = sx + Math.cos(ang) * (len * q / 8), pz2 = sz + Math.sin(ang) * (len * q / 8);
         for (let s = -1; s <= 1; s++) {
           const lx = Math.round(px2 + nx2 * s * (wb * 1.4 + 34)), lz = Math.round(pz2 + nz2 * s * (wb * 1.4 + 34));
-          if (H(lx, lz) <= WL + 4 || basinM(lx, lz) > 0.1) { dry = false; break; }
+          if (H(lx, lz) <= WL + 4 || basinM(lx, lz) > 0.1 || desertM(lx, lz) > 0) { dry = false; break; }   // …and NOT INTO THE DESERT (user). Tested here, on the same 9-point path walk with the same rim offsets, because the test has to reject the WHOLE gorge: gating the carve instead would leave a canyon that stops dead at the sand line. desertM > 0 (not > 0.5) so a gorge cannot even reach the blend band.
         }
       }
       if (dry) c = { sx, sz, ang, len, wb, dep: 280, seed: cx * 733 + cz * 911 };
@@ -348,6 +369,7 @@
     if (ihash(cx * 79 + 7, cz * 83 + 31) > 0.07) return null;   // halved 2026-07-16 (was 0.14)
     const wx = Math.round(cx * F2CELL + 3 + ihash(cx * 5 + 27, cz * 3 + 41) * (F2CELL - 6));
     const wz = Math.round(cz * F2CELL + 3 + ihash(cx * 11 + 33, cz * 7 + 15) * (F2CELL - 6));
+    if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── ferns are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (H(wx, wz) <= WL + 4) return null;              // no ferns in water or on beaches
     if (nearCave(wx, wz)) return null;
     for (let cz2 = Math.floor((wz - 14) / TCELL); cz2 <= Math.floor((wz + 14) / TCELL); cz2++)   // keep clear of pine trunks — the plant is 23 wide
@@ -370,12 +392,136 @@
   function stampFern2(f, x0, x1, z0, z1) {
     stampModel(FERN2V[f.mi], f.rot, f.wx, H(f.wx, f.wz), f.wz, x0, x1, z0, z1, 1);
   }
+  // ── CACTI ── the desert's only scatter. One candidate per 9.6 m cell; the mask test is >= 0.85 rather
+  // than the > 0.5 the forest litter uses, because that gate is a REJECT (keep pines out of the sand) and this
+  // one is an ADMIT: a cactus standing in the half-and-half rim would be a cactus in the treeline. Holding it
+  // to the open desert keeps the border reading as a border.
+  const CACCELL = 96;
+  function cactusAt(cx, cz) {
+    if (!CACTI.length) return null;
+    if (ihash(cx * 53 + 11, cz * 59 + 23) > 0.24) return null;   // -20% (user 2026-08-15), was 0.30
+    const wx = Math.round(cx * CACCELL + 8 + ihash(cx * 7 + 31, cz * 3 + 17) * (CACCELL - 16));
+    const wz = Math.round(cz * CACCELL + 8 + ihash(cx * 13 + 5, cz * 11 + 29) * (CACCELL - 16));
+    if (desertM(wx, wz) < 0.85) return null;
+    if (H(wx, wz) <= WL + 4) return null;              // never in water, never on a beach
+    if (nearCave(wx, wz)) return null;
+    const dxs = wx - SPWX, dzs = wz - SPWZ;
+    if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // the spawn clearing, same radius the pines respect
+    return { wx, wz, mi: (ihash(cx * 3 + 7, cz * 5 + 2) * CACTI.length) | 0, rot: (ihash(cx + 61, cz + 37) * 3.99) | 0 };
+  }
+  function stampCactus(c, x0, x1, z0, z1) {
+    stampModel(CACTI[c.mi], c.rot, c.wx, H(c.wx, c.wz) - 3, c.wz, x0, x1, z0, z1, 1);   // THREE voxels into the sand (user 2026-08-16). One was not enough: H is the column's own height, so on a dune's slope the far side of a wide base still hung in the air
+  }
+  // ── DESERT ROCKS ── the desert's second scatter. Two tiers off the .glb's own naming: the small ones
+  // (1.4-3.3 m) carry the field, the mid ones (5-11 m) are rare landmarks. Same ADMIT test as the cacti
+  // (>= 0.85) so none of them stand in the treeline, and the same spawn clearing the pines respect.
+  const DRCELL = 112;
+  function drockAt(cx, cz) {
+    if (!ROCK26.length) return null;
+    const roll = ihash(cx * 41 + 17, cz * 47 + 29);
+    // -25% again (user 2026-08-16), 0.225 -> 0.169; it was 0.30 before the first cut on 2026-08-15. ihash is
+    // uniform on 0..1, so the threshold IS the acceptance rate and the arithmetic is the verification — a
+    // 400-voxel in-game scan cannot resolve a quarter either way, which is a lesson the shrubs already taught.
+    // 0.251 (user 2026-08-16: "increase the rate of the runic and small rocks by 25%"). The tier cuts below
+    // move with it so that ONLY the small/runic pool grows: big and mid keep the same ABSOLUTE count they had
+    // at 0.211, and the extra acceptance all lands in the small pool. Was 0.169, and 0.225 before that.
+    if (roll > 0.251) return null;
+    const wx = Math.round(cx * DRCELL + 40 + ihash(cx * 5 + 13, cz * 7 + 41) * (DRCELL - 80));
+    const wz = Math.round(cz * DRCELL + 40 + ihash(cx * 11 + 23, cz * 3 + 7) * (DRCELL - 80));
+    if (desertM(wx, wz) < 0.85) return null;           // ADMIT test, not a reject: a rock in the blend band is a rock in the treeline
+    if (H(wx, wz) <= WL + 4) return null;
+    if (nearCave(wx, wz)) return null;
+    const dxs = wx - SPWX, dzs = wz - SPWZ;
+    if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // the spawn clearing the pines respect
+    // Same three tiers rocks26 ships, weighted so the desert reads as scattered stone with the odd landmark
+    // rather than a boulder field: big 4%, mid 20%, the small/runic pool the rest.
+    const t = ihash(cx * 19 + 7, cz * 23 + 5);
+    // big 3.36% / mid 16.81% / small+runic the rest — rebalanced from 4%/20%/76% when the accept rate went
+    // 0.211 -> 0.251, chosen so 0.251 x 0.0336 and 0.251 x 0.1681 reproduce the old 0.211 x 0.04 and x 0.20.
+    const pool = (t < 0.0336 && R26B.length) ? R26B : ((t < 0.2017 && R26M.length) ? R26M : (R26S.length ? R26S : R26M));
+    if (!pool.length) return null;
+    const mi = pool[(ihash(cx * 3 + 29, cz * 5 + 61) * pool.length) | 0];
+    // ── NEVER ON TOP OF A CACTUS (user 2026-08-15) ── the rock pass runs AFTER the cactus pass and stamps in
+    // mode 2, which OVERWRITES, so an overlap does not interleave the two models: it buries the plant and the
+    // player sees a rock where a saguaro was. Cleared by the two half-extents summed, the same shape fern2At
+    // uses to keep the big fern off pine trunks. cactusAt is deterministic, so asking it here is free of any
+    // ordering assumption — it does not matter which pass has already run.
+    const rm = ROCK26[mi];
+    if (rm) { const clr = Math.max(rm.sx, rm.sy) * 0.5 + 14;   // 14 = the widest cactus half-extent (25 across)
+      for (let cz2 = Math.floor((wz - clr) / CACCELL); cz2 <= Math.floor((wz + clr) / CACCELL); cz2++)
+        for (let cx2 = Math.floor((wx - clr) / CACCELL); cx2 <= Math.floor((wx + clr) / CACCELL); cx2++) {
+          const c9 = cactusAt(cx2, cz2); if (!c9) continue;
+          const dx9 = wx - c9.wx, dz9 = wz - c9.wz;
+          if (dx9 * dx9 + dz9 * dz9 < clr * clr) return null;
+        } }
+    return { wx, wz, mi, rot: (ihash(cx + 71, cz + 13) * 3.99) | 0 };
+  }
+  function stampDrock(r, x0, x1, z0, z1) {
+    stampModel(ROCK26[r.mi], r.rot, r.wx, H(r.wx, r.wz) - 5, r.wz, x0, x1, z0, z1, 2);   // FIVE voxels in (user 2026-08-16) — a boulder is wider than a cactus, so it needs to bury more of itself before its underside is flush on sloping sand   // mode 2 = OVERWRITE + raise hmap, the mode the forest boulders use: you walk over a rock, not through it
+  }
+  // ── DESERT SHRUBS ── the desert's third scatter: 6 GREEN scrub plants, 0.6-1.3 m, four of them FLOWERING,
+  // walk-through decor. (user 2026-08-15: "the shrubs are not showing up. implement them on the desert";
+  // re-baked green on the cactus's palette 2026-08-16; replaced by the user's own hand-authored 1.vox…6.vox
+  // the same day — "reload the shrubs in, I made modifications and renamed the files". The scatter itself is
+  // unchanged by that: it asks SHRUBV for a count and a footprint and never for a name or a shade.)
+  // DESERT ONLY, on the SAME >= 0.85 ADMIT test the cacti and the desert rocks use — not the > 0.5 REJECT the
+  // pine-forest litter passes use. The difference matters at the border: an admit test keeps every desert plant
+  // out of the dithered treeline, so the biome boundary still reads as a boundary. In the pine forest this
+  // returns null on its first line and shrubs are exactly zero.
+  // DENSITY: one candidate per 4.8 m cell, 28% kept -> one shrub per ~82 m² before the clearance rejects below,
+  // about one every 9 m. Deliberately several times denser than the cacti (one per 384 m²) and the desert rocks
+  // (one per 557 m²), because scrub is what a desert floor is mostly made of — present in every view, nowhere
+  // a carpet. Measure the real figure with __vb.shrubCount(x, z).
+  const SHCELL = 48;
+  const SHRUB_ON = true;                               // desert shrubs: ON. They were switched off 2026-08-16 ("remove the brown shrubs from the desert") and back on the same day once they were re-baked GREEN on the cactus ramp — the colour was the objection, not the plants. One named switch, both ways. Note this flag was ALREADY true while no shrub existed anywhere in the world: the loader was asking for the old shrub_N.vox names, SHRUBV came back empty, and shrubAt returns null on its first line — so an empty desert is a LOADER symptom first and a flag symptom second.
+  function shrubAt(cx, cz) {
+    if (!SHRUBV.length) return null;
+    // 0.21, down from 0.28 (user 2026-08-16: "decrease the amount of shrubs by 25%"). ihash is uniform on
+    // 0..1, so the threshold IS the acceptance rate and 0.28 * 0.75 = 0.21 is exactly a quarter fewer
+    // candidate cells. The downstream rejections (cactus/rock clearance, water, the spawn clearing) scale
+    // with it, so the planted count falls by the same quarter rather than by some other amount.
+    if (ihash(cx * 67 + 23, cz * 71 + 11) > 0.158) return null;   // -25% again (user 2026-08-16): 0.21 -> 0.158, from 0.28 originally
+    const wx = Math.round(cx * SHCELL + 4 + ihash(cx * 7 + 19, cz * 5 + 37) * (SHCELL - 8));
+    const wz = Math.round(cz * SHCELL + 4 + ihash(cx * 13 + 31, cz * 11 + 3) * (SHCELL - 8));
+    if (desertM(wx, wz) < 0.85) return null;
+    if (H(wx, wz) <= WL + 4) return null;              // never in the water, and not on the beach ring either
+    if (nearCave(wx, wz)) return null;
+    const dxs = wx - SPWX, dzs = wz - SPWZ;
+    if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // the spawn clearing, same radius the pines respect
+    const mi = (ihash(cx * 3 + 11, cz * 5 + 43) * SHRUBV.length) | 0;
+    const m = SHRUBV[mi], half = Math.max(m.sx, m.sy) >> 1;   // this plant's OWN half-footprint — the set runs 5 to 16 wide, so one fixed radius would either float the big ones or over-space the small ones. Read off the MODEL, so a re-authored set changes the spacing and the seating with it and nothing here needs touching
+    // ── NEVER INSIDE A CACTUS OR A DESERT ROCK ── both of those passes run AFTER this one in genRegionGen, and
+    // the rocks stamp in mode 2 (OVERWRITE), so an overlap does not interleave two models: it buries the bush,
+    // or leaves scrub growing out of a saguaro's ribs. cactusAt and drockAt are DETERMINISTIC, so probing the
+    // candidates they will place is free of any ordering assumption — it does not matter which pass has run.
+    // Same shape drockAt already uses to keep itself off the cacti: the two half-extents summed.
+    { const clr = half + 14;                           // 14 = the widest cactus half-extent (25 across)
+      for (let cz2 = Math.floor((wz - clr) / CACCELL); cz2 <= Math.floor((wz + clr) / CACCELL); cz2++)
+        for (let cx2 = Math.floor((wx - clr) / CACCELL); cx2 <= Math.floor((wx + clr) / CACCELL); cx2++) {
+          const c9 = cactusAt(cx2, cz2); if (!c9) continue;
+          const dx9 = wx - c9.wx, dz9 = wz - c9.wz;
+          if (dx9 * dx9 + dz9 * dz9 < clr * clr) return null;
+        } }
+    { const clr = half + 37;                           // 37 = the widest rocks26 model's half-extent (74 across)
+      for (let bz2 = Math.floor((wz - clr) / DRCELL); bz2 <= Math.floor((wz + clr) / DRCELL); bz2++)
+        for (let bx2 = Math.floor((wx - clr) / DRCELL); bx2 <= Math.floor((wx + clr) / DRCELL); bx2++) {
+          const r9 = drockAt(bx2, bz2); if (!r9) continue;
+          const rm = ROCK26[r9.mi], rc = half + (rm ? (Math.max(rm.sx, rm.sy) >> 1) : 8) + 2;   // that rock's OWN half-extent, so a 1.4 m stone does not clear a 4 m hole around itself
+          const dx9 = wx - r9.wx, dz9 = wz - r9.wz;
+          if (dx9 * dx9 + dz9 * dz9 < rc * rc) return null;
+        } }
+    return { wx, wz, mi, half, rot: (ihash(cx + 53, cz + 29) * 3.99) | 0 };
+  }
+  function stampShrub(r, x0, x1, z0, z1) {
+    stampModel(SHRUBV[r.mi], r.rot, r.wx, groundMin(r.wx, r.wz, r.half) - 1, r.wz, x0, x1, z0, z1, 1);   // groundMin, not H: seated on the LOWEST ground under its OWN footprint, so a bush on dune relief sinks into the slope instead of standing on one corner with daylight under the rest. The extra -1 is the sink stampCactus takes for the same reason — groundMin samples five points, not the whole footprint, so a dip between them can still leave a gap. mode 1 keeps terrain winning every contested cell, so the buried courses simply do not draw.
+  }
   const MUCELL = 52;                                   // MUSHROOMS: a rare cluster, ONLY in the pine forest (a pine must be within crown reach), one candidate per 5.2 m cell
   function mushAt(cx, cz) {
     if (!MUSHV) return null;
     if (ihash(cx * 89 + 17, cz * 97 + 5) > 0.053) return null;   // rare — ~5.3% of candidate cells before the pine-forest + rock-clearance gates below (cut by a third from 0.08, user)
     const wx = Math.round(cx * MUCELL + 5 + ihash(cx * 5 + 23, cz * 3 + 9) * (MUCELL - 10));
     const wz = Math.round(cz * MUCELL + 5 + ihash(cx * 11 + 7, cz * 7 + 19) * (MUCELL - 10));
+    if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── mushrooms are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (H(wx, wz) <= WL + 4) return null;              // no mushrooms in water or on beaches
     if (nearCave(wx, wz)) return null;
     let nearPine = false;                              // PINE-FOREST GATE: a pine within ~46 vox (crown reach) but ≥16 away so the 23-wide cluster never swallows a trunk
@@ -422,6 +568,7 @@
     if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.22) return null;
     const wx = Math.round(cx * PCCELL + 3 + ihash(cx * 7 + 9, cz * 5 + 3) * (PCCELL - 6));
     const wz = Math.round(cz * PCCELL + 3 + ihash(cx * 3 + 17, cz * 11 + 8) * (PCCELL - 6));
+    if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pinecones are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (H(wx, wz) <= WL + 4) return null;              // cones stay off beaches and lakebeds
     if (nearCave(wx, wz)) return null;
     return { wx, wz, rot: (ihash(cx + 19, cz + 23) * 3.99) | 0 };
@@ -435,6 +582,7 @@
     if (ihash(cx * 61 + 7, cz * 67 + 19) > 0.42) return null;
     const wx = Math.round(cx * SCELL + 2 + ihash(cx * 3 + 8, cz * 5 + 4) * (SCELL - 4));
     const wz = Math.round(cz * SCELL + 2 + ihash(cx * 7 + 2, cz * 9 + 6) * (SCELL - 4));
+    if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── twigs are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (H(wx, wz) <= WL + 4) return null;              // sticks stay off the beach
     if (nearCave(wx, wz)) return null;
     return { wx, wz, m: ihash(cx * 11 + 3, cz * 13 + 5) < 0.5 ? 0 : STICKV.length - 1, rot: (ihash(cx + 4, cz + 7) * 3.99) | 0 };
@@ -448,6 +596,7 @@
     if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.14) return null;
     const wx = Math.round(cx * LGCELL + 6 + ihash(cx * 3 + 9, cz * 7 + 1) * (LGCELL - 12));
     const wz = Math.round(cz * LGCELL + 6 + ihash(cx * 11 + 4, cz * 13 + 2) * (LGCELL - 12));
+    if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── fallen logs are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (H(wx, wz) <= WL + 4) return null;
     if (nearCave(wx, wz)) return null;
     return { wx, wz, rot: (ihash(cx * 5 + 21, cz * 3 + 33) * 3.99) | 0 };
@@ -483,12 +632,24 @@
     stampModel(LILYPAD_GIGV, g.rot, g.wx, WL + 1, g.wz, x0, x1, z0, z1, 4);   // floats on the lake surface; mode 4 clips each column to open water so it fits the lake outline
   }
   const TCELL = 45, TMARGIN = 24;                      // one pine candidate per 4.5 m cell (≈2× the old 64-cell density)
+  const SPVIEW_D = 96, SPVIEW_W = 13;                  // spawn sight-line: 9.6 m ahead, 1.3 m either side of the view axis
   function treeAt(cx, cz) {
     if (ihash(cx * 7 + 13, cz * 11 + 5) > 0.72) return null;
     const wx = Math.round(cx * TCELL + 6 + ihash(cx * 3 + 1, cz * 5 + 2) * (TCELL - 12));
     const wz = Math.round(cz * TCELL + 6 + ihash(cx * 9 + 4, cz * 3 + 8) * (TCELL - 12));
+    if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pines are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     const dxs = wx - SPWX, dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // spawn clearing
+    // ── AND A CLEAR LINE OF SIGHT DOWN THE SPAWN HEADING (user 2026-08-16: "try not to have the player spawn
+    // looking in front of a pine tree") ── the 26-voxel clearing above only guarantees elbow room; a pine just
+    // outside it, dead ahead, still fills the screen the instant you load. This rejects trunks inside a narrow
+    // CORRIDOR along SPYAW rather than widening the circle, which would clear trees to the sides and behind
+    // where nobody is looking. Derived from SPYAW rather than assuming +X, so re-baking the spawn heading
+    // moves the corridor with it. Short and narrow on purpose: long enough to open the view to the sand, tight
+    // enough that it reads as a gap between trees and not as a felled lane.
+    const fwdX = Math.sin(SPYAW), fwdZ = Math.cos(SPYAW);
+    const along = dxs * fwdX + dzs * fwdZ;
+    if (along > 0 && along < SPVIEW_D && Math.abs(dxs * fwdZ - dzs * fwdX) < SPVIEW_W) return null;
     if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
     if (nearCave(wx, wz)) return null;
     return { tx: wx, tz: wz, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
@@ -620,6 +781,19 @@
     yield* stampCellsGen(x0, x1, z0, z1, CAVE_CELL, CAVE_MARGIN, caveAt, stampCave);
     yield* stampCellsGen(x0, x1, z0, z1, BCELL, 44, boulderAt, stampBoulder);   // margin covers the widest rocks26 model (74 wide)
     yield* stampCellsGen(x0, x1, z0, z1, F2CELL, 16, fern2At, stampFern2);   // the fern.glb plant (23 wide)
+    yield* stampCellsGen(x0, x1, z0, z1, CACCELL, 16, cactusAt, stampCactus);
+    // ── ONE NAMED SWITCH, SHRUB_ON, AND IT IS DELIBERATELY LOUD ── the first time these were removed the
+    // loader was gutted and this call deleted, so when the user later asked for shrubs back it read as a BUG
+    // and cost an agent a full run to rediscover they had simply been turned off. The second removal (the
+    // brown ones) went through the flag instead, and turning them green again was a one-word change here.
+    if (SHRUB_ON) yield* stampCellsGen(x0, x1, z0, z1, SHCELL, 10, shrubAt, stampShrub);   // desert scrub. Margin 10 covers the widest model's half-footprint (still 16 across in the hand-authored set -> 8), so a bush centred just outside the region still stamps the half of it that falls inside. RE-CHECK THIS WHENEVER THE .vox CHANGE: a model wider than 20 silently loses its outer courses at every region seam, and the seam is exactly where nobody looks.
+    // AFTER the cacti and BEFORE the rocks, and that order is not arbitrary. A shrub's ids are RECLAIMED LOW
+    // ids (see SHRUBC/SHRUBF), so they are below DECOR_MIN — which means stampModel's mode-1 test reads a shrub voxel
+    // as hard terrain and REFUSES to write over it, exactly as it would for stone. Stamped first, a bush would
+    // therefore punch holes in a saguaro that lands on it. Going second it cannot, and the rocks stamp in mode
+    // 2 (OVERWRITE) so they win either way. shrubAt already refuses to sit inside either, so this is belt and
+    // braces rather than the mechanism — but it is the cheap half of the pair.
+    yield* stampCellsGen(x0, x1, z0, z1, DRCELL, 44, drockAt, stampDrock);   // the 26 rocks26 models, in the DESERT, in their own stock grey (user 2026-08-15 — the sandstone recolour is reverted). Margin 44 covers the widest of them (74 voxels), the same figure boulderAt uses for the same models in the forest
     yield* stampCellsGen(x0, x1, z0, z1, MUCELL, 18, mushAt, stampMush);      // rare pine-forest mushroom cluster (23×27 footprint)
     yield* stampCellsGen(x0, x1, z0, z1, PCCELL, 8, pconeAt, stampPcone);
     yield* stampCellsGen(x0, x1, z0, z1, SCELL, 8, stickAt, stampStick);

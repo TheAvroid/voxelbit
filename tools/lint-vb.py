@@ -658,7 +658,7 @@ UF_PINNED = {'drops': 68, 'pick2A': 1092, 'fflies': 1108, 'cshad': 1140, 'misc':
 UF_DERIVED = {'UF_PHYSB': 'physB', 'UF_PHYSC': 'physC', 'UF_PHYSBOUND': 'physBound',
               'UF_HELDCFG': 'heldCfg', 'UF_LGT': 'lgt', 'UF_HURTB': 'hurtB',
               'UF_HURTH': 'hurtH', 'UF_DROPSB': 'dropsB', 'UF_LIFEMOTB': 'lifeMotB',
-              'UF_DOF': 'dof'}
+              'UF_DOF': 'dof', 'UF_HEART': 'heart'}
 
 
 def js_ints(js):
@@ -744,11 +744,21 @@ def check_uniforms():
             err('render/buffers.js', '%s is %d but struct U puts %s at %d'
                 % (name, env[name], field, lay[field]))
 
-    m = re.search(r'new Float32Array\(UF_DOF \+ 4\)', js)
-    if m and lay.get('dof') is not None and lay['dof'] + 4 != total:
-        err('render/buffers.js', 'UF is UF_DOF+4 = %d floats but struct U needs %d - the '
-                                 'last field is not the end of the struct'
-            % (lay['dof'] + 4, total))
+    # THE TAIL MOVES. Every append lands a new last field, so this reads the allocation
+    # out of buffers.js instead of pinning one field's name: `new Float32Array(NAME + n)`
+    # has to come out at exactly the struct's own length, whichever field NAME addresses.
+    m = re.search(r'new Float32Array\((UF_[A-Z0-9_]+) \+ (\d+)\)', js)
+    if m:
+        base, span = m.group(1), int(m.group(2))
+        field = UF_DERIVED.get(base)
+        if field is None:
+            err('render/buffers.js', "UF is sized off %s, which is not in the lint's "
+                                     'UF_DERIVED map - add it, or check 8 cannot verify '
+                                     'the length of the buffer at all' % base)
+        elif lay.get(field) is not None and lay[field] + span != total:
+            err('render/buffers.js', 'UF is %s+%d = %d floats but struct U needs %d - the '
+                                     'field that constant addresses is not the end of the '
+                                     'struct' % (base, span, lay[field] + span, total))
     if VERBOSE:
         print('  uniforms: struct U = %d floats, %d pinned + %d derived offsets all '
               'where the JS expects (PHYS_MAX = %s)'

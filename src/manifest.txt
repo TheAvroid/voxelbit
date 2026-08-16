@@ -53,12 +53,14 @@ sim/life/stamped.js
 ui/audio.js
 ui/achievements.js
 sim/particles.js
+sim/vitals.js
 sim/life/reactions.js
 ui/keybinds.js
 ui/video-editor.js
 ui/settings.js
 ui/input.js
 ui/hud.js
+ui/vitals-hud.js
 ui/editor.js
 main/debug-api.js
 render/camera.js

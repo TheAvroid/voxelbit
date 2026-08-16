@@ -14,6 +14,22 @@
     // slider is what actually unlocks the full doubling: at a 1000 view the inner ring goes 286 -> 811.
     const LIFE_CAP = 1040;                             // was 520 — doubled, so a long view distance is no longer clamped by the cap
     const LIFE_KEEP = Math.min(rdV + 64, LIFE_CAP);    // DESPAWN radius (every kind) — slightly PAST the view, still safely inside the generated rect
+    const nDesert = 6;
+    // ── 25% RARER (user 2026-08-16) ── 6 per species x 7 = 42 was the old population; 0.75 of that is 31.5,
+    // which no integer per-species count can express (5 gives 35, i.e. only 17% fewer; 4 gives 28, 33% fewer).
+    // So the count is distributed Bresenham-style instead: the running total is 4.5 per species and each
+    // species takes whatever crossing that total produces, giving 4,5,4,5,4,5,4 = 31. Deterministic, balanced,
+    // and no species is arbitrarily favoured. Change DES_RARITY alone to retune.
+    // ── 25% RARER (user 2026-08-16) ── 6 per species x 7 = 42; three-quarters is 31.5, which no integer
+    // per-species count can express (5 gives 35, only 17% fewer; 4 gives 28, 33% fewer). So the count is
+    // distributed Bresenham-style: the running total is 4.5 per species and each takes whatever crossing it
+    // produces, giving 4,5,4,5,4,5,4 = 31. Deterministic, balanced, no species arbitrarily favoured.
+    // NOTE this was briefly 6/7 on a measurement of 27 alive against a target of 31 — that gap was NOT slot
+    // churn, it was the ant band spawning ZERO because its baked frames had been deleted. With the ant fixed,
+    // alive == target, so the honest value is 0.75. Retune against __vb.lifeAll(), and check every species is
+    // actually populated before concluding the target is unreachable.
+    const DES_RARITY = 0.75;
+    const nDesertOf = (sp) => Math.floor((sp + 1) * nDesert * DES_RARITY) - Math.floor(sp * nDesert * DES_RARITY);                                 // per SPECIES, out of DES_PER slots each — seven species scattered across the desert
     const LIFE_OUT = LIFE_KEEP * 0.94;                 // outermost SPAWN radius — the gap to LIFE_KEEP is the hysteresis band
     const LIFE_IN = Math.min(LIFE_KEEP * 0.78, LIFE_OUT - 24);   // innermost SPAWN radius — out past the fog, never in clear view
     const MAM_KEEP = CARD_KEEP;                        // LAND MAMMALS reach EXACTLY as far as the perched songbirds (user): the birds' FIXED 680 — not max(LIFE_KEEP,…), which let a big view slider push mammals past the birds and dilute the 56-head pool over an oversized disc (measured: mammals at 1020 vox, in-view rings near-empty)

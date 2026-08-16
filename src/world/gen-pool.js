@@ -46,9 +46,9 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { NEEDLE, MOSS, DIRT, ROCK, ROCKX, BROCK, LOGC, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26S, R26M, R26B, PINE_ANCH };
-    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
+    const consts = { SHRUB_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, DESOFF, DESB, DESW, DESY, DESREL, DESDUNE, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const tables = { NEEDLE, MOSS, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH };
+    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, desWob, desertM, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
@@ -56,6 +56,10 @@
       'const gwrap = (v, n) => v - (n === WX ? OX : OZ);\n' +
       'const rivCache = new Map(), caveCache = new Map();\n' +
       'const takeRows = () => null;\n';
+    // (ROCK26D — the Colorado-sandstone twin of ROCK26 — is no longer derived here: the desert rocks went
+    //  back to stock grey, so nothing in the worker references it. bow.js still builds it and R26DMAP is
+    //  still registered, so restoring is re-adding one line:
+    //  wsrc2 += 'const ROCK26D = ROCK26.map((r) => ({ sx: r.sx, sy: r.sy, sz: r.sz, vox: r.vox.map((p) => (p & 0xffffff) | (R26DMAP[p >>> 24] << 24)) }));' + String.fromCharCode(10);)
     wsrc2 += 'const ORPH_SCRATCH = { mark: null, stk: null };\n';   // sweepOrphans reuses these; the worker needs its own copy
     wsrc2 += 'const ORPHAN_OK = new Uint8Array(' + JSON.stringify(Array.from(ORPHAN_OK)) + ');\n';
     for (const k in fns) wsrc2 += 'const ' + k + ' = ' + fns[k].toString() + ';\n';
@@ -97,6 +101,7 @@
       '  postMessage({ id: d.id, stride: WX, W, hmap, bb, wb, nbx, nby, nbz, orph }, [W.buffer, hmap.buffer, bb.buffer, wb.buffer]);\n' +
       '  W = hmap = touched = null;\n' +
       '};';
+    if (location.search.includes('wsrc')) window.__vbWSRC = wsrc2;   // ?wsrc — hand the assembled worker source out so a syntax error in it can be located instead of guessed at
     const purl = URL.createObjectURL(new Blob([wsrc2], { type: 'text/javascript' }));
     const NPOOL = Math.max(2, Math.min(16, (navigator.hardwareConcurrency || 4) - 4));   // cap 8 -> 12 -> 20 (user 2026-08-07: make the initial load faster). Boot is dominated by worldgen: measured 9.34 s of a 10.54 s load, with assets/bricks/upload together under 1.2 s. On a 28-thread box the old min(12, hc-2) left more than half the machine idle. hc-4 keeps headroom for the main thread, the row worker and the browser.
     genPool = [];

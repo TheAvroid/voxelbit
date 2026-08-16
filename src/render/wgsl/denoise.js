@@ -51,7 +51,7 @@
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
       let c = textureLoad(hist, vec2<i32>(gid.xy), 0);
       if (c.b < 0.0) { textureStore(irrOut, vec2<i32>(gid.xy), c); return; }
-      let faceC = u32(textureLoad(gAlbedo, vec2<i32>(gid.xy), 0).a * 255.0 + 0.5) & 15u;
+      let faceC = gbFace(textureLoad(gAlbedo, vec2<i32>(gid.xy), 0).a);   // gbFace, not a raw mask: SANDF is a TOP face wearing a different id, and comparing the raw ids would stop a sand pixel sharing irradiance with the grass beside it
       var P = array<vec2<f32>, 12>(
         vec2<f32>(-0.326, -0.406), vec2<f32>(-0.840, -0.074), vec2<f32>(-0.696, 0.457), vec2<f32>(-0.203, 0.621),
         vec2<f32>(0.962, -0.195), vec2<f32>(0.473, -0.480), vec2<f32>(0.519, 0.767), vec2<f32>(0.185, -0.893),
@@ -69,7 +69,7 @@
         let q = vec2<i32>(vec2<f32>(gid.xy) + P[i] * radius + 0.5);
         if (q.x < 0 || q.y < 0 || q.x >= i32(u.res.x) || q.y >= i32(u.res.y)) { continue; }
         let s = textureLoad(hist, q, 0);
-        let f2 = u32(textureLoad(gAlbedo, q, 0).a * 255.0 + 0.5) & 15u;
+        let f2 = gbFace(textureLoad(gAlbedo, q, 0).a);
         if (s.b <= 0.0 || f2 != faceC || abs(s.b - c.b) > 0.04 * c.b + 2.0) { continue; }
         if ((c.a < 0.0) != (s.a < 0.0)) { continue; }   // never mix a moving-shadow pixel with a settled one — that is how the smear crosses the edge
         let w = exp(-2.0 * dot(P[i], P[i]));

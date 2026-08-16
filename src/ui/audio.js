@@ -50,6 +50,12 @@
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
   let sndVol = 1;   // start at FULL VOLUME on refresh (user 2026-08-06). Was 0 (always-muted, 2026-08-02); a page load still does NOT restore vb_vol, it just starts at 100% instead of 0%.
+  // ── TEMPORARY: SILENT ON REFRESH, FOR DEVELOPMENT (user 2026-08-15) ── the three buses above all deliberately
+  // reset to 100% on every page load, which is right for players and wrong for someone reloading the build a
+  // hundred times an afternoon. This overrides master and music to 0 AFTER their declarations so the reasoning
+  // above stays intact and undoing it is deleting these two lines — not reconstructing three defaults. The
+  // sliders still work normally once moved. REMOVE BEFORE SHIPPING.
+  sndVol = 0; musVol = 0;
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -93,6 +99,8 @@
       a._sfxOut = f; return true;
     } catch (e) { return false; }   // no Web Audio here — the element still plays dry rather than not at all
   };
+  let ambBiomeTick = () => {};                          // set by the ambience block below; called once a frame from the camera tick
+  let desAmbState = () => ({ phase: 'idle' });          // …and the desert bed's own test tap, assigned in the same block (see __vb.desAmb)
   // ── forest ambience ── constant background loop from page load. Browsers block autoplay before the first
   // user gesture, so a blocked play() is retried on the first pointer/key input (the click-to-enter covers it).
   // Tries forest_ambience.* first and falls back to ambience.mp4 so dropping the new file in just works.
@@ -104,7 +112,147 @@
     const ambPlay = () => { try { const p = amb.play(); if (p) p.catch(() => {}); } catch (e) {} };
     amb.addEventListener('error', () => { if (si < srcs.length) { amb.src = srcs[si++]; ambPlay(); } });
     amb.src = srcs[si++]; ambPlay();
-    const kick = () => { if (amb.paused) ambPlay(); };
+    // ── THE DESERT'S OWN BED (user 2026-08-15) ── the exact counterweight of the forest one, in the same block
+    // so the two can share one weight: the forest plays at (1 - desertM) and the desert at desertM, which sum
+    // to 1 everywhere. That is what makes the handover provable rather than tuned — there is no crossing where
+    // both are at full, and none where neither is playing.
+    //
+    // ── WHY WEB AUDIO, AND NOT A SECOND <audio loop> ── the ask was a PALINDROME: play the take, then play it
+    // BACKWARDS, then forwards again, for ever, so the recycle is smooth. A media element cannot run backwards
+    // at all (playbackRate must be positive), and plain loop=true clicks, because the last sample of a wind
+    // recording and its first sample are two unrelated points. So the file is fetched and decoded ONCE and
+    // rebuilt as a single buffer holding s[0..N-1] followed by s[N-2..1]; looping THAT natively is the
+    // palindrome. Both of its joins are sample-exact reflections — the turn reads s[N-2], s[N-1], s[N-2] and
+    // the wrap reads s[1], s[0], s[1] — so there is no discontinuity to hear, and no scheduler to drift,
+    // because the browser's own loop does the recycling. The endpoints are visited once each, not twice, which
+    // is why the buffer is 2N-2 frames and not 2N.
+    //
+    // COST, stated plainly: the palindrome is ~50 MB of float for this 66 s stereo take (~75 MB for the ~0.2 s
+    // the decoded source is still alive beside it). It is built lazily, only if the player actually goes near
+    // the sand, and never twice; the copy is sliced across frames so it is never one long stall.
+    const DES_AMB_BASE = 0.114;                        // MEASURED, not guessed: the take is -27.5 LUFS integrated against the forest bed's -42.3, so 0.625 * 10^(-14.8/20) = 0.114 lands the two at the same perceived level. A crossfade between beds of different loudness reads as a volume ramp, which is the one thing the handover must not do
+    const DES_AMB_SRCS = ['sound/desert_ambience.mp4', 'sound/desert_ambience.mp3', 'sound/desert_ambience.wav'];
+    const DES_AMB_NEAR = 0.02;                         // start FETCHING at the first hint of sand — desertM > 0 covers the whole 450-voxel blend band, so the decode and the rebuild finish long before the bed is loud enough to notice arriving
+    const DES_AMB_CHUNK = 1 << 20;                     // frames of palindrome copied per rendered frame. The whole 12.6 M-sample copy in one go is a 30-50 ms stall (a dropped frame); a slice this size is ~2 ms
+    let dAmbLvl = 0;                                   // what applyVol / the tick last asked for — the shim's own `volume`
+    let dAmbG = null, dAmbSrc = null, dAmbFwd = null, dAmbPal = null;
+    let dAmbCh = 0, dAmbI = 0, dAmbSide = 0, dAmbBuild = false;
+    let dAmbT0 = 0, dAmbHalf = 0, dAmbSi = 0, dAmbUrl = null, dAmbPhase = 'idle';
+    // A GainNode has no `volume`, so the master slider could never reach one. This shim hands sndReg exactly the
+    // property it writes, and carries `_sfxOut` so the video recorder's tap (veTapEl) finds the gain node and
+    // mixes the desert into an export — the same door a bass-filtered effect already goes through.
+    const dAmbEl = { _sfxOut: null,
+      get volume() { return dAmbLvl; },
+      set volume(v) { dAmbLvl = v; if (dAmbG) dAmbG.gain.value = v; } };
+    regSnd(dAmbEl, DES_AMB_BASE, false);               // BUS_AMB like the forest bed: a bed is not an effect, so only the master slider moves it
+    // Fetch → decode → hand the buffer to the staged rebuild. Every step is async and every failure walks to the
+    // next candidate file, so a missing or undecodable take costs silence rather than an exception on the frame
+    // the player first sees sand.
+    const dAmbLoad = () => {
+      if (dAmbPhase !== 'idle') return;
+      const ac = audioCtx(); if (!ac) { dAmbPhase = 'nowebaudio'; return; }
+      dAmbPhase = 'fetch'; dAmbUrl = DES_AMB_SRCS[dAmbSi++];
+      fetch(dAmbUrl).then((r) => { if (!r.ok) throw new Error('http ' + r.status); return r.arrayBuffer(); })
+        .then((ab) => { dAmbPhase = 'decode'; return ac.decodeAudioData(ab); })
+        .then((buf) => {
+          if (buf.length < 4) throw new Error('too short');
+          dAmbFwd = buf; dAmbPal = ac.createBuffer(buf.numberOfChannels, buf.length * 2 - 2, buf.sampleRate);
+          dAmbCh = 0; dAmbI = 0; dAmbSide = 0; dAmbBuild = true; dAmbPhase = 'build';
+        })
+        .catch(() => { dAmbPhase = dAmbSi < DES_AMB_SRCS.length ? 'idle' : 'failed'; });   // 'idle' re-arms the next tick on the NEXT candidate; 'failed' is terminal and never retried, so a 404 cannot become a fetch every frame
+    };
+    // One slice of the palindrome, driven from the tick. Typed-array ops only (set / slice / reverse), never an
+    // element loop — the same 4 MB of copying is several times cheaper through them.
+    const dAmbStep = () => {                           // true once the whole buffer is written
+      const N = dAmbFwd.length, C = dAmbFwd.numberOfChannels, M = N - 2;
+      let left = DES_AMB_CHUNK;
+      while (left > 0 && dAmbCh < C) {
+        const s2 = dAmbFwd.getChannelData(dAmbCh), o2 = dAmbPal.getChannelData(dAmbCh);
+        if (dAmbSide === 0) {                          // the outward half, s[0..N-1], straight through
+          const n = Math.min(left, N - dAmbI);
+          if (n > 0) o2.set(s2.subarray(dAmbI, dAmbI + n), dAmbI);
+          dAmbI += n; left -= n;
+          if (dAmbI >= N) { dAmbSide = 1; dAmbI = 0; }
+        } else {                                       // …and the return, o[N+j] = s[N-2-j], stopping one short of s[0] so the wrap reflects instead of repeating a sample
+          const n = Math.min(left, M - dAmbI);
+          if (n > 0) { const c = s2.slice(N - 1 - dAmbI - n, N - 1 - dAmbI); c.reverse(); o2.set(c, N + dAmbI); }
+          dAmbI += n; left -= n;
+          if (dAmbI >= M) { dAmbSide = 0; dAmbI = 0; dAmbCh++; }
+        }
+      }
+      return dAmbCh >= C;
+    };
+    const dAmbGo = () => {
+      dAmbBuild = false;
+      const ac = audioCtx(); if (!ac) { dAmbPhase = 'failed'; return; }
+      try {
+        dAmbG = ac.createGain(); dAmbG.gain.value = dAmbLvl; dAmbG.connect(ac.destination);
+        dAmbEl._sfxOut = dAmbG;                        // from here the recorder's tap has something to grab
+        dAmbSrc = ac.createBufferSource(); dAmbSrc.buffer = dAmbPal; dAmbSrc.loop = true; dAmbSrc.connect(dAmbG);
+        dAmbHalf = (dAmbFwd.length - 1) / dAmbFwd.sampleRate;   // one PASS, in seconds: half the palindrome. Read BEFORE the source buffer is let go
+        dAmbT0 = ac.currentTime; dAmbSrc.start();      // started at gain 0 unless the player is already on sand — it runs for the rest of the session and only the gain ever moves, exactly as the forest loop does
+        dAmbFwd = null;                                // the decoded take now lives inside the palindrome; holding it as well would be 25 MB for nothing
+        dAmbPhase = 'play';
+      } catch (e) { dAmbPhase = 'failed'; }
+    };
+    // Which pass is running, DERIVED from the audio clock rather than counted: the source never restarts and
+    // never fires an event, so there is nothing to count — and a derived answer cannot drift from what is
+    // actually being heard.
+    const dAmbPass = () => {
+      if (dAmbPhase !== 'play' || !(dAmbHalf > 0)) return null;
+      const ac = sfxAC; if (!ac) return null;
+      const el = Math.max(0, ac.currentTime - dAmbT0), n = Math.floor(el / dAmbHalf);
+      return { pass: n, dir: (n & 1) ? 'rev' : 'fwd', t: el - n * dAmbHalf, el };
+    };
+    // The palindrome is checked by REFLECTION, not against the source take — the decoded take is released
+    // the moment the rebuild lands, so it is not there to compare with. It does not need to be: writing
+    // o[i] = s[i] below N and o[i] = s[L-i] above it makes o[i] === o[L-i] true for every i in 1..L-1, and
+    // THAT is the whole claim — mirrored about the turn at N-1 and about the wrap at 0. A sampled check is
+    // enough because a build that went wrong went wrong in bulk (a slice at the wrong offset, a chunk
+    // boundary off by one), never in one lone sample.
+    const dAmbProbe = (n) => {
+      if (!dAmbPal || dAmbPhase !== 'play') return null;
+      const L = dAmbPal.length, C = dAmbPal.numberOfChannels;
+      let bad = 0, worst = 0;
+      for (let c = 0; c < C; c++) {
+        const o2 = dAmbPal.getChannelData(c);
+        for (let k = 0; k < n; k++) {
+          const i = 1 + ((Math.random() * (L - 1)) | 0);
+          const d = Math.abs(o2[i] - o2[L - i]);
+          if (d > 0) { bad++; if (d > worst) worst = d; }
+        }
+      }
+      return { n: n * C, bad, worst };
+    };
+    desAmbState = (probe) => {
+      const p = dAmbPass(), ac = sfxAC;
+      return { phase: dAmbPhase, url: dAmbUrl, dm: +Math.max(0, Math.min(1, desertM(P.x, P.z))).toFixed(3),
+               gain: +dAmbLvl.toFixed(5), forest: +amb.volume.toFixed(5), playing: dAmbPhase === 'play', audible: dAmbLvl > 0,
+               pass: p ? p.pass : null, dir: p ? p.dir : null, passT: p ? +p.t.toFixed(3) : null,
+               half: +dAmbHalf.toFixed(3), elapsed: p ? +p.el.toFixed(3) : null,
+               frames: dAmbPal ? dAmbPal.length : 0, ch: dAmbPal ? dAmbPal.numberOfChannels : 0,
+               mb: dAmbPal ? +(dAmbPal.length * dAmbPal.numberOfChannels * 4 / 1048576).toFixed(1) : 0,
+               loop: !!(dAmbSrc && dAmbSrc.loop), dur: dAmbPal ? +(dAmbPal.length / dAmbPal.sampleRate).toFixed(3) : 0,
+               probe: probe > 0 ? dAmbProbe(probe | 0) : null,
+               ctx: ac ? ac.state : null, ctxT: ac ? +ac.currentTime.toFixed(3) : null };
+    };
+    // ── NO FOREST BIRDSONG OVER THE SAND (user 2026-08-15) ── the ambience bed is a PINE FOREST recording, so
+    // it has no business playing in the desert. Faded rather than stopped: the loop keeps running and only its
+    // gain moves, so walking back into the trees brings it in smoothly and the element never has to re-buffer
+    // or re-hit the autoplay block. Cross-faded over the blend band itself (1 - desertM), which is the same
+    // weight the ground colour and the height use, so the sound follows the treeline you can actually see.
+    // Re-applied every frame on purpose: applyVol() rewrites every registered element when a slider moves and
+    // would otherwise restore full forest volume in the middle of the desert.
+    ambBiomeTick = () => {
+      const dm = Math.max(0, Math.min(1, desertM(P.x, P.z)));
+      const v = sndLevel(0.625, BUS_AMB) * (1 - dm);
+      if (amb.volume !== v) amb.volume = v;            // compared against the ELEMENT and not a remembered value: applyVol() writes it behind our back, and a remembered one would then agree with itself while the forest played at full volume in the middle of the desert
+      if (dm > DES_AMB_NEAR) dAmbLoad();               // …the sand is in sight: start the fetch, once, ever
+      if (dAmbBuild && dAmbStep()) dAmbGo();           // …and rebuild the palindrome a slice at a time until it is whole
+      const dv = sndLevel(DES_AMB_BASE, BUS_AMB) * dm;   // the other side of the same weight: the two gains sum to one, so a step into the sand is a handover and never a gap or a doubling
+      if (dAmbLvl !== dv) dAmbEl.volume = dv;
+    };
+    const kick = () => { if (amb.paused) ambPlay(); if (dAmbPhase !== 'idle') audioCtx(); };   // …and un-suspend the context the desert bed plays through, which the browser also holds until a gesture
     document.addEventListener('pointerdown', kick);
     document.addEventListener('keydown', kick);
   }
@@ -231,7 +379,9 @@
   const EAT_MS = 900;                                  // ── THE BITE FLOOR ── one bite per 900 ms, and it is now the EATING CADENCE as well as a click limiter: a fast click must not run through a whole stack in a second, and neither must a HELD right button (user 2026-08-11 — see the auto-repeat in the tick loop). tryEat is the single gate for both paths, so a bite costs the same wherever the call came from.
   let eatT = -1e9;
   let eatHold = false;                                 // ── IS THE HELD RIGHT BUTTON AN EATING HOLD? ── armed at mousedown ONLY when the pickup did not claim that click, cleared at mouseup. Without it the hold path would quietly overrule the pickup-wins rule above: `grabAnim` is only true while the item is IN FLIGHT, so a right-hold on a rock at your feet would grab the rock and then start eating the meat still in your hand the moment the flight landed. One press = one decision, grab or eat, for as long as it is held.
-  const EDIBLE = () => new Set([MEAT_IT].filter(Boolean));   // the raw steak today; the next food is one entry
+  // DERIVED from the vitals' food table rather than listed here: what is edible and what it restores are the
+  // same fact, and keeping two lists in step by hand is how a food ends up chewable but nourishing nothing.
+  const EDIBLE = () => new Set(Object.keys(vitFoods()).map(Number).filter(Boolean));
   const eatSnd = regSnd(new Audio('sound/eat.mp4'), 0.105);   // 0.7 −40% (user 2026-08-07), then −50% and another −50% (user 2026-08-11)
   // ── SNATCHED OUT OF THE AIR (user 2026-08-08) ── sound/pick_up.mp4 is the file that shipped as sound/hit.mp4
   // until the four-take tool_hit pool replaced it as the swing sound; it has been unused since and is now the
@@ -248,10 +398,12 @@
   const tryEat = () => {
     const sel = slots[selSlot];
     if (dead || ED.on || grabAnim || !sel || !EDIBLE().has(sel.it)) return false;
+    if (VIT.food >= VIT_FOOD_MAX) return false;         // a full bar refuses the bite, so food is never wasted
     const now9 = performance.now();
     if (now9 - eatT < EAT_MS) return false;
     eatT = now9;
     try { eatSnd.currentTime = 0; const p = eatSnd.play(); if (p) p.catch(() => {}); } catch (e) {}
+    vitEat(sel.it);                                     // hunger + saturation, by the food's own numbers
     if (--sel.n <= 0) { slots[selSlot] = null; slotTidy(); }
     return true;
   };
