@@ -132,7 +132,20 @@
   });
   let dead = false;
   let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = 0;
-  const FALL_FREE = 3;                                 // metres you may drop for nothing — Minecraft's threshold, and a believable one: a 3 m hop stings nobody   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
+  const FALL_FREE = 3;                                 // metres you may drop for nothing — Minecraft's threshold, and a believable one: a 3 m hop stings nobody
+  // ── AND PAST IT THE COST ACCELERATES (user 2026-08-17: "the higher the player falls, the more fall damage
+  // it causes. if its really high, the player just dies") ── it used to be one point per metre, flat, which
+  // made a 10 m drop and a 20 m drop feel like the same decision twice: both survivable, one merely longer.
+  // The square term is what puts a floor under that judgement. m is metres past the free window, and the
+  // damage is m + m*m/FALL_K, so the first few metres past the ledge stay nearly as cheap as they were and
+  // the last few are what kill you: 4 m still costs 1, 8 m costs 6 where it used to cost 5, and 15 m now
+  // takes a full 20-point bar where the flat rule needed 23. FALL_K is set from that 15 m figure and
+  // nothing else — it is the height a fall stops being a risk and becomes a decision.
+  const FALL_K = 18;
+  // ...and beyond FALL_KILL there is no arithmetic at all. The curve already kills a full bar well below
+  // this, so it changes no outcome today; it is here so the answer stays "you died" if max health, armour
+  // or a heal-on-landing ever moves, rather than quietly becoming survivable because a number elsewhere grew.
+  const FALL_KILL = 25;   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
   let uwT = 0;                                          // ── DROWN CLOCK ── seconds the EYE has been continuously submerged; hits DROWN_T → game over. Reset on surfacing/respawn; frozen (not reset) while paused/editor.
   const DROWN_T = 10;                                  // you can hold your breath for 10 s underwater (user)
   const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it

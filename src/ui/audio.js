@@ -50,6 +50,12 @@
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
   let sndVol = 1;   // start at FULL VOLUME on refresh (user 2026-08-06). Was 0 (always-muted, 2026-08-02); a page load still does NOT restore vb_vol, it just starts at 100% instead of 0%.
+  // ── TEMPORARY, FOR DEVELOPMENT (user 2026-08-17: "make the music and snow be turned off by default on
+  // refresh. (temp)") ── the MUSIC bus starts silent; master and sfx are untouched, so the world still makes noise.
+  // Written as an override AFTER the declaration above rather than by editing it, for the same reason the
+  // last one was: the reasoning up there stays true and undoing this is DELETING THESE LINES, not
+  // reconstructing a default from memory. The slider still works normally once moved. REMOVE BEFORE SHIPPING.
+  musVol = 0;
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider

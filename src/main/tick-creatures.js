@@ -13,6 +13,11 @@
       // spend it CHARGING, because DES_HUNT already steers them at the player and the flee block excludes any
       // hunter. So one table drives two opposite behaviours and neither species needs a special case.
       const DES_DASH = { gecko: 2, desert_mouse: 2, cobra: 2, scorpion: 2 }, DES_DASH_R = 70;
+      // ── THE TWO ADMIT ENDS OF THE BIOME GATE ── desertM at or past BIO_DESERT is open sand, at or under
+      // BIO_FOREST is closed forest, and the span between them is a treeline nothing spawns in. DESB is 450
+      // voxels of blend, so 0.15/0.85 puts each side's nearest spawn about 100 voxels - 10 m - off the
+      // boundary's centre line, and leaves roughly 20 m of empty ground between the two populations.
+      const BIO_DESERT = 0.85, BIO_FOREST = 0.15;
       const DES_HUNT = { cobra: 1, scorpion: 1 };         // ── WHO HUNTS THE PLAYER ── (user 2026-08-15)                   // ── PER-SPECIES ANIMATION RATE ── the scorpion reads slow at the house 24 (user 2026-08-15); everything unlisted stays 24
       const antLead = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) === 0;   // ── THE ANT COLUMN'S HEAD ── slot 0 of the ant band is the only ant that decides anything: it marches on the compass (its own branch in the steering chain below), and every other ant is PLACED on the path it recorded. Keyed on the NAME like desFly, so re-ordering the load list cannot promote some other animal to leader.
       const desFly = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'fly';   // ── THE FLY FLIES (user 2026-08-15) ── keyed on the NAME, not the index, so re-ordering the load list cannot silently turn some other animal into a flyer
@@ -140,7 +145,16 @@
             sx = ld.x - Math.sin(ld.th) * 3.2 + (Math.random() - 0.5) * 1.2;   // their leader, and at 16 vox/s they never closed it before being recycled.
             sz = ld.z - Math.cos(ld.th) * 3.2 + (Math.random() - 0.5) * 1.2;   // Waiting a frame for the leader is free — the retry loop comes straight back.
           }
-          if ((desertM(sx, sz) > 0.85) !== desSlot) continue;   // ── BIOME GATE, BOTH WAYS ── the desert band wants open desert and nothing else does. 0.85 (not 0.5) is an ADMIT test for the desert creatures, so none of them stands in the dithered treeline; for every other band it is the original reject, one notch stricter.  // was: NO LIFE IN THE DESERT (user) ── placed on the ONE annulus every land, flying and worm spawn funnels through, after both the home-finder and the fallback branch have chosen a point, so no species can route around it
+          // ── BIOME GATE, BOTH WAYS, AND NOW BOTH ENDS ARE ADMIT TESTS ── placed on the ONE annulus every
+          // land, flying and worm spawn funnels through, after both the home-finder and the fallback branch have
+          // chosen a point, so no species can route around it. The desert band has always admitted at 0.85 rather
+          // than 0.5 so none of its creatures stands in the dithered treeline. The forest was the plain INVERSE
+          // of that test, which admitted it anywhere under 0.85 - through the entire blend band and right up
+          // against the sand (user 2026-08-17: "the pine forest life are spawning too far out in the transition
+          // between the desert and the pine forest"). It gets its own admit end now, so the treeline reads as a
+          // border rather than as a mixing zone.
+          const dmS = desertM(sx, sz);
+          if (desSlot ? dmS < BIO_DESERT : dmS > BIO_FOREST) continue;
           if (sx <= rect.xlo + 4 || sx >= rect.xhi - 4 || sz <= rect.zlo + 4 || sz >= rect.zhi - 4) continue;   // NEVER spawn outside the GENERATED rect — hmap there is garbage (the snow-landing guard; embedded 'cave' creatures after recenters)
           sx7 = sx; sz7 = sz;
           const gS = bfSurf(sx, sz);

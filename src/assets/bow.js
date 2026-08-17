@@ -110,10 +110,10 @@
     ['assets/decoration/lillypad_small.vox', 'decor'],                                      // floats on lakes + rivers
     ['assets/decoration/lillypad_medium.vox', 'decor'],
     ['assets/decoration/lillypad_large.vox', 'decor'],
-    ['assets/decoration/stick_1.vox', 'held'],                                              // ground scatter, and PICKABLE - so 'held' for the same reason rock.vox is: the player carries it, and the shared palette path rounds its authored browns onto whatever decoration colour is within PAL_TOL
-    ['assets/decoration/stick_2.vox', 'held'],
+    ['assets/decoration/stick_1.vox', 'decor'],                                              // ground scatter, and PICKABLE - so 'held' for the same reason rock.vox is: the player carries it, and the shared palette path rounds its authored browns onto whatever decoration colour is within PAL_TOL
+    ['assets/decoration/stick_2.vox', 'decor'],
     ['assets/decoration/log.vox', 'decor'],                                                 // rare fallen log, solid
-    ['assets/decoration/rock.vox', 'held'],                                                 // the small stone. Ground scatter AND the thing the player dual-wields, which is why it is 'held' and not 'decor': it is parsed like a decoration in every other respect but takes the EXACT-COLOUR path. Its five authored greys (147/140/134/127/120) sit inside PAL_TOL of one another, so on the shared path 140 and 127 both collapsed onto 134 and twelve of its twenty voxels came out the same shade - a five-step ramp rendered as three. Measured with __vb.itemCols(2), which reported three colours where the .vox has five. The noTol comment in models.js already states the rule this was missing: the tolerance is right for scenery at 20 m and wrong for the thing in their hand.
+    ['assets/decoration/rock.vox', 'decor'],                                                 // the small stone. Ground scatter AND the thing the player dual-wields, which is why it is 'held' and not 'decor': it is parsed like a decoration in every other respect but takes the EXACT-COLOUR path. Its five authored greys (147/140/134/127/120) sit inside PAL_TOL of one another, so on the shared path 140 and 127 both collapsed onto 134 and twelve of its twenty voxels came out the same shade - a five-step ramp rendered as three. Measured with __vb.itemCols(2), which reported three colours where the .vox has five. The noTol comment in models.js already states the rule this was missing: the tolerance is right for scenery at 20 m and wrong for the thing in their hand.
     ['assets/stone_tools/stone_pick.vox', 'item'],                                          // …and the STONE PICK, the rock-breaking counterpart to the axe (user)
     ['assets/stone_tools/stone_shovel.vox', 'item'],                                        // …and the STONE SHOVEL, which digs ground and nothing else (user)
     ['assets/stone_tools/bow_arrow/arrow.vox', 'item'],                                     // …and the ARROW that lies on the bow (user)
@@ -202,21 +202,35 @@
     const SHRN = 6;
     const sbytes = await Promise.all(Array.from({ length: SHRN }, (_, i) =>                // fetched together, parsed in order — the same reason the cacti are, see the DECOR_LOAD note above
       fetchBytes('assets/foilage/desert_shrub/' + (i + 1) + '.vox')));
-    const sok = sbytes.filter(Boolean), sids = SHRUBC.concat(SHRUBF), scmap = new Map();
-    let sworst = 0, sworstCol = null;
-    for (const b of sok) for (const c of voxColsUsed(b)) {
-      const ck = (c[0] << 16) | (c[1] << 8) | c[2];
-      if (scmap.has(ck)) continue;
-      let bd = 1e9, bi = sids[0];
-      for (const q of sids) { const p = palette[q], d = (p[0] - c[0]) * (p[0] - c[0]) + (p[1] - c[1]) * (p[1] - c[1]) + (p[2] - c[2]) * (p[2] - c[2]);
-        if (d < bd) { bd = d; bi = q; } }
-      const bp = palette[bi], e = Math.max(Math.abs(bp[0] - c[0]), Math.abs(bp[1] - c[1]), Math.abs(bp[2] - c[2]));
-      if (e > sworst) { sworst = e; sworstCol = c; }
-      scmap.set(ck, bi);
-    }
-    SHRUBV = sok.map((b) => parseVoxModel(b, false, false, scmap));
+    const sok = sbytes.filter(Boolean);
+    // ── TWO MAPS, NOT ONE (user 2026-08-17: make shrubs 5 and 6 brown) ── the resolve is nearest-colour onto
+    // the shrubs' OWN ids, so which ids a file is ALLOWED to reach is the only thing that decides its colour.
+    // Files 1-4 may reach the greens, files 5-6 the browns, and both may reach the flowers. The .vox files are
+    // untouched: repainting one brown would have resolved it straight back to the nearest green, because green
+    // was the only body colour on offer. Worst-error tracking is per map for the same reason it existed before
+    // - it is the alarm that says a file has drifted away from the ramp it is being held against.
+    const SHRUB_BROWN0 = 4;                            // 0-based: files 5.vox and 6.vox
+    const smapFor = (ids) => {
+      const m = new Map(); let worst = 0, wcol = null;
+      for (const b of sok) for (const c of voxColsUsed(b)) {
+        const ck = (c[0] << 16) | (c[1] << 8) | c[2];
+        if (m.has(ck)) continue;
+        let bd = 1e9, bi = ids[0];
+        for (const q of ids) { const p = palette[q], d = (p[0] - c[0]) * (p[0] - c[0]) + (p[1] - c[1]) * (p[1] - c[1]) + (p[2] - c[2]) * (p[2] - c[2]);
+          if (d < bd) { bd = d; bi = q; } }
+        const bp = palette[bi], e = Math.max(Math.abs(bp[0] - c[0]), Math.abs(bp[1] - c[1]), Math.abs(bp[2] - c[2]));
+        if (e > worst) { worst = e; wcol = c; }
+        m.set(ck, bi);
+      }
+      return { m, worst, wcol };
+    };
+    const sgreen = smapFor(SHRUBC.concat(SHRUBF)), sbrown = smapFor(SHRUBB.concat(SHRUBF));
+    const sworst = sgreen.worst, sworstCol = sgreen.wcol;
+    // Mapped over sbytes, not sok, so the brown cut-off counts FILES and not survivors: with sok a single
+    // missing .vox would shift every later file one place and quietly recolour a green shrub.
+    SHRUBV = sbytes.map((b, i) => (b ? parseVoxModel(b, false, false, (i >= SHRUB_BROWN0 ? sbrown : sgreen).m) : null)).filter(Boolean);
     if (SHRUBV.length !== SHRN) console.warn('[vb] shrubs: only ' + SHRUBV.length + ' of ' + SHRN + ' .vox loaded');
-    console.log('[vb] shrubs:', SHRUBV.length, 'models,', scmap.size, 'authored shades ->', sids.length, 'ids (' + SHRUBC.length + ' green +', SHRUBF.length + ' flower), worst error', sworst + '/255', sworstCol || '');
+    console.log('[vb] shrubs:', SHRUBV.length, 'models,', sgreen.m.size, 'authored shades ->', SHRUBC.length + ' green /', SHRUBB.length + ' brown (files ' + (SHRUB_BROWN0 + 1) + '-' + SHRN + ') +', SHRUBF.length + ' flower, worst error green', sgreen.worst + '/255', 'brown', sbrown.worst + '/255');
     if (sworst > PAL_TOL) console.warn('[vb] shrubs: a shade is ' + sworst + '/255 from the nearest shrub id (' + sworstCol + ') — past PAL_TOL, so the .vox has moved away from SHRUBC/SHRUBF in palette.js');
   } catch (e) { console.warn('[vb] desert_shrub .vox missing — shrub decor skipped', e); SHRUBV = []; }
   let DROCK = [], DROCKS = [], DROCKM = [], DROCKB = [];                                                  // desert rocks from desert_rocks.glb (tools/voxelize_desert_rocks.py), small + mid tiers

@@ -64,8 +64,19 @@
   // THE FLOWERS NEED THIS MORE THAN THE GREENS DO: (255,203,127) is the cactus bloom's cream and it is ALREADY
   // in the table twice (__vb.palAudit() lists 96/195 as an exact pair), and cactusTab covers a cactus flower
   // exactly as it covers a spine — so an unreserved match here is the one that would have made a bush sting.
+  // ── ...AND A BROWN RAMP FOR THE LAST TWO SHRUBS (user 2026-08-17) ── files 5 and 6 are dead wood rather
+  // than living bush. The .vox files are NOT edited for this: bow.js resolves every authored shade onto the
+  // nearest SHRUB-OWNED id, so a brown painted into the file would simply snap back to the closest green.
+  // The colour has to exist as an id first, and the loader has to be told which files may reach it.
+  // Pine-wood brown taken lighter, as asked. It cannot be copied from the trunk as a literal: the bark
+  // shades come out of the pine .vox and are then pulled toward their own mean by TRUNK_SMOOTH, so the
+  // brown on screen is not a constant that exists anywhere to quote. Three steps, not four: the table had
+  // four ids free, and a ramp that empties it is one that makes the NEXT colour anywhere in the game
+  // silently nearest-match.
+  const SHRUBB = [addCol(141, 110, 74), addCol(158, 126, 88), addCol(174, 142, 103)];   // dark -> light
   for (const i of SHRUBC) palOwn.add(i);
   for (const i of SHRUBF) palOwn.add(i);
+  for (const i of SHRUBB) palOwn.add(i);
   const SAND   = [addCol(203, 183, 145), addCol(191, 171, 133), addCol(213, 193, 155)];                  // lake beaches + lakebed
   const DSAND  = [addCol(214, 188, 132), addCol(205, 178, 122), addCol(222, 197, 143), addCol(196, 169, 115)];   // ── DESERT SAND ── warmer and more saturated than the lake SAND above, and on DEDICATED ids for a reason that is not aesthetic: sandTab slows the player (beach sand pits), and sharing ids would make an entire biome wade. These are deliberately NOT in sandTab.
   const REDROCK = [addCol(193, 111, 72), addCol(171, 94, 60), addCol(147, 79, 52), addCol(209, 167, 127)];   // Colorado sandstone strata (last = cream band)

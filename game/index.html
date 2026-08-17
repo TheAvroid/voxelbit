@@ -1253,8 +1253,19 @@
   // THE FLOWERS NEED THIS MORE THAN THE GREENS DO: (255,203,127) is the cactus bloom's cream and it is ALREADY
   // in the table twice (__vb.palAudit() lists 96/195 as an exact pair), and cactusTab covers a cactus flower
   // exactly as it covers a spine — so an unreserved match here is the one that would have made a bush sting.
+  // ── ...AND A BROWN RAMP FOR THE LAST TWO SHRUBS (user 2026-08-17) ── files 5 and 6 are dead wood rather
+  // than living bush. The .vox files are NOT edited for this: bow.js resolves every authored shade onto the
+  // nearest SHRUB-OWNED id, so a brown painted into the file would simply snap back to the closest green.
+  // The colour has to exist as an id first, and the loader has to be told which files may reach it.
+  // Pine-wood brown taken lighter, as asked. It cannot be copied from the trunk as a literal: the bark
+  // shades come out of the pine .vox and are then pulled toward their own mean by TRUNK_SMOOTH, so the
+  // brown on screen is not a constant that exists anywhere to quote. Three steps, not four: the table had
+  // four ids free, and a ramp that empties it is one that makes the NEXT colour anywhere in the game
+  // silently nearest-match.
+  const SHRUBB = [addCol(141, 110, 74), addCol(158, 126, 88), addCol(174, 142, 103)];   // dark -> light
   for (const i of SHRUBC) palOwn.add(i);
   for (const i of SHRUBF) palOwn.add(i);
+  for (const i of SHRUBB) palOwn.add(i);
   const SAND   = [addCol(203, 183, 145), addCol(191, 171, 133), addCol(213, 193, 155)];                  // lake beaches + lakebed
   const DSAND  = [addCol(214, 188, 132), addCol(205, 178, 122), addCol(222, 197, 143), addCol(196, 169, 115)];   // ── DESERT SAND ── warmer and more saturated than the lake SAND above, and on DEDICATED ids for a reason that is not aesthetic: sandTab slows the player (beach sand pits), and sharing ids would make an entire biome wade. These are deliberately NOT in sandTab.
   const REDROCK = [addCol(193, 111, 72), addCol(171, 94, 60), addCol(147, 79, 52), addCol(209, 167, 127)];   // Colorado sandstone strata (last = cream band)
@@ -1689,10 +1700,10 @@
     ['assets/decoration/lillypad_small.vox', 'decor'],                                      // floats on lakes + rivers
     ['assets/decoration/lillypad_medium.vox', 'decor'],
     ['assets/decoration/lillypad_large.vox', 'decor'],
-    ['assets/decoration/stick_1.vox', 'held'],                                              // ground scatter, and PICKABLE - so 'held' for the same reason rock.vox is: the player carries it, and the shared palette path rounds its authored browns onto whatever decoration colour is within PAL_TOL
-    ['assets/decoration/stick_2.vox', 'held'],
+    ['assets/decoration/stick_1.vox', 'decor'],                                              // ground scatter, and PICKABLE - so 'held' for the same reason rock.vox is: the player carries it, and the shared palette path rounds its authored browns onto whatever decoration colour is within PAL_TOL
+    ['assets/decoration/stick_2.vox', 'decor'],
     ['assets/decoration/log.vox', 'decor'],                                                 // rare fallen log, solid
-    ['assets/decoration/rock.vox', 'held'],                                                 // the small stone. Ground scatter AND the thing the player dual-wields, which is why it is 'held' and not 'decor': it is parsed like a decoration in every other respect but takes the EXACT-COLOUR path. Its five authored greys (147/140/134/127/120) sit inside PAL_TOL of one another, so on the shared path 140 and 127 both collapsed onto 134 and twelve of its twenty voxels came out the same shade - a five-step ramp rendered as three. Measured with __vb.itemCols(2), which reported three colours where the .vox has five. The noTol comment in models.js already states the rule this was missing: the tolerance is right for scenery at 20 m and wrong for the thing in their hand.
+    ['assets/decoration/rock.vox', 'decor'],                                                 // the small stone. Ground scatter AND the thing the player dual-wields, which is why it is 'held' and not 'decor': it is parsed like a decoration in every other respect but takes the EXACT-COLOUR path. Its five authored greys (147/140/134/127/120) sit inside PAL_TOL of one another, so on the shared path 140 and 127 both collapsed onto 134 and twelve of its twenty voxels came out the same shade - a five-step ramp rendered as three. Measured with __vb.itemCols(2), which reported three colours where the .vox has five. The noTol comment in models.js already states the rule this was missing: the tolerance is right for scenery at 20 m and wrong for the thing in their hand.
     ['assets/stone_tools/stone_pick.vox', 'item'],                                          // …and the STONE PICK, the rock-breaking counterpart to the axe (user)
     ['assets/stone_tools/stone_shovel.vox', 'item'],                                        // …and the STONE SHOVEL, which digs ground and nothing else (user)
     ['assets/stone_tools/bow_arrow/arrow.vox', 'item'],                                     // …and the ARROW that lies on the bow (user)
@@ -1781,21 +1792,35 @@
     const SHRN = 6;
     const sbytes = await Promise.all(Array.from({ length: SHRN }, (_, i) =>                // fetched together, parsed in order — the same reason the cacti are, see the DECOR_LOAD note above
       fetchBytes('assets/foilage/desert_shrub/' + (i + 1) + '.vox')));
-    const sok = sbytes.filter(Boolean), sids = SHRUBC.concat(SHRUBF), scmap = new Map();
-    let sworst = 0, sworstCol = null;
-    for (const b of sok) for (const c of voxColsUsed(b)) {
-      const ck = (c[0] << 16) | (c[1] << 8) | c[2];
-      if (scmap.has(ck)) continue;
-      let bd = 1e9, bi = sids[0];
-      for (const q of sids) { const p = palette[q], d = (p[0] - c[0]) * (p[0] - c[0]) + (p[1] - c[1]) * (p[1] - c[1]) + (p[2] - c[2]) * (p[2] - c[2]);
-        if (d < bd) { bd = d; bi = q; } }
-      const bp = palette[bi], e = Math.max(Math.abs(bp[0] - c[0]), Math.abs(bp[1] - c[1]), Math.abs(bp[2] - c[2]));
-      if (e > sworst) { sworst = e; sworstCol = c; }
-      scmap.set(ck, bi);
-    }
-    SHRUBV = sok.map((b) => parseVoxModel(b, false, false, scmap));
+    const sok = sbytes.filter(Boolean);
+    // ── TWO MAPS, NOT ONE (user 2026-08-17: make shrubs 5 and 6 brown) ── the resolve is nearest-colour onto
+    // the shrubs' OWN ids, so which ids a file is ALLOWED to reach is the only thing that decides its colour.
+    // Files 1-4 may reach the greens, files 5-6 the browns, and both may reach the flowers. The .vox files are
+    // untouched: repainting one brown would have resolved it straight back to the nearest green, because green
+    // was the only body colour on offer. Worst-error tracking is per map for the same reason it existed before
+    // - it is the alarm that says a file has drifted away from the ramp it is being held against.
+    const SHRUB_BROWN0 = 4;                            // 0-based: files 5.vox and 6.vox
+    const smapFor = (ids) => {
+      const m = new Map(); let worst = 0, wcol = null;
+      for (const b of sok) for (const c of voxColsUsed(b)) {
+        const ck = (c[0] << 16) | (c[1] << 8) | c[2];
+        if (m.has(ck)) continue;
+        let bd = 1e9, bi = ids[0];
+        for (const q of ids) { const p = palette[q], d = (p[0] - c[0]) * (p[0] - c[0]) + (p[1] - c[1]) * (p[1] - c[1]) + (p[2] - c[2]) * (p[2] - c[2]);
+          if (d < bd) { bd = d; bi = q; } }
+        const bp = palette[bi], e = Math.max(Math.abs(bp[0] - c[0]), Math.abs(bp[1] - c[1]), Math.abs(bp[2] - c[2]));
+        if (e > worst) { worst = e; wcol = c; }
+        m.set(ck, bi);
+      }
+      return { m, worst, wcol };
+    };
+    const sgreen = smapFor(SHRUBC.concat(SHRUBF)), sbrown = smapFor(SHRUBB.concat(SHRUBF));
+    const sworst = sgreen.worst, sworstCol = sgreen.wcol;
+    // Mapped over sbytes, not sok, so the brown cut-off counts FILES and not survivors: with sok a single
+    // missing .vox would shift every later file one place and quietly recolour a green shrub.
+    SHRUBV = sbytes.map((b, i) => (b ? parseVoxModel(b, false, false, (i >= SHRUB_BROWN0 ? sbrown : sgreen).m) : null)).filter(Boolean);
     if (SHRUBV.length !== SHRN) console.warn('[vb] shrubs: only ' + SHRUBV.length + ' of ' + SHRN + ' .vox loaded');
-    console.log('[vb] shrubs:', SHRUBV.length, 'models,', scmap.size, 'authored shades ->', sids.length, 'ids (' + SHRUBC.length + ' green +', SHRUBF.length + ' flower), worst error', sworst + '/255', sworstCol || '');
+    console.log('[vb] shrubs:', SHRUBV.length, 'models,', sgreen.m.size, 'authored shades ->', SHRUBC.length + ' green /', SHRUBB.length + ' brown (files ' + (SHRUB_BROWN0 + 1) + '-' + SHRN + ') +', SHRUBF.length + ' flower, worst error green', sgreen.worst + '/255', 'brown', sbrown.worst + '/255');
     if (sworst > PAL_TOL) console.warn('[vb] shrubs: a shade is ' + sworst + '/255 from the nearest shrub id (' + sworstCol + ') — past PAL_TOL, so the .vox has moved away from SHRUBC/SHRUBF in palette.js');
   } catch (e) { console.warn('[vb] desert_shrub .vox missing — shrub decor skipped', e); SHRUBV = []; }
   let DROCK = [], DROCKS = [], DROCKM = [], DROCKB = [];                                                  // desert rocks from desert_rocks.glb (tools/voxelize_desert_rocks.py), small + mid tiers
@@ -11370,6 +11395,12 @@
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
   let sndVol = 1;   // start at FULL VOLUME on refresh (user 2026-08-06). Was 0 (always-muted, 2026-08-02); a page load still does NOT restore vb_vol, it just starts at 100% instead of 0%.
+  // ── TEMPORARY, FOR DEVELOPMENT (user 2026-08-17: "make the music and snow be turned off by default on
+  // refresh. (temp)") ── the MUSIC bus starts silent; master and sfx are untouched, so the world still makes noise.
+  // Written as an override AFTER the declaration above rather than by editing it, for the same reason the
+  // last one was: the reasoning up there stays true and undoing this is DELETING THESE LINES, not
+  // reconstructing a default from memory. The slider still works normally once moved. REMOVE BEFORE SHIPPING.
+  musVol = 0;
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -13029,6 +13060,12 @@
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}
   let snowOn = false;                                  // ── VOXEL SNOW ── starts CLEAR, then the first storm arrives 60 s after refresh (user 2026-08-06). Weather-driven; the button (and P) still forces one on/off by hand.
   let snowEndT = 0, snowNextT = 60000;   // ── FIRST STORM 60 s AFTER REFRESH (user 2026-08-06) ── snowNextT is the arrival, snowEndT the end of the CURRENT storm; the weather tick turns it on at 60 s and runs it 60 s, then re-arms on the normal 5-minute cadence. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one.
+  // ── TEMPORARY, FOR DEVELOPMENT (user 2026-08-17: "make the music and snow be turned off by default on
+  // refresh. (temp)") ── no storm is ever SCHEDULED, so a refresh is clear weather indefinitely.
+  // Written as an override AFTER the declaration above rather than by editing it, for the same reason the
+  // last one was: the reasoning up there stays true and undoing this is DELETING THESE LINES, not
+  // reconstructing a default from memory. snowOn is already false at load, so this is the only thing that had to move: the button and P still force a storm by hand, and one turned on that way re-arms the normal 5-minute cadence on its way out. REMOVE BEFORE SHIPPING.
+  snowNextT = Infinity;
   // TO RESTORE the weather cycle, put this back to `performance.now() + 120000` (first storm 2 min after refresh, then every 5 min).
   // The snow button / P key still forces a storm on by hand, and that path re-arms snowNextT normally.
   const SNOW_AUTO_OFF = false;   // storms RECUR again (user 2026-08-06): each event 60 s, then every 5 min. true made the first storm the last one — it armed snowNextT to Infinity on the way out.
@@ -13511,7 +13548,20 @@
   });
   let dead = false;
   let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = 0;
-  const FALL_FREE = 3;                                 // metres you may drop for nothing — Minecraft's threshold, and a believable one: a 3 m hop stings nobody   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
+  const FALL_FREE = 3;                                 // metres you may drop for nothing — Minecraft's threshold, and a believable one: a 3 m hop stings nobody
+  // ── AND PAST IT THE COST ACCELERATES (user 2026-08-17: "the higher the player falls, the more fall damage
+  // it causes. if its really high, the player just dies") ── it used to be one point per metre, flat, which
+  // made a 10 m drop and a 20 m drop feel like the same decision twice: both survivable, one merely longer.
+  // The square term is what puts a floor under that judgement. m is metres past the free window, and the
+  // damage is m + m*m/FALL_K, so the first few metres past the ledge stay nearly as cheap as they were and
+  // the last few are what kill you: 4 m still costs 1, 8 m costs 6 where it used to cost 5, and 15 m now
+  // takes a full 20-point bar where the flat rule needed 23. FALL_K is set from that 15 m figure and
+  // nothing else — it is the height a fall stops being a risk and becomes a decision.
+  const FALL_K = 18;
+  // ...and beyond FALL_KILL there is no arithmetic at all. The curve already kills a full bar well below
+  // this, so it changes no outcome today; it is here so the answer stays "you died" if max health, armour
+  // or a heal-on-landing ever moves, rather than quietly becoming survivable because a number elsewhere grew.
+  const FALL_KILL = 25;   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
   let uwT = 0;                                          // ── DROWN CLOCK ── seconds the EYE has been continuously submerged; hits DROWN_T → game over. Reset on surfacing/respawn; frozen (not reset) while paused/editor.
   const DROWN_T = 10;                                  // you can hold your breath for 10 s underwater (user)
   const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it
@@ -16423,8 +16473,9 @@
             // it — the same flag drowning and starving already pass.
             const drop = (P.fallPk === undefined ? P.y : P.fallPk) - P.y;
             if (!dead && !P.fly && !inWater && !P.noFall && drop > 0) {
-              const m = Math.floor(drop / 10) - FALL_FREE;
-              if (m > 0) vitHurt(m, 'you fell ' + Math.round(drop / 10) + ' m', true);
+              const md = Math.floor(drop / 10);            // whole metres, the figure the death line quotes
+              const m = md - FALL_FREE;
+              if (m > 0) vitHurt(md >= FALL_KILL ? 999 : Math.round(m + m * m / FALL_K), 'you fell ' + md + ' m', true);   // 999 rather than the max-health constant: vitHurt floors hp at 0, so any number past the bar is death, and this one cannot go stale if the bar changes. See FALL_K / FALL_KILL in input.js for the curve.
             }
             P.fallPk = undefined; P.noFall = 0;   // the free landing is spent
             P.onGround = true; P.sprintJump = false; P.fallT = 0;
@@ -17837,6 +17888,11 @@
       // spend it CHARGING, because DES_HUNT already steers them at the player and the flee block excludes any
       // hunter. So one table drives two opposite behaviours and neither species needs a special case.
       const DES_DASH = { gecko: 2, desert_mouse: 2, cobra: 2, scorpion: 2 }, DES_DASH_R = 70;
+      // ── THE TWO ADMIT ENDS OF THE BIOME GATE ── desertM at or past BIO_DESERT is open sand, at or under
+      // BIO_FOREST is closed forest, and the span between them is a treeline nothing spawns in. DESB is 450
+      // voxels of blend, so 0.15/0.85 puts each side's nearest spawn about 100 voxels - 10 m - off the
+      // boundary's centre line, and leaves roughly 20 m of empty ground between the two populations.
+      const BIO_DESERT = 0.85, BIO_FOREST = 0.15;
       const DES_HUNT = { cobra: 1, scorpion: 1 };         // ── WHO HUNTS THE PLAYER ── (user 2026-08-15)                   // ── PER-SPECIES ANIMATION RATE ── the scorpion reads slow at the house 24 (user 2026-08-15); everything unlisted stays 24
       const antLead = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) === 0;   // ── THE ANT COLUMN'S HEAD ── slot 0 of the ant band is the only ant that decides anything: it marches on the compass (its own branch in the steering chain below), and every other ant is PLACED on the path it recorded. Keyed on the NAME like desFly, so re-ordering the load list cannot promote some other animal to leader.
       const desFly = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'fly';   // ── THE FLY FLIES (user 2026-08-15) ── keyed on the NAME, not the index, so re-ordering the load list cannot silently turn some other animal into a flyer
@@ -17964,7 +18020,16 @@
             sx = ld.x - Math.sin(ld.th) * 3.2 + (Math.random() - 0.5) * 1.2;   // their leader, and at 16 vox/s they never closed it before being recycled.
             sz = ld.z - Math.cos(ld.th) * 3.2 + (Math.random() - 0.5) * 1.2;   // Waiting a frame for the leader is free — the retry loop comes straight back.
           }
-          if ((desertM(sx, sz) > 0.85) !== desSlot) continue;   // ── BIOME GATE, BOTH WAYS ── the desert band wants open desert and nothing else does. 0.85 (not 0.5) is an ADMIT test for the desert creatures, so none of them stands in the dithered treeline; for every other band it is the original reject, one notch stricter.  // was: NO LIFE IN THE DESERT (user) ── placed on the ONE annulus every land, flying and worm spawn funnels through, after both the home-finder and the fallback branch have chosen a point, so no species can route around it
+          // ── BIOME GATE, BOTH WAYS, AND NOW BOTH ENDS ARE ADMIT TESTS ── placed on the ONE annulus every
+          // land, flying and worm spawn funnels through, after both the home-finder and the fallback branch have
+          // chosen a point, so no species can route around it. The desert band has always admitted at 0.85 rather
+          // than 0.5 so none of its creatures stands in the dithered treeline. The forest was the plain INVERSE
+          // of that test, which admitted it anywhere under 0.85 - through the entire blend band and right up
+          // against the sand (user 2026-08-17: "the pine forest life are spawning too far out in the transition
+          // between the desert and the pine forest"). It gets its own admit end now, so the treeline reads as a
+          // border rather than as a mixing zone.
+          const dmS = desertM(sx, sz);
+          if (desSlot ? dmS < BIO_DESERT : dmS > BIO_FOREST) continue;
           if (sx <= rect.xlo + 4 || sx >= rect.xhi - 4 || sz <= rect.zlo + 4 || sz >= rect.zhi - 4) continue;   // NEVER spawn outside the GENERATED rect — hmap there is garbage (the snow-landing guard; embedded 'cave' creatures after recenters)
           sx7 = sx; sz7 = sz;
           const gS = bfSurf(sx, sz);

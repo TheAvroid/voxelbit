@@ -131,8 +131,9 @@
             // it — the same flag drowning and starving already pass.
             const drop = (P.fallPk === undefined ? P.y : P.fallPk) - P.y;
             if (!dead && !P.fly && !inWater && !P.noFall && drop > 0) {
-              const m = Math.floor(drop / 10) - FALL_FREE;
-              if (m > 0) vitHurt(m, 'you fell ' + Math.round(drop / 10) + ' m', true);
+              const md = Math.floor(drop / 10);            // whole metres, the figure the death line quotes
+              const m = md - FALL_FREE;
+              if (m > 0) vitHurt(md >= FALL_KILL ? 999 : Math.round(m + m * m / FALL_K), 'you fell ' + md + ' m', true);   // 999 rather than the max-health constant: vitHurt floors hp at 0, so any number past the bar is death, and this one cannot go stale if the bar changes. See FALL_K / FALL_KILL in input.js for the curve.
             }
             P.fallPk = undefined; P.noFall = 0;   // the free landing is spent
             P.onGround = true; P.sprintJump = false; P.fallT = 0;
