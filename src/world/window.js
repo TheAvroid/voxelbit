@@ -149,7 +149,14 @@
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
     if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
     if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
-    const dm = desertM(x, z); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.
+    // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
+    // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
+    // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
+    // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
+    // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
+    // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
+    // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
+    const dm = desertM(x, z); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.
     return h;
   };
   const RIVCELL = 768, RIVINF = 6200;                  // WATERSHEDS — one candidate per ~77 m cell, rare roll; each hit is a whole dendritic system (influence radius must cover the longest possible chain)

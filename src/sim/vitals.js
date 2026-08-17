@@ -51,9 +51,17 @@
   // ── FIVE HITS IN SUCCESSION KILL, AND TEN QUIET SECONDS UNDO IT (user 2026-08-16) ── a COUNT, not a health
   // total, because with no UI the player cannot read a bar: what they can feel is "I keep getting hit". The
   // counter is what actually kills — five stings end the run whatever each one took off — and any ten seconds
-  // without damage clears it AND opens regeneration. Deliberately behind the scenes: no display, the only
-  // signals are the hurt flash, the blood voxels and eventually the game-over screen.
+  // without damage opens regeneration and starts the run draining. Deliberately behind the scenes: no display,
+  // the only signals are the hurt flash, the blood voxels and eventually the game-over screen.
   const VIT_HITS_FATAL = 5, VIT_CALM = 10.0;
+  // ── AND IT DRAINS ONE HIT AT A TIME (user 2026-08-17: "let the player heal in steps … it should heal in the
+  // same amount of steps as the player takes damage") ── the run used to be zeroed in a single assignment, so
+  // four hits of red left the screen in ONE frame while the hp half of vitRedLevel was still stepping. 2.4 s is
+  // the rate the other half already moves at: saturation regen heals 0.8333 hp per 0.5 s, so a 4-hp heart — one
+  // shade of the vignette — takes exactly 2.4 s to come back. Both halves of that max() now walk down together
+  // instead of one of them snapping past the other. Nothing decays inside the calm window, which is what keeps
+  // five hits in succession fatal: a hit zeroes calm, so a run of them never gets a step back.
+  const VIT_HIT_DECAY = 2.4;
   const SPRINT_FOOD = 6;
 
   // ── FOOD ── { h: hunger restored, s: saturation modifier }. Saturation gained is h * s * 2, capped at the
@@ -78,11 +86,11 @@
   const vitFoodOf = (it) => (it && vitFoods()[it]) || null;
 
   const VIT = { hp: VIT_HP_MAX, food: VIT_FOOD_MAX, sat: 5, exh: 0, timer: 0, acc: 0,
-    hurtT: 0, hits: 0, calm: VIT_CALM, lx: 0, lz: 0, wasAir: false, onDeath: null, started: false };
+    hurtT: 0, hits: 0, hitT: 0, calm: VIT_CALM, lx: 0, lz: 0, wasAir: false, onDeath: null, started: false };
 
   function vitReset() {
     VIT.hp = VIT_HP_MAX; VIT.food = VIT_FOOD_MAX; VIT.sat = 5; VIT.exh = 0;
-    VIT.timer = 0; VIT.acc = 0; VIT.hurtT = 0; VIT.hits = 0; VIT.calm = VIT_CALM;
+    VIT.timer = 0; VIT.acc = 0; VIT.hurtT = 0; VIT.hits = 0; VIT.hitT = 0; VIT.calm = VIT_CALM;
     VIT.lx = P.x; VIT.lz = P.z; VIT.wasAir = false; VIT.started = true;
   }
 
@@ -110,8 +118,9 @@
   // hearts and the fifth step is death, not a colour. Death has TWO paths — hp reaching zero, and five hits in
   // succession — and a run of quick hits can kill with most of the bar still showing, so the level is the WORSE
   // of the two readings. Otherwise a player two hits from dying by the hit-run could be looking at a clear
-  // screen. Regeneration walks it back down on its own: the calm timer clears the hit run, and hp climbing
-  // raises the heart count, so recovering visibly drains the red without anything here having to fade it.
+  // screen. Regeneration walks it back down on its own: after the calm window the hit run drains a step at a time
+  // and hp climbing raises the heart count, so recovering visibly steps the red off without anything here
+  // having to fade it — and both terms step at the same 2.4 s, so neither one skips shades the other is showing.
   const vitRedLevel = () => {
     const hearts = Math.ceil(VIT.hp / (VIT_HP_MAX / 5));
     return Math.max(0, Math.min(4, Math.max(5 - hearts, VIT.hits | 0)));
@@ -194,7 +203,11 @@
     if (VIT.hp <= 0) return;
     // the calm clock: it only ever grows here, and vitHurt is the one thing that zeroes it
     VIT.calm += dt;
-    if (VIT.calm >= VIT_CALM) VIT.hits = 0;
+    // …and once it is up the run comes off one hit per VIT_HIT_DECAY rather than all at once. A fresh hit puts
+    // calm back to 0 and falls through the first branch, discarding the part-finished step — the same thing
+    // vitStep does to a part-finished regen cycle, and the reason a decay can never soften a run of hits.
+    if (VIT.calm < VIT_CALM) VIT.hitT = 0;
+    else if (VIT.hits > 0 && (VIT.hitT += dt) >= VIT_HIT_DECAY) { VIT.hits--; VIT.hitT = 0; }
 
     // ── EXHAUSTION FROM MOVEMENT ── charged per METRE, as Minecraft does, so a stroll and a sprint over the
     // same ground do not cost the same. Distance comes from the real position delta rather than the input keys,

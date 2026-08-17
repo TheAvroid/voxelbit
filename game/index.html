@@ -892,7 +892,14 @@
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
     if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
     if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
-    const dm = desertM(x, z); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.
+    // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
+    // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
+    // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
+    // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
+    // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
+    // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
+    // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
+    const dm = desertM(x, z); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.
     return h;
   };
   const RIVCELL = 768, RIVINF = 6200;                  // WATERSHEDS — one candidate per ~77 m cell, rare roll; each hit is a whole dendritic system (influence radius must cover the longest possible chain)
@@ -1041,7 +1048,14 @@
       const bn = e1(xnB) * 0.55 + e2(xnB * 2.13 + 11.7) * 0.27 + e3(xnB * 4.41 + 41.2) * 0.18;
       if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
       if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));
-      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── the SAME expression as H() in window.js, calling the SAME scalar desertM/fbm. These three copies of the height function have to agree bit-for-bit or the bulk fill and the placement queries disagree about where the ground is; sharing the function is what makes that true by construction rather than by careful copying.
+      // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
+      // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
+      // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
+      // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
+      // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
+      // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
+      // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
+      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── the SAME expression as H() in window.js, calling the SAME scalar desertM/fbm. These three copies of the height function have to agree bit-for-bit or the bulk fill and the placement queries disagree about where the ground is; sharing the function is what makes that true by construction rather than by careful copying.
       return h;
     };
   }
@@ -1087,7 +1101,14 @@
       const bn = e1(znB2) * 0.55 + e2(znB2 * 2.13 + 5.3) * 0.27 + e3(znB2 * 4.41 + 23.8) * 0.18;
       if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
       if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));
-      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── identical to H() and makeHRow. See the note in makeHRow.
+      // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
+      // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
+      // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
+      // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
+      // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
+      // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
+      // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
+      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── identical to H() and makeHRow. See the note in makeHRow.
       return h;
     };
   }
@@ -1668,10 +1689,10 @@
     ['assets/decoration/lillypad_small.vox', 'decor'],                                      // floats on lakes + rivers
     ['assets/decoration/lillypad_medium.vox', 'decor'],
     ['assets/decoration/lillypad_large.vox', 'decor'],
-    ['assets/decoration/stick_1.vox', 'decor'],                                             // ground scatter, pickable
-    ['assets/decoration/stick_2.vox', 'decor'],
+    ['assets/decoration/stick_1.vox', 'held'],                                              // ground scatter, and PICKABLE - so 'held' for the same reason rock.vox is: the player carries it, and the shared palette path rounds its authored browns onto whatever decoration colour is within PAL_TOL
+    ['assets/decoration/stick_2.vox', 'held'],
     ['assets/decoration/log.vox', 'decor'],                                                 // rare fallen log, solid
-    ['assets/decoration/rock.vox', 'decor'],                                                // the small stone, pickable
+    ['assets/decoration/rock.vox', 'held'],                                                 // the small stone. Ground scatter AND the thing the player dual-wields, which is why it is 'held' and not 'decor': it is parsed like a decoration in every other respect but takes the EXACT-COLOUR path. Its five authored greys (147/140/134/127/120) sit inside PAL_TOL of one another, so on the shared path 140 and 127 both collapsed onto 134 and twelve of its twenty voxels came out the same shade - a five-step ramp rendered as three. Measured with __vb.itemCols(2), which reported three colours where the .vox has five. The noTol comment in models.js already states the rule this was missing: the tolerance is right for scenery at 20 m and wrong for the thing in their hand.
     ['assets/stone_tools/stone_pick.vox', 'item'],                                          // …and the STONE PICK, the rock-breaking counterpart to the axe (user)
     ['assets/stone_tools/stone_shovel.vox', 'item'],                                        // …and the STONE SHOVEL, which digs ground and nothing else (user)
     ['assets/stone_tools/bow_arrow/arrow.vox', 'item'],                                     // …and the ARROW that lies on the bow (user)
@@ -1682,7 +1703,7 @@
   const decorBytes = await Promise.all(DECOR_LOAD.map((d) => fetchBytes(d[0])));
   const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV, SHOVV, ARROWV, BOWSTRIP, MEATV, HOEV, SPEARV] =
     DECOR_LOAD.map((d, i) => d[1] === 'bow' ? parseBowStrip(decorBytes[i], d[0])
-      : d[1] === 'item' ? parseVoxShared(decorBytes[i], d[0])
+      : (d[1] === 'item' || d[1] === 'held') ? parseVoxShared(decorBytes[i], d[0])   // 'held' is 'decor' plus the exact-colour exemption - see rock.vox above
       : parseVoxDecor(decorBytes[i], d[0], d[1] === 'own'));
   const CONEVL = CONEV ? { sx: CONEV.sx, sy: CONEV.sz, sz: CONEV.sy,                        // the same cone tipped 90° onto its side — fallen cones lie on the forest floor
     vox: CONEV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((CONEV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
@@ -11349,12 +11370,6 @@
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
   let sndVol = 1;   // start at FULL VOLUME on refresh (user 2026-08-06). Was 0 (always-muted, 2026-08-02); a page load still does NOT restore vb_vol, it just starts at 100% instead of 0%.
-  // ── TEMPORARY: SILENT ON REFRESH, FOR DEVELOPMENT (user 2026-08-15) ── the three buses above all deliberately
-  // reset to 100% on every page load, which is right for players and wrong for someone reloading the build a
-  // hundred times an afternoon. This overrides master and music to 0 AFTER their declarations so the reasoning
-  // above stays intact and undoing it is deleting these two lines — not reconstructing three defaults. The
-  // sliders still work normally once moved. REMOVE BEFORE SHIPPING.
-  sndVol = 0; musVol = 0;
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -11594,6 +11609,15 @@
   let pendKillT = 0;                                   // pending creature-hit: armed at swing start, FIRES ~250 ms in — when the axe visually LANDS on screen (user: only register the hit when the axe hits), not at the click
   const swishSnd = regSnd(new Audio('sound/bow/swish.mp4'), 0.36);   // swing whoosh — cut 40% (user), then a further 40% (0.6 → 0.36)
   const playSwish = () => { try { swishSnd.currentTime = 0; const pr = swishSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
+  // ── GAME OVER (user 2026-08-17) ── one voice, SFX bus, fired from die() in input.js so every death routes
+  // through it exactly as the game-over screen does. The file shipped as game_over.wav and nothing referenced
+  // it; converted to AAC .mp4 like every other sound here (48 kHz stereo, 320 k), which also dropped the cover
+  // art the .wav was carrying - left in, ffmpeg tries to write it as a video stream and the encode fails.
+  // BASE: game_over is -14.7 LUFS against swish's -20.2, so matching swish's 0.36 by loudness gives
+  // 0.36 * 10^(-5.5/20) = 0.191 - and the user asked for half of it. Carried as the base rather than baked
+  // into the file so the number stays visible and adjustable, the way every other level here is.
+  const gameOverSnd = regSnd(new Audio('sound/game_over.mp4'), 0.0955);
+  const playGameOver = () => { try { gameOverSnd.currentTime = 0; const pr = gameOverSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
   // ── THE BOW'S OWN VOICES (user 2026-08-07) ── all four files have shipped in sound/bow/ since the bow did;
   // only swish was ever wired, and then as the GENERIC swing whoosh for every tool, so the bow itself was
   // silent. One voice per stage of the shot: the string creaking as it is drawn, the shaft leaving, the string
@@ -12021,9 +12045,17 @@
   // ── FIVE HITS IN SUCCESSION KILL, AND TEN QUIET SECONDS UNDO IT (user 2026-08-16) ── a COUNT, not a health
   // total, because with no UI the player cannot read a bar: what they can feel is "I keep getting hit". The
   // counter is what actually kills — five stings end the run whatever each one took off — and any ten seconds
-  // without damage clears it AND opens regeneration. Deliberately behind the scenes: no display, the only
-  // signals are the hurt flash, the blood voxels and eventually the game-over screen.
+  // without damage opens regeneration and starts the run draining. Deliberately behind the scenes: no display,
+  // the only signals are the hurt flash, the blood voxels and eventually the game-over screen.
   const VIT_HITS_FATAL = 5, VIT_CALM = 10.0;
+  // ── AND IT DRAINS ONE HIT AT A TIME (user 2026-08-17: "let the player heal in steps … it should heal in the
+  // same amount of steps as the player takes damage") ── the run used to be zeroed in a single assignment, so
+  // four hits of red left the screen in ONE frame while the hp half of vitRedLevel was still stepping. 2.4 s is
+  // the rate the other half already moves at: saturation regen heals 0.8333 hp per 0.5 s, so a 4-hp heart — one
+  // shade of the vignette — takes exactly 2.4 s to come back. Both halves of that max() now walk down together
+  // instead of one of them snapping past the other. Nothing decays inside the calm window, which is what keeps
+  // five hits in succession fatal: a hit zeroes calm, so a run of them never gets a step back.
+  const VIT_HIT_DECAY = 2.4;
   const SPRINT_FOOD = 6;
 
   // ── FOOD ── { h: hunger restored, s: saturation modifier }. Saturation gained is h * s * 2, capped at the
@@ -12048,11 +12080,11 @@
   const vitFoodOf = (it) => (it && vitFoods()[it]) || null;
 
   const VIT = { hp: VIT_HP_MAX, food: VIT_FOOD_MAX, sat: 5, exh: 0, timer: 0, acc: 0,
-    hurtT: 0, hits: 0, calm: VIT_CALM, lx: 0, lz: 0, wasAir: false, onDeath: null, started: false };
+    hurtT: 0, hits: 0, hitT: 0, calm: VIT_CALM, lx: 0, lz: 0, wasAir: false, onDeath: null, started: false };
 
   function vitReset() {
     VIT.hp = VIT_HP_MAX; VIT.food = VIT_FOOD_MAX; VIT.sat = 5; VIT.exh = 0;
-    VIT.timer = 0; VIT.acc = 0; VIT.hurtT = 0; VIT.hits = 0; VIT.calm = VIT_CALM;
+    VIT.timer = 0; VIT.acc = 0; VIT.hurtT = 0; VIT.hits = 0; VIT.hitT = 0; VIT.calm = VIT_CALM;
     VIT.lx = P.x; VIT.lz = P.z; VIT.wasAir = false; VIT.started = true;
   }
 
@@ -12080,8 +12112,9 @@
   // hearts and the fifth step is death, not a colour. Death has TWO paths — hp reaching zero, and five hits in
   // succession — and a run of quick hits can kill with most of the bar still showing, so the level is the WORSE
   // of the two readings. Otherwise a player two hits from dying by the hit-run could be looking at a clear
-  // screen. Regeneration walks it back down on its own: the calm timer clears the hit run, and hp climbing
-  // raises the heart count, so recovering visibly drains the red without anything here having to fade it.
+  // screen. Regeneration walks it back down on its own: after the calm window the hit run drains a step at a time
+  // and hp climbing raises the heart count, so recovering visibly steps the red off without anything here
+  // having to fade it — and both terms step at the same 2.4 s, so neither one skips shades the other is showing.
   const vitRedLevel = () => {
     const hearts = Math.ceil(VIT.hp / (VIT_HP_MAX / 5));
     return Math.max(0, Math.min(4, Math.max(5 - hearts, VIT.hits | 0)));
@@ -12164,7 +12197,11 @@
     if (VIT.hp <= 0) return;
     // the calm clock: it only ever grows here, and vitHurt is the one thing that zeroes it
     VIT.calm += dt;
-    if (VIT.calm >= VIT_CALM) VIT.hits = 0;
+    // …and once it is up the run comes off one hit per VIT_HIT_DECAY rather than all at once. A fresh hit puts
+    // calm back to 0 and falls through the first branch, discarding the part-finished step — the same thing
+    // vitStep does to a part-finished regen cycle, and the reason a decay can never soften a run of hits.
+    if (VIT.calm < VIT_CALM) VIT.hitT = 0;
+    else if (VIT.hits > 0 && (VIT.hitT += dt) >= VIT_HIT_DECAY) { VIT.hits--; VIT.hitT = 0; }
 
     // ── EXHAUSTION FROM MOVEMENT ── charged per METRE, as Minecraft does, so a stroll and a sprint over the
     // same ground do not cost the same. Distance comes from the real position delta rather than the input keys,
@@ -13481,6 +13518,7 @@
   const die = (why) => {                               // every death routes through here so the game-over screen always says what killed you
     if (dead) return;
     dead = true;
+    playGameOver();                                  // …and it is the only place the death sound fires, for the same reason the screen is: one funnel, so no death can be silent
     const w = $('overWhy'); if (w) w.textContent = why;
     $('over').classList.remove('hidden');
     lockEl.classList.add('hidden');                    // never show the ESC menu under the game-over screen
@@ -14722,7 +14760,14 @@
     geckoDbg() { const o = []; for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
       if (!B || !B.init) continue; const sp = ((j - MAM_END) / DES_PER) | 0;
       if (!DESERTS[sp] || DESERTS[sp].name !== 'gecko') continue;
-      o.push({ j, d: +Math.hypot(P.x - B.x, P.z - B.z).toFixed(1), chase: +(B.chase || 0).toFixed(1) }); } return o; },
+      // ── THE NAV STATE, NOT JUST THE DISTANCE (2026-08-17) ── the cactus stall is only legible per creature:
+      // navstat's row 2 pools the worms in with the desert band, and wormPos covers slots 32-64, so neither can
+      // say whether THIS gecko is braked against something. navClear is the reach the brake actually measured
+      // along B.th (≤ NAV_WBCLR = the step is clamped to exactly zero), navTh/navReach are what the fan chose,
+      // and trap/noMove are the counters that used to read 0 through the whole stall and now do not.
+      o.push({ j, d: +Math.hypot(P.x - B.x, P.z - B.z).toFixed(1), chase: +(B.chase || 0).toFixed(1),
+        navTh: +(B.navTh || 0).toFixed(2), navReach: +(B.navReach || 0).toFixed(2), navClear: +(B.navClear || 0).toFixed(2),
+        trap: +(B.trap || 0).toFixed(2), noMove: +(B.noMove || 0).toFixed(2) }); } return o; },
     meatFor(j) { return dropsMeat(j | 0); },              // does a kill in this slot leave meat? the drop path's own predicate
     meatSpecies() { const o = {}; for (let i = 0; i < DESERTS.length; i++) o[DESERTS[i].name] = dropsMeat(MAM_END + i * DES_PER); return o; },
     vit() { return { hp: +VIT.hp.toFixed(3), food: VIT.food, sat: +VIT.sat.toFixed(3), exh: +VIT.exh.toFixed(3), timer: VIT.timer,
@@ -18226,6 +18271,20 @@
             if (d2w < 26 * 26 && d2w > 0.01) { const il = 1 / Math.sqrt(d2w); gx8 += dxw * il * (26 - Math.sqrt(d2w)) / 26; gz8 += dzw * il * (26 - Math.sqrt(d2w)) / 26; } }   // unit vectors, weighted by closeness — the old raw sum let one very near worm swamp the leash entirely
           if (B.hcx !== undefined && (B.trap || 0) <= 0.35) { const lx = B.x - B.hx, lz = B.z - B.hz, l2 = lx * lx + lz * lz;   // STUCK (trap > 0.35): drop the pull toward home so the fan can steer AROUND the trunk instead of into it — the same exemption the direct leash carried
             if (l2 > WORM_LEASH * WORM_LEASH) { const il = 1.6 / Math.sqrt(l2); gx8 -= lx * il; gz8 -= lz * il; } }
+          // ── AND THE FLEE / HUNT BEARING IS A GOAL, NOT AN OVERRIDE (user 2026-08-17: life "is also getting
+          // stuck on objects. cactus for example") ── it used to be written straight into B.omT further down,
+          // AFTER this fan, with no terrain in it at all: inside DES_DASH_R a gecko was pointed dead away from
+          // the player, and where a cactus trunk stood on that bearing the brake clamped its step to exactly
+          // zero and held it there — a few centimetres of travel over 2.3 s in the user's clip. That is the same
+          // defect the keep-apart push and the home leash had before they were folded in above, so it is folded
+          // in the same way: one more contributor to the ONE goal vector. Same bearing and the same two radii
+          // the overrides carried, but the fan must now satisfy "away from the player" AND "down an open lane"
+          // at once, which is what sends the animal AROUND the trunk instead of into it.
+          if (desSlot && DESERTS[desSp]) {
+            const hunt8 = !!DES_HUNT[DESERTS[desSp].name], run8 = !!DES_DASH[DESERTS[desSp].name] && !hunt8;   // ant, spider and every unlisted species are in neither table, so their goal vector stays empty and their plan is bit-identical
+            const px8 = hunt8 ? P.x - B.x : B.x - P.x, pz8 = hunt8 ? P.z - B.z : B.z - P.z;
+            const pd8 = px8 * px8 + pz8 * pz8, pr8 = hunt8 ? 90 : DES_DASH_R;
+            if ((hunt8 || run8) && pd8 < pr8 * pr8 && pd8 > 0.01) { const il8 = 1 / Math.sqrt(pd8); gx8 += px8 * il8; gz8 += pz8 * il8; } }   // a UNIT vector like the keep-apart terms: navSteer2 reads only the DIRECTION, and no other term writes this vector for the desert band, so the length is free
           const gOn = gx8 * gx8 + gz8 * gz8 > 0.01;
           const gc8 = navGroundAt(B.x, B.z);
           const bioH8 = desertM(B.x, B.z) > 0.85;
@@ -18478,25 +18537,32 @@
         // ── THE HUNTERS ── cobra and scorpion steer AT the player instead of wandering. The mammals' flee
         // maths inverted: they maximise the dot with the away vector, this maximises it with the toward one.
         // ── THE PREY RUNS THE OTHER WAY (user 2026-08-16: "if the mouse or gecko come near the player, have
-        // them run in the opposite direction. keep the 2x speed") ── the mirror image of the hunt block below:
-        // the hunters steer to MAXIMISE the dot with the toward-vector, these steer along the AWAY one. Same
-        // radius as DES_DASH, so the animal starts sprinting and starts fleeing on the same step rather than
-        // bolting in whatever direction it happened to be pointing. The speed itself is untouched — DES_DASH
-        // still doubles it — this only decides WHERE the doubled speed is spent.
+        // them run in the opposite direction. keep the 2x speed") ── the mirror image of the hunt block below.
+        // Same radius as DES_DASH, so the animal starts sprinting and starts fleeing on the same step rather
+        // than bolting in whatever direction it happened to be pointing. The speed itself is untouched —
+        // DES_DASH still doubles it — this only decides WHERE the doubled speed is spent.
+        // ── BOTH BEARINGS NOW GO IN THROUGH THE PLANNER ── the B.omT write that used to sit in each of these
+        // two blocks is gone; it ran every frame AFTER the fan and threw the fan's answer away, which is the
+        // whole of the cactus stall. What is left here is the WANDER target, which is the one thing the fan
+        // cannot derive for itself: pointing it along the run keeps the wander term (0.70) pulling the same way
+        // as the goal term (0.95) instead of dragging the sprint off toward a stale random bearing.
+        // ── AND THE RE-ROLL IS DEFERRED, NOT KILLED ── this was `tb3 + 1e9`: one pass within DES_DASH_R froze
+        // B.navWander for the rest of the creature's life, since nothing outside a slot recycle ever wrote tRe
+        // again, so long after the player had gone the animal was still steering at one fixed compass bearing.
+        // Re-armed 0.5 s ahead every frame the chase is live, it is suppressed for exactly as long as the run
+        // lasts and the ordinary 1.5-4 s re-roll resumes half a second after it ends.
         if (desSlot && DESERTS[desSp] && DES_DASH[DESERTS[desSp].name] && !DES_HUNT[DESERTS[desSp].name]) {
           const fdx = B.x - P.x, fdz = B.z - P.z, fd2 = fdx * fdx + fdz * fdz;
           if (fd2 < DES_DASH_R * DES_DASH_R && fd2 > 0.01) {
-            let dthF = Math.atan2(fdx, fdz) - B.th; dthF = Math.atan2(Math.sin(dthF), Math.cos(dthF));
-            B.omT = Math.max(-2.8, Math.min(2.8, dthF * 2.2));
-            B.tRe = tb3 + 1e9;                         // …and it stops taking random wander targets while it is running
+            B.navWander = Math.atan2(fdx, fdz);
+            B.tRe = tb3 + 0.5;
           }
         }
         if (desSlot && DESERTS[desSp] && DES_HUNT[DESERTS[desSp].name]) {
           const hdx = P.x - B.x, hdz = P.z - B.z, hd2 = hdx * hdx + hdz * hdz;
           if (hd2 < 90 * 90) {
-            let dth8 = Math.atan2(hdx, hdz) - B.th; dth8 = Math.atan2(Math.sin(dth8), Math.cos(dth8));
-            B.omT = Math.max(-2.8, Math.min(2.8, dth8 * 2.2));
-            B.tRe = tb3 + 1e9;
+            B.navWander = Math.atan2(hdx, hdz);        // the charge bearing, same as the flee above: the goal term steers, the wander term stops fighting it
+            B.tRe = tb3 + 0.5;
             // CONTACT. This used to call die() outright — the comment here noted that the moment a health
             // counter existed this is where it would be decremented instead, and that is now what happens.
             // A cobra bites harder than a scorpion, and both have a cooldown so standing in one cannot drain
@@ -18526,7 +18592,7 @@
       }
       const wormArb = NAVARB && (B.kind | 0) === 2 && !mamSlot;
       const gcW = wormArb ? navGroundAt(B.x, B.z) : 0;   // the worm's OWN travel surface, from the field — one number shared by its brake, its step test and its y servo, so all three agree on where the ground is
-      let mv5 = spd5 * dt, nx5, nz5;                 // the frame's step LENGTH as its own variable, so the flyer brake has something to cap
+      let mv5 = spd5 * dt, nx5, nz5, wBrk0 = false;   // the frame's step LENGTH as its own variable, so the flyer brake has something to cap (wBrk0: the worm brake clamped it to exactly zero — see below)
       if (NAVBRK && (B.kind | 0) === 6 && B.jumpV === undefined) {   // ── FISH, ON THE BRAKE ── airborne is exempt: a salmon's leap was validated at launch and must fly its arc at full speed.
         mv5 = navBrake2(B, (th7, L7) => fishReach(B, th7, L7), mv5, dt, NAV_FLOOK, NAV_FBCLR, NAV_FBRK2, 6);
         nx5 = B.x + Hx2 * mv5; nz5 = B.z + Hz2 * mv5; }
@@ -18536,6 +18602,15 @@
       else if (NAVBRK && wormArb) {                   // ── WORM, ON THE BRAKE ── the mover translates along B.th, which lags the planned heading while the eased turn integrator catches up; capping the step by the reach of the lane actually being crawled means the step can no longer END past it
         mv5 = navBrake2(B, (th7, L7) => navReachLand(B.x, B.z, th7, L7, gcW, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot), mv5, dt, NAV_WLOOK, NAV_WBCLR, NAV_WBRK2);
         if (B.navClear < NAV_WLOOK && B.navRe - tb3 > 0.034) B.navRe = tb3 + 0.034;   // a braking worm re-plans at 30 Hz instead of 12 — a slowed creature must not creep at the obstacle for the rest of an 83 ms tick
+        // ── A BRAKE-TO-ZERO IS A BLOCKED FRAME, AND IT USED TO BE INVISIBLE ── at reach ≤ NAV_WBCLR the curve's
+        // sqrt term is 0 and the geometric cap holds it there, so mv5 is EXACTLY 0 and nx5/nz5 come out equal to
+        // B.x/B.z. The step test below is then asked about the creature's own cell, which is legal sand by
+        // construction, so it passed and the accepted-move line cleared trap/stuck/noMove every single frame:
+        // the animal was pinned a voxel off a cactus with every stall counter reading zero, the blocked branch
+        // never ran, and the 12 s mercy recycle could never fire. This flag changes no motion whatsoever — mv5
+        // is already 0 — it only lets the counters see what the brake is doing, so the recycle is a real
+        // backstop again if a heading the fan cannot solve ever gets through.
+        wBrk0 = B.navClear <= NAV_WBCLR;
         nx5 = B.x + Hx2 * mv5; nz5 = B.z + Hz2 * mv5; }
       else if (NAVBRK && B.kind < 2) { mv5 = navBrakeAir(B, mv5, dt);
         if (B.navClear < NAV_LOOK && B.navRe - tb3 > 0.034) B.navRe = tb3 + 0.034;   // a BRAKING flyer re-plans at 30 Hz instead of 12. The rejection used to force that re-plan (B.navRe = 0 below) and closing the rejection would otherwise have taken the re-plan away with it, leaving a slowed creature to creep at the obstacle for the remainder of an 83 ms tick.
@@ -18596,7 +18671,9 @@
         const dmN = desertM(nx5, nz5) > 0.85;
         if (dmN !== !!desSlot && dmN !== (desertM(B.x, B.z) > 0.85)) stepOK = false;
       }
-      if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; B.noMove = 0; }
+      if (stepOK) { B.x = nx5; B.z = nz5;
+        if (wBrk0) { B.trap = (B.trap || 0) + dt; B.noMove = (B.noMove || 0) + dt; }   // ACCEPTED, but the brake made it a zero-length step: count it exactly as the refused branch below does, or a stall against a cactus reports as a clean walk forever
+        else { B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; B.noMove = 0; } }
       // ── THE ANT COLUMN ── a breadcrumb snake. The LEADER walks normally and drops a crumb every ANT_CRUMB
       // voxels; each follower is then placed at a fixed ARC LENGTH back along that recorded path, facing along
       // it. Following the leader's PATH rather than its current heading is the whole fix — the path is what a

@@ -139,6 +139,7 @@
   const die = (why) => {                               // every death routes through here so the game-over screen always says what killed you
     if (dead) return;
     dead = true;
+    playGameOver();                                  // …and it is the only place the death sound fires, for the same reason the screen is: one funnel, so no death can be silent
     const w = $('overWhy'); if (w) w.textContent = why;
     $('over').classList.remove('hidden');
     lockEl.classList.add('hidden');                    // never show the ESC menu under the game-over screen

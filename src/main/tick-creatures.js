@@ -447,6 +447,20 @@
             if (d2w < 26 * 26 && d2w > 0.01) { const il = 1 / Math.sqrt(d2w); gx8 += dxw * il * (26 - Math.sqrt(d2w)) / 26; gz8 += dzw * il * (26 - Math.sqrt(d2w)) / 26; } }   // unit vectors, weighted by closeness — the old raw sum let one very near worm swamp the leash entirely
           if (B.hcx !== undefined && (B.trap || 0) <= 0.35) { const lx = B.x - B.hx, lz = B.z - B.hz, l2 = lx * lx + lz * lz;   // STUCK (trap > 0.35): drop the pull toward home so the fan can steer AROUND the trunk instead of into it — the same exemption the direct leash carried
             if (l2 > WORM_LEASH * WORM_LEASH) { const il = 1.6 / Math.sqrt(l2); gx8 -= lx * il; gz8 -= lz * il; } }
+          // ── AND THE FLEE / HUNT BEARING IS A GOAL, NOT AN OVERRIDE (user 2026-08-17: life "is also getting
+          // stuck on objects. cactus for example") ── it used to be written straight into B.omT further down,
+          // AFTER this fan, with no terrain in it at all: inside DES_DASH_R a gecko was pointed dead away from
+          // the player, and where a cactus trunk stood on that bearing the brake clamped its step to exactly
+          // zero and held it there — a few centimetres of travel over 2.3 s in the user's clip. That is the same
+          // defect the keep-apart push and the home leash had before they were folded in above, so it is folded
+          // in the same way: one more contributor to the ONE goal vector. Same bearing and the same two radii
+          // the overrides carried, but the fan must now satisfy "away from the player" AND "down an open lane"
+          // at once, which is what sends the animal AROUND the trunk instead of into it.
+          if (desSlot && DESERTS[desSp]) {
+            const hunt8 = !!DES_HUNT[DESERTS[desSp].name], run8 = !!DES_DASH[DESERTS[desSp].name] && !hunt8;   // ant, spider and every unlisted species are in neither table, so their goal vector stays empty and their plan is bit-identical
+            const px8 = hunt8 ? P.x - B.x : B.x - P.x, pz8 = hunt8 ? P.z - B.z : B.z - P.z;
+            const pd8 = px8 * px8 + pz8 * pz8, pr8 = hunt8 ? 90 : DES_DASH_R;
+            if ((hunt8 || run8) && pd8 < pr8 * pr8 && pd8 > 0.01) { const il8 = 1 / Math.sqrt(pd8); gx8 += px8 * il8; gz8 += pz8 * il8; } }   // a UNIT vector like the keep-apart terms: navSteer2 reads only the DIRECTION, and no other term writes this vector for the desert band, so the length is free
           const gOn = gx8 * gx8 + gz8 * gz8 > 0.01;
           const gc8 = navGroundAt(B.x, B.z);
           const bioH8 = desertM(B.x, B.z) > 0.85;
@@ -699,25 +713,32 @@
         // ── THE HUNTERS ── cobra and scorpion steer AT the player instead of wandering. The mammals' flee
         // maths inverted: they maximise the dot with the away vector, this maximises it with the toward one.
         // ── THE PREY RUNS THE OTHER WAY (user 2026-08-16: "if the mouse or gecko come near the player, have
-        // them run in the opposite direction. keep the 2x speed") ── the mirror image of the hunt block below:
-        // the hunters steer to MAXIMISE the dot with the toward-vector, these steer along the AWAY one. Same
-        // radius as DES_DASH, so the animal starts sprinting and starts fleeing on the same step rather than
-        // bolting in whatever direction it happened to be pointing. The speed itself is untouched — DES_DASH
-        // still doubles it — this only decides WHERE the doubled speed is spent.
+        // them run in the opposite direction. keep the 2x speed") ── the mirror image of the hunt block below.
+        // Same radius as DES_DASH, so the animal starts sprinting and starts fleeing on the same step rather
+        // than bolting in whatever direction it happened to be pointing. The speed itself is untouched —
+        // DES_DASH still doubles it — this only decides WHERE the doubled speed is spent.
+        // ── BOTH BEARINGS NOW GO IN THROUGH THE PLANNER ── the B.omT write that used to sit in each of these
+        // two blocks is gone; it ran every frame AFTER the fan and threw the fan's answer away, which is the
+        // whole of the cactus stall. What is left here is the WANDER target, which is the one thing the fan
+        // cannot derive for itself: pointing it along the run keeps the wander term (0.70) pulling the same way
+        // as the goal term (0.95) instead of dragging the sprint off toward a stale random bearing.
+        // ── AND THE RE-ROLL IS DEFERRED, NOT KILLED ── this was `tb3 + 1e9`: one pass within DES_DASH_R froze
+        // B.navWander for the rest of the creature's life, since nothing outside a slot recycle ever wrote tRe
+        // again, so long after the player had gone the animal was still steering at one fixed compass bearing.
+        // Re-armed 0.5 s ahead every frame the chase is live, it is suppressed for exactly as long as the run
+        // lasts and the ordinary 1.5-4 s re-roll resumes half a second after it ends.
         if (desSlot && DESERTS[desSp] && DES_DASH[DESERTS[desSp].name] && !DES_HUNT[DESERTS[desSp].name]) {
           const fdx = B.x - P.x, fdz = B.z - P.z, fd2 = fdx * fdx + fdz * fdz;
           if (fd2 < DES_DASH_R * DES_DASH_R && fd2 > 0.01) {
-            let dthF = Math.atan2(fdx, fdz) - B.th; dthF = Math.atan2(Math.sin(dthF), Math.cos(dthF));
-            B.omT = Math.max(-2.8, Math.min(2.8, dthF * 2.2));
-            B.tRe = tb3 + 1e9;                         // …and it stops taking random wander targets while it is running
+            B.navWander = Math.atan2(fdx, fdz);
+            B.tRe = tb3 + 0.5;
           }
         }
         if (desSlot && DESERTS[desSp] && DES_HUNT[DESERTS[desSp].name]) {
           const hdx = P.x - B.x, hdz = P.z - B.z, hd2 = hdx * hdx + hdz * hdz;
           if (hd2 < 90 * 90) {
-            let dth8 = Math.atan2(hdx, hdz) - B.th; dth8 = Math.atan2(Math.sin(dth8), Math.cos(dth8));
-            B.omT = Math.max(-2.8, Math.min(2.8, dth8 * 2.2));
-            B.tRe = tb3 + 1e9;
+            B.navWander = Math.atan2(hdx, hdz);        // the charge bearing, same as the flee above: the goal term steers, the wander term stops fighting it
+            B.tRe = tb3 + 0.5;
             // CONTACT. This used to call die() outright — the comment here noted that the moment a health
             // counter existed this is where it would be decremented instead, and that is now what happens.
             // A cobra bites harder than a scorpion, and both have a cooldown so standing in one cannot drain
@@ -747,7 +768,7 @@
       }
       const wormArb = NAVARB && (B.kind | 0) === 2 && !mamSlot;
       const gcW = wormArb ? navGroundAt(B.x, B.z) : 0;   // the worm's OWN travel surface, from the field — one number shared by its brake, its step test and its y servo, so all three agree on where the ground is
-      let mv5 = spd5 * dt, nx5, nz5;                 // the frame's step LENGTH as its own variable, so the flyer brake has something to cap
+      let mv5 = spd5 * dt, nx5, nz5, wBrk0 = false;   // the frame's step LENGTH as its own variable, so the flyer brake has something to cap (wBrk0: the worm brake clamped it to exactly zero — see below)
       if (NAVBRK && (B.kind | 0) === 6 && B.jumpV === undefined) {   // ── FISH, ON THE BRAKE ── airborne is exempt: a salmon's leap was validated at launch and must fly its arc at full speed.
         mv5 = navBrake2(B, (th7, L7) => fishReach(B, th7, L7), mv5, dt, NAV_FLOOK, NAV_FBCLR, NAV_FBRK2, 6);
         nx5 = B.x + Hx2 * mv5; nz5 = B.z + Hz2 * mv5; }
@@ -757,6 +778,15 @@
       else if (NAVBRK && wormArb) {                   // ── WORM, ON THE BRAKE ── the mover translates along B.th, which lags the planned heading while the eased turn integrator catches up; capping the step by the reach of the lane actually being crawled means the step can no longer END past it
         mv5 = navBrake2(B, (th7, L7) => navReachLand(B.x, B.z, th7, L7, gcW, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot), mv5, dt, NAV_WLOOK, NAV_WBCLR, NAV_WBRK2);
         if (B.navClear < NAV_WLOOK && B.navRe - tb3 > 0.034) B.navRe = tb3 + 0.034;   // a braking worm re-plans at 30 Hz instead of 12 — a slowed creature must not creep at the obstacle for the rest of an 83 ms tick
+        // ── A BRAKE-TO-ZERO IS A BLOCKED FRAME, AND IT USED TO BE INVISIBLE ── at reach ≤ NAV_WBCLR the curve's
+        // sqrt term is 0 and the geometric cap holds it there, so mv5 is EXACTLY 0 and nx5/nz5 come out equal to
+        // B.x/B.z. The step test below is then asked about the creature's own cell, which is legal sand by
+        // construction, so it passed and the accepted-move line cleared trap/stuck/noMove every single frame:
+        // the animal was pinned a voxel off a cactus with every stall counter reading zero, the blocked branch
+        // never ran, and the 12 s mercy recycle could never fire. This flag changes no motion whatsoever — mv5
+        // is already 0 — it only lets the counters see what the brake is doing, so the recycle is a real
+        // backstop again if a heading the fan cannot solve ever gets through.
+        wBrk0 = B.navClear <= NAV_WBCLR;
         nx5 = B.x + Hx2 * mv5; nz5 = B.z + Hz2 * mv5; }
       else if (NAVBRK && B.kind < 2) { mv5 = navBrakeAir(B, mv5, dt);
         if (B.navClear < NAV_LOOK && B.navRe - tb3 > 0.034) B.navRe = tb3 + 0.034;   // a BRAKING flyer re-plans at 30 Hz instead of 12. The rejection used to force that re-plan (B.navRe = 0 below) and closing the rejection would otherwise have taken the re-plan away with it, leaving a slowed creature to creep at the obstacle for the remainder of an 83 ms tick.
@@ -817,7 +847,9 @@
         const dmN = desertM(nx5, nz5) > 0.85;
         if (dmN !== !!desSlot && dmN !== (desertM(B.x, B.z) > 0.85)) stepOK = false;
       }
-      if (stepOK) { B.x = nx5; B.z = nz5; B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; B.noMove = 0; }
+      if (stepOK) { B.x = nx5; B.z = nz5;
+        if (wBrk0) { B.trap = (B.trap || 0) + dt; B.noMove = (B.noMove || 0) + dt; }   // ACCEPTED, but the brake made it a zero-length step: count it exactly as the refused branch below does, or a stall against a cactus reports as a clean walk forever
+        else { B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; B.noMove = 0; } }
       // ── THE ANT COLUMN ── a breadcrumb snake. The LEADER walks normally and drops a crumb every ANT_CRUMB
       // voxels; each follower is then placed at a fixed ARC LENGTH back along that recorded path, facing along
       // it. Following the leader's PATH rather than its current heading is the whole fix — the path is what a

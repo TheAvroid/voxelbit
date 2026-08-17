@@ -38,7 +38,14 @@
       const bn = e1(xnB) * 0.55 + e2(xnB * 2.13 + 11.7) * 0.27 + e3(xnB * 4.41 + 41.2) * 0.18;
       if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
       if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));
-      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── the SAME expression as H() in window.js, calling the SAME scalar desertM/fbm. These three copies of the height function have to agree bit-for-bit or the bulk fill and the placement queries disagree about where the ground is; sharing the function is what makes that true by construction rather than by careful copying.
+      // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
+      // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
+      // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
+      // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
+      // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
+      // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
+      // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
+      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── the SAME expression as H() in window.js, calling the SAME scalar desertM/fbm. These three copies of the height function have to agree bit-for-bit or the bulk fill and the placement queries disagree about where the ground is; sharing the function is what makes that true by construction rather than by careful copying.
       return h;
     };
   }
@@ -84,7 +91,14 @@
       const bn = e1(znB2) * 0.55 + e2(znB2 * 2.13 + 5.3) * 0.27 + e3(znB2 * 4.41 + 23.8) * 0.18;
       if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
       if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));
-      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── identical to H() and makeHRow. See the note in makeHRow.
+      // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
+      // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
+      // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
+      // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
+      // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
+      // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
+      // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
+      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── identical to H() and makeHRow. See the note in makeHRow.
       return h;
     };
   }

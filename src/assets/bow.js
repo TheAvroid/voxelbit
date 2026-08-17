@@ -110,10 +110,10 @@
     ['assets/decoration/lillypad_small.vox', 'decor'],                                      // floats on lakes + rivers
     ['assets/decoration/lillypad_medium.vox', 'decor'],
     ['assets/decoration/lillypad_large.vox', 'decor'],
-    ['assets/decoration/stick_1.vox', 'decor'],                                             // ground scatter, pickable
-    ['assets/decoration/stick_2.vox', 'decor'],
+    ['assets/decoration/stick_1.vox', 'held'],                                              // ground scatter, and PICKABLE - so 'held' for the same reason rock.vox is: the player carries it, and the shared palette path rounds its authored browns onto whatever decoration colour is within PAL_TOL
+    ['assets/decoration/stick_2.vox', 'held'],
     ['assets/decoration/log.vox', 'decor'],                                                 // rare fallen log, solid
-    ['assets/decoration/rock.vox', 'decor'],                                                // the small stone, pickable
+    ['assets/decoration/rock.vox', 'held'],                                                 // the small stone. Ground scatter AND the thing the player dual-wields, which is why it is 'held' and not 'decor': it is parsed like a decoration in every other respect but takes the EXACT-COLOUR path. Its five authored greys (147/140/134/127/120) sit inside PAL_TOL of one another, so on the shared path 140 and 127 both collapsed onto 134 and twelve of its twenty voxels came out the same shade - a five-step ramp rendered as three. Measured with __vb.itemCols(2), which reported three colours where the .vox has five. The noTol comment in models.js already states the rule this was missing: the tolerance is right for scenery at 20 m and wrong for the thing in their hand.
     ['assets/stone_tools/stone_pick.vox', 'item'],                                          // …and the STONE PICK, the rock-breaking counterpart to the axe (user)
     ['assets/stone_tools/stone_shovel.vox', 'item'],                                        // …and the STONE SHOVEL, which digs ground and nothing else (user)
     ['assets/stone_tools/bow_arrow/arrow.vox', 'item'],                                     // …and the ARROW that lies on the bow (user)
@@ -124,7 +124,7 @@
   const decorBytes = await Promise.all(DECOR_LOAD.map((d) => fetchBytes(d[0])));
   const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV, SHOVV, ARROWV, BOWSTRIP, MEATV, HOEV, SPEARV] =
     DECOR_LOAD.map((d, i) => d[1] === 'bow' ? parseBowStrip(decorBytes[i], d[0])
-      : d[1] === 'item' ? parseVoxShared(decorBytes[i], d[0])
+      : (d[1] === 'item' || d[1] === 'held') ? parseVoxShared(decorBytes[i], d[0])   // 'held' is 'decor' plus the exact-colour exemption - see rock.vox above
       : parseVoxDecor(decorBytes[i], d[0], d[1] === 'own'));
   const CONEVL = CONEV ? { sx: CONEV.sx, sy: CONEV.sz, sz: CONEV.sy,                        // the same cone tipped 90° onto its side — fallen cones lie on the forest floor
     vox: CONEV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((CONEV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;

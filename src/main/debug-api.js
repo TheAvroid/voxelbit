@@ -504,7 +504,14 @@
     geckoDbg() { const o = []; for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
       if (!B || !B.init) continue; const sp = ((j - MAM_END) / DES_PER) | 0;
       if (!DESERTS[sp] || DESERTS[sp].name !== 'gecko') continue;
-      o.push({ j, d: +Math.hypot(P.x - B.x, P.z - B.z).toFixed(1), chase: +(B.chase || 0).toFixed(1) }); } return o; },
+      // ── THE NAV STATE, NOT JUST THE DISTANCE (2026-08-17) ── the cactus stall is only legible per creature:
+      // navstat's row 2 pools the worms in with the desert band, and wormPos covers slots 32-64, so neither can
+      // say whether THIS gecko is braked against something. navClear is the reach the brake actually measured
+      // along B.th (≤ NAV_WBCLR = the step is clamped to exactly zero), navTh/navReach are what the fan chose,
+      // and trap/noMove are the counters that used to read 0 through the whole stall and now do not.
+      o.push({ j, d: +Math.hypot(P.x - B.x, P.z - B.z).toFixed(1), chase: +(B.chase || 0).toFixed(1),
+        navTh: +(B.navTh || 0).toFixed(2), navReach: +(B.navReach || 0).toFixed(2), navClear: +(B.navClear || 0).toFixed(2),
+        trap: +(B.trap || 0).toFixed(2), noMove: +(B.noMove || 0).toFixed(2) }); } return o; },
     meatFor(j) { return dropsMeat(j | 0); },              // does a kill in this slot leave meat? the drop path's own predicate
     meatSpecies() { const o = {}; for (let i = 0; i < DESERTS.length; i++) o[DESERTS[i].name] = dropsMeat(MAM_END + i * DES_PER); return o; },
     vit() { return { hp: +VIT.hp.toFixed(3), food: VIT.food, sat: +VIT.sat.toFixed(3), exh: +VIT.exh.toFixed(3), timer: VIT.timer,

@@ -50,12 +50,6 @@
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
   let sndVol = 1;   // start at FULL VOLUME on refresh (user 2026-08-06). Was 0 (always-muted, 2026-08-02); a page load still does NOT restore vb_vol, it just starts at 100% instead of 0%.
-  // ── TEMPORARY: SILENT ON REFRESH, FOR DEVELOPMENT (user 2026-08-15) ── the three buses above all deliberately
-  // reset to 100% on every page load, which is right for players and wrong for someone reloading the build a
-  // hundred times an afternoon. This overrides master and music to 0 AFTER their declarations so the reasoning
-  // above stays intact and undoing it is deleting these two lines — not reconstructing three defaults. The
-  // sliders still work normally once moved. REMOVE BEFORE SHIPPING.
-  sndVol = 0; musVol = 0;
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -295,6 +289,15 @@
   let pendKillT = 0;                                   // pending creature-hit: armed at swing start, FIRES ~250 ms in — when the axe visually LANDS on screen (user: only register the hit when the axe hits), not at the click
   const swishSnd = regSnd(new Audio('sound/bow/swish.mp4'), 0.36);   // swing whoosh — cut 40% (user), then a further 40% (0.6 → 0.36)
   const playSwish = () => { try { swishSnd.currentTime = 0; const pr = swishSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
+  // ── GAME OVER (user 2026-08-17) ── one voice, SFX bus, fired from die() in input.js so every death routes
+  // through it exactly as the game-over screen does. The file shipped as game_over.wav and nothing referenced
+  // it; converted to AAC .mp4 like every other sound here (48 kHz stereo, 320 k), which also dropped the cover
+  // art the .wav was carrying - left in, ffmpeg tries to write it as a video stream and the encode fails.
+  // BASE: game_over is -14.7 LUFS against swish's -20.2, so matching swish's 0.36 by loudness gives
+  // 0.36 * 10^(-5.5/20) = 0.191 - and the user asked for half of it. Carried as the base rather than baked
+  // into the file so the number stays visible and adjustable, the way every other level here is.
+  const gameOverSnd = regSnd(new Audio('sound/game_over.mp4'), 0.0955);
+  const playGameOver = () => { try { gameOverSnd.currentTime = 0; const pr = gameOverSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
   // ── THE BOW'S OWN VOICES (user 2026-08-07) ── all four files have shipped in sound/bow/ since the bow did;
   // only swish was ever wired, and then as the GENERIC swing whoosh for every tool, so the bow itself was
   // silent. One voice per stage of the shot: the string creaking as it is drawn, the shaft leaving, the string
