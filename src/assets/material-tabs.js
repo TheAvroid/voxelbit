@@ -31,7 +31,28 @@
     console.log('[vb] log bark remap', [...logMap].map(([a, b]) => a + '->' + b).join(' '));
   }
   if (LOGV) for (const q of LOGV.vox) { decorTab[q >>> 24] = 1; axeOnlyTab[q >>> 24] = 1; }  // …and the ground LOGS (user), but those want the axe
-  for (const r of ROCK26) for (const q of r.vox) { decorTab[q >>> 24] = 1; pickOnlyTab[q >>> 24] = 1; }   // …and the 26 BOULDERS (user), which want the PICK. All 26 share one 12-shade palette, so this marks every rock in the world.
+  // ── WHAT THE RENDERER CALLS STONE (user 2026-08-16: "can you give the rock a reflection property from
+  // the sun?" … "all of the rocks") ── the one table isRockV in PRE is generated from, and nothing else reads
+  // it. A SEPARATE table on purpose: pickOnlyTab is the closest existing fit and it is wrong at both ends — it
+  // carries COAL and IRON (ore is a vein IN stone, not a stone face, and gold/crystal already have their own
+  // treatment) and it is missing BROCK and PEBBLE, which are the medium boulder and the hand stone — the two
+  // rocks the player is most often looking straight at. Built here rather than in the shader because the two
+  // model sets are 347k voxels between them and these loops already walk every one of them.
+  // ── ONE KNOWN LEAK, MEASURED, AND LEFT IN ── palette ids are shared by TOLERANCE (PAL_TOL 6) and the
+  // bird models load AFTER rocks26, so five of the twelve boulder shades — 145, 146, 148, 150, 151 — are also
+  // worn by the PERCHED SONGBIRDS, which are the only life this game writes into the world grid (see the
+  // stamp in sim/life/stamped.js) and therefore the only creature whose pixels reach isRockV at all. Every
+  // other creature is trace-injected and TRACE zeroes its h.vox, so they are immune by construction.
+  // Dropping the five is NOT the fix: they are 65.6% of a boulder's 347k voxels (149/150/151 alone are 71%
+  // of that), so a boulder would glint in patches. Measured instead: hunt a perched bird that still holds a
+  // colliding id, has clear sky overhead, and frame it down the MIRRORED sun — the one geometry where the
+  // sheen exists — and 3 pixels of the frame change, at 12/255. That is the worst case, not the typical one.
+  // The clean fix is the trick BROCK and the desert rocks already use, same colour on dedicated ids, applied
+  // to the BIRD loader instead: it costs ~5 palette slots out of the handful still free, which is a real
+  // spend for a 3-pixel artefact, so it is a decision to take deliberately rather than a bug to sweep up.
+  const rockShTab = new Uint8Array(256);
+  for (const i of [...ROCK, ...ROCKX, ...BROCK, ...PEBBLE]) rockShTab[i] = 1;   // terrain strata + their partner shades, the medium boulder, and the pickable field stone
+  for (const r of ROCK26) for (const q of r.vox) { decorTab[q >>> 24] = 1; pickOnlyTab[q >>> 24] = 1; rockShTab[q >>> 24] = 1; }   // …and the 26 BOULDERS (user), which want the PICK. All 26 share one 12-shade palette, so this marks every rock in the world.   // …and the same 12 shades are what the sun sheen keys on, forest and desert alike: stampDrock stamps THESE models into the sand, so one line covers both biomes' boulders.
   for (const i of [...ROCK, ...ROCKX, ...BROCK, ...ORECOAL, ...OREIRON]) rockTopTab[i] = 1;   // ── WHAT COUNTS AS ROCK UNDERFOOT ── strata, the partner shades, BOULDERS (dedicated ids, so pickOnlyTab never sees them) and ore. Read by the land-mammal spawn test; a 1-voxel PEBBLE is deliberately not here — it is ground scatter, and excluding it over an 11-voxel footprint would reject most of the forest floor.
   for (const i of [...ROCK, ...ROCKX, ...ORECOAL, ...OREIRON]) { decorTab[i] = 1; pickOnlyTab[i] = 1; }   // …and COAL + IRON (user): ore belongs to the pick like the stone it sits in   // …the STONE STRATA under the soil (user) belong to the PICK, not the shovel: dig down with the shovel, then swap and keep going
   const woodTab = new Uint8Array(256);                 // ── WOOD ── the axe takes chunks out of anything made of wood voxels (user), including a stump the
@@ -70,7 +91,7 @@
     markSolid(LILYPAD_GIGV);                                                                 // GIANT lilypads are solid — the player can stand on them (user: 'give it a hitbox')
     for (const r of ROCK26) markSolid(r);
 
-    for (const r of DROCK) { markSolid(r); for (const p of r.vox) { decorTab[p >>> 24] = 1; pickOnlyTab[p >>> 24] = 1; } }   // desert rocks are STONE: solid, and choppable only with the pick — the same pairing ROCK26 gets below, so an axe bounces off them
+    for (const r of DROCK) { markSolid(r); for (const p of r.vox) { decorTab[p >>> 24] = 1; pickOnlyTab[p >>> 24] = 1; rockShTab[p >>> 24] = 1; } }   // desert rocks are STONE: solid, and choppable only with the pick — the same pairing ROCK26 gets below, so an axe bounces off them
     for (const c of CACTI) markSolid(c);
     // ── AND CHOPPABLE BY ANYTHING, ARROWS INCLUDED (user 2026-08-15) ── decorTab is the admission ticket; the
     // three *OnlyTab tables are RESTRICTIONS on top of it. Listing the cacti here and in NOTHING else is exactly

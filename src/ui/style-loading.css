@@ -53,7 +53,26 @@
   /* CLICK-TO-ENTER prompt (user) — centred over the LIVE game after loading; transparent + pointer-events:none so the
      click lands on the canvas underneath (which locks the mouse). Hidden the moment the player takes control. */
   #playHint { position: fixed; inset: 0; z-index: 11; display: flex; align-items: center; justify-content: center;
-    color: #e8edf4; font: 11px 'px3', Consolas, monospace; letter-spacing: 3px; text-shadow: 0 2px 6px rgba(0,0,0,0.85);
+    /* ── THE PROMPT WEARS THE WORDMARK'S GOLD (user 2026-08-16: "make the pixel text have a gold gradient like the
+       voxelbit letter outline") ── the eight stops are the SAME ramp the settings rail already carries, which is the
+       title bevel's ring one colour per facet. Reusing it verbatim rather than mixing a second gold: two nearly-equal
+       golds on one screen read as a mistake, where one shared ramp reads as a house colour. Doubled stop positions
+       make these HARD BANDS, not a blend — the discrete-facet look is what keeps it reading as pixel art beside px3
+       instead of as a web gradient. background-clip paints the ramp through the glyphs, so the colour must go
+       transparent; the drop-shadow replaces text-shadow, which clipped text cannot use. */
+    background: linear-gradient(180deg, #ffeec2 0 12.5%, #ffe7aa 12.5% 25%, #f8d899 25% 37.5%, #efc98a 37.5% 50%,
+      #debd82 50% 62.5%, #d7b172 62.5% 75%, #d8a559 75% 87.5%, #d9993f 87.5% 100%);
+    /* SIZED TO THE TEXT, NOT TO THE BOX. #playHint is inset:0 — it fills the viewport — so an unsized ramp would run
+       over the whole screen height and the 11px glyphs would sample one flat slice of it, which is a solid colour with
+       extra steps. 2em is px3's own declared content box, so one tile is exactly one line and all eight facets land
+       inside the letters. */
+    background-size: 100% 2em; background-position: center; background-repeat: no-repeat;
+    -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent;
+    font: 11px 'px3', Consolas, monospace; letter-spacing: 3px; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.85));
     pointer-events: none; animation: playHintPulse 1.8s ease-in-out infinite; }
-  @keyframes playHintPulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.45; } }
+  /* the low point is 0, not 0.45 (user 2026-08-16: "when it blinks, have it turn off completely the text") — at 0.45
+     the prompt never left the screen, it just dimmed, which reads as a glow rather than a blink. It now goes fully out
+     and comes back. It also holds at each end rather than easing straight through: without the plateaus the text is
+     only briefly at full strength and briefly gone, and the eye reads the whole cycle as one soft throb. */
+  @keyframes playHintPulse { 0%,38% { opacity: 1; } 50%,62% { opacity: 0; } 75%,100% { opacity: 1; } }
   #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; transform: translateY(-28px); }   /* icons nudged up under the logo (user) */

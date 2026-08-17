@@ -47,6 +47,7 @@
   `;
 
   const BLIT_SRC = () => /* wgsl */`
+    const HURTV_GRID : vec2<f32> = vec2<f32>(64.0, 36.0);   // the hurt flash's block grid — the resolution the old DOM canvas was painted at, kept so the blocks are the same size they always were
     @group(0) @binding(1) var src : texture_2d<f32>;
     @group(0) @binding(2) var samp : sampler;
     @group(0) @binding(3) var dofT : texture_2d<f32>;
@@ -170,6 +171,66 @@
             if (((GLYPH5[gB] >> u32(cellB.y * 5 + cxB)) & 1u) == 1u) {
               col = mix(col, vec3<f32>(0.92, 0.95, 1.0), 0.69);   // 0.92 ink * 0.75 = 25% transparent (user)
             }
+          }
+        }
+      }
+      // ── THE HURT FLASH ── the red vignette that fires on every hit. Drawn HERE, last thing before the
+      // canvas, for one reason: it is the only place a screen effect is both SEEN and RECORDED. It used to be a
+      // DOM <canvas id="hurtFx"> stacked over the game and faded by a CSS keyframe, and veStartRec captures the
+      // WebGPU canvas with canvas.captureStream(60) — a DOM element on top of that canvas is not part of the
+      // captured surface, so every recording came back with no flash in it at all (user 2026-08-16). Compositing
+      // the two canvases into a third was not open either: drawImage of this canvas reads back all zero.
+      //
+      // It is a PORT, not a redesign — every number below is the one the old canvas painted with, so the look is
+      // unchanged. BLIT, not COMPOSITE: this is downstream of TAA, and a screen-FIXED pattern run through a
+      // reprojecting resolve would be dragged across the frame by camera motion and smear.
+      // A STATE, NOT AN EVENT (user 2026-08-16). This used to paint only while a hit flash was decaying; it now
+      // stands for as long as the hearts are down, and the flash is a spike on top. A hit at full health still
+      // paints at shade 1 so the blow always registers, then clears with the flash.
+      let hLev = max(u.hurtV.z, select(0.0, 1.0, u.hurtV.x > 0.0));
+      if (hLev > 0.0) {
+        // THE GRID IS WHAT MAKES IT VOXELISED. The old canvas was 64x36 pixels stretched over the window by CSS
+        // with image-rendering:pixelated; this is the same 64x36 cells over the same window, so a block is a block
+        // at any resolution rather than a shape that gets finer as the canvas grows.
+        let hCell = floor(uv * HURTV_GRID);
+        let hN = (hCell / (HURTV_GRID - vec2<f32>(1.0))) * 2.0 - 1.0;
+        let hD = sqrt(hN.x * hN.x * 0.85 + hN.y * hN.y);
+        // STARTS AT 0.78, NOT 0.42 — the first cut of the old canvas painted from 42% of the way out, which on a
+        // wide window is most of the screen. A hurt cue frames the view and never obscures it, so only the outer
+        // fifth paints and it stays under half opacity.
+        // 0.60, not 0.78 (user 2026-08-16: "turn the SCREEN 5 shades of red") — the earlier number framed the
+        // view from the outer fifth, which is a cue rather than the screen going red. This reaches well inward
+        // while the dither below still thins toward the middle, so the centre never fills and the hit is
+        // unmistakable without blinding the player mid-fight.
+        // The red CREEPS INWARD as the hearts go: one heart down frames the very edge, one heart left reaches
+        // most of the way in. Coverage carries the severity that the four shades alone could not.
+        // The band creeps inward one step per heart. These numbers were briefly widened on a bad reading —
+        // a vitSet-driven test let REGENERATION climb hp back between the set and the screenshot, so every
+        // level came out one lower than intended and the first one looked dead. Drive the level through
+        // vitHurt (which zeroes the calm timer and so blocks regen) or the measurement lies to you.
+        let hA = (hD - (0.86 - hLev * 0.10)) / 0.62;
+        if (hA > 0.0) {
+          // The dither: distance from centre is a PROBABILITY, so the red gathers at the edge and breaks into
+          // scattered blocks reaching inward. Seeded per HIT (u.hurtV.y), never per frame — a per-frame hash
+          // would re-roll every block 60 times a second and sizzle instead of fade, where the old canvas was
+          // painted once at the hit and only its opacity moved.
+          let hS = i32(u.hurtV.y);
+          // ── MORE DAMAGE, MORE RED PIXELS (user 2026-08-16) ── distance from centre is still the probability a
+          // block paints, but the whole curve is now scaled by the heart level: one heart down scatters a thin
+          // few at the very rim, one heart left fills most of the frame. Same blocks, same red, same per-hit
+          // seed — only the COUNT moves, which is the one thing the player is meant to read off it.
+          if (ih3(i32(hCell.x), i32(hCell.y), hS) <= min(1.0, hA * hA * 1.1 * (0.34 + hLev * 0.42))) {
+            let hV = ih3(i32(hCell.x), i32(hCell.y), hS + 7717);
+            // ── EXACTLY FIVE SHADES (user 2026-08-16) ── this used to be 150 + floor(hV*60), which is sixty reds
+            // and reads as one noisy red. floor(...*5.0) can only produce 0,1,2,3,4, so hT can only be
+            // 0, .25, .5, .75, 1 and the mix can only land on five colours — the count is a property of the
+            // arithmetic, not something that has to be eyeballed. Distance carries most of the weight so the
+            // shades stack outward as bands (deepest at the rim, lightest reaching in), with enough of the
+            // per-block hash mixed in that the bands break up instead of reading as clean concentric rings.
+            // NO SHADE (user 2026-08-16) — one red, the same one the effect has always used. Damage is carried
+            // entirely by HOW MANY pixels are red, never by what colour they are.
+            let hRed = vec3<f32>((150.0 + floor(hV * 60.0)) / 255.0, 10.0 / 255.0, 14.0 / 255.0);   // rgb(150..209, 10, 14), the old canvas's own reds
+            col = mix(col, hRed, min(0.55, 0.16 + hA * 0.34 + 0.22 * u.hurtV.x));   // per-block opacity stays PUT as damage rises — if it climbed too, the effect would read as one red sheet thickening rather than as more pixels   // the standing tint is deliberately under a third opacity — it has to be readable for minutes at a time, where the flash only has to survive a fraction of a second   // col is already display-encoded here (COMPOSITE did the 1/2.2), which is the space the DOM canvas composited in — so this is the identical blend
           }
         }
       }

@@ -65,6 +65,47 @@
     // The TEMPORAL window is deliberately left alone at 0.30-0.85: narrowing it is what made the water read as
     // "it changes its pattern, removes itself, then changes again" (user 2026-08-05). Population is the safe lever.
     const SAND_PICK : f32 = 0.80;
+    // ══ SUN REFLECTION ON STONE ══ (user 2026-08-16: "can you give the rock a reflection property from the
+    // sun?" … "all of the rocks") A ROCK IS NOT WATER, AND THIS IS DELIBERATELY NOT THE GLINT ABOVE.
+    // Everything the water, the ice and the sand wear is one effect: a world-space XZ cell grid, one lit cell
+    // per 10 cm voxel, twinkling on a sine phase. That is a model of a surface made of INDEPENDENT MOVING
+    // PIECES — wavelets, frost facets, grains — and a boulder is the opposite of that: one solid mass whose
+    // faces are metres across. Three concrete reasons it was not reused:
+    //   * the cell grid is indexed on (x, z), so on a VERTICAL rock face every cell in a column collapses to
+    //     one value and the twinkle degenerates into stripes. Water and sand are top faces only; stone is not.
+    //   * the twinkle is a TIME function. A boulder that sparkles while you and it both stand still reads as
+    //     an enchanted object, not as a rock, and "white dots on a dark surface" is the exact reading the user
+    //     has now objected to twice on sand (see SAND_MOON).
+    //   * a specular on stone is view-dependent, not time-dependent. It has to arrive because YOU moved.
+    // So this is an ordinary specular lobe: the sun's mirror image off the face, smeared by roughness.
+    // WHY IT IS ADDED AND NOT MIXED, WHICH IS THE WHOLE COLOUR ARGUMENT. The sand work established that ACES
+    // compresses the largest channel hardest, so a near-uniform brightness MULTIPLY leaves the curve less
+    // saturated than it entered — a wash toward white. On sand the answer was to multiply by a tint whose blue
+    // channel sits below 1. On stone that answer is not available: rock is NEUTRAL (PEBBLE is literally
+    // r = g = b; ROCK is 124/122/116), so there is no chroma in the surface to exaggerate and col * gain * tint
+    // just paints the tint's own hue on at the rock's own luminance. But a specular does not multiply albedo in
+    // the first place — for a dielectric the reflectance at the surface is achromatic, so the highlight carries
+    // the ILLUMINANT'S colour, not the material's. sunTint() already IS that colour, and it is (1.0, 0.42, 0.18)
+    // amber at a low sun and cool blue-silver under the moon. Adding it to a neutral grey therefore RAISES
+    // saturation by construction, which is the one thing gain can never do, and it is free: no new constant
+    // decides the hue, the sun does, so the effect tracks sunrise, noon and moonlight without a second table.
+    const ROCK_SHEEN : bool = true;                                  // the sun sheen on stone; the live switch is LG2 bit 0 (__vb.lgt2(0) / __vb.lgt2(1))
+    const ROCK_GLOSS : f32 = 18.0;                                   // Phong exponent. NOT the water's 26: that is a glitter point, this is a glare that has to survive being looked at from a few degrees off. Below about 10 it stops being a reflection OF anything and just brightens every sunward face at once
+    const ROCK_SPEC : f32 = 0.22;                                    // strength at normal incidence, with the lobe normalisation folded in — at the peak of the lobe it roughly doubles a sunlit rock, which is what a glare off stone does
+    const ROCK_GRAZE : f32 = 2.5;                                    // Fresnel: how much stronger the sheen is edge-on than face-on. Real stone goes far above 2.5x, but the geometry here is voxels and every silhouette is a hard 90-degree edge, so the honest number blew the rim out
+    // The two tints are a bias ON TOP of sunTint(), not a replacement for it. At noon sunTint is only mildly
+    // warm (3.60/3.24/2.74, R:B 1.31) while lit grey rock is warmer than that already (R:B about 1.49), so a
+    // raw additive sun would have pulled the highlight very slightly toward neutral — the sand failure mode
+    // again, at a fraction of the size. A modest golden bias puts the added light at R:B 2.16 instead, so the
+    // lit pixels come out warmer than the rock they sit on at EVERY sun elevation, not only at sunset.
+    const ROCK_TINT : vec3<f32> = vec3<f32>(1.18, 1.00, 0.72);
+    // …and the moon needs the opposite bias, because moonlight is the one light in this game that is cool.
+    // sunTint() already returns a blue for it; carrying the day's golden bias across would have cancelled that
+    // almost exactly (0.40/0.50/0.78 x 1.18/1.00/0.72 is a flat grey), which is how a night highlight turns
+    // into white static. There is no jump at the dusk/dawn swap despite the select: BOTH branches of sunTint()
+    // are gated by a smoothstep on the light's own elevation and reach zero at the horizon, so at the moment
+    // isMoon() flips, the term this tints is already nothing.
+    const ROCK_MOONT : vec3<f32> = vec3<f32>(0.85, 0.95, 1.18);
     // -- THE FLOATING HEARTS -- (user 2026-08-15: "use this for the hearts. have this voxel float in front of the
     // players screen") every number the health readout is drawn with. They live up here, as constants, rather
     // than in the uniform, because only two things about the hearts actually change while the game runs -- how
@@ -412,6 +453,33 @@
             let daySparkS = col * SAND_GAIN * SAND_TINT;
             let sparkCS = select(daySparkS, max(daySparkS, SAND_MOON), isMoon());
             col = mix(col, sparkCS, sparkS * columnS * gkS * 0.85 * irr.r);
+          }
+        }
+        // ── THE SUN, REFLECTED OFF STONE ── see ROCK_SHEEN above for why this is a specular lobe and not the
+        // water's glitter, and why it ADDS the sun's own colour instead of multiplying the rock's.
+        // WHICH PIXELS: bit 12 of the slot word, set by TRACE from isRockV — the terrain strata (ROCK/ROCKX),
+        // the medium boulder (BROCK), the 26 GLB boulders that scatter through BOTH the pine forest and the
+        // desert, the desert_rocks set, the pickable field stone (PEBBLE), and a boulder chunk that has been
+        // chopped loose and is falling as a rigid body. Six faces, not just the top: unlike a dune, a rock's
+        // sunward WALL is the part that glares, so the top-face restriction the sand glisten wears is wrong.
+        // WHY THE FLAT VOXEL NORMAL IS ENOUGH, and why there is no per-voxel micro-normal or mica sparkle on
+        // top of it: reflect() takes rd, and rd is per-PIXEL, so the lobe already falls off smoothly ACROSS a
+        // flat face with perspective — a real glare spot with a soft edge, not the uniform plateau a
+        // face-constant term would give. A per-voxel hash was written and thrown away for two reasons: it
+        // would have to be indexed in WORLD space here (the composite has no body-local cell, which is exactly
+        // the coordinate the terrain grain in TRACE is careful to use), so it would CRAWL across any rock
+        // chunk the physics moves; and the albedo already carries the terrain grain's +/-12% per voxel, so the
+        // surface is mottled under the highlight whether or not the highlight is mottled too.
+        // The two guards are not decoration. shR kills the lobe on faces the sun is behind, which reflect()
+        // alone does not do — a mirror ray can still point at the sun through the wall it bounced off. irr.r
+        // is the traced sun visibility, so a boulder in tree shade stays matte, and that is most of what sells
+        // this as light landing on the rock rather than paint applied to the rock.
+        if (ROCK_SHEEN && ((slRaw >> 12u) & 1u) != 0u && LG2(0u)) {
+          let shR = dot(n, u.sunDir);
+          if (shR > 0.0 && irr.r > 0.0) {
+            let lobeR = pow(max(dot(reflect(rd, n), u.sunDir), 0.0), ROCK_GLOSS);
+            let fresR = 1.0 + (ROCK_GRAZE - 1.0) * pow(1.0 - clamp(dot(-rd, n), 0.0, 1.0), 5.0);
+            col += sunTint() * select(ROCK_TINT, ROCK_MOONT, isMoon()) * (ROCK_SPEC * lobeR * fresR * shR * irr.r);
           }
         }
         // ── BACK-LIT FOLIAGE ── a needle is thin enough to pass light, and the whole reason a forest reads as

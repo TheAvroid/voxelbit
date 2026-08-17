@@ -13,6 +13,9 @@
   if (WYpick === 384) for (const c of [2048, 1536, 1280, 1024]) if (lim >= c * c * 384) { WXZ = c; break; }
   const WBYTES = WXZ * WXZ * WYpick;
   const PROF = adapter.features.has('timestamp-query');   // per-pass GPU timing (dev __vb.prof(); harmless when unread)
+  // A device gets DEFAULT limits unless it asks for more, whatever the adapter can do. TRACE already
+  // binds exactly 8 storage buffers and 8 is the WebGPU default cap, so a 9th (the paged-storage
+  // descriptor table) fails pipeline creation SILENTLY: black frame, absurd fps, nothing on __vbErr.
   const device = await adapter.requestDevice({
     ...(WBYTES > (1 << 27) ? { requiredLimits: { maxStorageBufferBindingSize: WBYTES, maxBufferSize: Math.max(WBYTES, 268435456) } } : {}),
     ...(PROF ? { requiredFeatures: ['timestamp-query'] } : {}) });

@@ -290,6 +290,12 @@
       UF[UF_HEART + 4] = (HEART_IT && heartShow && !ED.on && !dead) ? HEART_IT : 0;   // 0 = the whole shader block is one compare and draws nothing
       UF[UF_HEART + 5] = hpH; UF[UF_HEART + 6] = HEART_POSE.gap;
       UF[UF_HEART + 7] = Math.round(VIT.hurtT * 13) / 13; }   // the hit kick, STEPPED: VIT.hurtT falls 1 -> 0 over 0.55 s, and 13 steps across it is 24 fps - the rate every animation in this game runs at
+    // -- THE HURT FLASH -> u.hurtV -- the red vignette BLIT paints over the finished image. Its own clock, not
+    // VIT.hurtT: the kick above runs 0.55 s and the flash has always been the CSS keyframe's 0.42 s, and driving
+    // both off one lane would have silently retimed one of them. Written every frame; hurtVig() is 0 for all but
+    // the ~10 frames after a hit, and 0 is the one compare that skips the whole block in the shader.
+    UF[UF_HURTV] = hurtVig(); UF[UF_HURTV + 1] = HURTV.seed;
+    UF[UF_HURTV + 2] = vitRedLevel();                 // z: the standing heart level BLIT tints from — .x is the per-hit spike on top of it, and the two are independent on purpose (one is an event, one is a state)
     UF[64] = ED.on ? Math.max(64, renderDist)            // editor world: nothing stale exists (occupancy is empty beyond the stage) — no rect clamp
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));

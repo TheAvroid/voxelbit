@@ -100,17 +100,12 @@
   /* ── THE VITALS BAR IS GONE (user 2026-08-15: "remove the hunger/hearts ui. keep the mechanics") ──
      Only the hurt flash survives here. The hearts/hunger rules that used to sit above this comment were
      deleted whole rather than hidden, so nothing is left styling elements that no longer exist. */
-  #hurtFx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5;
-    image-rendering: pixelated; opacity: 0; }
-  /* ── AN ANIMATION, NOT A TWO-FRAME CLASS TOGGLE ── this was `opacity: 0` with a transition and an `.on`
-     class added for two rAF. It flashed on the FIRST hit only, because that hit also removed `.hidden`: the
-     display change forced a style recalc, so the transition had a start value to run from. Every later hit
-     added and removed `.on` inside two frames, which the browser coalesces into no visible change at all
-     (user 2026-08-16: "this only happens once, on the first time"). A keyframe animation restarted by
-     remove -> reflow -> add plays in full every single time, which is the same trick the heart row's jolt
-     already used. 0.42s to match the fade it replaces. */
-  @keyframes hurtFlash { 0% { opacity: 1; } 100% { opacity: 0; } }
-  #hurtFx.on { animation: hurtFlash 0.42s linear 1; }
+  /* ── THE HURT FLASH HAS NO CSS ANY MORE ── it was #hurtFx: a fixed 64x36 canvas over the whole window with
+     image-rendering:pixelated and a hurtFlash keyframe restarted by remove -> reflow -> add. All of it is gone,
+     because a DOM layer above the game canvas is not part of what canvas.captureStream(60) records and the flash
+     was therefore missing from every recording (user 2026-08-16). BLIT draws it into the image now. The keyframe
+     went with it, and so did the bug it was there to dodge: a two-frame class toggle coalescing into no visible
+     change, which had made the flash fire on the first hit only. */
   /* the loading screen carries the voxelbit title above the status text. When the world is ready the whole overlay is
      removed, revealing the LIVE game running underneath — one click on it locks the mouse and takes control (user). */
   /* LOADING VIDEO (user) — loading.mp4 plays full-bleed behind the status text; the video's OWN first frame
@@ -166,9 +161,28 @@
   /* CLICK-TO-ENTER prompt (user) — centred over the LIVE game after loading; transparent + pointer-events:none so the
      click lands on the canvas underneath (which locks the mouse). Hidden the moment the player takes control. */
   #playHint { position: fixed; inset: 0; z-index: 11; display: flex; align-items: center; justify-content: center;
-    color: #e8edf4; font: 11px 'px3', Consolas, monospace; letter-spacing: 3px; text-shadow: 0 2px 6px rgba(0,0,0,0.85);
+    /* ── THE PROMPT WEARS THE WORDMARK'S GOLD (user 2026-08-16: "make the pixel text have a gold gradient like the
+       voxelbit letter outline") ── the eight stops are the SAME ramp the settings rail already carries, which is the
+       title bevel's ring one colour per facet. Reusing it verbatim rather than mixing a second gold: two nearly-equal
+       golds on one screen read as a mistake, where one shared ramp reads as a house colour. Doubled stop positions
+       make these HARD BANDS, not a blend — the discrete-facet look is what keeps it reading as pixel art beside px3
+       instead of as a web gradient. background-clip paints the ramp through the glyphs, so the colour must go
+       transparent; the drop-shadow replaces text-shadow, which clipped text cannot use. */
+    background: linear-gradient(180deg, #ffeec2 0 12.5%, #ffe7aa 12.5% 25%, #f8d899 25% 37.5%, #efc98a 37.5% 50%,
+      #debd82 50% 62.5%, #d7b172 62.5% 75%, #d8a559 75% 87.5%, #d9993f 87.5% 100%);
+    /* SIZED TO THE TEXT, NOT TO THE BOX. #playHint is inset:0 — it fills the viewport — so an unsized ramp would run
+       over the whole screen height and the 11px glyphs would sample one flat slice of it, which is a solid colour with
+       extra steps. 2em is px3's own declared content box, so one tile is exactly one line and all eight facets land
+       inside the letters. */
+    background-size: 100% 2em; background-position: center; background-repeat: no-repeat;
+    -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent;
+    font: 11px 'px3', Consolas, monospace; letter-spacing: 3px; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.85));
     pointer-events: none; animation: playHintPulse 1.8s ease-in-out infinite; }
-  @keyframes playHintPulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.45; } }
+  /* the low point is 0, not 0.45 (user 2026-08-16: "when it blinks, have it turn off completely the text") — at 0.45
+     the prompt never left the screen, it just dimmed, which reads as a glow rather than a blink. It now goes fully out
+     and comes back. It also holds at each end rather than easing straight through: without the plateaus the text is
+     only briefly at full strength and briefly gone, and the eye reads the whole cycle as one soft throb. */
+  @keyframes playHintPulse { 0%,38% { opacity: 1; } 50%,62% { opacity: 0; } 75%,100% { opacity: 1; } }
   #btnRow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; transform: translateY(-28px); }   /* icons nudged up under the logo (user) */
   /* ══ HIDDEN ESC BUTTONS (user 2026-07-22): the ASSET-EDITOR (#edBtn) + ITEM-POSITION (#pkBtn) buttons are disabled from the esc menu. All their HTML + JS is left intact — this ONE rule just hides them. TO BRING THEM BACK: delete (or comment out) this single rule. ══ */
   #edBtn { display: none !important; }   /* the ASSET-EDITOR button stays hidden; the ITEM-POSITION one (#pkBtn) is back in the esc menu (user) — it is how a held pose gets tuned */
@@ -450,7 +464,7 @@
 <div id="scrollHint" class="hidden"><svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8 21h8v-2H8zm0-4h8v-2H8z"/><path d="M8 17h2v-4H8zm-5-4h5v-2H3zm0-2h2V9H3zm2-2h2V7H5zm2-2h2V5H7zm2-2h2V3H9zm2-2h2V1h-2zm2 2h2V3h-2zm2 2h2V5h-2zm2 2h2V7h-2zm2 4h2V9h-2zm-3 0h3v-2h-3zm-2 4h2v-4h-2z"/></svg><span>scroll up</span></div>
 <div id="achv"><div class="a1">discovery</div><div class="a2" id="achName">sharp edge</div></div>   <!-- .a2 is written per discovery; the markup keeps the first one as its resting text -->
 <div id="hud"></div>
-<canvas id="hurtFx" class="hidden"></canvas>   <!-- voxelised red hit flash: a LOW-RES canvas scaled up with image-rendering:pixelated, so its blocks are real pixels rather than a CSS approximation of them -->
+<!-- the voxelised red hit flash used to be a <canvas id="hurtFx"> here. It is drawn by BLIT now, INSIDE the image, because a DOM element over the game canvas is not part of what canvas.captureStream records and so never appeared in a recording (user 2026-08-16) -->
 <div id="cmdBar" class="hidden"><span id="cmdCaret">&gt;</span><span id="cmdTxt"></span><span id="cmdCur"></span><div id="cmdMsg"></div></div>
 <div id="stackN" class="hidden"></div>
 <div id="lgtPanel" class="hidden"><div class="lgtHead"><span>water</span><button id="lgtAll" title="water back to stock">reset</button></div></div>
@@ -650,6 +664,9 @@
   if (WYpick === 384) for (const c of [2048, 1536, 1280, 1024]) if (lim >= c * c * 384) { WXZ = c; break; }
   const WBYTES = WXZ * WXZ * WYpick;
   const PROF = adapter.features.has('timestamp-query');   // per-pass GPU timing (dev __vb.prof(); harmless when unread)
+  // A device gets DEFAULT limits unless it asks for more, whatever the adapter can do. TRACE already
+  // binds exactly 8 storage buffers and 8 is the WebGPU default cap, so a 9th (the paged-storage
+  // descriptor table) fails pipeline creation SILENTLY: black frame, absurd fps, nothing on __vbErr.
   const device = await adapter.requestDevice({
     ...(WBYTES > (1 << 27) ? { requiredLimits: { maxStorageBufferBindingSize: WBYTES, maxBufferSize: Math.max(WBYTES, 268435456) } } : {}),
     ...(PROF ? { requiredFeatures: ['timestamp-query'] } : {}) });
@@ -751,7 +768,7 @@
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
   const LGT_ALL = 0xffffff;                            // 24 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader). Bits 18-23 are the WATER group (user 2026-08-05). Stays exact in the f32 uniform: integers are exact to 2^24.
   const LGT_WATER = 0xfc0000;                          // bits 18-23 — the WATER group, and the only terms the panel exposes (user 2026-08-05: "I only want buttons that change the water")
-  const LGT2_ALL = 0x0;                                // ── SECOND TERM MASK (u.lgt.z) ── EMPTY. lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term would go. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). LG2() stays wired for whatever is next.
+  const LGT2_ALL = 0x1;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; the 31 bits above it are still free.
   // ══ WATER BAKE (user 2026-08-05) ══ THE defaults for every water control. Tune with the top-right panel,
   // hit `copy` on its bake row, and paste the line it gives you OVER this one — that is the whole workflow.
   // A player who has never touched the panel gets exactly what is written here; `reset` in the panel puts a
@@ -760,14 +777,14 @@
   const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, pixelGlisten: 1, waves: 0, reflection: 0.45 };
   const WBIT = { reflect: 18, refract: 19, foam: 20, ice: 21, pixelGlisten: 22, waves: 23 };   // …their bits in u.lgt.x
   const wBakeMask = () => { let m = LGT_ALL & ~LGT_WATER; for (const k in WBIT) if (WATER_BAKE[k]) m |= (1 << WBIT[k]); return m; };
-  const wBakeMask2 = () => 0;                          // nothing lives in the second mask (see LGT2_ALL)
+  const wBakeMask2 = () => LGT2_ALL;                   // the second mask has no per-term panel rows, so its bake IS its default — `reset` puts the rock sheen back on (see LGT2_ALL)
   const wBakeRefl = () => { const v = +WATER_BAKE.reflection; return (isFinite(v) && v >= 0 && v <= 2) ? v : 1; };
   // Everything OUTSIDE the water group is FORCED ON at load. The panel used to carry all 24 terms, so a
   // saved mask can have sun shadow / AO / fog / TAA switched off from an earlier bisection — and with those
   // rows gone there would be no way left to switch them back. Only the water bits are restored from storage.
   let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt');
     return v === null ? wBakeMask() : (((parseInt(v, 10) & LGT_WATER) | (LGT_ALL & ~LGT_WATER)) & LGT_ALL); } catch (e) { return wBakeMask(); } })();
-  let lgtMask2 = 0;                                    // …so this is 0 and stays 0. Kept as a variable because the frame still writes it to u.lgt.z (UF[UF_LGT + 2]) and __vb.lgt2() still reads it.
+  let lgtMask2 = LGT2_ALL;                             // …and this starts at the bake. Deliberately NOT restored from localStorage the way lgtMask is: every bit in here is a whole-scene look term, and a player who bisected one off in an old session must not be stuck with it (the same argument that forces every non-water bit of lgtMask on at load).
   // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
   // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
   let wReflK = (() => { try { const v = parseFloat(localStorage.getItem('vb_wrefl')); return (isFinite(v) && v >= 0 && v <= 2) ? v : wBakeRefl(); } catch (e) { return wBakeRefl(); } })();
@@ -1963,7 +1980,28 @@
     console.log('[vb] log bark remap', [...logMap].map(([a, b]) => a + '->' + b).join(' '));
   }
   if (LOGV) for (const q of LOGV.vox) { decorTab[q >>> 24] = 1; axeOnlyTab[q >>> 24] = 1; }  // …and the ground LOGS (user), but those want the axe
-  for (const r of ROCK26) for (const q of r.vox) { decorTab[q >>> 24] = 1; pickOnlyTab[q >>> 24] = 1; }   // …and the 26 BOULDERS (user), which want the PICK. All 26 share one 12-shade palette, so this marks every rock in the world.
+  // ── WHAT THE RENDERER CALLS STONE (user 2026-08-16: "can you give the rock a reflection property from
+  // the sun?" … "all of the rocks") ── the one table isRockV in PRE is generated from, and nothing else reads
+  // it. A SEPARATE table on purpose: pickOnlyTab is the closest existing fit and it is wrong at both ends — it
+  // carries COAL and IRON (ore is a vein IN stone, not a stone face, and gold/crystal already have their own
+  // treatment) and it is missing BROCK and PEBBLE, which are the medium boulder and the hand stone — the two
+  // rocks the player is most often looking straight at. Built here rather than in the shader because the two
+  // model sets are 347k voxels between them and these loops already walk every one of them.
+  // ── ONE KNOWN LEAK, MEASURED, AND LEFT IN ── palette ids are shared by TOLERANCE (PAL_TOL 6) and the
+  // bird models load AFTER rocks26, so five of the twelve boulder shades — 145, 146, 148, 150, 151 — are also
+  // worn by the PERCHED SONGBIRDS, which are the only life this game writes into the world grid (see the
+  // stamp in sim/life/stamped.js) and therefore the only creature whose pixels reach isRockV at all. Every
+  // other creature is trace-injected and TRACE zeroes its h.vox, so they are immune by construction.
+  // Dropping the five is NOT the fix: they are 65.6% of a boulder's 347k voxels (149/150/151 alone are 71%
+  // of that), so a boulder would glint in patches. Measured instead: hunt a perched bird that still holds a
+  // colliding id, has clear sky overhead, and frame it down the MIRRORED sun — the one geometry where the
+  // sheen exists — and 3 pixels of the frame change, at 12/255. That is the worst case, not the typical one.
+  // The clean fix is the trick BROCK and the desert rocks already use, same colour on dedicated ids, applied
+  // to the BIRD loader instead: it costs ~5 palette slots out of the handful still free, which is a real
+  // spend for a 3-pixel artefact, so it is a decision to take deliberately rather than a bug to sweep up.
+  const rockShTab = new Uint8Array(256);
+  for (const i of [...ROCK, ...ROCKX, ...BROCK, ...PEBBLE]) rockShTab[i] = 1;   // terrain strata + their partner shades, the medium boulder, and the pickable field stone
+  for (const r of ROCK26) for (const q of r.vox) { decorTab[q >>> 24] = 1; pickOnlyTab[q >>> 24] = 1; rockShTab[q >>> 24] = 1; }   // …and the 26 BOULDERS (user), which want the PICK. All 26 share one 12-shade palette, so this marks every rock in the world.   // …and the same 12 shades are what the sun sheen keys on, forest and desert alike: stampDrock stamps THESE models into the sand, so one line covers both biomes' boulders.
   for (const i of [...ROCK, ...ROCKX, ...BROCK, ...ORECOAL, ...OREIRON]) rockTopTab[i] = 1;   // ── WHAT COUNTS AS ROCK UNDERFOOT ── strata, the partner shades, BOULDERS (dedicated ids, so pickOnlyTab never sees them) and ore. Read by the land-mammal spawn test; a 1-voxel PEBBLE is deliberately not here — it is ground scatter, and excluding it over an 11-voxel footprint would reject most of the forest floor.
   for (const i of [...ROCK, ...ROCKX, ...ORECOAL, ...OREIRON]) { decorTab[i] = 1; pickOnlyTab[i] = 1; }   // …and COAL + IRON (user): ore belongs to the pick like the stone it sits in   // …the STONE STRATA under the soil (user) belong to the PICK, not the shovel: dig down with the shovel, then swap and keep going
   const woodTab = new Uint8Array(256);                 // ── WOOD ── the axe takes chunks out of anything made of wood voxels (user), including a stump the
@@ -2002,7 +2040,7 @@
     markSolid(LILYPAD_GIGV);                                                                 // GIANT lilypads are solid — the player can stand on them (user: 'give it a hitbox')
     for (const r of ROCK26) markSolid(r);
 
-    for (const r of DROCK) { markSolid(r); for (const p of r.vox) { decorTab[p >>> 24] = 1; pickOnlyTab[p >>> 24] = 1; } }   // desert rocks are STONE: solid, and choppable only with the pick — the same pairing ROCK26 gets below, so an axe bounces off them
+    for (const r of DROCK) { markSolid(r); for (const p of r.vox) { decorTab[p >>> 24] = 1; pickOnlyTab[p >>> 24] = 1; rockShTab[p >>> 24] = 1; } }   // desert rocks are STONE: solid, and choppable only with the pick — the same pairing ROCK26 gets below, so an axe bounces off them
     for (const c of CACTI) markSolid(c);
     // ── AND CHOPPABLE BY ANYTHING, ARROWS INCLUDED (user 2026-08-15) ── decorTab is the admission ticket; the
     // three *OnlyTab tables are RESTRICTIONS on top of it. Listing the cacti here and in NOTHING else is exactly
@@ -4300,6 +4338,10 @@
   // END, after dof, for the reason every field back here is: the JS writes this buffer at fixed float
   // indices, so a field inserted anywhere above silently feeds every one below it its neighbour's numbers.
   const UF_HEART = UF_DOF + 4;
+  // ── THE HURT FLASH ── x = strength 0..1, y = the per-hit dither seed. Appended after heartC, which is the
+  // rule every field back here follows: the JS writes this buffer at fixed float indices, so a lane inserted
+  // anywhere above silently feeds every one below it its neighbour's numbers. See hurtV in the struct in PRE.
+  const UF_HURTV = UF_HEART + 8;
   // HOW MANY HEARTS THE BAR IS. Five, which is what the removed DOM readout drew and therefore what the
   // player already knows: VIT_HP_MAX is 20, so one heart is 4 HP. Read by BOTH sides — tick-camera turns
   // hp into hearts with it, and COMPOSITE's loop bound is interpolated from it — so the two cannot disagree.
@@ -4319,7 +4361,7 @@
   // untouched by the halving either way.
   const HEART_POSE = { x0: -0.200, y: -0.52, z: 1.10, vs: 0.055, gap: 0.100, rig: 0.5 };   // x0 = the FIRST heart, so x0 = -gap*(HEART_N-1)/2 keeps the row centred
   let heartShow = 1;                                  // __vb.hearts(false) hides the row - the A/B lever for what the block costs, and the only way to take a clean screenshot of the frame without it
-  const UF = new Float32Array(UF_HEART + 8);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
+  const UF = new Float32Array(UF_HURTV + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
@@ -4420,6 +4462,13 @@
       // ── FLOATING HEARTS ── appended after dof for the same reason dof was appended after the drop halves.
       heart  : vec4<f32>,                                            // xyz = the FIRST heart's anchor in CAMERA space (voxel units, the same space the held item's pickA lives in), w = its voxel scale at full health
       heartC : vec4<f32>,                                            // x = the heart model's item id (0 = single.vox never loaded → the whole block compiles to one compare and draws nothing), y = health in HEARTS (hp / 4, so 5.0 is a full bar), z = the gap between two hearts in the same camera units, w = HURT KICK 0..1 (VIT.hurtT — the row swells and brightens for the half second after a hit)
+      // ── THE HURT FLASH ── the red vignette that fires on every hit. It used to be a DOM <canvas id="hurtFx">
+      // laid over the game and faded by a CSS keyframe. That works on screen and is INVISIBLE IN A RECORDING:
+      // veStartRec captures the WebGPU canvas with canvas.captureStream(60), and a DOM element sitting on top of
+      // that canvas is not part of the captured surface (user 2026-08-16: "the red pixels on the ui dont show up").
+      // Compositing the two canvases into a third is not open either — drawImage of this canvas reads back all
+      // zero. So the flash is now DRAWN INTO THE IMAGE, in BLIT, and the recording gets it because it is the image.
+      hurtV  : vec4<f32>,                                            // x = flash strength 0..1 (0 = the whole block is one compare), y = the PER-HIT dither seed (fixed for the length of one flash, so the blocks fade rather than sizzle), z/w spare
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}
@@ -4595,6 +4644,19 @@
     // so nothing downstream can tell the difference except the code that asks.
     const SANDF : u32 = 9u;
     fn isSandV(v : u32) -> bool { return ${[...SAND, ...DSAND].map((i) => 'v == ' + i + 'u').join(' || ')}; }   // beach/lakebed SAND + desert DSAND -- ids listed one by one rather than as a range, so a future palette reorder cannot silently widen it
+    // ── WHICH IDS ARE A CACTUS ── built the way isSandV is, from the ids the loaded models actually
+    // reference rather than a hand-written list, so a re-bake or a palette shift cannot leave it stale. The
+    // trailing 'or false' keeps the expression valid WGSL if the cacti failed to load and the set is empty.
+    fn isCactusV(v : u32) -> bool { return ${[...new Set(CACTI.flatMap((c) => c.vox.map((q) => q >>> 24)))].map((i) => 'v == ' + i + 'u').join(' || ') || 'false'}; }
+    // ── WHICH IDS ARE STONE ── the sun sheen in COMPOSITE asks this once per pixel, through bit 12 of the slot
+    // word (see slotOut in TRACE). Generated from rockShTab, which material-tabs.js fills from the palette
+    // constants AND from the ids the loaded boulder models actually reference — the same discipline isSandV
+    // and isCactusV follow, so a re-bake or a palette shift cannot leave this list stale. Written out one id
+    // at a time rather than as a range for the reason isSandV gives: a future palette reorder must not be able
+    // to silently widen it onto dirt. The trailing 'or false' keeps the expression valid WGSL if the table is
+    // somehow empty (a failed rocks26 fetch leaves only the terrain strata, which is already 12 ids, but the
+    // guard costs nothing and an empty return would be a compile error, i.e. a black screen).
+    fn isRockV(v : u32) -> bool { return ${[...rockShTab].map((f, i) => (f ? i : -1)).filter((i) => i >= 0).map((i) => 'v == ' + i + 'u').join(' || ') || 'false'}; }
     fn gbFace(a : f32) -> u32 { let r = u32(a * 255.0 + 0.5) & 15u; return select(r, 2u, r == SANDF); }   // ...the plain face, sand folded back into TOP: the denoiser rejects a neighbour whose face differs, and without this a sand/grass boundary would stop sharing irradiance samples
   `;
 
@@ -4971,7 +5033,20 @@
               let te = max(max(tn.x, tn.y), max(tn.z, 0.3));
               let tl = min(min(tf.x, tf.y), tf.z);
               let fwp = ctr - offR + winOf;                          // window-local -> world, for the biome test
-              if (te > 1.0 && te < tl && te < maxNear && desertMask(fwp.x, fwp.z) <= 0.5 && !flakeBlocked(ctr - offR)) {   // ── NO SNOW OVER THE DESERT (user) ── ordered deliberately: after the cheap slab/rotation rejects, before flakeBlocked's scattered loads, so it only costs anything on a ray that already struck a flake   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike. ctr is window-local now — minus the small remainder = the window position (exact at any world coordinate)
+              // ── THE DITHER KEY IS THE FLAKE'S IDENTITY, NOT ITS CURRENT ADDRESS (user 2026-08-16: "the snow
+              // seems to be flickering") ── this test thins the snowfall out across the desert blend band. It used to
+              // key on fract(sin(floor(fwp.x) ... )) — a hash of the flake's WORLD POSITION. fwp is the lattice minus
+              // the integrated fall/wind, so the world slides under a flake every frame: measured 15.7 vox/s of
+              // horizontal drift, which steps floor(fwp.x)/floor(fwp.z) about 16 times a second. Each step was a fresh
+              // uniform draw against desertMask, so every flake in the band flipped visible/culled ~8 times a second
+              // (2*dm*(1-dm)*R at dm 0.5) and the whole snowfield sizzled. The lattice CELL is what identifies a flake
+              // and it does not move with the wind, so hashing that gives each flake ONE key for its whole life: the
+              // value it is compared against still slides, because the flake really is drifting into the sand, but only
+              // across the 450-voxel band — so a flake crosses its threshold once and fades out instead of blinking.
+              // Same dHash and the same salt family the ground blanket dithers on (landSnowAt in tick-snow.js); the two
+              // are independent draws rather than one shared value, since a flake's lattice cell is not its landing
+              // column, and it is the shared dm ramp - not a shared number - that keeps the two boundaries together.
+              if (te > 1.0 && te < tl && te < maxNear && dHash((c.x + offC.x) * 5 + 17, (c.z + offC.z) * 7 + (c.y + offC.y) * 131 + 29) >= desertMask(fwp.x, fwp.z) && !flakeBlocked(ctr - offR)) {   // ── NO SNOW OVER THE DESERT (user) ── ordered deliberately: after the cheap slab/rotation rejects, before flakeBlocked's scattered loads, so it only costs anything on a ray that already struck a flake   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike. ctr is window-local now — minus the small remainder = the window position (exact at any world coordinate)
                 fte = te; fkAw = fkA; fkUw = fkUnder;
                 var nl = vec3<f32>(0.0);
                 if (tn.x >= tn.y && tn.x >= tn.z) { nl.x = -sign(rdL.x); }
@@ -5005,7 +5080,7 @@
       // by construction, and motion stays continuous (no grid snapping). Fireflies/sparks/dropped items keep the
       // composite path (emissive + translucency), as does any creature seen THROUGH a water surface (Beer–Lambert).
       var cSlot = 0u; var cCell = vec3<f32>(0.0); var cVc = vec3<i32>(0); var cAxis = 0u; var cN = vec3<f32>(0.0, 1.0, 0.0);
-      var bHit = false; var bCol = vec3<f32>(0.0); var bN = vec3<f32>(0.0, 1.0, 0.0); var bVc = vec3<i32>(0);   // rigid-body (felled chunk) hit
+      var bHit = false; var bCol = vec3<f32>(0.0); var bN = vec3<f32>(0.0, 1.0, 0.0); var bVc = vec3<i32>(0); var bVox = 0u;   // rigid-body (felled chunk) hit   // …and its PALETTE ID, which bCol has already thrown away: h.vox is set to 0 for a body hit (see below), so the stone test for the sun sheen has nothing else to ask. A chopped-out boulder chunk is stone and must catch the sun exactly like the boulder it came off.
       var bestT = select(1e9, h.t, h.t >= 0.0);                      // nearest hit so far (world / flake) — SHARED by the creature loop and the rigid-body trace below, which is why it lives outside the dynamic-life gate
       if (ITEMN > 0 && u.lifeCfg.y > 0.5) {
         let ndc3 = (px / u.res) * 2.0 - 1.0;
@@ -5079,7 +5154,7 @@
         // line above says is impossible. Free when there is nothing to hit: bodyTrace returns on one compare
         // while physC.x is 0, which is every frame no tree has been felled.
         let bh2 = bodyTrace(ro, rd, bestT);
-        if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bN = bh2.n;
+        if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bVox = bh2.vox; bN = bh2.n;
           bVc = bh2.vc; }                                          // BODY-LOCAL cell (see Hit.vc): the grain rides with the wood instead of the trunk sliding through a world-anchored noise field
       }
       if (bHit) {                                                    // a felled chunk is the primary hit — terrain-identical shading from here on
@@ -5095,6 +5170,7 @@
         else { h.face = select(4u, 5u, cN.z < 0.0); }                // nearest-axis face: the denoiser's edge tests + a composite fallback; true shading normal comes from the axis bits
       }
       var albedo = vec3<f32>(0.0);
+      var isRock = false;                                             // ── IS THIS PIXEL STONE ── rides out to slotOut bit 12 for the composite's sun sheen. Resolved inside the albedo branch below, not at the store, because that is the only place that knows WHICH id this pixel's colour came from: h.vox is authoritative for the static world only, a body hit carries its id in bVox, and a creature's h.vox is deliberately zeroed.
       var faceId = 7u; var t = -1.0;
       var hurtGlow = 0.0;                                            // >0 on a pixel inside the hit flash: it is emissive, so it must not be left to whatever light happens to reach it
       var sunV = 0.0; var skyV = 0.0;   // (bit 15 zeroes skyV at the end of the lighting block — the ambient/sky term, as opposed to the AO ray that modulates it)
@@ -5106,9 +5182,9 @@
         if (h.face == 2u && isSandV(h.vox)) { faceId = SANDF; }   // sand TOP face → the composite's sun glisten (see SANDF in PRE). Top only: a glinting vertical dune face or pit wall would read as wrong.
         let pos = ro + rd * t;
         let vcW = vec3<i32>(floor(pos - h.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));   // WORLD coords — grain must not swim when the window shifts
-        if (bHit) { albedo = bCol * select(1.0, 0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z), LG(9u)); }   // felled chunk: palette colour + genuinely MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
+        if (bHit) { albedo = bCol * select(1.0, 0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z), LG(9u)); isRock = isRockV(bVox); }   // felled chunk: palette colour + genuinely MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
         else if (cSlot != 0u) { albedo = cCell * select(1.0, 0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z), LG(11u)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
-        else { albedo = pal[h.vox].rgb * select(1.0, 0.88 + 0.24 * ivhash(vcW), LG(10u)); }
+        else { albedo = pal[h.vox].rgb * select(1.0, 0.88 + 0.24 * ivhash(vcW), LG(10u)); isRock = isRockV(h.vox); }
         if (u.hurtB.w > 0.0) {                                       // ── HIT FLASH ── the animal just hit, blinking red (user)
           // WHOSE pixel is this? A trace-injected creature carries its dynamic-life slot in cSlot, so the
           // wounded animal is identified exactly, pixel for pixel, however it moves. The old box could
@@ -5346,7 +5422,7 @@
         if (dot(dc2, dc2) < aoR * aoR) { reactive = max(reactive, u.physC.y); }
       }
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, reactive));
-      textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 8u) | (select(0u, 1u, t >= 0.0 && isFol(h.vox)) << 11u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction   // ...and bit 11 = IS THIS A LEAF. It rides here because the word had 21 unused bits and there is no spare g-buffer channel (gIrr is sun/sky/distance/history, gAlbedo is rgb + face); the composite cannot know a needle from bark otherwise. Every existing reader masks (& 255u, >> 8u & 7u), so this is invisible to them.
+      textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 8u) | (select(0u, 1u, t >= 0.0 && (isFol(h.vox) || isCactusV(h.vox))) << 11u) | (select(0u, 1u, isRock) << 12u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction   // ...and bit 11 = IS THIS A LEAF. It rides here because the word had 21 unused bits and there is no spare g-buffer channel (gIrr is sun/sky/distance/history, gAlbedo is rgb + face); the composite cannot know a needle from bark otherwise. Every existing reader masks (& 255u, >> 8u & 7u), so this is invisible to them.   // …and bit 12 = IS THIS STONE, on the same argument and for the same reason (user 2026-08-16: a sun reflection on every rock). It needs all SIX faces, so a faceId could not carry it: gAlbedo.a has exactly six values left in its low nibble and spending every one of them on one material would be the last thing that channel ever did.
     }
   `;
 
@@ -5530,6 +5606,47 @@
     // The TEMPORAL window is deliberately left alone at 0.30-0.85: narrowing it is what made the water read as
     // "it changes its pattern, removes itself, then changes again" (user 2026-08-05). Population is the safe lever.
     const SAND_PICK : f32 = 0.80;
+    // ══ SUN REFLECTION ON STONE ══ (user 2026-08-16: "can you give the rock a reflection property from the
+    // sun?" … "all of the rocks") A ROCK IS NOT WATER, AND THIS IS DELIBERATELY NOT THE GLINT ABOVE.
+    // Everything the water, the ice and the sand wear is one effect: a world-space XZ cell grid, one lit cell
+    // per 10 cm voxel, twinkling on a sine phase. That is a model of a surface made of INDEPENDENT MOVING
+    // PIECES — wavelets, frost facets, grains — and a boulder is the opposite of that: one solid mass whose
+    // faces are metres across. Three concrete reasons it was not reused:
+    //   * the cell grid is indexed on (x, z), so on a VERTICAL rock face every cell in a column collapses to
+    //     one value and the twinkle degenerates into stripes. Water and sand are top faces only; stone is not.
+    //   * the twinkle is a TIME function. A boulder that sparkles while you and it both stand still reads as
+    //     an enchanted object, not as a rock, and "white dots on a dark surface" is the exact reading the user
+    //     has now objected to twice on sand (see SAND_MOON).
+    //   * a specular on stone is view-dependent, not time-dependent. It has to arrive because YOU moved.
+    // So this is an ordinary specular lobe: the sun's mirror image off the face, smeared by roughness.
+    // WHY IT IS ADDED AND NOT MIXED, WHICH IS THE WHOLE COLOUR ARGUMENT. The sand work established that ACES
+    // compresses the largest channel hardest, so a near-uniform brightness MULTIPLY leaves the curve less
+    // saturated than it entered — a wash toward white. On sand the answer was to multiply by a tint whose blue
+    // channel sits below 1. On stone that answer is not available: rock is NEUTRAL (PEBBLE is literally
+    // r = g = b; ROCK is 124/122/116), so there is no chroma in the surface to exaggerate and col * gain * tint
+    // just paints the tint's own hue on at the rock's own luminance. But a specular does not multiply albedo in
+    // the first place — for a dielectric the reflectance at the surface is achromatic, so the highlight carries
+    // the ILLUMINANT'S colour, not the material's. sunTint() already IS that colour, and it is (1.0, 0.42, 0.18)
+    // amber at a low sun and cool blue-silver under the moon. Adding it to a neutral grey therefore RAISES
+    // saturation by construction, which is the one thing gain can never do, and it is free: no new constant
+    // decides the hue, the sun does, so the effect tracks sunrise, noon and moonlight without a second table.
+    const ROCK_SHEEN : bool = true;                                  // the sun sheen on stone; the live switch is LG2 bit 0 (__vb.lgt2(0) / __vb.lgt2(1))
+    const ROCK_GLOSS : f32 = 18.0;                                   // Phong exponent. NOT the water's 26: that is a glitter point, this is a glare that has to survive being looked at from a few degrees off. Below about 10 it stops being a reflection OF anything and just brightens every sunward face at once
+    const ROCK_SPEC : f32 = 0.22;                                    // strength at normal incidence, with the lobe normalisation folded in — at the peak of the lobe it roughly doubles a sunlit rock, which is what a glare off stone does
+    const ROCK_GRAZE : f32 = 2.5;                                    // Fresnel: how much stronger the sheen is edge-on than face-on. Real stone goes far above 2.5x, but the geometry here is voxels and every silhouette is a hard 90-degree edge, so the honest number blew the rim out
+    // The two tints are a bias ON TOP of sunTint(), not a replacement for it. At noon sunTint is only mildly
+    // warm (3.60/3.24/2.74, R:B 1.31) while lit grey rock is warmer than that already (R:B about 1.49), so a
+    // raw additive sun would have pulled the highlight very slightly toward neutral — the sand failure mode
+    // again, at a fraction of the size. A modest golden bias puts the added light at R:B 2.16 instead, so the
+    // lit pixels come out warmer than the rock they sit on at EVERY sun elevation, not only at sunset.
+    const ROCK_TINT : vec3<f32> = vec3<f32>(1.18, 1.00, 0.72);
+    // …and the moon needs the opposite bias, because moonlight is the one light in this game that is cool.
+    // sunTint() already returns a blue for it; carrying the day's golden bias across would have cancelled that
+    // almost exactly (0.40/0.50/0.78 x 1.18/1.00/0.72 is a flat grey), which is how a night highlight turns
+    // into white static. There is no jump at the dusk/dawn swap despite the select: BOTH branches of sunTint()
+    // are gated by a smoothstep on the light's own elevation and reach zero at the horizon, so at the moment
+    // isMoon() flips, the term this tints is already nothing.
+    const ROCK_MOONT : vec3<f32> = vec3<f32>(0.85, 0.95, 1.18);
     // -- THE FLOATING HEARTS -- (user 2026-08-15: "use this for the hearts. have this voxel float in front of the
     // players screen") every number the health readout is drawn with. They live up here, as constants, rather
     // than in the uniform, because only two things about the hearts actually change while the game runs -- how
@@ -5877,6 +5994,33 @@
             let daySparkS = col * SAND_GAIN * SAND_TINT;
             let sparkCS = select(daySparkS, max(daySparkS, SAND_MOON), isMoon());
             col = mix(col, sparkCS, sparkS * columnS * gkS * 0.85 * irr.r);
+          }
+        }
+        // ── THE SUN, REFLECTED OFF STONE ── see ROCK_SHEEN above for why this is a specular lobe and not the
+        // water's glitter, and why it ADDS the sun's own colour instead of multiplying the rock's.
+        // WHICH PIXELS: bit 12 of the slot word, set by TRACE from isRockV — the terrain strata (ROCK/ROCKX),
+        // the medium boulder (BROCK), the 26 GLB boulders that scatter through BOTH the pine forest and the
+        // desert, the desert_rocks set, the pickable field stone (PEBBLE), and a boulder chunk that has been
+        // chopped loose and is falling as a rigid body. Six faces, not just the top: unlike a dune, a rock's
+        // sunward WALL is the part that glares, so the top-face restriction the sand glisten wears is wrong.
+        // WHY THE FLAT VOXEL NORMAL IS ENOUGH, and why there is no per-voxel micro-normal or mica sparkle on
+        // top of it: reflect() takes rd, and rd is per-PIXEL, so the lobe already falls off smoothly ACROSS a
+        // flat face with perspective — a real glare spot with a soft edge, not the uniform plateau a
+        // face-constant term would give. A per-voxel hash was written and thrown away for two reasons: it
+        // would have to be indexed in WORLD space here (the composite has no body-local cell, which is exactly
+        // the coordinate the terrain grain in TRACE is careful to use), so it would CRAWL across any rock
+        // chunk the physics moves; and the albedo already carries the terrain grain's +/-12% per voxel, so the
+        // surface is mottled under the highlight whether or not the highlight is mottled too.
+        // The two guards are not decoration. shR kills the lobe on faces the sun is behind, which reflect()
+        // alone does not do — a mirror ray can still point at the sun through the wall it bounced off. irr.r
+        // is the traced sun visibility, so a boulder in tree shade stays matte, and that is most of what sells
+        // this as light landing on the rock rather than paint applied to the rock.
+        if (ROCK_SHEEN && ((slRaw >> 12u) & 1u) != 0u && LG2(0u)) {
+          let shR = dot(n, u.sunDir);
+          if (shR > 0.0 && irr.r > 0.0) {
+            let lobeR = pow(max(dot(reflect(rd, n), u.sunDir), 0.0), ROCK_GLOSS);
+            let fresR = 1.0 + (ROCK_GRAZE - 1.0) * pow(1.0 - clamp(dot(-rd, n), 0.0, 1.0), 5.0);
+            col += sunTint() * select(ROCK_TINT, ROCK_MOONT, isMoon()) * (ROCK_SPEC * lobeR * fresR * shR * irr.r);
           }
         }
         // ── BACK-LIT FOLIAGE ── a needle is thin enough to pass light, and the whole reason a forest reads as
@@ -6438,6 +6582,7 @@
   `;
 
   const BLIT_SRC = () => /* wgsl */`
+    const HURTV_GRID : vec2<f32> = vec2<f32>(64.0, 36.0);   // the hurt flash's block grid — the resolution the old DOM canvas was painted at, kept so the blocks are the same size they always were
     @group(0) @binding(1) var src : texture_2d<f32>;
     @group(0) @binding(2) var samp : sampler;
     @group(0) @binding(3) var dofT : texture_2d<f32>;
@@ -6561,6 +6706,66 @@
             if (((GLYPH5[gB] >> u32(cellB.y * 5 + cxB)) & 1u) == 1u) {
               col = mix(col, vec3<f32>(0.92, 0.95, 1.0), 0.69);   // 0.92 ink * 0.75 = 25% transparent (user)
             }
+          }
+        }
+      }
+      // ── THE HURT FLASH ── the red vignette that fires on every hit. Drawn HERE, last thing before the
+      // canvas, for one reason: it is the only place a screen effect is both SEEN and RECORDED. It used to be a
+      // DOM <canvas id="hurtFx"> stacked over the game and faded by a CSS keyframe, and veStartRec captures the
+      // WebGPU canvas with canvas.captureStream(60) — a DOM element on top of that canvas is not part of the
+      // captured surface, so every recording came back with no flash in it at all (user 2026-08-16). Compositing
+      // the two canvases into a third was not open either: drawImage of this canvas reads back all zero.
+      //
+      // It is a PORT, not a redesign — every number below is the one the old canvas painted with, so the look is
+      // unchanged. BLIT, not COMPOSITE: this is downstream of TAA, and a screen-FIXED pattern run through a
+      // reprojecting resolve would be dragged across the frame by camera motion and smear.
+      // A STATE, NOT AN EVENT (user 2026-08-16). This used to paint only while a hit flash was decaying; it now
+      // stands for as long as the hearts are down, and the flash is a spike on top. A hit at full health still
+      // paints at shade 1 so the blow always registers, then clears with the flash.
+      let hLev = max(u.hurtV.z, select(0.0, 1.0, u.hurtV.x > 0.0));
+      if (hLev > 0.0) {
+        // THE GRID IS WHAT MAKES IT VOXELISED. The old canvas was 64x36 pixels stretched over the window by CSS
+        // with image-rendering:pixelated; this is the same 64x36 cells over the same window, so a block is a block
+        // at any resolution rather than a shape that gets finer as the canvas grows.
+        let hCell = floor(uv * HURTV_GRID);
+        let hN = (hCell / (HURTV_GRID - vec2<f32>(1.0))) * 2.0 - 1.0;
+        let hD = sqrt(hN.x * hN.x * 0.85 + hN.y * hN.y);
+        // STARTS AT 0.78, NOT 0.42 — the first cut of the old canvas painted from 42% of the way out, which on a
+        // wide window is most of the screen. A hurt cue frames the view and never obscures it, so only the outer
+        // fifth paints and it stays under half opacity.
+        // 0.60, not 0.78 (user 2026-08-16: "turn the SCREEN 5 shades of red") — the earlier number framed the
+        // view from the outer fifth, which is a cue rather than the screen going red. This reaches well inward
+        // while the dither below still thins toward the middle, so the centre never fills and the hit is
+        // unmistakable without blinding the player mid-fight.
+        // The red CREEPS INWARD as the hearts go: one heart down frames the very edge, one heart left reaches
+        // most of the way in. Coverage carries the severity that the four shades alone could not.
+        // The band creeps inward one step per heart. These numbers were briefly widened on a bad reading —
+        // a vitSet-driven test let REGENERATION climb hp back between the set and the screenshot, so every
+        // level came out one lower than intended and the first one looked dead. Drive the level through
+        // vitHurt (which zeroes the calm timer and so blocks regen) or the measurement lies to you.
+        let hA = (hD - (0.86 - hLev * 0.10)) / 0.62;
+        if (hA > 0.0) {
+          // The dither: distance from centre is a PROBABILITY, so the red gathers at the edge and breaks into
+          // scattered blocks reaching inward. Seeded per HIT (u.hurtV.y), never per frame — a per-frame hash
+          // would re-roll every block 60 times a second and sizzle instead of fade, where the old canvas was
+          // painted once at the hit and only its opacity moved.
+          let hS = i32(u.hurtV.y);
+          // ── MORE DAMAGE, MORE RED PIXELS (user 2026-08-16) ── distance from centre is still the probability a
+          // block paints, but the whole curve is now scaled by the heart level: one heart down scatters a thin
+          // few at the very rim, one heart left fills most of the frame. Same blocks, same red, same per-hit
+          // seed — only the COUNT moves, which is the one thing the player is meant to read off it.
+          if (ih3(i32(hCell.x), i32(hCell.y), hS) <= min(1.0, hA * hA * 1.1 * (0.34 + hLev * 0.42))) {
+            let hV = ih3(i32(hCell.x), i32(hCell.y), hS + 7717);
+            // ── EXACTLY FIVE SHADES (user 2026-08-16) ── this used to be 150 + floor(hV*60), which is sixty reds
+            // and reads as one noisy red. floor(...*5.0) can only produce 0,1,2,3,4, so hT can only be
+            // 0, .25, .5, .75, 1 and the mix can only land on five colours — the count is a property of the
+            // arithmetic, not something that has to be eyeballed. Distance carries most of the weight so the
+            // shades stack outward as bands (deepest at the rim, lightest reaching in), with enough of the
+            // per-block hash mixed in that the bands break up instead of reading as clean concentric rings.
+            // NO SHADE (user 2026-08-16) — one red, the same one the effect has always used. Damage is carried
+            // entirely by HOW MANY pixels are red, never by what colour they are.
+            let hRed = vec3<f32>((150.0 + floor(hV * 60.0)) / 255.0, 10.0 / 255.0, 14.0 / 255.0);   // rgb(150..209, 10, 14), the old canvas's own reds
+            col = mix(col, hRed, min(0.55, 0.16 + hA * 0.34 + 0.22 * u.hurtV.x));   // per-block opacity stays PUT as damage rises — if it climbed too, the effect would read as one red sheet thickening rather than as more pixels   // the standing tint is deliberately under a third opacity — it has to be readable for minutes at a time, where the flash only has to survive a fraction of a second   // col is already display-encoded here (COMPOSITE did the 1/2.2), which is the space the DOM canvas composited in — so this is the identical blend
           }
         }
       }
@@ -7725,11 +7930,32 @@
     e.preventDefault(); e.stopPropagation();
     cmdShow(false);
   }, true);
+  let escBack = 0;                                     // an Escape press on a menu that is already up = "put me back in", fired on keyup so the browser is done with the key
+  document.addEventListener('keyup', (e) => {
+    if (e.code !== 'Escape' || !escBack) return;
+    escBack = 0;
+    if (!locked && !dead && !CMD.open) tryLock();
+  });
   document.addEventListener('keydown', (e) => {
     if (!CMD.open) {
       // …and once it is closed, Escape behaves as it always did. If the re-lock was refused we are still
       // unlocked with no menu showing, so this second press is what puts the menu up (user).
-      if (e.code === 'Escape' && !locked && !dead && performance.now() - CMD.escAt > 40 && vePanel.classList.contains('hidden')) lockEl.classList.remove('hidden');
+      // ── AND ESCAPE COMES BACK IN (user 2026-08-16: "let esc bring the player back into the game from having
+      // been on the esc menu") ── this line used to do one thing, show the menu, which meant a second press on a
+      // menu that was already up re-showed it and looked like Escape had stopped working. Which of the two it
+      // means is decided by whether the menu is on screen: not showing → this is the press that opens it;
+      // already showing → the player is asking to return, so ask for the pointer back. A press that lands
+      // inside Chrome's ~1.25 s post-Escape lock cooldown is simply refused, and pointerlockerror puts the menu
+      // straight back up, so an impatient double-tap costs nothing and the next press works.
+      if (e.code === 'Escape' && !locked && !dead && performance.now() - CMD.escAt > 40 && vePanel.classList.contains('hidden')) {
+        // …but the RE-LOCK is not requested here. Chrome's own Escape handling runs on this same KEYDOWN and
+        // exits pointer lock unconditionally, so a lock taken on keydown was handed back a moment later and the
+        // menu returned on its own — "works briefly, then displays the esc menu again" (user 2026-08-16). The
+        // request is moved to keyup below, which is still a user gesture but lands after the browser has
+        // finished with the key. Only the menu-opening half of the press belongs on keydown.
+        if (lockEl.classList.contains('hidden')) lockEl.classList.remove('hidden');
+        else escBack = 1;                                  // armed here, fired on keyup
+      }
       return;
     }
     e.stopPropagation();                               // every keystroke belongs to the line, never to the game's binds
@@ -10613,6 +10839,19 @@
   // Sized off the annulus the creatures actually land in (~934k vox² at LIFE_KEEP 1040): 42 bodies means a mean
   // gap of ~105 vox, and 6-of-a-species means ~280, so these sit near the half-of-mean that dart-throwing can
   // still satisfy quickly. They are RELAXED per retry at the call site — never let a floor starve a slot.
+  // ── AND THE SAME FOR THE FOUR LAND MAMMALS ── the forest band had ONE flat 70-voxel gate and no relaxation,
+  // and MEASURED over six boots the whole population was jammed against it: pooled nearest-neighbour min 70.2,
+  // p10 79.9, median 104.7 against a mean gap of ~163. A floor that the tenth percentile is sitting on is not a
+  // spacing rule, it is the thing deciding every position. MAM_APART is what a try-0 placement must offer;
+  // MAM_FLOOR is what the LAST try may accept and is exactly the old flat value, so the guarantee this band has
+  // always had cannot get weaker and a cramped spot still fills. Cubic, like the desert's, because a linear
+  // decay gives away half the gap by try 5. One floor rather than the desert's two: every mammal's nearest
+  // neighbour is a different species already (same-species gaps run 200-280), so a same-species rule would
+  // never bind.
+  // MAM_RELAX = the try the decay reaches MAM_FLOOR on, out of the 12 the spawn loop runs. The last few
+  // tries therefore ask for exactly the gate this band has always had, which is what keeps the count
+  // whole: decaying across the full budget left a slot unplaced for a frame in 2 of 12 measured samples.
+  const MAM_APART = 110, MAM_FLOOR = 70, MAM_RELAX = 7;
   const DES_APART = 160;        // between two of the SAME species — the one the eye reads as "geckos in a litter"
   const DES_APART_ANY = 64;     // between any two desert creatures — stops a mixed pile-up in one patch of sand
   // ── ANT COLUMN ── spacing along the leader's path, and how often the leader drops a crumb. The gap is 6, not
@@ -10620,6 +10859,10 @@
   // interpenetrate even in a geometrically perfect line. The crumb step sets how faithfully a follower traces a
   // tight turn — finer is smoother and costs only array entries.
   const ANT_GAP = 6.0, ANT_CRUMB = 0.75;
+  // How far ahead a walker checks for the biome line. 34 is a shade over two seconds of travel for the slowest
+  // desert species and about half a second for a dashing gecko — far enough that the turn reads as a decision
+  // rather than a bounce, close enough that it does not refuse ground it could legitimately have used.
+  const BIO_LOOK = 34;
   // ── AND THE ANT WALKS ON THE COMPASS (user 2026-08-16: "just have it move forward. when it want to turn,
   // rotate the ant 90 degrees") ── the leader's heading is an INTEGER 0-3 into ANT_DIR, never an angle, so a
   // diagonal is not expressible; a turn is +/-1 on that integer and lands in one frame. This is the same
@@ -11186,7 +11429,7 @@
     // COST, stated plainly: the palindrome is ~50 MB of float for this 66 s stereo take (~75 MB for the ~0.2 s
     // the decoded source is still alive beside it). It is built lazily, only if the player actually goes near
     // the sand, and never twice; the copy is sliced across frames so it is never one long stall.
-    const DES_AMB_BASE = 0.114;                        // MEASURED, not guessed: the take is -27.5 LUFS integrated against the forest bed's -42.3, so 0.625 * 10^(-14.8/20) = 0.114 lands the two at the same perceived level. A crossfade between beds of different loudness reads as a volume ramp, which is the one thing the handover must not do
+    const DES_AMB_BASE = 0.1425;   // +25% (user 2026-08-16), 0.114 -> 0.1425. The 0.114 was the LUFS-matched level; this is a deliberate lift above the match, not a re-measurement                        // MEASURED, not guessed: the take is -27.5 LUFS integrated against the forest bed's -42.3, so 0.625 * 10^(-14.8/20) = 0.114 lands the two at the same perceived level. A crossfade between beds of different loudness reads as a volume ramp, which is the one thing the handover must not do
     const DES_AMB_SRCS = ['sound/desert_ambience.mp4', 'sound/desert_ambience.mp3', 'sound/desert_ambience.wav'];
     const DES_AMB_NEAR = 0.02;                         // start FETCHING at the first hint of sand — desertM > 0 covers the whole 450-voxel blend band, so the decode and the rebuild finish long before the bed is loud enough to notice arriving
     const DES_AMB_CHUNK = 1 << 20;                     // frames of palindrome copied per rendered frame. The whole 12.6 M-sample copy in one go is a 30-50 ms stall (a dropped frame); a slice this size is ~2 ms
@@ -11726,7 +11969,7 @@
   const { ARROW_HITS_TO_KILL, CRY_GAP, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, spawnDeathBurst, spawnSplash, spawnTear, startCrying } = __m_sim_particles;
   const __m_sim_vitals = (() => {
   // @module - player vitals: hearts, hunger, saturation and exhaustion, ported from Minecraft's FoodStats
-  // @exports VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine
+  // @exports VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine, vitRedLevel
   // ── WHY THIS EXISTS ── until now `die(why)` WAS the whole of mortality: every hazard killed outright and the
   // player had no health at all (see the comment at the cobra contact test). Hearts only mean something once the
   // hazards stop one-shotting you, so this module owns both halves — the vitals, and the `vitHurt` entry point
@@ -11832,6 +12075,18 @@
     if ((VIT.hp <= 0 || VIT.hits >= VIT_HITS_FATAL) && VIT.onDeath) VIT.onDeath(why || 'you died');
   }
 
+  // ── HOW RED THE SCREEN IS (user 2026-08-16: "full hearts is no shade, then heart 0 is the gameover
+  // screen") ── 0 at full health and 1..4 as the hearts go, which is exactly four shades because there are five
+  // hearts and the fifth step is death, not a colour. Death has TWO paths — hp reaching zero, and five hits in
+  // succession — and a run of quick hits can kill with most of the bar still showing, so the level is the WORSE
+  // of the two readings. Otherwise a player two hits from dying by the hit-run could be looking at a clear
+  // screen. Regeneration walks it back down on its own: the calm timer clears the hit run, and hp climbing
+  // raises the heart count, so recovering visibly drains the red without anything here having to fade it.
+  const vitRedLevel = () => {
+    const hearts = Math.ceil(VIT.hp / (VIT_HP_MAX / 5));
+    return Math.max(0, Math.min(4, Math.max(5 - hearts, VIT.hits | 0)));
+  };
+
   // ── THE HURT SPURT ── literally the call a struck creature makes, aimed at the player instead:
   // spawnHitSparks throws the four red HITRED_IT voxels the blood burst uses, so taking a hit and landing one
   // spit the same 10 cm voxels. Placed in FRONT of and below the eye — at the camera itself all four spawn
@@ -11843,7 +12098,27 @@
     // the player reads them as flecks coming off their own body, which is what they are.
     const cp = Math.cos(P.pitch);
     const fx = Math.sin(P.yaw) * cp, fz = Math.cos(P.yaw) * cp;
-    spawnHitSparks(P.x + fx * 8.0, smoothEye - 3.0, P.z + fz * 8.0);   // 8, not 14 (user 2026-08-16: "bring the blood voxels closer into the player"). It started at 3, where perspective blew each 10 cm voxel into a metre-wide slab across the view; 14 read as distant flecks. 8 keeps them clearly the player's own without filling the screen
+    // ── THEY COME OUT OF THE PLAYER (user 2026-08-16) ── spawnHitSparks throws its four voxels from one point
+    // with a random ring of velocity, which at a fixed 8 voxels ahead reads as a burst hanging in the air in
+    // front of the camera rather than something leaving the body. So the burst is authored here instead: it
+    // STARTS on the player's own chest, just clear of the near plane, and every voxel is given velocity pointing
+    // AWAY from that chest — forward-biased so they travel out into view instead of past the ear. The motion is
+    // what sells the origin: the eye reads four flecks receding from a point on the body, and the point they
+    // recede from is the player. Same 10 cm HITRED_IT voxels, same lifetime, same red flag as a struck creature.
+    const cx = P.x + fx * 2.2, cy = smoothEye - 3.2, cz = P.z + fz * 2.2;
+    const rx = fz, rz = -fx;                                   // the player's right, for the lateral spread
+    for (let i = 0; i < 4; i++) {
+      const side = (i - 1.5) * 0.55 + (Math.random() - 0.5) * 0.5;   // fan across the chest, one either side of centre
+      const out = 26 + Math.random() * 22;                     // outward speed — fast enough that frame one is already leaving
+      sparks3d[i] = { x: cx + rx * side * 1.8, y: cy + (Math.random() - 0.5) * 2.2, z: cz + rz * side * 1.8,
+        vx: (fx * 0.85 + rx * side * 0.9) * out, vy: 10 + Math.random() * 16, vz: (fz * 0.85 + rz * side * 0.9) * out,
+        born: performance.now(), life: 0.4 + Math.random() * 0.3, ph: Math.random() * 6.283, smoke: false, red: true };
+    }
+    // ── AND THE SAME VOICE (user 2026-08-16: "play the same sound that plays when the player hits life") ──
+    // playLifeHit is the pool every blow that lands on a living thing already uses, and it attenuates with
+    // distance from the ear. Passing the player's OWN position puts them at zero range, so a hit taken is the
+    // same sound at full strength as a hit landed — which is what "the same sound" has to mean here.
+    playLifeHit(P.x, smoothEye, P.z);   // 8, not 14 (user 2026-08-16: "bring the blood voxels closer into the player"). It started at 3, where perspective blew each 10 cm voxel into a metre-wide slab across the view; 14 read as distant flecks. 8 keeps them clearly the player's own without filling the screen
     hurtScreen();
   }
 
@@ -11913,9 +12188,9 @@
     while (VIT.acc >= VIT_DTT && guard++ < 8) { VIT.acc -= VIT_DTT; vitStep(); }
     if (guard >= 8) VIT.acc = 0;
   }
-    return { VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine };
+    return { VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine, vitRedLevel };
   })();
-  const { VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine } = __m_sim_vitals;
+  const { VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine, vitRedLevel } = __m_sim_vitals;
   const __m_sim_life_reactions = (() => {
   // @module - what a creature does when it is hit: hurt, spook, ragdoll, death and the meat it drops
   // @exports HURT, HURT_MS, RAG_UP, creatureRagdoll, dropMeat, dropsMeat, hitCreature, hurtBox, reapDeaths, spooked, tryKillCreature
@@ -13198,7 +13473,8 @@
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - dy * ls));
   });
   let dead = false;
-  let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = 0;   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
+  let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = 0;
+  const FALL_FREE = 3;                                 // metres you may drop for nothing — Minecraft's threshold, and a believable one: a 3 m hop stings nobody   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
   let uwT = 0;                                          // ── DROWN CLOCK ── seconds the EYE has been continuously submerged; hits DROWN_T → game over. Reset on surfacing/respawn; frozen (not reset) while paused/editor.
   const DROWN_T = 10;                                  // you can hold your breath for 10 s underwater (user)
   const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it
@@ -13263,7 +13539,12 @@
     if (e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }   // ── T ── open the command line (user)
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
-    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }   // toggle fly (user re-added the F keybind 2026-07-22)
+    // ── DROPPING OUT OF FLY COSTS NOTHING (user 2026-08-16) ── switching fly OFF in mid-air starts a real
+    // fall, and the fall-damage tracker would bill the player for the whole descent. Pressing F is a mode
+    // change, not a mistake, so it grants ONE free landing, cleared the moment the feet touch down. Set on the
+    // toggle rather than tested at the landing: by then P.fly has been false for the whole drop and there is
+    // nothing left to distinguish it from walking off a cliff.
+    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; if (!P.fly) { P.noFall = 1; P.fallPk = undefined; } }   // toggle fly (user re-added the F keybind 2026-07-22)
     // R-key recording is BACK ON with the #veBtn button (user 2026-08-02, reversing the 2026-07-23 disable).
     if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
@@ -13430,40 +13711,27 @@
   // mechanics, just remove the ui." The mechanics are untouched and still tick in sim/vitals.js — health,
   // hunger, saturation, exhaustion, regen and starvation all run exactly as before, they are simply not
   // drawn. `__vb.vit()` is now the only way to read them, which is what the tests use.
-  const hurtEl = $('hurtFx');
-  const hurtCtx = hurtEl ? hurtEl.getContext('2d') : null;
-
-  // ── THE HURT SCREEN ── drawn at 64x36 and stretched over the window by CSS. That is what makes it VOXELISED:
-  // every block is one canvas pixel blown up to ~30 px on screen, so the edges are genuinely hard. Painting a
-  // full-resolution red vignette and calling it pixel art would have given soft edges at any window size.
-  const HURT_W = 64, HURT_H = 36;
-  function hurtScreen() {
-    if (!hurtCtx) return;
-    if (hurtEl.width !== HURT_W) { hurtEl.width = HURT_W; hurtEl.height = HURT_H; }
-    hurtCtx.clearRect(0, 0, HURT_W, HURT_H);
-    // A vignette in BLOCKS: distance from centre decides how likely a block is to be painted at all, so the
-    // red gathers at the edges and breaks up into scattered voxels as it reaches inward — a dither, not a fade.
-    for (let y = 0; y < HURT_H; y++) {
-      for (let x = 0; x < HURT_W; x++) {
-        const nx = (x / (HURT_W - 1)) * 2 - 1, ny = (y / (HURT_H - 1)) * 2 - 1;
-        const d = Math.sqrt(nx * nx * 0.85 + ny * ny);
-        // STARTS AT 0.78, NOT 0.42. The first cut painted from 42% of the way out, which on a wide window is
-        // most of the screen — a screenshot showed the scene almost entirely behind red blocks. A hurt cue has
-        // to frame the view, never obscure it, so only the outer fifth paints and it stays under half opacity.
-        const a = (d - 0.78) / 0.5;
-        if (a <= 0) continue;
-        if (Math.random() > Math.min(1, a * a * 1.1)) continue;
-        hurtCtx.fillStyle = 'rgba(' + (150 + ((Math.random() * 60) | 0)) + ',10,14,' + Math.min(0.5, 0.12 + a * 0.42).toFixed(3) + ')';
-        hurtCtx.fillRect(x, y, 1, 1);
-      }
-    }
-    hurtEl.classList.remove('hidden');
-    // RESTART the animation: dropping the class, forcing a reflow, then re-adding it is what makes a repeat
-    // hit replay the flash. Without the reflow the browser sees no class change at all and nothing happens.
-    hurtEl.classList.remove('on');
-    void hurtEl.offsetWidth;
-    hurtEl.classList.add('on');
-  }
+  // ── THE HURT FLASH LIVES IN THE RENDER NOW (user 2026-08-16: "when recording a video on playback, the
+  // red pixels on the ui dont show up. make them showup on playback when recording the scree.") ──
+  // It was a DOM <canvas id="hurtFx"> laid over the game at 64x36 and blown up by image-rendering:pixelated,
+  // faded by a CSS keyframe. That is correct on screen and INVISIBLE IN A RECORDING: veStartRec captures the
+  // WebGPU canvas with canvas.captureStream(60), and a DOM element stacked on top of that canvas is simply not
+  // part of the captured surface. Nor could it be composited in — drawImage of this canvas reads back all zero
+  // (the reason every screenshot in testing goes through CDP). The ONLY place a screen effect can be both seen
+  // and recorded is inside the image itself, so the same 64x36 grid, the same dither, the same reds and the same
+  // 0.42 s fade are now drawn by BLIT (see the hurt-flash block there). This file keeps the TIMING and the SEED,
+  // which is all that is left of it on the JS side; tick-camera publishes both into u.hurtV every frame.
+  const HURTV = { t0: -1e9, seed: 1 };
+  const HURTV_MS = 420;                      // the CSS keyframe's own 0.42 s, kept to the millisecond
+  const HURTV_STEPS = 10;                    // …stepped to 24 fps like every other animation in this game: 0.42 s x 24 = 10 frames
+  // Restarting is a bare timestamp write, so a hit landing mid-flash simply starts the fade again — which is what
+  // the remove -> reflow -> add class dance existed to force out of CSS. The bug that trick was fixing (the flash
+  // firing on the FIRST hit only, because two class toggles inside two frames coalesce into no change at all)
+  // cannot come back here: there is no style engine to coalesce anything.
+  function hurtScreen() { HURTV.t0 = performance.now(); HURTV.seed = 1 + ((Math.random() * 4093) | 0); }   // a fresh dither per hit, exactly as the old canvas re-painted itself per hit
+  // 1 at the hit, 0 at 0.42 s, STEPPED to 24 fps on the way down.
+  const hurtVig = () => { const k = 1 - (performance.now() - HURTV.t0) / HURTV_MS;
+    return k <= 0 ? 0 : Math.round(Math.min(1, k) * HURTV_STEPS) / HURTV_STEPS; };
   const __m_ui_editor = (() => {
   // @module — the asset editor: platform, gizmos, .vox parse, pose bakes
   // @exports BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edLayout, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSnapCount, edSnapErrs, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk
@@ -14013,7 +14281,100 @@
     flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
     modelIds(kind) { const m = { drock: DROCK, cactus: CACTI, shrub: SHRUBV, rock26: ROCK26 }[kind] || []; const o = new Set(); for (const q of m) for (const p of q.vox) o.add(p >>> 24); return [...o].sort((a, b) => a - b); },   // the palette ids a model set actually uses — colour heuristics cannot tell desert rock from desert sand. NOT `ids`: this object already has an `ids` key of a different shape further down, and a duplicate silently loses (the later one wins). 276 keys in one literal makes that easy to do — check before adding a name.
-    win() { return { xlo: winOX, xhi: winOX + WX, zlo: winOZ, zhi: winOZ + WZ }; },   // the loaded window in WORLD coords. Sampling voxels outside it reads a ring-buffer slot holding a different world location entirely — which reads as forest terrain appearing in the desert
+    win() { return { xlo: winOX, xhi: winOX + WX, zlo: winOZ, zhi: winOZ + WZ }; },
+    // ── PAGED-STORAGE FEASIBILITY CENSUS (dev) ── classify every 8³ brick as empty / uniform / mixed.
+    // Storage today is DENSE: WX*WY*WZ bytes, once on the CPU and once on the GPU, and a cube of empty
+    // sky costs exactly what a cube of forest costs. View distance is HALF the window width, and bytes
+    // grow with width², so seeing twice as far costs 4x the memory — that is the ceiling this measures.
+    // Under a brick-descriptor scheme only MIXED bricks need their 512-byte payload; empty and uniform
+    // bricks collapse into their own 4-byte descriptor. The occupancy bit already answers "empty", so
+    // only occupied bricks are scanned — which is why this is seconds and not minutes.
+    brickCensus() {
+      const t0 = performance.now();
+      const nB = BX * BY * BZ;
+      let empty = 0, uniS = 0, solid = 0, surf = 0;   // all-air / one material / no air but many materials / air+solid mix
+      const uniOf = new Map();
+      const NB = 8, band = Math.ceil(BY / NB), bands = [];
+      for (let i = 0; i < NB; i++) bands.push([0, 0, 0, 0]);
+      for (let bz = 0; bz < BZ; bz++) for (let by = 0; by < BY; by++) {
+        const bd = bands[Math.min(NB - 1, (by / band) | 0)];
+        for (let bx = 0; bx < BX; bx++) {
+          const b = bx + by * BX + bz * BX * BY;
+          if (!((bricks[b >> 5] >>> (b & 31)) & 1)) { empty++; bd[0]++; continue; }
+          const base = by * 8 * WX + bz * 8 * WX * WY + bx * 8;
+          const first = W32[base >> 2], v0 = first & 255;
+          let same = v0 !== 0 && first === ((v0 * 0x01010101) >>> 0), hasAir = false;
+          scan: for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) {
+            const rw = ((by * 8 + y) * WX + (bz * 8 + z) * WX * WY + bx * 8) >> 2;
+            const a = W32[rw], c = W32[rw + 1];
+            if (a !== first || c !== first) same = false;
+            // any zero BYTE in either word = an air voxel — the standard SWAR test, one per 4 voxels
+            if ((a - 0x01010101) & ~a & 0x80808080) { hasAir = true; break scan; }
+            if ((c - 0x01010101) & ~c & 0x80808080) { hasAir = true; break scan; }
+          }
+          if (hasAir) { surf++; bd[3]++; }
+          else if (same) { uniS++; bd[1]++; uniOf.set(v0, (uniOf.get(v0) || 0) + 1); }
+          else { solid++; bd[2]++; }
+        }
+      }
+      const cur = WX * WY * WZ, desc = nB * 4;
+      const pc = (n) => +(100 * n / nB).toFixed(1);
+      // Three candidate schemes, all keeping a 4-byte descriptor per brick:
+      const mb = (n) => +(n / 1048576).toFixed(1);
+      const sA = desc + (uniS === 0 ? 0 : 0) + (solid + surf) * 512;        // A: collapse empty + uniform only
+      const sB = desc + surf * 512;                                          // B: also treat every AIR-FREE brick as payload-free (regenerate/procedural)
+      return { window: [WX, WY, WZ], nBricks: nB,
+        empty, uniformSolid: uniS, solidManyMaterials: solid, surface: surf,
+        pct: { empty: pc(empty), uniformSolid: pc(uniS), solidManyMaterials: pc(solid), surface: pc(surf) },
+        uniTop: [...uniOf.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map((e) => e[0] + ':' + e[1]),
+        bandsLowToHigh: bands.map((q) => q.join('/')),
+        curMB: mb(cur), descMB: mb(desc),
+        schemeA: { mb: mb(sA), saving: +(cur / sA).toFixed(2), widthGain: +Math.sqrt(cur / sA).toFixed(2) },
+        schemeB: { mb: mb(sB), saving: +(cur / sB).toFixed(2), widthGain: +Math.sqrt(cur / sB).toFixed(2) },
+        ms: Math.round(performance.now() - t0) };
+    },
+    // ── HOW DEEP IS ANYTHING EVER CARVED? ── the census says the bottom bands are 100% air-free rock.
+    // If nothing ever cuts into them they are invisible AND untouchable, and the window is simply taller
+    // than the world needs. Per column: the LOWEST y holding an air voxel. Also the enclosed-rock count —
+    // an air-free brick whose six neighbours are all air-free can never be entered by any ray at all.
+    depthProbe() {
+      const t0 = performance.now();
+      let minAir = WY, cols = 0;
+      const hist = new Array(1 + (WY >> 4)).fill(0);           // lowest-air-y in 16-voxel buckets
+      for (let z = 0; z < WZ; z += 2) for (let x = 0; x < WX; x += 2) {
+        const c = x + z * WX * WY;
+        let lo = -1;
+        for (let y = 0; y < WY; y++) if (W[c + y * WX] === 0) { lo = y; break; }
+        if (lo < 0) continue;
+        cols++; if (lo < minAir) minAir = lo;
+        hist[Math.min(hist.length - 1, lo >> 4)]++;
+      }
+      // enclosed rock: air-free brick with six air-free neighbours (ray-unreachable by construction)
+      const airFree = new Uint8Array(BX * BY * BZ);
+      for (let bz = 0; bz < BZ; bz++) for (let by = 0; by < BY; by++) for (let bx = 0; bx < BX; bx++) {
+        const b = bx + by * BX + bz * BX * BY;
+        if (!((bricks[b >> 5] >>> (b & 31)) & 1)) continue;     // empty brick is all air, not air-free
+        let ok = 1;
+        scan: for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) {
+          const rw = ((by * 8 + y) * WX + (bz * 8 + z) * WX * WY + bx * 8) >> 2;
+          const a = W32[rw], c2 = W32[rw + 1];
+          if (((a - 0x01010101) & ~a & 0x80808080) || ((c2 - 0x01010101) & ~c2 & 0x80808080)) { ok = 0; break scan; }
+        }
+        airFree[b] = ok;
+      }
+      let enclosed = 0;
+      for (let bz = 1; bz < BZ - 1; bz++) for (let by = 1; by < BY - 1; by++) for (let bx = 1; bx < BX - 1; bx++) {
+        const b = bx + by * BX + bz * BX * BY;
+        if (!airFree[b]) continue;
+        if (airFree[b - 1] && airFree[b + 1] && airFree[b - BX] && airFree[b + BX] &&
+            airFree[b - BX * BY] && airFree[b + BX * BY]) enclosed++;
+      }
+      const nB = BX * BY * BZ;
+      return { WY, minAirY: minAir, colsSampled: cols,
+        lowestAirHist16: hist.map((n, i) => (i * 16) + ':' + n).filter((e) => !e.endsWith(':0')),
+        enclosedRockBricks: enclosed, pctEnclosed: +(100 * enclosed / nB).toFixed(1),
+        ms: Math.round(performance.now() - t0) };
+    },   // the loaded window in WORLD coords. Sampling voxels outside it reads a ring-buffer slot holding a different world location entirely — which reads as forest terrain appearing in the desert
     desBand() { const o = []; for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
       o.push({ j, sp: ((j - MAM_END) / DES_PER) | 0, idx: (j - MAM_END) % DES_PER, init: !!(B && B.init), kind: B ? (B.kind | 0) : -1 }); }
       return { species: DESERTS.map((d) => d.name + '@' + d.item0 + 'x' + d.n), nDesert: (typeof nDesert === 'undefined' ? 'UNDEFINED' : nDesert), perSpecies: (typeof nDesertOf === 'undefined' ? 'OUT-OF-SCOPE (tick-local)' : DESERTS.map((d, i) => d.name + ':' + nDesertOf(i))), DES_PER, MAM_END, DES_END, slots: o }; },   // why a desert slot is or is not live
@@ -14888,7 +15249,7 @@
     idAt(x, y, z) { return W[gwrap(Math.floor(x), WX) + (y | 0) * WX + gwrap(Math.floor(z), WZ) * WX * WY]; },   // raw voxel id — colTop/colTopId are solidTab-gated and go blind to water the moment it thaws
     supCap(v) { if (v !== undefined) SUP.cap = Math.max(16, v | 0); return { cap: SUP.cap, drapeCap: SUP.drapeCap, capHits: SUP.stats.capHits, structFloods: SUP.stats.structFloods, dropped: SUP.stats.dropped }; },   // squeeze the STRUCTURE flood ceiling so a test can force the cap-hit path on a small rock
     wrefl(v) { if (v !== undefined) { wReflK = Math.max(0, Math.min(2, +v)); resetHist = 1; try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e) {} lgtPaint(); } return wReflK; },   // WATER REFLECTION STRENGTH — the panel's slider, from the console
-    lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: {} }; },   // the SECOND mask (u.lgt.z) — currently EMPTY (see LGT2_ALL); left wired so a 25th term has somewhere to go
+    lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: { rockSheen: 1 } }; },   // the SECOND mask (u.lgt.z) — bit 0 is the SUN SHEEN ON STONE (user 2026-08-16). __vb.lgt2(0) / __vb.lgt2(1) is the A/B: it sets resetHist, so the denoiser does not hand the previous variant's history to the next shot
     lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, water: LGT_WATER, mask2: lgtMask2, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536, volumetric: 131072,
       waterReflect: 262144, waterRefract: 524288, waterFoam: 1048576, waterIce: 2097152, waterGlisten: 4194304, waterWaves: 8388608 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
@@ -15626,6 +15987,21 @@
       if (!fit(x + dx * (t + 0.02), z + dz * (t + 0.02))) return t;   // the clear run ends AT this boundary
     }
     return t; };
+  // ── THE BIOME LINE, EXPRESSED AS TERRAIN ── the step rule refuses a crossing, so a walker that plans a
+  // heading over the line has its move rejected every frame and stands there grinding. Steering it away with a
+  // separate omT write was tried and is the wrong shape: on the arbiter that is a SECOND writer arguing with the
+  // planner, which is the exact failure the arbiter exists to make inexpressible. Instead the line is reported to
+  // the planner in the only currency it scores in — reach. A candidate heading that runs into the boundary comes
+  // back short, so the fan prefers a lane that stays home-side for the same reason it prefers one without a tree
+  // in it, and the turn is the planner's ordinary eased turn. Backs off one 4-voxel step so the walker stops
+  // clear of the line rather than balanced on it.
+  const navBioClip = (x, z, th, r, home) => {
+    if (r <= 4) return r;
+    const dx = Math.sin(th), dz = Math.cos(th);
+    for (let d = 4; d <= r; d += 4) if ((desertM(x + dx * d, z + dz * d) > 0.85) !== home) return d - 4;
+    return r;
+  };
+
   const navReachLand = (x, z, th, maxD, gc, up, down, clr, sand) => {   // how far a WALKER can actually travel along a heading. Same cell DDA, one difference that matters: the step limit is carried FORWARD from cell to cell instead of being measured from the origin. A worm climbs a long slope two voxels at a time, and a reach anchored on where it started would have called every hill a wall and left the planner with no lane anywhere but flat ground.
     const dx = Math.sin(th), dz = Math.cos(th), CS = 1 << NVSH;
     const adx = dx < 0 ? -dx : dx, adz = dz < 0 ? -dz : dz;
@@ -15981,6 +16357,11 @@
         const gK = 1 + Math.min(1.125, P.fallT * 0.41); // falling and the terminal is higher, so a long drop keeps visibly winding up until it lands.
         P.vy = Math.max(-345, P.vy - GRAVITY * gK * dt);   // ramp starts at 1.0 so jump arcs are unchanged. Boost and terminal both CUT 25% (user 2026-07-18): was 1.5 / -460.
       }
+      // ── FALL DAMAGE: REMEMBER THE HIGHEST POINT OF THE FALL ── not the fall TIME (P.fallT) and not the
+      // impact speed, because both lie on a staircase: a player bouncing down a dune resets fallT on every
+      // contact and never accumulates, while a long shallow slide builds speed without ever really dropping.
+      // The peak-minus-landing height is the one quantity that means "how far did I actually fall".
+      if (!P.onGround && !P.fly) { if (P.fallPk === undefined || P.y > P.fallPk) P.fallPk = P.y; }
       const impV = P.vy;                              // impact velocity before the collision zeroes it
       const hitY = moveAxis(1, P.vy * dt, hh);
       if (hitY) {
@@ -15989,7 +16370,20 @@
           P.vy = Math.min(BOUNCE_MAX, BOUNCE_V0 + BOUNCE_DV * (P.bounceN - 1));
           P.onGround = false; P.sprintJump = false;
         } else {
-          if (P.vy < 0) { P.onGround = true; P.sprintJump = false; P.fallT = 0; }   // landed — the next fall winds up from zero again
+          if (P.vy < 0) {                             // landed — the next fall winds up from zero again
+            // ── AND PAY FOR IT ── Minecraft's curve, in this game's units: a voxel is 10 cm and HEIGHT is 20,
+            // so a 2 m person is 20 voxels and one METRE is 10. Nothing under FALL_FREE metres hurts, then one
+            // point per further metre. Landing in water is free, which is what makes a lake a way down.
+            // `bypass` = true: armour could never have stopped a fall, and Minecraft charges no exhaustion for
+            // it — the same flag drowning and starving already pass.
+            const drop = (P.fallPk === undefined ? P.y : P.fallPk) - P.y;
+            if (!dead && !P.fly && !inWater && !P.noFall && drop > 0) {
+              const m = Math.floor(drop / 10) - FALL_FREE;
+              if (m > 0) vitHurt(m, 'you fell ' + Math.round(drop / 10) + ' m', true);
+            }
+            P.fallPk = undefined; P.noFall = 0;   // the free landing is spent
+            P.onGround = true; P.sprintJump = false; P.fallT = 0;
+          }
           P.bounceN = 0;                              // landed on normal ground / hit a ceiling → reset the bounce streak
           P.vy = 0;
         }
@@ -16120,7 +16514,13 @@
         return y;
       };
       const landSnowAt = (wx0, wz0) => {
-        if (desertM(wx0, wz0) > 0.5) return;           // ── NO SNOW IN THE DESERT (user) ── first test in the function, before the queue cap and the sweep gate, so desert columns never consume a slot of the SNOW_MAX budget either: the blanket over the forest stays as deep as it was rather than being rationed against sand that will not hold it
+        // ── SNOW THINS OUT INTO THE DESERT (user 2026-08-16: "make the snow spread out like the rest of the
+        // terrain when transitioning") ── this was a cliff at dm 0.5: full snow one column, bare sand the next.
+        // It now dithers on the SAME hash and the SAME salts the surface material uses, so a column that took
+        // desert sand refuses snow and a column that stayed forest floor keeps it. The two boundaries are then
+        // the same boundary rather than two independent ones that happen to sit near each other.
+        const dmS = desertM(wx0, wz0);
+        if (dmS > 0 && ihash(wx0 * 5 + 17, wz0 * 7 + 29) < dmS) return;
         if ((snowQN - snowHead) + (snowWN - snowWHead) >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
         // ORDER (user): the FLAKES arrive first, the blanket second. The leading edge sweeps down from the sky, so
         // until it has passed THIS column's surface no flake has reached the ground here yet — laying snow before
@@ -16603,6 +17003,12 @@
       UF[UF_HEART + 4] = (HEART_IT && heartShow && !ED.on && !dead) ? HEART_IT : 0;   // 0 = the whole shader block is one compare and draws nothing
       UF[UF_HEART + 5] = hpH; UF[UF_HEART + 6] = HEART_POSE.gap;
       UF[UF_HEART + 7] = Math.round(VIT.hurtT * 13) / 13; }   // the hit kick, STEPPED: VIT.hurtT falls 1 -> 0 over 0.55 s, and 13 steps across it is 24 fps - the rate every animation in this game runs at
+    // -- THE HURT FLASH -> u.hurtV -- the red vignette BLIT paints over the finished image. Its own clock, not
+    // VIT.hurtT: the kick above runs 0.55 s and the flash has always been the CSS keyframe's 0.42 s, and driving
+    // both off one lane would have silently retimed one of them. Written every frame; hurtVig() is 0 for all but
+    // the ~10 frames after a hit, and 0 is the one compare that skips the whole block in the shader.
+    UF[UF_HURTV] = hurtVig(); UF[UF_HURTV + 1] = HURTV.seed;
+    UF[UF_HURTV + 2] = vitRedLevel();                 // z: the standing heart level BLIT tints from — .x is the per-hit spike on top of it, and the two are independent on purpose (one is an event, one is a state)
     UF[64] = ED.on ? Math.max(64, renderDist)            // editor world: nothing stale exists (occupancy is empty beyond the stage) — no rect clamp
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
@@ -17126,7 +17532,7 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > MAM_OUT * MAM_OUT) continue;              // NO inner floor + MAM_OUT ceiling (user): mammals fill the forest like the perched songbirds — nearest-first from the player out to the BIRD reach (~536, rect-clipped). Tradeoff: a mammal can occasionally recycle into view as you walk (the perched-bird model has no near floor either).
-          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); skunkCand.push(h);   // ord = deterministic scatter key (see the pick below)
+          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); skunkCand.push(h);   // ── ONE SCATTER KEY PER SPECIES ── this hash was copy-pasted identically into all four finders, and because every one of these grids is 85% occupied nearly every 160-cell offers a home to all four. A shared key means all four RANK the cells the same way, so bunny, armadillo, skunk and porcupine kept choosing the same cells and landed 40-113 voxels apart inside them — four-species knots that only the 70-voxel cross-species floor below prised open. MEASURED over 6 boots before changing it: every mammal's nearest neighbour was a DIFFERENT species, pooled nearest-neighbour min 70.2 / p10 79.9 — the whole population jammed against that floor, while the same-species gap sat at 250-280. Four independent keys make the four scatters independent, which is what the separate grids were for.
         }
       }
       if (!skunkCand.length) return null;
@@ -17156,7 +17562,7 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
-          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); porcCand.push(h);   // ord = deterministic scatter key (see the pick below)
+          h.d2 = d2; h.ord = ihash(h.cx * 439 + 37, h.cz * 443 + 53); porcCand.push(h);   // ord = this species' OWN scatter key (see the skunk finder)
         }
       }
       if (!porcCand.length) return null;
@@ -17186,7 +17592,7 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
-          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); bunnyCand.push(h);   // ord = deterministic scatter key (see the pick below)
+          h.d2 = d2; h.ord = ihash(h.cx * 449 + 67, h.cz * 457 + 89); bunnyCand.push(h);   // ord = this species' OWN scatter key (see the skunk finder)
         }
       }
       if (!bunnyCand.length) return null;
@@ -17216,7 +17622,7 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
-          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); armCand.push(h);   // ord = deterministic scatter key (see the pick below)
+          h.d2 = d2; h.ord = ihash(h.cx * 461 + 97, h.cz * 463 + 113); armCand.push(h);   // ord = this species' OWN scatter key (see the skunk finder)
         }
       }
       if (!armCand.length) return null;
@@ -17381,7 +17787,11 @@
       // ── WHO BOLTS WHEN YOU GET CLOSE (user 2026-08-15) ── doubles its travel speed inside DES_DASH_R. Applied
       // to the SPEED, not to the animation rate, so the gecko keeps its 24 fps gait and simply covers ground
       // faster — the same split the mouse's speed doubling used.
-      const DES_DASH = { gecko: 2, desert_mouse: 2 }, DES_DASH_R = 70;   // the mouse bolts too (user 2026-08-16), on the same radius and the same x2 the gecko uses
+      // ── WHO CHANGES PACE WHEN THE PLAYER IS CLOSE ── x2 inside DES_DASH_R, whichever way they are pointing.
+      // The gecko and the mouse spend it RUNNING (the flee block steers them away); the cobra and the scorpion
+      // spend it CHARGING, because DES_HUNT already steers them at the player and the flee block excludes any
+      // hunter. So one table drives two opposite behaviours and neither species needs a special case.
+      const DES_DASH = { gecko: 2, desert_mouse: 2, cobra: 2, scorpion: 2 }, DES_DASH_R = 70;
       const DES_HUNT = { cobra: 1, scorpion: 1 };         // ── WHO HUNTS THE PLAYER ── (user 2026-08-15)                   // ── PER-SPECIES ANIMATION RATE ── the scorpion reads slow at the house 24 (user 2026-08-15); everything unlisted stays 24
       const antLead = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) === 0;   // ── THE ANT COLUMN'S HEAD ── slot 0 of the ant band is the only ant that decides anything: it marches on the compass (its own branch in the steering chain below), and every other ant is PLACED on the path it recorded. Keyed on the NAME like desFly, so re-ordering the load list cannot promote some other animal to leader.
       const desFly = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'fly';   // ── THE FLY FLIES (user 2026-08-15) ── keyed on the NAME, not the index, so re-ordering the load list cannot silently turn some other animal into a flyer
@@ -17482,7 +17892,24 @@
             sx = h.x; sz = h.z; hcx = h.cx; hcz = h.cz;
           } else {
             const a5 = Math.random() * 6.283;
-            const d5 = Math.sqrt(LIFE_IN * LIFE_IN + Math.random() * (LIFE_OUT * LIFE_OUT - LIFE_IN * LIFE_IN));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
+            // ── THE DESERT BAND GETS A MUCH WIDER RING (user 2026-08-16: life "all seem to spawn near each
+            // other, then vast areas where nothing spawns") ── measured before changing anything: with the
+            // shared LIFE_IN (0.78 x LIFE_KEEP ~ 811) the ring is only ~31% of the disc it sits in and NOTHING
+            // is ever placed inside 811, so 61% of bodies sat beyond 770 voxels and the ground within 110 of
+            // the player held 1.3% of them. That reads exactly as a distant band with empty desert in front.
+            // Halving the inner radius quadruples the usable area and lets the same 31 bodies cover it.
+            // Pop-in is the reason the floor exists, and it is why this is scoped to the DESERT band alone:
+            // these are 1-3 voxel animals, sub-pixel at 400+ voxels, where a bunny or a duck is not.
+            // ── AND NOT THE LAND MAMMALS ── a `mamB` arm sat here giving bunnies/armadillos/skunks/porcupines
+            // a 0.55 inner floor, on the same argument. It was INERT: every one of the four is kind 2 with
+            // desSlot false, so the branch above routes all of them into findBunnyHome/findArmHome/
+            // findSkunkHome/findPorcHome and nothing in the band can ever reach this draw. Measured before
+            // removing it — over six boots the mammals' distance distribution (p25 323 / median 437 / p75 543
+            // / max 638) is a dead match for an area-uniform disc of radius MAM_OUT = 639, which is what the
+            // home finders produce and is nothing like this annulus. Their spread is decided by the scatter
+            // key in those finders, so that is where the even-spread work belongs and where it now is.
+            const inR = desSlot ? Math.min(LIFE_IN, LIFE_KEEP * 0.40) : LIFE_IN;
+            const d5 = Math.sqrt(inR * inR + Math.random() * (LIFE_OUT * LIFE_OUT - inR * inR));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
             sx = P.x + Math.sin(a5) * d5; sz = P.z + Math.cos(a5) * d5;
           }
           const antHeel = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) > 0;
@@ -17522,7 +17949,25 @@
             if (tooClose(MAM_END, DES_END, DES_APART_ANY * spread)) continue;
           }
           if (desSlot && wantK === 2 && !navSand(sx, sz)) continue;   // ── NO DESERT WALKER STARTS ON A ROCK OR A CACTUS (user 2026-08-16) ── the same rule its every step is judged by, asked once at placement. Without it a body placed on stone spends its whole life in the egress path, which is the one branch that moves without asking. The forest's own version of this test (isRockSurf over the MAMFIT footprint, below) is deliberately left where it is: it answers a different question, about worldgen strata, for a band this change does not touch.
-          if ((bunnySlot || armSlot || skunkSlot || porcSlot) && tooClose(276, 372, 70)) continue;   // CROSS-SPECIES floor: never spawn a land mammal within 70 vox of ANY live mammal (bunny/armadillo/skunk/porcupine) — breaks up the multi-species KNOTS (user: skunk 24 vox from a bunny etc.). 70 was count-starving under NEAREST-FIRST (even 24 left skunk 2 short — rejects had nowhere else to go), but the HASH-ORDER scatter retries land anywhere in the disc, so counts hold (measured 14/14/14/14).
+          // CROSS-SPECIES floor: never spawn a land mammal within MAM_FLOOR of ANY live mammal (bunny/
+          // armadillo/skunk/porcupine) — breaks up the multi-species KNOTS (user: skunk 24 vox from a bunny
+          // etc.). 70 was count-starving under NEAREST-FIRST (even 24 left skunk 2 short — rejects had nowhere
+          // else to go), but the HASH-ORDER scatter retries land anywhere in the disc, so counts hold.
+          // RELAXED BY TRY (user 2026-08-16: "make sure that the land mammals are evenly spread out across the
+          // pine forest"). The flat 70 was not spacing the band, it was DEFINING it: measured over six boots
+          // the pooled nearest-neighbour distribution sat at min 70.2 / p10 79.9 / median 104.7, i.e. the tenth
+          // percentile was standing on the gate. Asking for MAM_APART on the first try and decaying to the old
+          // 70 by try MAM_RELAX gives the placement room to find a real gap while leaving the worst case
+          // exactly where it has always been — so this cannot place anything closer than the flat rule did.
+          // It reaches the floor at MAM_RELAX rather than at the last try for a measured reason: decaying
+          // across the whole budget spent every try on a gate stricter than the old one, and a slot that used
+          // to fill could exhaust all twelve (measured 23 of 24 alive in 2 of 12 samples — transient, the slot
+          // retries next frame, but real). The last few tries now run at exactly the historical gate, so the
+          // band cannot do worse than it always has.
+          if (bunnySlot || armSlot || skunkSlot || porcSlot) {
+            const mamGap = MAM_APART - (MAM_APART - MAM_FLOOR) * Math.pow(Math.min(1, tries / MAM_RELAX), 3);
+            if (tooClose(276, 372, mamGap)) continue;
+          }
           // ── NO LAND MAMMAL STARTS ON STONE (user 2026-08-07) ── this used to sample ONE column, at the spawn
           // point, and reject only when it found GREY three voxels deep. Two ways through it: a boulder or a
           // shallow outcrop is not three deep, and an animal is not a column — a skunk is 11 voxels long, so its
@@ -17783,8 +18228,15 @@
             if (l2 > WORM_LEASH * WORM_LEASH) { const il = 1.6 / Math.sqrt(l2); gx8 -= lx * il; gz8 -= lz * il; } }
           const gOn = gx8 * gx8 + gz8 * gz8 > 0.01;
           const gc8 = navGroundAt(B.x, B.z);
+          const bioH8 = desertM(B.x, B.z) > 0.85;
+          // Only a walker standing on its OWN ground clips against the line — one already stranded the wrong side
+          // must be free to walk home, and the |dm-0.85| band keeps the extra desertM samples off the 90-odd
+          // percent of the band that is nowhere near the boundary. The band is far wider than a plan tick of
+          // travel, so a walker is always inside it well before the line is within reach.
+          const bioOn8 = bioH8 === !!desSlot && Math.abs(desertM(B.x, B.z) - 0.85) < 0.15;
           navSteer2(B, navLandOK(B.x, B.z, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot),
-            (th7, L7) => navReachLand(B.x, B.z, th7, L7, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot),
+            (th7, L7) => { const r7 = navReachLand(B.x, B.z, th7, L7, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot);
+              return bioOn8 ? navBioClip(B.x, B.z, th7, r7, bioH8) : r7; },
             NAV_WREACH, 2 * NAV_WN, gOn ? Math.atan2(gx8, gz8) : 0, gOn, 2.6, 2.4);   // the same ±2.6 clamp and 2.4 gain the keep-apart push used, so the crawl's turn character is unchanged
         }
       } else if (B.kind === 2) {                       // WORM: smooth continuous meandering crawl (the random pause was removed — user)
@@ -17993,6 +18445,25 @@
       // ── DESERT STEERING OVERRIDE ── runs AFTER both kind-2 branches have chosen a heading, because the
       // desert creatures take the NAV-ARBITER branch (wormArb below is true for them) and anything written
       // into the plain worm branch never executes for them at all. Setting B.omT here wins either way.
+      // ── TURN AWAY FROM THE BIOME EDGE (user 2026-08-16: life "gets stuck on the invisible wall between
+      // biomes") ── for the bands that are NOT on the arbiter. The mammals, the bunny and the ant leader each
+      // drive their own walk and never reach navSteer2, so the reach clamp above cannot help them; without this
+      // they walk into the line and the step rule holds them there. Measured: this block first went in INSIDE
+      // the desert gate below, which meant every pine-forest mammal — the whole population on the other side of
+      // the line — had no avoidance whatsoever, and the residual stall was mostly them.
+      if ((B.kind | 0) === 2 && B.init && (mamSlot || bunnySlot || antLead)) {
+        const home9 = !!desSlot;
+        if ((desertM(B.x + Hx2 * BIO_LOOK, B.z + Hz2 * BIO_LOOK) > 0.85) !== home9) {
+          const lx9 = Math.sin(B.th + 1.2), lz9 = Math.cos(B.th + 1.2);
+          const rx9 = Math.sin(B.th - 1.2), rz9 = Math.cos(B.th - 1.2);
+          const lOK9 = (desertM(B.x + lx9 * BIO_LOOK, B.z + lz9 * BIO_LOOK) > 0.85) === home9;
+          const rOK9 = (desertM(B.x + rx9 * BIO_LOOK, B.z + rz9 * BIO_LOOK) > 0.85) === home9;
+          const turn9 = lOK9 ? 1.2 : (rOK9 ? -1.2 : 3.14159);
+          B.th += Math.max(-2.4 * dt, Math.min(2.4 * dt, turn9));
+          Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
+          B.mth = B.th;
+        }
+      }
       if (desSlot && (B.kind | 0) === 2) {
         const desLine = DESERTS[desSp] && DESERTS[desSp].name === 'ant';
         const desIdx = (wk - MAM_END) % DES_PER;
@@ -18006,6 +18477,20 @@
         if (desLine && desIdx > 0) B.chase = 0;
         // ── THE HUNTERS ── cobra and scorpion steer AT the player instead of wandering. The mammals' flee
         // maths inverted: they maximise the dot with the away vector, this maximises it with the toward one.
+        // ── THE PREY RUNS THE OTHER WAY (user 2026-08-16: "if the mouse or gecko come near the player, have
+        // them run in the opposite direction. keep the 2x speed") ── the mirror image of the hunt block below:
+        // the hunters steer to MAXIMISE the dot with the toward-vector, these steer along the AWAY one. Same
+        // radius as DES_DASH, so the animal starts sprinting and starts fleeing on the same step rather than
+        // bolting in whatever direction it happened to be pointing. The speed itself is untouched — DES_DASH
+        // still doubles it — this only decides WHERE the doubled speed is spent.
+        if (desSlot && DESERTS[desSp] && DES_DASH[DESERTS[desSp].name] && !DES_HUNT[DESERTS[desSp].name]) {
+          const fdx = B.x - P.x, fdz = B.z - P.z, fd2 = fdx * fdx + fdz * fdz;
+          if (fd2 < DES_DASH_R * DES_DASH_R && fd2 > 0.01) {
+            let dthF = Math.atan2(fdx, fdz) - B.th; dthF = Math.atan2(Math.sin(dthF), Math.cos(dthF));
+            B.omT = Math.max(-2.8, Math.min(2.8, dthF * 2.2));
+            B.tRe = tb3 + 1e9;                         // …and it stops taking random wander targets while it is running
+          }
+        }
         if (desSlot && DESERTS[desSp] && DES_HUNT[DESERTS[desSp].name]) {
           const hdx = P.x - B.x, hdz = P.z - B.z, hd2 = hdx * hdx + hdz * hdz;
           if (hd2 < 90 * 90) {
@@ -18118,7 +18603,14 @@
       // real column walks, and it cannot oscillate because it is history, not a moving target.
       // Placed kinematically (B.x/B.z/B.th written directly) rather than steered, which also puts the ants out
       // of the nav arbiter's reach — the arbiter used to rewrite their heading 12 times a second.
-      if (desSlot && (B.kind | 0) === 2 && DESERTS[desSp] && DESERTS[desSp].name === 'ant') {
+      // ── A DEAD ANT STOPS BEING DRIVEN (user 2026-08-16: killing one leaves it "static into the terrain") ──
+      // the ant is the ONE creature placed kinematically: the leader writes B.x/B.z/B.th directly and each
+      // follower is set on the leader's breadcrumb path every frame, bypassing the mover entirely. Every other
+      // species dies by becoming a rigid body that falls, but this block kept writing the corpse's position
+      // back on top of the ragdoll, pinning it where it stood. Excluding a dying or slain body hands it to the
+      // same death path the rest of the life uses. A dead LEADER also stops laying crumbs, so the followers
+      // fall back to the head of the line rather than trailing a body that no longer moves.
+      if (desSlot && (B.kind | 0) === 2 && !B.dying && !B.slain && DESERTS[desSp] && DESERTS[desSp].name === 'ant') {
         const aIdx = (wk - MAM_END) % DES_PER;
         if (aIdx === 0) {
           if (!B.trail) B.trail = [{ x: B.x, z: B.z, th: B.th }];
@@ -18438,6 +18930,14 @@
                     pz3 + (Xw[2] * ex + Yw[2] * e[1] + zW[2] * e[2]) * bScale);
         }
       }
+      // ── A DASHING ANIMAL ANIMATES AS FAST AS IT MOVES (user 2026-08-16) ── the same DES_DASH factor and the
+      // same DES_DASH_R that double the travel speed now double the frame rate, so legs keep pace with ground
+      // covered instead of a sprinting gecko sliding on a walk cycle. It multiplies each species' OWN rate
+      // rather than setting a flat 48: everything runs at 24 and doubles to 48, but the scorpion runs at 12
+      // and doubles to 24, which keeps the slower gait the user asked for.
+      const desRate = (desSlot && DESERTS[desSp])
+        ? (DES_FPS[DESERTS[desSp].name] || 24) * ((DES_DASH[DESERTS[desSp].name] && ((P.x - B.x) * (P.x - B.x) + (P.z - B.z) * (P.z - B.z)) < DES_DASH_R * DES_DASH_R) ? DES_DASH[DESERTS[desSp].name] : 1)
+        : 24;
       const nfr = desSlot ? (DESERTS[desSp] ? DESERTS[desSp].n : 1) : B.kind === 6 ? FISHES[B.fsp || 0].n : (B.kind >= 3 ? 1 : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_NFRAMES : BUNNY_JUMP_NFRAMES) : (armSlot ? ARMADILLO_NFRAMES : (skunkSlot ? SKUNK_NFRAMES : (porcSlot ? PORCUPINE_NFRAMES : WORM_NFRAMES)))) : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES))));
       // ── THE SKUNK AND PORCUPINE RUN OFF THE SAME CLOCK IN BOTH RENDER PATHS (user 2026-08-07: "cut the
       // skunk's animation speed in half") ── it already had been, once, and it never showed: the GRID-STAMPED
@@ -18446,8 +18946,8 @@
       // and the animal the player was actually looking at ran at 24 fps — and jumped 4× the moment it crossed
       // the boundary. Same clock now, so the rate is what the marcher set, near and far alike.
       const fi3 = (B.kind === 2 && (skunkSlot || porcSlot)) ? (Math.floor(B.aframe || 0) % nfr)
-        : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * (desSlot && DESERTS[desSp] ? (DES_FPS[DESERTS[desSp].name] || 24) : 24)) % nfr)   // …and the desert rate applies HERE, which is the branch a kind-2 creature actually takes — putting it only on the line below meant the scorpion silently stayed at 24   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
-        : Math.floor((tb3 + wk * 0.37) * (desSlot && DESERTS[desSp] ? (DES_FPS[DESERTS[desSp].name] || 24) : 24)) % nfr;   // per-species rate for the desert set; everything else keeps the 24 fps house rule                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
+        : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * desRate) % nfr)   // …and the desert rate applies HERE, which is the branch a kind-2 creature actually takes — putting it only on the line below meant the scorpion silently stayed at 24   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
+        : Math.floor((tb3 + wk * 0.37) * desRate) % nfr;   // per-species rate for the desert set; everything else keeps the 24 fps house rule                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
       let glow = 0;
       if (B.kind === 1) {                              // GLOW (fireflies only): random dark spell, then the yellow abdomen holds BRIGHT for a full 2 s
         if (!B.glowT || now > B.glowT) { B.glow = !B.glow; B.glowT = now + (B.glow ? 2000 : 1500 + Math.random() * 3500); }

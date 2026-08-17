@@ -110,6 +110,11 @@
         const gK = 1 + Math.min(1.125, P.fallT * 0.41); // falling and the terminal is higher, so a long drop keeps visibly winding up until it lands.
         P.vy = Math.max(-345, P.vy - GRAVITY * gK * dt);   // ramp starts at 1.0 so jump arcs are unchanged. Boost and terminal both CUT 25% (user 2026-07-18): was 1.5 / -460.
       }
+      // ── FALL DAMAGE: REMEMBER THE HIGHEST POINT OF THE FALL ── not the fall TIME (P.fallT) and not the
+      // impact speed, because both lie on a staircase: a player bouncing down a dune resets fallT on every
+      // contact and never accumulates, while a long shallow slide builds speed without ever really dropping.
+      // The peak-minus-landing height is the one quantity that means "how far did I actually fall".
+      if (!P.onGround && !P.fly) { if (P.fallPk === undefined || P.y > P.fallPk) P.fallPk = P.y; }
       const impV = P.vy;                              // impact velocity before the collision zeroes it
       const hitY = moveAxis(1, P.vy * dt, hh);
       if (hitY) {
@@ -118,7 +123,20 @@
           P.vy = Math.min(BOUNCE_MAX, BOUNCE_V0 + BOUNCE_DV * (P.bounceN - 1));
           P.onGround = false; P.sprintJump = false;
         } else {
-          if (P.vy < 0) { P.onGround = true; P.sprintJump = false; P.fallT = 0; }   // landed — the next fall winds up from zero again
+          if (P.vy < 0) {                             // landed — the next fall winds up from zero again
+            // ── AND PAY FOR IT ── Minecraft's curve, in this game's units: a voxel is 10 cm and HEIGHT is 20,
+            // so a 2 m person is 20 voxels and one METRE is 10. Nothing under FALL_FREE metres hurts, then one
+            // point per further metre. Landing in water is free, which is what makes a lake a way down.
+            // `bypass` = true: armour could never have stopped a fall, and Minecraft charges no exhaustion for
+            // it — the same flag drowning and starving already pass.
+            const drop = (P.fallPk === undefined ? P.y : P.fallPk) - P.y;
+            if (!dead && !P.fly && !inWater && !P.noFall && drop > 0) {
+              const m = Math.floor(drop / 10) - FALL_FREE;
+              if (m > 0) vitHurt(m, 'you fell ' + Math.round(drop / 10) + ' m', true);
+            }
+            P.fallPk = undefined; P.noFall = 0;   // the free landing is spent
+            P.onGround = true; P.sprintJump = false; P.fallT = 0;
+          }
           P.bounceN = 0;                              // landed on normal ground / hit a ceiling → reset the bounce streak
           P.vy = 0;
         }

@@ -658,7 +658,7 @@ UF_PINNED = {'drops': 68, 'pick2A': 1092, 'fflies': 1108, 'cshad': 1140, 'misc':
 UF_DERIVED = {'UF_PHYSB': 'physB', 'UF_PHYSC': 'physC', 'UF_PHYSBOUND': 'physBound',
               'UF_HELDCFG': 'heldCfg', 'UF_LGT': 'lgt', 'UF_HURTB': 'hurtB',
               'UF_HURTH': 'hurtH', 'UF_DROPSB': 'dropsB', 'UF_LIFEMOTB': 'lifeMotB',
-              'UF_DOF': 'dof', 'UF_HEART': 'heart'}
+              'UF_DOF': 'dof', 'UF_HEART': 'heart', 'UF_HURTV': 'hurtV'}
 
 
 def js_ints(js):

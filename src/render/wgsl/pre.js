@@ -49,6 +49,13 @@
       // ── FLOATING HEARTS ── appended after dof for the same reason dof was appended after the drop halves.
       heart  : vec4<f32>,                                            // xyz = the FIRST heart's anchor in CAMERA space (voxel units, the same space the held item's pickA lives in), w = its voxel scale at full health
       heartC : vec4<f32>,                                            // x = the heart model's item id (0 = single.vox never loaded → the whole block compiles to one compare and draws nothing), y = health in HEARTS (hp / 4, so 5.0 is a full bar), z = the gap between two hearts in the same camera units, w = HURT KICK 0..1 (VIT.hurtT — the row swells and brightens for the half second after a hit)
+      // ── THE HURT FLASH ── the red vignette that fires on every hit. It used to be a DOM <canvas id="hurtFx">
+      // laid over the game and faded by a CSS keyframe. That works on screen and is INVISIBLE IN A RECORDING:
+      // veStartRec captures the WebGPU canvas with canvas.captureStream(60), and a DOM element sitting on top of
+      // that canvas is not part of the captured surface (user 2026-08-16: "the red pixels on the ui dont show up").
+      // Compositing the two canvases into a third is not open either — drawImage of this canvas reads back all
+      // zero. So the flash is now DRAWN INTO THE IMAGE, in BLIT, and the recording gets it because it is the image.
+      hurtV  : vec4<f32>,                                            // x = flash strength 0..1 (0 = the whole block is one compare), y = the PER-HIT dither seed (fixed for the length of one flash, so the blocks fade rather than sizzle), z/w spare
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}
@@ -224,6 +231,19 @@
     // so nothing downstream can tell the difference except the code that asks.
     const SANDF : u32 = 9u;
     fn isSandV(v : u32) -> bool { return ${[...SAND, ...DSAND].map((i) => 'v == ' + i + 'u').join(' || ')}; }   // beach/lakebed SAND + desert DSAND -- ids listed one by one rather than as a range, so a future palette reorder cannot silently widen it
+    // ── WHICH IDS ARE A CACTUS ── built the way isSandV is, from the ids the loaded models actually
+    // reference rather than a hand-written list, so a re-bake or a palette shift cannot leave it stale. The
+    // trailing 'or false' keeps the expression valid WGSL if the cacti failed to load and the set is empty.
+    fn isCactusV(v : u32) -> bool { return ${[...new Set(CACTI.flatMap((c) => c.vox.map((q) => q >>> 24)))].map((i) => 'v == ' + i + 'u').join(' || ') || 'false'}; }
+    // ── WHICH IDS ARE STONE ── the sun sheen in COMPOSITE asks this once per pixel, through bit 12 of the slot
+    // word (see slotOut in TRACE). Generated from rockShTab, which material-tabs.js fills from the palette
+    // constants AND from the ids the loaded boulder models actually reference — the same discipline isSandV
+    // and isCactusV follow, so a re-bake or a palette shift cannot leave this list stale. Written out one id
+    // at a time rather than as a range for the reason isSandV gives: a future palette reorder must not be able
+    // to silently widen it onto dirt. The trailing 'or false' keeps the expression valid WGSL if the table is
+    // somehow empty (a failed rocks26 fetch leaves only the terrain strata, which is already 12 ids, but the
+    // guard costs nothing and an empty return would be a compile error, i.e. a black screen).
+    fn isRockV(v : u32) -> bool { return ${[...rockShTab].map((f, i) => (f ? i : -1)).filter((i) => i >= 0).map((i) => 'v == ' + i + 'u').join(' || ') || 'false'}; }
     fn gbFace(a : f32) -> u32 { let r = u32(a * 255.0 + 0.5) & 15u; return select(r, 2u, r == SANDF); }   // ...the plain face, sand folded back into TOP: the denoiser rejects a neighbour whose face differs, and without this a sand/grass boundary would stop sharing irradiance samples
   `;
 

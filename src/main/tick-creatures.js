@@ -8,7 +8,11 @@
       // ── WHO BOLTS WHEN YOU GET CLOSE (user 2026-08-15) ── doubles its travel speed inside DES_DASH_R. Applied
       // to the SPEED, not to the animation rate, so the gecko keeps its 24 fps gait and simply covers ground
       // faster — the same split the mouse's speed doubling used.
-      const DES_DASH = { gecko: 2, desert_mouse: 2 }, DES_DASH_R = 70;   // the mouse bolts too (user 2026-08-16), on the same radius and the same x2 the gecko uses
+      // ── WHO CHANGES PACE WHEN THE PLAYER IS CLOSE ── x2 inside DES_DASH_R, whichever way they are pointing.
+      // The gecko and the mouse spend it RUNNING (the flee block steers them away); the cobra and the scorpion
+      // spend it CHARGING, because DES_HUNT already steers them at the player and the flee block excludes any
+      // hunter. So one table drives two opposite behaviours and neither species needs a special case.
+      const DES_DASH = { gecko: 2, desert_mouse: 2, cobra: 2, scorpion: 2 }, DES_DASH_R = 70;
       const DES_HUNT = { cobra: 1, scorpion: 1 };         // ── WHO HUNTS THE PLAYER ── (user 2026-08-15)                   // ── PER-SPECIES ANIMATION RATE ── the scorpion reads slow at the house 24 (user 2026-08-15); everything unlisted stays 24
       const antLead = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) === 0;   // ── THE ANT COLUMN'S HEAD ── slot 0 of the ant band is the only ant that decides anything: it marches on the compass (its own branch in the steering chain below), and every other ant is PLACED on the path it recorded. Keyed on the NAME like desFly, so re-ordering the load list cannot promote some other animal to leader.
       const desFly = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'fly';   // ── THE FLY FLIES (user 2026-08-15) ── keyed on the NAME, not the index, so re-ordering the load list cannot silently turn some other animal into a flyer
@@ -109,7 +113,24 @@
             sx = h.x; sz = h.z; hcx = h.cx; hcz = h.cz;
           } else {
             const a5 = Math.random() * 6.283;
-            const d5 = Math.sqrt(LIFE_IN * LIFE_IN + Math.random() * (LIFE_OUT * LIFE_OUT - LIFE_IN * LIFE_IN));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
+            // ── THE DESERT BAND GETS A MUCH WIDER RING (user 2026-08-16: life "all seem to spawn near each
+            // other, then vast areas where nothing spawns") ── measured before changing anything: with the
+            // shared LIFE_IN (0.78 x LIFE_KEEP ~ 811) the ring is only ~31% of the disc it sits in and NOTHING
+            // is ever placed inside 811, so 61% of bodies sat beyond 770 voxels and the ground within 110 of
+            // the player held 1.3% of them. That reads exactly as a distant band with empty desert in front.
+            // Halving the inner radius quadruples the usable area and lets the same 31 bodies cover it.
+            // Pop-in is the reason the floor exists, and it is why this is scoped to the DESERT band alone:
+            // these are 1-3 voxel animals, sub-pixel at 400+ voxels, where a bunny or a duck is not.
+            // ── AND NOT THE LAND MAMMALS ── a `mamB` arm sat here giving bunnies/armadillos/skunks/porcupines
+            // a 0.55 inner floor, on the same argument. It was INERT: every one of the four is kind 2 with
+            // desSlot false, so the branch above routes all of them into findBunnyHome/findArmHome/
+            // findSkunkHome/findPorcHome and nothing in the band can ever reach this draw. Measured before
+            // removing it — over six boots the mammals' distance distribution (p25 323 / median 437 / p75 543
+            // / max 638) is a dead match for an area-uniform disc of radius MAM_OUT = 639, which is what the
+            // home finders produce and is nothing like this annulus. Their spread is decided by the scatter
+            // key in those finders, so that is where the even-spread work belongs and where it now is.
+            const inR = desSlot ? Math.min(LIFE_IN, LIFE_KEEP * 0.40) : LIFE_IN;
+            const d5 = Math.sqrt(inR * inR + Math.random() * (LIFE_OUT * LIFE_OUT - inR * inR));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
             sx = P.x + Math.sin(a5) * d5; sz = P.z + Math.cos(a5) * d5;
           }
           const antHeel = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) > 0;
@@ -149,7 +170,25 @@
             if (tooClose(MAM_END, DES_END, DES_APART_ANY * spread)) continue;
           }
           if (desSlot && wantK === 2 && !navSand(sx, sz)) continue;   // ── NO DESERT WALKER STARTS ON A ROCK OR A CACTUS (user 2026-08-16) ── the same rule its every step is judged by, asked once at placement. Without it a body placed on stone spends its whole life in the egress path, which is the one branch that moves without asking. The forest's own version of this test (isRockSurf over the MAMFIT footprint, below) is deliberately left where it is: it answers a different question, about worldgen strata, for a band this change does not touch.
-          if ((bunnySlot || armSlot || skunkSlot || porcSlot) && tooClose(276, 372, 70)) continue;   // CROSS-SPECIES floor: never spawn a land mammal within 70 vox of ANY live mammal (bunny/armadillo/skunk/porcupine) — breaks up the multi-species KNOTS (user: skunk 24 vox from a bunny etc.). 70 was count-starving under NEAREST-FIRST (even 24 left skunk 2 short — rejects had nowhere else to go), but the HASH-ORDER scatter retries land anywhere in the disc, so counts hold (measured 14/14/14/14).
+          // CROSS-SPECIES floor: never spawn a land mammal within MAM_FLOOR of ANY live mammal (bunny/
+          // armadillo/skunk/porcupine) — breaks up the multi-species KNOTS (user: skunk 24 vox from a bunny
+          // etc.). 70 was count-starving under NEAREST-FIRST (even 24 left skunk 2 short — rejects had nowhere
+          // else to go), but the HASH-ORDER scatter retries land anywhere in the disc, so counts hold.
+          // RELAXED BY TRY (user 2026-08-16: "make sure that the land mammals are evenly spread out across the
+          // pine forest"). The flat 70 was not spacing the band, it was DEFINING it: measured over six boots
+          // the pooled nearest-neighbour distribution sat at min 70.2 / p10 79.9 / median 104.7, i.e. the tenth
+          // percentile was standing on the gate. Asking for MAM_APART on the first try and decaying to the old
+          // 70 by try MAM_RELAX gives the placement room to find a real gap while leaving the worst case
+          // exactly where it has always been — so this cannot place anything closer than the flat rule did.
+          // It reaches the floor at MAM_RELAX rather than at the last try for a measured reason: decaying
+          // across the whole budget spent every try on a gate stricter than the old one, and a slot that used
+          // to fill could exhaust all twelve (measured 23 of 24 alive in 2 of 12 samples — transient, the slot
+          // retries next frame, but real). The last few tries now run at exactly the historical gate, so the
+          // band cannot do worse than it always has.
+          if (bunnySlot || armSlot || skunkSlot || porcSlot) {
+            const mamGap = MAM_APART - (MAM_APART - MAM_FLOOR) * Math.pow(Math.min(1, tries / MAM_RELAX), 3);
+            if (tooClose(276, 372, mamGap)) continue;
+          }
           // ── NO LAND MAMMAL STARTS ON STONE (user 2026-08-07) ── this used to sample ONE column, at the spawn
           // point, and reject only when it found GREY three voxels deep. Two ways through it: a boulder or a
           // shallow outcrop is not three deep, and an animal is not a column — a skunk is 11 voxels long, so its
@@ -410,8 +449,15 @@
             if (l2 > WORM_LEASH * WORM_LEASH) { const il = 1.6 / Math.sqrt(l2); gx8 -= lx * il; gz8 -= lz * il; } }
           const gOn = gx8 * gx8 + gz8 * gz8 > 0.01;
           const gc8 = navGroundAt(B.x, B.z);
+          const bioH8 = desertM(B.x, B.z) > 0.85;
+          // Only a walker standing on its OWN ground clips against the line — one already stranded the wrong side
+          // must be free to walk home, and the |dm-0.85| band keeps the extra desertM samples off the 90-odd
+          // percent of the band that is nowhere near the boundary. The band is far wider than a plan tick of
+          // travel, so a walker is always inside it well before the line is within reach.
+          const bioOn8 = bioH8 === !!desSlot && Math.abs(desertM(B.x, B.z) - 0.85) < 0.15;
           navSteer2(B, navLandOK(B.x, B.z, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot),
-            (th7, L7) => navReachLand(B.x, B.z, th7, L7, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot),
+            (th7, L7) => { const r7 = navReachLand(B.x, B.z, th7, L7, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot);
+              return bioOn8 ? navBioClip(B.x, B.z, th7, r7, bioH8) : r7; },
             NAV_WREACH, 2 * NAV_WN, gOn ? Math.atan2(gx8, gz8) : 0, gOn, 2.6, 2.4);   // the same ±2.6 clamp and 2.4 gain the keep-apart push used, so the crawl's turn character is unchanged
         }
       } else if (B.kind === 2) {                       // WORM: smooth continuous meandering crawl (the random pause was removed — user)
@@ -620,6 +666,25 @@
       // ── DESERT STEERING OVERRIDE ── runs AFTER both kind-2 branches have chosen a heading, because the
       // desert creatures take the NAV-ARBITER branch (wormArb below is true for them) and anything written
       // into the plain worm branch never executes for them at all. Setting B.omT here wins either way.
+      // ── TURN AWAY FROM THE BIOME EDGE (user 2026-08-16: life "gets stuck on the invisible wall between
+      // biomes") ── for the bands that are NOT on the arbiter. The mammals, the bunny and the ant leader each
+      // drive their own walk and never reach navSteer2, so the reach clamp above cannot help them; without this
+      // they walk into the line and the step rule holds them there. Measured: this block first went in INSIDE
+      // the desert gate below, which meant every pine-forest mammal — the whole population on the other side of
+      // the line — had no avoidance whatsoever, and the residual stall was mostly them.
+      if ((B.kind | 0) === 2 && B.init && (mamSlot || bunnySlot || antLead)) {
+        const home9 = !!desSlot;
+        if ((desertM(B.x + Hx2 * BIO_LOOK, B.z + Hz2 * BIO_LOOK) > 0.85) !== home9) {
+          const lx9 = Math.sin(B.th + 1.2), lz9 = Math.cos(B.th + 1.2);
+          const rx9 = Math.sin(B.th - 1.2), rz9 = Math.cos(B.th - 1.2);
+          const lOK9 = (desertM(B.x + lx9 * BIO_LOOK, B.z + lz9 * BIO_LOOK) > 0.85) === home9;
+          const rOK9 = (desertM(B.x + rx9 * BIO_LOOK, B.z + rz9 * BIO_LOOK) > 0.85) === home9;
+          const turn9 = lOK9 ? 1.2 : (rOK9 ? -1.2 : 3.14159);
+          B.th += Math.max(-2.4 * dt, Math.min(2.4 * dt, turn9));
+          Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
+          B.mth = B.th;
+        }
+      }
       if (desSlot && (B.kind | 0) === 2) {
         const desLine = DESERTS[desSp] && DESERTS[desSp].name === 'ant';
         const desIdx = (wk - MAM_END) % DES_PER;
@@ -633,6 +698,20 @@
         if (desLine && desIdx > 0) B.chase = 0;
         // ── THE HUNTERS ── cobra and scorpion steer AT the player instead of wandering. The mammals' flee
         // maths inverted: they maximise the dot with the away vector, this maximises it with the toward one.
+        // ── THE PREY RUNS THE OTHER WAY (user 2026-08-16: "if the mouse or gecko come near the player, have
+        // them run in the opposite direction. keep the 2x speed") ── the mirror image of the hunt block below:
+        // the hunters steer to MAXIMISE the dot with the toward-vector, these steer along the AWAY one. Same
+        // radius as DES_DASH, so the animal starts sprinting and starts fleeing on the same step rather than
+        // bolting in whatever direction it happened to be pointing. The speed itself is untouched — DES_DASH
+        // still doubles it — this only decides WHERE the doubled speed is spent.
+        if (desSlot && DESERTS[desSp] && DES_DASH[DESERTS[desSp].name] && !DES_HUNT[DESERTS[desSp].name]) {
+          const fdx = B.x - P.x, fdz = B.z - P.z, fd2 = fdx * fdx + fdz * fdz;
+          if (fd2 < DES_DASH_R * DES_DASH_R && fd2 > 0.01) {
+            let dthF = Math.atan2(fdx, fdz) - B.th; dthF = Math.atan2(Math.sin(dthF), Math.cos(dthF));
+            B.omT = Math.max(-2.8, Math.min(2.8, dthF * 2.2));
+            B.tRe = tb3 + 1e9;                         // …and it stops taking random wander targets while it is running
+          }
+        }
         if (desSlot && DESERTS[desSp] && DES_HUNT[DESERTS[desSp].name]) {
           const hdx = P.x - B.x, hdz = P.z - B.z, hd2 = hdx * hdx + hdz * hdz;
           if (hd2 < 90 * 90) {
@@ -745,7 +824,14 @@
       // real column walks, and it cannot oscillate because it is history, not a moving target.
       // Placed kinematically (B.x/B.z/B.th written directly) rather than steered, which also puts the ants out
       // of the nav arbiter's reach — the arbiter used to rewrite their heading 12 times a second.
-      if (desSlot && (B.kind | 0) === 2 && DESERTS[desSp] && DESERTS[desSp].name === 'ant') {
+      // ── A DEAD ANT STOPS BEING DRIVEN (user 2026-08-16: killing one leaves it "static into the terrain") ──
+      // the ant is the ONE creature placed kinematically: the leader writes B.x/B.z/B.th directly and each
+      // follower is set on the leader's breadcrumb path every frame, bypassing the mover entirely. Every other
+      // species dies by becoming a rigid body that falls, but this block kept writing the corpse's position
+      // back on top of the ragdoll, pinning it where it stood. Excluding a dying or slain body hands it to the
+      // same death path the rest of the life uses. A dead LEADER also stops laying crumbs, so the followers
+      // fall back to the head of the line rather than trailing a body that no longer moves.
+      if (desSlot && (B.kind | 0) === 2 && !B.dying && !B.slain && DESERTS[desSp] && DESERTS[desSp].name === 'ant') {
         const aIdx = (wk - MAM_END) % DES_PER;
         if (aIdx === 0) {
           if (!B.trail) B.trail = [{ x: B.x, z: B.z, th: B.th }];
@@ -1065,6 +1151,14 @@
                     pz3 + (Xw[2] * ex + Yw[2] * e[1] + zW[2] * e[2]) * bScale);
         }
       }
+      // ── A DASHING ANIMAL ANIMATES AS FAST AS IT MOVES (user 2026-08-16) ── the same DES_DASH factor and the
+      // same DES_DASH_R that double the travel speed now double the frame rate, so legs keep pace with ground
+      // covered instead of a sprinting gecko sliding on a walk cycle. It multiplies each species' OWN rate
+      // rather than setting a flat 48: everything runs at 24 and doubles to 48, but the scorpion runs at 12
+      // and doubles to 24, which keeps the slower gait the user asked for.
+      const desRate = (desSlot && DESERTS[desSp])
+        ? (DES_FPS[DESERTS[desSp].name] || 24) * ((DES_DASH[DESERTS[desSp].name] && ((P.x - B.x) * (P.x - B.x) + (P.z - B.z) * (P.z - B.z)) < DES_DASH_R * DES_DASH_R) ? DES_DASH[DESERTS[desSp].name] : 1)
+        : 24;
       const nfr = desSlot ? (DESERTS[desSp] ? DESERTS[desSp].n : 1) : B.kind === 6 ? FISHES[B.fsp || 0].n : (B.kind >= 3 ? 1 : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_NFRAMES : BUNNY_JUMP_NFRAMES) : (armSlot ? ARMADILLO_NFRAMES : (skunkSlot ? SKUNK_NFRAMES : (porcSlot ? PORCUPINE_NFRAMES : WORM_NFRAMES)))) : (B.kind === 1 ? FFLY_NFRAMES : (B.dfly ? DFLY_NFRAMES : BFLY_NFRAMES))));
       // ── THE SKUNK AND PORCUPINE RUN OFF THE SAME CLOCK IN BOTH RENDER PATHS (user 2026-08-07: "cut the
       // skunk's animation speed in half") ── it already had been, once, and it never showed: the GRID-STAMPED
@@ -1073,8 +1167,8 @@
       // and the animal the player was actually looking at ran at 24 fps — and jumped 4× the moment it crossed
       // the boundary. Same clock now, so the rate is what the marcher set, near and far alike.
       const fi3 = (B.kind === 2 && (skunkSlot || porcSlot)) ? (Math.floor(B.aframe || 0) % nfr)
-        : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * (desSlot && DESERTS[desSp] ? (DES_FPS[DESERTS[desSp].name] || 24) : 24)) % nfr)   // …and the desert rate applies HERE, which is the branch a kind-2 creature actually takes — putting it only on the line below meant the scorpion silently stayed at 24   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
-        : Math.floor((tb3 + wk * 0.37) * (desSlot && DESERTS[desSp] ? (DES_FPS[DESERTS[desSp].name] || 24) : 24)) % nfr;   // per-species rate for the desert set; everything else keeps the 24 fps house rule                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
+        : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * desRate) % nfr)   // …and the desert rate applies HERE, which is the branch a kind-2 creature actually takes — putting it only on the line below meant the scorpion silently stayed at 24   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
+        : Math.floor((tb3 + wk * 0.37) * desRate) % nfr;   // per-species rate for the desert set; everything else keeps the 24 fps house rule                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
       let glow = 0;
       if (B.kind === 1) {                              // GLOW (fireflies only): random dark spell, then the yellow abdomen holds BRIGHT for a full 2 s
         if (!B.glowT || now > B.glowT) { B.glow = !B.glow; B.glowT = now + (B.glow ? 2000 : 1500 + Math.random() * 3500); }

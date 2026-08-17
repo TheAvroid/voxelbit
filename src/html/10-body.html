@@ -12,7 +12,7 @@
 <div id="scrollHint" class="hidden"><svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8 21h8v-2H8zm0-4h8v-2H8z"/><path d="M8 17h2v-4H8zm-5-4h5v-2H3zm0-2h2V9H3zm2-2h2V7H5zm2-2h2V5H7zm2-2h2V3H9zm2-2h2V1h-2zm2 2h2V3h-2zm2 2h2V5h-2zm2 2h2V7h-2zm2 4h2V9h-2zm-3 0h3v-2h-3zm-2 4h2v-4h-2z"/></svg><span>scroll up</span></div>
 <div id="achv"><div class="a1">discovery</div><div class="a2" id="achName">sharp edge</div></div>   <!-- .a2 is written per discovery; the markup keeps the first one as its resting text -->
 <div id="hud"></div>
-<canvas id="hurtFx" class="hidden"></canvas>   <!-- voxelised red hit flash: a LOW-RES canvas scaled up with image-rendering:pixelated, so its blocks are real pixels rather than a CSS approximation of them -->
+<!-- the voxelised red hit flash used to be a <canvas id="hurtFx"> here. It is drawn by BLIT now, INSIDE the image, because a DOM element over the game canvas is not part of what canvas.captureStream records and so never appeared in a recording (user 2026-08-16) -->
 <div id="cmdBar" class="hidden"><span id="cmdCaret">&gt;</span><span id="cmdTxt"></span><span id="cmdCur"></span><div id="cmdMsg"></div></div>
 <div id="stackN" class="hidden"></div>
 <div id="lgtPanel" class="hidden"><div class="lgtHead"><span>water</span><button id="lgtAll" title="water back to stock">reset</button></div></div>

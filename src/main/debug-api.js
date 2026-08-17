@@ -63,7 +63,100 @@
     flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
     modelIds(kind) { const m = { drock: DROCK, cactus: CACTI, shrub: SHRUBV, rock26: ROCK26 }[kind] || []; const o = new Set(); for (const q of m) for (const p of q.vox) o.add(p >>> 24); return [...o].sort((a, b) => a - b); },   // the palette ids a model set actually uses — colour heuristics cannot tell desert rock from desert sand. NOT `ids`: this object already has an `ids` key of a different shape further down, and a duplicate silently loses (the later one wins). 276 keys in one literal makes that easy to do — check before adding a name.
-    win() { return { xlo: winOX, xhi: winOX + WX, zlo: winOZ, zhi: winOZ + WZ }; },   // the loaded window in WORLD coords. Sampling voxels outside it reads a ring-buffer slot holding a different world location entirely — which reads as forest terrain appearing in the desert
+    win() { return { xlo: winOX, xhi: winOX + WX, zlo: winOZ, zhi: winOZ + WZ }; },
+    // ── PAGED-STORAGE FEASIBILITY CENSUS (dev) ── classify every 8³ brick as empty / uniform / mixed.
+    // Storage today is DENSE: WX*WY*WZ bytes, once on the CPU and once on the GPU, and a cube of empty
+    // sky costs exactly what a cube of forest costs. View distance is HALF the window width, and bytes
+    // grow with width², so seeing twice as far costs 4x the memory — that is the ceiling this measures.
+    // Under a brick-descriptor scheme only MIXED bricks need their 512-byte payload; empty and uniform
+    // bricks collapse into their own 4-byte descriptor. The occupancy bit already answers "empty", so
+    // only occupied bricks are scanned — which is why this is seconds and not minutes.
+    brickCensus() {
+      const t0 = performance.now();
+      const nB = BX * BY * BZ;
+      let empty = 0, uniS = 0, solid = 0, surf = 0;   // all-air / one material / no air but many materials / air+solid mix
+      const uniOf = new Map();
+      const NB = 8, band = Math.ceil(BY / NB), bands = [];
+      for (let i = 0; i < NB; i++) bands.push([0, 0, 0, 0]);
+      for (let bz = 0; bz < BZ; bz++) for (let by = 0; by < BY; by++) {
+        const bd = bands[Math.min(NB - 1, (by / band) | 0)];
+        for (let bx = 0; bx < BX; bx++) {
+          const b = bx + by * BX + bz * BX * BY;
+          if (!((bricks[b >> 5] >>> (b & 31)) & 1)) { empty++; bd[0]++; continue; }
+          const base = by * 8 * WX + bz * 8 * WX * WY + bx * 8;
+          const first = W32[base >> 2], v0 = first & 255;
+          let same = v0 !== 0 && first === ((v0 * 0x01010101) >>> 0), hasAir = false;
+          scan: for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) {
+            const rw = ((by * 8 + y) * WX + (bz * 8 + z) * WX * WY + bx * 8) >> 2;
+            const a = W32[rw], c = W32[rw + 1];
+            if (a !== first || c !== first) same = false;
+            // any zero BYTE in either word = an air voxel — the standard SWAR test, one per 4 voxels
+            if ((a - 0x01010101) & ~a & 0x80808080) { hasAir = true; break scan; }
+            if ((c - 0x01010101) & ~c & 0x80808080) { hasAir = true; break scan; }
+          }
+          if (hasAir) { surf++; bd[3]++; }
+          else if (same) { uniS++; bd[1]++; uniOf.set(v0, (uniOf.get(v0) || 0) + 1); }
+          else { solid++; bd[2]++; }
+        }
+      }
+      const cur = WX * WY * WZ, desc = nB * 4;
+      const pc = (n) => +(100 * n / nB).toFixed(1);
+      // Three candidate schemes, all keeping a 4-byte descriptor per brick:
+      const mb = (n) => +(n / 1048576).toFixed(1);
+      const sA = desc + (uniS === 0 ? 0 : 0) + (solid + surf) * 512;        // A: collapse empty + uniform only
+      const sB = desc + surf * 512;                                          // B: also treat every AIR-FREE brick as payload-free (regenerate/procedural)
+      return { window: [WX, WY, WZ], nBricks: nB,
+        empty, uniformSolid: uniS, solidManyMaterials: solid, surface: surf,
+        pct: { empty: pc(empty), uniformSolid: pc(uniS), solidManyMaterials: pc(solid), surface: pc(surf) },
+        uniTop: [...uniOf.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map((e) => e[0] + ':' + e[1]),
+        bandsLowToHigh: bands.map((q) => q.join('/')),
+        curMB: mb(cur), descMB: mb(desc),
+        schemeA: { mb: mb(sA), saving: +(cur / sA).toFixed(2), widthGain: +Math.sqrt(cur / sA).toFixed(2) },
+        schemeB: { mb: mb(sB), saving: +(cur / sB).toFixed(2), widthGain: +Math.sqrt(cur / sB).toFixed(2) },
+        ms: Math.round(performance.now() - t0) };
+    },
+    // ── HOW DEEP IS ANYTHING EVER CARVED? ── the census says the bottom bands are 100% air-free rock.
+    // If nothing ever cuts into them they are invisible AND untouchable, and the window is simply taller
+    // than the world needs. Per column: the LOWEST y holding an air voxel. Also the enclosed-rock count —
+    // an air-free brick whose six neighbours are all air-free can never be entered by any ray at all.
+    depthProbe() {
+      const t0 = performance.now();
+      let minAir = WY, cols = 0;
+      const hist = new Array(1 + (WY >> 4)).fill(0);           // lowest-air-y in 16-voxel buckets
+      for (let z = 0; z < WZ; z += 2) for (let x = 0; x < WX; x += 2) {
+        const c = x + z * WX * WY;
+        let lo = -1;
+        for (let y = 0; y < WY; y++) if (W[c + y * WX] === 0) { lo = y; break; }
+        if (lo < 0) continue;
+        cols++; if (lo < minAir) minAir = lo;
+        hist[Math.min(hist.length - 1, lo >> 4)]++;
+      }
+      // enclosed rock: air-free brick with six air-free neighbours (ray-unreachable by construction)
+      const airFree = new Uint8Array(BX * BY * BZ);
+      for (let bz = 0; bz < BZ; bz++) for (let by = 0; by < BY; by++) for (let bx = 0; bx < BX; bx++) {
+        const b = bx + by * BX + bz * BX * BY;
+        if (!((bricks[b >> 5] >>> (b & 31)) & 1)) continue;     // empty brick is all air, not air-free
+        let ok = 1;
+        scan: for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) {
+          const rw = ((by * 8 + y) * WX + (bz * 8 + z) * WX * WY + bx * 8) >> 2;
+          const a = W32[rw], c2 = W32[rw + 1];
+          if (((a - 0x01010101) & ~a & 0x80808080) || ((c2 - 0x01010101) & ~c2 & 0x80808080)) { ok = 0; break scan; }
+        }
+        airFree[b] = ok;
+      }
+      let enclosed = 0;
+      for (let bz = 1; bz < BZ - 1; bz++) for (let by = 1; by < BY - 1; by++) for (let bx = 1; bx < BX - 1; bx++) {
+        const b = bx + by * BX + bz * BX * BY;
+        if (!airFree[b]) continue;
+        if (airFree[b - 1] && airFree[b + 1] && airFree[b - BX] && airFree[b + BX] &&
+            airFree[b - BX * BY] && airFree[b + BX * BY]) enclosed++;
+      }
+      const nB = BX * BY * BZ;
+      return { WY, minAirY: minAir, colsSampled: cols,
+        lowestAirHist16: hist.map((n, i) => (i * 16) + ':' + n).filter((e) => !e.endsWith(':0')),
+        enclosedRockBricks: enclosed, pctEnclosed: +(100 * enclosed / nB).toFixed(1),
+        ms: Math.round(performance.now() - t0) };
+    },   // the loaded window in WORLD coords. Sampling voxels outside it reads a ring-buffer slot holding a different world location entirely — which reads as forest terrain appearing in the desert
     desBand() { const o = []; for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
       o.push({ j, sp: ((j - MAM_END) / DES_PER) | 0, idx: (j - MAM_END) % DES_PER, init: !!(B && B.init), kind: B ? (B.kind | 0) : -1 }); }
       return { species: DESERTS.map((d) => d.name + '@' + d.item0 + 'x' + d.n), nDesert: (typeof nDesert === 'undefined' ? 'UNDEFINED' : nDesert), perSpecies: (typeof nDesertOf === 'undefined' ? 'OUT-OF-SCOPE (tick-local)' : DESERTS.map((d, i) => d.name + ':' + nDesertOf(i))), DES_PER, MAM_END, DES_END, slots: o }; },   // why a desert slot is or is not live
@@ -938,7 +1031,7 @@
     idAt(x, y, z) { return W[gwrap(Math.floor(x), WX) + (y | 0) * WX + gwrap(Math.floor(z), WZ) * WX * WY]; },   // raw voxel id — colTop/colTopId are solidTab-gated and go blind to water the moment it thaws
     supCap(v) { if (v !== undefined) SUP.cap = Math.max(16, v | 0); return { cap: SUP.cap, drapeCap: SUP.drapeCap, capHits: SUP.stats.capHits, structFloods: SUP.stats.structFloods, dropped: SUP.stats.dropped }; },   // squeeze the STRUCTURE flood ceiling so a test can force the cap-hit path on a small rock
     wrefl(v) { if (v !== undefined) { wReflK = Math.max(0, Math.min(2, +v)); resetHist = 1; try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e) {} lgtPaint(); } return wReflK; },   // WATER REFLECTION STRENGTH — the panel's slider, from the console
-    lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: {} }; },   // the SECOND mask (u.lgt.z) — currently EMPTY (see LGT2_ALL); left wired so a 25th term has somewhere to go
+    lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: { rockSheen: 1 } }; },   // the SECOND mask (u.lgt.z) — bit 0 is the SUN SHEEN ON STONE (user 2026-08-16). __vb.lgt2(0) / __vb.lgt2(1) is the A/B: it sets resetHist, so the denoiser does not hand the previous variant's history to the next shot
     lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, water: LGT_WATER, mask2: lgtMask2, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536, volumetric: 131072,
       waterReflect: 262144, waterRefract: 524288, waterFoam: 1048576, waterIce: 2097152, waterGlisten: 4194304, waterWaves: 8388608 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one

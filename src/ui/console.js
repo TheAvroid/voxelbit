@@ -378,11 +378,32 @@
     e.preventDefault(); e.stopPropagation();
     cmdShow(false);
   }, true);
+  let escBack = 0;                                     // an Escape press on a menu that is already up = "put me back in", fired on keyup so the browser is done with the key
+  document.addEventListener('keyup', (e) => {
+    if (e.code !== 'Escape' || !escBack) return;
+    escBack = 0;
+    if (!locked && !dead && !CMD.open) tryLock();
+  });
   document.addEventListener('keydown', (e) => {
     if (!CMD.open) {
       // …and once it is closed, Escape behaves as it always did. If the re-lock was refused we are still
       // unlocked with no menu showing, so this second press is what puts the menu up (user).
-      if (e.code === 'Escape' && !locked && !dead && performance.now() - CMD.escAt > 40 && vePanel.classList.contains('hidden')) lockEl.classList.remove('hidden');
+      // ── AND ESCAPE COMES BACK IN (user 2026-08-16: "let esc bring the player back into the game from having
+      // been on the esc menu") ── this line used to do one thing, show the menu, which meant a second press on a
+      // menu that was already up re-showed it and looked like Escape had stopped working. Which of the two it
+      // means is decided by whether the menu is on screen: not showing → this is the press that opens it;
+      // already showing → the player is asking to return, so ask for the pointer back. A press that lands
+      // inside Chrome's ~1.25 s post-Escape lock cooldown is simply refused, and pointerlockerror puts the menu
+      // straight back up, so an impatient double-tap costs nothing and the next press works.
+      if (e.code === 'Escape' && !locked && !dead && performance.now() - CMD.escAt > 40 && vePanel.classList.contains('hidden')) {
+        // …but the RE-LOCK is not requested here. Chrome's own Escape handling runs on this same KEYDOWN and
+        // exits pointer lock unconditionally, so a lock taken on keydown was handed back a moment later and the
+        // menu returned on its own — "works briefly, then displays the esc menu again" (user 2026-08-16). The
+        // request is moved to keyup below, which is still a user gesture but lands after the browser has
+        // finished with the key. Only the menu-opening half of the press belongs on keydown.
+        if (lockEl.classList.contains('hidden')) lockEl.classList.remove('hidden');
+        else escBack = 1;                                  // armed here, fired on keyup
+      }
       return;
     }
     e.stopPropagation();                               // every keystroke belongs to the line, never to the game's binds

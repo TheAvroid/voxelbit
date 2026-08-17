@@ -1,5 +1,5 @@
   // @module - player vitals: hearts, hunger, saturation and exhaustion, ported from Minecraft's FoodStats
-  // @exports VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine
+  // @exports VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine, vitRedLevel
   // ── WHY THIS EXISTS ── until now `die(why)` WAS the whole of mortality: every hazard killed outright and the
   // player had no health at all (see the comment at the cobra contact test). Hearts only mean something once the
   // hazards stop one-shotting you, so this module owns both halves — the vitals, and the `vitHurt` entry point
@@ -105,6 +105,18 @@
     if ((VIT.hp <= 0 || VIT.hits >= VIT_HITS_FATAL) && VIT.onDeath) VIT.onDeath(why || 'you died');
   }
 
+  // ── HOW RED THE SCREEN IS (user 2026-08-16: "full hearts is no shade, then heart 0 is the gameover
+  // screen") ── 0 at full health and 1..4 as the hearts go, which is exactly four shades because there are five
+  // hearts and the fifth step is death, not a colour. Death has TWO paths — hp reaching zero, and five hits in
+  // succession — and a run of quick hits can kill with most of the bar still showing, so the level is the WORSE
+  // of the two readings. Otherwise a player two hits from dying by the hit-run could be looking at a clear
+  // screen. Regeneration walks it back down on its own: the calm timer clears the hit run, and hp climbing
+  // raises the heart count, so recovering visibly drains the red without anything here having to fade it.
+  const vitRedLevel = () => {
+    const hearts = Math.ceil(VIT.hp / (VIT_HP_MAX / 5));
+    return Math.max(0, Math.min(4, Math.max(5 - hearts, VIT.hits | 0)));
+  };
+
   // ── THE HURT SPURT ── literally the call a struck creature makes, aimed at the player instead:
   // spawnHitSparks throws the four red HITRED_IT voxels the blood burst uses, so taking a hit and landing one
   // spit the same 10 cm voxels. Placed in FRONT of and below the eye — at the camera itself all four spawn
@@ -116,7 +128,27 @@
     // the player reads them as flecks coming off their own body, which is what they are.
     const cp = Math.cos(P.pitch);
     const fx = Math.sin(P.yaw) * cp, fz = Math.cos(P.yaw) * cp;
-    spawnHitSparks(P.x + fx * 8.0, smoothEye - 3.0, P.z + fz * 8.0);   // 8, not 14 (user 2026-08-16: "bring the blood voxels closer into the player"). It started at 3, where perspective blew each 10 cm voxel into a metre-wide slab across the view; 14 read as distant flecks. 8 keeps them clearly the player's own without filling the screen
+    // ── THEY COME OUT OF THE PLAYER (user 2026-08-16) ── spawnHitSparks throws its four voxels from one point
+    // with a random ring of velocity, which at a fixed 8 voxels ahead reads as a burst hanging in the air in
+    // front of the camera rather than something leaving the body. So the burst is authored here instead: it
+    // STARTS on the player's own chest, just clear of the near plane, and every voxel is given velocity pointing
+    // AWAY from that chest — forward-biased so they travel out into view instead of past the ear. The motion is
+    // what sells the origin: the eye reads four flecks receding from a point on the body, and the point they
+    // recede from is the player. Same 10 cm HITRED_IT voxels, same lifetime, same red flag as a struck creature.
+    const cx = P.x + fx * 2.2, cy = smoothEye - 3.2, cz = P.z + fz * 2.2;
+    const rx = fz, rz = -fx;                                   // the player's right, for the lateral spread
+    for (let i = 0; i < 4; i++) {
+      const side = (i - 1.5) * 0.55 + (Math.random() - 0.5) * 0.5;   // fan across the chest, one either side of centre
+      const out = 26 + Math.random() * 22;                     // outward speed — fast enough that frame one is already leaving
+      sparks3d[i] = { x: cx + rx * side * 1.8, y: cy + (Math.random() - 0.5) * 2.2, z: cz + rz * side * 1.8,
+        vx: (fx * 0.85 + rx * side * 0.9) * out, vy: 10 + Math.random() * 16, vz: (fz * 0.85 + rz * side * 0.9) * out,
+        born: performance.now(), life: 0.4 + Math.random() * 0.3, ph: Math.random() * 6.283, smoke: false, red: true };
+    }
+    // ── AND THE SAME VOICE (user 2026-08-16: "play the same sound that plays when the player hits life") ──
+    // playLifeHit is the pool every blow that lands on a living thing already uses, and it attenuates with
+    // distance from the ear. Passing the player's OWN position puts them at zero range, so a hit taken is the
+    // same sound at full strength as a hit landed — which is what "the same sound" has to mean here.
+    playLifeHit(P.x, smoothEye, P.z);   // 8, not 14 (user 2026-08-16: "bring the blood voxels closer into the player"). It started at 3, where perspective blew each 10 cm voxel into a metre-wide slab across the view; 14 read as distant flecks. 8 keeps them clearly the player's own without filling the screen
     hurtScreen();
   }
 

@@ -98,6 +98,19 @@
   // Sized off the annulus the creatures actually land in (~934k vox² at LIFE_KEEP 1040): 42 bodies means a mean
   // gap of ~105 vox, and 6-of-a-species means ~280, so these sit near the half-of-mean that dart-throwing can
   // still satisfy quickly. They are RELAXED per retry at the call site — never let a floor starve a slot.
+  // ── AND THE SAME FOR THE FOUR LAND MAMMALS ── the forest band had ONE flat 70-voxel gate and no relaxation,
+  // and MEASURED over six boots the whole population was jammed against it: pooled nearest-neighbour min 70.2,
+  // p10 79.9, median 104.7 against a mean gap of ~163. A floor that the tenth percentile is sitting on is not a
+  // spacing rule, it is the thing deciding every position. MAM_APART is what a try-0 placement must offer;
+  // MAM_FLOOR is what the LAST try may accept and is exactly the old flat value, so the guarantee this band has
+  // always had cannot get weaker and a cramped spot still fills. Cubic, like the desert's, because a linear
+  // decay gives away half the gap by try 5. One floor rather than the desert's two: every mammal's nearest
+  // neighbour is a different species already (same-species gaps run 200-280), so a same-species rule would
+  // never bind.
+  // MAM_RELAX = the try the decay reaches MAM_FLOOR on, out of the 12 the spawn loop runs. The last few
+  // tries therefore ask for exactly the gate this band has always had, which is what keeps the count
+  // whole: decaying across the full budget left a slot unplaced for a frame in 2 of 12 measured samples.
+  const MAM_APART = 110, MAM_FLOOR = 70, MAM_RELAX = 7;
   const DES_APART = 160;        // between two of the SAME species — the one the eye reads as "geckos in a litter"
   const DES_APART_ANY = 64;     // between any two desert creatures — stops a mixed pile-up in one patch of sand
   // ── ANT COLUMN ── spacing along the leader's path, and how often the leader drops a crumb. The gap is 6, not
@@ -105,6 +118,10 @@
   // interpenetrate even in a geometrically perfect line. The crumb step sets how faithfully a follower traces a
   // tight turn — finer is smoother and costs only array entries.
   const ANT_GAP = 6.0, ANT_CRUMB = 0.75;
+  // How far ahead a walker checks for the biome line. 34 is a shade over two seconds of travel for the slowest
+  // desert species and about half a second for a dashing gecko — far enough that the turn reads as a decision
+  // rather than a bounce, close enough that it does not refuse ground it could legitimately have used.
+  const BIO_LOOK = 34;
   // ── AND THE ANT WALKS ON THE COMPASS (user 2026-08-16: "just have it move forward. when it want to turn,
   // rotate the ant 90 degrees") ── the leader's heading is an INTEGER 0-3 into ANT_DIR, never an angle, so a
   // diagonal is not expressible; a turn is +/-1 on that integer and lands in one frame. This is the same

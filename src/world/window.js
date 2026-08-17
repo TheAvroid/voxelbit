@@ -25,7 +25,7 @@
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
   const LGT_ALL = 0xffffff;                            // 24 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader). Bits 18-23 are the WATER group (user 2026-08-05). Stays exact in the f32 uniform: integers are exact to 2^24.
   const LGT_WATER = 0xfc0000;                          // bits 18-23 — the WATER group, and the only terms the panel exposes (user 2026-08-05: "I only want buttons that change the water")
-  const LGT2_ALL = 0x0;                                // ── SECOND TERM MASK (u.lgt.z) ── EMPTY. lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term would go. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). LG2() stays wired for whatever is next.
+  const LGT2_ALL = 0x1;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; the 31 bits above it are still free.
   // ══ WATER BAKE (user 2026-08-05) ══ THE defaults for every water control. Tune with the top-right panel,
   // hit `copy` on its bake row, and paste the line it gives you OVER this one — that is the whole workflow.
   // A player who has never touched the panel gets exactly what is written here; `reset` in the panel puts a
@@ -34,14 +34,14 @@
   const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, pixelGlisten: 1, waves: 0, reflection: 0.45 };
   const WBIT = { reflect: 18, refract: 19, foam: 20, ice: 21, pixelGlisten: 22, waves: 23 };   // …their bits in u.lgt.x
   const wBakeMask = () => { let m = LGT_ALL & ~LGT_WATER; for (const k in WBIT) if (WATER_BAKE[k]) m |= (1 << WBIT[k]); return m; };
-  const wBakeMask2 = () => 0;                          // nothing lives in the second mask (see LGT2_ALL)
+  const wBakeMask2 = () => LGT2_ALL;                   // the second mask has no per-term panel rows, so its bake IS its default — `reset` puts the rock sheen back on (see LGT2_ALL)
   const wBakeRefl = () => { const v = +WATER_BAKE.reflection; return (isFinite(v) && v >= 0 && v <= 2) ? v : 1; };
   // Everything OUTSIDE the water group is FORCED ON at load. The panel used to carry all 24 terms, so a
   // saved mask can have sun shadow / AO / fog / TAA switched off from an earlier bisection — and with those
   // rows gone there would be no way left to switch them back. Only the water bits are restored from storage.
   let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt');
     return v === null ? wBakeMask() : (((parseInt(v, 10) & LGT_WATER) | (LGT_ALL & ~LGT_WATER)) & LGT_ALL); } catch (e) { return wBakeMask(); } })();
-  let lgtMask2 = 0;                                    // …so this is 0 and stays 0. Kept as a variable because the frame still writes it to u.lgt.z (UF[UF_LGT + 2]) and __vb.lgt2() still reads it.
+  let lgtMask2 = LGT2_ALL;                             // …and this starts at the bake. Deliberately NOT restored from localStorage the way lgtMask is: every bit in here is a whole-scene look term, and a player who bisected one off in an old session must not be stuck with it (the same argument that forces every non-water bit of lgtMask on at load).
   // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
   // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
   let wReflK = (() => { try { const v = parseFloat(localStorage.getItem('vb_wrefl')); return (isFinite(v) && v >= 0 && v <= 2) ? v : wBakeRefl(); } catch (e) { return wBakeRefl(); } })();

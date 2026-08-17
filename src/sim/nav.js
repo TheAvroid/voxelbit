@@ -433,6 +433,21 @@
       if (!fit(x + dx * (t + 0.02), z + dz * (t + 0.02))) return t;   // the clear run ends AT this boundary
     }
     return t; };
+  // ── THE BIOME LINE, EXPRESSED AS TERRAIN ── the step rule refuses a crossing, so a walker that plans a
+  // heading over the line has its move rejected every frame and stands there grinding. Steering it away with a
+  // separate omT write was tried and is the wrong shape: on the arbiter that is a SECOND writer arguing with the
+  // planner, which is the exact failure the arbiter exists to make inexpressible. Instead the line is reported to
+  // the planner in the only currency it scores in — reach. A candidate heading that runs into the boundary comes
+  // back short, so the fan prefers a lane that stays home-side for the same reason it prefers one without a tree
+  // in it, and the turn is the planner's ordinary eased turn. Backs off one 4-voxel step so the walker stops
+  // clear of the line rather than balanced on it.
+  const navBioClip = (x, z, th, r, home) => {
+    if (r <= 4) return r;
+    const dx = Math.sin(th), dz = Math.cos(th);
+    for (let d = 4; d <= r; d += 4) if ((desertM(x + dx * d, z + dz * d) > 0.85) !== home) return d - 4;
+    return r;
+  };
+
   const navReachLand = (x, z, th, maxD, gc, up, down, clr, sand) => {   // how far a WALKER can actually travel along a heading. Same cell DDA, one difference that matters: the step limit is carried FORWARD from cell to cell instead of being measured from the origin. A worm climbs a long slope two voxels at a time, and a reach anchored on where it started would have called every hill a wall and left the planner with no lane anywhere but flat ground.
     const dx = Math.sin(th), dz = Math.cos(th), CS = 1 << NVSH;
     const adx = dx < 0 ? -dx : dx, adz = dz < 0 ? -dz : dz;

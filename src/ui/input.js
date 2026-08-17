@@ -131,7 +131,8 @@
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - dy * ls));
   });
   let dead = false;
-  let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = 0;   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
+  let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = 0;
+  const FALL_FREE = 3;                                 // metres you may drop for nothing — Minecraft's threshold, and a believable one: a 3 m hop stings nobody   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
   let uwT = 0;                                          // ── DROWN CLOCK ── seconds the EYE has been continuously submerged; hits DROWN_T → game over. Reset on surfacing/respawn; frozen (not reset) while paused/editor.
   const DROWN_T = 10;                                  // you can hold your breath for 10 s underwater (user)
   const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it
@@ -196,7 +197,12 @@
     if (e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }   // ── T ── open the command line (user)
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
-    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; }   // toggle fly (user re-added the F keybind 2026-07-22)
+    // ── DROPPING OUT OF FLY COSTS NOTHING (user 2026-08-16) ── switching fly OFF in mid-air starts a real
+    // fall, and the fall-damage tracker would bill the player for the whole descent. Pressing F is a mode
+    // change, not a mistake, so it grants ONE free landing, cleared the moment the feet touch down. Set on the
+    // toggle rather than tested at the landing: by then P.fly has been false for the whole drop and there is
+    // nothing left to distinguish it from walking off a cliff.
+    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; if (!P.fly) { P.noFall = 1; P.fallPk = undefined; } }   // toggle fly (user re-added the F keybind 2026-07-22)
     // R-key recording is BACK ON with the #veBtn button (user 2026-08-02, reversing the 2026-07-23 disable).
     if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)

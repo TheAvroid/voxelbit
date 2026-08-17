@@ -93,14 +93,9 @@
   /* ── THE VITALS BAR IS GONE (user 2026-08-15: "remove the hunger/hearts ui. keep the mechanics") ──
      Only the hurt flash survives here. The hearts/hunger rules that used to sit above this comment were
      deleted whole rather than hidden, so nothing is left styling elements that no longer exist. */
-  #hurtFx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5;
-    image-rendering: pixelated; opacity: 0; }
-  /* ── AN ANIMATION, NOT A TWO-FRAME CLASS TOGGLE ── this was `opacity: 0` with a transition and an `.on`
-     class added for two rAF. It flashed on the FIRST hit only, because that hit also removed `.hidden`: the
-     display change forced a style recalc, so the transition had a start value to run from. Every later hit
-     added and removed `.on` inside two frames, which the browser coalesces into no visible change at all
-     (user 2026-08-16: "this only happens once, on the first time"). A keyframe animation restarted by
-     remove -> reflow -> add plays in full every single time, which is the same trick the heart row's jolt
-     already used. 0.42s to match the fade it replaces. */
-  @keyframes hurtFlash { 0% { opacity: 1; } 100% { opacity: 0; } }
-  #hurtFx.on { animation: hurtFlash 0.42s linear 1; }
+  /* ── THE HURT FLASH HAS NO CSS ANY MORE ── it was #hurtFx: a fixed 64x36 canvas over the whole window with
+     image-rendering:pixelated and a hurtFlash keyframe restarted by remove -> reflow -> add. All of it is gone,
+     because a DOM layer above the game canvas is not part of what canvas.captureStream(60) records and the flash
+     was therefore missing from every recording (user 2026-08-16). BLIT draws it into the image now. The keyframe
+     went with it, and so did the bug it was there to dodge: a two-frame class toggle coalescing into no visible
+     change, which had made the flash fire on the first hit only. */

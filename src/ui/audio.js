@@ -130,7 +130,7 @@
     // COST, stated plainly: the palindrome is ~50 MB of float for this 66 s stereo take (~75 MB for the ~0.2 s
     // the decoded source is still alive beside it). It is built lazily, only if the player actually goes near
     // the sand, and never twice; the copy is sliced across frames so it is never one long stall.
-    const DES_AMB_BASE = 0.114;                        // MEASURED, not guessed: the take is -27.5 LUFS integrated against the forest bed's -42.3, so 0.625 * 10^(-14.8/20) = 0.114 lands the two at the same perceived level. A crossfade between beds of different loudness reads as a volume ramp, which is the one thing the handover must not do
+    const DES_AMB_BASE = 0.1425;   // +25% (user 2026-08-16), 0.114 -> 0.1425. The 0.114 was the LUFS-matched level; this is a deliberate lift above the match, not a re-measurement                        // MEASURED, not guessed: the take is -27.5 LUFS integrated against the forest bed's -42.3, so 0.625 * 10^(-14.8/20) = 0.114 lands the two at the same perceived level. A crossfade between beds of different loudness reads as a volume ramp, which is the one thing the handover must not do
     const DES_AMB_SRCS = ['sound/desert_ambience.mp4', 'sound/desert_ambience.mp3', 'sound/desert_ambience.wav'];
     const DES_AMB_NEAR = 0.02;                         // start FETCHING at the first hint of sand — desertM > 0 covers the whole 450-voxel blend band, so the decode and the rebuild finish long before the bed is loud enough to notice arriving
     const DES_AMB_CHUNK = 1 << 20;                     // frames of palindrome copied per rendered frame. The whole 12.6 M-sample copy in one go is a 30-50 ms stall (a dropped frame); a slice this size is ~2 ms

@@ -229,7 +229,7 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > MAM_OUT * MAM_OUT) continue;              // NO inner floor + MAM_OUT ceiling (user): mammals fill the forest like the perched songbirds — nearest-first from the player out to the BIRD reach (~536, rect-clipped). Tradeoff: a mammal can occasionally recycle into view as you walk (the perched-bird model has no near floor either).
-          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); skunkCand.push(h);   // ord = deterministic scatter key (see the pick below)
+          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); skunkCand.push(h);   // ── ONE SCATTER KEY PER SPECIES ── this hash was copy-pasted identically into all four finders, and because every one of these grids is 85% occupied nearly every 160-cell offers a home to all four. A shared key means all four RANK the cells the same way, so bunny, armadillo, skunk and porcupine kept choosing the same cells and landed 40-113 voxels apart inside them — four-species knots that only the 70-voxel cross-species floor below prised open. MEASURED over 6 boots before changing it: every mammal's nearest neighbour was a DIFFERENT species, pooled nearest-neighbour min 70.2 / p10 79.9 — the whole population jammed against that floor, while the same-species gap sat at 250-280. Four independent keys make the four scatters independent, which is what the separate grids were for.
         }
       }
       if (!skunkCand.length) return null;
@@ -259,7 +259,7 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
-          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); porcCand.push(h);   // ord = deterministic scatter key (see the pick below)
+          h.d2 = d2; h.ord = ihash(h.cx * 439 + 37, h.cz * 443 + 53); porcCand.push(h);   // ord = this species' OWN scatter key (see the skunk finder)
         }
       }
       if (!porcCand.length) return null;
@@ -289,7 +289,7 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
-          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); bunnyCand.push(h);   // ord = deterministic scatter key (see the pick below)
+          h.d2 = d2; h.ord = ihash(h.cx * 449 + 67, h.cz * 457 + 89); bunnyCand.push(h);   // ord = this species' OWN scatter key (see the skunk finder)
         }
       }
       if (!bunnyCand.length) return null;
@@ -319,7 +319,7 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
-          h.d2 = d2; h.ord = ihash(h.cx * 431 + 9, h.cz * 433 + 21); armCand.push(h);   // ord = deterministic scatter key (see the pick below)
+          h.d2 = d2; h.ord = ihash(h.cx * 461 + 97, h.cz * 463 + 113); armCand.push(h);   // ord = this species' OWN scatter key (see the skunk finder)
         }
       }
       if (!armCand.length) return null;

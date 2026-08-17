@@ -146,7 +146,20 @@
               let te = max(max(tn.x, tn.y), max(tn.z, 0.3));
               let tl = min(min(tf.x, tf.y), tf.z);
               let fwp = ctr - offR + winOf;                          // window-local -> world, for the biome test
-              if (te > 1.0 && te < tl && te < maxNear && desertMask(fwp.x, fwp.z) <= 0.5 && !flakeBlocked(ctr - offR)) {   // ── NO SNOW OVER THE DESERT (user) ── ordered deliberately: after the cheap slab/rotation rejects, before flakeBlocked's scattered loads, so it only costs anything on a ray that already struck a flake   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike. ctr is window-local now — minus the small remainder = the window position (exact at any world coordinate)
+              // ── THE DITHER KEY IS THE FLAKE'S IDENTITY, NOT ITS CURRENT ADDRESS (user 2026-08-16: "the snow
+              // seems to be flickering") ── this test thins the snowfall out across the desert blend band. It used to
+              // key on fract(sin(floor(fwp.x) ... )) — a hash of the flake's WORLD POSITION. fwp is the lattice minus
+              // the integrated fall/wind, so the world slides under a flake every frame: measured 15.7 vox/s of
+              // horizontal drift, which steps floor(fwp.x)/floor(fwp.z) about 16 times a second. Each step was a fresh
+              // uniform draw against desertMask, so every flake in the band flipped visible/culled ~8 times a second
+              // (2*dm*(1-dm)*R at dm 0.5) and the whole snowfield sizzled. The lattice CELL is what identifies a flake
+              // and it does not move with the wind, so hashing that gives each flake ONE key for its whole life: the
+              // value it is compared against still slides, because the flake really is drifting into the sand, but only
+              // across the 450-voxel band — so a flake crosses its threshold once and fades out instead of blinking.
+              // Same dHash and the same salt family the ground blanket dithers on (landSnowAt in tick-snow.js); the two
+              // are independent draws rather than one shared value, since a flake's lattice cell is not its landing
+              // column, and it is the shared dm ramp - not a shared number - that keeps the two boundaries together.
+              if (te > 1.0 && te < tl && te < maxNear && dHash((c.x + offC.x) * 5 + 17, (c.z + offC.z) * 7 + (c.y + offC.y) * 131 + 29) >= desertMask(fwp.x, fwp.z) && !flakeBlocked(ctr - offR)) {   // ── NO SNOW OVER THE DESERT (user) ── ordered deliberately: after the cheap slab/rotation rejects, before flakeBlocked's scattered loads, so it only costs anything on a ray that already struck a flake   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike. ctr is window-local now — minus the small remainder = the window position (exact at any world coordinate)
                 fte = te; fkAw = fkA; fkUw = fkUnder;
                 var nl = vec3<f32>(0.0);
                 if (tn.x >= tn.y && tn.x >= tn.z) { nl.x = -sign(rdL.x); }
@@ -180,7 +193,7 @@
       // by construction, and motion stays continuous (no grid snapping). Fireflies/sparks/dropped items keep the
       // composite path (emissive + translucency), as does any creature seen THROUGH a water surface (Beer–Lambert).
       var cSlot = 0u; var cCell = vec3<f32>(0.0); var cVc = vec3<i32>(0); var cAxis = 0u; var cN = vec3<f32>(0.0, 1.0, 0.0);
-      var bHit = false; var bCol = vec3<f32>(0.0); var bN = vec3<f32>(0.0, 1.0, 0.0); var bVc = vec3<i32>(0);   // rigid-body (felled chunk) hit
+      var bHit = false; var bCol = vec3<f32>(0.0); var bN = vec3<f32>(0.0, 1.0, 0.0); var bVc = vec3<i32>(0); var bVox = 0u;   // rigid-body (felled chunk) hit   // …and its PALETTE ID, which bCol has already thrown away: h.vox is set to 0 for a body hit (see below), so the stone test for the sun sheen has nothing else to ask. A chopped-out boulder chunk is stone and must catch the sun exactly like the boulder it came off.
       var bestT = select(1e9, h.t, h.t >= 0.0);                      // nearest hit so far (world / flake) — SHARED by the creature loop and the rigid-body trace below, which is why it lives outside the dynamic-life gate
       if (ITEMN > 0 && u.lifeCfg.y > 0.5) {
         let ndc3 = (px / u.res) * 2.0 - 1.0;
@@ -254,7 +267,7 @@
         // line above says is impossible. Free when there is nothing to hit: bodyTrace returns on one compare
         // while physC.x is 0, which is every frame no tree has been felled.
         let bh2 = bodyTrace(ro, rd, bestT);
-        if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bN = bh2.n;
+        if (bh2.t >= 0.0) { bestT = bh2.t; bHit = true; bCol = pal[bh2.vox].rgb; bVox = bh2.vox; bN = bh2.n;
           bVc = bh2.vc; }                                          // BODY-LOCAL cell (see Hit.vc): the grain rides with the wood instead of the trunk sliding through a world-anchored noise field
       }
       if (bHit) {                                                    // a felled chunk is the primary hit — terrain-identical shading from here on
@@ -270,6 +283,7 @@
         else { h.face = select(4u, 5u, cN.z < 0.0); }                // nearest-axis face: the denoiser's edge tests + a composite fallback; true shading normal comes from the axis bits
       }
       var albedo = vec3<f32>(0.0);
+      var isRock = false;                                             // ── IS THIS PIXEL STONE ── rides out to slotOut bit 12 for the composite's sun sheen. Resolved inside the albedo branch below, not at the store, because that is the only place that knows WHICH id this pixel's colour came from: h.vox is authoritative for the static world only, a body hit carries its id in bVox, and a creature's h.vox is deliberately zeroed.
       var faceId = 7u; var t = -1.0;
       var hurtGlow = 0.0;                                            // >0 on a pixel inside the hit flash: it is emissive, so it must not be left to whatever light happens to reach it
       var sunV = 0.0; var skyV = 0.0;   // (bit 15 zeroes skyV at the end of the lighting block — the ambient/sky term, as opposed to the AO ray that modulates it)
@@ -281,9 +295,9 @@
         if (h.face == 2u && isSandV(h.vox)) { faceId = SANDF; }   // sand TOP face → the composite's sun glisten (see SANDF in PRE). Top only: a glinting vertical dune face or pit wall would read as wrong.
         let pos = ro + rd * t;
         let vcW = vec3<i32>(floor(pos - h.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));   // WORLD coords — grain must not swim when the window shifts
-        if (bHit) { albedo = bCol * select(1.0, 0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z), LG(9u)); }   // felled chunk: palette colour + genuinely MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
+        if (bHit) { albedo = bCol * select(1.0, 0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z), LG(9u)); isRock = isRockV(bVox); }   // felled chunk: palette colour + genuinely MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
         else if (cSlot != 0u) { albedo = cCell * select(1.0, 0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z), LG(11u)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
-        else { albedo = pal[h.vox].rgb * select(1.0, 0.88 + 0.24 * ivhash(vcW), LG(10u)); }
+        else { albedo = pal[h.vox].rgb * select(1.0, 0.88 + 0.24 * ivhash(vcW), LG(10u)); isRock = isRockV(h.vox); }
         if (u.hurtB.w > 0.0) {                                       // ── HIT FLASH ── the animal just hit, blinking red (user)
           // WHOSE pixel is this? A trace-injected creature carries its dynamic-life slot in cSlot, so the
           // wounded animal is identified exactly, pixel for pixel, however it moves. The old box could
@@ -521,7 +535,7 @@
         if (dot(dc2, dc2) < aoR * aoR) { reactive = max(reactive, u.physC.y); }
       }
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, reactive));
-      textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 8u) | (select(0u, 1u, t >= 0.0 && isFol(h.vox)) << 11u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction   // ...and bit 11 = IS THIS A LEAF. It rides here because the word had 21 unused bits and there is no spare g-buffer channel (gIrr is sun/sky/distance/history, gAlbedo is rgb + face); the composite cannot know a needle from bark otherwise. Every existing reader masks (& 255u, >> 8u & 7u), so this is invisible to them.
+      textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 8u) | (select(0u, 1u, t >= 0.0 && (isFol(h.vox) || isCactusV(h.vox))) << 11u) | (select(0u, 1u, isRock) << 12u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction   // ...and bit 11 = IS THIS A LEAF. It rides here because the word had 21 unused bits and there is no spare g-buffer channel (gIrr is sun/sky/distance/history, gAlbedo is rgb + face); the composite cannot know a needle from bark otherwise. Every existing reader masks (& 255u, >> 8u & 7u), so this is invisible to them.   // …and bit 12 = IS THIS STONE, on the same argument and for the same reason (user 2026-08-16: a sun reflection on every rock). It needs all SIX faces, so a faceId could not carry it: gAlbedo.a has exactly six values left in its low nibble and spending every one of them on one material would be the last thing that channel ever did.
     }
   `;
 
