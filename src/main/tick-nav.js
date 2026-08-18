@@ -107,28 +107,82 @@
       for (let d = st; d <= maxD; d += st) { if (!fishFits(B, th, d)) break; r = d; }
       return r; };
     // ── PERCHED CARDINALS ── the rotate-frame cardinal sits on a pine crown (feet on the green needles) and plays its spin animation. Uses the disabled lily slots (40-54).
-    const foliageSet = new Uint8Array(256); for (const f of foliageIds) foliageSet[f] = 1;   // green canopy palette ids → the perch surface
+    const foliageSet = new Uint8Array(256); for (const f of foliageIds) foliageSet[f] = 1;   // green canopy palette ids → the perch surface. VERIFIED to already cover the OAKS: assets/material-tabs.js line 139 pushes every OAKLEAF id into foliageIds beside the pine's needles, and that fragment is 55 places above this one in src/manifest.txt, so this array is built after them. The perch SURFACE test therefore needed no change at all for the new biome — only the walk that visits it.
     const isAir = (x, y, z) => !W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
-    const pineEdgePerch = (tx, tz, bi) => {                // green voxels on the OUTER EDGE of the crown (air above + air to a side, ≥3 from the trunk), BELOW the crown tip → perch on the branch tips, NOT the very top (user)
+    // ── ONE CROWN WALK, TWO TREES ── green voxels on the OUTER EDGE of the crown (air above + air to a side,
+    // clear of the trunk), BELOW the crown tip → perch on the branch tips, NOT the very top (user). That
+    // question is the same for a pine and for an oak; the SHAPE of the crown is not, so the shape — and only
+    // the shape — is a parameter. The pine's arguments below are its original numbers, unchanged.
+    //   rad   half-width of the walk, in voxels either side of the trunk
+    //   st    column stride, so a crown 6x wider does not cost 36x the columns for the same three perches
+    //   tL1   trunk core skipped as a DIAMOND (|dx|+|dz|) — the pine's own test, a 4-voxel spine is a line
+    //   tCh   …or as a SQUARE (max(|dx|,|dz|)) — an oak bole is a fat column, not a line. One or the other.
+    //   tip   how far below the crown's highest candidate a perch must sit
+    //   scanH how high above the local ground the downward column scan starts
+    //   n     birds this tree carries, so the stride that keeps them off each other's perch scales with it
+    const crownEdgePerch = (tx, tz, bi, n, rad, st, tL1, tCh, tip, scanH) => {
       const cands = []; let crownTop = -1;
-      for (let dx = -9; dx <= 9; dx++) for (let dz = -9; dz <= 9; dz++) {
-        if (Math.abs(dx) + Math.abs(dz) < 3) continue;   // skip the trunk core
+      for (let dx = -rad; dx <= rad; dx += st) for (let dz = -rad; dz <= rad; dz += st) {
+        if (Math.abs(dx) + Math.abs(dz) < tL1) continue;   // skip the trunk core (pine)
+        if (Math.max(Math.abs(dx), Math.abs(dz)) < tCh) continue;   // …or the bole (oak)
         const x = tx + dx, z = tz + dz, gx = gwrap(x, WX), gz = gwrap(z, WZ), col = gx + gz * WX * WY;
-        const yTop = Math.min(WY - 2, hmap[gx + gz * WX] + 124);
+        const yTop = Math.min(WY - 2, hmap[gx + gz * WX] + scanH);
         for (let y = yTop; y > WL; y--) { const id = W[col + y * WX]; if (!id) continue;   // first voxel from the top (air above by construction)
           if (foliageSet[id]) { if (y > crownTop) crownTop = y;
             if (isAir(x + 1, y, z) || isAir(x - 1, y, z) || isAir(x, y, z + 1) || isAir(x, y, z - 1)) cands.push([x, y, z]); }   // outer rim = a horizontal neighbour is open air
           break; }
       }
-      const low = cands.filter((c) => c[1] <= crownTop - 4);   // keep clear of the narrow crown TIP → the wider side branches
+      const low = cands.filter((c) => c[1] <= crownTop - tip);   // keep clear of the crown TIP → the wider side branches
       const pool = low.length ? low : cands;
       if (!pool.length) return null;
       // PROCEDURAL: the candidate list is already in deterministic scan order over deterministic world voxels, so
       // hashing the tree + bird index picks the SAME needle every time. Birds are now a property of the forest, not
-      // of when you happened to walk past. The stride keeps the birds on one pine off each other's perch.
+      // of when you happened to walk past. The stride keeps the birds on one tree off each other's perch — floored
+      // at 3 so a pine (n ≤ 3) divides by exactly the 3 it always did, and widened for an oak, where n can reach 6
+      // and a fixed /3 would have wrapped bi=3 back onto bi=0's own branch.
       const k0 = (ihash(tx * 7 + 3, tz * 11 + 5) * pool.length) | 0;
-      return pool[(k0 + bi * Math.max(1, (pool.length / 3) | 0)) % pool.length];
+      return pool[(k0 + bi * Math.max(1, (pool.length / Math.max(3, n)) | 0)) % pool.length];
     };
+    const pineEdgePerch = (tx, tz, bi, n) => crownEdgePerch(tx, tz, bi, n, 9, 1, 3, 0, 4, 124);   // pine5.vox: ONE model, 35 x 36 across and 116 tall, so every number here can be a constant. Unchanged in value and in scan order — this call reproduces the old body exactly.
+    // ── AND THE SAME WALK RE-DERIVED FOR AN OAK ── not one of the pine's four shape numbers survives the move,
+    // and each is measured off game/assets/decoration/oak_trees.json, the bake oakAt itself indexes:
+    //   rad  the crown's own half-width, straight off the model box: max(sx, sy) >> 1. Checked against the bake,
+    //        that is EXACTLY the widest leaf voxel's Chebyshev distance from the trunk on all seven models
+    //        (17/22/23/30/37/50/57, against the pine's 17). Rotation only swaps sx and sy, so the max is
+    //        rotation-invariant and the walk never needs tr.rot. The pine's flat ±9 would have seen the middle
+    //        19 voxels of a 115-voxel footprint — 2.7% of its columns, and all of them under the crown CAP,
+    //        which is the one part `tip` then throws away. That is the whole of the miss-oak-perches half.
+    //   st   …which is also why the walk cannot stay dense: 115 x 115 columns is 36x the pine's 361 for the same
+    //        handful of perches. Stride so every tree costs ~19x19 samples whatever its size; falls out at 1 for
+    //        the small oaks and 7 for the giant, i.e. the giant is CHEAPER to walk than a pine. A ≥ st gap
+    //        between candidates is a free bonus: on a big oak it already exceeds CARD_SEP.
+    //   tCh  the BOLE, measured off the bake's own non-foliage voxels below the first fork — the bottom sz/8,
+    //        which sits clear beneath every model's fork (k1 z12, k2 z17, k3 z12, k4 z16, k5 z25, k6 z17). Bole
+    //        radius comes out 2-8 voxels, plus half the bird's own 8-voxel footprint, so 6-12 against the pine
+    //        diamond's 2. Deliberately measured BELOW the fork: higher up the bark reaches 43 voxels out on the
+    //        giant, but that is a LIMB, and a limb is a perch, not an obstacle.
+    //   tip  a pine tapers to a point and 4 voxels clears it; a dome does not. Scaled to the model at sz >> 3
+    //        (6/6/8/10/13/14). Measured against the bake's top-voxel profile that is what drops the crown cap
+    //        and keeps the flank: on OAKV[6] the inner ring's median top voxel is 100 of 113 and the rim's is 62.
+    //   scan the pine walk starts a blanket 124 above the ground because a pine is 116 tall. An oak is 21 to 114,
+    //        so start from the model's own height plus a slope allowance — 24 voxels covers a 2.4 m fall from
+    //        the trunk out to the drip line, and ground steeper than that would not be holding a tree up anyway.
+    //        Starting too low only finds a LOWER perch, never a wrong one, so this margin is soft.
+    const OKPERCH = [];                                // per-model perch geometry, measured once off the bake and cached — OAKV[6] is 86k voxels and this walks it exactly once per session
+    const oakPerchGeo = (k) => {
+      let g = OKPERCH[k]; if (g) return g;
+      const m = OAKV[k]; if (!m) return null;
+      const lowZ = m.sz >> 3, ax = m.sx >> 1, ay = m.sy >> 1;   // ax/ay = where stampModel puts the world anchor in model space (bottom-CENTRE)
+      let bole = 0;
+      for (let i = 0; i < m.vox.length; i++) { const p = m.vox[i];
+        if (((p >> 16) & 255) > lowZ || foliaTab[p >>> 24]) continue;   // wood only, below the first fork — the bush tier is leaf to the ground and must not read as a 12-voxel trunk
+        const r = Math.max(Math.abs((p & 255) - ax), Math.abs(((p >> 8) & 255) - ay));
+        if (r > bole) bole = r; }
+      const rad = Math.max(m.sx, m.sy) >> 1;
+      OKPERCH[k] = g = { rad, st: Math.max(1, Math.ceil(rad / 9)), tCh: bole + (CARD_SEP >> 1), tip: Math.max(4, m.sz >> 3), scan: m.sz + 24 };
+      return g;
+    };
+    const oakEdgePerch = (tx, tz, k, bi, n) => { const g = oakPerchGeo(k); return g ? crownEdgePerch(tx, tz, bi, n, g.rad, g.st, 0, g.tCh, g.tip, g.scan) : null; };
     // ── PERCHED BIRD PLACEMENT ── This used to throw 28 random darts at the disc and keep the first that hit a pine.
     // Random darts give a random DENSITY: some stretches of forest end up thick with birds and others bare, which is
     // the "not consistent throughout the forest" complaint. It also could not see which pines were free, so it wasted
@@ -153,7 +207,7 @@
       if (flyCandF !== frame) {
         flyCandF = frame; flyCand.length = 0;
         const owned = new Set();
-        for (let j = 0; j < 16; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 0 && !O.dfly && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // a dragonfly's water cell must NOT block a butterfly's meadow home
+        for (let j = FLY_0; j < FLY_END; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 0 && !O.dfly && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // a dragonfly's water cell must NOT block a butterfly's meadow home
         const R = Math.ceil(LIFE_OUT / FLY_CELL);
         const c0x = Math.floor(P.x / FLY_CELL), c0z = Math.floor(P.z / FLY_CELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -188,7 +242,7 @@
       if (wormCandF !== frame) {
         wormCandF = frame; wormCand.length = 0;
         const owned = new Set();
-        for (let j = 32; j < 64; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2 && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // the worm grid is now WORMS-ONLY: every land mammal (bunny/armadillo/skunk/porcupine) reserves on its OWN offset grid (findBunnyHome/findArmHome/findSkunkHome/findPorcHome) — the bunny was the last still sharing, and worms (22 cells) starved it at some locations (measured b=11 vs 14/14/14)
+        for (let j = WORM_0; j < WORM_END; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2 && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // the worm grid is now WORMS-ONLY: every land mammal (bunny/armadillo/skunk/porcupine) reserves on its OWN offset grid (findBunnyHome/findArmHome/findSkunkHome/findPorcHome) — the bunny was the last still sharing, and worms (22 cells) starved it at some locations (measured b=11 vs 14/14/14)
         const R = Math.ceil(LIFE_OUT / WORM_HCELL);
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -201,7 +255,7 @@
         }
       }
       if (!wormCand.length) return null;
-      const minD2 = selfWk >= 276 ? LIFE_IN * LIFE_IN : 0;   // BUNNIES/ARMADILLOS spawn out past the fog (LIFE_IN floor) like everything else; WORMS may still take the near cells (tiny — a near worm spawn is invisible, and mammals no longer inherit those cells)
+      const minD2 = selfWk >= MAM_0 ? LIFE_IN * LIFE_IN : 0;   // BUNNIES/ARMADILLOS spawn out past the fog (LIFE_IN floor) like everything else; WORMS may still take the near cells (tiny — a near worm spawn is invisible, and mammals no longer inherit those cells)
       let k = -1;
       for (let q = 0; q < wormCand.length; q++) if (wormCand[q].d2 >= minD2 && (k < 0 || wormCand[q].d2 < wormCand[k].d2)) k = q;
       if (k < 0) return null;
@@ -216,11 +270,11 @@
     };
     let skunkCandF = -1;
     const skunkCand = [];
-    const findSkunkHome = () => {                           // identical machinery to findWormHome, but on the skunk grid + reserving ONLY against other skunks (324-347) — its own cache
+    const findSkunkHome = () => {                           // identical machinery to findWormHome, but on the skunk grid + reserving ONLY against other skunks (SKUNK_0..SKUNK_END) — its own cache
       if (skunkCandF !== frame) {
         skunkCandF = frame; skunkCand.length = 0;
         const owned = new Set();
-        for (let j = 324; j < 348; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        for (let j = SKUNK_0; j < SKUNK_END; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
         const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (680·0.94) — LIFE_OUT under-scanned at default views, silently capping the reach at ~480
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -246,11 +300,11 @@
     };
     let porcCandF = -1;
     const porcCand = [];
-    const findPorcHome = () => {                            // identical machinery to findSkunkHome, but on the porcupine grid + reserving ONLY against other porcupines (348-371) — its own cache + the LIFE_IN..LIFE_OUT spawn band
+    const findPorcHome = () => {                            // identical machinery to findSkunkHome, but on the porcupine grid + reserving ONLY against other porcupines (PORC_0..MAM_END) — its own cache + the LIFE_IN..LIFE_OUT spawn band
       if (porcCandF !== frame) {
         porcCandF = frame; porcCand.length = 0;
         const owned = new Set();
-        for (let j = 348; j < 372; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        for (let j = PORC_0; j < MAM_END; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
         const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (see skunk)
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -276,11 +330,11 @@
     };
     let bunnyCandF = -1;
     const bunnyCand = [];
-    const findBunnyHome = () => {                           // identical machinery to findSkunkHome, on the bunny grid + reserving ONLY against other bunnies (276-299) — its own cache + the LIFE_IN..LIFE_OUT spawn band
+    const findBunnyHome = () => {                           // identical machinery to findSkunkHome, on the bunny grid + reserving ONLY against other bunnies (BUNNY_0..BUNNY_END) — its own cache + the LIFE_IN..LIFE_OUT spawn band
       if (bunnyCandF !== frame) {
         bunnyCandF = frame; bunnyCand.length = 0;
         const owned = new Set();
-        for (let j = 276; j < 300; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        for (let j = BUNNY_0; j < BUNNY_END; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
         const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (see skunk)
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -306,11 +360,11 @@
     };
     let armCandF = -1;
     const armCand = [];
-    const findArmHome = () => {                             // identical machinery to findSkunkHome, on the armadillo grid + reserving ONLY against other armadillos (300-323) — its own cache + the LIFE_IN..LIFE_OUT spawn band
+    const findArmHome = () => {                             // identical machinery to findSkunkHome, on the armadillo grid + reserving ONLY against other armadillos (ARM_0..ARM_END) — its own cache + the LIFE_IN..LIFE_OUT spawn band
       if (armCandF !== frame) {
         armCandF = frame; armCand.length = 0;
         const owned = new Set();
-        for (let j = 300; j < 324; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        for (let j = ARM_0; j < ARM_END; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
         const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (see skunk)
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -334,7 +388,7 @@
     const buildCardCand = () => {
       cardCand.length = 0;
       const owned = new Set();                         // (tree, index) pairs a slot already holds
-      for (let j = 64; j < 244; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) owned.add(O.tx + ',' + O.tz + ',' + O.bi); }
+      for (let j = CARD_0; j < CARD_END; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 5) owned.add(O.tx + ',' + O.tz + ',' + O.bi); }
       const R = Math.ceil(CARD_KEEP / TCELL);
       const c0x = Math.floor(P.x / TCELL), c0z = Math.floor(P.z / TCELL);
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -343,31 +397,51 @@
         const ddx = tr.tx - P.x, ddz = tr.tz - P.z, d2 = ddx * ddx + ddz * ddz;
         if (d2 > CARD_KEEP * CARD_KEEP) continue;
         const n = birdsOnPine(tr.tx, tr.tz);
-        for (let i = 0; i < n; i++) if (!owned.has(tr.tx + ',' + tr.tz + ',' + i)) cardCand.push({ tr, bi: i, d2 });
+        for (let i = 0; i < n; i++) if (!owned.has(tr.tx + ',' + tr.tz + ',' + i)) cardCand.push({ tx: tr.tx, tz: tr.tz, k: -1, bi: i, n, d2 });
+      }
+      // ── AND THE OAKS, ON THEIR OWN GRID (user 2026-08-17) ── the walk above enumerates PINES, and treeAt now
+      // returns null everywhere oakM > 0.5, so in the biome the player actually spawns in it found nothing at
+      // all: only the x > border segment of the CARD_KEEP disc held a candidate, none of it nearer than the 420
+      // voxels to the first pine, and ~180 of the 180 songbird slots went unused. Same enumeration, same
+      // occupancy set, same distance ceiling — a second grid, because oakAt's cell is 112 and treeAt's is 45,
+      // and one loop over the coarser of the two would miss most pines. The two passes can never double-count:
+      // their biome gates are mutually exclusive by construction (terrain.js gates both on oakM at 0.5).
+      const RO = Math.ceil(CARD_KEEP / OKCELL);
+      const o0x = Math.floor(P.x / OKCELL), o0z = Math.floor(P.z / OKCELL);
+      for (let dz = -RO; dz <= RO; dz++) for (let dx = -RO; dx <= RO; dx++) {
+        const tr = oakAt(o0x + dx, o0z + dz); if (!tr) continue;
+        const n = birdsOnOak(tr.wx, tr.wz, tr.k); if (!n) continue;   // asked FIRST: the bush tier scores 0 and is then never geometry-tested at all
+        const g = oakPerchGeo(tr.k); if (!g) continue;
+        const mg = g.rad + 2;                          // …and the rect margin is the CROWN's, not the pine's flat 10: the walk samples out to rad, and past the generated rect that reads stale toroidal window data and could perch a bird on a crown that is not there
+        if (tr.wx <= rect.xlo + mg || tr.wx >= rect.xhi - mg || tr.wz <= rect.zlo + mg || tr.wz >= rect.zhi - mg) continue;
+        const ddx = tr.wx - P.x, ddz = tr.wz - P.z, d2 = ddx * ddx + ddz * ddz;
+        if (d2 > CARD_KEEP * CARD_KEEP) continue;
+        for (let i = 0; i < n; i++) if (!owned.has(tr.wx + ',' + tr.wz + ',' + i)) cardCand.push({ tx: tr.wx, tz: tr.wz, k: tr.k, bi: i, n, d2 });
       }
     };
     // == PERCHES THE PLAYER HAS CLEARED == the clash test below only sees ACTIVE slots, and a slain bird has init=false, so the perch it just
     // vacated became the NEAREST free candidate again and the next spare slot took it — kill a bird and another lands in the same spot (user 2026-08-06).
     // Killing one empties that branch for the session, matching the rule the slot itself already follows: a slain creature is gone, not relocated.
     // Capped so a long session cannot grow it without bound; the cap is far past what anyone shoots in one sitting.
-    const findPineCrown = (selfWk) => {                // the NEAREST procedural bird that no slot holds yet
+    const findPineCrown = (selfWk) => {                // the NEAREST procedural bird that no slot holds yet — PINE **or** OAK now; the name is what tick-creatures.js calls
       if (cardCandF !== frame) { cardCandF = frame; buildCardCand(); }
       for (let t = 0; t < 12 && cardCand.length; t++) {
         let k = 0;                                     // nearest first, so the pool is always spent on the forest around you.
         for (let q = 1; q < cardCand.length; q++) if (cardCand[q].d2 < cardCand[k].d2) k = q;
         const c = cardCand[k];
         cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();
-        if (cardSlainPerch.has(cardPerchKey(c.tr.tx, c.tr.tz, c.bi))) continue;   // a bird was killed on this branch — leave it empty
-        const cr = pineEdgePerch(c.tr.tx, c.tr.tz, c.bi); if (!cr) continue;
+        if (cardSlainPerch.has(cardPerchKey(c.tx, c.tz, c.bi))) continue;   // a bird was killed on this branch — leave it empty
+        const cr = c.k < 0 ? pineEdgePerch(c.tx, c.tz, c.bi, c.n) : oakEdgePerch(c.tx, c.tz, c.k, c.bi, c.n);   // c.k = the OAKV size tier, or -1 for a pine (one model, no tier)
+        if (!cr) continue;
         let clash = false;                             // the cardinal model is ~7 vox across; two stamps closer than that corrupt each other
-        for (let j = 64; j < 244; j++) {
+        for (let j = CARD_0; j < CARD_END; j++) {
           const O = wbf[j];
           if (j === selfWk || !O || !O.init || (O.kind | 0) !== 5) continue;
           if (Math.abs(O.x - (cr[0] + 0.5)) < CARD_SEP && Math.abs(O.z - (cr[2] + 0.5)) < CARD_SEP &&
               Math.abs((O.perchFeet || 0) - (cr[1] + 1)) < CARD_SEP) { clash = true; break; }
         }
         if (clash) continue;
-        return { tx: c.tr.tx, tz: c.tr.tz, bi: c.bi, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };
+        return { tx: c.tx, tz: c.tz, bi: c.bi, x: cr[0] + 0.5, y: cr[1], z: cr[2] + 0.5 };
       }
       return null;
     };

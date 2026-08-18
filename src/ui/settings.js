@@ -13,9 +13,30 @@
   let dofLock = 0, dofCocK = DOF_COC * dofStr;         // __vb.dof() overrides: pin the focal plane / the aperture to A/B the effect at a fixed strength (0 = autofocus)
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}
   let snowOn = false;                                  // ── VOXEL SNOW ── starts CLEAR, then the first storm arrives 60 s after refresh (user 2026-08-06). Weather-driven; the button (and P) still forces one on/off by hand.
-  let snowEndT = 0, snowNextT = 60000;   // ── FIRST STORM 60 s AFTER REFRESH (user 2026-08-06) ── snowNextT is the arrival, snowEndT the end of the CURRENT storm; the weather tick turns it on at 60 s and runs it 60 s, then re-arms on the normal 5-minute cadence. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one.
+  let snowEndT = 0, snowNextT = 120000;   // ── FIRST STORM 120 s AFTER REFRESH (user 2026-08-06, raised 60 -> 120 on 2026-08-17) ── snowNextT is the ARRIVAL of the first storm, snowEndT the end of the CURRENT one. Only the arrival moved: an event still RUNS for 60 s and still re-arms on the normal 5-minute cadence, both of which live on the toggle path in ui/input.js and below. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one.
   // TO RESTORE the weather cycle, put this back to `performance.now() + 120000` (first storm 2 min after refresh, then every 5 min).
   // The snow button / P key still forces a storm on by hand, and that path re-arms snowNextT normally.
+  // ── RAIN SKY (user 2026-08-17: "when it rains can you make the sky more cloudy and darken the clouds as well.
+  // then when the rain is gone, the clouds return to normal. also when it rains the sun should dim a bit") ──
+  // rainSkyK is HOW FAR THE OVERCAST HAS COME IN, 0..1. It is ramped in tick-camera and published to the GPU as
+  // u.hurtV.w (see UF_RAINK) multiplied by oakM AT THE CAMERA, and that multiply is the whole of "it is RAIN,
+  // not the storm": the same event drops SNOW on the pine forest and the desert, so those two skies have to come
+  // out of all of this unchanged. Keeping the storm ramp and the biome weight as separate factors is also what
+  // makes walking the border work — the ramp is a clock, oakM is a position, and multiplying them greys the sky
+  // across the 450-voxel blend band at exactly the rate the player crosses it, with no lag to unwind and nothing
+  // to re-ramp. Easing the PRODUCT instead would have put a 20-second tail on a teleport, which is the one case
+  // where an instant answer is the correct one: you did not walk into that weather, you arrived in it.
+  let rainSkyK = 0;
+  // SECONDS to cloud over, and to clear again. Linear rather than exponential, so each has an end you can state
+  // rather than an asymptote, and ASYMMETRIC on purpose. 10 s in is a little over twice the ~4.9 s the existing
+  // storm edge takes to sweep from SNOW_HEAD (220 voxels up) down to the player at SNOW_SWEEP 45 vox/s, so the
+  // sky is already visibly grey by the time the first drops reach eye level and fully overcast a few seconds
+  // after — the sky leads the rain, which is the order it happens in. 20 s out is the half the user actually
+  // asked about: the trailing edge sweeps the last drops away in ~5 s and the deck then takes another quarter of
+  // a minute to break up, so "the rain stopped" and "the sky cleared" are two beats you watch happen instead of
+  // one switch. Both finish far inside the 300 s gap between storms, so the sky is back to its fair-weather self
+  // — bit-identical, not merely close: see the rainK note in COMPOSITE — long before the next storm arrives.
+  const RAIN_SKY_IN = 10, RAIN_SKY_OUT = 20;
   const SNOW_AUTO_OFF = false;   // storms RECUR again (user 2026-08-06): each event 60 s, then every 5 min. true made the first storm the last one — it armed snowNextT to Infinity on the way out.
   let heldSunV = 1;                                    // eased sun visibility at the player — gates the held item's DIRECT term so a tool in shade reads like the world around it (u.heldCfg.x)
   let heldSkyV = 1;                                    // …and eased SKY visibility — gates its AMBIENT + ground bounce, the term the world gets from irr.g (u.heldCfg.y). Without it a tool kept full open-sky ambient under a canopy or in a cave while the world around it went dark.

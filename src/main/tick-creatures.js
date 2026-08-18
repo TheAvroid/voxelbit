@@ -12,7 +12,13 @@
       // The gecko and the mouse spend it RUNNING (the flee block steers them away); the cobra and the scorpion
       // spend it CHARGING, because DES_HUNT already steers them at the player and the flee block excludes any
       // hunter. So one table drives two opposite behaviours and neither species needs a special case.
-      const DES_DASH = { gecko: 2, desert_mouse: 2, cobra: 2, scorpion: 2 }, DES_DASH_R = 70;
+      // ── …AND THE GRASS SNAKE TAKES THE COBRA'S NUMBER ON THE OTHER SIDE OF IT (user 2026-08-17) ── it is the
+      // cobra's model, animation cadence and travel speed, and the ONE deliberate difference is that it is
+      // absent from DES_HUNT. Because run8 below is `DES_DASH && !DES_HUNT`, the identical 2 that makes a
+      // cobra CHARGE makes a grass snake BOLT — same table, same constant, opposite behaviour, no special
+      // case. That is the whole of 'harmless': it never enters the bite block at all, so there is no reach,
+      // no cooldown and no damage number to tune.
+      const DES_DASH = { gecko: 2, desert_mouse: 2, cobra: 2, scorpion: 2, grass_snake: 2 }, DES_DASH_R = 70;
       // ── THE TWO ADMIT ENDS OF THE BIOME GATE ── desertM at or past BIO_DESERT is open sand, at or under
       // BIO_FOREST is closed forest, and the span between them is a treeline nothing spawns in. DESB is 450
       // voxels of blend, so 0.15/0.85 puts each side's nearest spawn about 100 voxels - 10 m - off the
@@ -20,11 +26,40 @@
       const BIO_DESERT = 0.85, BIO_FOREST = 0.15;
       const DES_HUNT = { cobra: 1, scorpion: 1 };         // ── WHO HUNTS THE PLAYER ── (user 2026-08-15)                   // ── PER-SPECIES ANIMATION RATE ── the scorpion reads slow at the house 24 (user 2026-08-15); everything unlisted stays 24
       const antLead = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) === 0;   // ── THE ANT COLUMN'S HEAD ── slot 0 of the ant band is the only ant that decides anything: it marches on the compass (its own branch in the steering chain below), and every other ant is PLACED on the path it recorded. Keyed on the NAME like desFly, so re-ordering the load list cannot promote some other animal to leader.
-      const desFly = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'fly';   // ── THE FLY FLIES (user 2026-08-15) ── keyed on the NAME, not the index, so re-ordering the load list cannot silently turn some other animal into a flyer
+      // ── WHO IN THE BAND FLIES (user 2026-08-15, + the BEE 2026-08-17) ── a table for the same reason
+      // DES_HUNT and DES_MEAT are tables: keyed on the NAME, not the index, so re-ordering the load list
+      // cannot silently turn some other animal into a flyer. A member is kind 0 — the butterfly's whole code
+      // path, its speed, its altitude servo and its arbiter branch — rather than the band's default kind 2.
+      const DES_FLYER = { fly: 1, bee: 1 };
+      const desFly = desSlot && DESERTS[desSp] && !!DES_FLYER[DESERTS[desSp].name];
+      const desBee = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'bee';   // …and the ONE member with errands. Everything else about it is the fly.
       const DES_FLY_UP = 16;                             // …and rides this much higher than a butterfly's glide line   // ── DESERT CREATURES ── appended after the mammals, DES_PER slots per species, species index off the slot the same way the fish take B.fsp
-      const porcSlot = wk >= 348 && wk < MAM_END, skunkSlot = wk >= 324 && wk < 348, armSlot = wk >= 300 && wk < 324, bunnySlot = wk >= 276 && wk < 300, fishSlot = wk >= 244 && wk < 276, wormSlot = wk >= 32 && wk < 64, duckSlot = wk >= 16 && wk < 32, lilySlot = wk >= 64 && wk < 244;
-      const isBaby = wk >= 20 && wk < 32, sib = isBaby ? (wk - 20) % 3 : 0;
-      const mom5 = isBaby ? wbf[16 + (((wk - 20) / 3) | 0)] : null;   // ducklings 20-22 belong to mom 16, 23-25→17, 26-28→18, 29-31→19 (3 each)
+      const porcSlot = wk >= PORC_0 && wk < MAM_END, skunkSlot = wk >= SKUNK_0 && wk < SKUNK_END, armSlot = wk >= ARM_0 && wk < ARM_END, bunnySlot = wk >= BUNNY_0 && wk < BUNNY_END, fishSlot = wk >= FISH_0 && wk < FISH_END, wormSlot = wk >= WORM_0 && wk < WORM_END, duckSlot = wk >= DUCK_0 && wk < BABY_END, lilySlot = wk >= CARD_0 && wk < CARD_END;
+      // ── A DESERT SPECIES THAT ALSO LIVES IN THE OAK FOREST (user 2026-08-17: "implement the mouse like done
+      // in the desert inside of the oak forest") ── keyed on the NAME, like desFly and antLead, so re-ordering
+      // the load list cannot silently move a habitat onto some other animal. The value is how many of the
+      // species' OWN DES_PER slots go to the oak population, and it is CLAMPED to what its desert head-count
+      // leaves spare: the mouse is species 2, nDesertOf gives it 4 of its 8, so 4 are free and the oak forest
+      // takes them. Three consequences, and all three are the reason it is done this way rather than by adding
+      // slots: the desert's own mouse count is not touched, no other species' band is touched, and DES_END is
+      // unchanged so every `< DES_END` loop in the game (particles, projectiles, the debug taps) still covers
+      // exactly the pool it always did. If DES_RARITY is ever raised the clamp gives the slots BACK to the
+      // desert rather than overrunning the band — the oak population shrinks, nothing breaks.
+      const DES_OAK = { desert_mouse: 4 };
+      const desIx = desSlot ? (wk - MAM_END) % DES_PER : 0;
+      // …and an OAK-ONLY species (DES_OAKONLY, sim/life/slots.js) takes its WHOLE population from this term,
+      // because nDesertOf gave it zero. One expression, not a second branch: for the mouse both operands are
+      // character for character what they were, so its arithmetic is untouched.
+      const oakN = desSlot && DESERTS[desSp] ? Math.min(DES_PER - nDesertOf(desSp), DES_OAKONLY[DESERTS[desSp].name] ? nOakOf(desSp) : (DES_OAK[DESERTS[desSp].name] | 0)) : 0;
+      const oakSlot = oakN > 0 && desIx >= nDesertOf(desSp) && desIx < nDesertOf(desSp) + oakN;   // the TAIL of the species' band is the oak population — a pure function of the slot number, so there is no per-body state to go stale across a recycle
+      // ── AND THE ONE TAG THE FIVE BIOME GATES ALL READ ── see bioHomeOK in sim/nav.js. BIO_ANY is what every
+      // creature in the game was before today, and its arithmetic there is the old test unchanged. The two new
+      // values are the whole of this change's biome logic: the oak mouse, and the PORCUPINE, which the user
+      // removed from the oak forest on the same day (2026-08-17) and which is therefore the one forest species
+      // that no longer means "either forest". The other three land mammals are deliberately still BIO_ANY.
+      const bioMe = oakSlot ? BIO_OAKF : (desSlot ? BIO_SAND : (porcSlot ? BIO_PINEF : BIO_ANY));
+      const isBaby = wk >= BABY_0 && wk < BABY_END, sib = isBaby ? (wk - BABY_0) % 3 : 0;
+      const mom5 = isBaby ? wbf[DUCK_0 + (((wk - BABY_0) / 3) | 0)] : null;   // the first three ducklings belong to the first mother, the next three to the second, and so on (3 each)
       // ── ORPHANED (user 2026-08-05: "killing the mom kills all the baby ducks — each duck has to be killed")
       // A brood used to be defined out of existence the instant its mother's slot went inactive, so one hit on
       // the mom silently deleted three ducklings that were never touched. Only a SLAIN mother makes orphans:
@@ -33,17 +68,17 @@
       // that is population churn far from the player, not a kill, and the pair must recycle together.
       const orphan = isBaby && !!mom5.slain;
       const wantK = desFly ? 0 : desSlot ? 2 : (bunnySlot || armSlot || skunkSlot || porcSlot) ? 2 : (fishSlot ? 6 : (lilySlot ? 5 : (wormSlot ? 2 : (duckSlot ? 3 : (moonMode ? 1 : 0)))));   // BUNNIES + ARMADILLOS + SKUNKS + PORCUPINES are kind 2 (worm machinery) — the slot band, not the kind, tells them apart at emit/AI
-      const isDfly = !desSlot && wantK === 0 && nDfly > 0 && waterSpots.length > 0 && wk >= nAct - nDfly;   // !desSlot: a desert slot number is far above nAct, so this would call the fly a dragonfly and then refuse to place it anywhere but water   // DRAGONFLIES take the TOP of the active flyer band — butterflies only give up slots when there is water in view   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), 64-243 PERCHED SONGBIRDS (180), 244-259 FISH
-      const active = desSlot ? (desSp < DESERTS.length && ((wk - MAM_END) % DES_PER) < nDesertOf(desSp))
-        : (porcSlot ? (wk - 348 < nPorcupine)
-        : (skunkSlot ? (wk - 324 < nSkunk)
-        : (armSlot ? (wk - 300 < nArmadillo)
-        : (bunnySlot ? (wk - 276 < nBunny)
-        : (fishSlot ? (wk - 244 < nFish)
-        : (lilySlot ? (wk - 64 < nCard)
-        : (wormSlot ? (wk - 32 < nWorm || (B.init && B.rel))
+      const isDfly = !desSlot && wantK === 0 && nDfly > 0 && waterSpots.length > 0 && wk >= nAct - nDfly;   // !desSlot: a desert slot number is far above nAct, so this would call the fly a dragonfly and then refuse to place it anywhere but water   // DRAGONFLIES take the TOP of the active flyer band — butterflies only give up slots when there is water in view   // day = butterflies, night = FIREFLIES; 16-19 MOM DUCKS, 20-31 ducklings, 32-63 WORMS (32), CARD_0..CARD_END PERCHED SONGBIRDS, FISH_0..FISH_END FISH
+      const active = desSlot ? (desSp < DESERTS.length && desIx < nDesertOf(desSp) + oakN)   // …+ oakN: the species' oak-forest population lives in the slots its desert count leaves spare, so admitting it is one term on the same test rather than a second band
+        : (porcSlot ? (wk - PORC_0 < nPorcupine)
+        : (skunkSlot ? (wk - SKUNK_0 < nSkunk)
+        : (armSlot ? (wk - ARM_0 < nArmadillo)
+        : (bunnySlot ? (wk - BUNNY_0 < nBunny)
+        : (fishSlot ? (wk - FISH_0 < nFish)
+        : (lilySlot ? (wk - CARD_0 < nCard)
+        : (wormSlot ? (wk - WORM_0 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && (orphan ? B.init : (mom5.init && sib < (mom5.nBab || 0))))   // a duckling exists only while its mother does, up to her brood size — unless she was KILLED, in which case it carries on alone until it is killed too
-        : (duckSlot ? (wk - 16 < nDuck) : (wk < nAct))))))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles  [three extra ) close the porcSlot + skunkSlot + armSlot branches]
+        : (duckSlot ? (wk - DUCK_0 < nDuck) : (wk < nAct))))))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles  [three extra ) close the porcSlot + skunkSlot + armSlot branches]
       if (ED.on || dead || !active || (porcSlot ? !PORCUPINE_WALK.length : (skunkSlot ? !SKUNK_WALK.length : (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length)))))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck/skunk/porcupine) must clear its stamp
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
@@ -56,14 +91,39 @@
       // census tick, so a waterSpots count wobbling across a >>2 boundary cannot churn the band.
       if (wantK === 0 && B.init && !B.dieT) { if (!!B.dfly === isDfly) B.dfMis = 0; else if (!B.dfMis) B.dfMis = now; else if (now - B.dfMis > 3000) { B.dfMis = 0; B.dieT = now; } }
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; if (B.sN) unstampWorm(B); B.init = false; }   // …and the STAMP goes with it: deactivating a grid-stamped creature without unstamping leaves its voxels in W and its cells in stampedIdx, permanently exempt from every support test
-      // Perched birds recycle at CARD_KEEP, just past where the 180-slot pool runs out at this density (~375 vox).
+      // Perched birds recycle at CARD_KEEP, and the CARD_N pool is sized in slots.js so that it runs out at about that same radius.
       // Because the frontier sits far beyond anything you can pick out, a bird activating there is invisible — which
       // is why this no longer needs the "only spawn behind the player" rule the random placement depended on.
       const rdK = wantK === 5 ? CARD_KEEP : ((bunnySlot || armSlot || skunkSlot || porcSlot) ? MAM_KEEP : LIFE_KEEP);   // land mammals persist to the bird keep radius (user: "spawn as far as the perched birds"); worms/ducks/fish keep LIFE_KEEP
       const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
       const hd2 = ((B.kind | 0) === 0 || (B.kind | 0) === 2 || (B.kind | 0) === 6) && B.hcx !== undefined ? (B.hx - P.x) * (B.hx - P.x) + (B.hz - P.z) * (B.hz - P.z) : dp2;
       const far = hd2 > rdK * rdK;                     // butterflies (and fish) judge by their HOME, everything else by where it is
-      if (!B.init || far || (B.trap > 12 && (B.kind < 3 || B.kind === 6 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; a duck/lily wedged ON real water NEVER teleports (the unstick frees it), but a FISH sealed in a rock pocket the escape can't solve does (respawns in open water)
+      // ── AND AN OAK-FOREST FLYER IS RECYCLED ONCE IT IS PROPERLY OUT OF THE OAK (user 2026-08-17) ── every
+      // other biome containment in this loop is `(B.kind|0) === 2`: the step rule, the turn-away and the
+      // planner's reach clip are all a WALKER's. A flyer has none of them, and the bee is the first creature
+      // that is both airborne and tied to one biome, so without this it would spawn in deep oak and then
+      // wander the pine forest at 56 vox/s with nothing to stop it — it has no home cell of its own from the
+      // annulus branch, so not even the butterfly leash applied (it does now; see the hcx write at the spawn).
+      // TWO THRESHOLDS, WHICH IS THE SHAPE sim/life/birds.js ARRIVED AT for exactly this question and for
+      // exactly this reason: a bird 'is the one creature that SHOULD be able to cross a treeline — clipping
+      // it off at the halfway line would read as an invisible wall in open sky'. So the bee is ADMITTED only
+      // in deep oak (the spawn gate's oakM > BIO_DESERT, 0.85) and RECYCLED only once it is past the midline
+      // (bioHomeOK's own BIO_OAKLINE, 0.5) — BIRD_IN/BIRD_OUT with the numbers this band already had. It is
+      // bioHomeOK itself rather than a second mask test, so there is still exactly one answer in the game to
+      // 'is this creature at home here'. Scoped to the oak FLYER: a walker is already contained, and a
+      // walker that HAS been stranded is deliberately left free to walk home instead of being deleted.
+      const beeOut = oakSlot && desFly && B.init && !bioHomeOK(bioMe, B.x, B.z);
+      // ── …AND A SWARM BEE FOLLOWS THE HIVES (user 2026-08-17) ── placing the five swarm slots at the
+      // player's nearest hive is only half an answer on its own: FLY_LEASH pins a bee within 84 voxels of
+      // wherever it was born and `far` does not fire until LIFE_KEEP (1040), so walking 600 voxels to the
+      // next hive would leave the whole swarm behind at the old one and the new hive standing empty — the
+      // exact thing the report is about, one hive along. So a swarm bee whose hive is no longer the
+      // player's recycles, and the placement below puts it at the new one. Same shape as beeOut above: a
+      // containment test on the ONE thing this slot is for, judged against the very query the placement
+      // reads, so the two can never disagree about where a swarm belongs.
+      const beeHome9 = (oakSlot && desBee && desIx < BEE_HIVE_N) ? beeHomeHive(P.x, P.z, tb3, LIFE_OUT) : null;
+      const beeStray = !!beeHome9 && B.init && (B.x - beeHome9.wx) * (B.x - beeHome9.wx) + (B.z - beeHome9.wz) * (B.z - beeHome9.wz) > BEE_STRAY_R * BEE_STRAY_R;
+      if (!B.init || far || beeOut || beeStray || (B.trap > 12 && (B.kind < 3 || B.kind === 6 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; a duck/lily wedged ON real water NEVER teleports (the unstick frees it), but a FISH sealed in a rock pocket the escape can't solve does (respawns in open water)
           B.x <= rect.xlo + 4 || B.x >= rect.xhi - 4 || B.z <= rect.zlo + 4 || B.z >= rect.zhi - 4 ||   // the window recentred/shrank under it — this ground is stale garbage, leave it
           (isBaby && !orphan && (B.x - mom5.x) * (B.x - mom5.x) + (B.z - mom5.z) * (B.z - mom5.z) > 40 * 40) ||   // a duckling stranded from its (recycled) mother rejoins her — an ORPHAN has nowhere to rejoin, and must not be teleported to where its mother died
           ((B.kind === 3 || B.kind === 4 || B.kind === 6) && !isBaby && ((frame + wk) & 63) === 0 && !bfWater(B.x, B.z)) ||   // recycle ONLY a DUCK/LILY/FISH genuinely OFF real water (dry ravine/land after a recenter) — NOT a perched cardinal (kind 5, never on water) and NOT one merely near a shore
@@ -87,10 +147,10 @@
           return false; };
         let sx7 = 0, sz7 = 0, hcx, hcz;
         for (let tries = 0; tries < 12 && !placed && wantK !== 5; tries++) {
-          let sx, sz;
+          let sx, sz, beeAtHive = false;               // …set by the hive placement below and read by the desert band's spacing floors: a SWARM is the one thing in that band that is meant to be a cluster
           if (wantK === 3 && lakeSpots.length) {       // MOTHER DUCKS TARGET LAKES: prefer a lake NO other mom (16-19) already holds — one family per visible lake
             const free = lakeSpots.filter((L) => {
-              for (let m = 16; m < 20; m++) { const O = wbf[m]; if (O !== B && O.init && (O.x - L.x) * (O.x - L.x) + (O.z - L.z) * (O.z - L.z) < 150 * 150) return false; }
+              for (let m = DUCK_0; m < DUCK_END; m++) { const O = wbf[m]; if (O !== B && O.init && (O.x - L.x) * (O.x - L.x) + (O.z - L.z) * (O.z - L.z) < 150 * 150) return false; }
               return true; });
             const pool7 = free.length ? free : lakeSpots;
             const L7 = pool7[tries % pool7.length];
@@ -104,7 +164,7 @@
             let L9 = null;
             for (let k = 0; k < waterSpots.length; k++) { const cand = waterSpots[(wk + tries + k) % waterSpots.length];   // walk the spots so a full pool yields to a hungrier one
               const cap = Math.max(1, Math.min(16, Math.round(cand.n / 3)));   // UNIFORM density: ~1 fish per 3 census samples (~1200 vox² of water). The old 1-per-sample slope CRAMMED ponds (a 9-sample pond held 9 fish) while big-lake spots were clamped at 16 regardless of area — density inverted (user)
-              let near = 0; for (let f = 244; f < 276; f++) { const F = wbf[f]; if (F && F.init && (F.kind | 0) === 6 && F.hx !== undefined && (F.hx - cand.x) * (F.hx - cand.x) + (F.hz - cand.z) * (F.hz - cand.z) < 45 * 45) near++; }   // count by HOME, not wander position — spots are pairwise >90 apart so 45-vox home-discs are DISJOINT; the old 90-vox position count tallied one lake fish against ALL its spots and starved big lakes (user)
+              let near = 0; for (let f = FISH_0; f < FISH_END; f++) { const F = wbf[f]; if (F && F.init && (F.kind | 0) === 6 && F.hx !== undefined && (F.hx - cand.x) * (F.hx - cand.x) + (F.hz - cand.z) * (F.hz - cand.z) < 45 * 45) near++; }   // count by HOME, not wander position — spots are pairwise >90 apart so 45-vox home-discs are DISJOINT; the old 90-vox position count tallied one lake fish against ALL its spots and starved big lakes (user)
               if (near < cap) { L9 = cand; break; } }
             if (!L9) break;                            // every pool already holds its size-capped share → add no more fish
             sx = L9.x + (Math.random() - 0.5) * 24; sz = L9.z + (Math.random() - 0.5) * 24;
@@ -134,9 +194,48 @@
             // / max 638) is a dead match for an area-uniform disc of radius MAM_OUT = 639, which is what the
             // home finders produce and is nothing like this annulus. Their spread is decided by the scatter
             // key in those finders, so that is where the even-spread work belongs and where it now is.
-            const inR = desSlot ? Math.min(LIFE_IN, LIFE_KEEP * 0.40) : LIFE_IN;
-            const d5 = Math.sqrt(inR * inR + Math.random() * (LIFE_OUT * LIFE_OUT - inR * inR));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
+            // ── A 3-VOXEL BEE ON THE HORIZON IS NOT A BEE (user 2026-08-17: "I dont see bees at all") ──
+            // MEASURED before this: 8 bees alive, om 1, home true — correct in every way except that they
+            // were 750 and 1026 voxels out. The desert annulus starts at 0.40 * LIFE_KEEP = 416 and runs to
+            // 978, which is right for a 4 m saguaro's scorpion and useless for something 3 voxels across:
+            // at 75 m a bee is a sub-pixel speck, so the population was entirely real and entirely unseen.
+            // The FLYING SONGBIRDS already solved exactly this — birds.js rides a deliberately tighter ring
+            // (0.24..0.50 of keep) so they arrive well inside the view and cross it, with a comment saying
+            // the wide ring 'puts a flyer on the horizon where it is a single pixel'. Same reasoning, same
+            // numbers, and the bee is smaller than a bird so it takes the tighter end.
+            // It is gated on the OAK flyers alone: the desert species keep their annulus exactly, so the
+            // sand is untouched. FLY_LEASH (84) then holds a bee near wherever it arrived.
+            const beeRing = desFly && oakSlot;
+            const inR = beeRing ? LIFE_KEEP * 0.10 : (desSlot ? Math.min(LIFE_IN, LIFE_KEEP * 0.40) : LIFE_IN);
+            const outR = beeRing ? LIFE_KEEP * 0.26 : LIFE_OUT;
+            const d5 = Math.sqrt(inR * inR + Math.random() * (outR * outR - inR * inR));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
             sx = P.x + Math.sin(a5) * d5; sz = P.z + Math.cos(a5) * d5;
+            // ── A SWARMER IS BORN AT ITS HIVE (user 2026-08-17: "it doesnt look like the bees are swarming
+            // the hive") ── the swarm behaviour was finished and the query was wired, and it still never
+            // fired, because the two were never introduced. beeHiveNear searches a 3x3 OAK-CELL walk around
+            // the BEE (about +-79 voxels) while hives sit roughly 690 apart, and a bee is placed at a random
+            // bearing from the PLAYER — so the odds of one landing inside its own search disc are a few
+            // percent, and every bee simply found flowers instead. Waiting for a bee to wander onto a hive
+            // does not work either: FLY_LEASH pins it within 84 voxels of wherever it spawned.
+            // So the hive is chosen FIRST and the bee is placed on it. Same trick the ducks use with the
+            // lake census - a creature that needs a rare feature is spawned AT the feature, not dropped at
+            // random in the hope of finding one.
+            // ── …AND THE SWARM SLOTS ARE PLACED AT THE PLAYER'S OWN HIVE (user 2026-08-17: "make the bees
+            // swarm around the beehive, still dont see them doing this") ── this searched the SPAWN RING and
+            // picked a hive out of it at random, which is why it almost never fired and why, on the rare
+            // boot where it did, it sent one bee each to five different hives. beeHomeHive (sim/life/
+            // slots.js, where the measurement behind this is recorded) answers the question that actually
+            // matters — which hive is nearest the PLAYER, out to the whole spawn disc — so all five swarm
+            // slots land at one hive and it is the hive you are standing under. The other three keep the
+            // ring and forage, so a hiveless stretch of forest still has bees in it.
+            // Placed just OFF the hive, not on it: inside BEE_ORBIT_R the approach state has nothing to do
+            // and the bee would pop straight to orbiting. A few voxels out and it flies in, which is the
+            // part worth watching — and it is a little further out than it was (14-32 against 10-24) now
+            // that the player is routinely standing at the hive this places around.
+            if (beeRing && desIx < BEE_HIVE_N) { const hv9 = beeHomeHive(P.x, P.z, tb3, LIFE_OUT);
+              if (hv9) { const ja = Math.random() * 6.2832, jr = 14 + Math.random() * 18;
+                sx = hv9.wx + Math.cos(ja) * jr; sz = hv9.wz + Math.sin(ja) * jr; beeAtHive = true; }
+            }
           }
           const antHeel = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) > 0;
           if (antHeel) {
@@ -153,10 +252,29 @@
           // against the sand (user 2026-08-17: "the pine forest life are spawning too far out in the transition
           // between the desert and the pine forest"). It gets its own admit end now, so the treeline reads as a
           // border rather than as a mixing zone.
+          // ── …AND THE OAK BORDER GETS THE SAME PAIR OF ADMIT ENDS (user 2026-08-17) ── OAKB is 450 like DESB,
+          // so the identical 0.15/0.85 buys the identical ~20 m of empty treeline between the oak forest's
+          // own population and the pine forest's. Two species read it, in opposite directions: the desert
+          // MOUSE, which now also lives in the oak forest and must be admitted only in DEEP oak, and the
+          // PORCUPINE, which the user removed from the oak forest and must therefore be admitted only OUTSIDE
+          // it — the plain 'not sand' test every other forest species still uses would have let it straight in.
+          // The oak test is second and reached only by those two, so no other band pays an oakM sample.
           const dmS = desertM(sx, sz);
-          if (desSlot ? dmS < BIO_DESERT : dmS > BIO_FOREST) continue;
+          if (bioMe === BIO_SAND ? dmS < BIO_DESERT : dmS > BIO_FOREST) continue;   // an OAK mouse takes the forest end of this, like every other forest creature: it is 1080+ voxels of pine away from the sand and must never be admitted near it
+          if (bioMe === BIO_OAKF || bioMe === BIO_PINEF) { const omS = oakM(sx, sz);
+            if (bioMe === BIO_OAKF ? omS < BIO_DESERT : omS > BIO_FOREST) continue; }
           if (sx <= rect.xlo + 4 || sx >= rect.xhi - 4 || sz <= rect.zlo + 4 || sz >= rect.zhi - 4) continue;   // NEVER spawn outside the GENERATED rect — hmap there is garbage (the snow-landing guard; embedded 'cave' creatures after recenters)
           sx7 = sx; sz7 = sz;
+          // ── …AND AN OAK FLYER TAKES A HOME CELL HERE (user 2026-08-17) ── the desert band falls through to
+          // this annulus deliberately (see the note on the home-finder branch above), and the annulus is the
+          // one spawn path that never set hcx — so FLY_LEASH, which is gated on `B.hcx !== undefined`, has
+          // never applied to a desert flyer. That is fine for the FLY, whose desert is 2000 voxels across;
+          // it is not fine for a bee, which is admitted at oakM > 0.85 and would otherwise be free to leave
+          // the wood entirely at 56 vox/s. Same one line the DRAGONFLY uses to stay over its water, and it
+          // buys the same second thing there: the recycle then judges by the HOME rather than by wherever
+          // the insect has flown to. BEE_FLOWER_R is deliberately under FLY_LEASH so the errands stay inside
+          // the disc this pins, and the two goals can never pull opposite ways.
+          if (oakSlot && desFly) { hcx = Math.floor(sx / FLY_CELL); hcz = Math.floor(sz / FLY_CELL); }
           const gS = bfSurf(sx, sz);
           if (wantK === 2 && gS <= WL + 0.5) continue; // worms spawn on LAND only
           // ── DESERT LIFE SPREADS OUT (user 2026-08-15: "there shouldnt be geckos right next to each other") ──
@@ -168,7 +286,14 @@
           // floors below are about a HALF of those means, which is the usual Poisson-disc working point.
           // TWO floors, because one cannot do both jobs: the same-species one is what the user actually sees
           // (six geckos reading as a litter), the cross-species one just stops a pile-up of mixed bugs.
-          if (desSlot && !antHeel) {
+          // ── …AND THEY DO NOT APPLY TO A SWARM (2026-08-17) ── DES_APART is 160 and never relaxes below
+          // half of it, while the hive jitter above is 14-32, so the SECOND bee placed at a hive was
+          // rejected here on every one of its twelve tries and ended up at a different hive entirely. That
+          // is the whole reason a hive never held more than one bee. The floor exists so six geckos do not
+          // read as a litter; five bees round a hive is the behaviour that was asked for, so the one
+          // placement that is deliberately a cluster is exempt — the ant heel already takes the identical
+          // exemption for the identical reason, and nothing else about the band changes.
+          if (desSlot && !antHeel && !beeAtHive) {
             // RELAXED BY TRY, so a floor can never STARVE a slot. Near the biome edge only a slice of the
             // annulus passes the desertM gate, and a hard floor there would leave slots permanently uninit —
             // i.e. fewer creatures, a worse bug than the one being fixed. Try 0 demands the full gap and the
@@ -201,7 +326,7 @@
           // band cannot do worse than it always has.
           if (bunnySlot || armSlot || skunkSlot || porcSlot) {
             const mamGap = MAM_APART - (MAM_APART - MAM_FLOOR) * Math.pow(Math.min(1, tries / MAM_RELAX), 3);
-            if (tooClose(276, 372, mamGap)) continue;
+            if (tooClose(MAM_0, MAM_END, mamGap)) continue;
           }
           // ── NO LAND MAMMAL STARTS ON STONE (user 2026-08-07) ── this used to sample ONE column, at the spawn
           // point, and reject only when it found GREY three voxels deep. Two ways through it: a boulder or a
@@ -236,11 +361,11 @@
           if (wantK === 0 && isDfly && !bfWater(sx, sz)) continue;    // the jitter may have thrown it ashore — a dragonfly only ever starts over real water
           if (wantK === 0 && !isDfly && bfWater(sx, sz)) continue;    // …and a BUTTERFLY never starts over water (user: limit butterflies over lakes); it may still drift out over one
           if ((wantK === 3 || wantK === 4) && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
-          if (wantK === 6 && (!bfWater(sx, sz) || WL - bfBed(sx, sz) < 4 || tooClose(244, 276, 14))) continue;   // FISH need REAL water DEEP enough for a body below the surface (≥4 vox) — rivers qualify, shore shelves don't; ≥14 apart so a pool holds a loose school, not a knot
-          if (wantK === 1 && tooClose(0, 16, 40)) continue;   // FIREFLIES still spread by proximity. BUTTERFLIES must NOT: their homes are already 128 vox apart by the cell grid, and testing against other butterflies' WANDERING positions made placement depend on where they happened to be — which is exactly what stopped the set being reproducible.             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
+          if (wantK === 6 && (!bfWater(sx, sz) || WL - bfBed(sx, sz) < 4 || tooClose(FISH_0, FISH_END, 14))) continue;   // FISH need REAL water DEEP enough for a body below the surface (≥4 vox) — rivers qualify, shore shelves don't; ≥14 apart so a pool holds a loose school, not a knot
+          if (wantK === 1 && tooClose(FLY_0, FLY_END, 40)) continue;   // FIREFLIES still spread by proximity. BUTTERFLIES must NOT: their homes are already 128 vox apart by the cell grid, and testing against other butterflies' WANDERING positions made placement depend on where they happened to be — which is exactly what stopped the set being reproducible.             // FLYERS spread ≥40 vox apart at spawn → even distribution, never clustered (user)
           // (worms no longer use tooClose: their homes are already 160 vox apart by the cell grid, and testing against other worms' CRAWLING positions made placement depend on where they had got to)          // worms spread WIDE — never bunched (user, doubled with the population)
-          if (wantK === 3 && tooClose(16, 20, 200)) continue;         // mother ducks spawn ≥200 vox apart → at most ~2 families fit on a typical lake (user: 'only 1-2 per lake')
-          if (wantK === 4 && tooClose(40, 55, 12)) continue;          // lilies scatter
+          if (wantK === 3 && tooClose(DUCK_0, DUCK_END, 200)) continue;         // mother ducks spawn ≥200 vox apart → at most ~2 families fit on a typical lake (user: 'only 1-2 per lake')
+          if (wantK === 4 && tooClose(CARD_0, CARD_END, 12)) continue;   // lilies scatter — and the band is CARD_0..CARD_END (lilySlot), not the 40-55 this read: the three literals on these lines were the last hard-coded band edges left after the ladder refactor, and this one had been WRONG since the lily slots were repurposed for the perched songbirds. Inert either way — nLily is 0, so no creature has had wantK 4 since — which is exactly why it survived: a stale band literal does not throw, it silently addresses the wrong animals.
           const sy = wantK === 6 ? (bfBed(sx, sz) + WL) * 0.5 : (wantK === 2 ? gS + ((desSlot && DESERTS[desSp] && MAMFIT[DESERTS[desSp].name]) ? MAMFIT[DESERTS[desSp].name].seat : 2) : (wantK === 3 ? WL + 4 : (wantK === 4 ? WL + 1.4 : (desFly ? DES_FLY_UP : 0) + bfGlide(sx, sz) + (wantK ? 9 : 14))));   // fish hang at MID-DEPTH; ducks/lilies float; duck FEET sit inside the water voxel layer
           if (wantK === 6 || ((wantK === 2 || !bfRoofed(sx, sy, sz)) && !bfObst(sx, sy, sz))) {   // a fish spot was already fully validated (real deep water) — bfObst would see the WATER voxels as solid and reject every one; worms live happily UNDER the canopy — the roof test starved dense-forest placement ('worms only near spawn')
             B.x = sx; B.z = sz; B.y = sy; placed = true;
@@ -261,13 +386,13 @@
           B.jumpRe = tb3 + (3 + Math.random() * 14) / Math.max(0.05, B.jumpMul);
           // ── SCHOOL ── join a same-species school that still has room (spawning right beside it), else start a fresh school of 3-6, else swim alone (~28%)
           B.school = -1; B.schoolCap = 0;
-          for (let m = 244; m < 276; m++) { const O = wbf[m]; if (O === B || !O.init || (O.kind | 0) !== 6 || O.school < 0 || O.fsp !== B.fsp) continue;
+          for (let m = FISH_0; m < FISH_END; m++) { const O = wbf[m]; if (O === B || !O.init || (O.kind | 0) !== 6 || O.school < 0 || O.fsp !== B.fsp) continue;
             if ((O.x - B.hx) * (O.x - B.hx) + (O.z - B.hz) * (O.z - B.hz) > 60 * 60) continue;   // LOCAL schools only — joining used to TELEPORT the spawn beside a school in a DIFFERENT pool, bypassing that pool's cap (this piled extra fish into small ponds, and a pond-locked fish could never swim back to its real home)
-            let cnt = 0; for (let q = 244; q < 276; q++) { const Q = wbf[q]; if (Q.init && Q.school === O.school) cnt++; }
+            let cnt = 0; for (let q = FISH_0; q < FISH_END; q++) { const Q = wbf[q]; if (Q.init && Q.school === O.school) cnt++; }
             if (cnt < O.schoolCap && bfWater(O.x, O.z) && WL - bfBed(O.x, O.z) >= 3) { B.school = O.school; B.schoolCap = O.schoolCap; B.x = O.x + (Math.random() - 0.5) * 9; B.z = O.z + (Math.random() - 0.5) * 9; break; } }
           if (B.school < 0 && B.schools && Math.random() > 0.18) { B.school = (fishSchoolSeq = (fishSchoolSeq + 1) & 0x3fffffff); B.schoolCap = 4 + (Math.random() * 5 | 0); } }   // 4-8 per school; only the SCHOOLING species form them (user: salmon + minnow for now), and they do so more often now that there are twice as many fish
         B.th = isBaby ? mom5.th : Math.random() * 6.283;
-        B.om = 0; B.omT = 0; B.turnAcc = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0; B.trail = undefined;   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash, panic, wound-up yaw or (ant leader) RECORDED PATH: a stale trail is a line of followers snapped back to where the previous occupant walked (turnAcc: a recycled duck inheriting most of a circle reads its very first bank as an over-wound spin and unwinds the long way round for nothing)
+        B.om = 0; B.omT = 0; B.turnAcc = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0; B.trail = undefined; B.beeM = undefined;   // …and B.beeM undefined re-seeds the BEE's errand machine from scratch: a recycled slot that kept beeM 2 would go on pinning itself to the previous occupant's flower hundreds of voxels away, every frame, exactly the way a stale B.bh snapped a re-placed bunny back to its old cell (see the note below). It is in THIS list and not beside the bee code for the same reason every other field here is: one place to look for what a fresh occupant must not inherit.   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash, panic, wound-up yaw or (ant leader) RECORDED PATH: a stale trail is a line of followers snapped back to where the previous occupant walked (turnAcc: a recycled duck inheriting most of a circle reads its very first bank as an over-wound spin and unwinds the long way round for nothing)
         // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading.
         // THIS LINE WAS DEAD: it used to sit after a `//` on the line above, so the trailing comment ate it. The
         // bunny is the one creature whose position is ASSIGNED rather than integrated (B.x = B.bpx + bake offset),
@@ -303,6 +428,134 @@
       const walkFree = (tx, tz) => mamArb ? navWalkFree(tx, tz, NAV_MCLR)   // the RELAXED gate the boxed-in and watchdog escapes are chosen with AND advanced under: land + body-clear, step limit ignored. It was hand-rolled identically in three places (two marcher escapes and the bunny's), and is now ONE function at a scope BOTH mammal controllers can see, because a marcher picking an exit under one rule and advancing under another is the original 'stuck on terrain' bug.
         : (bfSurf(tx, tz) > WL + 0.5 && !bfObstW(tx, bfSurf(tx, tz) + 2, tz) && !bfObstW(tx, bfSurf(tx, tz) + 4, tz));
       const duckFit = (px, pz) => bfWater(px, pz) && bfSky(px, WL + 2, pz);   // ── THE DUCK'S ONE ANSWER ── real water under open sky, which is what every one of its consumers was already reaching for; they just each asked a different subset. It is now literally ONE function behind the planner's lookahead, the reach fan, the blocked-escape probe, stepOK and the head buffer. It is deliberately NOT the field's swim band: gating on nvD >= 3 was built and measured, and it refused 3.6%% of a mother duck's steps on her own lake (322 stop events per creature-minute against 0.8, and 6%% off her distance) for a band that had zero stuck-seconds to begin with. The arbiter's job in this band is to remove the disagreement, not to add a rule.
+      // ══ THE BEE'S ERRANDS (user 2026-08-17) ══ 'going to flowers and sitting on them briefly', and 'make bees
+      // swarm around' a hive. One five-state machine, run every frame because it is TIMERS; the steering it asks
+      // for is a single goal BEARING handed to navSteerAir's existing homeTh/leashOut seam a hundred lines down,
+      // and the two HOLD states pin the pose after every servo has run, the way the ant followers are placed.
+      // Nothing here writes B.th, refuses a step or second-guesses navFitsAir. That is the point: sim/life/fish.js
+      // was broken for a long time because its planner and its mover each had an opinion about what was
+      // reachable and they disagreed, so the fish swam into terrain and stayed there. The bee cannot express
+      // that bug — an unreachable flower is not refused, it is simply never arrived at, and BEE_GIVE_S ends the
+      // attempt and BANS that column for BEE_BAN_S so the next look picks a different one.
+      //   B.beeM  0 wandering · 1 flying to a flower · 2 sitting on it · 3 flying to a hive · 4 orbiting it
+      //           5 ENRAGED — its hive has just been broken open and it is on the player (2026-08-17)
+      // ══ …AND THE FIFTH STATE IS AN ADDITION, NOT A REPLACEMENT ══ (user 2026-08-17: "if the player breaks
+      // open the beehive, have bees fly out of it, attacking the player.") Everything above it is untouched to
+      // the character: 5 is one more arm of the same if/else chain, one more clause at the steering seam, one
+      // more branch in the altitude servo, and it is NOT one of the two HOLD states down at the pose pin — so
+      // foraging, flower-sitting and hive-orbiting all still run exactly the code they ran yesterday.
+      if (desBee && B.init && !B.dying && !B.slain) {
+        if (B.beeM === undefined) { B.beeM = 0; B.beeRe = tb3 + Math.random() * BEE_LOOK_S; B.beeHRe = 0; B.beeBanT = 0; B.beePh = Math.random() * 6.283; B.beeRgRe = 0; B.beeHck = 0; B.beeStings = 0; }   // …and the three RAGE fields seed from here for the same reason every other one does: the recycle list up in the spawn block clears B.beeM alone, and this branch is what a fresh occupant re-derives the rest of the errand machine from. A kept beeRgRe would bar a new bee from a hive break it never saw.
+        const beeSwarm = desIx < BEE_HIVE_N;           // WHICH bees go to a hive is a pure function of the slot number — no per-frame arbitration, no scan of the other bees, and the split cannot drift as slots recycle. The rest keep foraging, so a hive in view never empties the meadow.
+        // ── WHERE THE ANGRY BEES COME FROM, AND WHY THERE ARE AT MOST FIVE ── nothing is spawned and no slot is
+        // stolen: the attackers are the hive's OWN bees, recruited off the break ledger. The cap is not a new
+        // constant, it is beeSwarm — the SAME slot-number split that already decides who lives at a hive and who
+        // forages. Three consequences, and each is the reason it is written this way rather than as a scan:
+        //   * The meadow is guaranteed. The three high slots are never recruited under any circumstance, so
+        //     however many hives the player smashes there are always bees out visiting flowers.
+        //   * The five are the right five. They are precisely the bees that go to hives, so on any hive the
+        //     player can actually find, the bees that come out of it were the bees that were living in it.
+        //   * There is no arbitration and nothing to go stale across a slot recycle, exactly as BEE_HIVE_N says.
+        // Entry sits BEFORE the state dispatch on purpose: a bee mid-orbit of the hive that just came apart has
+        // to drop what it is doing, and so does one sitting on a flower fifty voxels away. It can interrupt any
+        // state, which is what makes it read as the hive erupting rather than as five bees finishing an errand.
+        // …and the slot-number split is now the LEDGER's question, not this branch's: a hive break still
+        // recruits only the five that live there, while a bee that has just been SWATTED calls every bee in
+        // earshot (user 2026-08-17). Passing beeSwarm in rather than gating on it here is what lets one
+        // record type do both, and it is why a forager can enter mode 5 at all now.
+        if (B.beeM !== 5 && tb3 > (B.beeRgRe || 0)) {
+          const rg = hiveRageAt(B.x, B.z, tb3, beeSwarm);
+          if (rg) { B.beeM = 5; B.beeRgX = rg.x; B.beeRgZ = rg.z; B.beeT = tb3 + BEE_RAGE_S; rg.n++; }
+        }
+        if (B.beeM === 1) {                            // ── FLYING TO A FLOWER ──
+          const ddx = B.beeTx - B.x, ddz = B.beeTz - B.z;
+          if (beeBloomAt(B.beeTx, B.beeTz) !== B.beeTy) { B.beeM = 0; B.beeRe = tb3 + BEE_LOOK_S; }   // the bloom is GONE (chopped, buried by snow, edited away) — re-checked every frame so a bee can never settle onto a memory of a flower
+          else if (ddx * ddx + ddz * ddz < BEE_SIT_R * BEE_SIT_R) { B.beeM = 2; B.beeT = tb3 + BEE_SIT_S + Math.random() * BEE_SIT_J; }
+          else if (tb3 > B.beeT) { B.beeM = 0; B.beeBanX = B.beeTx; B.beeBanZ = B.beeTz; B.beeBanT = tb3 + BEE_BAN_S; B.beeRe = tb3 + BEE_LOOK_S; }   // GAVE UP — and bans this exact column, or the very next look re-picks the flower it just failed to reach and the bee grinds forever on a lane the fan cannot solve
+        } else if (B.beeM === 2) {                     // ── SITTING ── the pose is pinned below; here only the clock and the vanishing-flower check
+          if (tb3 > B.beeT || beeBloomAt(B.beeTx, B.beeTz) !== B.beeTy) { B.beeM = 0; B.beeRe = tb3 + BEE_LOOK_S + Math.random() * BEE_LOOK_S; }
+        } else if (B.beeM === 3) {                     // ── FLYING TO A HIVE ──
+          const hdx = B.beeTx - B.x, hdz = B.beeTz - B.z, har = BEE_ORBIT_R * 1.6;
+          if (hdx * hdx + hdz * hdz < har * har) { B.beeM = 4; B.beeT = tb3 + BEE_HIVE_S + Math.random() * BEE_HIVE_J; }
+          else if (tb3 > B.beeT) { B.beeM = 0; B.beeHRe = tb3 + BEE_HIVE_GAP; B.beeRe = tb3 + BEE_LOOK_S; }
+        } else if (B.beeM === 4) {                     // ── ORBITING ── bounded, so a hive can never capture a bee for the whole session
+          if (tb3 > B.beeT) { B.beeM = 0; B.beeHRe = tb3 + BEE_HIVE_GAP; B.beeRe = tb3 + BEE_LOOK_S; }
+          // ── AND AN ORBITING BEE WATCHES ITS OWN HIVE ── the axe posts to the ledger itself, but an ARROW
+          // does not: sim/projectiles.js reaches phChopDecor by its own path and would take a hive apart in
+          // five shots in complete silence. So do it the way beeBloomAt already checks a flower is still
+          // there — ASK THE WORLD — rather than adding a second hook per weapon that could be forgotten the
+          // next time something learns to break a voxel. One 125-cell count per second per orbiting bee, and
+          // hiveBroke is idempotent, so this and the swing racing to the same hive still fire once.
+          if (tb3 > (B.beeHck || 0)) {
+            B.beeHck = tb3 + 1;
+            const hb = (B.beeTx === undefined || B.beeTy === undefined) ? null : hiveBoxAt(B.beeTx, B.beeTy, B.beeTz);   // an undefined y would make every box test vacuously true and claim the first hive in the 3x3 walk
+            if (hb && hiveLeft(hb) <= hiveFull() * BEE_BREAK_F) hiveBroke(hb);
+          }
+        } else if (B.beeM === 5) {                     // ── ENRAGED ──
+          // ── HOW THE RAGE ENDS, THREE WAYS, AND ONE OF THEM ALWAYS FIRES ── an attacker that chases forever
+          // is a bug, and the bee already has the precedent for both halves of the answer: BEE_GIVE_S ends an
+          // errand on a clock, FLY_LEASH ends a drift on a distance.
+          //   * the CLOCK. BEE_RAGE_S seconds and it is over, whatever is happening — the same bound
+          //     BEE_HIVE_S puts on the orbit, for the same reason: nothing captures a bee for a session.
+          //   * the LEASH, measured from the HIVE and not from the bee, because a swarm defends a place. Get
+          //     BEE_RAGE_LEASH from the wreck and they lose interest. This is the one the PLAYER controls.
+          //   * DEATH. A dead player is not a target, and the swarm stands down rather than hovering over the
+          //     game-over screen.
+          // On the way out it re-arms rather than dropping straight back to idle: BEE_RAGE_GAP is exactly
+          // BEE_RAGE_WIN, so by the time the bee could be recruited again every record that called it is
+          // stale. Without that a bee that gave up on the leash would re-enter on the very next frame, exit
+          // again, and flicker between the two for the life of the record. It also takes the ordinary hive
+          // cooldown, so a bee that has just been driven off does not immediately fly back to the wreck.
+          const rgx = P.x - B.beeRgX, rgz = P.z - B.beeRgZ;
+          if (tb3 > B.beeT || dead || rgx * rgx + rgz * rgz > BEE_RAGE_LEASH * BEE_RAGE_LEASH) {
+            B.beeM = 0; B.beeRgRe = tb3 + BEE_RAGE_GAP; B.beeHRe = tb3 + BEE_HIVE_GAP; B.beeRe = tb3 + BEE_LOOK_S;
+          } else {
+            // ── THE STING, ON THE COBRA'S MACHINERY ── same reach expression (the animal's own MAMFIT
+            // footprint plus the player's half width and a little), same !dead && !P.fly gate, same one call
+            // to vitHurt. Two deliberate differences, and both are about what a BEE is:
+            //   * the vertical test is a BOX over the player's whole 20-voxel body, not the cobra's
+            //     centre-height band. A cobra is on the ground with the player, so |P.y - B.y| is a fair
+            //     question; a bee is in the AIR, and asking that of a flyer either excludes it entirely (the
+            //     bug that kept the cobra from ever biting) or has to be widened until it means nothing.
+            //   * the cooldown is the SWARM'S, not this bee's. See BEE_STING_CD — five private clocks on a
+            //     five-point bar is the whole bar inside a second.
+            const fB5 = MAMFIT.bee, sR5 = 5.0 + (fB5 ? fB5.hd : 2);
+            const sdx = P.x - B.x, sdz = P.z - B.z;
+            if (!P.fly && sdx * sdx + sdz * sdz < sR5 * sR5 && B.y > P.y - 3 && B.y < P.y + HEIGHT + 3 && tb3 > beeStingT) {
+              beeStingT = tb3 + BEE_STING_CD;
+              B.beeStings = (B.beeStings || 0) + 1;
+              vitHurt(BEE_STING, 'the bees stung you');
+            }
+          }
+        } else if (tb3 > B.beeRe) {                    // ── IDLE ── look for something to do. The hive outranks the flowers for the bees assigned to it: a bee at the hive is not out foraging.
+          B.beeRe = tb3 + BEE_LOOK_S + Math.random() * BEE_LOOK_S;
+          // ── …AND "OUTRANKS" NOW MEANS IT ALSO OUTRANKS THE COOLDOWN (user 2026-08-17: "still dont see
+          // them doing this") ── the hive was only consulted while BEE_HIVE_GAP had expired, so during the
+          // gap the very same look fell straight through to findBeeFlower and sent a swarm bee off on a
+          // 10-second errand up to BEE_FLOWER_R away. MEASURED with the placement fixed and this branch
+          // unchanged: the five swarm bees were at the hive, but only 1-3 of them were inside 40 voxels of
+          // it at any moment — the rest were out at flowers, which is exactly "I still dont see them
+          // swarming". So the hive is asked FIRST and unconditionally: a bee with one in reach either
+          // flies to it or waits out its cooldown near it, and never leaves for a flower. It is one
+          // beeHiveNear call, not two — `hvN` answers both questions.
+          const hvN = beeSwarm ? beeHiveNear(B.x, B.z) : null;
+          if (hvN && tb3 > B.beeHRe) { B.beeM = 3; B.beeTx = hvN.x; B.beeTy = hvN.y; B.beeTz = hvN.z; B.beeT = tb3 + BEE_GIVE_S; }
+          else if (!hvN) {                             // no hive in reach — forage, which is the whole life of the three non-swarm slots and of any swarm bee whose hive has gone out of range
+            const fl = findBeeFlower(B.hx !== undefined ? B.hx : B.x, B.hz !== undefined ? B.hz : B.z);
+            if (fl && !(tb3 < B.beeBanT && fl.x === B.beeBanX && fl.z === B.beeBanZ)) { B.beeM = 1; B.beeTx = fl.x; B.beeTy = fl.y; B.beeTz = fl.z; B.beeT = tb3 + BEE_GIVE_S; }
+          }
+        }
+      }
+      // A bee on an errand drops out of the fly's high cruise lane: DES_FLY_UP holds a desert fly 16 voxels above
+      // every other flyer's glide line, and a flower head stands ONE voxel off the ground. This is the only reason
+      // the three altitude sites below take a variable instead of the constant — for the fly, and for a bee that
+      // is merely wandering or circling a hive, it IS the constant.
+      // …and an ENRAGED bee drops out of it for the same reason a foraging one does, only harder: DES_FLY_UP
+      // floors a flyer at gAir + 22, and the player's box tops out at P.y + 20, so a bee left in the cruise
+      // lane would hover permanently above the head of the person it is attacking and could never once be
+      // inside the sting box. Zero, not a smaller number: the rage servo below aims it at P.y + BEE_RAGE_Y and
+      // gAir + 6 is the floor it must not fight.
+      const flyUp = desFly ? ((desBee && (B.beeM === 1 || B.beeM === 2 || B.beeM === 5)) ? 0 : DES_FLY_UP) : 0;
       if (B.kind === 4) {                              // LILY PAD: slow drift on the water + constant free rotation; movement heading (mth) is independent of the visual spin
         if (tb3 > B.tRe) { B.mth += (Math.random() - 0.5) * 1.2; B.tRe = tb3 + 3 + Math.random() * 4; }
         if (!bfWater(B.x + Math.sin(B.mth) * 5, B.z + Math.cos(B.mth) * 5)) B.mth += 2.6 * dt;   // shore/dry ahead — curl the drift away
@@ -456,7 +709,7 @@
         if (tb3 >= B.navRe) {
           B.navRe = tb3 + NAV_HZ;
           let gx8 = 0, gz8 = 0;                          // ── ONE GOAL VECTOR ── the keep-apart push and the home leash, resolved into a single direction BEFORE the fan. They used to be two separate writers, one of them steering the worm straight into the trunk the other was trying to avoid.
-          for (let j = 32; j < 64; j++) { const O = wbf[j]; if (O === B || !O.init || (O.kind | 0) !== 2) continue;
+          for (let j = WORM_0; j < WORM_END; j++) { const O = wbf[j]; if (O === B || !O.init || (O.kind | 0) !== 2) continue;
             const dxw = B.x - O.x, dzw = B.z - O.z, d2w = dxw * dxw + dzw * dzw;
             if (d2w < 26 * 26 && d2w > 0.01) { const il = 1 / Math.sqrt(d2w); gx8 += dxw * il * (26 - Math.sqrt(d2w)) / 26; gz8 += dzw * il * (26 - Math.sqrt(d2w)) / 26; } }   // unit vectors, weighted by closeness — the old raw sum let one very near worm swamp the leash entirely
           if (B.hcx !== undefined && (B.trap || 0) <= 0.35) { const lx = B.x - B.hx, lz = B.z - B.hz, l2 = lx * lx + lz * lz;   // STUCK (trap > 0.35): drop the pull toward home so the fan can steer AROUND the trunk instead of into it — the same exemption the direct leash carried
@@ -477,15 +730,17 @@
             if ((hunt8 || run8) && pd8 < pr8 * pr8 && pd8 > 0.01) { const il8 = 1 / Math.sqrt(pd8); gx8 += px8 * il8; gz8 += pz8 * il8; } }   // a UNIT vector like the keep-apart terms: navSteer2 reads only the DIRECTION, and no other term writes this vector for the desert band, so the length is free
           const gOn = gx8 * gx8 + gz8 * gz8 > 0.01;
           const gc8 = navGroundAt(B.x, B.z);
-          const bioH8 = desertM(B.x, B.z) > 0.85;
           // Only a walker standing on its OWN ground clips against the line — one already stranded the wrong side
-          // must be free to walk home, and the |dm-0.85| band keeps the extra desertM samples off the 90-odd
-          // percent of the band that is nowhere near the boundary. The band is far wider than a plan tick of
+          // must be free to walk home, and the near-edge window keeps the extra mask samples off the 90-odd
+          // percent of the band that is nowhere near a boundary. The window is far wider than a plan tick of
           // travel, so a walker is always inside it well before the line is within reach.
-          const bioOn8 = bioH8 === !!desSlot && Math.abs(desertM(B.x, B.z) - 0.85) < 0.15;
+          // Both halves come off the body's HOME TAG now rather than off desSlot: the same two samples and the
+          // same two comparisons for every creature that was here before, and the only band that reads a
+          // different line is the desert mouse's oak-forest population (bioHomeOK / bioNearEdge, sim/nav.js).
+          const bioOn8 = bioHomeOK(bioMe, B.x, B.z) && bioNearEdge(bioMe, B.x, B.z);
           navSteer2(B, navLandOK(B.x, B.z, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot),
             (th7, L7) => { const r7 = navReachLand(B.x, B.z, th7, L7, gc8, NAV_WUP, NAV_WDN, NAV_WCLR, desSlot);
-              return bioOn8 ? navBioClip(B.x, B.z, th7, r7, bioH8) : r7; },
+              return bioOn8 ? navBioClip(B.x, B.z, th7, r7, bioMe) : r7; },
             NAV_WREACH, 2 * NAV_WN, gOn ? Math.atan2(gx8, gz8) : 0, gOn, 2.6, 2.4);   // the same ±2.6 clamp and 2.4 gain the keep-apart push used, so the crawl's turn character is unchanged
         }
       } else if (B.kind === 2) {                       // WORM: smooth continuous meandering crawl (the random pause was removed — user)
@@ -494,13 +749,13 @@
         // leader and 1..DES_PER-1 heel behind it, each steering for a point just behind the one AHEAD rather
         // than all at the leader — a chain, not a star — and falling back up the chain when a link dies. This
         // works here only because two things do NOT apply to the desert band: the keep-apart repulsion below
-        // scans slots 32..64 (worms) so ants never shove each other out of line, and the home leash is gated on
+        // scans the WORM band so ants never shove each other out of line, and the home leash is gated on
         // B.hcx, which the annulus spawn never sets for them. Either would have fought the formation.
         const wormOK = (th6, dist) => { const ax = B.x + Math.sin(th6) * dist, az = B.z + Math.cos(th6) * dist, gA = bfSurf(ax, az);
           return gA > WL + 0.5 && Math.abs(gA - bfSurf(B.x, B.z)) <= 2 && !bfObstW(ax, gA + 2, az) && !bfObstW(ax, gA + 3, az); };   // ≤2 matches the STEP rule; +3 probe = body TOP clearance (bfObstW passes small ground clutter)
         if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 1.4; B.tRe = tb3 + 1.5 + Math.random() * 2.5; }
         let wrx = 0, wrz = 0;                           // SPREAD OUT — steer away from any nearby worm so they never bunch up (user); placement is already ≥60 apart, this stops runtime clumping
-        for (let j = 32; j < 64; j++) { const O = wbf[j]; if (O === B || !O.init || (O.kind | 0) !== 2) continue;
+        for (let j = WORM_0; j < WORM_END; j++) { const O = wbf[j]; if (O === B || !O.init || (O.kind | 0) !== 2) continue;
           const dxw = B.x - O.x, dzw = B.z - O.z, d2w = dxw * dxw + dzw * dzw;
           if (d2w < 26 * 26 && d2w > 0.01) { const w = 26 - Math.sqrt(d2w); wrx += dxw * w; wrz += dzw * w; } }
         if (wrx * wrx + wrz * wrz > 1) {                // a worm is within ~2.6 m — bias the heading toward the away direction
@@ -554,7 +809,7 @@
           // ── THREAT SCAN ── the player plus every configured predator creature (FC.predatorKinds — ducks by default);
           // the NEAREST one inside threatR (re)starts the flee window, and fleeHold keeps the state from flickering at the rim.
           let td2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) + (B.y - P.y - 2) * (B.y - P.y - 2), tx9 = P.x, tz9 = P.z;
-          if (FC.predatorKinds.length) for (let m9 = 16; m9 < 32; m9++) { const O = wbf[m9];   // ducks live in 16-31; widen the scan if other kinds ever join the list
+          if (FC.predatorKinds.length) for (let m9 = DUCK_0; m9 < BABY_END; m9++) { const O = wbf[m9];   // ducks live in DUCK_0..BABY_END; widen the scan if other kinds ever join the list
             if (!O || !O.init || FC.predatorKinds.indexOf(O.kind | 0) < 0) continue;
             const q2 = (B.x - O.x) * (B.x - O.x) + (B.z - O.z) * (B.z - O.z) + (B.y - O.y) * (B.y - O.y);
             if (q2 < td2) { td2 = q2; tx9 = O.x; tz9 = O.z; } }
@@ -578,7 +833,7 @@
             let want = B.navTh !== undefined ? B.navTh : B.th;
             if (B.school >= 0) {                       // schooling BLENDS with the channel: mostly stick with the group, but bend toward open water so the school never piles into a bank
               let cx = 0, cz = 0, hx = 0, hz = 0, sxx = 0, szz = 0, n = 0;
-              for (let m = 244; m < 276; m++) { const O = wbf[m]; if (O === B || !O.init || O.school !== B.school) continue;
+              for (let m = FISH_0; m < FISH_END; m++) { const O = wbf[m]; if (O === B || !O.init || O.school !== B.school) continue;
                 const dxs = O.x - B.x, dzs = O.z - B.z, d2 = dxs * dxs + dzs * dzs; if (d2 > 42 * 42) continue;
                 cx += O.x; cz += O.z; hx += Math.sin(O.th); hz += Math.cos(O.th); n++;
                 if (d2 < 7 * 7 && d2 > 0.01) { const w = 7 - Math.sqrt(d2); sxx -= dxs * w; szz -= dzs * w; } }
@@ -670,6 +925,22 @@
           let homeTh = 0, leashOut = false;
           if (B.hcx !== undefined) { const lx = B.x - B.hx, lz = B.z - B.hz;   // the LEASH becomes a score term too — the block below used to bend B.th directly, which is a second writer steering against the avoidance
             if (lx * lx + lz * lz > FLY_LEASH * FLY_LEASH) { leashOut = true; homeTh = Math.atan2(-lx, -lz); } }
+          // …and a BEE ON AN ERRAND steers by exactly the same term, overriding the leash for as long as it lasts.
+          // It can only OVERRIDE and never fight it, because BEE_FLOWER_R < FLY_LEASH puts every flower the bee
+          // can choose inside the disc the leash holds it in, so the two bearings agree by construction. Fed as a
+          // SCORE, not as a heading: the fan still has to find a lane that is open (navReachAir) and a pose the
+          // mover will accept (navFitsAir), so a trunk between the bee and its flower routes it around rather
+          // than into — which is the whole reason the errand is expressed here and not as a write to B.th.
+          // ── AND AN ENRAGED BEE IS THE SAME TERM WITH THE PLAYER AS THE GOAL ── one more clause, not a new
+          // mechanism, and it is the ONLY reason the chase can leave FLY_LEASH: leashOut REPLACES the home
+          // bearing with this one, so the disc the bee is normally held in stops pulling for as long as the
+          // rage lasts and the give-up distance is what bounds it instead. Still a SCORE and never a write to
+          // B.th, so navReachAir/navFitsAir keep the last word — a bee whose player is behind a trunk routes
+          // around it, and a bee that cannot get to you simply does not arrive, which is the same guarantee
+          // the flower errand has and the same one sim/life/fish.js was fixed to give.
+          if (desBee && (B.beeM === 1 || B.beeM === 3 || B.beeM === 5)) { leashOut = true;
+            const gx9 = B.beeM === 5 ? P.x : B.beeTx, gz9 = B.beeM === 5 ? P.z : B.beeTz;
+            homeTh = Math.atan2(gx9 - B.x, gz9 - B.z); }
           navSteerAir(B, homeTh, leashOut);
         }
       } else {
@@ -701,12 +972,15 @@
       // the desert gate below, which meant every pine-forest mammal — the whole population on the other side of
       // the line — had no avoidance whatsoever, and the residual stall was mostly them.
       if ((B.kind | 0) === 2 && B.init && (mamSlot || bunnySlot || antLead)) {
-        const home9 = !!desSlot;
-        if ((desertM(B.x + Hx2 * BIO_LOOK, B.z + Hz2 * BIO_LOOK) > 0.85) !== home9) {
+        // …and it is the HOME TAG that decides what 'the other side' means, not desSlot. That matters for
+        // exactly one creature in this block: the PORCUPINE, which is no longer allowed in the oak forest
+        // and so has an oak line to turn away from as well as a sand one. The bunny, armadillo and skunk
+        // are BIO_ANY and their three samples are the identical desertM comparisons they always were.
+        if (!bioHomeOK(bioMe, B.x + Hx2 * BIO_LOOK, B.z + Hz2 * BIO_LOOK)) {
           const lx9 = Math.sin(B.th + 1.2), lz9 = Math.cos(B.th + 1.2);
           const rx9 = Math.sin(B.th - 1.2), rz9 = Math.cos(B.th - 1.2);
-          const lOK9 = (desertM(B.x + lx9 * BIO_LOOK, B.z + lz9 * BIO_LOOK) > 0.85) === home9;
-          const rOK9 = (desertM(B.x + rx9 * BIO_LOOK, B.z + rz9 * BIO_LOOK) > 0.85) === home9;
+          const lOK9 = bioHomeOK(bioMe, B.x + lx9 * BIO_LOOK, B.z + lz9 * BIO_LOOK);
+          const rOK9 = bioHomeOK(bioMe, B.x + rx9 * BIO_LOOK, B.z + rz9 * BIO_LOOK);
           const turn9 = lOK9 ? 1.2 : (rOK9 ? -1.2 : 3.14159);
           B.th += Math.max(-2.4 * dt, Math.min(2.4 * dt, turn9));
           Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
@@ -853,14 +1127,17 @@
       // are gated (kind 2): fish and ducks live in water that crosses the border, and flyers are not the
       // complaint. A creature that somehow starts on the wrong side is NOT frozen — the test only refuses a
       // step that would move it further in, so it can always walk home.
-      if (stepOK && (B.kind | 0) === 2) {
-        // 0.85, the SAME threshold the spawn gate admits on — not 0.5. Measured at 0.5, forest walkers showed
-        // up on the "desert" side in 15% of samples, and they were not trespassing: forest life legally spawns
-        // anywhere up to dm 0.85, so a midline test called a large legal band wrong and the creatures were
-        // simply standing where they were born. Matching the spawn threshold makes the two agree.
-        const dmN = desertM(nx5, nz5) > 0.85;
-        if (dmN !== !!desSlot && dmN !== (desertM(B.x, B.z) > 0.85)) stepOK = false;
-      }
+      // 0.85, the SAME threshold the spawn gate admits on — not 0.5. Measured at 0.5, forest walkers showed
+      // up on the "desert" side in 15% of samples, and they were not trespassing: forest life legally spawns
+      // anywhere up to dm 0.85, so a midline test called a large legal band wrong and the creatures were
+      // simply standing where they were born. Matching the spawn threshold makes the two agree. (That
+      // reasoning is now recorded on BIO_SANDLINE in sim/nav.js, along with why the OAK line does not
+      // inherit it and sits on the honest midline instead.)
+      // The 'walk home' escape is unchanged and is now the shape it always meant: refuse the step only when
+      // the destination is foreign AND the creature is currently standing somewhere it belongs. The old
+      // two-boolean form said exactly that and no more — with one line in the world, 'not my side' and 'the
+      // other creature's side' were the same bit; with two, they are not, so it is written out literally.
+      if (stepOK && (B.kind | 0) === 2 && !bioHomeOK(bioMe, nx5, nz5) && bioHomeOK(bioMe, B.x, B.z)) stepOK = false;
       if (stepOK) { B.x = nx5; B.z = nz5;
         if (wBrk0) { B.trap = (B.trap || 0) + dt; B.noMove = (B.noMove || 0) + dt; }   // ACCEPTED, but the brake made it a zero-length step: count it exactly as the refused branch below does, or a stall against a cactus reports as a clean walk forever
         else { B.trap = Math.max(0, (B.trap || 0) - dt * 3); B.stuck = 0; B.noMove = 0; } }
@@ -1093,18 +1370,54 @@
       } else if (B.trap > 0.5 && !NAVARB) {            // STUCK: dive for the open understory when there's air below, else flutter up if the sky above is clear. RETIRED under the arbiter: it is a third writer of y that answers to a counter rather than to the field, and it parks a roofed flyer at ground+8 UNDER the canopy it is trying to leave.
         if (!bfObst(B.x, B.y - 2, B.z) && B.y - 2 > gLoc + 6) B.y -= 34 * dt;
         else if (!bfRoofed(B.x, B.y, B.z)) B.y += 40 * dt;
+      } else if (desBee && B.beeM === 5) {             // ── ENRAGED: HOLD THE PLAYER'S OWN HEIGHT ──
+        // The cruise line is a property of the TERRAIN (ground memory + 12), which is the right answer for
+        // anything wandering and the wrong one for something aimed at a person: on a slope, on a rock, on a
+        // roof, the player's feet and the local ground are different numbers, and the sting box is drawn round
+        // the player. So the rage flies the PLAYER instead — the same eased, rate-capped, budget-capped write
+        // the cruise branch makes, only against a different target. gAir + 3 is the floor so it cannot chase
+        // you into the dirt, and B.gRef is still maintained here so the ordinary servo resumes from a live
+        // ground memory the instant the rage ends rather than snapping off a stale one.
+        B.gRef = Math.max(gAir, (B.gRef || gAir) - 9 * dt);
+        const tgtR5 = Math.max(gAir + 3, P.y + BEE_RAGE_Y);
+        B.y += Math.max(-26 * dt, Math.min(30 * dt, (tgtR5 - B.y) * (1 - Math.exp(-4 * dt))));
       } else {
         B.gRef = Math.max(gAir, (B.gRef || gAir) - 9 * dt);   // GROUND MEMORY: rises instantly with terrain, sinks slowly — stays HIGH crossing gorges (no diving in) but settles to the
         const cruise = B.gRef + (B.kind ? 8 : 12);            // local ground on flats/slopes, so the cruise line sits in the open UNDERSTORY below the canopy ('caught on trees' fix —
         let stepY = (cruise - B.y) * (1 - Math.exp(-4 * dt)); // the old terrain-max stencil pinned cruise AT canopy height on any slope)
         stepY = Math.max(-26 * dt, Math.min(30 * dt, stepY)); // RATE-CAPPED — a reference jump must never become a visible teleport
         if (!(stepY > 0 && (bfObst(B.x, B.y + 3, B.z) || bfObst(B.x, B.y + 6, B.z)))) B.y += stepY;   // never ease UP into foliage overhead (two probes — gappy pine crowns fooled one)
-        if (B.y < B.gRef + 7 + (desFly ? DES_FLY_UP : 0)) B.y = Math.min(B.gRef + 7 + (desFly ? DES_FLY_UP : 0), B.y + 34 * dt);   // floors are APPROACHED at climb speed, never snapped
+        if (B.y < B.gRef + 7 + flyUp) B.y = Math.min(B.gRef + 7 + flyUp, B.y + 34 * dt);   // floors are APPROACHED at climb speed, never snapped
       }
-      if (B.kind < 2 && B.y < gAir + 6 + (desFly ? DES_FLY_UP : 0)) B.y = Math.min(gAir + 6 + (desFly ? DES_FLY_UP : 0), B.y + 34 * dt);   // the fly's floor rides DES_FLY_UP above every other flyer's   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline); gAir so the floor and the feasibility predicate agree on where the ground is
+      if (B.kind < 2 && B.y < gAir + 6 + flyUp) B.y = Math.min(gAir + 6 + flyUp, B.y + 34 * dt);   // the fly's floor rides DES_FLY_UP above every other flyer's   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline); gAir so the floor and the feasibility predicate agree on where the ground is
       if (NAVARB && B.kind < 2 && B.y !== yPrev5 && !navFitsAir(B.x, B.y, B.z) && navFitsAir(B.x, yPrev5, B.z)) { B.y = yPrev5; navVetoY++; }   // ── VERTICAL, SAME PREDICATE ── the altitude servo is the flyer's other motion axis and it used to write y with no feasibility test at all. It is not a teleport, so it is not rewritten here; it is VETOED by navFitsAir, so both axes now answer to one predicate.
       if (B.jumpV === undefined) { const yDn9 = yBudD > 30 ? yBudD : 30, yUp9 = yBudD > 34 ? yBudD : 34;
         B.y = Math.max(yPrev5 - yDn9 * dt, Math.min(yPrev5 + yUp9 * dt, B.y)); }   // GLOBAL vertical budget: whatever the branches above did, the frame's total climb/descent stays at flutter speed — teleports impossible. A LEAPING salmon is exempt: its arc is real ballistics and this cap would flatten the rise and make the fall float.
+      // ══ A BEE HOLDING STATION ══ the two states in which the bee's pose is PLACED rather than integrated, and
+      // it happens here, after every servo and every veto, for the reason the ant followers are placed here: a
+      // second controller arguing with the mover is the bug this codebase keeps re-learning, so there is no
+      // argument — the mover runs untouched and its answer is simply overwritten for these two states. The stall
+      // counters are cleared with it, or a bee that is deliberately stationary would bank 12 s of `trap` and
+      // mercy-recycle itself mid-visit.
+      // BOTH POSES ARE navFitsAir-LEGAL BY CONSTRUCTION, which is why neither needs the veto: the predicate
+      // vouches for y >= nvY + 2, a bloom's HEAD voxel is the second voxel above nvY (fillColumn puts a stalk in
+      // the first air voxel and the head on top of it), and the bee sits on top of THAT — so its lowest voxel is
+      // already a voxel clear of the band's floor. The orbit hangs in the crown band, higher still.
+      if (desBee && (B.beeM === 2 || B.beeM === 4)) {
+        if (B.beeM === 2) {                            // SITTING: pinned over the bloom's own column, easing down onto the head. BEE_DOWN rather than a snap so the last of the approach reads as a landing, and the same ease lifts it off when the clock runs out.
+          B.x = B.beeTx; B.z = B.beeTz;
+          const sy = B.beeTy + 1 + ((MAMFIT.bee && MAMFIT.bee.seat) || 1.5);   // head voxel top, plus the model's own measured seat — the same mamFitOf number the walkers stand on, so the bee rests ON the flower instead of hovering at a hand-picked offset that would be wrong the moment the art changes
+          B.y += Math.max(-BEE_DOWN * dt, Math.min(BEE_DOWN * dt, sy - B.y));
+        } else {                                       // ORBITING: a real circle, held kinematically. BEE_ORBIT_W x BEE_ORBIT_R is 12 vox/s against the bee's own 56, so it reads as hovering; the vertical term spreads the swarm through the crown rather than stacking it in one plane.
+          B.beePh += BEE_ORBIT_W * dt;
+          B.x = B.beeTx + Math.sin(B.beePh) * BEE_ORBIT_R;
+          B.z = B.beeTz + Math.cos(B.beePh) * BEE_ORBIT_R;
+          B.y = B.beeTy + Math.sin(B.beePh * 1.7 + wk) * BEE_ORBIT_Y;
+          B.th = B.beePh + 1.5708;                     // face along the orbit — the ONE place the bee's heading is assigned, and only while it is not being steered at all
+          Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
+        }
+        B.om = 0; B.omT = 0; B.trap = 0; B.noMove = 0;
+      }
       if (B.kind === 6) {                              // ── FISH TERRAIN HITBOX ── a hard guarantee: never render with the body in terrain. If any part of the long body overlaps solid, RESOLVE it — push the centre out to the nearest clear spot (works WITH the repulsion, not against it); only if there's no clear spot within reach does it fall back to the last clear pose. This is the "hitbox for terrain, not for the player" the user asked for.
         const bodyClear6 = (cx6, cz6) => fishBodyAt(cx6, cz6, B.th, Math.floor(B.y), B.fhalf);   // same single body test as the planner and stepOK
         if (bodyClear6(B.x, B.z)) { if (B.jumpV === undefined) { B.cx = B.x; B.cy = B.y; B.cz = B.z; B.cth = B.th; } }   // clear → remember this pose AND ITS HEADING (never an AIRBORNE one: a later revert would teleport the fish back into the sky)
@@ -1264,7 +1577,7 @@
       // are counted apart from their mothers on purpose: a brood is a dozen bodies against her one, so pooled
       // they would spend the whole duck allowance on babies and the mother would never be the one drawn.
       emitKnd[emitN] = fishSlot ? (LIFE_K_FISH + Math.min(LIFE_FISH_MAX - 1, B.fsp | 0)) : (wormSlot ? LIFE_K_WORM : (isBaby ? LIFE_K_BABY : (duckSlot ? LIFE_K_DUCK
-        : (wk < 16 ? (B.dfly ? LIFE_K_DFLY : LIFE_K_FLYER) : LIFE_K_OTHER))));   // wk < 16 is the flyer band: butterflies by day, fireflies by night, dragonflies at the top of it
+        : (wk < FLY_END ? (B.dfly ? LIFE_K_DFLY : LIFE_K_FLYER) : LIFE_K_OTHER))));   // wk < FLY_END is the flyer band: butterflies by day, fireflies by night, dragonflies at the top of it
       emitAnc[emitN * 3] = px3; emitAnc[emitN * 3 + 1] = py3; emitAnc[emitN * 3 + 2] = pz3;
       { const cx8 = emitBuf[o4], cy8 = emitBuf[o4 + 1], cz8 = emitBuf[o4 + 2];   // the camera-space anchor written above
         const r8 = LIFE_FRUST_R + (lifeIsDrawn(wk) ? LIFE_FRUST_HYST : 0);

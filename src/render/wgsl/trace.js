@@ -10,6 +10,23 @@
     ${DDAW}
     @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;   // 32-voxel SUPER-brick occupancy (window origin is 32-aligned, so off>>5 is exact)
     const SNV : u32 = ${location.search.includes('flakedbg') ? LAVA_T : SNOW[0]}u;                                   // falling-flake voxel id — flakes are REAL primary hits (?flakedbg paints them as emissive lava to bisect trace-vs-downstream)
+    const RNV : u32 = ${RAIN}u;                                                                       // falling-RAIN voxel id — the oak forest's weather. One palette id (see assets/palette.js): rain is a colour here and nothing else, because unlike SNOW it is never written into W
+    // ── RAIN, THE TUNING, IN ONE PLACE ── every number the rain march uses. RAIN_MULT is the whole of "much
+    // faster" (user): the drop lattice falls at RAIN_MULT x the flake lattice, i.e. 55 vox/s against snow's 11,
+    // which is 5.5 m/s — real rain's terminal velocity is 5-9 m/s and a snowflake's is 1-1.5, so the ratio is
+    // about right as well as being what was asked for. It multiplies the SAME accumulator the flakes use
+    // (u.pickY.w, integrated on the CPU at a constant 11 vox/s) rather than integrating u.time here, so rain
+    // and snow can never drift apart and no new uniform lane is needed.
+    // RAIN_HW/RAIN_HH are the drop's half-extents in voxels: 6 cm wide, 21 cm tall. A cube falling five times
+    // faster reads as HAIL, not rain — rain is legible because it is a streak — and the stretch is genuinely
+    // cheap here: the drop does not spin (a raindrop does not tumble), so the two-stage conservative-slab +
+    // rotate dance the flakes need collapses to ONE exact axis-aligned slab test, and the rain march is
+    // cheaper per cell than the snow one despite being longer. RAIN_HH is capped at 1.05 for a hard reason,
+    // not a taste one: the DDA walks 3-voxel cells and the jitter below keeps the whole drop INSIDE its own
+    // cell, so a taller drop would straddle a cell boundary and grazing rays would slice pieces off it.
+    const RAIN_MULT : f32 = 5.0; const RAIN_HW : f32 = 0.30; const RAIN_HH : f32 = 1.05;
+    const RAIN_THR : f32 = 0.9755;                                                                   // SAME lattice occupancy as snow (~2.45%), so rain is exactly as dense as the snowfall it replaces and costs the same to march. A drop covers 2.1 x 0.6 voxels against a flake's 1 x 1, so it is ~25% more screen per drop and a great deal more legible; this is the one number to move if the storm wants to be heavier or lighter
+    const RAIN_GATE : f32 = 350.0;                                                                   // how far WEST of the camera the oak mask is sampled to decide "could this ray see rain at all" — 150 for the flake march's own reach plus 200 for how far the border's meander can wander over the +-150 of z the same disc covers
     const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
     // ── THE DESERT, ON THE GPU ── falling flakes are traced voxels in a world-space lattice, not particles the
     // CPU places, so the JS gate that keeps the BLANKET off the sand cannot reach them: without this it snows
@@ -33,6 +50,29 @@
       let b = ${SPWX + DESOFF - desWob(SPWZ)} + (dVnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * ${DESW}.0
                                  + (dVnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * ${DESW * 0.35};
       let t = 0.5 + (x - b) / ${DESB}.0;
+      if (t >= 1.0) { return 1.0; }
+      if (t <= 0.0) { return 0.0; }
+      return dSstep(t);
+    }
+    // ── AND THE OAK FOREST, ON THE GPU, FOR THE SAME REASON ── read the note above desertMask first: it is
+    // the precedent and this is the same move. A falling flake or drop is a traced voxel in a world-space
+    // lattice, so the CPU's oakM cannot reach it — the JS gate in landSnowAt decides only what SETTLES. This
+    // is oakM(x, z) from world/window.js ported bit-for-bit (oakWob = 0.6 of the desert's own meander plus
+    // one independent octave; the mask runs the other way round, 1 = deep oak in the WEST), not a uniform,
+    // because it is pure (x, z) and SPWX is already fixed by the time this template runs (build.js is
+    // manifest line 24, this is line 29). f32 against the CPU's f64 is fine for the same reason: half a
+    // voxel of disagreement at a 450-voxel blend band is invisible and nothing downstream compares the two.
+    // It carries the whole of "it snows in the pines and rains in the oaks AT THE SAME TIME": the snow march
+    // culls a flake where this says oak, the rain march culls a drop where it says pine, and both dither on
+    // it, so the two weathers cross-fade across the border exactly as the canopies and the ground cover do.
+    fn oakWobG(z : f32) -> f32 {                       // = the JS oakWob(z), which is deliberately part-shared with desWob so the two borders stay broadly parallel
+      return ((dVnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * ${DESW}.0
+            + (dVnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * ${DESW * 0.35}) * 0.6
+           + (dVnoise(z * 0.0027 + 143.7, 61.3) - 0.5) * ${OAKW}.0;
+    }
+    fn oakMask(x : f32, z : f32) -> f32 {              // 1 = deep oak forest (WEST), 0 = pine forest — the mirror of desertMask
+      let b = f32(${SPWX + OAKOFF - oakWob(SPWZ)}) + oakWobG(z);   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
+      let t = 0.5 + (b - x) / ${OAKB}.0;
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
       return dSstep(t);
@@ -88,6 +128,22 @@
         let winOf = vec3<f32>(u.winO.x, 0.0, u.winO.y);
         var fte = 1e9;
         var fnn = vec3<f32>(0.0); var fface = 0u; var fkAw = 1.0; var fkUw = 0u;   // …and the winner's fade + what is under it
+        var fIsRain = false;                                         // the winner is a RAIN drop rather than a snow flake — the two marches compete on the same fte
+        // ── CAN THIS RAY SEE THE OAK FOREST AT ALL? ── one mask sample, uniform-valued across the whole workgroup,
+        // and it is what keeps rain free for the ~99% of the world that is pine forest and desert. The flake
+        // march reaches at most 150 voxels, so a camera far enough EAST of the oak border cannot have a drop in
+        // frame; RAIN_GATE pads that reach by how far the border's meander can wander over the same +-150 of z,
+        // so the test is conservative (it can only ever turn rain ON early, never off late — a missing band of
+        // weather at the edge of view would be the one failure mode worth avoiding). oakMask is monotone in x,
+        // so sampling the disc's WEST extreme is the maximum over the disc and no second sample is needed.
+        // When it is false the two blocks below are bit-identical to the snow march that shipped before rain.
+        // RAIN_ON false => this interpolates to a literal false, so the snow cull below and the whole rain march
+        // further down are dead code the WGSL compiler drops: the oak forest snows exactly like the pine
+        // forest again and no ray pays for a second lattice.
+        // Sampled if EITHER consumer is live - the flake cull (when snow is off in the oak forest) or the
+        // rain march (when rain is on). With both off this interpolates to a literal false and the whole
+        // oak weather path is dead code the compiler drops.
+        let oakNear = ${(!OAK_SNOW || RAIN_ON) ? 'oakMask(ro.x + winOf.x - RAIN_GATE, ro.z + winOf.z) > 0.0' : 'false'};
         {                                                            // near field: DDA over the 3-voxel flake lattice — a flake stays WHOLE from sky to ground.
           // A tile-binned producer pass was tried here (enumerate+bin flakes once, pixels read their tile): the TRACE
           // side dropped to +0.35 ms, but on this driver ANY producer dispatch with atomics OR workgroup barriers costs
@@ -116,6 +172,19 @@
               let ctr = (vec3<f32>(c) + vec3<f32>(0.17 + 0.66 * fract(h1 * 43758.5), 0.17 + 0.66 * fract(h1 * 12345.7), 0.17 + 0.66 * fract(h1 * 7777.3))) * 3.0;
               let cwy = ctr.y - offR.y;                              // storm-band pre-check — ctr is window-local, so minus the small remainder IS the world y (winOf.y = 0)
               if (cwy >= u.misc.y && cwy <= u.misc.z) {
+              let fwp = ctr - offR + winOf;                          // window-local -> world, for the biome tests. HOISTED out of the slab block below because the oak cull on the next line needs it too
+              // ── AND IT DOES NOT SNOW IN THE OAK FOREST (user: "instead of snow in the oak forest, make it rain") ──
+              // the desert cull further down thins snow out into the sand; this does the same at the other border,
+              // on the SAME dHash draw and the same salt, so a cell that refuses a flake is a cell the rain march
+              // below is free to fill. Two things about where it sits. It is EARLY — ahead of the conservative
+              // slab and the per-flake rotation the desert test deliberately sits behind — because in the oak
+              // forest this culls essentially every flake, so paying 12 hashes to skip the trig is the cheap
+              // direction, and it is what keeps the snow march nearly free while you stand in the rain. And it is
+              // behind the oakNear gate, so in the pine forest and the desert not one instruction of it executes and the
+              // snow that ships today is untouched, hash for hash.
+              var oakCull = false;
+              if (${!OAK_SNOW ? 'oakNear' : 'false'}) { oakCull = dHash((c.x + offC.x) * 5 + 17, (c.z + offC.z) * 7 + (c.y + offC.y) * 131 + 29) < oakMask(fwp.x, fwp.z); }
+              if (!oakCull) {
               let roL0 = roP - ctr;
               let taC = (vec3<f32>(-0.708, -0.5, -0.708) - roL0) * inv;   // free conservative slab vs the flake's rotation bound (a spinning 1³ voxel about Y stays inside 0.708/0.5/0.708) — no trig yet
               let tbC = (vec3<f32>(0.708, 0.5, 0.708) - roL0) * inv;
@@ -145,7 +214,6 @@
               let tn = min(ta2, tb2); let tf = max(ta2, tb2);
               let te = max(max(tn.x, tn.y), max(tn.z, 0.3));
               let tl = min(min(tf.x, tf.y), tf.z);
-              let fwp = ctr - offR + winOf;                          // window-local -> world, for the biome test
               // ── THE DITHER KEY IS THE FLAKE'S IDENTITY, NOT ITS CURRENT ADDRESS (user 2026-08-16: "the snow
               // seems to be flickering") ── this test thins the snowfall out across the desert blend band. It used to
               // key on fract(sin(floor(fwp.x) ... )) — a hash of the flake's WORLD POSITION. fwp is the lattice minus
@@ -173,6 +241,7 @@
               }
               }
               }
+              }
             }
             let tNext = min(tMax.x, min(tMax.y, tMax.z));
             if (tNext > maxNear) { break; }
@@ -181,8 +250,101 @@
             else { tMax.z += tDel.z; c.z += stp.z; }
           }
         }
-        if (fte < 8e8 && (h.t < 0.0 || fte < h.t)) {                 // a flake beat the world hit — it IS a snow voxel from here on
-          h.t = fte; h.vox = SNV; h.n = u.sunDir; h.face = fface; flakeHit = true; flakeFade = fkAw; flakeUnder = fkUw;   // SUN-FACING normal (user: "the snowflakes split into 2 chunks"): per-face cube shading tinted anti-sunward flakes grey vs white sunward ones — a visible tonal divide. A flake SCATTERS, so its lighting must not depend on face orientation; n = sunDir makes every flake's dot(n,sun) = 1 → one uniform field. (fface keeps the real face for grain.)
+        if (${RAIN_ON ? 'oakNear' : 'false'}) {
+          // ── RAIN ── the oak forest's half of the same storm (user: "instead of snow in the oak forest, make it
+          // rain … make the voxels that fall a light blue instead of white, and make them fall down much faster").
+          // Same mechanics as the flakes by design: a DDA over a world-space 3-voxel lattice, ~2.45% of cells
+          // occupied, a REAL primary hit so grain, the sun ray, AO, fog and the whole denoiser chain treat a drop
+          // exactly like the static world. It runs off the SAME storm flag (u.fx bit 4), so one weather event
+          // rains here and snows in the pines at the same moment, which is the whole point.
+          //
+          // WHY THIS IS A SECOND MARCH AND NOT A FLAG INSIDE THE FIRST ONE. The flake lattice does not move: what
+          // moves is the RAY, via offR, and the lattice re-indexes by a whole cell (offC) every time offR wraps 3
+          // so the slide is continuous and exact. That construction has room for exactly ONE fall speed — a second
+          // speed is a second offset, i.e. a second lattice, whose cell boundaries sit somewhere else. Sharing one
+          // DDA between them was worked through and costs either two candidate cells per step (drops straddle the
+          // other lattice's boundaries) or a fixed within-cell phase that bands the rain into horizontal layers.
+          // A separate march in its OWN lattice space is exact, leaves the tuned snow march untouched, and the
+          // oakNear gate above means the pine forest and the desert never execute a line of it.
+          let fallR = vec3<f32>(-u.rdist.z + sin(u.time * 0.6) * 0.8, u.pickY.w * RAIN_MULT, -u.rdist.w + cos(u.time * 0.5) * 0.8);   // the SAME horizontal wind as the flakes, RAIN_MULT x the fall: identical sideways drift over 1/5 the time is a five-times STEEPER streak, which is exactly how rain differs from snow in the same gust
+          let off = winOf + fallR;                                   // same exact-integer-cell + small-remainder split the flake march uses — see the precision note there; without it a far spawn loses the drops in view-dependent sectors
+          let offC = vec3<i32>(floor(off * (1.0 / 3.0)));
+          let offR = off - vec3<f32>(offC) * 3.0;
+          let roP = ro + offR;
+          let maxNear = min(min(min(select(1e9, h.t, h.t >= 0.0), u.rdist.x), 150.0), fte);   // …and never past a flake already found: in the blend band both weathers exist and the nearer one wins
+          var c = vec3<i32>(floor((roP + rd * 0.3) * (1.0 / 3.0)));
+          let stp = vec3<i32>(i32(sign(rdS.x)), i32(sign(rdS.y)), i32(sign(rdS.z)));
+          let tDel = abs(inv) * 3.0;
+          var tMax = ((vec3<f32>(c) + max(vec3<f32>(stp), vec3<f32>(0.0))) * 3.0 - roP) * inv;
+          for (var it = 0; it < 96; it++) {
+            let h1 = ih3(c.x + offC.x, (c.y + offC.y) * 7, c.z + offC.z);
+            if (h1 > RAIN_THR) {
+              // The y jitter is DELIBERATELY narrow (0.35..0.65 of the cell against the flakes' 0.17..0.83): with a
+              // half-height of RAIN_HH the drop then still ends inside its own 3-voxel cell, which is what makes
+              // this DDA exact — a drop poking through a cell face would be sliced by any ray that clips that face
+              // without entering the next cell. The range is derived from RAIN_HH so the two extremes touch the
+              // cell faces EXACTLY at any drop height, i.e. the drop population covers the whole
+              // cell height with nothing left over: no gap between one course of drops and the next to read as
+              // horizontal banding, and no overhang for a grazing ray to clip.
+              let ctr = vec3<f32>((f32(c.x) + 0.17 + 0.66 * fract(h1 * 43758.5)) * 3.0,
+                                  (f32(c.y) + RAIN_HH / 3.0 + (1.0 - RAIN_HH * (2.0 / 3.0)) * fract(h1 * 12345.7)) * 3.0,   // = 0.35 + 0.30 * r at RAIN_HH 1.05; derived from RAIN_HH rather than written out so the in-cell invariant survives anyone retuning the drop
+                                  (f32(c.z) + 0.17 + 0.66 * fract(h1 * 7777.3)) * 3.0);
+              let cwy = ctr.y - offR.y;                              // storm-band pre-check, same as the flakes: the drops arrive and leave with the same front
+              if (cwy >= u.misc.y && cwy <= u.misc.z) {
+              // ONE exact slab test, no conservative bound and no trig: a raindrop does not tumble, so the box is
+              // axis-aligned in world space and IS its own bound. That is what pays for the stretch.
+              let roL = roP - ctr;
+              let ta2 = (vec3<f32>(-RAIN_HW, -RAIN_HH, -RAIN_HW) - roL) * inv;
+              let tb2 = (vec3<f32>(RAIN_HW, RAIN_HH, RAIN_HW) - roL) * inv;
+              let tn = min(ta2, tb2); let tf = max(ta2, tb2);
+              let te = max(max(tn.x, tn.y), max(tn.z, 0.3));
+              let tl = min(min(tf.x, tf.y), tf.z);
+              if (te > 1.0 && te < tl && te < maxNear) {
+                let fwp = ctr - offR + winOf;                        // window-local -> world, for the biome test
+                // ── IT ONLY RAINS IN THE OAK FOREST ── the exact mirror of the snow cull, and the reason the border
+                // reads as weather rather than as a line. Keyed on the lattice CELL, not on the drop's world
+                // position: fwp slides under the drop as the wind carries it, so a position hash re-draws several
+                // times a second and the whole field sizzles (the 2026-08-16 desert-flicker bug — read the note at
+                // the desert test above, it is the same trap). Its own salt, so the rain dither and the snow dither
+                // are independent draws over the same ramp: across the band each cell rolls once for its whole
+                // life, so a column fades from one weather to the other instead of flickering between them.
+                if (dHash((c.x + offC.x) * 11 + 5, (c.z + offC.z) * 13 + (c.y + offC.y) * 197 + 41) < oakMask(fwp.x, fwp.z) && !flakeBlocked(ctr - offR)) {   // flakeBlocked LAST — ~38 scattered loads, and only a ray that genuinely struck a drop ever pays for them
+                  // The drop DISSOLVES into what it is about to land on rather than blinking out of the depth test —
+                  // the flakes' own fix, and it is what stands in for a splash: nothing lands, so the fade IS the
+                  // landing. It runs over TWO voxels rather than the flakes' one because a drop is RAIN_HH tall
+                  // and a flake is half a voxel: a one-voxel fade would still be near full opacity at the moment
+                  // the bottom of the streak entered the ground. Reaching zero exactly as the centre meets the
+                  // surface is what keeps the buried tail invisible.
+                  var rkA = 1.0; var rkU = 0u;
+                  { let fb = vec3<i32>(floor(ctr - offR));
+                    let fy = fract(ctr.y - offR.y);
+                    let b1 = voxAt(vec3<i32>(fb.x, fb.y - 1, fb.z));
+                    if (b1 != 0u) { rkA = clamp(fy * 0.5, 0.0, 1.0); rkU = b1; }
+                    else { let b2 = voxAt(vec3<i32>(fb.x, fb.y - 2, fb.z));
+                      if (b2 != 0u) { rkA = clamp(0.5 + 0.5 * fy, 0.0, 1.0); rkU = b2; } } }
+                  fte = te; fkAw = rkA; fkUw = rkU; fIsRain = true;
+                  var nl = vec3<f32>(0.0);
+                  if (tn.x >= tn.y && tn.x >= tn.z) { nl.x = -sign(rdS.x); }
+                  else if (tn.y >= tn.z) { nl.y = -sign(rdS.y); }
+                  else { nl.z = -sign(rdS.z); }
+                  fnn = nl;                                          // already world-space — nothing to rotate back
+                  if (abs(fnn.y) >= abs(fnn.x) && abs(fnn.y) >= abs(fnn.z)) { fface = select(2u, 3u, fnn.y < 0.0); }
+                  else if (abs(fnn.x) >= abs(fnn.z)) { fface = select(0u, 1u, fnn.x < 0.0); }
+                  else { fface = select(4u, 5u, fnn.z < 0.0); }
+                  break;
+                }
+              }
+              }
+            }
+            let tNext = min(tMax.x, min(tMax.y, tMax.z));
+            if (tNext > maxNear) { break; }
+            if (tMax.x <= tMax.y && tMax.x <= tMax.z) { tMax.x += tDel.x; c.x += stp.x; }
+            else if (tMax.y <= tMax.z) { tMax.y += tDel.y; c.y += stp.y; }
+            else { tMax.z += tDel.z; c.z += stp.z; }
+          }
+        }
+        if (fte < 8e8 && (h.t < 0.0 || fte < h.t)) {                 // a flake or a drop beat the world hit — it IS that voxel from here on
+          h.t = fte; h.vox = select(SNV, RNV, fIsRain); h.n = u.sunDir; h.face = fface; flakeHit = true; flakeFade = fkAw; flakeUnder = fkUw;   // SUN-FACING normal (user: "the snowflakes split into 2 chunks"): per-face cube shading tinted anti-sunward flakes grey vs white sunward ones — a visible tonal divide. A flake SCATTERS, so its lighting must not depend on face orientation; n = sunDir makes every flake's dot(n,sun) = 1 → one uniform field. (fface keeps the real face for grain.)
         }
       }
       // ── DYNAMIC LIFE ── every creature is a rigid voxel MODEL evaluated right here in the primary trace (the proven
@@ -472,7 +634,17 @@
                         skyV = clamp(aT / 24.0, 0.0, 1.0); }
           else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
-        if (flakeHit && h.vox == SNV) { sunV = max(sunV, 0.6); skyV = max(skyV, 0.85);
+        if (flakeHit) {
+          // ── A DROP IS NOT A FLAKE ── same idea, different numbers, and the split is REASONED rather than tuned
+          // (this has not been A/B'd in the browser yet — these two lines are where to start if the rain reads
+          // wrong). Snow is opaque and scatters, so it is white from every direction and takes a high floor on
+          // BOTH terms; without that its anti-sunward faces shaded to sky luminance and vanished. A raindrop is a
+          // lens instead: nearly everything you see in one is the sky behind it, which is what makes it read blue
+          // at all. So its floor is almost entirely skyV and the sun term stays low — giving it snow's 0.6 sunV
+          // would light the light blue toward white in open sun and undo the colour the whole change is about.
+          // Both still scale with the sun/moon term downstream, so a night storm stays subtle.
+          if (h.vox == RNV) { sunV = max(sunV, 0.25); skyV = max(skyV, 0.95); }
+          else { sunV = max(sunV, 0.6); skyV = max(skyV, 0.85); }
           if (flakeFade < 1.0 && flakeUnder != 0u) { albedo = mix(pal[flakeUnder].rgb, albedo, flakeFade); }   // dissolving into what it is landing on
         }
         if (hurtGlow > 0.0) { sunV = max(sunV, hurtGlow * 0.55); skyV = max(skyV, hurtGlow * 0.75); }   // the flash glows in shadow too (user) — otherwise an animal hit under a canopy barely changed colour   // SOFTER (user): pinning both terms to FULL erased the creature's own sun/AO shading, so the whole animal went flat and blew out; lifting them part-way keeps its form readable while a wound in deep shade still reads

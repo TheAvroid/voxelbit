@@ -36,7 +36,21 @@
     CLASS: new Uint8Array(256),                        // palette id -> class. CONDUIT is not in here: it is the stampedIdx lookup, which is per-CELL, not per-id.
     retry: [],                                         // seeds whose flood ran out of budget — re-queued so 'undecided' can never mean 'forgotten'
     cap: 1 << 20,                                    // ── STRUCTURE flood ceiling ── 2000 first (a cap hit was READ AS ANCHORED, so anything bigger hung in the air forever), then 32768 — which still could not decide the case it exists for: a big rocks26 formation is 56k voxels, so cutting one loose hit the cap on every try and floated permanently. That is the rock in the user's screenshot. This clears any mass a player can sever. Terrain never pays it: the walk exits on its FIRST anchored cell, so only a genuinely detached component is ever walked to the end.
-    drapeCap: 3000,
+    // ── 3000 -> 1<<17 (2026-08-17, THE OAKS) ── this is the DRAPE half of the pair above, and it was
+    // sized for a PINE canopy, which is many small tufts: pine5.vox's needles come apart into clumps
+    // of a few hundred and 3000 was never close to binding. An oak crown baked from a .glb is not that
+    // shape at all - it is ONE 26-connected shell, measured at 2,468 / 5,874 / 1,372 / 17,314 / 26,478 /
+    // 60,303 / 77,505 leaves for the seven models, so FIVE of the seven exceeded the cap with their
+    // whole crown in a single component.
+    // That is not a lost verdict, it is a queue that cannot drain: a capped flood returns undecided,
+    // supFlush re-queues the seed, and next frame it walks 3000 cells and gives up again - forever, for
+    // every disturbed leaf. It is the same failure SUP.cap was raised to 1<<20 for when a 56k rocks26
+    // formation could not be adjudicated, and it wants the same answer.
+    // THE WALK IS NOT THE COST IT LOOKS LIKE. A DRAPE flood TERMINATES on the first anchored STRUCTURE
+    // cell it touches, and every leaf on a standing tree is a few hops from its own branch, so the full
+    // 77k walk only ever happens for a crown that really is severed - which is exactly the case that has
+    // to be decided rather than deferred.
+    drapeCap: 1 << 17,
     msBudget: 2.0,                                     // ms/frame, checked BETWEEN components — never mid-flood, so a component is always resolved as a whole
     maxPasses: 4,                                      // cascade rounds per frame: a lift appends its vacated cells to the same queue
     qMax: 400000,

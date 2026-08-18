@@ -115,7 +115,114 @@
     // dragged onto them, and that goes for the bloom's cream as much as for the body green.
     for (const i of SHRUBC) decorTab[i] = 1;
     for (const i of SHRUBF) decorTab[i] = 1; }                                                 // a 4 m saguaro is an obstacle, not scenery. Safe to mark by id because the cacti carry their OWN 16 ids (their .json palette goes through addCol, which never dedupes), so nothing else in the world wears them
+  // ── THE OAKS ARE MADE OF THE TWO MATERIALS THE PINE ALREADY HAS ── and they have to say so HERE rather
+  // than inherit anything, because the oaks' ids come out of a .json loader and therefore land ABOVE
+  // DECOR_MIN, where the blanket `i < DECOR_MIN` sweep in palette.js never reaches. So both halves start life
+  // as walk-through decor and the wood has to be given its solidity back explicitly.
+  //   * BARK needs nothing at all, and that is the POINT of how it is loaded: assets/bow.js repoints the
+  //     oaks' three bark shades onto the pine's own woodIds rather than minting new ones, so the loop a few
+  //     lines up has already given every one of them woodTab + decorTab + axeOnlyTab, and the blanket
+  //     below-DECOR_MIN sweep in palette.js has already given them solidity. It is re-asserted below anyway,
+  //     as a no-op that documents the dependency — if the bark ever mints its own ids again, this line is
+  //     what stops an oak trunk silently becoming soft scenery the generation orphan sweep may delete
+  //     (ORPHAN_OK in sim/support-rules.js is derived as "not foliage and not wood").
+  //   * LEAVES are canopy: foliaTab, and NOT solid — you walk through an oak crown exactly as you walk
+  //     through a pine's needles. Pushing them into foliageIds as well is what carries that fact to the two
+  //     consumers that build their own tables from it AFTER this file: the WGSL `isFol` in render/wgsl/dda.js
+  //     (crown see-through when the eye clips into it) and the bird PERCH surface in main/tick-nav.js. It also
+  //     reaches SUP.CLASS in sim/support-rules.js, which reads foliaTab and makes every leaf a DRAPE — the
+  //     asymmetric-support rule that stops a crown ever being lifted as one piece with its trunk.
+  //   * canopy SNOW follows for free: tick-snow keys on foliaTab, so an oak crown catches a storm.
+  // Deliberately NOT in decorTab as a pair: bark is (with axeOnly), leaves are not — the same split the pine
+  // has, where needles are scenery the axe passes through on its way to the trunk.
+  for (const i of OAKBARK) { solidTab[i] = 1; woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }
+  for (const i of OAKLEAF) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
+  // ── A BERRY AND A FRUIT ARE CANOPY, NOT SCATTER (user 2026-08-17) ── the three FRUITC ids get exactly the
+  // treatment the oak LEAF above gets, and the reasoning is that a cherry on a bush and an apple in a crown
+  // genuinely ARE part of the crown. Everything that follows from foliaTab is what a fruit wants, item by item:
+  //   * NO HITBOX. solidTab stays 0, so you walk through a berry bush the way you walk through the leaves the
+  //     berries replaced — which matters at 22% of every oak in the world, all of it at knee height.
+  //   * DRAPE support (sim/support-rules.js reads foliaTab). A drape hangs off an anchored structure and never
+  //     conducts anchoring onward, which is precisely a fruit's relationship to the branch above it.
+  //   * NOT DELETABLE by the generation orphan sweep: ORPHAN_OK is derived as "not foliage and not wood", so
+  //     foliaTab is the flag that keeps a hanging fruit out of it. floatTab — the obvious alternative, and what
+  //     the BLOOM flower heads wear — would have been the opposite: ORPHAN_OK true, and the aim ray in
+  //     sim/tools.js walks straight THROUGH a floatTab voxel, so an apple would not even be a thing you can
+  //     point at.
+  //   * CHOPPABLE BY ANY TOOL, for free and through the path that already exists: phChopLeaves takes whatever is
+  //     inside its sphere with no tool gate at all, so knocking fruit out of a crown needs no new code and no
+  //     decorTab entry. decorTab is deliberately NOT set — it would put a 1-voxel berry in front of the swing as
+  //     its own target (the `decorTab[id] && !woodTab[id]` branch in tools.js) and confine that swing's okMat to
+  //     the berry, which is not what someone chopping a bush meant.
+  //   * canopy SNOW, crown see-through (`isFol` in render/wgsl/dda.js is generated from foliageIds) and the
+  //     backlit-leaf transmission in composite.js all follow. The last is a bonus rather than a cost: a backlit
+  //     cherry glowing red is what a backlit cherry does.
+  for (const i of FRUITC) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
+  // ── AND THE FRUIT'S STALK IS CANOPY TOO, WHENEVER IT HAS AN ID OF ITS OWN ── FRUIT_STEM_ID (assets/bow.js)
+  // is 0 today, so this loop does nothing and the stalk wears the oak leaf id exactly as it always has; the
+  // line exists so that minting the brown the user asked for is a ONE-WORD change over there rather than a
+  // change in two files that can be made in one. The treatment is deliberately IDENTICAL to the FRUITC line
+  // above rather than to the beehive's: a stalk is woody in COLOUR, not in behaviour. It is a 2-voxel drape
+  // hanging in a walk-through crown, so giving it woodTab/solidity to match its new colour would be the exact
+  // trade the beehive comment below argues against — a hitbox in a crown you walk through, a chop ray that
+  // reads it as the trunk behind the needles, and a STRUCTURE component whose only anchor is a DRAPE.
+  if (FRUIT_STEM_ID) { solidTab[FRUIT_STEM_ID] = 0; foliaTab[FRUIT_STEM_ID] = 1; foliageIds.push(FRUIT_STEM_ID); }
+  // ── AND A BEEHIVE IS A SOLID OBJECT YOU CUT OUT OF THE TREE ── solid + decorTab + axeOnly, which is the LOG's
+  // pairing and not the leaves'. Three deliberate choices in that:
+  //   * SOLID, because a 50 cm box in a crown you could walk through would read as a decal. It also gives it an
+  //     arrow hitbox (sim/projectiles.js tests solidTab), which is what a hive should have.
+  //   * decorTab + axeOnlyTab and nothing else, so `(axeOnlyTab[id] ? cut : true)` in the swing gate answers
+  //     "you need an edge" — an axe or the knife cuts a hive out, a shovel and a pick do not.
+  //   * NOT woodTab, even though a hive is the same KIND of target as a log. woodTab is what `aimWood` reads and
+  //     aimWood hands the whole swing to the tree-felling path, while the decor branch that actually chops a
+  //     hive is written as `decorTab[id] && !woodTab[id]`. Marking it wood would make a hive uncuttable AND make
+  //     aiming at one carve the oak behind it. The price is ORPHAN_OK true, and that is safe HERE for two
+  //     independent reasons, both read off sweepOrphans in world/terrain.js: the sweep runs only on a slab a
+  //     GORGE intersects (and oakAt refuses nearCave), and it deletes a component only when EVERY voxel in it is
+  //     ORPHAN_OK — a hive hangs off a BRANCH, so its component always contains bark and is spared. The runtime
+  //     resolver is the one that really matters, and there the hive is STRUCTURE hanging on wood, which is
+  //     exactly why OAK_BANCH below anchors it to bark rather than to leaves.
+  for (const i of HIVEC) { solidTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }
   solidTab[ED_WHITE] = solidTab[ED_GREY] = solidTab[ED_HLITE] = 1;                          // the editor stage is walkable floor
+  // ── WHERE THINGS HANG IN AN OAK ── PINE_ANCH's idea re-derived for eight crowns instead of one model, and
+  // split in two because a fruit and a hive want different SURFACES:
+  //   OAK_ANCH[k]   canopy LEAF with clear exterior air below — an apple or an orange hangs from it.
+  //   OAK_BANCH[k]  a BRANCH (bark) with six clear cells below — a beehive hangs from it, and it has to be bark:
+  //                 a hive is solid, so it is STRUCTURE to the support resolver, and the STRUCTURE flood may not
+  //                 enter a DRAPE cell. Hung off leaves it would be a component with no path to the ground, and
+  //                 the resolver would lift it the first time anything nearby was disturbed. Hung off bark it
+  //                 reaches the trunk, and the trunk is buried below hmap. Measured over the bake, every model
+  //                 offers 102-911 of these, so the constraint costs nothing in placement freedom.
+  // "Clear air below" means EXTERIOR air (voxShellAir, assets/bow.js): these crowns are hollow shells, so the
+  // naive empty-cell test would have hung most of the fruit inside the dome where nobody can see it.
+  // CAPPED, and that is not a detail: world/gen-pool.js stringifies every registered table straight into each
+  // gen worker's source, and the raw candidate lists run 471 to 39,053 entries per model. Angle-sorted first and
+  // then sampled evenly, so the cap costs even coverage rather than one arc of the crown — the same trick
+  // PINE_ANCH plays with cones, and 96 sectors is ten times the most fruit any tree carries.
+  const OAK_ANCH = [], OAK_BANCH = [];
+  { const AMAX = 96, BMAX = 32, EDGE = 3;
+    const fol = new Uint8Array(256); for (const f of foliageIds) fol[f] = 1;   // built AFTER the FRUITC loop above, so a berry on a bush reads as canopy and can never be mistaken for a branch
+    for (let k = 0; k < OAKV.length; k++) {
+      const m = OAKV[k], sx = m.sx, sy = m.sy, sz = m.sz;
+      const ext = voxShellAir(m).ext;
+      const clear = (x, y, z, n) => { for (let d = 1; d <= n; d++) { const zz = z - d;
+        if (zz < 0 || !ext[x + y * sx + zz * sx * sy]) return false; } return true; };
+      const A = [], B = [];
+      for (const p of m.vox) {
+        const x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+        if (x < EDGE || x >= sx - EDGE || y < EDGE || y >= sy - EDGE || z < 6) continue;
+        if (fol[p >>> 24]) { if (z >= (sz >> 2) && clear(x, y, z, 4)) A.push(x | (y << 8) | (z << 16)); }
+        else if (clear(x, y, z, 6)) B.push(x | (y << 8) | (z << 16));
+      }
+      const ang = (q) => Math.atan2(((q >> 8) & 255) - sy * 0.5, (q & 255) - sx * 0.5);
+      const trim = (a, n) => { a.sort((p, q) => ang(p) - ang(q));
+        if (a.length <= n) return a;
+        const out = []; for (let i = 0; i < n; i++) out.push(a[(((i + 0.5) / n) * a.length) | 0]);
+        return out; };
+      OAK_ANCH.push(trim(A, AMAX)); OAK_BANCH.push(trim(B, BMAX));
+    }
+    if (OAKV.length) console.log('[vb] oak anchors: fruit', OAK_ANCH.map((a) => a.length).join('/'),
+      '| hive', OAK_BANCH.map((a) => a.length).join('/'), '(caps', AMAX, '/', BMAX + ')'); }
   const PINE_ANCH = [];                                // pinecone anchors: canopy foliage voxels with open air below, ≥2 in from the model edge (base rotation)
   { const fol = new Uint8Array(256); for (const f of foliageIds) fol[f] = 1;
     for (let z = 30; z < MSZ; z++) for (let y = 2; y < MSY - 2; y++) for (let x = 2; x < MSX - 2; x++) {

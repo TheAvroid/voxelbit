@@ -88,12 +88,87 @@
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
   const cardSlainPerch = new Set(), CARD_SLAIN_CAP = 512;   // perches whose bird the player KILLED — see findPineCrown. Module scope on purpose: the kill handler and the placement search are ~4000 lines apart.
   const cardPerchKey = (tx, tz, bi) => tx + '|' + tz + '|' + bi;
-  // ── DESERT CREATURES (user 2026-08-15) ── seven species, DES_PER slots each, appended after the land
+  // ── REACH, AND THE ONE NUMBER THAT SIZES EVERY POPULATION BEHIND IT ── (user 2026-08-17: "unify the render
+  // distance of all the life") CARD_KEEP is the DESPAWN radius for the perched songbirds, and main/tick-life.js
+  // sets MAM_KEEP = CARD_KEEP so it is the four land mammals' reach too — those two were the short tier.
+  // Everything else (worms, ducks, fish, butterflies, desert life) already kept at LIFE_KEEP =
+  // min(renderDist + 64, LIFE_CAP), which is 1040 at the shipped 1000-voxel view, so this is now one number for
+  // all life. It lives HERE rather than beside stampCardinal, where it was declared until today, because it is
+  // what SIZES THE POOL below: CARD_N and the land-mammal counts are both derived from it, and
+  // sim/life/stamped.js is concatenated UNDER this fragment.
+  // 1040 IS THE WORLD'S EDGE, NOT A PREFERENCE: the generated rect reaches min(HALF, renderDist + 96) = 1024
+  // here, and a spawn outside the rect is rejected outright because its hmap is stale. Nothing can see further
+  // than this without a bigger window (the 3x-view-distance project).
+  const CARD_KEEP = 1040;
+  const CARD_KEEP_V0 = 680;                            // …and the reach every population below was TUNED at, kept as a NAME so the growth is arithmetic instead of a magic 2.34
+  // ── AND A REACH DILUTES UNLESS THE COUNTS FOLLOW ── what the player reads as "how alive is this forest" is
+  // population / AREA, so a population bounded by CARD_KEEP has to grow with the SQUARE of it or the same
+  // animals are smeared over 2.34x the ground. That exact failure was measured and reverted once before — see
+  // the comment on MAM_KEEP, "mammals at 1020 vox, in-view rings near-empty". Every count bounded by CARD_KEEP
+  // multiplies by this and nothing else does: the kinds that were already at 1040 are untouched.
+  // IT COSTS NOTHING IN DROP SLOTS, and that is a property of the arithmetic rather than luck. A land mammal
+  // trace-injects only inside UNI_BIRD_R (= LIFE_DRAW, 420) and grid-stamps beyond it, and that radius did NOT
+  // move; the traced head-count is therefore (near-field density) x pi x 420², and holding the density fixed is
+  // exactly what holds the drop-slot demand fixed. Measured against the old numbers: 6 mammals over a 639-vox
+  // spawn disc put 2.59 of them inside 420; 14 over a 977-vox disc puts 2.58. Same budget, more forest.
+  const LIFE_DENS_K = (CARD_KEEP * CARD_KEEP) / (CARD_KEEP_V0 * CARD_KEEP_V0);   // = 2.3391
+  // ── THE SLOT LADDER ── every band boundary in the game DERIVES from these widths. They used to be ~50
+  // hard-coded integer literals scattered over eleven fragments (16, 20, 32, 64, 244, 276, 300, 324, 348, 372),
+  // which meant widening any band silently renumbered every band above it — and a missed literal does not
+  // throw, it mis-classifies: a bunny counted as a fish, a porcupine that never bleeds, a debug tap reading the
+  // wrong animals. Widen a band by editing its _N here and every loop, spawn gate, census and tap moves with it.
+  // MAM_END is kept as its own name because the mammal loops mean "end of the mammal band" while the full-pool
+  // loops mean "end of the pool" (DES_END), and those two were the same number until the desert band landed.
+  const FLY_N = 16, DUCK_N = 4, BABY_N = 12, WORM_N = 32, FISH_N = 32, MAM_PER = 24, DES_N = 9, DES_PER = 8;
+  // ── PERCHED SONGBIRDS: THE ONE WIDTH THAT TRACKS THE REACH ── 180 was the pool at CARD_KEEP_V0 and it was
+  // SATURATED there: the oak wood's measured 1.24e-4 birds/vox² offers 180 perches inside a 680 disc and the
+  // census reached 179 of them. At 1040 the same wood offers 421, so the pool grows with the area and the
+  // forest the player walks through has the density it always had, now all the way out.
+  // WHAT THIS DOES AND DOES NOT BUY, because findPineCrown fills NEAREST-FIRST: a standing player was never
+  // thinned by the radius change (the nearest 180 perches are the same 180 perches), so this is not a rescue —
+  // it is REACH. A walking player was thinned, because a bird left behind holds its slot out to CARD_KEEP now
+  // instead of 680, and the pool spent on that tail is pool not spent on the forest ahead.
+  const CARD_N = Math.round(180 * LIFE_DENS_K);        // 421 — and it must stay UNDER the perch supply in the disc, or every unfilled slot re-runs buildCardCand at full cost each frame
+  const FLY_0 = 0, FLY_END = FLY_0 + FLY_N;            //   0-15    butterflies / fireflies / dragonflies
+  const DUCK_0 = FLY_END, DUCK_END = DUCK_0 + DUCK_N;  //  16-19    MOTHER ducks
+  const BABY_0 = DUCK_END, BABY_END = BABY_0 + BABY_N; //  20-31    ducklings, 3 per mother
+  const WORM_0 = BABY_END, WORM_END = WORM_0 + WORM_N; //  32-63    worms
+  const CARD_0 = WORM_END, CARD_END = CARD_0 + CARD_N; //  64-484   perched songbirds — GRID-STAMPED, so they take no drop slot and are free to exceed the drop budget
+  const FISH_0 = CARD_END, FISH_END = FISH_0 + FISH_N; // 485-516   fish (kind 6)
+  const BUNNY_0 = FISH_END, BUNNY_END = BUNNY_0 + MAM_PER;   // 517-540
+  const ARM_0 = BUNNY_END, ARM_END = ARM_0 + MAM_PER;        // 541-564
+  const SKUNK_0 = ARM_END, SKUNK_END = SKUNK_0 + MAM_PER;    // 565-588
+  const PORC_0 = SKUNK_END;                                  // 589-612
+  const MAM_0 = BUNNY_0, MAM_END = PORC_0 + MAM_PER;   // the four land mammals are one contiguous run, MAM_0..MAM_END, and MAM_PER slots each — the per-species count is nBunny/nArmadillo/nSkunk/nPorcupine in tick-life.js and is far under the band width
+  // ── THE 'DESERT' BAND (user 2026-08-15) ── DES_N species, DES_PER slots each, appended after the land
   // mammals. Appended rather than carved out of an existing band because every band is fully claimed.
-  // MAM_END is kept as its own name: the mammal loops elsewhere mean "end of the mammal band", which is
-  // still 372, while the full-pool loops mean "end of the pool", which is not. Those two happened to be
-  // the same number until now, and every one of the seventeen literals had to be read to tell which it was.
-  const MAM_END = 372, DES_N = 7, DES_PER = 8, DES_END = MAM_END + DES_N * DES_PER;
+  // WIDENED 7 -> 9 (user 2026-08-17) for the BEE and the GRASS SNAKE, and DES_N is the only number that
+  // moved: DES_END, wbf's length, every `< DES_END` loop, every census and every debug tap derive from it,
+  // which is the whole point of the ladder. 613-668 became 613-684.
+  const DES_END = MAM_END + DES_N * DES_PER;           // 613-684
+  // ── …AND THE BAND IS NO LONGER ONE BIOME ── the bee and the grass snake are OAK FOREST creatures. They
+  // ride this band because it is the one that already carries scene-graph animation, per-species behaviour
+  // tables and a habitat tag; nothing about it is intrinsically sand. Naming them HERE, next to DES_MEAT and
+  // keyed the same way, is what keeps the two halves of the decision together: main/tick-life.js gives an
+  // oak-only species ZERO of the desert head-count (so the sand's own 4,5,4,5,4,5,4 = 31 is untouched to the
+  // last body) and main/tick-creatures.js gives it BIO_OAKF instead of BIO_SAND.
+  // A species listed here is oak-only, and ITS VALUE IS ITS HEAD-COUNT — one table rather than a flag beside
+  // a count, because the two can never be true of different species. Clamped to DES_PER at the single call
+  // site (oakN in tick-creatures), so a value over 8 costs nothing and breaks nothing.
+  //   grass_snake 5 = round(nDesert x DES_RARITY), i.e. exactly the per-species density the desert band's
+  //     own seven were tuned to, over the same annulus, the same DES_APART floors and the same LIFE_KEEP.
+  //   bee 8 = the species' whole band, because a SWARM needs numbers (user 2026-08-17: 'make bees swarm
+  //     around it'). BEE_HIVE_N of them go to a hive when one is in reach and the rest forage, so at 5 the
+  //     hive would have taken every bee in the world and the flower visiting would never have been seen.
+  // The desert MOUSE is deliberately NOT here: it has two homes, which is a different thing and is expressed
+  // by DES_OAK in tick-creatures giving it a SHARE of its own slots.
+  const DES_OAKONLY = { bee: 8, grass_snake: 5 };
+  // What tick-life ASKED each band for on the last frame. A plain mirror, written once per frame, because
+  // nCard/nFish/nBunny… are consts inside tickBody and main/debug-api.js is concatenated ABOVE it — a tap
+  // reading them directly is a ReferenceError that no static check catches and only the first call reveals.
+  // Wanted vs alive is the pair that matters: a pool that never fills means placement is failing, not that
+  // the count is wrong, and those two have opposite fixes.
+  const LIFE_WANT = { perched: 0, fish: 0, worm: 0, flyer: 0, duck: 0, bunny: 0, armadillo: 0, skunk: 0, porcupine: 0 };
   // ── DESERT SPAWN SPACING ── Poisson-disc floors for the desert band, enforced in tick-creatures' spawn retry.
   // Sized off the annulus the creatures actually land in (~934k vox² at LIFE_KEEP 1040): 42 bodies means a mean
   // gap of ~105 vox, and 6-of-a-species means ~280, so these sit near the half-of-mean that dart-throwing can
@@ -113,6 +188,291 @@
   const MAM_APART = 110, MAM_FLOOR = 70, MAM_RELAX = 7;
   const DES_APART = 160;        // between two of the SAME species — the one the eye reads as "geckos in a litter"
   const DES_APART_ANY = 64;     // between any two desert creatures — stops a mixed pile-up in one patch of sand
+  // ── THE BEE'S TWO ERRANDS (user 2026-08-17: bees 'going to flowers and sitting on them briefly', and
+  // 'swarm around' a beehive) ── the bee flies the FLY's code path in every other respect; this is the whole
+  // of what makes it a bee rather than a fly with stripes. Both errands are expressed as a GOAL BEARING fed
+  // to navSteerAir's existing homeTh/leashOut seam — the same one the butterfly leash uses — so the planner
+  // scores the errand against navReachAir/navFitsAir, the identical predicates the mover then applies.
+  // THAT IS DELIBERATE AND IT IS THE FISH LESSON: sim/life/fish.js once had a planner and a mover that
+  // disagreed about what was reachable and the fish swam at terrain forever. Nothing here ever writes B.th
+  // or overrides a step. A bee that cannot get to its flower simply does not arrive, and BEE_GIVE_S ends it.
+  const BEE_FLOWER_R = 72;      // how far from its HOME a bee will look for a flower. Under FLY_LEASH (84) on purpose: the flower is then always inside the disc the leash already holds the bee in, so the errand goal and the leash goal can never pull opposite ways and there is only ever one bearing to feed the fan.
+  const BEE_LOOK_N = 512;       // dart throws per look. fillColumn plants a flower on ihash < 0.005 of eligible columns, i.e. 1 in 200, so 512 darts find one ~92% of the time and STOP AT THE FIRST HIT — the expected cost is ~200 hmap reads, not 512. A miss is free: the bee wanders and looks again at BEE_LOOK_S.
+  const BEE_LOOK_S = 1.6;       // …and how long it waits between looks, plus the same again at random
+  const BEE_SIT_R = 2.4;        // horizontal distance at which it stops approaching and settles onto the head
+  const BEE_SIT_S = 2.0, BEE_SIT_J = 1.6;   // 'BRIEFLY': 2.0-3.6 s on the flower. Long enough to read as a visit at a glance across a clearing, short enough that a bee watched for ten seconds is seen to leave — the same reasoning ANT_WHIM records for its own visible-behaviour cadence. The wings keep flapping at the house 24 fps throughout: a settled bee still buzzes, and freezing the strip would read as a dead bee stuck to a petal.
+  const BEE_GIVE_S = 10;        // …and the ARRIVE-BY deadline. A bee that has not reached its flower in this long abandons it and is barred from re-choosing that column for BEE_BAN_S. This is the anti-grind guarantee and it is a TIMER rather than a reachability test on purpose: a timer cannot disagree with the mover, and a second opinion about what is reachable is exactly what went wrong for the fish.
+  const BEE_BAN_S = 20;         // how long a given-up flower stays banned for that bee
+  const BEE_DOWN = 12;          // vox/s the bee eases down onto (and off) the bloom — a settle, never a snap
+  const BEE_HIVE_R = 150;       // how far a bee will notice a hive. Under 1.5 x OKCELL (112) so the 3x3 oak-cell walk beeHiveNear does is guaranteed to cover the whole radius.
+  const BEE_HIVE_N = 5;         // bees to a hive, taken from the LOW slots of the bee band so the split is a pure function of the slot number and needs no per-frame arbitration. The other 3 keep foraging, so a hive in view does not empty the meadow.
+  const BEE_ORBIT_R = 6.5, BEE_ORBIT_W = 1.9, BEE_ORBIT_Y = 2.2;   // orbit radius, rad/s, and the vertical spread of the swarm. 1.9 rad/s at 6.5 vox is 12.4 vox/s — well under the bee's own 56, so the swarm reads as hovering rather than as a racetrack.
+  const BEE_HIVE_S = 14, BEE_HIVE_J = 10;   // 14-24 s at the hive, then back to the flowers. Bounded so a hive cannot capture a bee for the whole session.
+  const BEE_HIVE_GAP = 3;       // …and how long before it will go back to a hive again. WAS 8, and with the errand skip below (a bee with its hive in reach does not go to a flower) those 8 seconds were the whole of the time the swarm was not orbiting — MEASURED at 8, only 1-3 of the five were ever within 40 voxels of the hive at once; at 3 it is 4-5. Not zero, because the re-approach is the part that reads as bees coming and going rather than as a fixed ring of decoration.
+  // Which palette ids are a flower HEAD. BLOOM is six shades and the bee has to recognise all six; a Set
+  // lookup per sampled voxel would be the whole cost of the search, so it is a 256-entry table like every
+  // other per-id rule in the game. Built HERE, at module scope: sim/life/slots.js is outside tickBody, and
+  // the obvious home (assets/material-tabs.js, where floatTab already marks these ids) is another agent's
+  // file today. BLOOM itself is assets/palette.js, fragment 16, far above this one.
+  const BLOOM_TAB = new Uint8Array(256); for (const bq of BLOOM) BLOOM_TAB[bq] = 1;
+  // ══════════════════════════════════════════════════════════════════════════════════════════════════
+  // ══ THE BEE'S TWO ERRANDS ══ the flower finder and the HIVE SEAM. The tuning is the BEE_* block above; the
+  // five-state machine that drives them is in main/tick-creatures.js, in the kind-0 flyer branch.
+  // These live at MODULE scope rather than beside findFlyHome/findWormHome in main/tick-nav.js, where they
+  // were written first, because that fragment is inside tickBody: everything declared there is a per-frame
+  // local and main/debug-api.js - concatenated ABOVE it - cannot see one at all. __vb.beeDbg/bloomAt/bloomNear
+  // would have thrown ReferenceError on their first call, and no static check in this repo catches that; the
+  // typeof guard around nDesertOf in desBand() is the same wall, recorded.
+  // ══════════════════════════════════════════════════════════════════════════════════════════════════
+  // The surface height of a column. Character for character main/tick-nav.js's bfSurf, which is a per-frame
+  // local for the reason above - the same split sim/nav.js records for its navBed/navWet mirrors. One line, so
+  // a mirror is cheaper than moving bfSurf out from under everything that already closes over it.
+  const beeSurf = (x, z) => Math.max(hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], WL);
+  // Is there a flower HEAD standing in this column, and at what y? -1 for no.
+  // Flowers are two real voxels - world/terrain.js's fillColumn puts a GRASS stalk in the first air voxel above
+  // the ground and a BLOOM head directly on top of it - so this is a VOXEL READ, not a re-derivation of the
+  // planting rule. Re-deriving it (the ihash the planter rolls, which would be cheaper per column) is exactly
+  // the wrong trade: it is a copy of another fragment's arithmetic that goes silently stale the day the
+  // planting changes, and all the bee would do is quietly stop finding flowers with nothing to point at.
+  // The window is +/-1 around the surface because BLOOM is in floatTab - surface scatter that never raises the
+  // heightmap - plus a voxel of slack for snow cover and for ground the player has edited under it.
+  const beeBloomAt = (x, z) => {
+    const g = beeSurf(x, z); if (g <= WL + 0.5) return -1;
+    const bx = gwrap(Math.floor(x), WX), bz = gwrap(Math.floor(z), WZ) * WX * WY;
+    const y0 = Math.max(1, Math.floor(g) - 1), y1 = Math.min(WY - 2, Math.floor(g) + 2);
+    for (let y = y0; y <= y1; y++) if (BLOOM_TAB[W[bx + y * WX + bz]]) return y;
+    return -1;
+  };
+  // A flower near a bee's HOME, by dart throw. Deliberately not nearest-first and deliberately unreserved: a
+  // bee is not competing for flowers the way a songbird competes for perches (there are ~80 blooms inside
+  // BEE_FLOWER_R against 8 bees in the whole world), so the candidate list and occupancy set findPineCrown /
+  // findFlyHome need would buy nothing and cost a per-frame rebuild. First hit wins and the search stops there.
+  const findBeeFlower = (hx, hz) => {
+    for (let t = 0; t < BEE_LOOK_N; t++) {
+      const a = Math.random() * 6.283, d = Math.sqrt(Math.random()) * BEE_FLOWER_R;
+      const fx = Math.floor(hx + Math.sin(a) * d) + 0.5, fz = Math.floor(hz + Math.cos(a) * d) + 0.5;
+      if (fx <= rect.xlo + 4 || fx >= rect.xhi - 4 || fz <= rect.zlo + 4 || fz >= rect.zhi - 4) continue;   // outside the generated rect the hmap is stale window data - the same guard every spawn takes
+      const fy = beeBloomAt(fx, fz); if (fy < 0) continue;
+      return { x: fx, y: fy, z: fz };
+    }
+    return null;
+  };
+  // ═══════════════════════ THE HIVE SEAM - ONE LINE TO WIRE ═══════════════════════
+  // The beehive is stamped into oak crowns by world/terrain.js, which this worktree does not own and has never
+  // seen. Everything a bee DOES with a hive - approach, orbit, bob, leave, cool down - is finished code in
+  // main/tick-creatures.js; the only thing missing is the query that says where one is, and it is this single
+  // arrow function. Every other line of the swarm already runs and is exercised by __vb.beeDbg().
+  //
+  //   TO WIRE: replace the `null` on the next line with terrain.js's hive query, which is expected to be
+  //   shaped exactly like oakAt - a pure deterministic function of an OAK CELL (OKCELL = 112, the grid
+  //   buildCardCand walks in main/tick-nav.js) returning null or an object carrying the hive's world position:
+  //
+  //       const BEE_HIVE_Q = (cx, cz) => hiveAt(cx, cz);
+  //
+  //   beeHiveNear below normalises whatever comes back, so only the FIELD NAMES matter: it reads wx/wy/wz
+  //   first and falls back to x/y/z, which between them cover both shapes already in this codebase (oakAt
+  //   returns wx/wz, findPineCrown returns x/y/z). A missing height is not an error - the swarm is hung in the
+  //   crown band instead. If the real query returns some third shape, this is the one place to map it.
+  const BEE_HIVE_Q = (cx, cz) => hiveAt(cx, cz);   // <<<< WIRE HERE - nothing else about the bee needs touching
+  // ...and the reach around it, on the oak grid. A 3x3 cell walk covers BEE_HIVE_R by construction (see the
+  // constant). Nearest wins, so a bee between two hives commits to one instead of oscillating between them.
+  const beeHiveNear = (x, z) => {
+    const cx = Math.floor(x / OKCELL), cz = Math.floor(z / OKCELL);
+    let best = null, bd = BEE_HIVE_R * BEE_HIVE_R;
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const h = BEE_HIVE_Q(cx + dx, cz + dz); if (!h) continue;
+      const wx = h.wx !== undefined ? h.wx : h.x, wz = h.wz !== undefined ? h.wz : h.z, wy = h.wy !== undefined ? h.wy : h.y;
+      if (wx === undefined || wz === undefined) continue;
+      if (wx <= rect.xlo + 8 || wx >= rect.xhi - 8 || wz <= rect.zlo + 8 || wz >= rect.zhi - 8) continue;   // past the generated rect the crown is not built and the swarm would orbit nothing
+      const ddx = wx - x, ddz = wz - z, d2 = ddx * ddx + ddz * ddz;
+      if (d2 >= bd) continue;
+      bd = d2; best = { x: wx, y: wy === undefined ? beeSurf(wx, wz) + 18 : wy, z: wz };
+    }
+    return best;
+  };
+  // ═══════════════════════ BREAKING ONE OPEN ═══════════════════════
+  // (user 2026-08-17: "if the player breaks open the beehive, have bees fly out of it, attacking the player.")
+  // Three separate questions, kept apart on purpose because each one has a different failure mode:
+  //   WHEN is the hive broken   — hiveChopped, below. A THRESHOLD on what is left of it, not the first tap.
+  //   WHO comes out             — main/tick-creatures.js. The hive's OWN bees, and nothing else.
+  //   WHEN does it stop         — a rage clock, a give-up distance and a re-arm window; also over there.
+  // What lives here is the part the other two have to agree on: a small LEDGER of hives that have just been
+  // broken. sim/tools.js writes it at the moment of the swing (that fragment is 48 and this one is 51, so the
+  // call resolves at CLICK time out of the one shared scope — never at module-evaluation time, which is the
+  // only ordering that would have mattered) and the bee state machine reads it. Nothing in the tool decides
+  // what a bee does and nothing in the bee reaches into the tool; the ledger is the whole of the seam.
+  //
+  // ── WHY A LEDGER AND NOT A DIRECT CALL ── three things fall out of it, and all three are real cases:
+  //   * A bee that arrives LATE still finds the wreck. Recruiting at the instant of the swing would find only
+  //     whoever was inside the radius on that one frame, and a hive's own foragers are often out.
+  //   * An arrow, the editor or a felled branch can break a hive too, and none of them go through chopSwing.
+  //     The orbit self-check in tick-creatures posts to this same ledger, so every path ends in one place.
+  //   * A test does not have to land a swing: __vb.hiveBreak() posts a record and everything after it is real.
+  //
+  // Which palette ids ARE a hive. A 256-entry table for exactly the reason BLOOM_TAB above is one: it is asked
+  // once per marched voxel inside the chop ray, and a two-element scan there would be the whole cost.
+  const HIVE_TAB = new Uint8Array(256); for (const hq of HIVEC) HIVE_TAB[hq] = 1;
+  // ── "BREAKS OPEN" IS A THRESHOLD, NOT A TAP ── the user's word is BREAKS, and a hive that has had one corner
+  // chipped is not broken open. HIVEV is 54 voxels; an axe swing on it carves a CHOP_RAD * 0.5 = radius-2.5
+  // sphere and lifts round(PH.chopBite * 0.5) = 15 of them (half, because a hive is deliberately not woodTab,
+  // so it is never the axe's OWN material — see the note in assets/material-tabs.js). 54 -> 39 -> 24, so half
+  // the hive is the SECOND swing: one hit chips it, the next one opens it. The stone knife works at a quarter
+  // scale (radius 1.25, a 4-voxel bite) and needs seven, which is the right shape too — a worse tool is a
+  // longer, louder mistake rather than a different rule.
+  // A FRACTION rather than a voxel count, because the model is art: re-authoring beehive.vox to 80 voxels must
+  // not silently move the threshold to "one swing".
+  const BEE_BREAK_F = 0.5;
+  // ── AND THE LEDGER ── at most this many wrecks are live at once. Four, because it is a ring for OVERLAPPING
+  // breaks (two hives inside one bee's radius) and not a history: a fifth simultaneous break means the player
+  // smashed five hives inside BEE_RAGE_WIN seconds, and the oldest of those has already recruited everything
+  // that could hear it.
+  const HIVE_BREAK = [], HIVE_BREAK_MAX = 4;
+  // …and a hive is only ever broken ONCE. Keyed on the oak's trunk column, which is what identifies a hive
+  // (hiveAt is a projection of oakAt on the OKCELL grid, so one cell is one tree is one hive). Capped and
+  // cleared wholesale exactly like cardSlainPerch above — a set that grows unbounded across a long session is
+  // the leak, and re-angering a hive the player broke an hour ago is not a behaviour anyone would notice.
+  const HIVE_DONE = new Set(), HIVE_DONE_CAP = 512;
+  // ── THE SWARM'S REACH, ITS TEMPER AND ITS PATIENCE ──
+  const BEE_RAGE_R = BEE_HIVE_R;   // how far a break is heard. The SAME radius a bee notices a hive from, deliberately: the bees that can hear one break are exactly the bees that would have been living at it, so this is one number rather than two that can drift apart.
+  const BEE_RAGE_WIN = 12;         // …and how long the wreck keeps calling. SHORTER than BEE_RAGE_S below, which is what stops a bee whose rage has just ended from re-entering off the very same record, forever.
+  const BEE_RAGE_S = 18;           // seconds one bee stays angry. Long enough to be a chase across a clearing, and bounded for the reason BEE_HIVE_S is bounded: nothing may capture a bee for the rest of the session.
+  const BEE_RAGE_LEASH = 220;      // ── THE GIVE-UP DISTANCE ── measured from the HIVE and not from the bee, because a swarm defends a PLACE. 22 m of running ends it, and the escape is a real choice: WALK is 46 vox/s against the bee's own 56, so walking away cannot work and SPRINTING (46 x 1.85 = 85) always can.
+  const BEE_RAGE_GAP = BEE_RAGE_WIN;   // …and a bee that has just calmed down may not be recruited again until every record that could have called it is stale
+  const BEE_RAGE_Y = 12;           // how high up the player it flies. The player box is 20 voxels tall from the feet at P.y, so this is chest height: inside the body for the sting test, and low enough to read as a bee in your face rather than one circling overhead.
+  // ── THE STING, ON A FIVE-POINT BAR ── vitHurt converts at the door with max(1, ceil(amount / 4)), so on a
+  // 5-point bar there is NO hit smaller than one fifth: 1, 2, 3 and 4 all cost exactly the same single point.
+  // A bee therefore quotes the floor of the scale, 1, and the only lever left for "small" is the RATE — which
+  // is why the cooldown below is SWARM-WIDE rather than per bee. Per bee it would be five independent clocks,
+  // and at the cobra's own 1 s that is 5 points a second, i.e. the whole bar inside one: that is not a bee, it
+  // is a landmine. One clock for the swarm makes it read the way the lava, quicksand and cactus timers in
+  // main/tick-body.js already do — standing in a hazard costs you a point every so often — and the arithmetic
+  // is then legible at a glance: 2.5 s a sting, so the full bar is 12.5 seconds of choosing to stand in it.
+  const BEE_STING = 1, BEE_STING_CD = 2.5;
+  let beeStingT = 0;               // …the one clock. Module scope, because main/tick-creatures.js runs inside tickBody where a `let` is a per-frame local and would reset the cooldown on every frame.
+  // The nearest hive RECORD (not the normalised {x,y,z} beeHiveNear hands the swarm) within r. The record is
+  // what a count and a break need — the box anchor, its size and its rotation — and it is what __vb.hiveDbg reads.
+  const hiveNearest = (x, z, r) => {
+    const cR = Math.ceil(r / OKCELL) + 1, cx = Math.floor(x / OKCELL), cz = Math.floor(z / OKCELL);
+    let best = null, bd = r * r;
+    for (let dz = -cR; dz <= cR; dz++) for (let dx = -cR; dx <= cR; dx++) {
+      const h = BEE_HIVE_Q(cx + dx, cz + dz); if (!h) continue;
+      const ex = h.wx - x, ez = h.wz - z, e2 = ex * ex + ez * ez;
+      if (e2 >= bd) continue;
+      bd = e2; best = h;
+    }
+    return best;
+  };
+  // ── AND WHICH HIVE THE SWARM BELONGS TO (user 2026-08-17: "angry bees dont come out of the beehives …
+  // make the bees swarm around the beehive, still dont see them doing this") ── MEASURED before this, with
+  // the player standing 8 voxels from a hive: all eight bees alive, every one of them 450-800 voxels away,
+  // and the nearest hive to ANY of them 272. Breaking that hive recruited nobody — the ledger record came
+  // back `called: 0`. So neither report is about the swarm behaviour, the ledger, the leash or the sting,
+  // every one of which is exercised and correct; there was simply never a bee within BEE_RAGE_R of the
+  // wreck, and orbiting was something that happened around hives nobody was standing at.
+  // The cause was in the SPAWN, and it was two things at once:
+  //   * it looked for a hive only inside the bee's own spawn RING (0.26 x LIFE_KEEP = 270 at the shipped
+  //     view). Hives sit ~600 apart, so the hive the player is at is usually not in that disc at all —
+  //     measured at one boot: four hives within 600 of the player, the nearest at 589, i.e. none.
+  //   * and when one WAS in range it picked uniformly among every hive in the disc, so the swarm scattered
+  //     one bee to a hive instead of five to the one the player can see.
+  // Both are answered by asking a different question: not "is there a hive somewhere near this bee's spawn
+  // ring" but "which hive is the PLAYER'S", answered once for the whole band and answered by DISTANCE. It
+  // is POLLED rather than derived per body because hiveNearest over a ring-sized square is ~27x27 oakAt
+  // calls — nothing every couple of seconds, real per bee per frame.
+  const BEE_HOME_POLL = 2;     // seconds between polls. The answer only moves as the player walks, and a swarm that takes two seconds to notice it has arrived at a new hive is not something anyone can see.
+  const BEE_STRAY_R = 200;     // …and how far a swarm bee may be from that hive before it is recycled back to it. Over FLY_LEASH (84) + BEE_FLOWER_R (72) with room to spare, so a bee merely out on an errand is never recycled mid-flight — only one whose hive is no longer the player's, which is what makes the swarm FOLLOW you from hive to hive instead of staying at the one it was born under.
+  let beeHomeT = -1, beeHomeR = -1, beeHomeH = null;
+  const beeHomeHive = (px, pz, tb, r) => {            // the nearest hive to the PLAYER, cached. `r` comes from the caller (LIFE_OUT) rather than being a constant here: a bee placed past LIFE_KEEP is recycled as "far" on its very next frame, which at a small view distance would be an every-frame churn loop.
+    if (tb >= beeHomeT || r !== beeHomeR) { beeHomeT = tb + BEE_HOME_POLL; beeHomeR = r; beeHomeH = hiveNearest(px, pz, r); }
+    return beeHomeH;
+  };
+  // The world box a hive occupies. stampModel anchors bottom-CENTRE and rotates about vertical, so the
+  // footprint is (sy, sx) on an odd rotation and (sx, sy) on an even one — read off stampModel in
+  // world/terrain.js rather than assumed, even though the shipped model is 5x5x5 and the two agree.
+  const hiveBox = (h) => { const fw = (h.rot & 1) ? h.sy : h.sx, fd = (h.rot & 1) ? h.sx : h.sy;
+    return { x0: h.bx - (fw >> 1), z0: h.bz - (fd >> 1), fw, fd, y0: h.by, fh: h.sz }; };
+  // Which hive is this voxel part of? The 3x3 oak-cell walk is exhaustive, and that is arithmetic rather than a
+  // hope: an oak candidate sits somewhere inside its own OKCELL (79) and its hive hangs at a crown anchor, so
+  // it is within half the widest crown (118 across, i.e. 59) of the trunk. A hive voxel is therefore never more
+  // than 79 + 59 = 138 voxels from its own cell's origin — under two cells — so the owning cell is always one
+  // of the nine around the cell the voxel itself falls in.
+  const hiveBoxAt = (x, y, z) => {
+    const cx = Math.floor(x / OKCELL), cz = Math.floor(z / OKCELL);
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const h = BEE_HIVE_Q(cx + dx, cz + dz); if (!h) continue;
+      const b = hiveBox(h);
+      if (x < b.x0 || x >= b.x0 + b.fw || z < b.z0 || z >= b.z0 + b.fd || y < b.y0 || y >= b.y0 + b.fh) continue;
+      return h;
+    }
+    return null;
+  };
+  // How much of it is still standing. A VOXEL COUNT over the box rather than a tally of what the tool took, for
+  // the same reason beeBloomAt reads the world instead of re-deriving the planting roll: a hive can also be
+  // shot, edited, or dropped whole when the branch it hangs from is felled, and a counter kept beside the axe
+  // would know about none of that. 125 reads, paid only on a swing that actually bit a hive.
+  const hiveLeft = (h) => {
+    const b = hiveBox(h); let n = 0;
+    for (let z = b.z0; z < b.z0 + b.fd; z++) { const zi = gwrap(z, WZ) * WX * WY;
+      for (let x = b.x0; x < b.x0 + b.fw; x++) { const xi = gwrap(x, WX);
+        for (let y = b.y0; y < b.y0 + b.fh; y++) { if (y < 1 || y >= WY) continue;
+          if (HIVE_TAB[W[xi + y * WX + zi]]) n++; } } }
+    return n;
+  };
+  const hiveFull = () => (HIVEV && HIVEV.vox) ? HIVEV.vox.length : 54;   // the model's own voxel count, read at CALL time — assets/bow.js assigns HIVEV during boot
+  // Post a break. Returns 1 the first time a given hive is broken and 0 ever after, so a caller can read it as
+  // "did this actually open the hive".
+  const hiveBroke = (h) => {
+    const k = h.tx + '|' + h.tz;
+    if (HIVE_DONE.has(k)) return 0;
+    if (HIVE_DONE.size >= HIVE_DONE_CAP) HIVE_DONE.clear();
+    HIVE_DONE.add(k);
+    HIVE_BREAK.push({ x: h.wx, y: h.wy, z: h.wz, t: performance.now() / 1000, n: 0, key: k });
+    while (HIVE_BREAK.length > HIVE_BREAK_MAX) HIVE_BREAK.shift();
+    return 1;
+  };
+  // ── THE HOOK sim/tools.js CALLS ── one line at the decor branch of chopSwing, AFTER the bite has landed.
+  // Deliberately asked after the carve: the question is "is the hive open now", and the swing that opened it is
+  // the one that should let the bees out.
+  const hiveChopped = (x, y, z) => {
+    const h = hiveBoxAt(x, y, z); if (!h) return 0;
+    if (hiveLeft(h) > hiveFull() * BEE_BREAK_F) return 0;
+    return hiveBroke(h);
+  };
+  // ── …AND SWATTING ONE IS THE OTHER WAY TO START A FIGHT (user 2026-08-17: "if the player decides to hit
+  // a bee, any surrounding bees will attack the player") ── the same LEDGER, deliberately, rather than a
+  // second mechanism beside it: everything downstream of a record — the recruiting, the rage clock, the
+  // leash measured from the place, the swarm-wide sting cooldown, the re-arm window, __vb.beeDbg's readout
+  // — is already written and already exercised, and the only thing that differs between a smashed hive and
+  // a swatted bee is WHERE the fight is and WHO may answer it. So a record now carries `all`.
+  //   * `all` unset (a hive break) — only the five hive slots answer, which is what keeps the meadow.
+  //   * `all` set (a bee was hit) — EVERY bee in earshot answers, foragers included. "Any surrounding bees"
+  //     is the request, and it is also the right rule: a bee defending itself is not a hive posting, and a
+  //     forager watching one of its own get swatted has the same reason to come as a guard does.
+  // sim/life/reactions.js calls this from hitCreature, above the wound/kill split, so it fires on EVERY blow
+  // — wounding or fatal, axe or arrow or bare hand — exactly where the sparks, the sound and the bolt fire.
+  const BEE_SWAT_MERGE = 40;   // …and two swings on the same bee are ONE fight. Without this a held left-click posts a record per blow and a four-deep ring of hive breaks is flushed by swatting one insect; refreshing the existing record also keeps the leash anchored where the fight actually is rather than where the first blow landed.
+  const beeAngered = (x, y, z) => {
+    const tb = performance.now() / 1000;
+    for (let i = HIVE_BREAK.length - 1; i >= 0; i--) { const b = HIVE_BREAK[i];
+      if (!b.all) continue;
+      const ex = b.x - x, ez = b.z - z;
+      if (ex * ex + ez * ez < BEE_SWAT_MERGE * BEE_SWAT_MERGE) { b.t = tb; b.x = x; b.y = y; b.z = z; return 0; }   // the same fight, moved
+    }
+    HIVE_BREAK.push({ x, y, z, t: tb, n: 0, key: '', all: 1 });   // no HIVE_DONE key: a swat is not a hive coming apart, and must never mark one as spent
+    while (HIVE_BREAK.length > HIVE_BREAK_MAX) HIVE_BREAK.shift();
+    return 1;
+  };
+  // Is there a wreck near enough, and recent enough, for a bee at (x, z) to answer? Newest first, so two
+  // overlapping breaks send a bee to the one that just happened. `anyOK` is whether THIS bee is one of the
+  // hive's own — a swat record (all) answers to every bee, a hive break only to those five.
+  const hiveRageAt = (x, z, tb, anyOK) => {
+    for (let i = HIVE_BREAK.length - 1; i >= 0; i--) { const b = HIVE_BREAK[i];
+      if (tb - b.t > BEE_RAGE_WIN || !(b.all || anyOK)) continue;
+      const dx = b.x - x, dz = b.z - z;
+      if (dx * dx + dz * dz <= BEE_RAGE_R * BEE_RAGE_R) return b;
+    }
+    return null;
+  };
   // ── ANT COLUMN ── spacing along the leader's path, and how often the leader drops a crumb. The gap is 6, not
   // the 3.2 the old steering aimed for: the baked ant model's box is 5 x 2 x 1, so at 3.2 the models would
   // interpenetrate even in a geometrically perfect line. The crumb step sets how faithfully a follower traces a
@@ -133,11 +493,26 @@
   const ANT_TURN_HOLD = 0.35;   // seconds a turn is held before another may fire. Below ~0.2 a wedged ant reads as a twitch; this is one body-length of travel at 16 vox/s
   const ANT_WHIM = 1.5;         // an unblocked ant rolls for a turn every ANT_WHIM..2*ANT_WHIM seconds
   const ANT_WHIM_P = 0.35;      // …and turns on 35% of those rolls. Together that is a corner every ~6.4 s, or ~100 voxels of straight march at the band's 16 vox/s. MEASURED at 2.5/0.30 first and it was too sparse to be the behaviour the user asked for: one turn per 12.5 s is 200 voxels, so a player watching the column for ten seconds would usually never see the quarter turn at all.
-  // ── WHICH DESERT KILLS LEAVE MEAT (user 2026-08-15) ── the four the user named. The other three — ant, fly
-  // and spider — leave nothing, which is the same distinction they drew earlier asking for no drops off the
-  // bugs. Keyed by NAME, not by slot number, so re-ordering DESERTS cannot silently re-assign it.
-  const DES_MEAT = { desert_mouse: 1, cobra: 1, scorpion: 1, gecko: 1 };
-  const wbf = Array.from({ length: DES_END }, () => ({ init: false }));   // WORLD creature pool: 0-15 flyers, 16-19 MOM ducks, 20-31 ducklings (3/mom), 32-63 worms (32 — DOUBLED AGAIN 2026-07-18), 64-243 PERCHED SONGBIRDS (180 slots — 120 -> 180 when the ROBIN joined, so it ADDS a third colour instead of eating the cardinal/blue-bird share — grid-stamped, so they use NO drop slot; free to exceed the drop budget), 244-275 FISH (kind 6 — off-grid swimmers under the lake/river surface; 16 -> 32 slots, DOUBLED 2026-07-20 at user request), 276-299 BUNNIES (24 — kind 2 ground hoppers reusing the worm machinery, model = BUNNY_ITEM0, added 2026-07-21 at user request), 300-323 ARMADILLOS (24 — kind 2 ground WALKERS, continuous cardinal march, model = ARMADILLO_ITEM0, added 2026-07-21 at user request), 324-347 SKUNKS (24 — kind 2 ground WALKERS, same cardinal-march AI as the armadillo, GRID-STAMPED via SKUNK_POSES, added 2026-07-21 at user request), 348-371 PORCUPINES (24 — kind 2 ground WALKERS, armadillo-style constant march, GRID-STAMPED via PORCUPINE_POSES, re-added 2026-07-22 at user request as a 4th land mammal alongside the skunk)
+  // ── WHICH DESERT-BAND KILLS LEAVE MEAT (user 2026-08-15) ── the four the user named. Ant, fly and spider
+  // leave nothing, which is the same distinction they drew earlier asking for no drops off the bugs. Keyed by
+  // NAME, not by slot number, so re-ordering DESERTS cannot silently re-assign it.
+  // The two 2026-08-17 species split on exactly that line and neither is a guess about a new rule, only about
+  // which side of the existing one they fall: the BEE is an insect like the fly and is absent, the GRASS
+  // SNAKE is a 17-voxel snake beside the cobra's 19 and bleeds like it. Verify with __vb.meatSpecies().
+  const DES_MEAT = { desert_mouse: 1, cobra: 1, scorpion: 1, gecko: 1, grass_snake: 1 };
+  // WORLD creature pool. The LAYOUT is the ladder above — read the boundaries there, never off this line.
+  //   FLY_0    flyers: butterflies by day, FIREFLIES after dark, dragonflies at the top of the band
+  //   DUCK_0   mother ducks / BABY_0 ducklings, 3 per mother / WORM_0 worms (32 — DOUBLED AGAIN 2026-07-18)
+  //   CARD_0   PERCHED SONGBIRDS — cardinal, blue bird and robin share the band (a third COLOUR was added when
+  //            the robin joined, not a third share). Grid-stamped, so they use NO drop slot.
+  //   FISH_0   fish (kind 6) — off-grid swimmers under the lake/river surface, 16 -> 32 slots 2026-07-20
+  //   BUNNY_0  kind 2 ground hoppers reusing the worm machinery, model = BUNNY_ITEM0 (2026-07-21)
+  //   ARM_0    kind 2 ground WALKERS, continuous cardinal march, model = ARMADILLO_ITEM0 (2026-07-21)
+  //   SKUNK_0  kind 2 ground WALKERS, the armadillo's AI, poses from SKUNK_POSES (2026-07-21)
+  //   PORC_0   kind 2 ground WALKERS, the armadillo's march, poses from PORCUPINE_POSES (2026-07-22)
+  //   MAM_END  the DES_N desert-BAND species, DES_PER slots each, up to DES_END — seven on the sand plus the
+  //            bee and the grass snake, which are oak-forest creatures riding the same machinery (DES_OAKONLY)
+  const wbf = Array.from({ length: DES_END }, () => ({ init: false }));
   // ── DROP-SLOT PRIORITY ── six creature kinds share whatever is left of the drop slots once the 25 fixed ones
   // and the drawn flock have taken theirs (95 of 128 today). Rather than emit in wk order (which
   // starved whatever came last — fish, then worms), each wbf creature's 16-float pose is staged here with its distance²,

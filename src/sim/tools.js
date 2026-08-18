@@ -337,7 +337,13 @@
       // the BITE follows the sphere it came out of — scaled from PH.chopBite, not from C_BITE, which
       // already carries the tool's own factor and would apply it a second time.
       const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS)) : Math.max(2, Math.round(PH.chopBite * mS * (dig ? DIG_BITE : 1)));
-      if (id && decorTab[id] && !woodTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat)) return 1;   // …but NOT wood: a standing trunk belongs to the tree path below, which is what fells it   // free gate, the id is already in hand
+      // ── AND A BEEHIVE IS THE ONE PIECE OF DECOR THAT ANSWERS BACK (user 2026-08-17: "if the player breaks
+      // open the beehive, have bees fly out of it, attacking the player") ── asked AFTER the carve, because the
+      // question is "is the hive open NOW". hiveChopped (sim/life/slots.js) counts what is left of the box and
+      // does nothing at all until it is past BEE_BREAK_F, so a chip is still just a chip. That is the whole of
+      // the tool's involvement: it posts a fact about the world to a ledger and returns. It does not know what
+      // a bee is, and the swing itself is untouched — same gate, same sphere, same bite, same return value.
+      if (id && decorTab[id] && !woodTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat)) { if (HIVE_TAB[id]) hiveChopped(x, y, z); return 1; }   // …but NOT wood: a standing trunk belongs to the tree path below, which is what fells it   // free gate, the id is already in hand
       // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
       // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
       // where the trunk was, and a solid-only trigger could never find the tree again — the axe would

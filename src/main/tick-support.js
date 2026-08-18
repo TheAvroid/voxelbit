@@ -86,7 +86,7 @@
       const dr = drops[i];
       if (!(WORM_NFRAMES && dr.it === WORM_ITEM0 && dr.T && (now - dr.born) / 1000 > dr.T + 0.24)) continue;
       let wi = 32, fd = -1;
-      for (let j = 32; j < 64; j++) { const B2 = wbf[j];   // worm pool slots (32-63, 32 worms — DOUBLED AGAIN 2026-07-18)
+      for (let j = WORM_0; j < WORM_END; j++) { const B2 = wbf[j];   // worm pool slots (WORM_N = 32 — DOUBLED AGAIN 2026-07-18)
         if (!B2.init) { wi = j; fd = -2; break; }
         const d2w = (B2.x - P.x) * (B2.x - P.x) + (B2.z - P.z) * (B2.z - P.z);
         if (d2w > fd) { fd = d2w; wi = j; }            // all live → reuse the farthest (least visible) slot
@@ -264,9 +264,16 @@
         if (ED.box2) { const B3 = birdBoxes[1]; B3.cx = ED.box2.cx; B3.cy = ED.box2.cy; B3.cz = ED.box2.cz; B3.hx = ED.box2.hx; B3.hy = ED.box2.hy; B3.hz = ED.box2.hz; B3.active = true; }   // …and the PREVIEW bunny (slot 1) so you can't walk through either
       } else if (FLYERS.length > 0 && !birdRagTick(bird)) {   // the WORLD bird (only when NOT in the editor) — and not while its corpse is falling
         const ps = birdStep(bird, 0, now / 1000, dt);    // bird 0 keeps the dedicated slot; the rest are emitted with the creatures below
-        birdPose(bird, ps);                              // …the pose the ragdoll will be rebuilt from
-        ps.uid = 0;                                      // stable identity for the dynamic-life temporal reprojection
-        birdWrite(bSlot, ps, cam, right, up, fwd);       // the SLOT INDEX, never o2: birdWrite derives the offset itself, so passing 132 wrote dropOff(132) — deep inside lifeMotB — and left drop slot 4's item id at 0, i.e. bird 0 flew invisible while still solid and still shootable (tick-life.js's call site already passed dropCursor; this one was missed when the signature changed)
-        birdHit(birdBox, ps);
+        // ── NO LEGAL SKY (the desert) ── birdStep returns null when its whole respawn ring is sand. Written as
+        // an if/else and NOT as an early `return`: this fragment is the BODY of tickBody() (main/tick-body.js
+        // opens the function, main/tick-passes.js closes it), so a `return` here would abandon the rest of the
+        // frame — support, nav, life, creatures, emit and every render pass — for one bird.
+        if (!ps) { UF[o2 + 7] = 0; birdBox.active = false; }
+        else {
+          birdPose(bird, ps);                            // …the pose the ragdoll will be rebuilt from
+          ps.uid = 0;                                    // stable identity for the dynamic-life temporal reprojection
+          birdWrite(bSlot, ps, cam, right, up, fwd);     // the SLOT INDEX, never o2: birdWrite derives the offset itself, so passing 132 wrote dropOff(132) — deep inside lifeMotB — and left drop slot 4's item id at 0, i.e. bird 0 flew invisible while still solid and still shootable (tick-life.js's call site already passed dropCursor; this one was missed when the signature changed)
+          birdHit(birdBox, ps);
+        }
       } else { UF[o2 + 7] = 0; birdBox.active = false; }
     }

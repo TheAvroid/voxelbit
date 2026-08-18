@@ -1,8 +1,10 @@
   // ── HURT FLASH ── all that is left of the vitals HUD. The five hunger and five heart voxels were built
   // here and then removed at the user's request (2026-08-15): "remove the hunger/hearts ui. keep the
-  // mechanics, just remove the ui." The mechanics are untouched and still tick in sim/vitals.js — health,
-  // hunger, saturation, exhaustion, regen and starvation all run exactly as before, they are simply not
-  // drawn. `__vb.vit()` is now the only way to read them, which is what the tests use.
+  // mechanics, just remove the ui." Nothing has to come back here now that hunger is gone (2026-08-17):
+  // there is no bar left to drop, because BOTH rows went two days before the mechanic did, and the health
+  // they would have drawn is already on screen twice — as the pixelated red band BLIT paints from
+  // vitRedLevel(), and as the floating heart row the composite draws from VIT.hp. This file is only the
+  // TIMING and the SEED of the flash; `__vb.vit()` is still how a test reads the numbers behind it.
   // ── THE HURT FLASH LIVES IN THE RENDER NOW (user 2026-08-16: "when recording a video on playback, the
   // red pixels on the ui dont show up. make them showup on playback when recording the scree.") ──
   // It was a DOM <canvas id="hurtFx"> laid over the game at 64x36 and blown up by image-rendering:pixelated,

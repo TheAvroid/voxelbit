@@ -4,6 +4,14 @@
   let pickWGSL = 'const ITEMN : i32 = 0; const PICKSTEPS : i32 = 1; const TRA_LO : i32 = 536870912; const TRA_HI : i32 = -1; const TRA2_LO : i32 = 536870912; const TRA2_HI : i32 = -1;\n    const ITEMD : array<vec4<i32>, 1> = array<vec4<i32>, 1>(vec4<i32>(0));\n    @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;';
   let itemHalfH = null;                              // per-item half height in voxels — a settled drop rests its BOTTOM on the ground, so it needs its own size
   let itemMapF32 = new Float32Array(4);                // ITEMMAP lives in a STORAGE BUFFER (binding 13) — as a var<private> constant array it silently broke past ~2.6k entries (the butterfly frames pushed it over; FXC-side limit, no compile error)
+  // ── THE TWO FRUIT, AND THE STRIP THEY ARE EATEN THROUGH ── each is a RUN of FOOD_EAT_N consecutive item ids
+  // exactly as the bow's draw is: APPLE_IT + f is frame f, and APPLE_IT itself (frame 0) is the whole fruit, so
+  // the thing that sits in a hotbar slot and the first frame of the animation are the SAME id and cannot drift
+  // apart. Declared out here rather than inside the items block for the reason TILL_ID is declared in
+  // sim/hands.js: the block below assigns them, and every reader (sim/vitals.js's food table, ui/audio.js's
+  // bite, main/tick-camera.js's frame pick, ui/hud.js's pose) is in a later fragment that needs the binding
+  // itself, not a copy of the 0 it started as.
+  let APPLE_IT = 0, ORANGE_IT = 0, FOOD_EAT_N = 0;
   {
     const items = [];                                  // {w, d, h, cells: [[r,g,b] | null]} — x = width, y = depth, z = height
     // ── PARALLEL PREFETCH ── kick EVERY creature/tool .vox fetch off at once so the network runs concurrently (was ~50 serial round-trips, one await per frame — the slow part of boot).
@@ -14,6 +22,7 @@
     for (let f = 0; f < 8; f++) pf('assets/life/cardinal/flight/0' + f + '.vox');
     for (const c of ['orange', 'red', 'blue', 'lime', 'pink', 'purple']) for (let f = 0; f < 8; f++) pf('assets/life/butterfly/' + c + '/0' + f + '.vox');   // prefetch must list the SAME colours as the loader below or the new ones stall on a cold fetch
     for (let f = 0; f < 6; f++) pf('assets/life/dragonfly/0' + f + '.vox');   // dragonfly ships 6 frames (base.vox is the source art, not a frame — skipped)
+    for (let f = 0; f < 13; f++) pf('assets/food/apple/' + String(f).padStart(2, '0') + '.vox');   // the apple EATING strip — 13 on disk today; the loader still walks until one is missing, so this number only decides how many arrive warm
     for (let f = 0; f < 4; f++) pf('assets/life/firefly/0' + f + '.vox');
     for (let f = 0; f < 12; f++) pf('assets/life/worm/' + String(f).padStart(2, '0') + '.vox');
     for (const sp of ['salmon', 'minnow']) for (let f = 0; f < 12; f++) pf('assets/life/' + sp + '/' + String(f).padStart(2, '0') + '.vox');   // fish swim strips (base.vox is source art, skipped); species without frames simply don't join
@@ -25,9 +34,17 @@
     // now writes desert_frames.json beside the frames it bakes, so the count cannot drift from the files.
     // The manifest is ONE extra request and it is awaited, because the prefetch below needs its numbers; if it
     // is missing we fall straight back to the old blind 20 and nothing breaks.
+    // ── THE DESERT BAND'S LOAD ORDER, IN ONE PLACE ── it used to be written out twice, once for the prefetch
+    // and once for the loader forty lines down, with a comment on each saying they must agree. They are the
+    // same list now, because the failure mode of them disagreeing is silent: a species missing from the
+    // prefetch still loads, one cold serial round-trip per frame, and only shows up as a slower boot.
+    // ORDER IS LOAD ORDER IS SLOT-BAND ORDER (species index = position in DESERTS), so this is APPEND-ONLY —
+    // it must stay in step with NAMES in tools/bake_desert_life.py. The last two are not desert creatures at
+    // all: the bee and the grass snake live in the OAK FOREST and only ride this band's machinery.
+    const DES_LOAD = ['ant', 'cobra', 'desert_mouse', 'fly', 'gecko', 'scorpion', 'spider', 'bee', 'grass_snake'];
     let desFrames = null;
     try { desFrames = await (await fetch('assets/life/desert_frames.json')).json(); } catch (e) { desFrames = null; }
-    for (const sp of ['ant', 'cobra', 'desert_mouse', 'fly', 'gecko', 'scorpion', 'spider'])
+    for (const sp of DES_LOAD)
       for (let f = 0, nf = (desFrames && desFrames[sp]) || 20; f < nf; f++) pf('assets/life/' + sp + '/' + String(f).padStart(2, '0') + '.vox');   // the desert set — the prefetch must list the same names the loader walks or every frame stalls on a cold fetch
     try {
       const pv = await abuf('assets/stone_tools/stone_axe.vox');
@@ -128,11 +145,137 @@
     }
     if (false) { const strip = [];
       void strip; }                                  // (superseded: the scene builder above already puts every frame in one shared grid)
-    if (MEATV) { MEAT_IT = items.length + 1; items.push(modelToItem(MEATV)); console.log('[vb] raw_meat item', MEAT_IT, MEATV.sx, MEATV.sy, MEATV.sz); }   // …appended after the pick, same reason: ids 1-4 are hard-coded elsewhere
+    // ══ EATEN DOWN TO A REMNANT ══ one carved strip, and EVERY food takes it: the two fruit below, and the
+    // steak (user 2026-08-17: "can you do the same animation to the meat like you did for the apple/orange").
+    // The whole model is frame 0 — which is why it doubles as the held item, exactly as apple/00.vox did — and
+    // each frame after it is missing a little more of the artist's own voxels.
+    // HOW THE CARVE WORKS. A bite point at the top corner of the model's own box, every voxel ordered by
+    // distance from it, and frame f missing the nearest f/(N-1) of the ones that go. The model is eaten INWARD
+    // FROM ONE SIDE down to a remnant rather than dissolving evenly: on the apple that means the blade goes
+    // with the first mouthful while the brown stalk, at the far corner from the bite, survives to the end, so
+    // what is left still reads as a core; on the steak it is a flat slab nibbled in from one corner.
+    // It costs ZERO palette entries either way — every frame is a copy of cells the model already resolved.
+    // EAT_N is the frame count and the ONE number ui/audio.js's EAT_FPS clock walks, so every food is eaten on
+    // the same beat. The BOX is per model and defaults to the model's own: the held DDA centres a model on its
+    // box, so the box is what decides where a thing hangs in your hand, and changing it would move an item
+    // whose pose is already baked. Only the fruit pass one in (see FRUIT_BOX).
+    const EAT_N = 13, EAT_KEEP = 0.28;                 // …and how much is still in your hand on the LAST frame. A remnant rather than an empty grid: a thing that vanishes a frame early reads as a dropped item
+    FOOD_EAT_N = EAT_N;                                // the strip length every edible shares — set here, not inside the fruit block, so a missing apple cannot silently take the meat's animation with it
+    const eatStrip = (m, box) => {                     // one whole model -> EAT_N frames of it being eaten
+      const cl = [];                                   // its voxels, in one list, so the bite order is a sort rather than a rule repeated per frame
+      for (let z = 0; z < m.h; z++) for (let y = 0; y < m.d; y++) for (let x = 0; x < m.w; x++) {
+        const c = m.cells[x + y * m.w + z * m.w * m.d]; if (c) cl.push({ x, y, z, c });
+      }
+      const bx = m.w - 1, by = (m.d - 1) / 2, bz = m.h - 1;
+      for (const q of cl) q.d2 = (q.x - bx) * (q.x - bx) + (q.y - by) * (q.y - by) + (q.z - bz) * (q.z - bz);
+      cl.sort((a, b) => a.d2 - b.d2 || a.z - b.z || a.x - b.x || a.y - b.y);   // ties broken on the coordinates so the strip is identical every boot — a sort that is not total is a thing eaten differently each time
+      const gone = Math.max(0, cl.length - Math.max(3, Math.round(cl.length * EAT_KEEP)));
+      const bb = box || [m.w, m.d, m.h];
+      const W = Math.max(bb[0], m.w), D = Math.max(bb[1], m.d), H = Math.max(bb[2], m.h);
+      const out = [];
+      for (let f = 0; f < EAT_N; f++) {
+        const eaten = EAT_N < 2 ? 0 : Math.round(gone * f / (EAT_N - 1));
+        const cells = new Array(W * D * H).fill(null);
+        for (let i = eaten; i < cl.length; i++) { const q = cl[i]; cells[q.x + q.y * W + q.z * W * D] = q.c.slice(); }
+        out.push({ w: W, d: D, h: H, cells });
+      }
+      return out;
+    };
+    if (MEATV) { const ms = eatStrip(modelToItem(MEATV));   // …its OWN box, so the steak hangs exactly where its baked pose already puts it
+      MEAT_IT = items.length + 1; for (const it of ms) items.push(it);
+      console.log('[vb] raw_meat items', MEAT_IT, '..', MEAT_IT + FOOD_EAT_N - 1, MEATV.sx, MEATV.sy, MEATV.sz,
+        ms[0].cells.filter(Boolean).length + '->' + ms[ms.length - 1].cells.filter(Boolean).length, 'vox'); }   // …appended after the pick, same reason: ids 1-4 are hard-coded elsewhere
     // …and the HOE and SPEAR (user), appended last of the tools so no existing id moves. Poses are stored
     // by NAME now, so the table can grow safely, but leaving the bow strip's run where it is costs nothing.
     if (HOEV) { HOE_IT = items.length + 1; items.push(modelToItem(HOEV)); console.log('[vb] stone_hoe.vox item', HOE_IT, HOEV.sx, HOEV.sy, HOEV.sz); }
     if (SPEARV) { SPEAR_IT = items.length + 1; items.push(modelToItem(SPEARV)); console.log('[vb] stone_spear.vox item', SPEAR_IT, SPEARV.sx, SPEARV.sy, SPEARV.sz); }
+    // ── THE APPLE AND THE ORANGE, AND THE STRIP THEY ARE EATEN THROUGH (user 2026-08-17: "have the player able
+    // to right click an apple from a tree and pick it up … then the player can right click to eat it … play the
+    // apple eating animation as there should already be one") ── the animation DID already exist and nothing in
+    // the game referenced it: assets/food/apple/00.vox … 12.vox, thirteen frames of an apple being eaten down to
+    // a core while its leaf tumbles away. Frame 00 is the whole fruit, which is why it doubles as the held model
+    // — one id for "an apple in your hand" and "frame zero of eating one" means they can never disagree.
+    //
+    // PARSED RAW, LIKE THE AXE AND THE KNIFE, NOT THROUGH modelToItem. Two things follow from that and both are
+    // the point. First, it costs ZERO palette entries: an item is a grid of raw RGB in ITEMMAP and never asks
+    // for an id at all, so all eleven authored shades arrive exactly as painted on a table with one slot left.
+    // Second — and this is the user's other note today — the artist's BROWN STALK (143,95,74) survives here even
+    // though the world fruit's stalk is still stuck on the oak leaf id: fruit.json pooled stem and leaf into one
+    // colour and the palette has no brown that is also canopy (see the argument in assets/bow.js). So the apple
+    // you hold has the brown stem the user asked for, today, at no cost.
+    //
+    // THERE IS ALSO A game/assets/food/apple/eat.b64.js — DELIBERATELY UNUSED. It is a base64 copy of these same
+    // thirteen files as a classic script, and it is one of TWENTY-ONE .b64.js files in the asset tree (chickens,
+    // tropical fish, a fly) that NOTHING in src/ loads or has ever loaded. The game is served, not opened over
+    // file://, and index.html is a single `type="module"`, so a classic script tag would be a second loading
+    // mechanism for one asset. The .vox files are fetched exactly as every other frame strip is.
+    //
+    // THE ORANGE HAS ART OF ITS OWN and now uses it — assets/food/orange.vox, parsed by the same rawItem
+    // below and carved into its own eat strip. It used to be the apple's thirteen frames with the flesh
+    // re-tinted, on the argument that both fruit are authored on one 4x3x5 grid and share their crown cells
+    // voxel for voxel; the user's answer to that is the whole of the change (see the block at the orange
+    // itself). Nothing about the APPLE moved: it is the same thirteen files, parsed the same way, padded to
+    // the same box.
+    { const rawItem = (b) => {                         // one .vox -> {w,d,h,cells} of raw RGB. Mints nothing; a missing or unreadable file answers null, which is how the walk below finds the end of the strip
+        if (!b || b.length < 16) return null;
+        try {
+          const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+          let sx = 0, sy = 0, sz = 0, vox = null; const pal = new Uint8Array(1024);
+          const walk = (off, end) => { while (off + 12 <= end) {
+            const id = String.fromCharCode(b[off], b[off + 1], b[off + 2], b[off + 3]);
+            const sz9 = dv.getUint32(off + 4, true), csz = dv.getUint32(off + 8, true);
+            if (id === 'SIZE' && !sx) { sx = dv.getUint32(off + 12, true); sy = dv.getUint32(off + 16, true); sz = dv.getUint32(off + 20, true); }
+            else if (id === 'XYZI' && !vox) { const n = dv.getUint32(off + 12, true); vox = b.subarray(off + 16, off + 16 + n * 4); }
+            else if (id === 'RGBA') pal.set(b.subarray(off + 12, off + 12 + 1024));
+            else if (id === 'MAIN') { walk(off + 12 + sz9, off + 12 + sz9 + csz); off += 12 + sz9 + csz; continue; }
+            off += 12 + sz9 + csz;
+          } };
+          walk(8, b.length);
+          if (!sx || !vox || !vox.length) return null;
+          if (sx * sy * sz > 1 << 20) return null;     // the walk that finds the end of the strip runs one COLD fetch past the last frame, and a 404 answers with the dev server's HTML rather than nothing — so a stray "SIZE" in a body that is not a .vox must not be allowed to size an allocation. Every real frame here is under 200 cells
+          const cells = new Array(sx * sy * sz).fill(null);
+          for (let i = 0; i < vox.length; i += 4) { const ci = vox[i + 3];
+            cells[vox[i] + vox[i + 1] * sx + vox[i + 2] * sx * sy] = [pal[(ci - 1) * 4], pal[(ci - 1) * 4 + 1], pal[(ci - 1) * 4 + 2]]; }
+          return { w: sx, d: sy, h: sz, cells };
+        } catch (e) { return null; }                   // a 404 body (the dev server answers with HTML) parses to nothing and ends the walk, which is the intended reading
+      };
+      // ── ONE STRIP BUILDER, AND BOTH FRUIT GO THROUGH IT (user 2026-08-17: "have the apple follow the
+      // same eating animation as the orange") ── the apple used to be thirteen AUTHORED frames
+      // (apple/00..12.vox: a bite, then the leaf tumbling away from a core) and the orange was carved out of
+      // its one model, so the two fruit were eaten in visibly different ways. Now there is one rule and both
+      // take it: the WHOLE fruit is the artist's single model, and the strip is carved out of that model's
+      // own voxels. apple/01..12.vox are no longer read by anything — they are left in the asset tree rather
+      // than deleted, like the eat.b64.js beside them, so the authored take is still there to go back to.
+      //
+      // HOW THE CARVE WORKS. A bite point at the top corner of the model's own box, every voxel ordered by
+      // distance from it, and frame f missing the nearest f/(N-1) of the ones that go. The fruit is eaten
+      // INWARD FROM ONE SIDE down to a remnant rather than dissolving evenly, the crown goes with the first
+      // mouthful, and on the apple the brown stalk — which sits at the far corner from the bite — survives
+      // to the last frame, so the thing left in your hand still reads as a core.
+      // Every voxel in it is the artist's, at the colour they painted, and the whole strip costs ZERO
+      // palette entries: an item is raw RGB in ITEMMAP and never asks for an id (see rawItem above).
+      //
+      // THE TWO NUMBERS THAT ARE NOT THE ART'S:
+      //   FRUIT_BOX is the grid every frame is padded into, and the ONE thing the fruit do not take from
+      //     eatStrip's default. The held DDA centres a model on its box
+      //     (`+ vec3(hw, hd, hh)` in COMPOSITE), so the box is what decides WHERE the fruit hangs in your
+      //     hand — and 7x3x6 is the envelope the apple's authored strip needed when its leaf tumbled clear
+      //     of the fruit, which is the grid the held poses in ui/hud.js were baked against. Both models are
+      //     4x3x5 with the ball at the origin, so it would be tidier to shrink it — and that would slide
+      //     both fruit a voxel and a half across the hand for a change nobody asked for. It is WIDENED,
+      //     never clipped, if either model is ever re-authored bigger.
+      const FRUIT_BOX = [7, 3, 6];
+      const apb = rawItem(await abuf('assets/food/apple/00.vox')), orb = rawItem(await abuf('assets/food/orange.vox'));
+      if (apb && orb) {
+        const ap = eatStrip(apb, FRUIT_BOX), or9 = eatStrip(orb, FRUIT_BOX);
+        APPLE_IT = items.length + 1; for (const it of ap) items.push(it);
+        ORANGE_IT = items.length + 1; for (const it of or9) items.push(it);
+        const nvox = (st) => st[0].cells.filter(Boolean).length + '->' + st[st.length - 1].cells.filter(Boolean).length;
+        console.log('[vb] food: apple items', APPLE_IT, '..', APPLE_IT + FOOD_EAT_N - 1, '| orange', ORANGE_IT, '..', ORANGE_IT + FOOD_EAT_N - 1,
+          '—', FOOD_EAT_N, 'carved eat frames on', ap[0].w + 'x' + ap[0].d + 'x' + ap[0].h,
+          '| apple.vox', apb.w + 'x' + apb.d + 'x' + apb.h, nvox(ap), 'vox | orange.vox', orb.w + 'x' + orb.d + 'x' + orb.h, nvox(or9), 'vox (0 palette ids)');
+      } else console.warn('[vb] assets/food/apple/00.vox or orange.vox missing — no apple or orange item, and no eating animation');
+    }
     // ── THE HEART (user 2026-08-15: "theres a file called single.vox. use this for the hearts") ── the file is
     // exactly what its name says: a 1x1x1 model holding ONE voxel, colour 255/67/67. Five of them float in front
     // of the eye as the health readout (see the heart block in COMPOSITE); this is only where the model becomes
@@ -214,13 +357,21 @@
       console.log('[vb] ' + label + ' flight', nf, 'frames -> items', it0, '.. glide pose', gl);
       return { item0: it0, n: nf, glide: gl };
     };
-    // ── NO BIRDS IN THE SKY (user 2026-08-15) ── emptied at the SOURCE rather than by zeroing BIRD_N: both draw
-    // paths (tick-life for the flock, tick-support for bird 0) already gate on FLYERS.length, and so do the
-    // hitboxes, so an empty list is a route the code was written to handle. BIRD_N cannot go to 0 — `bird` is
-    // birds[0] and the editor and the primary hitbox both reference it. The flight frames are still on disk;
-    // put the species back in this array to restore the flock. PERCHED songbirds are a different system
-    // (uniBirds, stamped.js) and are untouched.
-    for (const sp of []) {   // was ['cardinal', 'blue_bird', 'robin'] — every songbird that ships a flight/ strip joins the flock automatically
+    // ── BIRDS ARE BACK IN THE SKY (user 2026-08-17: "put song birds in the sky, just like the pine forest") ──
+    // and the history matters, because the request was framed as an oak-forest gap and it was not one. The same
+    // user emptied this list on 2026-08-15 ("NO BIRDS IN THE SKY"), at the SOURCE rather than by zeroing BIRD_N,
+    // and it was emptied for EVERY biome: measured before restoring, all 9 flock slots read init:false standing
+    // in the pine forest as well as the oak. So there was nothing biome-specific to fix and nothing to copy
+    // from the pine forest — the flock was simply switched off world-wide, and putting the three species back
+    // restores it world-wide too. It is NOT gated to the oak forest: birds.js has no biome test at all, its
+    // respawn ring just follows the player, and adding a first-ever biome gate to make a restore look local
+    // would be a bigger and stranger change than the restore itself.
+    // WHAT IT COSTS, since this is the thing the 2026-08-05 note bounded deliberately: the flock takes bird 0's
+    // dedicated drop slot 4 plus BIRD_SLOTS (8) of the compacted creature slots back off the ground creatures
+    // that were given them. If ducks/worms/fish start disappearing again, this line is why.
+    // Emptying it again is how you turn them off; PERCHED songbirds are a different system (uniBirds,
+    // stamped.js) and are unaffected either way.
+    for (const sp of ['cardinal', 'blue_bird', 'robin']) {   // every songbird that ships a flight/ strip joins the flock automatically
       try { const r0 = await loadFlight(sp, sp); FLYERS.push({ name: sp, item0: r0.item0, n: r0.n, glide: r0.glide }); }
       catch (e) { console.warn('[vb] ' + sp + ' flight frames missing - species skipped', e); }
     }
@@ -386,13 +537,20 @@
         console.log('[vb] fish ' + sp, loaded.length, 'frames -> items', it0, '..', items.length);
       } catch (e) { if (!String(e).includes('no frames')) console.warn('[vb] fish ' + sp + ' skipped', e); }
     }
-    // ── DESERT CREATURES ── the same loader shape as the fish above, and deliberately so. These seven are
-    // authored as SCENE-GRAPH animations (cobra is 19 keyframed segments, scorpion 6 parts, and so on), which
-    // nothing here could read; tools/bake_desert_life.py composites each animation frame into a flat numbered
-    // .vox offline, so by the time the game sees them they are ordinary frame strips and need no new parsing.
+    // ── THE DESERT BAND ── the same loader shape as the fish above, and deliberately so. These are authored as
+    // SCENE-GRAPH animations (cobra is 19 keyframed segments, scorpion 6 parts, and so on), which nothing here
+    // could read; tools/bake_desert_life.py composites each animation frame into a flat numbered .vox offline,
+    // so by the time the game sees them they are ordinary frame strips and need no new parsing.
     // Cells are raw sRGB like every other creature, so these cost ZERO of the 256-entry world palette — which
-    // matters: the seven hold 69 distinct authored colours and the table has ~15 slots left.
-    for (const sp of ['ant', 'cobra', 'desert_mouse', 'fly', 'gecko', 'scorpion', 'spider']) {
+    // matters: the band holds ~110 distinct authored colours and the table has almost nothing left. NOTHING in
+    // this loop touches palShare or edCol: a cell is `[r, g, b]` straight off the .vox RGBA chunk and goes into
+    // ITEMMAP as floats, so ADDING A SPECIES HERE CANNOT MINT A PALETTE ID. The grass snake's 21 authored
+    // greens are the proof — they would not have fit otherwise.
+    // ── AND 'DESERT' IS NOW THE BAND, NOT THE BIOME ── the bee and the grass snake are OAK FOREST creatures
+    // (user 2026-08-17) that ride this band because it is the one that already does scene-graph animation,
+    // per-species behaviour tables and a biome tag. Which biome a species lives in is decided by DES_OAKONLY
+    // in sim/life/slots.js, never by membership of this list.
+    for (const sp of DES_LOAD) {
       try {
         const loaded = [];
         for (let f = 0; f < 96; f++) {                 // gecko is 67 frames (its tongue keyframes run to _f 66)
@@ -420,7 +578,13 @@
           // white is unambiguous here and survives the artist re-indexing the authored .vox palette.
           // ?opaquewings puts the wings back to solid for an A/B: it drops the alpha at the SOURCE, so the
           // measured id range below comes back empty and every downstream test folds to its old behaviour.
-          if (sp === 'fly' && !location.search.includes('opaquewings')) for (const c9 of cells) { if (c9 && c9[0] > 250 && c9[1] > 250 && c9[2] > 250) c9.push(0.5); }
+          // ── AND THE BEE RIDES THE SAME LANE, ON THE SAME KEY ── it is the fly's model with a stripe: two PURE
+          // WHITE wing voxels either side of a three-voxel black/yellow/black body, flapping on the fly's own
+          // z 9-8-7-8 cycle. So the colour key needs no widening — the body's (23,23,23) and (252,215,5) are
+          // nowhere near 250 on all three channels and stay solid — and it takes the fly's 0.5 rather than the
+          // butterfly's 0.72 for the fly's reason: the wings are bare membrane beside a body that carries all
+          // of the animal's colour, so there is no silhouette to lose.
+          if ((sp === 'fly' || sp === 'bee') && !location.search.includes('opaquewings')) for (const c9 of cells) { if (c9 && c9[0] > 250 && c9[1] > 250 && c9[2] > 250) c9.push(0.5); }
           loaded.push({ w: bsx, d: bsy, h: bsz, cells });
         }
         if (!loaded.length) throw new Error('no frames');

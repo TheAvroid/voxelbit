@@ -46,9 +46,9 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { SHRUB_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, DESOFF, DESB, DESW, DESY, DESREL, DESDUNE, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { NEEDLE, MOSS, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH };
-    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, desWob, desertM, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
+    const consts = { SHRUB_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, DESOFF, DESB, DESW, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const tables = { NEEDLE, MOSS, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, BLOOM, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV };
+    const fns = { ihash, sstep, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, bankEval, bankDist, desWob, desertM, oakWob, oakM, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
@@ -196,6 +196,36 @@
     yield* genRegionGen(x0, x1, z0, z1, false);
     return false;
   }
+  // ── CONSOLE TAP: THE OAKS' FURNITURE ── berries, fruit and beehives, and where they are. It lives here rather
+  // than in main/debug-api.js for one structural reason: hiveAt and oakAt belong to world/terrain.js, terrain.js
+  // is a MODULE, and this fragment is the first one after it that already reaches for both — so this is the
+  // cheapest honest place to hand them to a human. window.__vbRow in world/gen-worker.js sets the precedent.
+  //   __vbOak.ids()            every id the feature spends and what all nine material tables say about each
+  //   __vbOak.tiers()          the eight OAKV models, so you can see the bush tier became two berry bushes
+  //   __vbOak.hives(x, z, r)   every beehive whose oak candidate lies in a square around a world point
+  //   __vbOak.fruit(x, z, r)   …and every fruit tree, with its species and its crop
+  //   __vbOak.hiveAt / oakAt   the raw cell queries, both on the SAME (cx, cz) OKCELL grid
+  window.__vbOak = { hiveAt, oakAt, OKCELL, OKMARGIN,
+    ids() { const row = (id, what) => ({ id, what, col: palette[id], solid: !!solidTab[id], folia: !!foliaTab[id],
+        wood: !!woodTab[id], decor: !!decorTab[id], axe: !!axeOnlyTab[id], pick: !!pickOnlyTab[id],
+        dig: !!digOnlyTab[id], sup: SUP.CLASS[id], orphanOK: !!ORPHAN_OK[id] });
+      return { palette: { used: palette.length, free: 256 - palette.length },
+        ids: [row(FRUITC[0], 'cherry + apple flesh'), row(FRUITC[1], 'blueberry'), row(FRUITC[2], 'orange flesh')]
+          .concat(HIVEC.map((i, n) => row(i, n ? 'hive panels' : 'hive bands'))) }; },
+    tiers() { return OAKV.map((m, i) => ({ i, sx: m.sx, sy: m.sy, sz: m.sz, vox: m.vox.length,
+      berries: m.vox.reduce((a, p) => a + ((p >>> 24) === FRUITC[0] || (p >>> 24) === FRUITC[1] ? 1 : 0), 0) })); },
+    hives(x, z, r) { const R = r || 512, out = [];
+      for (let cz = Math.floor((z - R) / OKCELL); cz <= Math.floor((z + R) / OKCELL); cz++)
+        for (let cx = Math.floor((x - R) / OKCELL); cx <= Math.floor((x + R) / OKCELL); cx++) {
+          const h = hiveAt(cx, cz); if (h) out.push(h); }
+      const side = R * 2 / 10;
+      return { n: out.length, everyM: out.length ? +Math.sqrt(side * side / out.length).toFixed(1) : null, hives: out }; },
+    fruit(x, z, r) { const R = r || 512, out = []; let oaks = 0;
+      for (let cz = Math.floor((z - R) / OKCELL); cz <= Math.floor((z + R) / OKCELL); cz++)
+        for (let cx = Math.floor((x - R) / OKCELL); cx <= Math.floor((x + R) / OKCELL); cx++) {
+          const t = oakAt(cx, cz); if (!t) continue; oaks++;
+          if (t.fn) out.push({ wx: t.wx, wz: t.wz, k: t.k, kind: FRUITV[t.fk] ? FRUITV[t.fk].name : t.fk, n: t.fn }); }
+      return { oaks, trees: out.length, pct: oaks ? +(100 * out.length / oaks).toFixed(1) : 0, list: out }; } };
   await buildWorld(true);
   // (cardinal is not stamped into the world — it's an off-grid DDA model driven per-frame in the tick loop; see "flying cardinal → drop slot 4")
   console.log('[vb] world built at', winOX, winOZ, 'spawn', SPWX, SPWZ);

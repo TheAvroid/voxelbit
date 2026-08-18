@@ -104,7 +104,7 @@
   }
   const CRY_WAIT = 900, CRY_MS = 3000, CRY_GAP = 260;   // …starts after the mother's death poof has cleared, runs 3 s (user), one tear every 260 ms — "one after the other"
   function startCrying(momSlot) {                       // her whole brood, at the moment she is confirmed dead
-    const b0 = 20 + (momSlot - 16) * 3;
+    const b0 = BABY_0 + (momSlot - DUCK_0) * 3;
     for (let j = b0; j < b0 + 3; j++) { const B = wbf[j]; if (!B || !B.init) continue;
       B.cryFrom = performance.now() + CRY_WAIT; B.cryTo = B.cryFrom + CRY_MS; B.cryNext = B.cryFrom; B.cryEye = 0; }
   }
@@ -134,7 +134,7 @@
     const vx = Math.sin(P.yaw) * cp, vy = sp, vz = Math.cos(P.yaw) * cp;   // view direction (yaw/pitch → x=sin·cos, y=sin, z=cos·cos)
     const HREACH = REACH_H, MAX3 = REACH_3D;   // TRIPLED reach (user 2026-07-22): ≤4.8 m HORIZONTAL reach (the eye sits ~1.85 m up, so measuring 3D-from-eye would put a ground creature permanently out of range) + a 3D cap + a ~35° crosshair cone. Shared with the axe — see REACH_H.
     let best = -1, bestD = 1e9;
-    for (let wk = 0; wk < DES_END; wk++) { const B = wbf[wk];   // 0-371 = every SPAWNED life form (flyers/ducks/worms/perched birds/fish/mammals). Flying songbirds live in birds[] and are excluded (out of melee reach anyway).
+    for (let wk = 0; wk < DES_END; wk++) { const B = wbf[wk];   // the WHOLE pool = every SPAWNED life form (flyers/ducks/worms/perched birds/fish/mammals/desert). Flying songbirds live in birds[] and are excluded (out of melee reach anyway).
       if (!B || !B.init) continue;
       const by = (B.kind | 0) === 5 ? (B.perchFeet || 0) + 3 : B.y + 2;   // a PERCHED BIRD's height lives in perchFeet (B.y is stale for kind 5) — +3 ≈ body centre. This is what makes the songbirds in the crowns KILLABLE (user).
       const dx = B.x - P.x, dy = by - smoothEye, dz = B.z - P.z;

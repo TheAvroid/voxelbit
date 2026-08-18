@@ -23,7 +23,9 @@
       cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
       misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w = EYE-INSIDE-A-VOXEL fill: the packed sRGB of the voxel the camera is buried in, PLUS 1 so that 0 means 'not buried' (written in tick-camera, read by COMPOSITE). NOT spare — take this lane for something else and the whole screen becomes the buried-in-rock fill.
       lifeMot : array<vec4<f32>, 64>,                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
-      lifeCfg : vec4<f32>,                                           // x = life debug view (0 off, 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO), y = trace-injection enabled (0 under ?oldlife → full analytic fallback), z/w spare
+      lifeCfg : vec4<f32>,                                           // x = life debug view (0 off, 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO), y = trace-injection enabled (0 under ?oldlife → full analytic fallback), z = the standing heart level the vitals ring reads, w = the RAIN SKY scalar (storm ramp x oakM at the
+                                                                   // camera; 0 in fair weather and outside the oak forest). NEITHER IS SPARE - hurtV.w is the last float of the
+                                                                   // whole uniform buffer, which is why it was safe to take: nothing sits below it to shift
       physB : array<vec4<f32>, ${PHYS_MAX * 5}>,                       // ── RIGID BODIES ── PHYS_MAX x 5 vec4 (24 today, was a hardcoded 16) — the length is INTERPOLATED from the JS constant so the shader can never disagree with the offsets buffers.js derives:
                                                                      // [0] anchor.xyz (camera space, at the COM) + voxel scale · [1] local X axis in camera space + dimX
                                                                      // [2] local Y axis + dimY · [3] local Z axis + dimZ · [4] comLocal.xyz + buffer offset
@@ -55,7 +57,14 @@
       // that canvas is not part of the captured surface (user 2026-08-16: "the red pixels on the ui dont show up").
       // Compositing the two canvases into a third is not open either — drawImage of this canvas reads back all
       // zero. So the flash is now DRAWN INTO THE IMAGE, in BLIT, and the recording gets it because it is the image.
-      hurtV  : vec4<f32>,                                            // x = flash strength 0..1 (0 = the whole block is one compare), y = the PER-HIT dither seed (fixed for the length of one flash, so the blocks fade rather than sizzle), z/w spare
+      hurtV  : vec4<f32>,                                            // x = flash strength 0..1 (0 = the whole block is one compare), y = the PER-HIT dither seed (fixed for the length of one flash, so the blocks fade rather than sizzle), z = the standing heart level, w = the RAIN SKY scalar (see UF_RAINK) — NOT spare
+      // ── THE STACK BADGE'S PLACEMENT (user 2026-08-17: "give me some sliders to adjust the positioning of
+      // the x(#)") ── appended at the VERY end, after hurtV, which is the rule every field back here follows:
+      // the JS writes this buffer at fixed float indices, so a lane inserted anywhere above silently feeds
+      // every one below it its neighbour's numbers. hurtV was genuinely full (see UF_RAINK), so this is a
+      // fresh vec4 rather than a borrowed lane. Written every frame in main/tick-camera.js from the sliders
+      // in the held-item panel (ui/hud.js), so it is never the zero a cold buffer would hand BLIT.
+      badge  : vec4<f32>,                                            // x/y = where the badge STARTS, in canvas PIXELS — the held model's own projected top-right corner plus the panel's nudge, computed in main/tick-camera.js. z = glyph size multiplier, w = tilt in radians
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}

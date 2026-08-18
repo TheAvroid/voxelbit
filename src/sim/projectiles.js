@@ -1,5 +1,5 @@
   // @module — arrows and spears: launch, arc, impact, and the pick-up flood
-  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, PASSTHRU, PICK_BOULDER, PICK_CONE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, WORM_PASS, arrowChop, floodRemove, floodScan, launchThrown, shootArrow, throwSpear
+  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_BOULDER, PICK_CONE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, launchThrown, shootArrow, throwSpear
   // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
   // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
   const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
@@ -56,7 +56,13 @@
     const S = treeShapeAt(ix, iz);
     const standing = !!(S && woodTab[id]);            // this voxel belongs to a pine that is still up
     let hit = standing ? physChopAt(ix, iy, iz, ARROW_CHOP_RAD, S, ARROW_CHOP_MIN, ARROW_CHOP_BITE, arrowWood).hit : false;
-    if (!hit && !standing) hit = phChopDecor(ix, iy, iz, ARROW_CHOP_RAD, ARROW_CHOP_BITE, okMat);   // mushrooms, ferns, ground logs — and soil and stone, which is what okMat is for
+    // ── THE FILTER FOLLOWS THE MATERIAL, NOT `standing` (2026-08-17) ── `standing` is false for anything
+    // treeShapeAt does not recognise, and treeShapeAt is pine-only by construction (treeAt/MROT/TCELL).
+    // So every OAK hit fell through to okMat, which is the permissive soil-and-stone filter, and the
+    // bite took the leaves around the shaft — reintroducing the exact 'aiming at the trunk gets the
+    // needles' complaint the paragraph above was written to fix. Wood is wood whether or not this code
+    // knows which tree it belongs to.
+    if (!hit && !standing) hit = phChopDecor(ix, iy, iz, ARROW_CHOP_RAD, ARROW_CHOP_BITE, woodTab[id] ? arrowWood : okMat);   // mushrooms, ferns, ground logs — and soil and stone, which is what okMat is for
     if (!hit) return false;
     // ── RESOLVE BEFORE TAGGING ── whatever that bite was holding up comes down through supFlush, off the cells the
     // carve actually changed. It is run to completion HERE, synchronously, rather than left to the frame
@@ -279,6 +285,111 @@
   if (ROCKV) for (const p of ROCKV.vox) PICK_ROCK.add(p >>> 24);                 // the field stone (rock.vox) → rock item
   for (const sm of STICKV) for (const p of sm.vox) PICK_STICK.add(p >>> 24);     // stick_1/stick_2 → twig item
   const PICK_TWIG = new Set([...PICK_STICK, ...PICK_CONE]);   // the one set the right-click flood walks: a stick and a pinecone are told apart by the ids the COMPONENT turns out to contain, not by which set the first voxel matched. Kept as a union so the classifier still works if the two ever share ids again (they did — see palOwn).
+  // ── AND THE FRUIT (user 2026-08-17: "have the player able to right click an apple from a tree and pick it
+  // up") ── the apple and the orange do NOT share the twig's problem, and that is worth saying because it is
+  // why this is two sets instead of one union with a component classifier. FRUITC is minted in palette.js and
+  // RESERVED in palOwn, so palShare can never hand an apple's red to anything else: an id in PICK_APPLE is an
+  // apple, full stop, and a flood started on one can never wander into an orange even where two crowns
+  // interleave. Species is decided by which set the hit voxel matched, not by what the flood turns up.
+  //
+  // THE FLOOD IS THE FLESH ONLY, AND THAT IS THE DESIGN, not a limitation. A stamped fruit is 24 voxels: 19 of
+  // flesh plus a 5-voxel stalk-and-leaf that wears an OAK LEAF id (assets/bow.js). Flooding those in would run
+  // straight out into the crown they are hanging in and take the whole tree. So the flesh comes away and the
+  // stalk stays on the branch, which is also what picking an apple looks like.
+  //
+  // TWO NUMBERS, BOTH MEASURED AGAINST THE ART RATHER THAN GUESSED:
+  //   FRUIT_CAP 26, against one fruit's 19. Over the cap floodScan refuses the whole region — the rule the
+  //     boulders already run on, "never leave a half-eaten stump" — so the cap has to clear one fruit and stop
+  //     short of two. It does: two fruit close enough to fuse would be 38. That refusal is not free (a fused
+  //     pair becomes unpickable) so it was measured before being accepted — simulating stampOak's own anchor
+  //     draw over all six fruiting crowns, 24,000 trees, a pair lands close enough to touch on 0.10% of them.
+  //   FRUIT_MIN 8, against the CHERRY. The berry bushes wear FRUITC[0] as well — the same red serves the apple
+  //     and the cherry, which is how three ids covered four things — so without a floor, right-clicking a bush
+  //     would hand you a whole apple for a 1-voxel berry. Berries are scattered one per angular sector: over
+  //     both bushes the largest 26-connected clump measured is TWO voxels, so 8 separates them by a factor of
+  //     four in both directions and still accepts an apple the player has already chopped half of.
+  const PICK_APPLE = new Set([FRUITC[0]]), PICK_ORANGE = new Set([FRUITC[2]]);
+  const FRUIT_IDS = new Set([...PICK_APPLE, ...PICK_ORANGE]);   // the cheap reject the pick ray tests before paying for a flood
+  const FRUIT_MIN = 8, FRUIT_CAP = 26;
+  // READ-ONLY, and deliberately so: it decides WHAT is there and hands back the cells, and the caller does the
+  // removing. That is what lets tryPickup and pickAim (sim/life/stamped.js) run the identical test, so the
+  // crosshair square can never promise a pick that the click then refuses.
+  // ── …AND THE STEM AND THE LEAF COME WITH IT (user 2026-08-17: "when I pick up the apple, only the red
+  // base comes with me. the brown stem and the leaf stay behind as static voxels") ── the flood above is over
+  // the FLESH id alone, because that is the id the crosshair test keys on; the fruit's other five voxels wear
+  // two different ones (assets/bow.js: a minted brown for the stalk, and an OAK LEAF id for the blade) so they
+  // were never in the region and stayed hanging in the crown.
+  //
+  // WHY THIS IS NOT SIMPLY A WIDER FLOOD, which is the obvious fix and is wrong: the blade wears the SAME id as
+  // every leaf in the tree, and world/terrain.js hangs each fruit one column under a canopy anchor — so the
+  // fruit's top voxel is face-adjacent (or diagonal) to a crown leaf, and one 26-connected flood over that id
+  // walks straight out into the canopy. It cannot be separated by CONNECTIVITY either: the fruit's blade and
+  // the leaf above it are one component, which is the same wall assets/bow.js records for the stem/leaf split.
+  //
+  // So it is bounded by GEOMETRY, which the models make exact. Both fruit are authored on a 4x3x5 grid with the
+  // flesh at the bottom and the stem/leaf in the two courses above it, and stampModel only ever rotates them
+  // about vertical — so relative to the flesh's own box every extra voxel is at most +2 UP and one across,
+  // while the anchor leaf that must not be taken is +3. A box of (+/-1, -1..+2, +/-1) around the flesh
+  // therefore contains the whole fruit and excludes the tree by construction.
+  // Everything is measured in LOCAL offsets from the picked voxel rather than in grid coordinates, because a
+  // min/max over wrapped x/z is the toroidal-seam bug that once produced a 2048-wide box.
+  const FRUIT_XR = 4;                                  // half-width of the local scan. The widest fruit is 4 across and 5 tall, and the pick can land on any of its flesh voxels, so this reaches the whole model from anywhere inside it.
+  // …AND HOW MANY OF THEM THERE ARE IS NOT A GUESS EITHER. The box alone is not tight enough: MEASURED on a
+  // real orange in a crown, it handed back 8 extra voxels where the model has 3 — the other 5 were canopy
+  // leaves packed against the fruit, wearing the same id, inside the same box. So the count comes from the
+  // MODEL: assets/bow.js resolved every fruit voxel to an id, so "how many are not flesh" is a fact about the
+  // art, and the nearest that many to the flesh win. On both fruit every one of its own cells is nearer the
+  // flesh than any canopy leaf can be (the model is 4x3x5 and the crown starts outside it), so this is exact
+  // in the ordinary case and degrades to "a leaf or two off the wrong blob" rather than a notch in the tree.
+  const fruitExtraN = (fleshId) => {
+    for (const f of (typeof FRUITV === 'undefined' ? [] : FRUITV)) {   // the model that IS this fruit, matched on its FLESH ID rather than on an index into fruit.json's order
+      let body = 0;
+      for (const p of f.vox) if ((p >>> 24) === fleshId) body++;
+      if (body) return f.vox.length - body;
+    }
+    return 0;
+  };
+  const fruitCrownCells = (x, y, z, set) => {
+    const idAt = (dx, dy, dz) => (y + dy < 1 || y + dy >= WY) ? 0 : W[gwrap(x + dx, WX) + (y + dy) * WX + gwrap(z + dz, WZ) * WX * WY];
+    const iiAt = (dx, dy, dz) => gwrap(x + dx, WX) + (y + dy) * WX + gwrap(z + dz, WZ) * WX * WY;
+    const extra = new Set([FRUIT_STEM_ID, FRUIT_LEAF_ID].filter(Boolean));   // read at CALL time: both are assigned during boot, and one of them is 0 until then
+    if (!extra.size) return [];
+    let lo = null, hi = null;                          // the FLESH's own local box — the thing the +2 is measured from
+    for (let dz = -FRUIT_XR; dz <= FRUIT_XR; dz++) for (let dy = -FRUIT_XR; dy <= FRUIT_XR; dy++) for (let dx = -FRUIT_XR; dx <= FRUIT_XR; dx++) {
+      if (!set.has(idAt(dx, dy, dz))) continue;
+      if (!lo) { lo = [dx, dy, dz]; hi = [dx, dy, dz]; continue; }
+      for (let k = 0; k < 3; k++) { const d = [dx, dy, dz][k]; if (d < lo[k]) lo[k] = d; if (d > hi[k]) hi[k] = d; }
+    }
+    if (!lo) return [];
+    const inBox = (dx, dy, dz) => dx >= lo[0] - 1 && dx <= hi[0] + 1 && dz >= lo[2] - 1 && dz <= hi[2] + 1 && dy >= lo[1] - 1 && dy <= hi[1] + 2;
+    const want = fruitExtraN([...set][0]);            // the model's own non-flesh voxel count — 5 on the apple (2 stalk + 3 blade), 3 on the orange
+    if (!want) return [];
+    const cx = (lo[0] + hi[0]) / 2, cy = (lo[1] + hi[1]) / 2, cz = (lo[2] + hi[2]) / 2;   // …and the flesh's own centre, which is what "nearest" is measured from
+    const out = [], seen = new Set(), q = [];
+    const push = (dx, dy, dz) => { const k = dx + '|' + dy + '|' + dz;
+      if (seen.has(k) || !inBox(dx, dy, dz) || !extra.has(idAt(dx, dy, dz))) return;
+      seen.add(k); q.push([dx, dy, dz]);
+      out.push({ ii: iiAt(dx, dy, dz), d2: (dx - cx) * (dx - cx) + (dy - cy) * (dy - cy) + (dz - cz) * (dz - cz) }); };
+    for (let dz = lo[2] - 1; dz <= hi[2] + 1; dz++) for (let dy = lo[1] - 1; dy <= hi[1] + 2; dy++) for (let dx = lo[0] - 1; dx <= hi[0] + 1; dx++) {
+      if (!set.has(idAt(dx, dy, dz))) continue;        // seed off the FLESH: the first course of stem/leaf is whatever touches it
+      for (let nz = -1; nz <= 1; nz++) for (let ny = -1; ny <= 1; ny++) for (let nx = -1; nx <= 1; nx++)
+        if (nx || ny || nz) push(dx + nx, dy + ny, dz + nz);
+    }
+    while (q.length) { const [qx, qy, qz] = q.pop();   // …then out through the rest of the stalk/blade, still inside the box
+      for (let nz = -1; nz <= 1; nz++) for (let ny = -1; ny <= 1; ny++) for (let nx = -1; nx <= 1; nx++)
+        if (nx || ny || nz) push(qx + nx, qy + ny, qz + nz); }
+    out.sort((a, b) => a.d2 - b.d2 || a.ii - b.ii);   // ties on the index so a fruit comes apart the same way every time
+    return out.slice(0, want).map((e) => e.ii);
+  };
+  const fruitAt = (x, y, z) => {
+    if (!APPLE_IT) return null;                        // no fruit item loaded (assets/food/apple missing) — nothing to pick up into
+    const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+    const set = PICK_APPLE.has(v) ? PICK_APPLE : (PICK_ORANGE.has(v) ? PICK_ORANGE : null);
+    if (!set) return null;
+    const sc = floodScan(x, y, z, set, FRUIT_CAP);     // over FRUIT_CAP comes back empty, which the length test below reads as "not one fruit"
+    if (sc.cells.length < FRUIT_MIN) return null;      // a berry, or a stub too small to be worth a whole fruit. Asked of the FLESH alone, before the crown is added: the flesh count is what identifies a fruit, and a berry bush has no stem to confuse it
+    return { it: set === PICK_ORANGE ? ORANGE_IT : APPLE_IT, cells: sc.cells.concat(fruitCrownCells(x, y, z, set)) };
+  };
   // ── SHRUBS ARE PASSABLE TO WILDLIFE, SOLID TO THE PLAYER (user 2026-08-16: "the cobra got stuck on a
   // shrub") ── giving the shrubs a hitbox an hour earlier was the user's own request, and it immediately
   // snagged a 19-segment snake on a knee-high bush. Both wants are satisfiable at once because they read

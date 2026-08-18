@@ -1,4 +1,4 @@
-"""Composite the seven desert creatures' ANIMATIONS into flat per-frame .vox files.
+"""Composite the desert-BAND creatures' ANIMATIONS into flat per-frame .vox files.
 
 Input:  game/assets/life/<name>.vox              (authored, scene-graph animation)
 Output: game/assets/life/<name>/00.vox, 01.vox…  (one file per frame, flat, one model each)
@@ -32,11 +32,27 @@ from collections import OrderedDict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIFE = os.path.join(ROOT, 'game', 'assets', 'life')
-NAMES = ['ant', 'cobra', 'desert_mouse', 'fly', 'gecko', 'scorpion', 'spider']
-# ── PER-SPECIES FRAME CAP ── the gecko's scene runs to 67 frames only because its TONGUE keyframes sit at
+# APPEND-ONLY. The load order here IS the slot-band order at runtime (species index = position in
+# DESERTS, and main/tick-life.js distributes the desert head-count Bresenham-style down that index), so
+# re-ordering this list silently re-assigns every band. bee + grass_snake join at the END for that reason,
+# even though neither lives in the desert - they ride the desert BAND's machinery, not its biome.
+NAMES = ['ant', 'cobra', 'desert_mouse', 'fly', 'gecko', 'scorpion', 'spider', 'bee', 'grass_snake']
+# ── PER-SPECIES FRAME WINDOW ── the gecko's scene runs to 67 frames only because its TONGUE keyframes sit at
 # _f 54-66; the body itself has 8. Baking all 67 spent 67 item-table entries on an animation that is a long
 # hold plus one flick. Capped at 7 (user 2026-08-15), which is the body loop, and 60 item slots come back.
-FRAME_CAP = {'gecko': 7}
+# A value may be an int (frames 0..n-1, the gecko's original meaning, unchanged) or a (start, count) PAIR,
+# because the same "long hold plus one flick" shape does not always put the loop at frame 0. The grass snake
+# is the case that needed it: 121 authored frames, of which 0-13 are a wide LEAD-IN swing, 14-25 are the
+# steady slither and repeat exactly (pose[14] == pose[26], and every consecutive delta inside the window is
+# the same 20 voxels, so it loops seamlessly), and 47-63 are one tongue flick. Baking 0..11 would have
+# spliced half the lead-in to half the loop and read as a hitch twice a second; (14, 12) is the loop itself,
+# matches the cobra's 12 frames exactly, and drops the flick on the gecko's precedent. Widen to (14, 50) if
+# the tongue is ever wanted back - it costs 38 more item-table entries.
+# grass_snake WAS (14, 12) — a window into a 121-frame source whose first 14 frames were a lead-in. The
+# user re-authored the .vox down to exactly the 12 loop frames on 2026-08-17, so the window is now not
+# only unnecessary but WRONG: 14..25 reads past the end of a 12-model file. A plain cap of 12 takes the
+# file as authored, and re-trimming the art again cannot silently resurrect the old offset.
+FRAME_CAP = {'gecko': 7, 'grass_snake': 12}
 
 
 def read_dict(d, o):
@@ -184,9 +200,10 @@ def main():
             print('%-14s MISSING' % name); continue
         sizes, models, pal, nodes = parse(src)
         nf = n_frames(nodes)
-        nf = min(nf, FRAME_CAP.get(name, nf))
+        win = FRAME_CAP.get(name, nf)
+        f0, nf = (win[0], min(win[1], max(0, nf - win[0]))) if isinstance(win, tuple) else (0, min(win, nf))
         comp, warn = [], []
-        for f in range(nf):
+        for f in range(f0, f0 + nf):
             v, w = compose(sizes, models, nodes, f)
             comp.append(v); warn += w
         # ONE grid for every frame, sized to the union — a per-frame bbox would make the creature

@@ -31,6 +31,37 @@
   // A player who has never touched the panel gets exactly what is written here; `reset` in the panel puts a
   // live session back to it. `reflection` is the Fresnel mirror weight (1 = physical Schlick), the rest are
   // on/off. Anything the player HAS changed is remembered in localStorage and wins until they hit reset.
+  // ── WHY THIS LIVES HERE AND NOT IN ui/settings.js WITH THE REST OF THE WEATHER ── render/wgsl/trace.js is
+  // manifest line 29 and ui/settings.js is line 60, and the shader interpolates RAIN_ON straight into its
+  // source. A const read before its own declaration is the "stuck on uploading world" black screen this
+  // codebase has hit before (see the notes in world/build.js), and the linter cannot see inside a template
+  // literal to catch it. world/window.js is line 14, above every consumer.
+  // ── RAIN: OFF (user 2026-08-17: "disable the rain from the oak forest") ── ONE named switch, the way
+  // SHRUB_ON is one, because the rain is four separate pieces in four files and turning it off by deleting
+  // any one of them leaves the other three describing a feature that no longer exists:
+  //   * render/wgsl/trace.js — the rain DDA march, and the cull that keeps SNOW off the oak forest
+  //   * main/tick-snow.js    — the accumulation gate that stops a blanket forming under the rain
+  //   * main/tick-camera.js  — the storm sky's rainK, which is what darkens the cloud and dims the sun
+  //   * main/tick-body.js    — the freeze gate that stops rain skinning the oak lakes with ice
+  // With this false the oak forest goes back to SNOWING like the rest of the world: the snow cull stops, the
+  // blanket forms again, the ice returns, and the sky keeps its ordinary storm look. That is deliberately the
+  // full revert rather than "no drops": disabling only the march would leave the oak forest the one biome with
+  // no weather at all, and the sky still going dark for a rain that never falls.
+  // The rain code is all still here and none of it is deleted. Flip this to true to bring it back.
+  const RAIN_ON = false;
+  // ── AND NO SNOW EITHER (user 2026-08-17: "turn off the snow in the oak forest") ── a SEPARATE switch from
+  // RAIN_ON, because the two were entangled and the pair of requests is not one request. The rain work culled
+  // snow over the oak forest as a side effect of putting rain there; switching the rain off handed the snow
+  // back, which is what "turn off the snow" is now undoing. Two flags, four states, and all four are coherent:
+  //     RAIN_ON  OAK_SNOW   the oak forest gets
+  //     false    false      NOTHING - the current setting: no drops, no flakes, no blanket, no ice
+  //     false    true       snow, exactly like the pine forest and the desert rim
+  //     true     false      rain, and no snow under it (what the rain feature shipped as)
+  //     true     true       both at once - allowed, and it would look wrong; nothing enforces it
+  // The three things this drives are the flake CULL in the shader (a flake is a GPU lattice voxel, so the CPU
+  // cannot reach it), the ACCUMULATION gate in tick-snow, and the FREEZE gate in tick-body - because a lake
+  // skinning over with ice in a biome where no snow is falling is the same wrongness as rain freezing one.
+  const OAK_SNOW = false;
   const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, pixelGlisten: 1, waves: 0, reflection: 0.45 };
   const WBIT = { reflect: 18, refract: 19, foam: 20, ice: 21, pixelGlisten: 22, waves: 23 };   // …their bits in u.lgt.x
   const wBakeMask = () => { let m = LGT_ALL & ~LGT_WATER; for (const k in WBIT) if (WATER_BAKE[k]) m |= (1 << WBIT[k]); return m; };
@@ -51,7 +82,16 @@
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
   const gwrap = (v, n) => ((v % n) + n) % n;
   let SPWX = 0, SPWZ = 0;                              // world spawn — placeholder; RANDOMISED on every refresh at boot (user 2026-07-20), see the spawn block below
-  let SPYAW = 1.5708; const SPPITCH = -0.044;   // FACING THE DESERT (user 2026-08-15): the biome split runs north-south with sand to the EAST, and heading = (sin(yaw), cos(yaw)), so +pi/2 looks down +x straight at the treeline's far side          // spawn CAMERA facing baked with the position (same T export); the lake-side spawn below re-aims the yaw at the water
+  let SPYAW = -1.5708; const SPPITCH = -0.044;   // ── FACING WEST, INTO THE ENDLESS OAK FOREST (user
+  // 2026-08-17) ── heading is (sin(yaw), cos(yaw)), so -pi/2 looks down -x: away from the pine treeline
+  // 42 m behind you and out over oak wood that runs to the horizon and never ends. It was +pi/2 for two
+  // earlier reasons that have both expired - it aimed at the desert when the sand was 80 voxels east
+  // (2026-08-15), then at the pine treeline once spawn moved into the oaks. Turning round is deliberate:
+  // the first thing you see should be the biome you are standing in, not the edge of it.
+  // NOTHING ELSE NEEDS TO MOVE. Both spawn sight-line corridors - treeAt's and oakAt's - derive their
+  // forward vector from SPYAW rather than assuming +x, precisely so re-aiming the camera drags the
+  // cleared lane with it. Check that is still true if either is ever rewritten.
+  // (was: FACING EAST, DOWN THE BIOME GRADIENT.)
 
   // deterministic integer hash — the shader ports this bit-for-bit for the far-field terrain
   const ihash = (x, z) => { let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263)) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
@@ -73,24 +113,32 @@
   const baseH = (x, z) => {
     const b = 8 + LIFT + 88 * fbm(x * 0.008, z * 0.008);
     const shoreK = Math.min(1, Math.abs(b - WL) / 12);   // fine detail fades out near the waterline — smooth, beach-like entries into water
-    return Math.min(HMAX, Math.max(4 + LIFT, Math.round(b + 9 * fbm(x * 0.04 + 7.3, z * 0.04 + 2.1) * (0.2 + 0.8 * shoreK))));
+    return Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * fbm(x * 0.04 + 7.3, z * 0.04 + 2.1) * (0.2 + 0.8 * shoreK), x, z))));   // ── ROUNDED OAK HILLS ── the forest expression is untouched; oakRoll (below, with oakM) either hands it straight back or replaces it with the oak forest's own rounded field. makeHRow and makeHCol wrap their own copies of this same expression in the same call
   };
   const basinM = (x, z) => {                           // huge, rare low-frequency basins pull the land under the waterline (threshold halved — lakes are rarer)
     const b = vnoise(x * 0.0016 + 313.7, z * 0.0016 + 157.3);
     if (b >= 0.065) return 0;
     return sstep(Math.min(1, (0.065 - b) / 0.06));
   };
-  // ── THE DESERT ── a flat sand basin centred on the spawn, so the player always starts in it and walks
-  // OUT into the pine forest. Anchored to SPWX/SPWZ rather than fixed coordinates because spawn is
+  // ── THE DESERT ── the EASTERNMOST of the world's three bands (oak forest | pine forest | desert; see
+  // oakM below for the other border). Anchored to SPWX/SPWZ rather than fixed coordinates because spawn is
   // re-randomised on every refresh (see build.js) - a fixed centre would land in a different place
   // relative to the player every session, or nowhere near them at all.
+  // It is no longer centred on the spawn and the player no longer starts in it: as of 2026-08-17 they start
+  // in the oak forest, two bands west, and the sand is a walk rather than a view.
   // The rim is a distance field wobbled by low-frequency noise, never a circle, and it BLENDS over DESB
   // rather than switching: H is continuous noise, so a hard mask would cut a cliff along the border. That
   // is the same reason the sand-to-forest surface transition below dithers instead of snapping.
-  const DESOFF = 80, DESB = 450, DESW = 320;          // how far the boundary sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each)
-  // 500 -> 300 (user 2026-08-15): at 500 the player spawned in the forest facing the desert correctly, but 50 m
-  // of dense pine stood between them and it, so the thing they were aimed at was invisible. 300 puts the sand
-  // inside view from the spawn point while still landing them solidly in the trees.
+  const DESOFF = 1500, DESB = 450, DESW = 320;        // how far the boundary sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each)
+  // History, because the number has moved three times and each move had a different reason: 500 -> 300 (user
+  // 2026-08-15) because 50 m of dense pine hid the thing the spawn camera was aimed at; then 300 -> 80; then
+  // 80 -> 1500 below, which abandons "the sand is visible from spawn" outright rather than tuning it, because
+  // spawn is no longer in the pine forest at all.
+  // 80 -> 1500 (user 2026-08-17, "spawn the player here"): spawn moved into the NEW oak forest, and the three
+  // bands run oak / pine / desert west to east, so the desert can no longer sit 8 m from the player - the whole
+  // pine forest is now between the two. DESOFF is what buys the pine band its width; see OAKOFF below for the
+  // arithmetic that keeps oak and desert from ever touching. The cost is that the sand is no longer visible
+  // from spawn (150 m against a 100 m view distance) - it is a two-minute walk east instead of a glance.
   const DESY = WL + 7;                                 // the flat: high enough that no basin or river bed can flood it
   // ── DUNE RELIEF, ON A 1-10 SCALE (user 2026-08-15) ── the rest of the terrain is NOT on a scale: its
   // amplitudes are raw voxel counts buried in the noise expressions (the forest is `88 * fbm` for the base plus
@@ -130,10 +178,168 @@
   // the whole border. Same reason the surface colour dithers on the mask weight instead of snapping.
   const desWob = (z) => (vnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * DESW
                       + (vnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * DESW * 0.35;   // two octaves so the border meanders instead of ruling a straight line
+  // ── THE OAK FOREST (user 2026-08-17) ── the world's THIRD band, and the one the player now starts in.
+  // West to east the world reads OAK FOREST | PINE FOREST | DESERT: the same shape as the desert border, one
+  // wandering north-south line with a blended rim, because that is the only arrangement in which every biome
+  // is reachable on foot and none of them encircles another.
+  // OAKOFF is measured EAST of spawn and is deliberately POSITIVE — spawn sits OAKOFF voxels inside the oak
+  // side of the line, which is what makes "spawn in the oak forest" true by construction on every refresh
+  // rather than a nudge applied afterwards. 420 puts the pine treeline 42 m ahead: inside the 100 m view
+  // distance, so the player can see they are standing at the edge of one forest looking into another.
+  //
+  // ── WHY THE WOBBLE IS PART-SHARED WITH THE DESERT'S, AND WHY THAT IS NOT LAZINESS ── two independent
+  // meanders of DESW's amplitude can swing 432 voxels each against spawn, so with fully separate noise the
+  // two borders could close to within 216 voxels and the oak forest would touch the sand somewhere out along
+  // z, with no pine between them. Carrying 0.6 of the desert's own wobble makes the two lines broadly
+  // parallel and leaves only the 0.4 residual free to converge; adding OAKW of independent noise on top keeps
+  // them from reading as ruled tramlines. Worst-case convergence is then 0.4*432 + 180 = 353 voxels against
+  // a DESOFF - OAKOFF gap of 1080, so the two 450-wide blend bands can never overlap and at least 277 voxels
+  // (27.7 m) of pure pine survives anywhere in the world — typically 630.
+  const OAKOFF = 420, OAKB = 450, OAKW = 180;         // how far the boundary sits EAST of spawn; blend width; the INDEPENDENT half of the meander
+  const oakWob = (z) => desWob(z) * 0.6 + (vnoise(z * 0.0027 + 143.7, 61.3) - 0.5) * OAKW;
+  const oakM = (x, z) => {                             // 1 = deep oak forest (WEST), 0 = pine forest (east) — the mirror of desertM, which runs the other way
+    const b = SPWX + OAKOFF + oakWob(z) - oakWob(SPWZ);   // pinned at the spawn's own z, for the reason desertM pins its own: otherwise how far the player starts from the border is a per-session lottery
+    const t = 0.5 + (b - x) / OAKB;
+    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
+  };
+  // ── ROUNDED HILLS (user 2026-08-17: "make the terrain have much more 'rounded' hills", with a photograph of
+  // Tuscan downland — broad domed crests, long clean sweeps, no fine-grained bumpiness anywhere) ── OAK FOREST
+  // ONLY. The pine forest and the desert come back out of oakRoll as the identical double, bit for bit.
+  //
+  // The forest base cannot be rounded by damping it, and that is the whole design. It is 88 * fbm at 0.008
+  // plus 9 * fbm at 0.04, and fbm's own third octave runs at 0.035 — so ~18 voxels of the 88 arrive on a
+  // 28-voxel wavelength, and the 9-voxel detail octave arrives on a 25-voxel one. THAT is the bumpiness in
+  // the photograph's terms: relief whose wavelength is shorter than the player is tall. Scaling those terms
+  // down leaves the same crinkle, quieter — the same mistake duneH's comment records from the dune pass,
+  // where raising amplitude alone made the sand squigglier rather than rounder.
+  // So the oak forest does not damp the forest base, it REPLACES it, exactly the way the desert flat replaces
+  // it: its own field, at its own wavelength, blended over the same rim. Two octaves at 0.0024 and 0.0057 —
+  // 417 and 175 voxels, i.e. hills 42 m across with a 17 m swell for shape, against the forest's 12 m — and
+  // then the same double smoothstep duneH uses, for the same reason: sstep flattens a signal near 0 and 1 and
+  // steepens it through the middle, so crests broaden into domes, valley floors go flat, and the shoulder
+  // between them is the rounded part. Measured against the pine base over 600 random columns, on the field
+  // itself before Math.round: median slope 0.41 -> 0.17, 95th percentile 0.87 -> 0.42, and mean |curvature|
+  // 0.097 -> 0.008, a 12x smoother surface. On the ROUNDED heights the same change reads as terrace width:
+  // the mean run of constant height along a walk goes 3.4 -> 8.7 voxels, so the ground steps half as often
+  // and half as high.
+  // Height DISTRIBUTION is deliberately left near where it was — mean 56.1 -> 59.8, peak 87 -> 98 against an
+  // HMAX of 105 — so the two forests meet at essentially the same elevation and the rim blend has nothing to
+  // ramp. Measured over the 66k columns of the blend band itself: 83% of neighbouring columns are dead level,
+  // 17% step one voxel and 0.01% step two, and NOTHING steps further — against 28% one-voxel steps and an
+  // 8-voxel worst case in the untouched pine forest, so the border is smoother than the biome it joins.
+  // Relief is BIGGER, not higher: sd 12.5 -> 17.7, which is what "large hills" means when the mean cannot move.
+  const OAKY = 20 + LIFT, OAKHILL = 78;                // the valley floor, and crest-above-floor
+  // OAKY sits 4 under WL on purpose, and the number was measured rather than picked. Above WL + 7 the oak
+  // forest has no still water in it at all — no lake, no shoreline, nothing for the ducks and the lilies —
+  // because the double smoothstep gives it broad FLAT valley floors and they would all be dry. Far below it,
+  // those same flat floors turn into the `shore` band (h <= WL + 6) and come up SAND: at 17 the oak forest
+  // was 4.2% sand surface against the pine forest's 1.0%, which is a green biome with a pale patch in every
+  // valley. 20 costs 2.5% and keeps the low ground a basin can still flood.
+  // ── THE TWO CHEAP BOUNDS ── oakRoll runs on EVERY column in the world, and oakM is 6 vnoise (24 hashes)
+  // where the rest of a column's height is about 10. These are the x-range outside which the answer is known
+  // without asking, and they are derived from the constants rather than typed, so a change to the border
+  // arithmetic carries them with it. |desWob| <= DESW * (0.5 + 0.35 * 0.5) and oakWob carries 0.6 of that
+  // plus its own +-OAKW/2, so |oakWob(z) - oakWob(SPWZ)| <= 2 * OAKWMAX; the rim is OAKB/2 either side of
+  // the line. East of OAKFAR the mask is exactly 0, west of OAKNEAR it is exactly 1 — so the pine forest and
+  // the desert pay one subtraction for this feature and the deep oak forest skips the mask too.
+  const OAKWMAX = DESW * 0.675 * 0.6 + OAKW * 0.5;     // 219.6 — the ceiling on |oakWob|
+  const OAKFAR = OAKOFF + 2 * OAKWMAX + OAKB * 0.5;    // 1084.2 east of spawn: no column past this can be in the oak forest at all
+  const OAKNEAR = OAKOFF - 2 * OAKWMAX - OAKB * 0.5;   // -244.2: every column west of this is DEEP oak, mask exactly 1
+  const oakH = (x, z) => {                             // the oak forest's OWN base height — long wavelength, double-smoothstepped, positive-only like duneH
+    const a = fbm(x * 0.0024 + 91.7, z * 0.0024 + 33.1);
+    const b = fbm(x * 0.0057 + 47.3, z * 0.0057 + 8.9);
+    return OAKY + OAKHILL * sstep(sstep(a * 0.82 + b * 0.18));   // OAKY .. OAKY + OAKHILL, never negative
+  };
+  // ── ONE HELPER, CALLED FROM ALL THREE COPIES OF H ── H(), makeHRow and makeHCol each carry the same height
+  // expression and have to agree BIT FOR BIT or the bulk fill and the placement queries disagree about where
+  // the ground is (__vb.gtest is what measures it). So this is a scalar function that takes the height the
+  // forest expression just produced and hands back the height the biome wants, and each of the three wraps
+  // its own existing expression in it verbatim. The three cannot drift, because there is only one expression.
+  const oakRoll = (h, x, z) => {
+    const dx = x - SPWX;
+    if (dx >= OAKFAR) return h;                        // pine forest and desert — the identical double back out, so their terrain is unchanged to the last bit
+    if (dx <= OAKNEAR) return oakH(x, z);              // deep oak — mask is exactly 1, and h * 0 + oakH * 1 is oakH
+    const om = oakM(x, z);
+    return om <= 0 ? h : h * (1 - om) + oakH(x, z) * om;   // the rim: the same lerp shape the desert flat uses, over the same 450 voxels, so the two forests meet on a slope rather than on a step
+  };
+  // ── SHALLOW BANKS (user 2026-08-17: "make the rivers in the oak forest flatter against the terrain instead
+  // of how the terrain just drops off steeply to the water") ── OAK FOREST ONLY, and a direct consequence of the
+  // rounded hills above.
+  //
+  // THE DIAGNOSIS. The river carve in H is a LERP between the land and a bed, weighted by the channel strength
+  // rs: `h * (1 - rs) + (WL - 2 - 26 * rs) * rs`. The vertical distance it has to travel is (h - bed); the
+  // horizontal distance it has to travel it in is the channel's own influence half-width w, ~50-160 voxels. So
+  // the bank slope is about (h - WL) / (0.6 * w) and it scales with how high the surrounding land is. In the
+  // pine forest, land near water sits ~35 voxels over WL and that reads fine. oakH REPLACED the oak base with a
+  // field running OAKY .. OAKY + OAKHILL, so oak land near water sits ~42 over WL and reaches +74 - the same
+  // lerp, over the same few tens of voxels, is then a cliff. Measured on a hand transcription of H over two
+  // river patches deep in the oak forest (68k land samples within 120 voxels of water, |grad h| on a 10-voxel
+  // baseline): the ground climbs from +11 above WL at 0-20 voxels out to its full +42 by 40-60 voxels and then
+  // plateaus, p90 slope 1.30, max 3.49, 15.4% of the bank steeper than 45 degrees - against an AMBIENT oak
+  // slope of median 0.21 / p90 0.45. Banks 2.9x steeper than the biome they sit in, which is exactly the
+  // "drops off steeply" the user is looking at. The same measurement says basinM lakes are ALREADY fine (p90
+  // 0.74, 1.6x ambient), so the basin pass is left alone; the big reservoirs riverAt builds are part of
+  // rivEval, so they get the skirt along with the channels.
+  //
+  // THE FIX is a CEILING, not another blend: the oak forest may not stand higher than a cone that rises out of
+  // the water's edge. Math.min is what makes that safe - it can only ever LOWER ground, so it cannot fill a
+  // lake, cannot raise a bed, and does nothing where the land is already low. 93.4% of oak columns are
+  // untouched; the ones that move drop a median of 12 voxels.
+  // OAKBANKY is the shelf the cone starts from, at the edge of the channel's influence, and the carve does its
+  // own lerp from there down to the bed. 22 is what keeps that last stretch gentle without widening the water
+  // much: the waterline is wherever the lerp crosses WL, so a lower shelf is a wider river - at 22 the water
+  // area grows 8.0%, at 18 it is 14%, and at 34 the bank is visibly steeper again for 4.7%.
+  // OAKBRISE + OAKBANKY - WL = 86 is deliberately above HMAX - WL = 81: the cone tops out over the highest
+  // ground the generator can make, so at the rim of the skirt the min ALWAYS releases and the skirt joins the
+  // hillside with no crease. OAKBANKR is then the only shape knob, and the pair is chosen so the ramp's
+  // steepest point, OAKBRISE * 1.5 / OAKBANKR = 0.34, stays under the oak forest's own p90 slope - the bank is
+  // never steeper than the hills it interrupts, which is what "flat against the terrain" has to mean here.
+  const OAKBANKR = 280, OAKBANKY = WL + 22, OAKBRISE = 64;   // skirt reach in voxels; the old shelf height; the cone's rise
+  // ── AND A FLAT BEACH INSIDE THE SKIRT (user 2026-08-17: "the sand that forms the outline around the water,
+  // it needs to be flatter") ── the skirt above already made the BANK shallow, but it started its cone at
+  // WL + 22, which is 16 voxels above the top of the sand band. fillColumn paints sand on `h <= WL + 6`, so
+  // the sand was only ever the thin strip where the river carve's own lerp happened to dip under that line:
+  // a narrow, tilted rind around the water rather than a shore. Holding the cap at OAKBEACHY for the first
+  // OAKBEACH voxels puts the whole ring inside the sand band and dead level, and the cone then starts from
+  // the beach instead of from the waterline.
+  // OAKBEACHY = WL + 4 sits in the MIDDLE of the sand band, not at its top: fillColumn dithers sand against
+  // (h - WL - 2) / 4.5, so at +4 about 56% of the ring comes up sand and the rest oak green - a beach that
+  // grades into the wood rather than a painted band with an edge. At WL + 6 it would be ~11% sand, at WL + 1
+  // it would be solid sand with a hard rim.
+  // It can still only ever LOWER ground (the `c >= h` test below), so it cannot fill a lake, raise a bed, or
+  // put a beach anywhere the land was already lower than the shelf.
+  // ── SHORTER SHORE, SAME FLATNESS (user 2026-08-17: "theres too much sand next to water. make the shore
+  // of the water shorter. still keep the flatness of the sand") ── 60 -> 24. The two properties are set by
+  // two DIFFERENT numbers, which is what makes this a one-constant change: OAKBEACHY is the shelf HEIGHT
+  // and is what makes the shore flat and sandy, OAKBEACH is only how far the shelf runs before the cone
+  // starts. Measured at 60 the sand ring came out 52 voxels wide against the pine forest's 18 - a beach
+  // you could lose a lake in. 24 lands it near the pine's width while keeping the median slope at ~0.06
+  // against pine's 0.182, which is the whole point: as much sand as a shore should have, as flat as a
+  // beach should be.
+  // The cone is unaffected, and if anything gentler: it now runs from 24 to OAKBANKR instead of from 60,
+  // so the same 82-voxel rise is spread over 256 voxels rather than 220.
+  const OAKBEACH = 24, OAKBEACHY = WL + 4;             // flat shore width in voxels (2.4 m), and its height
+  const oakBank = (h, x, z) => {                       // ONE shared scalar helper again, for the reason oakRoll is one: three copies of H and no room for drift
+    const dx = x - SPWX;
+    if (dx >= OAKFAR || h <= OAKBEACHY) return h;      // pine forest, desert, and any oak ground already at or under the BEACH - one subtraction and a compare, before the river scan
+    const d = bankDist(x, z);
+    if (d >= OAKBANKR) return h;                       // no water within the skirt
+    // ONE continuous profile from the beach to the hilltop: flat for OAKBEACH, then the same sstep cone to
+    // the same top (OAKBANKY + OAKBRISE, which is deliberately above HMAX - WL so the cap always releases
+    // into the hillside with no crease). Two separate pieces would step 18 voxels where they met, which is
+    // exactly the cliff this whole helper exists to remove.
+    const c = OAKBEACHY + (OAKBANKY + OAKBRISE - OAKBEACHY)
+              * sstep(Math.max(0, d - OAKBEACH) / (OAKBANKR - OAKBEACH));
+    if (c >= h) return h;
+    if (dx > OAKNEAR) { const om = oakM(x, z); return om <= 0 ? h : h * (1 - om) + c * om; }   // the rim: faded in on the same mask oakRoll uses, so a river crossing the biome border changes width gradually instead of stepping
+    return c;
+  };
   const desertM = (x, z) => {                          // 0 = pine forest (west), 1 = open desert (east)
-    // The wobble is subtracted AT THE SPAWN'S OWN z. Without that it swings +-188 voxels against a DESOFF of
-    // 80, so how far the player starts from the sand was a lottery: measured 380 voxels one session where the
-    // constant implies 305, and a big enough swing would have spawned them PAST the boundary, in the desert.
+    // The wobble is subtracted AT THE SPAWN'S OWN z. Without that it swings +-216 voxels either way, so how
+    // far the player starts from the sand was a lottery: measured 380 voxels one session where the constant
+    // of the day (80) implied 305, and a big enough swing would have spawned them PAST the boundary, in the
+    // desert. That specific hazard is gone now DESOFF is 1500, but the reason to pin it is not - oakM pins
+    // its own wobble the same way, and there the offset is 420 against the same +-216.
     // Pinning it costs nothing — the border still meanders exactly as before, it just passes DESOFF from
     // spawn at the spawn's own latitude, so "how far to the desert" is the same every session.
     const b = SPWX + DESOFF + desWob(z) - desWob(SPWZ);
@@ -147,6 +353,7 @@
     if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
     const rs = riverS(x, z);
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
+    h = Math.round(oakBank(h, x, z));                  // ── SHALLOW OAK BANKS ── BEFORE the carve, so the lerp below starts from the shelf instead of from a hilltop. h is already an integer here, so Math.round is the identity outside the oak forest and the pine/desert heights stay bit-exact; see oakBank
     if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
     if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
     // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
@@ -251,6 +458,49 @@
       for (let jx = Math.floor((x - RIVINF) / RIVCELL); jx <= Math.floor((x + RIVINF) / RIVCELL); jx++) {
         const R = riverAt(jx, jz); if (!R) continue;
         const v = rivEval(R, x, z); if (v > best) best = v;
+      }
+    return best;
+  }
+  // ── THE SAME GEOMETRY, READ AS A DISTANCE ── rivEval's strength is zero the moment a column is further from
+  // the centreline than the channel's own half-width w, and the whole point of the oak forest's shore skirt is
+  // to reach FURTHER than that, so it cannot be derived from rs however it is reshaped. This is rivEval's
+  // segment/lake loop line for line - same meander, same downstream taper, same rounded end caps, same wobbled
+  // lake rim - returning `distance beyond the water's edge` in voxels instead of a 0..1 strength. Negative
+  // inside a water body. rivEval itself is untouched, so rs stays bit-identical everywhere; this is a second,
+  // wider read of the geometry rather than a change to the first one.
+  const bankEval = (R, x, z, best) => {
+    if (best <= 0) return best;                        // already inside a channel or a lake: the cone is at its floor and no other watershed can lower it
+    if (x < R.x0 - OAKBANKR || x > R.x1 + OAKBANKR || z < R.z0 - OAKBANKR || z > R.z1 + OAKBANKR) return best;   // rivEval's bbox reject, grown by the skirt
+    for (const sg of R.segs) {
+      const tRaw = (x - sg.sx) * sg.dxr + (z - sg.sz) * sg.dzr;
+      const t = Math.max(0, Math.min(sg.len, tRaw));
+      const off = Math.sin(t * 0.015 + sg.seed) * 30 + Math.sin(t * 0.04 + sg.seed * 1.7) * 10;
+      const pd = (x - (sg.sx + sg.dxr * t)) * (-sg.dzr) + (z - (sg.sz + sg.dzr * t)) * sg.dxr;
+      const w = sg.wb * 1.4 * (sg.t0 + (sg.t1 - sg.t0) * (t / sg.len));
+      const over = tRaw < 0 ? -tRaw : (tRaw > sg.len ? tRaw - sg.len : 0);
+      const d = Math.hypot(Math.abs(pd - off), over) - w;
+      if (d < best) best = d;
+    }
+    for (const L of R.lakes) {
+      const dl = Math.hypot(x - L.x, z - L.z);
+      if (dl < L.r * 1.15 + OAKBANKR) {
+        const al = Math.atan2(z - L.z, x - L.x);
+        const wr = L.r * (1 + 0.10 * Math.sin(al * 3 + L.seed) + 0.05 * Math.sin(al * 7 + L.seed * 2.3));
+        if (dl - wr < best) best = dl - wr;
+      }
+    }
+    return best;
+  };
+  function bankDist(x, z) {                            // …taken over every watershed in range: riverS's own walk, with the same rivScope fast path
+    let best = OAKBANKR;                               // OAKBANKR means "no water within the skirt", which is all oakBank needs to bail out
+    if (rivScope && x >= rivScope.x0 && x < rivScope.x1 && z >= rivScope.z0 && z < rivScope.z1) {
+      for (const R of rivScope.list) best = bankEval(R, x, z, best);
+      return best;
+    }
+    for (let jz = Math.floor((z - RIVINF) / RIVCELL); jz <= Math.floor((z + RIVINF) / RIVCELL); jz++)
+      for (let jx = Math.floor((x - RIVINF) / RIVCELL); jx <= Math.floor((x + RIVINF) / RIVCELL); jx++) {
+        const R = riverAt(jx, jz); if (!R) continue;
+        best = bankEval(R, x, z, best);
       }
     return best;
   }

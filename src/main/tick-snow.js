@@ -51,7 +51,22 @@
         // It now dithers on the SAME hash and the SAME salts the surface material uses, so a column that took
         // desert sand refuses snow and a column that stayed forest floor keeps it. The two boundaries are then
         // the same boundary rather than two independent ones that happen to sit near each other.
-        const dmS = desertM(wx0, wz0);
+        // ── AND RAIN LEAVES NOTHING BEHIND (user 2026-08-17: "instead of snow in the oak forest, make it rain") ──
+        // this one max() is the entire accumulation story for the new weather, and it is deliberately the ONLY
+        // thing rain touches on the CPU. Falling rain is a shader-side lattice (see the RAIN march in TRACE);
+        // it never enters landSnowAt, never reaches snowQI/snowWI, never writes W and never seeds the support
+        // queue — so there is no blanket to melt, no thaw clock to arm and no floater it can leave hanging. What
+        // this line does is stop SNOW settling under the rain: without it the oak forest would keep collecting a
+        // white blanket while blue drops fell through it, which is the blue-snowdrift failure in reverse and the
+        // one way the two systems could visibly disagree. Sharing desertM's draw and salt rather than rolling a
+        // second one is what keeps a column's verdict single: it takes the sand's dither OR the oak's, never a
+        // second independent coin that could refuse a column both weathers. The two masks can never both be
+        // non-zero (see the gap arithmetic at OAKOFF), so max() is exactly "whichever border this column is at".
+        // RAIN_ON false => the oak term drops out and this is the desert-only test it always was, so the
+        // blanket settles in the oak forest again.
+        // The oak term is in whenever snow is not wanted there, whether that is because it is raining
+        // instead or because the biome simply has no weather.
+        const dmS = (RAIN_ON || !OAK_SNOW) ? Math.max(desertM(wx0, wz0), oakM(wx0, wz0)) : desertM(wx0, wz0);
         if (dmS > 0 && ihash(wx0 * 5 + 17, wz0 * 7 + 29) < dmS) return;
         if ((snowQN - snowHead) + (snowWN - snowWHead) >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
         // ORDER (user): the FLAKES arrive first, the blanket second. The leading edge sweeps down from the sky, so

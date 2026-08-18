@@ -185,6 +185,39 @@
   // rule every field back here follows: the JS writes this buffer at fixed float indices, so a lane inserted
   // anywhere above silently feeds every one below it its neighbour's numbers. See hurtV in the struct in PRE.
   const UF_HURTV = UF_HEART + 8;
+  // ── RAIN SKY ── (user 2026-08-17: "when it rains can you make the sky more cloudy and darken the clouds as
+  // well … also when it rains the sun should dim a bit") ── ONE 0..1 scalar drives the whole thing, and this is
+  // where it rides: u.hurtV.w, the LAST float of the last vec4 of the whole uniform struct.
+  //
+  // WHY THERE, and not a lane of its own. Every field back here carries the same warning — the JS writes this
+  // buffer at fixed float indices, so a field INSERTED anywhere shifts every one below it and silently feeds
+  // each its neighbour's numbers — and the usual answer is to append a fresh vec4 at the end. That was not open
+  // here: the struct those fields are DECLARED in lives in render/wgsl/pre.js, which this change does not own,
+  // so a new field would have been a JS offset with no shader field behind it. u.misc, the obvious home, is full
+  // in all four lanes (x cinematic vignette, y/z the storm edges, w the eye-inside-a-voxel fill) and every one
+  // of them is actively read. hurtV.w is genuinely spare and provably so: UF is a zero-initialised Float32Array,
+  // tick-camera writes only hurtV x/y/z (flash strength, per-hit dither seed, standing heart level), BLIT reads
+  // only those three, and pre.js documents .w as spare. Being the FINAL float in the buffer also means taking it
+  // cannot move anything: there is nothing below it. It costs no bytes and no bandwidth — UF already ends here.
+  const UF_RAINK = UF_HURTV + 3;
+  // ── STACK-BADGE PLACEMENT ── x/y = the CANVAS PIXEL the badge starts at (the held model's own projected
+  // top-right corner, plus the panel's nudge), z size, w tilt.
+  // A FRESH vec4 appended after hurtV rather than a borrowed lane, because hurtV has no spare float
+  // left (see the rain note above) — and appending is free here for the reason the note gives: there is
+  // nothing below it to shift. ui/hud.js owns the numbers, main/tick-camera.js writes them, BLIT reads them.
+  const UF_BADGE = UF_HURTV + 4;
+  // ── AND THE FIVE TUNING NUMBERS, HERE rather than beside snowOn in ui/settings.js ── COMPOSITE_SRC is invoked
+  // from render/wgsl/vis.js, manifest line 35; ui/settings.js is line 60. A const declared with the storm state
+  // is therefore in its temporal dead zone when the shader template interpolates it, and the symptom is the one
+  // documented in the house rules: the bundle builds, the linter passes, and the game boots to a black screen
+  // with nothing useful in the console. Anything the WGSL reads has to be declared at or above line 35; this
+  // file is line 26. RAIN_SUN_DIM is read by BOTH sides (the shader's sunTintR and tick-camera's heldCfg.x), so
+  // one declaration is also what stops the hand and the world disagreeing about how bright the sun is.
+  const RAIN_CLOUD_THR = 0.165;    // how far cloudDen's density cut DROPS at full rain: 0.565 → 0.400. That noise is three value-noise octaves, mean ≈ 0.50 and σ ≈ 0.15, so 0.565 is the +0.44σ cut behind the existing "~35% coverage" note and 0.400 is −0.68σ, i.e. ~75%. Overcast WITH BREAKS IN IT, deliberately not a lid: past ~90% the deck loses all structure and reads as fog rather than as weather.
+  const RAIN_CLOUD_DARK = 0.45;    // …and the deck falls to 55% of its fair-weather brightness. Applied to the march's ACCUMULATOR rather than inside the loop — acc is a linear sum in the per-step colour, so a uniform scale on that colour is exactly a uniform scale on acc, and doing it once after the loop costs one multiply per sky pixel instead of one per step.
+  const RAIN_SKY_DESAT = 0.35;     // the blue BETWEEN the clouds goes 35% of the way to its own luminance…
+  const RAIN_SKY_DIM = 0.20;       // …and 20% down with it. This pair is also the only handle this change has on the sun DISC and its glare, which are drawn inside skyColor() in pre.js — a file it does not own — so it is the literal reading of "the sun should dim a bit". At night it is what puts the stars and the moon behind the overcast.
+  const RAIN_SUN_DIM = 0.35;       // the DIRECT sun at 65% of normal: about the half-stop of key light a thin overcast costs, which reads as flatter contrast rather than as evening. It rides on sunTint() — the ILLUMINANT'S colour — and deliberately NOT on dayScale(), the global light level: a cloud deck kills the direct beam and leaves the sky-diffuse term nearly intact, and that split is exactly what makes an overcast scene look FLAT instead of DARK. Scaling dayScale() would have taken the ambient, the water scatter, the ice, the bounce and the held item down together — "night", not "a bit" — and dayScale() lives in pre.js besides.
   // HOW MANY HEARTS THE BAR IS. Five, which is what the removed DOM readout drew and therefore what the
   // player already knows: VIT_HP_MAX is 20, so one heart is 4 HP. Read by BOTH sides — tick-camera turns
   // hp into hearts with it, and COMPOSITE's loop bound is interpolated from it — so the two cannot disagree.
@@ -204,7 +237,7 @@
   // untouched by the halving either way.
   const HEART_POSE = { x0: -0.200, y: -0.52, z: 1.10, vs: 0.055, gap: 0.100, rig: 0.5 };   // x0 = the FIRST heart, so x0 = -gap*(HEART_N-1)/2 keeps the row centred
   let heartShow = 1;                                  // __vb.hearts(false) hides the row - the A/B lever for what the block costs, and the only way to take a clean screenshot of the frame without it
-  const UF = new Float32Array(UF_HURTV + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
+  const UF = new Float32Array(UF_BADGE + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
@@ -230,7 +263,15 @@
   // ── RIGID BODY VOXELS ── one dense grid per live body (palette id per cell, 0 = empty), sub-allocated
   // back to back. Nothing is written into W: a detached body exists ONLY as this buffer plus its
   // transform, which is what keeps the world grid authoritative and free of moving-object stamps.
-  const BODYCAP = 2 << 20;                             // 2M cells = 8 MB; a whole pine box is 35*36*116 = 146k
+  // ── 2 << 20 -> 6 << 20 (2026-08-17, THE FELLED OAKS) ── this was sized against a PINE, whose dense body
+  // box is 35*36*116 = 146k cells, so 2M held a dozen of them. An oak is a different object: the biggest
+  // model's box is 114*112*114 = 1.455M cells, so ONE felled giant took 70% of the buffer and a second
+  // made phReclaim evict the first - which is the 'the tree that fell has completely disappeared' failure,
+  // and it would have looked like a felling bug rather than a buffer one. 6M cells = 24 MB of VRAM and
+  // room for four giants down at once; 4 << 20 would buy only two, which a player clearing a stand hits
+  // immediately. The GPU cost is address space, not bandwidth: the trace only reads the cells a body
+  // actually occupies.
+  const BODYCAP = 6 << 20;                             // 6M cells = 24 MB; a whole pine box is 35*36*116 = 146k, a giant OAK's is 1.455M
   const bodyBuf = device.createBuffer({ size: BODYCAP * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   let bodyTop = 0;                                     // bump allocator; reset when no body references it
 

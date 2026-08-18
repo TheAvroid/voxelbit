@@ -146,6 +146,11 @@
   // guess is left in it: touching is touching. The margin is under half a voxel, which the 1 mm resting gap
   // clears easily while a player standing even one clear voxel off is plainly outside it.
   const CACT_MARGIN = 0.4;
+  // ── …AND HOW OFTEN IT STINGS ONCE YOU ARE ON IT ── named here, beside the reach, because tick-body has to
+  // use the same number in two places now: the gap between stings, and the value the timer RESTS at while
+  // you are clear of one. Those two drifting apart is the difference between "it stings the moment you
+  // touch it" and "it stings twice".
+  const CACT_CD = 0.9;
   // ── A CACTUS STINGS (user 2026-08-15: "take away health if the player rubs up against it") ── the player's
   // whole body brushes it, not just the eye: a saguaro arm at knee height must count, so this walks the
   // body's live height (crouched or standing — tick-body passes the same hh collision uses) over the whole
@@ -217,7 +222,7 @@
   // Cheap by construction: onMushroom() runs on a LANDING, not per frame, and the radius test rejects
   // every creature that cannot be under the player's feet before touching its cell list.
   const cellStamped = (ii) => {
-    for (let j = 64; j < DES_END; j++) {
+    for (let j = CARD_0; j < DES_END; j++) {       // CARD_0 = the first grid-stamped band; nothing below it stamps into W
       const B = wbf[j];
       if (!B || !B.sN) continue;
       const dx = B.x - P.x, dz = B.z - P.z;

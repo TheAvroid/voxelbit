@@ -58,9 +58,9 @@
       if (v) { snowOn = true; snowEndT = t + 3.6e6; snowFreezeAt = Math.min(snowFreezeAt, t + 1000); }
       else { snowOn = false; snowEndT = 0; }
       snowNextT = t + 3.6e6; snowBtnSync();
-      return { snowOn, endIn: Math.round(snowEndT - t), nextIn: Math.round(snowNextT - t) }; }, wormPos() { const o = []; for (let j = 32; j < 64; j++) { const B = wbf[j];
+      return { snowOn, endIn: Math.round(snowEndT - t), nextIn: Math.round(snowNextT - t) }; }, wormPos() { const o = []; for (let j = WORM_0; j < WORM_END; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), trap: +(B.trap || 0).toFixed(2) }); } return o; },   // worm stuck-test tap
-    flyers() { const o = []; for (let j = 0; j < 16; j++) { const B = wbf[j];
+    flyers() { const o = []; for (let j = FLY_0; j < FLY_END; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
     modelIds(kind) { const m = { drock: DROCK, cactus: CACTI, shrub: SHRUBV, rock26: ROCK26 }[kind] || []; const o = new Set(); for (const q of m) for (const p of q.vox) o.add(p >>> 24); return [...o].sort((a, b) => a - b); },   // the palette ids a model set actually uses — colour heuristics cannot tell desert rock from desert sand. NOT `ids`: this object already has an `ids` key of a different shape further down, and a duplicate silently loses (the later one wins). 276 keys in one literal makes that easy to do — check before adding a name.
     win() { return { xlo: winOX, xhi: winOX + WX, zlo: winOZ, zhi: winOZ + WZ }; },
@@ -159,10 +159,14 @@
     },   // the loaded window in WORLD coords. Sampling voxels outside it reads a ring-buffer slot holding a different world location entirely — which reads as forest terrain appearing in the desert
     desBand() { const o = []; for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
       o.push({ j, sp: ((j - MAM_END) / DES_PER) | 0, idx: (j - MAM_END) % DES_PER, init: !!(B && B.init), kind: B ? (B.kind | 0) : -1 }); }
-      return { species: DESERTS.map((d) => d.name + '@' + d.item0 + 'x' + d.n), nDesert: (typeof nDesert === 'undefined' ? 'UNDEFINED' : nDesert), perSpecies: (typeof nDesertOf === 'undefined' ? 'OUT-OF-SCOPE (tick-local)' : DESERTS.map((d, i) => d.name + ':' + nDesertOf(i))), DES_PER, MAM_END, DES_END, slots: o }; },   // why a desert slot is or is not live
+      return { species: DESERTS.map((d) => d.name + '@' + d.item0 + 'x' + d.n), nDesert: (typeof nDesert === 'undefined' ? 'UNDEFINED' : nDesert), perSpecies: (typeof nDesertOf === 'undefined' ? 'OUT-OF-SCOPE (tick-local)' : DESERTS.map((d, i) => d.name + ':' + nDesertOf(i))),
+        home: DESERTS.map((d) => d.name + ':' + (DES_OAKONLY[d.name] ? 'oak x' + DES_OAKONLY[d.name] : 'sand')),   // the band is two biomes now — an oak-only species must read 0 in perSpecies and its whole count here, and a sand species must read the reverse
+        DES_N, DES_PER, MAM_END, DES_END, pool: DES_END, slots: o }; },   // why a desert-band slot is or is not live
     dm(x, z) { return +desertM(x, z).toFixed(3); },   // biome weight at a world point: 0 = pine forest, 1 = open desert. The gates all key on this, so a test that wants to say "in the desert" has to be able to ask
+    om(x, z) { return +oakM(x, z).toFixed(3); },     // …and the OTHER border, the same way: 1 = oak forest, 0 = pine forest. Between them the two answer "which of the three biomes is this column", and every oak gate keys on this one
     lifeAll() { const o = []; for (let j = 0; j < DES_END; j++) { const B = wbf[j];   // DES_END, not a literal: this read 380 and silently hid six of the seven desert species behind its own bound   // EVERY live creature body with a position, across all the slot bands (flyers, worms, fish, mammals) — the biome spawn gates need one census, not four taps
       if (B && B.init && typeof B.x === 'number') o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(1), y: +(B.y || 0).toFixed(1), z: +B.z.toFixed(1), dm: +desertM(B.x, B.z).toFixed(2),
+        om: +oakM(B.x, B.z).toFixed(2), hom: (B.hx !== undefined && B.hz !== undefined) ? +oakM(B.hx, B.hz).toFixed(2) : null,   // …and the OAK mask, for the same reason dm is here: since 2026-08-17 the band holds oak-only species and 'is it home' cannot be answered off desertM alone
         hdm: (B.hx !== undefined && B.hz !== undefined) ? +desertM(B.hx, B.hz).toFixed(2) : null }); } return o; },   // dm = where it IS, hdm = where its HOME is. A spawn gate can only be judged by the home: a creature that was placed legally in the forest and has since walked or swum across a BLENDED border is not a spawn leak.
     snowEdges() { return { lead: UF[1269], trail: UF[1270], vis: snowVis }; }, snowStats() { return { on: snowOn, live: (snowQN - snowHead) + (snowWN - snowWHead), liveWater: snowWN - snowWHead, freezeK: freezeK, nextT: snowNextT, endT: snowEndT, freezeAt: snowFreezeAt }; },
     worldDump(wx0, wz0, n) { const out = new Uint8Array(n * n * WY); let k = 0;   // raw voxel block dump (base64) — lets a test DIFF two builds voxel-by-voxel
@@ -178,7 +182,7 @@
       deficit: { xlo: rect.xlo - t.xlo, xhi: t.xhi - rect.xhi, zlo: rect.zlo - t.zlo, zhi: t.zhi - rect.zhi },   // how far the built rect lags its target on each side (0 = fully caught up)
       pool: poolOk, q: poolQueue.length, busy: genPool ? genPool.filter((w) => w.busyId).length : 0 }; },   // streaming-gen telemetry tap
     fish() { const o = []; const bodyClip = (B) => { const hx = Math.sin(B.th), hz = Math.cos(B.th), ay = Math.floor(B.y), hf = B.fhalf || 5; for (const a of [hf, hf * 0.5, 0, -hf * 0.5, -hf]) { const bx = Math.floor(B.x + hx * a), bz = Math.floor(B.z + hz * a); for (let yy = ay - 1; yy <= ay + 2; yy++) if (solid(bx, yy, bz)) return true; } return false; };   // per-species body length — the old fixed ±5 reported every short minnow as clipping
-      for (let j = 244; j < 276; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), air: B.jumpV !== undefined, arm: B.jumpArm !== undefined, flee: ((B.fleeT || 0) * 1000 > performance.now()) || spooked(B), vyS: +(B.vyS || 0).toFixed(1) }); }
+      for (let j = FISH_0; j < FISH_END; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), air: B.jumpV !== undefined, arm: B.jumpArm !== undefined, flee: ((B.fleeT || 0) * 1000 > performance.now()) || spooked(B), vyS: +(B.vyS || 0).toFixed(1) }); }
       return { species: FISHES.map((f) => f.name + '(' + f.n + 'f@' + f.item0 + ')'), live: o }; },   // fish test tap
     vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW, SAND, DIRT, NEEDLE }, slots, LILY_SZ, WL, fishCfg: FISH_CFG,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint; fishCfg: LIVE fish tunables (speed/flee/jump/pitch)
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
@@ -208,6 +212,25 @@
     boxFreeAt(x, y, z) { return boxFree(x, y, z, HEIGHT); },   // can the player's whole box sit here?
     lifeUidAt(s) { return lifeUid[s | 0]; },           // which pool slot is DRAWN in drop slot s (2000+slot), or -1
     lifeBudget() { return { base: 25, total: DROP_SLOTS, drawn: lifeUid.filter((u) => u >= 2000).length }; },
+    // ── THE SLOT LADDER, AS THE GAME ACTUALLY BUILT IT ── every band boundary used to be a hard-coded integer
+    // repeated across eleven fragments, and a missed one does not throw: it silently mis-classifies (a bunny
+    // counted as a fish, a porcupine that never bleeds). They all derive from sim/life/slots.js now, and this
+    // prints the derived ladder beside the LIVE population each band is being asked for, so "is the pool the
+    // size I think it is" and "is anything landing in the wrong band" are one call rather than an audit.
+    // `alive` counts B.init in the band; `want` is what tick-life asked for this frame. lifeCensus() is the
+    // one to cross-check it against — it classifies by slot too, so the two disagreeing means a missed literal.
+    lifeBands() {
+      const B9 = [['flyer', FLY_0, FLY_END], ['duckMom', DUCK_0, DUCK_END], ['duckling', BABY_0, BABY_END],
+        ['worm', WORM_0, WORM_END], ['perched', CARD_0, CARD_END], ['fish', FISH_0, FISH_END],
+        ['bunny', BUNNY_0, BUNNY_END], ['armadillo', ARM_0, ARM_END], ['skunk', SKUNK_0, SKUNK_END],
+        ['porcupine', PORC_0, MAM_END], ['desert', MAM_END, DES_END]];
+      const o = {};
+      for (const [nm, lo, hi] of B9) { let n = 0;
+        for (let j = lo; j < hi; j++) { const q = wbf[j]; if (q && q.init && !q.slain) n++; }
+        o[nm] = { lo, hi, slots: hi - lo, alive: n }; }
+      return { keep: CARD_KEEP, keepWas: CARD_KEEP_V0, densK: +LIFE_DENS_K.toFixed(4), pool: DES_END,
+        want: Object.assign({}, LIFE_WANT),
+        bands: o }; },
     // ── WHO IS ALIVE, AND WHO IS ACTUALLY ON SCREEN ── per kind. The gap between `active` and `drawn` is the
     // slot famine: the trace-injected creatures share whatever is left of the 64 drop slots after the flying
     // songbirds, and the surplus is dropped by DISTANCE ALONE, so a dense near kind can starve a far one out
@@ -216,8 +239,11 @@
     // so they report drawn: -1 rather than a misleading 0.
     lifeCensus() {
       const STAMPED = LIFE_UNI ? { cardinal: 1 } : { cardinal: 1, bunny: 1, armadillo: 1, skunk: 1, porcupine: 1 };   // under ?uni none of the five is stamped any more - they are in the drop-slot ledger like every other creature, so report their real drawn/hidden counts instead of the -1 placeholder
-      const bandOf = (wk) => wk < 16 ? 'flyer' : wk < 20 ? 'duckMom' : wk < 32 ? 'duckling' : wk < 64 ? 'worm'
-        : wk < 244 ? 'cardinal' : wk < 276 ? 'fish' : wk < 300 ? 'bunny' : wk < 324 ? 'armadillo' : wk < 348 ? 'skunk' : 'porcupine';
+      // …and the LAST arm is the desert species by name, not an open-ended 'porcupine': this chain used to end
+      // at the porcupine, so every one of the 56 desert slots was counted and reported as a porcupine.
+      const bandOf = (wk) => wk < FLY_END ? 'flyer' : wk < DUCK_END ? 'duckMom' : wk < BABY_END ? 'duckling' : wk < WORM_END ? 'worm'
+        : wk < CARD_END ? 'cardinal' : wk < FISH_END ? 'fish' : wk < BUNNY_END ? 'bunny' : wk < ARM_END ? 'armadillo' : wk < SKUNK_END ? 'skunk'
+        : wk < MAM_END ? 'porcupine' : ((DESERTS[((wk - MAM_END) / DES_PER) | 0] || {}).name || 'desert');
       const shown = new Set();
       for (let s = 0; s < DROP_SLOTS; s++) { const u = lifeUid[s]; if (u >= 2000) shown.add(u - 2000); }
       const acc = {};
@@ -260,7 +286,7 @@
       return { i, vox: b.n, wood, fol, other, src: b.src, born: Math.round(performance.now() - b.born),
         d: Math.round(Math.hypot(b.pos[0] - P.x, b.pos[1] - smoothEye, b.pos[2] - P.z)) }; }); },
     fishState() { const o = [];                      // per-fish navigation health: is the body legally placed, is the wall-in-face backstop tripped, how far does its chosen lane run
-      for (let j = 244; j < 276; j++) { const B = wbf[j]; if (!B || !B.init || (B.kind | 0) !== 6) continue;
+      for (let j = FISH_0; j < FISH_END; j++) { const B = wbf[j]; if (!B || !B.init || (B.kind | 0) !== 6) continue;
         o.push({ j, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), th: +(B.th || 0).toFixed(2),
           spd: +(B.spd || 0).toFixed(1), bk: !!B.bkOn, tight: !!B.bkTight, flee: !!B.fleeing,
           reach: +(B.navReach === undefined ? -1 : B.navReach).toFixed(1),
@@ -269,9 +295,9 @@
           d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)) }); }
       return o; },
     mamSeatCmp() { const o = [];                     // the OLD stamped seat (one heightmap column) vs the ONE seat both paths use now — the gap is the correction
-      for (let j = 276; j < 372; j++) { const B = wbf[j]; if (!B || !B.init || (B.kind | 0) !== 2) continue;
-        const fit = j >= 348 ? MAMFIT.porc : (j >= 324 ? MAMFIT.skunk : (j >= 300 ? MAMFIT.arm : MAMFIT.bunny));
-        o.push({ j, kind: j >= 348 ? 'porc' : (j >= 324 ? 'skunk' : (j >= 300 ? 'arm' : 'bunny')),
+      for (let j = MAM_0; j < MAM_END; j++) { const B = wbf[j]; if (!B || !B.init || (B.kind | 0) !== 2) continue;
+        const fit = j >= PORC_0 ? MAMFIT.porc : (j >= SKUNK_0 ? MAMFIT.skunk : (j >= ARM_0 ? MAMFIT.arm : MAMFIT.bunny));
+        o.push({ j, kind: j >= PORC_0 ? 'porc' : (j >= SKUNK_0 ? 'skunk' : (j >= ARM_0 ? 'arm' : 'bunny')),
           oldG: Math.round(__vb.bfSurf(B.x, B.z)), newG: +mamSeatG(B, fit).toFixed(2),
           navCtr: +navWalkStand(B.x, B.z).toFixed(2), surfCtr: +__vb.bfSurf(B.x, B.z).toFixed(2) }); }
       return o; },
@@ -293,10 +319,10 @@
       return { dest: !!d, tapped: sndReg.filter((s) => s.a._veTap).length, total: sndReg.length,
         fxTapped: sndReg.filter((s) => s.a._sfxOut && s.a._veTap).length, fxTotal: sndReg.filter((s) => s.a._sfxOut).length }; },
     mamSeatProbe() { const o = [];                   // PAIRED density comparison on one pose: how much ground does each resolution MISS versus a fine grid?
-      for (let j = 276; j < 372; j++) { const B = wbf[j]; if (!B || !B.init || (B.kind | 0) !== 2) continue;
-        const fit = j >= 348 ? MAMFIT.porc : (j >= 324 ? MAMFIT.skunk : (j >= 300 ? MAMFIT.arm : MAMFIT.bunny));
+      for (let j = MAM_0; j < MAM_END; j++) { const B = wbf[j]; if (!B || !B.init || (B.kind | 0) !== 2) continue;
+        const fit = j >= PORC_0 ? MAMFIT.porc : (j >= SKUNK_0 ? MAMFIT.skunk : (j >= ARM_0 ? MAMFIT.arm : MAMFIT.bunny));
         const st = mamSeatSteps(fit);
-        o.push({ kind: j >= 348 ? 'porc' : (j >= 324 ? 'skunk' : (j >= 300 ? 'arm' : 'bunny')),
+        o.push({ kind: j >= PORC_0 ? 'porc' : (j >= SKUNK_0 ? 'skunk' : (j >= ARM_0 ? 'arm' : 'bunny')),
           steps: st, s3: mamSeatN(B, fit, 1, 1), sD: mamSeatN(B, fit, st[0], st[1]), sT: mamSeatN(B, fit, 6, 6) }); }
       return o; },
     desSeat() { const o = [];                       // DESERT ground-seat decomposition: every term the y servo feeds on, so a float can be blamed on the term that actually produced it
@@ -347,6 +373,19 @@
       const ids = [...new Set(LOGV.vox.map((p) => p >>> 24))];
       return ids.map((i) => ({ id: i, col: palette[i], isTrunkBark: woodIds.indexOf(i) >= 0, wood: !!woodTab[i] })); },
     barkIds() { return woodIds.map((i) => ({ id: i, col: palette[i] })); },
+    // The OAK palette and what every material table says about each id. The oaks are the first asset in this
+    // game whose two halves are DIFFERENT MATERIALS out of one .json, so this is the read that proves the
+    // split survived the loader: bark must come back solid + wood + axe, leaf must come back folia and NOT
+    // solid. `own` is the other half of the guarantee, and it is expected to be TRUE FOR THE LEAVES ONLY:
+    // those four ids are minted and reserved in palOwn so no later model can tolerance-share onto them and
+    // inherit "is canopy" by accident. The three bark ids come back own:false ON PURPOSE — they ARE the
+    // pine's own bark ids, borrowed rather than minted (assets/bow.js), which is where their material
+    // identity comes from. bark reporting own:true would mean the borrow had silently stopped happening.
+    oakIds() { return OAKBARK.map((i) => [i, 'bark']).concat(OAKLEAF.map((i) => [i, 'leaf']))
+      .map(([i, kind]) => ({ id: i, kind, col: palette[i], own: palOwn.has(i), solid: !!solidTab[i],
+        folia: !!foliaTab[i], wood: !!woodTab[i], decor: !!decorTab[i], axe: !!axeOnlyTab[i],
+        dig: !!digOnlyTab[i], pick: !!pickOnlyTab[i], sup: SUP.CLASS[i], orphanOK: !!ORPHAN_OK[i] })); },
+    oaks() { return OAKV.map((m, i) => ({ i, sx: m.sx, sy: m.sy, sz: m.sz, vox: m.vox.length })); },   // the baked models, in the voxelizer's height order — oakAt picks its size tiers by index off this
     shrubIds() { return SHRUBC.concat(SHRUBF).map((i) => ({ id: i, col: palette[i], solid: !!solidTab[i], decor: !!decorTab[i], wood: !!woodTab[i], axe: !!axeOnlyTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i], cactus: !!cactusTab[i], isTrunkBark: woodIds.indexOf(i) >= 0, models: SHRUBV.length })); },   // the SHRUB pair and what every material table says about each. These are LOW ids (the first two RECLAIMED, the rest minted beside them), inside the blanket solidity sweep's range, so `solid:false` is the assertion that the sweep really was undone. The first four are the GREEN ramp and the last six the FLOWER ramp, and both quote CACTUS colours on the shrubs' own ids: diff col against __vb.modelIds('cactus') mapped through the palette to check that, and `cactus:false` is the assertion that quoting those colours did not also hand a bush a saguaro's sting. Compare against __vb.modelIds('shrub') — anything the models wear that is not listed here is a colour that escaped the loader's map
     shrubCount(x, z, r) { let n = 0, lo = 1e9, hi = -1e9; const R = r || 512;   // how many shrub CANDIDATES survive in a world-space square around (x,z) — the honest density read, independent of what has actually streamed in. It also reports the desertM range it sampled, because a count of 0 means nothing unless you know you were standing in the desert
       for (let cz = Math.floor((z - R) / SHCELL); cz <= Math.floor((z + R) / SHCELL); cz++)
@@ -400,8 +439,26 @@
     // the full chop signature, so a test can vary ONE parameter at a time — the material filter in particular,
     // which decides whether the flood is asked about a tree that still has all its needles or one it does not.
     physChopFull(x, y, z, rad, minBite, bite, woodOnly) {
-      const S = treeShapeAt(x | 0, z | 0); if (!S) return { hit: false, why: 'no pine here' };
+      const S = treeShapeAt(x | 0, z | 0); if (!S) return { hit: false, why: 'no tree here' };
       return physChopAt(x | 0, y | 0, z | 0, rad, S, minBite, bite, woodOnly ? ((v) => !!woodTab[v]) : undefined);
+    },
+    // ── WHICH TREE OWNS THIS COLUMN, AND WHAT SHAPE DID IT GET ── the one read that separates "the axe found
+    // no tree" from "it found one and the carve refused". `oak` says which arm of treeShapeAt answered, `root`
+    // is the anchored/uncuttable course band (a pine's buried sink, an oak's first courses clear of ground),
+    // and `vox` is the model's own voxel count, so a fell can be priced before it is attempted.
+    treeShape(x, z) {
+      const S = treeShapeAt(x | 0, z | 0); if (!S) return null;
+      return { oak: !!S.oak, k: S.tr.k === undefined ? null : S.tr.k, rot: S.tr.rot, sink: S.tr.sink, root: S.root,
+               bx: S.bx, gy: S.gy, bz: S.bz, sx: S.R.sx, sz: S.R.sz, h: S.R.h === undefined ? MSZ : S.R.h,
+               vox: S.cells ? S.cells.length : null, glued: S.g ? 1 : 0, shapes: PH.stats.oakShapes | 0 };
+    },
+    // The root flood WITHOUT carving anything: is this tree still whole, and what does asking cost? On a
+    // standing tree orphans must be 0 — anything else is the crown coming apart on its own, which is the
+    // failure mode a 26-connected asset in a 6-connected flood produces. ms is the per-swing price.
+    treeFlood(x, z) {
+      const S = treeShapeAt(x | 0, z | 0); if (!S) return null;
+      const f = phFlood(S);
+      return { oak: !!S.oak, total: f.total, reached: f.reached, orphans: f.orphans, ms: PH.stats.lastFloodMs };
     },
     physSwing() { const r = chopSwing(); if (r) playToolHit(); else if (aimHitId()) playBlocked(); return r; },   // the tap drives exactly what a click does, sound included
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
@@ -478,6 +535,25 @@
     },
     supFlushNow() { return supFlush(true); },          // run the resolver to completion, ignoring the time slice — tests must not have to guess how many frames a cascade takes
     eat() { return tryEat(); },
+    // ── THE FRUIT, END TO END IN ONE CALL ── every number the pick -> hand -> eat -> animate chain depends on,
+    // so a verification is one line rather than five. `palette` is here because the whole feature's claim is
+    // that it costs ZERO ids: the eat strips are raw RGB in ITEMMAP and never ask the table for anything, so
+    // this length must read the same as it did before the fruit items existed.
+    fruit() {
+      const stemBrown = !!FRUIT_STEM_ID;
+      return { appleIt: APPLE_IT, orangeIt: ORANGE_IT, frames: FOOD_EAT_N, fps: EAT_FPS, stripMs: +(FOOD_EAT_N * EAT_FRAME_MS).toFixed(1),
+        eating: eatAnim ? { it: eatAnim.it, name: ITEM_NAMES[eatAnim.it] || null, frame: Math.floor((performance.now() - eatAnim.t0) / EAT_FRAME_MS) } : null,
+        shown: shownIt, shownName: ITEM_NAMES[shownIt] || null,
+        heals: { apple: (vitFoods()[APPLE_IT] || {}).hp || 0, orange: (vitFoods()[ORANGE_IT] || {}).hp || 0, meat: (vitFoods()[MEAT_IT] || {}).hp || 0 },
+        hp: VIT.hp, hpMax: VIT_HP_MAX,
+        fleshIds: { apple: FRUITC[0], orange: FRUITC[2] }, floodMin: FRUIT_MIN, floodCap: FRUIT_CAP,
+        stem: { id: FRUIT_STEM_ID, brown: stemBrown, col: stemBrown ? palette[FRUIT_STEM_ID] : null, note: stemBrown ? 'own id' : 'no brown minted — the world stalk still wears the oak leaf id (the HELD apple is raw art and is brown either way)' },
+        palette: palette.length };
+    },
+    // WHAT THE PICK RAY WOULD DO at one cell, without doing it: the exact verdict tryPickup and pickAim share.
+    // Null means "not one pickable fruit" — not fruit at all, a 1-2 voxel cherry under FRUIT_MIN, or a pair
+    // fused past FRUIT_CAP. n is the flesh voxel count, which is 19 for an untouched apple or orange.
+    fruitAt(x, y, z) { const f = fruitAt(x | 0, y | 0, z | 0); return f ? { it: f.it, name: ITEM_NAMES[f.it] || null, n: f.cells.length } : null; },
     // ── THE DESERT BED (2026-08-15) ── the palindrome loop has no element and fires no events, so nothing in
     // snd() above can see it and there is no `ended` a test could count. This is the whole state: how far the
     // load got, which PASS of the palindrome is sounding and which way that pass runs, the live gain against
@@ -514,9 +590,100 @@
         trap: +(B.trap || 0).toFixed(2), noMove: +(B.noMove || 0).toFixed(2) }); } return o; },
     meatFor(j) { return dropsMeat(j | 0); },              // does a kill in this slot leave meat? the drop path's own predicate
     meatSpecies() { const o = {}; for (let i = 0; i < DESERTS.length; i++) o[DESERTS[i].name] = dropsMeat(MAM_END + i * DES_PER); return o; },
-    vit() { return { hp: +VIT.hp.toFixed(3), food: VIT.food, sat: +VIT.sat.toFixed(3), exh: +VIT.exh.toFixed(3), timer: VIT.timer,
-      hits: VIT.hits, calm: +VIT.calm.toFixed(1), hpMax: VIT_HP_MAX, foodMax: VIT_FOOD_MAX, sprintOK: vitSprintOK(), foods: Object.keys(vitFoods()).length }; },
-    vitSet(hp, food, sat) { if (hp !== undefined) VIT.hp = hp; if (food !== undefined) VIT.food = food; if (sat !== undefined) VIT.sat = sat; return __vb.vit(); },
+    // ── THE OAK-FOREST HALF OF THE DESERT BAND ── one tap for the three questions the two 2026-08-17 species
+    // raise, because they are only meaningful together: is it ALIVE, is it in the RIGHT BIOME, and is it
+    // CLASSIFIED right. `home` is bioHomeOK's own verdict at the body's position — the predicate the game
+    // steers and recycles on, not a re-derivation of it — so a false here is a real trespass and not a
+    // difference of opinion between the test and the game. `om` should read well over BIO_OAKLINE (0.5) for
+    // every row, and over 0.85 for a body that has not moved far from where it was admitted.
+    oakLife() { const o = []; const nmO = (i) => (DESERTS[i] || {}).name || '?';
+      for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j]; const sp = ((j - MAM_END) / DES_PER) | 0;
+        if (!DES_OAKONLY[nmO(sp)] || !B || !B.init || typeof B.x !== 'number') continue;
+        o.push({ j, sp: nmO(sp), idx: (j - MAM_END) % DES_PER, kind: B.kind | 0,
+          x: Math.round(B.x), y: Math.round(B.y || 0), z: Math.round(B.z),
+          om: +oakM(B.x, B.z).toFixed(2), dm: +desertM(B.x, B.z).toFixed(2),
+          home: bioHomeOK(BIO_OAKF, B.x, B.z), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)),
+          meat: dropsMeat(j), leash: B.hcx !== undefined }); }
+      return o; },
+    // ── AND WHAT EACH BEE IS DOING ── the errand state machine, read out. `m` is B.beeM (0 wander / 1 to a
+    // flower / 2 sitting / 3 to a hive / 4 orbiting), `td` is how far it still has to go and `left` how long
+    // it has before the state ends — an arrive-by deadline in modes 1 and 3, a leave-at clock in 2 and 4.
+    // A bee stuck in mode 1 with td barely falling is the failure this was built to make visible, and it is
+    // self-limiting: `left` runs out at BEE_GIVE_S and that flower is banned for BEE_BAN_S. `hiveWired` stays
+    // false until beeHiveNear is wired (main/tick-nav.js, BEE_HIVE_Q), which is the one line that turns
+    // modes 3 and 4 on — so a report of 'no bees ever swarm' is answered by this field alone.
+    // ── AND MODE 5 IS THE ANGRY ONE (2026-08-17) ── `swarm` says whether this slot is even eligible for it
+    // (desIx < BEE_HIVE_N, the same slot-number split that decides who lives at a hive), `rgd` is how far the
+    // PLAYER is from the wreck this bee is defending — the number the give-up test actually reads, so a
+    // 'they gave up instantly' report is answered by comparing it against `leash` — and `stungBy` is how many
+    // times this individual has landed one. `angry` is the whole swarm, and it can never exceed `perHive`.
+    // `stingIn` counts down the ONE swarm-wide cooldown: five bees on you and still 2 s to the next point of
+    // damage is the intended reading, not a stuck clock.
+    beeDbg() { const o = []; const tbB = performance.now() / 1000; let nAngry = 0;
+      for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
+        const sp = ((j - MAM_END) / DES_PER) | 0; if (((DESERTS[sp] || {}).name) !== 'bee') continue;
+        if (!B || !B.init) continue;
+        if ((B.beeM | 0) === 5) nAngry++;
+        o.push({ j, idx: (j - MAM_END) % DES_PER, m: B.beeM | 0, x: Math.round(B.x), y: Math.round(B.y || 0), z: Math.round(B.z),
+          tx: B.beeTx === undefined ? null : Math.round(B.beeTx), tz: B.beeTz === undefined ? null : Math.round(B.beeTz),
+          td: B.beeTx === undefined ? null : +Math.hypot(B.beeTx - B.x, B.beeTz - B.z).toFixed(1),
+          left: B.beeT === undefined ? null : +(B.beeT - tbB).toFixed(1), banned: tbB < (B.beeBanT || 0),
+          swarm: ((j - MAM_END) % DES_PER) < BEE_HIVE_N,
+          rgd: B.beeRgX === undefined ? null : Math.round(Math.hypot(P.x - B.beeRgX, P.z - B.beeRgZ)),
+          pd: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), dy: Math.round((B.y || 0) - P.y), stungBy: B.beeStings | 0,
+          om: +oakM(B.x, B.z).toFixed(2) }); }
+      return { bees: o, hiveWired: !!beeHiveNear(P.x, P.z), sit: [BEE_SIT_S, BEE_SIT_S + BEE_SIT_J], giveUp: BEE_GIVE_S, perHive: BEE_HIVE_N, orbit: BEE_ORBIT_R,
+        angry: nAngry, rage: BEE_RAGE_S, leash: BEE_RAGE_LEASH, hear: BEE_RAGE_R, sting: BEE_STING, stingCd: BEE_STING_CD,
+        stingIn: +Math.max(0, beeStingT - tbB).toFixed(2),
+        breaks: HIVE_BREAK.map((b) => ({ x: Math.round(b.x), y: Math.round(b.y), z: Math.round(b.z), age: +(tbB - b.t).toFixed(1),
+          live: tbB - b.t <= BEE_RAGE_WIN, called: b.n, d: Math.round(Math.hypot(b.x - P.x, b.z - P.z)) })) }; },
+    // ── THE HIVE ITSELF ── how much of the nearest one is left, and what it would take to open it. This is the
+    // half of the feature the bee report cannot see: 'nothing happened when I chopped it' splits cleanly into
+    // 'the hive is not open yet' (left is still over need), 'it is open and was already claimed' (broken true),
+    // and 'it opened and nobody came' (broken true, beeDbg().angry 0) — three different bugs with three
+    // different fixes, and no way to tell them apart from the swarm's side alone.
+    hiveDbg(r) { const h = hiveNearest(P.x, P.z, r === undefined ? 400 : r);
+      if (!h) return { hive: null, searched: r === undefined ? 400 : r };
+      const lf = hiveLeft(h), fu = hiveFull();
+      return { hive: { x: h.wx, y: h.wy, z: h.wz, tree: [h.tx, h.tz], box: [h.sx, h.sy, h.sz], rot: h.rot },
+        d: Math.round(Math.hypot(h.wx - P.x, h.wz - P.z)), full: fu, left: lf,
+        need: Math.floor(fu * BEE_BREAK_F), frac: +(lf / Math.max(1, fu)).toFixed(2),
+        open: lf <= fu * BEE_BREAK_F, broken: HIVE_DONE.has(h.tx + '|' + h.tz) }; },
+    // ── AND THE TRIGGER, WITHOUT AN AXE ── posts a break for the nearest hive and returns what happened.
+    // Same reason __vb.birdKill exists: landing four accurate swings on a 50 cm box hanging in a crown 100
+    // voxels up is not something a test can do reliably, and the interesting half of this feature is
+    // everything AFTER the break. It is the real hiveBroke, so the ledger, the recruiting, the leash and the
+    // sting are all the shipped path — only the axe is simulated away. Pass true to also VERIFY the threshold
+    // rather than bypass it, which is how you check the counting half on a hive you actually chopped.
+    hiveBreak(strict) { const h = hiveNearest(P.x, P.z, 400);
+      if (!h) return { ok: false, why: 'no hive within 400' };
+      const lf = hiveLeft(h), fu = hiveFull();
+      if (strict && lf > fu * BEE_BREAK_F) return { ok: false, why: 'still ' + lf + ' of ' + fu + ' standing', left: lf, need: Math.floor(fu * BEE_BREAK_F) };
+      const first = hiveBroke(h);
+      return { ok: !!first, why: first ? 'broken' : 'already broken', left: lf, full: fu, d: Math.round(Math.hypot(h.wx - P.x, h.wz - P.z)), breaks: HIVE_BREAK.length }; },
+    // ── AND A SWAT, WITHOUT A SWING ── posts the real beeAngered at a given bee's position. Same reason
+    // hiveBreak exists beside it: landing a blow on a 3-voxel insect in flight is not something a test can do
+    // reliably, and the interesting half is everything AFTER the hit. Everything downstream is the shipped
+    // path — the ledger record, the recruiting, the leash and the sting — only the swing is simulated away.
+    beeSwat(j) { const B = wbf[j | 0];
+      if (!B || !B.init) return { ok: false, why: 'slot ' + (j | 0) + ' is not a live creature' };
+      const sp = ((( j | 0) - MAM_END) / DES_PER) | 0;
+      if (((DESERTS[sp] || {}).name) !== 'bee') return { ok: false, why: 'slot ' + (j | 0) + ' is not a bee' };
+      const fresh = beeAngered(B.x, B.y || 0, B.z);
+      return { ok: true, fresh: !!fresh, at: [Math.round(B.x), Math.round(B.z)], pd: Math.round(Math.hypot(B.x - P.x, B.z - P.z)),
+        inEarshot: __vb.beeDbg().bees.filter((b) => Math.hypot(b.x - B.x, b.z - B.z) <= BEE_RAGE_R).map((b) => ({ idx: b.idx, swarm: b.swarm })) }; },
+    // Is there a flower where I am standing, and at what y? The bee's own finder, asked directly — so a
+    // 'the bees never visit anything' report splits into 'there are no blooms here' and 'the bee cannot get
+    // to them' without guessing which.
+    bloomAt(x, z) { return beeBloomAt(x === undefined ? P.x : x, z === undefined ? P.z : z); },
+    bloomNear() { const f = findBeeFlower(P.x, P.z); return f ? { x: f.x, y: f.y, z: f.z, d: Math.round(Math.hypot(f.x - P.x, f.z - P.z)) } : null; },
+    // ── HUNGER IS GONE (2026-08-17) ── hp IS the five-point bar the screen pixelation paints, and `red`
+    // is the 0..4 it paints from. food/sat/exh/timer and the five-hit counter were deleted with the
+    // mechanic; reading them here threw a ReferenceError that no static check catches, because it is
+    // runtime-only and inside a function.
+    vit() { return { hp: VIT.hp, hpMax: VIT_HP_MAX, red: vitRedLevel(), hurtT: +VIT.hurtT.toFixed(3),
+      sprintOK: vitSprintOK(), foods: Object.keys(vitFoods()).length }; },
+    vitSet(hp) { if (hp !== undefined) VIT.hp = Math.max(0, Math.min(VIT_HP_MAX, Math.round(hp))); return __vb.vit(); },   // one argument now — the old (hp, food, sat) triple has nothing left to set
     hearts(v) { if (v !== undefined) heartShow = v ? 1 : 0; return { shown: !!heartShow, item: HEART_IT, n: HEART_N, hp: VIT.hp, hearts: +(VIT.hp / (VIT_HP_MAX / HEART_N)).toFixed(3), pose: { ...HEART_POSE } }; },   // the floating health voxels: read the state, or pass false to hide them (the A/B lever for the composite block's cost)
     vitHurt(n, why) { vitHurt(n, why || 'a test'); return __vb.vit(); },
     vitGive(it) { const k = addItem(it || MEAT_IT); for (let i = 0; i < slots.length; i++) if (slots[i] && slots[i].it === (it || MEAT_IT)) { selSlot = i; break; } return { added: k, hand: __vb.hand() }; },                      // one bite, exactly what a right-click does
@@ -587,7 +754,7 @@
     },
     decorIds() { const o = []; for (let i = 0; i < 256; i++) if (decorTab[i]) o.push(i); return o; },   // palette ids the axe can carve chunks from
     axeOnlyIds() { const o = []; for (let i = 0; i < 256; i++) if (axeOnlyTab[i]) o.push(i); return o; },   // …of those, the ones that need the AXE (wood)
-    ducks() { const o = []; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 3) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), th: +(B.th || 0).toFixed(3), om: +(B.om || 0).toFixed(3), turnAcc: +((B.turnAcc || 0)).toFixed(2) }); } return o; },   // duck slots — circling shows up as turnAcc growing without bound
+    ducks() { const o = []; for (let j = DUCK_0; j < BABY_END; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 3) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), th: +(B.th || 0).toFixed(3), om: +(B.om || 0).toFixed(3), turnAcc: +((B.turnAcc || 0)).toFixed(2) }); } return o; },   // duck slots — circling shows up as turnAcc growing without bound
     // ── FLOATER PROBE ── call this WHILE a suspect voxel is on screen.
     // Floods EVERY solid voxel in a box around you, upward from the terrain at its base, and reports
     // what it cannot reach. That is the only honest definition of "floating": no path to the ground
@@ -1080,18 +1247,53 @@
     rd() { return { renderDist, half: HALF, windowX: WX }; },   // fixed view-distance tap
     lifedbg(m) { lifeDbg = m === undefined ? 0 : m | 0; return { mode: lifeDbg, traceInjected: LIFE_TRACE }; },   // debug views: 0 off / 1 slot ids / 2 history confidence / 3 motion / 4 denoised AO / 5 RAW sun visibility / 6 DENOISED sun visibility
     birdCensus(r, wx, wz) {                          // tally the songbird colours around any centre, straight from the placement rule
-      const R = r || 6000, t = [0, 0, 0]; let pines = 0, birds = 0;
-      const c0x = Math.floor((wx === undefined ? P.x : wx) / TCELL), c0z = Math.floor((wz === undefined ? P.z : wz) / TCELL), n = Math.ceil(R / TCELL);
+      // ── BOTH TREE GRIDS (2026-08-17) ── this walked the PINE grid only, so standing in the oak forest it
+      // reported pines: 0, birds: 0 and the colour split read as broken, when in fact the oaks around you are
+      // full of birds placed by the same rule on a different grid. Two enumerations, one tally, because the
+      // question "what does the placement rule put near me" has two placement rules now.
+      const R = r || 6000, t = [0, 0, 0]; let pines = 0, oaks = 0, birds = 0;
+      const cx0 = wx === undefined ? P.x : wx, cz0 = wz === undefined ? P.z : wz;
+      const c0x = Math.floor(cx0 / TCELL), c0z = Math.floor(cz0 / TCELL), n = Math.ceil(R / TCELL);
       for (let dz = -n; dz <= n; dz++) for (let dx = -n; dx <= n; dx++) {
         const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
         pines++;
         const k = birdsOnPine(tr.tx, tr.tz);
         for (let i = 0; i < k; i++) { t[birdColour(tr.tx, tr.tz, i)]++; birds++; }
       }
-      return { radius: R, pines, birds, cardinal: t[0], blue: t[1], robin: t[2],
+      const o0x = Math.floor(cx0 / OKCELL), o0z = Math.floor(cz0 / OKCELL), on = Math.ceil(R / OKCELL);
+      for (let dz = -on; dz <= on; dz++) for (let dx = -on; dx <= on; dx++) {
+        const tr = oakAt(o0x + dx, o0z + dz); if (!tr) continue;
+        oaks++;
+        const k = birdsOnOak(tr.wx, tr.wz, tr.k);
+        for (let i = 0; i < k; i++) { t[birdColour(tr.wx, tr.wz, i)]++; birds++; }
+      }
+      return { radius: R, pines, oaks, trees: pines + oaks, birds, cardinal: t[0], blue: t[1], robin: t[2],
         pct: t.map((x) => +(x * 100 / Math.max(1, birds)).toFixed(1)) };
     },
+    // ── THE RAIN SKY, BOTH FACTORS SEPARATELY ── k is the storm CLOCK (ramps 0->1 over 10 s, back over
+    // 20 s) and atCam is what the shader actually gets, k * oakM at the camera. Reported apart because
+    // the two failure modes are different: k stuck at 1 after a storm is a broken ramp, atCam stuck at 0
+    // during one is a broken biome weight, and a single number cannot tell you which.
+    // ── THE FLYING FLOCK ── the 9 wandering songbirds, which live in DROP slots rather than creature
+    // slots, so lifeAll() cannot see them and a screenshot can only ever prove they are not in ONE
+    // 90-degree view. `alt` is height above the bird's own terrain sample, which is what the flight
+    // floor is expressed in; `om` says which biome it is currently over.
+    flyers() { return birds.map((b, i) => ({ i, init: !!b.init, x: Math.round(b.x), z: Math.round(b.z),
+      y: Math.round(b.y), g: Math.round(b.g), alt: Math.round(b.y - b.g), sp: b.sp | 0, mode: b.mode | 0,
+      om: +oakM(b.x, b.z).toFixed(2), d: Math.round(Math.hypot(b.x - P.x, b.z - P.z)) })); },
+    rainSky() { return { k: +rainSkyK.toFixed(3), atCam: +UF[UF_RAINK].toFixed(3),
+      oakAtCam: +oakM(P.x, P.z).toFixed(3), storm: !!snowOn }; },
     compass() { return { on: cmpOn, hidden: $('compass').classList.contains('hidden'), stored: localStorage.getItem('vb_cmp') }; },   // compass-toggle tap                // palette occupancy tap — edCol silently NEAREST-MATCHES once this hits 256, which would quietly wash a reskin's colours into another bird's
+    // ── WHERE THE STACK BADGE ENDED UP ── the held model's projected top-right corner, which main/tick-camera.js
+    // computes and BLIT draws at. `px` is the canvas pixel actually handed to the shader; `dims` is the item
+    // grid the corners were built from, and a null there is the whole answer to "the badge is nowhere near the
+    // item" — it means the item table lookup missed and the fallback parked the glyphs off screen.
+    badgeDbg() { const it = shownIt | 0, m = itemsRef && itemsRef[it - 1];
+      return { item: it, name: ITEM_NAMES[it] || null, dims: m ? [m.w, m.d, m.h] : null,
+        count: +UF[UF_HELDCFG + 2].toFixed(2), px: [Math.round(UF[UF_BADGE]), Math.round(UF[UF_BADGE + 1])],
+        size: +UF[UF_BADGE + 2].toFixed(2), tilt: +UF[UF_BADGE + 3].toFixed(2),
+        anchor: [+UF[48].toFixed(3), +UF[49].toFixed(3), +UF[50].toFixed(3)], vox: +UF[51].toFixed(4),
+        canvas: [UF[42], UF[43]], tanH: +UF[3].toFixed(3), aspect: +UF[7].toFixed(3) }; },
     itemCols(id) {                                   // distinct colours + dims of one item (1-based dit) — proves what a species actually renders with
       const it = itemsRef && itemsRef[id - 1]; if (!it) return null;
       const set = new Map();
@@ -1104,9 +1306,9 @@
       frames: BIRD_NFRAMES, glidePose: BIRD_GLIDE, blueFrames: BLUEF_NFRAMES, cardBase: BIRD_ITEM0, blueBase: BLUEF_ITEM0,
       birds: birds.map((b) => ({ init: b.init, x: +b.x.toFixed(1), y: +b.y.toFixed(1), z: +b.z.toFixed(1), mode: b.mode, glid: !!b.glid, fi: b.fi | 0, edge: !!b.edge, sp: b.sp | 0,
         d: Math.round(Math.hypot(b.x - P.x, b.z - P.z)) })) }; },   // flyer tap
-    birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
-    duckStamps() { let n = 0, live = 0, paused = 0; for (let j = 16; j < 32; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } } for (let j = 32; j < 64; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
-    perched() { const o = []; for (let j = 64; j < 244; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: B.sN | 0, want: B.sWant | 0, ids: B.sN ? [...new Set(Array.from(B.sCells.subarray(0, B.sN), (ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
+    birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = WORM_0; j < WORM_END; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
+    duckStamps() { let n = 0, live = 0, paused = 0; for (let j = DUCK_0; j < BABY_END; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } } for (let j = WORM_0; j < WORM_END; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
+    perched() { const o = []; for (let j = CARD_0; j < CARD_END; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: B.sN | 0, want: B.sWant | 0, ids: B.sN ? [...new Set(Array.from(B.sCells.subarray(0, B.sN), (ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
     reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     profMin(reset) { const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, profMin[i] > 1e8 ? -1 : +profMin[i].toFixed(3)]));   // uncontended per-pass cost — the A/B statistic (see profMin above)
@@ -1187,7 +1389,7 @@
     foamId() { return FOAM_IT; },                      // the splash droplet's item id
     splashAt(x, z, k) { spawnSplash(x, z, k); return __vb.sparkDbg().slice(0, 4); },   // fire a splash on demand (test tap)
     duckEyes() { return { n: DUCKB_EYES.length, cells: DUCKB_EYES }; },   // the duckling eye voxels the tears come out of - offsets from the model's CENTRE, which is where the drop-slot tracer anchors it
-    crying() { const o = []; for (let j = 20; j < 32; j++) { const B = wbf[j];
+    crying() { const o = []; for (let j = BABY_0; j < BABY_END; j++) { const B = wbf[j];
       if (B && B.init && B.cryTo) o.push({ slot: j, msLeft: Math.round(B.cryTo - performance.now()) }); } return o; },
     tears() { const n = performance.now(); return sparks3d.slice(TEAR_LO, TEAR_HI).filter((s) => s && s.foam && (n - s.born) / 1000 < s.life).length; },   // live TEAR droplets, tear band only
     splashLive() { const n = performance.now(); return sparks3d.slice(SPLASH_LO, SPLASH_HI).filter((s) => s && s.foam && (n - s.born) / 1000 < s.life).length; },
@@ -1235,7 +1437,7 @@
         if (id && solidTab[id] === 1) return y + 1; }
       return 1; },
     mamContact() { const out = [];                     // per land mammal: does its underside TOUCH the ground under it, and does any of that ground come up THROUGH it
-      for (let j = 276; j < 372; j++) { const B = wbf[j];
+      for (let j = MAM_0; j < MAM_END; j++) { const B = wbf[j];
         if (!B || !B.init || (B.kind | 0) !== 2 || !B.ragIt) continue;
         const m = this.mamBox(B.ragIt); if (!m) continue;
         const s = B.ragS || 1, hw = m.w * 0.5, hd = m.d * 0.5, hh = m.h * 0.5;
@@ -1251,14 +1453,14 @@
         // how STEEP is the ground under this body, and how fast is it crossing it — the two the user named
         let lo9 = 1e9, hi9 = -1e9;
         { const th9 = B.th || 0, sx9 = Math.sin(th9), cz9 = Math.cos(th9);
-          const fq = j >= 348 ? MAMFIT.porc : (j >= 324 ? MAMFIT.skunk : (j >= 300 ? MAMFIT.arm : MAMFIT.bunny));
+          const fq = j >= PORC_0 ? MAMFIT.porc : (j >= SKUNK_0 ? MAMFIT.skunk : (j >= ARM_0 ? MAMFIT.arm : MAMFIT.bunny));
           for (let u = -1; u <= 1; u++) for (let v = -1; v <= 1; v++) {
             const q = navWalkStand(B.x + sx9 * (fq ? fq.hd : 3) * u + cz9 * (fq ? fq.hw : 2) * v,
                                    B.z + cz9 * (fq ? fq.hd : 3) * u - sx9 * (fq ? fq.hw : 2) * v);
             if (q < lo9) lo9 = q; if (q > hi9) hi9 = q; } }
         const spd9 = B._mcX === undefined ? 0 : Math.hypot(B.x - B._mcX, B.z - B._mcZ) / Math.max(1e-3, (performance.now() - B._mcT) / 1000);
         B._mcX = B.x; B._mcZ = B.z; B._mcT = performance.now();
-        out.push({ j, kind: j >= 348 ? 'porc' : (j >= 324 ? 'skunk' : (j >= 300 ? 'arm' : 'bunny')),
+        out.push({ j, kind: j >= PORC_0 ? 'porc' : (j >= SKUNK_0 ? 'skunk' : (j >= ARM_0 ? 'arm' : 'bunny')),
           slope: +(hi9 - lo9).toFixed(2), spd: +spd9.toFixed(1),
           gap: +gap.toFixed(2),                        // smallest clearance anywhere under the body: 0 = resting on it, > 0 = AIRBORNE by that much, < 0 = sunk in
           intr: +intr.toFixed(2),                      // deepest the ground comes up through the model
@@ -1266,7 +1468,7 @@
           traced: !!(LIFE_UNI && uniTraced(B)), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)) }); }
       return out; },
     mammals() { const b = (a, z) => { let n = 0, near = 0; const pos = []; for (let j = a; j < z; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2) { n++; pos.push([Math.round(O.x), Math.round(O.z), Math.round(O.hx || 0), Math.round(O.hz || 0)]); if ((O.x - P.x) ** 2 + (O.z - P.z) ** 2 < 400 * 400) near++; } } return { active: n, within400: near, pos }; };   /*TEMP-DEBUG: live land-mammal census + positions/homes*/
-      return { bunny: b(276, 300), armadillo: b(300, 324), skunk: b(324, 348), porcupine: b(348, 372), p: [Math.round(P.x), Math.round(P.z)] }; },
+      return { bunny: b(BUNNY_0, BUNNY_END), armadillo: b(ARM_0, ARM_END), skunk: b(SKUNK_0, SKUNK_END), porcupine: b(PORC_0, MAM_END), p: [Math.round(P.x), Math.round(P.z)] }; },
     edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, paused: ED.paused, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pw: ED.pw, pd: ED.pd, pal: palette.length }; },
     dbg() { return { smoothEye, pickRock: [...PICK_ROCK], passthru: [...PASSTHRU] }; },
     htest(n) { let bad = 0; for (let i = 0; i < (n || 1000); i++) { const x = ((Math.random() * 2e6) | 0) - 1e6, z = ((Math.random() * 2e6) | 0) - 1e6;

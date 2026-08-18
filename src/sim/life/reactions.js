@@ -9,12 +9,14 @@
   // where the animal is deciding moment to moment. A wound is not a decision, and an animal that shrugs it off
   // in a second reads as not having noticed.
   // ── DOES THIS KILL LEAVE A CARCASS? ── the land mammals always have, and the DESERT band now does for the
-  // four species the user named; ant, fly and spider leave nothing, the same line they drew asking for no
-  // drops off the bugs. A named predicate rather than an inline test because it is the only way to check the
+  // five species listed in DES_MEAT; ant, fly, spider and now the BEE leave nothing, the same line the user
+  // drew asking for no drops off the bugs — the bee needed no change here at all, only the confirmation that
+  // an unlisted species falls out of this predicate FALSE (`__vb.meatSpecies().bee`). The GRASS SNAKE is
+  // listed: it is a snake beside the cobra, not a bug. A named predicate rather than an inline test because it is the only way to check the
   // rule without a kill: `__vb.meatFor(slot)` calls exactly this, so the test and the game cannot disagree.
   // Keyed by NAME so re-ordering DESERTS cannot silently re-assign which creature bleeds.
   const dropsMeat = (j) => {
-    if (j >= 276 && j < MAM_END) return true;
+    if (j >= MAM_0 && j < MAM_END) return true;
     if (j < MAM_END || j >= DES_END) return false;
     const d = DESERTS[((j - MAM_END) / DES_PER) | 0];
     return !!(d && DES_MEAT[d.name]);
@@ -188,6 +190,13 @@
     playLifeHit(hs9[0], hs9[1], hs9[2]);                // …and the SAME rule for the sound (user 2026-08-08): every blow that lands on a living thing is heard, whatever swung it. Here, above the wound/kill split and below the one-hit-per-swing guard, so it is exactly once per blow — hits one, two and three included, and a held swing cannot machine-gun it.
     B.spookT = performance.now() + HIT_SPOOK_MS;        // …and it BOLTS (user 2026-08-09) — same place and same rule as the two above, so every blow spooks it, arrow or axe or bare hand, wounding or fatal
     B.thrX = P.x; B.thrZ = P.z;                         // …away from the PLAYER: the fish flee angles off a remembered threat position, and the one that just shot it is the threat
+    // ── AND HITTING A BEE BRINGS THE REST (user 2026-08-17) ── posted HERE, beside the spook and above the
+    // wound/kill split, for the reason every line around it is here: this is the one place every blow in the
+    // game funnels through, so the swarm answers an arrow, a spear, an axe or a bare hand without any of them
+    // needing to know about bees. It fires whether the blow wounds or kills — a bee swatted out of the air
+    // still had witnesses. beeAngered (sim/life/slots.js) merges repeat blows into one fight.
+    if (best >= MAM_END && best < DES_END && ((DESERTS[((best - MAM_END) / DES_PER) | 0] || {}).name) === 'bee')
+      beeAngered(B.x, B.y || 0, B.z);
     const need = (token !== undefined && String(token).startsWith('arrow')) ? ARROW_HITS_TO_KILL : HITS_TO_KILL;   // an ARROW is a weapon, not a hand tool: TWO and the animal is down (user)
     // …and the SPEAR kills outright, thrust or thrown — the axe's privilege, for the one tool that is a
     // weapon first (user). Everything else wears the animal down.
@@ -195,9 +204,9 @@
     // …and a BIRD drops to a single shaft, arrow or spear (user): kind 5 is the perched songbirds.
     const oneBlow = heldIt() === 1 || !!(SPEAR_IT && heldIt() === SPEAR_IT) || (token !== undefined && String(token).startsWith('spear'))
       || (shaft && (B.kind | 0) === 5);
-    // …and slots 32-63 are the WORMS, which now go the same way (user): something that size surviving three
+    // …and the WORM band goes the same way (user): something that size surviving three
     // blows reads as absurd for the same reason the butterflies were exempted.
-    const frail = best < 16 || (best >= 32 && best < 64);
+    const frail = best < FLY_END || (best >= WORM_0 && best < WORM_END);
     if (!B.dying && !oneBlow && !frail) {
       B.hits = (B.hits | 0) + 1;
       if (B.hits < need) {
@@ -213,7 +222,7 @@
     // so the hit reads on the animal itself rather than the animal simply vanishing into smoke.
     if (B.dying) return;                                // already flashing its way out — a second click must not double-kill or restart the blink
     B.dying = true;
-    if (dropsMeat(best)) B.mammal = true;   // …and BELOW the mammal band's end. This was open-ended because 276.. WAS the whole band and the pool stopped at 372; the desert creatures now live above it and were inheriting the land mammals' meat drop (user: 'the bugs shouldnt drop anything').                   // remember WHAT it was: by the time it dies the slot is only a bag of stale numbers
+    if (dropsMeat(best)) B.mammal = true;   // …and BELOW the mammal band's end. This was open-ended because MAM_0.. WAS the whole band and the pool stopped at MAM_END; the desert creatures now live above it and were inheriting the land mammals' meat drop (user: 'the bugs shouldnt drop anything').                   // remember WHAT it was: by the time it dies the slot is only a bag of stale numbers
     const blink = true;                                 // the KILLING blow flashes too (user) — it used to be skipped whenever an earlier hit had already flashed,
     B.blinked = true;                                   // which left the third and fatal swing with no feedback of its own at all.
     // ── GO RIGID (user 2026-08-05) ── ONLY here, on the blow that kills: the animal becomes a rigid body and
@@ -264,7 +273,7 @@
       if (B.sN) unstampWorm(B);                           // clear a grid-stamped creature's world voxels (mammals + perched birds)
       if ((B.kind | 0) === 5 && B.tx !== undefined && cardSlainPerch.size < CARD_SLAIN_CAP) cardSlainPerch.add(cardPerchKey(B.tx, B.tz, B.bi));   // ── PERCH CLEARED ── so the next free slot cannot land another bird on the branch this one just died on (user)
       B.init = false; B.dieT = 0; B.slain = true; B.dying = false;         // SLAIN (user: "when I kill something, it respawns somewhere else — prevent this"): the slot is dead for the rest of the session — the population loop skips it, so nothing re-places it elsewhere
-      if (slotD >= 16 && slotD < 20) startCrying(slotD);   // …a MOTHER duck: the brood she leaves behind cries (user). Armed HERE, not at the hit, so a wounded-but-alive mother never sets them off.
+      if (slotD >= DUCK_0 && slotD < DUCK_END) startCrying(slotD);   // …a MOTHER duck: the brood she leaves behind cries (user). Armed HERE, not at the hit, so a wounded-but-alive mother never sets them off.
     }
   };
   document.addEventListener('mousedown', (e) => {

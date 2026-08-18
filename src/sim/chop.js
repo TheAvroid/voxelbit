@@ -363,7 +363,17 @@
         if (gy2 < by0) by0 = gy2; if (gy2 > by1) by1 = gy2;
         if (wz2 < bz0) bz0 = wz2; if (wz2 > bz1) bz1 = wz2;
       }
-      coneWake(bx0, bx1, by0, by1, bz0, bz1);
+      // ── THE 26 PAD IS FOR A TRUNK-SHAPED BOX, AND A FELLED OAK'S IS NOT ── CONE_WAKE_PAD is "a crown
+      // radius", and it exists because a LIFT whose bbox is only the trunk has to reach out to the cones and
+      // canopy snow hanging off a crown that is nowhere near that box. When the component IS the crown, the
+      // box already contains all of it and the pad is pure volume: coneWake iterates the box, so a 114-wide
+      // oak went 114+52 cubed = 4.5M cells (~20-30 ms) on the one frame the tree comes down, which is the
+      // largest single term in that hitch. A box wider than a crown radius cannot be a bare trunk, so it does
+      // not need a crown radius of reach — 4 covers the voxel or two of drape that can overhang a lifted mass.
+      // Chosen at 40 so nothing that exists today changes: a felled PINE is 36 wide (MSX/MSY) and keeps the
+      // 26 it has always had; only the oaks, whose crowns run 44 to 114, take the cheap path.
+      const wSpan = Math.max(bx1 - bx0, bz1 - bz0);
+      coneWake(bx0, bx1, by0, by1, bz0, bz1, wSpan >= 40 ? 4 : undefined);
     }
     PH.stats.separations += made.length;
     PH.stats.lastSepMs = +(performance.now() - t0).toFixed(2);

@@ -79,7 +79,17 @@
   for (const i of SHRUBB) palOwn.add(i);
   const SAND   = [addCol(203, 183, 145), addCol(191, 171, 133), addCol(213, 193, 155)];                  // lake beaches + lakebed
   const DSAND  = [addCol(214, 188, 132), addCol(205, 178, 122), addCol(222, 197, 143), addCol(196, 169, 115)];   // ── DESERT SAND ── warmer and more saturated than the lake SAND above, and on DEDICATED ids for a reason that is not aesthetic: sandTab slows the player (beach sand pits), and sharing ids would make an entire biome wade. These are deliberately NOT in sandTab.
-  const REDROCK = [addCol(193, 111, 72), addCol(171, 94, 60), addCol(147, 79, 52), addCol(209, 167, 127)];   // Colorado sandstone strata (last = cream band)
+  // ── COLORADO SANDSTONE: FOUR IDS FOR A THING THAT IS NOT IN THE GAME (reclaimed 2026-08-17, the BEEHIVE) ──
+  // this ramp has exactly one consumer in the whole build: the ROCK26D block in assets/bow.js, which recolours
+  // the 26 boulders into sandstone twins for the desert. Nothing stamps ROCK26D. The user reverted the desert
+  // rocks to stock grey, and world/gen-pool.js says so in as many words — its ROCK26D line is commented out with
+  // "the desert rocks went back to stock grey, so nothing in the worker references it". So these four are back in
+  // precisely the state palette.js's own comment described before the experiment: "declared and used by NOTHING".
+  // Four dead ids on a table with two free is what funds the hive and half the fruit. ONE boolean brings both the
+  // colours and the sandstone rocks back together, which is the whole reason this is a switch and not a deletion —
+  // bow.js guards its ROCK26D build on REDROCK.length, so flipping this is the entire restore.
+  const R26D_ON = false;                               // sandstone desert boulders (ROCK26D) — off, and the 4 REDROCK ids with them
+  const REDROCK = R26D_ON ? [addCol(193, 111, 72), addCol(171, 94, 60), addCol(147, 79, 52), addCol(209, 167, 127)] : [];   // Colorado sandstone strata (last = cream band)
   const ORECOAL = [addCol(52, 52, 56), addCol(44, 44, 48)];                                                // minerals - seen in cave walls
   const OREIRON = [addCol(150, 106, 74), addCol(134, 94, 66)];
   const OREGOLD = [addCol(216, 174, 58), addCol(196, 156, 50)];
@@ -161,10 +171,88 @@
   // the authored range cost one net palette id and put the ramp back; the five source greys resolve onto them
   // with at most 7/255 of error, inside PAL_TOL.
   const PEBBLE  = [addCol(147, 147, 147), addCol(134, 134, 134), addCol(120, 120, 120)];
+  // ── THE FRUIT STALK (user 2026-08-17: "the apple doesnt seem to have a brown stem") ── the LAST free
+  // slot of the 256, spent deliberately. The artist did paint a brown — apple/00.vox has the stalk at
+  // (143,95,74) — but the bake pools the stalk and the leaf into one colour whose mean is a green, so it
+  // arrived olive. assets/bow.js recovers the split by hue from the art the game already loads; this is
+  // the id that split needs to land on, and there was no reuse that did not leak: STICK_S is PICK_STICK
+  // (the stalk would right-click up as a twig), the bark ids are woodTab + solid (a hitbox in a
+  // walk-through crown, and STRUCTURE hanging off DRAPE), and STICK_M has 29 authored colours inside
+  // PAL_TOL of it, so it is very likely already borrowed by something that would inherit canopy.
+  // (143,95,74) is the artist's own value, not a guess. RESERVED in palOwn for the reason the fruit
+  // flesh ids are: a later tolerance share would hand canopy identity to whatever asked for a brown.
+  const FRUIT_STEM = addCol(143, 95, 74);
+  palOwn.add(FRUIT_STEM);
   const SNOW = [addCol(234, 238, 246), addCol(221, 227, 239)];                                           // fallen snow — strictly 1-voxel (10 cm) layers, walk-through decor
+  // ── RAIN, AND WHY IT IS EXACTLY ONE ID ── the oak forest gets rain where the pine forest gets snow, and a
+  // falling raindrop is a traced voxel in the same lattice the flakes use (see the RAIN block in TRACE), so it
+  // needs a palette entry the way a flake needs SNOW[0]. THE TABLE HAS THREE SLOTS LEFT — measured, and that
+  // budget is known here: one shade is spent, not a ramp. Snow can afford two because a BLANKET is a surface
+  // and a surface with one colour bands; falling rain is a scatter of ~2.45% occupied cells at 5x the fall
+  // speed, never adjacent to itself for more than a frame, so a second shade would buy nothing anybody could
+  // see. It is also never written into W — nothing lands, nothing accumulates — so unlike SNOW it needs no
+  // entry in snowTab, support-rules or any material table; it exists only as a colour the tracer looks up.
+  // Deliberately sits ABOVE DECOR_MIN so the blanket solid() sweep cannot mark it solid.
+  // ── …AND IT IS ONLY SPENT WHILE IT RAINS (2026-08-17, the FRUIT) ── RAIN_ON has been false since the user
+  // turned the weather off, and every path that could put this colour on screen is compiled out behind it: the
+  // whole rain march in TRACE is inside `if (${RAIN_ON ? 'oakNear' : 'false'})`, so `fIsRain` is a constant
+  // false, `h.vox = select(SNV, RNV, fIsRain)` is always SNV, and the one other reader (`h.vox == RNV`) sits
+  // inside `if (flakeHit)` where h.vox can only be SNV or RNV. Nothing renders it, and it is never written into
+  // W, so the id was a slot the table was holding for a feature that is switched off — which is exactly the slot
+  // the berries and the fruit needed. 0 rather than a near colour ON PURPOSE: aliasing it onto SNOW[1] would make
+  // that `h.vox == RNV` test fire for real fallen snow and quietly relight the blanket. Flip RAIN_ON back and the
+  // mint comes back with it, so this is a reclaim rather than a removal.
+  const RAIN = RAIN_ON ? addCol(150, 196, 236) : 0;                                                      // falling rain — one light blue, lit almost entirely by the sky term (see the scatter floor in TRACE)
   const ED_WHITE = addCol(250, 250, 252), ED_GREY = addCol(202, 207, 216), ED_HLITE = addCol(255, 186, 64);   // asset-editor stage: white plane, 1 m gridline grey, amber selection ring (all marked solid below)
   const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);                                    // twig (pickable) / stick — pine-trunk browns
   const BLOOM   = [addCol(198, 62, 54), addCol(226, 192, 62), addCol(230, 228, 220), addCol(152, 94, 192), addCol(224, 122, 162), addCol(228, 142, 56)];   // flower heads
+  // ── FRUIT AND BERRIES: THREE IDS, AND THAT IS THE WHOLE BUDGET (user 2026-08-17: berry bushes, and apples
+  // and oranges in the oaks) ── the ask was four things wearing 22 authored colours between them (an 11-colour
+  // apple, a 9-colour orange, a red berry and a blue one) and the table had TWO slots. It fits because two
+  // separate reuses do the work that minting would have:
+  //   * ONE RED SERVES THE CHERRY AND THE APPLE. [0] is the apple's own flesh, quantized to the voxel-weighted
+  //     mean of its seven authored shades by tools/voxelize_fruit.py — so the apple is not "close to" anything,
+  //     it IS its own average — and a cherry is the same fruit red at 1 voxel. Two fruit, one slot.
+  //   * THE STEM AND LEAF OF BOTH FRUIT WEAR AN OAK LEAF ID (assets/bow.js), which costs nothing and is not a
+  //     compromise: the thing is a leaf, hanging in a crown made of exactly that leaf.
+  // WHY NOT BLOOM[0]/BLOOM[5], WHICH ARE ALREADY A RED AND AN ORANGE. Because an id is a MATERIAL, and both
+  // directions of that swap are wrong. Taking their ids would give a fruit floatTab — which is ground scatter:
+  // the aim ray walks straight THROUGH a floatTab voxel (sim/tools.js), so an apple would be unaimable, and
+  // ORPHAN_OK in sim/support-rules.js is derived as "not foliage and not wood", which makes every one of them
+  // deletable by the generation orphan sweep. Going the other way and marking those ids foliaTab to fix that
+  // would hand every flower head in the game a canopy's see-through, snow-catching, bird-perchable identity.
+  // Same colour, own ids — the arrangement BROCK, DSAND and the desert shrubs all already use.
+  // The blue is this game's own: nothing in the table is a berry blue, and the two things that come closest are
+  // the WATER pair, which SUP.CLASS marks FLUID and isWater() reads as the lake.
+  // These sit above DECOR_MIN, so the blanket `i < DECOR_MIN` solidity sweep below cannot reach them and a
+  // berry never gets a hitbox; material-tabs.js then says what they positively ARE. __vbOak.ids() (world/gen-pool.js)
+  // prints all three with every material table's verdict, and __vb.palAudit() over/snaps must both still read 0.
+  const FRUITC = [addCol(209, 75, 70), addCol(86, 110, 192), addCol(244, 152, 61)];                      // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh (0 and 2 are tools/voxelize_fruit.py's own means — keep them in step with fruit.json's `pal`)
+  // ── THE BEEHIVE, IN TWO SHADES OF ONE HONEY YELLOW (user 2026-08-17: "implement the beehive.vox on some of
+  // the oak trees") ── beehive.vox paints 54 voxels in an EIGHT-step ramp that never leaves one hue: red is 255
+  // on every step and the whole ramp moves 12/255 in green and 52 in blue. Two ids is not a sacrifice of that,
+  // it is what the model is actually made of — the darkest shade alone is 24 of the 54 voxels and it draws the
+  // two horizontal BANDS that make the shape read as a hive rather than a crate, and the other seven are a soft
+  // face gradient across the panels between them. So: the band exactly as authored, and one weighted mean for
+  // the panels. Six of the eight shades land within 15/255 and the two extremes (a 1-voxel highlight each) within
+  // 22 — bounded, unlike the palNearest substitution a third mint would have caused. assets/bow.js resolves
+  // whatever the file contains onto these two by nearest colour, so re-authoring the hive cannot mint anything.
+  // OWN IDS, not BLOOM's yellow or OREGOLD's: a hive is SOLID and axe-choppable (see material-tabs.js), and
+  // hanging either of those flags on a flower head or on gold ore is exactly the leak DSAND and BROCK exist to
+  // avoid. Above DECOR_MIN like everything else here, so material-tabs.js grants the solidity explicitly.
+  const HIVEC = [addCol(255, 231, 97), addCol(255, 238, 127)];                                           // 0 = the two banding courses (the model's own darkest, exact), 1 = the panel gradient's weighted mean
+  // ── AND ALL FIVE ARE RESERVED, WHICH IS THE HALF THAT IS EASY TO FORGET ── these are minted HERE, in
+  // palette.js, and assets/creatures.js and assets/held-items.js parse in SHARE mode several fragments LATER at
+  // PAL_TOL 8. Without palOwn, the first creature whose red lands within 8/255 of the apple's (209,75,70) — a
+  // cardinal is exactly that colour — would be handed the FRUIT id, and material-tabs.js has already told that
+  // id it is CANOPY: walk-through, DRAPE, snow-catching, see-through when the eye is near it. That is the
+  // pinecone/stick failure in a new costume, and palOwn is the mechanism that already exists for it: palShare
+  // treats an exact match on a reserved id as no match, and palNearShare skips reserved ids outright. The HIVE
+  // pair needs it just as much in the other direction — its ids carry SOLID, and a bird that borrowed one would
+  // grow a hitbox. Nothing here loses anything by it: assets/bow.js assigns all five BY HAND, never through
+  // palShare, which is exactly the arrangement the oaks' own leaf ids use.
+  for (const i of FRUITC) palOwn.add(i);
+  for (const i of HIVEC) palOwn.add(i);
   const solidTab = new Uint8Array(256);                // per-id collision: terrain/trunks/logs solid; decor + FOLIAGE walk-through
   for (let i = 1; i < DECOR_MIN; i++) solidTab[i] = 1;
   for (const f of foliageIds) solidTab[f] = 0;

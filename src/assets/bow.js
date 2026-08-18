@@ -99,6 +99,29 @@
   // everything else wearing that colour. Pass own = true to keep dedicated entries, as the pinecone does.
   const parseVoxDecor = (b, url, own) => { try { return b ? parseVoxModel(b, !own) : null; } catch (e) { console.warn('[vb]', url, 'is unreadable — that decoration is skipped', e); return null; } };
   const fetchBytes = async (url) => { try { return new Uint8Array(await (await fetch(url)).arrayBuffer()); } catch (e) { console.warn('[vb]', url, 'missing — that decoration is skipped', e); return null; } };
+  // ── WHAT THE ARTIST PAINTED, CELL BY CELL, AND NOTHING ELSE ── a .vox read that MINTS NOTHING: no palette
+  // id is added, shared or reserved by calling this, which is the same promise voxColsUsed (assets/models.js)
+  // makes and for the same reason — sometimes a loader has to know the authored colours BEFORE it decides what
+  // ids they should get. voxColsUsed answers "which colours"; this answers "which colour is in which CELL",
+  // which is what the fruit loader below needs to tell an apple's brown stalk from its green leaf after the
+  // bake pooled the two into one slot. Key is x | y<<8 | z<<16, the same packing every model here uses.
+  const voxCellCols = (b) => { const out = new Map(); if (!b || b.length < 16) return out;
+    try {
+      const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+      let vox = null; const pal = new Uint8Array(1024);
+      const walk = (off, end) => { while (off + 12 <= end) {
+        const id = String.fromCharCode(b[off], b[off + 1], b[off + 2], b[off + 3]);
+        const sz = dv.getUint32(off + 4, true), csz = dv.getUint32(off + 8, true);
+        if (id === 'XYZI' && !vox) { const n = dv.getUint32(off + 12, true); vox = b.subarray(off + 16, off + 16 + n * 4); }
+        else if (id === 'RGBA') pal.set(b.subarray(off + 12, off + 12 + 1024));
+        else if (id === 'MAIN') { walk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+        off += 12 + sz + csz;
+      } };
+      walk(8, b.length);
+      if (vox) for (let i = 0; i < vox.length; i += 4) { const ci = vox[i + 3]; if (!ci) continue;
+        out.set(vox[i] | (vox[i + 1] << 8) | (vox[i + 2] << 16), [pal[(ci - 1) * 4], pal[(ci - 1) * 4 + 1], pal[(ci - 1) * 4 + 2]]); }
+    } catch (e) { console.warn('[vb] voxCellCols: unreadable .vox — the caller falls back to its default', e); }
+    return out; };
   // ── PARALLEL FETCH, ORDERED PARSE ── the requests still overlap, which is the whole point of the
   // Promise.all this replaces. What changed is WHERE the palette ids get minted: parsing used to happen
   // inside each promise, so a model's colours were added the moment ITS response landed, and id assignment
@@ -110,10 +133,10 @@
     ['assets/decoration/lillypad_small.vox', 'decor'],                                      // floats on lakes + rivers
     ['assets/decoration/lillypad_medium.vox', 'decor'],
     ['assets/decoration/lillypad_large.vox', 'decor'],
-    ['assets/decoration/stick_1.vox', 'decor'],                                              // ground scatter, and PICKABLE - so 'held' for the same reason rock.vox is: the player carries it, and the shared palette path rounds its authored browns onto whatever decoration colour is within PAL_TOL
-    ['assets/decoration/stick_2.vox', 'decor'],
+    ['assets/decoration/stick_1.vox', 'held'],                                              // ground scatter, and PICKABLE - so 'held' for the same reason rock.vox is: the player carries it, and the shared palette path rounds its authored browns onto whatever decoration colour is within PAL_TOL
+    ['assets/decoration/stick_2.vox', 'held'],
     ['assets/decoration/log.vox', 'decor'],                                                 // rare fallen log, solid
-    ['assets/decoration/rock.vox', 'decor'],                                                 // the small stone. Ground scatter AND the thing the player dual-wields, which is why it is 'held' and not 'decor': it is parsed like a decoration in every other respect but takes the EXACT-COLOUR path. Its five authored greys (147/140/134/127/120) sit inside PAL_TOL of one another, so on the shared path 140 and 127 both collapsed onto 134 and twelve of its twenty voxels came out the same shade - a five-step ramp rendered as three. Measured with __vb.itemCols(2), which reported three colours where the .vox has five. The noTol comment in models.js already states the rule this was missing: the tolerance is right for scenery at 20 m and wrong for the thing in their hand.
+    ['assets/decoration/rock.vox', 'held'],                                                 // the small stone. Ground scatter AND the thing the player dual-wields, which is why it is 'held' and not 'decor': it is parsed like a decoration in every other respect but takes the EXACT-COLOUR path. Its five authored greys (147/140/134/127/120) sit inside PAL_TOL of one another, so on the shared path 140 and 127 both collapsed onto 134 and twelve of its twenty voxels came out the same shade - a five-step ramp rendered as three. Measured with __vb.itemCols(2), which reported three colours where the .vox has five. The noTol comment in models.js already states the rule this was missing: the tolerance is right for scenery at 20 m and wrong for the thing in their hand.
     ['assets/stone_tools/stone_pick.vox', 'item'],                                          // …and the STONE PICK, the rock-breaking counterpart to the axe (user)
     ['assets/stone_tools/stone_shovel.vox', 'item'],                                        // …and the STONE SHOVEL, which digs ground and nothing else (user)
     ['assets/stone_tools/bow_arrow/arrow.vox', 'item'],                                     // …and the ARROW that lies on the bow (user)
@@ -148,6 +171,11 @@
     // Mapped by RELATIVE lightness: the two ranges do not overlap, so a nearest-colour match would collapse
     // all twelve rock shades onto one sandstone shade and flatten the rock (measured when the desert rocks
     // wore sand). Ranking within each palette keeps the model's own shading.
+    // ── …AND IT IS ONLY BUILT WHILE R26D_ON (2026-08-17) ── REDROCK is an EMPTY array when the switch in
+    // assets/palette.js is off, and an empty `red` would index red[-1] = undefined, write `undefined << 24`
+    // (id 0) into every ROCK26D voxel and fill R26DMAP with undefined. Nothing reads either one today, so that
+    // would be invisible rather than harmful — which is exactly the kind of quiet wrong state to refuse.
+    if (REDROCK.length)
     { const lum = (c) => c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
       const red = REDROCK.slice().sort((a, b) => lum(palette[a]) - lum(palette[b]));
       const rl = rj.pal.map(lum), lo = Math.min(...rl), hi = Math.max(...rl);
@@ -261,7 +289,228 @@
     DROCK = dj.rocks.map((r) => ({ sx: r.sx, sy: r.sy, sz: r.sz, vox: r.vox.map((p) => (p & 0xffffff) | (dids[p >>> 24] << 24)) }));
     dj.rocks.forEach((r, i) => { (r.grp === 'big' ? DROCKB : (r.grp === 'mid' ? DROCKM : DROCKS)).push(i); });   // three tiers off the .glb's own mesh names
   } catch (e) { console.warn('[vb] desert_rocks.json missing — desert rocks skipped', e); DROCK = []; }
-  let FERN2V = [];                                                                          // the big fern plant from fern.glb (see voxelize_fern2.py), walk-through decor — the ferns_grass clumps were REMOVED 2026-07-16
+  // ── THE OAK TREES (user 2026-08-17: "voxelize the oak_trees.glb file") ── seven broadleaf trees, 2.4 m to
+  // 11.7 m, baked from source/glb/oak_trees.glb by tools/voxelize_oaks.py at the SAME 10 cm voxel as every
+  // other asset in this game. The .json IS the asset: editing the .glb changes nothing on its own, exactly as
+  // it does not for the cacti and the rocks — re-run the tool.
+  // ORDER MATTERS AND IS THE TOOL'S: `trees` is emitted sorted by height, so the bake's [0] is the 2.4 m bush and
+  // its [6] is the 11.7 m oak. world/terrain.js picks its size tiers by index off that — but note the BERRY block
+  // further down splices the bush into two, so the LIVE OAKV is eight models and every index above the bush tier
+  // is one higher than the bake's. oakAt's size ladder is written against the live array, not against this line.
+  // ── SEVEN SHADES, AND ONLY FOUR OF THEM COST ANYTHING ── the three bark shades are repointed onto the
+  // pine's existing bark ids and the four leaf shades are minted as the oaks' OWN and reserved in palOwn.
+  // Both halves of that are explained where they happen, inside the try below.
+  let OAKV = [], OAKBARK = [], OAKLEAF = [];
+  try {
+    if (location.search.includes('nooaks')) throw new Error('?nooaks');   // A/B switch: an empty OAKV disables the scatter, the material marking and the stamp in one go, the way ?nocacti does
+    const oj = await (await fetch('assets/decoration/oak_trees.json')).json();
+    // ── BARK COSTS NOTHING: IT IS THE PINE'S OWN ── measured, ?nooaks reports 250/256 with SIX ids free,
+    // and the first cut of this asked for eight. The two it could not have were taken from the asset
+    // editor's swatches in complete silence (edSubs 0 -> 2, with palAudit still reporting over=0/snaps=0),
+    // which is the exact failure mode the ceiling notes in assets/palette.js warn about. So the three bark
+    // shades are repointed onto woodIds instead of minted — the same move log.vox already makes a few lines
+    // down in material-tabs.js, and for the same two reasons: the table has no room, and an oak trunk WANTS
+    // to be the same material as every other trunk in the game (solid, woodTab, axe-only), which reusing the
+    // ids grants for free rather than by remembering to mark it.
+    // ── MAPPED BY RELATIVE LIGHTNESS, NOT BY NEAREST COLOUR ── the two ranges barely overlap: the oak bake
+    // spans luma 74..107 and the pine's smoothed bark 89..104, so a nearest-colour match collapses all three
+    // oak shades onto the pine's darkest and the trunk loses its shading. This is the same rank-map the
+    // desert rocks use onto REDROCK, and for the identical reason — see ROCK26D above.
+    const lum0 = (c) => c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
+    const bark = woodIds.slice().sort((a, b) => lum0(palette[a]) - lum0(palette[b]));
+    const obk = oj.pal.slice(0, oj.nbark).slice().sort((a, b) => lum0(a) - lum0(b));
+    const bmap = new Map();                            // oak bark shade -> the pine bark id at the same rank
+    obk.forEach((c, i) => bmap.set(oj.pal.indexOf(c), bark[Math.min(bark.length - 1,
+      Math.floor(((i + 0.5) / obk.length) * bark.length))]));
+    // …and only the LEAVES mint, because the leaf colour is the one thing about this biome that nothing else
+    // in the table already carries. RESERVED in palOwn for the reason the pinecone's ids are: these ids are
+    // about to be told they are canopy — walk-through, DRAPE support, snow-bearing — and a later tolerance
+    // share would hand that to whatever model happened to ask for a nearby green. The palOwn add is guarded
+    // on the mint really happening: on a full table addCol returns somebody ELSE's nearest id, and reserving
+    // that would quietly steal it.
+    const oids = oj.pal.map((c, i) => { if (i < oj.nbark) return bmap.get(i);
+      const n0 = palette.length; const id = addCol(c[0], c[1], c[2]);
+      if (palette.length > n0) palOwn.add(id); return id; });
+    OAKBARK = [...new Set(oids.slice(0, oj.nbark))];                                         // pal[0:nbark] is bark, pal[nbark:] is leaf — see the voxelizer header
+    OAKLEAF = oids.slice(oj.nbark);
+    OAKV = oj.trees.map((t) => ({ sx: t.sx, sy: t.sy, sz: t.sz, vox: t.vox.map((p) => (p & 0xffffff) | (oids[p >>> 24] << 24)) }));
+    console.log('[vb] oaks:', OAKV.length, 'trees,', OAKV.reduce((a, m) => a + m.vox.length, 0), 'voxels,',
+      OAKBARK.length, 'bark ids (BORROWED from the pine) +', OAKLEAF.length, 'leaf ids (minted), widest', Math.max(...OAKV.map((m) => Math.max(m.sx, m.sy))), 'tallest', Math.max(...OAKV.map((m) => m.sz)));
+  } catch (e) { console.warn('[vb] oak_trees.json missing — oaks skipped', e); OAKV = []; OAKBARK = []; OAKLEAF = []; }
+  // ── ONE DENSE OCCUPANCY + EXTERIOR-AIR FLOOD FOR A SPARSE MODEL ── the oak crowns baked out of a .glb are
+  // HOLLOW SHELLS: measured over all seven, every single leaf voxel has an empty 6-neighbour (2468 of 2468 on
+  // the bush, 77513 of 77513 on the giant), so "has air beside it" does not mean "is on the OUTSIDE" — half of
+  // that air is the sealed cavity under the dome. A berry hung on an inside face, or an apple dropped into the
+  // hollow, is simply invisible. So the air is flooded from the bounding box inward first, and everything below
+  // asks about EXTERIOR air specifically. Both consumers (the berry scatter here and OAK_ANCH / OAK_BANCH in
+  // material-tabs.js) need exactly this, which is why it is one helper and not two loops.
+  // Transient: the caller drops both arrays. The giant is 114x112x114 = 1.46 MB of Uint8, and the whole set of
+  // nine models is ~3.5 M cells walked ONCE at load.
+  const voxShellAir = (m) => {
+    const sx = m.sx, sy = m.sy, sz = m.sz, n = sx * sy * sz;
+    const occ = new Uint8Array(n), ext = new Uint8Array(n), st = new Int32Array(n);
+    for (const p of m.vox) occ[(p & 255) + ((p >> 8) & 255) * sx + ((p >> 16) & 255) * sx * sy] = 1;
+    let sp = 0;
+    for (let z = 0; z < sz; z++) for (let y = 0; y < sy; y++) for (let x = 0; x < sx; x++) {
+      if (x && x < sx - 1 && y && y < sy - 1 && z && z < sz - 1) continue;   // seed from the box FACES only
+      const i = x + y * sx + z * sx * sy; if (occ[i] || ext[i]) continue;
+      ext[i] = 1; st[sp++] = i;
+    }
+    while (sp > 0) { const i = st[--sp];
+      const x = i % sx, y = ((i / sx) | 0) % sy, z = (i / (sx * sy)) | 0;
+      for (let d = 0; d < 6; d++) {
+        const nx = x + (d === 0 ? 1 : d === 1 ? -1 : 0), ny = y + (d === 2 ? 1 : d === 3 ? -1 : 0), nz = z + (d === 4 ? 1 : d === 5 ? -1 : 0);
+        if (nx < 0 || nx >= sx || ny < 0 || ny >= sy || nz < 0 || nz >= sz) continue;
+        const j = nx + ny * sx + nz * sx * sy; if (occ[j] || ext[j]) continue;
+        ext[j] = 1; st[sp++] = j;
+      } }
+    return { occ, ext };
+  };
+  // ── THE BUSH TIER IS A BERRY BUSH NOW, AND THE PLAIN ONE STOPS EXISTING (user 2026-08-17: "in oak_1 … one has
+  // single red voxels scattered around it, and the other one has single blue voxels … so there shouldn't be one
+  // without any berries") ── OAKV[0] is the 2.4 m underbrush, 22% of every oak in the world. It becomes TWO
+  // models, a cherry bush and a blueberry bush, and world/terrain.js splits that tier between them 50/50, so the
+  // berryless bush is not rarer — it is gone.
+  //
+  // WHY THIS IS A LOAD-TIME DERIVATION AND NOT A RE-BAKE. Every other decoration in this game is baked by a tool
+  // and the .json IS the asset, and that is still true of the TREE: nothing here re-shapes oak_1, it re-COLOURS
+  // 48 of its 2468 leaf voxels. Baking that would mean shipping two more copies of a 3427-voxel model to express
+  // a recolour that is a pure function of the model already on disk, and it would put the berry count and the
+  // scatter behind a re-run of tools/voxelize_oaks.py (which needs source/glb/oak_trees.glb) instead of in front
+  // of the reader. game/assets/decoration/oak_trees.json is untouched by this whole feature.
+  //
+  // A BERRY REPLACES A LEAF, IT DOES NOT ADD A VOXEL, and that is what makes it free of every support question in
+  // the game: the cell was already the crown's, so the berry is 26-connected to the crown by construction, it is
+  // inside the model that sim/physics.js oakShape() builds, and it therefore falls with the bush when the bush is
+  // felled. The voxel COUNT is identical, so nothing downstream that sizes off the bake shifts.
+  // Candidates are OUTER leaves only (see voxShellAir), angle-sorted about the trunk and picked one per angular
+  // sector — the same even-ring trick PINE_ANCH uses for cones, so berries wrap the bush instead of clumping on
+  // one face. The two variants take different phases off the same list, so a cherry bush and a blueberry bush
+  // standing side by side are not the same bush twice.
+  const OKBERRY = 48;                                  // berries per bush: 1 in every ~51 leaves, ~15 of them facing you at once on a 3.4 m bush. The one number to move if the bushes read bare or gaudy.
+  if (OAKV.length && OAKLEAF.length) {
+    const m = OAKV[0], sx = m.sx, sy = m.sy;
+    const fol = new Uint8Array(256); for (const i of OAKLEAF) fol[i] = 1;
+    const ext = voxShellAir(m).ext;
+    const cand = [];                                   // outer-surface leaf voxels, as INDICES into m.vox
+    for (let i = 0; i < m.vox.length; i++) { const p = m.vox[i];
+      if (!fol[p >>> 24]) continue;
+      const x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+      let out = false;
+      for (let d = 0; d < 6 && !out; d++) {
+        const nx = x + (d === 0 ? 1 : d === 1 ? -1 : 0), ny = y + (d === 2 ? 1 : d === 3 ? -1 : 0), nz = z + (d === 4 ? 1 : d === 5 ? -1 : 0);
+        if (nx < 0 || nx >= sx || ny < 0 || ny >= sy || nz < 0 || nz >= m.sz) continue;
+        if (ext[nx + ny * sx + nz * sx * sy]) out = true;
+      }
+      if (out) cand.push(i);
+    }
+    cand.sort((a, b) => Math.atan2(((m.vox[a] >> 8) & 255) - sy * 0.5, (m.vox[a] & 255) - sx * 0.5)
+                      - Math.atan2(((m.vox[b] >> 8) & 255) - sy * 0.5, (m.vox[b] & 255) - sx * 0.5));
+    const berryBush = (col, salt) => {                  // one recoloured copy of the bush
+      const vox = m.vox.slice(), n = Math.min(OKBERRY, cand.length);
+      for (let k = 0; k < n; k++) {
+        const j = cand[(((k + 0.15 + ihash(k * 29 + salt, k * 31 + salt) * 0.7) / n) * cand.length) | 0];
+        vox[j] = (vox[j] & 0xffffff) | (col << 24);
+      }
+      return { sx: m.sx, sy: m.sy, sz: m.sz, vox };
+    };
+    OAKV.splice(0, 1, berryBush(FRUITC[0], 11), berryBush(FRUITC[1], 97));   // [0] cherry, [1] blueberry — every index above the bush tier shifts up one, and world/terrain.js's size ladder is written against that
+    console.log('[vb] oak bushes: cherry + blueberry variants,', Math.min(OKBERRY, cand.length), 'berries each from',
+      cand.length, 'outer leaves — OAKV is', OAKV.length, 'models now');
+  }
+  // ── APPLES AND ORANGES (user 2026-08-17: "pick trees at random and place apples and oranges in the trees") ──
+  // tools/voxelize_fruit.py bakes both out of the art (apple/00.vox, and the ORANGE node inside the 117-model
+  // culinary pack that is orange.vox) and emits SLOTS rather than colours: 0 = flesh, 1 = stem and leaf. The ids
+  // are decided here, and neither of them is a mint this file makes:
+  //   * the flesh takes its own FRUITC entry, matched by colour to what the tool baked — so if the art is
+  //     re-authored and the tool's mean moves, this picks the nearer of the two rather than silently painting
+  //     an apple orange, and a mismatch is visible in the console line below;
+  //   * the LEAF WEARS AN OAK LEAF ID, the lightest of the four. That is not thrift, it is the correct
+  //     answer: the voxels are a leaf, and they are hanging in a crown made of exactly that leaf, so they get
+  //     foliaTab, DRAPE support and canopy see-through for nothing and cannot be told apart from the tree.
+  //   * the STEM IS WOODY AND WANTS A BROWN (user 2026-08-17: "the apple doesnt seem to have a brown stem …
+  //     the stem is currently green like the leaf on it"). The user is right, and the ART AGREES WITH THEM:
+  //     apple/00.vox paints the stalk at (0,1,4) and (1,1,3) in (143,95,74), a real brown, and the leaf blade
+  //     at (2,1,4)/(2,1,3)/(3,1,3) in three greens. What lost it is the BAKE, not this loader — fruit.json
+  //     carries a BOOLEAN high byte (0 = flesh, 1 = everything else) and one pooled `pal[nbody]` colour, whose
+  //     voxel-weighted mean is (171,178,100): three greens outvoting two browns, i.e. an olive.
+  //     Once collapsed the split cannot be recovered from fruit.json by GEOMETRY — measured, the five cells are
+  //     one 26-connected blob and the brown (1,1,3) is FACE-adjacent to the green (2,1,3), so no connectivity
+  //     or adjacency rule separates them. It CAN be recovered from the art, which the game now ships and loads
+  //     anyway for the eating animation, so that is what happens below: every non-flesh cell is looked up in
+  //     apple/00.vox and classified by its authored hue (r > g = woody stalk, otherwise leaf blade).
+  //     The ORANGE is read off orange.vox by the same rule (user 2026-08-17: "do not use the apple model at
+  //     all for the orange model") — it happens to answer identically today, because its three non-flesh
+  //     cells are three greens and it has no stalk at all, but it is now ITS OWN art saying so. A cell the
+  //     art does not know falls back to LEAF, so a re-authored fruit cannot come out wrong, only unimproved.
+  //   * …AND THE BROWN ITSELF IS NOT MINTED HERE. FRUIT_STEM_ID is 0, so the stalk falls back to the leaf id:
+  //     there is no id in the table that is both BROWN and CANOPY, and the palette is at 255/256 with one slot
+  //     left, which is not this file's to spend. Every reuse was checked and every one leaks. STICK_S is in
+  //     PICK_STICK, so a stalk would right-click up as a TWIG — and it would do it through the very flood the
+  //     fruit pickup in sim/projectiles.js walks. The oaks' own OAKBARK is solid + woodTab: that puts a hitbox
+  //     in a walk-through crown, lets the chop ray read a 2-voxel stalk as "the trunk behind the needles" and
+  //     hand the swing to the tree-felling path, and makes the stem STRUCTURE hanging off a DRAPE anchor — the
+  //     component-with-no-path-to-the-ground that the beehive comment in material-tabs.js documents, which the
+  //     resolver lifts on the first disturbance. STICK_M is the one already-minted brown that nothing wears,
+  //     but it is not in palOwn and it sits in the middle of a 29-colour pine-brown cluster (both sticks, the
+  //     log, both pines and every stone-tool haft are within PAL_TOL 8 of it), so it is very likely already
+  //     borrowed by palShare: marking it foliaTab could hand canopy identity to a twig, and reserving it would
+  //     displace its borrower onto the last slot or a snap. Set FRUIT_STEM_ID to a minted brown and the split
+  //     below goes live — material-tabs.js already marks it canopy whenever it is non-zero.
+  //     The HELD apple and its eating animation are raw-RGB art and are unaffected either way: their stalk is
+  //     the artist's own brown TODAY, at no palette cost, which is where an apple is actually big on screen.
+  const FRUIT_STEM_ID = FRUIT_STEM;                    // the brown minted in assets/palette.js — see the note there for why nothing existing could be reused
+  let FRUITV = [];
+  let FRUIT_LEAF_ID = 0;    // …and the CANOPY LEAF id the fruit's own blade ended up wearing, hoisted to module scope so the PICKUP can read it (sim/projectiles.js). It is chosen inside the try below by nearest colour, and a const in there is block-scoped — which is exactly why the pickup could not see it and left the leaf hanging in the tree.
+  try {
+    const fj = await (await fetch('assets/decoration/fruit.json')).json();
+    const near = (c, ids) => { let bd = 1e9, best = ids[0];
+      for (const i of ids) { const q = palette[i]; if (!q) continue;
+        const d = (q[0] - c[0]) * (q[0] - c[0]) + (q[1] - c[1]) * (q[1] - c[1]) + (q[2] - c[2]) * (q[2] - c[2]);
+        if (d < bd) { bd = d; best = i; } }
+      return best; };
+    const leafId = near(fj.pal[fj.nbody], OAKLEAF.length ? OAKLEAF : [FRUITC[0]]);
+    FRUIT_LEAF_ID = leafId;
+    const stemId = FRUIT_STEM_ID || leafId;
+    // ── EACH FRUIT IS READ OFF ITS OWN ART (user 2026-08-17: "do not use the apple model at all for the
+    // orange model") ── this looked the non-flesh cells of BOTH fruit up in apple/00.vox, on the argument
+    // that the two are baked on one grid and the orange's three crown cells ARE the apple's three leaf
+    // cells. That is true of the art as it stands and wrong as a rule: it is the apple deciding what an
+    // orange's stem is, so an orange re-authored with a brown stalk would quietly wear the apple's answer
+    // instead of its own. One map per fruit, keyed by the name tools/voxelize_fruit.py wrote, and the
+    // fallback is unchanged — a cell the art does not know is a leaf, which is what shipped before.
+    const ART = { apple: voxCellCols(await fetchBytes('assets/food/apple/00.vox')),
+                  orange: voxCellCols(await fetchBytes('assets/food/orange.vox')) };   // cell -> the colour the ARTIST painted: the only place the stem/leaf split still exists once the bake has pooled it
+    const woody = (art, p) => { const c = art && art.get(p & 0xffffff); return !!c && c[0] > c[1]; };   // brown stalk vs green blade, read off the authored colour. No art (or no file) = leaf
+    let nStem = 0;
+    FRUITV = fj.fruit.map((f, i) => { const body = near(fj.pal[i], [FRUITC[0], FRUITC[2]]), art = ART[f.name];
+      return { name: f.name, sx: f.sx, sy: f.sy, sz: f.sz,
+               vox: f.vox.map((p) => { const id = (p >>> 24) ? (woody(art, p) ? (nStem++, stemId) : leafId) : body;
+                 return (p & 0xffffff) | (id << 24); }) }; });
+    console.log('[vb] fruit:', FRUITV.map((f, i) => f.name + ' ' + f.sx + 'x' + f.sy + 'x' + f.sz + ' ' + f.vox.length + 'vox flesh id ' +
+      near(fj.pal[i], [FRUITC[0], FRUITC[2]])).join(', '), '— leaf on oak leaf id', leafId, '| stalk', nStem, 'vox on id', stemId,
+      stemId === leafId ? '(NO BROWN MINTED — the stalk still reads as leaf; see FRUIT_STEM_ID)' : '(brown)');
+  } catch (e) { console.warn('[vb] fruit.json missing — no fruit in the oaks', e); FRUITV = []; }
+  // ── AND THE BEEHIVE (user 2026-08-17: "implement the beehive.vox on some of the oak trees as well") ── one
+  // 5x5x5 model, 54 voxels, and NO new palette entry: every shade it is authored with is resolved onto the two
+  // HIVEC ids by nearest colour before the parse, and handing parseVoxModel a complete colMap is what stops it
+  // reaching addCol at all. That matters more than it sounds on a table this full — the own-ids path would have
+  // minted eight, and on a full table addCol SUBSTITUTES rather than fails. Reading the colours first with
+  // voxColsUsed (which mints nothing, by design) is the only way to decide a mapping before the parser does.
+  let HIVEV = null;
+  { const hb = await fetchBytes('assets/decoration/beehive.vox');
+    if (hb) try {
+      const cmap = new Map();
+      for (const c of voxColsUsed(hb)) { let bd = 1e9, id = HIVEC[0];
+        for (const h of HIVEC) { const q = palette[h];
+          const d = (q[0] - c[0]) * (q[0] - c[0]) + (q[1] - c[1]) * (q[1] - c[1]) + (q[2] - c[2]) * (q[2] - c[2]);
+          if (d < bd) { bd = d; id = h; } }
+        cmap.set((c[0] << 16) | (c[1] << 8) | c[2], id); }
+      HIVEV = parseVoxModel(hb, false, false, cmap);
+      console.log('[vb] beehive:', HIVEV.sx + 'x' + HIVEV.sy + 'x' + HIVEV.sz, HIVEV.vox.length, 'vox,', cmap.size, 'authored shades ->', HIVEC.length, 'ids');
+    } catch (e) { console.warn('[vb] beehive.vox is unreadable — no hives', e); HIVEV = null; }
+  }
+  let FERN2V = [];                                                                        // the big fern plant from fern.glb (see voxelize_fern2.py), walk-through decor — the ferns_grass clumps were REMOVED 2026-07-16
   try {
     const f2 = await (await fetch('assets/decoration/fern2.json')).json();
     const f2ids = f2.pal.map((c) => addCol(c[0], c[1], c[2]));

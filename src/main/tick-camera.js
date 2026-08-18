@@ -3,6 +3,26 @@
     { const ntd = window.__TFREEZE ? tday : (tday + dt * cycleSpeed / 1200) % 1;   // __TFREEZE pins the sun for perf A/Bs (the cycle moved measured trace cost 45% over one 7-minute run). Not __vb.tod(): that also sets resetHist, so pinning with it would measure a permanently-cold denoiser.
       if (ntd < tday) moonDay++;                       // a day rolled over → the moon advances one phase step (8-day cycle)
       tday = ntd; }
+    // ── RAIN SKY ── the one scalar the whole overcast hangs off, computed here beside the day/night cycle
+    // because it is the same kind of thing: an environment state the frame is shaded under, not an event.
+    // TWO FACTORS, kept apart deliberately (see rainSkyK in ui/settings.js for why):
+    //   rainSkyK — a CLOCK. Ramps 0→1 over RAIN_SKY_IN while a storm runs and 1→0 over RAIN_SKY_OUT once it
+    //     ends, linearly and in real seconds, so it is frame-rate independent and it finishes. It follows
+    //     snowOn, which means the snow button, the P key and __vb.snow() all drive it exactly as the weather
+    //     tick does — nothing here needs to know which one turned the storm on.
+    //   oakM  — a POSITION. 1 deep in the oak forest, 0 in the pines, smoothstepped across the 450-voxel border.
+    //     This is what makes it RAIN rather than STORM: the pine forest and the desert take snow from the same
+    //     event and must keep the sky they have today, and they do, because oakM is 0 there and every rain term
+    //     in COMPOSITE is written to reproduce the fair-weather expression exactly at 0.
+    // Six vnoise once a frame; oakM is the same function the rain march in TRACE is a bit-for-bit port of, and
+    // the same one landSnowAt uses to refuse a flake, so the sky, the drops and the bare ground under them can
+    // never disagree about where the border is.
+    rainSkyK = snowOn ? Math.min(1, rainSkyK + dt / RAIN_SKY_IN) : Math.max(0, rainSkyK - dt / RAIN_SKY_OUT);
+    // RAIN_ON false => 0, so the cloud thickening, the cloud darkening and the sun dim all switch off with
+    // the drops. The ramp itself keeps running; only its weight is zeroed, so turning rain back on picks
+    // up mid-storm without a jump.
+    const rainK = RAIN_ON ? rainSkyK * oakM(P.x, P.z) : 0;
+    UF[UF_RAINK] = rainK;                              // u.hurtV.w — the last float of the uniform buffer; see UF_RAINK in render/buffers.js for why that lane and why it is safe
     const ang = tday * Math.PI * 2 - Math.PI / 2;
     const el = Math.sin(ang) * 1.05;
     const ce2 = Math.cos(el);
@@ -97,7 +117,17 @@
           acc += (reach / HELD_SKY_R) * wgt; wsum += wgt;
         }
         heldSkyV += ((wsum > 0 ? acc / wsum : 1) - heldSkyV) * (1 - Math.exp(-8 * dt)); }   // the SAME ~0.15 s ease the sun term uses — walking under a crown must fade, not strobe
-      UF[UF_HELDCFG] = heldSunV; UF[UF_HELDCFG + 1] = heldSkyV; UF[UF_HELDCFG + 2] = Math.max(0, stackShown); UF[UF_HELDCFG + 3] = 0;   // ── STACKBADGE ── z is the held stack count the BLIT draws beside the hand. It MUST be written here: this line runs every frame and used to zero z, which silently clobbered a write made earlier in the frame. “Spare” meant actively zeroed, not unused.
+      // ── …AND THE RAIN DIMS THE TOOL IN YOUR HAND WITH THE WORLD ── heldCfg.x is "how much sun reaches the
+      // player", the scalar that gates the held item's DIRECT term (see heldLight in PRE), and a cloud deck
+      // overhead is precisely a reduction in how much sun reaches the player — so this is the same physical
+      // quantity rather than a cosmetic match. It has to be done HERE and not in the shader: heldLight lives in
+      // render/wgsl/pre.js, so the view-model is the one lit surface the sunTintR() swap in COMPOSITE cannot
+      // reach, and without this line the axe keeps a full-strength sun edge while the forest it is swinging at
+      // has lost a third of its own. RAIN_SUN_DIM is the SAME constant sunTintR uses, read from one declaration.
+      // The stack COUNT is forced to 2 while the held-item panel is open: the badge only draws above 1, so
+      // tuning it with a single item in hand would otherwise be dragging sliders against a blank screen.
+      // (u.badge itself is written further down, where the held model's own corners are known.)
+      UF[UF_HELDCFG] = heldSunV * (1 - RAIN_SUN_DIM * rainK); UF[UF_HELDCFG + 1] = heldSkyV; UF[UF_HELDCFG + 2] = Math.max(sbOpen() ? 2 : 0, stackShown); UF[UF_HELDCFG + 3] = 0;   // ── STACKBADGE ── z is the held stack count the BLIT draws beside the hand. It MUST be written here: this line runs every frame and used to zero z, which silently clobbered a write made earlier in the frame. “Spare” meant actively zeroed, not unused.
       UF[UF_LGT] = lgtMask; UF[UF_LGT + 1] = wReflK; UF[UF_LGT + 2] = lgtMask2; UF[UF_LGT + 3] = 0;   // ── WATER PANEL ── x = term mask (LG), y = the REFLECTION STRENGTH slider, z = the SECOND term mask (LG2 — lgt.x is full at 24 bits)
       // ── HIT FLASH ── published AFTER the creature stamps (see the block by UF[UF_HURTH + 3] further down), because a
       // land mammal re-stamps itself later in this same tick — bounce included — and a box measured here would
@@ -138,10 +168,17 @@
           else if (addItem(KNIFE_IT) === -1) cs.n += 2;   // nowhere to hold it (guarded at clash start, but never eat rocks for nothing)
         }
       }
-      { const hNow = heldIt() || 0; if (hNow !== prevHeldIt) { prevHeldIt = hNow; swapT0 = now; } }   // ── TOOL SWAP ── keyed off the ITEM, so a pickup or a craft landing in the hand animates too
+      // ── THE FRUIT BEING EATEN ── advanced ONCE per frame, here, because eatAnimFrame is what retires the
+      // animation when its last frame has been shown and calling it twice would step it twice. `eatIt` is the
+      // fruit the strip belongs to, and everything below reads `heldIt() || eatIt` rather than `heldIt()` for
+      // one reason: eating the LAST apple of a stack empties the slot on the same frame the animation starts,
+      // so from that frame on the hand is officially holding nothing. Without the fallback the pose would snap
+      // to the axe's, the swap would fire and drop the apple out of frame, and the core would never be seen.
+      const eatF = eatAnimFrame(now), eatIt = eatF >= 0 ? eatAnim.it : 0;
+      { const hNow = heldIt() || eatIt || 0; if (hNow !== prevHeldIt) { prevHeldIt = hNow; swapT0 = now; } }   // ── TOOL SWAP ── keyed off the ITEM, so a pickup or a craft landing in the hand animates too. The empty hand a finished apple leaves behind still swaps — eatIt goes to 0 with the animation, one frame after the core.
       const swapR = Math.max(0, 1 - (now - swapT0) / SWAP_MS);
       const swapF = swapR * swapR * (3 - 2 * swapR);   // 1 → 0 across the swap, SMOOTHSTEPPED and not quantised: this is a camera move, not a character animation, and stepping it at 24 fps read as a stutter (user)
-      const hcfg = heldCfg(heldIt() || 1);             // the shown item's OWN pose (during a grab flight this is the grabbed item's)
+      const hcfg = heldCfg(heldIt() || eatIt || 1);    // the shown item's OWN pose (during a grab flight this is the grabbed item's; through a bite it stays the fruit's even once the stack is gone)
       // ── SPEAR OVERHEAD ── holding the right button cocks it back over the shoulder, ready to throw; the
       // release sends it (user). Eased over SPEAR_WIND_MS so it lifts rather than snapping into place.
       // ── HURRY ── a bow held at full draw shakes, and worse the longer you hold it: the arm is under load
@@ -230,9 +267,54 @@
         if (bowLoosed && bowAtRest(now)) { bowLoosed = false; playBowReload(); }   // back at rest: the bow is nocked again, ready for the next draw — and you hear the next arrow go on (user)
         showId = ((BOW_NOCK && bowLoosed && bf > 0) ? BOW_NOCK : BOW_IT) + bf;
       }
+      // ── THE APPLE GOES DOWN TO A CORE ── the same swap the bow's draw makes, under the same held pose: one
+      // run of consecutive item ids, indexed by a frame counter. TWO ids are allowed to be showing when it
+      // starts and they are the only two that can be: `eatIt`, meaning the stack still has fruit in it, and 0,
+      // meaning that bite was the last one. Anything else means the player scrolled to another slot mid-chew,
+      // and then the strip simply is not drawn — the tool they switched to wins, and the animation retires on
+      // its own clock a few frames later.
+      if (eatF >= 0 && !dead && (showId === eatIt || showId === 0)) showId = eatIt + eatF;
       shownIt = showId;
       if (WORM_NFRAMES && showId >= WORM_ITEM0 && showId < WORM_ITEM0 + WORM_NFRAMES) showId = WORM_ITEM0 + Math.floor(now * 0.024) % WORM_NFRAMES;   // the caught worm SQUIGGLES — its 24 fps crawl cycle keeps playing in the hand (and through the grab flight)
       set3(52, AX, showId);
+      // ── THE STACK BADGE RIDES THE MODEL'S TOP-RIGHT CORNER (user 2026-08-17: "always in the top right") ──
+      // BLIT draws the x{n} beside the hand and used to place it at a fixed offset from the ANCHOR, which is
+      // the middle of the model's box — so it sat correctly on one item and half inside the next. The corner
+      // is a projection, and everything it needs is right here and nowhere else: the anchor and voxel scale
+      // (set3(48) above), the item's three local axes in camera space, and its GRID DIMENSIONS off the item
+      // table. All eight corners are projected rather than a guessed one, because which corner reads as
+      // "top right" changes with the pose — the axes are rotated by yaw/pitch/roll and the bob.
+      // The projection is character for character the one TRACE and BLIT use (camera y is DOWN here, hence the
+      // negate), so the pixel handed over is the pixel the badge lands on.
+      { const bi = (itemsRef && itemsRef[showId - 1]) || null, bs = hcfg.scale;
+        if (bi && bi.w && UF[50] > 0.05) {             // pickA.z: the same in-front-of-the-camera gate BLIT applies before it draws anything
+          // The model is centred on the anchor with half-extents vs*(w/2, d/2, h/2) along its three local
+          // axes (see the held-item DDA in COMPOSITE), so its apparent half-size on screen is the sum of the
+          // three axes' contributions to that screen direction. Measured at the ANCHOR'S depth rather than
+          // per corner, deliberately: at a viewmodel's z (~1) the perspective is steep enough that a corner
+          // swinging toward the eye projects far outside the shape you can actually see, and a box built from
+          // those corners put the badge half a screen away from the rock. This is the apparent box.
+          const hx2 = bi.w * 0.5 * bs, hy2 = bi.d * 0.5 * bs, hz2 = bi.h * 0.5 * bs;
+          const tH = UF[3], asp = UF[7], CWb = UF[42], CHb = UF[43], az = Math.max(0.05, hz);
+          const exX = Math.abs(hx2 * AX[0]) + Math.abs(hy2 * AY[0]) + Math.abs(hz2 * AZ[0]);
+          const exY = Math.abs(hx2 * AX[1]) + Math.abs(hy2 * AY[1]) + Math.abs(hz2 * AZ[1]);
+          // …and the projection is CALIBRATED, not assumed: writing the bare anchor here and screenshotting it
+          // is what settled the y sign (the anchor landed on the rock at 726 and 371 px away at the other
+          // sign). Larger camera y is UP the screen in this space, whatever the note in BLIT says.
+          const cxP = (((hx / az) / (tH * asp)) * 0.5 + 0.5) * CWb, cyP = (0.5 - ((hy / az) / tH) * 0.5) * CHb;
+          const rxP = ((exX / az) / (tH * asp)) * 0.5 * CWb, ryP = ((exY / az) / tH) * 0.5 * CHb;
+          const sbC = sbFor(showId);                   // this item's OWN trim (ui/hud.js). Keyed on the DRAWN id, so an eat strip or a bow draw — whose frames all share a name and therefore one placement — cannot shift the badge mid-animation
+          const gp = Math.max(2, Math.floor(CHb / 320 * Math.max(0.2, sbC.size)));   // the same glyph pixel BLIT derives, so the nudge is in badge pixels and holds at any resolution
+          // …AND IT IS KEPT ON SCREEN. The tool poses sit the held model hard against the right edge, so its own
+          // top-right corner is genuinely off the canvas for the fruit — measured at 2212 px on a 2240 px
+          // canvas, which would have run three glyphs into the bezel. A badge that has to be readable cannot
+          // follow the corner past the edge, so it stops at it. The run's own size is what it is clamped by,
+          // and the digit count comes from the same place BLIT gets it.
+          const nB9 = Math.max(sbOpen() ? 2 : 0, stackShown), runW = ((nB9 >= 10 ? 2 : 1) + 1) * 6 * gp;
+          UF[UF_BADGE] = Math.min(CWb - runW - 2, Math.max(2, cxP + rxP + sbC.x * gp));           // the model's own top-right, plus this item's trim
+          UF[UF_BADGE + 1] = Math.min(CHb - 5 * gp - 2, Math.max(2, cyP - ryP + sbC.y * gp));
+        } else { UF[UF_BADGE] = -1e4; UF[UF_BADGE + 1] = -1e4; }   // no item, or it is behind the eye: park the glyphs off screen rather than at a stale pixel
+        { const sbD = sbFor(showId); UF[UF_BADGE + 2] = sbD.size; UF[UF_BADGE + 3] = sbD.tilt; } }
       set3(56, AY, snowFallAcc);                     // u.pickY.w = integrated snow fall
       set3(60, AZ, freezeK);                        // u.pickZ.w = gradual freeze 0..1
       { // ── LEFT HAND ── shows the second rock when dual-wielding (selected rock stack n ≥ 2); also hosts a 2nd-rock grab flight

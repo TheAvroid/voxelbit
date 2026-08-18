@@ -533,26 +533,53 @@ def check_modules(masked, offsets, mods, where):
 
 
 # -- 9: the gen-worker serialization contract ---------------------------------
-# The worker pool is built by pasting the SOURCE of 51 functions into a blob via
-# fn.toString(), alongside a registry of 35 consts and 30 tables. toString() emits the
-# text exactly as written, so a serialized function may only mention names the worker
-# re-declares. Call a new helper from inside one of them and the text still says
-# `myHelper(...)`, but the worker has never heard of it: a ReferenceError on a background
-# thread, or worse, a silent fall back to the inline path that just runs slower.
+# TWO workers are built by pasting the SOURCE of a list of functions into a blob via
+# fn.toString(): the gen POOL (world/gen-pool.js - the whole generator) and the ROW worker
+# (world/gen-worker.js - the height/moss prefetch). toString() emits the text exactly as
+# written, so a serialized function may only mention names its worker re-declares. Call a
+# new helper from inside one of them and the text still says `myHelper(...)`, but the
+# worker has never heard of it: a ReferenceError on a background thread, or worse, a
+# silent fall back to the inline path that just runs slower.
+#
+# The ROW worker is why this now covers both. Its preamble was a hand-written string
+# naming seventeen things, and it went stale the first day the height function grew a
+# term: the desert biome put desertM/duneH/fbm into makeHRow, the oak forest later added
+# oakRoll/oakBank and their whole transitive tail, and none of it was in the string. It
+# threw on its first job and fell back to inline generation for weeks, behind a
+# console.warn nobody reads. Both preambles are registries now and both are walked here,
+# so "I added a term to H" is a lint failure rather than a thing someone has to remember.
 #
 # Precision matters more than reach here, so this only flags an identifier it can PROVE
 # is a top-level game name (from check 5's map) and that is not registered. A local, a
 # parameter, `Math`, or anything from another scope cannot reach this list, so a report
 # is a real finding rather than something to argue with.
-WORKER_DECLS = {          # names the pool writes into the worker preamble by hand
+#
+# The blind spot both share: the onmessage body is a STRING, so mask_js blanks it and the
+# names it calls are invisible here. Every one of them is a registry ROOT (the registry is
+# the root set this walks from), so that costs nothing today - but a NEW call added inside
+# that string to something unregistered is the one shape this cannot see.
+WORKER_DECLS = {          # names the pool writes into its worker preamble by hand
     'WX', 'WZ', 'OX', 'OZ', 'BX', 'W', 'hmap', 'touched', 'MROT', 'remap', 'rivScope',
     'gwrap', 'rivCache', 'caveCache', 'takeRows', 'ORPH_SCRATCH', 'ORPHAN_OK',
     'WY', 'onmessage', 'postMessage', 'self',
 }
+ROW_DECLS = {             # ...and the ones the ROW worker writes into its own by hand.
+    # rivCache/rivScope are per-worker MUTABLE state, so they cannot be a `const X = value`
+    # in a registry. SPWX/SPWZ are per-JOB: spawn is randomised in world/build.js, nine
+    # fragments below gen-worker.js, so both are still 0 when that preamble is assembled -
+    # they ride along with every postMessage instead of being baked.
+    'rivCache', 'rivScope', 'SPWX', 'SPWZ', 'onmessage', 'postMessage', 'self',
+}
+
+# (fragment, registry names in that fragment, hand-written preamble names, label)
+WORKERS = (
+    ('world/gen-pool.js', ('consts', 'tables', 'fns'), WORKER_DECLS, 'gen pool'),
+    ('world/gen-worker.js', ('consts', 'fns'), ROW_DECLS, 'row worker'),
+)
 
 
 def _registry(js, name):
-    """The identifier list out of `const <name> = { A, B, C };` in gen-pool.js."""
+    """The identifier list out of `const <name> = { A, B, C };` in a worker fragment."""
     m = re.search(r'const ' + name + r' = \{([^}]*)\}', js)
     if not m:
         return set()
@@ -585,16 +612,36 @@ def _body_of(masked, whole, start):
     return whole[start:i], masked[start:i]
 
 
-def check_worker(whole, masked, toplevel, where):
-    pool = os.path.join(SRC, 'world', 'gen-pool.js')
-    if not os.path.exists(pool):
-        return
-    js = open(pool, encoding='utf8').read()
-    consts, tables, fns = (_registry(js, k) for k in ('consts', 'tables', 'fns'))
+def _check_one_worker(rel, regs, decls, label, whole, masked, toplevel, where, listed):
+    path = os.path.join(SRC, rel.replace('/', os.sep))
+    if not os.path.exists(path):
+        return 0, 0
+    js = open(path, encoding='utf8').read()
+    named = {k: _registry(js, k) for k in regs}
+    fns = named.get('fns', set())
     if not fns:
-        err('world/gen-pool.js', 'the fns registry could not be read - check 9 is blind')
-        return
-    registered = consts | tables | fns | WORKER_DECLS
+        err(rel, 'the fns registry could not be read - check 9 is blind to the ' + label)
+        return 0, 0
+    registered = set(decls)
+    for v in named.values():
+        registered |= v
+
+    # ORDER: a worker fragment can only serialize names DECLARED ABOVE IT. Reading one
+    # declared lower is a temporal-dead-zone ReferenceError on the MAIN thread, thrown
+    # inside the try/catch that assembles the blob - which swallows it and falls back to
+    # the inline path, silently, exactly like the missing-name failure this check exists
+    # for. world/gen-worker.js is line 15 of src/manifest.txt and terrain.js is line 23,
+    # which is the whole reason its registry cannot reach for anything terrain.js declares.
+    here = listed.index(rel) if rel in listed else len(listed)
+    for name in sorted(registered - set(decls)):
+        at = toplevel.get(name)
+        if not at:
+            continue
+        frag = at.rsplit(':', 1)[0]
+        if frag in listed and listed.index(frag) > here:
+            err(rel, 'the %s registers "%s", but it is declared at %s - BELOW this fragment '
+                     'in src/manifest.txt, so the registry line reads it before it exists.'
+                % (label, name, at))
 
     ident = re.compile(r'[A-Za-z_$][A-Za-z0-9_$]*')
     decl = re.compile(r'\b(?:const|let|var|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)')
@@ -603,8 +650,7 @@ def check_worker(whole, masked, toplevel, where):
         m = re.search(r'^  (?:const|let|(?:async )?function\s*\*?)\s*' + re.escape(fname) + r'\b',
                       masked, re.M)
         if not m:
-            err('world/gen-pool.js', 'fns registers "%s" but nothing declares it at the top '
-                                     'level' % fname)
+            err(rel, 'fns registers "%s" but nothing declares it at the top level' % fname)
             continue
         src, msrc = _body_of(masked, whole, m.start())
         n_checked += 1
@@ -612,23 +658,42 @@ def check_worker(whole, masked, toplevel, where):
         local = set(decl.findall(msrc))
         for pm in re.finditer(r'\(([^()]*)\)\s*=>', msrc):
             local |= set(ident.findall(pm.group(1)))
-        head = msrc[:msrc.find('{') if '{' in msrc else len(msrc)]
+        # The DECLARATION HEAD - `function f(a, b) ` or `const f = (a, b) ` - and nothing
+        # more. It used to run to the first `{`, which for a CONCISE arrow
+        # (`const fbm = (x, z) => vnoise(...) * 0.55 + ...;`) is the end of the function:
+        # every name in the body was filed as a parameter and the whole body went
+        # unchecked. fbm, sstep, desWob and oakWob are all that shape, which is how
+        # vnoise / DESW / OAKW stayed invisible here even after the row worker's registry
+        # was walked. Cut at whichever of `{` and `=>` comes first instead.
+        cut = [i for i in (msrc.find('{'), msrc.find('=>')) if i >= 0]
+        head = msrc[:min(cut)] if cut else msrc
         local |= set(ident.findall(head))
+        said = set()                                     # one report per name, not one per use
         for pos, tok in ((mm.start(), mm.group(0)) for mm in ident.finditer(msrc)):
             if tok in local or tok not in toplevel or tok in registered or tok == fname:
+                continue
+            if tok in said:
                 continue
             if _is_member(msrc, pos):                    # a member access, not a free name
                 continue
             after = msrc[pos + len(tok):].lstrip()
             if after.startswith(':'):                    # an object-literal key
                 continue
+            said.add(tok)
             err(where(m.start()),
-                '"%s" uses top-level "%s", which the gen worker never declares. Add it to '
-                'the consts / tables / fns registry in world/gen-pool.js, or the worker '
-                'thread throws ReferenceError.' % (fname, tok))
-    if VERBOSE:
-        print('  worker:   %d serialized fns checked against %d registered names'
-              % (n_checked, len(registered)))
+                '"%s" uses top-level "%s", which the %s never declares. Add it to the %s '
+                'registry in %s, or the worker thread throws ReferenceError.'
+                % (fname, tok, label, ' / '.join(regs), rel))
+    return n_checked, len(registered)
+
+
+def check_worker(whole, masked, toplevel, where, listed):
+    for rel, regs, decls, label in WORKERS:
+        n_checked, n_reg = _check_one_worker(rel, regs, decls, label, whole, masked,
+                                             toplevel, where, listed)
+        if VERBOSE:
+            print('  worker:   %-10s %2d serialized fns checked against %d registered names'
+                  % (label, n_checked, n_reg))
 
 
 # -- 8: the WGSL uniform struct is the single source of truth for UF offsets ---
@@ -658,7 +723,8 @@ UF_PINNED = {'drops': 68, 'pick2A': 1092, 'fflies': 1108, 'cshad': 1140, 'misc':
 UF_DERIVED = {'UF_PHYSB': 'physB', 'UF_PHYSC': 'physC', 'UF_PHYSBOUND': 'physBound',
               'UF_HELDCFG': 'heldCfg', 'UF_LGT': 'lgt', 'UF_HURTB': 'hurtB',
               'UF_HURTH': 'hurtH', 'UF_DROPSB': 'dropsB', 'UF_LIFEMOTB': 'lifeMotB',
-              'UF_DOF': 'dof', 'UF_HEART': 'heart', 'UF_HURTV': 'hurtV'}
+              'UF_DOF': 'dof', 'UF_HEART': 'heart', 'UF_HURTV': 'hurtV',
+              'UF_BADGE': 'badge'}
 
 
 def js_ints(js):
@@ -893,7 +959,7 @@ if __name__ == '__main__':
     if NAMES:
         sys.exit(1 if check_name(NAMES, masked, offsets, mods, toplevel) else 0)
     check_wgsl(whole, offsets)
-    check_worker(whole, masked, toplevel, where)
+    check_worker(whole, masked, toplevel, where, listed)
     check_modules(masked, offsets, mods, where)
     check_uniforms()
     check_fresh(whole)

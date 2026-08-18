@@ -156,14 +156,53 @@
     // either flattens the deck or makes the raymarch miss it entirely.
     const CLOUD_LO : f32 = 760.0;
     const CLOUD_HI : f32 = 1080.0;
-    fn cloudDen(p : vec3<f32>) -> f32 {                              // cumulus deck between CLOUD_LO and CLOUD_HI, wind-drifted
+    const CLOUD_THR : f32 = 0.565;                                   // the FAIR-WEATHER density cut, now named because rain moves it (see RAIN_CLOUD_THR). It appears twice inside cloudDen and the second use is an EXACT short-circuit bound derived from the first, so the two can never be edited apart again.
+    // ── RAIN SKY ── (user 2026-08-17: cloudier + darker clouds while it rains, a slightly dimmer sun, and a
+    // clean return to normal afterwards). ONE uniform scalar, 0..1: how hard it is raining AT THE CAMERA.
+    // tick-camera writes it as the storm ramp times oakM(P.x, P.z), so it is 0 in the pine forest and the desert
+    // — which get SNOW from the same storm and must keep exactly the sky they have today — and it rises as the
+    // player walks west across the 450-voxel oak border. It rides in u.hurtV.w; see UF_RAINK in
+    // render/buffers.js for why that lane was the one available and why taking it is safe.
+    //
+    // THE RULE EVERY TERM BELOW OBEYS: at rainK 0 the expression must reduce to the fair-weather one EXACTLY,
+    // not approximately. thr becomes CLOUD_THR - x*0.0, the deck is scaled by 1.0 - x*0.0, sunTintR multiplies
+    // sunTint by 1.0, and skyRain returns its argument untouched behind a compare. That is what makes "then when
+    // the rain is gone, the clouds return to normal" a property of the code rather than a tuning claim.
+    fn rainK() -> f32 { return u.hurtV.w; }
+    const RAIN_CLOUD_THR : f32 = ${RAIN_CLOUD_THR.toFixed(4)};
+    const RAIN_CLOUD_DARK : f32 = ${RAIN_CLOUD_DARK.toFixed(4)};
+    const RAIN_SKY_DESAT : f32 = ${RAIN_SKY_DESAT.toFixed(4)};
+    const RAIN_SKY_DIM : f32 = ${RAIN_SKY_DIM.toFixed(4)};
+    const RAIN_SUN_DIM : f32 = ${RAIN_SUN_DIM.toFixed(4)};
+    // THE DIRECT SUN, dimmed by the deck overhead. sunTint() is the illuminant's own colour and already carries
+    // the entire day/night story inside it — the isMoon() branch, the horizon amber, the smoothstep fade through
+    // dawn — and a uniform scalar multiplied onto a continuous function is still continuous, so this cannot
+    // introduce a jump at the dusk/dawn moon swap the way a select() on isMoon() would. Every direct-sun site in
+    // this pass calls THIS instead of sunTint(); the one deliberate exception is the cloud march, whose deck is
+    // lit from ABOVE by the very cloud layer doing the dimming. dayScale() is untouched, on purpose: see
+    // RAIN_SUN_DIM in render/buffers.js.
+    fn sunTintR() -> vec3<f32> { return sunTint() * (1.0 - RAIN_SUN_DIM * rainK()); }
+    // A RAIN SKY HAS NO DEEP BLUE IN IT. One colour transform, applied to every place the sky is read: the sky
+    // itself, the haze the far world fades into, and the sky reflected in water and ice. All of them, or the
+    // horizon splits — dulled sky above a fair-weather haze is a seam right across the middle of the frame.
+    // This is also the only handle on the sun DISC and its glare, which are drawn inside skyColor() in pre.js;
+    // at night it is what takes the stars and the moon down behind the overcast. The compare is on a UNIFORM,
+    // so the whole dispatch takes one side of it and fair weather pays one scalar test.
+    fn skyRain(c : vec3<f32>) -> vec3<f32> {
+      let rk = rainK();
+      if (rk <= 0.0005) { return c; }
+      let lum = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+      return mix(c, vec3<f32>(lum), RAIN_SKY_DESAT * rk) * (1.0 - RAIN_SKY_DIM * rk);
+    }
+    fn skyBaseR(rd : vec3<f32>) -> vec3<f32> { return skyRain(skyBase(rd)); }
+    fn cloudDen(p : vec3<f32>, thr : f32) -> f32 {                   // cumulus deck between CLOUD_LO and CLOUD_HI, wind-drifted. thr is a PARAMETER rather than a global because rain lowers it and WGSL has no mutable module scope; the caller computes it once instead of ~36 times a sky pixel.
       let hf = clamp((p.y - CLOUD_LO) / (CLOUD_HI - CLOUD_LO), 0.0, 1.0);
       let q = vec3<f32>(p.x + u.time * 9.0, p.y, p.z + u.time * 3.5) * 0.0021;
       let o1 = vn3(q * vec3<f32>(1.0, 2.4, 1.0));
-      if (o1 * 0.60 + 0.40 < 0.565) { return 0.0; }                  // EXACT short-circuit: octaves 2+3 sum to at most 0.28+0.12, so below this bound the
-      var n = o1 * 0.60 + vn3(q * 2.6 + vec3<f32>(7.7)) * 0.28 + vn3(q * 6.1 + vec3<f32>(19.3)) * 0.12;   // clamp gate at 0.565 CANNOT open — same result, two of three noise octaves skipped
+      if (o1 * 0.60 + 0.40 < thr) { return 0.0; }                    // EXACT short-circuit: octaves 2+3 sum to at most 0.28+0.12, so below this bound the
+      var n = o1 * 0.60 + vn3(q * 2.6 + vec3<f32>(7.7)) * 0.28 + vn3(q * 6.1 + vec3<f32>(19.3)) * 0.12;   // clamp gate at thr CANNOT open — same result, two of three noise octaves skipped. Still exact now thr moves: it is the same thr on both lines.
       n = n * smoothstep(0.0, 0.16, hf) * smoothstep(1.0, 0.70, hf);
-      return clamp((n - 0.565) * 3.4, 0.0, 1.0);                     // ~35% coverage — scattered cumulus, plenty of blue
+      return clamp((n - thr) * 3.4, 0.0, 1.0);                       // ~35% coverage at the fair-weather CLOUD_THR — scattered cumulus, plenty of blue. RAIN drops thr, which widens coverage AND thickens what is already there, because n - thr grows everywhere at once
     }
     @group(0) @binding(22) var<storage, read> visb : array<u32>;     // per-8×8-tile drop-slot visibility bitmask (4×u32/tile) — computed ONCE per frame by the VIS prepass and shared with TRACE (this pass used to recompute it per workgroup behind a barrier)
     // ── VOLUMETRIC LIGHT ── march the camera ray, gathering in-scatter from the emissive point lights
@@ -248,7 +287,7 @@
         return;
       }
       if (face == 7u) {
-        col = skyColor(rd);
+        col = skyRain(skyColor(rd));                                 // ── RAIN ── dulled BEFORE the march, so the sky showing THROUGH the deck (col * T below) is the rain sky and not the fair-weather one
         if (rd.y > 0.02) {                                           // VOLUMETRIC CLOUDS — raymarched slab, beer-lambert with a sun tap
           let camY = u.camPos.y;
           let t0c = (CLOUD_LO - camY) / rd.y;
@@ -257,6 +296,16 @@
           let tb = min(max(t0c, t1c), 12000.0);
           if (tb > ta) {
             let roW = vec3<f32>(u.camPos.x + u.winO.x, camY, u.camPos.z + u.winO.y);
+            // ── HOW CLOUDY, AND HOW DARK ── the two halves of "make the sky more cloudy and darken the clouds",
+            // hoisted OUT of the march because both are uniform over the whole frame. thrC is the density cut:
+            // dropping it from 0.565 to 0.400 takes coverage from ~35% to ~75% and thickens every cloud already
+            // there, since n - thr grows everywhere at once — one number buys both, and no extra noise taps.
+            // (It does cost: a lower cut means cloudDen's exact one-octave short-circuit rejects fewer samples,
+            // so the march evaluates all three octaves more often. It is paid only while raining and partly
+            // handed back by the T < 0.05 early-out, which a denser deck reaches sooner.)
+            let rkC = rainK();
+            let thrC = CLOUD_THR - RAIN_CLOUD_THR * rkC;
+            let darkC = 1.0 - RAIN_CLOUD_DARK * rkC;                 // …and the deck's brightness. Applied to acc AFTER the loop, not to cc inside it: acc is the sum of T*a*cc with T and a independent of cc, so scaling every cc by a constant is exactly scaling acc by it — identical pixels, one multiply a pixel instead of one a step.
             let dtc = (tb - ta) / 18.0;
             var T = 1.0;
             var acc = vec3<f32>(0.0);
@@ -264,10 +313,10 @@
             var tcc = ta + dtc * rand(&seedC);                       // jittered start — kills the slab step-banding
             for (var ci = 0; ci < 18; ci++) {
               let p = roW + rd * tcc;
-              let d = cloudDen(p);
+              let d = cloudDen(p, thrC);
               if (d > 0.002) {
-                let li = 0.25 + 0.75 * exp(-cloudDen(p + u.sunDir * 60.0) * 2.4);   // one-tap self-shadow toward the sun
-                let cc = sunTint() * li * 0.55 + mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale();
+                let li = 0.25 + 0.75 * exp(-cloudDen(p + u.sunDir * 60.0, thrC) * 2.4);   // one-tap self-shadow toward the sun
+                let cc = sunTint() * li * 0.55 + mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale();   // PLAIN sunTint, not sunTintR: this is the TOP of the deck, lit from above by the sun the deck is busy blocking from everything underneath it. Darkening happens once, to acc, after the loop
                 let a = 1.0 - exp(-d * dtc * 0.02);
                 acc += T * a * cc;
                 T = T * (1.0 - a);
@@ -276,7 +325,7 @@
               tcc += dtc;
             }
             let fade = exp(-ta * 0.00035);                           // distant decks melt into the horizon haze
-            col = mix(col, acc + col * T, fade);
+            col = mix(col, acc * darkC + col * T, fade);             // darkC is 1.0 in fair weather, so this is bit-identical to the old line when it is not raining
           }
         }
       } else if (face == 8u) {                                       // LAVA: emissive — burns through the fog
@@ -286,7 +335,7 @@
         var fogA = 1.0 - exp(-irr.b * 0.0006);
         fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
         if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
-        col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
+        col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
       } else if (face == 6u) {                                       // ── PHYSICALLY-BASED WATER ── Gerstner surface, RAY-TRACED reflection + refraction, Beer–Lambert absorption + single scattering. The voxel aesthetic survives on purpose: the surface is still stepped 10 cm columns, the mirror image is the voxel world itself, glints stay discrete.
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         let alb = alb4.rgb * alb4.rgb;
@@ -306,15 +355,15 @@
         // visible contribution. Same look where it counts, a fraction of the rays.
         var refl = reflect(rd, nW);
         if (refl.y < 0.03) { refl = normalize(vec3<f32>(refl.x, 0.06 - refl.y * 0.5, refl.z)); }   // a grazing mirror ray that would dive back under the surface folds just above it — no self-hit acne
-        var reflC = skyBase(refl);
+        var reflC = skyBaseR(refl);
         if (tWat < 110.0 && fres > 0.045) {
           let rh = traceAll(pw2 + vec3<f32>(0.0, 0.06, 0.0), refl, 140.0, true);   // skipW: the folded mirror ray can never re-enter the flat water plane (crests live in the analytic field, not the grid) — output-identical, and it STRIDES the water-only bricks it skims instead of fine-stepping them
           if (rh.t >= 0.0) {
             let rpos = pw2 + refl * rh.t;
             let rvc = vec3<i32>(floor(rpos - rh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
             let ralb = pal[rh.vox].rgb * (0.88 + 0.24 * ivhash(rvc));
-            let rlit = sunTint() * (max(dot(rh.n, u.sunDir), 0.0) * 0.9 * irr.r) + mix(HORIZON, ZENITH, 0.5 + 0.5 * rh.n.y) * 0.95 * dayScale() + vec3<f32>(0.012, 0.013, 0.016);
-            reflC = mix(ralb * rlit, skyBase(refl), 1.0 - exp(-rh.t * 0.014));   // the mirror fades into sky with distance, like the world fades into haze
+            let rlit = sunTintR() * (max(dot(rh.n, u.sunDir), 0.0) * 0.9 * irr.r) + mix(HORIZON, ZENITH, 0.5 + 0.5 * rh.n.y) * 0.95 * dayScale() + vec3<f32>(0.012, 0.013, 0.016);
+            reflC = mix(ralb * rlit, skyBaseR(refl), 1.0 - exp(-rh.t * 0.014));   // the mirror fades into sky with distance, like the world fades into haze
           }
         }
         // ── REFRACTION + BEER–LAMBERT ── the transmitted ray bends by Snell (η = 1/1.33) and marches to the bed; what
@@ -348,7 +397,7 @@
           let nI = vec3<f32>(0.0, 1.0, 0.0);
           let fresI = 0.03 + 0.22 * pow(1.0 - clamp(-dot(rd, nI), 0.0, 1.0), 4.0);
           let frost = 0.9 + 0.2 * fract(sin(floor(wx2) * 12.9898 + floor(wz2) * 78.233) * 43758.5453);
-          var iceC = mix(alb, vec3<f32>(0.74, 0.81, 0.90), 0.62) * frost * (0.5 + 0.5 * irr.g) * dayScale() + skyBase(reflect(rd, nI)) * fresI;
+          var iceC = mix(alb, vec3<f32>(0.74, 0.81, 0.90), 0.62) * frost * (0.5 + 0.5 * irr.g) * dayScale() + skyBaseR(reflect(rd, nI)) * fresI;
           // -- ICE GLISTEN (same lgt.x bit 22 as the liquid one) -- the frozen surface wears the SAME discrete 10 cm cube
           // glint the water wears (user 2026-08-09: "make the ice glisten like the water does"). Same cell grid, same phase
           // and pick hashes, same duty window, same reflection column off the same flat surface normal -- so as a lake skins
@@ -399,7 +448,7 @@
         var fogA = 1.0 - exp(-irr.b * 0.0006);
         fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
         if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
-        col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
+        col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
       } else {
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         let alb = alb4.rgb * alb4.rgb;
@@ -414,7 +463,7 @@
           let nc = dropV(s4 + 1).xyz * nl.x + dropV(s4 + 2).xyz * nl.y + dropV(s4 + 3).xyz * nl.z;
           n = normalize(u.right * nc.x + u.up * nc.y + u.fwd * nc.z);
         }
-        let direct = sunTint() * (irr.r * max(dot(n, u.sunDir), 0.0));
+        let direct = sunTintR() * (irr.r * max(dot(n, u.sunDir), 0.0));
         let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
         let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
         col = alb * (direct + (skyIrr + bounce) * irr.g + vec3<f32>(0.012, 0.013, 0.016));   // faint cave ambient
@@ -479,7 +528,7 @@
           if (shR > 0.0 && irr.r > 0.0) {
             let lobeR = pow(max(dot(reflect(rd, n), u.sunDir), 0.0), ROCK_GLOSS);
             let fresR = 1.0 + (ROCK_GRAZE - 1.0) * pow(1.0 - clamp(dot(-rd, n), 0.0, 1.0), 5.0);
-            col += sunTint() * select(ROCK_TINT, ROCK_MOONT, isMoon()) * (ROCK_SPEC * lobeR * fresR * shR * irr.r);
+            col += sunTintR() * select(ROCK_TINT, ROCK_MOONT, isMoon()) * (ROCK_SPEC * lobeR * fresR * shR * irr.r);
           }
         }
         // ── BACK-LIT FOLIAGE ── a needle is thin enough to pass light, and the whole reason a forest reads as
@@ -494,7 +543,7 @@
         if (FOLBACK && ((slRaw >> 11u) & 1u) != 0u) {
           let tr = pow(max(dot(rd, u.sunDir), 0.0), FOL_LOBE);      // rd runs FROM the eye INTO the scene, so looking toward the sun is dot(rd, sunDir) -> 1. Do NOT flip this: dot(-rd, ...) peaks when the sun is BEHIND you, which is exactly when wrap is 0, so the two factors can never both be large and the whole term goes dead.
           let wrap = clamp(-dot(n, u.sunDir), 0.0, 1.0);            // …how far the face is turned AWAY from the sun, which is the side the light has to travel through
-          col += alb * vec3<f32>(1.15, 1.35, 0.70) * sunTint() * (tr * wrap * irr.r * FOL_STR);   // transmitted light is warmer and more saturated than the reflected colour — it has been filtered by the leaf. irr.r is what keeps a leaf deep inside a crown dark: see the sunOrg note in TRACE, without which that term is zero on every pixel this fires on.
+          col += alb * vec3<f32>(1.15, 1.35, 0.70) * sunTintR() * (tr * wrap * irr.r * FOL_STR);   // transmitted light is warmer and more saturated than the reflected colour — it has been filtered by the leaf. irr.r is what keeps a leaf deep inside a crown dark: see the sunOrg note in TRACE, without which that term is zero on every pixel this fires on.
         }
         let glowY = u.camPos.y + rd.y * irr.b;                                                   // the shared 4-bit glow field: bedrock hits = LAVA orange, surface hits = FIREFLY warm yellow
         if (glowY < 28.0) { col += alb * lavaG * vec3<f32>(1.0, 0.44, 0.13) * 3.6; }             // lava: linear decode, unchanged
@@ -502,7 +551,7 @@
         var fogA = 1.0 - exp(-irr.b * 0.0006);
         fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
         if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
-        col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
+        col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
       }
       // Distance to the nearest FOREGROUND surface drawn over the g-buffer (creature, drop, held item), or -1 if the scene
       // itself is what you see. The UNDERWATER block at the bottom needs this: it attenuates by the in-water path, and using
@@ -591,7 +640,7 @@
                     sunC = select(1.0, 0.0, shC.t >= 0.0);
                     }
                   } else if (${location.search.includes('noshadow') ? 1 : 0} == 1) { sunC = 1.0; }
-                  let direct = sunTint() * (sunC * max(dot(nw, u.sunDir), 0.0));
+                  let direct = sunTintR() * (sunC * max(dot(nw, u.sunDir), 0.0));
                   let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();
                   let bounceC = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
                   var alb2 = cell.rgb;                                 // DUCK EYE BLINK: the black eye voxel flashes the head-GREEN when the slot's blink lane (dYv.w) is lit (user)
@@ -629,7 +678,7 @@
                   var fogB = 1.0 - exp(-bestT * 0.0006);
                   fogB = max(fogB, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
                   if (!LG(5u)) { fogB = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
-                  col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogB);
+                  col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogB);
                   if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} &&
                       cell.r > 0.88 && cell.g > 0.88 && cell.b > 0.88) { col = mix(behind, col, 0.6); }   // FIREFLY WINGS (the white voxels) — 40% translucent
                 } else if (di >= 5) {                                // slots 5-24: clash/death SPARKS + death SMOKE (dYv.w = fade)
@@ -641,14 +690,14 @@
                     // 0.75 of its strength, so a blood voxel carries those same floors. That is what makes a voxel in
                     // the air read as the same material as the red on the animal it came off. It does NOT pulse or fade
                     // with dYv.w — the flash is a steady colour for the half second it lasts, and so is this.
-                    let bDir = sunTint() * max(dot(nw, u.sunDir), 0.0) * 0.55;
+                    let bDir = sunTintR() * max(dot(nw, u.sunDir), 0.0) * 0.55;
                     let bSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale() * 0.75;
                     col = HURT_RED * (bDir + bSky + vec3<f32>(0.012, 0.013, 0.016));
                   } else if (dit == ${FOAM_IT || 9995}) {            // ── SPLASH ── a droplet of the SAME foam the shoreline draws (FOAM_C), so a burst
                     // off the surface reads as water torn off the water rather than a white speck. Lit as a
                     // diffuse surface, NOT emissive like a spark: foam does not glow. It thins out as it dies
                     // (mix toward the scene behind), which is what sells it as spray rather than a solid cube.
-                    let sDir = sunTint() * max(dot(nw, u.sunDir), 0.0) * 0.55;
+                    let sDir = sunTintR() * max(dot(nw, u.sunDir), 0.0) * 0.55;
                     let sSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale() * 0.85;
                     col = mix(col, FOAM_C * (sDir + sSky + vec3<f32>(0.02, 0.022, 0.025)), 0.35 + 0.65 * dYv.w);
                   } else {                                           // SPARK — emissive 10 cm ember
@@ -668,7 +717,7 @@
                     if (dCap <= 0.0) { sunD = 1.0; }
                     else { let dsh = trace(dSp, u.sunDir, dCap, false); sunD = select(1.0, 0.0, dsh.t >= 0.0); }
                   } else if (${location.search.includes('noshadow') ? 1 : 0} == 1) { sunD = 1.0; }
-                  let dDirect = sunTint() * (sunD * max(dot(nw, u.sunDir), 0.0));
+                  let dDirect = sunTintR() * (sunD * max(dot(nw, u.sunDir), 0.0));
                   let dSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();
                   let dBounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
                   let dGrain = 0.95 + 0.10 * ih3(vcD.x, vcD.y, vcD.z);
@@ -705,7 +754,7 @@
                 var fogC = 1.0 - exp(-bestT * 0.0006);
                 fogC = max(fogC, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
                 if (!LG(5u)) { fogC = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
-                col = mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogC);
+                col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogC);
                 // (No submerged tint here: the UNDERWATER block at the end of main now absorbs this pixel over fgT — the
                 //  creature's OWN in-water path — so it dims exactly like the world does, with no double attenuation.)
                 // ── PER-VOXEL ALPHA (the fly's wings 50%, the dragonfly's 50%, the butterfly's 72%) ── LAST, after water and fog, so the wing and the scene

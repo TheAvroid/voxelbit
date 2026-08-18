@@ -96,7 +96,7 @@
   // DOUBLED (user 2026-07-18): 340 -> 680. The pool is the real limit before the radius is — at this density 680
   // would hold ~300 birds against 180 slots, so the activation frontier lands near 530 vox rather than 680, and the
   // generated rect (renderDist + 96) caps it from there. Declared at module scope because stampCardinal below needs it.
-  const birdColour = (tx, tz, bi) => {              // 0 cardinal / 1 blue bird / 2 robin — a pure function of the PINE, so a census can sample it without spawning anything
+  const birdColour = (tx, tz, bi) => {              // 0 cardinal / 1 blue bird / 2 robin — a pure function of the TREE (pine or oak), so a census can sample it without spawning anything
     // LOCALLY EVEN (user). The old 40-vox `(x + 2z) % 3` colouring was even world-wide but not near you: a
     // diagonal 3-colouring lays out long same-colour BANDS, so any one view skewed (64/49/67 of 180 measured).
     // Index the pine's own candidate CELL instead — exactly one pine per cell — and colour it from a 3×3 LATIN
@@ -107,7 +107,20 @@
     // this pine's 3x3 patch of candidate cells in a fixed order and deal the three colours round-robin, which
     // makes each patch exactly even however the birds are distributed across its pines. The per-patch rotation
     // and stride (both coprime to 3, so balance is preserved) stop it reading as one repeating sequence.
-    const cx = Math.floor(tx / TCELL), cz = Math.floor(tz / TCELL);
+    // ── ONE ROUND-ROBIN, TWO FORESTS (user 2026-08-17: "make the song birds perched in the oak trees") ── every
+    // word of the argument above is about a 3x3 patch of CANDIDATE CELLS and the birds inside it, and none of it
+    // is about pines, so the whole of it is lifted out here and handed the grid it should walk. Running an OAK
+    // through the pine grid would have looked like it worked and been meaningless: TCELL is 45 against OKCELL's
+    // 112, so a 3x3 pine patch is 135 voxels across where one oak cell alone is 112, and treeAt returns null
+    // everywhere in this biome — every oak would have scored seq = 0 and been coloured by bi alone, i.e. the
+    // per-tree sequence with no neighbourhood balancing at all, which is exactly the skew this replaced.
+    const oak = oakM(tx, tz) >= 0.5;                   // >= 0.5 is the SAME line oakAt and treeAt split on, so a tree is always asked about on the grid that actually produced it
+    const bc = oak ? birdColourOn(tx, tz, bi, OKCELL, oakAt, (t) => birdsOnOak(t.wx, t.wz, t.k))
+                   : birdColourOn(tx, tz, bi, TCELL, treeAt, (t) => birdsOnPine(t.tx, t.tz));
+    return (bc === 1 && !BLUEBIRD_ROTATE.length) || (bc === 2 && !ROBIN_ROTATE.length) ? 0 : bc;   // a missing reskin gives its share back to the cardinal
+  };
+  const birdColourOn = (tx, tz, bi, cell, at, count) => {   // the patch walk itself — grid size, tree accessor and per-tree bird count are the only things a biome changes
+    const cx = Math.floor(tx / cell), cz = Math.floor(tz / cell);
     const sx = Math.floor(cx / 3), sz = Math.floor(cz / 3);
     const off = (ihash(sx * 37 + 11, sz * 53 + 7) * 3) | 0;
     const stride = ihash(sx * 71 + 5, sz * 29 + 13) < 0.5 ? 1 : 2;
@@ -115,17 +128,47 @@
     for (let jz = 0; jz < 3; jz++) for (let jx = 0; jx < 3; jx++) {
       const ccx = sx * 3 + jx, ccz = sz * 3 + jz;
       if (ccx === cx && ccz === cz) { mine = seq + bi; }
-      const tr = treeAt(ccx, ccz); if (!tr) continue;
-      seq += birdsOnPine(tr.tx, tr.tz);
+      const tr = at(ccx, ccz); if (!tr) continue;
+      seq += count(tr);
     }
-    let bc = (((mine < 0 ? bi : mine) * stride + off) % 3 + 3) % 3;
-    if (bc === 1 && !BLUEBIRD_ROTATE.length) bc = 0;
-    if (bc === 2 && !ROBIN_ROTATE.length) bc = 0;      // a missing reskin gives its share back to the cardinal
-    return bc;
+    return (((mine < 0 ? bi : mine) * stride + off) % 3 + 3) % 3;
   };
   const birdsOnPine = (tx, tz) => {                   // 0-3, a deterministic property of the tree. HALVED (user 2026-07-18):
     const h = ihash(tx * 0x9E37 + 13, tz * 0x85EB + 7);   // mean 0.83 -> 0.41 birds per pine (was .42/.80/.95), then 0.41 -> 0.63
     return h < 0.55 ? 0 : (h < 0.86 ? 1 : (h < 0.96 ? 2 : 3));   // …+50% when the ROBIN joined, so the third colour is ADDED on top instead of thinning the other two (user). The population is perch-limited, not slot-limited: nCard alone could not lift it past ~130.
+  };
+  // ── HOW MANY BIRDS AN OAK CARRIES ── birdsOnPine's table cannot simply be reused, because it is a constant
+  // that only reads as one because every pine in the game IS ONE MODEL. oakAt deals SEVEN sizes, from a 2.4 m
+  // bush to an 11.4 m giant whose crown box is 114 voxels across against pine5's 35 — a flat 0-3 would put as
+  // many birds in a shrub as in a tree ten times its size. So tie the count to the CROWN FOOTPRINT at the
+  // pine's own birds-per-area-of-canopy, and the number falls out of the bake: a size tier can be added or
+  // re-weighted in world/terrain.js and this cannot go stale behind it.
+  //   The 0.63 is birdsOnPine's OWN expectation, read straight off its own thresholds:
+  //   0.31*1 + 0.10*2 + 0.04*3 = 0.63 birds over pine5.vox's 35 x 36 crown box. Change that table and change
+  //   this number with it. Against the bake it deals k1 0.97, k2 0.94, k3 1.83, k4 2.62, k5 5.05, k6 6.38.
+  // MEASURED CONSEQUENCE, AND IT IS DELIBERATE: an oak wood's canopy covers ~28% of the ground (OKCELL 112 at
+  // 78% occupancy over a mean 4481-voxel crown box) against the pine wood's ~45% (TCELL 45 at 72% over 1260),
+  // so this lands the oak forest at 55% of the pine forest's BIRD density: 1.99 birds per oak, 1.24e-4 per
+  // vox², which is ~109 birds inside the rect-clipped ~530 frontier against the pines' 198 — i.e. ~109 of the
+  // 180 slots filled rather than all 180. (At a CARD_KEEP of 680 it reaches 179 — which is exactly the census CARD_N is now sized off; see the ladder in slots.js. So the oak population
+  // is REACH-limited, not tree-limited: raise the view distance and it saturates the pool exactly as the pines
+  // do.) Matching the pine density head-on at the default view would need ~10
+  // birds in a single giant oak, which is the roost CARD_PER_TREE was introduced to refuse ("unlimited clumped
+  // them and the spread measured worse"). A more open wood holding fewer birds is the honest answer; if the
+  // biome wants to read denser, the lever is OKCELL in terrain.js, not more birds per tree.
+  const CARD_OAK_CAP = 6;                             // ceiling per oak: 2x the pines' 3, on a crown 3.3x as wide, so even a maxed giant is SPARSER per branch than a pine
+  const birdsOnOak = (wx, wz, k) => {
+    const m = OAKV[k]; if (!m || !MSX) return 0;      // ?nooaks / a failed bake, or pine5.vox never parsed (MSX 0 would divide by zero)
+    // ── AND NOTHING PERCHES IN THE BUSH TIER ── OAKV[0] is 21 voxels tall, and stampOak sinks it 1-3, so its
+    // crown top lands about 18 voxels up: the player's own eye line (sim/player.js EYE 18.5, HEIGHT 20). A
+    // perched bird is not decor — it is a SOLID grid stamp — so a bird there is a body you walk face-first
+    // into on open forest floor, and at 22% of all oaks it would be a lot of them. It would not read as
+    // "perched in a tree" either; it reads as a bird standing in the undergrowth. Asked as a question about
+    // the MODEL against the PLAYER rather than written as `k === 0`, so re-baking the tool with a different
+    // smallest tree cannot leave this test pointing at the wrong index.
+    if (m.sz - 3 < HEIGHT) return 0;
+    const mean = 0.63 * (m.sx * m.sy) / (MSX * MSY);
+    return Math.min(CARD_OAK_CAP, Math.round(mean * (0.5 + ihash(wx * 0x7F4A + 29, wz * 0x6C08 + 17))));   // its OWN salt, not birdsOnPine's: two scatters keyed alike rank the world alike (see the mammals' one-key-per-species finding). The 0.5..1.5 roll preserves the mean exactly and still leaves the small tiers sometimes empty.
   };
   let uniBirdN = 0, uniBirdWant = 0;                   // how many perched songbirds reached a drop slot last frame, and how many asked
   const uniBirds = [];                                 // ?uni: perched songbirds staged as [wx, wy, wz, item, th, poolIdx, dp2] and injected into drop slots after the fair-share emit
@@ -160,12 +203,24 @@
     const dx9 = B.x - P.x, dz9 = B.z - P.z, t9 = dx9 * dx9 + dz9 * dz9 < rr9 * rr9;
     B.uniTr = t9 ? 1 : 0; return t9;
   };
-  const CARD_KEEP = 680;
+  // ── CARD_KEEP MOVED (2026-08-17) ── the perched songbirds' despawn radius, and via MAM_KEEP the land
+  // mammals' too, now lives in sim/life/slots.js beside the slot ladder, because it is what SIZES that ladder:
+  // CARD_N = round(180 * LIFE_DENS_K) and the four mammal counts are all derived from it. The reasoning for
+  // the value, and for why a reach change forces a population change, is in the comment there.
   const CARD_SEP = 8;                                  // minimum gap between two perched birds, in voxels — must exceed the model footprint or their grid stamps collide
+  // ── HOW FAR A PERCHED BIRD ANIMATES ── deliberately the FULL keep radius: the user rejected a short one
+  // outright ("it doesn't look like all the birds are animated"), and the last time it was a separate number it
+  // was 90 voxels. It is a NAME rather than CARD_KEEP inlined because it is the one lever that would pay for
+  // the CARD_N growth outright if the frame time ever asks for it: re-stamping is what a perched bird costs,
+  // it is paid only by birds that animate, and dropping this to CARD_KEEP_V0 would hold the re-stamp budget at
+  // exactly today's while the population still fills the new disc — the birds beyond 680 did not exist
+  // yesterday, so making them static decor regresses nothing that ships. NOT taken without the user's say-so:
+  // it is a visual change, and this is the exact complaint they have already made once.
+  const CARD_ANIM_R = CARD_KEEP;
   const stampCardinal = (B, now, wk9) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
     const cp = ensureBirdPoses(B.bird | 0); if (!cp) return;   // perched birds come in THREE colours (B.bird: 0 red cardinal, 1 blue bird, 2 robin)
     const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
-    const near = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) < CARD_KEEP * CARD_KEEP;   // EVERY active bird animates (user: 'it doesn't look like all the birds are animated'). This was 90 while the population was double; halving it bought back the re-stamp budget.
+    const near = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) < CARD_ANIM_R * CARD_ANIM_R;   // EVERY active bird animates (user: 'it doesn't look like all the birds are animated'). This was 90 while the population was double; halving it bought back the re-stamp budget.
     const t = (now + B.phase) % cyc;
     const fiC = (near && !window.__CARDPIN) ? (t < n * frameMs ? Math.floor(t / frameMs) : n - 1) : 0;   // hold the last frame through the pause
     const q = (near && !window.__CARDPIN) ? ((-(Math.floor((now + B.phase) / cyc) % 4)) & 3) : 0;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
@@ -207,7 +262,7 @@
     if (LIFE_UNI && UNI_BIRDS && uniTraced(B)) { if (B.sN) unstampWorm(B); uniBird(B, wk9, fiC, q, gx, gy, gz); return; }   // ?uni: same frame, same 4-way turn, same anchor - injected instead of stamped. Forked HERE, below the perch-support check, so both paths recycle a bird whose crown was felled on exactly the same rule. The unstamp is what makes the hybrid safe to cross INWARD: without it the bird would be drawn twice, once out of W and once out of its slot.
     stampApply(B, cp[fiC][q], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + fiC + ',' + q);
   };
-  const unstampAllWorms = () => { for (let j = 16; j < DES_END; j++) { const B = wbf[j]; if (B && B.sN) {   // ALL grid-stamped creatures: perched songbirds (64-243) + BUNNIES/ARMADILLOS/SKUNKS/PORCUPINES (276-371). Must cover the mammals too, or their stamps get unstamped one-by-one AFTER the editor's bricks.fill(0) and re-patch as floating chunks (user bug)
+  const unstampAllWorms = () => { for (let j = DUCK_0; j < DES_END; j++) { const B = wbf[j]; if (B && B.sN) {   // ALL grid-stamped creatures: perched songbirds (CARD_0..CARD_END) + BUNNIES/ARMADILLOS/SKUNKS/PORCUPINES (MAM_0..MAM_END). Must cover the mammals too, or their stamps get unstamped one-by-one AFTER the editor's bricks.fill(0) and re-patch as floating chunks (user bug)
     for (let i = 0; i < B.sN; i++) { const ii = B.sCells[i]; stampedIdx.delete(ii); if (W[ii] !== 0) W[ii] = B.sPrev[i]; }   // restore, same reason as unstampWorm
     B.sN = 0; B.sKey = null; } } };   // hard clear (editor freeze) — caller re-uploads occupancy
   let lakeScanT = 0; const lakeSpots = [];             // detected LAKES in view (clusters of wide-open-water samples) — each gets its own duck family
@@ -238,7 +293,7 @@
       }
     }
     if (WORM_NFRAMES && canAdd(WORM_ITEM0)) {          // LIVE WORMS — same generous ray-sphere grab as drops; the caught worm keeps wriggling in the hand
-      for (let wi = 32; wi < 64; wi++) {               // worm pool slots (32-63, 32 worms — DOUBLED AGAIN 2026-07-18)
+      for (let wi = WORM_0; wi < WORM_END; wi++) {     // worm pool slots (WORM_N = 32 — DOUBLED AGAIN 2026-07-18)
         const B = wbf[wi];
         if (!B || !B.init || (B.kind | 0) !== 2) continue;
         const ox = B.x - P.x, oy = B.y - smoothEye, oz = B.z - P.z;
@@ -276,6 +331,8 @@
           if (canAdd(pit)) { for (const ii of sc.cells) W[ii] = 0; startGrab(pit, x + 0.5, y + 0.5, z + 0.5); gpuPatch(sc.cells); }
         }
       }
+      else if (FRUIT_IDS.has(v)) { const fr = fruitAt(x, y, z);   // ── AN APPLE OR AN ORANGE, OFF THE BRANCH (user 2026-08-17) ── fruitAt (sim/projectiles.js) owns the whole verdict: which species, which cells, and whether this is one fruit rather than a cherry or a fused pair
+        if (fr && canAdd(fr.it)) { for (const ii of fr.cells) W[ii] = 0; startGrab(fr.it, x + 0.5, y + 0.5, z + 0.5); gpuPatch(fr.cells); } }   // the FLESH comes away and the stalk stays on the tree — see the note in projectiles.js
       return;
     }
   }
@@ -294,7 +351,7 @@
       if (qx * qx + qy * qy + qz * qz < 42) return true;
     }
     if (WORM_NFRAMES && canAdd(WORM_ITEM0)) {          // live worms
-      for (let wi = 32; wi < 64; wi++) {
+      for (let wi = WORM_0; wi < WORM_END; wi++) {
         const B = wbf[wi];
         if (!B || !B.init || (B.kind | 0) !== 2) continue;
         const ox = B.x - P.x, oy = B.y - smoothEye, oz = B.z - P.z;
@@ -312,6 +369,7 @@
       if ((PICK_ROCK.has(v) || PICK_BOULDER.has(v)) && canAdd(2)) return true;
       if (PICK_STICK.has(v) && canAdd(3)) return true;
       if (PICK_CONE.has(v) && canAdd(4)) return true;
+      if (FRUIT_IDS.has(v)) { const fr = fruitAt(x, y, z); return !!fr && canAdd(fr.it); }   // …and a fruit, through the SAME verdict the click uses, so the square never lights on a cherry or on a fused pair the pick would refuse
       return false;                                    // solid but not pickable → the ray is blocked
     }
     return false;

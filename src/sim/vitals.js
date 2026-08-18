@@ -1,130 +1,134 @@
-  // @module - player vitals: hearts, hunger, saturation and exhaustion, ported from Minecraft's FoodStats
-  // @exports VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine, vitRedLevel
-  // ── WHY THIS EXISTS ── until now `die(why)` WAS the whole of mortality: every hazard killed outright and the
-  // player had no health at all (see the comment at the cobra contact test). Hearts only mean something once the
-  // hazards stop one-shotting you, so this module owns both halves — the vitals, and the `vitHurt` entry point
-  // the hazards now call instead of `die`.
+  // @module - player vitals: a FIVE-POINT health bar, the damage the hazards take off it, and the food that puts it back
+  // @exports VIT, VIT_HP_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine, vitRedLevel
+  // ── WHY THIS EXISTS ── until this module `die(why)` WAS the whole of mortality: every hazard killed outright and
+  // the player had no health at all (see the comment at the cobra contact test). Health only means something once the
+  // hazards stop one-shotting you, so this module owns both halves — the vitals, and the `vitHurt` entry point the
+  // hazards now call instead of `die`.
   //
-  // ── RESOLUTION ── 20 points, Minecraft's own scale, because every constant below is quoted against it.
-  // These were drawn as five voxels a side until the user removed the UI; the numbers stayed on the 20-point
-  // bar then and still do, so the mechanics remain the ones they were copied from.
-  const VIT_HP_MAX = 20, VIT_FOOD_MAX = 20;
-  // Minecraft is a 20 tps simulation and every constant below is a TICK COUNT, so the vitals run on their own
-  // fixed 20 Hz step rather than on the render frame. Ticking this per frame would make hunger drain ~3x faster
-  // at 60 fps than at 20, and faster still on a 240 Hz monitor — the mechanics would depend on the hardware.
-  const VIT_TPS = 20, VIT_DTT = 1 / VIT_TPS;
-
-  // ── HUNGER IS OFF (user 2026-08-16: "disable the hunger mechanics, but keep the code for later") ── ONE
-  // switch, and everything below it is intact: the exhaustion accumulator still totals up, eating still works,
-  // the food table still resolves, and every constant keeps its measured Minecraft value. What this skips is
-  // the SPEND — the step that turns exhaustion into lost saturation and lost hunger. With nothing draining,
-  // `food` stays at max, which means the starvation branch can never be reached (it needs food 0) and the
-  // regen branches stay satisfied (they need food >= 18), so health still recovers. Flip to true to bring the
-  // whole system back; nothing else needs changing. NOTE if it does come back, hunger needs to be VISIBLE
-  // again before anything is gated on it — a hidden hunger gate on the sprint key read as a random failure.
-  const VIT_HUNGER_ON = false;
-
-  // ── EXHAUSTION ── the hidden accumulator that actually drives hunger. Actions add to it; when it passes
-  // EXH_STEP, ONE point comes off saturation, or off hunger when saturation is already empty. That ordering is
-  // the entire reason saturation is invisible and still matters.
-  // NOTE the two details the wiki gets wrong and the source does not: the test is STRICTLY greater-than, and it
-  // SUBTRACTS 4 rather than resetting to 0, so the remainder carries. And only ONE unit is spent per tick, so a
-  // big spike drains at most one point per tick instead of cascading.
-  const EXH_STEP = 4.0, EXH_CAP = 40.0;
-  const EXH_SPRINT = 0.1, EXH_SWIM = 0.01, EXH_JUMP = 0.05, EXH_SPRINT_JUMP = 0.2;
-  const EXH_HURT = 0.1, EXH_ATTACK = 0.1, EXH_MINE = 0.005, EXH_REGEN = 6.0;
-  // WALKING IS FREE in modern Minecraft — the source literally reads addExhaustion(0.0F * distance), a vestige
-  // of the value removed around 1.9. Only sprinting, swimming and jumping cost anything.
-  const EXH_WALK = 0.0;
-  // ── …WHICH LEAVES A STANDING PLAYER'S HUNGER FROZEN FOREVER ── and the user asked for the bar to "slowly
-  // deplete". This trickle is therefore a DELIBERATE departure from Minecraft, and the only one in this file.
-  // At 0.02/s it costs a hunger point roughly every 200 s and empties a full bar in a little under an hour.
-  const EXH_IDLE = 0.02;
-
-  // ── REGEN ── two branches, and they are not one rule with different numbers. Saturation regen needs a FULL
-  // bar plus saturation to spend and heals up to 2 HP/s; normal regen only needs 18 and heals 1 HP per 4 s.
-  // Both charge exhaustion, which is what stops regeneration being free. The wiki claims non-zero saturation
-  // alone also enables normal regen — the decompiled source disagrees, and this follows the source.
-  const REGEN_FOOD = 18, REGEN_TICKS = 80, SATREGEN_TICKS = 10, STARVE_TICKS = 80;
-  // Starvation will not finish you off: this is Minecraft's NORMAL difficulty rule, damage only while above 1.
-  const STARVE_FLOOR = 1;
-  // ── FIVE HITS IN SUCCESSION KILL, AND TEN QUIET SECONDS UNDO IT (user 2026-08-16) ── a COUNT, not a health
-  // total, because with no UI the player cannot read a bar: what they can feel is "I keep getting hit". The
-  // counter is what actually kills — five stings end the run whatever each one took off — and any ten seconds
-  // without damage opens regeneration and starts the run draining. Deliberately behind the scenes: no display,
-  // the only signals are the hurt flash, the blood voxels and eventually the game-over screen.
-  const VIT_HITS_FATAL = 5, VIT_CALM = 10.0;
-  // ── AND IT DRAINS ONE HIT AT A TIME (user 2026-08-17: "let the player heal in steps … it should heal in the
-  // same amount of steps as the player takes damage") ── the run used to be zeroed in a single assignment, so
-  // four hits of red left the screen in ONE frame while the hp half of vitRedLevel was still stepping. 2.4 s is
-  // the rate the other half already moves at: saturation regen heals 0.8333 hp per 0.5 s, so a 4-hp heart — one
-  // shade of the vignette — takes exactly 2.4 s to come back. Both halves of that max() now walk down together
-  // instead of one of them snapping past the other. Nothing decays inside the calm window, which is what keeps
-  // five hits in succession fatal: a hit zeroes calm, so a run of them never gets a step back.
-  const VIT_HIT_DECAY = 2.4;
-  const SPRINT_FOOD = 6;
-
-  // ── FOOD ── { h: hunger restored, s: saturation modifier }. Saturation gained is h * s * 2, capped at the
-  // hunger level AFTER eating. Raw meat carries Minecraft's raw-beef numbers; it is the only food the game
-  // currently gives you (the apple frames under assets/food/apple are modelled but not yet an item).
+  // ── FIVE POINTS, AND THE PIXELATED SCREEN IS THE BAR (user 2026-08-17: "theres only 5 health points. the health is
+  // represented by the pixelated screen. each food eaten increase the health by one point") ── this file used to be a
+  // port of Minecraft's FoodStats: a 20-point health bar, a 20-point hunger bar, hidden saturation, a hidden
+  // exhaustion accumulator, two regeneration branches, starvation damage, and — because none of that was ever drawn —
+  // a SECOND death path that counted five hits. Four representations of "how hurt am I", three of them invisible.
   //
-  // BOUND LAZILY, and that is not a style choice. The item ids are assigned by an ASYNC asset load, so writing
-  // this table from held-items.js — fragment 22, against this module's fragment 56 — threw "Cannot access
-  // VIT_FOODS before initialization" and left the game on a black screen. Registering from the other side is a
-  // TDZ hazard in one direction and a table keyed on id 0 in the other. Rebuilding on first use after the id
-  // changes is immune to both, and costs one integer compare per lookup.
+  // There is now exactly ONE. `VIT.hp` is an integer 0..5. `vitRedLevel()` is `5 - hp`, which is precisely the 0..4
+  // the hurt-flash block in render/wgsl/blit.js already reads off `u.hurtV.z` to decide how far the red pixels creep
+  // in ("the band creeps inward one step per heart"). So the pixelation is not a cue ABOUT the health — it IS the
+  // health bar, and it has five states because the bar has five points. The floating heart row is the same number
+  // read a second way: tick-camera divides `VIT.hp` by `VIT_HP_MAX / HEART_N`, and with both of those now 5 that
+  // division is by one — five hearts, one per point, no conversion left to get wrong.
+  //
+  // ── AND HUNGER IS GONE (user 2026-08-17: "can you remove the hunger mechanic. instead food is going to replenish
+  // health. health doesnt replenish on its own … this simplifies the hunger system, the player doesnt have to eat all
+  // the time, unless of course he is taking damage all the time") ── not switched off behind a flag as it was on
+  // 2026-08-16, DELETED. Gone with it: the hunger bar, saturation, the exhaustion accumulator and every EXH_
+  // constant, both regeneration branches, starvation damage, and the 20 Hz fixed step that existed solely because
+  // every one of those constants was a Minecraft tick count. Nothing in here now runs on a clock at all.
+  const VIT_HP_MAX = 5;
+
+  // ── WHAT A HAZARD'S `amount` MEANS ── every caller of `vitHurt` is in another fragment (a cobra strike in
+  // tick-creatures, drowning in tick-camera, lava/quicksand/cactus/falling in tick-body) and every one of them quotes
+  // its damage on Minecraft's 20-point scale, where a heart is 4 points. Rewriting nine hazard sites to a new unit is
+  // how a tuned curve gets quietly detuned, so the numbers stay where they are and the conversion happens HERE, at
+  // the single door they all come through: one health point per heart's worth of damage, and never less than one, so
+  // no blow is free.
+  //
+  // This is deliberately not a re-balance. The old system's real killer was already a count of five — five hits ended
+  // the run "whatever each one took off" — so a cactus, a quicksand tick and a drowning tick each cost exactly what
+  // they always did: one of five. What the divisor adds back is the severity the hit count threw away: a cobra (5) is
+  // worth two points where a scorpion (3) is worth one, and the fall curve keeps its authored shape — a 15 m drop
+  // works out at 20 damage, which was "a full 20-point bar" then and is a full five-point bar now, so the height that
+  // killed a healthy player still kills them.
+  const VIT_DMG_PER_POINT = 4;
+
+  // ── FOOD ── { hp: health points restored }. One point per item, flat, which is the user's own number and the reason
+  // this table no longer carries Minecraft's { h, s } pair: hunger restored and saturation modifier were inputs to a
+  // regeneration system that no longer exists, and raw meat's 3-and-0.3 described a bar the player can no longer see.
+  // The table survives because it is also the answer to "what is edible" — ui/audio.js derives EDIBLE from these
+  // keys rather than keeping a second list that could drift out of step.
+  //
+  // ── AND THERE ARE THREE FOODS NOW (user 2026-08-17: "then the player can right click to eat it. (if down
+  // hearts.) apply this to the orange as well") ── an apple and an orange, picked off an oak. ALL THREE RESTORE
+  // ONE POINT, and that is not indifference about balance: it is the user's own rule from earlier the same day,
+  // and it is the reason this table lost its { h, s } pair — "each food eaten increase the health by one point".
+  // A fruit worth 2 would contradict that sentence, and a fruit worth half a point would break something harder:
+  // VIT.hp is an integer 0..5, and both vitRedLevel and the floating heart row index straight off it, so a
+  // fractional heal would leave the pixelation between two of its five states and the row between two hearts.
+  // What separates a fruit from a steak is therefore NOT the number, and it should not be. Meat costs a kill;
+  // fruit is forage. The scarcity is already in the world — 10% of oak TREES carry any, three to nine each — and
+  // the pacing is already in EAT_MS, one bite per 900 ms whatever is in your hand. Fruit stacks to 8, so a good
+  // tree is about one full bar's worth of healing that you have to go and find.
+  // THE TWO FRUIT MATCH EACH OTHER for the same reason: as far as the bar is concerned they are one fruit in two
+  // colours, and an orange that healed differently would be a rule with nothing on screen to explain it.
+  // APPLE_IT and ORANGE_IT are the FIRST frame of each eat strip (assets/held-items.js) — the only id of either
+  // run that can ever sit in a hotbar slot — so registering the head registers exactly the right thing, and the
+  // twelve frames behind it stay correctly inedible.
+  //
+  // BOUND LAZILY, and that is not a style choice. The item ids are assigned by an ASYNC asset load, so writing this
+  // table from held-items.js — fragment 22, against this module's fragment 56 — threw "Cannot access VIT_FOODS before
+  // initialization" and left the game on a black screen. Registering from the other side is a TDZ hazard in one
+  // direction and a table keyed on id 0 in the other. Rebuilding on first use after the id changes is immune to both,
+  // and costs one string compare per lookup. The key is all THREE ids and not just the meat's: they are assigned by
+  // three different loads, and keying on one of them would freeze the table at whatever the other two were when the
+  // meat first resolved — which, for the fruit, is 0.
   const VIT_FOODS = {};
-  let vitFoodKey = -1;
+  let vitFoodKey = '';
   function vitFoods() {
-    if (vitFoodKey !== MEAT_IT) {
-      vitFoodKey = MEAT_IT;
+    const k9 = MEAT_IT + '/' + APPLE_IT + '/' + ORANGE_IT;
+    if (vitFoodKey !== k9) {
+      vitFoodKey = k9;
       for (const k in VIT_FOODS) delete VIT_FOODS[k];
-      if (MEAT_IT) VIT_FOODS[MEAT_IT] = { h: 3, s: 0.3 };
+      if (MEAT_IT) VIT_FOODS[MEAT_IT] = { hp: 1 };
+      if (APPLE_IT) VIT_FOODS[APPLE_IT] = { hp: 1 };
+      if (ORANGE_IT) VIT_FOODS[ORANGE_IT] = { hp: 1 };
     }
     return VIT_FOODS;
   }
   const vitFoodOf = (it) => (it && vitFoods()[it]) || null;
 
-  const VIT = { hp: VIT_HP_MAX, food: VIT_FOOD_MAX, sat: 5, exh: 0, timer: 0, acc: 0,
-    hurtT: 0, hits: 0, hitT: 0, calm: VIT_CALM, lx: 0, lz: 0, wasAir: false, onDeath: null, started: false };
+  // hurtT is the only thing left with a clock: it rides 1 -> 0 over 0.55 s and drives the hit KICK — the swell the
+  // floating heart row gives on a blow, and the spike the pixelation paints on top of the standing level. It is an
+  // event, not a state, which is exactly why it is separate from hp.
+  const VIT = { hp: VIT_HP_MAX, hurtT: 0, onDeath: null };
 
-  function vitReset() {
-    VIT.hp = VIT_HP_MAX; VIT.food = VIT_FOOD_MAX; VIT.sat = 5; VIT.exh = 0;
-    VIT.timer = 0; VIT.acc = 0; VIT.hurtT = 0; VIT.hits = 0; VIT.hitT = 0; VIT.calm = VIT_CALM;
-    VIT.lx = P.x; VIT.lz = P.z; VIT.wasAir = false; VIT.started = true;
-  }
+  function vitReset() { VIT.hp = VIT_HP_MAX; VIT.hurtT = 0; }
 
-  const vitExhaust = (e) => { VIT.exh = Math.min(VIT.exh + e, EXH_CAP); };
-  const vitSprintOK = () => VIT.food > SPRINT_FOOD;
-  // Swinging and digging cost exhaustion too — small per action, but they are why an active player gets hungry
-  // and an idle one barely does. Wrapped as named calls so the constants stay in here with the rest of them.
-  const vitOnAttack = () => vitExhaust(EXH_ATTACK);
-  const vitOnMine = () => vitExhaust(EXH_MINE);
+  // ── NOTHING GATES SPRINTING ANY MORE ── this was Minecraft's "no sprinting at hunger 6 or below", and tick-body
+  // stopped consulting it on 2026-08-16 because a hidden rule that disables a movement key reads as a broken key
+  // ("the sprint button stop working randomly"). With hunger deleted there is no number left that could gate it even
+  // in principle, so sprinting is now gated by exactly two things and both are visible to the player: the sprint key,
+  // and not being crouched. The predicate survives only because main/debug-api.js reports it; it is a constant true
+  // and no caller branches on it.
+  const vitSprintOK = () => true;
+  // Swinging and digging used to charge exhaustion, which is how an active player got hungry. There is no exhaustion
+  // to charge. They stay as no-ops because sim/life/reactions.js and main/tick-camera.js call them on every landed
+  // blow and every chop, and a missing name there is a ReferenceError mid-swing rather than a compile error.
+  const vitOnAttack = () => {};
+  const vitOnMine = () => {};
 
-  // `bypass` = damage armour could never have stopped (starving, drowning, falling, lava). Minecraft charges no
-  // exhaustion for those, which is what stops starvation from feeding itself into a death spiral.
+  // `bypass` was "damage armour could never have stopped" — Minecraft charges no exhaustion for drowning, falling or
+  // lava, which is what stopped starvation feeding itself into a death spiral. There is no exhaustion and no
+  // starvation, so it now reads as nothing at all. The parameter is kept because five call sites pass it and because
+  // it still documents, at those call sites, which hazards are unblockable.
   function vitHurt(amount, why, bypass) {
     if (amount <= 0 || VIT.hp <= 0) return;
-    VIT.hp = Math.max(0, VIT.hp - amount);
-    if (!bypass) vitExhaust(EXH_HURT);
+    VIT.hp = Math.max(0, VIT.hp - Math.max(1, Math.ceil(amount / VIT_DMG_PER_POINT)));
     VIT.hurtT = 1;
-    VIT.hits++; VIT.calm = 0;                          // …and the run of hits grows; any quiet spell resets it in vitTick
     vitHurtFx();
-    if ((VIT.hp <= 0 || VIT.hits >= VIT_HITS_FATAL) && VIT.onDeath) VIT.onDeath(why || 'you died');
+    // ── ONE DEATH, ONE THRESHOLD ── there were two paths here (hp reaching zero, and a five-hit run) plus a third
+    // that starved you. Starvation went with hunger, and the hit run went because it WAS this bar all along: it
+    // counted to five because the player could not read a health total, and now the screen shows them one. A player
+    // who is two points from dying can no longer be looking at a clear screen, so nothing has to reconcile a hidden
+    // counter against a visible bar.
+    if (VIT.hp <= 0 && VIT.onDeath) VIT.onDeath(why || 'you died');
   }
 
-  // ── HOW RED THE SCREEN IS (user 2026-08-16: "full hearts is no shade, then heart 0 is the gameover
-  // screen") ── 0 at full health and 1..4 as the hearts go, which is exactly four shades because there are five
-  // hearts and the fifth step is death, not a colour. Death has TWO paths — hp reaching zero, and five hits in
-  // succession — and a run of quick hits can kill with most of the bar still showing, so the level is the WORSE
-  // of the two readings. Otherwise a player two hits from dying by the hit-run could be looking at a clear
-  // screen. Regeneration walks it back down on its own: after the calm window the hit run drains a step at a time
-  // and hp climbing raises the heart count, so recovering visibly steps the red off without anything here
-  // having to fade it — and both terms step at the same 2.4 s, so neither one skips shades the other is showing.
-  const vitRedLevel = () => {
-    const hearts = Math.ceil(VIT.hp / (VIT_HP_MAX / 5));
-    return Math.max(0, Math.min(4, Math.max(5 - hearts, VIT.hits | 0)));
-  };
+  // ── HOW RED THE SCREEN IS (user 2026-08-16: "full hearts is no shade, then heart 0 is the gameover screen") ── 0 at
+  // full health and 1..4 as the points go, which is four shades because the fifth step is death, not a colour. It used
+  // to be the WORSE of two readings, hp and the hit run, because either could kill you; with one bar it is a
+  // subtraction. NOTHING FADES IT — the level only comes down when hp goes up, and hp only goes up when you eat. That
+  // is the whole mechanic made visible: the red on the screen is a standing bill, and food is the only way to pay it.
+  const vitRedLevel = () => Math.max(0, Math.min(4, VIT_HP_MAX - VIT.hp));
 
   // ── THE HURT SPURT ── literally the call a struck creature makes, aimed at the player instead:
   // spawnHitSparks throws the four red HITRED_IT voxels the blood burst uses, so taking a hit and landing one
@@ -161,73 +165,22 @@
     hurtScreen();
   }
 
+  // ── ONE BITE, ONE POINT ── and the refusal is a FULL-HEALTH test, not the full-hunger test it replaced. That test
+  // was the bug: with hunger frozen at max the bar was always full, so `tryEat` refused every bite and a hurt player
+  // could not eat at all. The rule it was written for still holds and is the reason a test belongs here — a bite that
+  // would heal nothing must not consume the item — it just has to ask about the bar the food actually fills.
   function vitEat(it) {
     const f = vitFoodOf(it);
-    if (!f || VIT.food >= VIT_FOOD_MAX) return false;
-    VIT.food = Math.min(VIT_FOOD_MAX, VIT.food + f.h);
-    // capped at the hunger level AFTER eating, not at the food's own value, so a rich food eaten on a nearly
-    // empty bar banks far less saturation than the same food eaten when nearly full.
-    VIT.sat = Math.min(VIT.food, VIT.sat + f.h * f.s * 2);
+    if (!f || VIT.hp >= VIT_HP_MAX) return false;
+    VIT.hp = Math.min(VIT_HP_MAX, VIT.hp + f.hp);
     return true;
   }
 
-  // ── ONE 20 Hz TICK ── the order here IS the mechanic. Exhaustion is spent first, then exactly one of the
-  // regen/starve branches runs, and any branch that does not apply RESETS the timer, discarding partial
-  // progress. Healing to full, or dropping to hunger 17, therefore throws away a part-finished regen cycle.
-  function vitStep() {
-    if (VIT_HUNGER_ON && VIT.exh > EXH_STEP) {
-      VIT.exh -= EXH_STEP;
-      if (VIT.sat > 0) VIT.sat = Math.max(0, VIT.sat - 1);
-      else VIT.food = Math.max(0, VIT.food - 1);
-    }
-    const hurt = VIT.hp > 0 && VIT.hp < VIT_HP_MAX && VIT.calm >= VIT_CALM;   // no healing mid-fight: ten quiet seconds first, the same window that clears the hit run
-    if (VIT.sat > 0 && hurt && (!VIT_HUNGER_ON || VIT.food >= VIT_FOOD_MAX)) {
-      if (++VIT.timer >= SATREGEN_TICKS) {
-        // heals a FRACTION when saturation is low rather than a flat point: min(sat, 6) / 6 HP, charged as f
-        // exhaustion. That keeps the identity 1 HP = 6 exhaustion = 1.5 saturation true at every level.
-        const f = Math.min(VIT.sat, 6.0);
-        VIT.hp = Math.min(VIT_HP_MAX, VIT.hp + f / 6.0);
-        vitExhaust(f);
-        VIT.timer = 0;
-      }
-    } else if (hurt && (!VIT_HUNGER_ON || VIT.food >= REGEN_FOOD)) {   // with hunger OFF, regen stops consulting it entirely — otherwise 'disabled' still left healing hostage to a number nothing maintains
-      if (++VIT.timer >= REGEN_TICKS) { VIT.hp = Math.min(VIT_HP_MAX, VIT.hp + 1); vitExhaust(EXH_REGEN); VIT.timer = 0; }
-    } else if (VIT_HUNGER_ON && VIT.food <= 0) {   // …and starvation is off with it: gating only the SPEND left this branch live, so anything that set food to 0 (a debug tap, a future feature) still bit for 1 hp every 4 s
-      if (++VIT.timer >= STARVE_TICKS) { if (VIT.hp > STARVE_FLOOR) vitHurt(1, 'you starved', true); VIT.timer = 0; }
-    } else VIT.timer = 0;
-  }
-
+  // ── AND THAT IS THE WHOLE TICK ── it used to spend exhaustion, run one of three regen/starve branches on a 20 Hz
+  // fixed step, charge exhaustion per metre walked, and decay a hit run. Health no longer changes with time in ANY
+  // direction: the only two things that move it are `vitHurt` and `vitEat`. What is left is the hit kick riding down
+  // over 0.55 s, which is an animation, not a mechanic. Still called unconditionally from tick-body (it once sat
+  // inside the `if (P.fly) … else` movement branch and silently stopped the moment fly mode engaged).
   function vitTick(dt) {
-    if (!VIT.started) { vitReset(); return; }
     if (VIT.hurtT > 0) VIT.hurtT = Math.max(0, VIT.hurtT - dt / 0.55);
-    if (VIT.hp <= 0) return;
-    // the calm clock: it only ever grows here, and vitHurt is the one thing that zeroes it
-    VIT.calm += dt;
-    // …and once it is up the run comes off one hit per VIT_HIT_DECAY rather than all at once. A fresh hit puts
-    // calm back to 0 and falls through the first branch, discarding the part-finished step — the same thing
-    // vitStep does to a part-finished regen cycle, and the reason a decay can never soften a run of hits.
-    if (VIT.calm < VIT_CALM) VIT.hitT = 0;
-    else if (VIT.hits > 0 && (VIT.hitT += dt) >= VIT_HIT_DECAY) { VIT.hits--; VIT.hitT = 0; }
-
-    // ── EXHAUSTION FROM MOVEMENT ── charged per METRE, as Minecraft does, so a stroll and a sprint over the
-    // same ground do not cost the same. Distance comes from the real position delta rather than the input keys,
-    // so being shoved, sliding or swimming all count honestly. A voxel is 10 cm, hence the 0.1.
-    if (!P.fly) {
-      const dx = P.x - VIT.lx, dz = P.z - VIT.lz;
-      const dist = Math.sqrt(dx * dx + dz * dz) * 0.1;
-      if (dist > 0 && dist < 3) {
-        const swim = P.y < WL;
-        const sprint = (dist / Math.max(dt, 1e-4)) > 0.62;
-        vitExhaust(dist * (swim ? EXH_SWIM : sprint ? EXH_SPRINT : EXH_WALK));
-      }
-      if (!P.onGround && !VIT.wasAir) vitExhaust(P.sprintJump ? EXH_SPRINT_JUMP : EXH_JUMP);
-      VIT.wasAir = !P.onGround;
-      vitExhaust(EXH_IDLE * dt);
-    }
-    VIT.lx = P.x; VIT.lz = P.z;
-
-    VIT.acc += dt;
-    let guard = 0;
-    while (VIT.acc >= VIT_DTT && guard++ < 8) { VIT.acc -= VIT_DTT; vitStep(); }
-    if (guard >= 8) VIT.acc = 0;
   }

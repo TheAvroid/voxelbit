@@ -9,9 +9,10 @@
     if (VE.recording) VE.lastPaint = now - Math.min(VE_CAP_MS * 0.5, (now - VE.lastPaint) - VE_CAP_MS);   // carry the overshoot so the cadence cannot drift slow
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
     // ── VITALS ── UNCONDITIONAL, and that matters: this first sat further down beside the hazard checks, which
-    // are inside the `if (P.fly) … else` movement branch, so hunger silently stopped the moment fly mode
+    // are inside the `if (P.fly) … else` movement branch, so the vitals silently stopped the moment fly mode
     // engaged (measured: it ran exactly twice, then never again). Health is not part of movement.
-    // Per-metre exhaustion still reads correctly from here — it diffs against the position stored last frame.
+    // Since the hunger rework (2026-08-17) this only rides the hit KICK down — health itself no longer changes
+    // with time in either direction, so there is nothing here a dropped frame could get wrong.
     vitTick(dt);
     if (locked && !anthemDone) { playSecs += dt; if (playSecs >= anthemNextAt) playAnthem(); }   // ── PLAY CLOCK ── counts only while the player HAS THE CONTROLS: the loading screen, the press-any-button prompt, the esc menu and the death screen are not gameplay, and a backgrounded tab stops rAF outright. Two minutes of PLAYING, not two minutes of the page being open.
     fpsEma = fpsEma * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
@@ -32,12 +33,13 @@
     else {
       if (!blurLock) cineBlurK = cineBlurK < 0.002 ? 0 : cineBlurK * Math.exp(-5 * dt);   // fade the blur out with the roll — an instant cut back to a sharp image is as jarring as popping it on
       if (P.roll) P.roll = Math.abs(P.roll) < 0.002 ? 0 : P.roll * Math.exp(-7 * dt);   // leaving cine mode (or dying in it) levels the horizon out smoothly instead of snapping upright
-    // ── SPRINT IS NOT GATED ON HUNGER ANY MORE (user 2026-08-16: "the sprint button stop working randomly") ──
-    // it was `&& vitSprintOK()`, i.e. Minecraft's "no sprinting at hunger 6 or below". Faithful, and wrong here:
-    // sprinting COSTS 0.1 exhaustion per metre, so a long sprint drains hunger past the threshold and switches
-    // itself off — and with the hunger bar removed at the user's request there is nothing on screen that could
-    // explain why. A hidden rule that disables a movement key is a bug however correct the rule is. `vitSprintOK`
-    // is kept (and still reported by __vb.vit()) so the gate can come back the day hunger is visible again.
+    // ── NOTHING GATES SPRINTING BUT THE KEY AND THE CROUCH ── it was `&& vitSprintOK()`, i.e. Minecraft's "no
+    // sprinting at hunger 6 or below". Faithful, and wrong here: sprinting COST 0.1 exhaustion per metre, so a long
+    // sprint drained hunger past the threshold and switched itself off, with nothing on screen that could explain
+    // why ("the sprint button stop working randomly", user 2026-08-16). A hidden rule that disables a movement key
+    // is a bug however correct the rule is. Hunger was then deleted outright (2026-08-17), so there is no longer a
+    // number in the game that COULD gate this — `vitSprintOK` is a constant true kept only for __vb.vit(). Both of
+    // the conditions below are ones the player can see themselves doing, which is the property that matters.
     const sprint = keys.has(binds.sprint) && !crouching;
     const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
     let mx = 0, mz = 0;
@@ -164,10 +166,19 @@
       // is given above, so a crouched player is tested at 13 voxels and not 20 — the test asks about the body
       // that is actually there. Cacti are markSolid, so the usual way to earn this is to WALK INTO one: the
       // collision clamp leaves the box 1 mm off the trunk and cactusHurtAt's margin covers exactly that.
+      // ── …AND THE FIRST ONE LANDS THE INSTANT YOU TOUCH IT (user 2026-08-17: "have the cactus in the desert
+      // damage the player immediatly upon the player touching it … rubbing up against it I mean") ── the timer
+      // counted UP FROM ZERO on contact, so brushing a saguaro cost nothing for the first 0.9 s and a player
+      // who bumped one and stepped away was never hurt at all. It is a LEADING edge now, and the whole of the
+      // change is what the clear branch rests the timer at: primed rather than zeroed, so the very first frame
+      // of contact is already over the line. The cadence after that is untouched — leaning on one still costs
+      // a point every CACT_CD, which is the part the 2026-08-15 note argues for.
+      // Same reason the LAVA and QUICKSAND timers below/above are deliberately NOT changed: those are hazards
+      // you stand IN and they are meant to ramp; this is a thing you brush PAST, and it has to bite once.
       if (!dead && !P.fly && cactusHurtAt(P.x, P.y, P.z, hh)) {
         vbCactT += dt;
-        if (vbCactT >= 0.9) { vbCactT = 0; vitHurt(1, 'the cactus spines got you'); }
-      } else vbCactT = 0;
+        if (vbCactT >= CACT_CD) { vbCactT = 0; vitHurt(1, 'the cactus spines got you'); }
+      } else vbCactT = CACT_CD;
       if (P.y < -60) respawn();
       // eye smoothing — step-ups AND stick-downs ease over ~80 ms instead of popping; exact tracking while airborne
       const targetEye = P.y + eyeH - P.sink;           // …minus how far the quicksand has swallowed us
@@ -197,7 +208,25 @@
       // liquid moving water for seconds — a field of isolated white cubes bobbing on the swell, which is exactly
       // the screenshot. Holding at 0.4 (the shader's own wave-suppression threshold) until the last water-snow
       // voxel has drained means snow is never seen on wavy water; the sheet then thaws normally.
-      freezeK = (snowOn && now >= snowFreezeAt) ? Math.min(1, freezeK + dt / 5) : Math.max(snowWN > snowWHead ? 0.4 : 0, freezeK - dt / 5);   // water freezes over 5 s and thaws back over 5 s — but only from SNOW_FREEZE_DELAY (10 s) after the storm starts, so the flakes you can see have reached the ground before the river skins over
+      // ── AND IT MUST BE SNOWING WHERE YOU ARE, NOT MERELY STORMING (2026-08-17) ── freezeK gated on
+      // `snowOn` alone, which was exactly right while a storm meant snow everywhere. It now RAINS in the
+      // oak forest, and rain was skinning the lakes there with ice: water freezing over while liquid drops
+      // fall through it. rainSkyK * oakM is the same scalar the sky dims on, so ice fades out on the same
+      // ramp the weather does instead of switching on a line.
+      // NOTE WHAT THIS CAN AND CANNOT BE: freezeK is ONE GLOBAL scalar - it drives solidTab[WATER_T], a
+      // material flag for the whole world - so ice has never been per-column and this cannot make it so. The
+      // test is therefore CAMERA-RELATIVE, exactly like the sky dimming it shares its scalar with: stand in
+      // the oak forest and lakes do not freeze, walk into the pines and they do. That is the right
+      // approximation while you can only ever see the water near you, and per-column ice is a far larger
+      // change than this line.
+      // RAIN_ON false => `snowOn` alone, the test this was before the rain landed: it snows in the oak
+      // forest again, so its lakes are meant to freeze again.
+      // ── IS IT SNOWING WHERE THE PLAYER IS? ── freezeK is ONE GLOBAL scalar driving solidTab[WATER_T], so
+      // this has always been camera-relative and cannot be per-column. Two ways the answer is now no in
+      // the oak forest: it is raining there (the rain ramp), or nothing falls there at all (OAK_SNOW).
+      const oakHere = Math.max(0, Math.min(1, oakM(P.x, P.z)));
+      const snowHere = snowOn && (OAK_SNOW ? true : oakHere < 0.5) && (!RAIN_ON || rainSkyK * oakHere < 0.5);
+      freezeK = (snowHere && now >= snowFreezeAt) ? Math.min(1, freezeK + dt / 5) : Math.max(snowWN > snowWHead ? 0.4 : 0, freezeK - dt / 5);   // water freezes over 5 s and thaws back over 5 s — but only from SNOW_FREEZE_DELAY (10 s) after the storm starts, so the flakes you can see have reached the ground before the river skins over
       const nowSolid = freezeK > 0.6;
       if (nowSolid !== iceSolid) { iceSolid = nowSolid; solidTab[WATER_T] = nowSolid ? 1 : 0;
         // Frozen water is choppable, and PICK-ONLY: an axe should bounce off a lake exactly as it bounces off

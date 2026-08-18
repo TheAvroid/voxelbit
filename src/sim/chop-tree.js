@@ -63,13 +63,29 @@
         PH.stats.lastChip = { vox: cutC.length, wood: w9, fol: f9, filtered: !!ok, n: (PH.stats.lastChip ? PH.stats.lastChip.n + 1 : 1) }; }
       // ── the remainder ── 6-connected pieces of what is left, largest first so a big trunk half never
       // loses its slot to a splinter (the same rule phSeparate uses).
-      const left = new Set(keepC), comps = [];
+      // ── …AND 26-CONNECTED FOR A BODY THAT CAME OFF AN OAK (2026-08-17) ── b.c26 is set by phBuildBody off
+      // the shape the body was cut from. An oak crown is one piece only 26-connected (see oakShape in
+      // sim/physics.js), so re-splitting a felled oak 6-connected hands back the main shell PLUS the 233
+      // diagonal clusters as separate components — one swing at a log on the ground and the crown flies apart
+      // into two dozen clumps with the rest folded into the largest piece. Same rule the flood and phComponent
+      // use, applied to the off-grid twin of the same geometry. A pine's bodies carry c26 = 0 and take the
+      // original loop untouched.
+      const left = new Set(keepC), comps = [], c26 = !!b.c26;
       while (left.size) {
         const start = left.values().next().value;
         const comp = [], st = [start]; left.delete(start);
         while (st.length) {
           const k2 = st.pop(); comp.push(k2);
           const mx = k2 % sx, mz = ((k2 / sx) | 0) % sz, my = (k2 / (sx * sz)) | 0;
+          if (c26) {
+            for (let d = 0; d < 78; d += 3) {
+              const nx = mx + phNb26[d], ny = my + phNb26[d + 1], nz = mz + phNb26[d + 2];
+              if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+              const nk = key(nx, ny, nz);
+              if (left.has(nk)) { left.delete(nk); st.push(nk); }
+            }
+            continue;
+          }
           for (let d = 0; d < 6; d++) {
             const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
             const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
@@ -121,12 +137,14 @@
       }
       for (const comp of keep) {
         const nb = phSubBody(b, comp, idMap);
+        nb.c26 = b.c26;                                // phSubBody builds through a {bx,gy,bz} pseudo-shape, which has no oak flag — carry the parent's, or the piece forgets how it is connected and the NEXT swing shatters it
         nb.sleeping = false; nb.sleepT = 0;            // the shape changed under it — let it re-settle
         PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(nb);
       }
       // ── the bite ── one chunk, thrown clear along the swing, collected like every other chip
       if (chipC && chipC.length) {
         const chip = phSubBody(b, chipC, idMap);
+        chip.c26 = b.c26;
         chip.vel[0] += phFallDir[0] * 6 + (Math.random() - 0.5) * 4;
         chip.vel[1] += 4 + Math.random() * 3;
         chip.vel[2] += phFallDir[2] * 6 + (Math.random() - 0.5) * 4;
@@ -148,7 +166,7 @@
   // voxel is nearest, and NEEDLES outnumber bark everywhere in the crown — see the gather loop below.
   const physChopAt = (wx, wy, wz, rad, S0, minBite, bite, ok) => {
     const S = S0 || treeShapeAt(Math.round(wx), Math.round(wz));
-    if (!S) return { hit: false, why: 'no pine here' };
+    if (!S) return { hit: false, why: 'no tree here' };   // …'pine' until 2026-08-17: treeShapeAt answers for oaks now too
     const r = rad === undefined ? 3 : rad, r2 = r * r;
     phFlushBirdsNear(wx, wy, wz, r + 8);              // a bird standing on what is about to be cut leaves FIRST (see phFlushBirdsNear)
     const cellsOut = []; let removed = 0;
@@ -167,7 +185,7 @@
       const v = phPresent(S, mx, my, mz); if (!v) continue;
       if (PICK_CONE.has(v)) continue;                // cones are pickable ITEMS, not material. Foliage IS carvable (user: break the canopy into chunks while the tree still stands) — the flood below then decides honestly whether what is left is still attached.
       if (ok && !ok(v)) continue;                    // …but a swing aimed at the TRUNK passes a wood-only filter, or it comes back full of needles (see chopSwing)
-      if (my <= S.tr.sink) continue;                 // never cut the buried root courses out from under the anchor
+      if (my <= S.root) continue;                    // never cut the root courses out from under the anchor — the pine's buried sink, and an oak's first courses clear of the ground (see OAK_ROOT)
       cX.push(mx); cY.push(my); cZ.push(mz); cV.push(v);
     }
     if (cX.length < minBite) return { hit: false, why: 'thin bite (' + cX.length + ')' };

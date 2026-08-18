@@ -39,7 +39,7 @@
   const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); cursSync(); return; } canvas.requestPointerLock(); };
   const setLightMode = (on) => {                        // L: hand the cursor to the light panel, and nothing else
     lightMode = !!on;
-    if (lightMode) { try { document.exitPointerLock(); } catch (e) {} }
+    if (lightMode) { try { document.exitPointerLock(); } catch (e) {} if (CDPTEST) { locked = false; crossEl.classList.add('hidden'); } }   // …and under ?cdp there is no real pointer lock to exit (tryLock fakes the other half the same way), so drop the flag by hand or a test can never see the cursor come free
     else if (!locked) tryLock();
     lockEl.classList.toggle('hidden', locked || dead || lightMode || !vePanel.classList.contains('hidden'));
     cursSync();
@@ -131,7 +131,7 @@
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - dy * ls));
   });
   let dead = false;
-  let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = 0;
+  let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = CACT_CD;   // …the cactus one starts PRIMED: it is a leading-edge timer now (see tick-body), and the clear branch rests it here anyway — seeding it to 0 would make the very first cactus of a session the one that waited
   const FALL_FREE = 3;                                 // metres you may drop for nothing — Minecraft's threshold, and a believable one: a 3 m hop stings nobody
   // ── AND PAST IT THE COST ACCELERATES (user 2026-08-17: "the higher the player falls, the more fall damage
   // it causes. if its really high, the player just dies") ── it used to be one point per metre, flat, which

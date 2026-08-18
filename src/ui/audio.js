@@ -269,7 +269,20 @@
   //     to glory    -14.1      -> 0.125
   //     award       -19.1      -> 0.222   (4 dB quieter, so 4 dB up)
   const ANTHEM_SET = [['red_carpet', 0.140], ['achievement', 0.125], ['award', 0.222], ['to_glory', 0.125]];
-  const anthemSnds = ANTHEM_SET.map(([n9, g9]) => regMus(new Audio('sound/music/' + n9 + '.mp4'), g9));
+  // ── SHUFFLED EVERY SESSION (user 2026-08-17: "can you re-order the songs that play") ── the set used to run
+  // in the order it is written above, every session, so the same track always opened and `to_glory` was only
+  // ever heard by someone who played for a solid five minutes. A Fisher-Yates over a COPY, so ANTHEM_SET itself
+  // stays the documented reference order the loudness table above is written against.
+  // THE GAIN TRAVELS WITH THE NAME, which is the whole reason this shuffles the PAIRS rather than the names:
+  // the four gains are not decorative, they are ebur128 measurements levelling -19.1 LUFS against -14.1, and
+  // pairing `award` with red_carpet's 0.140 would play it 4 dB quiet.
+  // Math.random is right here and a seed would be wrong: this is presentation, not world generation. It is
+  // read once at load, touches nothing the generator or a test hashes, and deliberately differs run to run.
+  const anthemOrder = ANTHEM_SET.slice();
+  for (let i9 = anthemOrder.length - 1; i9 > 0; i9--) { const j9 = (Math.random() * (i9 + 1)) | 0;
+    const t9 = anthemOrder[i9]; anthemOrder[i9] = anthemOrder[j9]; anthemOrder[j9] = t9; }
+  const anthemSnds = anthemOrder.map(([n9, g9]) => regMus(new Audio('sound/music/' + n9 + '.mp4'), g9));
+  console.log('[vb] anthem order:', anthemOrder.map((t9) => t9[0]).join(' -> '));
   const anthemSnd = anthemSnds[0];                     // the first cut, still named for the taps that read it
   let playSecs = 0, anthemDone = false;                // the play clock, and the set-is-finished latch
   let anthemIdx = 0, anthemNextAt = ANTHEM_AT;         // which cut comes next, and the play-clock time it is due
@@ -379,9 +392,36 @@
   // second in line behind the pickup, so right-clicking a rock at your feet still grabs the rock rather than
   // silently eating your dinner; `grabAnim` is the flag that says the pickup claimed the click. HOLDING the
   // button keeps eating (user 2026-08-11), one bite per EAT_MS, exactly as holding the left button keeps swinging.
-  const EAT_MS = 900;                                  // ── THE BITE FLOOR ── one bite per 900 ms, and it is now the EATING CADENCE as well as a click limiter: a fast click must not run through a whole stack in a second, and neither must a HELD right button (user 2026-08-11 — see the auto-repeat in the tick loop). tryEat is the single gate for both paths, so a bite costs the same wherever the call came from.
+  const EAT_MS = 900;                                  // ── THE BITE FLOOR ── one bite per 900 ms, and it is now the EATING CADENCE as well as a click limiter: a fast click must not run through a whole stack in a second, and neither must a HELD right button (user 2026-08-11 — see the auto-repeat in the tick loop). tryEat is the single gate for both paths, so a bite costs the same wherever the call came from.   // ── AND IT STAYS 900 AT FIVE HEALTH POINTS (2026-08-17) ── a bite is now 20% of the bar, so this number alone decides how fast a stack of meat can undo a near-death: 3.6 s to climb 1 → 5. That is long enough that healing is a thing you stop and do rather than a keypress, and short enough not to be a chore — and lengthening it would be exactly the wrong lever, because the point of this rework is that the player thinks about food LESS, not that eating is slower.
   let eatT = -1e9;
   let eatHold = false;                                 // ── IS THE HELD RIGHT BUTTON AN EATING HOLD? ── armed at mousedown ONLY when the pickup did not claim that click, cleared at mouseup. Without it the hold path would quietly overrule the pickup-wins rule above: `grabAnim` is only true while the item is IN FLIGHT, so a right-hold on a rock at your feet would grab the rock and then start eating the meat still in your hand the moment the flight landed. One press = one decision, grab or eat, for as long as it is held.
+  // ── AND THE FRUIT IS ACTUALLY CHEWED (user 2026-08-17: "play the apple eating animation as there should
+  // already be one") ── assets/held-items.js carves apple/00.vox and orange.vox into a run of consecutive item
+  // ids each, and this is the clock that walks them. It lives here, beside tryEat, because a bite is the ONLY
+  // thing that starts it: the strip is not a loop the hand idles through, it is one fruit eaten, once, per click.
+  // 24 FPS, which is the house rate for every animation in this game unless the user says otherwise, so the
+  // thirteen frames run 542 ms. That sits comfortably inside EAT_MS (900), and the gap is deliberate rather
+  // than leftover: the core lands, holds for a third of a second, and only then can the next bite start — so a
+  // HELD right button reads as bite, swallow, bite instead of a flicker of half-eaten apples.
+  // ── 8 FPS WAS TRIED AND TAKEN BACK OUT, SAME DAY (user 2026-08-17: "play the apple at 8 frames a second",
+  // then "erase that 8 fps for the apple, have it match the orange") ── recorded because the rate is a thing
+  // that will be reached for again, and because it does not stand alone: ONE clock walks both fruit, so
+  // slowing the apple slowed the orange with it, and at 8 the strip ran 1625 ms — past EAT_MS, which meant a
+  // HELD right button restarted it at 900 and you never once saw a fruit eaten to its core. Anything under
+  // ~15 fps has that problem here; a slower chew needs EAT_MS moved with it, and EAT_MS is the healing
+  // cadence the block above argues for, not an animation number.
+  // NOT a `let` inside a module, and not read back out of the hotbar: the last apple of a stack empties its
+  // slot on the same frame the animation starts, so anything that asked the hand what it was holding would
+  // stop drawing the fruit one frame into being eaten. tick-camera reads THIS instead, which is why the core
+  // still gets eaten in front of you when it was your last one.
+  let eatAnim = null;                                  // {t0, it} — the strip playing in the hand, or null
+  const EAT_FPS = 24, EAT_FRAME_MS = 1000 / EAT_FPS;   // the house rate, and ONE clock for both fruit — see the note above
+  const eatAnimFrame = (now) => {                      // which frame of the strip the hand should draw, or -1 for "not eating". Self-clearing: the frame past the last one ends the animation.
+    if (!eatAnim) return -1;
+    const f = Math.floor((now - eatAnim.t0) / EAT_FRAME_MS);
+    if (f >= FOOD_EAT_N) { eatAnim = null; return -1; }
+    return f < 0 ? 0 : f;
+  };
   // DERIVED from the vitals' food table rather than listed here: what is edible and what it restores are the
   // same fact, and keeping two lists in step by hand is how a food ends up chewable but nourishing nothing.
   const EDIBLE = () => new Set(Object.keys(vitFoods()).map(Number).filter(Boolean));
@@ -401,12 +441,14 @@
   const tryEat = () => {
     const sel = slots[selSlot];
     if (dead || ED.on || grabAnim || !sel || !EDIBLE().has(sel.it)) return false;
-    if (VIT.food >= VIT_FOOD_MAX) return false;         // a full bar refuses the bite, so food is never wasted
+    if (VIT.hp >= VIT_HP_MAX) return false;             // ── FULL HEALTH REFUSES THE BITE ── so a steak is never spent on nothing. This asked about the HUNGER bar until 2026-08-17, which was the bug the user hit: hunger sat frozen at max, so the test was always true and a hurt player could not eat at all. Same rule, asked of the bar food now fills
     const now9 = performance.now();
     if (now9 - eatT < EAT_MS) return false;
     eatT = now9;
+    const bit = sel.it;                                 // captured BEFORE the stack is spent: the line below can empty the slot, and the animation still has to know what it was eating
     try { eatSnd.currentTime = 0; const p = eatSnd.play(); if (p) p.catch(() => {}); } catch (e) {}
-    vitEat(sel.it);                                     // hunger + saturation, by the food's own numbers
+    vitEat(bit);                                        // +1 health point, by the food's own number in vitFoods()
+    if (FOOD_EAT_N && (bit === APPLE_IT || bit === ORANGE_IT || bit === MEAT_IT)) eatAnim = { t0: now9, it: bit };   // …and the food is visibly eaten down to a remnant. All three carry a carved strip now (user 2026-08-17 put the steak on the same animation as the fruit); it stays a TEST rather than an unconditional arm because a food added without one would otherwise index off the end of the item table
     if (--sel.n <= 0) { slots[selSlot] = null; slotTidy(); }
     return true;
   };

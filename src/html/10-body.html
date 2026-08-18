@@ -26,7 +26,7 @@
   <div class="arwRow arwBake"><input type="text" id="arwBake" readonly><button id="arwCopy">copy</button></div>
   <div class="arwHint" id="arwNow">0 / 0 / 0</div></div>
 <div id="lock" class="hidden">
-  <h1><span class="tv" data-t="voxel">voxel</span><span class="tb" data-t="bit">bit</span><sup class="tver">v1.1</sup></h1>
+  <h1><span class="tv" data-t="voxel">voxel</span><span class="tb" data-t="bit">bit</span><sup class="tver">v1.2</sup></h1>
   <div id="btnRow">
     <button id="kbBtn" aria-label="settings" data-lbl="settings"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
     <button id="edBtn" aria-label="asset editor" data-lbl="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
@@ -78,6 +78,10 @@
   <h2>held item</h2>
   <div id="pkRows"></div>
   <div style="text-align:center"><button id="pkReset">reset</button><button id="pkClose">done</button></div>
+</div><div id="sbCard">
+  <h2>stack count</h2>
+  <div id="sbRows"></div>
+  <div style="text-align:center"><button id="sbReset">reset</button></div>
 </div></div>
 <div id="load"><div id="loadVid"><i></i></div><h1 id="loadTitle"><span class="tv" data-t="voxel">voxel</span><span class="tb" data-t="bit">bit</span><sup class="tver">v<span class="vd"><span class="vdr"><i>0</i></span></span>.<span class="vd"><span class="vdr"><i>0</i></span></span></sup></h1><span id="loadMsg">generating forest…</span><div id="loadMeter"><div id="loadBar"><div id="loadFill"></div><div id="loadGloss"></div></div><span id="loadPct">0%</span></div></div>
 <div id="over" class="hidden"><h1>game over</h1><div id="overWhy">you fell into the lava</div><div class="ohint">click to respawn</div></div>

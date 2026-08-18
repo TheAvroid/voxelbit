@@ -433,6 +433,41 @@
       if (!fit(x + dx * (t + 0.02), z + dz * (t + 0.02))) return t;   // the clear run ends AT this boundary
     }
     return t; };
+  // ── WHERE A CREATURE IS ALLOWED TO BE, AS ONE PREDICATE ── the biome rule used to be the SAME boolean mask
+  // test written out in five places (the spawn gate, the planner's reach clip, the non-arbiter walkers'
+  // turn-away, the step rule and the proximity band that gates the last three), each of them keyed on
+  // `desSlot` — i.e. on the slot number, which is only another way of saying "is this a desert species".
+  // That held together for exactly as long as a species lived in one band. It does not any more: the desert
+  // mouse now also lives in the OAK forest (user 2026-08-17) and the porcupine has been taken OUT of it, so
+  // "which slot band" and "which biome" are different questions and the five copies could disagree. A body
+  // admitted by a spawn test its own walk tests then call foreign does not simply look wrong — it reads as
+  // not-at-home every frame and grinds against an invisible wall until the mercy recycle takes it.
+  // So the tag is per-BODY and the answer is one function. BIO_ANY is every species that was here before and
+  // still means literally "anywhere that is not sand", so its arithmetic below is character for character the
+  // old test and the pine forest's and the desert's behaviour is unchanged to the last bit.
+  const BIO_ANY = 0, BIO_SAND = 1, BIO_OAKF = 2, BIO_PINEF = 3;
+  // Both borders are 450-voxel smoothstep blends of the same shape (DESB and OAKB), so one pair of numbers
+  // serves both. The SAND line is 0.85 and not 0.5 for the measured reason recorded at the spawn gate: forest
+  // life legally spawns anywhere up to desertM 0.85, so a midline test called a large legal band foreign and
+  // reported trespassers that were only standing where they were born. The OAK line carries no such legacy —
+  // both of its populations are admitted clear of the treeline, at oakM >= 0.85 one side and <= 0.15 the
+  // other — so it sits on the honest midline and each side turns back at the CENTRE of the empty band.
+  const BIO_SANDLINE = 0.85, BIO_OAKLINE = 0.5;
+  const bioHomeOK = (home, x, z) => {
+    const ds = desertM(x, z) > BIO_SANDLINE;
+    if (home === BIO_SAND) return ds;
+    if (ds) return false;                             // BIO_ANY ends here, on exactly the sample and the comparison it always made — no oakM is taken and nothing in the pine forest pays for this
+    if (home === BIO_OAKF) return oakM(x, z) > BIO_OAKLINE;
+    if (home === BIO_PINEF) return oakM(x, z) <= BIO_OAKLINE;
+    return true;
+  };
+  // Is this body near enough to ITS OWN line for the clip to be worth sampling? Keeps the extra mask calls off
+  // the ~90% of each band that is nowhere near a boundary. Both windows are far wider than one plan tick of
+  // travel — a dashing mouse covers 5.3 voxels at NAV_HZ against a ~100-voxel window — so a walker is always
+  // well inside the window before the line itself is within reach.
+  const bioNearEdge = (home, x, z) => (home === BIO_OAKF || home === BIO_PINEF)
+    ? Math.abs(oakM(x, z) - BIO_OAKLINE) < 0.35
+    : Math.abs(desertM(x, z) - BIO_SANDLINE) < 0.15;
   // ── THE BIOME LINE, EXPRESSED AS TERRAIN ── the step rule refuses a crossing, so a walker that plans a
   // heading over the line has its move rejected every frame and stands there grinding. Steering it away with a
   // separate omT write was tried and is the wrong shape: on the arbiter that is a SECOND writer arguing with the
@@ -441,10 +476,12 @@
   // back short, so the fan prefers a lane that stays home-side for the same reason it prefers one without a tree
   // in it, and the turn is the planner's ordinary eased turn. Backs off one 4-voxel step so the walker stops
   // clear of the line rather than balanced on it.
+  // Takes the body's home TAG rather than a precomputed boolean of which side it is on: with two borders in
+  // the world, "the far side of the line" is no longer one bit of information.
   const navBioClip = (x, z, th, r, home) => {
     if (r <= 4) return r;
     const dx = Math.sin(th), dz = Math.cos(th);
-    for (let d = 4; d <= r; d += 4) if ((desertM(x + dx * d, z + dz * d) > 0.85) !== home) return d - 4;
+    for (let d = 4; d <= r; d += 4) if (!bioHomeOK(home, x + dx * d, z + dz * d)) return d - 4;
     return r;
   };
 

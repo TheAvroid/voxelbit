@@ -1,5 +1,5 @@
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, LGCELL, LGIGCELL, LILYCELL, MUCELL, OCELL, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, LGCELL, LGIGCELL, LILYCELL, MUCELL, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -12,6 +12,7 @@
     hmap[gx + gz * WX] = h;                            // hmap = the GROUND (lakebeds included — you walk on them, underwater)
     const mossy = !lake && mossV > 0.52;               // 0.56 → 0.52 ≈ +30% moss coverage
     const dm = desertM(wx, wz);                        // biome weight for this column: 0 = pine forest, 1 = open desert
+    const om = oakM(wx, wz);                           // …and the other way: 1 = oak forest (west of the pines), 0 = pine forest. The two masks can never both be non-zero — see the gap arithmetic at OAKOFF
     const base = gx + gz * WX * WY;
     let surfMoss = false;                              // grass only grows where a MOSS surface voxel actually landed
     const yTop = fresh ? (lake ? WL + 1 : h) : WY;     // fresh columns skip writing the empty sky — ~40% faster world builds
@@ -37,6 +38,17 @@
       // replaced the gradient with a hard edge running down the biome line (user: "can you blend this biome
       // transtion line better"). Keeping `shore` is what lets the dither go on doing its job on dry land.
       else if (shore && dm > 0.5) c = SAND[(sh * 3) | 0];
+      // ── THE OAK FOREST FLOOR IS GREEN (user 2026-08-17) ── and it is MOSS, the shade the pine forest
+      // already grows in patches, rather than a new ramp. Two reasons, and the second is the one that decided
+      // it: a fresh 4-shade green would cost four more palette ids on a table with about twelve free and the
+      // oak models themselves have just spent eight; and MOSS is already wired into every table a ground
+      // surface has to be in — digOnlyTab (the shovel, and only the shovel, digs ground), decorTab, and the
+      // snow/support classes. What separates the two biomes is COVERAGE, not hue: the pine floor is brown
+      // needle litter with green patches (mossV > 0.52), the oak floor is green everywhere. Standing on the
+      // border the change is unmistakable, and it cost nothing.
+      // DITHERED against the mask itself, exactly as the desert branch above is, so the green thins out into
+      // the litter across the whole rim instead of ending on a line.
+      else if (om > 0 && ihash(wx * 11 + 23, wz * 13 + 41) < om) { c = MOSS[(sh * 4) | 0]; surfMoss = true; }
       else { c = (mossy ? MOSS : NEEDLE)[(sh * 4) | 0]; surfMoss = mossy; }
       W[base + (h - 1) * WX] = c;
     }
@@ -104,6 +116,30 @@
     // inDesert, because this tier is ALSO the pine forest's field stone and the user is looking at the desert.
     // A separate salt so it thins independently of the tier roll above rather than re-cutting the same order.
     if (inDesert && ihash(cx * 53 + 31, cz * 59 + 13) > 0.375) return null;   // another -25% (user 2026-08-16): 0.5 -> 0.375, so a quarter of the original desert hand stones remain
+    // ── AND A QUARTER FEWER IN THE OAK FOREST (user 2026-08-17: "reduce the rocks by 25%. (oak forest)") ──
+    // the desert cut two lines above is the pattern: a biome rate cut is its own roll on its own salt, so it
+    // thins the field independently instead of re-cutting the tier order and shifting which tier a surviving
+    // cell draws. It applies to ALL FOUR tiers because "the rocks" in an oak wood means every rock in it —
+    // unlike the desert, where the same user request was about the boulders only and tier 0 had its own line.
+    // ── THE CUT WAS TAKEN TWICE (user 2026-08-17: "reduce the rocks by 25%", then "make the rocks -25% less
+    // rare again") ── 0.75 kept three candidates in four; 0.5625 is that same quarter taken off what was
+    // left, so the oak forest now carries 0.75 * 0.75 = 56.25% of the rock density the pine forest does.
+    // ONE threshold on ONE salt rather than two chained rolls: chaining would be the same field thinned
+    // twice, which is identical in expectation but re-draws which particular rocks survive, and the user is
+    // looking at a world they have already walked around in.
+    // The mask is tested AFTER the salt, not before it, purely for cost: oakM is 6 vnoise where this whole
+    // function is otherwise a handful of hashes, and boulderAt runs on every 34-voxel cell in the world plus
+    // ~16 more probes per mushroom site. Same rejections, a quarter of the mask evaluations.
+    if (ihash(cx * 61 + 43, cz * 67 + 29) > 0.5625 && oakM(bx, bz) > 0.5) return null;
+    // ── AND THE BIG ONES HALVED AGAIN ON TOP (user 2026-08-17: "reduce the large rocks in half") ──
+    // ANSWERING THE QUESTION THAT CAME WITH IT: yes, the cut above already thins the large rocks, because
+    // it is a flat rate on every tier — after it the oak forest carries 56.25% of the pine forest's big
+    // rocks just as it carries 56.25% of its pebbles. This line is a SECOND, tier-specific cut on top, so
+    // the two biggest tiers end at 28.1% of the pine forest's while the field stone and the small rocks
+    // stay at 56.25%: the oak wood keeps its scatter and loses its landmarks.
+    // size 2 and 3 are the mid and BIG rocks26 tiers (5.5% and 1.5% of candidates); its own salt again, so
+    // it thins that population rather than re-drawing which tier a survivor belongs to.
+    if (size >= 2 && ihash(cx * 71 + 17, cz * 73 + 41) > 0.5 && oakM(bx, bz) > 0.5) return null;
     const rot = (ihash(cx * 23 + 2, cz * 7 + 11) * 3.99) | 0;
     // Boulders stamp AFTER the cave carve, off the PRISTINE height, so one overhanging the mouth pit hangs in the
     // air. The old guard tested the rock's CENTRE against a flat 52, but the pit measures 42-52 across and the widest
@@ -246,7 +282,22 @@
         const px2 = sx + Math.cos(ang) * (len * q / 8), pz2 = sz + Math.sin(ang) * (len * q / 8);
         for (let s = -1; s <= 1; s++) {
           const lx = Math.round(px2 + nx2 * s * (wb * 1.4 + 34)), lz = Math.round(pz2 + nz2 * s * (wb * 1.4 + 34));
-          if (H(lx, lz) <= WL + 4 || basinM(lx, lz) > 0.1 || desertM(lx, lz) > 0) { dry = false; break; }   // …and NOT INTO THE DESERT (user). Tested here, on the same 9-point path walk with the same rim offsets, because the test has to reject the WHOLE gorge: gating the carve instead would leave a canyon that stops dead at the sand line. desertM > 0 (not > 0.5) so a gorge cannot even reach the blend band.
+          if (H(lx, lz) <= WL + 4 || basinM(lx, lz) > 0.1) { dry = false; break; }
+          // ── WHICH BIOMES REFUSE A GORGE ── one clause per band, tested on the same 9-point path walk with
+          // the same rim offsets as the water tests above, because a biome has to reject the WHOLE gorge:
+          // gating the carve instead would leave a canyon that stops dead on the biome line. Each is `> 0`
+          // rather than `> 0.5` so a gorge cannot even reach a blend band.
+          // READ THE THIRD CLAUSE BEFORE CHANGING ANYTHING: the world has exactly three bands, the two masks
+          // are never both non-zero, and "neither of them" IS the pine forest — so with all three listed, NO
+          // GORGE GENERATES ANYWHERE IN THE WORLD. That is what was asked for (user 2026-08-17: "remove the
+          // ravines from the pine forest and the oak forest", the desert having already refused them on
+          // 2026-08-16), and it is deliberately written as three refusals rather than as a deleted system:
+          // caveAt/stampCave/nearCave/caveHitsBox and the orphan sweep are all intact, so handing a biome its
+          // ravines back is deleting its one clause here, and a fourth band would start with them enabled.
+          const dmL = desertM(lx, lz), omL = oakM(lx, lz);
+          if (dmL > 0                                  // ── NOT IN THE DESERT (user 2026-08-16) ──
+            || omL > 0                                 // ── NOR IN THE OAK FOREST (user 2026-08-17) ──
+            || (dmL <= 0 && omL <= 0)) { dry = false; break; }   // ── NOR IN THE PINE FOREST (user 2026-08-17) ── every column that is neither of the above is pine, so this clause is the pine forest and it is unconditional
         }
       }
       if (dry) c = { sx, sz, ang, len, wb, dep: 280, seed: cx * 733 + cz * 911 };
@@ -370,6 +421,7 @@
     const wx = Math.round(cx * F2CELL + 3 + ihash(cx * 5 + 27, cz * 3 + 41) * (F2CELL - 6));
     const wz = Math.round(cz * F2CELL + 3 + ihash(cx * 11 + 33, cz * 7 + 15) * (F2CELL - 6));
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── ferns are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
+    if (oakM(wx, wz) > 0.5) return null;      // ── NOR IN THE OAK FOREST (user 2026-08-17: "remove the ferns from the oak forest") ── the same halfway gate on the other border, so the fern field thins out across the rim instead of ending on the iso-line. DELIBERATE AND USER-DIRECTED, exactly like the mushroom gate a few passes down: it looks identical to the accidental biome exclusion that gate replaced, so do not "fix" it back.
     if (H(wx, wz) <= WL + 4) return null;              // no ferns in water or on beaches
     if (nearCave(wx, wz)) return null;
     for (let cz2 = Math.floor((wz - 14) / TCELL); cz2 <= Math.floor((wz + 14) / TCELL); cz2++)   // keep clear of pine trunks — the plant is 23 wide
@@ -522,6 +574,17 @@
     const wx = Math.round(cx * MUCELL + 5 + ihash(cx * 5 + 23, cz * 3 + 9) * (MUCELL - 10));
     const wz = Math.round(cz * MUCELL + 5 + ihash(cx * 11 + 7, cz * 7 + 19) * (MUCELL - 10));
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── mushrooms are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
+    // ── NOR IN THE OAK FOREST, AND THIS IS DELIBERATE — DO NOT "FIX" IT (user 2026-08-17: "remove the red
+    // mushroom for the oak forest") ── mushrooms were taught about oaks EARLIER THE SAME DAY, by adding an
+    // oakAt proximity loop beside the pine one below so that `nearPine` meant "am I in a forest" rather than
+    // "is there a pine here". The user then asked for the opposite, so that loop is gone and mushrooms are
+    // pine-forest litter again. It looks exactly like the bug it was written to fix — a gate that rejects
+    // every candidate in a whole biome — so it is stated twice: this explicit mask test, which is the one
+    // that carries the user's decision, and the pine-only `nearPine` loop below, which would achieve it on
+    // its own (treeAt returns null everywhere oakM > 0.5, so no candidate in the oak forest can find a pine).
+    // The explicit test is the load-bearing one: it survives anyone later relaxing the tree gate.
+    // Same halfway point and same reason as the desert line above — the litter thins across the rim.
+    if (oakM(wx, wz) > 0.5) return null;
     if (H(wx, wz) <= WL + 4) return null;              // no mushrooms in water or on beaches
     if (nearCave(wx, wz)) return null;
     let nearPine = false;                              // PINE-FOREST GATE: a pine within ~46 vox (crown reach) but ≥16 away so the 23-wide cluster never swallows a trunk
@@ -532,7 +595,7 @@
         if (d2 < 16 * 16) return null;                 // too close to a trunk — reject the whole site
         if (d2 < 46 * 46) nearPine = true;
       }
-    if (!nearPine) return null;                        // no pine nearby → not the forest → no mushrooms
+    if (!nearPine) return null;                        // no pine within crown reach → not pine-forest floor → no mushrooms
     for (let bz2 = Math.floor((wz - 60) / BCELL); bz2 <= Math.floor((wz + 60) / BCELL); bz2++)   // KEEP CLEAR OF ROCKS — both are decor-range ids so a mode-1 stamp would overwrite/interpenetrate the boulder (visible clipping); boulderAt is deterministic so probe the same candidates it places
       for (let bx2 = Math.floor((wx - 60) / BCELL); bx2 <= Math.floor((wx + 60) / BCELL); bx2++) {
         const b = boulderAt(bx2, bz2); if (!b) continue;
@@ -568,6 +631,7 @@
     if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.22) return null;
     const wx = Math.round(cx * PCCELL + 3 + ihash(cx * 7 + 9, cz * 5 + 3) * (PCCELL - 6));
     const wz = Math.round(cz * PCCELL + 3 + ihash(cx * 3 + 17, cz * 11 + 8) * (PCCELL - 6));
+    if (oakM(wx, wz) > 0.5) return null;      // ── NOR IN THE OAK FOREST ── a cone on the ground is a PINE cone: it is the one piece of forest litter that names the tree it fell from, and there are no pines here to have dropped it. (The cones hung IN a crown need no gate — stampTree hangs those, and stampTree no longer runs in this biome.)
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pinecones are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (H(wx, wz) <= WL + 4) return null;              // cones stay off beaches and lakebeds
     if (nearCave(wx, wz)) return null;
@@ -583,6 +647,24 @@
     const wx = Math.round(cx * SCELL + 2 + ihash(cx * 3 + 8, cz * 5 + 4) * (SCELL - 4));
     const wz = Math.round(cz * SCELL + 2 + ihash(cx * 7 + 2, cz * 9 + 6) * (SCELL - 4));
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── twigs are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
+    // ── IN THE OAK FOREST, ONLY UNDER A TREE (user 2026-08-17: "only have stick near oak trees", and
+    // explicitly "keep the pine forest the same") ── a twig is something a tree DROPPED, and the oak wood has
+    // wide clearings between its crowns where a stick lying in open meadow reads as litter rather than as
+    // deadfall. So here the twig has to be under a canopy. The PINE forest keeps its blanket scatter exactly:
+    // this whole test is behind the oak mask, so `oakM <= 0.5` skips it and nothing about the pines changes.
+    // 64 voxels is the widest oak's half-footprint (114 across) plus a little, so "near" means "under or just
+    // beyond the crown", not "within sight of".
+    if (oakM(wx, wz) > 0.5) {
+      let nearOak = false;
+      for (let cz2 = Math.floor((wz - 64) / OKCELL); cz2 <= Math.floor((wz + 64) / OKCELL) && !nearOak; cz2++)
+        for (let cx2 = Math.floor((wx - 64) / OKCELL); cx2 <= Math.floor((wx + 64) / OKCELL); cx2++) {
+          const t2 = oakAt(cx2, cz2); if (!t2) continue;
+          const rr = (Math.max(OAKV[t2.k].sx, OAKV[t2.k].sy) >> 1) + 8;   // that tree's OWN crown radius, so a bush drops twigs in a small ring and a giant in a wide one
+          const dx2 = wx - t2.wx, dz2 = wz - t2.wz;
+          if (dx2 * dx2 + dz2 * dz2 < rr * rr) { nearOak = true; break; }
+        }
+      if (!nearOak) return null;
+    }
     if (H(wx, wz) <= WL + 4) return null;              // sticks stay off the beach
     if (nearCave(wx, wz)) return null;
     return { wx, wz, m: ihash(cx * 11 + 3, cz * 13 + 5) < 0.5 ? 0 : STICKV.length - 1, rot: (ihash(cx + 4, cz + 7) * 3.99) | 0 };
@@ -631,6 +713,160 @@
   function stampLilyGig(g, x0, x1, z0, z1) {
     stampModel(LILYPAD_GIGV, g.rot, g.wx, WL + 1, g.wz, x0, x1, z0, z1, 4);   // floats on the lake surface; mode 4 clips each column to open water so it fits the lake outline
   }
+  // -- THE OAKS (user 2026-08-17: "spread the trees around the oak forest biome") -- the oak forest's only
+  // tree pass, and the exact counterpart of treeAt/stampTree below: one candidate per cell, jittered inside
+  // it, gated on the biome mask, kept out of water and gorges and off the spawn.
+  //
+  // WHY 112 AND NOT THE PINES' 45. An oak is not a pine-shaped object. The widest of these crowns is 118
+  // voxels across against pine5's 35, and the biggest is 86,080 voxels against the pine's 8,440 - ten times
+  // the model at three times the width. Cell size is therefore doing two jobs at once, and they happen to
+  // want the same number: 11.2 m spacing is what a closed broadleaf canopy actually looks like (crowns
+  // touching, trunks not), and it is also what keeps the STAMP COST in the same league as the pine pass it
+  // sits beside. Against the size mix below that is ~1.8 voxels written per world column, where the pine
+  // pass writes ~3.0. Halve this cell and the generator writes four times as much oak per column, which is
+  // the one way this feature could quietly cost the whole game its frame budget.
+  //
+  // THE SIZE MIX IS WEIGHTED, NOT UNIFORM, and it is weighted DOWN. OAKV is height-sorted by the voxelizer
+  // (0 = the 2.4 m bush, 6 = the 11.7 m oak), and a flat roll over seven models would make the two giants
+  // 29% of every tree - 76k voxels a throw. The ramp below spends its picks on the cheap end while still
+  // putting a full-grown oak in most views: an even split by CANOPY LAYER (underbrush / young / mature /
+  // giant) rather than by model, which is also how a real oak wood is stocked.
+  // ── DENSITY DOUBLED (user 2026-08-17) ── and it is the CELL that moved, not the pass rate: candidates
+  // per unit area go as 1/OKCELL^2, so 112 -> 79 is 112^2/79^2 = 2.01x, where raising the 0.78 roll could
+  // only ever have bought 28% before it saturated. 7.9 m spacing against crowns up to 11.4 m wide means
+  // the canopy now genuinely closes - which is the point - and stampOak's mode 1 simply lets neighbouring
+  // crowns interleave rather than fight.
+  // THE COST IS LINEAR IN THIS AND IT IS THE ONE THING TO WATCH: the pass writes ~2x the voxels per world
+  // column it did (about 3.6 against the pine pass's 3.0), all of it in the gen workers.
+  const OKCELL = 79, OKMARGIN = 60;                    // one oak candidate per 7.9 m cell; margin covers the widest crown's half-footprint (118 across -> 59), so a tree centred just outside a region still stamps the half of it that falls inside. RE-CHECK THIS IF THE BAKE GETS BIGGER - a model wider than 2*OKMARGIN silently loses its outer courses at every region seam, and the seam is exactly where nobody looks.
+  // ── DOUBLED, 0.10 -> 0.20 (user 2026-08-17: "I don't see fruit trees very often") ── and the reason it
+  // read as rarer than 10% is worth writing down, because the two numbers are not the same thing:
+  // this is the share of ELIGIBLE oaks, and the two BUSH tiers are excluded (a berry bush already carries
+  // fruit), so 22% of every oak you walk past can never qualify. 0.10 of the remaining 78% was 7.8% of all
+  // oaks — about 1 in 13 — which is what the eye was reporting. Measured in-game before this change: 7 of
+  // 124 oaks, 5.6%.
+  // 0.10 -> 0.20 read as TOO MANY (user, same session), so it settles at 0.15: 11.7% of all oaks,
+  // about 1 in 9 — half again as common as it started and a third down from the doubling.
+  // Kept as a share of the ELIGIBLE trees rather than
+  // re-based onto all oaks, so the bush exclusion stays visible in the number instead of being buried.
+  const OKFRUIT = 0.15;                                // share of oak TREES (the two bush tiers excluded — they are the berry bushes) that carry fruit
+  const OKHIVE = 0.06;                                 // …and of the mature+giant layers that carry a beehive: 6% of the 52% of oaks that reach those layers = 3.1% of all oaks
+  const OKVIEW_W = 22;                                 // spawn sight-line half-width for an oak, against the pine's 13: a crown carries 59 voxels of half-footprint, so a trunk cleared at the pine's tolerance still hangs its canopy over the whole view
+  function oakAt(cx, cz) {
+    if (!OAKV.length) return null;                     // ?nooaks, or the .json never loaded - one test disables the whole pass
+    if (ihash(cx * 41 + 19, cz * 37 + 7) > 0.78) return null;
+    const wx = Math.round(cx * OKCELL + 10 + ihash(cx * 5 + 3, cz * 7 + 11) * (OKCELL - 20));
+    const wz = Math.round(cz * OKCELL + 10 + ihash(cx * 11 + 9, cz * 13 + 5) * (OKCELL - 20));
+    if (oakM(wx, wz) < 0.5) return null;               // -- OAK FOREST ONLY -- the mirror of the pines' own test at the same halfway point, so the two canopies thin into each other across the rim instead of both ending on one line
+    // -- THE SPAWN CLEARING, WIDENED FOR A BROADLEAF -- the same two tests treeAt runs (a circle, then a
+    // corridor down SPYAW), with both radii scaled to the tree. 40 voxels rather than 26: the player now
+    // starts INSIDE this biome rather than beside it, so this is the clearing they actually stand in, and an
+    // oak trunk 2.6 m away puts bark across a third of the screen. Derived from SPYAW rather than assuming
+    // +X, so re-baking the spawn heading moves the corridor with it.
+    const dxs = wx - SPWX, dzs = wz - SPWZ;
+    if (dxs * dxs + dzs * dzs < 40 * 40) return null;
+    const fwdX = Math.sin(SPYAW), fwdZ = Math.cos(SPYAW);
+    const along = dxs * fwdX + dzs * fwdZ;
+    if (along > 0 && along < SPVIEW_D && Math.abs(dxs * fwdZ - dzs * fwdX) < OKVIEW_W) return null;
+    if (H(wx, wz) <= WL + 4) return null;              // no oaks in water or on a beach - the same line the pines use
+    if (nearCave(wx, wz)) return null;
+    const sr = ihash(cx * 17 + 23, cz * 19 + 31);
+    // ── THE BUSH TIER IS TWO MODELS NOW, AND EVERY INDEX ABOVE IT MOVED UP ONE ── assets/bow.js splices the
+    // 2.4 m bush into a CHERRY bush and a BLUEBERRY bush and splices both into OAKV in its place, so the bake's
+    // seven models are eight and the plain berryless bush does not exist anywhere in the world any more (user
+    // 2026-08-17: "there shouldn't be one without any berries"). The four canopy layers and their weights are
+    // unchanged - only the indices they name. 50/50 on its OWN salt rather than reusing sr, because sr has
+    // already been spent deciding the layer and a second read of it would correlate the two.
+    const k = sr < 0.22 ? (ihash(cx * 23 + 5, cz * 29 + 3) < 0.5 ? 0 : 1)         // 22% underbrush - the 2.4 m bush, half cherry and half blueberry
+            : sr < 0.48 ? 2 + ((ihash(cx * 3 + 71, cz * 5 + 13) * 1.99) | 0)      // 26% young, ~5 m
+            : sr < 0.80 ? 4 + ((ihash(cx * 7 + 29, cz * 3 + 61) * 1.99) | 0)      // 32% mature, 7-9 m
+            : 6 + ((ihash(cx * 13 + 47, cz * 11 + 19) * 1.99) | 0);               // 20% giant, 11 m
+    const t = { wx, wz, k: Math.min(OAKV.length - 1, k), rot: (ihash(cx + 137, cz + 89) * 3.99) | 0,
+                sink: 1 + ((ihash(cx * 19, cz * 23) * 3) | 0) };   // sink 1-3, and it means something DIFFERENT here than it does for a pine: stampOak writes in mode 1, so every course below the local ground is refused rather than punched into the hill. The sink only decides how many base courses are hidden.
+    // ── FRUIT (user 2026-08-17: "pick trees at random and place apples and oranges in the trees ... make 10% of
+    // oak trees have some fruit it in") ── one SPECIES per tree, because an apple tree is an apple tree, and a
+    // count that comes off the crown's own footprint the way birdsOnOak does rather than a constant: 3 on a young
+    // oak, 9 on a giant. THE BUSH TIERS ARE EXCLUDED and that is the point of them - a berry bush already carries
+    // fruit, and hanging a 30 cm apple in a 2.4 m shrub reads as litter. So the 10% is 10% of the oak TREES.
+    if (t.k >= 2 && FRUITV.length && OAK_ANCH[t.k] && OAK_ANCH[t.k].length &&
+        ihash(cx * 53 + 7, cz * 59 + 13) < OKFRUIT) {
+      const fm = OAKV[t.k];
+      t.fk = ihash(cx * 61 + 17, cz * 43 + 29) < 0.5 ? 0 : 1;                     // 0 = apple, 1 = orange (FRUITV's own order, which tools/voxelize_fruit.py fixes)
+      // ── DOUBLED (user 2026-08-17: "double the rate of the apples in the bigger trees. As in a single tree
+      // should carry more apples") ── the x2 wraps the WHOLE expression rather than being folded into the
+      // divisor, so the size ramp keeps its shape and every tier simply doubles: 6 / 6 / 8 / 10 / 16 / 18
+      // against the old 3 / 3 / 4 / 5 / 8 / 9. Folding it into the /2000 instead would have flattened the
+      // ramp's low end (a young oak would have gained as much as a giant), and the request is explicitly
+      // about the BIGGER trees carrying more.
+      // The cap moves 10 -> 20 with it, or the two giants would both clip to 10 and the doubling would
+      // land on every tier EXCEPT the ones it was asked for. OAK_ANCH is capped at 96 anchors per model,
+      // so 18 fruit still draws from a pool five times its size and cannot run short.
+      t.fn = Math.min(20, 2 * (3 + (((fm.sx * fm.sy) / 2000) | 0)));
+    }
+    // ── AND A BEEHIVE, WHICH IS A LANDMARK RATHER THAN SCATTER (user 2026-08-17) ── rarer than the fruit and
+    // restricted to the two biggest canopy layers: a 50 cm box needs a crown big enough to hold it without
+    // becoming the tree. 6% of the mature-and-giant layers is 3.1% of all oaks, which at OKCELL 79 and the 78%
+    // pass rate is about one hive per 51 m square - roughly two inside the default draw radius, so it is
+    // findable without being furniture. The Y IS RESOLVED HERE, not at stamp time, because hiveAt() is the
+    // query the bee swarm reads and it has to answer with a world position; groundMin is only paid on the 3%
+    // that actually carry one. The hive hangs from a BRANCH (OAK_BANCH, bark), never from leaves - see the
+    // support argument in assets/material-tabs.js.
+    if (t.k >= 4 && HIVEV && OAK_BANCH[t.k] && OAK_BANCH[t.k].length &&
+        ihash(cx * 71 + 29, cz * 67 + 41) < OKHIVE) {
+      const m = OAKV[t.k], B = OAK_BANCH[t.k];
+      const a = B[((ihash(cx * 83 + 11, cz * 79 + 37) * (B.length - 0.01)) | 0)];
+      const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 255;
+      let rx, rz;                                                                 // stampModel's rotation, verbatim - see the cone block in stampTree
+      if (t.rot === 0) { rx = ax; rz = ay; }
+      else if (t.rot === 1) { rx = m.sy - 1 - ay; rz = ax; }
+      else if (t.rot === 2) { rx = m.sx - 1 - ax; rz = m.sy - 1 - ay; }
+      else { rx = ay; rz = m.sx - 1 - ax; }
+      const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+      const hx = t.wx - (fw >> 1) + rx, hz = t.wz - (fd >> 1) + rz;
+      const hy = groundMin(t.wx, t.wz, 4) - t.sink + az - HIVEV.sz;               // …so the hive's TOP course lands one below the branch it hangs from: the model's top-centre voxel (2,2,4) is occupied and stampModel anchors bottom-CENTRE, so that voxel is face-adjacent to the bark whatever the rotation
+      t.hv = { wx: hx, wy: hy + (HIVEV.sz >> 1), wz: hz,                          // CENTRE of the box - the point a swarm orbits
+               bx: hx, by: hy, bz: hz,                                            // …and the stampModel anchor (bottom-CENTRE column) it is actually written at
+               sx: HIVEV.sx, sy: HIVEV.sy, sz: HIVEV.sz,
+               tx: t.wx, tz: t.wz, k: t.k, rot: t.rot };
+    }
+    return t;
+  }
+  // ── WHERE ARE THE BEEHIVES ── the pure query the BEES read, shaped exactly like oakAt: same OKCELL grid, same
+  // (cx, cz) cell coordinates, hash-driven, no state and no cache, safe to call from the main thread, a gen
+  // worker or a test. It is a projection of oakAt rather than a second scatter, because a hive is a property OF
+  // an oak: two independent rolls could put a hive where no tree stands. Scan it the way stampCellsGen scans
+  // oakAt - Math.floor((w - OKMARGIN) / OKCELL) to Math.floor((w + OKMARGIN) / OKCELL) - and every hive in a
+  // region comes back. Returns null, or { wx, wy, wz (the box's CENTRE), bx, by, bz (its stamp anchor),
+  // sx, sy, sz (the model box), tx, tz (the oak's trunk column), k (size tier), rot }.
+  function hiveAt(cx, cz) { const t = oakAt(cx, cz); return (t && t.hv) || null; }
+  function stampOak(t, x0, x1, z0, z1) {
+    const gy = groundMin(t.wx, t.wz, 4) - t.sink;
+    stampModel(OAKV[t.k], t.rot, t.wx, gy, t.wz, x0, x1, z0, z1, 1);   // mode 1 = empty cells + soft decor: the crown grows through the ferns and grass instead of leaving a hole where one would have been, and the buried trunk courses are clipped by the terrain instead of carving it. groundMin over a 4-voxel radius seats the tree on the LOW side of a slope, so no oak stands on a stalk.
+    if (t.fn) {                                        // FRUIT — hung UNDER canopy anchors exactly as stampTree hangs its pinecones, and rotated with the tree so every region stamps them identically
+      const m = OAKV[t.k], A = OAK_ANCH[t.k], F = FRUITV[t.fk];
+      const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+      const bx = t.wx - (fw >> 1), bz = t.wz - (fd >> 1);
+      const used = new Set();                          // one fruit per column — never stacked
+      for (let j = 0; j < t.fn; j++) {                 // OAK_ANCH is angle-sorted: the j-th fruit comes out of the j-th angular sector, so a tree's crop rings the crown instead of clumping
+        const a = A[(((j + 0.15 + ihash(t.wx * 13 + j * 29, t.wz * 17 + j * 31) * 0.7) / t.fn) * A.length) | 0];
+        const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 255;
+        let rx, rz;
+        if (t.rot === 0) { rx = ax; rz = ay; }
+        else if (t.rot === 1) { rx = m.sy - 1 - ay; rz = ax; }
+        else if (t.rot === 2) { rx = m.sx - 1 - ax; rz = m.sy - 1 - ay; }
+        else { rx = ay; rz = m.sx - 1 - ax; }
+        const ck = rx | (rz << 8); if (used.has(ck)) continue; used.add(ck);
+        // Mode 1, not the cone's mode 0: a fruit is a 3-voxel ball and mode 0 would let one leaf in the way take
+        // a bite out of it. It cannot eat BARK either way — stampModel's mode-1 test is `cur < DECOR_MIN`, and
+        // the oaks' bark ids are the pine's, which are below that line.
+        // The model's top-centre voxel is (2,1,4) on both fruit, so with wy = gy + az - F.sz it lands within one
+        // column of the anchor leaf at every rotation — face-adjacent at rot 0/1 and diagonal at 2/3, and the
+        // drape flood in sim/support-rules.js is 26-connected precisely so a diagonal counts as attached.
+        stampModel(F, (ax + az + j) & 3, bx + rx, gy + az - F.sz, bz + rz, x0, x1, z0, z1, 1);
+      }
+    }
+    if (t.hv) stampModel(HIVEV, t.rot, t.hv.bx, t.hv.by, t.hv.bz, x0, x1, z0, z1, 1);   // the BEEHIVE, at the world anchor oakAt already resolved
+  }
   const TCELL = 45, TMARGIN = 24;                      // one pine candidate per 4.5 m cell (≈2× the old 64-cell density)
   const SPVIEW_D = 96, SPVIEW_W = 13;                  // spawn sight-line: 9.6 m ahead, 1.3 m either side of the view axis
   function treeAt(cx, cz) {
@@ -638,6 +874,7 @@
     const wx = Math.round(cx * TCELL + 6 + ihash(cx * 3 + 1, cz * 5 + 2) * (TCELL - 12));
     const wz = Math.round(cz * TCELL + 6 + ihash(cx * 9 + 4, cz * 3 + 8) * (TCELL - 12));
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pines are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
+    if (oakM(wx, wz) > 0.5) return null;     // ── NOR IN THE OAK FOREST (user 2026-08-17) ── the same test at the other border. Without it the new biome is a pine wood with oaks in it rather than a biome, and the two canopies interpenetrate right across the 450-voxel blend band. > 0.5 rather than > 0 deliberately: the pines thin out through the rim instead of stopping on the iso-line, which is what makes the two forests read as meeting rather than as abutting.
     const dxs = wx - SPWX, dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // spawn clearing
     // ── AND A CLEAR LINE OF SIGHT DOWN THE SPAWN HEADING (user 2026-08-16: "try not to have the player spawn
@@ -645,7 +882,7 @@
     // outside it, dead ahead, still fills the screen the instant you load. This rejects trunks inside a narrow
     // CORRIDOR along SPYAW rather than widening the circle, which would clear trees to the sides and behind
     // where nobody is looking. Derived from SPYAW rather than assuming +X, so re-baking the spawn heading
-    // moves the corridor with it. Short and narrow on purpose: long enough to open the view to the sand, tight
+    // moves the corridor with it. Short and narrow on purpose: long enough to open the view out of the trees, tight
     // enough that it reads as a gap between trees and not as a felled lane.
     const fwdX = Math.sin(SPYAW), fwdZ = Math.cos(SPYAW);
     const along = dxs * fwdX + dzs * fwdZ;
@@ -801,6 +1038,7 @@
     // (GIGANTIC lake pads REMOVED at user request 2026-07-20 — the lilyGigAt/stampLilyGig pair is left in place, and still
     //  crosses to the gen workers, so re-enabling is a one-line restore of this pass. The small drifting pads are untouched.)
     yield* stampCellsGen(x0, x1, z0, z1, LGCELL, 16, logAt, stampLog);
+    yield* stampCellsGen(x0, x1, z0, z1, OKCELL, OKMARGIN, oakAt, stampOak);   // -- THE OAKS -- last of the stamped decor and immediately before the pines, which is where a tree belongs: every ground scatter above has already been laid, and mode 1 lets a crown grow through the ferns and grass rather than leaving a hole where one would have been. The two tree passes never meet - their biome gates are exclusive - so their order relative to each other is free.
     for (const t of treesInRegion(x0, x1, z0, z1)) { stampTree(t, x0, x1, z0, z1); yield; }   // one tree per slice — the old all-at-once pass spiked 10–25 ms per band
   }
   function genRegion(x0, x1, z0, z1, fresh) { const g = genRegionGen(x0, x1, z0, z1, fresh); for (let r = g.next(); !r.done; r = g.next()) {} }

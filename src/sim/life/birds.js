@@ -31,8 +31,33 @@
         const bKeep = Math.min(renderDist + 64, 1040), bOut = bKeep * 0.50, bIn = bKeep * 0.24;
         if (b.init) { const ddx = b.x - P.x, ddz = b.z - P.z;
           if (ddx * ddx + ddz * ddz > bKeep * bKeep) b.init = false; }   // left the ring → respawn it ahead of you instead
+        // ── FORESTS ONLY, NEVER THE DESERT (user 2026-08-17: "the birds should be oak and pine forests only.
+        // I only want them disabled in the desert") ── the flock's FIRST biome test; birds.js had none, which
+        // is why restoring the species list put birds over the sand as well. TWO different thresholds on
+        // purpose, and the pair is the whole design:
+        //   * BIRD_OUT 0.85 RECYCLES a bird that has flown deep over the dunes. Not 0.5, because a bird is
+        //     the one creature that SHOULD be able to cross a treeline — clipping it off at the halfway line
+        //     would read as an invisible wall in open sky, which is exactly what the ground creatures' own
+        //     gate comment warns about. It drifts out over the sand and is recycled once it is properly out.
+        //   * BIRD_IN 0.35 refuses a SPAWN. Tighter than the recycle line so a fresh bird never appears
+        //     already half-way to being culled, which would flicker the flock along the border.
+        // The two are the same shape as the ground life's BIO_DESERT/BIO_FOREST pair and for the same reason.
+        const BIRD_OUT = 0.85, BIRD_IN = 0.35;
+        if (b.init && desertM(b.x, b.z) > BIRD_OUT) b.init = false;
         if (!b.init) {                                // placed out past the fog, never in plain view, and staggered so they never read as a formation
-          const a0 = (bi / BIRD_N) * Math.PI * 2 + Math.random() * 1.4, r0 = bIn + Math.random() * Math.max(1, bOut - bIn);
+          // ── AND IF THERE IS NOWHERE LEGAL, DO NOT PLACE IT AT ALL ── stand deep in the desert and every
+          // candidate on the ring is sand, so the flock has to be able to answer "none". Eight tries around
+          // the ring (the ring is a circle; eight covers it) and then `b.off`, which the two draw paths skip
+          // exactly the way they already skip a ragdolling bird. Without this a bird with no legal spot would
+          // keep its x/z of 0 and be drawn at the world origin.
+          let a0 = 0, r0 = 0, ok = false;
+          for (let q = 0; q < 8 && !ok; q++) {
+            a0 = (bi / BIRD_N) * Math.PI * 2 + Math.random() * 1.4 + q * 0.7854;
+            r0 = bIn + Math.random() * Math.max(1, bOut - bIn);
+            ok = desertM(P.x + Math.cos(a0) * r0, P.z + Math.sin(a0) * r0) <= BIRD_IN;
+          }
+          b.off = !ok;
+          if (!ok) return null;                       // no forest within the ring — the sky over the desert stays empty
           b.x = P.x + Math.cos(a0) * r0; b.z = P.z + Math.sin(a0) * r0;
           b.x = Math.max(rect.xlo + 60, Math.min(rect.xhi - 60, b.x));   // never outside the generated rect — the hmap is stale there and the terrain-follow flies blind
           b.z = Math.max(rect.zlo + 60, Math.min(rect.zhi - 60, b.z));
@@ -41,7 +66,7 @@
           b.dying = false; b.rag = false; b.ragBody = null; b.ragParts = null; b.ragIt = 0;   // a recycled slot must not inherit the last bird's death: `rag` would keep it from ever being drawn, and a stale ragIt would build the next corpse from the wrong pose
           b.altO = Math.random() * 30; b.tRe = tb + Math.random() * 3;   // staggered whim timers → independent behaviour
           b.flapT0 = tb - Math.random() * 0.5;         // desynced wingbeats
-          b.om = 0; b.vyS = 0; b.swO = 0; b.mode = 0; b.glid = false;
+          b.om = 0; b.vyS = 0; b.swO = 0; b.mode = 0; b.glid = false; b.off = false;
           b.sp = FLYERS.length ? (bi % FLYERS.length) : 0;   // ── SPECIES ── fixed by SLOT, never rolled: a coin flip drifts, this holds an exact even split (12 birds / 3 species = 4 each) no matter how many recycle
         }
         if (tb > b.tRe) {                             // pick the next BEHAVIOUR, not just a turn rate — that is what reads as intent instead of drift

@@ -28,7 +28,7 @@
       const b = 8 + LIFT + 88 * (s1(xb) * 0.55 + s2(xb * 2.13 + 11.7) * 0.27 + s3(xb * 4.41 + 41.2) * 0.18);
       const shoreK = Math.min(1, Math.abs(b - WL) / 12);
       const xd = wx * 0.04 + 7.3;
-      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(b + 9 * (d1(xd) * 0.55 + d2(xd * 2.13 + 11.7) * 0.27 + d3(xd * 4.41 + 41.2) * 0.18) * (0.2 + 0.8 * shoreK))));
+      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * (d1(xd) * 0.55 + d2(xd * 2.13 + 11.7) * 0.27 + d3(xd * 4.41 + 41.2) * 0.18) * (0.2 + 0.8 * shoreK), wx, wz))));   // ── ROUNDED OAK HILLS ── the row-specialized forest expression is untouched and still bit-identical to baseH's; oakRoll is the SAME scalar helper baseH and makeHCol call, so the oak field cannot drift between the three copies any more than desertM/duneH can
       const b0 = bsr(wx * 0.0016 + 313.7);
       const bm = b0 >= 0.065 ? 0 : sstep(Math.min(1, (0.065 - b0) / 0.06));
       const m = bm * Math.max(0, Math.min(1, (66 + LIFT - h) / 20));
@@ -36,6 +36,7 @@
       const rs = riverS(wx, wz);
       const xnB = wx * 0.05 + 13.7;
       const bn = e1(xnB) * 0.55 + e2(xnB * 2.13 + 11.7) * 0.27 + e3(xnB * 4.41 + 41.2) * 0.18;
+      h = Math.round(oakBank(h, wx, wz));              // ── SHALLOW OAK BANKS ── the SAME shared scalar helper H() and makeHCol call, in the same place in the pass order. The arithmetic exists once, so the three copies cannot drift; see oakBank in window.js
       if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
       if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));
       // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
@@ -81,7 +82,7 @@
       const b = 8 + LIFT + 88 * (s1(zb) * 0.55 + s2(zb * 2.13 + 5.3) * 0.27 + s3(zb * 4.41 + 23.8) * 0.18);
       const shoreK = Math.min(1, Math.abs(b - WL) / 12);
       const zd = wz * 0.04 + 2.1;
-      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(b + 9 * (d1(zd) * 0.55 + d2(zd * 2.13 + 5.3) * 0.27 + d3(zd * 4.41 + 23.8) * 0.18) * (0.2 + 0.8 * shoreK))));
+      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * (d1(zd) * 0.55 + d2(zd * 2.13 + 5.3) * 0.27 + d3(zd * 4.41 + 23.8) * 0.18) * (0.2 + 0.8 * shoreK), wx, wz))));   // ── ROUNDED OAK HILLS ── identical to H() and makeHRow: the forest expression untouched, wrapped in the one shared oakRoll. See the note in makeHRow.
       const b0 = bsc(wz * 0.0016 + 157.3);
       const bm = b0 >= 0.065 ? 0 : sstep(Math.min(1, (0.065 - b0) / 0.06));
       const m = bm * Math.max(0, Math.min(1, (66 + LIFT - h) / 20));
@@ -89,6 +90,7 @@
       const rs = riverS(wx, wz);
       const znB2 = wz * 0.05 + 4.2;
       const bn = e1(znB2) * 0.55 + e2(znB2 * 2.13 + 5.3) * 0.27 + e3(znB2 * 4.41 + 23.8) * 0.18;
+      h = Math.round(oakBank(h, wx, wz));              // ── SHALLOW OAK BANKS ── identical to H() and makeHRow. See the note in makeHRow.
       if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
       if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));
       // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the

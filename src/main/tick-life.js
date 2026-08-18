@@ -12,7 +12,7 @@
     // spawn outside it is rejected outright, so LIFE_KEEP can only reach a little past the view. At the default view
     // (368) that lands the inner ring at ~337 instead of ~202 — the most the built world allows. Raising the view
     // slider is what actually unlocks the full doubling: at a 1000 view the inner ring goes 286 -> 811.
-    const LIFE_CAP = 1040;                             // was 520 — doubled, so a long view distance is no longer clamped by the cap
+    const LIFE_CAP = CARD_KEEP;                        // was 520 — doubled, so a long view distance is no longer clamped by the cap. NOT a literal any more: it and CARD_KEEP were two names for the world's edge and drifting them apart is what un-unifies the reach again (user 2026-08-17)
     const LIFE_KEEP = Math.min(rdV + 64, LIFE_CAP);    // DESPAWN radius (every kind) — slightly PAST the view, still safely inside the generated rect
     const nDesert = 6;
     // ── 25% RARER (user 2026-08-16) ── 6 per species x 7 = 42 was the old population; 0.75 of that is 31.5,
@@ -29,7 +29,26 @@
     // alive == target, so the honest value is 0.75. Retune against __vb.lifeAll(), and check every species is
     // actually populated before concluding the target is unreachable.
     const DES_RARITY = 0.75;
-    const nDesertOf = (sp) => Math.floor((sp + 1) * nDesert * DES_RARITY) - Math.floor(sp * nDesert * DES_RARITY);                                 // per SPECIES, out of DES_PER slots each — seven species scattered across the desert
+    // ── AND THE BAND NOW HOLDS TWO BIOMES, SO THE DESERT COUNT SKIPS THE SPECIES THAT ARE NOT IN IT ──
+    // (user 2026-08-17: the bee and the grass snake) The Bresenham above distributes 4.5 bodies per species
+    // down the SPECIES INDEX, so simply appending two more names to DESERTS would have re-run the whole
+    // distribution over nine slots and moved the desert's own populations. It walks the SAND species only:
+    // an oak-only species takes 0, and the running index r advances only for the ones that are really out
+    // there — so ant/cobra/desert_mouse/fly/gecko/scorpion/spider keep 4,5,4,5,4,5,4 = 31 to the last body,
+    // bit-identical to before, and stay bit-identical however many oak species are appended after them.
+    // Built as a small ARRAY once per frame rather than a closure that re-walks the list: nDesertOf is called
+    // for every slot in the band on every frame, and DESERTS is loaded async so it cannot be hoisted out.
+    const desCnt = []; { let r = 0;
+      for (let i = 0; i < DES_N; i++) { const dn = (DESERTS[i] || {}).name;
+        if (dn && DES_OAKONLY[dn]) { desCnt.push(0); continue; }
+        desCnt.push(Math.floor((r + 1) * nDesert * DES_RARITY) - Math.floor(r * nDesert * DES_RARITY)); r++; } }
+    const nDesertOf = (sp) => desCnt[sp] | 0;                                                                 // per SPECIES, out of DES_PER slots each — scattered across the desert; ZERO for an oak-only species
+    // ── …AND WHAT AN OAK-ONLY SPECIES GETS INSTEAD ── its own entry in DES_OAKONLY, which IS the head-count
+    // (see the table in sim/life/slots.js for why each of the two numbers is what it is). Read through a named
+    // function rather than indexed at the call site so the desert count and the oak count are the same shape of
+    // thing to every reader: nDesertOf(sp) + nOakOf(sp) is the species' whole population, and `active` in
+    // tick-creatures is exactly that sum.
+    const nOakOf = (sp) => (DES_OAKONLY[(DESERTS[sp] || {}).name] | 0);
     const LIFE_OUT = LIFE_KEEP * 0.94;                 // outermost SPAWN radius — the gap to LIFE_KEEP is the hysteresis band
     const LIFE_IN = Math.min(LIFE_KEEP * 0.78, LIFE_OUT - 24);   // innermost SPAWN radius — out past the fog, never in clear view
     const MAM_KEEP = CARD_KEEP;                        // LAND MAMMALS reach EXACTLY as far as the perched songbirds (user): the birds' FIXED 680 — not max(LIFE_KEEP,…), which let a big view slider push mammals past the birds and dilute the 56-head pool over an oversized disc (measured: mammals at 1020 vox, in-view rings near-empty)
@@ -37,19 +56,31 @@
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 2.5));   // BUTTERFLIES doubled (user 2026-07-18): 1.25 -> 2.5, still bounded by the 16 flyer slots   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
     const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
-    const nBunny = BUNNY_ITEM0 ? (Math.max(3, Math.min(7, Math.round(nActD * 0.405))) & ~1) : 0;   // ground BUNNIES (slots 276-299) — kind 2, hop through the forest. & ~1 → EVEN count (user)
-    const nArmadillo = ARMADILLO_ITEM0 ? (Math.max(3, Math.min(7, Math.round(nActD * 0.405))) & ~1) : 0;   // ground ARMADILLOS (slots 300-323) — kind 2, WALK the forest floor at ~9 vox/s. MATCHES the bunny formula/count, & ~1 → EVEN (user)
-    const nSkunk = SKUNK_WALK.length ? (Math.max(3, Math.min(7, Math.round(nActD * 0.405))) & ~1) : 0;   // ground SKUNKS (slots 324-347) — kind 2, same cardinal walk as the armadillo. SAME formula/count as the bunny + armadillo, & ~1 → EVEN (user)
-    const nPorcupine = PORCUPINE_WALK.length ? (Math.max(3, Math.min(7, Math.round(nActD * 0.405))) & ~1) : 0;   // ground PORCUPINES (slots 348-371) — kind 2, restored to the pine forest 2026-07-22 after the user re-edited it in the asset editor. SAME formula/count as the other three land mammals, & ~1 → EVEN
+    // ── THE FOUR LAND MAMMALS, SCALED TO THE REACH (2026-08-17) ── the ceiling was a flat 7 and the count
+    // landed on 6 at every shipped view, over a spawn disc of MAM_OUT = 0.94 * 680 = 639. MAM_KEEP is CARD_KEEP
+    // now, so that disc is 977 and 6 head would read as 43% of the density this band has always had — the
+    // failure the comment on MAM_KEEP records having been measured and reverted once already. x LIFE_DENS_K
+    // takes it to 14 per species, which is the SAME animals per acre: the same-species mean nearest-neighbour
+    // gap, sqrt(pi * MAM_OUT^2 / n), is 462 voxels before and 463 after — so MAM_APART / MAM_FLOOR / MAM_RELAX
+    // are still sized for the spacing they were measured against and need no retuning.
+    // The ceiling is now MAM_PER — the band's own width, the only bound that cannot be exceeded without
+    // renumbering — rather than a hand-picked 7 that a bigger reach would silently sit on.
+    const nMam = Math.max(3, Math.min(MAM_PER, Math.round(nActD * 0.405 * LIFE_DENS_K))) & ~1;   // & ~1 → EVEN count (user). ONE expression, because all four species have shared a formula since they were added and four copies of it is four chances to scale three of them.
+    const nBunny = BUNNY_ITEM0 ? nMam : 0;             // ground BUNNIES (BUNNY_0..BUNNY_END) — kind 2, hop through the forest
+    const nArmadillo = ARMADILLO_ITEM0 ? nMam : 0;     // ground ARMADILLOS (ARM_0..ARM_END) — kind 2, WALK the forest floor at ~9 vox/s
+    const nSkunk = SKUNK_WALK.length ? nMam : 0;       // ground SKUNKS (SKUNK_0..SKUNK_END) — kind 2, same cardinal walk as the armadillo
+    const nPorcupine = PORCUPINE_WALK.length ? nMam : 0;   // ground PORCUPINES (PORC_0..MAM_END) — kind 2, restored to the pine forest 2026-07-22 after the user re-edited it in the asset editor
     const nDfly = (DFLY_NFRAMES && waterSpots.length) ? Math.min(3, 1 + (waterSpots.length >> 2)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before. RATE HALVED 2026-07-20 (user): cap 6→3, per-spot growth >>1→>>2 — half as many at every water amount
     const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
-    const nFish = (FISHES.length && waterSpots.length) ? Math.min(24, 6 + waterSpots.length * 6) : 0;   // FISH scale with how much water is in view (lakes AND rivers). CUT 25% (user 2026-08-09): ceiling 32→24, base 8→6, per-spot 8→6 — a uniform quarter off the WHOLE curve, so the cut is the same at every water amount rather than only biting where the ceiling clamped. The per-pool density cap below (~1 fish per 3 census samples) is deliberately UNTOUCHED: it is the anti-cramming ceiling, not the population, and lowering it too would thin small ponds twice. Slot band 244-275 now runs 244-267; species stays an even split (wk % FISHES.length). Was DOUBLED 2026-07-21: base 4→8, per-spot 4→8, ceiling 24→32
+    const nFish = (FISHES.length && waterSpots.length) ? Math.min(24, 6 + waterSpots.length * 6) : 0;   // FISH scale with how much water is in view (lakes AND rivers). CUT 25% (user 2026-08-09): ceiling 32→24, base 8→6, per-spot 8→6 — a uniform quarter off the WHOLE curve, so the cut is the same at every water amount rather than only biting where the ceiling clamped. The per-pool density cap below (~1 fish per 3 census samples) is deliberately UNTOUCHED: it is the anti-cramming ceiling, not the population, and lowering it too would thin small ponds twice. Slot band FISH_0..FISH_END is 32 wide and the live count now stops short of it; species stays an even split (wk % FISHES.length). Was DOUBLED 2026-07-21: base 4→8, per-spot 4→8, ceiling 24→32
     // Count scales with the AREA the birds have to cover. The 60 cap was set when the spawn ring was ~331 vox; the
     // ring is now ~406, which is 1.5x the area, so the same 60 birds read as a thinner, patchier forest. This keeps
     // the ORIGINAL density over the larger disc (~90 at the default view) and is still inside the 180-slot pool.
-    const nCard = CARD_NFRAMES ? 180 : 0;              // the FULL pool — 120 -> 180 so the ROBIN is ADDED to the songbird population rather than splitting the cardinal/blue-bird share three ways (user)
+    const nCard = CARD_NFRAMES ? CARD_N : 0;           // the FULL pool — 120 -> 180 so the ROBIN is ADDED to the songbird population rather than splitting the cardinal/blue-bird share three ways (user), then 180 -> CARD_N (421) when the reach went 680 -> 1040, so the same forest density now reaches all the way out. Sized in slots.js off CARD_KEEP; see the ladder there.
 
+    LIFE_WANT.perched = nCard; LIFE_WANT.fish = nFish; LIFE_WANT.worm = nWorm; LIFE_WANT.flyer = nAct; LIFE_WANT.duck = nDuck;
+    LIFE_WANT.bunny = nBunny; LIFE_WANT.armadillo = nArmadillo; LIFE_WANT.skunk = nSkunk; LIFE_WANT.porcupine = nPorcupine;   // → __vb.lifeBands().want
     const ffLights = [];                               // glowing fireflies + live clash/death SPARKS this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
     if ((DUCK_ITEM0 || DFLY_NFRAMES || FISHES.length) && !ED.on && now > lakeScanT) {   // ── LAKE + WATER CENSUS (every 2.5 s) ── grid-sample the view for wide-open-water spots, cluster them into lakes; fish home on the same census;
@@ -82,6 +113,7 @@
       for (let bi = 1; bi < BIRD_N; bi++) {
         if (birdRagTick(birds[bi])) { birdBoxes[bi].active = false; continue; }   // it is the rigid body now — not stepped, not drawn
         const ps = birdStep(birds[bi], bi, tbF, dt);   // stepped for ALL of them, drawn for some
+        if (!ps) { birdBoxes[bi].active = false; continue; }   // ── NO LEGAL SKY ── birdStep returns null when the whole respawn ring is desert (see BIRD_IN there). Same treatment as a ragdolling bird: no pose, no hitbox, nothing drawn — NOT a pose at the world origin, which is what an un-inited bird would have been.
         birdPose(birds[bi], ps);                       // …and the pose it was drawn at, for the ragdoll
         ps.uid = bi;                                   // stable identity for the dynamic-life temporal reprojection
         birdHit(birdBoxes[bi], ps);                    // every cardinal is solid, same as the first

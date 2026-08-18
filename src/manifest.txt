@@ -13,6 +13,7 @@ core/telemetry.js
 world/window.js
 world/gen-noise.js
 world/gen-worker.js
+assets/vox-index.js
 assets/palette.js
 assets/models.js
 assets/bow.js

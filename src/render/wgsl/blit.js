@@ -102,7 +102,11 @@
         let sunNDC = vec2<f32>(dot(u.sunDir, u.right) / (sf * u.tanH * u.aspect), dot(u.sunDir, u.up) / (sf * u.tanH));
         let sunPix = vec2<f32>((sunNDC.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - sunNDC.y * 0.5) * u.canvasRes.y);
         let glow = textureSampleLevel(godT, samp, uv, 0.0).rgb;   // ── the march now happens once per 2x2 block in GOD_SRC ── bilinear back up; the effect has no detail this loses
-        col += glow * (0.055 * dayK) * select(vec3<f32>(1.0, 0.93, 0.78), vec3<f32>(0.55, 0.65, 1.0) * 1.1, isMoon());   // strong warm sun shafts / cool MOON RAYS — the rays, not the fog
+        // ── THE SHAFTS DIM WITH THE SUN THAT CASTS THEM (2026-08-17) ── the storm sky drops the direct beam
+        // to 65% and thickens the deck to ~75% cover, and god rays kept firing at full strength through it:
+        // bright shafts under a heavy overcast, which reads as a bug rather than as weather. u.hurtV.w is
+        // the rain scalar (0 outside the oak forest and outside a storm), so fair weather is unchanged.
+        col += glow * (0.055 * dayK) * (1.0 - 0.35 * u.hurtV.w) * select(vec3<f32>(1.0, 0.93, 0.78), vec3<f32>(0.55, 0.65, 1.0) * 1.1, isMoon());   // strong warm sun shafts / cool MOON RAYS — the rays, not the fog
         // ── LENS FLARE: ghosts along the sun→centre axis + streak + bloom, gated by on-screen sun visibility
         // ── GHOST FOOTPRINT FIRST ── sv is a FRAME CONSTANT (a fixed 3×3 tap around the sun pixel), yet it was
         // computed on EVERY pixel of the canvas: nine texture fetches per pixel to decide a value that is the same
@@ -148,15 +152,21 @@
       // The anchor IS the viewmodel anchor, so the badge bobs with the hand instead of floating near it.
       if (u.heldCfg.z > 1.5 && u.pickA.z > 0.05) {
         let GLYPH5 = array<u32, 11>(15255086u, 32641252u, 32553487u, 16267791u, 9413964u, 16268335u, 15252526u, 2236959u, 15252014u, 15235630u, 18299345u);
-        let pAB = u.pickA.xyz + vec3<f32>(3.4 * u.pickA.w, 4.2 * u.pickA.w, 0.0);   // offset in the item's OWN voxel size, not screen pixels, so the badge tracks the model's apparent size instead of drifting off it when the item is large. Camera space here has +y DOWN (see the trace ray build: camera y = -ndc.y * tanH), so this is right-and-below the anchor.
-        let ndcB = vec2<f32>((pAB.x / pAB.z) / (u.tanH * u.aspect), -(pAB.y / pAB.z) / u.tanH);
-        let anchorB = vec2<f32>((ndcB.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - ndcB.y * 0.5) * u.canvasRes.y);
-        let pxB = max(2.0, floor(u.canvasRes.y / 320.0));   // one glyph pixel, floored to WHOLE screen pixels so the badge cannot shimmer under TAA
+        // ── WHERE IT GOES IS COMPUTED, NOT TUNED (user 2026-08-17: "auto adjust the number count in the top
+        // right of the held item in hand. always in the top right") ── this used to be a fixed offset from the
+        // viewmodel ANCHOR in item-voxel units, which is the middle of the model's box: right for one item and
+        // wrong for the next, because a 5x6x1 steak and a 7x3x6 apple put their top-right corner in completely
+        // different places relative to that centre. So main/tick-camera.js projects the held model's own eight
+        // box corners and hands over the screen pixel the badge starts at — the item's actual top-right corner,
+        // whatever it is holding, whatever pose it is in, however it bobs. u.badge.x/y is that pixel.
+        // It is done in JS rather than here for one reason: the corners need the model's GRID DIMENSIONS, and
+        // this shader has no way to look up the held item's entry in ITEMD.
+        let pxB = max(2.0, floor(u.canvasRes.y / 320.0 * max(0.2, u.badge.z)));   // one glyph pixel, floored to WHOLE screen pixels so the badge cannot shimmer under TAA. The size multiplier is inside the floor for that reason — scaling AFTER it would put the glyph back on fractional pixels. Clamped away from zero so a cold uniform (or a cleared save) can never collapse the badge to nothing.
         let nB = i32(u.heldCfg.z + 0.5);
         let digB = select(1, 2, nB >= 10);
-        let orgB = floor(anchorB);   // the voxel-space offset above already places it; no further screen-pixel nudge
+        let orgB = floor(vec2<f32>(u.badge.x, u.badge.y));
         let rel0 = (fc.xy - orgB) / pxB;
-        let BADGE_TILT = -0.26;   // ~15 deg. Tilt + shear so the badge sits IN the scene rather than flat on the screen (user).
+        let BADGE_TILT = u.badge.w;   // ~15 deg by default. Tilt + shear so the badge sits IN the scene rather than flat on the screen (user).
         let cB = cos(BADGE_TILT); let sB = sin(BADGE_TILT);
         let rotB = vec2<f32>(rel0.x * cB - rel0.y * sB, rel0.x * sB + rel0.y * cB);
         let relB = vec2<f32>(rotB.x + rotB.y * 0.30, rotB.y);   // shear stands in for the foreshortening of a real angled quad
