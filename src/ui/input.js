@@ -59,7 +59,16 @@
   // suppression and cursSync still read them, harmlessly false forever), so restoring the key is re-adding
   // this one listener.
   lockEl.addEventListener('click', tryLock);
-  canvas.addEventListener('click', () => { if (!locked) { lightMode = false; tryLock(); } });   // clicking the world takes control back and ends light mode
+  canvas.addEventListener('click', () => { if (locked) return;                    // clicking the world takes control back and ends light mode…
+    // …EXCEPT WHILE THE HELD-ITEM / STACK-COUNT PANEL IS OPEN (user 2026-08-18) ── #pkPanel is pointer-events:none with
+    // only its two cards set to auto, so the panel's own padding AND the 10px gap between the cards are click-through
+    // to this full-screen canvas. The cards are 350px wide in one corner; everything around them is a live re-lock
+    // trigger, and a re-lock hides the cursor and hands the mouse back to the camera. Missing a 190px slider by a few
+    // pixels mid-tune and having the pointer yanked away is squarely part of "the sliders don't work very well".
+    // A DOM read, not the hud.js const: this fragment is bundled ABOVE ui/hud.js and reaching pkPanel directly here
+    // would be the const-before-declaration black screen this codebase keeps re-learning.
+    const pk = $('pkPanel'); if (pk && !pk.classList.contains('hidden')) return;
+    lightMode = false; tryLock(); });
   document.addEventListener('keydown', (e) => {        // "press any button" — ANY key leaves the start prompt (a click still works via the canvas handler above)
     if (locked || $('playHint').classList.contains('hidden')) return;
     $('playHint').classList.add('hidden');             // drop the text the instant a key is pressed — don't wait on a successful lock (Esc can't lock, so it would otherwise stay stuck on screen)

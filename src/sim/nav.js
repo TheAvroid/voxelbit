@@ -445,7 +445,11 @@
   // So the tag is per-BODY and the answer is one function. BIO_ANY is every species that was here before and
   // still means literally "anywhere that is not sand", so its arithmetic below is character for character the
   // old test and the pine forest's and the desert's behaviour is unchanged to the last bit.
-  const BIO_ANY = 0, BIO_SAND = 1, BIO_OAKF = 2, BIO_PINEF = 3;
+  // BIO_CHERRY is the fourth, and note what it is NOT: there is no "cherry or oak" value, because the cherry
+  // forest's roster is a subtraction rather than an addition. Everything that lives there — the worms and the
+  // butterflies — is BIO_ANY and always was; what the biome needed was for BIO_ANY to stop meaning "anywhere
+  // that is not sand". BIO_CHERRY exists for the one creature that is exclusive to it, the pink bird.
+  const BIO_ANY = 0, BIO_SAND = 1, BIO_OAKF = 2, BIO_PINEF = 3, BIO_CHERRY = 4;
   // Both borders are 450-voxel smoothstep blends of the same shape (DESB and OAKB), so one pair of numbers
   // serves both. The SAND line is 0.85 and not 0.5 for the measured reason recorded at the spawn gate: forest
   // life legally spawns anywhere up to desertM 0.85, so a midline test called a large legal band foreign and
@@ -453,10 +457,36 @@
   // both of its populations are admitted clear of the treeline, at oakM >= 0.85 one side and <= 0.15 the
   // other — so it sits on the honest midline and each side turns back at the CENTRE of the empty band.
   const BIO_SANDLINE = 0.85, BIO_OAKLINE = 0.5;
-  const bioHomeOK = (home, x, z) => {
+  // 0.15, NOT the 0.5 the oak line uses, and it must MATCH the spawn gate's BIO_FOREST in main/tick-creatures.js.
+  // With the two at different values there is a corridor between them that is legal to walk into but illegal to
+  // be born in, and a walker simply drifts through it: measured with this at 0.5, two skunks and four desert-band
+  // creatures were standing in the blend band that the spawn gate had correctly refused them. A containment line
+  // that is looser than the admit line is not containment.
+  const BIO_CHLINE = 0.15;
+  const bioHomeOK = (home, x, z, chOK) => {
     const ds = desertM(x, z) > BIO_SANDLINE;
     if (home === BIO_SAND) return ds;
-    if (ds) return false;                             // BIO_ANY ends here, on exactly the sample and the comparison it always made — no oakM is taken and nothing in the pine forest pays for this
+    if (ds) return false;
+    if (home === BIO_CHERRY) return chNear(x) && cherryM(x, z) > BIO_CHLINE;   // the pink bird, and nothing else, lives INSIDE the band
+    // ── AND EVERY OTHER HOME IS NOW EXCLUDED FROM IT (user 2026-08-18: "remove all the life except for the
+    // worm") ── this line is the whole of that requirement and it is the easiest thing in the biome to miss.
+    // BIO_ANY means "anywhere that is not sand", so without it the bunnies, armadillos, skunks, fish, ducks,
+    // dragonflies, fireflies and every butterfly colour would keep walking into the blossom exactly as they
+    // walk into the oak forest — not because anything admitted them, but because nothing ever refused them.
+    // The worms and the pink butterflies get back in through their own admit test at the spawn gate in
+    // main/tick-creatures.js; this is the containment half, which is what stops a bunny that was born in the
+    // oak forest from wandering across the line.
+    // ── chOK: THE CALLER WAS ADMITTED HERE ON PURPOSE (user 2026-08-18: "bees seem to disappear randomly") ──
+    // the note above is right that this is the containment half and that the spawn gate is the admit half, and
+    // it is right about what that costs: the two must list the SAME creatures or the pair becomes a loop. The
+    // bee is the case that broke it. `cherryLife` (main/tick-creatures.js) admits a bee to the blossom, this
+    // line refused it, and `beeOut` recycles on exactly this verdict — so every bee that reached the band was
+    // re-placed on the very next frame, forever. MEASURED: 1-2 of the 8 bees jumped more than 50 voxels EVERY
+    // SECOND, one of them 266, which is what the player sees as a bee vanishing while they watch it.
+    // So the admit list travels with the call rather than being duplicated here, where it could drift out of
+    // step a second time. A bee still has to satisfy its own home line below (BIO_OAKF, oakM > 0.5) — and it
+    // does, because the blossom sits inside oakM by construction.
+    if (!chOK && chNear(x) && cherryM(x, z) > BIO_CHLINE) return false;   // chNear first: bioHomeOK runs for EVERY kind-2 body every frame (~224 of them), and an unguarded mask here was ~450 extra cherryM per frame
     if (home === BIO_OAKF) return oakM(x, z) > BIO_OAKLINE;
     if (home === BIO_PINEF) return oakM(x, z) <= BIO_OAKLINE;
     return true;
@@ -465,9 +495,13 @@
   // the ~90% of each band that is nowhere near a boundary. Both windows are far wider than one plan tick of
   // travel — a dashing mouse covers 5.3 voxels at NAV_HZ against a ~100-voxel window — so a walker is always
   // well inside the window before the line itself is within reach.
-  const bioNearEdge = (home, x, z) => (home === BIO_OAKF || home === BIO_PINEF)
-    ? Math.abs(oakM(x, z) - BIO_OAKLINE) < 0.35
-    : Math.abs(desertM(x, z) - BIO_SANDLINE) < 0.15;
+  const bioNearEdge = (home, x, z) => home === BIO_CHERRY ? Math.abs((chNear(x) ? cherryM(x, z) : 0) - BIO_CHLINE) < 0.35
+    : (home === BIO_OAKF || home === BIO_PINEF)
+    ? Math.abs(oakM(x, z) - BIO_OAKLINE) < 0.35 || Math.abs(cherryM(x, z) - BIO_CHLINE) < 0.35
+    // …and a BIO_ANY walker now has a second line it can cross, so it has to be woken near that one too. Without
+    // this the containment above would only be consulted near the sand, and a bunny would stroll into the
+    // blossom unchecked — the clip is only as good as the window that asks for it.
+    : Math.abs(desertM(x, z) - BIO_SANDLINE) < 0.15 || (chNear(x) && Math.abs(cherryM(x, z) - BIO_CHLINE) < 0.35);   // …the whole point of bioNearEdge is that the ~90% of a band nowhere near a border pays nothing, and an unguarded mask here undid that
   // ── THE BIOME LINE, EXPRESSED AS TERRAIN ── the step rule refuses a crossing, so a walker that plans a
   // heading over the line has its move rejected every frame and stands there grinding. Steering it away with a
   // separate omT write was tried and is the wrong shape: on the arbiter that is a SECOND writer arguing with the

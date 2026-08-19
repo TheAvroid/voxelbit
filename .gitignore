@@ -23,6 +23,10 @@
 # would make the push fail outright. The audio library is ~646 MB and unreferenced.
 source/glb/
 source/audio/
+# 2026-08-18: the .fbx sculpts + their textures, 32 MB. Same rule as source/glb/ above — authoring
+# originals, not runtime assets. (A trailing `#` comment does NOT work here: git only treats `#` as a
+# comment at the START of a line, so `source/fbx/  # note` is a literal pattern that matches nothing.)
+source/fbx/
 *.glb
 
 # NOTE: source/wip/ is deliberately NOT ignored. It is work-in-progress voxel art

@@ -19,14 +19,15 @@
     const pf = (u) => { AB[u] = fetch(u).then((r) => r.ok ? r.arrayBuffer() : null).catch(() => null); return u; };
     const abuf = async (u) => new Uint8Array((AB[u] ? await AB[u] : await (await fetch(u).catch(() => ({ arrayBuffer: () => null }))).arrayBuffer()) || new ArrayBuffer(0));
     pf('assets/stone_tools/stone_axe.vox'); pf('assets/stone_tools/stone_knife.vox'); pf('assets/single.vox');
-    for (let f = 0; f < 8; f++) pf('assets/life/cardinal/flight/0' + f + '.vox');
+    for (const sp9 of ['cardinal', 'pink_bird']) for (let f = 0; f < 8; f++) pf('assets/life/' + sp9 + '/flight/0' + f + '.vox');   // …the pink bird prefetches too, for the reason the butterfly colours do: a strip that is not prefetched stalls on a cold fetch at the moment it first has to be drawn
     for (const c of ['orange', 'red', 'blue', 'lime', 'pink', 'purple']) for (let f = 0; f < 8; f++) pf('assets/life/butterfly/' + c + '/0' + f + '.vox');   // prefetch must list the SAME colours as the loader below or the new ones stall on a cold fetch
     for (let f = 0; f < 6; f++) pf('assets/life/dragonfly/0' + f + '.vox');   // dragonfly ships 6 frames (base.vox is the source art, not a frame — skipped)
     for (let f = 0; f < 13; f++) pf('assets/food/apple/' + String(f).padStart(2, '0') + '.vox');   // the apple EATING strip — 13 on disk today; the loader still walks until one is missing, so this number only decides how many arrive warm
     for (let f = 0; f < 4; f++) pf('assets/life/firefly/0' + f + '.vox');
     for (let f = 0; f < 12; f++) pf('assets/life/worm/' + String(f).padStart(2, '0') + '.vox');
-    for (const sp of ['salmon', 'minnow']) for (let f = 0; f < 12; f++) pf('assets/life/' + sp + '/' + String(f).padStart(2, '0') + '.vox');   // fish swim strips (base.vox is source art, skipped); species without frames simply don't join
-    for (let f = 0; f < 11; f++) pf('assets/life/cardinal/rotate/' + String(f).padStart(2, '0') + '.vox');
+    for (const sp of ['salmon', 'minnow', 'betta']) for (let f = 0; f < 12; f++) pf('assets/life/' + sp + '/' + String(f).padStart(2, '0') + '.vox');   // fish swim strips (base.vox is source art, skipped); species without frames simply don't join
+    for (const sp8 of ['cardinal', 'pink_bird']) for (let f = 0; f < 11; f++) pf('assets/life/' + sp8 + '/rotate/' + String(f).padStart(2, '0') + '.vox');
+    for (let f = 0; f < 10; f++) pf('assets/life/flamingo/' + String(f).padStart(2, '0') + '.vox');
     pf('assets/life/duck/base.vox'); pf('assets/life/duck/baby.vox');
     // ── THE DESERT SET, BY MANIFEST ── this used to prefetch a blind 20 frames per species. Only 58 of those
     // 140 files exist, so every boot spent 82 round-trips collecting 404s — and they were also the bulk of the
@@ -108,6 +109,10 @@
     items.push({ w: 1, d: 1, h: 1, cells: [[255, 255, 255]] });
     FOAM_IT = items.length + 1;                                       // ── SPLASH DROPLET (user 2026-08-05) ── the same particle as a spark, in FOAM: thrown when a fish or the player breaks the surface either way
     items.push({ w: 1, d: 1, h: 1, cells: [FOAM_SRGB.slice()] });
+    PETAL_IT = items.length + 1;                                      // ── FALLING PETAL (user 2026-08-18: "can you make single voxels fall from the cherry trees") ── one voxel from the MIDDLE of BLOSLEAF, so a petal in the air is the same pink as the crown it left. Taken as a literal rather than read from the palette because the item table is raw RGB and never sees a palette id; if BLOSLEAF is ever re-tuned this wants the same treatment.
+    items.push({ w: 1, d: 1, h: 1, cells: [[232, 142, 175]] });
+    PETALW_IT = items.length + 1;                                     // …and the WHITE variety's, from the middle of BLOSWHITE — cream rather than grey-white, for the same reason that ramp is
+    items.push({ w: 1, d: 1, h: 1, cells: [[239, 225, 230]] });
     KNIFE_IT = items.length + 1;                                      // STONE KNIFE — born when two rocks are clashed together
     try {
       const kv = await abuf('assets/stone_tools/stone_knife.vox');
@@ -371,8 +376,15 @@
     // that were given them. If ducks/worms/fish start disappearing again, this line is why.
     // Emptying it again is how you turn them off; PERCHED songbirds are a different system (uniBirds,
     // stamped.js) and are unaffected either way.
-    for (const sp of ['cardinal', 'blue_bird', 'robin']) {   // every songbird that ships a flight/ strip joins the flock automatically
-      try { const r0 = await loadFlight(sp, sp); FLYERS.push({ name: sp, item0: r0.item0, n: r0.n, glide: r0.glide }); }
+    // 'pink_bird' is LISTED BUT NOT SHIPPED (user 2026-08-18: "I'm going to create a pink bird as a .vox file").
+    // The loader skips a species whose flight/ strip is missing with a warn and no other effect, so this entry
+    // costs nothing today and turns the cherry forest's flock on by itself the moment
+    // game/assets/life/pink_bird/flight/00.vox.. exists — no code change, the same way every other songbird
+    // joined. Until then BIRD_PINK stays -1 and the blossom sky is simply empty, which is what it is now.
+    // A derived recolour of the cardinal lived here briefly and was removed: authored art beats a hue rotation.
+    for (const sp of ['cardinal', 'blue_bird', 'robin', 'pink_bird']) {   // every songbird that ships a flight/ strip joins the flock automatically
+      try { const r0 = await loadFlight(sp, sp); FLYERS.push({ name: sp, item0: r0.item0, n: r0.n, glide: r0.glide });
+        if (sp === 'pink_bird') BIRD_PINK = FLYERS.length - 1; }   // …AFTER the push and inside the try, so a species that fails to load leaves this at -1 rather than pointing at whichever bird happens to occupy that slot
       catch (e) { console.warn('[vb] ' + sp + ' flight frames missing - species skipped', e); }
     }
     if (FLYERS.length) { BIRD_ITEM0 = FLYERS[0].item0; BIRD_NFRAMES = FLYERS[0].n; BIRD_GLIDE = FLYERS[0].glide; }   // legacy handles = the first species
@@ -416,6 +428,7 @@
             // small dark body is the case the effect was built for, and neither was complained about.
             loaded.push({ w: bsx, d: bsy, h: bsz, cells });
           }
+          if (cname === 'pink') BFLY_PINK = BFLY_COLS.length;         // ── THE CHERRY FOREST'S ONE COLOUR ── captured HERE and never written as the literal 4: this push only fires on a complete 8-frame parse (see the no-orphan-half-sets rule on the next line), so one bad .vox anywhere earlier in the list silently shifts every index after it and the blossom would fill with purple butterflies and no error anywhere
           BFLY_COLS.push(items.length + 1);                           // all 8 frames parsed OK — commit the whole color at once (no orphan half-sets)
           for (const it of loaded) items.push(it);
         } catch (e) { console.warn('[vb] butterfly color', cname, 'missing - skipped', e); }
@@ -506,7 +519,11 @@
       WORM_NFRAMES = 12;
       console.log('[vb] worm', WORM_NFRAMES, 'frames -> items', WORM_ITEM0, '..', items.length);
     } catch (e) { console.warn('[vb] worm frames missing - forest floor stays still', e); WORM_NFRAMES = 0; }
-    for (const sp of ['salmon', 'minnow', 'bass', 'blue_gill', 'catfish']) {   // ── FISH ── one loader for every species: numbered swim frames straight in the species dir (like the worm), long axis = model y, head at −y
+    // 'betta' joins at the END, which matters: species is fixed by SLOT (B.fsp = wk % FISHES.length) and
+    // ui/console.js builds /locate names off the LOADED order, so inserting one renames bands. Its frames come
+    // from tools/bake_desert_life.py rather than the frame splitter — betta.vox is five body parts on keyframed
+    // transforms, so it needs the scene-graph walk (see the EXTRA list in that tool).
+    for (const sp of ['salmon', 'minnow', 'bass', 'blue_gill', 'catfish', 'betta']) {   // ── FISH ── one loader for every species: numbered swim frames straight in the species dir (like the worm), long axis = model y, head at −y
       try {
         if (location.search.includes('nobfly')) throw new Error('disabled by ?nobfly flag');
         const loaded = [];
@@ -533,6 +550,7 @@
         if (!loaded.length) throw new Error('no frames');
         const it0 = items.length + 1;
         for (const it of loaded) items.push(it);
+        if (sp === 'betta') BETTA_FSP = FISHES.length;   // captured BEFORE the push, so it names the slot this species is about to take — and only reached when the whole strip parsed
         FISHES.push({ name: sp, item0: it0, n: loaded.length, half: Math.max(2, loaded[0].d * 0.5) });   // half the model's LONG axis (model y) — the AI's body probes scale to the real species, so a short minnow isn't navigated (or reported) as a 10-voxel salmon
         console.log('[vb] fish ' + sp, loaded.length, 'frames -> items', it0, '..', items.length);
       } catch (e) { if (!String(e).includes('no frames')) console.warn('[vb] fish ' + sp + ' skipped', e); }
@@ -705,6 +723,10 @@
       for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/robin/rotate/' + String(f).padStart(2, '0') + '.vox'); ROBIN_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       console.log('[vb] robin rotate', ROBIN_ROTATE.length, 'frames (3rd perched songbird)');
     } catch (e) { console.warn('[vb] robin rotate frames missing', e); ROBIN_ROTATE = []; }
+    try {                                                             // PINK BIRD rotate frames — the cherry forest's perched songbird, same geometry again
+      for (let f = 0; f < 11; f++) { const bv = await abuf('assets/life/pink_bird/rotate/' + String(f).padStart(2, '0') + '.vox'); PINKBIRD_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      console.log('[vb] pink_bird rotate', PINKBIRD_ROTATE.length, 'frames (4th perched songbird — cherry forest only)');
+    } catch (e) { console.warn('[vb] pink_bird rotate frames missing', e); PINKBIRD_ROTATE = []; }
     try {                                                             // BUNNY frames (raw bytes) → the asset-editor filmstrips. Folders: jump/, rotate/left/, rotate/right/ (00-10 each). A missing file 404s to an HTML page, so REQUIRE the 'VOX ' magic before pushing — else the loop swallows 404 pages as garbage frames.
       const isVox = (u8) => u8.length > 4 && u8[0] === 0x56 && u8[1] === 0x4f && u8[2] === 0x58 && u8[3] === 0x20;   // 'VOX '
       for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/bunny/rotate/left/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; BUNNY_ROTATE.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
@@ -745,12 +767,28 @@
       if (blloaded.length === CARD_NFRAMES) { BLUEB_ITEM0 = items.length + 1; for (const it of blloaded) items.push(it); }   // frame-count parity is required, not cosmetic: the perch clock indexes both tables with the SAME frame number
       const rbloaded = parseBunny(ROBIN_ROTATE);           // ROBIN rotate frames -> ROBIN_ITEM0
       if (rbloaded.length === CARD_NFRAMES) { ROBIN_ITEM0 = items.length + 1; for (const it of rbloaded) items.push(it); }
-      console.log('[vb] songbird reskins -> items: blue', BLUEB_ITEM0, 'robin', ROBIN_ITEM0, 'of', CARD_NFRAMES, 'frames');
+      // ── AND THE PINK BIRD, WHICH HAD POSES BUT NO ITEM STRIP ── PINKBIRD_ROTATE was parsed only into
+      // PINK_POSES for the GRID-STAMP path (sim/life/stamped.js), so beyond UNI_BIRD_R a blossom bird stamped
+      // pink while inside it the trace path fell through birdItem0's missing arm onto CARD_ITEM0 and drew the
+      // RED cardinal — the bird changed species as the player walked toward it, oscillating at the boundary,
+      // with nothing logged anywhere. Same frame-count parity gate the other two reskins take, and for the same
+      // reason: the perch clock indexes both the poses and the strip, so a mismatched strip walks off its end.
+      const pkloaded = parseBunny(PINKBIRD_ROTATE);        // PINK BIRD rotate frames -> PINKB_ITEM0
+      if (pkloaded.length === CARD_NFRAMES) { PINKB_ITEM0 = items.length + 1; for (const it of pkloaded) items.push(it); }
+      console.log('[vb] songbird reskins -> items: blue', BLUEB_ITEM0, 'robin', ROBIN_ITEM0, 'pink', PINKB_ITEM0, 'of', CARD_NFRAMES, 'frames');
+      try {                                               // FLAMINGO walk cycle — 10 frames, split from flamingo.vox
+        for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/flamingo/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; FLAMINGO_WALK.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
+      } catch (e) { console.warn('[vb] flamingo walk frames missing', e); }
+      try { const bvv = await abuf('assets/decoration/birch.vox');   // the editor's staged exhibit — see BIRCH_VOX in assets/creatures.js. Nothing in the WORLD reads it
+        if (isVox(bvv)) BIRCH_VOX.push({ name: '00.vox', u8: bvv }); }
+      catch (e) { console.warn('[vb] birch.vox missing — the editor falls through to the next model', e); }
+      const flloaded = parseBunny(FLAMINGO_WALK);         // same call every other walker uses: raw .vox RGB, so this does NOT touch the 256-entry world palette
+      if (flloaded.length) { FLAMINGO_ITEM0 = items.length + 1; for (const it of flloaded) items.push(it); FLAMINGO_NFRAMES = flloaded.length; }
       const skloaded = parseBunny(SKUNK_WALK);             // SKUNK walk frames -> SKUNK_ITEM0 (same call the armadillo uses; raw .vox RGB, so this does NOT touch the 256-entry world palette)
       if (skloaded.length) { SKUNK_ITEM0 = items.length + 1; for (const it of skloaded) items.push(it); SKUNK_NFRAMES = skloaded.length; }
       const ploaded = parseBunny(PORCUPINE_WALK);          // PORCUPINE walk frames -> PORCUPINE_ITEM0
       if (ploaded.length) { PORCUPINE_ITEM0 = items.length + 1; for (const it of ploaded) items.push(it); PORCUPINE_NFRAMES = ploaded.length; }
-      for (const [k9, i9] of [['arm', ARMADILLO_ITEM0], ['skunk', SKUNK_ITEM0], ['porc', PORCUPINE_ITEM0], ['bunny', BUNNY_ITEM0]]) {
+      for (const [k9, i9] of [['arm', ARMADILLO_ITEM0], ['skunk', SKUNK_ITEM0], ['porc', PORCUPINE_ITEM0], ['bunny', BUNNY_ITEM0], ['flam', FLAMINGO_ITEM0]]) {   // …and the FLAMINGO, or it falls to the worm's default seat and a 17-voxel bird stands with its legs in the ground
         const f9 = i9 ? mamFitOf(items, i9) : null; if (f9) MAMFIT[k9] = f9; }   // read off frame 0: every frame of a walk cycle shares the model box
       console.log('[vb] mammal fit', JSON.stringify(MAMFIT));
       console.log('[vb] skunk -> items', SKUNK_ITEM0, '(' + SKUNK_NFRAMES + '); porcupine', PORCUPINE_ITEM0, '(' + PORCUPINE_NFRAMES + ')');
@@ -768,7 +806,17 @@
       }
       it.cells = out; };
     const creatureStart = Math.min(...[BFLY_ITEM0, FFLY_ITEM0, WORM_ITEM0, DUCK_ITEM0, DUCKB_ITEM0, LILY_ITEM0, CARD_ITEM0, BUNNY_ITEM0, ARMADILLO_ITEM0, SKUNK_ITEM0, PORCUPINE_ITEM0, BLUEB_ITEM0, ROBIN_ITEM0].filter((x) => x > 0).concat([1e9]));   // creatures only — NOT the hand tools (axe/rock/knife keep their authored gradients, no grain/AO)
-    const HELD_ITEMS = new Set([1, ROCK_IT, STICK_IT, CONE_IT, KNIFE_IT, PICK_IT, SHOVEL_IT, BOW_IT, MEAT_IT, HOE_IT, SPEAR_IT].filter(Boolean));
+    // ── THE BLOSSOM TWIG, APPENDED AT THE END OF THE TABLE (user 2026-08-18: a picked-up pink twig went green) ──
+    // the world twig and the HELD twig are different objects: the ground scatter is a stamped model, the thing in
+    // your hand is an ITEM built from the same .vox, so recolouring the scatter alone left the pickup showing
+    // stock stick_1. An item-table entry, not a palette one, so it costs nothing from the full 256.
+    // IT GOES LAST, AND THAT IS THE WHOLE OF WHY THIS COMMENT IS LONG. Item ids are POSITIONAL. Built where it
+    // logically belongs — next to STICK_IT — it pushed the pinecone from 4 to 5 and every item after it up one,
+    // while ui/hud.js's ITEM_NAMES still spelled `4: 'pinecone'` and the held pose table still keyed poses to
+    // 1..4: the game came up with a twig named pinecone. Appending cannot renumber anything that already exists.
+    // Any future item belongs here too, not beside its relatives.
+    if (STICKB.length) { STICK_BLOS_IT = items.length + 1; items.push(modelToItem(STICKB[0])); }
+    const HELD_ITEMS = new Set([1, ROCK_IT, STICK_BLOS_IT, STICK_IT, CONE_IT, KNIFE_IT, PICK_IT, SHOVEL_IT, BOW_IT, MEAT_IT, HOE_IT, SPEAR_IT].filter(Boolean));   // …the blossom twig is a held item too, or it renders through the wrong path in the hand
     for (let i = creatureStart - 1; i < items.length; i++) {
       if (!items[i] || !items[i].cells || !items[i].cells.length) continue;
       // ── STATIC LIGHTING ON WHAT YOU CARRY (user) ── held and dropped items now get the SAME baked

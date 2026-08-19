@@ -562,6 +562,11 @@ WORKER_DECLS = {          # names the pool writes into its worker preamble by ha
     'WX', 'WZ', 'OX', 'OZ', 'BX', 'W', 'hmap', 'touched', 'MROT', 'remap', 'rivScope',
     'gwrap', 'rivCache', 'caveCache', 'takeRows', 'ORPH_SCRATCH', 'ORPHAN_OK',
     'WY', 'onmessage', 'postMessage', 'self',
+    # OAKBLOSV is DERIVED in the preamble, not registered: it is OAKV with the leaf ids run through BLOSMAP,
+    # and OAKV is 218,367 voxels, so registering the derived copy as a table would ship those voxels into every
+    # worker a second time - the thing that stopped the boot completing when ROCK26D tried it. Both of its
+    # inputs ARE registered, which is what keeps this honest.
+    'OAKBLOSV', 'OAKWHITV',   # OAKWHITV is the same arrangement for the WHITE blossom variety, derived through BLOSMAPW
 }
 ROW_DECLS = {             # ...and the ones the ROW worker writes into its own by hand.
     # rivCache/rivScope are per-worker MUTABLE state, so they cannot be a `const X = value`

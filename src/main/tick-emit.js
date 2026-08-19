@@ -76,16 +76,21 @@
     for (let ci = 0; ci < 16; ci++) { const o6 = 1140 + ci * 8, C = cshadList[ci];
       if (C) { UF[o6] = C[0]; UF[o6 + 1] = C[1]; UF[o6 + 2] = C[2]; UF[o6 + 3] = 1; UF[o6 + 4] = C[3]; UF[o6 + 5] = C[4]; UF[o6 + 6] = 0; UF[o6 + 7] = 0; }
       else UF[o6 + 3] = 0; }
-    for (let si2 = 0; si2 < 20; si2++) {               // ── clash/death sparks + death SMOKE → drop slots 5-24 ── real voxels on short arcs, fading out (sp4.smoke picks the look)
+    for (let si2 = 0; si2 < sparks3d.length; si2++) {   // ── clash/death sparks + death SMOKE + tears + POLLEN → drop slots 5-28 ── read off the array rather than a literal 20, so growing the pool needs one edit and not three ── real voxels on short arcs, fading out (sp4.smoke picks the look)
       const o3 = 68 + (5 + si2) * 16, sp4 = sparks3d[si2];
       const tS = sp4 ? (now - sp4.born) / 1000 : 1e9;
       if (!sp4 || tS > sp4.life) { UF[o3 + 7] = 0; if (sp4) sparks3d[si2] = null; continue; }
-      const smoke = !!sp4.smoke, grav = smoke ? 1.5 : 85;   // SMOKE keeps RISING (near-zero gravity → floats up like a snowflake in reverse, doesn't fall back); SPARKS arc down fast
+      const smoke = !!sp4.smoke, petal = !!sp4.petal, grav = smoke ? 1.5 : (petal ? 0 : 85);   // a PETAL is not ballistic at all: it descends at a constant rate, so gravity is off and the fall is written straight into py4 below   // SMOKE keeps RISING (near-zero gravity → floats up like a snowflake in reverse, doesn't fall back); SPARKS arc down fast
       let px4 = sp4.x + sp4.vx * tS, py4 = sp4.y + sp4.vy * tS - grav * tS * tS, pz4 = sp4.z + sp4.vz * tS;
-      const a4 = sp4.ph + tS * (smoke ? (sp4.spin || 3) : 7), ca4 = Math.cos(a4), sa4 = Math.sin(a4);   // SMOKE voxels TWIRL like the snowflakes (user): about the vertical at a per-particle rate (~2-4.5 rad/s); sparks spin faster
+      const a4 = petal ? 0 : sp4.ph + tS * (smoke ? (sp4.spin || 3) : 7), ca4 = Math.cos(a4), sa4 = Math.sin(a4);   // …and it does NOT spin (user): pinning the angle to 0 leaves the basis below at identity, which is the whole of it — a petal rocks, it does not yaw   // SMOKE voxels TWIRL like the snowflakes (user): about the vertical at a per-particle rate (~2-4.5 rad/s); sparks spin faster
       const Xs = [ca4, 0, sa4], Ys = [sa4, 0, -ca4], Zs = [0, 1, 0];   // spin about vertical (like a snowflake), right-handed
-      let itn = (sp4.foam && FOAM_IT) ? FOAM_IT : ((sp4.red && HITRED_IT) ? HITRED_IT : SPARK_IT), vsc = 1.0;   // …the only place the three differ
-      if (smoke) {                                     // ONE individual voxel, off the grid like a snowflake: a per-voxel wandering DRIFT (sin/cos, like the flakes' wind sway) as it floats up, then CENTRE it on its position so it spins about its own middle (not a corner)
+      let itn = petal ? (sp4.white ? PETALW_IT : PETAL_IT) : ((sp4.foam && FOAM_IT) ? FOAM_IT : ((sp4.red && HITRED_IT) ? HITRED_IT : SPARK_IT)), vsc = 1.0;   // …the only place the three differ
+      if (petal) {                                     // ── THE CRADLE ── one sine along the petal's own fixed horizontal axis, so it swings left-right across the fall line the way a leaf does. Amplitude is constant and the descent is linear: no acceleration, no yaw, nothing that reads as tumbling.
+        const sw4 = Math.sin(tS * sp4.rate + sp4.ph);
+        py4 = sp4.y - PETAL_FALL * tS;
+        px4 = sp4.x + sp4.ax * sw4 * PETAL_SWAY;
+        pz4 = sp4.z + sp4.az * sw4 * PETAL_SWAY;
+      } else if (smoke) {                                     // ONE individual voxel, off the grid like a snowflake: a per-voxel wandering DRIFT (sin/cos, like the flakes' wind sway) as it floats up, then CENTRE it on its position so it spins about its own middle (not a corner)
         itn = SMOKE_IT; vsc = 1.0;                     // 10 cm voxel — exactly a snowflake's size (user)
         px4 += Math.sin(tS * 1.6 + sp4.ph) * 1.4;
         pz4 += Math.cos(tS * 1.9 + sp4.ph * 1.7) * 1.4;

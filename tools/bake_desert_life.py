@@ -37,6 +37,17 @@ LIFE = os.path.join(ROOT, 'game', 'assets', 'life')
 # re-ordering this list silently re-assigns every band. bee + grass_snake join at the END for that reason,
 # even though neither lives in the desert - they ride the desert BAND's machinery, not its biome.
 NAMES = ['ant', 'cobra', 'desert_mouse', 'fly', 'gecko', 'scorpion', 'spider', 'bee', 'grass_snake']
+# ── AND THE SPECIES THAT ARE NOT IN THE DESERT BAND AT ALL (user 2026-08-18) ── the BETTA is a fish: it does
+# not ride the desert band's slots, it has no entry in DESERTS, and it must NOT be appended to NAMES above,
+# because that list's position IS the slot band and adding to it re-assigns nothing but still writes the
+# species into desert_frames.json where the desert loader would then look for it.
+# What it DOES need from this tool is the only thing this tool has: the scene-graph walk. betta.vox is five
+# body PARTS on keyframed transforms — 1x1x6, 1x1x4, 1x1x2, 3x2x2 at 4/4/2/6 voxels — so reading its models in
+# file order (what tools/split_vox_frames.py does, and what the fish loader would get from flat frames) yields
+# body parts sitting at the origin, exactly the failure this file's header describes for the cobra.
+# So it is baked here and excluded from the manifest: same walk, same flattening, output in the same
+# <name>/00.vox shape the fish loader in assets/held-items.js already reads.
+EXTRA = ['betta']
 # ── PER-SPECIES FRAME WINDOW ── the gecko's scene runs to 67 frames only because its TONGUE keyframes sit at
 # _f 54-66; the body itself has 8. Baking all 67 spent 67 item-table entries on an animation that is a long
 # hold plus one flick. Capped at 7 (user 2026-08-15), which is the body loop, and 60 item slots come back.
@@ -194,7 +205,7 @@ def main():
     # exist across the seven). It is emitted HERE, by the tool that writes the frames, so the two cannot drift.
     manifest = {}
     print('%-14s %7s %8s %10s %s' % ('creature', 'frames', 'voxels', 'grid', 'note'))
-    for name in NAMES:
+    for name in NAMES + EXTRA:
         src = os.path.join(LIFE, name + '.vox')
         if not os.path.exists(src):
             print('%-14s MISSING' % name); continue
@@ -228,7 +239,8 @@ def main():
         note = 'rotated keyframes ignored (%s)' % set(warn) if warn else ''
         print('%-14s %7d %8s %10s %s' % (name, nf, '%d-%d' % (min(counts), max(counts)),
                                          '%dx%dx%d' % (sx, sy, sz), note))
-        manifest[name] = nf
+        if name not in EXTRA:
+            manifest[name] = nf                        # EXTRA species are not desert-band life, so they stay out of desert_frames.json — that file is read by the desert loader to size ITS bands
     json.dump(manifest, open(os.path.join(LIFE, 'desert_frames.json'), 'w'))
     print('wrote desert_frames.json:', manifest)
 

@@ -24,4 +24,29 @@ if ! git diff --quiet -- game/index.html || ! git diff --cached --quiet -- game/
   git add game/index.html || exit 1
   echo "pre-commit: rebuilt and staged game/index.html"
 fi
+
+# ── game/assets/palette.vox IS A BUILD ARTIFACT TOO (user 2026-08-18) ────────────────────────────────
+# It is the authoring reference for the 256-entry table: open it beside new art and pick FROM it, because
+# an id is a MATERIAL and a colour that merely lands within PAL_TOL of an existing one inherits that id's
+# material with it. A stale plate is therefore worse than no plate -- it quietly recommends colours the
+# table no longer holds.
+#
+# There is no static list to read: the palette is BUILT at boot by addCol/palShare as each asset loads, so
+# tools/palette_vox.py boots the real game and reads the table back. That costs ~15 s and a browser, which
+# is why this is CONDITIONAL and NON-BLOCKING:
+#   * conditional -- only when a staged path can actually mint or move an id. palette.js declares the named
+#     ramps, models.js owns addCol/palShare/PAL_TOL, bow.js decides what loads and in what order, and any
+#     .vox/.json under game/assets is art whose colours enter the table. Nothing else can change it.
+#   * non-blocking -- a failure here warns and lets the commit through. The plate is a reference for humans;
+#     no build, test or runtime path reads it, so a machine with no browser must still be able to commit.
+if git diff --cached --name-only | grep -Eq '^src/assets/(palette|models|bow)\.js$|^game/assets/.*\.(vox|json)$'; then
+  if "$PY" tools/palette_vox.py >/dev/null 2>&1; then
+    if ! git diff --quiet -- game/assets/palette.vox; then
+      git add game/assets/palette.vox && echo "pre-commit: regenerated and staged game/assets/palette.vox"
+    fi
+  else
+    echo "pre-commit: palette_vox.py failed - game/assets/palette.vox may be stale (not fatal)" >&2
+    echo "            re-run it by hand once a browser is available: python tools/palette_vox.py" >&2
+  fi
+fi
 exit 0

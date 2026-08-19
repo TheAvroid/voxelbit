@@ -97,6 +97,7 @@
   // scattered. Reusing an identical colour is invisible; what it is NOT safe for is a model whose OWN ids gate a
   // behaviour — PICK_CONE is built from the pinecone's ids, so a shared id there would let one cone pickup flood
   // everything else wearing that colour. Pass own = true to keep dedicated entries, as the pinecone does.
+  const parseVoxVariants2 = (b, url) => { try { return b ? parseVoxVariants(b, true) : null; } catch (e) { console.warn('[vb]', url, 'is unreadable — that variant set is skipped', e); return null; } };   // share=true: meadow flowers are scenery, so the PAL_TOL reuse applies (they are not held)
   const parseVoxDecor = (b, url, own) => { try { return b ? parseVoxModel(b, !own) : null; } catch (e) { console.warn('[vb]', url, 'is unreadable — that decoration is skipped', e); return null; } };
   const fetchBytes = async (url) => { try { return new Uint8Array(await (await fetch(url)).arrayBuffer()); } catch (e) { console.warn('[vb]', url, 'missing — that decoration is skipped', e); return null; } };
   // ── WHAT THE ARTIST PAINTED, CELL BY CELL, AND NOTHING ELSE ── a .vox read that MINTS NOTHING: no palette
@@ -143,16 +144,122 @@
     ['assets/stone_tools/bow_arrow/bow/base.vox', 'bow'],                                   // …the BOW: ONE multi-model file whose models are its DRAW FRAMES (user), parsed in SHARE mode so the frames' shared colours cost no palette entries
     ['assets/food/meat/meat.vox', 'item'],                                                  // …and RAW MEAT, which a killed land mammal leaves behind (user)
     ['assets/stone_tools/stone_hoe.vox', 'item'],                                           // …and the STONE HOE and STONE SPEAR, carried like the rest of the kit (user)
-    ['assets/stone_tools/stone_spear.vox', 'item']];
+    ['assets/stone_tools/stone_spear.vox', 'item'],
+  // ── THE CHERRY FOREST'S AUTHORED TWIGS (user 2026-08-18: "reload the sticks ... using the sticks labeled
+  // pink_stick_1 and pink_stick_2") ── these REPLACE a derived recolour that used to live in this file. Authored
+  // art beats a hue rotation, and it costs almost nothing here: the two files reuse stick_1/stick_2's browns
+  // EXACTLY (verified byte-for-byte on the palettes), so 'held' — which is share-plus-exact-match-only — reuses
+  // every brown id already minted and mints only the four pinks of the leaf.
+  // APPENDED AT THE END of DECOR_LOAD deliberately: the destructure below is positional, so an entry inserted
+  // beside its relatives renames every model after it. The same lesson the held-item table taught the same day.
+    ['assets/decoration/pink_stick_1.vox', 'held'],
+    ['assets/decoration/pink_stick_2.vox', 'held'],
+  // ── THE MEADOW FLOWERS (user 2026-08-18: "replace all the flowers in the current game with flowers.vox") ──
+  // ONE multi-model file whose models are VARIANTS, not frames — five different flowers, so 'variants' rather
+  // than 'decor'. 'decor' would have read only the first of the five (parseVoxModel takes the first SIZE/XYZI
+  // pair) and silently planted the same flower everywhere.
+  // Appended at the END for the reason the pink twigs above are: the destructure below is POSITIONAL.
+    ['assets/decoration/flowers.vox', 'variants'],
+];
   const decorBytes = await Promise.all(DECOR_LOAD.map((d) => fetchBytes(d[0])));
-  const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV, SHOVV, ARROWV, BOWSTRIP, MEATV, HOEV, SPEARV] =
+  const [CONEV, lilyS, lilyM, lilyL, stk1, stk2, LOGV, ROCKV, PICKV, SHOVV, ARROWV, BOWSTRIP, MEATV, HOEV, SPEARV, pstk1, pstk2, FLOWERV0] =
     DECOR_LOAD.map((d, i) => d[1] === 'bow' ? parseBowStrip(decorBytes[i], d[0])
+      : d[1] === 'variants' ? parseVoxVariants2(decorBytes[i], d[0])                 // a VARIANT SET — see the flowers entry above
       : (d[1] === 'item' || d[1] === 'held') ? parseVoxShared(decorBytes[i], d[0])   // 'held' is 'decor' plus the exact-colour exemption - see rock.vox above
       : parseVoxDecor(decorBytes[i], d[0], d[1] === 'own'));
   const CONEVL = CONEV ? { sx: CONEV.sx, sy: CONEV.sz, sz: CONEV.sy,                        // the same cone tipped 90° onto its side — fallen cones lie on the forest floor
     vox: CONEV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((CONEV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
   const LILYV = [lilyS, lilyM, lilyL].filter(Boolean);
+  // ── THE FLOWER SET, AND THE TWO ID SETS THE REST OF THE GAME ASKS ABOUT ── derived from the models' OWN
+  // voxels, never from a literal id. That is the standing rule for decor and it is not stylistic: the palette
+  // is not boot-stable (assets are parsed in array order now, but edCol still mints during play), so an id
+  // written down here would be a different colour on another load.
+  //   FLOWERIDS  — every id the variants use. This is the MATERIAL set, and it inherits exactly what BLOOM's
+  //                six ids used to carry: floatTab (surface scatter — no hitbox, the aim ray passes through,
+  //                and ORPHAN_OK so the generation sweep may clear a stranded one) plus the snow pass-through.
+  //   FLOWERHEAD — the PETAL ids only, i.e. everything that is not stem or leaf green. This is what the bees
+  //                forage on (sim/life/slots.js BLOOM_TAB): a bee belongs on the bloom, not halfway down the
+  //                stalk, and the old single-voxel flower had no stem to land on by mistake. Green is ASKED OF
+  //                THE PALETTE rather than hard-coded, the same test the pink twigs' leaf recolour uses.
+  const FLOWERV = (FLOWERV0 || []).filter((m) => m && m.vox.length);
+  const FLOWERIDS = [], FLOWERHEAD = [];
+  { const seen = new Set();
+    for (const m of FLOWERV) for (const q of m.vox) { const fid = q >>> 24;
+      if (seen.has(fid)) continue; seen.add(fid); FLOWERIDS.push(fid);
+      const fc = palette[fid]; if (fc && !(fc[1] > fc[0] && fc[1] >= fc[2])) FLOWERHEAD.push(fid); } }
+  // ── THE PINK VARIANT IS THE BLOSSOM BAND'S, AND ONLY THE BLOSSOM BAND'S (user 2026-08-18: "I actually just
+  // made a pink flower in the flower.vox folder. use that instead") ── it is authored, not derived: an earlier
+  // cut recoloured the white flower's three near-whites through a minted pink ramp, and authored art beats a
+  // recolour every time. It also costs nothing, because the file was already being loaded.
+  // SPLIT BY MEASUREMENT, NOT BY INDEX. It is model 0 today and adding it pushed every other variant down one —
+  // which is precisely why nothing here may count on position. The pink flower is "the variant whose petals are
+  // pink-hued", so re-exporting the file in any order, or adding a seventh flower, cannot silently plant pink
+  // through the oak forest or strand the blossom band with a yellow one.
+  // Hue 330..360 with a saturation floor separates it from the RED flower at hue 0, which is the only other
+  // warm variant; the amber centre and green stems every model shares fall outside the band.
+  const flowerIsPink = (id) => {
+    const c = palette[id]; if (!c) return false;
+    const mx = Math.max(c[0], c[1], c[2]), mn = Math.min(c[0], c[1], c[2]);
+    if (mx < 150 || mx === 0 || (mx - mn) / mx < 0.15) return false;   // too dark, or too grey to have a meaningful hue
+    const d = mx - mn;
+    const h = mx === c[0] ? (((60 * (c[1] - c[2])) / d) + 360) % 360
+            : mx === c[1] ? (60 * (c[2] - c[0])) / d + 120
+                          : (60 * (c[0] - c[1])) / d + 240;
+    return h >= 330 && h < 360;
+  };
+  const FLOWERV_CH = [];
+  {
+    const pinkN = FLOWERV.map((m) => m.vox.reduce((n, q) => n + (flowerIsPink(q >>> 24) ? 1 : 0), 0));
+    const best = pinkN.indexOf(Math.max(...pinkN));
+    if (best >= 0 && pinkN[best] > 0) {
+      FLOWERV_CH.push(FLOWERV[best]);
+      FLOWERV.splice(best, 1);                         // …and OUT of the general set, so the oak forest never plants it
+    }
+  }
+  // ── THE LAVENDER SPIKE GETS A RAMP (user 2026-08-18: "create 3 more shades for the lavender flower ... 3 more
+  // purple shades I mean") ── the model paints all 17 of its petal voxels in ONE purple, which at 3x3x8 is the
+  // largest flat block of colour in the set. FLOWPURP adds three shades around the authored one and the voxel's
+  // own position picks between them, the same dither the blossom crowns use and for the same reason: the art
+  // supplies one colour, so a per-id remap could never show four.
+  // FOUND BY HUE, not by index — it is model 3 today and was model 2 before the pink flower was added, which is
+  // exactly the drift this avoids. 250..300 is violet, clear of the blue flower below it and the pink above.
+  if (FLOWPURP.length) {
+    const hueOf = (c) => { const mx = Math.max(c[0], c[1], c[2]), mn = Math.min(c[0], c[1], c[2]), d = mx - mn;
+      if (!d || mx < 60) return -1;
+      return mx === c[0] ? (((60 * (c[1] - c[2])) / d) + 360) % 360
+           : mx === c[1] ? (60 * (c[2] - c[0])) / d + 120 : (60 * (c[0] - c[1])) / d + 240; };
+    const isViolet = (id) => { const c = palette[id]; if (!c) return false; const h = hueOf(c); return h >= 250 && h < 300; };
+    let vi = -1, vn = 0;
+    FLOWERV.forEach((m, i) => { let n = 0; for (const q of m.vox) if (isViolet(q >>> 24)) n++; if (n > vn) { vn = n; vi = i; } });
+    if (vi >= 0 && vn > 0) {
+      const m = FLOWERV[vi];
+      const vlum = (i) => { const c = palette[i]; return c ? c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114 : 0; };   // local: bow.js's own lum0 is declared several hundred lines BELOW this, so using it here is a temporal dead zone and a black screen at boot
+      const ramp = [...new Set(m.vox.map((q) => q >>> 24).filter(isViolet).concat(FLOWPURP))]
+        .sort((a, b) => vlum(a) - vlum(b));   // dark -> light, the authored shade taking its place among the three
+      FLOWERV[vi] = { sx: m.sx, sy: m.sy, sz: m.sz, vox: m.vox.map((q) => {
+        if (!isViolet(q >>> 24)) return q;                      // stems and the blue tip are left alone
+        const x = q & 255, y = (q >> 8) & 255, z = (q >> 16) & 255;
+        return (q & 0xffffff) | (ramp[((x * 131 + y * 61 + z * 17) & 1023) % ramp.length] << 24);
+      }) };
+      for (const i of FLOWPURP) { if (!FLOWERIDS.includes(i)) FLOWERIDS.push(i); if (!FLOWERHEAD.includes(i)) FLOWERHEAD.push(i); }
+    }
+  }
+  console.log('[vb] flowers.vox', FLOWERV.length, 'variants,', FLOWERIDS.length, 'ids of which', FLOWERHEAD.length, 'are petal (the rest are stem/leaf) +', FLOWERV_CH.length, 'pink twin for the blossom band');
+  // ── AND THEIR BLOSSOM TWINS (user 2026-08-18: "change the green leaf on the stick to a pink leaf") ──
+  // built at LOAD from the models already parsed, the same derivation berryBush does on the oak bush a few
+  // hundred lines below, and for the same reason: nothing here re-shapes a twig, it re-colours the four leaf
+  // voxels of one and the seven of the other. Baking two more .vox files would ship two more models to express
+  // a recolour that is a pure function of the models on disk.
+  // The leaf is found by ASKING THE PALETTE which of the twig's ids are green, not by hard-coding indices:
+  // stick_1 and stick_2 are 'held' models, so their ids come out of palShare in whatever order the parse ran,
+  // and an index written here would rot the first time an unrelated decoration minted before them.
   const STICKV = [stk1, stk2].filter(Boolean);
+  const STICKB = [pstk1, pstk2].filter(Boolean);       // the AUTHORED pink twigs, index-parallel to STICKV so world/terrain.js picks a pair rather than a model. Empty if the two files are missing, and stickAt falls back to the green pair
+  // The leaf ids the pink twigs actually carry, read off the models rather than assumed: the pickup has to remove
+  // them (see twigLeafCells in sim/projectiles.js) and they are NOT the canopy's BLOSLEAF — the user authored a
+  // ramp of their own. Told apart from the twig browns by channel order: a brown is r>g>b, these pinks are r>b>g.
+  const TWIGPINK = [...new Set(STICKB.flatMap((m) => m.vox.map((q) => q >>> 24))
+    .filter((id) => { const c = palette[id]; return c && c[2] > c[1]; }))];
   const ROCKVU = ROCKV ? { sx: ROCKV.sx, sy: ROCKV.sz, sz: ROCKV.sy,                        // the same stone tipped 90° onto its edge — half the field stones stand upright
     vox: ROCKV.vox.map((p) => (p & 255) | (((p >> 16) & 255) << 8) | ((ROCKV.sy - 1 - ((p >> 8) & 255)) << 16) | (p & 0xff000000)) } : null;
   let ROCK26 = [], ROCK26D = [], R26S = [], R26M = [], R26B = [];
@@ -300,7 +407,38 @@
   // ── SEVEN SHADES, AND ONLY FOUR OF THEM COST ANYTHING ── the three bark shades are repointed onto the
   // pine's existing bark ids and the four leaf shades are minted as the oaks' OWN and reserved in palOwn.
   // Both halves of that are explained where they happen, inside the try below.
-  let OAKV = [], OAKBARK = [], OAKLEAF = [];
+  // ── THE DITHER THAT LETS A FOUR-GREEN CROWN SHOW EIGHT PINKS ── the oak art carries four distinct leaf
+  // greens, so a straight id -> id remap can only ever put four colours on a crown; the other four shades of an
+  // eight-step ramp were minted and never written. Each green instead names a BAND of the ramp and the voxel's
+  // own position picks within it, so the whole ramp appears and the crown gains a fine mottle rather than four
+  // flat plateaus — which is what blossom actually looks like.
+  // DETERMINISTIC AND POSITION-KEYED, which both matter: the gen workers rebuild these sets from OAKV
+  // themselves (world/gen-pool.js), so main thread and worker must agree voxel for voxel or gtest splits. The
+  // hash reads only x/y/z out of the packed voxel, so it cannot drift.
+  // A FUNCTION DECLARATION, not a const arrow: it is stringified into every gen worker, and the worker's
+  // OAKBLOSV line runs at startup — a const would be in its temporal dead zone there.
+  function blosRemap(m, ramp, rank, fruit) {
+    const top = ramp.length - 1;
+    let rmax = 0;
+    for (let i = 0; i < 256; i++) if (rank[i] > rmax) rmax = rank[i];   // how many leaf greens the art really has; never assume four
+    return { sx: m.sx, sy: m.sy, sz: m.sz, vox: m.vox.map((p) => {
+      const r = rank[p >>> 24];
+      if (r < 0) return p;                             // bark, and every id a crown carries that is not leaf, passes straight through
+      const x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+      // ── THE CHERRIES ── a leaf voxel becomes fruit instead of blossom, on its own hash so the scatter does
+      // not correlate with the shade dither below (sharing one would put every cherry on the same tone).
+      // 3/2048 is ~0.15%: on the giant crown's ~77,000 leaf voxels that is a hundred or so, which reads as a
+      // fruiting tree, and on the bush tiers only a handful. Tested first at 1% and the crowns went red.
+      // Keyed on POSITION like everything else here, so a tree keeps its cherries across regeneration and the
+      // gen workers place them identically — the gtest invariant this whole function lives under.
+      if (fruit && (((x * 191 + y * 37 + z * 101) & 2047) < 3)) return (p & 0xffffff) | (fruit << 24);
+      const base = rmax ? Math.round(r * top / rmax) : 0;
+      const j = (((x * 73 + y * 151 + z * 199) & 1023) % 3) - 1;   // -1, 0 or +1 — one step either side of the band centre
+      const q = base + j;
+      return (p & 0xffffff) | (ramp[q < 0 ? 0 : (q > top ? top : q)] << 24);
+    }) };
+  }
+  let OAKV = [], OAKBARK = [], OAKLEAF = [], OAKBLOSV = [], OAKWHITV = [], BLOSRANK = new Int8Array(256).fill(-1);   // BLOSRANK: oak leaf id -> 0..3 by luminance, -1 for everything else. The RAMP is an argument, so one table serves both varieties   // BLOSMAP: oak leaf id -> its cherry-blossom twin; identity for everything else. The workers rebuild the pink crowns from it rather than being handed a second 218k-voxel model set
   try {
     if (location.search.includes('nooaks')) throw new Error('?nooaks');   // A/B switch: an empty OAKV disables the scatter, the material marking and the stamp in one go, the way ?nocacti does
     const oj = await (await fetch('assets/decoration/oak_trees.json')).json();
@@ -334,9 +472,32 @@
     OAKBARK = [...new Set(oids.slice(0, oj.nbark))];                                         // pal[0:nbark] is bark, pal[nbark:] is leaf — see the voxelizer header
     OAKLEAF = oids.slice(oj.nbark);
     OAKV = oj.trees.map((t) => ({ sx: t.sx, sy: t.sy, sz: t.sz, vox: t.vox.map((p) => (p & 0xffffff) | (oids[p >>> 24] << 24)) }));
+    // ── THE CHERRY FOREST'S PINK CROWN IS AN ID MAP, NOT A SECOND MODEL SET (user 2026-08-18) ── 256 numbers,
+    // of which only the leaf entries are not the identity. The gen workers rebuild OAKBLOSV from OAKV through
+    // it (see world/gen-pool.js), which is exactly the R26DMAP pattern a few hundred lines above and exists for
+    // exactly the same measured reason: gen-pool stringifies every registered table into EACH worker's source,
+    // OAKV is 218,367 voxels, and shipping a second copy is what stopped the boot completing when ROCK26D tried
+    // it. A 256-number array costs nothing and the bark, which is 3 of the 7 ids, is shared rather than copied.
+    // Paired BY RANK, dark→dark, not by nearest colour: the two ramps barely overlap (green luma 74..107,
+    // blossom 128..205), so a nearest-colour match would collapse all four greens onto the darkest blossom and
+    // the crown would lose its shading — the identical mistake the bark map documents avoiding just above.
+    // FOUR GREENS ONTO THREE BLOSSOMS: the two middle greens share the mid pink. They are the pair a crown uses
+    // interchangeably for the same interior shade (105,143,51 and 107,141,77 differ by 26 in one channel and
+    // nothing in luma), so collapsing THEM is what a three-shade ramp should collapse.
+    // ── ONE RANK TABLE, NOT ONE MAP PER VARIETY ── BLOSMAP/BLOSMAPW were id -> id, which caps the crown at as
+    // many colours as the SOURCE has: the oak art carries exactly four leaf greens, so an eight-shade ramp
+    // showed four shades and the other four were never written. What varies per variety is the target ramp, and
+    // what the source actually supplies is a RANK — how dark this green is relative to the other three. So the
+    // table is rank-only and the ramp is an argument (see blosRemap below).
+    // -1 means "not a leaf": bark, and any id a crown does not carry, passes through untouched.
+    BLOSRANK = new Int8Array(256).fill(-1);
+    if (OAKLEAF.length) {
+      const lo = OAKLEAF.slice().sort((a, b) => lum0(palette[a]) - lum0(palette[b]));   // dark -> light, the same order every blossom ramp is authored in
+      lo.forEach((id, i) => { BLOSRANK[id] = i; });
+    }
     console.log('[vb] oaks:', OAKV.length, 'trees,', OAKV.reduce((a, m) => a + m.vox.length, 0), 'voxels,',
       OAKBARK.length, 'bark ids (BORROWED from the pine) +', OAKLEAF.length, 'leaf ids (minted), widest', Math.max(...OAKV.map((m) => Math.max(m.sx, m.sy))), 'tallest', Math.max(...OAKV.map((m) => m.sz)));
-  } catch (e) { console.warn('[vb] oak_trees.json missing — oaks skipped', e); OAKV = []; OAKBARK = []; OAKLEAF = []; }
+  } catch (e) { console.warn('[vb] oak_trees.json missing — oaks skipped', e); OAKV = []; OAKBARK = []; OAKLEAF = []; OAKBLOSV = []; OAKWHITV = []; }
   // ── ONE DENSE OCCUPANCY + EXTERIOR-AIR FLOOD FOR A SPARSE MODEL ── the oak crowns baked out of a .glb are
   // HOLLOW SHELLS: measured over all seven, every single leaf voxel has an empty 6-neighbour (2468 of 2468 on
   // the bush, 77513 of 77513 on the giant), so "has air beside it" does not mean "is on the OUTSIDE" — half of
@@ -415,6 +576,15 @@
       return { sx: m.sx, sy: m.sy, sz: m.sz, vox };
     };
     OAKV.splice(0, 1, berryBush(FRUITC[0], 11), berryBush(FRUITC[1], 97));   // [0] cherry, [1] blueberry — every index above the bush tier shifts up one, and world/terrain.js's size ladder is written against that
+    // ── AND THE PINK SET IS BUILT HERE, AFTER THE SPLICE, BECAUSE THE SPLICE CHANGES OAKV'S LENGTH ──
+    // it replaces one model with two, so every index above the bush tier shifts up by one. Built before this
+    // line, OAKBLOSV had 7 entries against OAKV's 8 and `OAKBLOSV[t.k]` was a DIFFERENT TREE from `OAKV[t.k]`.
+    // The gen workers never had the bug — they derive their copy from the OAKV that gen-pool registers, which
+    // is this final one — so the two paths stamped different geometry and __vb.gtest reported 21,640 voxel
+    // diffs: the pool's pink crown against empty air where the main thread had put a smaller model.
+    // If a later splice ever touches OAKV again, this line has to stay below it.
+    OAKBLOSV = OAKV.map((m) => blosRemap(m, BLOSLEAF, BLOSRANK, BLOSCHERRY));
+    OAKWHITV = OAKV.map((m) => blosRemap(m, BLOSWHITE, BLOSRANK, BLOSCHERRY));   // the white variety fruits too — it is the same species, only the blossom differs   // built HERE, after berryBush has spliced OAKV — building it earlier is what once made OAKBLOSV[t.k] a different tree from OAKV[t.k] (gtest 21640)
     console.log('[vb] oak bushes: cherry + blueberry variants,', Math.min(OKBERRY, cand.length), 'berries each from',
       cand.length, 'outer leaves — OAKV is', OAKV.length, 'models now');
   }
@@ -640,7 +810,10 @@
     }
   } catch (e) { console.warn('[vb] mushroom.json missing — forest mushrooms skipped', e); }
   let LILYPAD_GIGV = null;                                                                   // GIGANTIC lilypad on lakes (lillypad_gigantic.json, palette-reduced + laid flat) — solid, 1-2 per lake
+  // The fetch itself is behind LGIG_ON (assets/palette.js), not just the stamp: the 14 ids this model mints are
+  // the point of the switch, and they are minted by the loader below whether or not anything ever draws it.
   try {
+    if (!LGIG_ON) throw new Error('gigantic lilypads are off (LGIG_ON) — their 14 palette ids are reclaimed');
     const gj = await (await fetch('assets/decoration/lillypad_gigantic.json')).json();
     const lilyCols = [...new Set(LILYV.flatMap((m) => m.vox.map((p) => p >>> 24)))].map((id) => palette[id]);   // the REGULAR lilypads' mint-green swatches (user: 'same shade as the other lillypads')
     const gcache = new Map();                                                                // snap each giant-pad shade to the nearest regular-lily colour, addCol'd to its OWN id so markSolid never makes the small pads solid too
@@ -648,7 +821,7 @@
       for (const q of lilyCols) { const d = (q[0] - c[0]) * (q[0] - c[0]) + (q[1] - c[1]) * (q[1] - c[1]) + (q[2] - c[2]) * (q[2] - c[2]); if (d < bd) { bd = d; m = q; } }
       const k = (m[0] << 16) | (m[1] << 8) | m[2]; if (!gcache.has(k)) gcache.set(k, addCol(m[0], m[1], m[2])); return gcache.get(k); });
     LILYPAD_GIGV = { sx: gj.sx, sy: gj.sy, sz: gj.sz, vox: gj.vox.map((p) => (p & 0xffffff) | (gids[p >>> 24] << 24)) };
-  } catch (e) { console.warn('[vb] lillypad_gigantic.json missing — giant pads skipped', e); }
+  } catch (e) { if (LGIG_ON) console.warn('[vb] lillypad_gigantic.json missing — giant pads skipped', e); }   // silent when the feature is simply OFF: the throw above is the switch, not a failure, and a warn every boot saying a present file is missing is worse than no warn at all
   const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
   if (MUSHV) for (const q of MUSHV.vox) decorTab[q >>> 24] = 1;                             // ── CHOPPABLE DECOR ── mushrooms…
   for (const i of FERNIDS) decorTab[i] = 1;                                                 // …and ferns (user): any tool takes chunks out of both

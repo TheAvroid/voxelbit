@@ -43,18 +43,49 @@
         //     already half-way to being culled, which would flicker the flock along the border.
         // The two are the same shape as the ground life's BIO_DESERT/BIO_FOREST pair and for the same reason.
         const BIRD_OUT = 0.85, BIRD_IN = 0.35;
-        if (b.init && desertM(b.x, b.z) > BIRD_OUT) b.init = false;
+        // ── AND THE BLOSSOM IS THE OTHER PLACE THE FLOCK DOES NOT GO (user 2026-08-18: "dont spawn any
+        // songbirds") ── this file gated on desertM ALONE, so the sky over every forest was the same sky; a
+        // cherry forest is "not desert" and the cardinals, blue birds and robins would have kept crossing it.
+        // The cheap-out is the same one the ground gates use: cherryM is a sub-region of the oak mask, so a
+        // bird over the pine forest or the desert never pays for the second sample.
+        const chOut = (x9, z9) => chNear(x9) && cherryM(x9, z9) > 0.5;   // 0.5 — the number the TREE uses (world/terrain.js `blos`), not BIRD_IN, which is a DESERT constant that happened to be in scope. At 0.35 every flying bird in the 0.35..0.5 strip was pink while the oaks under it were still green. chNear, not `oakM > 0`: oakM is true across the whole infinite oak forest, so it was never a cheap-out at all
+        // ── AND THE RECYCLE IS SPECIES-AWARE, BOTH WAYS ── an ordinary songbird is retired when it drifts INTO
+        // the blossom, and a pink bird when it drifts OUT of it. Only the first half was written at first, and
+        // the flock is free-flying: a pink bird simply flew across the border and kept going, measured at
+        // oakM 0.2 with no blossom under it at all. A one-directional containment on a moving body is not
+        // containment, which is the same lesson BIO_CHLINE records for the walkers.
+        const pinkMe = BIRD_PINK >= 0 && b.sp === BIRD_PINK;
+        if (b.init && (desertM(b.x, b.z) > BIRD_OUT || (pinkMe ? !chOut(b.x, b.z) : chOut(b.x, b.z)))) b.init = false;
         if (!b.init) {                                // placed out past the fog, never in plain view, and staggered so they never read as a formation
           // ── AND IF THERE IS NOWHERE LEGAL, DO NOT PLACE IT AT ALL ── stand deep in the desert and every
           // candidate on the ring is sand, so the flock has to be able to answer "none". Eight tries around
           // the ring (the ring is a circle; eight covers it) and then `b.off`, which the two draw paths skip
           // exactly the way they already skip a ragdolling bird. Without this a bird with no legal spot would
           // keep its x/z of 0 and be drawn at the world origin.
+          // Half the flock looks for blossom, half for ordinary forest, split by slot so the two populations are
+          // stable rather than racing: stand in the cherry forest and the pink half fills the sky while the
+          // other half simply reports `off`, and the reverse in the oak wood. With no pink bird loaded this is
+          // always false and every bird takes the old path unchanged.
+          // ── DECIDED PER CANDIDATE POINT, NOT PER SLOT (audit 2026-08-18) ── this was `(bi & 1) === 0`, a pure
+          // function of the slot number, and the comment below already claimed it was per point. The consequence
+          // was that deep in the oak forest every EVEN slot failed all eight ring tries and set b.off forever,
+          // and deep in the blossom every odd slot did — half the flock permanently unplaceable, re-testing
+          // eight ring points a frame to keep failing. The species is now read OFF the point that was accepted,
+          // so any slot can take any legal spot and the two skies stay disjoint just the same.
+          let pinkHere = false;
           let a0 = 0, r0 = 0, ok = false;
           for (let q = 0; q < 8 && !ok; q++) {
             a0 = (bi / BIRD_N) * Math.PI * 2 + Math.random() * 1.4 + q * 0.7854;
             r0 = bIn + Math.random() * Math.max(1, bOut - bIn);
-            ok = desertM(P.x + Math.cos(a0) * r0, P.z + Math.sin(a0) * r0) <= BIRD_IN;
+            const bx9 = P.x + Math.cos(a0) * r0, bz9 = P.z + Math.sin(a0) * r0;
+            // ── AND THE BLOSSOM SWAPS THE FLOCK RATHER THAN EMPTYING IT ── the pink bird is admitted ONLY
+            // inside the band and the three ordinary songbirds ONLY outside it, so the two skies are disjoint
+            // and a bird is never drawn over the wrong forest. the species is decided per CANDIDATE POINT, not per
+            // slot, because a slot recycles and the player walks: the same slot legitimately carries a robin
+            // over the oak wood and a pink bird ten minutes later inside the blossom.
+            const inCh = chOut(bx9, bz9);
+            ok = desertM(bx9, bz9) <= BIRD_IN && (!inCh || BIRD_PINK >= 0);   // blossom is legal only when there IS a pink bird to put in it
+            if (ok) pinkHere = inCh;
           }
           b.off = !ok;
           if (!ok) return null;                       // no forest within the ring — the sky over the desert stays empty
@@ -67,7 +98,12 @@
           b.altO = Math.random() * 30; b.tRe = tb + Math.random() * 3;   // staggered whim timers → independent behaviour
           b.flapT0 = tb - Math.random() * 0.5;         // desynced wingbeats
           b.om = 0; b.vyS = 0; b.swO = 0; b.mode = 0; b.glid = false; b.off = false;
-          b.sp = FLYERS.length ? (bi % FLYERS.length) : 0;   // ── SPECIES ── fixed by SLOT, never rolled: a coin flip drifts, this holds an exact even split (12 birds / 3 species = 4 each) no matter how many recycle
+          // ── SPECIES ── fixed by SLOT, never rolled: a coin flip drifts, this holds an exact even split no
+          // matter how many recycle. A bird that found blossom takes the pink strip; everything else keeps the
+          // old round-robin, and it is taken over the ORDINARY species only (FLYERS minus the derived pink one)
+          // so adding the fourth did not quietly put pink birds over the oak forest.
+          const nOrd = Math.max(1, FLYERS.length - (BIRD_PINK >= 0 ? 1 : 0));
+          b.sp = pinkHere ? BIRD_PINK : (FLYERS.length ? (bi % nOrd) : 0);
         }
         if (tb > b.tRe) {                             // pick the next BEHAVIOUR, not just a turn rate — that is what reads as intent instead of drift
           const r = Math.random();

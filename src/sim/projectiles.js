@@ -1,5 +1,5 @@
   // @module — arrows and spears: launch, arc, impact, and the pick-up flood
-  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_BOULDER, PICK_CONE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, launchThrown, shootArrow, throwSpear
+  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, launchThrown, shootArrow, throwSpear, twigLeafCells
   // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
   // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
   const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
@@ -284,6 +284,13 @@
   const PICK_CONE = new Set(); if (CONEV) for (const p of CONEV.vox) PICK_CONE.add(p >>> 24);   // pinecone ids (ground cones AND tree-hung ones) → pinecone item
   if (ROCKV) for (const p of ROCKV.vox) PICK_ROCK.add(p >>> 24);                 // the field stone (rock.vox) → rock item
   for (const sm of STICKV) for (const p of sm.vox) PICK_STICK.add(p >>> 24);     // stick_1/stick_2 → twig item
+  // ── AND THE BLOSSOM TWIG'S LEAF IS DELIBERATELY NOT IN HERE ── STICKB wears BLOSLEAF ids, which are the
+  // CANOPY's ids, and PICK_STICK is walked by the right-click flood: adding them would make every pink crown in
+  // the world right-click up as a twig, which is verbatim the pinecone/stick collision recorded at palOwn in
+  // assets/palette.js. So a blossom twig picks up by its BROWNS, exactly the way a fruit picks up by its flesh
+  // and leaves its oak-leaf stalk behind (see PICK_APPLE below) — the leaf is scenery on a pickable object, and
+  // that is the established design here rather than a shortfall.
+  for (const sm of STICKB) for (const p of sm.vox) { const id = p >>> 24; if (!BLOSLEAF.includes(id)) PICK_STICK.add(id); }
   const PICK_TWIG = new Set([...PICK_STICK, ...PICK_CONE]);   // the one set the right-click flood walks: a stick and a pinecone are told apart by the ids the COMPONENT turns out to contain, not by which set the first voxel matched. Kept as a union so the classifier still works if the two ever share ids again (they did — see palOwn).
   // ── AND THE FRUIT (user 2026-08-17: "have the player able to right click an apple from a tree and pick it
   // up") ── the apple and the orange do NOT share the twig's problem, and that is worth saying because it is
@@ -381,6 +388,51 @@
     out.sort((a, b) => a.d2 - b.d2 || a.ii - b.ii);   // ties on the index so a fruit comes apart the same way every time
     return out.slice(0, want).map((e) => e.ii);
   };
+  // ══ THE SAME BOUND, FOR THE TWIG'S LEAF (user 2026-08-18: "when picking up the stick, you leave the pink
+  // leaves behind") ══ generalised out of fruitCrownCells above rather than written a second time, because it is
+  // the same problem with the same correct answer and two copies of it would drift.
+  //
+  // THE PROBLEM. A pickup has to answer two DIFFERENT questions and they were being answered with one set:
+  //   * what may TRIGGER this pickup — and the blossom leaf must not, or every pink crown in the world
+  //     right-clicks up as a twig (the pinecone/stick collision recorded at palOwn in assets/palette.js);
+  //   * what the pickup REMOVES once it has decided what the thing is — and here the leaf must be included,
+  //     or it is left hanging in the air with its twig gone from under it.
+  // Excluding it from both is what left the leaf floating. So the trigger set stays clean and the removal is
+  // widened, bounded exactly the way the fruit's stalk is: seeded off the body, flooded only through the extra
+  // ids, clipped to the body's own box, and capped at the MODEL'S OWN count of them. A wider flood is what must
+  // never happen — a twig lying under a cherry tree would take the whole crown.
+  const extraCells = (cells, extra, want) => {
+    if (!extra.size || !want || !cells.length) return [];
+    let lo = null, hi = null;                          // the BODY's own box, in world voxels this time (the fruit works in local offsets because it is asked about a point, not given a component)
+    const xyz = (ii) => [ii % WX, ((ii / WX) | 0) % WY, (ii / (WX * WY)) | 0];
+    for (const ii of cells) { const p = xyz(ii);
+      if (!lo) { lo = p.slice(); hi = p.slice(); continue; }
+      for (let k = 0; k < 3; k++) { if (p[k] < lo[k]) lo[k] = p[k]; if (p[k] > hi[k]) hi[k] = p[k]; } }
+    const pad = 1;                                     // one voxel: a leaf is face- or diagonally-adjacent to the twig it grew on, never further
+    const inBox = (gx, gy, gz) => gx >= lo[0] - pad && gx <= hi[0] + pad && gy >= lo[1] - pad && gy <= hi[1] + pad && gz >= lo[2] - pad && gz <= hi[2] + pad;
+    const iiOf = (gx, gy, gz) => gx + gy * WX + gz * WX * WY;
+    const cx = (lo[0] + hi[0]) / 2, cy = (lo[1] + hi[1]) / 2, cz = (lo[2] + hi[2]) / 2;
+    const out = [], seen = new Set(), q = [];
+    const push = (gx, gy, gz) => {
+      if (gy < 1 || gy >= WY || !inBox(gx, gy, gz)) return;
+      const ii = iiOf(gx, gy, gz); if (seen.has(ii) || !extra.has(W[ii])) return;
+      seen.add(ii); q.push([gx, gy, gz]);
+      out.push({ ii, d2: (gx - cx) * (gx - cx) + (gy - cy) * (gy - cy) + (gz - cz) * (gz - cz) }); };
+    for (const ii of cells) { const [gx, gy, gz] = xyz(ii);
+      for (let nz = -1; nz <= 1; nz++) for (let ny = -1; ny <= 1; ny++) for (let nx = -1; nx <= 1; nx++)
+        if (nx || ny || nz) push(gx + nx, gy + ny, gz + nz); }
+    while (q.length) { const [qx, qy, qz] = q.pop();
+      for (let nz = -1; nz <= 1; nz++) for (let ny = -1; ny <= 1; ny++) for (let nx = -1; nx <= 1; nx++)
+        if (nx || ny || nz) push(qx + nx, qy + ny, qz + nz); }
+    out.sort((a, b) => a.d2 - b.d2 || a.ii - b.ii);    // ties on the index, so the same twig comes apart the same way every time
+    return out.slice(0, want).map((e) => e.ii);
+  };
+  // The blossom leaf ids a twig can carry, and HOW MANY — read off the models themselves so re-authoring
+  // stick_1.vox cannot leave this number stale. Empty when the cherry forest's models never built.
+  const TWIG_EXTRA = new Set((typeof TWIGPINK === 'undefined' ? [] : TWIGPINK));   // the AUTHORED pink twigs' own leaf ids (assets/bow.js), NOT the canopy's BLOSLEAF: the user's pink_stick art carries a ramp of its own, and keying this on the canopy would both miss the real leaf and risk the flood reaching a crown
+  const TWIG_EXTRA_N = (typeof STICKB === 'undefined' ? [] : STICKB)
+    .reduce((n, m) => Math.max(n, m.vox.filter((p) => TWIG_EXTRA.has(p >>> 24)).length), 0);
+  const twigLeafCells = (cells) => extraCells(cells, TWIG_EXTRA, TWIG_EXTRA_N);
   const fruitAt = (x, y, z) => {
     if (!APPLE_IT) return null;                        // no fruit item loaded (assets/food/apple missing) — nothing to pick up into
     const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];

@@ -224,9 +224,21 @@
       // ── IS IT SNOWING WHERE THE PLAYER IS? ── freezeK is ONE GLOBAL scalar driving solidTab[WATER_T], so
       // this has always been camera-relative and cannot be per-column. Two ways the answer is now no in
       // the oak forest: it is raining there (the rain ramp), or nothing falls there at all (OAK_SNOW).
-      const oakHere = Math.max(0, Math.min(1, oakM(P.x, P.z)));
+      const oakHere = Math.max(0, Math.min(1, wSharp(oakWeather(P.x, P.z))));   // wSharp so the ice follows the same tightened weather border the blanket and the flakes do   // oakWeather, not oakM (user 2026-08-18): the blossom band is inside oakM but it SNOWS there now, so its lakes freeze like the pines'
       const snowHere = snowOn && (OAK_SNOW ? true : oakHere < 0.5) && (!RAIN_ON || rainSkyK * oakHere < 0.5);
-      freezeK = (snowHere && now >= snowFreezeAt) ? Math.min(1, freezeK + dt / 5) : Math.max(snowWN > snowWHead ? 0.4 : 0, freezeK - dt / 5);   // water freezes over 5 s and thaws back over 5 s — but only from SNOW_FREEZE_DELAY (10 s) after the storm starts, so the flakes you can see have reached the ground before the river skins over
+      // ── AND THE ANTI-WAVE FLOOR IS ABOUT WHERE THE SNOW IS, NOT WHERE YOU ARE (user 2026-08-18: "the water in
+      // the oak forest seems to freeze") ── the 0.4 below pins freezeK at the shader's wave-suppression
+      // threshold while water-snow is still draining, so a white blanket is never seen bobbing on a swell.
+      // But snowWN/snowWHead is a GLOBAL queue and freezeK is a GLOBAL scalar, so a storm draining anywhere
+      // held EVERY lake wave-flat — and wave-flat water reads as ice, even though 0.4 is well below the 0.6
+      // that actually flips solidTab. The blossom band sitting inside the oak forest is what made this
+      // constant: oak now borders snow country on both sides instead of only at the pine treeline.
+      // Safe to drop the floor here because there is no water-snow near the camera to protect: landSnowAt
+      // refuses to settle any where oakWeather says oak (the dmS gate in tick-snow.js), so the case the floor
+      // exists for cannot arise in the biome this exempts.
+      const oakDry = oakHere >= 0.5;                   // the SAME halfway line snowHere splits on, so the two can never disagree about which biome this is
+      freezeK = (snowHere && now >= snowFreezeAt) ? Math.min(1, freezeK + dt / 5)
+        : Math.max((snowWN > snowWHead && !oakDry) ? 0.4 : 0, freezeK - dt / 5);   // water freezes over 5 s and thaws back over 5 s — but only from SNOW_FREEZE_DELAY (10 s) after the storm starts, so the flakes you can see have reached the ground before the river skins over
       const nowSolid = freezeK > 0.6;
       if (nowSolid !== iceSolid) { iceSolid = nowSolid; solidTab[WATER_T] = nowSolid ? 1 : 0;
         // Frozen water is choppable, and PICK-ONLY: an axe should bounce off a lake exactly as it bounces off

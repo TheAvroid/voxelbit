@@ -216,12 +216,21 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > LIFE_OUT * LIFE_OUT) continue;
-          h.d2 = d2; flyCand.push(h);
+          h.d2 = d2; h.ord = ihash(h.cx * 421 + 17, h.cz * 419 + 31); flyCand.push(h);   // ord = this species' OWN scatter key (see the skunk finder below — same fix, and this is the half of it that was never applied)
         }
       }
       if (!flyCand.length) return null;
       let k = 0;
-      for (let q = 1; q < flyCand.length; q++) if (flyCand[q].d2 < flyCand[k].d2) k = q;
+      // ── HASH-ORDER SCATTER, NOT NEAREST-FIRST (user 2026-08-18: "the life seems to still be clustering on
+      // players spawn ... this has been a very persistent problem") ── it is persistent because the fix below
+      // for the four land mammals was never applied here. Nearest-first hands the 16 butterflies the 16
+      // CLOSEST homes, so at a home density of ~3.05e-5 per vox² they all land inside r ~409 of a 977 disc —
+      // 17.5% of the area holding 100% of them, ~5.7x over-density, and NONE outside it. Homes are written once
+      // and never re-rolled, so standing at spawn freezes that fill permanently: measured 20.4%/19.8%/20.2%/
+      // 20.2% of all life inside LIFE_IN over 150 s, i.e. dead stable rather than drifting.
+      // The hash is area-uniform over the whole disc because the candidate LIST is, so picking the smallest
+      // arbitrary key picks uniformly from it.
+      for (let q = 1; q < flyCand.length; q++) if (flyCand[q].ord < flyCand[k].ord) k = q;
       const h = flyCand[k];
       flyCand[k] = flyCand[flyCand.length - 1]; flyCand.pop();
       return h;
@@ -251,13 +260,18 @@
           if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
           const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
           if (d2 > LIFE_OUT * LIFE_OUT) continue;
-          h.d2 = d2; wormCand.push(h);
+          h.d2 = d2; h.ord = ihash(h.cx * 409 + 53, h.cz * 401 + 11); wormCand.push(h);   // ord = this species' OWN scatter key (see the skunk finder)
         }
       }
       if (!wormCand.length) return null;
-      const minD2 = selfWk >= MAM_0 ? LIFE_IN * LIFE_IN : 0;   // BUNNIES/ARMADILLOS spawn out past the fog (LIFE_IN floor) like everything else; WORMS may still take the near cells (tiny — a near worm spawn is invisible, and mammals no longer inherit those cells)
+      // ── AND THE WORMS KEEP THE FOG FLOOR TOO (user 2026-08-18) ── this used to be 0 for a worm, on the
+      // argument that a worm is tiny enough to appear near you without reading as pop-in. True on its own, but
+      // combined with the nearest-first pick below it meant 22 worms took the 22 closest cells every time —
+      // ~2.9x over-density inside r 571 and nothing beyond. With the hash scatter the floor costs nothing and
+      // the near field stops being the only place a worm can be.
+      const minD2 = LIFE_IN * LIFE_IN;
       let k = -1;
-      for (let q = 0; q < wormCand.length; q++) if (wormCand[q].d2 >= minD2 && (k < 0 || wormCand[q].d2 < wormCand[k].d2)) k = q;
+      for (let q = 0; q < wormCand.length; q++) if (wormCand[q].d2 >= minD2 && (k < 0 || wormCand[q].ord < wormCand[k].ord)) k = q;   // HASH-ORDER SCATTER — see findFlyHome above
       if (k < 0) return null;
       const h = wormCand[k];
       wormCand[k] = wormCand[wormCand.length - 1]; wormCand.pop();
@@ -300,11 +314,60 @@
     };
     let porcCandF = -1;
     const porcCand = [];
+    // ── THE FLAMINGO'S OWN HOME GRID ── the same shape as porcHome on its own salt, so its cells are an
+    // independent supply rather than a share of the porcupine's. A borrowed grid was only half the bug: the
+    // borrowed RESERVATION band was the other half, and together they meant the porcupine (which runs first)
+    // emptied the candidate list and the flamingo never got a home.
+    const flamHome = (cx, cz) => {
+      if (ihash(cx * 0x4D2F + 67, cz * 0x71A3 + 71) >= 0.85) return null;
+      return { x: cx * WORM_HCELL + 20 + ihash(cx * 89 + 53, cz * 97 + 59) * (WORM_HCELL - 40),
+               z: (cz + 0.5) * WORM_HCELL + 20 + ihash(cx * 101 + 61, cz * 103 + 67) * (WORM_HCELL - 40), cx, cz };
+    };
+    let flamCandF = -1;
+    const flamCand = [];
+    const findFlamHome = () => {                            // ── THE FLAMINGO GETS ITS OWN (audit 2026-08-18) ── it borrowed findPorcHome, whose reservation band and
+    // candidate list belong to the porcupine; the porcupine runs first and emptied the list, so the flamingo
+    // never received a home at all. Its own grid, its own reservations, salted apart so the two do not stack.
+    // (identical machinery to findSkunkHome otherwise — see there. Original note: PORC_0..MAM_END) — its own cache + the LIFE_IN..LIFE_OUT spawn band
+      if (flamCandF !== frame) {
+        flamCandF = frame; flamCand.length = 0;
+        // A COUNT, not a set: the cell stays a candidate until it holds a full pair. Nothing outside this block
+        // reads it — the pair test below is inside the block with it, and the MATE OFFSET is not decided here at
+        // all but in main/tick-creatures.js, off the live census, where a placement is known to have succeeded.
+        // Both ReferenceErrors this file threw at the game loop were the same slip: a `const` (and then a `let`
+        // that survived its last reader) declared in this block and named further down, outside it.
+        const owned = new Map();
+        for (let j = FLAM_0; j < FLAM_END; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) {
+          const kF = O.hcx + ',' + O.hcz; owned.set(kF, (owned.get(kF) || 0) + 1); } }
+        // PORC_0..FLAM_0, not ..MAM_END: MAM_END grew to take in the flamingo band, so this reserved against flamingos too — and since porcupines run FIRST they drained the candidate list and every flamingo got null. A reservation band must be the species' own slots, not "the rest of the pool"
+        const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (see skunk)
+        const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
+        for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+          const h = flamHome(c0x + dx, c0z + dz); if (!h) continue;
+          if ((owned.get(h.cx + ',' + h.cz) || 0) >= FLAM_PAIR) continue;   // …not `has`: one bird no longer closes the cell, a PAIR does
+          if (h.x <= rect.xlo + 8 || h.x >= rect.xhi - 8 || h.z <= rect.zlo + 8 || h.z >= rect.zhi - 8) continue;
+          const ddx = h.x - P.x, ddz = h.z - P.z, d2 = ddx * ddx + ddz * ddz;
+          if (d2 > MAM_OUT * MAM_OUT) continue;              // no inner floor + MAM_OUT ceiling — fills the forest out to the bird reach (see skunk)
+          h.d2 = d2; h.ord = ihash(h.cx * 439 + 37, h.cz * 443 + 53); flamCand.push(h);   // ord = this species' OWN scatter key (see the skunk finder)
+        }
+      }
+      if (!flamCand.length) return null;
+      let k = 0;
+      for (let q = 1; q < flamCand.length; q++) if (flamCand[q].ord < flamCand[k].ord) k = q;   // HASH-ORDER SCATTER — area-uniform over the disc, not nearest-first (see the skunk pick)
+      const h = flamCand[k];
+      flamCand[k] = flamCand[flamCand.length - 1]; flamCand.pop();
+      // NOTE: the PAIRING itself is not done here. This function is asked for a home up to 12 times per slot
+      // per frame and most of those tries are then rejected downstream (biome, spacing, rock, obstruction), so
+      // anything counted here counts ATTEMPTS, not birds — a cell retired after two rejected tries takes its
+      // partner slot with it, which measured as one couple and two singles. The mate offset lives in
+      // main/tick-creatures.js instead, on the live census, where a placement is known to have succeeded.
+      return h;
+    };
     const findPorcHome = () => {                            // identical machinery to findSkunkHome, but on the porcupine grid + reserving ONLY against other porcupines (PORC_0..MAM_END) — its own cache + the LIFE_IN..LIFE_OUT spawn band
       if (porcCandF !== frame) {
         porcCandF = frame; porcCand.length = 0;
         const owned = new Set();
-        for (let j = PORC_0; j < MAM_END; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }
+        for (let j = PORC_0; j < FLAM_0; j++) { const O = wbf[j]; if (O && O.init && O.hcx !== undefined) owned.add(O.hcx + ',' + O.hcz); }   // PORC_0..FLAM_0, not ..MAM_END: MAM_END grew to take in the flamingo band, so this reserved against flamingos too — and since porcupines run FIRST they drained the candidate list and every flamingo got null. A reservation band must be the species' own slots, not "the rest of the pool"
         const R = Math.ceil(MAM_OUT / WORM_HCELL);     // scan to the MAMMAL ring (see skunk)
         const c0x = Math.floor(P.x / WORM_HCELL), c0z = Math.floor(P.z / WORM_HCELL);
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -397,7 +460,7 @@
         const ddx = tr.tx - P.x, ddz = tr.tz - P.z, d2 = ddx * ddx + ddz * ddz;
         if (d2 > CARD_KEEP * CARD_KEEP) continue;
         const n = birdsOnPine(tr.tx, tr.tz);
-        for (let i = 0; i < n; i++) if (!owned.has(tr.tx + ',' + tr.tz + ',' + i)) cardCand.push({ tx: tr.tx, tz: tr.tz, k: -1, bi: i, n, d2 });
+        for (let i = 0; i < n; i++) if (!owned.has(tr.tx + ',' + tr.tz + ',' + i)) cardCand.push({ tx: tr.tx, tz: tr.tz, k: -1, bi: i, n, d2 , ord: ihash(tr.tx * 397 + 7, tr.tz * 389 + 23) });
       }
       // ── AND THE OAKS, ON THEIR OWN GRID (user 2026-08-17) ── the walk above enumerates PINES, and treeAt now
       // returns null everywhere oakM > 0.5, so in the biome the player actually spawns in it found nothing at
@@ -416,7 +479,7 @@
         if (tr.wx <= rect.xlo + mg || tr.wx >= rect.xhi - mg || tr.wz <= rect.zlo + mg || tr.wz >= rect.zhi - mg) continue;
         const ddx = tr.wx - P.x, ddz = tr.wz - P.z, d2 = ddx * ddx + ddz * ddz;
         if (d2 > CARD_KEEP * CARD_KEEP) continue;
-        for (let i = 0; i < n; i++) if (!owned.has(tr.wx + ',' + tr.wz + ',' + i)) cardCand.push({ tx: tr.wx, tz: tr.wz, k: tr.k, bi: i, n, d2 });
+        for (let i = 0; i < n; i++) if (!owned.has(tr.wx + ',' + tr.wz + ',' + i)) cardCand.push({ tx: tr.wx, tz: tr.wz, k: tr.k, bi: i, n, d2 , ord: ihash(tr.wx * 397 + 7, tr.wz * 389 + 23) });
       }
     };
     // == PERCHES THE PLAYER HAS CLEARED == the clash test below only sees ACTIVE slots, and a slain bird has init=false, so the perch it just
@@ -426,8 +489,13 @@
     const findPineCrown = (selfWk) => {                // the NEAREST procedural bird that no slot holds yet — PINE **or** OAK now; the name is what tick-creatures.js calls
       if (cardCandF !== frame) { cardCandF = frame; buildCardCand(); }
       for (let t = 0; t < 12 && cardCand.length; t++) {
-        let k = 0;                                     // nearest first, so the pool is always spent on the forest around you.
-        for (let q = 1; q < cardCand.length; q++) if (cardCand[q].d2 < cardCand[k].d2) k = q;
+        // HASH-ORDER SCATTER, not nearest-first (user 2026-08-18). The old comment here said the pool was
+        // "always spent on the forest around you" — which is exactly the complaint: 421 perch slots, ~64% of
+        // the whole creature pool, all spent on the nearest trees. The perch supply is deliberately larger than
+        // CARD_N (see sim/life/slots.js), so whichever end of it goes unspent is the end that looks empty, and
+        // nearest-first guarantees that end is the far one. One key per TREE so a tree's perches stay together.
+        let k = 0;
+        for (let q = 1; q < cardCand.length; q++) if (cardCand[q].ord < cardCand[k].ord) k = q;
         const c = cardCand[k];
         cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();
         if (cardSlainPerch.has(cardPerchKey(c.tx, c.tz, c.bi))) continue;   // a bird was killed on this branch — leave it empty

@@ -49,7 +49,7 @@
   let musVol = 1;   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
-  let sndVol = 1;   // start at FULL VOLUME on refresh (user 2026-08-06). Was 0 (always-muted, 2026-08-02); a page load still does NOT restore vb_vol, it just starts at 100% instead of 0%.
+  let sndVol = 0;   // ── MUTED FOR NOW (user 2026-08-18: "turn off the volume for the time being") ── back to the 2026-08-02 always-muted start; put this to 1 to restore the 2026-08-06 full-volume start. It is the MASTER, so it takes the sfx and music buses down with it, and a page load still does NOT restore vb_vol — the slider just opens at 0% and can be dragged back up for the session.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -258,17 +258,30 @@
   // still under the tool hits. On the MUSIC bus, so nothing but the master and the new slider can move it.
   const ANTHEM_AT = 60;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-08: was 120)
   const ANTHEM_GAP = 60;                               // …and a minute of gameplay of SILENCE between one track ending and the next starting (user)
-  // ── THE SET (user 2026-08-08) ── all four anthem cuts, in rotation, then silence for the rest of the
-  // session. Built from source/audio/anthem/*.wav by the same recipe as the first one and each other sound in
-  // the game: AAC-LC 320k, 48 kHz stereo, .mp4 — the four together are 13 MB against 95 MB of source PCM.
-  // The per-track GAIN is not a guess: every file was measured with ebur128 and levelled against red carpet,
-  // which is the anchor at 0.14 because its own 0.14 was tuned by ear against high_score.mp4. Integrated
-  // loudness, and the gain that lands each at the same perceived level:
-  //     red carpet  -15.1 LUFS -> 0.140   (the anchor)
-  //     achievement -14.1      -> 0.125   (1 dB hotter, so 1 dB down)
-  //     to glory    -14.1      -> 0.125
-  //     award       -19.1      -> 0.222   (4 dB quieter, so 4 dB up)
-  const ANTHEM_SET = [['red_carpet', 0.140], ['achievement', 0.125], ['award', 0.222], ['to_glory', 0.125]];
+  // ── THE SET (user 2026-08-08, re-cut 2026-08-18) ── the soundtrack, in rotation, then silence for the rest
+  // of the session. It moved from game/sound/music/*.mp4 to game/sound/soundtrack/*.mp3 and gained two cuts,
+  // `ceremony` and `winner`, so it is SIX now rather than four.
+  //
+  // ── THE GAIN IS ONE NUMBER NOW, AND THAT IS THE POINT ── it used to be four different numbers, because the
+  // four files ranged over 5 dB of integrated loudness and each needed its own correction. The files are
+  // levelled at the SOURCE now (user 2026-08-18: "make sure all of the songs in the soundtrack have the same
+  // dB level"): every one was two-pass `loudnorm`-ed to I=-16 LUFS / TP=-1.5 dBTP and measures -16.2 to the
+  // tenth, so a per-track gain would be correcting a difference that no longer exists.
+  //     measured after processing: achievement / award / ceremony / red_carpet / to_glory / winner
+  //                                  all -16.2 LUFS, spread 0.0 LU
+  // 0.159 CARRIES THE OLD LEVEL FORWARD rather than being a fresh guess: the old anchor was 0.125 at -14.1
+  // LUFS, the files are now -16.2, i.e. 2.1 dB quieter, and 0.125 * 10^(2.1/20) = 0.159. So the score plays at
+  // exactly the loudness it did before, which is the number that was tuned by ear against high_score.mp4.
+  // If a future track is added, level it to -16 with the same recipe and it inherits this gain — that is what
+  // levelling at the source buys.
+  //
+  // HALF A SECOND OF SILENCE TOPS AND TAILS EVERY CUT (user 2026-08-18). The sources ran from 0.46 s to 2.40 s
+  // of lead-in; each was trimmed to nothing and then padded back to exactly 0.5 s, so every track opens and
+  // closes on the same beat instead of on whatever its export happened to leave.
+  const ANTHEM_GAIN = 0.159;
+  const ANTHEM_SET = [['red_carpet', ANTHEM_GAIN], ['achievement', ANTHEM_GAIN], ['award', ANTHEM_GAIN],
+                      ['to_glory', ANTHEM_GAIN], ['ceremony', ANTHEM_GAIN], ['winner', ANTHEM_GAIN],
+                      ['nomination', ANTHEM_GAIN]];   // matched to the set at -16.2 LUFS / 44.1k / 192k with 0.5 s pads, so it shares ANTHEM_GAIN
   // ── SHUFFLED EVERY SESSION (user 2026-08-17: "can you re-order the songs that play") ── the set used to run
   // in the order it is written above, every session, so the same track always opened and `to_glory` was only
   // ever heard by someone who played for a solid five minutes. A Fisher-Yates over a COPY, so ANTHEM_SET itself
@@ -281,7 +294,7 @@
   const anthemOrder = ANTHEM_SET.slice();
   for (let i9 = anthemOrder.length - 1; i9 > 0; i9--) { const j9 = (Math.random() * (i9 + 1)) | 0;
     const t9 = anthemOrder[i9]; anthemOrder[i9] = anthemOrder[j9]; anthemOrder[j9] = t9; }
-  const anthemSnds = anthemOrder.map(([n9, g9]) => regMus(new Audio('sound/music/' + n9 + '.mp4'), g9));
+  const anthemSnds = anthemOrder.map(([n9, g9]) => regMus(new Audio('sound/soundtrack/' + n9 + '.mp3'), g9));   // soundtrack/*.mp3, not music/*.mp4 — see the set above. The old .mp4s are left in place; nothing reads them.
   console.log('[vb] anthem order:', anthemOrder.map((t9) => t9[0]).join(' -> '));
   const anthemSnd = anthemSnds[0];                     // the first cut, still named for the taps that read it
   let playSecs = 0, anthemDone = false;                // the play clock, and the set-is-finished latch
@@ -448,7 +461,14 @@
     const bit = sel.it;                                 // captured BEFORE the stack is spent: the line below can empty the slot, and the animation still has to know what it was eating
     try { eatSnd.currentTime = 0; const p = eatSnd.play(); if (p) p.catch(() => {}); } catch (e) {}
     vitEat(bit);                                        // +1 health point, by the food's own number in vitFoods()
-    if (FOOD_EAT_N && (bit === APPLE_IT || bit === ORANGE_IT || bit === MEAT_IT)) eatAnim = { t0: now9, it: bit };   // …and the food is visibly eaten down to a remnant. All three carry a carved strip now (user 2026-08-17 put the steak on the same animation as the fruit); it stays a TEST rather than an unconditional arm because a food added without one would otherwise index off the end of the item table
+    // ── ONE ANIMATION FOR EVERY EDIBLE, PRESENT AND FUTURE (user 2026-08-18) ── armed off the FOOD TABLE's own
+    // `strip` flag (sim/vitals.js) rather than off a hand-written list of ids. That list was a second definition
+    // of "what is edible" living a file away from the real one, and the two could disagree: a food added to the
+    // table without being added here would eat silently, with no chew at all. Now the table is the only place a
+    // food is declared and this line cannot fall behind it. The clock, the cadence and the sound are already
+    // shared — this was the last thing that was not.
+    const fd9 = vitFoods()[bit];
+    if (FOOD_EAT_N && fd9 && fd9.strip) eatAnim = { t0: now9, it: bit };   // strip:false foods (the worm) chew on the same EAT_MS clock and make the same sound; they simply have no carved frames to walk, and indexing a FOOD_EAT_N run off a crawl cycle would show the next creature's frames
     if (--sel.n <= 0) { slots[selSlot] = null; slotTidy(); }
     return true;
   };

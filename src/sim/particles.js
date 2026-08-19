@@ -1,5 +1,5 @@
   // @module - splash, spark and debris particle pools and their per-frame step
-  // @exports ARROW_HITS_TO_KILL, CRY_GAP, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, spawnDeathBurst, spawnSplash, spawnTear, startCrying
+  // @exports ARROW_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_SWAY, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying
   // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
   // something breaks the surface — a fish launching, the same fish coming back down, and the player going
   // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is
@@ -75,6 +75,8 @@
   // three deep on open water.
   const SPLASH_LO = 4, SPLASH_HI = 16;                 // 12 slots = three complete bursts in the air at once
   const TEAR_LO = 16, TEAR_HI = 20;                    // 4 slots — three ducklings at CRY_GAP never need more
+  const POL_LO = 20, POL_HI = 24;                      // 4 slots — the BEES' pollen trail (user 2026-08-18). Its OWN band, not a share of the tears': several bees can leave a flower at once and each trails repeatedly, so sharing would have had ducklings and bees cutting each other short — the exact failure the note above records being fixed twice.
+  const PETAL_LO = 24, PETAL_HI = 40;                 // 16 slots — the CHERRY PETALS. The band is the population: a petal is spawned whenever one is free, so this number IS how many are in the air, and it self-limits without a counter.
   // Take the next slot in a band: FREE first, then the oldest one holding DEATH SMOKE, else -1.
   // ── NEVER STEAL A DROPLET (user 2026-08-05: "some are cut off real short and others are fine") ── the
   // first version fell back to the oldest live slot whatever it held, which is exactly a droplet being
@@ -101,6 +103,63 @@
     sparks3d[slot] = { x: wx, y: wy, z: wz,
       vx: Math.cos(a) * 1.6, vy: 1.5 + Math.random() * 2.5, vz: Math.sin(a) * 1.6,   // a gentle well-up, then gravity takes it straight down the cheek
       born: performance.now(), life: TEAR_LIFE, ph: Math.random() * 6.283, smoke: false, foam: true };
+  }
+  // ── POLLEN (user 2026-08-18: "as the bee leaves the flower, have white voxels come out of its tail end
+  // repeatedly ... to represent the bee pollinating the flower") ── the duckling's tear, re-aimed. Same foam
+  // voxel and the same band discipline, three differences that make it read as shed dust rather than crying:
+  //   * it BARELY moves sideways and drifts DOWN slowly (a tear wells up and falls; pollen just sinks),
+  //   * it lives a little longer, so a trail is several grains at once rather than one blinking,
+  //   * and it is emitted from a moving bee, so the grains are strung out along its flight by themselves —
+  //     no spread is needed to make a trail, the motion supplies it.
+  const POL_LIFE = 1.1, POL_MS = 2600, POL_GAP = 190;   // …trailing for 2.6 s after leaving a bloom, a grain every 190 ms. 110 was too fast for a 4-slot band shared by every nearby bee: most grains were refused outright and the survivors popped at random, which is what read as artifacts rather than as a trail
+  function spawnPollen(wx, wy, wz) {
+    const slot = bandSlot(POL_LO, POL_HI); if (slot < 0) return;   // skip rather than cut a live grain short — the splash rule
+    const a = Math.random() * 6.283;
+    sparks3d[slot] = { x: wx, y: wy, z: wz,
+      vx: Math.cos(a) * 0.5, vy: 0.4 + Math.random() * 0.5, vz: Math.sin(a) * 0.5,   // a puff, not a burst: it leaves the abdomen and settles
+      born: performance.now(), life: POL_LIFE, ph: Math.random() * 6.283, smoke: false, foam: true };
+  }
+
+  // ── FALLING PETALS (user 2026-08-18: "can you make single voxels fall from the cherry trees. single pink
+  // voxels falling ... give them a falling leaf animation sway. how a leaf would expect to move when falling
+  // from a tree. a smooth left to right cradle motion. dont make them spin") ──
+  // Hosted in the particle pool rather than the snow lattice, because a petal has to know which TREE it left:
+  // the white variety is a per-tree flag (oakAt's `wht`), and the lattice marches cells, not trees. Spawning off
+  // oakAt gives it the tree for free, and the same call already answers "is this one of the blossom trees".
+  // THE CRADLE IS NOT A SPIN. A real petal rocks side to side along ONE horizontal axis as it sinks — it does not
+  // yaw. So each petal picks a fixed axis (ax, az) at birth and slides along it on a sine; the emit's rotation
+  // is pinned to identity for these, which is the whole of "dont make them spin".
+  const PETAL_GAP = 260;                               // ms between attempts — with 16 slots and a ~10 s fall this keeps the band saturated, so the air stays evenly dressed rather than pulsing
+  const PETAL_FALL = 3.5;                              // vox/s. A leaf does not drop, it descends: 0.35 m/s reads as weightless where the snow's own fall reads as weather
+  const PETAL_SWAY = 1.2;                              // voxels either side of the fall line
+  const PETAL_MAXLIFE = 14;                            // a petal from a giant's crown would otherwise hold a slot for 20 s
+  function spawnPetal(wx, wy, wz, white) {
+    const slot = bandSlot(PETAL_LO, PETAL_HI); if (slot < 0) return;   // band full → skip, never cut a live petal short (the splash's rule)
+    const g = H(Math.round(wx), Math.round(wz));
+    const a = Math.random() * 6.283;
+    sparks3d[slot] = { x: wx, y: wy, z: wz, vx: 0, vy: 0, vz: 0,
+      born: performance.now(), life: Math.max(1, Math.min(PETAL_MAXLIFE, (wy - g) / PETAL_FALL)),   // dies as it reaches the ground rather than at a fixed age, so none of them wink out in mid-air
+      ph: Math.random() * 6.283, smoke: false, foam: false,
+      petal: true, white: !!white, ax: Math.cos(a), az: Math.sin(a),   // the fixed cradle axis
+      rate: 0.8 + Math.random() * 0.6 };               // its own rock rate, so a drift of petals is never in step
+  }
+  let petalNext = 0;
+  function petalTick() {
+    if (!PETAL_IT || !OAKV.length) return;
+    const now = performance.now();
+    if (now < petalNext) return;
+    petalNext = now + PETAL_GAP;
+    const c0x = Math.floor(P.x / OKCELL), c0z = Math.floor(P.z / OKCELL);
+    for (let att = 0; att < 6; att++) {                // a few draws, not a scan: out of the blossom every draw misses and the whole thing costs six oakAt calls every 260 ms
+      const t = oakAt(c0x + ((Math.random() * 5) | 0) - 2, c0z + ((Math.random() * 5) | 0) - 2);
+      if (!t || !t.blos) continue;                     // `blos` is oakAt's own cherry flag — no second biome test to drift out of step with it
+      const m = OAKV[t.k]; if (!m) continue;
+      const r = Math.max(m.sx, m.sy) * 0.5, ang = Math.random() * 6.283;
+      const rr = r * (0.35 + 0.65 * Math.random());    // out of the CROWN, not off the trunk
+      const top = H(t.wx, t.wz) + m.sz - t.sink;
+      spawnPetal(t.wx + Math.cos(ang) * rr, top - Math.random() * m.sz * 0.35, t.wz + Math.sin(ang) * rr, t.wht);
+      return;
+    }
   }
   const CRY_WAIT = 900, CRY_MS = 3000, CRY_GAP = 260;   // …starts after the mother's death poof has cleared, runs 3 s (user), one tear every 260 ms — "one after the other"
   function startCrying(momSlot) {                       // her whole brood, at the moment she is confirmed dead

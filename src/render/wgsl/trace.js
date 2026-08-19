@@ -46,10 +46,16 @@
       return (dHash(ix, iz) * (1.0 - fx) + dHash(ix + 1, iz) * fx) * (1.0 - fz)
            + (dHash(ix, iz + 1) * (1.0 - fx) + dHash(ix + 1, iz + 1) * fx) * fz;
     }
+    // ── THE BIOME CYCLE, ON THE GPU (user 2026-08-18: "make sure the landscapes keep cycling, endlessly") ──
+    // world/window.js pwrap, ported bit for bit. floor(d/BIOP + 0.5) and NOT round(): WGSL's round breaks ties
+    // to even and JS's Math.round breaks them upward, and the two sides of this border must agree — the snow
+    // and rain marches here decide what FALLS while the CPU decides what SETTLES, so a disagreement is visible
+    // as flakes falling on ground that refuses them.
+    fn pwrapG(d : f32) -> f32 { return d - floor(d / f32(${BIOP}) + 0.5) * f32(${BIOP}); }
     fn desertMask(x : f32, z : f32) -> f32 {
-      let b = ${SPWX + DESOFF - desWob(SPWZ)} + (dVnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * ${DESW}.0
+      let c = f32(${SPWX + DESC - desWob(SPWZ)}) + (dVnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * ${DESW}.0
                                  + (dVnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * ${DESW * 0.35};
-      let t = 0.5 + (x - b) / ${DESB}.0;
+      let t = 0.5 + (f32(${DESH}) - abs(pwrapG(x - c))) / ${DESB}.0;   // a BAND on a wrapped distance now, exactly as the JS desertM is
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
       return dSstep(t);
@@ -71,12 +77,39 @@
            + (dVnoise(z * 0.0027 + 143.7, 61.3) - 0.5) * ${OAKW}.0;
     }
     fn oakMask(x : f32, z : f32) -> f32 {              // 1 = deep oak forest (WEST), 0 = pine forest — the mirror of desertMask
-      let b = f32(${SPWX + OAKOFF - oakWob(SPWZ)}) + oakWobG(z);   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
-      let t = 0.5 + (b - x) / ${OAKB}.0;
+      let c = f32(${SPWX + OAKC - oakWob(SPWZ)}) + oakWobG(z);   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
+      let t = 0.5 + (f32(${OAKH}) - abs(pwrapG(x - c))) / ${OAKB}.0;   // a BAND, like the JS oakM: a half-plane has no west edge for the cycle to close against
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
       return dSstep(t);
     }
+    // ── AND THE BLOSSOM BAND IS CUT BACK OUT OF IT, ON THE GPU TOO (user 2026-08-18: "in the cherry biome
+    // make it snow like the pine forest") ── read the oakWeather note in world/window.js first; this is that
+    // scalar ported the same way, and for the same reason oakMask itself is ported: a falling flake is a
+    // traced voxel in a world-space lattice, so the CPU's masks cannot reach it and the JS gate in landSnowAt
+    // decides only what SETTLES. Without this the band keeps oakMask's verdict, every flake over it is culled,
+    // and the blanket the CPU now lays there appears under a clear sky — the two halves of the weather
+    // disagreeing in the one way the desert note above exists to prevent.
+    fn chWobG(z : f32) -> f32 {                        // = the JS chWob(z): 0.6 of the OAK meander (which already carries 0.36 of the desert's) plus one independent octave, so all three borders stay broadly parallel
+      return oakWobG(z) * 0.6 + (dVnoise(z * 0.0019 + 211.3, 97.7) - 0.5) * ${CHW}.0;
+    }
+    fn cherryMask(x : f32, z : f32) -> f32 {           // 1 = inside the blossom band, 0 = the oak forest either side of it. A DISTANCE from the centre line, not a side of it — that is what makes it a band rather than a half-plane
+      let b = f32(${SPWX - CHOFF - chWob(SPWZ)}) + chWobG(z);   // pinned at the spawn's own z exactly as the JS is, or how far spawn sits inside the band is a per-session lottery
+      let t = (${CHHALF + CHB}.0 - abs(pwrapG(x - b))) / ${CHB}.0;   // wrapped, or the blossom exists in the first period only and every later one falls back to plain oak weather
+      if (t >= 1.0) { return 1.0; }
+      if (t <= 0.0) { return 0.0; }
+      return dSstep(t);
+    }
+    // ── THE WEATHER BORDER'S CONTRAST CURVE ── world/window.js wSharp, ported bit for bit. The blanket is
+    // decided on the CPU and the falling flakes here, so if only one side sharpened its border the other would
+    // disagree across the whole ramp — snow settling under a clear sky, or flakes falling on ground that
+    // refuses them. Every weather test on this side goes through it, exactly as every one on that side does.
+    fn wSharpG(m : f32) -> f32 {                       // widened to 0.20..0.80 in step with the JS — see world/window.js. The two MUST match or the flakes and the blanket disagree across the band
+      if (m <= 0.20) { return 0.0; }
+      if (m >= 0.80) { return 1.0; }
+      return dSstep((m - 0.20) / 0.6);
+    }
+    fn oakWeather(x : f32, z : f32) -> f32 { return oakMask(x, z) * (1.0 - cherryMask(x, z)); }   // what every WEATHER site below asks. oakMask itself stays the faithful port of oakM, because the worldgen questions still want that one
     ${FLAKEBLK}
     fn onbT(n : vec3<f32>) -> vec3<f32> {
       return normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
@@ -143,7 +176,19 @@
         // Sampled if EITHER consumer is live - the flake cull (when snow is off in the oak forest) or the
         // rain march (when rain is on). With both off this interpolates to a literal false and the whole
         // oak weather path is dead code the compiler drops.
-        let oakNear = ${(!OAK_SNOW || RAIN_ON) ? 'oakMask(ro.x + winOf.x - RAIN_GATE, ro.z + winOf.z) > 0.0' : 'false'};
+        // ── THIS GATE IS A CONSERVATIVE BOUND AND MUST NOT BE SHARPENED (user 2026-08-18: "you also seem to
+        // make it snow in the oak forest ... the snow still instantly appears when transitioning biomes") ── it
+        // is a CAMERA test that decides whether the per-flake cull below runs AT ALL, so it has to stay true
+        // anywhere a visible flake might need culling. Wrapping it in wSharpG (which I did when the border was
+        // tightened) made it binary and narrow, and broke the snow two ways at once:
+        //   * stand in the blossom band and oakWeather is 0, so the gate went false and NOT ONE flake was
+        //     culled anywhere in view — the whole field switched on the instant you crossed;
+        //   * stand just inside the oak forest where oakWeather is still under 0.2 and the gate went false
+        //     there too, so it snowed in the oak forest.
+        // The RAW mask, with RAIN_GATE's margin, is the right bound: true across the whole blend and false only
+        // well inside the biomes that never cull. The SMOOTH transition belongs on the per-flake test below,
+        // which reads the FLAKE's own position — a gate on the camera can only ever be on or off.
+        let oakNear = ${(!OAK_SNOW || RAIN_ON) ? 'oakWeather(ro.x + winOf.x - RAIN_GATE, ro.z + winOf.z) > 0.0' : 'false'};
         {                                                            // near field: DDA over the 3-voxel flake lattice — a flake stays WHOLE from sky to ground.
           // A tile-binned producer pass was tried here (enumerate+bin flakes once, pixels read their tile): the TRACE
           // side dropped to +0.35 ms, but on this driver ANY producer dispatch with atomics OR workgroup barriers costs
@@ -183,7 +228,7 @@
               // behind the oakNear gate, so in the pine forest and the desert not one instruction of it executes and the
               // snow that ships today is untouched, hash for hash.
               var oakCull = false;
-              if (${!OAK_SNOW ? 'oakNear' : 'false'}) { oakCull = dHash((c.x + offC.x) * 5 + 17, (c.z + offC.z) * 7 + (c.y + offC.y) * 131 + 29) < oakMask(fwp.x, fwp.z); }
+              if (${!OAK_SNOW ? 'oakNear' : 'false'}) { oakCull = dHash((c.x + offC.x) * 5 + 17, (c.z + offC.z) * 7 + (c.y + offC.y) * 131 + 29) < wSharpG(oakWeather(fwp.x, fwp.z)); }
               if (!oakCull) {
               let roL0 = roP - ctr;
               let taC = (vec3<f32>(-0.708, -0.5, -0.708) - roL0) * inv;   // free conservative slab vs the flake's rotation bound (a spinning 1³ voxel about Y stays inside 0.708/0.5/0.708) — no trig yet
@@ -227,7 +272,7 @@
               // Same dHash and the same salt family the ground blanket dithers on (landSnowAt in tick-snow.js); the two
               // are independent draws rather than one shared value, since a flake's lattice cell is not its landing
               // column, and it is the shared dm ramp - not a shared number - that keeps the two boundaries together.
-              if (te > 1.0 && te < tl && te < maxNear && dHash((c.x + offC.x) * 5 + 17, (c.z + offC.z) * 7 + (c.y + offC.y) * 131 + 29) >= desertMask(fwp.x, fwp.z) && !flakeBlocked(ctr - offR)) {   // ── NO SNOW OVER THE DESERT (user) ── ordered deliberately: after the cheap slab/rotation rejects, before flakeBlocked's scattered loads, so it only costs anything on a ray that already struck a flake   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike. ctr is window-local now — minus the small remainder = the window position (exact at any world coordinate)
+              if (te > 1.0 && te < tl && te < maxNear && dHash((c.x + offC.x) * 5 + 17, (c.z + offC.z) * 7 + (c.y + offC.y) * 131 + 29) >= wSharpG(desertMask(fwp.x, fwp.z)) && !flakeBlocked(ctr - offR)) {   // ── NO SNOW OVER THE DESERT (user) ── ordered deliberately: after the cheap slab/rotation rejects, before flakeBlocked's scattered loads, so it only costs anything on a ray that already struck a flake   // te > 1: a flake that reaches the eye "hits your face" is culled; the open-air test runs LAST, only on a real strike. ctr is window-local now — minus the small remainder = the window position (exact at any world coordinate)
                 fte = te; fkAw = fkA; fkUw = fkUnder;
                 var nl = vec3<f32>(0.0);
                 if (tn.x >= tn.y && tn.x >= tn.z) { nl.x = -sign(rdL.x); }
@@ -308,7 +353,7 @@
                 // the desert test above, it is the same trap). Its own salt, so the rain dither and the snow dither
                 // are independent draws over the same ramp: across the band each cell rolls once for its whole
                 // life, so a column fades from one weather to the other instead of flickering between them.
-                if (dHash((c.x + offC.x) * 11 + 5, (c.z + offC.z) * 13 + (c.y + offC.y) * 197 + 41) < oakMask(fwp.x, fwp.z) && !flakeBlocked(ctr - offR)) {   // flakeBlocked LAST — ~38 scattered loads, and only a ray that genuinely struck a drop ever pays for them
+                if (dHash((c.x + offC.x) * 11 + 5, (c.z + offC.z) * 13 + (c.y + offC.y) * 197 + 41) < wSharpG(oakWeather(fwp.x, fwp.z)) && !flakeBlocked(ctr - offR)) {   // flakeBlocked LAST — ~38 scattered loads, and only a ray that genuinely struck a drop ever pays for them
                   // The drop DISSOLVES into what it is about to land on rather than blinking out of the depth test —
                   // the flakes' own fix, and it is what stands in for a splash: nothing lands, so the fade IS the
                   // landing. It runs over TWO voxels rather than the flakes' one because a drop is RAIN_HH tall

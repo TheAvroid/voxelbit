@@ -15,9 +15,60 @@ src/<area>/<name>.js    a fragment
 tools/bundle.py         src/ -> game/index.html
 tools/lint-vb.py        the 11 checks that catch a black screen before the browser does
 tools/vbtest.py         boots the real game and diffs it against a baseline
+tools/vbharness.py      keeps ONE booted game alive; queries it in ~0.2s instead of ~10s
 tools/where.py          an index.html line -> the fragment that wrote it, and back
 docs/architecture.md    what lives in which fragment
 ```
+
+## Asking the running game a question
+
+`tools/vbharness.py` keeps one booted game alive and answers queries against it. Use it
+whenever you need more than one look at the game — which is nearly always. Booting a
+browser per question costs ~10 s each and, in practice, far more in scaffolding; a query
+against a live instance costs ~0.2 s.
+
+```
+python tools/vbharness.py start --win 1792x865     # ~10 s, once
+python tools/vbharness.py eval "__vb.badgeDbg()"   # ~0.2 s, as often as you like
+python tools/vbharness.py eval --file probe.js     # multi-line / async probes
+python tools/vbharness.py shot out.png
+python tools/vbharness.py reset                    # undo the last test's leftovers
+python tools/vbharness.py reset --at 4096 4096     # …and wipe the WORLD (full regen, ~7 s)
+python tools/vbharness.py reload                   # re-read src/, fresh page (no bundle.py)
+python tools/vbharness.py errors                   # non-404 errors on this page
+python tools/vbharness.py slots                    # live harnesses — check before dispatching an agent
+python tools/vbharness.py stop
+```
+
+Four things about it that are not guessable:
+
+- **`reload` re-bundles from `src/` in memory** (it serves through `serve-nocache.py`), so
+  the edit → look → edit loop never runs `tools/bundle.py`. Run that before committing, not
+  before looking. Note a reload re-randomises the spawn, so probe absolute coordinates.
+- **Read a uniform only after a frame has ticked.** `__vb.badgeDbg()` and friends report
+  what the render loop last wrote, so a probe that sets a value and reads it back in the
+  same synchronous block gets the stale number and looks like a broken feature. `await` a
+  couple of `requestAnimationFrame`s between the write and the read, and settle ~120 frames
+  after a `giveIt`/teleport before trusting anything — the swap animation moves the model
+  for about a second, and it will swamp a small effect.
+- **Storms are held off by default.** `__vb.snow(0)` — which every older script in `tools/`
+  calls — only cancels the storm in progress; the next one still arrives 120 s after load
+  and every 5 minutes after that, and snow writes into the world. The harness calls
+  `__vb.snowHold(false)` at boot and after every reload. Pass `start --snow` if you are
+  actually testing snow.
+- **One world answers every query.** `eval` is free for read-only probes; anything that
+  chops, fells, stamps, teleports or drops leaves the world changed for the next test.
+  `reset` clears what a teleport does not (felled bodies, editor, camera, counters);
+  `reset --at X Z` additionally zeroes the world, because a teleport further than 200
+  voxels triggers a full regen and worldgen is a pure function of world coordinates.
+
+`--slot NAME` (or `VB_SLOT`) gives each agent its own instance, so concurrent agents never
+collide — but the machine still only takes 2–3 booted games, so treat a slot as a resource
+you claim, not one you spawn per task. An idle instance reaps itself after 30 minutes, and
+killing the daemon by any means takes its Chrome with it.
+
+`tools/vbharness.py reap` deletes Chrome profiles from finished runs (never one in use).
+`tools/cdp.py` has never removed them, and they reach tens of GB.
 
 ## The loop
 
@@ -106,6 +157,45 @@ none of them use `import`/`export`. Three consequences that matter every time yo
   `function tickBody(now) {`; the next six fragments are its body; `main/tick-passes.js`
   closes it. They are cut at statement boundaries, so ordinary editing inside one is
   safe, but do not touch a fragment's first or last line without checking its neighbour.
+
+## Dispatching agents: six rules, each of them paid for
+
+These are not style preferences. Each one was measured on 2026-08-18, on a session where agents did
+~40 minutes of wall-clock work and roughly 40% of it was wasted.
+
+**1. Give the agent the harness. Never let it boot its own Chrome.** Two verification agents cost
+12.5 and 5.9 minutes, and almost all of it was scaffolding — each launched a browser, generated a
+world, and wrote its own probe rig. `tools/vbharness.py` reduces that to `eval` at ~0.2 s. Put the
+slot in the prompt: *"use `python tools/vbharness.py --slot <name> eval`, do NOT launch Chrome"*, and
+name a slot nobody else is on (`vbharness slots` lists the live ones). Tell it the three traps too —
+await a frame before reading a uniform, settle ~120 frames after a teleport, and re-click the canvas
+if `__vb.ft()` returns null — or it will rediscover them at your expense.
+
+**2. Scope to a DECISION, not a topic.** The prompts that paid off asked numbered questions and
+demanded `file:line`. The one that asked for "a survey of X" returned 200k tokens of which maybe a
+tenth was used. Ask what you need to decide, and say what you will do with the answer.
+
+**3. Cap the output in the prompt.** "Ranked list, ≤1500 words, file:line, no quote longer than 10
+lines." Without it you get correct, exhaustive, unreadable reports and pay for all of it.
+
+**4. Split by HYPOTHESIS, never by file.** The slider bug was solved by one agent asking "is it the
+maths?" and another "is it the DOM?" — they could not overlap, and the second found four defects
+nobody would have gone looking for. Split by file and both read the same code and report it twice.
+
+**5. Cheap review BEFORE expensive verification, never concurrently.** Running a static review and a
+CDP verification in parallel looks efficient and is not: the review found two real defects, which
+invalidated the finished 12-minute verification, and it had to be run again. Static review is
+minutes; in-game verification is expensive. Serialise them in that order, then verify ONCE against a
+final build.
+
+**6. Never block on an agent that can only confirm.** If you already found the cause by reading the
+code, the agent's job is to BROADEN — "what else is wrong in here" — not to agree with you. Start
+fixing immediately either way. 3.4 minutes were spent waiting to be told something already known.
+
+Two more things worth planning around. Agents parallelise BREADTH, not DEPTH: once work becomes
+fix → verify → next-fix-depends-on-result, they stop helping, and the answer is to shorten the chain
+rather than add agents to it. And they die — two hit API 529s mid-session — so prefer several small
+agents over one long one, because a death at minute eleven costs everything it had not reported.
 
 ## Several agents at once
 

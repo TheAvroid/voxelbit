@@ -73,14 +73,25 @@
   // meat first resolved — which, for the fruit, is 0.
   const VIT_FOODS = {};
   let vitFoodKey = '';
+  // ── ONE TABLE, AND `strip` IS PART OF IT (user 2026-08-18: "make worms edible ... have all edible things share
+  // the same eating animation") ── the animation used to be armed by a hand-written id test in ui/audio.js
+  // (`bit === APPLE_IT || bit === ORANGE_IT || bit === MEAT_IT`), which is a second list of what is edible sitting
+  // a file away from this one. Two lists is how the worm would have become edible WITHOUT an animation, and how
+  // the next food after it would too. So the strip is declared HERE, beside the hp, and audio.js arms the chew
+  // from the food's own entry. Adding a food is now one line in one place, and it cannot be half-added.
+  //   strip: true  — carries a FOOD_EAT_N run of carved frames and is eaten down to a remnant
+  //   strip: false — a single-model food; it still chews on the same clock, it just has no carved frames to show
+  // The WORM is strip:false because assets/life/worm is a crawl cycle, not a bite-down strip: indexing a
+  // FOOD_EAT_N run off WORM_ITEM0 would walk straight into the next creature's frames.
   function vitFoods() {
-    const k9 = MEAT_IT + '/' + APPLE_IT + '/' + ORANGE_IT;
+    const k9 = MEAT_IT + '/' + APPLE_IT + '/' + ORANGE_IT + '/' + WORM_ITEM0;
     if (vitFoodKey !== k9) {
       vitFoodKey = k9;
       for (const k in VIT_FOODS) delete VIT_FOODS[k];
-      if (MEAT_IT) VIT_FOODS[MEAT_IT] = { hp: 1 };
-      if (APPLE_IT) VIT_FOODS[APPLE_IT] = { hp: 1 };
-      if (ORANGE_IT) VIT_FOODS[ORANGE_IT] = { hp: 1 };
+      if (MEAT_IT) VIT_FOODS[MEAT_IT] = { hp: 1, strip: true };
+      if (APPLE_IT) VIT_FOODS[APPLE_IT] = { hp: 1, strip: true };
+      if (ORANGE_IT) VIT_FOODS[ORANGE_IT] = { hp: 1, strip: true };
+      if (WORM_ITEM0) VIT_FOODS[WORM_ITEM0] = { hp: 1, strip: false };   // ── THE WORM (user 2026-08-18) ── one health point, the same as everything else on this table
     }
     return VIT_FOODS;
   }

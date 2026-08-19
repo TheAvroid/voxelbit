@@ -13,13 +13,13 @@
   //
   // FORMAT: one entry per FOLDER, "<dir>:<name>,<name>,..." joined with ';'. Names keep their real case
   // (the fetch URL is case-sensitive) and drop the .vox; the empty dir is game/assets itself. Grouping by
-  // folder is what makes this 6214 characters instead of the 25902 the flat paths cost. Folders are emitted
+  // folder is what makes this 6453 characters instead of the 26803 the flat paths cost. Folders are emitted
   // parent-first, siblings in order, so every subtree is a CONTIGUOUS run - ui/console.js relies on that to
   // answer "how many files are under life/tropical_life/pelican" without a second table. It is unpacked
   // lazily, on the first command that needs it, so the boot pays nothing for it.
-  const VOXDEX = [                                     // 918 files in 116 folders
-    ':single',
-    'decoration:beehive,lillypad_large,lillypad_medium,lillypad_small,log,lotus,mushroom,pine_puffy,pine_skinny,pinecone,rock,shell,stick_1,stick_2',
+  const VOXDEX = [                                     // 962 files in 120 folders
+    ':palette',
+    'decoration:beehive,birch,flowers,lillypad_large,lillypad_medium,lillypad_small,log,lotus,mushroom,pine_puffy,pine_skinny,pinecone,pink_stick_1,pink_stick_2,rock,shell,stick_1,stick_2',
     'decoration/rocks:BIG_1_BiG_0,Big_2_BiG_0,Big_3_BiG_0,Big_4_BiG_0,Big_5_BiG_0,Mid_1_MID_0,Mid_2_MID_0,Mid_3_MID_0,Mid_4_MID_0,Mid_4_MID_0_001,Mid_5_MID_0,Runic_1_Runic_0,Runic_2_Runic_0,Runic_3_Runic_0,Runic_4_Runic_0,Runic_5_Runic_0,Runic_6_Runic_0,Runic_7_Runic_0,Small_1_SMall_0,Small_2_SMall_0,Small_3_SMall_0,Small_4_SMall_0,Small_5_SMall_0,Small_6_SMall_0,Small_7_SMall_0,Small_8_SMall_0',
     'foilage:palm_tree,pine4,pine5',
     'foilage/cactus:cactus_1,cactus_2,cactus_3,cactus_4,cactus_5,cactus_6,cactus_7,cactus_8,cactus_9',
@@ -40,13 +40,14 @@
     'guns/pistol/shoot:00,01,02,03,04,05,06,07,08,09',
     'guns/shotgun/fire:00,01,02,03,04,05,06,07,08,09,10,11,12,13',
     'guns/shotgun/reload:30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49',
-    'life:ant,bee,cobra,desert_mouse,fly,gecko,grass_snake,scorpion,spider',
+    'life:ant,bee,betta,cobra,desert_mouse,fly,gecko,grass_snake,scorpion,spider',
     'life/ant:00',
     'life/armadillo:base',
     'life/armadillo/ball:base',
     'life/armadillo/walk:00,01,02,03,04,05,06,07,base',
     'life/bass:00,01,02,03,04,05,06,07,08,09,10,11,base',
     'life/bee:00,01,02,03',
+    'life/betta:00,01,02,03,04,05,06,07',
     'life/blue_bird:old',
     'life/blue_bird/flight:00,01,02,03,04,05,06,base',
     'life/blue_bird/rotate:00,01,02,03,04,05,06,07,08,09,10,base',
@@ -85,11 +86,14 @@
     'life/dragonfly:00,01,02,03,04,05,base',
     'life/duck:baby,base',
     'life/firefly:00,01,02,03',
+    'life/flamingo:00,01,02,03,04,05,06,07,08,09,base',
     'life/fly:00,01,02,03',
     'life/frog/ribbet:00,01,02,03,04,05,06,07,08',
     'life/gecko:00,01,02,03,04,05,06',
     'life/grass_snake:00,01,02,03,04,05,06,07,08,09,10,11',
     'life/minnow:00,01,02,03,04,05,06,07,08,09,10,11,base',
+    'life/pink_bird/flight:00,01,02,03,04,05,06,base',
+    'life/pink_bird/rotate:00,01,02,03,04,05,06,07,08,09,10,base',
     'life/porcupine:00,01,02,03,04,05,base',
     'life/robin:base',
     'life/robin/flight:00,01,02,03,04,05,06,base',

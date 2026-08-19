@@ -98,7 +98,7 @@
   let SNOW_ROLL_MAX = 1;                               // how far the settle-roll may DROP a flake (0 = unlimited). At a crown's edge the lowest neighbour is the forest floor, so an unlimited roll tips canopy snow off the tree — measured 18% canopy coverage against 44% ground
   let SNOW_SHELF = 0;                                  // how many of a crown voxel's 4 sides must also carry crown before snow may settle. DEFAULT 0 = the v0.9 gate. A/B measured 2026-08-07: shelf 2 halved canopy coverage (38.7%% -> 17.0%%) and cut snow-with-nothing-under-it only from 2 to 1 in a 61x61 sample, i.e. it costs most of the crown snow and buys nothing. Kept as a knob, off.
   let SNOW_ON_CROWN = 1;                               // runtime A/B switch for canopy snow — the only honest way to price it is in ONE session
-  const SNOW_PASS = new Set([...GRASS, BLOOM[0], BLOOM[1], BLOOM[2], BLOOM[3], BLOOM[4], BLOOM[5]]);   // landings fall THROUGH grass/blooms and bury them — ferns are OUT: snow settles ON their fronds
+  const SNOW_PASS = new Set([...GRASS, ...FLOWERIDS]);   // the WHOLE flower, stem included — a flake should fall through the plant, not perch on its stalk (was BLOOM's six heads; user 2026-08-18)   // landings fall THROUGH grass/blooms and bury them — ferns are OUT: snow settles ON their fronds
   const SNOW_FERN = new Set(FERNIDS);                  // fern-topped columns skip the settle-roll (fronds sit above the ground beside them, so rolling would always shed the flake)
   const SNOW_SKIP = new Set([WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y]);                                    // …but never land on lava; surface water is FROZEN while it snows, so flakes settle on the ice
   let showCoords = false;   // COORDS HUD (user): the x/y/z lines start HIDDEN on EVERY refresh — the player re-enables them in settings each session (NOT restored from vb_coords, like the volume-resets-to-100 rule)
@@ -374,7 +374,12 @@
   kbPanel.addEventListener('click', (e) => { e.stopPropagation();   // stopPropagation so a click in here never reaches the document handler that enters the game
     if (!e.target.closest('#kbCard2, #kbCard3, #kbCard4')) { kbPanel.classList.add('hidden'); listenAction = null; } });   // ONE selector list, not a chain of closest() calls: a card added to the panel and forgotten here would close the whole thing the moment you touched it. Clicked ANYWHERE outside the boxes — the backdrop OR the kbWrap gap/under a shorter box — closes settings and falls back to the esc menu (user)
   document.addEventListener('keydown', (e) => {                      // capture phase — rebinding swallows the key
-    if (!listenAction) { if (e.code === 'Escape') { kbPanel.classList.add('hidden'); const pk = $('pkPanel'); if (pk) pk.classList.add('hidden'); } return; }
+    // Escape closes the tuning panel through its own DONE BUTTON rather than hiding the element (user 2026-08-18).
+    // Hiding it raw skipped pkShow → setLightMode(false), so `lightMode` stayed true after the panel was gone: the
+    // pointer stayed unlocked, and the esc-menu suppression that reads lightMode (ui/input.js) kept the pause menu
+    // from opening. Only a canvas click recovered. The button is wired to pkShow, so the click is the whole fix.
+    if (!listenAction) { if (e.code === 'Escape') { kbPanel.classList.add('hidden');
+      const pk = $('pkPanel'), pc = $('pkClose'); if (pk && !pk.classList.contains('hidden')) { if (pc) pc.click(); else pk.classList.add('hidden'); } } return; }
     e.preventDefault(); e.stopPropagation();
     if (e.code !== 'Escape') { binds[listenAction] = e.code; try { localStorage.setItem('vb_binds', JSON.stringify(binds)); } catch (err) {} }
     listenAction = null; kbRefresh();

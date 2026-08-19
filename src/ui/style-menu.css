@@ -1,5 +1,7 @@
-  /* ══ HIDDEN ESC BUTTONS (user 2026-07-22): the ASSET-EDITOR (#edBtn) + ITEM-POSITION (#pkBtn) buttons are disabled from the esc menu. All their HTML + JS is left intact — this ONE rule just hides them. TO BRING THEM BACK: delete (or comment out) this single rule. ══ */
-  #edBtn { display: none !important; }   /* the ASSET-EDITOR button stays hidden; the ITEM-POSITION one (#pkBtn) is back in the esc menu (user) — it is how a held pose gets tuned */
+  /* ══ ESC BUTTONS ══ the ASSET-EDITOR (#edBtn) and ITEM-POSITION (#pkBtn) buttons were both hidden here on
+     2026-07-22 with their HTML and JS left intact. #pkBtn came back first (it is how a held pose gets tuned),
+     and #edBtn is back now too (user 2026-08-18: "bring back the asset editor"). Nothing was restored to do
+     it — the rule that hid it is simply gone, exactly as its own note said it would be. ══ */
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
   #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn, #edCopy { position: relative; top: 0; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, top 0.15s ease-out, box-shadow 0.15s; will-change: transform; }   /* subtle resting drop shadow (user) — deepens on hover below. Explicit top:0 so the hover-lift TRANSITIONS (top:auto→-4px can't interpolate → would jump). */
   #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg, #edCopy svg { width: 22px; height: 22px; }

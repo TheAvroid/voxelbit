@@ -700,6 +700,13 @@
                     let sDir = sunTintR() * max(dot(nw, u.sunDir), 0.0) * 0.55;
                     let sSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale() * 0.85;
                     col = mix(col, FOAM_C * (sDir + sSky + vec3<f32>(0.02, 0.022, 0.025)), 0.35 + 0.65 * dYv.w);
+                  } else if (dit == ${PETAL_IT || 9994} || dit == ${PETALW_IT || 9993}) {   // ── FALLING PETAL ── a petal is not a spark: it does not glow, it is a scrap of the
+                    // canopy catching the light. So it is lit as a DIFFUSE surface off its own item colour,
+                    // the way the splash droplet is lit off the foam's, and it does NOT fade with dYv.w —
+                    // it lands and is gone at full colour rather than dissolving in the air.
+                    let ptDir = sunTintR() * max(dot(nw, u.sunDir), 0.0) * 0.75;
+                    let ptSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale() * 0.9;
+                    col = cell.rgb * (ptDir + ptSky + vec3<f32>(0.02, 0.02, 0.024));
                   } else {                                           // SPARK — emissive 10 cm ember
                     col = cell.rgb * (0.8 + 2.6 * dYv.w);
                   }

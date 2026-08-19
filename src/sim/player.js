@@ -1,5 +1,11 @@
   // ── asset editor state ── declared HERE (before solid/stepShifts, which gate on it); the editor itself lives lower down
-  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 121, pd: 121, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0, bunny: false, rgiz: false, dragRing: -1, dragRAcc: 0, rgizBoxes: [],
+  // pw/pd are the STAGE footprint, doubled from 121 to 242 (user 2026-08-18) so a grove fits on it. The note is
+  // HERE and not on the line itself: that line is one dense object literal, and a `//` part-way into it ate
+  // fcells/ring/paused and left the editor throwing "ED.fcells is not iterable" the moment it opened.
+  // Doubling it has a cost worth knowing: edEnter picks the stage height by clearing the tallest terrain on the
+  // footprint, so four times the area finds taller terrain and the stage sits HIGHER, leaving less headroom for
+  // whatever is staged. Measured after the change: 46 voxels, which is why the birch grove is sized to fit that.
+  const ED = { on: false, ret: null, prev: new Map(), frames: [], sel: 0, x0: 0, z0: 0, y: 0, pw: 242, pd: 242, fcells: [], ring: [], paused: false, animT: 0, giz: false, dragAxis: -1, dragAcc: 0, gizBoxes: [], blink: false, spin: 0, bunny: false, rgiz: false, dragRing: -1, dragRAcc: 0, rgizBoxes: [],
     frames2: [], fcells2: [], box2: null, off2: '', name1: '', name2: '', hopX: 0, hopY: 0, hopZ: 0, hop2X: 0, hop2Y: 0, hop2Z: 0 };   // TWO bunnies on the stage (user): frames = LEFT/editable lane, frames2 = RIGHT/preview lane; fcells2/box2 = the preview's stamped cells + hitbox; off2 = the preview's offset namespace; name1/name2 = which variant is in each lane (for the combined export); hop*/hop2* = per-lane forward-march accumulation
 
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
@@ -200,6 +206,13 @@
         && px + HW > B2.cx - B2.hx && px - HW < B2.cx + B2.hx
         && pz + HW > B2.cz - B2.hz && pz - HW < B2.cz + B2.hz
         && py + hh > B2.cy - B2.hy && py       < B2.cy + B2.hy) { boxBodyHit = true; return false; }
+    }
+    for (let bb = 0; !noBody && bb < flamBoxes.length; bb++) {             // SOLID FLAMINGOS: same test, same reason — it was the one land-band creature with no box at all
+      const B3 = flamBoxes[bb];
+      if (B3.active
+        && px + HW > B3.cx - B3.hx && px - HW < B3.cx + B3.hx
+        && pz + HW > B3.cz - B3.hz && pz - HW < B3.cz + B3.hz
+        && py + hh > B3.cy - B3.hy && py       < B3.cy + B3.hy) { boxBodyHit = true; return false; }
     }
     for (let bb = 0; !noBody && bb < porcBoxes.length; bb++) {             // SOLID PORCUPINES: the player can't run through a nearby world porcupine
       const B2 = porcBoxes[bb];

@@ -66,7 +66,7 @@
         // blanket settles in the oak forest again.
         // The oak term is in whenever snow is not wanted there, whether that is because it is raining
         // instead or because the biome simply has no weather.
-        const dmS = (RAIN_ON || !OAK_SNOW) ? Math.max(desertM(wx0, wz0), oakM(wx0, wz0)) : desertM(wx0, wz0);
+        const dmS = wSharp((RAIN_ON || !OAK_SNOW) ? Math.max(desertM(wx0, wz0), oakWeather(wx0, wz0)) : desertM(wx0, wz0));   // wSharp: the blanket stops nearer the border than the terrain blend does (world/window.js)   // oakWeather cuts the blossom band back out of the oak term, so the blanket SETTLES there (user 2026-08-18)
         if (dmS > 0 && ihash(wx0 * 5 + 17, wz0 * 7 + 29) < dmS) return;
         if ((snowQN - snowHead) + (snowWN - snowWHead) >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
         // ORDER (user): the FLAKES arrive first, the blanket second. The leading edge sweeps down from the sky, so

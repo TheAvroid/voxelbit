@@ -198,9 +198,20 @@
       for (let i = 1; i < palette.length && cid === undefined; i++) { const q = palette[i];
         if (q[0] === r && q[1] === g && q[2] === b) cid = i; }
       if (cid !== undefined) { /* found one already in the table */ }
-      else if (PAL_TOL > 0 && (cid = palNearShare(r, g, b)) !== undefined) { /* ── TOLERANCE REUSE ── the same lever palShare got, on the path that actually fills the table. edCol mints creature colours LAZILY, the first time a species is stamped or ragdolled, and it had exact-match-or-mint only: a shade one unit off an existing one cost a whole id, and the ids ran out mid-session. Floored at DECOR_MIN and skipping palOwn for the reasons palNearShare documents. */ }
+      else if (PAL_TOL > 0 && (cid = edNearShareOK(r, g, b)) !== undefined) { /* ── TOLERANCE REUSE ── the same lever palShare got, on the path that actually fills the table. edCol mints creature colours LAZILY, the first time a species is stamped or ragdolled, and it had exact-match-or-mint only: a shade one unit off an existing one cost a whole id, and the ids ran out mid-session. Floored at DECOR_MIN and skipping palOwn for the reasons palNearShare documents. */ }
       else if (palette.length < 256) cid = addCol(r, g, b);
-      else { cid = palNearest(r, g, b); edSnaps++;
+      // ── A SUBSTITUTE MUST NOT CARRY BEHAVIOUR (user 2026-08-18: "I got killed by a cactus in the cherry boime")
+      // ── and that is exactly what this line used to do. A palette id is not a colour, it is a MATERIAL: cactusTab,
+      // solidTab, foliaTab, the pickup sets and the support classes are all keyed by it. So when the table is full
+      // and a creature colour is snapped to its nearest neighbour, the creature inherits whatever that neighbour
+      // MEANS. Measured: the pink bird's plumage snapped onto the cactus FLOWER's pinks — ids 108/109/112, which
+      // carry cactusTab — and every grid-stamped pink bird became a cactus. Walking into one in the cherry forest
+      // reported "the cactus spines got you". Nothing about the colour was visibly wrong; the damage was.
+      // edSubstOK is the same nearest-colour walk with the harmful materials removed from the candidate set, so a
+      // substitution can still be the wrong SHADE — that is the documented price of a full table — but it can no
+      // longer be the wrong THING. Preferred over freeing ids because it fixes the class rather than this instance:
+      // the next creature added to a full palette would have hit it too.
+      else { cid = edSubstOK(r, g, b); edSnaps++;
         const q = palette[cid]; edSnapErr.push(Math.max(Math.abs(q[0] - r), Math.abs(q[1] - g), Math.abs(q[2] - b))); }   // HOW WRONG the substitute is. This is the number the tolerance share is measured against: a reuse is bounded by PAL_TOL, a substitution is bounded by nothing   // ── COUNTED (2026-08-15) ── this path is where the palette ACTUALLY runs out: creature colours arrive lazily, the first time a species is stamped or ragdolled, so the table fills during PLAY and every colour past 256 is silently substituted. It reported nothing at all before, which is why the ceiling read as "exactly full, nothing turned away". __vb.palAudit().edSnaps                  // was a THIRD copy of the nearest-colour walk, and the only one that did not skip RESERVED ids — so a full palette could snap imported art onto a pinecone id and every stamp of it would right-click up as a pinecone. palNearest (assets/palette.js) is the one addCol and palShare use.
       edColCache.set(key, cid);
     }
@@ -292,6 +303,18 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = gsurf + 1 - ARMADILLO_FOOTZ;
     stampApply(B, ARMADILLO_POSES[afi][h], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + afi + ',' + h);
   };
+  // ── FLAMINGO alignment is BAKED INTO THE ART, not held here (user 2026-08-18: "make sure the flamingo in
+  // the cherry forest matches the one in the asset editor ... when I update the flamingo in the asset editor,
+  // do the same for the real world") ── the exported offsets were applied to the .vox frames themselves with
+  // tools/bake_offsets.py, so there is nothing left for this table to add.
+  // WHY THE ART AND NOT A TABLE, WHEN EVERY OTHER CREATURE HERE USES A TABLE. The others are GRID-STAMPED, so
+  // buildArmPoses reads their bake and the world stamps from the result. The flamingo is TRACE-INJECTED: its
+  // world frames come from parseBunny reading the raw .vox straight into the item table, which never sees a
+  // bake. A table could therefore only ever move the EDITOR's bird, which is exactly the mismatch being fixed.
+  // Baked into the art, both paths read the same file and cannot disagree.
+  // AN EMPTY OBJECT, NOT A DELETED LINE: the offsets are in the frames now, so re-adding them here would apply
+  // them a second time and slide the bird back off centre by the amount that was just corrected.
+  const FLAMINGO_BAKE = {};
   const PORCUPINE_BAKES = [{ '01.vox': [1, 0, 0], '02.vox': [1, 0, 0], '03.vox': [1, 1, 0] }, {}, {}, {}];   // PORCUPINE alignment (user editor re-export 2026-07-22, SOUTH only, now a 6-frame model 00-05): frames 01/02 +1x, frame 03 +1x +1y. E/N/W auto-derive via armOffset's parity correction.
   const buildPorcPoses = () => {                          // PORCUPINE grid-stamp poses [frame][heading] — IDENTICAL machinery to buildArmPoses (edParseVox, no blink), but from PORCUPINE_WALK + its own PORCUPINE_BAKES (user's 4th land mammal)
     if (PORCUPINE_POSES || !PORCUPINE_WALK.length) return;
@@ -417,8 +440,38 @@
     if (ED.on) return;
     ED.on = true; ED.ret = { x: P.x, y: P.y, z: P.z, yaw: P.yaw, pitch: P.pitch, fly: P.fly };   // fly saved too — the editor turns it ON for the framing below, exit restores what the player had
     cmpVis();                                          // hide the top-centre compass while in the editor (user)
-    ED.x0 = Math.max(rect.xlo + 4, Math.min(rect.xhi - 4 - ED.pw, Math.round(P.x / 10) * 10 - (ED.pw >> 1)));
-    ED.z0 = Math.max(rect.zlo + 4, Math.min(rect.zhi - 4 - ED.pd, Math.round(P.z / 10) * 10 - (ED.pd >> 1)));
+    // ── THE STAGE LOOKS FOR LOW GROUND (user 2026-08-18: the grove needs headroom) ── it used to plant itself
+    // exactly at the player, and then had to sit above the tallest thing on its own footprint for brick purity.
+    // Land next to a giant oak and the stage rides up with it, and since a model is stamped UPWARD from the
+    // stage the room left under the world ceiling is whatever the terrain happened to leave: measured 46 voxels
+    // against a grove 101 tall, i.e. the top two thirds simply clipped away.
+    // So try a ring of candidate origins and take the one whose terrain is LOWEST. A coarse stride is enough to
+    // choose between them — the fine scan below still decides the actual height — and a meadow twenty metres
+    // away routinely sits 40+ voxels under a crown, which is the difference between a grove fitting and not.
+    const stageTop = (sx0, sz0, step) => {
+      let t = WL;
+      for (let z = sz0; z < sz0 + ED.pd; z += step) for (let x = sx0; x < sx0 + ED.pw; x += step) {
+        const gx = gwrap(x, WX), gz = gwrap(z, WZ), b2 = gx + gz * WX * WY;
+        let y = Math.min(WY - 2, hmap[gx + gz * WX] + 118);
+        while (y > WL && !W[b2 + y * WX]) y--;
+        if (y > t) t = y;
+      }
+      return t;
+    };
+    const clampX = (v) => Math.max(rect.xlo + 4, Math.min(rect.xhi - 4 - ED.pw, v));
+    const clampZ = (v) => Math.max(rect.zlo + 4, Math.min(rect.zhi - 4 - ED.pd, v));
+    const px0 = Math.round(P.x / 10) * 10 - (ED.pw >> 1), pz0 = Math.round(P.z / 10) * 10 - (ED.pd >> 1);
+    let bestX = clampX(px0), bestZ = clampZ(pz0), bestT = stageTop(bestX, bestZ, 8);
+    // Three rings, not one. A single step lands in the same stand of trees you were standing in; the low ground
+    // that actually buys headroom — a meadow, a shore, a river flat — is usually a few hundred voxels out. The
+    // player is teleported onto the stage regardless, so distance costs nothing, and a coarse stride keeps all
+    // 24 probes cheap enough to run on the button press.
+    for (let ring = 1; ring <= 3; ring++) for (const [ox, oz] of [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const cx = clampX(px0 + ox * ring * (ED.pw + 24)), cz = clampZ(pz0 + oz * ring * (ED.pd + 24));
+      const t = stageTop(cx, cz, 8);
+      if (t < bestT) { bestT = t; bestX = cx; bestZ = cz; }
+    }
+    ED.x0 = bestX; ED.z0 = bestZ;
     let topMax = WL;                                   // stage must sit above all content on its footprint (its bricks stay PURE — no terrain sharing an 8³ brick with the plane)
     for (let z = ED.z0; z < ED.z0 + ED.pd; z += 2) for (let x = ED.x0; x < ED.x0 + ED.pw; x += 2) {
       const gx = gwrap(x, WX), gz = gwrap(z, WZ), b2 = gx + gz * WX * WY;
@@ -426,7 +479,17 @@
       while (y > WL && !W[b2 + y * WX]) y--;
       if (y > topMax) topMax = y;
     }
-    ED.y = Math.min(WY - 24, Math.max((topMax + 15) & ~7, WY - 80));   // 8-aligned with ≥8 clearance, high in the sky
+    // ── HEADROOM FOR WHAT IS ON THE STAGE (user 2026-08-18: the four birches were not showing) ── the stage
+    // has to clear the tallest terrain on its own footprint (brick purity: an 8³ brick shared with terrain
+    // would draw that terrain), but it was ALSO pinned within 80 of the ceiling, and a model is stamped upward
+    // from it. Measured: WY 384, stage 336, so 46 voxels of room — and the birch grove is 81 tall, so both big
+    // trees were cut off at the waist and it did not read as four trees at all.
+    // Doubling the stage footprint made it worse rather than better: topMax now scans four times the area, so
+    // it is far more likely to find a tall tree to clear.
+    // WY - 160 as the floor buys up to ~158 on flat ground while the topMax term still lifts it clear of
+    // anything underneath. It cannot promise a fixed amount — the terrain decides — which is why the grove is
+    // also sized to fit the worst case rather than the best.
+    ED.y = Math.min(WY - 24, Math.max((topMax + 15) & ~7, WY - 160));   // 8-aligned, clear of the ground below, as low as the ceiling allows
     unstampAllWorms();                                 // clear live worms out of W before the editor freezes the world (else edExit's rebuildBricks would resurrect them)
     bricks.fill(0); bricks2.fill(0); wbricks.fill(0);  // SEPARATE LEVEL: empty occupancy = the whole world vanishes from the tracer (W is untouched — exit rebuilds)
     const cells = [];
@@ -434,7 +497,13 @@
     gpuPatch(cells, true, cells.length, false);        // track=false: entering the editor overwrites real world cells with the stage plane, and none of that is a terrain edit
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = true;   // fly ON so the framing below can't be pulled off by gravity while the world is frozen
     smoothEye = P.y + EYE; resetHist = 1;
-    if (!ED.frames.length && PORCUPINE_WALK.length) { edImportBufs(PORCUPINE_WALK, 'vb_edoffsets_porcupine', PORCUPINE_BAKES[0], 'porcupine'); ED.bun = null; ED.bunny = false; ED.arm = { hd: 0, px: 0, pz: 0, tRe: 0 }; ED.bakes = PORCUPINE_BAKES; }   // PORCUPINE walk cycle is now the ASSET-EDITOR object (user: swapped the skunk out of the editor — the skunk still spawns in the WORLD, it's just no longer what you edit). Align ONCE in SOUTH; headings auto-derive via armOffset (its own PORCUPINE_BAKES + 'vb_edoffsets_porcupine' namespace)
+    // ── THE STAGE OPENS ON THE BIRCH (user 2026-08-18: "in the asset editor, I want you to remove the
+    // flamingo ... generate a birch tree made out of 10cm voxels") ── the flamingo is gone from HERE only; it
+    // is untouched in the world, where it is trace-injected from the same frames as before.
+    // ED.arm stays null so it takes the plain playback branch. A birch is one frame, so nothing animates — the
+    // branch handles n === 1 without a special case, and the 12 fps flamingo rate below no longer applies.
+    if (!ED.frames.length && BIRCH_VOX.length) { edImportBufs(BIRCH_VOX, 'vb_edoffsets_birch', {}, 'birch'); ED.bun = null; ED.bunny = false; ED.arm = null; }
+    else if (!ED.frames.length && PORCUPINE_WALK.length) { edImportBufs(PORCUPINE_WALK, 'vb_edoffsets_porcupine', PORCUPINE_BAKES[0], 'porcupine'); ED.bun = null; ED.bunny = false; ED.arm = { hd: 0, px: 0, pz: 0, tRe: 0 }; ED.bakes = PORCUPINE_BAKES; }   // PORCUPINE walk cycle is now the ASSET-EDITOR object (user: swapped the skunk out of the editor — the skunk still spawns in the WORLD, it's just no longer what you edit). Align ONCE in SOUTH; headings auto-derive via armOffset (its own PORCUPINE_BAKES + 'vb_edoffsets_porcupine' namespace)
     else if (!ED.frames.length && SKUNK_WALK.length) { edImportBufs(SKUNK_WALK, 'vb_edoffsets_skunk', SKUNK_BAKES[0], 'skunk'); ED.bun = null; ED.bunny = false; ED.arm = { hd: 0, px: 0, pz: 0, tRe: 0 }; ED.bakes = SKUNK_BAKES; }   // FALLBACK: if the porcupine frames are missing, the skunk is still available in the editor
     else if (!ED.frames.length && BUNNY_JUMP.length) { edImportBufs(BUNNY_JUMP, 'vb_edoffsets_jump', BUNNY_JUMP_BAKE, 'jump'); ED.bunny = false; }   // jump frames only → just hop forward
     else if (!ED.frames.length && BUNNY_ROTATE.length) { edImportBufs(BUNNY_ROTATE, 'vb_edoffsets_rotate', BUNNY_ROT_BAKE, 'rotate'); ED.bunny = false; }   // rotate frames only

@@ -14,6 +14,33 @@
       const d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
       if (d < bd) { bd = d; id = i; } }
     return id; };
+  // ── …AND THE ONE A CREATURE COLOUR MAY BE SNAPPED TO ── palNearest above is right for scenery, which is
+  // allowed to land on another piece of scenery's id. A CREATURE is not: a grid-stamped body wearing a cactus id
+  // stings, wearing a pinecone id picks up as a pinecone, wearing a foliage id stops colliding. So this is the
+  // same walk with the materials that carry BEHAVIOUR struck out of the candidate set. The tables are declared in
+  // assets/material-tabs.js, below this fragment, so they are read through a late-bound getter rather than closed
+  // over — a direct reference here is the const-before-declaration black screen this codebase is prone to.
+  // Falls back to palNearest if every candidate is excluded, because a wrong shade beats no id at all.
+  // The material exclusion is shared by BOTH creature paths, because both of them hand a creature somebody
+  // else's id: the tolerance REUSE in edCol (which is what actually did it — measured, the pink bird's
+  // (243,133,158) is 5/255 from the cactus flower's (243,130,153), inside PAL_TOL, so it was handed that id
+  // outright and edSubs never even incremented) and the nearest-colour SUBSTITUTION below it. Reserved-id
+  // skipping was already right in both; behaviour skipping was missing from both.
+  const edMatBad = (i) => (typeof cactusTab !== 'undefined' && cactusTab[i]) ||
+                          (typeof coneTab !== 'undefined' && coneTab[i]) ||
+                          (typeof foliaTab !== 'undefined' && foliaTab[i]);
+  const edNearShareOK = (r, g, b) => {                 // tolerance reuse, minus the ids that MEAN something
+    let bd = 1e9, best;
+    for (let i = DECOR_MIN; i < palette.length; i++) { const c = palette[i];
+      if (!c || palOwn.has(i) || edMatBad(i)) continue;
+      const d = Math.max(Math.abs(c[0] - r), Math.abs(c[1] - g), Math.abs(c[2] - b));
+      if (d <= PAL_TOL && d < bd) { bd = d; best = i; } }
+    return best; };
+  const edSubstOK = (r, g, b) => { let bd = 1e9, id = -1;
+    for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (!c || palOwn.has(i) || edMatBad(i)) continue;
+      const d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
+      if (d < bd) { bd = d; id = i; } }
+    return id < 0 ? palNearest(r, g, b) : id; };
   const palMintLog = [];                               // ?palmint only — [id, r, g, b, caller stack]
   let palOver = 0;                                     // how many colours the ceiling turned away — __vb.palAudit() reports it
   const addCol = (r, g, b) => {
@@ -88,6 +115,16 @@
   // Four dead ids on a table with two free is what funds the hive and half the fruit. ONE boolean brings both the
   // colours and the sandstone rocks back together, which is the whole reason this is a switch and not a deletion —
   // bow.js guards its ROCK26D build on REDROCK.length, so flipping this is the entire restore.
+  // ── THE GIANT LILYPAD, AND WHY ITS FOURTEEN IDS ARE WORTH MORE THAN IT IS ── same shape as the switch below
+  // and the same argument, only larger. lillypad_gigantic.json carries a 14-entry palette and every one of them
+  // is minted through addCol, which never dedupes — and the pass that stamps it was removed from genRegionGen.
+  // debug-api.js says so in its own words at the lilyGigAt tap: "the GIANT pads no longer stamp, so a candidate
+  // site must come back with an empty footprint". So the model is loaded, marked solid, folded into LILYIDS, and
+  // never written into the world: fourteen ids on a table that had NOTHING free, spent on a plant nobody can see.
+  // Flipping this back on restores the model AND its colours together — bow.js skips the whole fetch when it is
+  // off and every consumer is already null-guarded (markSolid, LILYIDS, lilyGigAt), which is what makes a switch
+  // honest here rather than a deletion.
+  const LGIG_ON = false;                               // gigantic lilypads — off, and their 14 palette ids with them
   const R26D_ON = false;                               // sandstone desert boulders (ROCK26D) — off, and the 4 REDROCK ids with them
   const REDROCK = R26D_ON ? [addCol(193, 111, 72), addCol(171, 94, 60), addCol(147, 79, 52), addCol(209, 167, 127)] : [];   // Colorado sandstone strata (last = cream band)
   const ORECOAL = [addCol(52, 52, 56), addCol(44, 44, 48)];                                                // minerals - seen in cave walls
@@ -133,13 +170,27 @@
     for (const ci of used) { const r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
       if (isFol(r, g, b)) continue; const w = cnt.get(ci); sr += r * w; sg += g * w; sb += b * w; sw += w; }
     const mr = sw ? sr / sw : 0, mg = sw ? sg / sw : 0, mb = sw ? sb / sw : 0;
-    const k = TRUNK_SMOOTH, lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const k = TRUNK_SMOOTH, WOOD_DEDUP = 4, lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;   // WOOD_DEDUP: max channel delta at which two SMOOTHED bark shades are the same colour — see the loop below
     let lo = 255, hi = 0, lo2 = 255, hi2 = 0;
     for (const ci of used) { const r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
       if (isFol(r, g, b)) { remap[ci] = addCol(r, g, b); foliageIds.push(remap[ci]); continue; }
       const l0 = lum(r, g, b); if (l0 < lo) lo = l0; if (l0 > hi) hi = l0;
       const nr = Math.round(r + (mr - r) * k), ng = Math.round(g + (mg - g) * k), nb = Math.round(b + (mb - b) * k);
       const l1 = lum(nr, ng, nb); if (l1 < lo2) lo2 = l1; if (l1 > hi2) hi2 = l1;
+      // ── THE SMOOTHING COLLAPSES SHADES, SO MINT THE COLLAPSED ONES ONCE (2026-08-18) ── pulling every bark
+      // colour k of the way to the trunk's weighted mean is a CONTRACTION: shades that are distinct in
+      // pine5.vox come out within a unit or two of each other, and minting one id per SOURCE colour then spent
+      // several of a 256-entry table on colours nothing can tell apart. Measured before this line existed: of
+      // eight wood ids, three sat within 3/255 of another one. remap[] is exactly the mechanism for two source
+      // colours to share one game id, so reuse instead of minting.
+      // WHY NOT palNearShare/PAL_TOL: that is a judgement about how close is close enough for UNRELATED art,
+      // and it is floored at DECOR_MIN, which the bark sits below. This is a much narrower claim — the
+      // smoothing has already made these the same colour — so the bound is 3, not PAL_TOL's 8, and it only
+      // ever matches against this tree's own wood.
+      let wid = -1;
+      for (const q of woodIds) { const c = palette[q];
+        if (Math.max(Math.abs(c[0] - nr), Math.abs(c[1] - ng), Math.abs(c[2] - nb)) <= WOOD_DEDUP) { wid = q; break; } }
+      if (wid >= 0) { remap[ci] = wid; continue; }      // …and a source colour that lands on an existing shade just points at it
       remap[ci] = addCol(nr, ng, nb); woodIds.push(remap[ci]); }
     console.log('[vb] bark smoothing', k, '- luminance spread', (hi - lo).toFixed(1), '->', (hi2 - lo2).toFixed(1)); }
   const MROT = [];                                     // the 4 exact 90° rotations, precomputed — variation without resampling artifacts
@@ -162,7 +213,118 @@
   const GRASS = [addCol(83, 108, 54), addCol(74, 99, 49), addCol(92, 117, 61), addCol(65, 88, 45)];      // = the MOSS palette, only ~12% brighter — strands blend into their patch
   const WATER_T = addCol(58, 128, 154), WATER_B = addCol(43, 106, 134);
   const isWater = (v) => v === WATER_T || v === WATER_B;   // the lake surface / body ids — a swing walks straight through these (see chopSwing)
-  const LAVA_T = addCol(255, 122, 22), LAVA_B = addCol(198, 44, 6), LAVA_R = addCol(226, 58, 10), LAVA_Y = addCol(255, 206, 46);   // gorge-floor lava — blended red/orange/yellow, emissive, deadly                                  // pond surface / body, close shades (walk-through — you swim)
+  // ── GORGE LAVA, COLLAPSED TO ONE ID (2026-08-18) ── it was four shades, and all four are UNREACHABLE in the
+  // shipped world: caveAt refuses a gorge in the desert, in the oak forest AND in the pine forest (see the three
+  // clauses in world/terrain.js), so no gorge generates anywhere and stampCave's lava lines never run. Every
+  // other mention of these names is a GUARD — "is this voxel lava?" in player death, the support rules, the
+  // snow skip, the console ban list, the trace shader — and a guard against a voxel that never exists behaves
+  // identically whether it names one id or four. So three of the four are handed back to pay for the cherry
+  // forest's blossom, on a table that is otherwise at 256/256 with nothing free.
+  // RESTORING THEM IS THIS ONE LINE. If gorges ever come back, put the three addCol calls back and the lava
+  // renders in its original four-tone blend again; nothing else has to change, because nothing else ever
+  // distinguished them except the blend in stampCave.
+  const LAVA_T = addCol(255, 122, 22), LAVA_B = LAVA_T, LAVA_R = LAVA_T, LAVA_Y = LAVA_T;   // gorge-floor lava — emissive, deadly, and currently ungenerated                                  // pond surface / body, close shades (walk-through — you swim)
+  // ── THE CHERRY FOREST'S BLOSSOM (user 2026-08-18) ── the pink the oak canopy wears in the cherry biome. THREE
+  // shades against the green ramp's four, and that is the whole cost of this biome's colour: the three ids come
+  // from the lava collapse above, so nothing anywhere else in the world moved a single value to pay for them.
+  // Three well-separated blossoms read better on a crown than four crowded ones would — the green ramp spans
+  // luma 74..107 in four steps because it is describing LEAVES in shadow, and a blossom canopy is a brighter,
+  // flatter thing that bands if the steps are too close. Dark → light, the same order OAKLEAF is sorted in, so
+  // the id map in assets/bow.js can pair them off by rank without knowing anything about either ramp.
+  // These are reserved in palOwn below: a canopy id carries "is foliage", and a model tolerance-sharing onto
+  // one at 8/255 would silently inherit snow-catching, DRAPE and the see-through primary ray.
+  // ── THE PALE PETAL IS GONE (user 2026-08-18: "remove the lightest most whitest voxel color from the pink
+  // cherry trees") ── the ramp was deep rose -> mid pink -> (246,182,205), and that last one is nearly white:
+  // it was the canopy's highlight and it read as blown-out against the white variety standing next to it.
+  // The ramp was rebuilt to eight shades afterwards (see just below), so nothing was lost by dropping it — the
+  // light end simply stops short of white now instead of reaching it.
+  // PINK ONLY. BLOSWHITE below is untouched: the white trees are supposed to be white, and their palest step is
+  // a different colour (248,238,241) that this does not go near.
+  // It also hands back a palette slot, which is why the table has room again — see the WOOD_DEDUP note.
+  // ── EIGHT SHADES (user 2026-08-18: "throw much more shades of pink into the cherry trees ... try 8 shades") ──
+  // The two it replaces are both still here, at index 3 and 6, so nothing about the crown's existing colour
+  // moves; the ramp is filled in AROUND them. It runs deep rose -> mid pink and STOPS THERE: the pale petal was
+  // removed earlier the same day for reading as blown-out white, so the light end deliberately reaches only
+  // (236,148,178), which is still plainly pink beside the white variety rather than competing with it.
+  // Eight shades only pay off because of the DITHER in assets/bow.js: the oak crown art carries four distinct
+  // leaf greens, so a per-id remap can never show more than four colours however long this list is.
+  // ── AND THE WHOLE RAMP MOVED FOUR STEPS LIGHTER (user 2026-08-18: "make the darker cherry trees 2 shades
+  // lighter", then "4 shades lighter") ── the dark end has climbed from the original (150,62,96) to
+  // (208,110,143), four of its own steps. The pink variety is the dark one standing next to the white, so
+  // lightening it is what closes the gap between the two varieties.
+  // THE RAMP COMPRESSES RATHER THAN SLIDING, and that is deliberate. Sliding all eight steps up by four would
+  // have carried the LIGHT end past (246,182,205) — the exact shade removed earlier today for reading as blown
+  // out — so the top is pinned where two steps had already put it and the dark end walks up to meet it. The
+  // tree reads four shades lighter; no white is reintroduced. If it wants to go lighter again, the honest move
+  // is to revisit that cap explicitly rather than to let the top drift through it.
+  // THE LIGHT END STILL STOPS SHORT OF WHITE. The new top is (248,168,195), against the (246,182,205) that was
+  // removed earlier today for reading as blown out — 14 more saturation on the weakest channel, which is the
+  // difference between "light pink" and "white with a tint". Do not push this further without checking that.
+  const BLOSLEAF = [addCol(208, 110, 143), addCol(214, 118, 151), addCol(220, 126, 159), addCol(226, 134, 167),
+                    addCol(232, 142, 175), addCol(238, 150, 183), addCol(243, 159, 189), addCol(248, 168, 195)];
+  // ── AND THE WHITE VARIANT (user 2026-08-18: "make half the cherry trees have white petals instead of pink") ──
+  // Same structure as BLOSLEAF and read the same way: a leaf green's RANK picks a band of this ramp and the
+  // voxel's own position picks within it (assets/bow.js blosRemap), so the length here is independent of how
+  // many greens the oak art happens to carry. A warm neutral with a
+  // faint pink cast rather than a pure grey-white — a real white cherry is cream, and a neutral ramp beside the
+  // rose one reads as a lighting bug rather than a second variety.
+  // KEPT OFF THE SNOW: the palest step is 248,238,241 and settled snow is 250,250,252, which is 11 apart on
+  // green and blue. They are both palOwn so neither can be handed to the other by tolerance, but the point here
+  // is VISUAL — a white canopy that matches its own snow cap exactly loses the cap, and it snows in this biome
+  // now (see oakWeather in world/window.js). 11/255 is enough to read the cap and little enough to stay white.
+  // THE THREE IDS THESE COST were freed by the bark dedup above (WOOD_DEDUP): the table was at 256/256 and the
+  // smoothing had been minting one id per SOURCE bark colour for shades it had already collapsed. So this is
+  // paid for out of genuine waste, not out of somebody else's ramp.
+  // ── AND SIX FOR THE WHITE VARIETY (user 2026-08-18: "more shades of white/pink for the lighter cherry
+  // trees") ── the original three are kept at index 1, 3 and 5 and the ramp is filled in around them, so the
+  // white trees keep the colour they already had and simply gain the steps between.
+  // The light end is (247,235,238), not the (248,238,241) it replaces: settled snow is (250,250,252) and
+  // PAL_TOL is now 12, so the old value sat exactly on that tolerance. These are palOwn and minted through
+  // addCol, so no sharing could actually have taken them — but a white canopy that matches its own snow cap to
+  // within a rounding error loses the cap, and it snows in this biome. 15/255 is enough to keep them apart.
+  const BLOSWHITE = [addCol(186, 160, 170), addCol(200, 176, 184), addCol(214, 193, 201),
+                     addCol(230, 212, 218), addCol(239, 225, 230), addCol(247, 235, 238)];
+  for (const i of BLOSLEAF) palOwn.add(i);
+  for (const i of BLOSWHITE) palOwn.add(i);
+  // ── AND THE FRUIT (user 2026-08-18: "scatter this shade: 840c0c on the cherry trees ... single voxels that
+  // will act like cherries on the tree") ── the authored colour exactly, (132,12,12).
+  // IT MINTS ITS OWN ID EVEN THOUGH THAT COLOUR IS ALREADY IN THE TABLE. addCol pushes unconditionally, so this
+  // is a deliberate duplicate and palAudit will report it as one — the same arrangement BROCK has against ROCK,
+  // and for the same reason: an id is a MATERIAL. The existing (132,12,12) belongs to the baked desert set, and
+  // borrowing it would hand every cherry that creature's material and every one of those creatures a fruit's.
+  // A duplicate colour on its own id costs one slot and keeps both meanings intact; sharing costs nothing and
+  // corrupts both. There are slots now (see PAL_TOL in assets/models.js), which is what makes this affordable.
+  // ── THREE MORE PURPLES FOR THE LAVENDER (user 2026-08-18: "create 3 more shades for the lavender flower ...
+  // 3 more purple shades I mean") ── the model paints its whole 17-voxel spike in ONE purple, so it reads as a
+  // solid block of colour. These three plus the authored one make a four-step ramp, dithered onto the spike by
+  // voxel position (assets/bow.js) exactly as the blossom crowns are — same reason, same mechanism.
+  // palOwn: the recolour is keyed on these, so a tolerance reuse handing one to another model would sprinkle
+  // that model's material through the lavender.
+  // ── TIGHTER, AND DARKER (user 2026-08-18: "make the lavender have much less contrast between its purples.
+  // make it more on the darker purple side") ── the first cut ran (120,70,158) to (198,152,226), which put the
+  // pale end 78 red-units above the dark end and read as a two-tone flower rather than a shaded one. All three
+  // now sit BELOW the model's own authored (152,94,192) and 12 units apart, so the four-step ramp spans 112 to
+  // 152 instead of 120 to 198 — the contrast drops by roughly half and the whole flower sits deeper.
+  const FLOWPURP = [addCol(112, 66, 150), addCol(124, 76, 162), addCol(136, 86, 174)];
+  for (const i of FLOWPURP) palOwn.add(i);
+  // (The blossom band's pink meadow flower briefly minted its own three-pink ramp here, derived from the white
+  // variant. The user authored a real pink flower into flowers.vox instead, so the derivation and its three ids
+  // are gone — authored art beats a recolour, and it costs nothing extra because the file was already loading.)
+  // ── OAK-FOREST MOSS (user 2026-08-18: "make the moss on the rocks in the oak forest match the leaf color of
+  // the oak trees") ── the rock cap was laid in GRASS, which is the MOSS ramp ~12% brighter and reads much
+  // duller than an oak canopy: measured, the brightest oak leaf is 50/255 from its nearest GRASS shade, and the
+  // mid two are 24-26 off. So the pine forest's cap is right and the oak forest's was not.
+  // THESE ARE THE OAK LEAF COLOURS EXACTLY, ON THEIR OWN IDS. Reusing OAKLEAF's ids would have been free and is
+  // wrong: those are CANOPY material — foliaTab, which carries the see-through primary ray, the snow catch and
+  // DRAPE support. Moss on a boulder that you can see through is not moss. Their own ids get floatTab instead,
+  // the same surface-scatter class GRASS has, so the cap keeps every property the pine one has and only the
+  // colour changes. Duplicate colours on separate ids, deliberately, exactly as BROCK repeats ROCK's greys.
+  // THREE, NOT FOUR. The darkest oak leaf (82,115,47) is already within 7/255 of a GRASS shade, so it would buy
+  // nothing; the three that matter are the ones a canopy actually reads as. The table has 5 free.
+  const OAKMOSS = [addCol(105, 143, 51), addCol(107, 141, 77), addCol(134, 167, 89)];
+  for (const i of OAKMOSS) palOwn.add(i);   // reserved: mossCap keys on these, and a tolerance reuse would scatter somebody else's model over the boulders
+  const BLOSCHERRY = addCol(132, 12, 12);
+  palOwn.add(BLOSCHERRY);   // reserved: the scatter is keyed on this id, so a tolerance reuse handing it to a model would sprinkle that model through every crown   // reserved HERE and not up with SHRUBF's: this const is declared 100 lines below that one, and reading it there is the const-before-declaration black screen (a bare `for` in a module body is not hoisted past a TDZ)
   // ── SMALL ROCK (rock.vox) — right-click to pick up ── THREE NEUTRAL greys, matching what the model is
   // actually authored with. It was two WARM greys (122,120,114) and (103,101,97), and rock.vox paints five
   // pure neutrals (147/140/134/127/120, every one r=g=b): so the stone lost its shading to two tones AND
@@ -203,9 +365,27 @@
   // that `h.vox == RNV` test fire for real fallen snow and quietly relight the blanket. Flip RAIN_ON back and the
   // mint comes back with it, so this is a reclaim rather than a removal.
   const RAIN = RAIN_ON ? addCol(150, 196, 236) : 0;                                                      // falling rain — one light blue, lit almost entirely by the sky term (see the scatter floor in TRACE)
-  const ED_WHITE = addCol(250, 250, 252), ED_GREY = addCol(202, 207, 216), ED_HLITE = addCol(255, 186, 64);   // asset-editor stage: white plane, 1 m gridline grey, amber selection ring (all marked solid below)
+  const ED_WHITE = addCol(250, 250, 252), ED_GREY = addCol(202, 207, 216), ED_HLITE = addCol(255, 186, 64);
+  // ── RESERVED (user 2026-08-18: "I think the flowers have hitboxes") ── and that is exactly what happened.
+  // material-tabs.js makes these three SOLID because the editor stage is walkable floor, and they sit below
+  // DECOR_MIN. flowers.vox authors an amber centre at (255,186,64) and a petal at (250,250,252) — the same two
+  // colours, exactly — so palShare's EXACT-match path (which, unlike the tolerance path, is NOT floored at
+  // DECOR_MIN) handed the flower the editor's ids and every flower with a centre got a hitbox. Measured: 2 of
+  // the 14 flower ids were solid, and the amber is shared by four of the five variants.
+  // palOwn is the fix rather than clearing solidTab, because the editor genuinely needs its floor: an exact
+  // match on a RESERVED id is not a match, so the flower mints its own and both meanings survive.
+  for (const i of [ED_WHITE, ED_GREY, ED_HLITE]) palOwn.add(i);   // asset-editor stage: white plane, 1 m gridline grey, amber selection ring (all marked solid below)
   const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);                                    // twig (pickable) / stick — pine-trunk browns
-  const BLOOM   = [addCol(198, 62, 54), addCol(226, 192, 62), addCol(230, 228, 220), addCol(152, 94, 192), addCol(224, 122, 162), addCol(228, 142, 56)];   // flower heads
+  // ── BLOOM IS GONE, AND ITS SIX SLOTS PAY FOR flowers.vox (user 2026-08-18: "replace all the flowers in the
+  // current game with flowers.vox") ── it was six single-voxel flower HEADS, sown one per column beside a grass
+  // stem in fillColumn. The authored file is five whole plants, so the six ids had no remaining reader: nothing
+  // in the game wants "the colour of a flower head" as a constant any more, it wants the model's own ids.
+  // Everything the six carried is now derived from those (assets/bow.js FLOWERIDS/FLOWERHEAD): floatTab and the
+  // snow pass-through from FLOWERIDS, and the bees' forage test from FLOWERHEAD, which is the petals ONLY —
+  // BLOOM had no stem to confuse a bee with, and the model does.
+  // Deleting them here is what makes the swap affordable: the table is at its ceiling, the five variants want
+  // 15 colours, and PAL_TOL absorbs the ones that already exist. Do NOT re-add a BLOOM ramp to "keep the old
+  // flowers working" — there is nothing left to work, and the six slots are spent.
   // ── FRUIT AND BERRIES: THREE IDS, AND THAT IS THE WHOLE BUDGET (user 2026-08-17: berry bushes, and apples
   // and oranges in the oaks) ── the ask was four things wearing 22 authored colours between them (an 11-colour
   // apple, a 9-colour orange, a red berry and a blue one) and the table had TWO slots. It fits because two

@@ -249,11 +249,28 @@
             edLayout(); }
         }
         else if (ED.frames.length && !ED.paused) {       // ── playing → 24 fps + continuous forward march (manual .vox imports) ──
-          const n = ED.frames.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
+          // ── THE FLAMINGO LOOPS WITHOUT THE TAIL (user 2026-08-18: "have the flamingo cycle through the first
+          // 10 frames. repeatedly.") ── every other import gets a 600 ms hold on its last frame, which suits a
+          // one-shot action like a jump: it reads as the pose landing before the cycle restarts. A WALK has no
+          // such beat, and on the flamingo the hold looked like the bird stopping dead once a second. Zero
+          // pause for it, so the ten frames run straight into each other at a flat 24 fps.
+          // FLAMINGO AT 12 fps (user 2026-08-18: "play the flamingo at 12 fps in the editor") — the same
+          // arrangement the skunk already has on the walking branch above, and for the same reason: the editor
+          // should preview a creature at the rate it actually ships at, not at the 24 fps house default.
+          const n = ED.frames.length, frameMs = 1000 / (ED.name1 === 'flamingo' ? 12 : 24), pauseMs = ED.name1 === 'flamingo' ? 0 : 600, cyc = n * frameMs + pauseMs;
           const t = now % cyc, fi = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;
           const blink = (now % 3400) < 160;
           if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink) { ED.sel = fi; ED.blink = blink; ED.spin = 0;
-            const k = Math.floor(now / cyc);
+            // ── THE FLAMINGO ANIMATES IN PLACE (user 2026-08-18: "in the center of it, animated") ── this
+            // branch normally walks the model forward by the per-frame offset delta once per cycle, which is
+            // what makes an imported walk cycle travel. The flamingo is the stage's opening exhibit and is
+            // meant to stay centred, so its cycle count is pinned to 0 and every hop below multiplies out to
+            // nothing. Its frames are base-aligned anyway (tools/align_frames.py) so the delta is already ~0 —
+            // this states it rather than relying on it, because a re-bake carrying offsets would otherwise
+            // quietly walk it off the middle.
+            // A ZEROED k RATHER THAN AN EARLY RETURN: the ED.box / ED.box2 publishes below this block still
+            // have to run, and returning here would silently stop the hit box following the model.
+            const k = ED.name1 === 'flamingo' ? 0 : Math.floor(now / cyc);
             const lf = ED.frames[n - 1] || {}, f0 = ED.frames[0] || {};
             ED.hopX = k * ((lf.ox || 0) - (f0.ox || 0)); ED.hopY = k * ((lf.oy || 0) - (f0.oy || 0)); ED.hopZ = k * ((lf.oz || 0) - (f0.oz || 0));
             const n2 = ED.frames2.length, l2 = n2 ? ED.frames2[n2 - 1] : {}, g2 = n2 ? ED.frames2[0] : {};

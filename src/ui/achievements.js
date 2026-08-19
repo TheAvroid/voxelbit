@@ -6,7 +6,16 @@
   const dualRocks = () => !dead && !grabAnim && !!(slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2);
   const achEl = $('achv'), achNameEl = $('achName'), clashHintEl = $('clashHint');
   let achHideT = 0;
-  const sparks3d = [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null];   // 20 death-burst slots (drops uniform 5-24): CLASH uses the first 4 as embers; a DEATH fills 4 sparks + 16 INDIVIDUAL smoke voxels (10 cm each → the plume needs more of them to read as dense) — world-space particles
+  // 24 slots: 20 as before, plus a 4-slot POLLEN band at the top (user 2026-08-18 — the bees). The tear band's
+  // own note says four is already more than crying can use and that tears were the band with slack; pollen has
+  // no such slack, because several bees leave flowers at once and each trails repeatedly. Sharing would have had
+  // ducklings and bees cutting each other's effects short, which is the exact bug sim/particles.js records being
+  // fixed twice. THREE places know this number: the emit loop in main/tick-emit.js, the drop-slot reserve in
+  // main/tick-life.js, and the bands in sim/particles.js — all three moved together.
+  const sparks3d = [null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null];   // +16 for FALLING PETALS (user 2026-08-18) — a band rather than a share, same reasoning as the pollen's: a petal lives ~10 s where a droplet lives 0.9, so sharing would have had petals squatting on every splash slot in the blossom   // 20 death-burst slots (drops uniform 5-24): CLASH uses the first 4 as embers; a DEATH fills 4 sparks + 16 INDIVIDUAL smoke voxels (10 cm each → the plume needs more of them to read as dense) — world-space particles
   // ── ONE DISCOVERY, THEN ANY NUMBER OF THEM (user 2026-08-07) ── the banner used to be hard-wired to
   // "sharp edge" in the markup, so a second discovery starts by splitting the two things it needs: `key` is
   // what makes it fire exactly once, `label` is what the player reads. Both stay session-only, like the

@@ -6,6 +6,9 @@ Rules baked in (learned the hard way, see memory):
   * The window is placed far OFFSCREEN instead, and never activated (SWP_NOACTIVATE),
     so it can never steal the user's cursor or foreground window.
   * --mute-audio, always.
+  * VB_WIN overrides the offscreen window size ('W,H'). It exists because the small
+    default makes the game CPU-bound: a timing run wants a real 1792x865 or it measures
+    the wrong bottleneck. Placement stays offscreen whatever the size.
   * The debug port and the Chrome profile are per-RUN, so two agents testing at the same
     time can never share either. VB_SLOT names the slot when you want a stable one (the
     reaper matches that exact token at a boundary); with it unset the slot is this
@@ -72,7 +75,7 @@ def launch(url):
     os.makedirs(PROF, exist_ok=True)
     args = [CHROME, '--remote-debugging-port=%d' % PORT, '--user-data-dir=' + PROF,
             '--mute-audio', '--no-first-run', '--no-default-browser-check',
-            '--window-position=-4000,-4000', '--window-size=1280,760',
+            '--window-position=-4000,-4000', '--window-size=' + os.environ.get('VB_WIN', '1280,760'),
             '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
             '--disable-background-timer-throttling', '--disable-features=CalculateNativeWinOcclusion',
             '--enable-unsafe-webgpu', '--no-sandbox', url]

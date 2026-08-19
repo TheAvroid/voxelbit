@@ -1,5 +1,5 @@
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, LGCELL, LGIGCELL, LILYCELL, MUCELL, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -13,6 +13,7 @@
     const mossy = !lake && mossV > 0.52;               // 0.56 → 0.52 ≈ +30% moss coverage
     const dm = desertM(wx, wz);                        // biome weight for this column: 0 = pine forest, 1 = open desert
     const om = oakM(wx, wz);                           // …and the other way: 1 = oak forest (west of the pines), 0 = pine forest. The two masks can never both be non-zero — see the gap arithmetic at OAKOFF
+    const cm = (om > 0 && chNear(wx)) ? cherryM(wx, wz) : 0;   // chNear FIRST: this line runs once per COLUMN, and cherryM is ~7 vnoise — see the bound's note in world/window.js. The om test alone was not a cheap-out at all, because om > 0 is the whole infinite oak forest           // …and the blossom, which is a SUB-REGION of the oak mask (world/window.js), so `om > 0` is an exact cheap-out rather than an approximation: outside the oak forest cherryM is 0 by construction and the pine forest and the desert pay nothing at all for this biome existing
     const base = gx + gz * WX * WY;
     let surfMoss = false;                              // grass only grows where a MOSS surface voxel actually landed
     const yTop = fresh ? (lake ? WL + 1 : h) : WY;     // fresh columns skip writing the empty sky — ~40% faster world builds
@@ -61,15 +62,58 @@
         for (let k = 0; k < gh; k++) { const ii = base + (h + k) * WX; if (W[ii]) break; W[ii] = gc; }
       }
     }
-    if (!lake && h > WL + 4 && h + 3 < WY && dm < 0.5) {   // FLOWERS: everywhere except beaches/water — and not in the desert (grass needs no gate: it only grows where a MOSS surface landed, which the sand branch never sets)
-      if (ihash(wx * 9 + 71, wz * 5 + 29) < 0.005) {   // uniform spread — no clustering
-        const s0 = base + h * WX;
-        if (!W[s0] && !W[s0 + WX]) {
-          W[s0] = GRASS[(ihash(wx + 13, wz * 13) * 4) | 0];
-          W[s0 + WX] = BLOOM[(ihash(wx * 17 + 3, wz * 23 + 11) * 6) | 0];
-        }
+    // ── NO FLOWERS IN THE BLOSSOM (user 2026-08-18: "remove all of the flowers") ── the cherry forest's ground
+    // colour is fallen petals instead, and those are dropped by the trees themselves in stampOak rather than
+    // sown here, because "near trees" is the whole point of them. A meadow flower and a fallen petal in the
+    // same square metre would read as neither.
+    // ── FALLEN PETALS (user 2026-08-18: "scatter pink voxels on the ground near trees") ── placed HERE, in the
+    // per-column pass, and not scattered from stampOak the way the first cut did it. That version cost a
+    // MEASURED 2.65-SECOND FREEZE the first time the cherry forest generated, and the reason is material class,
+    // not count: it wrote the canopy's BLOSLEAF ids, which are foliaTab, so every petal was an isolated
+    // ORPHAN_OK:false voxel and the generation orphan sweep had to flood from each one to prove it was anchored.
+    // Thousands per region. With ?nopetal the same walk peaked at 50 ms.
+    // The flowers have always done this job cheaply, so the petals now do it the same way: one voxel, laid in
+    // fillColumn, wearing an id that is FLOAT-tab ground scatter rather than canopy. TWIGPINK is the authored
+    // pink_stick leaf ramp, already marked floatTab in assets/material-tabs.js, so this costs no palette id and
+    // lands the petals in the right material class by construction.
+    // "Near trees" is satisfied by the biome rather than by a proximity probe: the blossom band is 78% tree
+    // cells, so uniform-within-cherry IS under the canopy, and a per-column proximity walk is exactly the cost
+    // this rewrite exists to remove.
+    // ── AND THEY FALL UNDER THE TREES, NOT OVER THE WHOLE BAND (user 2026-08-18: "only have the single dropped
+    // pink petals underneath the trees. not scattered around everywhere") ── the first cut leaned on the biome
+    // instead of on a proximity test, reasoning that the blossom band is 78% tree CELLS so uniform-within-cherry
+    // is effectively under the canopy. Cells are not canopy: a cell is 79 voxels and a crown is a good deal
+    // narrower, so the open ground between trees got the same litter as the ground beneath them, and it read as
+    // pink confetti over a meadow rather than as something the trees had dropped.
+    // The test is the crown's own FOOTPRINT, from the same oakAt the stamp uses, so a petal lands exactly where
+    // a crown will be. A 3x3 cell walk covers it: OKCELL is 79 and the widest crown's half-footprint is inside
+    // OKMARGIN 60, so no tree outside those nine cells can reach this column.
+    // COST: the walk is behind the rate roll, so it runs on ~1.5% of blossom columns rather than all of them —
+    // fillColumn is the hottest loop in worldgen and this is the same shape as the chNear guard above it.
+    // 0.004 -> 0.015 because the eligible area shrank by roughly that factor; the litter under a crown stays as
+    // dense as it was, and the meadow between crowns is now clean.
+    const petalUnderTree = () => {
+      const cx9 = Math.floor(wx / OKCELL), cz9 = Math.floor(wz / OKCELL);
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
+        const t9 = oakAt(cx9 + a, cz9 + b);
+        if (!t9 || !t9.blos) continue;                 // only a BLOSSOM crown drops blossom
+        const m9 = OAKV[t9.k]; if (!m9) continue;
+        const fw = (t9.rot & 1) ? m9.sy : m9.sx, fd = (t9.rot & 1) ? m9.sx : m9.sy;
+        if (Math.abs(wx - t9.wx) <= fw * 0.42 && Math.abs(wz - t9.wz) <= fd * 0.42) return true;   // 0.42 of the footprint, not 0.5: the bounding box includes the crown's sparse outermost voxels, and litter at the very rim reads as scatter again
       }
+      return false;
+    };
+    if (PETAL_ON && !lake && h > WL + 2 && h + 2 < WY && cm > 0.5 && typeof TWIGPINK !== 'undefined' && TWIGPINK.length
+        && ihash(wx * 7 + 53, wz * 11 + 17) < 0.015 && petalUnderTree()) {   // 0.02 -> 0.004, just under the FLOWERS' own 0.005. The rate is the whole cost: every scattered voxel is ORPHAN_OK ground litter, so the generation orphan sweep floods from each one to prove it is anchored, and at 2% of columns that was ~12,000 floods per region and a 1.3 s hitch the first time the blossom generated
+      const s9 = base + h * WX;
+      if (!W[s9]) W[s9] = TWIGPINK[(ihash(wx * 19 + 5, wz * 23 + 9) * TWIGPINK.length) | 0];
     }
+    // ── THE FLOWERS USED TO BE SOWN HERE, ONE VOXEL AT A TIME ── a grass stem at h and a BLOOM head at h+1, at
+    // 0.005 per column. They are an authored five-variant MODEL now (user 2026-08-18: "replace all the flowers
+    // in the current game with flowers.vox"), and a model cannot be stamped from fillColumn: stampModel needs
+    // the region bounds this per-column function does not have. So they moved to a cell pass beside the
+    // mushrooms and the sticks — see FLWCELL / flowerAt / stampFlower below. The biome gates travelled with
+    // them unchanged (no beaches, no water, not the desert, not the blossom band).
   }
   function stampModel(m, rot, wx, wy, wz, x0, x1, z0, z1, mode) {   // sparse decoration model stamp, rotated 0-3 about vertical, anchored bottom-center,
     const fw = (rot & 1) ? m.sy : m.sx, fd = (rot & 1) ? m.sx : m.sy;   // clipped to the region. mode: 0 = empty cells only; 1 = empty + soft decor;
@@ -158,6 +202,31 @@
           const dx = bx - t.tx, dz = bz - t.tz;
           if (dx * dx + dz * dz < halfw * halfw) return true;
         }
+      // ── AND THE OAKS, WHICH THIS NEVER ASKED ABOUT (user 2026-08-18: "dont have trees and rocks collide") ──
+      // the loop above probes treeAt, which is PINES, and treeAt returns null for every column where
+      // oakM > 0.5. So in the oak forest and the blossom band inside it the clash test was not merely too
+      // tight, it was INERT: it walked its cells, found nothing, and passed every candidate. Rocks stamp in
+      // mode 2 (OVERWRITE, and 23 passes before the oaks), while stampOak writes in mode 1 and refuses cells
+      // that already hold hard stone — so the rock was placed first and the crown was then carved away around
+      // it. That is a boulder punched clean through a cherry canopy, which is exactly what the user photographed.
+      // THE BERTH IS THE CROWN'S, NOT THE TRUNK'S. An oak's crown reaches 57 voxels from its centre at the
+      // widest tier while a big rock is 37 — so the separation this needs is ~94, against the 45 the pine test
+      // gives. Each tree is measured with its OWN model rather than a constant, the way stickAt does it, or
+      // every rock would be pushed away from a sapling by a giant's radius.
+      // ROCK-REFUSES-TREE is the right direction and not an arbitrary choice: rocks are placed first, so they
+      // are the ones that can still yield, and oakAt is already walked per frame by buildCardCand — putting the
+      // cost in the rarer pass is what keeps it off the frame budget.
+      if (OAKV.length) {
+        const reach = halfw + 57;                      // 57 = the widest crown's half-footprint; the per-tree test below is what actually decides
+        for (let cz2 = Math.floor((bz - reach) / OKCELL); cz2 <= Math.floor((bz + reach) / OKCELL); cz2++)
+          for (let cx2 = Math.floor((bx - reach) / OKCELL); cx2 <= Math.floor((bx + reach) / OKCELL); cx2++) {
+            const t9 = oakAt(cx2, cz2); if (!t9) continue;
+            const m9 = OAKV[t9.k]; if (!m9) continue;
+            const need = halfw + (Math.max(m9.sx, m9.sy) >> 1);
+            const dx9 = bx - t9.wx, dz9 = bz - t9.wz;
+            if (dx9 * dx9 + dz9 * dz9 < need * need) return true;
+          }
+      }
       return false;
     };
     if (size === 0) return (ROCKV && !treeClash(ROCKV.sx, ROCKV.sy, 3))
@@ -254,6 +323,69 @@
     const sink = 1 + ((m.sz * 0.12) | 0) + ((ihash(b.bx * 3 + 1, b.bz * 5 + 2) * 3) | 0);   // bigger rocks sit deeper — no floating edges on bumpy ground
     const gy = rockSeatY(m, b.bx, b.bz) - sink;
     stampModel(m, b.rot, b.bx, gy, b.bz, x0, x1, z0, z1, 2);   // overwrite + hmap raise — a REAL rock you collide with
+    mossCap(m, b, gy, x0, x1, z0, z1);                 // …and a mossy cap on the sky-facing faces (see below)
+  }
+  // ── MOSS ON THE FOREST ROCKS (user 2026-08-18: "add moss to the rocks in the pine forest. the 26 rocks.
+  // also do it the rocks in the oak forest") ── laid ON TOP of the rock as its own voxel rather than by
+  // recolouring the rock's own, and that distinction is the whole design.
+  //
+  // WHY NOT REPAINT THE ROCK'S TOP VOXELS. A palette id is a MATERIAL. The rocks26 ids carry decorTab +
+  // pickOnlyTab + rockShTab; the MOSS ids carry decorTab + digOnlyTab. digOnlyTab is tested BEFORE pickOnlyTab
+  // in every tool gate (sim/tools.js), so repainting would make a PICK bounce off the green voxels and a
+  // SHOVEL bounce off the grey ones — and worse, the okMat flood that decides a bite splits by material, so a
+  // pick bite starting on stone would carve the rock out from under its own cap and leave a floating green
+  // shell. The rock would also lose rockShTab (its sun sheen) and rockTopTab (the land-mammal seat test).
+  //
+  // WHY GRASS AND NOT MOSS. GRASS is already floatTab — surface scatter, SUP.DRAPE, walk-through, cuttable by
+  // any tool, and already in projectiles.js's PASSTHRU — which is exactly what a cap wants: chop the rock and
+  // the drape lifts with it instead of hanging in the air. MOSS is digOnly ground material and would bring the
+  // tool-gate split back in through the side door. It also costs ZERO palette ids, and the table has none to
+  // give (PAL_TOL is already at 12 to free the last few).
+  //
+  // NO BIOME TEST IS NEEDED, and that is not an oversight: boulderAt returns null for every rocks26 tier in
+  // the desert (see `inDesert && size !== 0` above), so stampBoulder can only ever reach this in the pine and
+  // oak forests — which is precisely the two the user asked for.
+  //
+  // The rotation math is stampModel's, verbatim, because the cap has to land on the ROTATED voxel: deriving it
+  // any other way would put moss beside the rock at three of the four headings.
+  function mossCap(m, b, gy, x0, x1, z0, z1) {
+    if (!GRASS.length) return;
+    // ── THE OAK FOREST'S MOSS IS THE OAK'S OWN LEAF COLOUR (user 2026-08-18) ── GRASS is the MOSS ramp and
+    // reads far duller than the canopy above it (the brightest oak leaf is 50/255 from its nearest GRASS
+    // shade). OAKMOSS is those leaf colours on float-material ids — see assets/palette.js for why they are not
+    // simply OAKLEAF's own ids.
+    // ONE mask sample per ROCK, not per voxel: this decides a whole boulder's cap, and the loop below runs over
+    // every voxel of a model that can reach 56k of them.
+    // ── AND THE BLOSSOM BAND'S IS PINK (user 2026-08-18: "make the moss in the cherry forest, pink on the
+    // rocks ... just reuse pink slots") ── TWIGPINK, and it costs NOTHING: it is the authored pink stick-leaf
+    // ramp, and material-tabs.js already flags every stick voxel id floatTab, which is the exact surface-scatter
+    // class GRASS and OAKMOSS use. So it is the one pink in the table that is already the right MATERIAL — the
+    // canopy pinks (BLOSLEAF/BLOSWHITE) are foliaTab and would make the cap see-through, the same reason
+    // OAKMOSS could not simply borrow OAKLEAF's ids. The table is at 0 free, so reusing was the only option
+    // anyway, and this one happens to be correct rather than merely affordable.
+    // CHERRY IS TESTED FIRST because the blossom band is a SUB-REGION of the oak mask — asking oakM first would
+    // hand every blossom rock the oak's green.
+    const cap = (TWIGPINK.length && chNear(b.bx) && cherryM(b.bx, b.bz) > 0.5) ? TWIGPINK
+              : (OAKMOSS.length && oakM(b.bx, b.bz) > 0.5) ? OAKMOSS : GRASS;
+    const fw = (b.rot & 1) ? m.sy : m.sx, fd = (b.rot & 1) ? m.sx : m.sy;
+    const bx = b.bx - (fw >> 1), bz = b.bz - (fd >> 1);
+    for (let i = 0; i < m.vox.length; i++) {
+      const p = m.vox[i];
+      const x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+      let rx, rz;
+      if (b.rot === 0) { rx = x; rz = y; }
+      else if (b.rot === 1) { rx = m.sy - 1 - y; rz = x; }
+      else if (b.rot === 2) { rx = m.sx - 1 - x; rz = m.sy - 1 - y; }
+      else { rx = y; rz = m.sx - 1 - x; }
+      const ax = bx + rx, az = bz + rz;
+      if (ax < x0 || ax >= x1 || az < z0 || az >= z1) continue;
+      const ay = gy + z + 1; if (ay < 1 || ay >= WY) continue;   // the cell ABOVE this rock voxel
+      const gx = gwrap(ax, WX), gz = gwrap(az, WZ);
+      const ii = gx + ay * WX + gz * WX * WY;
+      if (W[ii] !== 0) continue;                       // sky-facing only: anything occupied above means this is an interior or side voxel, not the top
+      if (ihash(ax * 7 + 13, az * 11 + 29) >= 0.55) continue;   // patchy, not a lawn — 55% of the exposed top, on its own salt so it does not correlate with the rock's own tier roll
+      W[ii] = cap[(ihash(ax * 3 + 1, az * 3 + 7) * cap.length) | 0];
+    }
   }
   const CAVE_CELL = 640, CAVE_MARGIN = 900;            // RAVINES -> CAVES: sparser, VAST gorges (1/4 the old frequency)
   const CAVE_WMAX = 52;                                // the half-extent stampCave carves around its axis. Shared with caveHitsBox: if these two ever disagree the orphan sweep starts skipping real gorges.
@@ -567,6 +699,67 @@
   function stampShrub(r, x0, x1, z0, z1) {
     stampModel(SHRUBV[r.mi], r.rot, r.wx, groundMin(r.wx, r.wz, r.half) - 1, r.wz, x0, x1, z0, z1, 1);   // groundMin, not H: seated on the LOWEST ground under its OWN footprint, so a bush on dune relief sinks into the slope instead of standing on one corner with daylight under the rest. The extra -1 is the sink stampCactus takes for the same reason — groundMin samples five points, not the whole footprint, so a dip between them can still leave a gap. mode 1 keeps terrain winning every contested cell, so the buried courses simply do not draw.
   }
+  // ── MEADOW FLOWERS (user 2026-08-18: "replace all the flowers in the current game with flowers.vox. make the
+  // flowers 2x as rare") ── a cell pass, because a MODEL needs region bounds; the single-voxel version this
+  // replaces lived in fillColumn. Same biome gates it had there, restated on the candidate's own column.
+  //
+  // THE RATE IS THE OLD ONE, HALVED, AND THAT IS ARITHMETIC RATHER THAN TASTE. The old test was one flower per
+  // column at p = 0.005, i.e. 1 per 200 columns. FLWCELL 8 gives one candidate per 64 columns, so matching the
+  // old density would need p = 0.005 * 64 = 0.32; half of that is 0.16, which is 1 flower per 400 columns.
+  // FLWCELL is 8 and not larger because the cell also sets the MINIMUM SPACING: a 5x5 variant in a 4-wide cell
+  // would overlap its neighbour, and much larger than 8 turns a uniform meadow into visible clumps-and-gaps.
+  const FLWCELL = 8;
+  // How many flower cells across one single-species PATCH is. 12 cells = 96 voxels, which at the rate above
+  // holds ~11 flowers — enough to read as "a patch of roses" rather than as two that happen to match. The patch
+  // edges are straight, and that is invisible at this density: nothing draws the boundary, ~11 scattered plants
+  // do, so what the eye gets is a drift of one colour into another rather than a tile.
+  const FLWPATCH = 12;
+  function flowerAt(cx, cz) {
+    if (!FLOWERV || !FLOWERV.length) return null;
+    if (ihash(cx * 37 + 11, cz * 41 + 29) > 0.08) return null;   // see the rate note above — 0.08 of cells, a QUARTER of the old per-column density
+    const wx = Math.round(cx * FLWCELL + 1 + ihash(cx * 7 + 13, cz * 5 + 3) * (FLWCELL - 2));
+    const wz = Math.round(cz * FLWCELL + 1 + ihash(cx * 3 + 19, cz * 11 + 23) * (FLWCELL - 2));
+    if (desertM(wx, wz) > 0.5) return null;            // the old gate: dm < 0.5
+    // ── THE BLOSSOM BAND GETS ITS OWN FLOWER RATHER THAN NONE (user 2026-08-18: "have them follow the same
+    // flower mechanics as the oak forest flowers ... this is all taking place in the cherry forest") ── it used
+    // to be refused here, on the argument that a meadow flower and a fallen petal in the same square metre read
+    // as neither. The answer turned out to be a flower that belongs: the white variant recoloured pink
+    // (assets/bow.js FLOWERV_CH). Everything else about the scatter is identical — same cell, same rate, same
+    // patch machinery — so the band gets the same drifts the oak forest does, in its own colour.
+    const inCh = chNear(wx) && cherryM(wx, wz) > 0.5;
+    if (inCh && !FLOWERV_CH.length) return null;       // the derivation failed (no white variant found) — refuse rather than plant an oak-forest flower in the blossom
+    const h = H(wx, wz);
+    if (h <= WL + 4 || h + 3 >= WY) return null;       // no flowers in water, on beaches, or against the sky ceiling
+    if (nearCave(wx, wz)) return null;
+    // ── THE VARIETY COMES FROM A COARSE PATCH CELL, NOT THIS ONE (user 2026-08-18: "make the flowers stick with
+    // their respective colors ... patches of roses or patches of yellow flowers") ── drawing k on the flower's
+    // OWN cell gives every neighbour an independent variety, which is the confetti this replaces. Keying it on
+    // a cell FLWPATCH times coarser makes every flower inside one patch the same plant, and the patch is where
+    // the variety changes. Its own salt, so a patch's colour is not tied to which cells inside it happen to
+    // carry a flower.
+    // Math.floor, NOT `/ FLWPATCH | 0`: cell coordinates go negative (the world is centred far from 0) and a
+    // bitwise truncation rounds toward zero, which would mirror the patch grid about the origin and put a seam
+    // through it. floor is uniform across the sign change.
+    const px = Math.floor(cx / FLWPATCH), pz = Math.floor(cz / FLWPATCH);
+    const set = inCh ? FLOWERV_CH : FLOWERV;           // the blossom band draws from its own one-variant set; everywhere else from the five
+    return { wx, wz, ch: inCh ? 1 : 0, k: (ihash(px * 53 + 7, pz * 59 + 17) * (set.length - 0.01)) | 0,
+             rot: (ihash(cx * 61 + 31, cz * 67 + 43) * 3.99) | 0 };   // rotation stays per-FLOWER: a patch of one species should not be a patch of one pose
+  }
+  function stampFlower(m, x0, x1, z0, z1) {
+    // mode 1 = empty cells + soft decor, the same mode the mushrooms and the oaks use: a flower grows THROUGH
+    // the grass already standing in its column instead of leaving a bare square around itself.
+    // ── SEATED ON ITS OWN COLUMN, NOT ON A MINIMUM OVER ITS NEIGHBOURS (user 2026-08-18: "sometimes the rose
+    // seems to be one voxel too low in the ground. both of its green voxels need to be showing") ── it was
+    // groundMin(wx, wz, 2), which takes the LOWEST of five columns probed at +/-2. Every flower's occupied
+    // footprint is 3x3 and its stem is the CENTRE column alone, so those probes sample ground the model never
+    // touches: on any slope with a one-voxel fall within two voxels the seat dropped by one, the z=0 green
+    // landed inside the surface voxel, and stampModel's mode-1 gate (`cur !== 0 && cur < DECOR_MIN`) refused
+    // it. One green showing instead of two, and only on slopes — hence "sometimes".
+    // H(wx, wz) is the first EMPTY y of the stem's own column, so z=0 lands ON the surface and z=1 above it.
+    // It is also the same function flowerAt already gates the candidate on, so placement and seat now agree
+    // rather than being decided by two different measurements.
+    stampModel((m.ch ? FLOWERV_CH : FLOWERV)[m.k], m.rot, m.wx, H(m.wx, m.wz), m.wz, x0, x1, z0, z1, 1);
+  }
   const MUCELL = 52;                                   // MUSHROOMS: a rare cluster, ONLY in the pine forest (a pine must be within crown reach), one candidate per 5.2 m cell
   function mushAt(cx, cz) {
     if (!MUSHV) return null;
@@ -667,10 +860,13 @@
     }
     if (H(wx, wz) <= WL + 4) return null;              // sticks stay off the beach
     if (nearCave(wx, wz)) return null;
-    return { wx, wz, m: ihash(cx * 11 + 3, cz * 13 + 5) < 0.5 ? 0 : STICKV.length - 1, rot: (ihash(cx + 4, cz + 7) * 3.99) | 0 };
+    return { wx, wz, m: ihash(cx * 11 + 3, cz * 13 + 5) < 0.5 ? 0 : STICKV.length - 1, b: chNear(wx) && cherryM(wx, wz) > 0.5, rot: (ihash(cx + 4, cz + 7) * 3.99) | 0 };   // b = this twig fell off a cherry tree, so its leaf is pink
   }
   function stampStick(s, x0, x1, z0, z1) {
-    stampModel(STICKV[s.m], s.rot, s.wx, groundMin(s.wx, s.wz, 2), s.wz, x0, x1, z0, z1, 1);
+    // STICKB is the same two twigs with the leaf recoloured (assets/bow.js) — identical geometry, so the
+    // seating, the pickup flood and the float table all behave the same. s.b is decided in stickAt, where the
+    // biome is already being sampled, rather than here, so the stamp stays a pure function of the candidate.
+    stampModel((s.b && STICKB.length ? STICKB : STICKV)[s.m], s.rot, s.wx, groundMin(s.wx, s.wz, 2), s.wz, x0, x1, z0, z1, 1);
   }
   const LGCELL = 96;                                   // FALLEN LOG (log.vox): one candidate per 9.6 m cell, 14% kept — rare, solid, walkable
   function logAt(cx, cz) {
@@ -781,15 +977,39 @@
             : sr < 0.48 ? 2 + ((ihash(cx * 3 + 71, cz * 5 + 13) * 1.99) | 0)      // 26% young, ~5 m
             : sr < 0.80 ? 4 + ((ihash(cx * 7 + 29, cz * 3 + 61) * 1.99) | 0)      // 32% mature, 7-9 m
             : 6 + ((ihash(cx * 13 + 47, cz * 11 + 19) * 1.99) | 0);               // 20% giant, 11 m
-    const t = { wx, wz, k: Math.min(OAKV.length - 1, k), rot: (ihash(cx + 137, cz + 89) * 3.99) | 0,
+    // ── THE CHERRY FOREST'S TREES ARE THESE TREES (user 2026-08-18: "use the same oak trees, except make the
+    // leaves pink") ── so this is a FLAG on the oak, not a second scatter pass. The cherry band sits inside
+    // oakM by construction (see cherryM in world/window.js), which means oakAt already runs there and already
+    // returns the right trees at the right density; all that changes is which model array stampOak reads and
+    // whether fruit is hung. A separate pass would have had to duplicate the size ladder, the spawn clearing,
+    // the anchors and the stick/rock proximity probes, and would have broken the "the two tree passes never
+    // meet" claim that lets oakAt and treeAt be ordered freely.
+    const blos = chNear(wx) && cherryM(wx, wz) > 0.5;   // chNear first: oakAt is NOT worldgen-only — buildCardCand (main/tick-nav.js) walks a 29x29 block of it EVERY FRAME, so an unguarded mask here was ~5,000 vnoise a frame spent answering "no"
+    // …and the BUSH TIERS ARE SKIPPED IN BLOSSOM (user: "dont spawn apples or oranges in the trees"). Tiers 0
+    // and 1 are not plain underbrush — they are the CHERRY and BLUEBERRY bushes, 22% of every oak in the world,
+    // and they carry berries by construction rather than by the fruit roll below. Turning off the roll alone
+    // would still have left a fifth of the cherry forest as fruiting shrubs. Re-rolled into the young tier on
+    // its own salt so the tier mix stays a partition and the blossom wood is not simply 22% emptier.
+    const k2 = blos && k < 2 ? 2 + ((ihash(cx * 31 + 13, cz * 17 + 7) * 1.99) | 0) : k;
+    // ── A QUARTER OF THE BLOSSOM IS WHITE (user 2026-08-18: "make half the cherry trees have white petals
+    // instead of pink", then "make the white cherry trees at 25% instead of 50%") ── a SECOND flag rather than a tri-state on `blos`, because everything else in the game that asks
+    // about these trees is asking "is this a cherry tree" and must keep getting yes for both varieties:
+    // cherryOak() refuses the songbird perches on them, the fruit roll below is gated on !t.blos, and the bush
+    // tiers are re-rolled above. Only the STAMP cares which variety it is.
+    // Its own salt, and one no other decision here uses: sharing k2's or rot's would tie a tree's colour to its
+    // size or its facing, and a forest where every big tree is white is not a mix, it is a pattern.
+    // Keyed on the CELL (cx, cz) like every other per-tree draw, so a tree keeps its colour across regeneration
+    // and across the worker/main-thread split — the same reason rot is.
+    const wht = blos && ihash(cx * 43 + 91, cz * 29 + 67) < 0.25;   // 0.5 -> 0.25 (user 2026-08-18): a QUARTER white, so pink still reads as the forest's colour and white as the variety in it
+    const t = { wx, wz, k: Math.min(OAKV.length - 1, k2), blos, wht, rot: (ihash(cx + 137, cz + 89) * 3.99) | 0,
                 sink: 1 + ((ihash(cx * 19, cz * 23) * 3) | 0) };   // sink 1-3, and it means something DIFFERENT here than it does for a pine: stampOak writes in mode 1, so every course below the local ground is refused rather than punched into the hill. The sink only decides how many base courses are hidden.
     // ── FRUIT (user 2026-08-17: "pick trees at random and place apples and oranges in the trees ... make 10% of
     // oak trees have some fruit it in") ── one SPECIES per tree, because an apple tree is an apple tree, and a
     // count that comes off the crown's own footprint the way birdsOnOak does rather than a constant: 3 on a young
     // oak, 9 on a giant. THE BUSH TIERS ARE EXCLUDED and that is the point of them - a berry bush already carries
     // fruit, and hanging a 30 cm apple in a 2.4 m shrub reads as litter. So the 10% is 10% of the oak TREES.
-    if (t.k >= 2 && FRUITV.length && OAK_ANCH[t.k] && OAK_ANCH[t.k].length &&
-        ihash(cx * 53 + 7, cz * 59 + 13) < OKFRUIT) {
+    if (!t.blos && t.k >= 2 && FRUITV.length && OAK_ANCH[t.k] && OAK_ANCH[t.k].length &&
+        ihash(cx * 53 + 7, cz * 59 + 13) < OKFRUIT) {   // …and NO FRUIT IN THE BLOSSOM (user 2026-08-18). t.fn stays undefined and stampOak's whole fruit block is already guarded on it, so this one term is the entire switch — and it also keeps the fruit's LEAF out, which wears an OAKLEAF id and would have hung green in a pink crown
       const fm = OAKV[t.k];
       t.fk = ihash(cx * 61 + 17, cz * 43 + 29) < 0.5 ? 0 : 1;                     // 0 = apple, 1 = orange (FRUITV's own order, which tools/voxelize_fruit.py fixes)
       // ── DOUBLED (user 2026-08-17: "double the rate of the apples in the bigger trees. As in a single tree
@@ -811,6 +1031,10 @@
     // query the bee swarm reads and it has to answer with a world position; groundMin is only paid on the 3%
     // that actually carry one. The hive hangs from a BRANCH (OAK_BANCH, bark), never from leaves - see the
     // support argument in assets/material-tabs.js.
+    // ── BEEHIVES DO HANG IN THE BLOSSOM (user 2026-08-18, reversing the same day's removal) ── they were briefly
+    // gated off here on the argument that the bees are BIO_OAKF and refused at the spawn gate, so the nest would
+    // be an empty one. The user wants the nest regardless, so the gate is gone rather than left as a dead `true`.
+    // If you want bees in it too, the lever is the BIO_ANY exclusion in main/tick-creatures.js, not this line.
     if (t.k >= 4 && HIVEV && OAK_BANCH[t.k] && OAK_BANCH[t.k].length &&
         ihash(cx * 71 + 29, cz * 67 + 41) < OKHIVE) {
       const m = OAKV[t.k], B = OAK_BANCH[t.k];
@@ -838,10 +1062,27 @@
   // oakAt - Math.floor((w - OKMARGIN) / OKCELL) to Math.floor((w + OKMARGIN) / OKCELL) - and every hive in a
   // region comes back. Returns null, or { wx, wy, wz (the box's CENTRE), bx, by, bz (its stamp anchor),
   // sx, sy, sz (the model box), tx, tz (the oak's trunk column), k (size tier), rot }.
+  // ── NO PERCHED SONGBIRDS IN THE BLOSSOM (user 2026-08-18) ── the perch candidates come from the two TREE
+  // grids, not from the life spawn gate: buildCardCand (main/tick-nav.js) walks oakAt and treeAt and hangs birds
+  // on whatever it finds, and it is the one life path that never reaches the biome test in tick-creatures.js.
+  // So the refusal has to live where the perches are counted. cherryOak answers "is this oak a blossom one",
+  // and the bird count for such a tree is zero — which starves findPineCrown of candidates and leaves the slot
+  // unplaced, exactly as standing in the desert already does.
+  // A separate helper rather than a term inside oakAt: oakAt must keep returning the tree (the rocks, the
+  // sticks and the fell all probe it), and only the BIRD question changes.
+  function cherryOak(t) { return !!(t && t.blos); }
   function hiveAt(cx, cz) { const t = oakAt(cx, cz); return (t && t.hv) || null; }
   function stampOak(t, x0, x1, z0, z1) {
     const gy = groundMin(t.wx, t.wz, 4) - t.sink;
-    stampModel(OAKV[t.k], t.rot, t.wx, gy, t.wz, x0, x1, z0, z1, 1);   // mode 1 = empty cells + soft decor: the crown grows through the ferns and grass instead of leaving a hole where one would have been, and the buried trunk courses are clipped by the terrain instead of carving it. groundMin over a 4-voxel radius seats the tree on the LOW side of a slope, so no oak stands on a stalk.
+    // OAKBLOSV is the same models with every leaf voxel run through the pink ramp, and OAKWHITV through the
+    // white one (assets/bow.js blosRemap; the gen workers rebuild their own copies). A leaf's GREEN picks a band
+    // of the ramp and the voxel's own position picks within it, so a crown wears the whole ramp rather than one
+    // shade per source green. Geometry, anchors and footprint are untouched — so everything that probes an oak
+    // (rock clash, stick proximity, the bird perches, the fell) is unaffected.
+    // Each falls back to the next set down if its own failed to build, so a missing derived set degrades to pink
+    // and then to green rather than to a crash — OAKV[t.k] is always valid because every set maps OAKV in place.
+    const oakSet = t.blos ? (t.wht && OAKWHITV.length ? OAKWHITV : (OAKBLOSV.length ? OAKBLOSV : OAKV)) : OAKV;
+    stampModel(oakSet[t.k], t.rot, t.wx, gy, t.wz, x0, x1, z0, z1, 1);   // mode 1 = empty cells + soft decor: the crown grows through the ferns and grass instead of leaving a hole where one would have been, and the buried trunk courses are clipped by the terrain instead of carving it. groundMin over a 4-voxel radius seats the tree on the LOW side of a slope, so no oak stands on a stalk.
     if (t.fn) {                                        // FRUIT — hung UNDER canopy anchors exactly as stampTree hangs its pinecones, and rotated with the tree so every region stamps them identically
       const m = OAKV[t.k], A = OAK_ANCH[t.k], F = FRUITV[t.fk];
       const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
@@ -889,6 +1130,13 @@
     if (along > 0 && along < SPVIEW_D && Math.abs(dxs * fwdZ - dzs * fwdX) < SPVIEW_W) return null;
     if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
     if (nearCave(wx, wz)) return null;
+    // ── AND HALF AGAIN IN THE PINE FOREST (user 2026-08-18: "reduce the amount of flowers in the pine forest
+    // in half") ── a SECOND, independent draw rather than a separate rate constant, so the two densities stay
+    // in a stated ratio: everywhere else keeps the rate above and the pines get exactly half of it. Its own
+    // salt, or it would correlate with the placement draw and thin precisely the cells that were already
+    // sparse. oakM < 0.5 is the pine forest by the same halfway line every other pine/oak split here uses, and
+    // the desert has already been refused by the mask test above, so this cannot catch it too.
+    if (oakM(wx, wz) < 0.5 && ihash(cx * 71 + 5, cz * 79 + 13) > 0.375) return null;   // 0.5 -> 0.375 (user 2026-08-18: "decrease the flowers in the pine forest by 25%") — a quarter off what survived, so the pines now keep 0.375 of the base rate against everywhere else's 1.0
     return { tx: wx, tz: wz, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
   }
   function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
@@ -1031,7 +1279,8 @@
     // 2 (OVERWRITE) so they win either way. shrubAt already refuses to sit inside either, so this is belt and
     // braces rather than the mechanism — but it is the cheap half of the pair.
     yield* stampCellsGen(x0, x1, z0, z1, DRCELL, 44, drockAt, stampDrock);   // the 26 rocks26 models, in the DESERT, in their own stock grey (user 2026-08-15 — the sandstone recolour is reverted). Margin 44 covers the widest of them (74 voxels), the same figure boulderAt uses for the same models in the forest
-    yield* stampCellsGen(x0, x1, z0, z1, MUCELL, 18, mushAt, stampMush);      // rare pine-forest mushroom cluster (23×27 footprint)
+    yield* stampCellsGen(x0, x1, z0, z1, MUCELL, 18, mushAt, stampMush);
+    yield* stampCellsGen(x0, x1, z0, z1, FLWCELL, 6, flowerAt, stampFlower);   // meadow flowers — margin 6 covers the widest variant (5) rotated, plus a voxel      // rare pine-forest mushroom cluster (23×27 footprint)
     yield* stampCellsGen(x0, x1, z0, z1, PCCELL, 8, pconeAt, stampPcone);
     yield* stampCellsGen(x0, x1, z0, z1, SCELL, 8, stickAt, stampStick);
     yield* stampCellsGen(x0, x1, z0, z1, LILYCELL, 8, lilyAt, stampLily);

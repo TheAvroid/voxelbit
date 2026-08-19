@@ -75,8 +75,8 @@
   snowTab[SNOW[0]] = 1; snowTab[SNOW[1]] = 1;
   const floatTab = new Uint8Array(256);
   const coneTab = new Uint8Array(256);                 // PINECONE ids — no hitbox for the PLAYER (see solid()); every other system still treats them normally
-  for (const i of [...GRASS, ...BLOOM]) floatTab[i] = 1;
-  for (const m of STICKV) for (const q of m.vox) floatTab[q >>> 24] = 1;            // twigs (user)
+  for (const i of [...GRASS, ...FLOWERIDS, ...OAKMOSS]) floatTab[i] = 1;   // OAKMOSS rides with GRASS: same surface-scatter class, oak-canopy colour (see assets/palette.js)   // FLOWERIDS replaces BLOOM (user 2026-08-18): the flowers are an authored MODEL now, so the ids come off its own voxels — see assets/bow.js
+  for (const m of STICKV.concat(STICKB)) for (const q of m.vox) floatTab[q >>> 24] = 1;            // twigs (user) — and the AUTHORED pink pair, whose browns are already flagged (they are the same ids) but whose four leaf pinks are its own and would otherwise miss the whole ground-scatter class
   // ── PINECONES ARE WALK-THROUGH FOR THE PLAYER (user 2026-08-05: "should be able to clip through them") ──
   // floatTab already called them surface scatter, but solidTab is set by the BLANKET `i < DECOR_MIN` sweep
   // above and cones come out of the pine's own palette, so they landed in that range and kept a hitbox: you
@@ -137,6 +137,18 @@
   // has, where needles are scenery the axe passes through on its way to the trunk.
   for (const i of OAKBARK) { solidTab[i] = 1; woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }
   for (const i of OAKLEAF) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
+  // ── THE BLOSSOM IS CANOPY, EXACTLY AS THE GREEN LEAF IS ── the cherry forest stamps the SAME oak models with
+  // the leaf ids swapped (assets/bow.js blosRemap), so every material question a crown answers — do I collide, do
+  // I catch snow, does the primary ray see through me, am I axe-only, does the orphan sweep keep me — has to
+  // answer identically or the two forests would behave differently while looking the same. Nothing is inherited
+  // from OAKLEAF by being "a leaf": these flags are per-id and this line is the whole of the blossom's identity.
+  for (const i of BLOSLEAF) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
+  for (const i of BLOSWHITE) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
+  // The CHERRIES are foliage too, and deliberately the same class as the apples and oranges rather than the
+  // canopy: foliaTab is what keeps a hanging fruit OUT of the generation orphan sweep (ORPHAN_OK is "not
+  // foliage and not wood"), and it is what lets the aim ray stop on one instead of passing through the way it
+  // passes through floatTab scatter. No hitbox, so you still walk through a crown.
+  if (BLOSCHERRY) { solidTab[BLOSCHERRY] = 0; foliaTab[BLOSCHERRY] = 1; foliageIds.push(BLOSCHERRY); }   // the white variant is the same MATERIAL as the pink one — see the BLOSMAPW note in assets/bow.js
   // ── A BERRY AND A FRUIT ARE CANOPY, NOT SCATTER (user 2026-08-17) ── the three FRUITC ids get exactly the
   // treatment the oak LEAF above gets, and the reasoning is that a cherry on a bush and an apple in a crown
   // genuinely ARE part of the crown. Everything that follows from foliaTab is what a fruit wants, item by item:
@@ -184,6 +196,12 @@
   //     exactly why OAK_BANCH below anchors it to bark rather than to leaves.
   for (const i of HIVEC) { solidTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }
   solidTab[ED_WHITE] = solidTab[ED_GREY] = solidTab[ED_HLITE] = 1;                          // the editor stage is walkable floor
+  // ── AND NOTHING A FLOWER WEARS IS SOLID ── stated explicitly, AFTER the editor line above, rather than left
+  // to the fact that the flower now mints its own ids (palOwn on ED_*, see assets/palette.js). Belt and braces:
+  // solidTab is a blanket `i < DECOR_MIN` range sweep, so any future colour a flower shares down into that
+  // range would silently grow a hitbox again, and this is the line that says it must not. floatTab already
+  // said "surface scatter"; floatTab is not what the player collides with.
+  for (const i of FLOWERIDS) solidTab[i] = 0;
   // ── WHERE THINGS HANG IN AN OAK ── PINE_ANCH's idea re-derived for eight crowns instead of one model, and
   // split in two because a fruit and a hive want different SURFACES:
   //   OAK_ANCH[k]   canopy LEAF with clear exterior air below — an apple or an orange hangs from it.
@@ -207,19 +225,42 @@
       const ext = voxShellAir(m).ext;
       const clear = (x, y, z, n) => { for (let d = 1; d <= n; d++) { const zz = z - d;
         if (zz < 0 || !ext[x + y * sx + zz * sx * sy]) return false; } return true; };
-      const A = [], B = [];
+      // ── AND THE HIVE NEEDS ITS WHOLE BOX CLEAR, NOT A COLUMN (user 2026-08-18: "the beehive is clipping
+      // through the tree") ── `clear` above tests a 1x1 column, which is right for a fruit (one voxel on a
+      // string) and wrong for a beehive: HIVEV is 5x5x5, so an anchor whose column happened to be open still
+      // put four of the hive's five courses through whatever branches and leaves stood beside it. Widening the
+      // test to the model's real footprint is what stops it intersecting the crown at all.
+      // EXTERIOR air, like the column test — these crowns are hollow shells, so an "empty" cell is very often
+      // inside the dome, and a hive hung there is both buried and clipping.
+      const hvx = (typeof HIVEV !== 'undefined' && HIVEV) ? (HIVEV.sx >> 1) : 2;
+      const hvy = (typeof HIVEV !== 'undefined' && HIVEV) ? (HIVEV.sy >> 1) : 2;
+      const clearBox = (x, y, z, n) => {
+        for (let ddx = -hvx; ddx <= hvx; ddx++) for (let ddy = -hvy; ddy <= hvy; ddy++) {
+          const xx = x + ddx, yy = y + ddy;
+          if (xx < 0 || xx >= sx || yy < 0 || yy >= sy) return false;
+          for (let d = 1; d <= n; d++) { const zz = z - d;
+            if (zz < 0 || !ext[xx + yy * sx + zz * sx * sy]) return false; }
+        }
+        return true;
+      };
+      const A = [], B = [], BW = [];   // BW: branch anchors with room for the whole hive, see clearBox below
       for (const p of m.vox) {
         const x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
         if (x < EDGE || x >= sx - EDGE || y < EDGE || y >= sy - EDGE || z < 6) continue;
         if (fol[p >>> 24]) { if (z >= (sz >> 2) && clear(x, y, z, 4)) A.push(x | (y << 8) | (z << 16)); }
-        else if (clear(x, y, z, 6)) B.push(x | (y << 8) | (z << 16));
+        else if (clear(x, y, z, 6)) { B.push(x | (y << 8) | (z << 16)); if (clearBox(x, y, z, 5)) BW.push(x | (y << 8) | (z << 16)); }   // BW = the subset with the HIVE'S WHOLE BOX clear; B stays the old column test as the fallback
       }
       const ang = (q) => Math.atan2(((q >> 8) & 255) - sy * 0.5, (q & 255) - sx * 0.5);
       const trim = (a, n) => { a.sort((p, q) => ang(p) - ang(q));
         if (a.length <= n) return a;
         const out = []; for (let i = 0; i < n; i++) out.push(a[(((i + 0.5) / n) * a.length) | 0]);
         return out; };
-      OAK_ANCH.push(trim(A, AMAX)); OAK_BANCH.push(trim(B, BMAX));
+      // ── PREFER A CLEAR BOX, BUT NEVER RETURN NOTHING (user 2026-08-18) ── requiring the hive's full 5x5x5 of
+      // exterior air is what stops it clipping the crown, and on its own it is too strict: it emptied the list
+      // for every model and hives vanished from the world entirely (measured — hiveDbg searched 400 cells and
+      // found none). So the wide test SELECTS when it can and the old column test stands behind it. A crown
+      // with no roomy branch still gets a hive, just the tucked-in one it had before, rather than none.
+      OAK_ANCH.push(trim(A, AMAX)); OAK_BANCH.push(trim(BW.length ? BW : B, BMAX));
     }
     if (OAKV.length) console.log('[vb] oak anchors: fruit', OAK_ANCH.map((a) => a.length).join('/'),
       '| hive', OAK_BANCH.map((a) => a.length).join('/'), '(caps', AMAX, '/', BMAX + ')'); }

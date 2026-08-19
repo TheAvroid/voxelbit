@@ -2,7 +2,19 @@
   // logged with a stack (window.__vbErr — paste it to be fixed), and where possible the loop is restarted instead
   // of hanging. A LOST GPU DEVICE (driver reset/timeout — the classic mid-walk freeze) shows a visible banner.
   window.__vbErr = null;
-  const vbNoteErr = (tag, e) => { window.__vbErr = tag + ': ' + ((e && (e.stack || e.message)) || e); console.error('[vb]', tag, e); };
+  // ── AND A RING, NOT JUST THE LAST ONE (user 2026-08-18: an intermittent freeze/crash minutes into play) ──
+  // __vbErr is overwritten by every subsequent error, so a fault that fires once and is then followed by any
+  // other noise leaves nothing behind. That is exactly the wrong shape for a bug you cannot reproduce on demand:
+  // by the time anybody looks, the thing that actually broke is gone. This keeps the last 32 with a wall-clock
+  // stamp and the uptime at which each happened, which is what turns "it froze at some point" into a timeline.
+  // Read it with __vb.errLog(). Bounded so it cannot itself become the leak it is here to help find.
+  window.__vbErrLog = [];
+  const vbNoteErr = (tag, e) => {
+    const msg = tag + ': ' + ((e && (e.stack || e.message)) || e);
+    window.__vbErr = msg;
+    window.__vbErrLog.push({ t: new Date().toISOString().slice(11, 19), up: +(performance.now() / 1000).toFixed(1), tag, msg: String(msg).slice(0, 400) });
+    if (window.__vbErrLog.length > 32) window.__vbErrLog.shift();
+    console.error('[vb]', tag, e); };
   // ── CPU PHASE TELEMETRY ── (dev) armed with __vb.cprof(true). When disarmed this costs exactly one
   // predictable `if (CPROF)` test per phase boundary — no performance.now() calls, no allocation — so it
   // is safe to leave compiled into normal play. Armed, it EMAs the ms spent in each tickBody phase.

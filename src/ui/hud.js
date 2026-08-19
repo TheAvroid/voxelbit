@@ -79,7 +79,9 @@
   // have already dragged the orange's sliders this session, clear it (or drag it) to see this take.
   if (APPLE_IT) { const fp = { x: 1.09, y: -0.26, z: 0.92, yaw: 0.12, pitch: -1.32, roll: 1.01, scale: 0.075 };
     for (let f = 0; f < FOOD_EAT_N; f++) { PICK_DEFS[APPLE_IT + f] = { ...fp }; PICK_DEFS[ORANGE_IT + f] = { ...fp }; } }
+  if (STICK_BLOS_IT) PICK_DEFS[STICK_BLOS_IT] = { ...PICK_DEFS[3] };   // the blossom twig is stick_1 with a recoloured leaf — same geometry, same anchor, so it holds in the hand exactly as the green one does and starts on its bake
   const pickCfgs = { 1: { ...PICK_DEFS[1] }, 2: { ...PICK_DEFS[2] }, 3: { ...PICK_DEFS[3] }, 4: { ...PICK_DEFS[4] } };
+  if (STICK_BLOS_IT) pickCfgs[STICK_BLOS_IT] = { ...PICK_DEFS[STICK_BLOS_IT] };
   pickCfgs[KNIFE_IT] = { ...PICK_DEFS[KNIFE_IT] };
   if (PICK_IT) pickCfgs[PICK_IT] = { ...PICK_DEFS[PICK_IT] };
   if (SHOVEL_IT) pickCfgs[SHOVEL_IT] = { ...PICK_DEFS[SHOVEL_IT] };
@@ -92,6 +94,7 @@
   if (WORM_ITEM0) pickCfgs[WORM_ITEM0] = { ...PICK_DEFS[WORM_ITEM0] };
   if (APPLE_IT) for (let f = 0; f < FOOD_EAT_N; f++) { pickCfgs[APPLE_IT + f] = { ...PICK_DEFS[APPLE_IT + f] }; pickCfgs[ORANGE_IT + f] = { ...PICK_DEFS[ORANGE_IT + f] }; }
   const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
+  if (STICK_BLOS_IT) ITEM_NAMES[STICK_BLOS_IT] = 'twig';   // ── THE SAME NAME AS ITEM 3, DELIBERATELY ── the held-pose and stack-badge panels group by NAME (see the peers helpers below), so the green twig and the blossom twig share one pose, one badge placement and one saved bake. Without this the pink one is a nameless id: no pose entry, no badge trim, and neither panel can bind to it.
   ITEM_NAMES[KNIFE_IT] = 'knife';
   if (PICK_IT) ITEM_NAMES[PICK_IT] = 'pick';
   if (SHOVEL_IT) ITEM_NAMES[SHOVEL_IT] = 'shovel';
@@ -153,9 +156,32 @@
   for (const id in ITEM_NAMES) SB_DEFS[id] = { ...SB_BASE };   // every id that answers to a name — which is exactly the set the hand can show and the set a save can be keyed by
   // ── PER-ITEM BAKES ── paste a copy row here, spread across the strip if the item is one:
   //   if (APPLE_IT) for (let f = 0; f < FOOD_EAT_N; f++) SB_DEFS[APPLE_IT + f] = { x: 0.1, y: 5, size: 1, tilt: -0.26 };
+  // THE FRUIT (user 2026-08-18). Spread across the whole eat strip, not written to the whole
+  // fruit at once: every frame of a bite answers to the same name, so a placement on frame 0 alone
+  // would let the badge jump the moment you took a bite. The orange carries the apple's numbers
+  // deliberately (user: "use the same stack position for the orange as well") — the two models are
+  // the same size and sit in the same pose, so one placement is correct for both; a shared const
+  // rather than two literals so they cannot drift apart in a later edit.
+  // Note x = -48: the old slider stopped at -20 and could not have reached this, which is the
+  // clamp/range fix above earning its keep rather than a coincidence.
+  const SB_FRUIT = { x: -48, y: 23, size: 1, tilt: -0.26 };
+  for (const base of [APPLE_IT, ORANGE_IT]) if (base) for (let f = 0; f < FOOD_EAT_N; f++) SB_DEFS[base + f] = { ...SB_FRUIT };
+  // THE HELD STICK (user 2026-08-18). One id, not a strip — held-items.js pushes a single item for stick_1.vox
+  // — and it answers to 'twig' rather than 'stick': ITEM_NAMES hardcodes 3:'twig' and ui/console.js maps every
+  // spelling (stick, stick_1, stick_2, twig) onto that same id, so the panel titles it "stack count — twig".
+  // Keyed on STICK_IT and not the literal 3 so an item-list change cannot silently move this onto something else.
+  if (STICK_IT) SB_DEFS[STICK_IT] = { x: -51.5, y: 0, size: 1, tilt: -0.26 };
+  if (STICK_BLOS_IT) SB_DEFS[STICK_BLOS_IT] = { x: -51.5, y: 0, size: 1, tilt: -0.26 };   // the blossom twig is the same object in the hand, so it carries the same badge placement
   const sbCfgs = {}; for (const id in SB_DEFS) sbCfgs[id] = { ...SB_DEFS[id] };
   const sbFor = (it) => sbCfgs[it] || SB_BASE;         // read-only fallback: an id with no name (nothing the hand shows) takes the base rather than minting an entry from a render loop
-  try { const byName = JSON.parse(localStorage.getItem('vb_stackbadge2') || '{}');
+  // ── THE KEY IS BUMPED TO …3 (user 2026-08-18) ── the trim's UNIT changed with the slider fix: x/y used to be
+  // multiplied by the FLOORED glyph pixel and are now multiplied by the unfloored one (main/tick-camera.js), so at a
+  // 865-tall canvas the very same stored number renders 35% further out than it did when it was tuned. `_b` cannot
+  // catch that — it fingerprints the DEFAULTS, and the defaults did not move — so a stale save would have quietly
+  // relocated every hand-placed badge with nothing on screen to explain it. Dropping the old key is the honest
+  // migration and costs little: every placement in it was tuned through the clamp bug this change fixes, i.e. through
+  // a slider that could not reach most of its own range. vb_stackbadge2 is left on disk rather than deleted.
+  try { const byName = JSON.parse(localStorage.getItem('vb_stackbadge3') || '{}');
     const stale = [];
     for (const id in sbCfgs) { const nm = ITEM_NAMES[id], sv = nm ? byName[nm] : null; if (!sv) continue;
       if (sv._b !== sbSig(SB_DEFS[id])) { if (stale.indexOf(nm) < 0) stale.push(nm); continue; }   // the code bake moved since this was saved — the code wins
@@ -164,7 +190,7 @@
   } catch (e) { console.warn('[vb] stack-badge placements could not be restored', e); }
   const sbSave = () => { try {
     const byName = {}; for (const id in sbCfgs) { const nm = ITEM_NAMES[id]; if (nm) byName[nm] = Object.assign({ _b: sbSig(SB_DEFS[id]) }, sbCfgs[id]); }
-    localStorage.setItem('vb_stackbadge2', JSON.stringify(byName)); } catch (e) {} };
+    localStorage.setItem('vb_stackbadge3', JSON.stringify(byName)); } catch (e) {} };
   const pkPanelEl = $('pkPanel');                      // …read once per frame by tick-camera: while this panel is up the badge is FORCED visible (see the note there), or there is nothing on screen to drag the sliders against
   const sbOpen = () => !pkPanelEl.classList.contains('hidden');
   const heldIt = () => (grabAnim && !grabAnim.left && !slots[selSlot] ? grabAnim.it : (slots[selSlot] ? slots[selSlot].it : 0));   // the item the RIGHT hand is showing (0 = empty). A grab flight into a FULL hand does not borrow it (user): that pickup flies as its own world object so your tool stays out — see grabGhost. An EMPTY hand borrows it again, the way it did originally, so the incoming item flies into the HELD POSE itself and there is no tool to lose.
@@ -203,9 +229,9 @@
       for (const [k, mn, mx, st, name] of PKDEF) {
         const row = document.createElement('div'); row.className = 'pkRow';
         const lbl = document.createElement('span'); lbl.textContent = name;
-        const inp = document.createElement('input'); inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st; inp.value = cfg[k];
+        const inp = document.createElement('input'); inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st; inp.value = cfg[k]; sliderFill(inp);   // …and the gold rail is PAINTED (ui/settings.js). Without this call the CSS var falls back to 50%, so every knob would sit on a half-filled bar whatever its value — worse than no fill, because it reads as a real reading
         const val = document.createElement('span'); val.className = 'pkVal'; val.textContent = (+cfg[k]).toFixed(k === 'scale' ? 3 : 2);
-        inp.addEventListener('input', (e) => { e.stopPropagation(); const v9 = parseFloat(inp.value); for (const c9 of pkPeers()) c9[k] = v9; val.textContent = (+cfg[k]).toFixed(k === 'scale' ? 3 : 2); pickSave();
+        inp.addEventListener('input', (e) => { e.stopPropagation(); const v9 = parseFloat(inp.value); for (const c9 of pkPeers()) c9[k] = v9; val.textContent = (+cfg[k]).toFixed(k === 'scale' ? 3 : 2); sliderFill(inp); pickSave();
           const j = document.getElementById('pkJson'); if (j) j.value = pkStr(); });
         inp.addEventListener('pointerdown', (e) => e.stopPropagation());
         row.appendChild(lbl); row.appendChild(inp); row.appendChild(val); pkRows.appendChild(row);
@@ -224,7 +250,21 @@
     // ── …AND THE SECOND CARD, UNDER IT ── same row markup, same copy-to-bake row, same save-by-fingerprint
     // rule, and now the same PER-ITEM binding as the card above it: the sliders bind to whatever the hand is
     // showing and a drag moves every id that answers to its name, so a strip keeps one placement.
-    const SBDEF = [['x', -20, 20, 0.5, 'nudge right'], ['y', -20, 20, 0.5, 'nudge down'], ['size', 0.3, 3, 0.05, 'size'], ['tilt', -1.57, 1.57, 0.01, 'tilt']];
+    // ── THE RANGES ARE THE OTHER HALF OF THE "BARELY MOVES" REPORT (user 2026-08-18) ── the real culprit was a
+    // clamp in main/tick-camera.js that outranked the slider (fixed there), but even unblocked these numbers
+    // were thin: a badge pixel is CH/320, so at a 865-tall canvas the old +/-20 was +/-54 screen px of total
+    // authority over a placement that can start a couple of hundred px away. +/-60 badge px is the same nudge
+    // in spirit — still measured off the model's own corner, still resolution independent — with enough reach
+    // to actually land it. SIZE went the other way, from 0.05 to 0.25: BLIT floors the glyph pixel to a whole
+    // screen pixel (it must, or the badge shimmers), so at 865 the old step gave 55 slider positions and only
+    // SEVEN distinct outcomes — 89% of a drag did nothing, and the bottom third was one flat plateau. A step
+    // that cannot be seen is not precision, it is a slider that reads as broken; 0.25 puts most positions on a
+    // different glyph pixel. The MINIMUM stays low (0.25, not 0.5) because the plateau is a property of THIS height,
+    // not of the setting: at 865 everything under ~0.74 floors to the same 2 px, but on a 4K panel 0.25 and 0.5 are
+    // genuinely different glyph pixels, and a range trimmed to what one monitor can show is the same mistake in
+    // miniature. Every stop is an exact multiple of the step, so no saved value lands off-grid.
+    // Bake finer numbers by hand in SB_DEFS if a specific item ever wants one.
+    const SBDEF = [['x', -60, 60, 0.5, 'nudge right'], ['y', -60, 60, 0.5, 'nudge down'], ['size', 0.25, 3, 0.25, 'size'], ['tilt', -1.57, 1.57, 0.01, 'tilt']];
     const sbRows = $('sbRows'), sbTitle = $('sbCard').querySelector('h2');
     let sbIt = 1;                                      // which item the badge sliders are bound to — resolved from the hand each time the panel refreshes, exactly as pkIt is
     const sbPeers = () => { const nm = ITEM_NAMES[sbIt], out = [];
@@ -239,9 +279,9 @@
       for (const [k, mn, mx, st, name] of SBDEF) {
         const row = document.createElement('div'); row.className = 'pkRow';
         const lbl = document.createElement('span'); lbl.textContent = name;
-        const inp = document.createElement('input'); inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st; inp.value = cfg[k];
+        const inp = document.createElement('input'); inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st; inp.value = cfg[k]; sliderFill(inp);
         const val = document.createElement('span'); val.className = 'pkVal'; val.textContent = (+cfg[k]).toFixed(2);
-        inp.addEventListener('input', (e) => { e.stopPropagation(); const v9 = parseFloat(inp.value); for (const c9 of sbPeers()) c9[k] = v9; val.textContent = (+cfg[k]).toFixed(2); sbSave();
+        inp.addEventListener('input', (e) => { e.stopPropagation(); const v9 = parseFloat(inp.value); for (const c9 of sbPeers()) c9[k] = v9; val.textContent = (+cfg[k]).toFixed(2); sliderFill(inp); sbSave();
           const j = document.getElementById('sbJson'); if (j) j.value = sbStr(); });
         inp.addEventListener('pointerdown', (e) => e.stopPropagation());
         row.appendChild(lbl); row.appendChild(inp); row.appendChild(val); sbRows.appendChild(row);
@@ -281,6 +321,10 @@
     const pkShow = (on) => { pkPanel.classList.toggle('hidden', !on); setLightMode(on); if (on) { pkRefresh(); sbRefresh(); } };
     document.addEventListener('keydown', (e) => {
       if (e.code !== 'KeyL' || CMD.open || ED.on || e.repeat) return;
+      // …and NOT while a control in the panel has the keyboard (user 2026-08-18). Click a slider, then press L —
+      // an arrow-key nudge is the precise way to use these, and 'l' is one keystroke from the arrow cluster — and the
+      // panel you are tuning vanished. ui/input.js:47 already guards its own keys this way; this one never did.
+      const ae = document.activeElement; if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
       e.preventDefault();
       pkShow(pkPanel.classList.contains('hidden'));   // rebinds the sliders to whatever is in the hand right now
     });

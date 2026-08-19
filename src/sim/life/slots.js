@@ -85,6 +85,7 @@
   const armBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 3, hz: 4 }));   // SOLID world-armadillo hitboxes — lower + flatter than the bunny; nearest few, republished each frame
   const skunkBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 4, hz: 4 }));   // SOLID world-skunk hitboxes — a touch taller than the armadillo (rounder body); nearest few, republished each frame
   const porcBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 4, hz: 4 }));   // SOLID world-porcupine hitboxes (user's 4th land mammal) — same extents as the skunk; nearest few, republished each frame
+  const flamBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 4, hz: 4 }));   // …and the FLAMINGO's, or it is the one land-band creature the player walks straight through: sim/player.js tests exactly these arrays, so a band with no array is a body with no collision
   const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
   const cardSlainPerch = new Set(), CARD_SLAIN_CAP = 512;   // perches whose bird the player KILLED — see findPineCrown. Module scope on purpose: the kill handler and the placement search are ~4000 lines apart.
   const cardPerchKey = (tx, tz, bi) => tx + '|' + tz + '|' + bi;
@@ -139,7 +140,12 @@
   const ARM_0 = BUNNY_END, ARM_END = ARM_0 + MAM_PER;        // 541-564
   const SKUNK_0 = ARM_END, SKUNK_END = SKUNK_0 + MAM_PER;    // 565-588
   const PORC_0 = SKUNK_END;                                  // 589-612
-  const MAM_0 = BUNNY_0, MAM_END = PORC_0 + MAM_PER;   // the four land mammals are one contiguous run, MAM_0..MAM_END, and MAM_PER slots each — the per-species count is nBunny/nArmadillo/nSkunk/nPorcupine in tick-life.js and is far under the band width
+  // ── THE FLAMINGO (user 2026-08-18) ── a FIFTH band on the land-mammal run, and inside it rather than beside
+  // it on purpose: it walks, it is killable and it leaves a carcass, which is the whole of what MAM_0..MAM_END
+  // means to the code that loops over it (dropsMeat, the seat, the hurt box, the even-spread machinery). Being a
+  // bird rather than a mammal changes nothing any of those loops ask. It is the cherry forest's only land life.
+  const FLAM_0 = PORC_0 + MAM_PER, FLAM_END = FLAM_0 + MAM_PER;   // 613-636
+  const MAM_0 = BUNNY_0, MAM_END = FLAM_END;   // the four land mammals are one contiguous run, MAM_0..MAM_END, and MAM_PER slots each — the per-species count is nBunny/nArmadillo/nSkunk/nPorcupine in tick-life.js and is far under the band width
   // ── THE 'DESERT' BAND (user 2026-08-15) ── DES_N species, DES_PER slots each, appended after the land
   // mammals. Appended rather than carved out of an existing band because every band is fully claimed.
   // WIDENED 7 -> 9 (user 2026-08-17) for the BEE and the GRASS SNAKE, and DES_N is the only number that
@@ -186,6 +192,25 @@
   // tries therefore ask for exactly the gate this band has always had, which is what keeps the count
   // whole: decaying across the full budget left a slot unplaced for a frame in 2 of 12 measured samples.
   const MAM_APART = 110, MAM_FLOOR = 70, MAM_RELAX = 7;
+  // ── FLAMINGOS COME IN PAIRS (user 2026-08-18: "can you spawn flamingos as a couple") ── every other creature
+  // reserves its home cell outright, one animal per cell, which is exactly what made a lone flamingo. So the
+  // flamingo's cell takes TWO, and the second one is placed off the first rather than off the cell: a pair that
+  // shares a cell but not a spot would stand 40 voxels apart and read as two lone birds, not a couple.
+  const FLAM_PAIR = 2, FLAM_MATE_LO = 5, FLAM_MATE_HI = 9;
+  // ── FISH SPACING (user 2026-08-18: "sometimes there will be way too many fish in a very small area") ──
+  // the per-pool cap was never the leak; the GEOMETRY under it was. A spot stands for up to 25,400 vox² of water
+  // but every fish it spawned landed inside a 24-vox box — 576 vox², so sixteen fish at 1 per 36 vox² when the
+  // cap itself is written for 1 per 1200. Same shape as the desert's: a comfortable floor that relaxes cubically
+  // rather than a hard one, so a cramped pond still fills instead of burning its retries.
+  const FISH_APART = 28, FISH_FLOOR = 14, FISH_RELAX = 11;
+  // The betta is the other half. It is EXEMPT from the floor by design (it shoals), joined the first betta within
+  // 120 and broke unconditionally — one global anchor per pool, no size cap — so in the blossom band, where every
+  // fish is picked betta, the entire population could stack into one ~18-vox disc.
+  // JOIN is how far a newcomer will SWIM to a shoal; HUDDLE is how wide a shoal actually is (members sit 3-9 from
+  // their anchor) and is what the cap is counted over. Keeping them separate matters: counting mates near the
+  // CANDIDATE instead of near the ANCHOR measured shoals of 1-2 — the spawn disc is 45 wide, so a newcomer almost
+  // never lands within one shoal-width of the shoal it should be joining, and the betta stopped schooling at all.
+  const BETTA_JOIN = 120, BETTA_HUDDLE = 16, BETTA_SCHOOL = 6, BETTA_APART = 70;
   const DES_APART = 160;        // between two of the SAME species — the one the eye reads as "geckos in a litter"
   const DES_APART_ANY = 64;     // between any two desert creatures — stops a mixed pile-up in one patch of sand
   // ── THE BEE'S TWO ERRANDS (user 2026-08-17: bees 'going to flowers and sitting on them briefly', and
@@ -214,7 +239,7 @@
   // other per-id rule in the game. Built HERE, at module scope: sim/life/slots.js is outside tickBody, and
   // the obvious home (assets/material-tabs.js, where floatTab already marks these ids) is another agent's
   // file today. BLOOM itself is assets/palette.js, fragment 16, far above this one.
-  const BLOOM_TAB = new Uint8Array(256); for (const bq of BLOOM) BLOOM_TAB[bq] = 1;
+  const BLOOM_TAB = new Uint8Array(256); for (const bq of FLOWERHEAD) BLOOM_TAB[bq] = 1;   // FLOWERHEAD, not every flower id: the model has a STEM and a bee belongs on the bloom. BLOOM was heads-only by construction; this restores that property explicitly (assets/bow.js)
   // ══════════════════════════════════════════════════════════════════════════════════════════════════
   // ══ THE BEE'S TWO ERRANDS ══ the flower finder and the HIVE SEAM. The tuning is the BEE_* block above; the
   // five-state machine that drives them is in main/tick-creatures.js, in the kind-0 flyer branch.

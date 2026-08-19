@@ -27,7 +27,21 @@
   // case goes 15 -> 6 while 32 slots come free. Terrain is untouched at any tolerance: this only decides which
   // id a NEW model colour gets, never what an existing id looks like, and it is floored at DECOR_MIN.
   // ?paltol=N overrides for A/B; 0 restores the old exact-only behaviour.
-  const PAL_TOL = (() => { const m = /[?&]paltol=(\d+)/.exec(location.search); return m ? +m[1] : 8; })();
+  // ── 8 -> 12 (user 2026-08-18: "condense any palette colors that are either similar in shade or very similar
+  // in shade. whatever slots you can gain make them black slots") ── measured over four boots of this build:
+  //     paltol   palette  free   worst error   silently substituted
+  //        8       255      1        8/255            0
+  //       10       244     12        9/255            0
+  //       12       237     19       11/255            0
+  //       14       234     22       11/255            0
+  // 12 is the knee: 18 slots for 3/255 of extra bounded error, and 14 buys only 3 more for nothing. Note the
+  // last column stays ZERO throughout, which is the whole safety argument and is worth restating — a tolerance
+  // reuse is BOUNDED by PAL_TOL, while the palNearest substitution it prevents is bounded by nothing at all
+  // (15/255 at boot historically, and far worse in play: the green-porcupine bug). Raising this trades a
+  // slightly larger bounded error for headroom, never for an unbounded one.
+  // HELD ITEMS ARE UNAFFECTED: everything on the 'item'/'held' path passes noTol and still gets exact colours
+  // or its own id, which is the fix the stone tools needed on 2026-08-15 and this must not undo.
+  const PAL_TOL = (() => { const m = /[?&]paltol=(\d+)/.exec(location.search); return m ? +m[1] : 12; })();
   let palTolHits = 0;                                  // slots this saved — __vb.palAudit() reports it
   const palTolErr = {};                                // max-channel delta -> how many colours landed there
   const palTolIdx = new Map();                         // colour -> the id a TOLERANCE reuse gave it. Deliberately not palIdx: see the note at the call site
@@ -176,6 +190,51 @@
       mvox.push(pvox[i] | (pvox[i + 1] << 8) | (pvox[i + 2] << 16) | (cid << 24));   // cid<<24 may flip the sign bit — every reader uses bitwise ops, so that's fine
     }
     return { sx, sy, sz, vox: mvox };
+  };
+  // ── EVERY MODEL IN A MULTI-MODEL .vox, AS SEPARATE DECOR VARIANTS ── parseVoxModel above deliberately reads
+  // only the FIRST SIZE/XYZI pair (the `!sx` / `!pvox` guards), because every other caller in this tree has one
+  // model per file. A VARIANT SET is the other shape and it needs its own function rather than a flag, because
+  // the return type differs: flowers.vox is five different flowers, not five frames of one, so each model
+  // becomes its own entry and the ground scatter picks between them.
+  // NOT tools/split_vox_frames.py's job either — that splits FRAMES to disk, and its own guard refuses a file
+  // whose models differ more than 4x in volume, which this one does (27 to 125) precisely because the variants
+  // are different plants rather than poses of one.
+  // ONE colMap ACROSS ALL THE MODELS, for the reason parseVoxModel's colMap note gives: the variants overlap
+  // heavily — the same stem green, the same white — and parsing them independently would mint that green once
+  // per model. Shared, the whole set costs what one model's palette costs plus what the others add.
+  const parseVoxVariants = (pv, share, noTol) => {
+    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+    const sizes = [], raws = []; const ppal = new Uint8Array(1024);
+    const walk = (off, end) => { while (off < end) {
+      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
+      if (id === 'SIZE') sizes.push([pdv.getUint32(off + 12, true), pdv.getUint32(off + 16, true), pdv.getUint32(off + 20, true)]);
+      else if (id === 'XYZI') { const n = pdv.getUint32(off + 12, true); raws.push(pv.subarray(off + 16, off + 16 + n * 4)); }
+      else if (id === 'RGBA') ppal.set(pv.subarray(off + 12, off + 12 + 1024));
+      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+      off += 12 + bsz + csz;
+    } };
+    walk(8, pv.length);
+    if (!raws.length) throw new Error('no XYZI chunk');
+    const colMap = new Map(), out = [];
+    for (let m = 0; m < raws.length; m++) {
+      const raw = raws[m], sz = sizes[m] || sizes[0], cmap = new Map(), mvox = [];
+      for (let i = 0; i < raw.length; i += 4) {
+        const ci = raw[i + 3];
+        let cid = cmap.get(ci);
+        if (cid === undefined) {
+          const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
+          const ck = (cr << 16) | (cg << 8) | cb;
+          if (colMap.has(ck)) cid = colMap.get(ck);
+          else { if (share) cid = palShare(cr, cg, cb, noTol); else { cid = addCol(cr, cg, cb); palOwn.add(cid); }
+            colMap.set(ck, cid); }
+          cmap.set(ci, cid);
+        }
+        mvox.push(raw[i] | (raw[i + 1] << 8) | (raw[i + 2] << 16) | (cid << 24));
+      }
+      out.push({ sx: sz[0], sy: sz[1], sz: sz[2], vox: mvox });
+    }
+    return out;
   };
   // ── WHAT COLOURS DOES THIS .vox ACTUALLY USE ── the distinct RGBs its voxels reference, and NOTHING ELSE:
   // no palette id is minted, shared or reserved by looking. That is the whole point. parseVoxModel decides an

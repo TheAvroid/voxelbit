@@ -21,7 +21,7 @@
     // RAIN_ON false => 0, so the cloud thickening, the cloud darkening and the sun dim all switch off with
     // the drops. The ramp itself keeps running; only its weight is zeroed, so turning rain back on picks
     // up mid-storm without a jump.
-    const rainK = RAIN_ON ? rainSkyK * oakM(P.x, P.z) : 0;
+    const rainK = RAIN_ON ? rainSkyK * oakWeather(P.x, P.z) : 0;   // oakWeather: if rain is ever switched back on it must not fall on the blossom band, which now takes snow instead
     UF[UF_RAINK] = rainK;                              // u.hurtV.w — the last float of the uniform buffer; see UF_RAINK in render/buffers.js for why that lane and why it is safe
     const ang = tday * Math.PI * 2 - Math.PI / 2;
     const el = Math.sin(ang) * 1.05;
@@ -45,13 +45,25 @@
       right = r2;
     }
     cmpUpdate();                                       // ── compass ── one transform write per frame
+    // ── DUAL-WIELD ROCK ── the left hand is showing one of the SELECTED stack's rocks. Declared out here, and
+    // not inside either block that wants it, because the LEFT HAND block below and the badge count directly
+    // above disagreed about it for as long as both existed — and one condition spelled twice is how they got
+    // to disagree. Both now read this.
+    const dualRock = !dead && !!slots[selSlot] && slots[selSlot].it === 2 && (slots[selSlot].n | 0) >= 2;
     { const hs = slots[selSlot];                       // ── HELD-STACK COUNT ── x2..x8 top right, hidden at one (user)
-      const nHold = hs && !dead ? (hs.n | 0) : 0;
+      // ── THE ROCK IN THE LEFT HAND IS NOT IN THE PILE (user 2026-08-18) ── the badge counted the whole stack
+      // while dual-wielding, so two rocks read "x2" with both of them visibly in your hands and nothing else to
+      // count. The badge is meant to say what you are CARRYING BEYOND what it is drawing, so the left hand's
+      // rock comes off the total: two rocks now show no badge at all (BLIT draws nothing at or below 1), three
+      // show x2, and the number always matches the rocks you cannot already see. Only the steady dual-wield
+      // subtracts — a left-hand GRAB FLIGHT is an incoming pickup, not one of these rocks, and lgrab below is
+      // deliberately not part of this.
+      const nHold = hs && !dead ? Math.max(0, (hs.n | 0) - (dualRock ? 1 : 0)) : 0;
       if (nHold !== stackShown) { stackShown = nHold;
         // ── STACKBADGE ── stackShown is the latch; the uniform write itself lives in the per-frame heldCfg line, which would otherwise zero it.
         stackEl.classList.add('hidden'); } }   // the old top-right HTML badge is retired — the count is drawn in the image now (user)
     crossEl.classList.toggle('sq', locked && !ED.on && pickAim());   // crosshair morphs + → □ ONLY over something RIGHT-CLICK can pick up (user 2026-08-02 — it used to include aimedCreature(), so it also lit up on anything killable, which is a LEFT-click action and made the square mean two different things)
-    const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera
+    const cam = [P.x, smoothEye, P.z];                 // no bob — dead-steady camera (a head bob was tried 2026-08-18 and reverted at the user's request the same day)
     // ── NO MENU DRIFT (user 2026-08-11: "keep the camera still") ── the esc menu used to sway the whole camera
     // on a sine (±0.9 vox in x/z, ±0.55 in y). Because the sine is sampled from the wall clock, the frame Esc
     // was pressed picked it up mid-cycle, so the image JUMPED to wherever the wave happened to be and then
@@ -308,11 +320,35 @@
           // …AND IT IS KEPT ON SCREEN. The tool poses sit the held model hard against the right edge, so its own
           // top-right corner is genuinely off the canvas for the fruit — measured at 2212 px on a 2240 px
           // canvas, which would have run three glyphs into the bezel. A badge that has to be readable cannot
-          // follow the corner past the edge, so it stops at it. The run's own size is what it is clamped by,
-          // and the digit count comes from the same place BLIT gets it.
-          const nB9 = Math.max(sbOpen() ? 2 : 0, stackShown), runW = ((nB9 >= 10 ? 2 : 1) + 1) * 6 * gp;
-          UF[UF_BADGE] = Math.min(CWb - runW - 2, Math.max(2, cxP + rxP + sbC.x * gp));           // the model's own top-right, plus this item's trim
-          UF[UF_BADGE + 1] = Math.min(CHb - 5 * gp - 2, Math.max(2, cyP - ryP + sbC.y * gp));
+          // follow the corner past the edge, so it stops at it. The run's own width is what it is clamped by.
+          // ── THE RUN IS ONE DIGIT, ALWAYS ── this used to be measured from the live count via a `nB9 >= 10`
+          // test, which was dead arithmetic dressed up as a safeguard: STACK_MAX is 8 (sim/hands.js), so the
+          // count BLIT is handed never reaches two digits and its own `digB` is permanently 1. Spelling the
+          // width as a constant says that out loud and, because it cannot change, hands the clamp the
+          // stability the old expression only looked like it had — the count no longer moves the right edge,
+          // so a placement tuned with the panel open (which forces the count to 2) still holds when it closes.
+          // Raise this the day the cap goes past 9, together with GLYPH5's bounds in blit.js.
+          const runW = (1 + 1) * 6 * gp;
+          // ── THE CORNER IS CLAMPED FIRST, THEN THE TRIM IS ADDED (user 2026-08-18: the sliders "barely move") ──
+          // this was one expression, `min(hi, max(lo, corner + trim))`, and the min was the OUTER operation, so
+          // the right-edge clamp had the last word over the slider. For any item whose corner sits past that
+          // edge — which is most of them, the tool poses hold the model hard right, and the 2212-on-2240
+          // measurement above is exactly such a case — a leftward nudge only walked the sum back DOWN toward a
+          // ceiling that kept returning the same pinned pixel. Anything more than 20 badge px past the edge was
+          // frozen solid across the whole slider, and the +1 default sat inside the dead zone, so the panel
+          // opened on a slider that did nothing. Pulling the corner on screen BEFORE the trim is added gives the
+          // trim a live value to work from: the outer clamp then only stops the badge leaving the canvas, which
+          // is all it was ever there to do, and a nudge left always moves the badge left.
+          const bLoX = 2, bHiX = CWb - runW - 2, bLoY = 2, bHiY = CHb - 5 * gp - 2;
+          const bCX = Math.min(bHiX, Math.max(bLoX, cxP + rxP)), bCY = Math.min(bHiY, Math.max(bLoY, cyP - ryP));
+          // …and the trim's OWN unit is the unfloored glyph pixel. gp is floored because BLIT draws whole screen
+          // pixels and a fractional one would shimmer, but a floored NUDGE is a second quantization on top of
+          // that: it pinned the step to exactly 1 px at every height below 960 and made the x/y sliders jump
+          // sideways whenever the size slider crossed a floor threshold. The badge's final position is snapped
+          // to a whole pixel by BLIT regardless, so the nudge can be smooth here for free.
+          const gpN = Math.max(2, CHb / 320 * Math.max(0.2, sbC.size));
+          UF[UF_BADGE] = Math.min(bHiX, Math.max(bLoX, bCX + sbC.x * gpN));           // the model's own top-right, pulled on screen, plus this item's trim
+          UF[UF_BADGE + 1] = Math.min(bHiY, Math.max(bLoY, bCY + sbC.y * gpN));
         } else { UF[UF_BADGE] = -1e4; UF[UF_BADGE + 1] = -1e4; }   // no item, or it is behind the eye: park the glyphs off screen rather than at a stale pixel
         { const sbD = sbFor(showId); UF[UF_BADGE + 2] = sbD.size; UF[UF_BADGE + 3] = sbD.tilt; } }
       set3(56, AY, snowFallAcc);                     // u.pickY.w = integrated snow fall
@@ -322,7 +358,7 @@
         //   launched as a projectile on release — see shootArrow.)
         const lgrab = grabAnim && grabAnim.left && !dead;
         {
-        const lid = lgrab ? grabAnim.it : ((!dead && slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2) ? 2 : 0);
+        const lid = lgrab ? grabAnim.it : (dualRock ? 2 : 0);   // …the same predicate the badge count subtracts by, so the hand and the number can never disagree about whether a rock is being dual-wielded
         if (!lid) UF[1095] = 0;                      // pick2A.w = 0 → zero bounding radius hides the left hand (pick2 sits after the 64 drop slots: 1092..1107)
         else {
           const c2 = heldCfg(2);                     // mirrored rock pose: anchor x negated, yaw/roll negated (still a proper rotation — no handedness flip)

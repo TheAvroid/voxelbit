@@ -92,7 +92,9 @@
   const ensureCardPoses = () => { if (!CARD_POSES && CARDINAL_ROTATE.length) CARD_POSES = buildBirdPoses(CARDINAL_ROTATE); return CARD_POSES; };
   const ensureBluePoses = () => { if (!BLUE_POSES && BLUEBIRD_ROTATE.length) BLUE_POSES = buildBirdPoses(BLUEBIRD_ROTATE); return BLUE_POSES; };   // blue bird = the cardinal reskinned, scattered the SAME way (user)
   const ensureRobinPoses = () => { if (!ROBIN_POSES && ROBIN_ROTATE.length) ROBIN_POSES = buildBirdPoses(ROBIN_ROTATE); return ROBIN_POSES; };   // robin = the same bird recoloured again — third colour in the same rotation
-  const ensureBirdPoses = (c) => (c === 2 ? ensureRobinPoses() : (c === 1 ? ensureBluePoses() : null)) || ensureCardPoses();   // any missing reskin quietly falls back to the red cardinal
+  let PINK_POSES = null;
+  const ensurePinkPoses = () => { if (!PINK_POSES && PINKBIRD_ROTATE.length) PINK_POSES = buildBirdPoses(PINKBIRD_ROTATE); return PINK_POSES; };   // …and the cherry forest's own, built the same way from the same 11-frame layout
+  const ensureBirdPoses = (c) => (c === 3 ? ensurePinkPoses() : (c === 2 ? ensureRobinPoses() : (c === 1 ? ensureBluePoses() : null))) || ensureCardPoses();   // any missing reskin quietly falls back to the red cardinal
   // DOUBLED (user 2026-07-18): 340 -> 680. The pool is the real limit before the radius is — at this density 680
   // would hold ~300 birds against 180 slots, so the activation frontier lands near 530 vox rather than 680, and the
   // generated rect (renderDist + 96) caps it from there. Declared at module scope because stampCardinal below needs it.
@@ -117,6 +119,20 @@
     const oak = oakM(tx, tz) >= 0.5;                   // >= 0.5 is the SAME line oakAt and treeAt split on, so a tree is always asked about on the grid that actually produced it
     const bc = oak ? birdColourOn(tx, tz, bi, OKCELL, oakAt, (t) => birdsOnOak(t.wx, t.wz, t.k))
                    : birdColourOn(tx, tz, bi, TCELL, treeAt, (t) => birdsOnPine(t.tx, t.tz));
+    // ── AND THE BLOSSOM IS ONE SPECIES, NOT A QUARTER OF FOUR (user 2026-08-18) ── the round-robin above balances
+    // three colours across a 3x3 patch, and the cherry forest wants none of that: it wants EVERY perched bird to
+    // be the pink one. So the balancing still runs (it decides nothing here) and its answer is overridden, rather
+    // than the pink bird being dealt into the rotation — dealing it in would have put pink birds in the oak wood
+    // and cardinals in the blossom, which is the opposite of what was asked for both ways round.
+    // Asked of the TREE's own position, the same coordinate the whole function is a pure function of, so a census
+    // can still sample it without spawning anything.
+    // ── AND THE TEST IS THE TREE'S OWN, 0.5, NOT 0.15 (user 2026-08-18: "Pink birds are in oak trees ... seems to
+    // only be in neighboring oak trees next to the cherry trees") ── which is exactly what a 0.15 here produced.
+    // `blos` in world/terrain.js decides whether a tree is a BLOSSOM tree at cherryM > 0.5, so every tree in the
+    // 0.15..0.5 blend is a green oak — and this line was putting pink birds in all of them. One species, two
+    // thresholds, and the gap between them was visible from the ground. The bird now keys on the same number the
+    // TREE does, so a pink bird sits in a pink crown and nowhere else, by construction rather than by tuning.
+    if (PINKBIRD_ROTATE.length && cherryM(tx, tz) > 0.5) return 3;
     return (bc === 1 && !BLUEBIRD_ROTATE.length) || (bc === 2 && !ROBIN_ROTATE.length) ? 0 : bc;   // a missing reskin gives its share back to the cardinal
   };
   const birdColourOn = (tx, tz, bi, cell, at, count) => {   // the patch walk itself — grid size, tree accessor and per-tree bird count are the only things a biome changes
@@ -159,6 +175,16 @@
   const CARD_OAK_CAP = 6;                             // ceiling per oak: 2x the pines' 3, on a crown 3.3x as wide, so even a maxed giant is SPARSER per branch than a pine
   const birdsOnOak = (wx, wz, k) => {
     const m = OAKV[k]; if (!m || !MSX) return 0;      // ?nooaks / a failed bake, or pine5.vox never parsed (MSX 0 would divide by zero)
+    // ── AND NOTHING PERCHES IN THE BLOSSOM (user 2026-08-18: "dont spawn any songbirds in the trees") ──
+    // asked HERE, at the per-tree count, rather than at the spawn gate, because the perched birds are the one
+    // life path that never reaches it: buildCardCand walks the tree grids directly. Zero birds on a tree means
+    // buildCardCand offers no candidate there, findPineCrown returns null, and the slot simply stays unplaced
+    // — the same shape as standing in the desert. The count is also what __vb.birdCensus reports, so a census
+    // taken in the cherry forest tells the truth for free.
+    // ── AND THE BLOSSOM GETS ITS BIRDS BACK (user 2026-08-18, reversing the same day's refusal) ── this returned
+    // 0 here while the cherry forest had no bird of its own. It has one now, so the tree keeps its normal count
+    // and birdColour below decides the SPECIES instead. Nothing about the count is biome-specific any more.
+    if (PINKBIRD_ROTATE.length === 0 && cherryM(wx, wz) > 0.5) return 0;   // 0.5, matching the tree: at 0.15 a wide ring of ORDINARY green oaks around the blossom lost its birds too   // …except with no pink art loaded, in which case the blossom would fill with cardinals — better empty than wrong
     // ── AND NOTHING PERCHES IN THE BUSH TIER ── OAKV[0] is 21 voxels tall, and stampOak sinks it 1-3, so its
     // crown top lands about 18 voxels up: the player's own eye line (sim/player.js EYE 18.5, HEIGHT 20). A
     // perched bird is not decor — it is a SOLID grid stamp — so a bird there is a body you walk face-first
@@ -172,7 +198,7 @@
   };
   let uniBirdN = 0, uniBirdWant = 0;                   // how many perched songbirds reached a drop slot last frame, and how many asked
   const uniBirds = [];                                 // ?uni: perched songbirds staged as [wx, wy, wz, item, th, poolIdx, dp2] and injected into drop slots after the fair-share emit
-  const birdItem0 = (c) => (c === 2 ? (ROBIN_ITEM0 || CARD_ITEM0) : (c === 1 ? (BLUEB_ITEM0 || CARD_ITEM0) : CARD_ITEM0));   // a missing reskin quietly falls back to the red cardinal, exactly as ensureBirdPoses does on the grid path
+  const birdItem0 = (c) => (c === 3 ? (PINKB_ITEM0 || CARD_ITEM0) : (c === 2 ? (ROBIN_ITEM0 || CARD_ITEM0) : (c === 1 ? (BLUEB_ITEM0 || CARD_ITEM0) : CARD_ITEM0)));   // …and the PINK arm, or a blossom bird stamps pink beyond the trace radius and draws RED inside it   // a missing reskin quietly falls back to the red cardinal, exactly as ensureBirdPoses does on the grid path
   const uniCor = (n) => n / 2 - (n >> 1);              // 0 for an even model dimension, 0.5 for an odd one: the grid stamp centres on (n >> 1) whole voxels while the emit centres on n / 2, and this is the whole difference between them
   const uniBird = (B, wk, fiC, q, gx, gy, gz) => {     // the same anchor + frame the grid stamp would have used, expressed for the trace path (derivation in the patch header)
     const it0 = birdItem0(B.bird | 0); if (!it0 || !itemsRef) return;
@@ -207,6 +233,7 @@
   // mammals' too, now lives in sim/life/slots.js beside the slot ladder, because it is what SIZES that ladder:
   // CARD_N = round(180 * LIFE_DENS_K) and the four mammal counts are all derived from it. The reasoning for
   // the value, and for why a reach change forces a population change, is in the comment there.
+  const LAST_PICK = { body: 0, leaf: 0, it: 0 };      // what the last twig pickup actually removed, for the test tap in main/debug-api.js
   const CARD_SEP = 8;                                  // minimum gap between two perched birds, in voxels — must exceed the model footprint or their grid stamps collide
   // ── HOW FAR A PERCHED BIRD ANIMATES ── deliberately the FULL keep radius: the user rejected a short one
   // outright ("it doesn't look like all the birds are animated"), and the last time it was a separate number it
@@ -327,8 +354,19 @@
         const sc = floodScan(x, y, z, PICK_TWIG, 24);   // one flood, read-only — nothing is destroyed until we know what it is AND that there is room for it
         if (sc.cells.length) {
           let isCone = true; for (const q3 of sc.kinds) if (!PICK_CONE.has(q3)) { isCone = false; break; }   // any stick-exclusive id present → it is a stick
-          const pit = isCone ? 4 : 3;
-          if (canAdd(pit)) { for (const ii of sc.cells) W[ii] = 0; startGrab(pit, x + 0.5, y + 0.5, z + 0.5); gpuPatch(sc.cells); }
+          // ── A BLOSSOM TWIG STAYS PINK IN THE HAND ── decided by WHERE it was picked up rather than by the ids
+          // the flood found, because the flood deliberately does not contain the leaf: BLOSLEAF is the canopy's
+          // id set and putting it in PICK_STICK would make every pink crown right-click up as a twig (the
+          // pinecone/stick collision recorded at palOwn). The biome is the honest question anyway — a twig lying
+          // in the cherry forest fell off a cherry tree.
+          const pit = isCone ? 4 : (STICK_BLOS_IT && cherryM(x, z) > 0.5 ? STICK_BLOS_IT : 3);   // 0.5 — the same number stickAt stamps on (world/terrain.js). At 0.15 a visibly GREEN twig in the outer blend picked up as a pink one
+          // …and the LEAF comes away with it. sc.cells is the browns only — the blossom leaf is deliberately not a
+          // pickup trigger (see PICK_STICK in sim/projectiles.js) — so without this the twig vanished and its pink
+          // leaf stayed hanging in the air. twigLeafCells is bounded by the component's own box and capped at the
+          // model's own leaf count, so it can never run out into the crown a twig happens to be lying under.
+          const leaf9 = twigLeafCells(sc.cells), all9 = sc.cells.concat(leaf9);
+          LAST_PICK.body = sc.cells.length; LAST_PICK.leaf = leaf9.length; LAST_PICK.it = pit;   // __vb.lastPick — the only way to SEE this working: a twig always lies under a crown, so counting blossom voxels in a box around it counts the canopy too
+          if (canAdd(pit)) { for (const ii of all9) W[ii] = 0; startGrab(pit, x + 0.5, y + 0.5, z + 0.5); gpuPatch(all9); }
         }
       }
       else if (FRUIT_IDS.has(v)) { const fr = fruitAt(x, y, z);   // ── AN APPLE OR AN ORANGE, OFF THE BRANCH (user 2026-08-17) ── fruitAt (sim/projectiles.js) owns the whole verdict: which species, which cells, and whether this is one fruit rather than a cherry or a fused pair

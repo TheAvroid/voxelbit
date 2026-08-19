@@ -10,7 +10,7 @@
   // and a black screen. A command line runs at human speed; rebuilding nine entries per /spawn costs nothing.
   const CMD_SPECIES = () => ({
     butterfly: [FLY_0, FLY_END, 0], moth: [FLY_0, FLY_END, 1], duck: [DUCK_0, DUCK_END, 3], worm: [WORM_0, WORM_END, 2],
-    fish: [FISH_0, FISH_END, 6], bunny: [BUNNY_0, BUNNY_END, 2], armadillo: [ARM_0, ARM_END, 2], skunk: [SKUNK_0, SKUNK_END, 2], porcupine: [PORC_0, MAM_END, 2],
+    fish: [FISH_0, FISH_END, 6], bunny: [BUNNY_0, BUNNY_END, 2], armadillo: [ARM_0, ARM_END, 2], skunk: [SKUNK_0, SKUNK_END, 2], porcupine: [PORC_0, FLAM_0, 2], flamingo: [FLAM_0, FLAM_END, 2],
   });
   // Fields on a bag, NOT two exported `let`s: a module exports a const snapshot taken at
   // module-init, so `CMD.open` read from outside would have been frozen `false` for ever and
@@ -417,7 +417,14 @@
       // which was exact while there were two biomes and is WRONG the moment there are three: the oak forest
       // satisfies it perfectly, so /locate pine_forest from the oak side answered "you are already there".
       pine_forest: () => biomeSeek((x, z) => desertM(x, z) <= 0.005 && oakM(x, z) <= 0.005, 'the pine forest'),
-      oak_forest: () => biomeSeek((x, z) => oakM(x, z) >= 0.995, 'the oak forest'),
+      // ── AND OAK IS A CONJUNCTION NOW TOO (2026-08-18) ── the note above this predicted exactly this: a fourth
+      // biome breaks any "biome" test written as the absence of the others. The cherry forest sits INSIDE oakM
+      // (cherryM is a sub-region of it — see world/window.js), so `oakM >= 0.995` is satisfied perfectly from
+      // deep inside the blossom and /locate oak_forest answered "you are already there" while standing under a
+      // pink crown. pine_forest above needs no cherry term for the mirror reason: cherry ground has oakM 1, so
+      // its `oakM <= 0.005` already excludes it.
+      oak_forest: () => biomeSeek((x, z) => oakM(x, z) >= 0.995 && cherryM(x, z) <= 0.005, 'the oak forest'),
+      cherry_forest: () => biomeSeek((x, z) => cherryM(x, z) >= 0.995, 'the cherry forest'),
     };
   })();
   // Walk x outward from the player (the biome split is a line in x), both ways, and take the first column that
@@ -474,7 +481,8 @@
       bunny: { lo: BUNNY_0, hi: BUNNY_END, hab: 'forest' },
       armadillo: { lo: ARM_0, hi: ARM_END, hab: 'forest' },
       skunk: { lo: SKUNK_0, hi: SKUNK_END, hab: 'forest' },
-      porcupine: { lo: PORC_0, hi: MAM_END, hab: 'pineforest' },   // NOT 'forest': it was excluded from the oak forest (user 2026-08-17), so it is the one land mammal for which "the forest" means exactly one of the two
+      porcupine: { lo: PORC_0, hi: FLAM_0, hab: 'pineforest' },   // hi is FLAM_0, not MAM_END: MAM_END grew to take in the flamingo band, so this walked 589..637 and /locate porcupine routed the player to a live flamingo
+      flamingo: { lo: FLAM_0, hi: FLAM_END, hab: 'cherryforest' },   // the blossom's own bird — BIO_CHERRY, and the only creature that is is the one land mammal for which "the forest" means exactly one of the two
     };
     for (let i = 0; i < FISHES.length; i++) T[FISHES[i].name] = { lo: FISH_0, hi: FISH_END, hab: 'water', shore: 1, ok: ((k) => (B) => (B.fsp | 0) === k)(i) };   // species is fixed by SLOT (B.fsp), so the name has to key off the LOADED order rather than a literal
     for (let i = 0; i < DESERTS.length; i++) { const nm = DESERTS[i].name;   // seven contiguous DES_PER blocks in load order — read off DESERTS so re-ordering the loader cannot silently rename a band
@@ -560,6 +568,7 @@
   // someone standing in one of them 400+ voxels into the other was the old behaviour and was simply wrong.
   // The two narrow tags exist for the two species that really are one-sided.
   const CMD_LIFE_HAB = { desert: ['desert', 'the desert'], water: ['lake', 'the water', 'river'],
+    cherryforest: ['cherry_forest', 'the cherry forest'],
     forest: ['pine_forest', 'the pine forest'], pineforest: ['pine_forest', 'the pine forest'],
     oakforest: ['oak_forest', 'the oak forest'], sandoroak: ['desert', 'the desert'] };
   // 'forest' and 'sandoroak' both name two places, so the answer depends on where the player is: if they

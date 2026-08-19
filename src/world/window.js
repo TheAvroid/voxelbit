@@ -129,7 +129,44 @@
   // The rim is a distance field wobbled by low-frequency noise, never a circle, and it BLENDS over DESB
   // rather than switching: H is continuous noise, so a hard mask would cut a cliff along the border. That
   // is the same reason the sand-to-forest surface transition below dithers instead of snapping.
-  const DESOFF = 1500, DESB = 450, DESW = 320;        // how far the boundary sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each)
+  // ── THE FOUR BANDS ARE EVEN (user 2026-08-18: "the oak forest band is very tiny between the cherry forest and
+  // the pine forest. make sure that all biome bands are even") ── and they are even by ARITHMETIC, not by eye.
+  // Measured at each mask's own midpoint (the 0.5 iso-line, which is where every gate in the game splits):
+  //     cherry half-extent to its midpoint = CHHALF + CHB/2 = 540
+  //     oak strip   = OAKOFF - 540  = 1080
+  //     pine strip  = DESOFF - OAKOFF = 1080
+  //     cherry band = 2 * 540 = 1080
+  // so W = 1080 for all three, and the two half-infinite ends (oak to the west, desert to the east) are
+  // structural — oakM is 1 for every column west of its line and desertM is 1 for every column east of its own,
+  // and neither can be made finite without inventing a fifth biome to put beyond it.
+  // W is 1080 because that is what the pine forest ALREADY was (the old DESOFF - OAKOFF), so the band nobody
+  // complained about is the one that sets the size and the gap proof below is inherited rather than re-derived.
+  // The cost is that the desert now sits 270 m east of spawn instead of 150 m. That is the price of even bands.
+  // == THE BANDS CYCLE, ENDLESSLY (user 2026-08-18: "do the biomes cycle over and over again? I'm going
+  // through seemingly endless oak forest. make sure the landscapes keep cycling, endlessly") ==
+  // Every mask in this file was a HALF-PLANE - desertM is "east of a line", oakM is "west of a line" - so the
+  // world had two ends: walk far enough east and the desert never stops, far enough west and the oak forest
+  // never stops. The second of those is what the player walked into.
+  // The fix is one coordinate rather than four masks: each band is measured on a distance that WRAPS every
+  // BIOP voxels, so the arrangement that already exists repeats. Two things had to change for that to be
+  // seamless. oakM gained a WEST edge (a half-plane has no far side to meet the wrap with), and desertM became
+  // a BAND like the cherry forest's, which is what lets one band cover both the east end of a period and the
+  // west end of the next.
+  //   cherry+oak   spawn-2645 .. spawn+1220     (the blossom sits INSIDE this, as it always has)
+  //   pine         spawn+1220 .. spawn+2300
+  //   desert       spawn+2300 .. spawn+3380
+  //   pine         spawn+3380 .. spawn+4455  ->  wraps to spawn-2645
+  // EVERY EASTWARD BOUNDARY IS UNCHANGED TO THE VOXEL: OAKC/OAKH reproduce OAKOFF exactly at the oak/pine line
+  // and DESC/DESH reproduce DESOFF exactly at the pine/desert line, so the world the player already knows in
+  // the facing direction is bit-identical and only the west gains structure.
+  // AND PINE SITS ON BOTH SIDES OF THE SAND, which is not decoration: the long note under OAKOFF works out
+  // that two meanders can converge until the oak forest touches the sand with no pine between them, and it is
+  // the reason the wobbles are part-shared in the first place. The same arithmetic on this new seam leaves
+  // >= 272 voxels of pure pine worst case (625 nominal, less 0.4 of the desert meander and one OAKW octave),
+  // which is the same guarantee that note makes for the seam it was written about.
+  const BIOP = 7100;                                   // one full cycle: 3865 oak+cherry, 1080 pine, 1080 desert, 1075 pine
+  const pwrap = (d) => d - Math.floor(d / BIOP + 0.5) * BIOP;   // signed distance into [-BIOP/2, BIOP/2). floor(x + 0.5) rather than Math.round because the WGSL port must agree with this bit for bit, and WGSL's round() breaks ties to EVEN where Math.round breaks them upward
+  const DESOFF = 2300, DESB = 450, DESW = 320;        // how far the boundary sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each)
   // History, because the number has moved three times and each move had a different reason: 500 -> 300 (user
   // 2026-08-15) because 50 m of dense pine hid the thing the spawn camera was aimed at; then 300 -> 80; then
   // 80 -> 1500 below, which abandons "the sand is visible from spawn" outright rather than tuning it, because
@@ -195,13 +232,111 @@
   // them from reading as ruled tramlines. Worst-case convergence is then 0.4*432 + 180 = 353 voxels against
   // a DESOFF - OAKOFF gap of 1080, so the two 450-wide blend bands can never overlap and at least 277 voxels
   // (27.7 m) of pure pine survives anywhere in the world — typically 630.
-  const OAKOFF = 420, OAKB = 450, OAKW = 180;         // how far the boundary sits EAST of spawn; blend width; the INDEPENDENT half of the meander
+  const OAKOFF = 1220, OAKB = 450, OAKW = 180;         // how far the boundary sits EAST of spawn; blend width; the INDEPENDENT half of the meander. 420 -> 1620 for the even-band arithmetic at DESOFF: spawn is still WEST of this line, so oakM(SPWX,SPWZ) is still exactly 1 and "spawn is in the oak forest by construction" still holds — the cherry band simply sits inside it
   const oakWob = (z) => desWob(z) * 0.6 + (vnoise(z * 0.0027 + 143.7, 61.3) - 0.5) * OAKW;
-  const oakM = (x, z) => {                             // 1 = deep oak forest (WEST), 0 = pine forest (east) — the mirror of desertM, which runs the other way
-    const b = SPWX + OAKOFF + oakWob(z) - oakWob(SPWZ);   // pinned at the spawn's own z, for the reason desertM pins its own: otherwise how far the player starts from the border is a per-session lottery
-    const t = 0.5 + (b - x) / OAKB;
+  // ── THE WEST EDGE, AND WHY IT SITS WHERE IT DOES ── the band has to CONTAIN the blossom band, because
+  // "every column with cherryM > 0 also has oakM === 1" is load-bearing (see the long note under cherryM: the
+  // whole cherry forest is oak TERRAIN, and it inherits oakH's valley floors and oakBank's beaches by being
+  // inside this mask). The blossom reaches CHOFF + CHHALF + CHB = 2120 west of spawn, the two borders meander
+  // independently by up to 235.7 voxels against each other (chWob carries 0.6 of oakWob, so the free part is
+  // 0.4 of oakWob's 439.2 swing plus one CHW octave), and this mask needs a further OAKB/2 to reach a hard 1.
+  // 2120 + 300 + 225 = 2645, which leaves 64 voxels of margin on the worst case rather than none.
+  const OAKWOFF = -2645;                               // the WEST boundary, as a signed distance from spawn
+  const OAKC = (OAKWOFF + OAKOFF) / 2, OAKH = (OAKOFF - OAKWOFF) / 2;   // -712.5 and 1932.5: centre + half-width. OAKC + OAKH is OAKOFF exactly, so the oak/pine line east of spawn does not move by so much as a voxel
+  const oakM = (x, z) => {                             // 1 = deep oak forest, 0 = pine forest either side of it — a BAND now, not a half-plane, so the forest ends in both directions and the cycle can close
+    const c = SPWX + OAKC + oakWob(z) - oakWob(SPWZ);   // pinned at the spawn's own z, for the reason desertM pins its own: otherwise how far the player starts from the border is a per-session lottery
+    const t = 0.5 + (OAKH - Math.abs(pwrap(x - c))) / OAKB;   // a DISTANCE from the centre line, the same shape cherryM has always had
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
+  // ══ THE CHERRY FOREST (user 2026-08-18) ══ a fourth band, WEST of the oak forest, and deliberately carved out
+  // of oak's own region rather than given a height field of its own.
+  //
+  // WHY WEST, AND WHY THAT IS THE WHOLE DESIGN. oakRoll short-circuits: `if (dx <= OAKNEAR) return oakH(x, z)`,
+  // so every column more than 244 voxels west of spawn is UNCONDITIONALLY oak terrain — the mask is never even
+  // evaluated out there. A cherry band placed in that region therefore inherits oakH's broad valley floors,
+  // oakBank's shallow banks and beaches, and with them the thing the user asked for by name: WATER. OAKY sits 4
+  // under WL precisely so those flat floors can flood, and that is a measured number (see the note above it).
+  // The alternative — a fourth base field — would have meant a fourth term in all THREE copies of H, which is
+  // the one edit in this file that cannot be made safely by inspection. This way H is not touched at all, and
+  // htest/gtest stay clean by construction rather than by testing.
+  //
+  // SO cherryM IS A SUB-REGION OF oakM, NOT A DISJOINT BAND. Every column with cherryM > 0 also has oakM === 1.
+  // That is deliberate and it is load-bearing in both directions: the cherry forest inherits every oak REFUSAL
+  // for free (no ferns, no pinecones, no mushrooms, no pines — all already gated on oakM > 0.5), and in exchange
+  // every oak ADMISSION has to be re-gated to keep cherry out (the oaks themselves, the fruit, the oak sticks).
+  // Read CHOFF as "how far west of the oak border the blossom starts" — it is NOT measured from spawn like the
+  // other two, because it hangs off a border that already moves with the spawn.
+  // ── AND IT IS A FINITE BAND, BECAUSE THE PLAYER SPAWNS IN IT (user 2026-08-18) ── the first cut made cherry
+  // west-infinite like oak and desert, and that cannot work once spawn has to be inside it: oakM is 1 for every
+  // column west of its line, so a second west-infinite mask either sits entirely inside oak (and spawn, which is
+  // 420 east of oak's line, is outside it) or swallows oak entirely. A band solves both at once — oak is what
+  // lies on BOTH sides of it, which is exactly "neighbour the oak forest", and spawn sits inside by construction
+  // the way it sits inside oak by construction.
+  //
+  // THE THREE NUMBERS ARE CONSTRAINED, NOT CHOSEN. Spawn must be in the pure band, so CHHALF >= CHOFF. The band's
+  // east edge is CHB east of that, and it must stay clear of oak's own line at OAKOFF (420) or the blossom runs
+  // into the pine treeline — which is why CHB is 200 and not the 450 the other two borders use. Worst-case
+  // meander is ±107 (see chWob), so the 160 voxels of clearance at CHOFF 1140 is the margin that keeps them apart.
+  // ── SPAWN SITS OFF CENTRE, AT THE EAST EDGE (user 2026-08-18: "make the spawn moved off center to get the full
+  // bands walk") ── the band was centred ON spawn, which meant the player only ever had half of it in front of
+  // them: 540 of blossom whichever way they walked, against a full 1080 of oak beyond it. That is what read as a
+  // thin cherry band even though the arithmetic said they matched. The centre now sits CHOFF west of spawn, so
+  // spawn lands 140 inside the EAST edge and the whole 940 of blossom is ahead — and ahead is the right word,
+  // because SPYAW faces WEST into the forest (see the spawn heading above), so the full band is in the view the
+  // player is given rather than behind them.
+  // OAKOFF and DESOFF moved with it to keep all three at 1080 measured between mask midpoints:
+  //     cherry  spawn-940 .. spawn+140   = 1080
+  //     oak     spawn+140 .. spawn+1220  = 1080
+  //     pine    spawn+1220 .. spawn+2300 = 1080
+  // CHOFF is 400 rather than 440 (which would put spawn exactly on the pure band's edge) so cherryM(SPWX,SPWZ)
+  // is 1 with margin instead of landing on the 1.0 boundary.
+  const CHOFF = 940, CHHALF = 980, CHB = 200, CHW = 60;   // ── BAND WIDTH DOUBLED (user 2026-08-18) ── 1080 -> 2160 measured between mask midpoints (2 * (CHHALF + CHB/2)). CHOFF moves with it so spawn stays 140 inside the EAST edge and the whole 2020 of blossom is still ahead in the facing direction; OAKOFF and DESOFF are untouched, so oak and pine keep their 1080 each and only the cherry band grew   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander
+  const chWob = (z) => oakWob(z) * 0.6 + (vnoise(z * 0.0019 + 211.3, 97.7) - 0.5) * CHW;   // carries 0.6 of the OAK meander for the reason oakWob carries 0.6 of the desert's: two free meanders converge and let bands touch. Its own half is small because this band has the least room of the three
+  const cherryM = (x, z) => {                          // 1 = inside the blossom band, 0 = the oak forest either side of it
+    const b = SPWX - CHOFF + chWob(z) - chWob(SPWZ);   // pinned at the spawn's own z, so the wobble cancels there and spawn's position in the band is not a per-session lottery
+    const t = (CHHALF + CHB - Math.abs(pwrap(x - b))) / CHB;  // …and it is a DISTANCE from the centre line, not a side of it — that one change is what makes it a band. pwrap is what makes it RECUR: without it the band exists once and the world either side of it does not repeat
+    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
+  };
+  // ── AND desWob IS IN THIS SUM (audit 2026-08-18) ── chWob = oakWob*0.6 + noise*CHW, and oakWob is itself
+  // desWob*0.6 + noise*OAKW, so chWob carries desWob*0.36. The first version of this counted only the OAKW and
+  // CHW terms and therefore UNDER-covered by ~155 voxels each side — meaning chNear could answer "not blossom"
+  // for a column that cherryM would have called blossom, which is the one answer a cheap bound may never give.
+  // |desWob| <= DESW * 0.675 (the two-octave sum, see desWob), so the carried term is 0.36 * that.
+  const CHREACH = CHHALF + CHB + 2 * (DESW * 0.675 * 0.36 + OAKW * 0.5 * 0.6 + CHW * 0.5);
+  // ── AND THE CHEAP BOUND THAT MUST BE ASKED FIRST (user 2026-08-18: the game froze on boot) ── cherryM costs
+  // ~7 vnoise, and fillColumn called it for EVERY COLUMN with om > 0, which is the whole infinite oak forest.
+  // A 768x768 window is 590,000 columns, so a boot paid millions of extra noise evaluations in the hottest loop
+  // in worldgen. This is the same shape OAKFAR/OAKNEAR give oakRoll: one subtract and a compare that answers
+  // "this column cannot be in the band" without evaluating the band. chWob's swing is already inside CHREACH,
+  // so the bound is exact rather than conservative — a column it rejects has cherryM 0 by construction.
+  const chNear = (x) => Math.abs(pwrap(x - (SPWX - CHOFF))) <= CHREACH;   // …on the wrapped distance, or this cheap bound would answer 'not blossom' for every band but the first and cull the cherry forest out of every later cycle
+  // ── AND THE WEATHER ASKS A DIFFERENT QUESTION THAN THE WORLDGEN DOES (user 2026-08-18: "in the cherry biome
+  // make it snow like the pine forest") ── cherryM is a SUB-REGION of oakM (see the long note above), which is
+  // exactly what lets the blossom band inherit every oak REFUSAL for free. Weather is the one place that
+  // inheritance is wrong. The oak forest is deliberately the biome with no falling weather at all — OAK_SNOW
+  // false means snow is culled there and RAIN_ON false means nothing replaced it — and because cherry sits
+  // inside oakM the blossom band was silently getting that same nothing while the pines were in a storm.
+  // This is the oak mask with the blossom band cut back out of it. Read it as "does this column get OAK
+  // weather", as against oakM's "is this column oak". It is a SEPARATE NAME rather than a change to oakM
+  // because the two questions genuinely differ: the ferns, cones, mushrooms, pines and rounded hills all still
+  // want the plain mask, and folding cherry into oakM would hand the blossom band pine WORLDGEN as well.
+  // chNear FIRST, for the reason it is asked first everywhere else in this file: this runs once per SETTLING
+  // COLUMN in the snow path and cherryM is ~7 vnoise. Outside the band's exact bound the answer is oakM
+  // unchanged, for the cost of one subtract and one compare.
+  // ── AND THE WEATHER BORDER IS SHARPER THAN THE BIOME BORDER (user 2026-08-18: "can you keep the snow more in
+  // the relative biomes territory?") ── the masks cross-fade over their whole blend band, 450 voxels for the
+  // desert and 200 for the blossom, because that is right for TERRAIN: canopies, ground cover and height all
+  // want to interleave across a treeline rather than switch on a line. Weather inherited that ramp and it is
+  // too generous — snow was still falling a couple of hundred voxels into country that does not get snow,
+  // which is what reads as it belonging to no biome in particular.
+  // This is a contrast curve, not a hard edge: the fade still exists, it just happens over the middle 30% of
+  // the ramp instead of all of it, so a storm still crosses a treeline rather than stopping at a wall.
+  // IT MUST BE APPLIED IDENTICALLY ON BOTH SIDES. The blanket is decided on the CPU (landSnowAt) and the
+  // falling flakes on the GPU (the trace march), so a curve on one and not the other is snow settling under a
+  // clear sky — see wSharpG in render/wgsl/trace.js, which is this function ported bit for bit.
+  const wSharp = (m) => (m <= 0.20 ? 0 : m >= 0.80 ? 1 : sstep((m - 0.20) / 0.6));   // 0.35..0.65 -> 0.20..0.80 (user 2026-08-18: "the snowing appears instantly when transitioning biomes") — the first cut squeezed the fade into 25 voxels, which at walking pace is under a second and reads as a switch. 0.60 of the ramp is ~75 voxels: still far tighter than the 125 the raw mask gives, so the snow stays in its own biome, but you now walk INTO it
+  const oakWeather = (x, z) => { const om = oakM(x, z); return (om > 0 && chNear(x)) ? om * (1 - cherryM(x, z)) : om; };
+  const PETAL_ON = !location.search.includes('nopetal');   // ?nopetal — A/B the fallen-petal scatter. A CONST, not a location read inside stampOak: that function is serialised into the gen workers, whose Blob location carries no query string, so the flag would be true in the pool and false inline and gtest would (correctly) call it a mismatch.   // 1614: no column further than this from the band centre can be cherry at all — the cheap bound a scatter gate takes before paying for 8 vnoise
   // ── ROUNDED HILLS (user 2026-08-17: "make the terrain have much more 'rounded' hills", with a photograph of
   // Tuscan downland — broad domed crests, long clean sweeps, no fine-grained bumpiness anywhere) ── OAK FOREST
   // ONLY. The pine forest and the desert come back out of oakRoll as the identical double, bit for bit.
@@ -244,7 +379,12 @@
   // the desert pay one subtraction for this feature and the deep oak forest skips the mask too.
   const OAKWMAX = DESW * 0.675 * 0.6 + OAKW * 0.5;     // 219.6 — the ceiling on |oakWob|
   const OAKFAR = OAKOFF + 2 * OAKWMAX + OAKB * 0.5;    // 1084.2 east of spawn: no column past this can be in the oak forest at all
-  const OAKNEAR = OAKOFF - 2 * OAKWMAX - OAKB * 0.5;   // -244.2: every column west of this is DEEP oak, mask exactly 1
+  const OAKNEAR = OAKOFF - 2 * OAKWMAX - OAKB * 0.5;   // 555.8: no column east of this is deep oak, mask exactly 1 below it
+  // ── AND THE SAME PAIR ON THE WEST EDGE ── these are pure short-circuits, not the mask: they must be
+  // CONSERVATIVE in both directions or a column gets the wrong terrain rather than merely a slower answer.
+  // Same construction as the two above, mirrored about the band's other boundary.
+  const OAKWFAR = OAKWOFF - 2 * OAKWMAX - OAKB * 0.5;  // no column west of this can be in the oak forest at all
+  const OAKWNEAR = OAKWOFF + 2 * OAKWMAX + OAKB * 0.5; // every column east of this (and west of OAKNEAR) is DEEP oak
   const oakH = (x, z) => {                             // the oak forest's OWN base height — long wavelength, double-smoothstepped, positive-only like duneH
     const a = fbm(x * 0.0024 + 91.7, z * 0.0024 + 33.1);
     const b = fbm(x * 0.0057 + 47.3, z * 0.0057 + 8.9);
@@ -256,9 +396,9 @@
   // forest expression just produced and hands back the height the biome wants, and each of the three wraps
   // its own existing expression in it verbatim. The three cannot drift, because there is only one expression.
   const oakRoll = (h, x, z) => {
-    const dx = x - SPWX;
-    if (dx >= OAKFAR) return h;                        // pine forest and desert — the identical double back out, so their terrain is unchanged to the last bit
-    if (dx <= OAKNEAR) return oakH(x, z);              // deep oak — mask is exactly 1, and h * 0 + oakH * 1 is oakH
+    const dx = pwrap(x - SPWX);                        // WRAPPED, like the mask it is short-circuiting for: on a raw distance these two tests answer for the first period only and every later oak forest would come out as pine
+    if (dx >= OAKFAR || dx <= OAKWFAR) return h;       // pine forest and desert — the identical double back out, so their terrain is unchanged to the last bit
+    if (dx <= OAKNEAR && dx >= OAKWNEAR) return oakH(x, z);   // deep oak — mask is exactly 1, and h * 0 + oakH * 1 is oakH
     const om = oakM(x, z);
     return om <= 0 ? h : h * (1 - om) + oakH(x, z) * om;   // the rim: the same lerp shape the desert flat uses, over the same 450 voxels, so the two forests meet on a slope rather than on a step
   };
@@ -320,8 +460,8 @@
   // so the same 82-voxel rise is spread over 256 voxels rather than 220.
   const OAKBEACH = 24, OAKBEACHY = WL + 4;             // flat shore width in voxels (2.4 m), and its height
   const oakBank = (h, x, z) => {                       // ONE shared scalar helper again, for the reason oakRoll is one: three copies of H and no room for drift
-    const dx = x - SPWX;
-    if (dx >= OAKFAR || h <= OAKBEACHY) return h;      // pine forest, desert, and any oak ground already at or under the BEACH - one subtraction and a compare, before the river scan
+    const dx = pwrap(x - SPWX);                        // wrapped, for the reason oakRoll's is
+    if (dx >= OAKFAR || dx <= OAKWFAR || h <= OAKBEACHY) return h;      // pine forest, desert, and any oak ground already at or under the BEACH - one subtraction and a compare, before the river scan
     const d = bankDist(x, z);
     if (d >= OAKBANKR) return h;                       // no water within the skirt
     // ONE continuous profile from the beach to the hilltop: flat for OAKBEACH, then the same sstep cone to
@@ -331,10 +471,18 @@
     const c = OAKBEACHY + (OAKBANKY + OAKBRISE - OAKBEACHY)
               * sstep(Math.max(0, d - OAKBEACH) / (OAKBANKR - OAKBEACH));
     if (c >= h) return h;
-    if (dx > OAKNEAR) { const om = oakM(x, z); return om <= 0 ? h : h * (1 - om) + c * om; }   // the rim: faded in on the same mask oakRoll uses, so a river crossing the biome border changes width gradually instead of stepping
+    if (dx > OAKNEAR || dx < OAKWNEAR) { const om = oakM(x, z); return om <= 0 ? h : h * (1 - om) + c * om; }   // the rim: faded in on the same mask oakRoll uses, so a river crossing the biome border changes width gradually instead of stepping
     return c;
   };
-  const desertM = (x, z) => {                          // 0 = pine forest (west), 1 = open desert (east)
+  // 540 gives the sand 1080 voxels, the same width the pine strip has always had, and DESC = DESOFF + DESH
+  // puts DESC - DESH exactly on DESOFF so the pine/desert line east of spawn does not move by a voxel.
+  // NOT "run the sand up to where the next period's oak begins" — that was the first version of this line and
+  // it measured 2155 wide, because the gap from DESOFF to BIOP + OAKWOFF is desert AND the pine strip that has
+  // to sit between the sand and the next oak forest. It ate that strip whole: sampled at 200-voxel steps the
+  // band sequence came back desert(2200) → pine(200) → oak, i.e. sand running straight into the trees, which
+  // is the exact adjacency the meander notes under OAKOFF exist to prevent.
+  const DESH = 540, DESC = DESOFF + DESH;
+  const desertM = (x, z) => {                          // 0 = pine forest, 1 = open desert — a BAND now (see BIOP), with pine on BOTH sides of the sand
     // The wobble is subtracted AT THE SPAWN'S OWN z. Without that it swings +-216 voxels either way, so how
     // far the player starts from the sand was a lottery: measured 380 voxels one session where the constant
     // of the day (80) implied 305, and a big enough swing would have spawned them PAST the boundary, in the
@@ -342,8 +490,8 @@
     // its own wobble the same way, and there the offset is 420 against the same +-216.
     // Pinning it costs nothing — the border still meanders exactly as before, it just passes DESOFF from
     // spawn at the spawn's own latitude, so "how far to the desert" is the same every session.
-    const b = SPWX + DESOFF + desWob(z) - desWob(SPWZ);
-    const t = 0.5 + (x - b) / DESB;
+    const c = SPWX + DESC + desWob(z) - desWob(SPWZ);
+    const t = 0.5 + (DESH - Math.abs(pwrap(x - c))) / DESB;   // a band, not a half-plane: one band centred at DESC covers the sand at the east end of a period AND the sand at the west end of the next, because the distance wraps
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
   const H = (x, z) => {

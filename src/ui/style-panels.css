@@ -80,7 +80,7 @@
   #kbCard2 h2, #kbCard3 h2, #kbCard4 h2, #pkCard h2, #sbCard h2 { font: 12px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0 0 12px; color: #fff; }
   .pkRow { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
   .pkRow:last-child { border-bottom: none; }
-  .pkRow input { width: 150px; accent-color: #d2a453; cursor: pointer; }
+  .pkRow input { width: 190px; accent-color: #d2a453; cursor: pointer; }   /* 150 -> 190 (user 2026-08-18): the nudge ranges widened, and the card carries the extra 40px inside its 350px content box with room to spare. accent-color is now dead for the ranges — style-settings.css draws their rail and thumb by hand — but still dresses the text row. */
   .pkVal { min-width: 52px; text-align: right; color: #d2a453; }
   #pkClose, #pkReset { margin: 14px 6px 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 22px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
   #pkClose:hover, #pkReset:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
