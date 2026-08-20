@@ -15,12 +15,19 @@
         if (!poolOk) break;
         const oq = j.msg && j.msg.orph;
         blitSlab(j);
+
         if (oq && oq.seeds && oq.seeds.length) {   // now the voxels are really in W, ask the resolver about the ambiguous ones
           for (let q = 0; q < oq.seeds.length; q += 3) {
             const ii = gwrap(oq.seeds[q], WX) + oq.seeds[q + 1] * WX + gwrap(oq.seeds[q + 2], WZ) * WX * WY;
             if (W[ii]) { supPush(ii); ORPH.seeded++; }
           }
         }
+        done++;   // ── THE COUNTER NOBODY WAS COUNTING (2026-08-19) ── `done` was declared at the top of this
+        // loop, read by the progress line above, and incremented NOWHERE, so pct was permanently 0: the bar sat
+        // at its 22% floor for the whole build and the message never moved off the first 'growing forest'.
+        // It went unnoticed because setLoad was a no-op — the CSS trickle owned the bar, so the dead counter
+        // fed a function that threw its argument away. The moment the bar started tracking real progress
+        // (core/boot.js) this became the thing holding it still.
         jobById.delete(j.id); j.msg = null;            // …and DROP the slab. `jobs` outlives the loop, so the map delete alone freed nothing: msg owns the transferred W/hmap/bb/wb, and this rect is the whole window, so every slab held to the end summed to a second complete copy of the world buffer (~226 MB) for the entire boot. Blitted and its orphan seeds read (oq is captured above) — nothing reads it again. Same release poolFree does for the streaming path.
       }
       built = poolOk;
@@ -76,6 +83,14 @@
     SPWZ = Math.round((Math.random() - 0.5) * 400000);
     console.log('[vb] spawn RANDOM', SPWX, SPWZ);
   }
-  { let g = 0; while ((H(SPWX, SPWZ) <= WL + 6 || nearCave(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random point over a huge basin can't loop forever   // …and never onto SAND: quicksand (tick-body.js) swallows the player on any sandTab voxel, and fillColumn lays beach/lakebed sand on every `shore` column — h <= WL + 6, plus a dithered band above. The world is not built yet at this point so there is no voxel to read, but H is analytic and it is the same condition the surface branch uses, so WL + 6 rejects exactly the columns that could come up sand.
+  // ── SPAWN IN THE OAK FOREST (user 2026-08-19: "have the player spawn in the oak forest on refresh") ── NOT
+  // done here, and the reason is worth writing down: walking SPWX cannot work. chNear/cherryM/oakM in
+  // world/window.js are all anchored to SPWX itself (chNear is pwrap(x - (SPWX - CHOFF))), so the bands are
+  // positioned RELATIVE to the spawn point — move the spawn and the whole arrangement moves with it, and the
+  // player lands in exactly the same biome they started in. A first attempt walked east testing oakM and
+  // subtracting the blossom, and landed in cherry on 5 boots out of 5. The fix is in the OFFSETS instead: see
+  // CHOFF / OAKOFF / OAKWOFF in world/window.js, which now place spawn in the middle of the oak strip east of
+  // the blossom rather than 140 voxels inside the blossom's own east edge.
+  { let g = 0; while ((H(SPWX, SPWZ) <= WL + 6 || nearCave(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random pick in open water cannot hang the boot
   winOX = Math.round(SPWX / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
 

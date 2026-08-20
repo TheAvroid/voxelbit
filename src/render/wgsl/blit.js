@@ -58,7 +58,8 @@
     }
     @fragment fn fs(@builtin(position) fc : vec4<f32>) -> @location(0) vec4<f32> {
       let uv = fc.xy / u.canvasRes;
-      var col = textureSampleLevel(src, samp, uv, 0.0).rgb;
+      let src4 = textureSampleLevel(src, samp, uv, 0.0);            // .a = the SKY mask the TAA pass wrote (1 = sky) - free, this fetch was already here for the colour
+      var col = src4.rgb;
       // ── DEPTH OF FIELD ── scatter-as-gather over a disc whose radius IS this pixel's circle of confusion.
       // dofT carries {colour, signed CoC} together, so a tap costs one fetch. A tap contributes only while its
       // OWN circle still reaches this pixel — that one test is what stops the blurred background from eating the
@@ -68,7 +69,9 @@
       // It runs FIRST so the god rays, the flare ghosts and the vignette below all land on the finished image —
       // a flare is made at the lens, not at the subject, and blurring one along with the scene reads as a smudge.
       if (u.dof.x > 0.0) {
-        let R = abs(textureSampleLevel(dofT, samp, uv, 0.0).a * 2.0 - 1.0) * u.dof.y;
+        let cocA = textureSampleLevel(dofT, samp, uv, 0.0).a;       // this pixel's own SIGNED circle of confusion, encoded to 0..1
+        let R = abs(cocA * 2.0 - 1.0) * u.dof.y;
+        let isSky = src4.a > 0.5;                                   // ...and whether it is sky at all - read by the tap below
         if (R > 0.8) {
           // ── THE TAP COUNT FOLLOWS THE DISC (user 2026-08-07: "it takes off some fps") ── a flat 32 was
           // sized for the WIDEST circle the strength slider can ask for (~21 px at 1080p), then paid on every
@@ -89,7 +92,7 @@
             let s = textureSampleLevel(dofT, samp, uv + vec2<f32>(cos(ang), sin(ang)) * rr / u.canvasRes, 0.0);
             let rs = abs(s.a * 2.0 - 1.0) * u.dof.y;                // …the TAP's own circle of confusion
             let w = smoothstep(rs + 1.0, rs - 1.0, rr);             // decreasing form: 1 while that circle covers us, 0 once it falls short
-            acc += s.rgb * w; wsum += w;
+            acc += select(s.rgb, src4.rgb, isSky && (s.a > cocA - 0.01)) * w; wsum += w;   // -- THE SKY IS A BACKDROP, NOT A SUBJECT -- it sits at the FAR STOP, so every star used to be gathered across the whole disc and came out a 5.5 px smudge at half its peak (measured 2026-08-19, and this was the whole of the blur). A sky tap now carries the CENTRE's own sky colour instead of its neighbour's, so the stars, the moon's rim and the cloud edges stay as sharp as the composite drew them - while the weight still lands in wsum, which is what keeps a near branch or a far ridge spilling onto the sky at exactly the ratio it always did. The test is self-calibrating rather than a magic number: sky is pinned at the LARGEST circle of confusion the encode can hold (real geometry would have to stand 20000+ voxels out to reach it), so 'the same CoC as this sky pixel' means 'also sky'
           }
           col = acc / wsum;
         }
@@ -150,36 +153,43 @@
       // ── STACKBADGE ── x{n} beside the HELD item, drawn INTO the image (user: not HTML in the corner).
       // px3's own digits, baked to their native 5x5 grid and packed 25 bits each, LSB = leftmost pixel.
       // The anchor IS the viewmodel anchor, so the badge bobs with the hand instead of floating near it.
-      if (u.heldCfg.z > 1.5 && u.pickA.z > 0.05) {
+      // ── BOTH HANDS CARRY A STACK BADGE (user 2026-08-19: "the rock in the left hand doesnt have the stack
+      // number") ── this was written for the right hand and read u.heldCfg.z / u.badge directly. It is now a
+      // loop over the two hands, because a badge is a property of a HELD STACK and the off-hand holds one too
+      // (a second rock when dual-wielding, or the other half of a craft pair). Same glyphs, same tilt-and-shear,
+      // same gold-at-a-full-stack, from the same code — duplicating it would have let the two drift.
+      //   hand 0: count u.heldCfg.z, placement u.badge,  visibility u.pickA.z
+      //   hand 1: count u.vitG.y,    placement u.badge2, visibility u.pick2A.z
+      // The visibility term is each hand's OWN anchor depth: a badge must not be drawn for a hand that is
+      // empty or behind the eye, and the two hands are empty independently.
+      {
         let GLYPH5 = array<u32, 11>(15255086u, 32641252u, 32553487u, 16267791u, 9413964u, 16268335u, 15252526u, 2236959u, 15252014u, 15235630u, 18299345u);
-        // ── WHERE IT GOES IS COMPUTED, NOT TUNED (user 2026-08-17: "auto adjust the number count in the top
-        // right of the held item in hand. always in the top right") ── this used to be a fixed offset from the
-        // viewmodel ANCHOR in item-voxel units, which is the middle of the model's box: right for one item and
-        // wrong for the next, because a 5x6x1 steak and a 7x3x6 apple put their top-right corner in completely
-        // different places relative to that centre. So main/tick-camera.js projects the held model's own eight
-        // box corners and hands over the screen pixel the badge starts at — the item's actual top-right corner,
-        // whatever it is holding, whatever pose it is in, however it bobs. u.badge.x/y is that pixel.
-        // It is done in JS rather than here for one reason: the corners need the model's GRID DIMENSIONS, and
-        // this shader has no way to look up the held item's entry in ITEMD.
-        let pxB = max(2.0, floor(u.canvasRes.y / 320.0 * max(0.2, u.badge.z)));   // one glyph pixel, floored to WHOLE screen pixels so the badge cannot shimmer under TAA. The size multiplier is inside the floor for that reason — scaling AFTER it would put the glyph back on fractional pixels. Clamped away from zero so a cold uniform (or a cleared save) can never collapse the badge to nothing.
-        let nB = i32(u.heldCfg.z + 0.5);
-        let digB = select(1, 2, nB >= 10);
-        let orgB = floor(vec2<f32>(u.badge.x, u.badge.y));
-        let rel0 = (fc.xy - orgB) / pxB;
-        let BADGE_TILT = u.badge.w;   // ~15 deg by default. Tilt + shear so the badge sits IN the scene rather than flat on the screen (user).
-        let cB = cos(BADGE_TILT); let sB = sin(BADGE_TILT);
-        let rotB = vec2<f32>(rel0.x * cB - rel0.y * sB, rel0.x * sB + rel0.y * cB);
-        let relB = vec2<f32>(rotB.x + rotB.y * 0.30, rotB.y);   // shear stands in for the foreshortening of a real angled quad
-        let cellB = vec2<i32>(floor(relB));
-        if (cellB.y >= 0 && cellB.y < 5 && cellB.x >= 0 && cellB.x < (digB + 1) * 6) {
-          let giB = cellB.x / 6;                            // glyph 0 is the x, then the digits
-          let cxB = cellB.x - giB * 6;                      // 6th column is the inter-glyph gap
-          if (cxB < 5) {
-            var gB = 10;
-            if (giB == 1) { gB = select(nB, nB / 10, digB == 2); }
-            if (giB == 2) { gB = nB % 10; }
-            if (((GLYPH5[gB] >> u32(cellB.y * 5 + cxB)) & 1u) == 1u) {
-              col = mix(col, vec3<f32>(0.92, 0.95, 1.0), 0.69);   // 0.92 ink * 0.75 = 25% transparent (user)
+        for (var bh = 0; bh < 2; bh = bh + 1) {
+          let cntB = select(u.heldCfg.z, u.vitG.y, bh == 1);
+          let bq   = select(u.badge,     u.badge2,  bh == 1);
+          let depB = select(u.pickA.z,   u.pick2A.z, bh == 1);
+          if (cntB <= 1.5 || depB <= 0.05) { continue; }
+          let pxB = max(2.0, floor(u.canvasRes.y / 320.0 * max(0.2, bq.z)));   // one glyph pixel, floored to WHOLE screen pixels so the badge cannot shimmer under TAA
+          let fullB = cntB > 99.5;
+          let nB = i32(cntB - select(0.0, 100.0, fullB) + 0.5);
+          let digB = select(1, 2, nB >= 10);
+          let orgB = floor(vec2<f32>(bq.x, bq.y));
+          let rel0 = (fc.xy - orgB) / pxB;
+          let BADGE_TILT = bq.w;   // ~15 deg by default. Tilt + shear so the badge sits IN the scene rather than flat on the screen (user).
+          let cB = cos(BADGE_TILT); let sB = sin(BADGE_TILT);
+          let rotB = vec2<f32>(rel0.x * cB - rel0.y * sB, rel0.x * sB + rel0.y * cB);
+          let relB = vec2<f32>(rotB.x + rotB.y * 0.30, rotB.y);   // shear stands in for the foreshortening of a real angled quad
+          let cellB = vec2<i32>(floor(relB));
+          if (cellB.y >= 0 && cellB.y < 5 && cellB.x >= 0 && cellB.x < (digB + 1) * 6) {
+            let giB = cellB.x / 6;                            // glyph 0 is the x, then the digits
+            let cxB = cellB.x - giB * 6;                      // 6th column is the inter-glyph gap
+            if (cxB < 5) {
+              var gB = 10;
+              if (giB == 1) { gB = select(nB, nB / 10, digB == 2); }
+              if (giB == 2) { gB = nB % 10; }
+              if (((GLYPH5[gB] >> u32(cellB.y * 5 + cxB)) & 1u) == 1u) {
+                col = mix(col, select(vec3<f32>(0.92, 0.95, 1.0), vec3<f32>(1.00, 0.80, 0.26), fullB), 0.69);   // 0.92 ink * 0.75 = 25% transparent (user) — GOLD at a full stack
+              }
             }
           }
         }
@@ -241,6 +251,34 @@
             // entirely by HOW MANY pixels are red, never by what colour they are.
             let hRed = vec3<f32>((150.0 + floor(hV * 60.0)) / 255.0, 10.0 / 255.0, 14.0 / 255.0);   // rgb(150..209, 10, 14), the old canvas's own reds
             col = mix(col, hRed, min(0.55, 0.16 + hA * 0.34 + 0.22 * u.hurtV.x));   // per-block opacity stays PUT as damage rises — if it climbed too, the effect would read as one red sheet thickening rather than as more pixels   // the standing tint is deliberately under a third opacity — it has to be readable for minutes at a time, where the flash only has to survive a fraction of a second   // col is already display-encoded here (COMPOSITE did the 1/2.2), which is the space the DOM canvas composited in — so this is the identical blend
+          }
+        }
+      }
+      // ── AND THE SAME EFFECT IN GOLD, FOR HUNGER (user 2026-08-19: "copy the pixels on the screen when the
+      // player loses health, except make them gold pixels to represent hunger") ── deliberately a COPY of the
+      // block above rather than a shared helper: every number in it was tuned by eye against the red over two
+      // days of the user's own notes, and folding the two into one function would mean any later tweak to one
+      // bar silently retuning the other. They are two readouts that happen to look alike, not one readout.
+      // THREE THINGS ARE DIFFERENT, and each for a reason:
+      //   * the SEED is offset. Both bars dither over the same 64x36 grid, so sharing a seed would have gold and
+      //     red competing for exactly the same cells — whichever drew second would win and the first bar would
+      //     simply vanish wherever they overlapped. Offset, they interleave and both stay readable at once.
+      //   * there is no per-hit SPIKE. hurtV.x is an event (you were just struck); going hungry is not an event,
+      //     it is a slow state, so there is nothing to flash and the level alone drives it.
+      //   * it paints UNDER the red: hunger is the slower, less urgent bar, and a hit landing while starving
+      //     should still read as a hit.
+      let gLev = u.vitG.x;
+      if (gLev > 0.0) {
+        let gCell = floor(uv * HURTV_GRID);
+        let gN = (gCell / (HURTV_GRID - vec2<f32>(1.0))) * 2.0 - 1.0;
+        let gD = sqrt(gN.x * gN.x * 0.85 + gN.y * gN.y);
+        let gA = (gD - (0.86 - gLev * 0.10)) / 0.62;
+        if (gA > 0.0) {
+          let gS = 4409;                                  // a FIXED seed, not a per-hit one: hunger has no hit to seed from, and a per-frame hash would sizzle
+          if (ih3(i32(gCell.x), i32(gCell.y), gS) <= min(1.0, gA * gA * 1.1 * (0.34 + gLev * 0.42))) {
+            let gV = ih3(i32(gCell.x), i32(gCell.y), gS + 7717);
+            let gGold = vec3<f32>((205.0 + floor(gV * 45.0)) / 255.0, (150.0 + floor(gV * 40.0)) / 255.0, 20.0 / 255.0);   // rgb(205..249, 150..189, 20) — the hotbar badge's gold, kept warm enough that it never reads as the red's lighter end
+            col = mix(col, gGold, min(0.55, 0.16 + gA * 0.34));
           }
         }
       }

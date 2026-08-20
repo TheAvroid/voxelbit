@@ -3,6 +3,24 @@
 A voxel game that ships as one self-contained HTML file the player double-clicks. That
 has not changed. What changed is that the 16,226-line file is no longer what you edit.
 
+## Do not use sub-agents
+
+Work on this repo directly. Do not spawn sub-agents / Task agents for any part of it — not
+to scout, not to build, not to verify. This is a standing instruction from the repo owner
+(2026-08-19), not a per-task preference, and it holds regardless of how large the batch is
+or how parallelisable the work looks.
+
+Two reasons it matters here, both observed:
+
+* **Concurrent agents each boot their own Chrome, and that corrupts every timing number.**
+  Three at once made two batches of frame-time measurements worthless — one agent measured
+  the same +0.13 ms drift at a pose where its change was provably a no-op. Anything with a
+  measured ms in it needs one browser on the box.
+* **A wrong result from an agent reads as plausible.** A fixed-crosshair chop test once
+  reported "the hive lost zero voxels" and looked like a real defect; the swing animation is
+  570 ms with impact at 250 ms, and the test was re-arming it every 150 ms so no chop ever
+  landed. Catching that needed the person who wrote the test to distrust it.
+
 ## Edit `src/`, never `game/index.html`
 
 `game/index.html` is a **build artifact**. `tools/bundle.py` overwrites it from the 78

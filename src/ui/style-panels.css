@@ -75,9 +75,9 @@
      column is not a card: a click landing in the gap between them falls through to the backdrop rule and
      closes the panel, exactly as the gap between two side-by-side boxes always has. */
   #kbCol { display: flex; flex-direction: column; align-items: stretch; gap: 14px; }   /* VISUALS + SOUND + CONTROLS as separate rounded boxes side by side (user), like the video editor's stacked pieces. FOUR boxes at a 350 px minimum overrun a narrow window, so the row WRAPS rather than pushing the far card off screen — max-width alone would only have clipped it. */
-  #kbCard2, #kbCard3, #kbCard4, #pkCard, #sbCard { background: rgba(16,21,28,0.8); border: 1px solid #2b3646; border-radius: 16px; padding: 22px 26px 18px; min-width: 350px; max-height: 88vh; overflow-y: auto; scrollbar-width: none; font: 8px/2.1 'px3', Consolas, monospace; letter-spacing: 1px; color: #dfe6ee; box-shadow: 0 12px 48px rgba(0,0,0,0.55); }   /* 20% transparent (user); scrollbar-width:none → no scrollbar 'slider' on the right; still scrolls via wheel */
-  #kbCard2::-webkit-scrollbar, #kbCard3::-webkit-scrollbar, #kbCard4::-webkit-scrollbar, #pkCard::-webkit-scrollbar, #sbCard::-webkit-scrollbar { display: none; }   /* hide the WebKit scrollbar too */
-  #kbCard2 h2, #kbCard3 h2, #kbCard4 h2, #pkCard h2, #sbCard h2 { font: 12px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0 0 12px; color: #fff; }
+  #kbCard2, #kbCard3, #kbCard4, #pkCard, #sbCard, #ntCard { background: rgba(16,21,28,0.8); border: 1px solid #2b3646; border-radius: 16px; padding: 22px 26px 18px; min-width: 350px; max-height: 88vh; overflow-y: auto; scrollbar-width: none; font: 8px/2.1 'px3', Consolas, monospace; letter-spacing: 1px; color: #dfe6ee; box-shadow: 0 12px 48px rgba(0,0,0,0.55); }   /* 20% transparent (user); scrollbar-width:none → no scrollbar 'slider' on the right; still scrolls via wheel */
+  #kbCard2::-webkit-scrollbar, #kbCard3::-webkit-scrollbar, #kbCard4::-webkit-scrollbar, #pkCard::-webkit-scrollbar, #sbCard::-webkit-scrollbar, #ntCard::-webkit-scrollbar { display: none; }   /* hide the WebKit scrollbar too */
+  #kbCard2 h2, #kbCard3 h2, #kbCard4 h2, #pkCard h2, #sbCard h2, #ntCard h2 { font: 12px 'px3', Consolas, monospace; letter-spacing: 3px; margin: 0 0 12px; color: #fff; }
   .pkRow { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
   .pkRow:last-child { border-bottom: none; }
   .pkRow input { width: 190px; accent-color: #d2a453; cursor: pointer; }   /* 150 -> 190 (user 2026-08-18): the nudge ranges widened, and the card carries the extra 40px inside its 350px content box with room to spare. accent-color is now dead for the ranges — style-settings.css draws their rail and thumb by hand — but still dresses the text row. */
@@ -91,6 +91,24 @@
   .kbKey.listen { border-color: #7fd05a; color: #b8ff6e; }
   #kbClose { display: block; margin: 14px auto 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
   #kbClose:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
+  /* ── NIGHT PANEL (L) ── one switch per night-only look term. Anchored exactly where the held-item panel is,
+     because it TOOK ITS KEY and the two are never up together — landing in the same place is what makes that
+     read as one panel being swapped for another rather than as a second thing appearing somewhere new. The
+     wrapper is pointer-events:none with the card re-enabling them, so a click in the empty space either side
+     falls through to the backdrop rule that closes it, exactly as #pkPanel's does. The card body itself is the
+     shared rule above (#ntCard is in that list), so nothing about the frame is restated here. */
+  #ntPanel { position: fixed; inset: 0 0 auto auto; display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-start;
+    padding: 12px 12px 0 0; padding-left: 24px; background: none; pointer-events: none; z-index: 30; }
+  #ntCard { pointer-events: auto; min-width: 300px; }
+  .ntRow { display: flex; justify-content: space-between; align-items: center; gap: 26px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
+  .ntRow:last-child { border-bottom: none; }
+  .ntRow button { min-width: 62px; background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 14px; color: #dfe6ee; cursor: pointer; font: inherit;
+    transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }   /* OFF = no colour, the same neutral pill every other toggle in this game rests at (see #vigBtn) */
+  .ntRow button:hover { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* a toggle LIFTS on hover and keeps its own on/off colour — no gold hover outline; that is the non-toggle treatment */
+  .ntRow button.on { border-color: #d2a453; color: #ffd76a; }   /* ON = gold, matching the settings panel */
+  #ntCard .ntHint { color: #6d7f96; font-size: 7px; line-height: 1.9; padding-top: 8px; margin-top: 6px; border-top: 1px solid #1a212c; }
+  #ntClose, #ntReset { margin: 14px 6px 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 22px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
+  #ntClose:hover, #ntReset:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
   #over { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; background: rgba(26,6,2,0.82); color: #ffd9c0; font: 9px/2 'px3', Consolas, monospace; letter-spacing: 1px; cursor: pointer; text-align: center; z-index: 25; }
   #over h1 { font: 22px 'px3', Consolas, monospace; letter-spacing: 4px; margin: 0; color: #ff6a3a; }
   #over .ohint { opacity: 0.75; font-size: 7px; }

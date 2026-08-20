@@ -1,7 +1,12 @@
   /* ══ ESC BUTTONS ══ the ASSET-EDITOR (#edBtn) and ITEM-POSITION (#pkBtn) buttons were both hidden here on
      2026-07-22 with their HTML and JS left intact. #pkBtn came back first (it is how a held pose gets tuned),
      and #edBtn is back now too (user 2026-08-18: "bring back the asset editor"). Nothing was restored to do
-     it — the rule that hid it is simply gone, exactly as its own note said it would be. ══ */
+     it — the rule that hid it is simply gone, exactly as its own note said it would be.
+     ── AND #edBtn IS HIDDEN AGAIN (user 2026-08-19: "remove the asset editor icon from the esc menu") ── by the
+     same one-rule method, for the same reason it worked last time: the <button> stays in html/10-body.html and
+     ui/editor.js keeps its four references to edBtnEl (the 'on' class, the two panel toggles and the click
+     handler), so nothing has to be guarded against a missing element and bringing it back is deleting one line.
+     The editor itself is untouched and still opens with __vb.ed(true). ══ */
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
   #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn, #edCopy { position: relative; top: 0; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, top 0.15s ease-out, box-shadow 0.15s; will-change: transform; }   /* subtle resting drop shadow (user) — deepens on hover below. Explicit top:0 so the hover-lift TRANSITIONS (top:auto→-4px can't interpolate → would jump). */
   #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg, #edCopy svg { width: 22px; height: 22px; }
@@ -21,5 +26,11 @@
     text-shadow: 0 1px 3px rgba(0,0,0,0.9); opacity: 0; transition: opacity 0.18s ease-out; pointer-events: none; }
   #kbBtn:hover::after, #pkBtn:hover::after, #edBtn:hover::after, #dcBtn:hover::after, #veBtn:hover::after, #edCopy:hover::after { opacity: 1; }   /* HOVER (user): the tile lifts and the icon goes GOLD (user 2026-08-08 — was green) (svg fill is currentColor, so the colour carries) */
   #edBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  /* HIDDEN (user 2026-08-19: "remove the asset editor icon from the esc menu"). This rule has to sit AFTER
+     the shared #kbBtn,#pkBtn,#edBtn,… tile rule and carry !important, because that group selector names #edBtn
+     too: each selector in a list is matched on its OWN specificity, so plain `#edBtn{display:none}` placed above
+     it is an exact (1,0,0) TIE that the later `display:flex` wins — which is why the first attempt left the icon
+     on screen. !important also survives anyone reordering these rules later. */
+  #edBtn { display: none !important; }
   #edCopy.copied { border-color: #7fd05a; color: #b8ff6e; }   /* green pulse on export → confirms the copy without replacing the icon */
   #edCopy.copied::after { opacity: 1; }                        /* …and surface the "copied ✓" label even if the cursor isn't on it */

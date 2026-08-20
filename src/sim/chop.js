@@ -261,7 +261,29 @@
   const phSeparate = (S, f) => { phSrc = 'treeSeparate';                     // orphans -> rigid bodies; the SAME cell list drives the world erase, so a voxel is in exactly one state
     const t0 = performance.now();
     const made = [], cellsOut = [], comps = [], snowClaim = new Set();
-    for (let k = 0; k < phMark.length; k++) {
+    // ── SCAN THIS TREE'S BOX, NOT THE BUFFER'S (2026-08-19, found while measuring the fell spike) ── phMark is
+    // allocated once and only ever GROWS: phFlood sizes it to sx * sz * MSZ and reuses it, so after one big oak
+    // it is ~1.17M entries and stays that way. Scanning phMark.length therefore made every later separation pay
+    // the LARGEST tree ever chopped this session — a pine's own box is 35 x 36 x MSZ = 146k, so a pine felled
+    // after an oak was walking 8x the cells it has, decomposing each into an mx/my/mz that is outside the model
+    // and asking phPresent about it. Harmless (S.R.A returns undefined and the cell is skipped) and pure waste.
+    // The bound is phFlood's own formula, so the two cannot drift apart.
+    // ── AND IT WALKS THE TREE'S OWN VOXELS, NOT ITS BOX (2026-08-19, the felling spike) ── S.cells is the
+    // SPARSE list of occupied model indices, built in sim/physics.js beside the rotated shape,
+    // in exactly the li = mx + mz*sx + my*sx*sz layout this loop decodes. Its own comment there records why it
+    // exists: it is what makes the FLOOD's seed pass O(voxels) instead of O(box). This scan was the one place
+    // that had not been given it.
+    // MEASURED on the oak the user felled: the box is 101 x 100 x MSZ = 1,171,600 cells and the tree is 67,204
+    // voxels — a 17x difference, and every one of those 1.1M iterations was doing two divisions and a modulo to
+    // rebuild coordinates for a cell that is empty 94% of the time.
+    // The result is IDENTICAL, not approximate: phPresent can only return non-zero for a cell the model
+    // occupies, so the cells this skips are exactly the ones the old loop rejected. The phMark and phPresent
+    // tests stay — a listed cell can still have been marked by an earlier component, or been removed from W.
+    // A PINE keeps the box scan (its shape carries cells: null) and does not care: 36 x 35 x MSZ is 146k, an
+    // eighth of the oak's box, and it is the oak that is felt.
+    const list9 = S.cells, nAll9 = list9 ? list9.length : f.sx * f.sz * MSZ;
+    for (let q9 = 0; q9 < nAll9; q9++) {
+      const k = list9 ? list9[q9] : q9;
       if (phMark[k] !== 0) continue;
       const mx0 = k % f.sx, mz0 = ((k / f.sx) | 0) % f.sz, my0 = (k / (f.sx * f.sz)) | 0;
       if (!phPresent(S, mx0, my0, mz0)) continue;

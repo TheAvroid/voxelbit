@@ -1,25 +1,45 @@
   // ── right-click pickup: pebbles + twigs ─────────────────────────────────────
-  // ── HAND SLOTS ── UNLIMITED (user, for now): the hotbar grows as things are picked up and always keeps
-  // one trailing empty, so a pickup can never be refused. Scroll wheel cycles the whole list; Q drops
-  // from the selected slot. Same-type items still stack rather than taking a new slot each time.
-  // THE ORDER IS THE USER'S: axe, pick, shovel, hoe, knife, bow, spear. Anything whose .vox is missing
-  // simply drops out of the line rather than leaving a hole.
-  const slots = [1, PICK_IT, SHOVEL_IT, HOE_IT, KNIFE_IT, BOW_IT, SPEAR_IT].filter(Boolean).map((it) => ({ it, n: 1 }));   // the KNIFE is in the rotation too (user)   // …and the BOW is back (user)   // stone axe, PICK, SHOVEL — and the last slot stays EMPTY (user), so there is always somewhere for a pickup to land. The BOW is no longer in the starting kit for that reason; __vb.giveIt(__vb.bowId()) puts it in hand to tune.
+  // ── HAND SLOTS ── FIVE, AND YOU START WITH NONE (user 2026-08-19: "have the player spawn with nothing. max
+  // inventory slots is 5") ── the hotbar was UNLIMITED: it grew on every pickup and always kept one trailing
+  // empty so a pickup could never be refused, which is why canAdd was a bare `true`. With a ceiling that
+  // predicate has to mean something again, or a full hotbar would silently swallow whatever it could not
+  // hold — and every caller already checks it (the bench refuses to craft, tryPickup refuses to grab, the
+  // clash refuses to make a knife), so making it honest is the whole change.
+  // Scroll wheel cycles the list; Q drops from the selected slot. Same-type items still stack rather than
+  // taking a new slot each time, so five slots is five KINDS, not five things.
+  // ── THE STARTING KIT IS GONE WITH IT ── it was axe, pick, shovel, bow, and before that the hoe, knife and
+  // spear the user took out earlier the same day. Every one of them is now findable or craftable: the stone
+  // age bench (ui/achievements.js) makes the axe, pick, shovel, hoe and spear out of sticks and rocks, and
+  // the knife comes from clashing two rocks. So the tools were the last thing being issued rather than
+  // earned, and an empty hotbar is what makes the bench the start of the game instead of a shortcut.
+  const SLOT_MAX = 5;                                // hard ceiling on hotbar slots (user)
+  const slots = [];                                  // …and it starts EMPTY
   let selSlot = 0;
   const STACK_MAX = 8;                                 // how deep a stackable item goes (user)
   const stackable = (it) => !(it === 1 || it === KNIFE_IT || it === PICK_IT || it === SHOVEL_IT || it === BOW_IT || it === HOE_IT || it === SPEAR_IT);   // TOOLS AND WEAPONS DO NOT STACK (user) — each takes its own slot; everything else (raw meat, rocks, twigs, cones) stacks to STACK_MAX
-  const canAdd = () => true;                           // …so nothing is ever un-pickable for want of room (see slotTidy)
+  // ── AND canAdd MEANS SOMETHING AGAIN ── it was `() => true` while the hotbar was unlimited. Three ways to
+  // say yes, in the order addItem below actually uses them: it stacks onto a slot that already holds this
+  // item, it takes an empty slot, or it grows the hotbar while there is room under the ceiling.
+  const canAdd = (it) => {
+    if (it !== undefined && stackable(it))
+      for (let i = 0; i < slots.length; i++) if (slots[i] && slots[i].it === it && slots[i].n < STACK_MAX) return true;
+    for (let i = 0; i < slots.length; i++) if (!slots[i]) return true;
+    return slots.length < SLOT_MAX;
+  };
   const slotTidy = () => {                             // keep EXACTLY one trailing empty: pickups always have a home, and the wheel never lands on a run of blanks
     while (slots.length > 1 && !slots[slots.length - 1] && !slots[slots.length - 2]) slots.pop();
-    if (slots.length === 0 || slots[slots.length - 1]) slots.push(null);
-    if (selSlot >= slots.length) selSlot = slots.length - 1;
+    if ((slots.length === 0 || slots[slots.length - 1]) && slots.length < SLOT_MAX) slots.push(null);   // …but never PAST the ceiling: at SLOT_MAX a full hotbar simply has no trailing empty, which is what makes canAdd below say no
+    if (selSlot >= slots.length) selSlot = Math.max(0, slots.length - 1);
   };
   slotTidy();                                          // start with the trailing empty already in place
   function addItem(it) {                               // prefer stacking, then the SELECTED slot, then any empty, then a NEW one. Never fails.
     if (stackable(it)) for (let i = 0; i < slots.length; i++) if (slots[i] && slots[i].it === it && slots[i].n < STACK_MAX) { slots[i].n++; return i; }   // stack first, up to the cap
     if (!slots[selSlot]) { slots[selSlot] = { it, n: 1 }; slotTidy(); return selSlot; }
     for (let i = 0; i < slots.length; i++) if (!slots[i]) { slots[i] = { it, n: 1 }; slotTidy(); return i; }
-    slots.push({ it, n: 1 }); slotTidy(); return slots.length - 2;   // grew the hotbar (user) — -2 because slotTidy has just appended the next empty
+    if (slots.length >= SLOT_MAX) return -1;           // FULL — and -1 is the answer every caller already handles (tryPickup keeps the item in the world, the clash gives the rocks back)
+    const k9 = slots.length;                           // …remembered BEFORE the push, so the answer does not depend on whether slotTidy then appended a trailing empty
+    slots.push({ it, n: 1 }); slotTidy();
+    return k9;
   }
   // ── THE HOE'S TILLED-EARTH ID, DECLARED HERE AND NOWHERE ELSE ── it is minted at RUNTIME by hoeTill
   // (sim/tools.js) the first time the hoe is swung, and read by main/debug-api.js's tillInfo. It cannot live

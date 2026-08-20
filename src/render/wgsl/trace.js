@@ -104,12 +104,19 @@
     // decided on the CPU and the falling flakes here, so if only one side sharpened its border the other would
     // disagree across the whole ramp — snow settling under a clear sky, or flakes falling on ground that
     // refuses them. Every weather test on this side goes through it, exactly as every one on that side does.
-    fn wSharpG(m : f32) -> f32 {                       // widened to 0.20..0.80 in step with the JS — see world/window.js. The two MUST match or the flakes and the blanket disagree across the band
-      if (m <= 0.20) { return 0.0; }
-      if (m >= 0.80) { return 1.0; }
-      return dSstep((m - 0.20) / 0.6);
+    fn wSharpG(m : f32) -> f32 {                       // widened to 0.06..0.94 AND made LINEAR in step with the JS — see world/window.js. The two MUST match or the flakes and the blanket disagree across the band
+      if (m <= 0.06) { return 0.0; }
+      if (m >= 0.94) { return 1.0; }
+      return (m - 0.06) / 0.88;
     }
-    fn oakWeather(x : f32, z : f32) -> f32 { return oakMask(x, z) * (1.0 - cherryMask(x, z)); }   // what every WEATHER site below asks. oakMask itself stays the faithful port of oakM, because the worldgen questions still want that one
+    fn cherryMaskW(x : f32, z : f32) -> f32 {          // the blossom band as the WEATHER sees it — cherryMask's twin on the wider CHBW ramp (world/window.js cherryW). Same centre and same CHHALF, so WHERE it snows is identical and only the fade length differs
+      let b = f32(${SPWX - CHOFF - chWob(SPWZ)}) + chWobG(z);
+      let t = (${CHHALF + CHBW}.0 - abs(pwrapG(x - b))) / ${CHBW}.0;
+      if (t >= 1.0) { return 1.0; }
+      if (t <= 0.0) { return 0.0; }
+      return dSstep(t);
+    }
+    fn oakWeather(x : f32, z : f32) -> f32 { return oakMask(x, z) * (1.0 - cherryMaskW(x, z)); }   // what every WEATHER site below asks. oakMask itself stays the faithful port of oakM, because the worldgen questions still want that one
     ${FLAKEBLK}
     fn onbT(n : vec3<f32>) -> vec3<f32> {
       return normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
@@ -612,7 +619,7 @@
         let sp = pos + h.n * 0.02;
         if (${location.search.includes('nosun') ? 0 : 1} == 1 && (dot(h.n, u.sunDir) > 0.0 || (FOLBACK && isFol(h.vox))) && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night (?nosun disables for A/B)
           let st = onbT(u.sunDir); let sb = cross(u.sunDir, st);
-          let jitK = select(0.0, 0.028, LG(12u));                   // bit 12: sun PENUMBRA — off = a pin-sharp, perfectly hard shadow edge
+          let jitK = select(0.0, mix(0.028, 0.009, nightK()), LG(12u));                   // bit 12: sun PENUMBRA — off = a pin-sharp, perfectly hard shadow edge   // …and NIGHT BIT 0 tightens the cone toward the moon's own angular radius. 0.028 rad is a soft edge tuned for the SUN through a canopy; the same cone under a light a twentieth as bright gives a penumbra the denoiser cannot resolve, so a moon shadow arrived as a smudge. The mix rides nightK(), so noon is bit-identical.
           let sdir = normalize(u.sunDir + st * ((rand(&seed) * 2.0 - 1.0) * jitK) + sb * ((rand(&seed) * 2.0 - 1.0) * jitK));
           // -- BACK-LIT LEAF -- sp sits 0.02 along the NORMAL, which on a face the sun is BEHIND is the dark
           // side: the ray then walks straight back through the leaf's own voxel, hits it, and the pixel reads
@@ -705,7 +712,7 @@
         if (dh.t >= 0.0 && (dh.vox == LVT || dh.vox == LVB || dh.vox == LVR || dh.vox == LVY)) {
           lavaG = u32(clamp((1.0 - dh.t / 18.0) * 14.0 + 0.5, 0.0, 14.0));
         }
-      } else if (t >= 0.0 && faceId != 8u && faceId != 7u) {           // FIREFLY LIGHT — same 4-bit glow field (lava lives below y 28, fireflies above: never both).
+      } else if (t >= 0.0 && faceId != 8u && faceId != 7u) {   // FIREFLY LIGHT — BAKED IN (user 2026-08-19: "bake in the firefly light and remove it from the panel"); it was night bit 4   // …NIGHT BIT 4 is the panel's switch for this and nothing else. LG bit 3 above already gates it, but that bit is shared with the LAVA probe, so a row labelled 'firefly light' driving it would have turned the bedrock glow off too. — same 4-bit glow field (lava lives below y 28, fireflies above: never both).
         let pos2 = ro + rd * t;                                        // Teardown-style AREA light (juandiegomontoya breakdown): jittered target on the glow sphere,
         var best = 0.0; var bi = -1;                                   // sphere-light falloff window (inner full → outer ZERO), temporal dither — TAA resolves the noise.
         for (var f = 0; f < 8; f++) {

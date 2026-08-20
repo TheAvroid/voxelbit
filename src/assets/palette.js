@@ -286,6 +286,19 @@
                      addCol(230, 212, 218), addCol(239, 225, 230), addCol(247, 235, 238)];
   for (const i of BLOSLEAF) palOwn.add(i);
   for (const i of BLOSWHITE) palOwn.add(i);
+  // ── AND THE PALE VARIETY'S FALLEN PETALS (user 2026-08-19: "can you make the petals (single voxels) under the
+  // light cherry tree also match the light cherry tree?") ── the ground scatter under a blossom tree wore
+  // TWIGPINK whatever colour the crown above it was, so a white cherry shed PINK petals onto the grass.
+  // THESE ARE BLOSWHITE'S TOP FOUR COLOURS EXACTLY, ON THEIR OWN IDS, and the duplication is the point — it is
+  // the same rule OAKMOSS is built on. BLOSWHITE is CANOPY material: foliaTab, which carries the see-through
+  // primary ray, the snow catch and DRAPE support. A petal lying in the grass that you can see through, that
+  // catches snow and that the support resolver treats as hanging is not a petal. Its own ids get the ground
+  // scatter's class instead (mossTab, beside TWIGPINK), so only the colour is shared.
+  // FOUR SHADES, not the full six: the two darkest BLOSWHITE steps are the crown's shadow side and read as
+  // grey on open ground, where a fallen petal is lit from above.
+  // Paid for by the six ids the delta-1 share in assets/models.js reclaimed — the table was at 256/256.
+  const TWIGWHITE = [addCol(214, 193, 201), addCol(230, 212, 218), addCol(239, 225, 230), addCol(247, 235, 238)];
+  for (const i of TWIGWHITE) palOwn.add(i);   // reserved: the scatter keys on these, and a tolerance reuse would sprinkle somebody else's model through the blossom
   // ── AND THE FRUIT (user 2026-08-18: "scatter this shade: 840c0c on the cherry trees ... single voxels that
   // will act like cherries on the tree") ── the authored colour exactly, (132,12,12).
   // IT MINTS ITS OWN ID EVEN THOUGH THAT COLOUR IS ALREADY IN THE TABLE. addCol pushes unconditionally, so this
@@ -323,6 +336,38 @@
   // nothing; the three that matter are the ones a canopy actually reads as. The table has 5 free.
   const OAKMOSS = [addCol(105, 143, 51), addCol(107, 141, 77), addCol(134, 167, 89)];
   for (const i of OAKMOSS) palOwn.add(i);   // reserved: mossCap keys on these, and a tolerance reuse would scatter somebody else's model over the boulders
+  // ── THE SECOND OAK, AND IT COSTS TWO IDS (user 2026-08-19: "make the oak trees have 2 shades of green. a
+  // lighter green and a darker green. similar to whats done with the cherry trees") ── the cherry forest ships
+  // two VARIETIES of one tree by remapping the oak's leaf ids onto another ramp (assets/bow.js blosRemap), and
+  // that is what this is: half the oaks keep the green they have and half wear a lighter one. The DARK variety
+  // is free — it is the existing OAKLEAF, stamped raw and byte-for-byte unchanged — so the only spend is the
+  // light one's ramp, and even that is mostly reuse.
+  //
+  // TWO IDS FOR A FOUR-STEP RAMP. The light ramp is [oak leaf #2, oak leaf #3, these two] (assembled as
+  // OAKLITER in assets/bow.js, which is where the luminance-sorted leaf ids exist). It CLIMBS OFF the existing
+  // ramp rather than standing beside it: the light variety's two darkest steps are the dark variety's two
+  // lightest, and the two below them are simply dropped. That is not thrift dressed up — it is what "the same
+  // tree, lighter" means, and it is why the pair reads as one species in two shades rather than two unrelated
+  // greens.
+  //
+  // WHY THAT IS ENOUGH TO SEE, given the two ramps overlap. The art's four greens are NOT evenly used: the
+  // darkest (82,115,47) is 28-72% of every crown (measured over all seven models), so a crown's colour is
+  // decided almost entirely by where rank 0 lands. Dropping it IS the effect. Simulated over the real models
+  // with the real dither, the crown mean moves (103,138,60) -> (139,171,93): luma 119 -> 153, and 36/255 on the
+  // widest channel.
+  //
+  // THE HUE STAYS ON THE OAK'S OWN LINE and is pushed a few degrees YELLOWER rather than paler, for a reason
+  // that is not aesthetic: ids 112-115 are the LILY PAD's four greens, (155,182,117) up to (193,220,166), and
+  // the pale continuation of the oak ramp lands inside PAL_TOL of them (measured: 8/255 on the first step).
+  // These two sit 17 and 21 away instead. palOwn already makes a share impossible in both directions — this is
+  // the belt to that brace, and it also keeps a sunlit crown from reading as the colour of pondweed.
+  //
+  // RESERVED, for exactly the reason OAKLEAF and both blossom ramps are: assets/material-tabs.js is about to
+  // tell these ids they are CANOPY — walk-through, DRAPE support, snow-catching, see-through when the eye is
+  // inside them, and a bird perch — and a later tolerance share would hand all of that to whatever model next
+  // asked for a bright green.
+  const OAKLITE = [addCol(160, 192, 100), addCol(186, 216, 124)];   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
+  for (const i of OAKLITE) palOwn.add(i);
   const BLOSCHERRY = addCol(132, 12, 12);
   palOwn.add(BLOSCHERRY);   // reserved: the scatter is keyed on this id, so a tolerance reuse handing it to a model would sprinkle that model through every crown   // reserved HERE and not up with SHRUBF's: this const is declared 100 lines below that one, and reading it there is the const-before-declaration black screen (a bare `for` in a module body is not hoisted past a TDZ)
   // ── SMALL ROCK (rock.vox) — right-click to pick up ── THREE NEUTRAL greys, matching what the model is

@@ -299,7 +299,22 @@
   const startGrab = (it, wx, wy, wz, aPh, lev) => {    // EVERY pickup flies to the hand — never an instant swap; a 2nd rock flies to the LEFT hand
     if (lev) playPickUp();                             // ── THE SNATCH, NOT THE LANDING (user 2026-08-08) ── this fired from the two ARRIVAL branches at first, which put it a full GRAB_MS (measured: 365 ms) after the grab, and the pickup read as late. It belongs HERE: the item leaves the air on this frame, the flight is just it travelling to the hand. Only the two drop grabs pass lev — a rock in a wall or a worm in the dirt is not levitating.
     grabAnim = { t0: performance.now(), it, x: wx, y: wy, z: wz, aPh: aPh !== undefined ? aPh : performance.now() * 0.0012,
-      left: it === 2 && !!(slots[selSlot] && slots[selSlot].it === 2) };
+      // ── WHICH HAND IS THIS FLYING TO (user 2026-08-19: "when the player picked up a rock while holding a
+      // stick in the right hand, it goes inside the player and then goes to the left hand") ── this used to
+      // mean ONE thing: a second ROCK, for the dual-wield clash. Every other pickup took the right hand's
+      // hand-full path, which draws the item as a world ghost flying to [P.x, eye + absorbY, P.z] — the
+      // player's own chest. That was right while the off-hand could only ever hold a second rock, and became
+      // wrong the moment the stone-age bench let it hold the OTHER half of a craft pair: the rock flew into
+      // the player, was granted, and only then appeared out in the left hand, which is the jump reported.
+      // The test now matches what tick-camera will actually SHOW in that hand (its craftOther), so the flight
+      // ends where the item ends up:
+      //   holding a rock  + picking a rock  -> dual wield, left
+      //   holding a rock  + picking a stick -> craft pair, left
+      //   holding a stick + picking a rock  -> craft pair, left
+      //   holding a stick + picking a stick -> NOT left: the off-hand shows no second stick, so it would fly
+      //                                       to a hand that is not going to be holding it
+      left: (() => { const h9 = slots[selSlot] && slots[selSlot].it;
+        return (h9 === 2 && (it === 2 || it === 3)) || (h9 === 3 && it === 2); })() };
   };
   function tryPickup() {                               // march the view ray; first pickable id wins, first solid stops it
     if (grabAnim) return;                              // one flight at a time — a second grab mid-flight would overwrite (and lose) the first item

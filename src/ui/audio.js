@@ -49,7 +49,11 @@
   let musVol = 1;   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
-  let sndVol = 0;   // ── MUTED FOR NOW (user 2026-08-18: "turn off the volume for the time being") ── back to the 2026-08-02 always-muted start; put this to 1 to restore the 2026-08-06 full-volume start. It is the MASTER, so it takes the sfx and music buses down with it, and a page load still does NOT restore vb_vol — the slider just opens at 0% and can be dragged back up for the session.
+  let sndVol = 1;   // ── SOUND IS BACK ON (user 2026-08-19: "turn the volume back on by default") ── it was set to 0 on
+                    // 2026-08-18 ("turn off the volume for the time being"), and "for the time being" has ended. 1 is the
+                    // 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
+                    // preference: a saved vb_vol is written by the slider and re-read there, so a player who turns it down
+                    // still gets their setting — this only decides where a fresh load begins.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -291,9 +295,18 @@
   // pairing `award` with red_carpet's 0.140 would play it 4 dB quiet.
   // Math.random is right here and a seed would be wrong: this is presentation, not world generation. It is
   // read once at load, touches nothing the generator or a test hashes, and deliberately differs run to run.
-  const anthemOrder = ANTHEM_SET.slice();
+  // ── …EXCEPT `award`, WHICH ALWAYS OPENS (user 2026-08-19: "play award.mp3 first in the playlist. shuffle
+  // everything else") ── so it is pulled OUT before the shuffle and put back at the front, rather than shuffled
+  // and then swapped into place: swapping would displace whichever track the shuffle had put first, which is a
+  // second, silent rule about the order. The filter is by NAME and keeps the pair intact, so award still
+  // carries its own measured gain (see the note above) and a rename cannot quietly drop the pin — if the name
+  // ever stops matching, the set simply shuffles whole and nothing breaks.
+  const ANTHEM_FIRST = 'award';
+  const anthemPin = ANTHEM_SET.filter((p9) => p9[0] === ANTHEM_FIRST);
+  const anthemOrder = ANTHEM_SET.filter((p9) => p9[0] !== ANTHEM_FIRST);
   for (let i9 = anthemOrder.length - 1; i9 > 0; i9--) { const j9 = (Math.random() * (i9 + 1)) | 0;
     const t9 = anthemOrder[i9]; anthemOrder[i9] = anthemOrder[j9]; anthemOrder[j9] = t9; }
+  anthemOrder.unshift(...anthemPin);
   const anthemSnds = anthemOrder.map(([n9, g9]) => regMus(new Audio('sound/soundtrack/' + n9 + '.mp3'), g9));   // soundtrack/*.mp3, not music/*.mp4 — see the set above. The old .mp4s are left in place; nothing reads them.
   console.log('[vb] anthem order:', anthemOrder.map((t9) => t9[0]).join(' -> '));
   const anthemSnd = anthemSnds[0];                     // the first cut, still named for the taps that read it
@@ -311,6 +324,7 @@
   for (const a9 of anthemSnds) a9.addEventListener('ended', () => { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; });
   const SWAP_MS = 240;                                 // how long a tool swap takes to rise back into frame — short enough that it never delays a swing
   let swapT0 = -1e9, prevHeldIt = -1;                  // …and when the current one started (see the view-model block)
+  let lSwapT0 = -1e9, prevLeftIt = -1;                 // …and the OFF hand's own pair (user 2026-08-19: the left hand should share the right's mechanics). Its own clock, because the two hands change item independently — a craft pair forming swaps the LEFT hand while the right keeps what it was holding
   let swingStart = -1e9, mouse0 = false, mouse2 = false;   // mouse2: RIGHT button HELD — the wind-up for a rock throw (right-hold, then left-click)               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
   let pendKillT = 0;                                   // pending creature-hit: armed at swing start, FIRES ~250 ms in — when the axe visually LANDS on screen (user: only register the hit when the axe hits), not at the click
   const swishSnd = regSnd(new Audio('sound/bow/swish.mp4'), 0.36);   // swing whoosh — cut 40% (user), then a further 40% (0.6 → 0.36)
@@ -413,9 +427,13 @@
   // ids each, and this is the clock that walks them. It lives here, beside tryEat, because a bite is the ONLY
   // thing that starts it: the strip is not a loop the hand idles through, it is one fruit eaten, once, per click.
   // 24 FPS, which is the house rate for every animation in this game unless the user says otherwise, so the
-  // thirteen frames run 542 ms. That sits comfortably inside EAT_MS (900), and the gap is deliberate rather
-  // than leftover: the core lands, holds for a third of a second, and only then can the next bite start — so a
-  // HELD right button reads as bite, swallow, bite instead of a flicker of half-eaten apples.
+  // twenty-one frames run 875 ms, filling EAT_MS (900) almost exactly — so a HELD right button reads as one
+  // continuous bite-swallow-bite rather than a flicker of half-eaten apples.
+  // ── IT WAS THIRTEEN FRAMES AND 542 MS UNTIL 2026-08-19, AND THE 358 MS THAT LEFT OVER WAS A BUG TWICE ──
+  // first as a fresh item appearing mid-chew (nothing was drawing the gap, so the hand fell back to the stack),
+  // then, once the last frame was held across it, as a frame that visibly stuck: 358 ms is 8.6x the 41.7 ms
+  // every other frame gets, and the eye reads that as the animation jamming on its final pose. The window is
+  // filled with real frames now. See the EAT_N block in assets/held-items.js for why 21 is the ceiling.
   // ── 8 FPS WAS TRIED AND TAKEN BACK OUT, SAME DAY (user 2026-08-17: "play the apple at 8 frames a second",
   // then "erase that 8 fps for the apple, have it match the orange") ── recorded because the rate is a thing
   // that will be reached for again, and because it does not stand alone: ONE clock walks both fruit, so
@@ -432,7 +450,24 @@
   const eatAnimFrame = (now) => {                      // which frame of the strip the hand should draw, or -1 for "not eating". Self-clearing: the frame past the last one ends the animation.
     if (!eatAnim) return -1;
     const f = Math.floor((now - eatAnim.t0) / EAT_FRAME_MS);
-    if (f >= FOOD_EAT_N) { eatAnim = null; return -1; }
+    // ── THE REMNANT HOLDS UNTIL THE NEXT BITE IS LEGAL (user 2026-08-19: "when eating the meat, if its
+    // stacked, it loads the new one before the first one is done playing the eating animation") ── the
+    // block above has ALWAYS described this hold, but it was never implemented: the strip is FOOD_EAT_N/EAT_FPS
+    // and a bite is gated at EAT_MS, so retiring the animation the instant its last frame had been shown handed
+    // the hand straight back to heldIt() — THE NEXT WHOLE ITEM OFF THE STACK — for whatever was left of the bite.
+    // On a stack of one that read as an apple core vanishing early; on a stack of meat it read as a fresh steak
+    // appearing mid-chew. This is now a 25 ms backstop rather than the 358 ms it closed when it was written:
+    // EAT_N was raised to fill the window with frames instead, because a third of a second of held pose reads
+    // as a stuck frame (user, same day). Keeping it costs nothing and it still guarantees the invariant: the new
+    // item appears on the frame the new bite starts and not before, whatever EAT_N and EAT_MS are set to. Keyed off EAT_MS rather than a hold constant
+    // of its own so the two cannot drift apart: move the cadence and the hold follows it.
+    // The selSlot test ends the hold early if you scroll away mid-chew — the remnant is only the right thing
+    // to draw while that slot is still the one in your hand; the strip itself is not gated on it, because
+    // eating the LAST of a stack empties the slot without changing which slot is selected.
+    if (f >= FOOD_EAT_N) {
+      if (now - eatAnim.t0 < EAT_MS && selSlot === eatAnim.sl) return FOOD_EAT_N - 1;
+      eatAnim = null; return -1;
+    }
     return f < 0 ? 0 : f;
   };
   // DERIVED from the vitals' food table rather than listed here: what is edible and what it restores are the
@@ -454,7 +489,7 @@
   const tryEat = () => {
     const sel = slots[selSlot];
     if (dead || ED.on || grabAnim || !sel || !EDIBLE().has(sel.it)) return false;
-    if (VIT.hp >= VIT_HP_MAX) return false;             // ── FULL HEALTH REFUSES THE BITE ── so a steak is never spent on nothing. This asked about the HUNGER bar until 2026-08-17, which was the bug the user hit: hunger sat frozen at max, so the test was always true and a hurt player could not eat at all. Same rule, asked of the bar food now fills
+    if (VIT.hp >= VIT_HP_MAX && VIT.food >= VIT_FOOD_MAX) return false;   // ── NOTHING TO GAIN REFUSES THE BITE ── so a steak is never spent on nothing. It asked about HEALTH ALONE until hunger came back (user 2026-08-19), and health alone is wrong the moment there are two bars: a player at full health with an empty stomach could not eat, so the hunger bar could only ever go down and starvation was unavoidable. The condition is now the SAME one sim/vitals.js vitEat refuses on — deliberately duplicated rather than exported, because this is the CLICK gate (it also owns the sound, the chew and the stack spend) and vitEat is the authority; if they ever disagree the click is refused and nothing is spent, which is the safe direction
     const now9 = performance.now();
     if (now9 - eatT < EAT_MS) return false;
     eatT = now9;
@@ -468,7 +503,7 @@
     // food is declared and this line cannot fall behind it. The clock, the cadence and the sound are already
     // shared — this was the last thing that was not.
     const fd9 = vitFoods()[bit];
-    if (FOOD_EAT_N && fd9 && fd9.strip) eatAnim = { t0: now9, it: bit };   // strip:false foods (the worm) chew on the same EAT_MS clock and make the same sound; they simply have no carved frames to walk, and indexing a FOOD_EAT_N run off a crawl cycle would show the next creature's frames
+    if (FOOD_EAT_N && fd9 && fd9.strip) eatAnim = { t0: now9, it: bit, base: fd9.eat || bit, sl: selSlot };   // `base` is what the frame counter indexes; it differs from `it` only for the WORM, whose held id is the head of a crawl cycle rather than of an eat strip   // strip:false foods (the worm) chew on the same EAT_MS clock and make the same sound; they simply have no carved frames to walk, and indexing a FOOD_EAT_N run off a crawl cycle would show the next creature's frames
     if (--sel.n <= 0) { slots[selSlot] = null; slotTidy(); }
     return true;
   };
@@ -511,3 +546,4 @@
     const d9 = Math.hypot(wx - P.x, wy - smoothEye, wz - P.z);
     lifeHitPool(Math.max(0.14, Math.min(1, 1 - (d9 - 12) / 190))); };
   let bobPh = 0, bobAmp = 0;                           // walk/sprint view-model bob state
+  let camBobY = 0;                                     // …and the CAMERA's share of it (user 2026-08-19). Vertical only — see the note where it is written, in main/tick-camera.js

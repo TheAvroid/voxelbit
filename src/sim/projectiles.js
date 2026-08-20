@@ -62,8 +62,18 @@
     // bite took the leaves around the shaft — reintroducing the exact 'aiming at the trunk gets the
     // needles' complaint the paragraph above was written to fix. Wood is wood whether or not this code
     // knows which tree it belongs to.
-    if (!hit && !standing) hit = phChopDecor(ix, iy, iz, ARROW_CHOP_RAD, ARROW_CHOP_BITE, woodTab[id] ? arrowWood : okMat);   // mushrooms, ferns, ground logs — and soil and stone, which is what okMat is for
+    // ── AND A BEEHIVE IS THE ONE THING HERE THAT ANSWERS BACK (2026-08-19) ── the SILENT PATH: this reaches
+    // phChopDecor by its own route and had no hook at all, so an arrow could take a hive apart and nothing
+    // ever reached the ledger. It was not really covered by the 1 Hz watch in main/tick-creatures.js either —
+    // that watch is scoped to the SWARM slots and to the hive nearest the PLAYER, so a forager-only population
+    // or a shot at any hive that is not the closest one is still silent, and even in the covered case the
+    // answer arrives up to a second late. The hook is one line and it is tools.js's, verbatim: asked AFTER the
+    // carve, because the question is "is the hive open now", and hiveChopped does nothing until BEE_BREAK_F.
+    // The FILTER is tools.js's too, for the same reason: within ARROW_CHOP_RAD of a hive voxel is the oak
+    // branch it hangs from, and bark is decorTab, so the permissive arm would spend the shaft's bite on wood.
+    if (!hit && !standing) hit = phChopDecor(ix, iy, iz, ARROW_CHOP_RAD, ARROW_CHOP_BITE, woodTab[id] ? arrowWood : (HIVE_TAB[id] ? ((v) => !!HIVE_TAB[v]) : okMat));   // mushrooms, ferns, ground logs — and soil and stone, which is what okMat is for
     if (!hit) return false;
+    if (HIVE_TAB[id]) hiveChopped(ix, iy, iz);         // …and the swing that opens it is the one that lets the bees out — the same ledger the axe posts to
     // ── RESOLVE BEFORE TAGGING ── whatever that bite was holding up comes down through supFlush, off the cells the
     // carve actually changed. It is run to completion HERE, synchronously, rather than left to the frame
     // loop, because the tagging loop below has to see the bodies it makes — that ordering is load-bearing
@@ -429,7 +439,7 @@
   };
   // The blossom leaf ids a twig can carry, and HOW MANY — read off the models themselves so re-authoring
   // stick_1.vox cannot leave this number stale. Empty when the cherry forest's models never built.
-  const TWIG_EXTRA = new Set((typeof TWIGPINK === 'undefined' ? [] : TWIGPINK));   // the AUTHORED pink twigs' own leaf ids (assets/bow.js), NOT the canopy's BLOSLEAF: the user's pink_stick art carries a ramp of its own, and keying this on the canopy would both miss the real leaf and risk the flood reaching a crown
+  const TWIG_EXTRA = new Set((typeof TWIGPINK === 'undefined' ? [] : TWIGPINK).concat(typeof TWIGWHITE === 'undefined' ? [] : TWIGWHITE));   // the AUTHORED pink twigs' own leaf ids (assets/bow.js), NOT the canopy's BLOSLEAF: the user's pink_stick art carries a ramp of its own, and keying this on the canopy would both miss the real leaf and risk the flood reaching a crown
   const TWIG_EXTRA_N = (typeof STICKB === 'undefined' ? [] : STICKB)
     .reduce((n, m) => Math.max(n, m.vox.filter((p) => TWIG_EXTRA.has(p >>> 24)).length), 0);
   const twigLeafCells = (cells) => extraCells(cells, TWIG_EXTRA, TWIG_EXTRA_N);

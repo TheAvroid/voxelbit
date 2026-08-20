@@ -142,7 +142,7 @@
     ['assets/stone_tools/stone_shovel.vox', 'item'],                                        // …and the STONE SHOVEL, which digs ground and nothing else (user)
     ['assets/stone_tools/bow_arrow/arrow.vox', 'item'],                                     // …and the ARROW that lies on the bow (user)
     ['assets/stone_tools/bow_arrow/bow/base.vox', 'bow'],                                   // …the BOW: ONE multi-model file whose models are its DRAW FRAMES (user), parsed in SHARE mode so the frames' shared colours cost no palette entries
-    ['assets/food/meat/meat.vox', 'item'],                                                  // …and RAW MEAT, which a killed land mammal leaves behind (user)
+    ['assets/food/meat/steak/base.vox', 'item'],                                            // …and RAW MEAT, which a killed land mammal leaves behind (user). MOVED into steak/ (user 2026-08-19): the folder now holds the source AND the 21 carved eat frames tools/eat_frames.py writes beside it, the same base.vox + numbered-frames layout every animated model in assets/life uses. The frames are the readable copy — the strip the game actually shows is still carved at load by eatStrip
     ['assets/stone_tools/stone_hoe.vox', 'item'],                                           // …and the STONE HOE and STONE SPEAR, carried like the rest of the kit (user)
     ['assets/stone_tools/stone_spear.vox', 'item'],
   // ── THE CHERRY FOREST'S AUTHORED TWIGS (user 2026-08-18: "reload the sticks ... using the sticks labeled
@@ -182,6 +182,40 @@
   //                stalk, and the old single-voxel flower had no stem to land on by mistake. Green is ASKED OF
   //                THE PALETTE rather than hard-coded, the same test the pink twigs' leaf recolour uses.
   const FLOWERV = (FLOWERV0 || []).filter((m) => m && m.vox.length);
+  // ── AND NO FLOWER MAY WEAR A PINE'S NEEDLE ── parseVoxVariants2 reads this file in SHARE mode (PAL_TOL 6),
+  // which is right for scenery and has one consequence nothing downstream can undo: an id is a MATERIAL, so a
+  // flower colour that resolves onto a colour the CANOPY already owns hands the pine every table the flower is
+  // later given. Measured: the stem's upper green (74,114,51) landed on a pine needle id carrying 13.4% of the
+  // crown voxels above ground in a 193x193 patch of pine forest, and it was already costing the tree two things
+  // nobody asked for — floatTab (assets/material-tabs.js marks every FLOWERIDS id surface scatter) and the snow
+  // pass-through in ui/settings.js, so a flake fell THROUGH one needle in seven instead of settling on it. Making
+  // the flowers choppable would have added a third and much worse one: decorTab on a needle puts the pine's own
+  // crown in front of the swing as decor, which is the "aiming at the trunk gets the leaves" complaint the whole
+  // leaf-vs-trunk rule in sim/tools.js exists to answer.
+  // FOLDED, NOT EXCLUDED. Leaving the id out of the flower's tables instead would leave one stem voxel per plant
+  // that no tool can take — and this is the stem, at z=1 of an 8-tall model, so every broken flower would keep a
+  // green stub. Re-pointing it at the flower's OTHER stem green costs one voxel a shift of 15/255 in green on a
+  // 2-voxel stalk and hands the plant a single flat stem colour, which is what the model reads as anyway.
+  // DERIVED BOTH WAYS, because the palette is not boot-stable: the ids to fold are "whatever this file resolved
+  // onto a canopy or bark id" (foliageIds/woodIds are already populated by assets/palette.js from pine5.vox), and
+  // the host is the flower's most-used GREEN that no tree claims — the same green test FLOWERHEAD is built on.
+  // If a re-author ever leaves no unclaimed green at all this refuses rather than guesses, and the decorTab line
+  // in material-tabs.js has the matching belt-and-braces so a canopy id can never reach it either way.
+  {
+    const isGrn = (i) => { const c = palette[i]; return !!c && c[1] > c[0] && c[1] >= c[2]; };
+    const claimed = (i) => foliageIds.indexOf(i) >= 0 || woodIds.indexOf(i) >= 0;
+    const cnt = new Map();
+    for (const m of FLOWERV) for (const q of m.vox) { const i = q >>> 24; cnt.set(i, (cnt.get(i) || 0) + 1); }
+    const bad = [...cnt.keys()].filter(claimed);
+    let host = -1, hn = -1;
+    for (const [i, n] of cnt) if (isGrn(i) && !claimed(i) && n > hn) { hn = n; host = i; }
+    if (bad.length && host >= 0) {
+      const bs = new Set(bad);
+      for (let k = 0; k < FLOWERV.length; k++) { const m = FLOWERV[k];
+        FLOWERV[k] = { sx: m.sx, sy: m.sy, sz: m.sz, vox: m.vox.map((q) => (bs.has(q >>> 24) ? (q & 0xffffff) | (host << 24) : q)) }; }
+      console.log('[vb] flowers: tree-claimed ids', bad.join('/'), '-> own green', host, palette[host]);
+    } else if (bad.length) console.warn('[vb] flowers wear tree ids', bad.join('/'), 'and have no green of their own to fold onto — those voxels stay out of decorTab');
+  }
   const FLOWERIDS = [], FLOWERHEAD = [];
   { const seen = new Set();
     for (const m of FLOWERV) for (const q of m.vox) { const fid = q >>> 24;
@@ -214,6 +248,40 @@
     if (best >= 0 && pinkN[best] > 0) {
       FLOWERV_CH.push(FLOWERV[best]);
       FLOWERV.splice(best, 1);                         // …and OUT of the general set, so the oak forest never plants it
+    }
+  }
+  // ── AND ITS LIGHTER TWIN (user 2026-08-19: "basically just make half the current pink flowers a lighter pink
+  // like the lighter tree") ── the blossom band ships two cherry varieties, and until now its flower had one
+  // colour, so a pale tree stood over dark pink flowers. This is the SAME arrangement the crowns already use:
+  // one authored model, its petal ids remapped onto the other variety's ramp (blosRemap, a few hundred lines
+  // below), and it costs ZERO palette entries — BLOSWHITE is already minted, already palOwn-reserved, and is
+  // literally "the lighter tree" the user is asking these flowers to match.
+  // BY LUMINANCE RANK, not by nearest colour, and for the reason the crown map records: the two ramps barely
+  // overlap, so a nearest-colour match would collapse every pink onto BLOSWHITE's darkest step and the flower
+  // would lose its shading. Rank spreads the petals across the whole ramp however many shades either has.
+  // ONLY the petals move. flowerIsPink is the same hue test that found this model in the first place, so the
+  // amber centre and the green stem every flower shares fall outside it and pass through untouched — a light
+  // flower is the pink one with pale petals, not a bleached plant.
+  // The 50/50 needs no code: flowerAt draws `k` over the set's length on a COARSE patch cell, so two entries
+  // give patches of dark pink and patches of light in the same drifts every other flower colour already forms.
+  if (FLOWERV_CH.length === 1 && typeof BLOSWHITE !== 'undefined' && BLOSWHITE.length) {
+    const src9 = FLOWERV_CH[0];
+    const flum = (i) => { const c = palette[i]; return c ? c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114 : 0; };   // local: bow.js's own lum0 is declared later, inside the oak loader
+    const pinks9 = [...new Set(src9.vox.map((q) => q >>> 24))].filter(flowerIsPink).sort((a, b) => flum(a) - flum(b));
+    if (pinks9.length) {
+      const m9 = new Map();
+      // ONE PETAL SHADE IS THE CASE THAT ACTUALLY HAPPENS: the authored flower paints all its petals in a
+      // single pink, so the rank spread below is the general path and this is the one that runs. It lands on
+      // BLOSWHITE.length - 2, NOT the top of the ramp — the top step is (247,235,238), which is so close to
+      // white that the flower stopped reading as pink at all, and the user asked for a lighter PINK. One step
+      // down is the exact colour the light cherry's own falling petal already uses (PETALW_IT, taken from the
+      // middle of this ramp), so a pale flower and the petal drifting onto it are the same shade by construction.
+      pinks9.forEach((id, i) => { const t = pinks9.length < 2 ? Math.max(0, BLOSWHITE.length - 2)
+        : Math.round(i * (BLOSWHITE.length - 1) / (pinks9.length - 1));
+        m9.set(id, BLOSWHITE[t]); });
+      FLOWERV_CH.push({ sx: src9.sx, sy: src9.sy, sz: src9.sz,
+        vox: src9.vox.map((q) => (m9.has(q >>> 24) ? (q & 0xffffff) | (m9.get(q >>> 24) << 24) : q)) });
+      console.log('[vb] cherry flowers:', FLOWERV_CH.length, 'varieties —', pinks9.length, 'petal shades remapped onto BLOSWHITE');
     }
   }
   // ── THE LAVENDER SPIKE GETS A RAMP (user 2026-08-18: "create 3 more shades for the lavender flower ... 3 more
@@ -438,7 +506,7 @@
       return (p & 0xffffff) | (ramp[q < 0 ? 0 : (q > top ? top : q)] << 24);
     }) };
   }
-  let OAKV = [], OAKBARK = [], OAKLEAF = [], OAKBLOSV = [], OAKWHITV = [], BLOSRANK = new Int8Array(256).fill(-1);   // BLOSRANK: oak leaf id -> 0..3 by luminance, -1 for everything else. The RAMP is an argument, so one table serves both varieties   // BLOSMAP: oak leaf id -> its cherry-blossom twin; identity for everything else. The workers rebuild the pink crowns from it rather than being handed a second 218k-voxel model set
+  let OAKV = [], OAKBARK = [], OAKLEAF = [], OAKBLOSV = [], OAKWHITV = [], OAKLITER = [], OAKLITEV = [], BLOSRANK = new Int8Array(256).fill(-1);   // OAKLITER: the LIGHT green oak variety's 4-step ramp — the sorted leaf ids' top two, then the two OAKLITE mints. OAKLITEV: OAKV with every leaf run through it   // BLOSRANK: oak leaf id -> 0..3 by luminance, -1 for everything else. The RAMP is an argument, so one table serves both varieties   // BLOSMAP: oak leaf id -> its cherry-blossom twin; identity for everything else. The workers rebuild the pink crowns from it rather than being handed a second 218k-voxel model set
   try {
     if (location.search.includes('nooaks')) throw new Error('?nooaks');   // A/B switch: an empty OAKV disables the scatter, the material marking and the stamp in one go, the way ?nocacti does
     const oj = await (await fetch('assets/decoration/oak_trees.json')).json();
@@ -494,10 +562,20 @@
     if (OAKLEAF.length) {
       const lo = OAKLEAF.slice().sort((a, b) => lum0(palette[a]) - lum0(palette[b]));   // dark -> light, the same order every blossom ramp is authored in
       lo.forEach((id, i) => { BLOSRANK[id] = i; });
+      // ── AND THE SECOND GREEN VARIETY'S RAMP, ASSEMBLED HERE FOR THE SAME REASON THE RANK TABLE IS ── this is
+      // the one place in the build that holds the leaf ids in luminance order, and OAKLITER is defined in terms
+      // of that order rather than of particular ids: "the two lightest greens the art already has, then the two
+      // lighter ones assets/palette.js minted above them". Re-authoring oak_trees.glb with different greens
+      // therefore moves this ramp with it instead of silently pointing at the wrong shade.
+      // TWO OF THE FOUR STEPS ARE THE DARK VARIETY'S OWN IDS, deliberately — see the OAKLITE note in
+      // assets/palette.js. They are already palOwn, already foliaTab and already in foliageIds, so sharing them
+      // between the two varieties is free in slots AND free in material: both varieties are oak canopy and every
+      // question the game asks about a leaf has to get the same answer from either.
+      OAKLITER = lo.slice(2).concat(OAKLITE);
     }
     console.log('[vb] oaks:', OAKV.length, 'trees,', OAKV.reduce((a, m) => a + m.vox.length, 0), 'voxels,',
       OAKBARK.length, 'bark ids (BORROWED from the pine) +', OAKLEAF.length, 'leaf ids (minted), widest', Math.max(...OAKV.map((m) => Math.max(m.sx, m.sy))), 'tallest', Math.max(...OAKV.map((m) => m.sz)));
-  } catch (e) { console.warn('[vb] oak_trees.json missing — oaks skipped', e); OAKV = []; OAKBARK = []; OAKLEAF = []; OAKBLOSV = []; OAKWHITV = []; }
+  } catch (e) { console.warn('[vb] oak_trees.json missing — oaks skipped', e); OAKV = []; OAKBARK = []; OAKLEAF = []; OAKBLOSV = []; OAKWHITV = []; OAKLITER = []; OAKLITEV = []; }
   // ── ONE DENSE OCCUPANCY + EXTERIOR-AIR FLOOD FOR A SPARSE MODEL ── the oak crowns baked out of a .glb are
   // HOLLOW SHELLS: measured over all seven, every single leaf voxel has an empty 6-neighbour (2468 of 2468 on
   // the bush, 77513 of 77513 on the giant), so "has air beside it" does not mean "is on the OUTSIDE" — half of
@@ -585,6 +663,18 @@
     // If a later splice ever touches OAKV again, this line has to stay below it.
     OAKBLOSV = OAKV.map((m) => blosRemap(m, BLOSLEAF, BLOSRANK, BLOSCHERRY));
     OAKWHITV = OAKV.map((m) => blosRemap(m, BLOSWHITE, BLOSRANK, BLOSCHERRY));   // the white variety fruits too — it is the same species, only the blossom differs   // built HERE, after berryBush has spliced OAKV — building it earlier is what once made OAKBLOSV[t.k] a different tree from OAKV[t.k] (gtest 21640)
+    // ── AND THE LIGHT GREEN OAK, WHICH IS THE SAME MOVE IN A THIRD COLOUR (user 2026-08-19) ── same models,
+    // same rank table, a different ramp. It MUST be built here with the other two and not a line earlier: the
+    // splice above turned one bush into two, so an OAKLITEV assembled before it would be 7 entries against
+    // OAKV's 8 and OAKLITEV[t.k] would be a DIFFERENT TREE from OAKV[t.k] — the gtest 21640 failure the pink
+    // set already documents, which the gen workers never reproduce because they derive from the final OAKV.
+    // NO FRUIT ARGUMENT (0 rather than BLOSCHERRY): the cherries are a blossom-only scatter, and a green oak
+    // that carries fruit carries the apple and orange MODELS that stampOak hangs off OAK_ANCH. Those are
+    // untouched here and stay correct for both varieties — the fruit's leaf blade wears the lightest oak leaf
+    // id, which is a member of BOTH ramps, so it reads as part of whichever crown it is hanging in.
+    // The BERRIES on the two bush tiers pass through for the same reason the bark does: BLOSRANK is -1 for
+    // every id that is not a leaf, so a cherry or blueberry bush in the light variety keeps its berries.
+    OAKLITEV = OAKLITER.length ? OAKV.map((m) => blosRemap(m, OAKLITER, BLOSRANK, 0)) : [];
     console.log('[vb] oak bushes: cherry + blueberry variants,', Math.min(OKBERRY, cand.length), 'berries each from',
       cand.length, 'outer leaves — OAKV is', OAKV.length, 'models now');
   }

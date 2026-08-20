@@ -58,8 +58,12 @@
   const woodTab = new Uint8Array(256);                 // ── WOOD ── the axe takes chunks out of anything made of wood voxels (user), including a stump the
   for (const i of woodIds) { woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }   // felled tree left behind, which belongs to no tree shape any more
   for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND, ...DSAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the SOIL (user): dirt, the mossy grass on top of it, the brown pine litter that covers most of the forest floor, and beach sand. NOT the stone strata underneath — the shovel stops at rock (user).   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
-  // ── SURFACE SCATTER ── grass strands, flowers, twigs and pinecones. None of it is choppable decor, so
-  // none of it is in decorTab — but all of it needs something underneath, which is what floatTab marks.
+  // ── SURFACE SCATTER ── grass strands, flowers, twigs and pinecones: all of it needs something underneath,
+  // which is what floatTab marks. floatTab is NOT a statement about whether a tool can break the thing — the
+  // FLOWERS carry decorTab as well (see the block beside their solidTab line below), and the two tables answer
+  // different questions: floatTab is "this rests on the surface and the eye/aim walks past it", decorTab is
+  // "a swing may take a bite out of it". Grass, twigs and cones are still scatter-only, which is why they are
+  // the set the hoe lifts and the flowers are the set that also breaks.
   // ── SNOW IS COVER, NOT A TARGET (user 2026-08-07: "the tool shouldn't register the snow, but the material
   // under the snow") ── its own flag, because a swing must SEE THROUGH the blanket the way it already sees a
   // trunk through needles. Deliberately NOT added to decorTab/digOnlyTab/pickOnlyTab: landSnowAt caps a stack
@@ -142,6 +146,14 @@
   // I catch snow, does the primary ray see through me, am I axe-only, does the orphan sweep keep me — has to
   // answer identically or the two forests would behave differently while looking the same. Nothing is inherited
   // from OAKLEAF by being "a leaf": these flags are per-id and this line is the whole of the blossom's identity.
+  // ── AND SO IS THE LIGHT GREEN VARIETY (user 2026-08-19) ── the same two lines the blossom gets, for the
+  // same reason: assets/bow.js stamps HALF the oak forest with the leaf ids run through OAKLITER, and two of
+  // that ramp's four steps are ids OAKLEAF already covered a line above. These are the other two, and without
+  // this line a light crown would collide with the player, refuse snow, stop being see-through when you walked
+  // into it, drop off the bird perch surface, and — worst — lose its exemption from the generation orphan
+  // sweep (ORPHAN_OK in sim/support-rules.js is derived as "not foliage and not wood"), which deletes an
+  // unsupported voxel: half the oaks in the world would generate with holes in them.
+  for (const i of OAKLITE) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
   for (const i of BLOSLEAF) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
   for (const i of BLOSWHITE) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
   // The CHERRIES are foliage too, and deliberately the same class as the apples and oranges rather than the
@@ -202,6 +214,47 @@
   // range would silently grow a hitbox again, and this is the line that says it must not. floatTab already
   // said "surface scatter"; floatTab is not what the player collides with.
   for (const i of FLOWERIDS) solidTab[i] = 0;
+  // ── …AND EVERY FLOWER BREAKS, WITH WHATEVER IS IN HAND (user 2026-08-19: "make the flowers breakable with
+  // any tool, or item. like the ferns for example") ── decorTab and nothing else, which is EXACTLY the fern's
+  // pairing (the FERNIDS loop in assets/bow.js): decorTab is the admission ticket and the three *OnlyTab tables
+  // are RESTRICTIONS on top of it, so leaving all three unset is what makes the swing gate's
+  // `(axeOnlyTab[id] ? cut : true)` branch in sim/tools.js answer true for an axe, a knife, a pick, a shovel, a
+  // held rock and an empty hand alike — the same sentence the lily pads, the cacti and the shrubs are already
+  // written with.
+  // WHAT WAS MISSING WAS THE TICKET, NOT A RESTRICTION, and that is worth stating because the obvious guess is
+  // the other one: no *OnlyTab has ever named a flower id, so the tool gate always said yes. It never got that
+  // far. phChopDecor (sim/support.js) rejects a candidate cell outright on `!decorTab[v]`, so the sphere came
+  // back empty, the branch was false, and the swing walked on through the plant to whatever stood behind it.
+  // One table, and a flower behaves as a fern does.
+  // floatTab STAYS, and the two do not fight: floatTab is what makes the AIM ray walk past a flower, and the
+  // decor branch in the main march reads the voxel the ray is CROSSING rather than the one the crosshair
+  // settled on, so a flower is choppable without ever becoming a thing that can steal a crosshair from the
+  // ground behind it. solidTab is untouched by the line above for the same reason the pads' is: breaking
+  // something should not first give it a hitbox.
+  // IT DOES NOT TAKE THE TURF WITH IT. okMat in sim/tools.js confines the sphere to `!digOnlyTab && !pickOnlyTab`
+  // once it is aimed at a flower, and the moss/needle/dirt/sand a flower stands in is digOnlyTab — so the ground
+  // under the plant is never a candidate, and neither is the GRASS beside it, which is floatTab but has no
+  // decorTab of its own. And a stem cut out from under a head strands nothing: flowers are SUP.DRAPE (that is
+  // floatTab's doing, sim/support-rules.js), so the remainder is adjudicated by supFlush and dropped as a chunk
+  // exactly as any other severed drape is.
+  // BOTH BIOME SETS, for free: FLOWERIDS is derived in assets/bow.js from FLOWERV's own voxels BEFORE the pink
+  // variant is spliced out into FLOWERV_CH, with FLOWPURP pushed in after — so this one list is every id the
+  // oak forest's variants and the blossom band's twin wear between them. Derived, never a literal id: decor ids
+  // are not boot-stable.
+  // THE GUARD IS NOT DECORATION. flowers.vox is read in SHARE mode, so a flower colour can RESOLVE onto an id a
+  // tree already owns, and decorTab on a canopy or bark id would hand the pine's own crown to the decor branch
+  // of the swing — the "aiming at the trunk gets the leaves" failure. assets/bow.js folds those ids off the
+  // flower models before FLOWERIDS is built, so this test should never fire; it is here because it is the line
+  // that has to hold if a re-authored file ever finds a green the fold cannot rehome.
+  // ── ONE SHARE REMAINS, MEASURED, AND KEPT ── the stem's own green IS GRASS[1] (an exact palette match, not a
+  // tolerance one), so this line also makes that one of the four grass shades choppable — measured at 3.3% of
+  // columns, against 13% for all four. That is deliberate and it is the cheaper half of a trade with no third
+  // option: the palette is FULL (256 used, 0 free, 0 reclaimable), so the stem cannot be given an id of its own,
+  // and refusing this id instead would leave a green stub standing wherever a flower was broken. What it costs
+  // is that a swing crossing one grass strand in four spends itself on the strand — the same thing a fern or a
+  // shrub already does, on a twelfth of the columns grass actually covers. If the flowers ever get their own
+  // stem id back, drop GRASS out of this and nothing else here changes.
+  for (const i of FLOWERIDS) if (!foliaTab[i] && !woodTab[i]) decorTab[i] = 1;
   // ── WHERE THINGS HANG IN AN OAK ── PINE_ANCH's idea re-derived for eight crowns instead of one model, and
   // split in two because a fruit and a hive want different SURFACES:
   //   OAK_ANCH[k]   canopy LEAF with clear exterior air below — an apple or an orange hangs from it.
@@ -271,6 +324,21 @@
       if (M[i] && fol[remap[M[i]]] && !M[i - MSX * MSY]) PINE_ANCH.push(x | (y << 8) | (z << 16));
     }
     PINE_ANCH.sort((a, b) => Math.atan2(((a >> 8) & 255) - MSY * 0.5, (a & 255) - MSX * 0.5) - Math.atan2(((b >> 8) & 255) - MSY * 0.5, (b & 255) - MSX * 0.5)); }   // angle-sorted around the trunk — stampTree slices it into sectors so cones ring the crown evenly
+  // ── CONSOLE TAP: WHAT A FLOWER ID REALLY CARRIES ── the same service lilyIds() does for the pads, and it
+  // exists for the same reason they needed one: flowers.vox is parsed in SHARE mode (PAL_TOL 6 — see
+  // parseVoxVariants2 in assets/bow.js), so a flower colour may RESOLVE onto an id something else already owns,
+  // and every table above is per-ID. Marking the flowers choppable is therefore only honest if nothing ELSE
+  // wears one of those ids, and this is the read that settles it rather than asserting it: `own` true means the
+  // id was minted and reserved for the flower so nothing can have shared onto it, and grass/oakmoss/shrub say
+  // whether one of the other scatter sets is standing on the same slot. It lives here rather than in
+  // main/debug-api.js because every one of these tables is declared in this fragment or the one above it.
+  window.__vbFlowerMat = () => FLOWERIDS.map((i) => ({ id: i, col: palette[i], own: palOwn.has(i),
+    n: FLOWERV.concat(FLOWERV_CH).reduce((a, m) => a + m.vox.reduce((b, q) => b + ((q >>> 24) === i ? 1 : 0), 0), 0),   // how many voxels of the six models wear it — a shared id nothing is painted with is not a leak worth paying for
+    z: FLOWERV.concat(FLOWERV_CH).flatMap((m) => m.vox.filter((q) => (q >>> 24) === i).map((q) => (q >> 16) & 255)).sort((a, b) => a - b),   // …and how high up the plant, which is what says whether an id left out of decorTab would leave a stub or a hole
+    petal: FLOWERHEAD.indexOf(i) >= 0, decor: !!decorTab[i], solid: !!solidTab[i], float: !!floatTab[i],
+    folia: !!foliaTab[i], wood: !!woodTab[i], cone: !!coneTab[i], snow: !!snowTab[i],
+    axe: !!axeOnlyTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i],
+    grass: GRASS.indexOf(i) >= 0, oakmoss: OAKMOSS.indexOf(i) >= 0, shrub: SHRUBC.indexOf(i) >= 0 || SHRUBF.indexOf(i) >= 0 }));
   if (palette.length > 256) console.error('[vb] PALETTE OVERFLOW', palette.length, '— world ids are u8, decoration colors must be quantized harder');
   console.log('[vb] decorations: cone', !!CONEV, 'lily', LILYV.length, 'stick', STICKV.length, 'log', !!LOGV, 'rock', !!ROCKV, 'rocks26', ROCK26.length, 'ferns', FERN2V.length, 'shrubs', SHRUBV.length, 'anchors', PINE_ANCH.length, 'palette', palette.length);
 

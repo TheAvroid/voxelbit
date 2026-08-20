@@ -13,6 +13,8 @@
   let WORM_ITEM0 = 0, WORM_NFRAMES = 0;                // inchworm crawl frames (assets/life/worm) — a GROUND crawler, active day and night (pool slots 24+)
   let BETTA_FSP = -1;                                  // index into FISHES of the betta, or -1 if its frames never loaded. A LOAD-ORDER fact, captured in assets/held-items.js, never written as a literal
   const FISHES = [];                                   // every loaded FISH strip: { name, item0, n } (assets/life/<species>/00..NN.vox — salmon today, minnow etc. join automatically
+  const BLINK_HAS = new Set();                        // item0 bases whose strip carries BLINK variants at +NFRAMES (assets/held-items.js eyeBlink).
+                                                     // A creature NOT in here must never take the offset: it would read past its own strip into the next one's frames.
   const DESERTS = [];                                  // every loaded DESERT creature: { name, item0, n }. Frames are baked flat by tools/bake_desert_life.py from the scene-graph .vox — see the loader in held-items.js
                                                        // when their numbered frames ship). Fish are kind-6 wbf creatures: OFF-GRID swimmers under the water surface of lakes AND rivers,
                                                        // burst-glide pacing (dart → coast), free y-axis rotation with pitch/bank, and a fast bolt away from a too-close player.
@@ -28,8 +30,8 @@
   const FOAM_SRGB = FOAM_RGB.map((v) => Math.round(Math.pow(v, 1 / 2.2) * 255));
   let FOAM_IT = 0;                                     // …its item id (one 10 cm voxel, the splash particle)
   let STICK_BLOS_IT = 0;                               // the cherry forest's twig, held: stick_1 with a pink leaf. 0 when the blossom models never built
-  let PETAL_IT = 0, PETALW_IT = 0;                     // the two FALLING PETAL voxels — pink off a pink tree, cream off a white one
-  let SPARK_IT = 0, HITRED_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0, BOW_NOCK = 0, BOW_FRAMES = 0, ARROW_IT = 0, MEAT_IT = 0, HOE_IT = 0, SPEAR_IT = 0, HEART_IT = 0;   // BOW_NOCK = the same strip WITHOUT the arrow, shown once it is loosed   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
+  let PETAL_IT = 0, PETALW_IT = 0, PETALG_IT = 0, PETALGL_IT = 0, PETALN_IT = 0, WORM_EAT0 = 0;   // the four FALLING LEAF voxels — pink off a pink tree, cream off a white one, GREEN off a plain oak (user 2026-08-19: "also apply this to the regular oak trees. green leaves should fall")
+  let SPARK_IT = 0, HITRED_IT = 0, HITGOLD_IT = 0, KNIFE_IT = 0, ROCK_IT = 0, STICK_IT = 0, CONE_IT = 0, SMOKE_IT = 0, PICK_IT = 0, SHOVEL_IT = 0, BOW_IT = 0, BOW_NOCK = 0, BOW_FRAMES = 0, ARROW_IT = 0, MEAT_IT = 0, HOE_IT = 0, SPEAR_IT = 0, HEART_IT = 0;   // BOW_NOCK = the same strip WITHOUT the arrow, shown once it is loosed   // item ids of the clash spark, stone knife, held field-stone, held stick, held pinecone, DEATH SMOKE (the natural ones get AO+grain)
   let BLUEB_ITEM0 = 0, ROBIN_ITEM0 = 0, PINKB_ITEM0 = 0;               // the two songbird RESKINS in the item table (trace path). Identical geometry to the cardinal, so they reuse CARD_NFRAMES / CARD_OFF / CARD_FOOTZ untouched.
   let CARD_ITEM0 = 0, CARD_NFRAMES = 0, CARD_H = 0, CARD_FOOTZ = 1e9;   // cardinal ROTATE frames (assets/life/cardinal/rotate/00-10, base.vox ignored) → item table; ONE animated model STANDING on the asset-editor stage. CARD_H/CARD_FOOTZ plant the feet on the plane.
   let CARDINAL_ROTATE = [];                            // + the same frames' RAW bytes, auto-imported as the editable filmstrip on the editor stage (,/. select each frame) while the standing model previews the animation
@@ -40,18 +42,19 @@
   let BUNNY_JUMP = [];                                 // JUMP bunny frames (assets/life/bunny/jump/00-10) — the LEFT-lane editor object (jumps FORWARD). Both show on the stage together (user).
   let BUNNY_ROTATE_RIGHT = [];                         // RIGHT-rotating bunny frames (assets/life/bunny/rotate/right/00-10) — authored right-turn .vox (rotation is IN the voxel data), user
   let ARMADILLO_WALK = [];                             // ARMADILLO walk frames (assets/life/armadillo/walk/00-07) — world creature; still loaded for the pine-forest armadillo (no longer the asset-editor default)
-  let SKUNK_WALK = [];                             // SKUNK walk frames (assets/life/skunk/00-09) — the asset-editor object (user: replaced the porcupine in the editor)
+  let SKUNK_WALK = [];                             // SKUNK walk frames (assets/life/skunk/00-09) — the asset-editor object AGAIN (user 2026-08-19 removed the porcupine from the editor; the porcupine is still a WORLD creature)
   let ARMADILLO_ITEM0 = 0, ARMADILLO_NFRAMES = 0;      // (legacy trace path — the world armadillo now GRID-STAMPS instead, see ARMADILLO_POSES)
   let ARMADILLO_POSES = null, ARMADILLO_FOOTZ = 0;     // GRID-STAMP poses [frame][heading] (built lazily) — the world armadillo stamps into W exactly like the asset editor (identical box-centre + armOffset), so its alignment matches 1:1 (user)
   let FLAMINGO_ITEM0 = 0, FLAMINGO_NFRAMES = 0;        // FLAMINGO walk frames in the ITEM table (trace path) — parsed from raw .vox RGB like the other walkers, so it costs the 256-entry world palette nothing
   const FLAMINGO_WALK = [];                            // raw bytes of assets/life/flamingo/00..09.vox, split from flamingo.vox by tools/split_vox_frames.py
-  // ── THE ASSET EDITOR'S EXHIBIT (user 2026-08-18: "in the asset editor, I want you to remove the flamingo. I
-  // want you to attempt to generate a birch tree made out of 10cm voxels ... keep the flamingo on the field") ──
-  // RAW BYTES, in the same shape FLAMINGO_WALK holds, because the editor stages through edBuildFrames which
-  // parses a .vox itself; a parsed decor model would be the wrong type. One entry = a one-frame "animation",
-  // which the editor's playback branch handles without a special case.
-  // Generated, not authored: tools/gen_birch.py. Re-roll a variant with --seed.
-  const BIRCH_VOX = [];
+  // ── NO TREE IS STAGED IN THE ASSET EDITOR (user 2026-08-19: "remove the pine tree from the asset editor") ──
+  // a BIRCH_VOX and then a FIR_VOX buffer lived here, each holding one decoration .vox's RAW BYTES for the
+  // editor stage. Both are gone, along with the fetches in assets/held-items.js that filled them; the stage
+  // falls through to the skunk (see ui/editor.js edEnter) — the PORCUPINE branch that headed the chain was
+  // removed on 2026-08-19 too, but only from the EDITOR: the porcupine is still a world land mammal and every
+  // PORCUPINE_* symbol below is still read by the world. game/assets/decoration/birch.vox and
+  // fir_spruce.vox are deliberately KEPT on disk so `/spawn birch` and `/spawn fir_spruce` still resolve
+  // through VOXDEX, which is a build-time walk of that folder.
   let SKUNK_ITEM0 = 0, SKUNK_NFRAMES = 0;              // SKUNK walk frames in the ITEM table (trace path). Without this the emit's item selector fell through to WORM_ITEM0 and a trace-injected skunk drew a worm.
   let SKUNK_POSES = null, SKUNK_POSES_B = null, SKUNK_FOOTZ = 0;     // GRID-STAMP poses [frame][heading] for the world skunk — normal + eye-BLINK variant (SKUNK_POSES_B), built lazily via edBuildFrames so the world skunk matches the asset-editor skunk 1:1 (alignment, blink, all) (user)
   let PORCUPINE_WALK = [];                             // PORCUPINE walk frames (assets/life/porcupine/00-…) — WORLD-only 4th land mammal (user re-added it alongside the skunk; the editor object stays the skunk). Behaves like the armadillo: constant cardinal march, 24 fps, grid-stamped, no blink.

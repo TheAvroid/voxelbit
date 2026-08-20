@@ -99,14 +99,20 @@
         if (!t9 || !t9.blos) continue;                 // only a BLOSSOM crown drops blossom
         const m9 = OAKV[t9.k]; if (!m9) continue;
         const fw = (t9.rot & 1) ? m9.sy : m9.sx, fd = (t9.rot & 1) ? m9.sx : m9.sy;
-        if (Math.abs(wx - t9.wx) <= fw * 0.42 && Math.abs(wz - t9.wz) <= fd * 0.42) return true;   // 0.42 of the footprint, not 0.5: the bounding box includes the crown's sparse outermost voxels, and litter at the very rim reads as scatter again
+        if (Math.abs(wx - t9.wx) <= fw * 0.42 && Math.abs(wz - t9.wz) <= fd * 0.42) return t9;   // the TREE, not just true: the scatter now has to know which VARIETY shed on this column (user 2026-08-19)   // 0.42 of the footprint, not 0.5: the bounding box includes the crown's sparse outermost voxels, and litter at the very rim reads as scatter again
       }
-      return false;
+      return null;
     };
     if (PETAL_ON && !lake && h > WL + 2 && h + 2 < WY && cm > 0.5 && typeof TWIGPINK !== 'undefined' && TWIGPINK.length
-        && ihash(wx * 7 + 53, wz * 11 + 17) < 0.015 && petalUnderTree()) {   // 0.02 -> 0.004, just under the FLOWERS' own 0.005. The rate is the whole cost: every scattered voxel is ORPHAN_OK ground litter, so the generation orphan sweep floods from each one to prove it is anchored, and at 2% of columns that was ~12,000 floods per region and a 1.3 s hitch the first time the blossom generated
+        && ihash(wx * 7 + 53, wz * 11 + 17) < 0.015) {   // 0.02 -> 0.004, just under the FLOWERS' own 0.005. The rate is the whole cost: every scattered voxel is ORPHAN_OK ground litter, so the generation orphan sweep floods from each one to prove it is anchored, and at 2% of columns that was ~12,000 floods per region and a 1.3 s hitch the first time the blossom generated
+      const t9p = petalUnderTree();
+      // ── THE PETAL MATCHES THE CROWN IT FELL OFF ── `wht` is the same flag stampOak reads to decide which
+      // ramp the canopy itself wears, so the ground and the tree above it cannot disagree. TWIGWHITE falls
+      // back to TWIGPINK if the pale ids were never minted (a full palette), which keeps this a colour
+      // question rather than a reason for the scatter to vanish.
+      const ramp9 = (t9p && t9p.wht && typeof TWIGWHITE !== 'undefined' && TWIGWHITE.length) ? TWIGWHITE : TWIGPINK;
       const s9 = base + h * WX;
-      if (!W[s9]) W[s9] = TWIGPINK[(ihash(wx * 19 + 5, wz * 23 + 9) * TWIGPINK.length) | 0];
+      if (t9p && !W[s9]) W[s9] = ramp9[(ihash(wx * 19 + 5, wz * 23 + 9) * ramp9.length) | 0];
     }
     // ── THE FLOWERS USED TO BE SOWN HERE, ONE VOXEL AT A TIME ── a grass stem at h and a BLOOM head at h+1, at
     // 0.005 per column. They are an authored five-variant MODEL now (user 2026-08-18: "replace all the flowers
@@ -740,6 +746,27 @@
     // Math.floor, NOT `/ FLWPATCH | 0`: cell coordinates go negative (the world is centred far from 0) and a
     // bitwise truncation rounds toward zero, which would mirror the patch grid about the origin and put a seam
     // through it. floor is uniform across the sign change.
+    // ── AND HALF AGAIN IN THE PINE FOREST (user 2026-08-18: "reduce the amount of flowers in the pine forest
+    // in half", then "decrease the flowers in the pine forest by 25%") ── a SECOND, independent draw rather than a
+    // separate rate constant, so the two densities stay in a stated ratio: everywhere else keeps the rate at the
+    // top of this function and the pine forest gets 0.375 of it. Its own salt, or it would correlate with the
+    // placement draw and thin precisely the cells that were already sparse.
+    //
+    // ── THIS BLOCK SPENT A DAY IN treeAt (fixed 2026-08-19: user "double the density of the pine forest? it
+    // seems more sparse now?") ── word for word, comment and all, it was written into the PINE spawn instead of
+    // the flower one. So the flowers the user asked to halve were never touched, and the pine forest was quietly
+    // cut to 0.375 of its trees — which is exactly the sparseness they then reported. The two functions are
+    // shaped alike (cell hash, jittered wx/wz, a run of biome refusals, a return), which is how it went unseen;
+    // the load-bearing difference is that treeAt returns a TREE. Anything of the form "less X in the pine
+    // forest" belongs beside X's own rate, and X here is the flower.
+    //
+    // oakM < 0.5 is the pine forest by the same halfway line every other pine/oak split here uses, and the
+    // desert has already been refused by the mask test above, so this cannot catch it too. The blossom band
+    // sits well inside oakM > 0.5, so it keeps the full rate and `inCh` needs no test of its own.
+    // ihash FIRST, oakM second: `&&` is left-to-right and both are pure, so the order cannot change the answer,
+    // but it decides how often the expensive one runs. oakM is ~7 vnoise; this way the 0.625 the cheap draw
+    // rejects never pay for it, and flower cells are FLWCELL = 8 apart — dense enough for that to matter.
+    if (ihash(cx * 71 + 5, cz * 79 + 13) > 0.375 && oakM(wx, wz) < 0.5) return null;
     const px = Math.floor(cx / FLWPATCH), pz = Math.floor(cz / FLWPATCH);
     const set = inCh ? FLOWERV_CH : FLOWERV;           // the blossom band draws from its own one-variant set; everywhere else from the five
     return { wx, wz, ch: inCh ? 1 : 0, k: (ihash(px * 53 + 7, pz * 59 + 17) * (set.length - 0.01)) | 0,
@@ -1001,7 +1028,46 @@
     // Keyed on the CELL (cx, cz) like every other per-tree draw, so a tree keeps its colour across regeneration
     // and across the worker/main-thread split — the same reason rot is.
     const wht = blos && ihash(cx * 43 + 91, cz * 29 + 67) < 0.25;   // 0.5 -> 0.25 (user 2026-08-18): a QUARTER white, so pink still reads as the forest's colour and white as the variety in it
-    const t = { wx, wz, k: Math.min(OAKV.length - 1, k2), blos, wht, rot: (ihash(cx + 137, cz + 89) * 3.99) | 0,
+    // ── AND THE GREEN OAKS COME IN TWO SHADES (user 2026-08-19: "make the oak trees have 2 shades of green. a
+    // lighter green and a darker green. similar to whats done with the cherry trees") ── the cherry parallel is
+    // exact and deliberate: this is the same arrangement `wht` is, one flag deciding which of two remapped model
+    // sets stampOak reads, with the geometry, the anchors, the footprint, the fruit and the hive untouched. So
+    // everything that probes an oak — the rock clash, the stick proximity, the bird perches, the fell — cannot
+    // tell the varieties apart, which is the property that makes this a colour change and not a second tree.
+    // Light is a VARIETY inside a dark-green forest exactly as white is one inside a pink forest, so dark stays
+    // the wood's colour and light is the thing you notice in it. It shipped at 50/50 on the reading that the
+    // user had asked for the oaks to HAVE two shades — neither the exception — and the follow-ups settled it
+    // the other way, first at a quarter and then at a quarter OF WHAT.
+    // A QUARTER OF ALL OAKS, WHICH IS NOT 0.25 HERE (user 2026-08-19: "I want 25% of all oak trees to be
+    // lighter", revising the same day's "make the light tree oak variants at 25% of the total oak trees", which
+    // shipped as a quarter of the population this draw can reach). `!blos` has already spent the blossom band
+    // BEFORE the roll, so a light oak can only ever come out of the GREEN oaks — a bare 0.25 buys a quarter of a
+    // sub-population, and measured that way it was 16.46% of the world's oaks. The compensation is exact and it
+    // is one division:  p = 0.25 / (1 - blossomShare).
+    // THE BLOSSOM SHARE IS MEASURED, and re-measured rather than inherited, because it is a property of the
+    // biome strips and those move — all six are 2160 wide today (world/window.js, BIOP = 12960) and the number
+    // moved with them, from 34.05% to 33.262% over 1,358,483 oakAt candidates. So p = 0.25 / 0.66738 = 0.3746;
+    // 0.379, the value the earlier strip widths implied, would land at 25.29% of all oaks.
+    // SAMPLE IN WHOLE BIOP PERIODS — that is the trap in measuring it at all. The strips repeat every BIOP in x,
+    // so any window narrower than one period reads a single PHASE of the arrangement: a first pass over
+    // half-period windows read 32.0% with a 30.4-34.3% spread between anchors, which is noise about the wrong
+    // centre. Eight blocks six periods wide, spread from z -880,000 to +1,140,000, read 33.05-33.51%. The same
+    // pass reads white at 25.04% of blossom, which is this line's control, and light at 24.97% of green, which
+    // says the salt does not correlate with oakAt's own acceptance rolls. Re-cut the bands and this constant is
+    // wrong: re-measure and re-divide it, do not nudge it.
+    // THE TWO FIGURES ARE FAR APART AND BOTH ARE WORTH KNOWING: at 0.3746 the light variety is a quarter of ALL
+    // oaks and ~37.5% of the GREEN ones, so the oak forest proper reads as better than a third light while the
+    // world reads as a quarter. That is the request, and it is what it costs for the blossom band to be a third
+    // of every oak rather than the thin strip it looks like on a map.
+    // NOT IN THE BLOSSOM: `!blos` keeps the cherry band on exactly the trees it had. A blossom oak's leaf ids
+    // are already remapped to pink or white, and a second remap on top of that is meaningless — the light green
+    // is a variety of the GREEN oak, the way white is a variety of the pink one.
+    // Its own salt, and one nothing else in this function uses: sharing k2's would tie a tree's colour to its
+    // size, rot's to its facing, and the fruit roll's would make every light oak an apple tree. Keyed on the
+    // CELL like every other per-tree draw, so a tree keeps its shade across regeneration and across the
+    // worker/main-thread split.
+    const lite = !blos && OAKLITEV.length > 0 && ihash(cx * 97 + 13, cz * 101 + 59) < 0.3746;   // 0.5 -> 0.25 -> 0.3746 (user 2026-08-19): a quarter of ALL oaks wear the LIGHT ramp (assets/bow.js OAKLITER), which over a population that is 33.262% blossom is 0.25 / (1 - 0.33262) of the GREEN ones — see the arithmetic above. Not a taste value: change the blossom share and this must be divided again
+    const t = { wx, wz, k: Math.min(OAKV.length - 1, k2), blos, wht, lite, rot: (ihash(cx + 137, cz + 89) * 3.99) | 0,
                 sink: 1 + ((ihash(cx * 19, cz * 23) * 3) | 0) };   // sink 1-3, and it means something DIFFERENT here than it does for a pine: stampOak writes in mode 1, so every course below the local ground is refused rather than punched into the hill. The sink only decides how many base courses are hidden.
     // ── FRUIT (user 2026-08-17: "pick trees at random and place apples and oranges in the trees ... make 10% of
     // oak trees have some fruit it in") ── one SPECIES per tree, because an apple tree is an apple tree, and a
@@ -1081,7 +1147,11 @@
     // (rock clash, stick proximity, the bird perches, the fell) is unaffected.
     // Each falls back to the next set down if its own failed to build, so a missing derived set degrades to pink
     // and then to green rather than to a crash — OAKV[t.k] is always valid because every set maps OAKV in place.
-    const oakSet = t.blos ? (t.wht && OAKWHITV.length ? OAKWHITV : (OAKBLOSV.length ? OAKBLOSV : OAKV)) : OAKV;
+    // …and OAKLITEV is the GREEN forest's second shade, built through the same blosRemap off OAKLITER (user
+    // 2026-08-19). The `t.blos` arm is untouched, so the cherry forest stamps exactly the models it stamped
+    // before: a blossom oak never reaches the light-green arm, because oakAt refuses `lite` when `blos` is set.
+    const oakSet = t.blos ? (t.wht && OAKWHITV.length ? OAKWHITV : (OAKBLOSV.length ? OAKBLOSV : OAKV))
+                          : (t.lite && OAKLITEV.length ? OAKLITEV : OAKV);
     stampModel(oakSet[t.k], t.rot, t.wx, gy, t.wz, x0, x1, z0, z1, 1);   // mode 1 = empty cells + soft decor: the crown grows through the ferns and grass instead of leaving a hole where one would have been, and the buried trunk courses are clipped by the terrain instead of carving it. groundMin over a 4-voxel radius seats the tree on the LOW side of a slope, so no oak stands on a stalk.
     if (t.fn) {                                        // FRUIT — hung UNDER canopy anchors exactly as stampTree hangs its pinecones, and rotated with the tree so every region stamps them identically
       const m = OAKV[t.k], A = OAK_ANCH[t.k], F = FRUITV[t.fk];
@@ -1108,7 +1178,32 @@
     }
     if (t.hv) stampModel(HIVEV, t.rot, t.hv.bx, t.hv.by, t.hv.bz, x0, x1, z0, z1, 1);   // the BEEHIVE, at the world anchor oakAt already resolved
   }
-  const TCELL = 45, TMARGIN = 24;                      // one pine candidate per 4.5 m cell (≈2× the old 64-cell density)
+  // ── PINE DENSITY (user 2026-08-19: "double the density of the pine forest? it seems more sparse now?") ──
+  // THE DOUBLING IS THE BUG FIX ABOVE, NOT THIS NUMBER. The sparseness was real and it was one day old: a
+  // "reduce the flowers in the pine forest" edit had been written into treeAt instead of flowerAt (see the note
+  // there), so every pine was drawn against a 0.375 gate meant for meadow flowers. Removing it takes a
+  // 1024 × 1024 patch of pine forest from 117 trees back to 284 — 2.43×, which is the doubling that was asked
+  // for, and is also exactly the forest that shipped before that edit. TCELL is therefore UNCHANGED at 45.
+  //
+  // If a future ask really is "denser than it has ever been", this is the dial, and the arithmetic is not the
+  // obvious one: TCELL is a cell EDGE while density is per unit AREA, so doubling divides it by √2, not by 2.
+  // 45 → 32 is 45² / 32² = 1.98× on top of the 2.43× above; it was built and measured (573 trees, 4.90×) and
+  // costs only +0.2 ms a frame, because by then the canopy is closed and the extra trunks are hidden behind the
+  // ones in front. It is a WALL: the floor, and every flower, mushroom, fern and rock on it, stops being
+  // visible. 45 → 22 would be 4× again and is never the right reading of "double".
+  //
+  // TMARGIN is NOT a function of TCELL and did not move. A candidate is jittered 6 voxels inside its own cell,
+  // so the widest thing a cell can stamp overhangs the cell by the same amount at any cell size: pine5.vox is
+  // 35 × 36 × 116 → a half-footprint of 18, less the 6 inset = 12, and the cones hung off the crown's outer
+  // anchors add ~4. 24 clears both. (Compare OKMARGIN = 60 for the oaks, whose widest crown is 114 across —
+  // a model wider than 2 × margin silently loses its outer courses at every region seam, and that is the
+  // failure this number exists to stay ahead of.)
+  //
+  // Every OTHER reader of TCELL — the boulder, fern, mushroom and treesInRegion scans here, plus physics.js,
+  // tick-nav.js, tick-creatures.js and debug-api.js — walks `Math.floor((w ± R) / TCELL)` with R in WORLD
+  // voxels. A candidate lives inside its own cell, so a cell wholly outside [w - R, w + R] cannot hold one
+  // within R: those scans are exact at any cell size. None of them needed touching; they simply walk more cells.
+  const TCELL = 45, TMARGIN = 24;                      // one pine candidate per 4.5 m cell
   const SPVIEW_D = 96, SPVIEW_W = 13;                  // spawn sight-line: 9.6 m ahead, 1.3 m either side of the view axis
   function treeAt(cx, cz) {
     if (ihash(cx * 7 + 13, cz * 11 + 5) > 0.72) return null;
@@ -1130,13 +1225,6 @@
     if (along > 0 && along < SPVIEW_D && Math.abs(dxs * fwdZ - dzs * fwdX) < SPVIEW_W) return null;
     if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
     if (nearCave(wx, wz)) return null;
-    // ── AND HALF AGAIN IN THE PINE FOREST (user 2026-08-18: "reduce the amount of flowers in the pine forest
-    // in half") ── a SECOND, independent draw rather than a separate rate constant, so the two densities stay
-    // in a stated ratio: everywhere else keeps the rate above and the pines get exactly half of it. Its own
-    // salt, or it would correlate with the placement draw and thin precisely the cells that were already
-    // sparse. oakM < 0.5 is the pine forest by the same halfway line every other pine/oak split here uses, and
-    // the desert has already been refused by the mask test above, so this cannot catch it too.
-    if (oakM(wx, wz) < 0.5 && ihash(cx * 71 + 5, cz * 79 + 13) > 0.375) return null;   // 0.5 -> 0.375 (user 2026-08-18: "decrease the flowers in the pine forest by 25%") — a quarter off what survived, so the pines now keep 0.375 of the base rate against everywhere else's 1.0
     return { tx: wx, tz: wz, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
   }
   function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region

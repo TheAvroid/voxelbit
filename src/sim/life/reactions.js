@@ -1,5 +1,5 @@
   // @module - what a creature does when it is hit: hurt, spook, ragdoll, death and the meat it drops
-  // @exports HURT, HURT_MS, RAG_UP, creatureRagdoll, dropMeat, dropsMeat, hitCreature, hurtBox, reapDeaths, spooked, tryKillCreature
+  // @exports HURT, HURT_MS, RAG_UP, creatureRagdoll, dropMeat, dropsMeat, hitCreature, hurtBox, reapDeaths, spooked, tryKillCreature, hitsNeeded
   // ── STRUCK = SPOOKED (user 2026-08-09) ── every family that has a flee state already enters it on
   // PROXIMITY and runs its animation at double rate there: the bunny 24→48 fps (B.bflee), the land mammals
   // 12→24 (B.aflee), the fish ×fleeMult with its animation scaled to match (B.fleeT). Being SHOT did none of
@@ -174,6 +174,16 @@
     B.ragBody = B.ragParts[0] || fb;                    // the largest piece — every existing ragBody consumer still has a body to read
     return B.ragBody;
   };
+  // ── HOW MANY BLOWS THIS WEAPON NEEDS ── the one place the answer lives, so the hit path and the debug tap
+  // cannot disagree. The KNIFE is read off heldIt() rather than off `token`, because it has no token of its
+  // own: arrows and spears announce themselves because they arrive DETACHED from the player, while a knife
+  // blow comes through the same hand-tool path as an axe or a bare fist and the only thing that tells them
+  // apart is what is in the hand.
+  // `slot` is optional and only the ARROW branch reads it: a flamingo takes two where everything else takes one.
+  const hitsNeeded = (token, slot) => (token !== undefined && String(token).startsWith('arrow'))
+    ? ((slot !== undefined && slot >= FLAM_0 && slot < FLAM_END) ? FLAM_ARROW_HITS : ARROW_HITS_TO_KILL)
+    : ((KNIFE_IT && heldIt() === KNIFE_IT) ? KNIFE_HITS_TO_KILL : HITS_TO_KILL);   // the STONE KNIFE takes TWO (user 2026-08-19, was three): it is a cutting edge, so it sits with the arrow between the axe's one blow and every blunt hand tool's three
+
   const hitCreature = (best, token) => {                // …and this is the hit itself, on a KNOWN slot — callable from a test without having to aim first
     const B = wbf[best];
     if (!B || !B.init) return;
@@ -197,7 +207,7 @@
     // still had witnesses. beeAngered (sim/life/slots.js) merges repeat blows into one fight.
     if (best >= MAM_END && best < DES_END && ((DESERTS[((best - MAM_END) / DES_PER) | 0] || {}).name) === 'bee')
       beeAngered(B.x, B.y || 0, B.z);
-    const need = (token !== undefined && String(token).startsWith('arrow')) ? ARROW_HITS_TO_KILL : HITS_TO_KILL;   // an ARROW is a weapon, not a hand tool: TWO and the animal is down (user)
+    const need = hitsNeeded(token, best);                  // …and it is a NAMED function so main/debug-api.js's hitsOn() can report the same number this line acts on: the tap printed the bare HITS_TO_KILL, which was true when three was the only answer and became a lie the moment the arrow got its own   // an ARROW is a weapon, not a hand tool: TWO and the animal is down (user)
     // …and the SPEAR kills outright, thrust or thrown — the axe's privilege, for the one tool that is a
     // weapon first (user). Everything else wears the animal down.
     const shaft = token !== undefined && (String(token).startsWith('spear') || String(token).startsWith('arrow'));
@@ -236,7 +246,15 @@
   };
   const dropMeat = (B) => {                             // RAW MEAT where a land mammal fell (user): lands as an ordinary drop, so it hovers, spins and can be picked up like anything else
     const lx = Math.round(B.x), lz = Math.round(B.z);
-    drops.push({ x: lx, y: hmap[gwrap(lx, WX) + gwrap(lz, WZ) * WX], z: lz, it: MEAT_IT, ph: Math.random() * 6.28,
+    // ── A FISH LEAVES ITS MEAT ON THE SURFACE (user 2026-08-19: "when the player kills a fish, have the raw
+    // meat hover above the water, where the fish was killed") ── every other kill drops at hmap, the GROUND
+    // height of the column. For a fish that is the SEABED, so the meat would sink out of sight under however
+    // many voxels of water it was swimming in, and the one drop the player cannot walk to is the one they have
+    // to swim down for. WL is the global waterline (world/window.js), so this floats it where the fish died.
+    // The x/z are the fish's own, untouched: "where the fish was killed" is the whole point, and only the
+    // height moves. Drops already hover and spin above their y, so the meat bobs on the surface for free.
+    const onWater = B.kind === 6;
+    drops.push({ x: lx, y: onWater ? WL : hmap[gwrap(lx, WX) + gwrap(lz, WZ) * WX], z: lz, it: MEAT_IT, ph: Math.random() * 6.28,
       born: performance.now(), T: 0, q0: [0, 0, 0, 1] });
     if (drops.length > 4) drops.shift();                // the composite renders up to 4 at once
   };
@@ -259,7 +277,7 @@
       const B = wbf[slotD];
       pendDeath.splice(i, 1);
       if (!B || !B.init) continue;
-      if (MEAT_IT && pendDeath.length >= 0 && B.mammal) dropMeat(B);   // LAND MAMMALS leave RAW MEAT behind (user) — armed at the hit, since B.x/B.y are about to stop being maintained
+      if (MEAT_IT && pendDeath.length >= 0 && (B.mammal || B.kind === 6)) dropMeat(B);   // LAND MAMMALS leave RAW MEAT behind (user) — and FISH do too (user 2026-08-19), floated to the waterline by dropMeat rather than left on the seabed — armed at the hit, since B.x/B.y are about to stop being maintained
       // …the poof goes where the animal ACTUALLY IS. A ragdoll has been falling for the whole flash, so B.x/B.y
       // is where it was standing half a second ago; its body knows where it landed (user: it dies with the sparks).
       // The body goes WITH the poof: the sparks are the death, and leaving the corpse behind would both outlive
@@ -320,7 +338,18 @@
       return;                                          // no swing this click: the hand is empty now
     }
     if (e.button === 0 && !dead) {
-      if (e.shiftKey && dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }   // clash instead of swing — only when the knife will have somewhere to go (exactly-2 rocks frees this slot)
+      if (e.shiftKey && dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }
+      // ── …AND THE SAME GESTURE OPENS THE STONE AGE BENCH FOR A ROCK + A STICK (user 2026-08-19) ── tested AFTER
+      // the clash, so two rocks still make a knife and nothing about that path changes. The two are mutually
+      // exclusive by construction anyway: dualRocks needs a rock stack of 2 in the selected slot, craftPair
+      // needs the OTHER half in a different slot. Same 700 ms re-arm, and the same `return` — the click is the
+      // gesture, so it must not also swing the tool.
+      // ── SHIFT + CLICK IS BOTH HALVES OF THE BENCH (user 2026-08-19: "instead of enter to craft something its
+      // shift + left click") ── the same gesture opens it and commits it, which is why this is tested BEFORE
+      // the open below: while the bench is up, a shift+click can only mean "make this one". Enter still works
+      // (ui/input.js keeps it) — this is an addition, not a replacement, and it costs nothing to leave both.
+      if (e.shiftKey && CRAFT.open) { craftConfirm(); return; }
+      if (e.shiftKey && !CRAFT.open && performance.now() - clashT0 > 700 && craftOpen()) { clashT0 = performance.now(); return; }   // clash instead of swing — only when the knife will have somewhere to go (exactly-2 rocks frees this slot)
       mouse0 = true;
       if (performance.now() - swingStart >= 570) { swingStart = performance.now(); pendKillT = swingStart + 250; }   // …and no whoosh here either (user 2026-08-07) — see playToolHit   // a click is IGNORED until the current swing's full 570 ms animation finishes — no mid-swing restart (user; applies to every held item). Holding still auto-repeats via the tick loop. The creature-hit is ARMED here but registers 250 ms in, when the axe visually lands (user).
     }

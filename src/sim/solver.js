@@ -277,7 +277,21 @@
         // …only once it has settled: a chunk mid-tumble keeps its arc. But a small chunk on uneven ground
         // can jitter forever without ever formally sleeping — which left ARROW chunks uncollectable no
         // matter how close you stood (user). Near-stillness counts as settled for those.
-        if (!b.sleeping && !(b.nearR && tNow - b.born > 1500)) continue;   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
+        // ── AND THAT RULE IS FOR EVERY CHUNK NOW, NOT JUST ARROW ONES (user 2026-08-19: "have the player be
+        // able to pick up ALL loose voxels. so long as they are small enough") ── the note above describes the
+        // exact failure and then fixed it for `nearR` chunks alone: a small piece resting on uneven ground can
+        // jitter against two contacts forever without the solver ever formally sleeping it, and until it does,
+        // this line refuses it no matter how long you stand over it. Nothing about that is specific to arrows —
+        // it is the generic "came to rest but never went quiet" case, and it is exactly the loose debris the
+        // user is walking up to and failing to collect.
+        // A REAL STILLNESS TEST, not just the clock. The arrow rule leans on `nearR` to mean "this one is a
+        // scrap, let it in", and generalising the clock alone would sweep up chunks still mid-arc — a piece
+        // thrown past you at 1.6 s would swerve into your chest. 2 vox/s is well under a bounce and well over
+        // solver jitter, so a genuinely moving chunk keeps its arc and a stuck one is collectable.
+        // SIZE IS STILL THE ONLY OTHER GATE, deliberately: PH.absorbSize is the user's own "too big to carry,"
+        // break it down first" rule and this does not touch it.
+        const vJ = b.vel[0] * b.vel[0] + b.vel[1] * b.vel[1] + b.vel[2] * b.vel[2];
+        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || vJ < 4))) continue;   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
         const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
         const rA = b.nearR || PH.absorbR;               // an ARROW's chunk keeps its own, much shorter reach (user)
         if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;
@@ -287,7 +301,14 @@
       b.absorbP = [b.pos[0], b.pos[1], b.pos[2]];      // where the flight starts
       b.sleeping = false;                              // a settled chunk must still be able to fly in
     }
-    for (let i = PH.bodies.length - 1; i >= 0; i--) { const rb = PH.bodies[i]; if (!rb.retire) continue;
+    // ── A CHUNK IN FLIGHT IS NOT SCENERY ── the absorb block above documents the invariant ("every flight
+    // STARTED must finish: flights === absorbed + in-flight") and this loop was the thing breaking it: retire
+    // bakes a settled body back into the static grid, and nothing here asked whether that body was already on
+    // its way to the player. MEASURED on a 4-voxel chip: flights +1, absorbed +0, retired +1 in the SAME frame —
+    // the chunk was collected and welded into the ground instead of arriving. It matters more now than it did,
+    // because the absorb gate no longer waits for a formal sleep (user 2026-08-19), so far more small chips
+    // start a flight while still inside retireMax; but the guard is right either way and costs one test.
+    for (let i = PH.bodies.length - 1; i >= 0; i--) { const rb = PH.bodies[i]; if (rb.absorbing || !rb.retire) continue;
       // A speck that settled up a tree is still dropped — losing it is invisible and leaving it welded into
       // the canopy is not (see phOnGround). Anything BIGGER that could not be baked keeps its slot instead:
       // the distant-scrap path below hands this loop 7-64 voxel pieces, and silently destroying one of those

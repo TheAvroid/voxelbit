@@ -1,10 +1,11 @@
   // @module — screen recording, the clip timeline, red annotations, the export
-  // @exports BASE_VIG, VE, VE_CAP_MS, renderDist, veAudioDest, vePanel, veTapEl, veToggleRec
+  // @exports BASE_VIG, VE, renderDist, veAudioDest, vePanel, veTapEl, veToggleRec
   // ═══════════════ VIDEO EDITOR + SCREEN RECORDER ═══════════════ (user)
   // Capture the game canvas to a .webm with MediaRecorder, then trim / cut / delete / resize clips on a timeline and
   // export the result. Entirely self-contained DOM + MediaRecorder work — nothing here touches the WebGPU render loop.
   // The "recording" banner is a DOM element (never drawn on the canvas), so it can never appear in the capture/export.
   const VE = { clips: [], dur: 0, sel: -1, blobUrl: null, thumb: '', playing: false, lastPaint: 0, ac: null,
+               capHz: 60, capMs: 1000 / 60 - 0.6, capEvery: 1, paintN: 0, recTrack: null,   // ── THE CAPTURE CADENCE ── on the object rather than as two module consts because tick-body.js reads it EVERY FRAME and the probe below rewrites it once: an exported `let` is a const snapshot taken at module-init, so the render loop would have kept the 60 forever (the linter catches exactly this)
                rec: null, chunks: [], recording: false, drag: null,
                strokes: [], undone: [], pen: false, drawing: false, exporting: false };   // strokes: red annotation polylines in NORMALISED video space; undone: redo stack for Ctrl+Z; exporting: suspends the game's render work
   const veBtnEl = $('veBtn'), vePanel = $('vePanel'), veStage = $('veStage'), veVideo = $('veVideo'),
@@ -20,7 +21,7 @@
   const veCaptureMime = () => { for (const m of (location.search.includes('vecap=vp8')
       ? ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/webm']
       : ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm'])) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return ''; };   // LIVE-CAPTURE codec: VP8 webm FIRST. It fixes BOTH complaints — VP8 is 2-5× cheaper to encode than VP9 (no more render-loop lag) AND webm scrubs cleanly in the editor, whereas MediaRecorder's fragmented mp4 has no seek index → the export's frame-by-frame seek stalled and froze the output. mp4 stays only as a last resort for browsers with no webm recording (Safari). The export re-encodes to mp4 regardless, so live quality only needs to be decent.
-  const veBitrate = (w, h) => Math.min(100e6, Math.max(28e6, Math.round((w || 1280) * (h || 720) * 60 * 0.2)));   // QUALITY (user: "download looks lower"): the export is a SECOND encode on top of the recording (trim+annotate needs a re-compress), so 16 Mbps compounded into visible loss. Scale the bitrate to the actual resolution × 60 fps at ~0.2 bpp so BOTH the recording and the re-encode stay near-transparent: ~28 Mbps at 1080p, ~44 at 1440p, capped at 100 for 4K/high-DPI. Bigger files, but the download now matches the preview. STILL the RECORDING rate — the master wants to be generous because the export re-encodes it. The EXPORT rate is veExportRate() below.
+  const veBitrate = (w, h) => Math.min(100e6, Math.max(28e6, Math.round((w || 1280) * (h || 720) * VE.capHz * 0.2)));   // …and the rate follows the CAPTURE rate (was a hard 60): at 120 Hz twice the frames share the bits, so a fixed number would have halved the quality per frame the moment the capture rate went up   // QUALITY (user: "download looks lower"): the export is a SECOND encode on top of the recording (trim+annotate needs a re-compress), so 16 Mbps compounded into visible loss. Scale the bitrate to the actual resolution × 60 fps at ~0.2 bpp so BOTH the recording and the re-encode stay near-transparent: ~28 Mbps at 1080p, ~44 at 1440p, capped at 100 for 4K/high-DPI. Bigger files, but the download now matches the preview. STILL the RECORDING rate — the master wants to be generous because the export re-encodes it. The EXPORT rate is veExportRate() below.
 
   // ── EXPORT SIZE BUDGET (user: 45 s of 3822×1890 came out a 906 MB download) ──
   // MediaRecorder treats videoBitsPerSecond as a SUGGESTION and consistently OVERSHOOTS it. Measured on this
@@ -102,8 +103,40 @@
   // other and the recording gets 8/16/17/25/33 ms intervals plus dropped frames (measured: 46 in 5 s).
   // That uneven spacing IS the judder. MediaRecorder ignores explicit VideoFrame timestamps (verified
   // by experiment), so it cannot be corrected downstream - the paint cadence has to be even at the
-  // source, which is what VE_CAP_MS does in the render loop.
-  const VE_CAP_MS = 1000 / 60 - 0.6;                   // one paint per capture slot, a hair under so a slot is never missed
+  // source, which is what VE.capMs does in the render loop.
+  // ── AND THE CAPTURE RATE IS THE DISPLAY'S, NOT A HARD-CODED 60 (user 2026-08-19: "when recording, it cuts my
+  // frames in half") ── the cadence argument above is right and stays, but it was pinned at 60: on a 120 Hz
+  // monitor the gate in tick-body.js then dropped every OTHER paint for the length of the take, which is exactly
+  // the halving the user saw — the recording was smooth and the GAME was not. The two are only in tension if the
+  // capture rate is fixed. Sampling at the refresh rate instead satisfies both: one paint per slot, no paint
+  // discarded, and the throttle becomes a no-op on any display the game can already keep up with.
+  // MEASURED, not read off screen.refreshRate (which does not exist): the MINIMUM rAF delta over 40 frames, so a
+  // few slow frames during boot cannot drag the estimate down — a 120 Hz panel that stutters twice still reports
+  // 120. Snapped to a ladder because the raw number is never exactly 60/120, and left at 60 if the probe comes
+  // back slower than 25 Hz (a machine that far behind wants the smaller encode anyway).
+  // 144 is the ceiling ON THE CAPTURE, not on the game: above it the encoder is the thing that cannot keep up,
+  // and MediaRecorder dropping frames would put the judder back while costing the file size of the frames it
+  // dropped. A 240 Hz display is the one case still throttled, and it is throttled to 120 rather than to 60.
+  const VE_HZ_LADDER = [60, 72, 75, 90, 100, 120, 144];   // VE.capHz / VE.capMs hold the result — one paint per capture slot, a hair under so a slot is never missed
+  (function veProbeHz() {                              // one burst at boot; the result is cached for every take
+    let n = 0, prev = 0, best = 1e9;
+    const step = (t) => {
+      if (prev) { const d = t - prev; if (d > 1 && d < best) best = d; }
+      prev = t;
+      if (++n < 40) { requestAnimationFrame(step); return; }
+      if (!isFinite(best) || best > 40) return;        // 25 Hz or slower — keep the 60 default
+      const hz = 1000 / best;
+      let pick = VE_HZ_LADDER[0];
+      for (const c of VE_HZ_LADDER) if (hz >= c - 4) pick = c;   // -4 of slack: a 120 Hz panel measures 119.88
+      // ── THE PROBE SETS THE DISPLAY RATE AND NOTHING ELSE ── it used to write capHz/capMs directly, which is
+      // wrong in two ways now that the capture rate is derived: it does not know the canvas size, and it lands
+      // ASYNCHRONOUSLY — 40 rAF frames in — so on a recording started during boot it overwrote the rate
+      // veStartRec had just computed while leaving capEvery untouched, and the two then disagreed (observed:
+      // capHz 120 against capEvery 1 at a size whose budget allows 99). veStartRec owns the derivation.
+      VE.refreshHz = pick;
+    };
+    requestAnimationFrame(step);
+  })();
   // ── RELEASING A CANVAS CAPTURE, IN ONE PLACE ── VIDEO tracks only, for the reason veStopRec gives: the audio
   // tracks come from the shared veGameDest node and stopping them would silence every later recording. A live
   // canvas track nobody reads still copies the presented surface 60x a second (~29 MB a frame at this canvas),
@@ -123,8 +156,35 @@
     // VE.recording would then throttle the game's paint cadence the moment the export released it.
     if (VE.exporting) { console.warn('[vb] not starting a recording during an export — the canvas is not being painted'); return; }
     const mime = veCaptureMime(); if (!mime) { console.warn('[vb] MediaRecorder unsupported'); return; }   // hardware H.264 first → doesn't contend with the render loop the way software VP9 did
-    let stream; try { stream = canvas.captureStream(60); } catch (e) { console.warn('[vb] canvas.captureStream failed', e); return; }
-    VE.recStream = stream;                             // kept so veStopRec can release the canvas capture (see there)   // 60 fps → matches the game's cadence so playback isn't juddery (user)
+    // ── THE CAPTURE RATE IS BOUNDED BY THE ENCODER, NOT ONLY BY THE DISPLAY (user 2026-08-19: "it seems to lag
+    // in the beginning of the clip and when the player eats the steak") ── sampling at the refresh rate fixed
+    // the game being throttled, and then asked the encoder for something it cannot do: MEASURED on the user's
+    // own 3822x1890 take, the file came back at an average 40 fps with gaps of 50-84 ms and one of 679 ms.
+    // That is 7.2 MEGAPIXELS a frame; at 120 fps it is 867 Mpixel/s, which no hardware H.264 encoder sustains
+    // while the game is also rendering. MediaRecorder does not block when it falls behind, it DROPS — and a
+    // dropped frame is exactly the judder VE_CAP_MS exists to prevent, now arriving from the other end.
+    // So the rate is min(refresh, budget / pixels), and 240 Mpixel/s is the budget: a shade under the ~289
+    // that take actually achieved, so it sits inside what this machine demonstrably does rather than at the
+    // edge of it. 1080p keeps the full refresh; 4K lands near 30.
+    // AND IT SNAPS TO refresh/N, N AN INTEGER, which is the whole reason this stays smooth. The frames are
+    // pushed BY THE RENDER LOOP (see capEvery in main/tick-body.js), one every Nth paint, so the spacing is
+    // exact by construction instead of being a sampler's own clock beating against the paint rate — the
+    // original judder this block was written for. captureStream(0) is manual-push mode, the same mode the
+    // EXPORT path already uses for the same reason; it also means the game never skips a paint while
+    // recording, so a 120 Hz game stays 120 Hz whatever the capture rate is.
+    const VE_PIX_BUDGET = 240e6;
+    { const px = Math.max(1, (canvas.width | 0) * (canvas.height | 0));
+      const refresh = VE.refreshHz || 60;
+      const maxFps = Math.max(12, VE_PIX_BUDGET / px);
+      VE.capEvery = Math.max(1, Math.ceil(refresh / maxFps));
+      VE.capHz = refresh / VE.capEvery;
+      VE.capMs = 1000 / VE.capHz - 0.6;
+      VE.paintN = 0;
+      console.log('[vb] rec', canvas.width + 'x' + canvas.height, '@', VE.capHz.toFixed(1), 'fps (refresh', refresh + ', every', VE.capEvery + ' paints)'); }
+    let stream; try { stream = canvas.captureStream(0); } catch (e) { console.warn('[vb] canvas.captureStream failed', e); return; }   // 0 = MANUAL push — the render loop drives it, see above
+    VE.recTrack = stream.getVideoTracks()[0] || null;
+    if (!VE.recTrack || !VE.recTrack.requestFrame) { console.warn('[vb] canvas capture has no requestFrame — falling back to the sampler'); veReleaseCap(stream); try { stream = canvas.captureStream(VE.capHz); } catch (e2) { return; } VE.recTrack = null; }
+    VE.recStream = stream;                             // kept so veStopRec can release the canvas capture (see there)   // captures at VE.capHz → matches the game's cadence so playback isn't juddery (user), and no longer at the cost of the game's own frame rate
     const adest = veAudioDest(); if (adest) { try { adest.stream.getAudioTracks().forEach((t) => stream.addTrack(t)); } catch (e) {} }   // mix in the game audio (user) — video-only if it fails
     // ── THE CHUNK LIST IS PER-RECORDER, NOT A MODULE SINGLETON ── it was VE.chunks, and stop() queues
     // `dataavailable` and `stop` as SEPARATE tasks, so a second veStartRec landing between them corrupted the
@@ -154,7 +214,7 @@
       veReleaseCap(VE.recStream); VE.recStream = null;
       if (chunks.length) veLoadBlob(new Blob(chunks, { type: blobType }));
     };
-    VE.lastPaint = performance.now() - VE_CAP_MS;     // first frame paints immediately
+    VE.lastPaint = performance.now() - VE.capMs;     // (kept for the fallback sampler path only)
     // ── A TIMESLICE, SO A LOST TAB IS NOT A LOST TAKE ── start() with no argument delivers ONE blob, at stop,
     // which means the whole recording sits inside the recorder until then: an OOM, an encoder fault or a
     // navigation lost ALL of it rather than its tail. veBitrate reads the DPR-SCALED buffer, not CSS pixels, so
@@ -176,6 +236,7 @@
     // and stopping them would silence every later recording.
     if (VE.recStream) { veReleaseCap(VE.recStream); VE.recStream = null; }
     VE.recording = false;
+    VE.recTrack = null;                              // the render loop tests this before pushing — a stale track would keep requestFrame firing into a stopped recorder
     veRecUI(false);
   };
   const veToggleRec = () => { VE.recording ? veStopRec() : veStartRec(); };
@@ -294,7 +355,7 @@
     // out from under the other. Gating here rather than at each call site covers the buttons; the guards on
     // veSplit/veDelete/veHandleDown cover the paths that do not go through a button.
     const has = VE.clips.length > 0 && !VE.exporting;
-    vePlayBtn.disabled = !has; $('veSplit').disabled = !has; $('veExport').disabled = !has;
+    vePlayBtn.disabled = !has; $('veSplit').disabled = !has; $('veExport').disabled = !has; $('veSnap').disabled = !has;
     $('veDel').disabled = VE.sel < 0 || !has;
     veSizeSel.disabled = !has;
     veUpdateEst();                       // trimming, splitting and deleting all change the exported DURATION, so the estimate has to follow every one of them
@@ -470,6 +531,31 @@
   const veClose = () => { vePanel.classList.add('hidden'); vePause(); if (!locked && !dead) lockEl.classList.remove('hidden'); };   // hand the screen back to the esc menu so the player resumes / re-locks from there
   veBtnEl.addEventListener('click', (e) => { e.stopPropagation(); veOpen(); });   // opens the editor; recording is the ● rec button inside the panel
   veRecBtn.addEventListener('click', (e) => { e.stopPropagation(); veToggleRec(); });
+  // ── SNAPSHOT (user 2026-08-19: "add a button to the recorder that lets me take a snapshot of the video as a
+  // .png file") ── the frame sitting at the playhead, at the video's OWN resolution rather than at whatever size
+  // the editor happens to be showing it, so a snapshot of a 4K capture is 4K. It reuses veStrokePaint — the same
+  // painter the on-screen layer and the export compositor use — so the red annotations land in the .png exactly
+  // where they are on screen: they live in normalised video space, so painting them at (0, 0, vw, vh) is the
+  // whole of the mapping. Line width follows the frame width on the same 0.004 the editor uses, or a hairline
+  // stroke authored on a small preview would come out invisible at full size.
+  // NOT while an export is running: veExport drives veVideo's own currentTime through the clip list, so the
+  // frame on screen mid-export belongs to the export, not to the playhead the player is looking at.
+  const veSnapshot = () => {
+    if (VE.exporting) return;
+    const vw = veVideo.videoWidth | 0, vh = veVideo.videoHeight | 0;
+    if (!vw || !vh) return;
+    const c = document.createElement('canvas'); c.width = vw; c.height = vh;
+    const g = c.getContext('2d');
+    g.drawImage(veVideo, 0, 0, vw, vh);
+    veStrokePaint(g, 0, 0, vw, vh, Math.max(1.5, vw * 0.004));
+    c.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob), a3 = document.createElement('a');
+      a3.href = url; a3.download = 'voxelbit-frame.png'; document.body.appendChild(a3); a3.click(); a3.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);   // the same grace the clip download gets
+    }, 'image/png');
+  };
+  $('veSnap').addEventListener('click', (e) => { e.stopPropagation(); veSnapshot(); });
   $('veExport').addEventListener('click', (e) => { e.stopPropagation(); veExport(); });
   $('veClose').addEventListener('click', (e) => { e.stopPropagation(); veClose(); });
   vePlayBtn.addEventListener('click', (e) => { e.stopPropagation(); veTogglePlay(); });

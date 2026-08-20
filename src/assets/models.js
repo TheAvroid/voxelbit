@@ -62,6 +62,14 @@
   // authored colours were reused off by up to 6/255 (the user's "slightly off"). A held tool fills a third of
   // the screen and is stared at constantly, so it mints its own id instead. Costs a handful of slots out of the
   // headroom the tolerance itself freed - that is what the headroom is FOR.
+  // Nearest id within ONE unit on every channel, or undefined. Reserved ids (palOwn) and ids whose material
+  // MEANS something (edMatBad) are never offered — the same two exclusions the tolerance share uses.
+  const palNear1 = (r, g, b) => {
+    for (let i = 1; i < palette.length; i++) { const c = palette[i];
+      if (!c || palOwn.has(i)) continue;
+      if (Math.abs(c[0] - r) <= 1 && Math.abs(c[1] - g) <= 1 && Math.abs(c[2] - b) <= 1) return i; }
+    return undefined;
+  };
   const palShare = (r, g, b, noTol) => {
     if (!palIdx) { palIdx = new Map();
       for (let i = 1; i < palette.length; i++) { const c = palette[i]; if (!c) continue;
@@ -78,6 +86,17 @@
       id = palTolIdx.get(k);
       if (id === undefined) { id = palNearShare(r, g, b); if (id !== undefined) palTolIdx.set(k, id); }
     }
+    // ── A noTol MODEL MAY STILL SHARE AN INVISIBLE NEIGHBOUR (2026-08-19, to free the two ids the light cherry
+    // scatter needs) ── noTol exists because PAL_TOL is 6 and snapping a held tool's ramp within 6 collapsed
+    // its shades (the stone kit bug the block above records). It does NOT need to mean "exact or mint": the
+    // audit found the table holding 109,78,50 AND 109,79,51, and 115,83,54 AND 114,83,53 — two pairs one unit
+    // apart on one or two channels, minted separately only because stick_1 and stick_2 are different files
+    // parsed as 'held'. One unit of 255 is below anything a screen or an eye resolves, so sharing at delta 1
+    // cannot flatten a ramp the way 6 did — a ramp with a 1-unit step has no step. It returns exactly 2 ids
+    // on this table, which is what the light-cherry ground petals and twigs are minted from.
+    // palOwn and edMatBad are still respected, via palNear1 — a reserved id means something and is never a
+    // substitute, whatever the distance.
+    if (id === undefined && noTol) { const n1 = palNear1(r, g, b); if (n1 !== undefined) id = n1; }   // NO length gate: the pairs this frees mint at ids ~127-139, long before any threshold worth setting, and a 1-unit share cannot flatten a ramp at any table size
     if (id === undefined) {
       if (palette.length < 256) { id = addCol(r, g, b); }
       else {                                           // FULL: nearest existing colour, never a 257th entry — an id past 255 wraps and takes a voxel's SOLIDITY with it. palNearest (assets/palette.js) is the same walk addCol's ceiling uses, and it skips reserved ids for the same reason: a full palette must not re-create the collision palOwn just refused.

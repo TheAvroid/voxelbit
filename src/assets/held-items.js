@@ -105,6 +105,8 @@
     items.push({ w: 1, d: 1, h: 1, cells: [[255, 208, 112]] });
     HITRED_IT = items.length + 1;                                     // ── HIT VOXEL (user 2026-08-05) ── striking a life form throws RED voxels rather than the rocks' amber embers. Identical particle in every other way — same arc, spin and lifetime — so the DEATH poof can keep the original sparks.
     items.push({ w: 1, d: 1, h: 1, cells: [[222, 38, 30]] });
+    HITGOLD_IT = items.length + 1;                                     // ── HUNGER VOXEL (user 2026-08-19: "have gold voxels come out of the player when the player goes down a health point ... render the same except gold") ── the HIT voxel's twin in gold: same 10 cm cube, same burst, same emissive spark path, and it is thrown by the same authored burst in sim/vitals.js. Losing a point of either bar throws flecks off your own body; only the colour says which bar it was
+    items.push({ w: 1, d: 1, h: 1, cells: [[232, 176, 44]] });
     SMOKE_IT = items.length + 1;                                      // DEATH SMOKE — one white voxel (like a snowflake is one voxel). Each smoke SLOT is an INDIVIDUAL voxel at its own continuous position + snowflake spin (user: "move off the grid like the snowflakes"), rendered TRANSLUCENT (20%) through the drops path (never in inventory)
     items.push({ w: 1, d: 1, h: 1, cells: [[255, 255, 255]] });
     FOAM_IT = items.length + 1;                                       // ── SPLASH DROPLET (user 2026-08-05) ── the same particle as a spark, in FOAM: thrown when a fish or the player breaks the surface either way
@@ -113,6 +115,12 @@
     items.push({ w: 1, d: 1, h: 1, cells: [[232, 142, 175]] });
     PETALW_IT = items.length + 1;                                     // …and the WHITE variety's, from the middle of BLOSWHITE — cream rather than grey-white, for the same reason that ramp is
     items.push({ w: 1, d: 1, h: 1, cells: [[239, 225, 230]] });
+    PETALG_IT = items.length + 1;                                      // ── FALLING OAK LEAF (user 2026-08-19: "also apply this to the regular oak trees. green leaves should fall for example") ── the same particle in the PLAIN oak's green, taken from the middle of its four-green ramp exactly as the two above are taken from the middle of their blossom ramps. Hard-coded rather than read off OAKLEAF for the reason those are: oak_trees.json loads long after the item table is built, and a leaf that cannot be minted until the art arrives would leave the band with a hole in it
+    items.push({ w: 1, d: 1, h: 1, cells: [[105, 143, 51]] });
+    PETALGL_IT = items.length + 1;                                     // …and the LIGHT oak variety's, from the middle of OAKLITER. The oak ships two varieties exactly as the cherry ships pink and white (see the OAKLITE block in assets/palette.js), so it sheds two leaves for the same reason the cherry does: a light-green crown dropping the dark variety's leaf is the same mismatch a white tree dropping a pink petal would be
+    items.push({ w: 1, d: 1, h: 1, cells: [[160, 192, 100]] });
+    PETALN_IT = items.length + 1;                                      // ── FALLING PINE NEEDLE (user 2026-08-19: "make the pine tree have falling leaves as well") ── the fifth and last leaf, in the pine canopy's own green. READ OFF pine5.vox, not off a ramp in assets/palette.js: the four ids named NEEDLE there are the pine's BARK browns (97,74,50 and friends), and the canopy's real colours are minted straight from the model's own palette (the isFol branch in palette.js). Its six greens run (30,54,24) to (88,130,60); this is the middle one, which is both the shade the crown is mostly made of and light enough that a single 10 cm voxel stays visible against a dark forest floor. Already minted by that loader, so it costs no palette entry — which matters, the table is full
+    items.push({ w: 1, d: 1, h: 1, cells: [[62, 98, 43]] });
     KNIFE_IT = items.length + 1;                                      // STONE KNIFE — born when two rocks are clashed together
     try {
       const kv = await abuf('assets/stone_tools/stone_knife.vox');
@@ -164,17 +172,53 @@
     // the same beat. The BOX is per model and defaults to the model's own: the held DDA centres a model on its
     // box, so the box is what decides where a thing hangs in your hand, and changing it would move an item
     // whose pose is already baked. Only the fruit pass one in (see FRUIT_BOX).
-    const EAT_N = 13, EAT_KEEP = 0.28;                 // …and how much is still in your hand on the LAST frame. A remnant rather than an empty grid: a thing that vanishes a frame early reads as a dropped item
+    // ── 21 FRAMES, NOT 13 (user 2026-08-19: "the last frame seems to hold for much longer then the rest of the
+    // animation. also make the last frame broken up into more frames") ── and the two halves of that are ONE
+    // change. A bite is gated at EAT_MS = 900 ms and 13 frames at 24 fps only run 542 ms, so the strip finished
+    // with 358 ms of the bite still to go — 8.6x a normal frame's 41.7 ms, which is exactly a last frame that
+    // "holds much longer than the rest". Filling that window with real frames fixes the hold BY subdividing the
+    // chew, rather than by cutting the pose short: 21 frames run 875 ms, leaving 25 ms of hold, less than one
+    // frame. That is the ceiling, not a preference — 22 would run 917 ms, past EAT_MS, and a held right button
+    // would restart the strip before its last frame was ever drawn (the 8 fps incident ui/audio.js records).
+    // The carve is uniform in f, so the extra frames land across the WHOLE chew and the end is finer with it.
+    // WHICH WAY THE WORM GOES. Its length is the d (y) axis, and this is the end that is eaten FIRST — negate
+    // it to eat from the other end. It is a direction rather than a flag because the next food to want this may
+    // well be long along x or z instead.
+    const WORM_EAT_DIR = [0, -1, 0];   // flipped (user 2026-08-19: "it currently is being eating bottom to top, just flip it")
+    const EAT_N = 21, EAT_KEEP = 0.0;                  // …and how much is still in your hand on the LAST frame. ZERO for every food now — see the block below
     FOOD_EAT_N = EAT_N;                                // the strip length every edible shares — set here, not inside the fruit block, so a missing apple cannot silently take the meat's animation with it
-    const eatStrip = (m, box) => {                     // one whole model -> EAT_N frames of it being eaten
+    // ── WHAT IS LEFT ON THE LAST FRAME IS PER FOOD (user 2026-08-19: "can you just make sure the last frame
+    // dissapears properly") ── EAT_KEEP was 0.28 for everything, on the argument that "a thing that vanishes a
+    // frame early reads as a dropped item" and that an apple's remnant is a CORE and the point of the carve.
+    // It was wrong for the steak — meat is eaten, not cored — so the meat was given 0 and eaten to nothing.
+    // ── AND THEN THE FRUIT FOLLOWED IT (user 2026-08-19: "now the orange and apple are having the issue that
+    // the steak had on the last frame") ── which settles the argument: whatever a 28% remnant reads as, it is
+    // not a bite finishing. The last frame held a core for the rest of the bite and then the core simply
+    // blinked out of the hand, and that pop is what both reports are about. At 0 the strip's final frame is an
+    // EMPTY grid, so the food thins to nothing on its own beat and there is nothing left to vanish.
+    // `keep` stays an ARGUMENT rather than being deleted: a future food that genuinely wants to leave something
+    // behind (a bone, a stalk) asks for it in one place, and the max(3, …) floor below still guards it from
+    // being rounded away. It is only the DEFAULT that is now 0.
+    // ── AND A FOOD CAN BE EATEN ALONG AN AXIS INSTEAD OF FROM A CORNER (user 2026-08-19: "can you eat the worm
+    // from top to bottom") ── the default bite point is one top corner of the model's box and the voxels go
+    // nearest-first, which is right for a thing you bite INTO: an apple loses its blade side while the stalk at
+    // the far corner survives to the end. It is wrong for a thing you eat END TO END. Worse for the worm
+    // specifically: it is 3 x 6 x 2, its length is the d axis, and the bite point's `by` term is (d-1)/2 —
+    // the MIDDLE of that length — so it was being consumed outward from its own middle in both directions.
+    // `order` replaces the distance score with a straight projection onto a direction, so the voxels furthest
+    // along it go first and the food retreats evenly down that axis. Everything else about the carve is
+    // untouched, including the tie-breaks that keep the strip identical on every boot.
+    const eatStrip = (m, box, keep, order) => {        // one whole model -> EAT_N frames of it being eaten
       const cl = [];                                   // its voxels, in one list, so the bite order is a sort rather than a rule repeated per frame
       for (let z = 0; z < m.h; z++) for (let y = 0; y < m.d; y++) for (let x = 0; x < m.w; x++) {
         const c = m.cells[x + y * m.w + z * m.w * m.d]; if (c) cl.push({ x, y, z, c });
       }
       const bx = m.w - 1, by = (m.d - 1) / 2, bz = m.h - 1;
       for (const q of cl) q.d2 = (q.x - bx) * (q.x - bx) + (q.y - by) * (q.y - by) + (q.z - bz) * (q.z - bz);
+      if (order) for (const q of cl) q.d2 = -(q.x * order[0] + q.y * order[1] + q.z * order[2]);   // NEGATED so the highest projection sorts first and is eaten first — the same ascending sort then serves both modes
       cl.sort((a, b) => a.d2 - b.d2 || a.z - b.z || a.x - b.x || a.y - b.y);   // ties broken on the coordinates so the strip is identical every boot — a sort that is not total is a thing eaten differently each time
-      const gone = Math.max(0, cl.length - Math.max(3, Math.round(cl.length * EAT_KEEP)));
+      const kp = keep === undefined ? EAT_KEEP : keep;
+      const gone = Math.max(0, cl.length - (kp > 0 ? Math.max(3, Math.round(cl.length * kp)) : 0));
       const bb = box || [m.w, m.d, m.h];
       const W = Math.max(bb[0], m.w), D = Math.max(bb[1], m.d), H = Math.max(bb[2], m.h);
       const out = [];
@@ -186,7 +230,7 @@
       }
       return out;
     };
-    if (MEATV) { const ms = eatStrip(modelToItem(MEATV));   // …its OWN box, so the steak hangs exactly where its baked pose already puts it
+    if (MEATV) { const ms = eatStrip(modelToItem(MEATV), null, 0);   // explicit 0 even though it is the default now — this is the food the rule was written for   // …its OWN box, so the steak hangs exactly where its baked pose already puts it, and keep = 0 so the last frame is EMPTY — the steak is eaten away rather than leaving a scrap to blink out (user 2026-08-19)
       MEAT_IT = items.length + 1; for (const it of ms) items.push(it);
       console.log('[vb] raw_meat items', MEAT_IT, '..', MEAT_IT + FOOD_EAT_N - 1, MEATV.sx, MEATV.sy, MEATV.sz,
         ms[0].cells.filter(Boolean).length + '->' + ms[ms.length - 1].cells.filter(Boolean).length, 'vox'); }   // …appended after the pick, same reason: ids 1-4 are hard-coded elsewhere
@@ -517,7 +561,15 @@
       WORM_ITEM0 = items.length + 1;
       for (const it of loaded) items.push(it);
       WORM_NFRAMES = 12;
-      console.log('[vb] worm', WORM_NFRAMES, 'frames -> items', WORM_ITEM0, '..', items.length);
+      // ── AND THE WORM IS EATEN LIKE EVERYTHING ELSE (user 2026-08-19: "have eating the worm follow the same
+      // eating mechanics as everything else ... I mean the eating animation") ── it was the one food with
+      // strip:false, and sim/vitals.js says exactly why: assets/life/worm is a CRAWL CYCLE, so indexing a
+      // FOOD_EAT_N run off WORM_ITEM0 walks straight into the next creature's frames. The fix is not to index
+      // off the crawl at all — it is to carve the worm its OWN strip, on its own ids, from the first frame of
+      // that cycle (a straight worm). keep = 0, like the steak: a worm is eaten, not cored.
+      { const ws = eatStrip(items[WORM_ITEM0 - 1], null, 0, WORM_EAT_DIR);   // …eaten END TO END down its length rather than out from its middle (user 2026-08-19)
+        WORM_EAT0 = items.length + 1; for (const it of ws) items.push(it); }
+      console.log('[vb] worm', WORM_NFRAMES, 'frames -> items', WORM_ITEM0, '..', items.length, '| eat strip', WORM_EAT0, '..', WORM_EAT0 + FOOD_EAT_N - 1);
     } catch (e) { console.warn('[vb] worm frames missing - forest floor stays still', e); WORM_NFRAMES = 0; }
     // 'betta' joins at the END, which matters: species is fixed by SLOT (B.fsp = wk % FISHES.length) and
     // ui/console.js builds /locate names off the LOADED order, so inserting one renames bands. Its frames come
@@ -757,16 +809,52 @@
           out.push({ w: bsx, d: bsy, h: bsz, cells });
         }
         return out; };
+      // ── THE UNIVERSAL BLINK ── the eye is the ONE voxel painted PURE BLACK, and that is the whole test.
+      // The user said so plainly ("it should be a pure black voxel") and the art bears it out: checked across
+      // every creature frame on disk, each carries EXACTLY ONE (0,0,0) voxel and nothing else is that colour.
+      // The tiny insects (ant at 2 voxels, bee at 5) have none and simply never blink, which is correct.
+      // ── WHAT THE FIRST ATTEMPT GOT WRONG, because it is the bug the user reported ── it treated "every
+      // channel under 60" as an eye and snapped those to black. On a bunny that is one voxel and it looked
+      // fine. On a SKUNK, which is a black animal, it caught SIX: the skunk's body is (33,33,33), (44,44,48)
+      // and (50,49,43), all comfortably under 60, so its TAIL blinked. The flamingo blinked five. Darkness is
+      // not what marks an eye — being EXACTLY black is, and the artist already encodes it that way.
+      // Nothing is snapped any more either: snapping near-blacks TO black manufactured more eyes on exactly
+      // the models that were already worst.
+      const isEye = (c) => c && c[0] === 0 && c[1] === 0 && c[2] === 0;
+      const eyeBlink = (loaded) => {
+        const out = [];
+        for (const src of loaded) {
+          const w = src.w, d = src.d, n = w * d, lid = src.cells.slice();
+          for (let i = 0; i < src.cells.length; i++) {
+            if (!isEye(src.cells[i])) continue;
+            // the LID is the nearest voxel that is not the eye — the face around it. Bounded to 3 cells
+            // because a lid is skin touching the eye, and an unbounded nearest-search is O(n^2) a frame.
+            const ex = i % w, ey = ((i / w) | 0) % d, ez = (i / n) | 0;
+            let best = null, bd = 1e9;
+            for (let dz = -3; dz <= 3; dz++) for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+              const qx = ex + dx, qy = ey + dy, qz = ez + dz;
+              if (qx < 0 || qy < 0 || qz < 0 || qx >= w || qy >= d || qz >= src.h) continue;
+              const q = src.cells[qx + qy * w + qz * n];
+              if (!q || isEye(q)) continue;
+              const dd = dx * dx + dy * dy + dz * dz;
+              if (dd < bd) { bd = dd; best = q; }
+            }
+            if (best) lid[i] = best;
+          }
+          out.push({ w: src.w, d: src.d, h: src.h, cells: lid });
+        }
+        return out;
+      };
       const bloaded = parseBunny(BUNNY_ROTATE);           // ROTATE frames (turn animation) → BUNNY_ITEM0
-      if (bloaded.length) { BUNNY_ITEM0 = items.length + 1; for (const it of bloaded) items.push(it); BUNNY_NFRAMES = bloaded.length; }
+      if (bloaded.length) { BUNNY_ITEM0 = items.length + 1; for (const it of bloaded) items.push(it); { const _bl = eyeBlink(bloaded); if (_bl.length === bloaded.length) { BLINK_HAS.add(BUNNY_ITEM0); for (const it of _bl) items.push(it); } } BUNNY_NFRAMES = bloaded.length; }
       const bjloaded = parseBunny(BUNNY_JUMP);             // JUMP frames (hop animation) → BUNNY_JUMP_ITEM0
-      if (bjloaded.length) { BUNNY_JUMP_ITEM0 = items.length + 1; for (const it of bjloaded) items.push(it); BUNNY_JUMP_NFRAMES = bjloaded.length; }
+      if (bjloaded.length) { BUNNY_JUMP_ITEM0 = items.length + 1; for (const it of bjloaded) items.push(it); { const _bl = eyeBlink(bjloaded); if (_bl.length === bjloaded.length) { BLINK_HAS.add(BUNNY_JUMP_ITEM0); for (const it of _bl) items.push(it); } } BUNNY_JUMP_NFRAMES = bjloaded.length; }
       const aloaded = parseBunny(ARMADILLO_WALK);          // 8 WALK frames → ARMADILLO_ITEM0 (world armadillo trace-injects these; no blink items, like the bunny)
-      if (aloaded.length) { ARMADILLO_ITEM0 = items.length + 1; for (const it of aloaded) items.push(it); ARMADILLO_NFRAMES = aloaded.length; }
+      if (aloaded.length) { ARMADILLO_ITEM0 = items.length + 1; for (const it of aloaded) items.push(it); { const _bl = eyeBlink(aloaded); if (_bl.length === aloaded.length) { BLINK_HAS.add(ARMADILLO_ITEM0); for (const it of _bl) items.push(it); } } ARMADILLO_NFRAMES = aloaded.length; }
       const blloaded = parseBunny(BLUEBIRD_ROTATE);        // BLUE BIRD rotate frames -> BLUEB_ITEM0
-      if (blloaded.length === CARD_NFRAMES) { BLUEB_ITEM0 = items.length + 1; for (const it of blloaded) items.push(it); }   // frame-count parity is required, not cosmetic: the perch clock indexes both tables with the SAME frame number
+      if (blloaded.length === CARD_NFRAMES) { BLUEB_ITEM0 = items.length + 1; for (const it of blloaded) items.push(it); { const _bl = eyeBlink(blloaded); if (_bl.length === blloaded.length) { BLINK_HAS.add(BLUEB_ITEM0); for (const it of _bl) items.push(it); } } }   // frame-count parity is required, not cosmetic: the perch clock indexes both tables with the SAME frame number
       const rbloaded = parseBunny(ROBIN_ROTATE);           // ROBIN rotate frames -> ROBIN_ITEM0
-      if (rbloaded.length === CARD_NFRAMES) { ROBIN_ITEM0 = items.length + 1; for (const it of rbloaded) items.push(it); }
+      if (rbloaded.length === CARD_NFRAMES) { ROBIN_ITEM0 = items.length + 1; for (const it of rbloaded) items.push(it); { const _bl = eyeBlink(rbloaded); if (_bl.length === rbloaded.length) { BLINK_HAS.add(ROBIN_ITEM0); for (const it of _bl) items.push(it); } } }
       // ── AND THE PINK BIRD, WHICH HAD POSES BUT NO ITEM STRIP ── PINKBIRD_ROTATE was parsed only into
       // PINK_POSES for the GRID-STAMP path (sim/life/stamped.js), so beyond UNI_BIRD_R a blossom bird stamped
       // pink while inside it the trace path fell through birdItem0's missing arm onto CARD_ITEM0 and drew the
@@ -774,20 +862,20 @@
       // with nothing logged anywhere. Same frame-count parity gate the other two reskins take, and for the same
       // reason: the perch clock indexes both the poses and the strip, so a mismatched strip walks off its end.
       const pkloaded = parseBunny(PINKBIRD_ROTATE);        // PINK BIRD rotate frames -> PINKB_ITEM0
-      if (pkloaded.length === CARD_NFRAMES) { PINKB_ITEM0 = items.length + 1; for (const it of pkloaded) items.push(it); }
+      if (pkloaded.length === CARD_NFRAMES) { PINKB_ITEM0 = items.length + 1; for (const it of pkloaded) items.push(it); { const _bl = eyeBlink(pkloaded); if (_bl.length === pkloaded.length) { BLINK_HAS.add(PINKB_ITEM0); for (const it of _bl) items.push(it); } } }
       console.log('[vb] songbird reskins -> items: blue', BLUEB_ITEM0, 'robin', ROBIN_ITEM0, 'pink', PINKB_ITEM0, 'of', CARD_NFRAMES, 'frames');
       try {                                               // FLAMINGO walk cycle — 10 frames, split from flamingo.vox
         for (let f = 0; f < 16; f++) { const bv = await abuf('assets/life/flamingo/' + String(f).padStart(2, '0') + '.vox'); if (!isVox(bv)) break; FLAMINGO_WALK.push({ name: String(f).padStart(2, '0') + '.vox', u8: bv }); }
       } catch (e) { console.warn('[vb] flamingo walk frames missing', e); }
-      try { const bvv = await abuf('assets/decoration/birch.vox');   // the editor's staged exhibit — see BIRCH_VOX in assets/creatures.js. Nothing in the WORLD reads it
-        if (isVox(bvv)) BIRCH_VOX.push({ name: '00.vox', u8: bvv }); }
-      catch (e) { console.warn('[vb] birch.vox missing — the editor falls through to the next model', e); }
+      // (the editor's staged tree used to be fetched here — assets/decoration/birch.vox, then fir_spruce.vox.
+      //  Both are gone from the boot: the stage opens on the SKUNK now and nothing else reads either file.
+      //  The porcupine fetch below STAYS — it feeds the world land mammal, not the editor stage.)
       const flloaded = parseBunny(FLAMINGO_WALK);         // same call every other walker uses: raw .vox RGB, so this does NOT touch the 256-entry world palette
-      if (flloaded.length) { FLAMINGO_ITEM0 = items.length + 1; for (const it of flloaded) items.push(it); FLAMINGO_NFRAMES = flloaded.length; }
+      if (flloaded.length) { FLAMINGO_ITEM0 = items.length + 1; for (const it of flloaded) items.push(it); { const _bl = eyeBlink(flloaded); if (_bl.length === flloaded.length) { BLINK_HAS.add(FLAMINGO_ITEM0); for (const it of _bl) items.push(it); } } FLAMINGO_NFRAMES = flloaded.length; }
       const skloaded = parseBunny(SKUNK_WALK);             // SKUNK walk frames -> SKUNK_ITEM0 (same call the armadillo uses; raw .vox RGB, so this does NOT touch the 256-entry world palette)
-      if (skloaded.length) { SKUNK_ITEM0 = items.length + 1; for (const it of skloaded) items.push(it); SKUNK_NFRAMES = skloaded.length; }
+      if (skloaded.length) { SKUNK_ITEM0 = items.length + 1; for (const it of skloaded) items.push(it); { const _bl = eyeBlink(skloaded); if (_bl.length === skloaded.length) { BLINK_HAS.add(SKUNK_ITEM0); for (const it of _bl) items.push(it); } } SKUNK_NFRAMES = skloaded.length; }
       const ploaded = parseBunny(PORCUPINE_WALK);          // PORCUPINE walk frames -> PORCUPINE_ITEM0
-      if (ploaded.length) { PORCUPINE_ITEM0 = items.length + 1; for (const it of ploaded) items.push(it); PORCUPINE_NFRAMES = ploaded.length; }
+      if (ploaded.length) { PORCUPINE_ITEM0 = items.length + 1; for (const it of ploaded) items.push(it); { const _bl = eyeBlink(ploaded); if (_bl.length === ploaded.length) { BLINK_HAS.add(PORCUPINE_ITEM0); for (const it of _bl) items.push(it); } } PORCUPINE_NFRAMES = ploaded.length; }
       for (const [k9, i9] of [['arm', ARMADILLO_ITEM0], ['skunk', SKUNK_ITEM0], ['porc', PORCUPINE_ITEM0], ['bunny', BUNNY_ITEM0], ['flam', FLAMINGO_ITEM0]]) {   // …and the FLAMINGO, or it falls to the worm's default seat and a 17-voxel bird stands with its legs in the ground
         const f9 = i9 ? mamFitOf(items, i9) : null; if (f9) MAMFIT[k9] = f9; }   // read off frame 0: every frame of a walk cycle shares the model box
       console.log('[vb] mammal fit', JSON.stringify(MAMFIT));

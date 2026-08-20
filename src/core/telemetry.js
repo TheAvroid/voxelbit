@@ -60,12 +60,12 @@
   ctx.configure({ device, format, alphaMode: 'opaque' });
   let moonTex = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
   device.queue.writeTexture({ texture: moonTex }, new Uint8Array([205, 210, 220, 255]), {}, [1, 1]);   // flat fallback if the photo is missing
-  try {                                                // REAL moon — NASA SVS full-moon photograph mapped onto the disc
-    const mimg = await createImageBitmap(await (await fetch('assets/moon.jpg')).blob());
+  try {                                                // REAL moon — a full-disc photograph mapped onto the disc (user supplied moon.webp and then moon.png 2026-08-19, replacing moon.jpg, which was a WANING CRESCENT with its terminator and earthshine baked into the pixels and needed a high-pass in the shader to pass for full. Measured on the new file: 1600x1600, 68.8% of it above 40/255 and the four quadrants within 92-113 of each other, i.e. evenly lit — so the shader samples it straight)
+    const mimg = await createImageBitmap(await (await fetch('assets/moon.png')).blob());
     const moonFallback = moonTex;                      // the 1x1 placeholder is superseded here — destroy it once the real photo is in place
     moonTex = device.createTexture({ size: [mimg.width, mimg.height], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
     device.queue.copyExternalImageToTexture({ source: mimg }, { texture: moonTex }, [mimg.width, mimg.height]);
     mimg.close();                                      // release the decoded bitmap immediately — the texture owns the pixels now
     try { moonFallback.destroy(); } catch (e) {}       // no bind group has been built yet (makeTargets runs later), so nothing references it
-  } catch (e) { console.warn('[vb] moon.jpg missing — flat moon disc', e); }
+  } catch (e) { console.warn('[vb] moon.png missing — flat moon disc', e); }
 

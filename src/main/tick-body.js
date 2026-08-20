@@ -5,8 +5,19 @@
     // 120 Hz paint. This gate is at the TOP on purpose: skipping a WHOLE frame is safe, but returning
     // part-way through skips the strip-scatter dispatch with xStripPending still set and breaks the
     // streaming order (that mistake threw a tick exception).
-    if (VE.recording && now - VE.lastPaint < VE_CAP_MS) { tickReq = true; paceWaited = false; requestAnimationFrame(tick); return; }
-    if (VE.recording) VE.lastPaint = now - Math.min(VE_CAP_MS * 0.5, (now - VE.lastPaint) - VE_CAP_MS);   // carry the overshoot so the cadence cannot drift slow
+    // ── RECORDING PUSHES A FRAME, IT NO LONGER SKIPS ONE (user 2026-08-19) ── this gate used to RETURN here to
+    // hold the paint rate down to the capture rate, which is what halved a 120 Hz game's frame rate for the
+    // length of a take. The cadence argument behind it was right and is kept, but it is served the other way
+    // round now: the canvas track is in manual-push mode (captureStream(0), see veStartRec) and the render loop
+    // hands it one frame every capEvery-th paint. Spacing is exact BY CONSTRUCTION — it is an integer division
+    // of the paint rate rather than a sampler's own clock beating against it — and the game paints every frame.
+    // It sits at the TOP for the same reason the old gate did: this must not run part-way through a tick.
+    // The push captures the frame PRESENTED LAST tick, which is what makes it a whole frame rather than a
+    // half-drawn one.
+    if (VE.recording && VE.recTrack) {
+      VE.paintN = (VE.paintN | 0) + 1;
+      if (VE.paintN % (VE.capEvery || 1) === 0) { try { VE.recTrack.requestFrame(); } catch (e) {} }
+    }
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
     // ── VITALS ── UNCONDITIONAL, and that matters: this first sat further down beside the hazard checks, which
     // are inside the `if (P.fly) … else` movement branch, so the vitals silently stopped the moment fly mode
@@ -133,7 +144,17 @@
             // it — the same flag drowning and starving already pass.
             const drop = (P.fallPk === undefined ? P.y : P.fallPk) - P.y;
             if (!dead && !P.fly && !inWater && !P.noFall && drop > 0) {
-              const md = Math.floor(drop / 10);            // whole metres, the figure the death line quotes
+              // ── …AND THE +1e-3 IS THE COLLISION EPSILON, NOT A FUDGE ── moveAxis parks a landed body at
+              // floor(y) + 1 + 0.001 (player.js), so both ends of this subtraction carry a millimetre that
+              // very nearly cancels — but only very nearly: float drift in the sub-stepped move leaves the
+              // measured drop up to ~0.0012 voxels SHORT of the real one. On any height that is not an exact
+              // metre nobody could tell, but Math.floor cuts exactly on the metre, so a true 4 m step off a
+              // ledge measured 39.9991 and bucketed as 3 m — no damage — on 6 falls out of 25. The tolerance
+              // is a thousandth of a metre = 0.01 voxels, roughly 8x the observed drift so it clears it with
+              // margin, while still being 100x smaller than the metre this floor() buckets on: it can only
+              // rescue a drop already sitting on a boundary, and cannot promote one that is genuinely short
+              // (39 voxels stayed at 0 damage across 25 trials after the change).
+              const md = Math.floor(drop / 10 + 1e-3);      // whole metres, the figure the death line quotes
               const m = md - FALL_FREE;
               if (m > 0) vitHurt(md >= FALL_KILL ? 999 : Math.round(m + m * m / FALL_K), 'you fell ' + md + ' m', true);   // 999 rather than the max-health constant: vitHurt floors hp at 0, so any number past the bar is death, and this one cannot go stale if the bar changes. See FALL_K / FALL_KILL in input.js for the curve.
             }
@@ -200,7 +221,15 @@
       snowFallV = 11.0;                                // CONSTANT fall speed — no motion-based modulation (it read as far flakes speeding up while running)
       snowFallAcc += snowFallV * dt;
       if (snowOn && now > snowEndT) { snowOn = false; snowNextT = SNOW_AUTO_OFF ? Infinity : now + 300000; snowBtnSync(); }   // a snow EVENT lasts 60 s…
-      else if (!snowOn && now > snowNextT) { snowOn = true; snowEndT = now + 60000; snowBtnSync(); }   // …then waits 5 min for the next (first one is 2 min after refresh)
+      else if (!snowOn && now > snowNextT) {          // …then waits 5 min for the next (first one is 2 min after refresh)
+        // ── BUT NOT AFTER DARK (user 2026-08-19: "dont make it snow at night") ── the arrival is DEFERRED, not
+        // cancelled: pushing snowNextT forward by SNOW_NIGHT_RETRY re-asks the same question a few seconds later
+        // and the storm lands on the first tick after sunrise. Cancelling instead (snowNextT = now + 300000)
+        // would silently drop every storm whose 5-minute slot happened to fall in the dark, which at the 20-min
+        // cycle is half of them. sunUp()/SNOW_DAY_ONLY are in ui/settings.js beside snowNextT itself.
+        if (SNOW_DAY_ONLY && !sunUp()) { snowNextT = now + SNOW_NIGHT_RETRY; }
+        else { snowOn = true; snowEndT = now + 60000; snowBtnSync(); }
+      }
       // ── THE ICE MUST OUTLIVE ITS OWN BLANKET (user 2026-08-07: "snow forms square artifacts when it lands on
       // the water") ── landing is governed by the ice (freezeK >= 0.6) but REMOVAL was governed by a wall clock
       // (snowWMeltAt, +6 s after the storm), and the two never overlapped: freezeK reached 0 about 5 s after a

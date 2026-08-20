@@ -38,7 +38,17 @@
         if (desertM(P.x + Math.cos(a) * r, P.z + Math.sin(a) * r) >= 0.85) ok++; }
       return Math.max(0.12, ok / 24);
     };
-    const nDesert = 6 * bioFracDesertAt(LIFE_KEEP * 0.86);
+    // ── THE WORLD GOES TO SLEEP (user 2026-08-19: "when it turns night, make all of the land animals
+    // dissapear/bugs, etc. just have birds in the trees. no birds flying") ── one flag, read by every ground
+    // and flying population below, so night is a single decision rather than nine of them drifting apart.
+    // moonMode is the renderer's OWN night (main/tick-camera.js hands the world to the moon at sun elevation
+    // -0.06), which is already in scope here and already gates the firefly/butterfly swap, so "night" means
+    // the same thing to the creatures as it does to the sky.
+    // WHAT STAYS: the perched songbirds (nCard) — they are the "birds in the trees" — the FISH, which are not
+    // land animals, and the FIREFLIES, which only exist at night, are the night's own light source and have a
+    // switch of their own in the L panel. Everything that walks, crawls, swims on the surface or flies goes.
+    const NIGHT_QUIET = !!moonMode;
+    const nDesert = NIGHT_QUIET ? 0 : 6 * bioFracDesertAt(LIFE_KEEP * 0.86);   // the BUGS (ant, gecko, scorpion, spider, fly, bee, snakes, desert mouse) — gone after dark
     // ── 25% RARER (user 2026-08-16) ── 6 per species x 7 = 42 was the old population; 0.75 of that is 31.5,
     // which no integer per-species count can express (5 gives 35, i.e. only 17% fewer; 4 gives 28, 33% fewer).
     // So the count is distributed Bresenham-style instead: the running total is 4.5 per species and each
@@ -72,7 +82,7 @@
     // function rather than indexed at the call site so the desert count and the oak count are the same shape of
     // thing to every reader: nDesertOf(sp) + nOakOf(sp) is the species' whole population, and `active` in
     // tick-creatures is exactly that sum.
-    const nOakOf = (sp) => (DES_OAKONLY[(DESERTS[sp] || {}).name] | 0);
+    const nOakOf = (sp) => (NIGHT_QUIET ? 0 : (DES_OAKONLY[(DESERTS[sp] || {}).name] | 0));   // the OAK-only bugs (bee, grass snake) are counted here and NOT by nDesert, so they need the night gate of their own — zeroing nDesert alone left them out foraging in the dark
     const LIFE_OUT = LIFE_KEEP * 0.94;                 // outermost SPAWN radius — the gap to LIFE_KEEP is the hysteresis band
     const LIFE_IN = Math.min(LIFE_KEEP * 0.78, LIFE_OUT - 24);   // innermost SPAWN radius — out past the fog, never in clear view
     const MAM_KEEP = CARD_KEEP;                        // LAND MAMMALS reach EXACTLY as far as the perched songbirds (user): the birds' FIXED 680 — not max(LIFE_KEEP,…), which let a big view slider push mammals past the birds and dilute the 56-head pool over an oversized disc (measured: mammals at 1020 vox, in-view rings near-empty)
@@ -130,7 +140,7 @@
     };
     const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
     const nAct = moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 2.5));   // BUTTERFLIES doubled (user 2026-07-18): 1.25 -> 2.5, still bounded by the 16 flyer slots   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
-    const nWorm = WORM_NFRAMES ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // NOT scaled by bioFrac: a worm is admitted in the blossom as well as both forests, so its legal area is the whole world bar the sand — scaling it would thin the one population the cherry forest is supposed to have   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
+    const nWorm = (WORM_NFRAMES && !NIGHT_QUIET) ? Math.max(11, Math.min(22, Math.round(nActD * 1.4))) : 0;   // NOT scaled by bioFrac: a worm is admitted in the blossom as well as both forests, so its legal area is the whole world bar the sand — scaling it would thin the one population the cherry forest is supposed to have   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
     // ── THE FOUR LAND MAMMALS, SCALED TO THE REACH (2026-08-17) ── the ceiling was a flat 7 and the count
     // landed on 6 at every shipped view, over a spawn disc of MAM_OUT = 0.94 * 680 = 639. MAM_KEEP is CARD_KEEP
     // now, so that disc is 977 and 6 head would read as 43% of the density this band has always had — the
@@ -140,7 +150,7 @@
     // are still sized for the spacing they were measured against and need no retuning.
     // The ceiling is now MAM_PER — the band's own width, the only bound that cannot be exceeded without
     // renumbering — rather than a hand-picked 7 that a bigger reach would silently sit on.
-    const nMam = Math.max(2, Math.min(MAM_PER, Math.round(nActD * 0.405 * LIFE_DENS_K * bioFracAt((MAM_KEEP * 0.78 + MAM_OUT) * 0.5)))) & ~1;   // & ~1 → EVEN count (user). ONE expression, because all four species have shared a formula since they were added and four copies of it is four chances to scale three of them.   // …and ONE bioFrac, on that same shared expression, so all four species thin together at a border instead of three of them doing it (floor 3 -> 2 because `& ~1` turns an odd floor into 2 anyway, and 3 would have re-inflated the scaled count)
+    const nMam = NIGHT_QUIET ? 0 : Math.max(2, Math.min(MAM_PER, Math.round(nActD * 0.405 * LIFE_DENS_K * bioFracAt((MAM_KEEP * 0.78 + MAM_OUT) * 0.5)))) & ~1;   // & ~1 → EVEN count (user). ONE expression, because all four species have shared a formula since they were added and four copies of it is four chances to scale three of them.   // …and ONE bioFrac, on that same shared expression, so all four species thin together at a border instead of three of them doing it (floor 3 -> 2 because `& ~1` turns an odd floor into 2 anyway, and 3 would have re-inflated the scaled count)
     // ── THE FLAMINGO'S OWN COUNT ── not scaled by bioFracAt like the other four: they are refused IN the
     // blossom and thinned near it, and this one is the opposite — it lives ONLY there, so the legal-area scalar
     // would thin it exactly where it belongs. Sized off the same nMam expression so it reads at the four
@@ -156,14 +166,14 @@
     // Measuring the ring costs 24 mask pairs once, against thousands of wasted retries, and it also means the
     // population fades in as the player approaches rather than popping at a threshold.
     const chFrac = FLAMINGO_ITEM0 ? bioFracCherryAt((MAM_KEEP * 0.78 + MAM_OUT) * 0.5) : 0;
-    const nFlamingo = chFrac > 0 ? Math.max(1, Math.round(nMam * chFrac / 2)) * 2 : 0;   // ── AND THE COUNT IS EVEN (user 2026-08-18: "spawn flamingos as a couple") ── rounded in PAIRS rather than clamped to a minimum of 2: an odd want left exactly one bird over, and the leftover is the most visible one precisely because it is the only one standing alone
+    const nFlamingo = (chFrac > 0 && !NIGHT_QUIET) ? Math.max(1, Math.round(nMam * chFrac / 2)) * 2 : 0;   // ── AND THE COUNT IS EVEN (user 2026-08-18: "spawn flamingos as a couple") ── rounded in PAIRS rather than clamped to a minimum of 2: an odd want left exactly one bird over, and the leftover is the most visible one precisely because it is the only one standing alone
     const nBunny = BUNNY_ITEM0 ? nMam : 0;             // ground BUNNIES (BUNNY_0..BUNNY_END) — kind 2, hop through the forest
     const nArmadillo = ARMADILLO_ITEM0 ? nMam : 0;     // ground ARMADILLOS (ARM_0..ARM_END) — kind 2, WALK the forest floor at ~9 vox/s
     const nSkunk = SKUNK_WALK.length ? nMam : 0;       // ground SKUNKS (SKUNK_0..SKUNK_END) — kind 2, same cardinal walk as the armadillo
     const pineFrac = PORCUPINE_WALK.length ? bioFracPineAt((MAM_KEEP * 0.78 + MAM_OUT) * 0.5) : 0;
-    const nPorcupine = pineFrac > 0 ? Math.max(2, Math.round(nMam * pineFrac)) : 0;   // …zero when there is no pine in reach, so the band stops asking instead of burning its retries every frame
-    const nDfly = (DFLY_NFRAMES && waterSpots.length) ? Math.min(3, 1 + (waterSpots.length >> 2)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before. RATE HALVED 2026-07-20 (user): cap 6→3, per-spot growth >>1→>>2 — half as many at every water amount
-    const nDuck = DUCK_ITEM0 ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
+    const nPorcupine = (pineFrac > 0 && !NIGHT_QUIET) ? Math.max(2, Math.round(nMam * pineFrac)) : 0;   // …zero when there is no pine in reach, so the band stops asking instead of burning its retries every frame
+    const nDfly = (DFLY_NFRAMES && waterSpots.length && !NIGHT_QUIET) ? Math.min(3, 1 + (waterSpots.length >> 2)) : 0;   // DRAGONFLIES scale with how much water is in view and take the TOP of the flyer band, so with no water nearby the flock is 100% butterflies exactly as before. RATE HALVED 2026-07-20 (user): cap 6→3, per-spot growth >>1→>>2 — half as many at every water amount
+    const nDuck = (DUCK_ITEM0 && !NIGHT_QUIET) ? Math.min(4, lakeSpots.length + 1) : 0;   // MOTHER ducks (slots 16-19) — 1-2 families PER lake, at LEAST 1 in every lake (user): lakes+1 covers every detected lake and lets one get a 2nd family; capped by the 4 mom slots. lakeSpots is last frame's census.
     const nLily = 0;                                   // LIVE drifting lily pads DISABLED (user 2026-07-18) — only the STATIC stamped pads remain. Was `LILY_ITEM0 ? 12 : 0`.
     const nFish = (FISHES.length && waterSpots.length) ? Math.min(12, 3 + waterSpots.length * 3) : 0;   // HALVED AGAIN (user 2026-08-18): ceiling 24→12, base 6→3, per-spot 6→3 — another uniform half off the whole curve, same as the 2026-08-09 quarter. Nothing downstream needs a minimum: FISH_N 32 was never binding, and the species split is an index not a count.   // FISH scale with how much water is in view (lakes AND rivers). CUT 25% (user 2026-08-09): ceiling 32→24, base 8→6, per-spot 8→6 — a uniform quarter off the WHOLE curve, so the cut is the same at every water amount rather than only biting where the ceiling clamped. The per-pool density cap below (~1 fish per 3 census samples) is deliberately UNTOUCHED: it is the anti-cramming ceiling, not the population, and lowering it too would thin small ponds twice. Slot band FISH_0..FISH_END is 32 wide and the live count now stops short of it; species stays an even split (wk % FISHES.length). Was DOUBLED 2026-07-21: base 4→8, per-spot 4→8, ceiling 24→32
     // Count scales with the AREA the birds have to cover. The 60 cap was set when the spawn ring was ~331 vox; the
@@ -216,7 +226,7 @@
     // that is always overhead and always the same, so they were the cheapest thing to bound. Every bird still
     // FLIES — birdStep runs for all of them, so the flock and its hitboxes are unchanged — but only the nearest
     // BIRD_SLOTS are drawn, which hands six slots straight to the creatures the player was losing.
-    if (!ED.on && FLYERS.length > 0) {
+    if (!ED.on && FLYERS.length > 0 && !NIGHT_QUIET) {   // ── AND NOTHING FLIES AT NIGHT (user) ── the else below already deactivates every bird box, so this one clause both grounds the flock and stops it being drawn; the PERCHED songbirds are a separate population (nCard) and are untouched
       const tbF = now / 1000;
       const bOrd = [];
       for (let bi = 1; bi < BIRD_N; bi++) {

@@ -715,7 +715,7 @@
           pd: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), dy: Math.round((B.y || 0) - P.y), stungBy: B.beeStings | 0,
           om: +oakM(B.x, B.z).toFixed(2) }); }
       return { bees: o, hiveWired: !!beeHiveNear(P.x, P.z), sit: [BEE_SIT_S, BEE_SIT_S + BEE_SIT_J], giveUp: BEE_GIVE_S, perHive: BEE_HIVE_N, orbit: BEE_ORBIT_R,
-        angry: nAngry, rage: BEE_RAGE_S, leash: BEE_RAGE_LEASH, hear: BEE_RAGE_R, sting: BEE_STING, stingCd: BEE_STING_CD,
+        angry: nAngry, rage: BEE_RAGE_S, leash: BEE_RAGE_LEASH, hear: BEE_RAGE_R, hearBreak: BEE_BREAK_R, sting: BEE_STING, stingCd: BEE_STING_CD,   // `hear` is a SWAT's reach, `hearBreak` a hive's — 'only five came' now splits into 'the others were outside hearBreak' and 'they were inside it and did not answer'
         stingIn: +Math.max(0, beeStingT - tbB).toFixed(2),
         breaks: HIVE_BREAK.map((b) => ({ x: Math.round(b.x), y: Math.round(b.y), z: Math.round(b.z), age: +(tbB - b.t).toFixed(1),
           live: tbB - b.t <= BEE_RAGE_WIN, called: b.n, d: Math.round(Math.hypot(b.x - P.x, b.z - P.z)) })) }; },
@@ -764,11 +764,41 @@
     // mechanic; reading them here threw a ReferenceError that no static check catches, because it is
     // runtime-only and inside a function.
     vit() { return { hp: VIT.hp, hpMax: VIT_HP_MAX, red: vitRedLevel(), hurtT: +VIT.hurtT.toFixed(3),
+      food: VIT.food, gold: vitGoldLevel(), exh: +VIT.exh.toFixed(3), starveT: +VIT.starveT.toFixed(2),   // ── THE HUNGER BAR ── the four numbers a test needs: the points, the 0..4 BLIT paints gold from, the accumulator that spends them, and how far into a starvation tick we are
       sprintOK: vitSprintOK(), foods: Object.keys(vitFoods()).length,
       foodTable: Object.entries(vitFoods()).map(([id, f]) => ({ id: +id, name: ITEM_NAMES[id] || null, hp: f.hp, strip: !!f.strip })) }; },   // …the table itself, because "is this edible AND does it chew" is now one declaration (sim/vitals.js) and a test should be able to read it rather than infer it
-    vitSet(hp) { if (hp !== undefined) VIT.hp = Math.max(0, Math.min(VIT_HP_MAX, Math.round(hp))); return __vb.vit(); },   // one argument now — the old (hp, food, sat) triple has nothing left to set
+    vitSet(hp, food) { if (hp !== undefined) VIT.hp = Math.max(0, Math.min(VIT_HP_MAX, Math.round(hp)));
+      if (food !== undefined) { VIT.food = Math.max(0, Math.min(VIT_FOOD_MAX, Math.round(food))); VIT.exh = 0; VIT.starveT = 0; }   // the second argument is BACK (user 2026-08-19, hunger re-introduced) — and it clears the accumulator with it, or a test that sets a full bar watches banked exhaustion spend it again on the next tick
+      return __vb.vit(); },
     hearts(v) { if (v !== undefined) heartShow = v ? 1 : 0; return { shown: !!heartShow, item: HEART_IT, n: HEART_N, hp: VIT.hp, hearts: +(VIT.hp / (VIT_HP_MAX / HEART_N)).toFixed(3), pose: { ...HEART_POSE } }; },   // the floating health voxels: read the state, or pass false to hide them (the A/B lever for the composite block's cost)
     vitHurt(n, why) { vitHurt(n, why || 'a test'); return __vb.vit(); },
+    rec(on) { if (on !== undefined && !!on !== !!VE.recording) veToggleRec();   // drive and inspect the SCREEN RECORDER — the capture rate is derived from the canvas size at start, so a test has no other way to see what it chose
+      return { recording: !!VE.recording, canvas: [canvas.width, canvas.height], mpix: +((canvas.width * canvas.height) / 1e6).toFixed(2),
+        refreshHz: VE.refreshHz || 0, capHz: +(VE.capHz || 0).toFixed(1), capEvery: VE.capEvery | 0, paintN: VE.paintN | 0,
+        pushed: Math.floor((VE.paintN | 0) / Math.max(1, VE.capEvery | 0)), manualPush: !!VE.recTrack, clips: VE.clips.length }; },
+    weatherAt(x, z) { const m = oakWeather(x, z);   // the WEATHER border as the snow actually sees it: the raw mask, and the wSharp window the blanket and the flakes are both dithered through. A fade that reads as a line on screen is a `sharp` that goes 0 -> 1 over too few voxels, and this is the only way to measure that without eyeballing a screenshot
+      return { mask: +m.toFixed(4), sharp: +wSharp(m).toFixed(4), cherry: +cherryM(x, z).toFixed(4) }; },
+    lifeGait(sl, spookMs) { const B = wbf[sl | 0]; if (!B || !B.init) return null;
+      if (spookMs) B.spookT = performance.now() + spookMs;   // …and it can ARM the spook, which is what a landed hit does (sim/life/reactions.js) — the only way a test can see the flee gait without an arrow in the air   // the WALK state of a land mammal: is it fleeing, how fast are its legs, how fast is it travelling. The three the flee rule sets together
+      return { slot: sl | 0, flee: !!B.aflee, spooked: performance.now() < (B.spookT || 0),
+        fps: +(B.afps || 0).toFixed(1), speed: +(B.aspd || 0).toFixed(1), hits: B.hits | 0 }; },
+    flamingos() { const o = []; for (let j = FLAM_0; j < FLAM_END; j++) if (wbf[j] && wbf[j].init) o.push(j); return o; },   // live flamingo slots
+    grabTo(it) { const h = slots[selSlot] && slots[selSlot].it;   // WHICH HAND would a pickup of `it` fly to, given what is held right now — the predicate startGrab uses, without needing a rock on the ground to test it
+      const left = (h === 2 && (it === 2 || it === 3)) || (h === 3 && it === 2);
+      return { held: h || 0, picking: it | 0, hand: left ? 'left' : 'right' }; },
+    grabNow() { return grabAnim ? { it: grabAnim.it, left: !!grabAnim.left, age: +(performance.now() - grabAnim.t0).toFixed(0) } : null; },   // the flight in progress, if any
+    craft(act) {                                     // drive and inspect the STONE AGE bench: no arg reports, 'open'/'next'/'prev'/'ok'/'close' act
+      if (act === 'open') craftOpen(); else if (act === 'next') craftCycle(1); else if (act === 'prev') craftCycle(-1);
+      else if (act === 'ok') craftConfirm(); else if (act === 'close') craftClose();
+      const p = craftPair();
+      return { open: !!CRAFT.open, lit: !!CRAFT.lit, k: +craftK(performance.now()).toFixed(3), t0age: CRAFT.t0 ? +(performance.now() - CRAFT.t0).toFixed(0) : -1, fly: CRAFT.fly ? +(performance.now() - CRAFT.fly).toFixed(0) : 0, idx: CRAFT.idx | 0, menu: craftMenu().map((i) => ({ id: i, name: ITEM_NAMES[i] || null })),
+        showing: craftItem(), showingName: ITEM_NAMES[craftItem()] || null,
+        cost: craftCostFor(craftItem()), have: craftHave(), afford: craftAfford(craftItem()),
+        menuCost: craftMenu().map((i) => ({ name: ITEM_NAMES[i] || i, ...craftCostFor(i) })),
+        pair: p ? { rock: p.rock, stick: p.stick } : null, hand: __vb.hand(), stoneAge: !!vbAch.stoneAge,
+        pick3Id: UF[UF_PICK3 + 4 + 3] };
+    },
+    vitDrain(n) { for (let i = 0; i < (n || 1); i++) vitExhaust(EXH_STEP); return __vb.vit(); },   // spend n HUNGER points through the real drain — the only way a test can see the gold burst, since walking is free and sprinting a whole point takes 160 m
     vitGive(it) { const k = addItem(it || MEAT_IT); for (let i = 0; i < slots.length; i++) if (slots[i] && slots[i].it === (it || MEAT_IT)) { selSlot = i; break; } return { added: k, hand: __vb.hand() }; },                      // one bite, exactly what a right-click does
     knifeId() { return KNIFE_IT; }, rockId() { return ROCK_IT; }, pickId() { return PICK_IT; }, shovelId() { return SHOVEL_IT; }, bowId() { return BOW_IT; }, meatId() { return MEAT_IT; }, hoeId() { return HOE_IT; }, spearId() { return SPEAR_IT; },
     escMenu(v) { locked = !v; lockEl.classList.toggle('hidden', locked); cursSync(); return { locked }; },   // drive the esc menu headlessly: under ?cdp there is no pointer lock, so pointerlockchange never fires and this path is otherwise untestable
@@ -1492,7 +1522,7 @@
         const t = (now - s.born) / 1000; if (t > s.life) return null;
         return { y: s.y + s.vy * t - (s.smoke ? 1.5 : 85) * t * t, aboveWL: s.y + s.vy * t - 85 * t * t - WL, foam: !!s.foam }; }); },
     killSlot(s) { swingStart = performance.now(); hitCreature(s | 0); return { init: !!wbf[s].init, hits: wbf[s].hits | 0, dying: !!wbf[s].dying }; },   // each tap counts as its OWN swing: the one-hit-per-swing guard keys on swingStart, which this tap otherwise never advances
-    hitsOn(s) { const B = wbf[s | 0]; return B ? { hits: B.hits | 0, needs: HITS_TO_KILL, alive: !!B.init, dying: !!B.dying } : null; },   // how many hits this creature has taken, for checking the rule in play   // run the hit on a KNOWN creature, no aiming involved
+    hitsOn(s) { const B = wbf[s | 0]; return B ? { hits: B.hits | 0, needs: hitsNeeded(), alive: !!B.init, dying: !!B.dying } : null; },   // `needs` is the LIVE answer for what is in the hand right now (sim/life/reactions.js), not the bare constant it used to print — with an arrow's two and the knife's two beside the default three, a fixed number here is simply wrong three ways out of four   // how many hits this creature has taken, for checking the rule in play   // run the hit on a KNOWN creature, no aiming involved
     hurtTest(slot, hold) { const B = wbf[slot | 0]; if (!B || !B.init) return null; HURT.slot = slot | 0; HURT.hold = !!hold; hurtBox(B); HURT.t0 = performance.now(); return __vb.hurtInfo(); },   // arm the wounded flash WITHOUT the hit, so a capture can be timed against it
     aimed() { return aimedCreature(); },              // which life slot the crosshair is actually on (-1 = none) — a swing test has to confirm it is ON target before it can read anything into the result
     kill() { tryKillCreature(); return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : 'spark') : null); },   /*TEMP-DEBUG: force a kill-attempt from the current camera*/

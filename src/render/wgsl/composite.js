@@ -362,7 +362,7 @@
             let rpos = pw2 + refl * rh.t;
             let rvc = vec3<i32>(floor(rpos - rh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
             let ralb = pal[rh.vox].rgb * (0.88 + 0.24 * ivhash(rvc));
-            let rlit = sunTintR() * (max(dot(rh.n, u.sunDir), 0.0) * 0.9 * irr.r) + mix(HORIZON, ZENITH, 0.5 + 0.5 * rh.n.y) * 0.95 * dayScale() + vec3<f32>(0.012, 0.013, 0.016);
+            let rlit = sunTintR() * (max(dot(rh.n, u.sunDir), 0.0) * 0.9 * irr.r) + mix(HORIZON, ZENITH, 0.5 + 0.5 * rh.n.y) * 0.95 * dayScale() + ambFloor();
             reflC = mix(ralb * rlit, skyBaseR(refl), 1.0 - exp(-rh.t * 0.014));   // the mirror fades into sky with distance, like the world fades into haze
           }
         }
@@ -466,7 +466,7 @@
         let direct = sunTintR() * (irr.r * max(dot(n, u.sunDir), 0.0));
         let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
         let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
-        col = alb * (direct + (skyIrr + bounce) * irr.g + vec3<f32>(0.012, 0.013, 0.016));   // faint cave ambient
+        col = alb * (direct + (skyIrr + bounce) * irr.g + ambFloor());   // faint cave ambient
         // ── SAND GLISTEN (the same lgt.x bit 22 the water and the ice glint wear) ── user 2026-08-15: "make the
         // sand glisten from the sun like the water". This is the WATER's column, not a new effect: the same one-glint-
         // cell-per-10-cm-voxel grid, the same phase and pick hashes, the same 0.30–0.85 duty window, the same pow(., 26)
@@ -668,7 +668,7 @@
                     let caC = caust(floor(vec2<f32>(wpC.x + u.winO.x, wpC.z + u.winO.y)) + vec2<f32>(0.5));
                     alb3 = alb2 * (1.0 + 1.6 * caC * smoothstep(-0.02, 0.12, u.sunDir.y) * sunC * (1.0 - waterIceK));   // …and the webs stop as the lid closes: caustics need a moving surface to focus the sun through
                   }
-                  col = alb3 * (direct + (skyIrr + bounceC) * 0.85 + vec3<f32>(0.012, 0.013, 0.016)) * grain;   // 0.85 ≈ the terrain's typical open-air AO term — same formula as the static world (irr coupling stays banned: it read as translucent)
+                  col = alb3 * (direct + (skyIrr + bounceC) * 0.85 + ambFloor()) * grain;   // 0.85 ≈ the terrain's typical open-air AO term — same formula as the static world (irr coupling stays banned: it read as translucent)
                   if (${WORM_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${WORM_ITEM0 || 9999} && dit < ${(WORM_ITEM0 || 9999) + (WORM_NFRAMES || 1)}) {   // WORM fake-AO — the smooth off-grid worm's stand-in for the grid-stamped cardinal's REAL contact AO (user chose 'fake AO, stay smooth'): darken the underside + lower body so it reads GROUNDED, no grid-stamp shimmer
                     let upN = clamp(0.5 + 0.5 * nw.y, 0.0, 1.0);              // 1 = top-facing, 0 = down-facing (the shaded underside against the ground)
                     let hN = f32(vcD.z) / max(1.0, f32(eH - 1));             // 0 = ground side of the body, 1 = its top
@@ -692,7 +692,7 @@
                     // with dYv.w — the flash is a steady colour for the half second it lasts, and so is this.
                     let bDir = sunTintR() * max(dot(nw, u.sunDir), 0.0) * 0.55;
                     let bSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale() * 0.75;
-                    col = HURT_RED * (bDir + bSky + vec3<f32>(0.012, 0.013, 0.016));
+                    col = HURT_RED * (bDir + bSky + ambFloor());
                   } else if (dit == ${FOAM_IT || 9995}) {            // ── SPLASH ── a droplet of the SAME foam the shoreline draws (FOAM_C), so a burst
                     // off the surface reads as water torn off the water rather than a white speck. Lit as a
                     // diffuse surface, NOT emissive like a spark: foam does not glow. It thins out as it dies
@@ -700,7 +700,7 @@
                     let sDir = sunTintR() * max(dot(nw, u.sunDir), 0.0) * 0.55;
                     let sSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale() * 0.85;
                     col = mix(col, FOAM_C * (sDir + sSky + vec3<f32>(0.02, 0.022, 0.025)), 0.35 + 0.65 * dYv.w);
-                  } else if (dit == ${PETAL_IT || 9994} || dit == ${PETALW_IT || 9993}) {   // ── FALLING PETAL ── a petal is not a spark: it does not glow, it is a scrap of the
+                  } else if (dit == ${PETAL_IT || 9994} || dit == ${PETALW_IT || 9993} || dit == ${PETALG_IT || 9992} || dit == ${PETALGL_IT || 9991} || dit == ${PETALN_IT || 9990}) {   // ── FALLING LEAF ── the two GREENS join the two blossoms here (user 2026-08-19): the branch is about how a scrap of canopy is LIT, which is the same question whatever colour it is, and a green leaf that missed this test would fall out of the else as an emissive spark and glow in the dark. ── a petal is not a spark: it does not glow, it is a scrap of the
                     // canopy catching the light. So it is lit as a DIFFUSE surface off its own item colour,
                     // the way the splash droplet is lit off the foam's, and it does NOT fade with dYv.w —
                     // it lands and is gone at full colour rather than dissolving in the air.
@@ -728,7 +728,7 @@
                   let dSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();
                   let dBounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
                   let dGrain = 0.95 + 0.10 * ih3(vcD.x, vcD.y, vcD.z);
-                  col = cell.rgb * (dDirect + (dSky + dBounce) * 0.85 + vec3<f32>(0.012, 0.013, 0.016)) * dGrain;
+                  col = cell.rgb * (dDirect + (dSky + dBounce) * 0.85 + ambFloor()) * dGrain;
                 }
                 // ── ONLY WHAT IS BEHIND THE SURFACE ── keyed on waterT, i.e. on this pixel's primary hit being
                 // the water surface. That IS a discontinuity: where the pixel behind a fish shows the bed or the
@@ -784,9 +784,10 @@
         var heldT = 1e18;
         let ndc2 = (px / u.res) * 2.0 - 1.0;
         let dc = normalize(vec3<f32>(ndc2.x * u.tanH * u.aspect, -ndc2.y * u.tanH, 1.0));
-        for (var hand = 0; hand < 2; hand = hand + 1) {
+        for (var hand = 0; hand < 3; hand = hand + 1) {   // 0 = right, 1 = left, 2 = the CRAFT PREVIEW hovering between them
           var pA = u.pickA; var pX = u.pickX; var pY = u.pickY; var pZ = u.pickZ;
           if (hand == 1) { pA = u.pick2A; pX = u.pick2X; pY = u.pick2Y; pZ = u.pick2Z; }
+          if (hand == 2) { pA = u.pick3A; pX = u.pick3X; pY = u.pick3Y; pZ = u.pick3Z; }
           if (pX.w < 0.5) { continue; }
           let it = clamp(i32(pX.w + 0.5) - 1, 0, ITEMN - 1);
           let PICKW = ITEMD[it].x; let PICKD = ITEMD[it].y; let PICKH = ITEMD[it].z; let IOFF = ITEMD[it].w;

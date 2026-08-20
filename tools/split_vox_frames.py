@@ -37,7 +37,7 @@ def read_dict(b, off):
     return d, off
 
 
-def parse_scene(b):
+def parse_scene(b, want=None):
     """The ANIMATION order and the per-frame translations, out of the scene graph.
 
     This is the half of a .vox that the first version of this tool threw away, and throwing it away cost a
@@ -53,7 +53,17 @@ def parse_scene(b):
     Returns (order, trans) or (None, None) when the file has no animated shape, in which case the caller keeps
     the old file-order behaviour and its --order/--start escape hatches.
     """
+    # ── ONE BRANCH OUT OF SEVERAL (2026-08-19) ── a .vox can hold more than one animated shape. The skunk's
+    # base.vox carries two: an nTRN named "skunk" over a 10-frame nSHP, and one named "wip" over a 40-entry
+    # nSHP that re-lists 18 work-in-progress models. With no filter this took whichever multi-frame nSHP it
+    # saw LAST and silently split the wrong branch. `want` names the nTRN to descend into; everything outside
+    # it is skipped, so "ignore the wip branch" is expressed rather than hoped for.
+    # The name lives on the nTRN, and the frames on an nSHP one or two levels below it (wip nests an extra
+    # nGRP/nTRN), so the filter is a DEPTH GATE: once the named node is entered, capture the first multi-frame
+    # nSHP found under it and stop looking.
     order, trans = None, None
+    inside = [want is None]                                # no name asked for -> the whole file is fair game
+    done = [False]
 
     def walk(off, end):
         nonlocal order, trans
@@ -71,18 +81,23 @@ def parse_scene(b):
                 for _ in range(nm):
                     ids.append(struct.unpack_from('<i', b, o)[0]); o += 4
                     _, o = read_dict(b, o)
-                if nm > 1:
+                if nm > 1 and inside[0] and not done[0]:
                     order = ids
+                    done[0] = True                         # the FIRST animated shape under the named branch wins
             elif cid == 'nTRN':
                 o = body + 4
-                _, o = read_dict(b, o)
+                nd, o = read_dict(b, o)
+                if want is not None and nd.get('_name', '') == want:
+                    inside[0] = True                       # …and everything under here is the branch we want
+                elif want is not None and nd.get('_name', '') and nd.get('_name', '') != want and not done[0]:
+                    inside[0] = False                      # a DIFFERENT named branch: shut the gate again
                 o += 12                                    # child id, reserved, layer id
                 nf = struct.unpack_from('<i', b, o)[0]; o += 4
                 fr = []
                 for _ in range(nf):
                     fd, o = read_dict(b, o)
                     fr.append(tuple(int(v) for v in fd.get('_t', '0 0 0').split()))
-                if nf > 1:
+                if nf > 1 and inside[0] and not done[0]:
                     trans = fr
             off += 12 + n1 + csz
 
@@ -163,8 +178,20 @@ def main():
     # ── THE SCENE GRAPH WINS, WHEN THERE IS ONE ── frame order and per-frame placement both come out of it, so
     # a correctly-authored animation needs no flags at all. --order/--start remain for files that have no
     # animated shape (a plain multi-model .vox), and an explicit --order still overrides this.
-    scn_order, scn_trans = parse_scene(raw)
-    if scn_order and len(scn_order) == len(models) and not any(a.startswith('--order=') for a in sys.argv[2:]):
+    # ── --node=NAME picks ONE branch of a multi-branch file ── see the note in parse_scene. Without it the
+    # length check below is the safety rail: a scene order that does not account for every model in the file is
+    # refused, because that is what a half-read scene graph looks like. WITH a name, a subset is the POINT, so
+    # the rail becomes "every index the branch names must exist" instead.
+    want = None
+    for a9 in sys.argv[2:]:
+        if a9.startswith('--node='):
+            want = a9.split('=', 1)[1]
+    scn_order, scn_trans = parse_scene(raw, want)
+    scn_ok = bool(scn_order) and (all(0 <= i < len(models) for i in scn_order) if want
+                                  else len(scn_order) == len(models))
+    if want and scn_order:
+        print('  branch %r -> %d frames, models %s' % (want, len(scn_order), scn_order))
+    if scn_ok and not any(a.startswith('--order=') for a in sys.argv[2:]):
         models = [models[i] for i in scn_order]
         sizes = [sizes[i] for i in scn_order]
         if scn_trans and len(scn_trans) == len(models):

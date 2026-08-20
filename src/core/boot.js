@@ -59,28 +59,38 @@
     if (verCells.some((c2) => c2.firstElementChild.dataset.busy)) return;
     verRoll(verCells[0], vs[0]); verRoll(verCells[1], vs[2]);
   };
+  // ── THE BAR TRACKS THE BUILD NOW (user 2026-08-19: "it also seems to get stuck at 90%") ── it used to be a
+  // pure CSS trickle: a 3 s ease to 90%, then a 75 s crawl from 0.90 to 0.995. Nine and a half hundredths over
+  // seventy-five seconds is about a tenth of a percent a second, and decelerating — which is not "creeping",
+  // it is INDISTINGUISHABLE FROM STOPPED. The bar sat on 90% for the rest of the load and the user read it,
+  // correctly, as stuck.
+  // The infuriating part is that real progress was already being computed and thrown away: world/build.js
+  // counts finished slabs and calls setLoad(22 + done/total * 64) on every one of them, and setLoad was a
+  // NO-OP kept only so the phase calls stayed harmless. So the fix is not a better fake — it is to let the
+  // number that already exists drive the bar. MEASURED on this machine: assets land at 0.9 s, the 512-chunk
+  // world build runs 0.9 s -> 8.5 s, occupancy and upload finish about 1.4 s after that. The three ranges
+  // below are those three phases, so the bar now moves for the whole of the longest one instead of parking.
+  let loadSeen = 0, loadTailArmed = false;
+  const loadTo = (t, secs) => {                          // monotonic: a later phase can never pull the bar backwards
+    if (loadDone || loadFinishing || t <= loadSeen) return;
+    loadSeen = t;
+    loadFillEl.style.transition = 'transform ' + secs + 's cubic-bezier(0.25, 0.8, 0.35, 1)';
+    loadFillEl.style.transform = 'scaleX(' + t.toFixed(4) + ')';
+  };
   { loadFillEl.style.transform = 'scaleX(0)'; void loadFillEl.offsetWidth;   // commit 0 first so the transition actually runs from empty
-    // 9s -> 3s (2026-08-09): the ease was tuned when boot took ~10 s. Boot is now ~2 s, so the bar was only
-    // reaching 58-68% before the world landed and finishLoad had to glide the last 33-40 points — the same
-    // lurch the 0.85 s glide was added to remove, just at the other end. Measured bar position at finishLoad
-    // across two pinned worlds: 9s -> 60/67%, 3.8s -> 78/83%, 3s -> 81/86%, 2.2s -> 86/90%. 3 s halves the
-    // jump on a fast machine while still giving a slow one three seconds of CLIMBING bar before the crawl
-    // below takes over — going shorter buys a little more on fast boxes and parks slow ones in the crawl.
-    loadFillEl.style.transition = 'transform 3s cubic-bezier(0.05, 0.7, 0.2, 1)';   // front-loaded ease-out: quick, responsive start that decelerates and lingers
-    loadFillEl.style.transform = 'scaleX(0.9)';
-    // ── AND THEN IT KEEPS CREEPING ── the ease above ENDS at 90% and used to sit there until finishLoad, so any
-    // world that took longer than nine seconds showed a bar parked at 90% for the rest of the wait (user
-    // 2026-08-07: "hits 90% where it freezes there for a few seconds"). Chain a long slow crawl that approaches
-    // full without ever arriving, so the meter is always moving and 0→100 reads as one continuous sweep.
-    // finishLoad overrides it the moment the world is really ready, and loadFinishing stops ITS transitionend
-    // from starting the crawl again and pulling the bar back off 100%.
-    setTimeout(() => {                                 // a TIMER, not transitionend: the element's transitionend
-      if (loadDone || loadFinishing) return;           // proved unreliable to hook here, and this cannot be missed
-      loadFillEl.style.transition = 'transform 75s cubic-bezier(0.12, 0.62, 0.3, 1)';
-      loadFillEl.style.transform = 'scaleX(0.995)';
-    }, 3050);
+    // PHASE 1, the assets: no callback to hang off, so this stays an ease — but only to 0.20, where the build
+    // takes over, rather than to 0.90, where it had nowhere left to go.
+    loadFillEl.style.transition = 'transform 1.2s cubic-bezier(0.05, 0.7, 0.2, 1)';
+    loadFillEl.style.transform = 'scaleX(0.20)'; loadSeen = 0.20;
     requestAnimationFrame(loadNumStep); }
-  const setLoad = () => {};                              // real progress no longer drives the BAR (the trickle owns it); kept as a no-op so the phase calls below stay harmless
+  // PHASE 2, the world: driven by real slab completion out of world/build.js.
+  // PHASE 3, occupancy + upload: setLoad's own last call arms a slow run to 0.97, because those two stages
+  // report once and then say nothing for over a second. It is the only guessed segment left, and it is short.
+  const setLoad = (p) => {
+    const t = Math.max(0, Math.min(0.94, (+p || 0) / 100));
+    loadTo(t, 0.45);
+    if (t >= 0.85 && !loadTailArmed) { loadTailArmed = true; setTimeout(() => loadTo(0.97, 6), 60); }
+  };
   const finishLoad = () => { loadFinishing = true; loadFillEl.style.transition = 'transform 0.85s cubic-bezier(0.25, 0.9, 0.3, 1)'; loadFillEl.style.transform = 'scaleX(1)'; setTimeout(() => { loadDone = true; loadPctEl.textContent = '100%'; verSet('1.0'); loadGlossEl.style.width = '100%'; }, 850); };   // verSet, NOT textContent: assigning text here destroyed the drum markup (the .vd cells) and left plain text behind.   // world ready → GLIDE the last stretch to full over 0.85 s so it never snaps (user: "jumps from 80% to 100%"); the % follows the compositor the whole way, then pins to a true 100% once the glide has actually arrived
   const palTrace = [];                                 // ── WHERE THE 256 WENT ── palette.length sampled at every load stage, so the ceiling can be attributed to a LOADER instead of guessed at. __vb.palTrace() reads it.
   const stage = async (msg) => { try { palTrace.push([msg, palette.length]); } catch (e) {} loadMsgEl.textContent = msg; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); };

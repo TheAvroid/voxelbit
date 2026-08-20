@@ -359,11 +359,74 @@
   const HIVE_DONE = new Set(), HIVE_DONE_CAP = 512;
   // ── THE SWARM'S REACH, ITS TEMPER AND ITS PATIENCE ──
   const BEE_RAGE_R = BEE_HIVE_R;   // how far a break is heard. The SAME radius a bee notices a hive from, deliberately: the bees that can hear one break are exactly the bees that would have been living at it, so this is one number rather than two that can drift apart.
+  // ── …AND A HIVE COMING APART IS HEARD TWICE AS FAR (user 2026-08-19: "if the player breaks the beehive,
+  // have all the bees nearby attack him") ── the swat radius is BEE_RAGE_R above, and it is right for a swat:
+  // one bee is hit, and the bees that could have seen it are the ones standing at the same flower patch. A hive
+  // is a different event and the user's word for who answers is ALL, so the reach is the second number and the
+  // eligibility rule is the first — both changed on the same day, and neither is a re-tune of the other.
+  // 300 is exactly 2 x BEE_RAGE_R, and three independent readings land on it, which is why it is not a taste:
+  //   * it covers the FORAGING population as it actually sits. The three non-swarm bees spawn on their own ring
+  //     (0.10-0.26 x LIFE_KEEP = 104-270 at the shipped view) and drift FLY_LEASH inside it — MEASURED at a hive
+  //     the player was standing on, the foragers sat 127, 190, 247, 323 and 347 voxels out across four samples.
+  //     At 150 a break reached at most one of them and usually none; at 300 it reaches the ring.
+  //   * it is under HALF the spacing between hives (~600), so a break at one hive can never call the swarm that
+  //     lives at the next one. That is the bound that keeps this 'the bees nearby' and not 'every bee alive'.
+  //   * BEE_RAGE_LEASH is measured from the WRECK to the PLAYER, not to the bee, so recruiting from 300 cannot
+  //     be self-cancelling: a bee that starts 300 out is not over its own leash, it simply has 5.4 s of flying
+  //     to do at its own 56 vox/s, inside the BEE_RAGE_S 18 it is angry for.
+  const BEE_BREAK_R = BEE_RAGE_R * 2;
   const BEE_RAGE_WIN = 12;         // …and how long the wreck keeps calling. SHORTER than BEE_RAGE_S below, which is what stops a bee whose rage has just ended from re-entering off the very same record, forever.
   const BEE_RAGE_S = 18;           // seconds one bee stays angry. Long enough to be a chase across a clearing, and bounded for the reason BEE_HIVE_S is bounded: nothing may capture a bee for the rest of the session.
   const BEE_RAGE_LEASH = 220;      // ── THE GIVE-UP DISTANCE ── measured from the HIVE and not from the bee, because a swarm defends a PLACE. 22 m of running ends it, and the escape is a real choice: WALK is 46 vox/s against the bee's own 56, so walking away cannot work and SPRINTING (46 x 1.85 = 85) always can.
   const BEE_RAGE_GAP = BEE_RAGE_WIN;   // …and a bee that has just calmed down may not be recruited again until every record that could have called it is stale
-  const BEE_RAGE_Y = 12;           // how high up the player it flies. The player box is 20 voxels tall from the feet at P.y, so this is chest height: inside the body for the sting test, and low enough to read as a bee in your face rather than one circling overhead.
+  // ── …AND BEE_RAGE_Y WAS NOT THE BUG, WHICH HAD TO BE CHECKED FIRST ── the sting test is a horizontal
+  // reach plus a BOX over the whole body, `B.y > P.y - 3 && B.y < P.y + HEIGHT + 3`, i.e. P.y-3 .. P.y+23.
+  // Twelve sat squarely inside it with 11 voxels of margin either side, and the measurement agreed: over a
+  // 17 s rage with 8 bees angry, `dy` read exactly 12 on every bee on every sample. The vertical servo was
+  // already doing its job perfectly and every single miss was horizontal.
+  // ── IT IS 16 ANYWAY, AND ONLY BECAUSE THE CLOSER CHANGED WHAT THE NUMBER MEANS ── 12 was authored as
+  // "chest height, so it reads as a bee in your face rather than one circling overhead", and at the 20-90
+  // voxels the bee actually used to sit at, 12 above the feet IS roughly the eyeline. Now that the closer
+  // parks it on BEE_ATK_F × the sting reach — four voxels out — the same 12 is 6.5 voxels BELOW EYE (which
+  // is 18.5), and the screenshot proves it: the camera had to pitch 77° down to see the swarm at all. A bee
+  // mobbing you belongs in the forward view, not under your feet. 16 puts it 2.5 under the eyeline, ~32°
+  // down at the ring — the lower half of the screen, at swatting distance. It is FREE: 16 ± BEE_ATK_YS is
+  // 13.4-18.6 against a box that runs to +23, so the sting geometry keeps 4.4 voxels of headroom and the
+  // spread is still contained by construction. Nothing about the sting test moved.
+  const BEE_RAGE_Y = 16;           // how high up the player an enraged bee flies — see the two paragraphs above for why this is 16 and not the 12 it was authored at, and why the change cannot cost a sting.
+  // ── THE CLOSE (user 2026-08-19: "when the bees are supposed to attack, they dont target the player, they
+  // cause damage but only if the player just happens to be in the way") ── the TRIGGER was never the bug.
+  // MEASURED on the same 17 s rage: pd ran 9 → 106 → 12 → 95 → 9 on one bee and 16 → 191 on another, five of
+  // the eight never came inside the 6.5-voxel sting reach at all, and the swarm landed 4 stings in 17 s —
+  // every one of them while CROSSING, which is the user's "only if the player just happens to be in the
+  // way", stated as a number. That is a SAIL-PAST, and it has three causes, all in the pursuit:
+  //   1. THE GOAL IS ONE SCORE TERM AMONG SIX, AND IT LOSES. sim/nav.js navSteerAir weighs the player
+  //      bearing at NAV_W_HOME 0.95 against KEEP 0.55 + WANDER 0.70 = 1.25 that both favour whatever heading
+  //      the bee already has. Do the arithmetic for a bee that has just overshot, with the player behind it:
+  //      carrying straight on scores +0.55 +0.70 −0.95 = +0.30, turning round scores −0.55 −0.70 +0.95
+  //      −0.30 = −0.60. The fan is STRUCTURALLY unable to turn a bee around — it re-acquires only when the
+  //      reach and openness terms happen to disagree, which IS the 40-voxel, ~10 s orbit that was measured.
+  //   2. NO ARRIVAL. A flyer's speed is a constant 56 vox/s and its yaw is clamped at 6.5 rad/s, so its
+  //      minimum turn radius is 56/6.5 = 8.6 voxels before the eased integrator (really ~11). The sting
+  //      reach is 5.0 + MAMFIT.bee.hd = 6.5. A bee at cruise cannot fly a circle small enough to STAY inside
+  //      its own sting radius however perfect its bearing is; it has to slow down to close.
+  //   3. THE FAN IS COARSE AND SLOW. Sixteen compass headings is 22.5° of bearing quantisation, decided at
+  //      NAV_HZ = 12 Hz, which is 4.6 voxels of travel between decisions. Against a 6.5-voxel target that is
+  //      a miss by construction.
+  // So the rage gets its own CLOSER (main/tick-creatures.js, in the flyer's arbiter branch) and keeps the
+  // fan as its ROUTER. Nothing about it writes B.th or moves the bee: it writes the same B.omT the fan
+  // writes, through the same eased integrator and the same ±6.5 clamp, and a speed the same navBrakeAir
+  // caps — so navReachAir and navFitsAir still have the last word and the fish's planner/mover split stays
+  // unexpressible. It only takes the heading when the direct line is CLEAR to the goal; otherwise the fan
+  // routes and "a bee that cannot get to you simply does not arrive" is unchanged.
+  const BEE_ATK_F = 0.62;          // the ATTACK RING, as a fraction of the sting reach — derived from it rather than authored beside it, so the two can never drift apart. At MAMFIT.bee.hd 1.5 that is 6.5 × 0.62 = 4.0 voxels: comfortably inside the reach with room for the servo's own overshoot, and outside the player's own HW 2.6, so the bee is in your face rather than in your eye.
+  const BEE_ATK_W = 1.15;          // rad/s the ring turns. Each bee chases ITS OWN point on that ring, so this is the swarm's apparent circling rate: 1.15 × 4.0 = 4.6 vox/s, well under the closing floor below, so the point is always catchable and the bee is never left chasing a target that outruns it.
+  const BEE_ATK_YS = 2.6;          // …and the vertical spread about BEE_RAGE_Y, per bee, off the same B.beePh the hive orbit already spreads itself with. P.y + 12 ± 2.6 is 9.4-14.6, inside the sting box's own −3..+23 by construction, so the spread can never cost a sting. Its whole job is that eight bees converging do not end up in one plane.
+  const BEE_CLOSE_K = 2.2;         // ── THE ARRIVAL ── vox/s of approach speed per voxel still to go. 25 out is 55 (full chase), 10 out is 22, at the ring it is the floor below. The turn radius scales with it: 10/6.5 = 1.5 voxels at the ring, so the bee can hold station ON you instead of flying a 17-voxel circle around you.
+  const BEE_CLOSE_MIN = 10;        // …and the floor, so an arrived bee still has way on and still reads as a bee rather than a hovering decal. It is a FLOOR and never a ceiling: the top of the ramp is the flyer's own 56 and nothing here raises it, which is exactly what keeps SPRINTING (85 vox/s) an escape and BEE_RAGE_LEASH reachable.
+  const BEE_ATK_TURN = 7.0;        // rage yaw gain (the fan's own is 4.2) — the closer has to win the last few voxels. Still a RATE fed to the same clamp and the same integrator, never a write to B.th.
+  const BEE_ATK_TRAP = 0.25;       // …and it stands down while the mover is refusing steps. A closer that kept aiming at the player through a trunk would fight the escape probe, bank `trap` and mercy-recycle the bee; a quarter second of blocked steps hands the heading back to the fan, which is the half of this that knows how to go round.
+  const BEE_CLOSER = !location.search.includes('nobeeclose');   // ?nobeeclose — rage ON, closer OFF: the bee falls back to the fan's goal bearing alone. Same shape and the same reason as sim/nav.js's own ?nobrake and ?noarb: this adds work to a per-frame path, so the A/B that isolates ITS cost has to exist in the shipped build rather than be inferred from two builds. Read once at module scope, never per frame.
   // ── THE STING, ON A FIVE-POINT BAR ── vitHurt converts at the door with max(1, ceil(amount / 4)), so on a
   // 5-point bar there is NO hit smaller than one fifth: 1, 2, 3 and 4 all cost exactly the same single point.
   // A bee therefore quotes the floor of the scale, 1, and the only lever left for "small" is the RATE — which
@@ -421,11 +484,25 @@
   // it is within half the widest crown (118 across, i.e. 59) of the trunk. A hive voxel is therefore never more
   // than 79 + 59 = 138 voxels from its own cell's origin — under two cells — so the owning cell is always one
   // of the nine around the cell the voxel itself falls in.
+  // ── …AND IT IS ASKED PER MARCHED VOXEL NOW, SO THE OAK SCAN IS MEMOISED (2026-08-19) ── sim/tools.js asks
+  // this of every AIR cell a swing ray walks (see the hollowed-hive continuation there), and the bare form is
+  // nine oakAt calls each time. The nine ANSWERS depend only on (cx, cz), and a hive is pure worldgen — a hash
+  // on the oak grid, no state, and nothing a chop or an edit can move — so one cell's answer is valid for the
+  // whole session. CHOP_REACH is a fraction of OKCELL (79), so a swing ray sits inside one cell for its entire
+  // length and a whole march costs ONE scan. A single entry rather than a Map: the ray is a straight line and
+  // there is one player, so a second cell only appears when the ray crosses a boundary, and re-scanning on
+  // that crossing is cheaper than a map lookup on every voxel that does not.
+  let hiveCellX = 0x7fffffff, hiveCellZ = 0x7fffffff, hiveCellA = null;
+  const hiveCell = (cx, cz) => {
+    if (cx !== hiveCellX || cz !== hiveCellZ) { hiveCellX = cx; hiveCellZ = cz; hiveCellA = null;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const h = BEE_HIVE_Q(cx + dx, cz + dz); if (!h) continue;
+        (hiveCellA || (hiveCellA = [])).push(h); } }
+    return hiveCellA;
+  };
   const hiveBoxAt = (x, y, z) => {
-    const cx = Math.floor(x / OKCELL), cz = Math.floor(z / OKCELL);
-    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-      const h = BEE_HIVE_Q(cx + dx, cz + dz); if (!h) continue;
-      const b = hiveBox(h);
+    const a = hiveCell(Math.floor(x / OKCELL), Math.floor(z / OKCELL)); if (!a) return null;
+    for (let i = 0; i < a.length; i++) { const h = a[i], b = hiveBox(h);
       if (x < b.x0 || x >= b.x0 + b.fw || z < b.z0 || z >= b.z0 + b.fd || y < b.y0 || y >= b.y0 + b.fh) continue;
       return h;
     }
@@ -451,7 +528,7 @@
     if (HIVE_DONE.has(k)) return 0;
     if (HIVE_DONE.size >= HIVE_DONE_CAP) HIVE_DONE.clear();
     HIVE_DONE.add(k);
-    HIVE_BREAK.push({ x: h.wx, y: h.wy, z: h.wz, t: performance.now() / 1000, n: 0, key: k });
+    HIVE_BREAK.push({ x: h.wx, y: h.wy, z: h.wz, t: performance.now() / 1000, n: 0, key: k, r: BEE_BREAK_R });   // no `swat` flag: a later swat must post its OWN record rather than merging into this one and dragging the wreck (and with it the leash anchor) off the hive
     while (HIVE_BREAK.length > HIVE_BREAK_MAX) HIVE_BREAK.shift();
     return 1;
   };
@@ -468,36 +545,67 @@
   // second mechanism beside it: everything downstream of a record — the recruiting, the rage clock, the
   // leash measured from the place, the swarm-wide sting cooldown, the re-arm window, __vb.beeDbg's readout
   // — is already written and already exercised, and the only thing that differs between a smashed hive and
-  // a swatted bee is WHERE the fight is and WHO may answer it. So a record now carries `all`.
-  //   * `all` unset (a hive break) — only the five hive slots answer, which is what keeps the meadow.
-  //   * `all` set (a bee was hit) — EVERY bee in earshot answers, foragers included. "Any surrounding bees"
-  //     is the request, and it is also the right rule: a bee defending itself is not a hive posting, and a
-  //     forager watching one of its own get swatted has the same reason to come as a guard does.
+  // a swatted bee is WHERE the fight is and HOW FAR it is heard.
+  // ── …AND THE SLOT SPLIT IS NO LONGER THE ELIGIBILITY RULE (user 2026-08-19: "if the player breaks the
+  // beehive, have all the bees nearby attack him") ── a record used to carry `all`, and a hive break left it
+  // unset so that only the five beeSwarm slots answered while the three foragers kept the meadow. The user has
+  // now asked for the other rule on the hive too, so the flag is gone rather than being set on both kinds of
+  // record: with nothing left that it distinguishes, keeping a field every writer sets to 1 is a rule nobody
+  // is applying. EVERY live bee inside a record's own reach answers it, and the two events differ only in that
+  // reach — BEE_RAGE_R for a swat, BEE_BREAK_R for a hive (see the justification at those constants).
+  // The meadow is still guaranteed, by the two bounds that were always the real ones rather than by the slot
+  // split: BEE_RAGE_S ends every bee's rage in 18 s, and BEE_BREAK_R is under half the hive spacing so a break
+  // reaches this hive's neighbourhood and not the next hive's.
+  //   * `r`    — how far this wreck is heard. Read by hiveRageAt; a missing one falls back to BEE_RAGE_R.
+  //   * `swat` — set on a SWAT only, and it is a merge key, not an eligibility flag: two blows on one bee are
+  //     one fight (BEE_SWAT_MERGE), but a swat landed next to a hive the player just smashed must NOT be
+  //     allowed to fold into that hive's record, because merging moves the wreck — and the leash is anchored
+  //     to the wreck, so a smashed hive would quietly re-anchor itself to wherever the last bee was hit.
   // sim/life/reactions.js calls this from hitCreature, above the wound/kill split, so it fires on EVERY blow
   // — wounding or fatal, axe or arrow or bare hand — exactly where the sparks, the sound and the bolt fire.
   const BEE_SWAT_MERGE = 40;   // …and two swings on the same bee are ONE fight. Without this a held left-click posts a record per blow and a four-deep ring of hive breaks is flushed by swatting one insect; refreshing the existing record also keeps the leash anchored where the fight actually is rather than where the first blow landed.
   const beeAngered = (x, y, z) => {
     const tb = performance.now() / 1000;
     for (let i = HIVE_BREAK.length - 1; i >= 0; i--) { const b = HIVE_BREAK[i];
-      if (!b.all) continue;
+      if (!b.swat) continue;   // SWAT records only — see the `swat` note above: folding a swat into a hive break would drag the wreck, and the leash with it, off the hive
       const ex = b.x - x, ez = b.z - z;
       if (ex * ex + ez * ez < BEE_SWAT_MERGE * BEE_SWAT_MERGE) { b.t = tb; b.x = x; b.y = y; b.z = z; return 0; }   // the same fight, moved
     }
-    HIVE_BREAK.push({ x, y, z, t: tb, n: 0, key: '', all: 1 });   // no HIVE_DONE key: a swat is not a hive coming apart, and must never mark one as spent
+    HIVE_BREAK.push({ x, y, z, t: tb, n: 0, key: '', swat: 1, r: BEE_RAGE_R });   // no HIVE_DONE key: a swat is not a hive coming apart, and must never mark one as spent
     while (HIVE_BREAK.length > HIVE_BREAK_MAX) HIVE_BREAK.shift();
     return 1;
   };
   // Is there a wreck near enough, and recent enough, for a bee at (x, z) to answer? Newest first, so two
-  // overlapping breaks send a bee to the one that just happened. `anyOK` is whether THIS bee is one of the
-  // hive's own — a swat record (all) answers to every bee, a hive break only to those five.
-  const hiveRageAt = (x, z, tb, anyOK) => {
+  // overlapping breaks send a bee to the one that just happened. EVERY live bee is eligible for every record
+  // (2026-08-19 — see the block above); the only thing that varies is the record's own reach, so this takes no
+  // per-bee argument at all any more. The `|| BEE_RAGE_R` fallback is not defensive padding: __vb.hiveBreak and
+  // any future poster that forgets the field then behave exactly as the swat path does rather than as a record
+  // with a zero radius that nothing can ever hear.
+  const hiveRageAt = (x, z, tb) => {
     for (let i = HIVE_BREAK.length - 1; i >= 0; i--) { const b = HIVE_BREAK[i];
-      if (tb - b.t > BEE_RAGE_WIN || !(b.all || anyOK)) continue;
-      const dx = b.x - x, dz = b.z - z;
-      if (dx * dx + dz * dz <= BEE_RAGE_R * BEE_RAGE_R) return b;
+      if (tb - b.t > BEE_RAGE_WIN) continue;
+      const dx = b.x - x, dz = b.z - z, r = b.r || BEE_RAGE_R;
+      if (dx * dx + dz * dz <= r * r) return b;
     }
     return null;
   };
+  // ── A LIVE TAP ── window.__vbBee rather than a __vb.* method, for the reason sim/particles.js hands out
+  // __vbPetal: main/debug-api.js is one shared fragment and this probes one state of one creature. It reads
+  // the ALTITUDE SERVO and the CLOSER's own clearance from inside the rage (main/tick-creatures.js stashes
+  // them there), which is the pair __vb.beeDbg cannot show and the pair that says WHY an enraged bee is not
+  // arriving: `gAir` is the nav field's travel surface under the bee, `tgt` the height the servo is flying,
+  // and `clr`/`want` how far the closer's direct line ran against how far it needed. A bee whose tgt sits at
+  // gAir + 3 rather than near P.y + BEE_RAGE_Y is being held UP by the canopy it is standing on, not chasing.
+  window.__vbBee = () => { const o = [];
+    for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
+      const sp = ((j - MAM_END) / DES_PER) | 0; if (((DESERTS[sp] || {}).name) !== 'bee') continue;
+      if (!B || !B.init) continue;
+      const r2 = (v) => (v === undefined ? null : +v.toFixed(1));
+      o.push({ idx: (j - MAM_END) % DES_PER, m: B.beeM | 0, y: r2(B.y || 0),
+        pd: r2(Math.sqrt((B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z))), dy: r2((B.y || 0) - P.y),
+        gAir: r2(B.beeGA), tgt: r2(B.beeTgt), floor: B.beeGA === undefined ? null : r2(B.beeGA + 3),
+        clr: r2(B.beeClr), want: r2(B.beeWant), spd: r2(B.beeRgSpd), trap: r2(B.trap || 0) }); }
+    return { P: [Math.round(P.x), Math.round(P.y), Math.round(P.z)], rageY: BEE_RAGE_Y, bees: o }; };
   // ── ANT COLUMN ── spacing along the leader's path, and how often the leader drops a crumb. The gap is 6, not
   // the 3.2 the old steering aimed for: the baked ant model's box is 5 x 2 x 1, so at 3.2 the models would
   // interpenetrate even in a geometrically perfect line. The crumb step sets how faithfully a follower traces a

@@ -1,6 +1,35 @@
   // ── frame loop ─────────────────────────────────────────────────────────────
   const halton = (i, b) => { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = (i / b) | 0; } return r; };
   const JIT = Array.from({ length: 8 }, (_, i) => [halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5]);
+  // ── NIGHT PANEL (L) ── one switch per night-only look term (user 2026-08-19). The mask is published as
+  // u.lgt.w in main/tick-camera.js and read by NG() in the shaders — see the bit list in render/wgsl/pre.js.
+  // Declared UP HERE, at the top level, and not down inside the panel block: tick-camera.js sits below this
+  // fragment in the manifest and reads it every frame, and a const inside a block is invisible from there.
+  // [label, bit, what it does] — the order is the order the rows are drawn in.
+  const NIGHT_ROWS = [
+    // ── BITS 0 AND 1 ARE GONE FROM THIS LIST, NOT FROM THE GAME (user 2026-08-19: "bake in the moonlight
+    // effect. remove it from the list" and "remove the moon phases from the list. make the moon a full moon") ──
+    // the moonlight contrast pass now runs unconditionally in render/wgsl/pre.js, and the moon is always drawn
+    // full and solid there. The remaining bit NUMBERS are deliberately unchanged: they are persisted in
+    // localStorage as vb_night, so renumbering would silently re-map every existing player's switches.
+    ['shooting stars', 5, 'occasional meteors, drawn as blocks'],
+  ];
+  // ── WHAT IS ON OUT OF THE BOX ── bit 4 because the firefly light is EXISTING shipped behaviour and this
+  // row is only its switch: defaulting it off would be a silent removal. Bit 5 because the shooting stars were
+  // asked for outright. Everything else defaults OFF on purpose — a moon overhaul was built and reverted on
+  // 2026-08-19, so this ships as opt-in and the panel is how you opt in.
+  // ── …AND BIT 6 (user 2026-08-19: "add more color to the night sky, like nebulas ... like the real night sky
+  // would look like in the country") ── asked for outright, exactly as the shooting stars were, so it defaults
+  // ON for the same reason. Bit 3 (twinkle) still defaults OFF, but it is no longer the inert row the user
+  // reported: its amplitude was measured against TAA's own jitter floor and raised until it clears it.
+  // Bits 0, 1, 4 and 6 are no longer rows. 0/1 (moonlight, moon phase) and 4 (firefly light) are BAKED IN
+  // and always on; 6 (nebulas) was removed from the game outright. Only bits 2, 3 and 5 remain switchable,
+  // and their NUMBERS are deliberately unchanged — a stored vb_night mask would otherwise silently remap.
+  const NIGHT_DEF = (1 << 5);   // bits 0/1 are no longer rows; anything still set for them in a stored mask is simply never read
+  let nightMask = NIGHT_DEF;
+  // 128 and not (1 << NIGHT_ROWS.length): the rows no longer START at bit 0, so the row COUNT is not the bit
+  // WIDTH — bounding by it would reject every stored mask that has the nebula bit set.
+  try { const nv = parseInt(localStorage.getItem('vb_night'), 10); if (nv >= 0 && nv < 128) nightMask = nv; } catch (e) {}
   let frame = 0, prevT = performance.now(), fpsEma = 60, hudT = 0;
   let profQS = null, profRes = null, profStg = null, profBusy = false, profNew = false;   // per-pass GPU timing — armed via __vb.prof(true)
   const profEma = [0, 0, 0, 0, 0, 0, 0, 0], PROF_NAMES = ['trace', 'temporal', 'spatial', 'composite', 'taa', 'vis', 'blit', 'god'];
@@ -59,7 +88,9 @@
   // that axis to point straight down and the head ends up highest; the small roll gives it the tools' lean.
   if (ARROW_IT) PICK_DEFS[ARROW_IT] = { x: 0.91, y: -0.1, z: 0.96, yaw: 0, pitch: 3.14, roll: 0.08, scale: 0.08 };   // arrow — user bake 2026-08-04
   if (BOW_IT) PICK_DEFS[BOW_IT] = { x: 1.09, y: -0.14, z: 1.02, yaw: 0.01, pitch: 1.57, roll: -0.06, scale: 0.106 };   // bow — user bake 2026-08-04   // the tool family's anchor, but a BOW-sized model (user): its art is 1 voxel wide, so the axe's scale read as a sliver   // bow — user bake 2026-08-04   // bow — held upright across the hand, smaller scale because the model is much longer than a hand tool. Tune live in the held-item panel.
-  if (WORM_ITEM0) PICK_DEFS[WORM_ITEM0] = { x: 0.81, y: -0.22, z: 1.13, yaw: 0.3, pitch: -0.14, roll: -3.14, scale: 0.08 };   // live worm (user bake 2026-07-17)
+  if (WORM_ITEM0) { const wp = { x: 0.81, y: -0.22, z: 1.13, yaw: 0.3, pitch: -0.14, roll: -3.14, scale: 0.08 };   // live worm (user bake 2026-07-17)
+    PICK_DEFS[WORM_ITEM0] = wp;
+    if (WORM_EAT0) for (let f = 0; f < FOOD_EAT_N; f++) PICK_DEFS[WORM_EAT0 + f] = { ...wp }; }   // …and every frame of its eat strip hangs exactly where the live worm does, the same way the meat and fruit strips share one pose
   // ── THE TWO FRUIT ── EVERY frame of an eat strip carries the SAME pose, exactly as the bow's draw frames do
   // and for the same reason: the apple is eaten in the hand, the hand does not move. So this is one pose copied
   // across the run, and a tug on the sliders moves all thirteen together.
@@ -92,6 +123,7 @@
   if (HOE_IT) pickCfgs[HOE_IT] = { ...PICK_DEFS[HOE_IT] };
   if (SPEAR_IT) pickCfgs[SPEAR_IT] = { ...PICK_DEFS[SPEAR_IT] };
   if (WORM_ITEM0) pickCfgs[WORM_ITEM0] = { ...PICK_DEFS[WORM_ITEM0] };
+  if (WORM_EAT0) for (let f = 0; f < FOOD_EAT_N; f++) pickCfgs[WORM_EAT0 + f] = { ...PICK_DEFS[WORM_EAT0 + f] };
   if (APPLE_IT) for (let f = 0; f < FOOD_EAT_N; f++) { pickCfgs[APPLE_IT + f] = { ...PICK_DEFS[APPLE_IT + f] }; pickCfgs[ORANGE_IT + f] = { ...PICK_DEFS[ORANGE_IT + f] }; }
   const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
   if (STICK_BLOS_IT) ITEM_NAMES[STICK_BLOS_IT] = 'twig';   // ── THE SAME NAME AS ITEM 3, DELIBERATELY ── the held-pose and stack-badge panels group by NAME (see the peers helpers below), so the green twig and the blossom twig share one pose, one badge placement and one saved bake. Without this the pink one is a nameless id: no pose entry, no badge trim, and neither panel can bind to it.
@@ -105,6 +137,7 @@
   if (MEAT_IT) for (let f = 0; f < FOOD_EAT_N; f++) ITEM_NAMES[MEAT_IT + f] = 'raw meat';   // every eat frame answers to the one name — that is what makes ONE saved pose cover the whole strip
   if (APPLE_IT) for (let f = 0; f < FOOD_EAT_N; f++) { ITEM_NAMES[APPLE_IT + f] = 'apple'; ITEM_NAMES[ORANGE_IT + f] = 'orange'; }   // every eat frame answers to the one name, like the bow's draw frames — that is what makes ONE saved pose cover the whole strip, and it is also what makes `/spawn apple` work without a CMD_FILES entry (ui/console.js falls back to a name search over this table)
   if (WORM_ITEM0) ITEM_NAMES[WORM_ITEM0] = 'worm';
+  if (WORM_EAT0) for (let f = 0; f < FOOD_EAT_N; f++) ITEM_NAMES[WORM_EAT0 + f] = 'worm';   // every eat frame answers to the one name, exactly as the meat's and the fruit's do — that is what makes ONE saved pose cover the whole strip
   // ── THE SEVEN NUMBERS A POSE IS, AND ITS FINGERPRINT ── the signature is of the BAKED DEFAULT a saved
   // pose was tuned against, and it is what makes editing PICK_DEFS above take effect (user 2026-08-17:
   // "the baked apple position is not carying over when baking it in here"). See the restore below.
@@ -304,11 +337,17 @@
     // __vb.pick() and a re-added button both still work. Guarded because the element is no longer there.
     { const pb = $('pkBtn'); if (pb) pb.addEventListener('click', (e) => { e.stopPropagation(); pkShow(true); }); }
     $('pkClose').addEventListener('click', (e) => { e.stopPropagation(); pkShow(false); });
-    // ── L OPENS AND CLOSES IT (user 2026-08-17) ── bound HERE and not in ui/input.js because pkPanel and
+    // ── K OPENS AND CLOSES IT ── it was on L until 2026-08-19, when the user asked for L to carry the NIGHT
+    // panel instead: "remove what currently on the l toggle (keep the code)". Nothing here was removed — the
+    // panel, every slider, pkRefresh, sbRefresh, pkReset and __vb.pick() are untouched and still work — only
+    // the key in the compare below changed. K is the right one to move to: it was freed on 2026-08-06 when the
+    // vignette lost its bind (see the migration in ui/keybinds.js), it is next to the key this used to be, and
+    // it is the only letter within reach that nothing else answers to.
+    // ── (the note this replaced, which still explains the rest of the block) ── bound HERE and not in ui/input.js because pkPanel and
     // pkRefresh are declared in this fragment, which the manifest places BELOW input.js: reaching them
     // from there is a const-before-declaration, the black-screen failure this codebase is prone to.
-    // L was FREE — the vignette that the stale comment in ui/settings.js still credits to it was on K and
-    // was unbound on 2026-08-06 (see the migration in ui/keybinds.js), so nothing had to be taken away.
+    // Neither key had to be taken from anything: L was free when this was written, and K has been free since
+    // the vignette lost it (the stale comment in ui/settings.js still credits the vignette to L; it was K).
     // Guarded the same way T is: not while the command line owns the keyboard, and not in the editor.
     // ── …AND IT HANDS OVER THE CURSOR (user 2026-08-17: "when the player presses l, have it free the cursor
     // so I can adjust the settings") ── the panel opened under POINTER LOCK, so the mouse was still driving the
@@ -320,18 +359,82 @@
     // display:none, so nothing else is riding it. Closing hands the pointer straight back.
     const pkShow = (on) => { pkPanel.classList.toggle('hidden', !on); setLightMode(on); if (on) { pkRefresh(); sbRefresh(); } };
     document.addEventListener('keydown', (e) => {
+      // ── L, NOT K (user 2026-08-19: "bring back the editor for the stack numbers on the l keybind. also bring
+      // back the object in hand editor as well. everything on the l toggle") ── both editors already live in
+      // THIS one panel: pkRefresh builds the held-item sliders and sbRefresh builds the stack-badge ones, and
+      // pkShow below calls both. So "everything on the l toggle" is one key change rather than a rebuild.
+      // L was free: the night panel's own listener was deleted earlier the same day once its last row was
+      // baked in (see the block below), and this is what takes the key back.
       if (e.code !== 'KeyL' || CMD.open || ED.on || e.repeat) return;
       // …and NOT while a control in the panel has the keyboard (user 2026-08-18). Click a slider, then press L —
       // an arrow-key nudge is the precise way to use these, and 'l' is one keystroke from the arrow cluster — and the
       // panel you are tuning vanished. ui/input.js:47 already guards its own keys this way; this one never did.
       const ae = document.activeElement; if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
       e.preventDefault();
-      pkShow(pkPanel.classList.contains('hidden'));   // rebinds the sliders to whatever is in the hand right now
+      const want = pkPanel.classList.contains('hidden');
+      if (want) ntShow(false);                         // …and only ONE of the two free-cursor panels is ever up: they both drive setLightMode, so leaving the other open means its close hands the pointer back under a panel that is still on screen
+      pkShow(want);                                    // rebinds the sliders to whatever is in the hand right now
     });
     $('pkReset').addEventListener('click', (e) => { e.stopPropagation();   // …and reset takes the whole strip back too, for the same reason a drag moves it
       for (const id in pickCfgs) if (ITEM_NAMES[id] === ITEM_NAMES[pkIt]) Object.assign(pickCfgs[id], PICK_DEFS[id]);
       pickSave(); pkRefresh(); });
     pkPanel.addEventListener('click', (e) => { e.stopPropagation();
       if (e.target === pkPanel) pkShow(false); });   // backdrop click closes it too, matching the settings panel
+
+    // ────────── NIGHT PANEL ─ L ────────── (user 2026-08-19: "put a new set of buttons for the new
+    // night time features"). One row per bit of nightMask; the shaders read the mask as u.lgt.w through NG().
+    // It lives INSIDE this block, beside the panel it took the key from, for two reasons that are both about
+    // not repeating old mistakes: it needs pkShow to close the other panel (see the note on the key above),
+    // and the whole open/close dance — setLightMode rather than a bare exitPointerLock, which would surface
+    // the ESC menu over the released cursor — is already solved four lines up and is copied rather than
+    // re-derived. The DOM is BUILT HERE rather than added to html/10-body.html so the feature is one
+    // self-contained edit in one file.
+    const ntPanel = document.createElement('div');
+    ntPanel.id = 'ntPanel'; ntPanel.className = 'hidden';
+    ntPanel.innerHTML = '<div id="ntCard"><h2>night</h2><div id="ntRows"></div>'
+      + '<div class="ntHint">night only — every one of these is behind the same compare on the sun\'s elevation, so by day they cost nothing</div>'
+      + '<div style="text-align:center"><button id="ntReset">reset</button><button id="ntClose">done</button></div></div>';
+    document.body.appendChild(ntPanel);
+    const ntRows = $('ntRows');
+    for (const [label, bit, why] of NIGHT_ROWS) {
+      const row = document.createElement('div'); row.className = 'ntRow'; row.title = why;
+      const lbl = document.createElement('span'); lbl.textContent = label;
+      const btn = document.createElement('button'); btn.id = 'ntB' + bit;
+      btn.addEventListener('click', (e) => { e.stopPropagation();
+        nightMask ^= (1 << bit);
+        // The denoiser carries 64 frames of history. Bit 0 moves the IRRADIANCE the world is lit by, so
+        // without this the first second after a toggle is a cross-fade of the two looks rather than either
+        // of them — which is also exactly what makes an A/B screenshot lie. Same reason __vb.lgt() sets it.
+        resetHist = 1;
+        ntSave(); ntRefresh(); });
+      row.appendChild(lbl); row.appendChild(btn); ntRows.appendChild(row);
+    }
+    const ntSave = () => { try { localStorage.setItem('vb_night', String(nightMask)); } catch (e) {} };
+    function ntRefresh() { for (const [, bit] of NIGHT_ROWS) { const b = $('ntB' + bit), on = (nightMask & (1 << bit)) !== 0;
+      b.textContent = on ? 'on' : 'off'; b.classList.toggle('on', on); } }
+    const ntShow = (on) => { if (on) pkShow(false); ntPanel.classList.toggle('hidden', !on); setLightMode(on); if (on) ntRefresh(); };
+    // ── L OPENS NOTHING (user 2026-08-19: "disable the panel completely on the l toggle") ── the night
+    // panel emptied out over the course of the day: moonlight, moon phase, firefly light, the milky way,
+    // the nebulas and the star twinkle were baked in or removed one by one, and the last row, the shooting
+    // stars, is baked in with this change. A panel with nothing in it is worse than no panel, so the KEY
+    // LISTENER is what goes — L is now a free keybind again.
+    // The panel's markup, ntShow/ntRefresh/ntSave and NIGHT_ROWS below are deliberately LEFT IN PLACE and
+    // are simply unreachable: re-exposing a night feature means adding its row back and restoring these
+    // five lines, not rebuilding the panel. Nothing reads nightMask any more — every NG() call is gone
+    // from the shaders — so the stored vb_night value is inert rather than wrong.
+    $('ntClose').addEventListener('click', (e) => { e.stopPropagation(); ntShow(false); });
+    $('ntReset').addEventListener('click', (e) => { e.stopPropagation(); nightMask = NIGHT_DEF; resetHist = 1; ntSave(); ntRefresh(); });
+    ntPanel.addEventListener('click', (e) => { e.stopPropagation();
+      if (e.target === ntPanel) ntShow(false); });   // backdrop click closes it, matching every other panel here
+    ntRefresh();
+    // ── AND FROM THE CONSOLE ── window.__vb is built in main/debug-api.js, which the manifest places BELOW
+    // this file, so this cannot hang itself off it without a load-order trap. Its own global instead:
+    // __vbNight() reads the mask, __vbNight(m) sets it, __vbNight('milkyway') flips one row by name.
+    window.__vbNight = (m) => {
+      if (typeof m === 'string') { const r = NIGHT_ROWS.find((q) => q[0].replace(/ /g, '') === m.replace(/ /g, '').toLowerCase()); if (r) nightMask ^= (1 << r[1]); }
+      else if (m !== undefined) { nightMask = m | 0; }
+      if (m !== undefined) { resetHist = 1; ntSave(); ntRefresh(); }
+      return { mask: nightMask, on: NIGHT_ROWS.filter(([, b]) => nightMask & (1 << b)).map(([n]) => n) };
+    };
   }
 

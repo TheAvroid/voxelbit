@@ -219,6 +219,18 @@
     const cap = Math.max(2, Math.floor(2.0 * C_RAD * C_RAD));
     const C_MIN = Math.max(2, Math.min(Math.round(CHOP_MINBITE * kS), cap));
     const C_LAST = Math.max(2, Math.min(Math.round(CHOP_LAST * kS), cap));
+    // ── THE HIVE'S OWN SPHERE AND BITE ── exactly what the decor branch below already hands a hive voxel
+    // (soi/soiR both answer base * 0.5 for it, since a hive is nobody's own material), lifted out here so the
+    // hollowed-hive continuation can use the SAME numbers from a cell that holds no id to derive them from.
+    // Nothing is scaled: this is the identical sphere and the identical bite, moved, not widened — see the
+    // note on the continuation for why the radius was never the lever.
+    const H_RAD = CHOP_RAD * base * 0.5;
+    // ── WHAT THE HELD TOOL CAN ACTUALLY TAKE ── one rule, used by the AIM march below and by the rigid-body
+    // gate further down, which used to carry its own copy. Hoisted because the aim needs it: see the
+    // see-through note at the leaf/wood test.
+    const toolTakes = (v) => digOnlyTab[v] ? (dig || knife) : (pickOnlyTab[v] ? (pick || knife) : (axeOnlyTab[v] ? cut : true));
+    const H_BITE = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * base * 0.5)) : Math.max(2, Math.round(PH.chopBite * base * 0.5));   // no DIG_BITE term, unlike mBite below: a hive is axeOnlyTab, so the continuation is gated on `cut` and the shovel can never reach this   // axe 15, stone knife 4 — the two numbers the BEE_BREAK_F note is written against
+    const okHive = (v) => !!HIVE_TAB[v];               // …and it takes HIVE and nothing else: the branch it hangs from is bark, one voxel above its top course and well inside the sphere
     const cp = Math.cos(P.pitch), vx = Math.sin(P.yaw) * cp, vy = Math.sin(P.pitch), vz = Math.cos(P.yaw) * cp;
     // the ray is unit, so t IS the 3D distance and t*cp the horizontal one — cap by both, exactly as
     // aimedCreature does, so the axe reaches precisely as far as a swing that would kill
@@ -260,7 +272,27 @@
         return 0;
       }
       if (!firstLeaf) { if (!firstSnow || t - snowT <= SNOW_SEE_THROUGH) { aimId = lv; aimBody = inB; aimT = t; } return 2; }   // solid, and no leaf in front of it — the ordinary march decides
-      if (woodTab[lv] && t - leafT <= LEAF_SEE_THROUGH) { aimId = lv; aimBody = inB; aimT = t; return 2; }   // TRUNK behind the needles → the player meant the trunk
+      // ── …AND A BEEHIVE IS THE OTHER THING THAT HIDES BEHIND LEAVES (user 2026-08-19: "have the bees also
+      // target the player when the player hits the behive and breaks it") ── the see-through was WOOD only, and
+      // a hive hangs from a BRANCH INSIDE an oak crown, so the ray meets a leaf a voxel or two before it on
+      // almost every line. The leaf then won (the `return 3` below), the whole swing went to phChopLeaves, and
+      // phChopLeaves returns TRUE — so the march that carries the hive's own branch was never reached and the
+      // player's axe quietly cut needles instead. MEASURED with the axe aimed dead at the hive centre from 13
+      // voxels, eight swings a world: in THREE worlds of six the hive lost not one voxel, and in two more it
+      // stalled part-eaten at 28-31 of 54 against a break threshold of 27. So the hive never crossed
+      // BEE_BREAK_F, hiveChopped was never even asked, nothing reached the ledger, and no bee answered — which
+      // is the whole report. Swatting a bee works because nothing stands in front of a bee in the air; the
+      // hive is the case where something always does. Same rule, same LEAF_SEE_THROUGH budget and same shape
+      // as the trunk's, because it is the same question: what did the crosshair really mean.
+      // ── …AND ONLY IF THE TOOL COULD TAKE IT (user 2026-08-19: "Im hitting a foilage voxel with a pick, but
+      // its not breaking. instead its registering on the wood") ── the see-through was unconditional, so a leaf
+      // in front of a trunk ALWAYS surrendered the aim to the wood, whatever was in the hand. With an axe that
+      // is the point of the rule. With a PICK it is a dead swing: wood is axeOnlyTab, so the pick cannot cut
+      // what it just aimed at, and the leaf it CAN break was thrown away to get there. The rule now only fires
+      // when the tool can actually break the thing behind the leaf — otherwise the leaf really was the target,
+      // which is the `return 3` below. Same question as before ("what did the crosshair mean"), asked with the
+      // hand included.
+      if ((woodTab[lv] || HIVE_TAB[lv]) && t - leafT <= LEAF_SEE_THROUGH && toolTakes(lv)) { aimId = lv; aimBody = inB; aimT = t; return 2; }   // TRUNK — or the HIVE hanging in the crown — behind the needles → that is what the player meant
       return 3;                                        // something else solid behind the leaf → the leaf really was the target (aimId stays the leaf)
     });
     // ── THE SWING IS CONFINED TO WHAT THE CROSSHAIR IS ON ── wood keeps to wood, needles to needles. Only
@@ -283,7 +315,7 @@
     // neither is `cut`, so the branch was skipped and the swing fell through to the world path — which finds
     // nothing, because a rigid body is not in W. The material's own rule is the one that should decide, and
     // that rule already exists a few lines below for the same materials while they are still in the ground.
-    const bodyTool = (v) => digOnlyTab[v] ? (dig || knife) : (pickOnlyTab[v] ? (pick || knife) : (axeOnlyTab[v] ? cut : true));
+    const bodyTool = toolTakes;   // the same rule the aim march uses — one copy, hoisted above (see toolTakes)
     // ── THE ONE GATE (user 2026-08-07: "I'm aiming and clicking with the axe on the dirt, the axe registers the
     // nearby tree") ── the crosshair is resting on GRID wood. treeShapeAt is a bare XZ bounding-box test over a
     // pine's ~35-voxel footprint, so S latches for ANY ground column within ~17 voxels of the bole; physChopAt
@@ -331,7 +363,14 @@
       const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
       // ROCK needs the pick, WOOD needs a cutting edge, everything else soft yields to whatever is in hand.
       // …and the carve is confined to that same material, so the sphere cannot spill into the next one.
-      const okMat = digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]));
+      // ── …AND A BEEHIVE IS ITS OWN MATERIAL FOR THIS PURPOSE (2026-08-19) ── it is neither dig- nor pick-only,
+      // so it fell through to the permissive third arm, which admits every other decorTab id in the sphere —
+      // and the one thing always within 2.5 voxels of a hive is the oak BRANCH it hangs from (bark is decorTab
+      // + woodTab + axeOnly). Nearest-first then spends part of the bite on bark, which is why a hive that
+      // should have gone 54 -> 39 -> 24 was MEASURED stalling at 28-31: the two swings the threshold is sized
+      // for never lifted 15 hive voxels each. This is the same rule the line above already states — the carve
+      // is confined to the material the crosshair is on — applied to the one decor id it did not cover.
+      const okMat = HIVE_TAB[id] ? okHive : (digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v])));
       const mS = soi(id);                            // this material's BITE factor (own = full, anything else = half) — unchanged by the SOI doubling
       const mR = soiR(id);                           // …and its REACH, the doubled one on the tool's own material
       // the BITE follows the sphere it came out of — scaled from PH.chopBite, not from C_BITE, which
@@ -344,6 +383,25 @@
       // the tool's involvement: it posts a fact about the world to a ledger and returns. It does not know what
       // a bee is, and the swing itself is untouched — same gate, same sphere, same bite, same return value.
       if (id && decorTab[id] && !woodTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat)) { if (HIVE_TAB[id]) hiveChopped(x, y, z); return 1; }   // …but NOT wood: a standing trunk belongs to the tree path below, which is what fells it   // free gate, the id is already in hand
+      // ── AND A HIVE THE CROSSHAIR HAS ALREADY PUNCHED THROUGH IS STILL A HIVE (user 2026-08-19: "fix the hive
+      // stall") ── the branch above fires only when the MARCHED VOXEL is itself a hive voxel, and beehive.vox
+      // is a HOLLOW SHELL: 54 voxels wrapped one deep around a 3x3x3 pocket of air. Two swings from a fixed
+      // crosshair hole the near wall and then the far one, and from the third swing on the ray's own line runs
+      // clean through the box without touching a single hive voxel. The branch stops being asked, and the 24
+      // that remain — the rim around the tunnel — cannot be reached again from that stance at all. MEASURED as
+      // a hard stall: swings 3, 4, 5 … removed nothing, for ever, while moving the mouse two voxels resumed it
+      // instantly. That is not a reach problem and the radius is NOT the lever (raising a tool's own-material
+      // sphere measured a null result twice, and this sphere is never even created); it is the GATE.
+      // The tree path already answers exactly this question for a bole — "a hole punched clean through a trunk
+      // is still aiming at the tree", see aimSky above — and it can, because treeShapeAt says which tree owns a
+      // column whether or not any wood is left on the ray. hiveBoxAt is that same query for a hive, so this is
+      // the decor twin of the S latch and not a new mechanism: if the ray is walking through the AIR INSIDE a
+      // hive's own 5x5x5 box, the crosshair is on the hive, and the swing carves it. phChopDecor never required
+      // its centre to be occupied — it gathers shells outward — so centring in the tunnel collects the rim.
+      // Nothing else moves: same sphere, same bite, same hiveChopped, same BEE_BREAK_F. A chip is still a chip,
+      // and the ambush this feature refused stays refused, because the ray has to pass THROUGH the hive's box
+      // to get here — which is aiming at it, not clipping a crown on the way to a trunk.
+      if (!id && cut && hiveBoxAt(x, y, z) && phChopDecor(x, y, z, H_RAD, H_BITE, okHive)) { hiveChopped(x, y, z); return 1; }   // `!id` only: an occupied cell is the branch above's business, whatever it holds   // hiveBoxAt memoises its oak scan per cell, so a whole march costs one 3x3 probe
       // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
       // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
       // where the trunk was, and a solid-only trigger could never find the tree again — the axe would

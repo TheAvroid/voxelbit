@@ -227,6 +227,11 @@
     // pine's needles come out as their own drape component — and canopy snow rests on NEEDLES, not on the trunk.
     // Walk up from any component voxel that is not itself snow, deduped against the component so a snow stack
     // that is already part of it is never added twice.
+    // ── …AND ITS MOSS (user 2026-08-19) ── mossTab is the rock cap and the grass strands (see sim/support-rules.js):
+    // another separate voxel resting one layer above what holds it, so a boulder cut loose and lifted whole left
+    // its green behind exactly as a crown used to leave its white. Same walk, same dedupe, one more table in the
+    // test. The stack stays short by construction — a moss cap is ONE course and a strand is at most four — so
+    // this is the same handful of steps the snow cap already pays, not a new scan.
     var comp = comp0;
     if (comp0.length) {
       const inComp = new Set(comp0), addS = [];
@@ -235,9 +240,10 @@
         const gy0 = ((ii / WX) | 0) % WY;
         for (let y2 = gy0 + 1; y2 < WY - 1; y2++) {
           const jj = ii + (y2 - gy0) * WX;               // +1 in y is +WX in the flat index
-          const v2 = W[jj]; if (!v2 || !snowTab[v2]) break;
+          const v2 = W[jj]; if (!v2 || !(snowTab[v2] || mossTab[v2])) break;   // snow on top of moss on top of a rock is one stack and comes as one
           if (inComp.has(jj)) break;
           inComp.add(jj); addS.push(jj);
+          if (mossTab[v2]) PH.stats.mossCarried = (PH.stats.mossCarried | 0) + 1;
         }
       }
       if (addS.length) comp = comp0.concat(addS);
@@ -503,11 +509,20 @@
     // stationary on top of the piece and is collected with it. Scanned per taken voxel and deduped by world
     // index, since several taken voxels can share a column. The chunk's local box has to grow first — the cell
     // key below is computed against y1, and a cap above it would fold onto another slot.
+    // ── …AND ITS MOSS, WHICH IS THE SAME SENTENCE (user 2026-08-19: "when breaking the rocks with moss on top
+    // of it, the moss doesnt go with the chunk that was broken off. this was already fixed with the snow landing
+    // on the rocks. fix it for the moss.") ── mossCap lays a boulder's cap as its own voxel in the cell ABOVE
+    // each sky-facing stone voxel, so it is a snow cap in every structural respect and the ONLY thing it was
+    // missing was membership of the set this loop tests. mossTab (sim/support-rules.js) is that membership, and
+    // it is deliberately not snowTab and not floatTab — see the note there for what each of those would drag in.
+    // The tool's own `ok(v)` filter does NOT reach this loop, and that is right: a PICK claims stone, and the
+    // cap is not stone. It rides along because it was resting on what the pick took, not because the pick may
+    // take it.
     const snowIdx = [], snowSeen = new Set();
     for (let k = 0; k < take; k++) { const j = ord[k];
       for (let y = cY[j] + 1; y < WY; y++) {
         const ii = gwrap(cX[j], WX) + y * WX + gwrap(cZ[j], WZ) * WX * WY;
-        const v = W[ii]; if (!v || !snowTab[v]) break;   // not snow directly above → this column carries no cap
+        const v = W[ii]; if (!v || !(snowTab[v] || mossTab[v])) break;   // not snow or MOSS directly above → this column carries no cap
         if (snowSeen.has(ii)) break;
         snowSeen.add(ii); snowIdx.push(ii, cX[j], y, cZ[j], v);
         if (y > y1) y1 = y;
@@ -534,7 +549,8 @@
       if (idMap.has(kk)) continue;
       cells.push(kk); idMap.set(kk, vS);
       W[ii] = 0; out.push(ii);
-      PH.stats.snowCarried = (PH.stats.snowCarried | 0) + 1;   // how many snow voxels rode away on chunks — the one honest read that the cap went WITH the bite
+      if (mossTab[vS]) PH.stats.mossCarried = (PH.stats.mossCarried | 0) + 1;   // …counted apart from the snow, so one number answers "did the MOSS travel" without a storm in the way
+      else PH.stats.snowCarried = (PH.stats.snowCarried | 0) + 1;   // how many snow voxels rode away on chunks — the one honest read that the cap went WITH the bite
     }
     // (the upward 10-voxel column scan that used to sit here is gone: it was column-only,
     //  gravity-only and erase-only, so a strand held up SIDEWAYS by what the bite took was invisible
@@ -564,4 +580,36 @@
     //  world. And because woodTab is a subset of decorTab while the foliage ids are not, a shovel
     //  bite at a pine’s base lifted the trunk section and left the crown hanging in the sky.)
     return true;
+  };
+  // ── A LIVE TAP FOR THE CAP THAT TRAVELS ── window.__vbMoss rather than a __vb.* method, the way
+  // sim/particles.js hands out __vbPetal: main/debug-api.js is one shared fragment and this probes one rule.
+  // __vb.bodySnow() is its opposite number for canopy snow and pinecones and is deliberately left alone.
+  //   __vbMoss.world(x,y,z,r)  every moss voxel still standing in W in a box, with what it is sitting ON —
+  //                            `onRock` is rockShTab, so it separates a BOULDER'S CAP from a grass strand
+  //   __vbMoss.bodies()        the moss (and snow) riding every live rigid body
+  //   __vbMoss.carried()       the running totals both carry paths keep
+  //   __vbMoss.tab             the live table. Zeroing it, chopping, restoring it and chopping again is an
+  //                            in-session A/B of exactly this fix against exactly this rock — which is the only
+  //                            honest way to show the moss used to stay behind, since the OLD behaviour is
+  //                            "mossTab is empty" and nothing else about the two paths differs.
+  // The world read and the body read have to be taken TOGETHER: "the moss went with the chunk" is proven by
+  // moss appearing in a body's voxel set AND having left the world cells it used to occupy, and either alone
+  // can lie — a body can hold moss it was built from, and a world cell can empty because something erased it.
+  window.__vbMoss = {
+    tab: mossTab,
+    carried() { return { moss: PH.stats.mossCarried | 0, snow: PH.stats.snowCarried | 0 }; },
+    bodies() { return PH.bodies.map((b) => { let m = 0, sn = 0;
+      for (let i = 0; i < b.n; i++) { if (mossTab[b.id[i]]) m++; else if (snowTab[b.id[i]]) sn++; }
+      return { vox: b.n, moss: m, snow: sn, src: b.src, pos: b.pos.map((q) => +q.toFixed(1)) }; }).filter((q) => q.moss || q.snow); },
+    world(x, y, z, r) {
+      const R = r === undefined ? 8 : r | 0, out = [];
+      const cx = Math.round(x), cy = Math.round(y), cz = Math.round(z);
+      for (let dy = -R; dy <= R; dy++) { const yy = cy + dy; if (yy < 1 || yy >= WY) continue;
+        for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+          const gx = gwrap(cx + dx, WX), gz = gwrap(cz + dz, WZ);
+          const v = W[gx + yy * WX + gz * WX * WY]; if (!mossTab[v]) continue;
+          const u = W[gx + (yy - 1) * WX + gz * WX * WY];
+          out.push({ x: cx + dx, y: yy, z: cz + dz, id: v, below: u, onRock: !!rockShTab[u] }); } }
+      return out;
+    },
   };

@@ -56,7 +56,7 @@
     tipMaxMs: 15000,   // …and the drive's hard stop stretches with it
     tipDamp: 0.6,                                    // per-SUBSTEP retention of any rotation that is not about the topple axis — solver noise, and the source of the shudder                                  // hard stop: never drive a topple longer than this, whatever it is caught on
     stats: { chops: 0, voxRemoved: 0, separations: 0, floods: 0, floodVox: 0, dustVox: 0,
-             retired: 0, evicted: 0, sparks: 0, unstuck: 0, topples: 0, toppleMaxTilt: 0, ccd: 1, chunks: 0, reclaimed: 0, absorbed: 0, dropped: 0, birdsKilled: 0, bodyChops: 0, bodySplits: 0, decorFalls: 0, snowCarried: 0, coneCarried: 0, lastFellDeg: 0, lastBodyChopMs: 0, lastFloodMs: 0, lastSepMs: 0, stepMs: 0, substeps: 0, contacts: 0, oakShapes: 0 },   // oakShapes = (model, rotation) oak shapes built this session; each is a 10-15 ms build, and a number that keeps climbing means the 3-entry LRU is thrashing
+             retired: 0, evicted: 0, sparks: 0, unstuck: 0, topples: 0, toppleMaxTilt: 0, ccd: 1, chunks: 0, reclaimed: 0, absorbed: 0, dropped: 0, birdsKilled: 0, bodyChops: 0, bodySplits: 0, decorFalls: 0, snowCarried: 0, coneCarried: 0, mossCarried: 0, lastFellDeg: 0, lastBodyChopMs: 0, lastFloodMs: 0, lastSepMs: 0, stepMs: 0, substeps: 0, contacts: 0, oakShapes: 0 },   // oakShapes = (model, rotation) oak shapes built this session; each is a 10-15 ms build, and a number that keeps climbing means the 3-entry LRU is thrashing
   };
   // ── THE OAKS FALL TOO (user 2026-08-17: "make the oak trees fall with the axe") ─────────────────────
   // Everything below treeShapeAt — the carve, the root flood, the separate, the topple — is written
@@ -119,7 +119,18 @@
       if (!A[li]) cells[n++] = li;
       A[li] = p >>> 24;
     }
-    const lab = new Int32Array(A.length);              // 6-component label per cell, 0 = none. Transient: it exists only to find the strays.
+    // ── THE LABEL BUFFER IS SCRATCH, NOT AN ALLOCATION (2026-08-19, the oak/cherry felling cost) ── it is
+    // transient by its own admission: nothing outside this function ever reads it, and `shp` below does not
+    // keep it. It was still a fresh Int32Array of the whole model BOX every time a shape was built, which on
+    // the big oak is 101 x 100 x 116 = 1,171,600 entries — 4.7 MB allocated, zeroed and then handed to the GC,
+    // per (model, rotation) pair. That is the cost the oak and cherry forests pay and the pine forest does
+    // not: a pine has ONE model rotated at load, while an oak builds a shape on demand for each of 8 models
+    // x 4 rotations, and the LRU below evicts, so the same shape is paid for again after enough trees.
+    // Reused and cleared over the SPARSE cell list instead of refilled: only cells that are part of the tree
+    // are ever written, so clearing 67k entries is exact where zeroing 1.17M was the same work as the flood
+    // it was preparing for. Grown, never shrunk — the largest oak sizes it once for the session.
+    if (!oakLabScr || oakLabScr.length < A.length) oakLabScr = new Int32Array(A.length);
+    const lab = oakLabScr;                             // 6-component label per cell, 0 = none. Cleared over `cells` at the end of the stray pass below.
     const st = new Int32Array(n);
     let nc = 0, best = 0, bestN = 0;
     for (let i = 0; i < n; i++) {
@@ -156,6 +167,8 @@
         }
       }
     }
+    for (let i = 0; i < n; i++) lab[cells[i]] = 0;      // …and hand the scratch back clean. Over the CELLS, not the box: those are the only entries the two passes above can have written
+
     // ── WHERE THE BOLE STANDS IN THIS SHAPE'S OWN FRAME ── the anchor band is measured at the TRUNK, and the
     // trunk is not at the middle of the model box: MEASURED, the bark centroid of the bottom course is off
     // the bbox centre by (-5.2, +6.0) on the 7 m oak and (+0.8, -2.9) on the 11.7 m one, because the box is
@@ -379,11 +392,14 @@
   // ── 6-NEIGHBOUR CONNECTIVITY over ONE tree ── seeds are the buried courses (my <= sink): the root
   // anchor. Anything the flood cannot reach from the root is detached. Flat mark buffer sized to the
   // model box, allocated once and reused, so a chop allocates nothing.
+  let phPres = null;                                 // per-cell "is this voxel still in the world", filled by the flood's seed pass — see the note there
+  let oakLabScr = null;                              // see the note in the oak shape builder — reused label buffer, never read outside it
   let phMark = null, phStack = null;
   const phFlood = (S) => {
     const sx = S.R.sx, sz = S.R.sz, nAll = sx * sz * MSZ;
     if (!phMark || phMark.length < nAll) { phMark = new Uint8Array(nAll); phStack = new Int32Array(nAll); }
     else phMark.fill(0, 0, nAll);
+    if (!phPres || phPres.length < nAll) phPres = new Uint8Array(nAll);   // …and its partner. Never bulk-cleared: each flood erases exactly what it wrote (see the end of this function), so it is always all-zero on entry
     const li = (mx, my, mz) => mx + mz * sx + my * sx * sz;
     let sp = 0, reached = 0, total = 0;
     const t0 = performance.now();
@@ -398,14 +414,17 @@
         const k = C[i];
         const mx = k % sx, mz = ((k / sx) | 0) % sz, my = (k / (sx * sz)) | 0;
         const v = phPresent(S, mx, my, mz);
+        phPres[k] = v ? 1 : 0;
         if (!v) continue;
         total++;
         if (my <= root && woodTab[v] && !phMark[k]) { phMark[k] = 1; phStack[sp++] = k; }
       }
     } else {
-      for (let my = 0; my < MSZ; my++) for (let mz = 0; mz < sz; mz++) for (let mx = 0; mx < sx; mx++)
-        if (phPresent(S, mx, my, mz)) { total++;
-          if (my <= root) { const k = li(mx, my, mz); if (!phMark[k]) { phMark[k] = 1; phStack[sp++] = k; } } }
+      for (let my = 0; my < MSZ; my++) for (let mz = 0; mz < sz; mz++) for (let mx = 0; mx < sx; mx++) {
+        const k0 = li(mx, my, mz), v0 = phPresent(S, mx, my, mz);
+        phPres[k0] = v0 ? 1 : 0;
+        if (v0) { total++;
+          if (my <= root && !phMark[k0]) { phMark[k0] = 1; phStack[sp++] = k0; } } }
     }
     while (sp > 0) {
       const k = phStack[--sp]; reached++;
@@ -416,7 +435,12 @@
         const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
         if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
         const nk = li(nx, ny, nz);
-        if (phMark[nk] || !phPresent(S, nx, ny, nz)) continue;
+        // ── THE SEED PASS ALREADY ASKED ── phPresent is not a lookup, it is a WORLD read: an A[] index, a
+        // toroidal wrap on x and z, a W[] fetch and a remap compare. The pass above runs it over every cell
+        // of the tree and then threw the answer away, so this loop asked again — six times per popped cell,
+        // ~500k times on the giant oak, for a value that cannot have changed since (nothing writes W inside
+        // a flood). Cached in phPres, it is a byte read.
+        if (phMark[nk] || !phPres[nk]) continue;
         phMark[nk] = 1; phStack[sp++] = nk;
       }
       if (g && g[k]) {                                // ── THE DIAGONAL LINKS ── 12,505 flagged cells of 86,365 on the giant, so this runs on 14% of the pops and buys 26-connected reachability at 37% of a 26-connected flood (see oakShape)
@@ -424,11 +448,17 @@
           const nx = mx + phNb26[d], ny = my + phNb26[d + 1], nz = mz + phNb26[d + 2];
           if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
           const nk = li(nx, ny, nz);
-          if (phMark[nk] || !phPresent(S, nx, ny, nz)) continue;
+          if (phMark[nk] || !phPres[nk]) continue;   // …the same cached answer the 6-neighbour loop above uses
           phMark[nk] = 1; phStack[sp++] = nk;
         }
       }
     }
+    // ── HAND THE PRESENCE SCRATCH BACK CLEAN ── it is never bulk-cleared on entry, so every flood has to
+    // erase exactly what it wrote. The oak wrote its sparse cell list; the pine wrote its whole box. Anything
+    // left set would be read as "present" by the NEXT tree at the same index, and a stale 1 in a cell the next
+    // tree does not own would let its flood walk through empty air.
+    if (S.cells) { const C2 = S.cells; for (let i = 0; i < C2.length; i++) phPres[C2[i]] = 0; }
+    else phPres.fill(0, 0, nAll);
     PH.stats.floods++; PH.stats.floodVox += total;
     PH.stats.lastFloodMs = +(performance.now() - t0).toFixed(2);
     return { total, reached, orphans: total - reached, sx, sz, li };

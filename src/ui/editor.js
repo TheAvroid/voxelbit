@@ -497,26 +497,68 @@
     gpuPatch(cells, true, cells.length, false);        // track=false: entering the editor overwrites real world cells with the stage plane, and none of that is a terrain edit
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = true;   // fly ON so the framing below can't be pulled off by gravity while the world is frozen
     smoothEye = P.y + EYE; resetHist = 1;
-    // ── THE STAGE OPENS ON THE BIRCH (user 2026-08-18: "in the asset editor, I want you to remove the
-    // flamingo ... generate a birch tree made out of 10cm voxels") ── the flamingo is gone from HERE only; it
-    // is untouched in the world, where it is trace-injected from the same frames as before.
-    // ED.arm stays null so it takes the plain playback branch. A birch is one frame, so nothing animates — the
-    // branch handles n === 1 without a special case, and the 12 fps flamingo rate below no longer applies.
-    if (!ED.frames.length && BIRCH_VOX.length) { edImportBufs(BIRCH_VOX, 'vb_edoffsets_birch', {}, 'birch'); ED.bun = null; ED.bunny = false; ED.arm = null; }
-    else if (!ED.frames.length && PORCUPINE_WALK.length) { edImportBufs(PORCUPINE_WALK, 'vb_edoffsets_porcupine', PORCUPINE_BAKES[0], 'porcupine'); ED.bun = null; ED.bunny = false; ED.arm = { hd: 0, px: 0, pz: 0, tRe: 0 }; ED.bakes = PORCUPINE_BAKES; }   // PORCUPINE walk cycle is now the ASSET-EDITOR object (user: swapped the skunk out of the editor — the skunk still spawns in the WORLD, it's just no longer what you edit). Align ONCE in SOUTH; headings auto-derive via armOffset (its own PORCUPINE_BAKES + 'vb_edoffsets_porcupine' namespace)
-    else if (!ED.frames.length && SKUNK_WALK.length) { edImportBufs(SKUNK_WALK, 'vb_edoffsets_skunk', SKUNK_BAKES[0], 'skunk'); ED.bun = null; ED.bunny = false; ED.arm = { hd: 0, px: 0, pz: 0, tRe: 0 }; ED.bakes = SKUNK_BAKES; }   // FALLBACK: if the porcupine frames are missing, the skunk is still available in the editor
-    else if (!ED.frames.length && BUNNY_JUMP.length) { edImportBufs(BUNNY_JUMP, 'vb_edoffsets_jump', BUNNY_JUMP_BAKE, 'jump'); ED.bunny = false; }   // jump frames only → just hop forward
-    else if (!ED.frames.length && BUNNY_ROTATE.length) { edImportBufs(BUNNY_ROTATE, 'vb_edoffsets_rotate', BUNNY_ROT_BAKE, 'rotate'); ED.bunny = false; }   // rotate frames only
-    else if (!ED.frames.length && BLUEBIRD_ROTATE.length) { edImportBufs(BLUEBIRD_ROTATE); ED.bunny = false; }   // …or the blue bird if both bunny sets are missing
-    // ── FRAME THE OBJECT ── stand the player 5 voxels BACK from the stage centre (where the model is stamped) with the FEET
-    // ON THE FLOOR (P.y = ED.y + 1 = plane top), then pitch DOWN to aim the eye at the model's vertical centre so the object
+    // ── THE STAGE OPENS ON THE SKUNK (user 2026-08-19: "remove the porcupine from the editor") ──
+    // NO TREE AND NO PORCUPINE IS STAGED ANY MORE. The BIRCH, then the FIR, then the PORCUPINE walk cycle
+    // each stood at the head of this fall-through chain in turn; all three are gone from HERE. The two trees
+    // are also gone from the boot (nothing fetches birch.vox or fir_spruce.vox), but the PORCUPINE IS NOT:
+    // it is one of the four land mammals and it still SPAWNS IN THE WORLD, so every porcupine symbol stays.
+    // PORCUPINE_WALK is still fetched in assets/held-items.js, buildPorcPoses/stampPorcupine (just above)
+    // still stamp the world porcupine, and PORCUPINE_BAKES still aligns it. Only the editor's USE of the
+    // model is gone. Note buildPorcPoses reads edParseVox + PORCUPINE_BAKES directly — it never read the
+    // 'vb_edoffsets_porcupine' localStorage namespace — so dropping that namespace with this branch cannot
+    // move the world porcupine by a voxel. (game/assets/life/porcupine/*.vox and the decoration .vox files
+    // all STAY on disk: VOXDEX is a build-time walk of game/assets and /spawn + /locate resolve through it.)
+    // With the porcupine branch gone the chain falls through to its next live link — the SKUNK walk cycle,
+    // which is what the stage opened on before the porcupine was staged.
+    // ── THE SKUNK IS OFF THE STAGE TOO (user 2026-08-19: "remove the skunk from the asset editor") ── the
+    // fourth removal from this chain today, after the birches, the fir and the porcupine. Only the STAGING
+    // branch went: every SKUNK_* symbol stays, because the WORLD skunk needs them and — unlike the
+    // porcupine, whose poses are built straight from edParseVox — buildSkunkPoses goes through
+    // edBuildFrames and the 'vb_edoffsets_skunk' namespace, so deleting that namespace would move the
+    // skunk that walks the forest. The chain now heads on the bunny.
+    // ── THE STAGE OPENS EMPTY (user 2026-08-19: "now theres a bunny in the asset editor, remove it. why do
+    // land mammals keep spawning in here? investigate and fix it") ── HERE IS WHY. This was an ordered
+    // fall-through: "if nothing is staged, stage the next creature that happens to be loaded". Removing the
+    // head of it only ever PROMOTED the next link, which is why the same request has now come in five times
+    // — the four birches, then the fir, then the porcupine, then the skunk, and now the bunny. It was
+    // whack-a-mole by construction, and the next removal would simply have surfaced the bluebird.
+    // So the chain is gone rather than shortened again. The editor's own empty-stage message has said
+    // "press ESC, then import a .vox to begin" the whole time (see edHudUpd at the top of this file), so an
+    // empty stage is what it always claimed to do; the chain was the thing contradicting it.
+    // Nothing about IMPORTING changed, and no creature's data was touched — every BUNNY_*/BLUEBIRD_* symbol
+    // stays for the world, exactly as the skunk's and porcupine's did.
+    ED.bun = null; ED.bunny = false; ED.arm = null;   // an empty stage animates nothing: clear the playback state the branches used to set
+    // ── FRAME THE OBJECT ── stand the player BACK from the stage centre (where the model is stamped) with the FEET
+    // ON THE FLOOR (P.y = ED.y + 1 = plane top), then pitch to aim the eye at the model's vertical centre so the object
     // stays framed. (The old framing floated the eye at the model's mid-height, which for any model shorter than the 18.5
     // eye height sank the 20-voxel person's feet below the plane — the "clipped through the floor" the user reported.)
-    { const bf = ED.frames[0]; const midH = bf ? (bf.sz * 0.5) : 6;
-      const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2, back = 50;
-      P.x = cx; P.z = cz - back;                        // 50 voxels back along −Z (yaw 0 faces +Z → the model) — stands well clear of the object for a fuller view (user)
+    // ── …AND STAND FAR ENOUGH BACK TO SEE ALL OF IT (2026-08-19) ── `back` was a fixed 50, which frames a
+    // bunny and cuts a tree off at the knees, so solve for the distance instead of picking one.
+    // WHAT THE FIRST ATTEMPT GOT WRONG, because it is subtle and cost a user-visible bug: it solved for the
+    // model's TOTAL angular span fitting the vertical FOV. That is only the right question if the camera axis
+    // BISECTS the span — and the line below deliberately aims at the model's MID-HEIGHT instead, which for a
+    // tall model is a very different direction (measured on the 116-voxel fir: axis 26.3°, bisector 18.8°).
+    // The whole 7.5° of error lands on the bottom edge, so the tree's base and the stage under it were pushed
+    // off-screen (measured ndcBot −1.127, i.e. 12.7% past the edge) while the crown sat comfortably inside.
+    // So solve the constraint the code actually imposes, per edge, against the axis it actually uses. With the
+    // eye EYE above the plane, the model H tall, and the axis at p = atan(A/d) where A = H/2 − EYE:
+    //     bottom   p + atan(EYE/d)        ≤ V     →   tan(V)·d² − (H/2)·d + tan(V)·(−A·EYE)     ≥ 0
+    //     top      atan((H−EYE)/d) − p    ≤ V     →   tan(V)·d² − (H/2)·d + tan(V)·((H−EYE)·A)  ≥ 0
+    // Both are the same quadratic in d with a different constant, so `edge` takes the larger root of it; no
+    // real root means that edge is never crossed at any distance, which is the normal case for anything
+    // shorter than eye height. V is the VERTICAL HALF-angle: tanH = tan(FOV/2) in tick-camera.js, and
+    // pre.js applies it as `up * (ndc.y * u.tanH)`, so vertical framing does not move with the aspect ratio.
+    // FOV is read from its own declaration (ui/hud.js) rather than retyped, which is how the 72-vs-36 slip
+    // happened the first time. MARGIN leaves air around the model rather than fitting it to the frame edge.
+    // Floored at the old 50 so every small model is framed EXACTLY as before — this only ever backs off.
+    { const bf = ED.frames[0]; const H = bf ? bf.sz : 12, midH = H * 0.5;
+      const MARGIN = 1.22, tv = Math.tan(FOV / 2), A = midH - EYE;
+      const edge = (c) => { const disc = midH * midH - 4 * tv * tv * c; return disc <= 0 ? 0 : (midH + Math.sqrt(disc)) / (2 * tv); };
+      const fit = Math.max(edge(-A * EYE), edge((H - EYE) * A));   // the nearer the camera may stand with BOTH edges clear
+      const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2, back = Math.max(50, Math.round(fit * MARGIN));
+      P.x = cx; P.z = cz - back;                        // back along −Z (yaw 0 faces +Z → the model)
       P.y = ED.y + 1;                                   // feet planted on the plane (NOT floating at eye-mid-height)
-      P.yaw = 0; P.pitch = Math.atan2(midH - EYE, back);   // aim the eye down at the model's vertical centre → the object sits framed in front of the camera
+      P.yaw = 0; P.pitch = Math.atan2(midH - EYE, back);   // aim the eye at the model's vertical centre → the object sits framed in front of the camera
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();

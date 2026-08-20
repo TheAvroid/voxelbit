@@ -14,6 +14,17 @@
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}
   let snowOn = false;                                  // ── VOXEL SNOW ── starts CLEAR, then the first storm arrives 60 s after refresh (user 2026-08-06). Weather-driven; the button (and P) still forces one on/off by hand.
   let snowEndT = 0, snowNextT = 120000;   // ── FIRST STORM 120 s AFTER REFRESH (user 2026-08-06, raised 60 -> 120 on 2026-08-17) ── snowNextT is the ARRIVAL of the first storm, snowEndT the end of the CURRENT one. Only the arrival moved: an event still RUNS for 60 s and still re-arms on the normal 5-minute cadence, both of which live on the toggle path in ui/input.js and below. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one.
+  // ── AND IT DOES NOT SNOW AT NIGHT (user 2026-08-19: "dont make it snow at night") ── the gate is on the
+  // storm's ARRIVAL only, in main/tick-body.js. sunUp() mirrors main/tick-camera.js's own sun elevation
+  // (ang = tday*2pi - pi/2, el = sin(ang)*1.05, elevation = sin(el)) and uses the SAME -0.06 threshold that
+  // file uses to hand the world over to the moon, so "not night" here means exactly what the player sees as
+  // night rather than a second, nearby definition that can drift from it. tday lives in ui/input.js, which the
+  // manifest places after this file but before every tick fragment, so this is only ever CALLED once it exists.
+  // A storm already running when the sun sets is left alone to finish its 60 s: the lead/trail sweep in
+  // main/tick-snow.js is derived from snowOnT0/snowOffT0, and cutting it mid-flight strands that edge.
+  const SNOW_DAY_ONLY = true;
+  const sunUp = () => Math.sin(Math.sin(tday * Math.PI * 2 - Math.PI / 2) * 1.05) >= -0.06;
+  const SNOW_NIGHT_RETRY = 15000;                      // due but dark: re-ask in 15 s rather than computing the next sunrise — the cycle is 20 min at 1x but ALT+scroll rescales it, so a computed wake-up would be wrong the moment the speed changed
   // TO RESTORE the weather cycle, put this back to `performance.now() + 120000` (first storm 2 min after refresh, then every 5 min).
   // The snow button / P key still forces a storm on by hand, and that path re-arms snowNextT normally.
   // ── RAIN SKY (user 2026-08-17: "when it rains can you make the sky more cloudy and darken the clouds as well.
@@ -297,8 +308,14 @@
           const p = req.call(el); if (p && p.catch) p.catch(() => {}); }
       } catch (err) {}
     });
-    document.addEventListener('fullscreenchange', fsShow);
-    document.addEventListener('webkitfullscreenchange', fsShow);
+    // ── AND ENGAGE THE ESCAPE LOCK ON THE WAY IN ── navigator.keyboard.lock() only works in fullscreen, so a
+    // player who is already pointer-locked and THEN goes fullscreen would otherwise keep getting Chrome's
+    // "press Esc to show your cursor" bubble until the next re-lock. escLock is a const in ui/input.js, which
+    // the manifest places after this file — safe here because this only ever runs from an event, long after
+    // both fragments have executed. See the note at escLock for why the bubble cannot simply be removed.
+    const fsEsc = () => { fsShow(); try { if (document.fullscreenElement && typeof escLock === 'function') escLock(); } catch (e) {} };
+    document.addEventListener('fullscreenchange', fsEsc);
+    document.addEventListener('webkitfullscreenchange', fsEsc);
     fsShow(); }
   const sliderFill = (sl) => { const lo = +sl.min, hi = +sl.max, pct = hi > lo ? (sl.value - lo) / (hi - lo) * 100 : 0;
     sl.style.setProperty('--fill', pct + '%'); };   // paints the GREEN LINE up to the knob — re-run on every value change (input AND the per-frame tod sync)

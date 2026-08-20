@@ -206,6 +206,27 @@
   // left (see the rain note above) — and appending is free here for the reason the note gives: there is
   // nothing below it to shift. ui/hud.js owns the numbers, main/tick-camera.js writes them, BLIT reads them.
   const UF_BADGE = UF_HURTV + 4;
+  // ── THE HUNGER LEVEL (user 2026-08-19: hunger re-introduced, drawn as GOLD pixels) ── a fresh vec4 appended
+  // after badge, for the reason every lane back here is appended rather than borrowed: the JS writes this buffer
+  // at fixed float indices, so a lane inserted anywhere above silently feeds every one below it its neighbour's
+  // numbers. badge is full (x/y pixel, z size, w tilt) and hurtV has been full since UF_RAINK took its last
+  // float, so there was nothing to borrow. Appending is free here — there is nothing below it to shift.
+  // x = vitGoldLevel() 0..4. y/z/w spare, and deliberately: the next screen-space readout gets them without
+  // moving anything, which is exactly the property this end of the buffer exists to have.
+  const UF_VITG = UF_BADGE + 4;
+  // ── THE CRAFT PREVIEW'S HAND (user 2026-08-19, the STONE AGE bench) ── a THIRD held-item lane, laid out
+  // exactly like pickA/X/Y/Z and pick2A/X/Y/Z so COMPOSITE's hand loop reads it with the same four lines: A =
+  // anchor xyz in camera space + voxel size, X/Y/Z = the item's axes, and X.w = the show id (0 = hidden).
+  // Appended at the END rather than beside pick2, because everything from UF_PHYSB down is written at fixed
+  // float indices and inserting a lane in the middle silently feeds every field below it its neighbour's
+  // numbers. Sixteen floats is the price of the preview being a real voxel model rather than a 2D icon.
+  const UF_PICK3 = UF_VITG + 4;
+  // ── AND THE OFF-HAND'S STACK BADGE (user 2026-08-19: "the rock in the left hand doesnt have the stack
+  // number") ── the same four numbers `badge` carries for the right hand: x/y = the canvas PIXEL the glyphs
+  // start at, z = size, w = tilt. It needs its own because both are per-ITEM and the two hands hold different
+  // things. The COUNT does not need a lane of its own — it goes in vitG.y, which that block reserved as spare
+  // for exactly this: 'the next screen-space readout gets them without moving anything'.
+  const UF_BADGE2 = UF_PICK3 + 16;
   // ── AND THE FIVE TUNING NUMBERS, HERE rather than beside snowOn in ui/settings.js ── COMPOSITE_SRC is invoked
   // from render/wgsl/vis.js, manifest line 35; ui/settings.js is line 60. A const declared with the storm state
   // is therefore in its temporal dead zone when the shader template interpolates it, and the symptom is the one
@@ -237,7 +258,7 @@
   // untouched by the halving either way.
   const HEART_POSE = { x0: -0.200, y: -0.52, z: 1.10, vs: 0.055, gap: 0.100, rig: 0.5 };   // x0 = the FIRST heart, so x0 = -gap*(HEART_N-1)/2 keeps the row centred
   let heartShow = 1;                                  // __vb.hearts(false) hides the row - the A/B lever for what the block costs, and the only way to take a clean screenshot of the frame without it
-  const UF = new Float32Array(UF_BADGE + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
+  const UF = new Float32Array(UF_BADGE2 + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532

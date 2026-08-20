@@ -36,7 +36,17 @@
       try { localStorage.setItem('vb_cmp', cmpOn ? '1' : '0'); } catch (e2) {}
       cmpShow(); });
     cmpShow(); }
-  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); cursSync(); return; } canvas.requestPointerLock(); };
+  // ── THE "PRESS ESC TO SHOW YOUR CURSOR" BUBBLE (user 2026-08-19: "can you prevent this pop up") ── that box
+  // is CHROME's, not ours: it is drawn outside the page on every requestPointerLock() and no page can remove
+  // it, hide it or style it. The one lever the platform gives is the KEYBOARD LOCK API, and it only applies in
+  // FULLSCREEN: with Escape locked, Chrome stops re-showing the pointer-lock bubble and switches to its
+  // hold-Esc-to-exit affordance, which it shows once rather than on every lock.
+  // So this is a no-op in a window and the fix in fullscreen, which is the honest shape of the thing. It is
+  // wrapped because the API is Chromium-only and returns a promise that REJECTS when not fullscreen — an
+  // unhandled rejection every time the player clicked back into a windowed game would be worse than the bubble.
+  const escLock = () => { try { const k = navigator.keyboard;
+    if (k && k.lock && document.fullscreenElement) k.lock(['Escape']).catch(() => {}); } catch (e) {} };
+  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); cursSync(); return; } canvas.requestPointerLock(); escLock(); };
   const setLightMode = (on) => {                        // L: hand the cursor to the light panel, and nothing else
     lightMode = !!on;
     if (lightMode) { try { document.exitPointerLock(); } catch (e) {} if (CDPTEST) { locked = false; crossEl.classList.add('hidden'); } }   // …and under ?cdp there is no real pointer lock to exit (tryLock fakes the other half the same way), so drop the flag by hand or a test can never see the cursor come free
@@ -82,6 +92,10 @@
   const cursEl = $('curs');
   const stackEl = $('stackN');                         // the x2..x8 badge; only redrawn when the count actually changes
   let stackShown = -1;
+  let stackFull = false;   // ── IS THE HELD STACK AT ITS CEILING ── read by the heldCfg write in main/tick-camera.js, which
+                           // encodes it for the badge glyph in render/wgsl/blit.js. A separate latch rather than a test on
+                           // stackShown, because stackShown SUBTRACTS the rock already in the left hand: dual-wielding a full
+                           // eight shows x7, and that stack is still full.
   const cursSync = () => { document.body.classList.toggle('freecur', !locked); if (locked) cursEl.classList.remove('sq');
     $('arwPanel').classList.toggle('hidden', locked || !$('over').classList.contains('hidden'));   // the arrow buttons are only REACHABLE with a free cursor, so that is exactly when they show — but never over the death screen. (Read from the DOM, not `dead`: cursSync runs once during init, BEFORE that binding exists.)
     // ── THE WATER PANEL SHOWS ON THE SAME RULE ── free cursor, never over the death screen, plus the video
@@ -210,6 +224,15 @@
     }
     if (!locked || dead || !e.deltaY) return;
     e.preventDefault();
+    // ── THE WHEEL CYCLES THE BENCH WHILE IT IS OPEN (user 2026-08-19) ── and it takes priority over the hotbar
+    // for the length of the choice. The keyboard note below argued the opposite when the bench was built —
+    // that re-binding the wheel would mean the same flick doing two different things a second apart — and the
+    // user has since asked for exactly that. It is the right call on reflection: while a chooser is up, the
+    // wheel is the obvious way to page through it, and selecting a hotbar slot mid-craft does nothing useful
+    // anyway (both hands are already committed to the gesture and the halves are gone from them).
+    // The arrow keys and A/D still work — this is an addition, not a replacement.
+    if (CRAFT.open) { craftCycle(e.deltaY < 0 ? 1 : -1); return; }   // same sign convention as the hotbar below: scroll UP advances
+
     selSlot = (selSlot + (e.deltaY < 0 ? 1 : slots.length - 1)) % slots.length;   // wraps the WHOLE list now, however long it has grown   // SCROLL UP ADVANCES (user 2026-08-07): up from the axe reaches the pick, then the shovel — the direction the on-screen hint is pointing
   }, { passive: false });
   // (The L relief knob is GONE — the desert relief is fixed at DESREL = 24 in world/window.js, so there is
@@ -217,7 +240,23 @@
   document.addEventListener('keydown', (e) => {
     if (CMD.open) return;                               // the COMMAND LINE has the keyboard (user)
     if (!locked) return;
-    if (e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }   // ── T ── open the command line (user)
+    if (e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }
+    // ── THE STONE AGE BENCH OWNS THE KEYBOARD WHILE IT IS OPEN (user 2026-08-19) ── placed above every other
+    // binding and returning, for the reason the command line above does the same: while a chooser is up, the
+    // arrow keys must cycle IT and not do whatever else they are bound to. Enter commits, Escape backs out.
+    // Left/right AND the scroll wheel (the wheel is handled in the wheel listener above, added on the user's
+    // request 2026-08-19; this block kept the keys). Both work, so neither is the only way in.
+    if (CRAFT.open) {
+      // ── A AND D ARE GONE (user 2026-08-19: "remove the keybinds a and d from selecting the items in the
+      // crafting slider") ── they are the STRAFE keys. Binding them here meant that stepping sideways while
+      // the bench was open silently changed what you were about to make, and this block returns before the
+      // movement handler ever sees the key, so it also stopped the player moving. The arrows and the scroll
+      // wheel are both unambiguous and neither is bound to anything else while a chooser is up.
+      if (e.code === 'ArrowRight') { e.preventDefault(); craftCycle(1); return; }
+      if (e.code === 'ArrowLeft') { e.preventDefault(); craftCycle(-1); return; }
+      if (e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); craftConfirm(); return; }
+      if (e.code === 'Escape') { craftClose(); return; }   // no preventDefault: ESC also releases the pointer lock, and taking that away would trap the cursor
+    }   // ── T ── open the command line (user)
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
     // ── DROPPING OUT OF FLY COSTS NOTHING (user 2026-08-16) ── switching fly OFF in mid-air starts a real

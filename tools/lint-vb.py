@@ -567,6 +567,7 @@ WORKER_DECLS = {          # names the pool writes into its worker preamble by ha
     # worker a second time - the thing that stopped the boot completing when ROCK26D tried it. Both of its
     # inputs ARE registered, which is what keeps this honest.
     'OAKBLOSV', 'OAKWHITV',   # OAKWHITV is the same arrangement for the WHITE blossom variety, derived through BLOSMAPW
+    'OAKLITEV',               # …and the LIGHT GREEN oak variety, derived through OAKLITER (which IS registered) by the same blosRemap
 }
 ROW_DECLS = {             # ...and the ones the ROW worker writes into its own by hand.
     # rivCache/rivScope are per-worker MUTABLE state, so they cannot be a `const X = value`
@@ -729,7 +730,7 @@ UF_DERIVED = {'UF_PHYSB': 'physB', 'UF_PHYSC': 'physC', 'UF_PHYSBOUND': 'physBou
               'UF_HELDCFG': 'heldCfg', 'UF_LGT': 'lgt', 'UF_HURTB': 'hurtB',
               'UF_HURTH': 'hurtH', 'UF_DROPSB': 'dropsB', 'UF_LIFEMOTB': 'lifeMotB',
               'UF_DOF': 'dof', 'UF_HEART': 'heart', 'UF_HURTV': 'hurtV',
-              'UF_BADGE': 'badge'}
+              'UF_BADGE': 'badge', 'UF_VITG': 'vitG', 'UF_PICK3': 'pick3A', 'UF_BADGE2': 'badge2'}
 
 
 def js_ints(js):

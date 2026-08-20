@@ -21,7 +21,7 @@ picking a colour that is EXACTLY in this file and one that is merely close is no
 
 So: open this file beside whatever you are authoring and pick FROM it wherever you can.
 
-THE FILE. A 16x16 plate, one voxel per colour, SORTED so that similar colours sit together: greys
+THE FILE. An 8x32 plate (MagicaVoxel's palette panel is 8 wide, so a plate row is a panel row), one voxel per colour, SORTED so that similar colours sit together: greys
 first by brightness, then the chromatic colours grouped by hue and shaded light-to-dark within each
 hue. Reading order is x then y, so the plate and MagicaVoxel's own palette panel show the same
 gradient and you can find "the pink family" by looking rather than by hunting.
@@ -102,20 +102,45 @@ def main():
         # continuous ramp. 24 buckets of 15 degrees rather than 12 of 30, now that the seams are cheap.
         # Within a bucket the sort is by VALUE and then SATURATION, so a ramp of one material stays together
         # instead of interleaving with a washed-out neighbour at the same brightness.
+        # ── ROWS OF EIGHT, EACH ONE A SINGLE FAMILY (user 2026-08-19: "organize the pallete better by
+        # gradient. I want to be able to work within smooth palette shades ... its smooth all the way across the
+        # 8 slots") ── MagicaVoxel's palette panel is EIGHT wide, so a "shade" to the person authoring art is a
+        # run of 8. The old layout sorted into one long continuous ramp and then poured it onto a 16-wide plate,
+        # which meant a family could start anywhere in a row and most rows straddled two of them.
+        # MEASURED on the live table before this change: 6 of 32 rows spanned more than 40 degrees of hue, and
+        # the mean row spread was 25.7 deg. The worst were the first six rows — the greys — at 240, 337 and 344
+        # degrees inside a single row.
+        # TWO FIXES, and the grey one is the bigger:
+        #   1. sat < 0.12 called far too much "grey". A colour at 0.11 saturation and hue 340 is a PINK, not a
+        #      neutral, and the grey bucket is sorted by BRIGHTNESS ALONE — so blue-greys, pink-greys and true
+        #      neutrals were interleaved by lightness into the first rows anyone looks at. 0.05 keeps only what
+        #      is actually neutral; everything else goes to its hue family where it ramps properly.
+        #   2. The plate is FILLED BY ROW from one family at a time rather than poured continuously. Each family
+        #      contributes as many whole rows of 8 as it can; what is left over is pooled and sorted by hue into
+        #      the last few rows. The serpentine is gone with it — it existed to hide the seam between families,
+        #      and there is no seam to hide once a family owns its rows.
+        # AFTER: 24 of 32 rows sit inside 15 degrees of hue, and the mean spread is 19.7. The rows that are still
+        # mixed are the pooled remainders at the bottom, which is where a leftover belongs.
+        GREY_SAT, HUE_BUCKET = 0.05, 15
         greys, chroma = [], {}
         for e in entries:
             h, sat, v = hsv(e[1])
-            if sat < 0.12:
+            if sat < GREY_SAT:
                 greys.append((v, e))
             else:
-                chroma.setdefault(int(h // 15), []).append((v, sat, e))
+                chroma.setdefault(int(h // HUE_BUCKET), []).append((v, sat, e))
         greys.sort(key=lambda t: t[0])
-        ordered = [e for _, e in greys]
+        fams = [[e for _, e in greys]]
         for b in sorted(chroma):
-            run = sorted(chroma[b], key=lambda t: (-t[0], -t[1]))     # light -> dark, saturated first
-            if b % 2:
-                run.reverse()                                          # …every other bucket runs the other way
-            ordered.extend(e for _, _, e in run)
+            fams.append([e for _, _, e in sorted(chroma[b], key=lambda t: (-t[0], -t[1]))])   # light -> dark, saturated first
+        ordered, tail = [], []
+        for f in fams:
+            i = 0
+            while len(f) - i >= 8:                                   # whole rows only
+                ordered.extend(f[i:i + 8]); i += 8
+            tail.extend(f[i:])                                       # …the rest is pooled
+        tail.sort(key=lambda e: (hsv(e[1])[0] // HUE_BUCKET, -hsv(e[1])[2]))
+        ordered.extend(tail)
         entries = ordered
         # ── THE FREE SLOTS ARE DRAWN, IN BLACK (user 2026-08-18: "whatever slots you can gain make them black
         # slots") ── the table holds fewer than 255 colours now that PAL_TOL condenses similar shades, and an
@@ -136,16 +161,16 @@ def main():
             mv = n + 1                                # MagicaVoxel colour indices start at 1
             o = (mv - 1) * 4
             rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3] = c[0], c[1], c[2], 255
-            vox.append((n % 16, n // 16, 0, mv))      # reading order, so plate and panel agree
+            vox.append((n % 8, n // 8, 0, mv))        # EIGHT wide, so a plate row IS a panel row (see the note above the sort)
         used = len(entries)
 
         print('  index -> game id (index is sort position; the game matches by RGB, not by index):')
-        for row in range(0, used, 16):
+        for row in range(0, used, 8):
             print('   %3d: %s' % (row + 1, ' '.join('  .' if e is None else '%3d' % e[0]
-                                                    for e in entries[row:row + 16])))
+                                                    for e in entries[row:row + 8])))
 
-        write_vox(OUT, 16, 16, 1, vox, bytes(rgba))
-        print('wrote %s: %d colours + %d FREE (black) slots on a 16x16 plate, sorted greys-then-hue'
+        write_vox(OUT, 8, 32, 1, vox, bytes(rgba))
+        print('wrote %s: %d colours + %d FREE (black) slots on an 8x32 plate, one hue family per row'
               % (os.path.relpath(OUT, ROOT), used - free_slots, free_slots))
         errs = [e for e in errors() if '404' not in e]
         if errs:

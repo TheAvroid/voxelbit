@@ -1,6 +1,18 @@
     for (let wk = 0; wk < DES_END; wk++) {
       const B = wbf[wk];
-      if (B.slain) continue;                           // KILLED BY THE PLAYER (user): a slain slot never recycles or re-places — the creature is gone for the session (kill already cleared its stamp; init=false keeps it out of every emit/census)
+      if (B.slain) continue;
+      // ── EVERY CREATURE BLINKS (user 2026-08-19: "implement a universal blinking feature") ── one clock for
+      // all of them, on the state the duck already used, so no creature can end up with two blink timers
+      // disagreeing. Read only by the creatures whose strip actually carries lid variants (BLINK_HAS, at the
+      // emit below); the flag costs nothing on the rest, and a strip that gains variants later starts blinking
+      // with no further wiring. The beat and the gap are the duck's, tuned by hand: 150 ms shut, 2.2-4.8 s
+      // open, re-rolled every time so a herd never falls into step.
+      // AT THE TOP OF THE LOOP ON PURPOSE. It was first placed down beside the emit, and 125 of 546 creatures
+      // froze mid-blink with a deadline already in the past — everything that takes one of the many `continue`
+      // paths between here and there (grid-stamped mammals, culled slots, the recycle branch) simply stopped
+      // advancing its clock. A clock has to tick on every frame the creature exists, not only on the frames it
+      // happens to be drawn.
+      if (B.init && (!B.blinkT || now > B.blinkT)) { B.blink = !B.blink; B.blinkT = now + (B.blink ? 150 : 1100 + Math.random() * 1300); }   // gap HALVED (user 2026-08-19: "double the rate of the blinking") — 2.2-4.8 s -> 1.1-2.4 s. The 150 ms shut is untouched: doubling that too would read as a slow wink rather than a blink                           // KILLED BY THE PLAYER (user): a slain slot never recycles or re-places — the creature is gone for the session (kill already cleared its stamp; init=false keeps it out of every emit/census)
       if (B.rag) continue;                             // RAGDOLLED: the rigid body IS the animal now. Steering, animating or emitting it again would draw a second copy standing where it used to be while the real one falls.
       const desSlot = wk >= MAM_END, desSp = desSlot ? ((wk - MAM_END) / DES_PER) | 0 : 0;
       const DES_FPS = { scorpion: 12 };                   // ── PER-SPECIES ANIMATION RATE ── unlisted species keep the 24 fps house rule
@@ -18,6 +30,7 @@
       // cobra CHARGE makes a grass snake BOLT — same table, same constant, opposite behaviour, no special
       // case. That is the whole of 'harmless': it never enters the bite block at all, so there is no reach,
       // no cooldown and no damage number to tune.
+      const WD_WIN = 4.0, WD_MIN = 3.0, WD_GIVE = 3;   // ── NO-PROGRESS WATCHDOG ── window in seconds, the net displacement that counts as progress inside it, and how many stalled windows before a creature is recycled rather than re-headed. See the block that reads them, above the recycle test
       const DES_DASH = { gecko: 2, desert_mouse: 2, cobra: 2, scorpion: 2, grass_snake: 2 }, DES_DASH_R = 70;
       // ── THE TWO ADMIT ENDS OF THE BIOME GATE ── desertM at or past BIO_DESERT is open sand, at or under
       // BIO_FOREST is closed forest, and the span between them is a treeline nothing spawns in. DESB is 450
@@ -124,6 +137,35 @@
       // reads, so the two can never disagree about where a swarm belongs.
       const beeHome9 = (oakSlot && desBee && desIx < BEE_HIVE_N) ? beeHomeHive(P.x, P.z, tb3, LIFE_OUT) : null;
       const beeStray = !!beeHome9 && B.init && (B.x - beeHome9.wx) * (B.x - beeHome9.wx) + (B.z - beeHome9.wz) * (B.z - beeHome9.wz) > BEE_STRAY_R * BEE_STRAY_R;
+      // ── THE NO-PROGRESS WATCHDOG (user 2026-08-19: "snake getting stuck on trees ... make sure that no life
+      // gets stuck on objects endlessly") ── B.trap, which every escape below is written against, counts only
+      // steps the mover REFUSES. That misses the failure the user is describing: a creature that oscillates
+      // against a trunk has its step ACCEPTED each frame and then bounced back, so it travels nowhere while
+      // trap stays at zero and nothing ever fires. MEASURED over ~40 s in the oak forest, max trap by band:
+      // flyer 0.03, bunny 0.05, skunk 0.13, armadillo 0.24, DESERT (the snake's band) 0.26 — none of them
+      // within an order of magnitude of the 12 s escape, which is exactly what a stall that trap cannot see
+      // looks like. So this watches DISPLACEMENT instead, which cannot be fooled by motion that goes nowhere.
+      // GENTLE FIRST, and that ordering is the whole design: one stalled window re-seats the heading and lifts
+      // trap just past the 0.35/0.5 thresholds the existing steering escapes already watch for, so the creature
+      // gets to solve it with the machinery that is already there. Only after WD_GIVE consecutive stalled
+      // windows does it hand over to the recycle below, and 3 x 4 s lands on the same 12 s the trap escape uses.
+      // NOT WORMS (wantK 2) AND NOT PERCHED BIRDS (wantK 5): a worm legitimately wanders a 3-4 voxel patch for
+      // ten seconds at a time (measured: 24.8 voxels of path inside a 3.4 voxel box) and a cardinal is supposed
+      // to sit still, so both would be permanent false positives.
+      if (B.init && wantK !== 5 && wantK !== 2) {
+        if (B.wdT === undefined) { B.wdT = tb3; B.wdX = B.x; B.wdZ = B.z; B.wdN = 0; }
+        else if (tb3 - B.wdT > WD_WIN) {
+          const wdx = B.x - B.wdX, wdz = B.z - B.wdZ;
+          if (wdx * wdx + wdz * wdz < WD_MIN * WD_MIN) {
+            B.wdN = (B.wdN || 0) + 1;
+            B.om = 0; B.omT = 0; B.tRe = 0;            // drop any pending turn, then face somewhere new outright
+            B.h = (Math.random() * 4) | 0; B.ah = B.h; B.th = Math.random() * 6.2831853;
+            B.trap = Math.max(B.trap || 0, 1.0);       // …and above the 0.35/0.5 the steering escapes watch
+            if (B.wdN >= WD_GIVE) B.trap = 99;         // still nowhere after WD_GIVE windows: let the recycle take it
+          } else B.wdN = 0;
+          B.wdT = tb3; B.wdX = B.x; B.wdZ = B.z;
+        }
+      }
       if (!B.init || far || beeOut || beeStray || (B.trap > 12 && (B.kind < 3 || B.kind === 6 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; a duck/lily wedged ON real water NEVER teleports (the unstick frees it), but a FISH sealed in a rock pocket the escape can't solve does (respawns in open water)
           B.x <= rect.xlo + 4 || B.x >= rect.xhi - 4 || B.z <= rect.zlo + 4 || B.z >= rect.zhi - 4 ||   // the window recentred/shrank under it — this ground is stale garbage, leave it
           (isBaby && !orphan && (B.x - mom5.x) * (B.x - mom5.x) + (B.z - mom5.z) * (B.z - mom5.z) > 40 * 40) ||   // a duckling stranded from its (recycled) mother rejoins her — an ORPHAN has nowhere to rejoin, and must not be teleported to where its mother died
@@ -592,13 +634,42 @@
         // Entry sits BEFORE the state dispatch on purpose: a bee mid-orbit of the hive that just came apart has
         // to drop what it is doing, and so does one sitting on a flower fifty voxels away. It can interrupt any
         // state, which is what makes it read as the hive erupting rather than as five bees finishing an errand.
-        // …and the slot-number split is now the LEDGER's question, not this branch's: a hive break still
-        // recruits only the five that live there, while a bee that has just been SWATTED calls every bee in
-        // earshot (user 2026-08-17). Passing beeSwarm in rather than gating on it here is what lets one
-        // record type do both, and it is why a forager can enter mode 5 at all now.
+        // ── …AND THE CAP IS GONE (user 2026-08-19: "if the player breaks the beehive, have all the bees
+        // nearby attack him") ── the five paragraphs above are the record of why a hive break used to recruit
+        // only beeSwarm, and every one of them is still TRUE — they are just no longer what the user wants.
+        // ALL is the word, so the ledger asks one question of every bee now: are you inside this wreck's own
+        // reach (BEE_BREAK_R for a hive, BEE_RAGE_R for a swat — sim/life/slots.js), and is it still calling.
+        // beeSwarm is therefore no longer passed in and no longer means "who may be angry"; it goes back to
+        // meaning only what its own comment says — which bees LIVE at a hive — and is still read by the orbit
+        // bound below. The three guarantees the cap used to provide are now carried by the two clocks that
+        // always really carried them: BEE_RAGE_S ends every rage, and BEE_BREAK_R is under half the hive
+        // spacing, so a smashed hive calls its own neighbourhood and never the next hive's swarm.
         if (B.beeM !== 5 && tb3 > (B.beeRgRe || 0)) {
-          const rg = hiveRageAt(B.x, B.z, tb3, beeSwarm);
+          const rg = hiveRageAt(B.x, B.z, tb3);
           if (rg) { B.beeM = 5; B.beeRgX = rg.x; B.beeRgZ = rg.z; B.beeT = tb3 + BEE_RAGE_S; rg.n++; }
+        }
+        // ── AND THE HIVE IS WATCHED WHATEVER THE BEE IS DOING (user 2026-08-19: "have the bees also target
+        // the player when the player hits the behive and breaks it") ── the axe posts to the ledger itself,
+        // but only from the one branch of chopSwing whose crosshair id IS a hive voxel, and that branch is
+        // reached far less often than a swing lands. MEASURED at a hive 13 voxels away, aiming dead at it:
+        // five consecutive swings returned `hit` with the hive's own voxel count frozen — the ray met the
+        // crown standing in front of the hive first, so the swing was spent on foliage and tools.js never
+        // asked. An ARROW never asks at all: sim/projectiles.js reaches phChopDecor by its own path with no
+        // hook on it. Both are SILENT BREAKS, and a hive that comes apart in silence is exactly the report:
+        // the player breaks it and no bee ever answers, while swatting one always works because
+        // sim/life/reactions.js fires on EVERY blow rather than on one privileged branch of one weapon.
+        // So the world is ASKED on a clock instead of the weapon being trusted to report — the same answer
+        // beeBloomAt gives for a flower that may no longer be there, and the same guarantee the swat has.
+        // This lived inside the ORBIT branch before, which made it a watch on hives that happened to have a
+        // bee in state 4 at that instant; a bee out at a flower, inbound, or already enraged watched nothing.
+        // Scoped to the SWARM slots — the bees that live at a hive — and to the PLAYER's own hive, which is
+        // the one being chopped and is already cached at BEE_HOME_POLL, so it adds no search. One 125-cell
+        // count per second per swarm bee: exactly what the orbit branch paid, and hiveBroke is idempotent, so
+        // this and the swing racing to the same hive still post one record between them.
+        if (beeSwarm && tb3 > (B.beeHck || 0)) {
+          B.beeHck = tb3 + 1;
+          const hw9 = beeHomeHive(P.x, P.z, tb3, LIFE_OUT);
+          if (hw9 && hiveLeft(hw9) <= hiveFull() * BEE_BREAK_F) hiveBroke(hw9);
         }
         if (B.beeM === 1) {                            // ── FLYING TO A FLOWER ──
           const ddx = B.beeTx - B.x, ddz = B.beeTz - B.z;
@@ -631,17 +702,6 @@
           // puts them there), so for them the bound is the bug and not the safeguard.
           // beeSwarm is a pure function of the slot number, so this cannot drift as slots recycle.
           if (tb3 > B.beeT && !beeSwarm) { B.beeM = 0; B.beeHRe = tb3 + BEE_HIVE_GAP; B.beeRe = tb3 + BEE_LOOK_S; }
-          // ── AND AN ORBITING BEE WATCHES ITS OWN HIVE ── the axe posts to the ledger itself, but an ARROW
-          // does not: sim/projectiles.js reaches phChopDecor by its own path and would take a hive apart in
-          // five shots in complete silence. So do it the way beeBloomAt already checks a flower is still
-          // there — ASK THE WORLD — rather than adding a second hook per weapon that could be forgotten the
-          // next time something learns to break a voxel. One 125-cell count per second per orbiting bee, and
-          // hiveBroke is idempotent, so this and the swing racing to the same hive still fire once.
-          if (tb3 > (B.beeHck || 0)) {
-            B.beeHck = tb3 + 1;
-            const hb = (B.beeTx === undefined || B.beeTy === undefined) ? null : hiveBoxAt(B.beeTx, B.beeTy, B.beeTz);   // an undefined y would make every box test vacuously true and claim the first hive in the 3x3 walk
-            if (hb && hiveLeft(hb) <= hiveFull() * BEE_BREAK_F) hiveBroke(hb);
-          }
         } else if (B.beeM === 5) {                     // ── ENRAGED ──
           // ── HOW THE RAGE ENDS, THREE WAYS, AND ONE OF THEM ALWAYS FIRES ── an attacker that chases forever
           // is a bug, and the bee already has the precedent for both halves of the answer: BEE_GIVE_S ends an
@@ -741,7 +801,12 @@
               if (best !== B.ah) { B.ah = best; B.aTurnT = tb3 + 0.28; } } }
           else if (tb3 > B.aWhim) { B.aWhim = tb3 + 1 + Math.random() * 0.6; if (Math.random() < 0.25) { const t = Math.random() < 0.5 ? 1 : 3; if (walkOK(B.ah + t)) { B.ah = (B.ah + t) & 3; B.aTurnT = tb3 + 0.28; } } }   // each ~1-1.6 s step: 75% keep walking forward / 25% rotate 90° (50/50 left/right) — user
         }
-        const spdTgt = skunkSlot ? (B.aflee ? 48 : 24) : (porcSlot ? (B.aflee ? 18 : 9) : 9);   // SKUNK: 24→48 on flee. PORCUPINE: 9→18 — DOUBLE the pace when the player is near (user). ARMADILLO (else): constant 9. All eased via B.aspd below.
+        // …AND THE MOVEMENT WITH IT. The flamingo fell into the bare `9` here — the only one of these four with
+        // no flee pace at all, so being hit changed its legs and not its ground speed, which is the half of the
+        // report that mattered. Doubled to 18, exactly as the porcupine's 9 -> 18 and the skunk's 24 -> 48 do,
+        // so the three now share one rule rather than the flamingo being the exception nobody wrote down.
+        // Eased on the same ramp below, so a hit accelerates it rather than teleporting it to full speed.
+        const spdTgt = skunkSlot ? (B.aflee ? 48 : 24) : (porcSlot || flamSlot ? (B.aflee ? 18 : 9) : 9);   // SKUNK: 24→48 on flee. PORCUPINE: 9→18 — DOUBLE the pace when the player is near (user). ARMADILLO (else): constant 9. All eased via B.aspd below.
         B.aspd = (B.aspd === undefined) ? spdTgt : B.aspd + (spdTgt - B.aspd) * Math.min(1, dt * 6);   // ease the pace toward the target (bunny-style ramp) so the speed-up/-down isn't an instant snap
         B.th = cardTh(B.ah);                             // HOISTED from below the advance — nothing between the two positions ever read B.th, so the non-arbiter path is unchanged; the brake needs the heading the marcher is ACTUALLY walking this frame, not last frame's
         if (walkOK(B.ah)) {
@@ -768,7 +833,11 @@
           B.ah = best; B.aTurnT = tb3 + 0.28; B.aRelax = 1.4;
         }
         B.animClk = (B.animClk || 0) + dt;   // armadillo walk clock (24 fps, read by stampArmadillo)
-        if (skunkSlot || porcSlot || flamSlot) { const fps = (B.aflee ? 24 : 12) * (skunkSlot ? SKUNK_ANIM_MUL : 1); B.afps = (B.afps === undefined) ? fps : B.afps + (fps - B.afps) * Math.min(1, dt * 6); B.aframe = ((B.aframe || 0) + dt * B.afps) % Math.max(1, skunkSlot ? SKUNK_WALK.length : (porcSlot ? PORCUPINE_WALK.length : FLAMINGO_NFRAMES)); }   // ── AND THE FLAMINGO (user 2026-08-18: "its not playing through its frames") ── fi3 was already reading B.aframe for it, but nothing ADVANCED that clock, so it read a permanent 0 and the bird stood in frame 0. The modulus is its own frame count, and Math.max(1, ...) keeps a species whose art failed to load from dividing by zero   // SKUNK + PORCUPINE (user): ease 12↔24 fps (DOUBLE the walk cycle when fleeing, bunny-style) on a frame-position clock so switching rate never jumps a frame; read by stampSkunk/stampPorcupine   // ── SKUNK AT HALF SPEED (user 2026-08-06) ── 6 fps walking, 12 fleeing; it shared this line with the porcupine so the rate is SPLIT, not halved for both. The 24 fps house rule still holds everywhere else.
+        // ── A STRUCK FLAMINGO BOLTS (user 2026-08-19: "have the flamingo double in speed. not only in fps
+        // (should be 48) but also in movement") ── 48 is the user's own number and it is DOUBLE the 24 fps house
+        // rate rather than double this bird's own 12: a wading flamingo is deliberately half-rate, and doubling
+        // that to 24 was the old flee and is what reads as too slow to be a bolt.
+        if (skunkSlot || porcSlot || flamSlot) { const fps = (B.aflee ? (flamSlot ? 48 : 24) : 12) * (skunkSlot ? SKUNK_ANIM_MUL : 1); B.afps = (B.afps === undefined) ? fps : B.afps + (fps - B.afps) * Math.min(1, dt * 6); B.aframe = ((B.aframe || 0) + dt * B.afps) % Math.max(1, skunkSlot ? SKUNK_WALK.length : (porcSlot ? PORCUPINE_WALK.length : FLAMINGO_NFRAMES)); }   // ── AND THE FLAMINGO (user 2026-08-18: "its not playing through its frames") ── fi3 was already reading B.aframe for it, but nothing ADVANCED that clock, so it read a permanent 0 and the bird stood in frame 0. The modulus is its own frame count, and Math.max(1, ...) keeps a species whose art failed to load from dividing by zero   // SKUNK + PORCUPINE (user): ease 12↔24 fps (DOUBLE the walk cycle when fleeing, bunny-style) on a frame-position clock so switching rate never jumps a frame; read by stampSkunk/stampPorcupine   // ── SKUNK AT HALF SPEED (user 2026-08-06) ── 6 fps walking, 12 fleeing; it shared this line with the porcupine so the rate is SPLIT, not halved for both. The 24 fps house rule still holds everywhere else.
         B.om = 0; B.omT = 0; B.bspd = 0;                 // kill the shared glide/steering — the march above is the motion. Alignment lives in the GRID-STAMP poses (armOffset baked in), not a render offset — the armadillo grid-stamps again (user).
       } else if (B.kind === 2 && bunnySlot) {          // BUNNY (user): its MOTION IS THE BAKED ANIMATION — I apply no glide or turn of my own. The jump bake carries the −6 forward march; the rotate bake carries the 90° yaw. I only choose which sequence to play + follow the terrain. Cardinal grid, editor-identical.
         const DIRb = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -1094,6 +1163,34 @@
             homeTh = Math.atan2(gx9 - B.x, gz9 - B.z); }
           navSteerAir(B, homeTh, leashOut);
         }
+        // ══ THE CLOSER (user 2026-08-19: "when the bees are supposed to attack, they dont target the
+        // player, they cause damage but only if the player just happens to be in the way") ══ the fan above
+        // is the ROUTER and stays the router; this is the last twenty voxels of the chase, and it is the
+        // whole of the fix. The three reasons a goal BEARING cannot land a sting are written out on the
+        // BEE_ATK_* block in sim/life/slots.js; the short of it is that the fan's own KEEP + WANDER terms
+        // outvote the goal term for a bee that has overshot, that 56 vox/s against a 6.5 rad/s yaw clamp is
+        // an 8.6-voxel minimum turn radius round a 6.5-voxel target, and that 22.5° at 12 Hz is 4.6 voxels
+        // of travel per decision. So the closer runs EVERY FRAME instead of on the sense tick, and aims at
+        // an EXACT bearing instead of one of sixteen.
+        // WHAT IT IS NOT: it is not a second mover. It writes the same B.omT the fan writes, through the
+        // same ease and the same ±6.5 clamp, and a speed the same navBrakeAir caps and the same navFitsAir
+        // vetoes. It takes the heading ONLY when the direct line is clear all the way to its goal, so a bee
+        // with a trunk in the way is still routed by the fan and "a bee that cannot get to you simply does
+        // not arrive" is the guarantee it always was — the fish lesson, kept.
+        if (desBee && B.beeM === 5 && BEE_CLOSER) {
+          B.beePh += BEE_ATK_W * dt;                 // ── THE SWARM STAYS A SWARM ── each bee closes on its OWN point of a ring round the player, not on the player, so eight converging bees arrive on eight different bearings instead of stacking into one dot. beePh is already seeded per slot from Math.random and is free-running, so this needs no new field and cannot go stale across a recycle (the seed line clears B.beeM and re-derives it).
+          const rA5 = (5.0 + (MAMFIT.bee ? MAMFIT.bee.hd : 2)) * BEE_ATK_F;   // …and the ring is the STING REACH scaled — CHARACTER FOR CHARACTER the expression the sting test reads, so the geometry the bee flies and the geometry that scores a hit cannot drift when the model's footprint changes
+          const axR = P.x + Math.sin(B.beePh) * rA5, azR = P.z + Math.cos(B.beePh) * rA5;
+          const dxR = axR - B.x, dzR = azR - B.z, dR = Math.sqrt(dxR * dxR + dzR * dzR);
+          B.beeRgSpd = Math.max(BEE_CLOSE_MIN, Math.min(56, dR * BEE_CLOSE_K));   // ARRIVAL, capped at the flyer's OWN cruise. This ramp can only ever SLOW a bee — that is what keeps sprinting (85) an escape and the leash reachable, and it is the half that lets the bee hold a 1.5-voxel turn radius at the ring instead of an 8.6-voxel one.
+          if (dR > 0.05 && !(B.trap > BEE_ATK_TRAP)) {  // …and it stands down while the mover is refusing steps, or it would fight the escape probe below and bank trap until the mercy recycle
+            const thR = Math.atan2(dxR, dzR);
+            const wantR = dR < NAV_LOOK ? dR : NAV_LOOK;
+            B.beeClr = navReachAir(B.x, B.y, B.z, thR, wantR); B.beeWant = wantR;   // stashed for window.__vbBee — the value is computed anyway, so this is two writes and no extra probe
+            if (B.beeClr >= wantR - 0.01)   // THE SAME predicate the fan scores with and the mover applies — clear to the goal (or to the planner's own horizon) or the fan keeps the heading and routes
+              B.omT = Math.max(-6.5, Math.min(6.5, navAng(thR - B.th) * BEE_ATK_TURN));
+          }
+        }
       } else {
         if (tb3 > B.tRe) { B.omT = (Math.random() - 0.5) * 4.0; B.tRe = tb3 + 0.4 + Math.random() * 0.8; }
         const la5 = 13;
@@ -1212,7 +1309,13 @@
       }
       const wormArb = NAVARB && (B.kind | 0) === 2 && !mamSlot;
       const gcW = wormArb ? navGroundAt(B.x, B.z) : 0;   // the worm's OWN travel surface, from the field — one number shared by its brake, its step test and its y servo, so all three agree on where the ground is
-      let mv5 = spd5 * dt, nx5, nz5, wBrk0 = false;   // the frame's step LENGTH as its own variable, so the flyer brake has something to cap (wBrk0: the worm brake clamped it to exactly zero — see below)
+      // ── AND AN ENRAGED BEE FLIES ITS ARRIVAL RAMP INSTEAD OF THE FLAT CRUISE ── spd5 above is the BAND's
+      // speed and stays exactly that; this is one creature in one state substituting its own. For every
+      // other body in the pool spdB5 IS spd5, the identical double, so `spdB5 * dt` is bit-for-bit the
+      // expression that was here and no band's trajectory moves by an ULP. The ramp is a cap, never a
+      // boost — its top is spd5's own 56 — which is what leaves SPRINTING an escape (see BEE_CLOSE_MIN).
+      const spdB5 = (desBee && B.beeM === 5 && B.beeRgSpd !== undefined) ? B.beeRgSpd : spd5;
+      let mv5 = spdB5 * dt, nx5, nz5, wBrk0 = false;   // the frame's step LENGTH as its own variable, so the flyer brake has something to cap (wBrk0: the worm brake clamped it to exactly zero — see below)
       if (NAVBRK && (B.kind | 0) === 6 && B.jumpV === undefined) {   // ── FISH, ON THE BRAKE ── airborne is exempt: a salmon's leap was validated at launch and must fly its arc at full speed.
         mv5 = navBrake2(B, (th7, L7) => fishReach(B, th7, L7), mv5, dt, NAV_FLOOK, NAV_FBCLR, NAV_FBRK2, 6);
         nx5 = B.x + Hx2 * mv5; nz5 = B.z + Hz2 * mv5; }
@@ -1534,8 +1637,14 @@
         // the cruise branch makes, only against a different target. gAir + 3 is the floor so it cannot chase
         // you into the dirt, and B.gRef is still maintained here so the ordinary servo resumes from a live
         // ground memory the instant the rage ends rather than snapping off a stale one.
+        // ── …AND THE SWARM DOES NOT ARRIVE IN ONE PLANE ── the closer already spreads the bees round the
+        // player horizontally; without this they would all do it at exactly P.y + BEE_RAGE_Y and read as a
+        // ring cut out of card. Same per-bee B.beePh, same shape as the hive orbit's own vertical term, and
+        // it is free: ±BEE_ATK_YS about 12 is 9.4-14.6, which the sting box (P.y−3 .. P.y+HEIGHT+3) contains
+        // with 11 voxels to spare, so no bee can ever be spread OUT of a sting it would otherwise land.
         B.gRef = Math.max(gAir, (B.gRef || gAir) - 9 * dt);
-        const tgtR5 = Math.max(gAir + 3, P.y + BEE_RAGE_Y);
+        const tgtR5 = Math.max(gAir + 3, P.y + BEE_RAGE_Y + Math.sin(B.beePh * 1.7 + wk) * BEE_ATK_YS);
+        B.beeGA = gAir; B.beeTgt = tgtR5;              // read by window.__vbBee (sim/life/slots.js) — mode 5 only, so an ordinary bee pays nothing
         B.y += Math.max(-26 * dt, Math.min(30 * dt, (tgtR5 - B.y) * (1 - Math.exp(-4 * dt))));
       } else {
         B.gRef = Math.max(gAir, (B.gRef || gAir) - 9 * dt);   // GROUND MEMORY: rises instantly with terrain, sinks slowly — stays HIGH crossing gorges (no diving in) but settles to the
@@ -1722,9 +1831,9 @@
         if (!B.glowT || now > B.glowT) { B.glow = !B.glow; B.glowT = now + (B.glow ? 2000 : 1500 + Math.random() * 3500); }
         glow = B.glow ? 2.8 : 0;
         if (glow > 0) ffLights.push([B.x - winOX, py3, B.z - winOZ, glow * fadeIn * fadeOut, dp2]);   // this one casts LIGHT — window coords for the tracer
-      } else if (B.kind === 3) {                       // DUCK EYE BLINK (user): the black eye voxel flashes green ~every 2.5-5 s for a beat; glow lane carries 0/1 to the shader
-        if (!B.blinkT || now > B.blinkT) { B.blink = !B.blink; B.blinkT = now + (B.blink ? 150 : 2200 + Math.random() * 2600); }
-        glow = B.blink ? 1 : 0;
+      }
+      if (B.kind === 3) {                              // DUCK EYE BLINK (user): the black eye voxel flashes green ~every 2.5-5 s for a beat; glow lane carries 0/1 to the shader
+        glow = B.blink ? 1 : 0;                       // …the duck's is a GREEN flash in the shader rather than a baked lid frame, so it reads the same clock a different way
       }
       const rx = px3 - cam[0], ry = py3 - cam[1], rz = pz3 - cam[2];
       if (bunnySlot && dp2 < 30 * 30 && bunnyBoxN < bunnyBoxes.length) { const bx9 = bunnyBoxes[bunnyBoxN++]; bx9.active = true; bx9.cx = B.x; bx9.cy = B.y; bx9.cz = B.z; }   // SOLID (user): publish a hitbox for each near bunny so the player can't run through it
@@ -1746,7 +1855,11 @@
       if (emitN >= EMIT_CAP) continue;                 // stage the pose (never emit directly) — the nearest are chosen after the loop
       const o4 = emitN * 16;
       emitBuf[o4] = rx * right[0] + ry * right[1] + rz * right[2]; emitBuf[o4 + 1] = rx * up[0] + ry * up[1] + rz * up[2]; emitBuf[o4 + 2] = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]; emitBuf[o4 + 3] = bScale;
-      emitBuf[o4 + 7] = (desSlot ? (DESERTS[desSp] ? DESERTS[desSp].item0 : 0) : B.kind === 6 ? FISHES[B.fsp || 0].item0 : (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_ITEM0 : BUNNY_JUMP_ITEM0) : (armSlot ? ARMADILLO_ITEM0 : (skunkSlot ? SKUNK_ITEM0 : (porcSlot ? PORCUPINE_ITEM0 : (flamSlot ? FLAMINGO_ITEM0 : WORM_ITEM0))))) : (B.kind === 1 ? FFLY_ITEM0 : (B.dfly ? DFLY_ITEM0 : BFLY_COLS[B.col])))))) + fi3;
+      const _it0 = (desSlot ? (DESERTS[desSp] ? DESERTS[desSp].item0 : 0) : B.kind === 6 ? FISHES[B.fsp || 0].item0 : (B.kind === 4 ? LILY_ITEM0 + (B.col % Math.max(1, LILY_SZ.length)) : (B.kind === 3 ? (isBaby ? DUCKB_ITEM0 : DUCK_ITEM0) : (B.kind === 2 ? (bunnySlot ? (B.bst ? BUNNY_ITEM0 : BUNNY_JUMP_ITEM0) : (armSlot ? ARMADILLO_ITEM0 : (skunkSlot ? SKUNK_ITEM0 : (porcSlot ? PORCUPINE_ITEM0 : (flamSlot ? FLAMINGO_ITEM0 : WORM_ITEM0))))) : (B.kind === 1 ? FFLY_ITEM0 : (B.dfly ? DFLY_ITEM0 : BFLY_COLS[B.col]))))));
+      // ── AND THE BLINK IS ONE OFFSET ── the variants sit immediately after a creature's own frames, so
+      // +nfr selects the lid. Gated on BLINK_HAS because a strip WITHOUT variants would read straight past
+      // its own end into the next creature's frames — a visible corruption, not a missing blink.
+      emitBuf[o4 + 7] = _it0 + fi3 + ((B.blink && BLINK_HAS.has(_it0)) ? nfr : 0);
       emitBuf[o4 + 11] = glow;
       // ── THE POSE THE RENDERER USED ── cached so the RAGDOLL can rebuild this creature's voxels in world
       // space at the instant it dies. Nothing extra is allocated: Xw/Yw/Zw are this frame's own arrays, and

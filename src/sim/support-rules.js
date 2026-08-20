@@ -71,6 +71,32 @@
     for (let i = 1; i < 256; i++) if (foliaTab[i] || floatTab[i]) C[i] = SUP.DRAPE;   // needles, grass, blooms, twigs, cones
     C[SNOW[0]] = SUP.DRAPE; C[SNOW[1]] = SUP.DRAPE;
     for (const v of [WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y]) C[v] = SUP.FLUID; }   // LAST, so fluid can never be overwritten. Water is FLUID whether or not the ice flag has flipped solidTab[WATER_T]: a lake reaches the ground by construction, and a rule that walked it would flood the whole body and never find an anchor.
+  // ── THE MOSS CAP COMES AWAY WITH THE ROCK (user 2026-08-19: "when breaking the rocks with moss on top of it,
+  // the moss doesnt go with the chunk that was broken off. this was already fixed with the snow landing on the
+  // rocks. fix it for the moss.") ── and the fix is the SAME fix, not a second one: mossCap (world/terrain.js)
+  // lays the cap as its OWN voxel in the cell ABOVE each sky-facing rock voxel — deliberately, so the stone
+  // keeps pickOnlyTab and its sun sheen while the green keeps the float-material class. That makes a moss cap
+  // structurally identical to a SNOW cap, and the two places that already hand a bitten or lifted mass its
+  // blanket (the cap scan in phChopDecor, the addS walk in supDrop) both key on snowTab. Moss was simply not in
+  // the set that travels, so it stayed behind for the resolver to pick up as its own little drape component —
+  // which is exactly what "the moss doesnt go with the chunk" looks like.
+  //
+  // WHY A TAB OF ITS OWN RATHER THAN THE floatTab CLASS IT ALREADY WEARS. floatTab carries the PINECONE ids,
+  // and cone ids ARE the pine's bark ids (see the coneTab note in assets/material-tabs.js) — as are the twig
+  // browns. Both carry paths walk STRAIGHT UP from a taken voxel until the material changes, so keyed on
+  // floatTab a shovel bite at the foot of a pine would walk the whole TRUNK into the chunk. Nor snowTab: snow
+  // has melt and thaw queues, the landSnowAt 3-layer cap and the supPush landed-flake skip hanging off it, and
+  // moss wants none of that. One flag, read by the same two loops.
+  //
+  // THE THREE RAMPS BELOW ARE EXACTLY WHAT mossCap CAN WRITE, and none is shared with anything structural:
+  // GRASS is minted through addCol, which never dedupes, so it is distinct from the MOSS ground ramp it was
+  // sampled from; OAKMOSS is palOwn-reserved for this and nothing else; TWIGPINK is filtered off the pink
+  // twigs' own voxels by channel order (r>b>g), so the twig BROWNS — which are bark ids — are not in it.
+  // GRASS also dresses the loose 1-4 voxel STRANDS on the forest floor, and that is a feature rather than a
+  // leak: a strand is one column resting on the soil, so a shovel bite under one left it hanging over its own
+  // hole — the same bug, and it now rides the chunk for the same reason.
+  const mossTab = new Uint8Array(256);
+  for (const i of [...GRASS, ...OAKMOSS, ...TWIGPINK, ...TWIGWHITE]) mossTab[i] = 1;   // TWIGWHITE rides with TWIGPINK: same scatter, same class, only the crown above it differs
   // Which ids may a generation-time orphan sweep DELETE. Derived, not hand-listed: everything except foliage
   // and wood. A canopy can read as detached in its own model and a trunk is the tree, so neither is ever
   // deleted blind; that leaves terrain — stone, strata, dirt, moss, sand, ore — which is what gorge carving

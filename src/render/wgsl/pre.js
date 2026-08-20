@@ -65,6 +65,15 @@
       // fresh vec4 rather than a borrowed lane. Written every frame in main/tick-camera.js from the sliders
       // in the held-item panel (ui/hud.js), so it is never the zero a cold buffer would hand BLIT.
       badge  : vec4<f32>,                                            // x/y = where the badge STARTS, in canvas PIXELS — the held model's own projected top-right corner plus the panel's nudge, computed in main/tick-camera.js. z = glyph size multiplier, w = tilt in radians
+      // ── HUNGER (user 2026-08-19) ── x = 0..4, the same 0..4 hurtV.z carries for health, so BLIT draws ONE
+      // effect twice in two colours rather than two effects. Appended at the very end for the reason badge was.
+      vitG   : vec4<f32>,
+      // ── THE CRAFT PREVIEW ── a third hand, same layout as pick2 (see render/buffers.js UF_PICK3). It hangs
+      // between the two real hands while the STONE AGE bench is open and is hidden (pick3X.w = 0) otherwise.
+      pick3A : vec4<f32>,
+      pick3X : vec4<f32>, pick3Y : vec4<f32>, pick3Z : vec4<f32>,
+      // ── THE OFF-HAND'S STACK BADGE ── same layout as the right hand's badge lane; its COUNT rides in vitG.y (see render/buffers.js).
+      badge2 : vec4<f32>,                                            // x = hunger level 0 (full stomach) .. 4 (empty, and starving). y/z/w spare.
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}
@@ -104,6 +113,15 @@
     // ── SECOND MASK (u.lgt.z) ── lgt.x is FULL: it carries 24 terms and an f32 holds integers exactly only
     // to 2^24, so a 25th bit there would start rounding and flip its neighbours. Extra switches live here.
     fn LG2(b : u32) -> bool { return (u32(u.lgt.z + 0.5) & (1u << b)) != 0u; }
+    // ── NIGHT MASK (u.lgt.w) ── the NIGHT panel's own switches (L opens it; ui/hud.js owns the mask and
+    // main/tick-camera.js publishes it). lgt.w is where these live rather than a new uniform field because it
+    // was the buffer's DECLARED SPARE — tick-camera wrote a literal 0 into it every frame and nothing read it —
+    // so the whole panel costs no struct churn and cannot shift a single downstream offset, which is the
+    // failure this codebase pays for most dearly. Bits, in panel order:
+    //   0 moonlight (a harder moon key + a dimmer isotropic night floor, so moon shadows READ)
+    //   1 moon phase (the baked crescent turned to face the sun instead of double-shaded)
+    //   2 milky way   3 star twinkle   4 firefly light   5 shooting stars
+    fn NG(b : u32) -> bool { return (u32(u.lgt.w + 0.5) & (1u << b)) != 0u; }
     // ── BACK-LIT FOLIAGE ── BAKED IN at 30% of the swept strength (user 2026-08-08), so these are constants
     // and not a uniform: no slider, no keybind, no per-frame float. FOL_LOBE is the forward-lobe exponent and
     // it matters more than the strength does — it sets how wide an arc around the sun the glow fires over, and
@@ -129,13 +147,30 @@
       return f32(h ^ (h >> 16u)) / 4294967296.0;
     }
     fn isMoon() -> bool { return (u32(u.fx) & 8u) != 0u; }          // at night u.sunDir carries the MOON direction
+    // ── HOW FAR INTO THE NIGHT ── 1 deep at night, 0 by day, read off the TRUE sun elevation and eased over
+    // EXACTLY the window dayScale() below uses. Every night term multiplies through this instead of branching
+    // on isMoon(), which is the standing rule here: isMoon() flips the instant the moon clears the horizon, so
+    // a light term keyed on it JUMPS at the dusk and dawn swaps. This cannot — at the swap sy is ≈ -0.05, where
+    // the smoothstep has already reached 1 and this is already 0, so a term scaled by it is bit-identical to
+    // the unscaled one on both sides of the flip. Declared BELOW isMoon(): WGSL has no forward declarations.
+    fn nightK() -> f32 { return 1.0 - smoothstep(-0.25, -0.05, select(u.sunDir.y, -u.sunDir.y, isMoon())); }
+    // ── THE NIGHT'S AMBIENT FLOOR ── the faint isotropic top-up every surface gets no matter what reaches
+    // it. By day it is a rounding error next to the sun; at night it is the LARGEST term on a shadowed voxel,
+    // which is exactly why moon shadows used to sit at ~5:1 against a moonlit face and read as tint rather
+    // than as shadow. Night bit 0 takes it down, and the moon key up, so the ratio opens to ~15:1.
+    const AMB_FLOOR : vec3<f32> = vec3<f32>(0.012, 0.013, 0.016);
+    const MOON_FLR : f32 = 0.42;                                     // …what is left of that floor deep at night with bit 0 on
+    const MOON_AMB : f32 = 0.62;                                     // …and of dayScale()'s own night floor, i.e. of the sky glow
+    const MOON_KEY : f32 = 1.34;                                     // …against a moon key raised this much, so a LIT face barely moves and a shadowed one falls away
+    fn ambFloor() -> vec3<f32> { return AMB_FLOOR * mix(1.0, MOON_FLR, nightK()); }
     fn dayScale() -> f32 {                                           // global light level — SMOOTH through the sun↔moon swap (user: no abrupt jump at dusk 18:13 / dawn 5:46)
       let sy = select(u.sunDir.y, -u.sunDir.y, isMoon());            // TRUE sun elevation: in moon mode u.sunDir is the moon (opposite point), so −u.sunDir.y is the real sun — continuous across the swap
       let dayVal = 0.025 + 0.975 * smoothstep(-0.10, 0.28, sy);      // daytime curve
-      return mix(0.0135, dayVal, smoothstep(-0.25, -0.05, sy));      // ease from the moon floor (0.0135) up to the day curve across twilight — no step where moonMode flips
+      let mf = 0.0135 * mix(1.0, MOON_AMB, nightK());   // the MOONLIGHT contrast pass takes the isotropic sky glow down (BAKED IN, user 2026-08-19: "bake in the moonlight effect. remove it from the list" — it was night bit 0); nightK() is 0 by the swap so the day side of this is untouched
+      return mix(mf, dayVal, smoothstep(-0.25, -0.05, sy));           // ease from the moon floor (0.0135) up to the day curve across twilight — no step where moonMode flips
     }
     fn sunTint() -> vec3<f32> {                                      // sun goes amber at the horizon; the moon is cool silver-blue
-      if (isMoon()) { return vec3<f32>(0.40, 0.50, 0.78) * 0.198 * smoothstep(0.0, 0.15, u.sunDir.y); }   // moonlight follows the darker nights: 0.44 → 0.352 → 0.264 → 0.198
+      if (isMoon()) { return vec3<f32>(0.94, 0.95, 1.00) * 0.198 * smoothstep(0.0, 0.15, u.sunDir.y) * mix(1.0, MOON_KEY, nightK()); }   // WHITE moonlight (user 2026-08-19: "make it cast white light from it") — was a deep blue 0.40/0.50/0.78, which is the stylised night-blue every game reaches for; 0.94/0.95/1.00 is a faint cool white instead, so surfaces keep their OWN colour under it and only the exposure says night. The 0.198 magnitude is untouched, so nothing gets brighter — the light only stops being blue. Moonlight follows the darker nights: 0.44 -> 0.352 -> 0.264 -> 0.198   // …and the moonlight pass lifts the KEY while ambFloor()/dayScale() drop everything around it, which is a contrast change and very nearly not a brightness one — the darker nights the four steps above bought are the thing this must not undo
       let warm = mix(vec3<f32>(1.0, 0.42, 0.18), vec3<f32>(1.0, 1.0, 1.0), smoothstep(0.02, 0.38, u.sunDir.y));
       return SUN_COL * warm * smoothstep(-0.05, 0.10, u.sunDir.y);
     }
@@ -156,8 +191,18 @@
       let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale();
       let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * nw.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());   // warm ground bounce on side/under faces — without it side faces are sky-only (cool + dark) and the axe handle read grey-brown
       let skyOcc = select(1.0, u.heldCfg.y, LG(1u));                 // gated on the AO debug bit so it switches WITH the world's AO rather than against it
-      return direct + (skyIrr + bounce) * skyOcc + vec3<f32>(0.012, 0.013, 0.016);
+      return direct + (skyIrr + bounce) * skyOcc + ambFloor();   // …ambFloor(), not the constant: night bit 0 takes this down with the world's, or a carried tool would float free of the ground it stands over the moment the panel deepens the night
     }
+    fn vn2(p : vec2<f32>) -> f32 {
+      let f = floor(p); let i = vec2<i32>(f);
+      var w = p - f; w = w * w * (3.0 - 2.0 * w);
+      let a = mix(ih3(i.x, i.y, 7), ih3(i.x + 1, i.y, 7), w.x);
+      let b = mix(ih3(i.x, i.y + 1, 7), ih3(i.x + 1, i.y + 1, 7), w.x);
+      return mix(a, b, w.y);
+    }
+    // ↑ MOVED UP from beside caust(): the MILKY WAY in skyColor() below clumps on it, and WGSL has no forward
+    // declarations — a call above the definition is a compile error, which in this codebase is a black screen.
+    // Byte-for-byte the same function; caust() still calls it from where it always did.
     @group(0) @binding(14) var moonTex : texture_2d<f32>;            // sampled only by skyColor — pipelines that never call it drop these bindings
     @group(0) @binding(15) var moonSamp : sampler;
     fn skyBase(rd : vec3<f32>) -> vec3<f32> {
@@ -172,6 +217,19 @@
       c += vec3<f32>(0.62, 0.24, 0.08) * sethue * pow(max(dot(rd, sdh), 0.0), 3.0) * clamp(1.0 - abs(rd.y) * 2.2, 0.0, 1.0);   // sunrise/sunset band
       return c;
     }
+    // ── SHOOTING-STAR TUNING ── the whole of "rare enough to feel like an event". Two slots at one chance per
+    // MET_PER, 55% of those chances taken, is a meteor about every 42 seconds of night: roughly ten across one
+    // night of the 20-minute cycle. MET_Q is the BLOCK — 0.004 rad is about 0.23 deg, i.e. ~6 px across at 1080p
+    // and a 70 deg field, which is a chunky pixel rather than a dot. Raise MET_Q and the streak gets blockier.
+    const MET_PER : f32 = 8.0;   // HALVED RATE (user 2026-08-19: "decrease the rate of shooting stars by 50%") — 4.0 -> 8.0 doubles each slot's window, so with the slot COUNT unchanged at 8 the meteors stay evenly spaced and simply arrive half as often     // window per slot. With 8 slots, a 1.4 s life and 80% of windows taken, roughly 2.2 meteors are alive somewhere in the sky at any moment — about one in five frames has one IN VIEW, because a 72-degree view is a small part of a sphere. That last factor is the whole reason the first attempt (2 slots, 46 s) was invisible: it put one meteor every 42 s ANYWHERE, i.e. perhaps one in view a minute.
+    const MOON_PIV : f32 = 0.52;   // the photo's own mid-tone: contrast is expanded ABOUT this, not about black
+    const MOON_CON : f32 = 1.75;   // …and by this much
+    const MOON_MID : f32 = 0.50;   // …landing on THIS output level. Separating the input pivot from the output mid-point is what keeps the gain from simply pushing the face into the ceiling: at PIV 0.46 / CON 2.30 with no offset, 34% of the disc clipped at 255 and the highlands went featureless — brighter, but no more legible than before. See the note at moonRGB
+    const MET_LIFE : f32 = 1.40;
+    const MET_Q : f32 = 0.0040;
+    const MET_LEN : i32 = 30;     // LONGER (user 2026-08-19: "thin lines") — a streak reads as a line by being long against its width, not by being wide
+    const MET_W0 : f32 = 0.75;     // half-width in cells at the HEAD…
+    const MET_W1 : f32 = 0.05;     // …and at the tip of the tail. Linear between: see the taper in the draw below. 2.35/0.30 -> 0.75/0.05 (user: "thin lines"): the head was nearly 5 cells across and read as a block with a thread behind it
     fn skyColor(rd : vec3<f32>) -> vec3<f32> {
       var c = skyBase(rd);
       let realSun = select(u.sunDir, -u.sunDir, isMoon());            // the ACTUAL sun (u.sunDir carries the up-body; −it is the down-body). Both are continuous across the dusk/dawn swap.
@@ -179,26 +237,153 @@
       { let s = dot(rd, realSun); let up = smoothstep(-0.03, 0.06, realSun.y);   // ── SUN disc: only while the sun is above the horizon; it sinks below the map at dusk and rises at dawn (no pop) ──
         c += SUN_COL * 6.0 * smoothstep(0.999939, 0.999962, s) * up;  // hard-edged disc, halved
         c += SUN_COL * 0.5 * pow(max(s, 0.0), 2600.0) * up; }         // GLARE — a tight corona hugging the disc
-      { let s = dot(rd, realMoon); let up = smoothstep(-0.03, 0.06, realMoon.y);   // ── MOON disc: a real NASA photograph, only while the moon is above the horizon — rises as the sun sets ──
+      // ── THE MOON IS AN OBJECT, NOT A GLOW (user 2026-08-19: "the moon seems to be transparent, make the moon
+      // completely solid") ── it used to be an ADDITIVE c += mt * ..., so whatever the sky already held
+      // showed straight through it. Worse, the whole star / milky way / nebula / meteor block below runs AFTER
+      // this one and adds on top, so stars came out IN FRONT of the moon. Both are fixed by the same move:
+      // resolve the disc's colour and coverage here, then COMPOSITE it over everything at the end of the sky,
+      // with mix() rather than +. Inside the disc the sky is replaced, which is what opaque means.
+      var moonRGB = vec3<f32>(0.0);
+      var moonCov = 0.0;
+      { let s = dot(rd, realMoon); let up = smoothstep(-0.03, 0.06, realMoon.y);   // only while the moon is above the horizon — rises as the sun sets
         let md = smoothstep(0.999742, 0.999787, s);
         if (md > 0.001) {
-          let T = normalize(cross(realMoon, vec3<f32>(0.0, 1.0, 0.0)));
-          let B = cross(realMoon, T);
-          let uv = vec2<f32>(dot(rd, T), dot(rd, B)) * (0.5 / 0.0217) + vec2<f32>(0.5);
-          let mt = textureSampleLevel(moonTex, moonSamp, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
-          let du = uv * 2.0 - vec2<f32>(1.0);                        // disc-local coords → sphere normal for the PHASE terminator
-          let nz = sqrt(max(0.0, 1.0 - du.x * du.x - du.y * du.y));
-          let ph = u.rdist.y * 6.2831853;                            // 0 = new, pi = full
-          let lam = max(dot(vec3<f32>(du.x, du.y, nz), vec3<f32>(sin(ph), 0.0, -cos(ph))), 0.0);
-          c += mt * 4.5 * md * up * (0.035 + 0.965 * lam);           // lambert-lit lunar sphere + a whisper of earthshine on the dark side
+          // ── THE PHOTO IS ALREADY A FULL MOON, SO IT IS SAMPLED STRAIGHT ── moon.webp (user 2026-08-19)
+          // replaced moon.jpg, which was a waning crescent with its terminator and earthshine baked in and
+          // needed a blur-and-high-pass in here to pass for full. Measured on the new file: 68.8% of it sits
+          // above 40/255 and its four quadrants are within 92-113 of one another, i.e. evenly lit across the
+          // face. All of that reconstruction is therefore gone — four texture taps and an unsharp mask with it.
+          // No synthetic terminator either: the disc is drawn as the photograph shows it, at every hour of
+          // every night, which is what "make the moon a full moon" asks for.
+          let TS = normalize(realMoon * dot(normalize(vec3<f32>(realSun.x, 1e-4, realSun.z)), realMoon) - normalize(vec3<f32>(realSun.x, 1e-4, realSun.z)));
+          let B = cross(realMoon, TS);
+          let uv = clamp(vec2<f32>(dot(rd, TS), dot(rd, B)) * (0.5 / 0.0217) + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+          let mt = textureSampleLevel(moonTex, moonSamp, uv, 0.0).rgb;
+          // A gentle limb roll only, so the edge does not read as a cut-out sticker. No lambert term: a real
+          // full moon is nearly flat across the face (Lommel-Seeliger backscatter straight at the observer),
+          // which is exactly why it reads as a disc and not as a ball.
+          let du = uv * 2.0 - vec2<f32>(1.0);
+          let r2 = clamp(du.x * du.x + du.y * du.y, 0.0, 1.0);
+          let limb = 0.86 + 0.14 * sqrt(1.0 - r2);
+          // ── CONTRAST, OR THE CRATERS ARE NOT THERE (user 2026-08-19: "theres not enough contrast in the
+          // moon. I cant see the craters") ── the photograph is a faithful full moon and that is exactly the
+          // problem: a real full moon is lit straight down the line of sight, so there are no shadows in it and
+          // the maria differ from the highlands by very little. Measured off the rendered disc before this: a
+          // median of 229/255 with the 25th percentile at 207, i.e. three quarters of the face inside 22 levels.
+          // So expand about the disc's own mid-tone. MOON_PIV is that mid-tone in linear terms and MOON_CON the
+          // gain; the pivot matters more than the gain, because expanding about 0 would just brighten and clip.
+          let mlum = max(max(mt.r, mt.g), mt.b);
+          let mcon = clamp((mlum - MOON_PIV) * MOON_CON + MOON_MID, 0.02, 1.0);
+          let mtint = mt / max(mlum, 0.001);                          // keep the photo's own (near-neutral) hue, drive only the level
+          moonRGB = clamp(mtint * mcon * limb, vec3<f32>(0.0), vec3<f32>(1.0));
+          moonCov = md * up;
         }
       }
       let night = 1.0 - smoothstep(-0.16, 0.02, realSun.y);          // stars fade in on the real sun elevation — continuous across the swap (no pop)
-      if (night > 0.02 && rd.y > 0.02) {                             // stars
+      // ── THE HARD LINE ACROSS THE SKY (user 2026-08-19: "there also seems to be a cutoff in the nightsky") ──
+      // this gate used to be rd.y > 0.02, so every pixel below about one degree of elevation got NO stars, no
+      // band and no meteors while the pixel just above it got all three. That is a horizontal seam straight
+      // across the lower sky, and it is the cutoff. The gate now reaches below the horizon and hz fades the
+      // whole set out smoothly instead — which is also what the real sky does, since atmospheric extinction
+      // thickens towards the horizon and stars die out before they reach it.
+      let hz = smoothstep(-0.02, 0.17, rd.y);
+      if (night > 0.02 && rd.y > -0.02) {                            // ── EVERYTHING THAT ONLY EXISTS AT NIGHT ── stars, the milky way, the meteors, all behind ONE compare on a value that is exactly 0 for the whole of the day. A day sky pixel pays that compare and nothing else, which is what makes the night panel free at noon.
+        // ── THE MILKY WAY, BAKED IN (user 2026-08-19: "bake in the fog in the night sky", then "I meant remove
+        // the milky way from the PANEL") ── the band itself stays exactly as it was; only its switch is gone.
+        // MW_N is the band's POLE, so dot(rd, MW_N) is 0 along its centre line. Tilted well off vertical so the
+        // band climbs out of the horizon at an angle rather than ringing the sky like a hoop, and written out
+        // ALREADY NORMALISED because a const initialiser must be a const-expression and not every driver
+        // const-folds normalize(). Bit 2 is retired; nothing reads the band value outside this block any more, because
+        // the star threshold stopped leaning on it when the band stopped seeding stars.
+        const MW_N : vec3<f32> = vec3<f32>(0.3603, 0.7807, -0.5105);
+        const MW_T : vec3<f32> = vec3<f32>(0.8171, 0.0, 0.5767);      // = normalize(cross(MW_N, up))
+        const MW_B : vec3<f32> = vec3<f32>(0.4502, -0.6250, -0.6379); // = cross(MW_N, MW_T)
+        {
+          let mwd = dot(rd, MW_N);
+          let mwp = vec2<f32>(dot(rd, MW_T), dot(rd, MW_B));          // an in-band coordinate to clump on
+          let band = exp(-mwd * mwd * 24.0);                          // about 12 degrees to half strength
+          let clump = 0.45 + 0.40 * vn2(mwp * 4.7) + 0.30 * vn2(mwp * 12.3);
+          let rift = 1.0 - 0.60 * smoothstep(0.30, 0.78, vn2(mwp * 2.9 + vec2<f32>(11.3, 4.7)));   // the dark dust lane that splits the real band down its length
+          c += vec3<f32>(0.0205, 0.0216, 0.0300) * band * clump * rift * night * hz;   // the "fog": ~3.4x its original strength (user 2026-08-19: "add more fog")
+        }
+        // ── AND IT NO LONGER SEEDS STARS (user 2026-08-19: "the milky way seems to add more stars to the sky,
+        // prevent that from happening") ── the threshold used to fall inside the band (0.9985 - 0.0011 * band)
+        // so the band carried a denser star field as well as its glow. That was deliberate once, on the theory
+        // that a real band IS unresolved stars, but it is not what was wanted: the band now contributes ONLY
+        // its haze, and the star field is uniform across the whole sky whether the band is on or off.
+        let thr = 0.9985;
         let cc = vec3<i32>(rd * 480.0);
         let hh = ih3(cc.x, cc.y, cc.z);
-        if (hh > 0.9985) { c += vec3<f32>(0.9, 0.93, 1.0) * (hh - 0.9985) * 500.0 * night; }
+        if (hh > thr) {
+          // ── TWINKLE (night bit 3) ── on a SECOND hash of the same cell. Not on hh: hh only spans the 0.0015
+          // above the threshold, so every star would share one phase and the whole sky would pulse together.
+          // ── AND IT HAS TO CLEAR A NOISE FLOOR IT DOES NOT SET (user 2026-08-19: "star twinkle doesnt seem to
+          // do anything") ── it was +/-28% at 0.14-0.5 Hz, held down out of a fear of blinking pixels. MEASURED
+          // why that reads as nothing: TAA jitters the camera sub-pixel every frame, so the cell index flips between
+          // neighbouring cells and a star pixel ALREADY varies with a temporal standard deviation of 7.8/255
+          // with twinkle switched off entirely. Switched on at 28% the figure was 7.9 — the signal sat under
+          // the jitter. Proved it was wiring-clean rather than dead by amplifying it to +/-50% at 8 rad/s,
+          // which took the same measurement to 35.8. So the amplitude is the whole bug: +/-55% against a
+          // mean-66 star is about +/-36, roughly 3x the floor, and 0.35-1.0 Hz stays far slower than TAA's
+          // 8-frame (~0.13 s) window, so it resolves as a shimmer rather than half-averaging into a flicker.
+          let tp = ih3(cc.x + 17, cc.y + 5, cc.z - 23);
+          let tw = 0.45 + 0.55 * sin(u.time * (0.75 + tp * 1.35) + tp * 62.83);   // BAKED IN (user 2026-08-19: "bake in the star twinkle and remove it from the panel") — it was night bit 3, and the select() with it   // SLOWER (user 2026-08-19: "make the star twinkle slower") — 2.2-6.2 rad/s was a 1.0-2.9 s period and read as busy; 0.75-2.10 is 3.0-8.4 s. The AMPLITUDE is what clears TAA's jitter floor, not the rate, so slowing it costs no visibility
+          c += vec3<f32>(0.9, 0.93, 1.0) * (hh - thr) * 1000.0 * night * tw * hz;   // 2x (user 2026-08-19: 'double the brightness'). It is the TERM that doubles, not the pixel: aces() and the 1/2.2 encode downstream absorb it, so the brightest star moves up without ever reaching 255 - a star that saturates loses its colour and its size cue, which is the failure mode the moon disc hit
+        }
+        // ── SHOOTING STARS (night bit 5, user 2026-08-19: "throw in some pixelated shooting stars") ──
+        // STATELESS. Every property of an event is hashed from the index of the window it falls in, so every
+        // pixel and every frame agree on it without a byte of storage, a buffer or a JS tick — and one survives
+        // a reload of the page mid-flight. Two slots, half a period out of step so they cannot land on top of
+        // each other; about 55% of windows fire, so the sky is empty far more often than not.
+        // ── MORE OF THEM (user 2026-08-19: "I dont see any shooting stars in the night sky. maybe increase the
+        // count") ── 2 slots at MET_PER 46 with 55% taken was one meteor every ~42 s of night, i.e. perhaps ten
+        // in a whole night and easily none in the minute anybody happens to look up. 5 slots evenly spaced
+        // across a 17 s window is about one every 3 s: frequent enough to be a feature you notice rather than
+        // one you have to be told about, and still nothing like a continuous stream.
+        {                                                        // BAKED IN (user 2026-08-19: "disable the panel completely on the l toggle") — it was night bit 5, the last switchable one; with no panel there is nothing left to read a mask, so the feature is simply on
+          for (var mi = 0; mi < 8; mi = mi + 1) {
+            let off = f32(mi) * MET_PER / 8.0;
+            let ei = floor((u.time + off) / MET_PER);
+            let k0 = i32(ei) * 7919 + mi * 104729;
+            if (ih3(k0, 3, 11) < 0.20) { continue; }
+            let tau = u.time + off - ei * MET_PER - ih3(k0, 7, 29) * (MET_PER - MET_LIFE);   // somewhere inside the window, never on the beat
+            if (tau < 0.0 || tau > MET_LIFE) { continue; }
+            let el = 0.22 + ih3(k0, 13, 5) * 0.62;                    // where it comes in: clear of the horizon haze, clear of the zenith
+            let az = ih3(k0, 23, 41) * 6.2831853;
+            let ce = cos(el);
+            let A = vec3<f32>(ce * sin(az), sin(el), ce * cos(az));
+            let R = normalize(cross(A, vec3<f32>(0.0, 1.0, 0.0)));
+            var D = vec3<f32>(0.0, -1.0, 0.0) + R * (ih3(k0, 37, 53) * 1.6 - 0.8);   // meteors FALL — down, with a lean, and the lean is what stops a dozen of them looking like one animation
+            D = normalize(D - A * dot(D, A));                         // re-seated into the plane through A, so the path is a great circle and the rate below is an honest angular speed
+            let Bm = cross(A, D);
+            let thH = (0.42 + ih3(k0, 59, 67) * 0.34) * tau;          // where the HEAD is now, as an angle from A
+            // ── THE BLOCKS ── the streak is deliberately NOT a line. rd is resolved into the path's own frame
+            // and then SNAPPED to a grid of MET_Q-radian cells, so what reaches the screen is a chain of
+            // hard-edged squares stepping across the sky. 10 cm voxels on the ground and the same discipline
+            // overhead (user: "pixelated"); a smooth antialiased streak is the thing this must not be.
+            let qb = floor(dot(rd, Bm) / MET_Q + 0.5);                // across the path, in whole cells
+            let qa = floor(atan2(dot(rd, D), dot(rd, A)) / MET_Q + 0.5);   // and along it
+            let kb = i32(round((thH - qa * MET_Q) / MET_Q));          // how many cells BEHIND the head this one is
+            if (kb < 0 || kb >= MET_LEN) { continue; }
+            // ── THE WIDTH TAPERS, IT DOES NOT STEP (user 2026-08-19: "have the shooting star have a smooth
+            // linear transition from the head of the star to the tail. it looks like the head is just a block,
+            // with the tail being much thinner") ── it was a two-state test: three cells across while kb < 2,
+            // one cell after, i.e. a blunt block that dropped to a hairline at a hard edge two cells in. The
+            // half-width now falls LINEARLY from MET_W0 at the head to MET_W1 at the tip, and the comparison is
+            // against that continuous value, so the silhouette narrows a cell at a time down its length.
+            // Still snapped to the MET_Q grid, so it stays a chain of blocks rather than becoming a smooth
+            // antialiased wedge — "pixelated" was the original ask and the taper must not undo it.
+            let tfrac = f32(kb) / f32(MET_LEN);
+            let hw = MET_W0 + (MET_W1 - MET_W0) * tfrac;
+            if (abs(qb) > hw) { continue; }
+            if (ih3(i32(qa), 909, k0) < 0.10 + 0.34 * f32(kb) / f32(MET_LEN)) { continue; }   // and cells drop out down the tail, so it frays instead of stopping on a ruler line
+            let fade = pow(1.0 - tfrac, 2.4) * (0.35 + 0.65 * clamp((hw - abs(qb)) * 1.6, 0.0, 1.0));   // ── BRIGHT AT THE HEAD, DIM AT THE TAIL (user 2026-08-19, with a reference image) ── the exponent is the gradient: 1.5 held most of the streak near full and then fell off a cliff, 2.4 falls away from the head immediately so the head reads as the source and the tail as what is left of it. The second factor dims ACROSS the line too, so a one-cell-wide tail still has a soft edge rather than a hard one
+            let lf = smoothstep(0.0, 0.08, tau) * (1.0 - smoothstep(MET_LIFE * 0.70, MET_LIFE, tau));   // strikes in, burns out
+            c += vec3<f32>(1.00, 0.26, 0.030) * (3.1 * fade * lf * night * hz);   // BRIGHT ORANGE (user 2026-08-19). 9.0 was too hot to BE orange: aces() desaturates highlights, so the head clipped to near-white (measured ~255/250/195) and only the dim tail kept any hue — the opposite of the ask. 3.1 sits under that knee, so the whole streak stays orange while still reading as emissive against a sky whose stars peak near 96.   // BRIGHT ORANGE AND EMISSIVE (user 2026-08-19). The near-white 1.0/0.95/0.86 was the colour of a real meteor and read as another star; this is unmistakably orange. 2.3 -> 9.0 so the head clips to white through aces() while the tail stays orange, which is what "emissive" looks like on this pipeline — a hot core in a coloured envelope, exactly how the lava and the sparks are drawn
+          }
+        }
       }
+      c = mix(c, moonRGB, moonCov);                                  // ── THE DISC GOES ON LAST ── over the stars, the milky way, the nebulas and the meteors, so none of them can be seen through it. mix() and not +=: inside the disc the sky is REPLACED, which is what "solid" means.
       return c;
     }
     fn aces(x : vec3<f32>) -> vec3<f32> {
@@ -214,13 +399,6 @@
       var nx_ = 0.0; var nz_ = 0.0; var ny_ = 1.0;
       ${GERSTN_WGSL}
       return normalize(vec3<f32>(nx_, max(ny_, 0.30), nz_));
-    }
-    fn vn2(p : vec2<f32>) -> f32 {
-      let f = floor(p); let i = vec2<i32>(f);
-      var w = p - f; w = w * w * (3.0 - 2.0 * w);
-      let a = mix(ih3(i.x, i.y, 7), ih3(i.x + 1, i.y, 7), w.x);
-      let b = mix(ih3(i.x, i.y + 1, 7), ih3(i.x + 1, i.y + 1, 7), w.x);
-      return mix(a, b, w.y);
     }
     fn caust(p : vec2<f32>) -> f32 {                                 // CAUSTICS — two drifting noise fields; their coincidence lines are the bright webs
       let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.275, u.time * 0.17));    // caustic drift halved with the waves
