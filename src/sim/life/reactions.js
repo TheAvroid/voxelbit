@@ -216,7 +216,14 @@
       || (shaft && (B.kind | 0) === 5);
     // …and the WORM band goes the same way (user): something that size surviving three
     // blows reads as absurd for the same reason the butterflies were exempted.
-    const frail = best < FLY_END || (best >= WORM_0 && best < WORM_END);
+    // ── AND EVERY BUG IN THE DESERT BAND, THE BEE INCLUDED (user 2026-08-21: "make bees 1 hit like the other
+    // insects. make all insects one hit") ── the FLY_0 band the rule started with holds only the butterflies,
+    // moths, fireflies and dragonflies, so the ant, the housefly, the bee, the scorpion and the spider were still
+    // riding the desert band's default three and the bee read as the exception to a rule the player had already
+    // been taught. They are the same size class as everything the two lines above exempt. The list is DES_FRAIL
+    // (sim/life/slots.js) — by NAME, because the band's bugs are not contiguous; see the note there.
+    const desFrail = best >= MAM_END && best < DES_END && !!DES_FRAIL[((DESERTS[((best - MAM_END) / DES_PER) | 0] || {}).name)];
+    const frail = best < FLY_END || (best >= WORM_0 && best < WORM_END) || desFrail;
     if (!B.dying && !oneBlow && !frail) {
       B.hits = (B.hits | 0) + 1;
       B.hurtAt = performance.now();                    // …and WHEN, which is what keeps the population controller from retiring it mid-fight (see the grace in main/tick-creatures.js)

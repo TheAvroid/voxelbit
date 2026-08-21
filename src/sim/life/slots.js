@@ -169,6 +169,20 @@
   // The desert MOUSE is deliberately NOT here: it has two homes, which is a different thing and is expressed
   // by DES_OAK in tick-creatures giving it a SHARE of its own slots.
   const DES_OAKONLY = { bee: 8, grass_snake: 5 };
+  // ── WHO DIES TO ONE BLOW, WHATEVER SWUNG IT (user 2026-08-21: "make bees 1 hit like the other insects. make
+  // all insects one hit") ── read by `frail` in sim/life/reactions.js, which already exempted the FLY_0 flyers
+  // and the worms on exactly this argument: a creature that size surviving three blows from a shovel reads as
+  // absurd. This is the DESERT band's half of that list, and it has to be a NAME table rather than a slot range
+  // because the band's bugs are not contiguous — they sit at DES_LOAD indices 0, 3, 5, 6, 7 (assets/held-items.js)
+  // interleaved with the cobra, the gecko and the desert mouse, so a range test would be three ranges and would
+  // quietly mean something else the day a species is inserted into the list.
+  // The scorpion and the spider are arachnids rather than insects strictly, and they are IN: "all insects" reads
+  // as "all the bugs" here, and a scorpion left on three would be the one obvious survivor of the rule.
+  // NOT here, deliberately: cobra, gecko and grass_snake (reptiles) and desert_mouse (a mammal, and the one
+  // member of this band that drops meat) — they keep HITS_TO_KILL like every other animal in the game.
+  // The value is 1 and nothing reads it; it is a SET, written as a table so it sits in the same shape as
+  // DES_OAKONLY above and DES_FLYER/DES_HUNT/DES_DASH in main/tick-creatures.js, which key on the same names.
+  const DES_FRAIL = { ant: 1, fly: 1, scorpion: 1, spider: 1, bee: 1 };
   // What tick-life ASKED each band for on the last frame. A plain mirror, written once per frame, because
   // nCard/nFish/nBunny… are consts inside tickBody and main/debug-api.js is concatenated ABOVE it — a tap
   // reading them directly is a ReferenceError that no static check catches and only the first call reveals.

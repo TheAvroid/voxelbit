@@ -714,7 +714,16 @@
     else maybeRecenter();
     P.y = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
     for (let g = 0; g < 40 && P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT); g++) P.y += 1;   // never land inside a rock or a trunk — capped, so a bad column drops you rather than launching you
-    P.fallT = 0; smoothEye = P.y + EYE; resetHist = 1;
+    // ── AND ARRIVING SOMEWHERE IS NOT FALLING (user 2026-08-21: "teleporting seems to hurt the player. for
+    // example typing /locate") ── P.fallPk is the HIGHEST POINT OF THE CURRENT FALL and it is a world y, so it
+    // means nothing once the player is standing somewhere else: hop from a ridge at y 280 to a valley floor at
+    // y 180 and the landing below computes drop = 100 voxels = 10 m and charges for it. Clearing fallT alone
+    // was never enough — the damage curve in tick-body.js deliberately does NOT read fallT (see the note there
+    // about staircases), it reads peak-minus-landing.
+    // noFall = 1 as well, and not instead: the lift-out-of-solid loop above can leave the player up to 40
+    // voxels over the ground, so there IS a real fall about to happen, and it is one the player did not ask
+    // for. It is the same pair the fly toggle already sets when it drops you (ui/input.js).
+    P.fallT = 0; P.fallPk = undefined; P.noFall = 1; smoothEye = P.y + EYE; resetHist = 1;
     // …and FACE IT (the creature path passes a look point; every terrain target passes nothing and is
     // untouched). An ant is one voxel tall: arriving beside it still pointing whichever way you happened to be
     // pointing is indistinguishable from arriving nowhere. Pitch is clamped inside the same +-1.55 the mouse

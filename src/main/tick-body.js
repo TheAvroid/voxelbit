@@ -14,10 +14,6 @@
     // It sits at the TOP for the same reason the old gate did: this must not run part-way through a tick.
     // The push captures the frame PRESENTED LAST tick, which is what makes it a whole frame rather than a
     // half-drawn one.
-    if (VE.recording && VE.recTrack) {
-      VE.paintN = (VE.paintN | 0) + 1;
-      if (VE.paintN % (VE.capEvery || 1) === 0) { try { VE.recTrack.requestFrame(); } catch (e) {} }
-    }
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
     // ── VITALS ── UNCONDITIONAL, and that matters: this first sat further down beside the hazard checks, which
     // are inside the `if (P.fly) … else` movement branch, so the vitals silently stopped the moment fly mode
@@ -61,7 +57,7 @@
     if (dead) { mx = 0; mz = 0; }
     const ml = Math.hypot(mx, mz); if (ml > 0) { mx /= ml; mz /= ml; }
     if (P.fly) {
-      const spd = sprint ? 170 : 60;
+      const spd = sprint ? 255 : 90;              // ── x1.5 (user 2026-08-21: "make the fly speed 1.5x faster") ── was 170/60. BOTH arms scale, so sprint keeps the 2.83x ratio over the cruise it has always had; and vy reads the same `spd`, so up/down speeds up with forward instead of the climb quietly falling behind.
       const k = 1 - Math.exp(-10 * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
       let vy = 0; if (keys.has(binds.jump)) vy += spd; if (keys.has(binds.crouch)) vy -= spd;   // fly down = crouch (Alt) only; Ctrl no longer descends (user removed it)
@@ -77,6 +73,7 @@
       // waterline with 17 of its 20 voxels in open air. Swimming is a WAIST-DEEP question (user 2026-08-05).
       // inWater keeps the old probe: it gates horizontal drag and drowning, where ankle-deep is the right call.
       const swimming = waterAt(Math.floor(P.x), Math.floor(P.y + SWIM_DEEP), Math.floor(P.z));
+      P.swim = swimming;                               // published for moveAxis's step-up gate (sim/player.js) — set HERE, above the two horizontal moves below, so it is this frame's answer and not last frame's
       // ── THE PLAYER BREAKS THE SURFACE ── same splash a fish throws, either direction (user 2026-08-05).
       // Keyed off the STATE CHANGE, so wading along at the waterline cannot chatter; scaled by how hard the
       // crossing was, so a dive throws spray and stepping in off a beach barely ripples.
@@ -253,8 +250,32 @@
       // ── IS IT SNOWING WHERE THE PLAYER IS? ── freezeK is ONE GLOBAL scalar driving solidTab[WATER_T], so
       // this has always been camera-relative and cannot be per-column. Two ways the answer is now no in
       // the oak forest: it is raining there (the rain ramp), or nothing falls there at all (OAK_SNOW).
+      // ── AND "NOT THE OAK FOREST" IS NOT THE SAME QUESTION AS "IS IT SNOWING HERE" (user 2026-08-21: "the oak
+      // forest water freezes over when it snows in other biomes. prevent this from happening") ── the test below
+      // asked only about oak, so every column that is not oak counted as snowing. THE DESERT IS NOT OAK AND GETS
+      // NO SNOW: stand on the sand during a storm and snowHere went true, freezeK climbed, solidTab[WATER_T]
+      // flipped — and because that flag is GLOBAL, every lake in the world skinned over, the oak forest's
+      // included. That is the report almost word for word: it snows in another biome and your water freezes.
+      // dryHere is the BLANKET'S OWN TEST, verbatim — tick-snow.js computes wSharp(max(desertM, oakWeather)) per
+      // settling column and refuses the column when it is high. Asking the identical expression here is what
+      // makes "there is ice" and "there is snow on the ground" answer the same way at both borders instead of
+      // only at the oak one. The OAK_SNOW arm is carried through so all four states of the matrix at the top of
+      // world/window.js stay coherent: with snow switched back on in the oak, the desert must still stay liquid.
+      // ── …AND THE OAK BAND NEVER ICES AT ALL, BLOSSOM INCLUDED ── the second half of the same request, and it
+      // needs its own term because dryHere cannot express it. cherryW ramps over CHBW = 300, so oakWeather is
+      // dragged down for 300 voxels of PURE OAK either side of the blossom, and wSharp turns that into a `< 0.5`
+      // well before the pink starts: standing among oak trees beside an oak lake, watching it freeze. Keying the
+      // refusal on oakM — the BIOME, not the weather — is exact, and it costs the blossom its ice. That is a
+      // deliberate trade and not an oversight: the blossom is inside the oak forest, so "the oak forest does not
+      // freeze" has to include it or the border comes straight back. It still SNOWS there (the 2026-08-18 rule
+      // is untouched — this line moves ice only).
+      // WHAT THIS STILL CANNOT DO: freezeK is ONE GLOBAL scalar driving a material flag, so ice has never been
+      // per-column and this does not make it so. Stand in the pines and an oak lake across the treeline still
+      // freezes with everything else. Fixing THAT is per-column ice, which is a far larger change.
       const oakHere = Math.max(0, Math.min(1, wSharp(oakWeather(P.x, P.z))));   // wSharp so the ice follows the same tightened weather border the blanket and the flakes do   // oakWeather, not oakM (user 2026-08-18): the blossom band is inside oakM but it SNOWS there now, so its lakes freeze like the pines'
-      const snowHere = snowOn && (OAK_SNOW ? true : oakHere < 0.5) && (!RAIN_ON || rainSkyK * oakHere < 0.5);
+      const dryHere = Math.max(0, Math.min(1, wSharp(Math.max(desertM(P.x, P.z), OAK_SNOW ? 0 : oakWeather(P.x, P.z)))));   // 1 = no snow falls on this column — tick-snow.js's dmS, asked at the camera
+      const oakBand = oakM(P.x, P.z) > 0.5;            // the BIOME, not the weather: the one test cherryW cannot drag down
+      const snowHere = snowOn && !oakBand && dryHere < 0.5 && (!RAIN_ON || rainSkyK * oakHere < 0.5);
       // ── AND THE ANTI-WAVE FLOOR IS ABOUT WHERE THE SNOW IS, NOT WHERE YOU ARE (user 2026-08-18: "the water in
       // the oak forest seems to freeze") ── the 0.4 below pins freezeK at the shader's wave-suppression
       // threshold while water-snow is still draining, so a white blanket is never seen bobbing on a swell.
@@ -265,7 +286,7 @@
       // Safe to drop the floor here because there is no water-snow near the camera to protect: landSnowAt
       // refuses to settle any where oakWeather says oak (the dmS gate in tick-snow.js), so the case the floor
       // exists for cannot arise in the biome this exempts.
-      const oakDry = oakHere >= 0.5;                   // the SAME halfway line snowHere splits on, so the two can never disagree about which biome this is
+      const oakDry = oakBand || dryHere >= 0.5;        // the SAME two terms snowHere splits on, so the two can never disagree about whether this column gets weather
       freezeK = (snowHere && now >= snowFreezeAt) ? Math.min(1, freezeK + dt / 5)
         : Math.max((snowWN > snowWHead && !oakDry) ? 0.4 : 0, freezeK - dt / 5);   // water freezes over 5 s and thaws back over 5 s — but only from SNOW_FREEZE_DELAY (10 s) after the storm starts, so the flakes you can see have reached the ground before the river skins over
       const nowSolid = freezeK > 0.6;

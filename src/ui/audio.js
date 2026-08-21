@@ -276,7 +276,7 @@
   // BASE 0.14 — measured, the track is -15.2 LUFS integrated, within 0.1 dB of high_score.mp4's -15.1, so the
   // achievement jingle's own twice-tuned 0.09 is the anchor: this sits ~4 dB over it (a moment, not a cue) and
   // still under the tool hits. On the MUSIC bus, so nothing but the master and the new slider can move it.
-  const ANTHEM_AT = 3;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-20: 120 -> 60 -> 30 -> 10 -> 3, and the clock no longer starts on its own — see anthemArmed)
+  const ANTHEM_AT = 60;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-20: 120 -> 60 -> 30 -> 10 -> 3, and the clock no longer starts on its own — see anthemArmed)
   const ANTHEM_GAP = 60;                               // …and a minute of gameplay of SILENCE between one track ending and the next starting (user)
   // ── THE SET (user 2026-08-08, re-cut 2026-08-18) ── the soundtrack, in rotation, then silence for the rest
   // of the session. It moved from game/sound/music/*.mp4 to game/sound/soundtrack/*.mp3 and gained two cuts,
@@ -330,21 +330,65 @@
   // starts when the user presses 1. 3 seconds after the player presses 1") ── the play clock used to run from
   // the moment the player took the controls, so the opening track was tied to nothing the player did. Armed by
   // the 1 key instead (ui/input.js), and ANTHEM_AT is the 3 seconds between the press and the music.
-  // A LATCH, not a toggle: only the FIRST press arms it, so pressing 1 again mid-set cannot restart the
-  // playlist or re-trigger a track. Everything after the first cut is unchanged — ANTHEM_GAP still spaces them.
-  let anthemArmed = false;
+  // ── ARMED FROM THE START AGAIN (user 2026-08-21: "have the songs play regularly now. after 60 seconds, then
+  // the first song plays") ── this was a latch the 1 key set (2026-08-20), then one a recording start set
+  // (2026-08-21 morning); both triggers are gone and the clock simply runs. It still ticks only while `locked`
+  // (main/tick-body.js), so the 60 s is 60 s of GAMEPLAY — the count does not run down behind the start prompt
+  // or the esc menu. Everything after the first cut is unchanged: ANTHEM_GAP still spaces them.
+  let anthemArmed = true;
   let playSecs = 0, anthemDone = false;                // the play clock, and the set-is-finished latch
   let anthemIdx = 0, anthemNextAt = ANTHEM_AT;         // which cut comes next, and the play-clock time it is due
   const playAnthem = () => {
     const a9 = anthemSnds[anthemIdx++];
     anthemNextAt = Infinity;                           // nothing is due while one is playing — the ended handler below schedules the next
-    if (anthemIdx >= anthemSnds.length) anthemDone = true;   // that was the fourth: the set is spent and the clock can stop
+    if (anthemIdx >= anthemSnds.length) anthemReshuffle(a9);   // that was the LAST of the set — draw a fresh order and keep going, rather than latching anthemDone and going silent for the session
     try { a9.currentTime = 0; const p9 = a9.play(); if (p9) p9.catch(() => { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; }); } catch (e) { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; }
   };
   // A refused or failed play must not stall the set: the catch above re-arms the next one on the same gap it
   // would have got anyway. `ended` is the normal path — the gap is measured from the moment a track FINISHES,
   // so it is a minute of silence rather than a minute of overlap.
   for (const a9 of anthemSnds) a9.addEventListener('ended', () => { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; });
+  // ── THE RECORDER STARTS THE MUSIC NOW, AND THE 1 KEY IS GONE (user 2026-08-21: "when the player presses r
+  // to record, the award song plays 3 seconds later. remove the 1 keybind" ... "if the user presses r again in
+  // the same session, the award song plays again and so on") ── the soundtrack is scoring the CLIP, so the
+  // thing that starts it is the thing that starts the clip.
+  // ANTHEM_AT is unchanged and still means what it always meant: 3 seconds of gameplay between the trigger and
+  // the first note, so the take opens on a beat of quiet.
+  // CALLED FROM veStartRec, NOT FROM A KEY, so the #veRecBtn button arms it exactly as R does — the trigger is
+  // "a recording began", and there are two ways to begin one.
+  // IT ALWAYS OPENS ON AWARD, and anthemIdx = 0 IS that, by construction rather than by name: ANTHEM_FIRST is
+  // pulled out of the shuffle and unshifted to the front of anthemOrder (see above), so slot 0 is award every
+  // session. The rest of the set follows it on the usual ANTHEM_GAP, in this session's shuffled order.
+  // AND IT IS A RESET, EVERY TIME — that is the second half of the request. A second recording in the same
+  // session gets award again, not "the next song in rotation", so anthemIdx goes back to 0 and the spent-set
+  // latch is cleared. Anything still playing from the last take is stopped first: without that a track from
+  // recording #1 would still be running when recording #2's award starts and the two would sound over each
+  // other. currentTime is rewound with the pause so a stopped track does not resume mid-phrase if the rotation
+  // reaches it again later.
+  // ── AND WHEN THE SET RUNS OUT IT RESHUFFLES INSTEAD OF STOPPING (user 2026-08-21: "then a reshuffle") ──
+  // playAnthem latched anthemDone the moment the last cut STARTED, and tickBody's clock is gated on !anthemDone,
+  // so a long session went permanently silent after one pass of seven tracks. This draws a fresh order and keeps
+  // going. Fisher-Yates over BOTH arrays with the SAME permutation: anthemOrder carries the names the debug tap
+  // reports and anthemSnds the Audio elements, so shuffling one and not the other would report every track under
+  // a neighbour's name. The elements themselves are reordered, never rebuilt — their `ended` listeners ride along.
+  // AWARD IS NOT RE-PINNED. ANTHEM_FIRST is about how a SESSION opens (user 2026-08-19: "play award.mp3 first in
+  // the playlist. shuffle everything else"); re-pinning it every cycle would make the one track you are certain
+  // to have heard already the one you hear most.
+  const anthemReshuffle = (justPlayed) => {
+    for (let i9 = anthemOrder.length - 1; i9 > 0; i9--) {
+      const j9 = (Math.random() * (i9 + 1)) | 0;
+      let t9 = anthemOrder[i9]; anthemOrder[i9] = anthemOrder[j9]; anthemOrder[j9] = t9;
+      t9 = anthemSnds[i9]; anthemSnds[i9] = anthemSnds[j9]; anthemSnds[j9] = t9;
+    }
+    // …and the new cycle never opens on the cut that is playing RIGHT NOW: a 1-in-7 immediate repeat is the one
+    // ordering a listener would actually notice, and a single swap removes it without biasing anything else.
+    if (justPlayed && anthemSnds[0] === justPlayed && anthemSnds.length > 1) {
+      let t9 = anthemOrder[0]; anthemOrder[0] = anthemOrder[1]; anthemOrder[1] = t9;
+      t9 = anthemSnds[0]; anthemSnds[0] = anthemSnds[1]; anthemSnds[1] = t9;
+    }
+    anthemIdx = 0; anthemDone = false;
+    console.log('[vb] anthem RESHUFFLE:', anthemOrder.map((t9) => t9[0]).join(' -> '));
+  };
   const SWAP_MS = 240;                                 // how long a tool swap takes to rise back into frame — short enough that it never delays a swing
   let swapT0 = -1e9, prevHeldIt = -1, prevHeldSlot;    // …and when the current one started (see the view-model block). prevHeldSlot is the SLOT OBJECT the hand was last drawing from — undefined to start, so the first frame with anything in hand counts as a change   // …and when the current one started (see the view-model block)
   let lSwapT0 = -1e9, prevLeftIt = -1;                 // …and the OFF hand's own pair (user 2026-08-19: the left hand should share the right's mechanics). Its own clock, because the two hands change item independently — a craft pair forming swaps the LEFT hand while the right keeps what it was holding

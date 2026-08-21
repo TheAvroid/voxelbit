@@ -11,6 +11,18 @@
         emitBuf[o4 + 8] = Yw9[0] * right[0] + Yw9[2] * right[2]; emitBuf[o4 + 9] = Yw9[0] * up[0] + Yw9[2] * up[2]; emitBuf[o4 + 10] = Yw9[0] * fwd[0] + Yw9[2] * fwd[2]; emitBuf[o4 + 11] = 0;
         emitBuf[o4 + 12] = right[1]; emitBuf[o4 + 13] = up[1]; emitBuf[o4 + 14] = fwd[1]; emitBuf[o4 + 15] = 0;   // LEVEL frame: Zw is world up, exactly as the emit's own fast path assumes
         emitWho[emitN] = R9[5]; emitAna[emitN] = 0; emitKnd[emitN] = LIFE_K_BIRD;
+        // ── AND A PERCHED BIRD HAS NO FALLBACK EITHER (user 2026-08-21: "I believe I saw a pink bird
+        // disappear") ── emitMust is the bit sim/life/slots.js added on 2026-08-20 for the land mammals, whose
+        // note says "the four land mammals are the only life with TWO render paths". They are not. A perched
+        // bird has exactly the same deal and gives up exactly the same thing: crossing inside UNI_BIRD_R it
+        // calls unstampWorm and drops its grid stamp (sim/life/stamped.js), then relies on a drop slot. Lose
+        // the competition with the stamp already surrendered and it is drawn by NEITHER path — the precise
+        // failure that note describes for an armadillo at 291 voxels, on a population of 421 instead of 96.
+        // IT WAS ALSO READING A STALE BIT. emitMust is a frame-reused Uint8Array and only the creature loop
+        // (main/tick-creatures.js) writes it; this block never did. So a bird inherited whatever creature held
+        // that emit index last frame, which is why the symptom is intermittent and why it moves around: the
+        // same bird is "must draw" or not depending on what was staged before it.
+        emitMust[emitN] = 1;
         emitAnc[emitN * 3] = R9[0]; emitAnc[emitN * 3 + 1] = R9[1]; emitAnc[emitN * 3 + 2] = R9[2];
         { const cx8 = emitBuf[o4], cy8 = emitBuf[o4 + 1], cz8 = emitBuf[o4 + 2];
           const r8 = LIFE_FRUST_R + (lifeIsDrawn(R9[5]) ? LIFE_FRUST_HYST : 0);

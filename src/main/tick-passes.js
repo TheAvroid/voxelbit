@@ -94,6 +94,17 @@
       if (showTime) hudParts.push(`${clock}${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}${cycleSpeed !== 1 ? '  x' + cycleSpeed.toFixed(1) : ''}`);
       hudEl.textContent = hudParts.join('\n\n');
     }
+    // ── HAND THE FRAME TO THE RECORDER, AFTER IT IS DRAWN ── this used to sit at the TOP of tickBody, capturing
+    // whatever was presented LAST tick. That was right for MediaRecorder, whose requestFrame() asks the COMPOSITOR
+    // for the last composited image. It is wrong for the WebCodecs recorder, which reads the canvas itself with
+    // `new VideoFrame(canvas)`: before this frame's passes have run there is nothing valid in the WebGPU canvas to
+    // read, and the take opened with EMPTY frames — measured, indices 0-4 and 9 came out pure green, 130 bytes
+    // each, and green is what a zeroed YUV plane looks like (user 2026-08-21: "theres green screens now").
+    // Here the frame has been submitted, so what is read is the picture that was just rendered.
+    if (VE.recording && VE.pushFrame) {
+      VE.paintN = (VE.paintN | 0) + 1;
+      if (VE.paintN % (VE.capEvery || 1) === 0) VE.pushFrame(now);
+    }
     // FRAME PACING: off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the CPU's frame
     // prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it. This used to
     // be the v-sync-off half of a branch; v-sync was removed (user 2026-08-08) and it defaulted off anyway, so

@@ -7,10 +7,30 @@
   let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline
   let resetHist = 1;
   let liveTargets = null;                              // textures the CURRENT bind groups reference — destroyed only after the GPU is done with them
+  // ── RECORD AT THE TRACE RESOLUTION ── with capNative set, the canvas backing store IS the trace target and
+  // renderScale becomes 1: the shader stops upscaling and the BROWSER upscales the canvas for display instead.
+  // The picture carries the same information either way — it was always an upscale of RW x RH — but the recorder
+  // then encodes ~3.6 Mpix instead of ~7.4, which is the whole difference between a 60 fps capture and a 120 fps
+  // one. Measured on this hardware: 59.6 fps encoding the full 7.43 Mpix canvas, 137.7 fps at 3.84 Mpix. And
+  // shrinking anywhere LATER is worse than not shrinking at all — the encoder's own scaler managed 25.5 fps and a
+  // round trip through a 2D canvas 21.7 — so the frame has to be small before it is ever handed over.
+  let capNative = 0;
+  function veCaptureNative(on) {
+    const v = on ? 1 : 0;
+    if (v === capNative) return { CW, CH, RW, RH };
+    capNative = v;
+    makeTargets(true);                                 // rebuilds the screen textures and resets temporal history: one hitch, at the start or end of a take
+    return { CW, CH, RW, RH };
+  }
   function makeTargets(force) {
-    const nCW = Math.max(2, Math.floor(canvas.clientWidth * devicePixelRatio));
-    const nCH = Math.max(2, Math.floor(canvas.clientHeight * devicePixelRatio));
-    const nRW = Math.max(2, Math.round(nCW * renderScale)), nRH = Math.max(2, Math.round(nCH * renderScale));
+    // EVEN dimensions, always. H.264 will not encode an odd height, so the recorder masks with `& ~1`; when that
+    // mask disagreed with the real canvas size the encoder silently took its own SCALING path instead of the fast
+    // one (measured 25.5 fps against 59.6). One pixel is nothing to the render; the mismatch was not.
+    const shrink = capNative ? renderScale : 1;
+    const nCW = Math.max(2, Math.floor(canvas.clientWidth * devicePixelRatio * shrink) & ~1);
+    const nCH = Math.max(2, Math.floor(canvas.clientHeight * devicePixelRatio * shrink) & ~1);
+    const rs = capNative ? 1 : renderScale;
+    const nRW = Math.max(2, Math.round(nCW * rs)), nRH = Math.max(2, Math.round(nCH * rs));
     if (!force && liveTargets && nCW === CW && nCH === CH && nRW === RW && nRH === RH) return;   // a resize event that did not change the pixel size must not rebuild ten textures (and reset temporal history)
     if (CPROF) cpEvt |= 16;
     CW = nCW; CH = nCH; RW = nRW; RH = nRH;

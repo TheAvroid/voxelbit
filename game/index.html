@@ -905,7 +905,20 @@
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
   const gwrap = (v, n) => ((v % n) + n) % n;
   let SPWX = 0, SPWZ = 0;                              // world spawn — placeholder; RANDOMISED on every refresh at boot (user 2026-07-20), see the spawn block below
-  let SPYAW = 1.5708; const SPPITCH = -0.044;   // ── FACING EAST, DOWN THE OAK STRIP AT THE BLOSSOM (and into the sunrise — see BAND_MIRROR) (user 2026-08-20: "facing the cherry forest direction") ── -pi/2 is -x, and the cherry band's centre is SPWX - CHOFF, i.e. due WEST of spawn, so this already pointed at it; the 2026-08-20 band slide kept it that way deliberately (see the map above). Was: ── FACING WEST, INTO THE ENDLESS OAK FOREST (user
+  let SPYAW = 1.5708; const SPPITCH = -0.044;   // ── FACING EAST, AT THE BLOSSOM, WITH THE PINE TREELINE AT YOUR BACK (user 2026-08-21: "spin the player
+  // around facing the cherry forest") ── heading is (sin(yaw), cos(yaw)), so +pi/2 looks down +x, and +x is where the pink is: the blossom's centre is
+  // SPWX - CHOFF and CHOFF is NEGATIVE (see BAND_MIRROR), so the band sits at spawn +2960 with its near edge 1880 ahead, the whole oak strip away. The dawn
+  // sun rises in +x too, which is the entire point of BAND_MIRROR (user 2026-08-20: "running into the sun while running in the direction of the cherry
+  // forest") ─ that pairing is restored by this turn, and it was the one thing the previous revision gave up.
+  // THE SPAWN SLIDE STAYS, AND THAT IS THE WHOLE POINT OF THEM BEING TWO KNOBS. Only the heading moved here: the player still stands 280 from the oak/pine
+  // line (see the slide note above OAKOFF), so "at the edge of the pine forest, but in the oak forest" is still true to the voxel ─ the treeline is simply
+  // 28 m BEHIND the start pose instead of in front of it, and one turn on the spot brings it back. Anyone re-reading this later: do NOT "fix" the slide to
+  // match the heading. The position was asked for on its own and is unrelated to which way the camera points.
+  // NOTHING ELSE NEEDS TO MOVE for the re-aim: both spawn sight-line corridors ─ treeAt's and oakAt's ─ build their forward vector from SPYAW rather than
+  // assuming +x, precisely so re-aiming the camera drags the cleared lane with it, and the corridor now opens the view back down the oak strip. Check that
+  // is still true if either is ever rewritten.
+  // Was, for one revision: ── FACING WEST, AT THE PINE TREELINE (user 2026-08-21: "facing the direction of the pine forest") ─ same 280 stance, turned round.
+  // And before that: ── FACING EAST, DOWN THE OAK STRIP AT THE BLOSSOM (and into the sunrise — see BAND_MIRROR) (user 2026-08-20: "facing the cherry forest direction") ── -pi/2 is -x, and the cherry band's centre is SPWX - CHOFF, i.e. due WEST of spawn, so this already pointed at it; the 2026-08-20 band slide kept it that way deliberately (see the map above). Was: ── FACING WEST, INTO THE ENDLESS OAK FOREST (user
   // 2026-08-17) ── heading is (sin(yaw), cos(yaw)), so -pi/2 looks down -x: away from the pine treeline
   // 42 m behind you and out over oak wood that runs to the horizon and never ends. It was +pi/2 for two
   // earlier reasons that have both expired - it aimed at the desert when the sand was 80 voxels east
@@ -974,20 +987,24 @@
   // The one strip that does NOT move is the CHERRY forest: it was doubled to 2160 on 2026-08-18 and is already
   // the target, so CHOFF/CHHALF/CHB/CHW are untouched and spawn's position inside the blossom is bit-identical.
   // Every other strip grows to meet it.
-  // The six strips, as signed distances from spawn (spawn is at 0, inside the blossom, 140 west of its east edge):
-  //     oak     -4780 .. -2620   2160   <- OAKWOFF
-  //     cherry  -2620 ..  -460   2160   = 2 * (CHHALF + CHB/2)
-  //     oak       -460 ..  +620   ...    <- OAKOFF   (spawn sits at 0, i.e. 620 WEST of the pine line)
-  //     pine      +620 .. +2780   2160   <- DESOFF
-  //     desert  +2780 .. +4940   2160   = 2 * DESH
-  //     pine    +4940 .. +7100   2160
+  // (That is the 2026-08-19 table, and it is HISTORY twice over: BAND_MIRROR flipped every centre on 2026-08-20 and
+  // "one biome per band" deleted the second oak strip on the same day, so the period is FIVE strips, not six, and
+  // it runs the other way round. THE CURRENT MAP, as signed distances from spawn along +x, spawn at 0:
+  //     pine    -6760 .. -4600   2160   (the wrap: the oak band's west edge less one BIOP)
+  //     desert  -4600 .. -2440   2160   = 2 * DESH,  outer edge <- -DESOFF
+  //     pine    -2440 ..  -280   2160
+  //     oak      -280 .. +1880   2160   <- the oak/pine line is -OAKOFF, i.e. 280 voxels WEST of spawn, and SPYAW faces it
+  //     cherry  +1880 .. +4040   2160   = 2 * (CHHALF + CHB),  centre -CHOFF   <- and the oak BAND's far edge, -OAKWOFF
+  // BIOP = 5 * 2160 = 10800. Every line in it is a signed distance, so a WEST band reads negative; the constants
+  // themselves are the unmirrored magnitudes and BAND_MIRROR carries the sign — see OAKC/DESC/CHOFF.)
   //
   // ── SPAWN SLID 600 EAST INSIDE THE OAK STRIP (user 2026-08-20: "spawn the player in the oak forest but near
   // the pine forest, facing the cherry forest direction") ── every offset above moved by the SAME 600, so the
   // arrangement is translated and not reshaped: every strip is the 2160 it was, and the equal-strip invariant
   // the note below is written against still holds to the voxel. Only where SPAWN sits inside it changed —
   // from the middle of the east oak strip to 620 from the pine line, which is inside pure oak (OAKB is 450, so
-  // the blend reaches only 225 either side) with the pines in plain view. CHOFF moves the OPPOSITE way because
+  // the blend reaches only 225 either side) with the pines in plain view. (620 was still too far back — 2026-08-21
+  // repeats this exact move with 340 and lands on 280; see the slide note above OAKOFF.) CHOFF moves the OPPOSITE way because
   // it is measured WESTWARD: the blossom's centre is SPWX - CHOFF, so +600 there is -600 in signed distance,
   // which keeps the cherry band where it was relative to the pines and leaves it dead ahead of the start yaw.
   //
@@ -1025,7 +1042,7 @@
   // sim/nav.js's BIO_SANDLINE reasoning depends on.
   const BIOP = 10800;                                  // one full cycle: SIX strips of 2160 — oak, cherry, oak, pine, desert, pine. 6 * W by construction, never a sum of measured pieces
   const pwrap = (d) => d - Math.floor(d / BIOP + 0.5) * BIOP;   // signed distance into [-BIOP/2, BIOP/2). floor(x + 0.5) rather than Math.round because the WGSL port must agree with this bit for bit, and WGSL's round() breaks ties to EVEN where Math.round breaks them upward
-  const DESOFF = 2780, DESB = 450, DESW = 1000;        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
+  const DESOFF = 2440, DESB = 450, DESW = 1000;        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
   // History, because the number has moved three times and each move had a different reason: 500 -> 300 (user
   // 2026-08-15) because 50 m of dense pine hid the thing the spawn camera was aimed at; then 300 -> 80; then
   // 80 -> 1500 below, which abandons "the sand is visible from spawn" outright rather than tuning it, because
@@ -1097,8 +1114,22 @@
   // 2250 against a band that has 3240 either side of its centre, so it still cannot escape the oak forest.
   // Every derived bound below (OAKWMAX, CHREACH, the four short-circuits) reads off these constants rather
   // than a typed number, so they all moved with them — which is exactly why this was safe to change at all.
-  const desWob = (z) => (vnoise(z * 0.00060 + 27.9, 83.1) - 0.5) * DESW
-                      + (vnoise(z * 0.0022 + 11.2, 51.7) - 0.5) * DESW * 0.35;   // two octaves: the long one is the S, the short one keeps it from reading as a drawn curve
+  // ── THE FOUR MEANDER FREQUENCIES, NAMED, BECAUSE THE SHADER NEEDS THEM TOO (user 2026-08-21: "the snow on
+  // the ground needs to match the snow in the sky in terms of how far it's going … the pine forest falling snow
+  // is too far out in the oak forest") ── render/wgsl/trace.js carries a port of all three wobbles, because a
+  // falling flake is a GPU lattice voxel the CPU cannot reach, and every one of its four frequencies had drifted
+  // to ~1.9x the numbers below:
+  //     desWob 1   0.00060 -> 0.0011      oakWob   0.0014 -> 0.0027
+  //     desWob 2   0.0022  -> 0.0043      chWob    0.0010 -> 0.0019
+  // The CPU decides what SETTLES and the GPU decides what FALLS, so that is two borders wandering at different
+  // wavelengths over the same world: at one z the flakes overshoot deep into the oak, at another they stop short
+  // of the blossom — which is the report, both halves of it, and it is why the ground reads correct (the blanket,
+  // the trees and the terrain all share the CPU line) while the sky does not.
+  // NAMED AND INTERPOLATED so the class of bug is gone rather than the instance: trace.js now writes
+  // ${WOB_OAK} instead of a typed literal, and a copy that cannot be typed cannot drift.
+  const WOB_DES1 = 0.00060, WOB_DES2 = 0.0022, WOB_OAK = 0.0014, WOB_CH = 0.0010;   // four SCALARS rather than one object: the gen-pool/gen-worker registries carry scalars, and a shared table is a new shape for them to learn
+  const desWob = (z) => (vnoise(z * WOB_DES1 + 27.9, 83.1) - 0.5) * DESW
+                      + (vnoise(z * WOB_DES2 + 11.2, 51.7) - 0.5) * DESW * 0.35;   // two octaves: the long one is the S, the short one keeps it from reading as a drawn curve
   // ── THE OAK FOREST (user 2026-08-17) ── the world's THIRD band, and the one the player now starts in.
   // West to east the world reads OAK | CHERRY | OAK | PINE | DESERT | PINE (see the strip table at the top of
   // the file): the same shape as the desert border, one wandering north-south line with a blended rim, because
@@ -1119,8 +1150,24 @@
   // two numbers were 277 and 630. The seam did not get safer by being tuned; it got safer because the strip
   // doubled and the meander did not.) The SECOND pine strip, between the sand and the next period's oak, is
   // the identical arithmetic on an identical 2160 gap — see the note under DESH.
-  const OAKOFF = 620, OAKB = 450, OAKW = 540;         // how far the oak/pine line sits EAST of spawn; blend width; the INDEPENDENT half of the meander. 1220 -> 2300 = the blossom's east midpoint (spawn+140) plus one full strip W, so the PURE oak between the pink and the pines is 2160 like everything else. Spawn is still 2300 WEST of this line, so oakM(SPWX,SPWZ) is still exactly 1 and "spawn is in the oak forest by construction" still holds — the cherry band simply sits inside it
-  const oakWob = (z) => desWob(z) * 0.6 + (vnoise(z * 0.0014 + 143.7, 61.3) - 0.5) * OAKW;
+  // ══ SPAWN SLID 340 WEST AGAIN, ONTO THE PINE TREELINE (user 2026-08-21: "spawn the player at the edge of the pine forest, but in the oak forest …
+  // basically just spawn the player further back towards the pine forest") ══
+  // The 2026-08-20 pass put spawn 620 from the oak/pine line and called that "the pines in plain view"; the user has now called 620 too far back, so it is
+  // 280. Same move as that pass and made the same way: FOUR offsets move by the SAME 340 so the arrangement is TRANSLATED and not reshaped ─ every strip is
+  // still exactly 2160 wide, BIOP is still 5 * 2160, and the only thing that changed is where the player stands inside the pattern.
+  //     OAKOFF   620 -> 280      the oak/pine line, i.e. how far the treeline is from the start pose
+  //     OAKWOFF -3700 -> -4040   the oak band's far side, so the band keeps its 4320 (= 2 strips: oak + cherry)
+  //     CHOFF   -2620 -> -2960   the blossom rides along, so it stays the oak band's outer strip exactly
+  //     DESOFF   2780 -> 2440    the pine/desert line rides along, so the pine strip keeps its 2160
+  // AND 280 IS NOT AN ARBITRARY 'NEAR'. OAKB is 450, so oakM reaches a hard 1 at OAKB/2 = 225 from the line: 280 leaves 55 voxels of cushion, which is what
+  // keeps "spawn is in the oak forest by construction" literally true (oakM(SPWX, SPWZ) === 1, not 0.98) while putting the treeline 28 m ahead. It is exact
+  // rather than approximate because oakM pins its meander at the spawn's own z ─ oakWob(z) - oakWob(SPWZ) cancels at SPWZ ─ and pwrap(SPWX - (SPWX + OAKC))
+  // does not depend on SPWX, so build.js's eastward nudge off water cannot erode the cushion.
+  // WHAT THE PLAYER SEES: pines are gated `oakM > 0.5 -> reject` (terrain.js treeAt) and oaks on `oakM < 0.5 -> reject` (oakAt), so the canopies split on the
+  // mask MIDPOINT and the treeline is a line, 280 voxels dead ahead of the start yaw. Behind the player: 1880 of oak, then the blossom.
+  // AND IT CANNOT BE DONE BY NUDGING SPWX ─ the note under CHOFF records a first attempt that tried; the bands are anchored to SPWX and simply come along.
+  const OAKOFF = 280, OAKB = 450, OAKW = 540;         // how far the oak/pine line sits EAST of spawn; blend width; the INDEPENDENT half of the meander. 1220 -> 2300 = the blossom's east midpoint (spawn+140) plus one full strip W, so the PURE oak between the pink and the pines is 2160 like everything else. Spawn is still 2300 WEST of this line, so oakM(SPWX,SPWZ) is still exactly 1 and "spawn is in the oak forest by construction" still holds — the cherry band simply sits inside it
+  const oakWob = (z) => desWob(z) * 0.6 + (vnoise(z * WOB_OAK + 143.7, 61.3) - 0.5) * OAKW;
   // ── THE WEST EDGE, AND WHY IT SITS WHERE IT DOES ── it is the OTHER oak strip, and as of 2026-08-19 it is
   // set the same way the east one is: the blossom's west midpoint (spawn - 2020) less one full strip W, i.e.
   // -4180. It used to be set by the CONTAINMENT BOUND instead — the least-negative west edge that still keeps
@@ -1148,7 +1195,10 @@
   // the blossom's own centre (SPWX - CHOFF, i.e. +2620 mirrored, half-width CHHALF+CHB = 1080) lands on
   // 1540..3700, which IS the band's outer strip exactly. The oak strip is 1540 wide either side of spawn and
   // spawn keeps its 620 to the pine line, so the spawn work is untouched.
-  const OAKWOFF = -3700;                               // the WEST boundary, as a signed distance from spawn: the blossom's west midpoint (-2020) less one strip W
+  // (Those three numbers are pre-2026-08-21: the 340 slide above makes them centre +1880, blossom 1880..4040, and
+  // spawn 280 from the pine line. The RELATION each states — outer strip, equal halves — is what the slide preserves,
+  // and it preserves it exactly, because all four offsets moved together.)
+  const OAKWOFF = -4040;                               // the WEST boundary, as a signed distance from spawn: the blossom's west midpoint (-2020) less one strip W
   // ── THE BANDS ARE MIRRORED ABOUT SPAWN (user 2026-08-20: "can you flip the map? I want to be running into
   // the sun while running in the direction of the cherry forest. I want the sun to stay east though") ──
   // the SUN is untouched: tick-camera derives it from tday alone, and at dawn (tday 0.25) its vector is
@@ -1222,8 +1272,8 @@
   // so every strip keeps its 2160: the blossom's east midpoint goes from spawn+140 to spawn-940, and spawn
   // therefore sits 940 east of the pink and 1220 west of the pines, i.e. inside the oak strip with room on
   // both sides. BIOP is unchanged, the six strips are unchanged, and only the PHASE of the pattern moved.
-  const CHOFF = BAND_MIRROR * 2620, CHHALF = 980, CHB = 200, CHW = 260;   // ── UNCHANGED BY THE EQUAL-STRIP PASS (user 2026-08-19: "make all of the biomes the exact same size... double the size of the bands") ── this band was doubled on 2026-08-18 (1080 -> 2160 measured between mask midpoints, 2 * (CHHALF + CHB/2)) and 2160 is precisely the width every OTHER strip has now grown to, so nothing here moves: spawn still sits 140 inside the EAST edge with the whole 2020 of blossom ahead in the facing direction, bit for bit   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander   // CHOFF is MIRRORED (see BAND_MIRROR): the blossom's centre is SPWX - CHOFF, so a negative CHOFF puts it EAST of spawn, in the sunrise. Magnitude unchanged.
-  const chWob = (z) => oakWob(z) * 0.6 + (vnoise(z * 0.0010 + 211.3, 97.7) - 0.5) * CHW;   // carries 0.6 of the OAK meander for the reason oakWob carries 0.6 of the desert's: two free meanders converge and let bands touch. Its own half is small because this band has the least room of the three
+  const CHOFF = BAND_MIRROR * 2960, CHHALF = 980, CHB = 200, CHW = 260;   // ── UNCHANGED BY THE EQUAL-STRIP PASS (user 2026-08-19: "make all of the biomes the exact same size... double the size of the bands") ── this band was doubled on 2026-08-18 (1080 -> 2160 measured between mask midpoints, 2 * (CHHALF + CHB/2)) and 2160 is precisely the width every OTHER strip has now grown to, so nothing here moves: spawn still sits 140 inside the EAST edge with the whole 2020 of blossom ahead in the facing direction, bit for bit   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander   // CHOFF is MIRRORED (see BAND_MIRROR): the blossom's centre is SPWX - CHOFF, so a negative CHOFF puts it EAST of spawn, in the sunrise. Magnitude unchanged.
+  const chWob = (z) => oakWob(z) * 0.6 + (vnoise(z * WOB_CH + 211.3, 97.7) - 0.5) * CHW;   // carries 0.6 of the OAK meander for the reason oakWob carries 0.6 of the desert's: two free meanders converge and let bands touch. Its own half is small because this band has the least room of the three
   const cherryM = (x, z) => {                          // 1 = inside the blossom band, 0 = the oak forest either side of it
     const b = SPWX - CHOFF + chWob(z) - chWob(SPWZ);   // pinned at the spawn's own z, so the wobble cancels there and spawn's position in the band is not a per-session lottery
     const t = (CHHALF + CHB - Math.abs(pwrap(x - b))) / CHB;  // …and it is a DISTANCE from the centre line, not a side of it — that one change is what makes it a band. pwrap is what makes it RECUR: without it the band exists once and the world either side of it does not repeat
@@ -1805,7 +1855,7 @@
     // come out of. Anything from world/terrain.js (23) or world/gen-pool.js (25) is still in its temporal dead
     // zone on this line, and reading it would throw INSIDE this try — which swallows it and falls back, the same
     // invisible failure the missing names caused. Check 9 enforces the ordering as well as the completeness.
-    const consts = { LIFT, WL, HMAX, RIVCELL, RIVINF, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY };
+    const consts = { WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY };
     const fns = { ihash, sstep, pwrap, vnoise, fbm, riverAt, rivEval, gatherRivers, riverS, bankEval, bankDist, desWob, desertM, oakWob, oakM, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
@@ -7032,7 +7082,7 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const tables = { NEEDLE, MOSS, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
     const fns = { ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, bankEval, bankDist, desWob, desertM, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
@@ -7790,8 +7840,22 @@
       let realSun = select(u.sunDir, -u.sunDir, isMoon());            // the ACTUAL sun (u.sunDir carries the up-body; −it is the down-body). Both are continuous across the dusk/dawn swap.
       let realMoon = -realSun;                                         // the moon is the opposite point — so as the sun sets in the west, the moon RISES in the east, both drawn from their OWN elevation
       { let s = dot(rd, realSun); let up = smoothstep(-0.03, 0.06, realSun.y);   // ── SUN disc: only while the sun is above the horizon; it sinks below the map at dusk and rises at dawn (no pop) ──
-        c += SUN_COL * 6.0 * smoothstep(0.999939, 0.999962, s) * up;  // hard-edged disc, halved
-        c += SUN_COL * 0.5 * pow(max(s, 0.0), 2600.0) * up; }         // GLARE — a tight corona hugging the disc
+        // ── 25% SMALLER (user 2026-08-21: "make the sun 25% smaller") ── s is cos(angle from the sun), so the
+        // size lives in these thresholds as an ANGLE and not as a radius: 25% off is cos(0.75 * acos(edge)) for
+        // each of the two, worked out rather than eyeballed. The disc was 1.2657 degrees across and is 0.9493
+        // now (for scale, the real sun is ~0.53, so it is still generous — this brings it nearer, not past).
+        //   outer 0.999939 -> 0.99996569   (0.6329 deg -> 0.4747)
+        //   inner 0.999962 -> 0.99997862   (0.4995 deg -> 0.3746)
+        // BOTH thresholds move, so the soft edge between them scales with the disc instead of staying the width
+        // it was — the sun reads as the same object, smaller, rather than as a smaller core with the old fringe.
+        // AND THE GLARE GOES WITH IT, which is the half that makes the change visible at all. The corona is
+        // pow(s, n) and its angular width goes as 1/sqrt(n), so shrinking it 25% is n / 0.75^2 = 2600 -> 4622.
+        // Left alone it would have kept the old radius and the sun would still have read the same size, just
+        // with a smaller hard core inside an unchanged halo.
+        // BRIGHTNESS IS UNTOUCHED (6.0 and 0.5), and so is every LIGHTING term: the sun that lights the world is
+        // u.sunDir and its irradiance, computed nowhere near here. This is the sun you can SEE, only.
+        c += SUN_COL * 6.0 * smoothstep(0.99996569, 0.99997862, s) * up;  // hard-edged disc, halved
+        c += SUN_COL * 0.5 * pow(max(s, 0.0), 4622.0) * up; }         // GLARE — a tight corona hugging the disc
       // ── THE MOON IS AN OBJECT, NOT A GLOW (user 2026-08-19: "the moon seems to be transparent, make the moon
       // completely solid") ── it used to be an ADDITIVE c += mt * ..., so whatever the sky already held
       // showed straight through it. Worse, the whole star / milky way / nebula / meteor block below runs AFTER
@@ -8265,7 +8329,7 @@
     // cell, so a taller drop would straddle a cell boundary and grazing rays would slice pieces off it.
     const RAIN_MULT : f32 = 5.0; const RAIN_HW : f32 = 0.30; const RAIN_HH : f32 = 1.05;
     const RAIN_THR : f32 = 0.9755;                                                                   // SAME lattice occupancy as snow (~2.45%), so rain is exactly as dense as the snowfall it replaces and costs the same to march. A drop covers 2.1 x 0.6 voxels against a flake's 1 x 1, so it is ~25% more screen per drop and a great deal more legible; this is the one number to move if the storm wants to be heavier or lighter
-    const RAIN_GATE : f32 = 350.0;                                                                   // how far WEST of the camera the oak mask is sampled to decide "could this ray see rain at all" — 150 for the flake march's own reach plus 200 for how far the border's meander can wander over the +-150 of z the same disc covers
+    const RAIN_GATE : f32 = 350.0;                                                                   // how far past the oak BAND's own edge the camera still counts as "could this ray see the oak forest at all" (see oakNear below, which measures a wrapped DISTANCE and so needs no direction) — 150 for the flake march's own reach plus 200 for how far the border's meander can wander over the +-150 of z the same disc covers
     const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
     // ── THE DESERT, ON THE GPU ── falling flakes are traced voxels in a world-space lattice, not particles the
     // CPU places, so the JS gate that keeps the BLANKET off the sand cannot reach them: without this it snows
@@ -8292,8 +8356,8 @@
     // as flakes falling on ground that refuses them.
     fn pwrapG(d : f32) -> f32 { return d - floor(d / f32(${BIOP}) + 0.5) * f32(${BIOP}); }
     fn desertMask(x : f32, z : f32) -> f32 {
-      let c = f32(${SPWX + DESC - desWob(SPWZ)}) + (dVnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * ${DESW}.0
-                                 + (dVnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * ${DESW * 0.35};
+      let c = f32(${SPWX + DESC - desWob(SPWZ)}) + (dVnoise(z * ${WOB_DES1} + 27.9, 83.1) - 0.5) * ${DESW}.0
+                                 + (dVnoise(z * ${WOB_DES2} + 11.2, 51.7) - 0.5) * ${DESW * 0.35};   // the frequencies are INTERPOLATED from world/window.js (WOB_DES1/DES2/OAK/CH), never typed: a hand-copied one drifted to ~1.9x and put the falling snow on a different border from the blanket (see the note there)
       let t = 0.5 + (f32(${DESH}) - abs(pwrapG(x - c))) / ${DESB}.0;   // a BAND on a wrapped distance now, exactly as the JS desertM is
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
@@ -8311,12 +8375,15 @@
     // culls a flake where this says oak, the rain march culls a drop where it says pine, and both dither on
     // it, so the two weathers cross-fade across the border exactly as the canopies and the ground cover do.
     fn oakWobG(z : f32) -> f32 {                       // = the JS oakWob(z), which is deliberately part-shared with desWob so the two borders stay broadly parallel
-      return ((dVnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * ${DESW}.0
-            + (dVnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * ${DESW * 0.35}) * 0.6
-           + (dVnoise(z * 0.0027 + 143.7, 61.3) - 0.5) * ${OAKW}.0;
+      return ((dVnoise(z * ${WOB_DES1} + 27.9, 83.1) - 0.5) * ${DESW}.0
+            + (dVnoise(z * ${WOB_DES2} + 11.2, 51.7) - 0.5) * ${DESW * 0.35}) * 0.6
+           + (dVnoise(z * ${WOB_OAK} + 143.7, 61.3) - 0.5) * ${OAKW}.0;
     }
-    fn oakMask(x : f32, z : f32) -> f32 {              // 1 = deep oak forest (WEST), 0 = pine forest — the mirror of desertMask
-      let c = f32(${SPWX + OAKC - oakWob(SPWZ)}) + oakWobG(z);   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
+    // the band's CENTRE LINE at this z — its own function because the oakNear gate below has to measure the
+    // camera's distance to the band, and a second copy of this expression is a second thing to keep in step.
+    fn oakCentreG(z : f32) -> f32 { return f32(${SPWX + OAKC - oakWob(SPWZ)}) + oakWobG(z); }   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
+    fn oakMask(x : f32, z : f32) -> f32 {              // 1 = deep oak forest, 0 = pine forest — the mirror of desertMask
+      let c = oakCentreG(z);
       let t = 0.5 + (f32(${OAKH}) - abs(pwrapG(x - c))) / ${OAKB}.0;   // a BAND, like the JS oakM: a half-plane has no west edge for the cycle to close against
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
@@ -8330,7 +8397,7 @@
     // and the blanket the CPU now lays there appears under a clear sky — the two halves of the weather
     // disagreeing in the one way the desert note above exists to prevent.
     fn chWobG(z : f32) -> f32 {                        // = the JS chWob(z): 0.6 of the OAK meander (which already carries 0.36 of the desert's) plus one independent octave, so all three borders stay broadly parallel
-      return oakWobG(z) * 0.6 + (dVnoise(z * 0.0019 + 211.3, 97.7) - 0.5) * ${CHW}.0;
+      return oakWobG(z) * 0.6 + (dVnoise(z * ${WOB_CH} + 211.3, 97.7) - 0.5) * ${CHW}.0;
     }
     fn cherryMask(x : f32, z : f32) -> f32 {           // 1 = inside the blossom band, 0 = the oak forest either side of it. A DISTANCE from the centre line, not a side of it — that is what makes it a band rather than a half-plane
       let b = f32(${SPWX - CHOFF - chWob(SPWZ)}) + chWobG(z);   // pinned at the spawn's own z exactly as the JS is, or how far spawn sits inside the band is a per-session lottery
@@ -8434,7 +8501,30 @@
         // The RAW mask, with RAIN_GATE's margin, is the right bound: true across the whole blend and false only
         // well inside the biomes that never cull. The SMOOTH transition belongs on the per-flake test below,
         // which reads the FLAKE's own position — a gate on the camera can only ever be on or off.
-        let oakNear = ${(!OAK_SNOW || RAIN_ON) ? 'oakWeather(ro.x + winOf.x - RAIN_GATE, ro.z + winOf.z) > 0.0' : 'false'};
+        // ── AND IT IS A DISC, NOT A DIRECTION (user 2026-08-21: "its snowing in the pine forest, but is having the
+        // snow fall in the oak forest … the snow just instantly appearing when switching biomes") ── the note above
+        // is right about WHAT this gate must be and the old expression stopped being it, twice over. Both faults
+        // are in the one line, and both were introduced by changes elsewhere that had no reason to look here:
+        //   * "oakMask is monotone in x, so the WEST extreme is the maximum over the disc" was true of a HALF-PLANE.
+        //     oakM became a BAND on 2026-08-18 so the cycle could close, and a band is not monotone in anything:
+        //     sampling one side of the camera says nothing about the other.
+        //   * BAND_MIRROR (2026-08-20) then put the oak forest EAST of the pines. minus-RAIN_GATE samples WEST, so on
+        //     the border the player actually walks the margin now points away from the forest it exists to find.
+        // WHAT THE PLAYER SAW. Standing in the pines, the sample landed in more pine, oakNear went false, and the
+        // per-flake cull below did not run AT ALL — so it snowed across every oak column in view, out to the march's
+        // own 150-voxel reach. Then walking east the gate flipped true at a fixed camera x (~125 voxels PAST the
+        // treeline, inside the oak), and the whole flake field started being culled between one step and the next.
+        // That is both halves of the report: too far out, and then a switch rather than a fade. The BLANKET was
+        // never affected because tick-snow.js asks wSharp per settling column with no camera gate at all, which is
+        // exactly why the ground snow reads as correct and the falling snow does not.
+        // THE FIX IS THE BOUND THE NOTE ALREADY ASKS FOR, stated properly: is the camera within RAIN_GATE of the oak
+        // BAND, measured on the wrapped distance to its centre line. Direction-free, so it cannot care which way
+        // round BAND_MIRROR has the world; wrapped, so it stays true in every period of the cycle; and still one
+        // mask sample, uniform across the workgroup, so the pine forest and the deep desert pay what they always did.
+        // It uses oakM's own reach (OAKH + OAKB/2 — outside that the mask is exactly 0) rather than oakWeather's,
+        // because oakWeather <= oakM everywhere and a bound that is too WIDE only costs a little work, while one
+        // that is too narrow is the bug above.
+        let oakNear = ${(!OAK_SNOW || RAIN_ON) ? 'abs(pwrapG(ro.x + winOf.x - oakCentreG(ro.z + winOf.z))) < f32(' + (OAKH + OAKB * 0.5) + ') + RAIN_GATE' : 'false'};
         {                                                            // near field: DDA over the 3-voxel flake lattice — a flake stays WHOLE from sky to ground.
           // A tile-binned producer pass was tried here (enumerate+bin flakes once, pixels read their tile): the TRACE
           // side dropped to +0.35 ms, but on this driver ANY producer dispatch with atomics OR workgroup barriers costs
@@ -10640,10 +10730,30 @@
   let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline
   let resetHist = 1;
   let liveTargets = null;                              // textures the CURRENT bind groups reference — destroyed only after the GPU is done with them
+  // ── RECORD AT THE TRACE RESOLUTION ── with capNative set, the canvas backing store IS the trace target and
+  // renderScale becomes 1: the shader stops upscaling and the BROWSER upscales the canvas for display instead.
+  // The picture carries the same information either way — it was always an upscale of RW x RH — but the recorder
+  // then encodes ~3.6 Mpix instead of ~7.4, which is the whole difference between a 60 fps capture and a 120 fps
+  // one. Measured on this hardware: 59.6 fps encoding the full 7.43 Mpix canvas, 137.7 fps at 3.84 Mpix. And
+  // shrinking anywhere LATER is worse than not shrinking at all — the encoder's own scaler managed 25.5 fps and a
+  // round trip through a 2D canvas 21.7 — so the frame has to be small before it is ever handed over.
+  let capNative = 0;
+  function veCaptureNative(on) {
+    const v = on ? 1 : 0;
+    if (v === capNative) return { CW, CH, RW, RH };
+    capNative = v;
+    makeTargets(true);                                 // rebuilds the screen textures and resets temporal history: one hitch, at the start or end of a take
+    return { CW, CH, RW, RH };
+  }
   function makeTargets(force) {
-    const nCW = Math.max(2, Math.floor(canvas.clientWidth * devicePixelRatio));
-    const nCH = Math.max(2, Math.floor(canvas.clientHeight * devicePixelRatio));
-    const nRW = Math.max(2, Math.round(nCW * renderScale)), nRH = Math.max(2, Math.round(nCH * renderScale));
+    // EVEN dimensions, always. H.264 will not encode an odd height, so the recorder masks with `& ~1`; when that
+    // mask disagreed with the real canvas size the encoder silently took its own SCALING path instead of the fast
+    // one (measured 25.5 fps against 59.6). One pixel is nothing to the render; the mismatch was not.
+    const shrink = capNative ? renderScale : 1;
+    const nCW = Math.max(2, Math.floor(canvas.clientWidth * devicePixelRatio * shrink) & ~1);
+    const nCH = Math.max(2, Math.floor(canvas.clientHeight * devicePixelRatio * shrink) & ~1);
+    const rs = capNative ? 1 : renderScale;
+    const nRW = Math.max(2, Math.round(nCW * rs)), nRH = Math.max(2, Math.round(nCH * rs));
     if (!force && liveTargets && nCW === CW && nCH === CH && nRW === RW && nRH === RH) return;   // a resize event that did not change the pixel size must not rebuild ten textures (and reset temporal history)
     if (CPROF) cpEvt |= 16;
     CW = nCW; CH = nCH; RW = nRW; RH = nRH;
@@ -10898,6 +11008,7 @@
   // voxels deep, so a waist test almost never fired and the bob the user was looking for simply never ran.
   // 5 is knee-deep: it engages in an ordinary lake while still leaving a shallow wade as walking.
   const SWIM_DEEP = 5;
+  const SWIM_STEP = 12;                                // how far a SWIMMER may auto-step, against 5 on land — sized off the measurement in moveAxis: float depth 6 + the steepest bank on a measured lake 4, plus margin
   const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 4.5;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
   const WATER_SPD = 0.344;                             // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
@@ -11170,9 +11281,31 @@
       if (axis === 0) P.x += dd; else if (axis === 1) P.y += dd; else P.z += dd;
       if (boxFree(P.x, P.y, P.z, hh)) continue;
       const bodyBlk = boxBodyHit;                      // WHAT refused, captured NOW: every boxFree below overwrites the flag
-      if (axis !== 1 && (P.onGround || !boxFree(P.x, P.y - 1.4, P.z, hh))) {   // step-up even during downhill micro-air — no brief catches
+      // ── …AND WHILE SWIMMING (user 2026-08-21: "the player has a hard time getting out of the water onto
+      // land") ── the two conditions above are both about having the GROUND under you: standing on it, or being
+      // a moment of micro-air away from it downhill. A swimmer has neither — P.onGround is false and there is
+      // open water for 1.4 below — so the step-up never fired in water at all, and swimming into a bank stopped
+      // you dead against it however low the bank was.
+      // NOR COULD YOU RISE OVER IT. The Space spring targets the EYE at WL + 1 + SWIM_RISE, which on a 20-voxel
+      // body still puts the FEET under the waterline: holding Space floats you AT the surface, it does not lift
+      // you above the bank. So the only way out was to hunt along the shore for somewhere shallow enough that
+      // `swimming` went false and P.onGround came back — which is the difficulty being reported.
+      // SAME 5-VOXEL LIMIT AS ON LAND, deliberately: hauling out is the same move as stepping up a kerb. A sheer
+      // face still refuses it, because the step needs a FREE box at that height to land in — this cannot climb a
+      // cliff out of the sea any more than it can on dry ground.
+      if (axis !== 1 && (P.onGround || P.swim || !boxFree(P.x, P.y - 1.4, P.z, hh))) {   // step-up even during downhill micro-air — no brief catches
         let stepped = false;
-        for (let up = 1; up <= 5; up++) if (boxFree(P.x, P.y + up, P.z, hh)) { P.y += up; stepped = true; break; }   // auto-step up to 5 voxels / 50 cm (user; was 3)
+        // ── AND A SWIMMER GETS A TALLER ONE, BECAUSE IT HAS FURTHER TO REACH ── MEASURED on a lake: the body
+        // floats with its FEET 6 voxels under the waterline (identical holding Space or not — SWIM_RISE targets
+        // the EYE at WL + 12, which on a 20-voxel body is feet at WL - 6), while the banks around that same lake
+        // stand 1 to 4 voxels PROUD of the water, median 1. So hauling out is a climb of 6 + 1 = 7 voxels at the
+        // median and 10 at the steepest bank there — against a step limit of 5. The swimmer could not step out
+        // anywhere. That is the whole of "a hard time getting out of the water onto land": not a blocked move,
+        // an out-of-reach one, and it is why holding Space does not help either.
+        // 12 covers the worst bank measured with margin and is still not a climbing tool: the step needs a FREE
+        // box at that height to land in, so a sheer cliff out of deep water refuses it exactly as it does on land.
+        const upMax = P.swim ? SWIM_STEP : 5;
+        for (let up = 1; up <= upMax; up++) if (boxFree(P.x, P.y + up, P.z, hh)) { P.y += up; stepped = true; break; }   // auto-step up to 5 voxels / 50 cm (user; was 3)
         if (stepped) continue;
       }
       // ── A CREATURE'S BOX IS NOT THE VOXEL GRID (2026-08-10) ── the clamps below resolve against
@@ -11210,7 +11343,7 @@
     maybeRecenter();
     P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
-    P.fallT = 0; uwT = 0;                               // fresh lungs on respawn
+    P.fallT = 0; P.fallPk = undefined; P.noFall = 1; uwT = 0;   // fresh lungs on respawn — and a clean fall ledger, for the reason cmdGoTo clears the same pair: P.fallPk is a world y left over from wherever you died, and the lift loop above can leave you over the ground
     vitReset();                                         // …and a full bar of hearts and hunger
     smoothEye = P.y + EYE;
   }
@@ -12067,7 +12200,16 @@
     else maybeRecenter();
     P.y = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
     for (let g = 0; g < 40 && P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT); g++) P.y += 1;   // never land inside a rock or a trunk — capped, so a bad column drops you rather than launching you
-    P.fallT = 0; smoothEye = P.y + EYE; resetHist = 1;
+    // ── AND ARRIVING SOMEWHERE IS NOT FALLING (user 2026-08-21: "teleporting seems to hurt the player. for
+    // example typing /locate") ── P.fallPk is the HIGHEST POINT OF THE CURRENT FALL and it is a world y, so it
+    // means nothing once the player is standing somewhere else: hop from a ridge at y 280 to a valley floor at
+    // y 180 and the landing below computes drop = 100 voxels = 10 m and charges for it. Clearing fallT alone
+    // was never enough — the damage curve in tick-body.js deliberately does NOT read fallT (see the note there
+    // about staircases), it reads peak-minus-landing.
+    // noFall = 1 as well, and not instead: the lift-out-of-solid loop above can leave the player up to 40
+    // voxels over the ground, so there IS a real fall about to happen, and it is one the player did not ask
+    // for. It is the same pair the fly toggle already sets when it drops you (ui/input.js).
+    P.fallT = 0; P.fallPk = undefined; P.noFall = 1; smoothEye = P.y + EYE; resetHist = 1;
     // …and FACE IT (the creature path passes a look point; every terrain target passes nothing and is
     // untouched). An ant is one voxel tall: arriving beside it still pointing whichever way you happened to be
     // pointing is indistinguishable from arriving nowhere. Pitch is clamped inside the same +-1.55 the mouse
@@ -14710,7 +14852,7 @@
   const { SUPWHY, phChopDecor, phChopLeaves, supFlood, supFlush } = __m_sim_support;
   const __m_sim_tools = (() => {
   // @module — the voxel-accurate melee ray, the stone tools’ reach/bite constants, and the hoe’s tilled earth
-  // @exports AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay
+  // @exports AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_AIM, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay
   // ── AXE SWING -> TRUNK ── melee reach along the view ray, trunk voxels only. Returns true when the
   // swing bit wood so the caller can spend the swing on the tree rather than also registering a kill.
   const AIM_FORGIVE = 1.6;                            // voxels of slack around a creature's own radius in the kill test. Small and ABSOLUTE, so it forgives a shaky hand without ever growing into the fixed 35-degree cone this replaced.
@@ -14755,6 +14897,12 @@
   const DIG_BITE = 2;
   //                                                    A QUARTER of the axe's radius (halved twice, user); the chunk it yields is half. 1.0/1.0 would make it identical to the axe.
   const SKUNK_ANIM_MUL = 0.5;                          // the SKUNK's walk rate as a fraction of the porcupine's 12/24 (user 2026-08-06, re-asked 2026-08-07) → 6 fps walking, 12 fleeing. One constant, read by the world marcher AND the editor preview, so the two can never drift.
+  // ── WHAT THE LAST SWING DECIDED ── the aim pre-pass's verdict plus WHICH branch of the march spent the
+  // swing, published so a test can ask instead of inferring. Inferring is what made "the axe hits foliage"
+  // take three passes to pin down: a voxel diff shows leaves gone and cannot say whether that was the leaf
+  // branch firing on a crosshair that was really on bark, or a wood-filtered sphere behaving correctly on a
+  // crosshair that was really on a leaf. Read with __vb.chopAim().
+  const CHOP_AIM = { path: 'none' };
   const CHOP_RAD = 5, CHOP_DEEP = 1.5;   // RAD 5 so a full PH.chopBite is reachable from one impact point; CHOP_DEEP pushes the carve sphere into the wood so the chunk has depth instead of being a surface cap
   // ── DEEP WAS 3 (user 2026-08-07: "the axe hits the tree trunk from the backside") ── that 3 was authored
   // when the impact point could not be trusted: the carve fired from wherever treeShapeAt first answered,
@@ -14922,6 +15070,7 @@
     const soiR = (id) => (ownTab && ownTab[id]) ? base * SOI_OWN : base * 0.5;   // …and the REACH, doubled on the tool's own material
     const kS = base;
     const C_RAD = CHOP_RAD * base * SOI_OWN, C_DEEP = CHOP_DEEP * base;
+    const D_DEEP = (window.__CDEEP !== undefined ? +window.__CDEEP : CHOP_DEEP) * base;   // the DECOR branch's own copy of the push — same number, its own name so an A/B can move it without touching the felled-body path
     const C_CUT = C_RAD;   // the CARVE sphere. Same as the reach today; kept as its own name because they are different questions — how far a swing may look for material, and how big a bite it takes out of it.   // the WOOD paths — a cutting edge OWNS wood, so this is its doubled sphere; C_DEEP is a depth offset, not a reach, and is untouched
     const C_BITE = knife ? Math.max(4, Math.round(PH.chopBite * KNIFE_BITE * base)) : Math.round(PH.chopBite * base);   // the WOOD chunk, at this tool's sphere   // the knife takes HALF the axe's chunk (user); the PICK and SHOVEL take proportionally MORE, because a wider sphere that still lifts 30 voxels is just a slower way to dig the same hole
     // A minimum bite bigger than the sphere can physically hold makes every swing miss (that is how the
@@ -14978,9 +15127,28 @@
     // Tool-dependent, because the number means "how far can the thing I am trying to hit hide": an AXE is for
     // wood, so it looks through a whole oak canopy for it. Everything else keeps the pine number — the knife
     // included, which is aimed at creatures and has no business reaching through a crown for a trunk.
-    // 24, not unlimited: past a crown's depth it would stop being "the leaf was in the way" and start being
-    // "there is a tree somewhere over there", and a player who really is aiming at leaves must still get them.
-    const LEAF_SEE_THROUGH = (window.__LST !== undefined) ? window.__LST : (axe ? 24 : 6);   // window.__LST overrides it live (same pattern as __UNIBR / __TFREEZE) so the pine number and the axe number can be A/B'd against the SAME tree — the world re-randomises on every reload, so that is the only way to compare them honestly                        // voxels of needles a trunk can hide behind — a pine crown is a few voxels of needle around the bole
+    // ── AND 24 WAS STILL A GUESS, SO IT IS DERIVED NOW (user 2026-08-21: "when the axe is 'hitting' the wood,
+    // it's still not voxel accurate. it's hitting the foliage behind the wood of the tree") ── the 2026-08-20
+    // pass measured ten sight lines into an 86k oak and got 8, 9, 12, 17, 22, 24, 25, 27, 29, 29, then picked
+    // 24 off that list. FOUR OF THE TEN ARE OVER IT. On those lines `t - leafT` fails the test, the pre-pass
+    // falls to its `return 3` below, leafHit is 3 — and the whole swing is spent by phChopLeaves on a sphere
+    // centred on the FIRST LEAF, whatever the crosshair was resting on. Crosshair on bark, axe eats canopy.
+    // That is not a number that wants nudging again; it wants to stop being a number somebody chose. What it
+    // has to cover is one CROWN, because that is the thing standing between the eye and the bole, and the bake
+    // already carries that measurement: OKMARGIN (world/terrain.js) is the widest oak's half-footprint, kept
+    // beside the models so it grows if the bake does. Twice it is the full width, i.e. the longest chord any
+    // ray can take through the widest crown in the game — so a ray that entered a crown can always reach the
+    // bole inside it, from any angle, on any oak.
+    // BE HONEST ABOUT WHAT THIS COSTS. 120 is wider than the swing can reach at all (CHOP_REACH is 53
+    // horizontal, 107 at the limit), so for an AXE the rule is now effectively "any wood on the ray wins".
+    // The old note here argued against exactly that — "a player who really is aiming at leaves must still get
+    // them" — and it is the price: with an axe in hand you can no longer cut a leaf that has a trunk behind it.
+    // Leaves against open sky, an isolated bush, the outside of a canopy all still cut, and every OTHER tool
+    // keeps the pine's 6 (the knife included), so the leaf-cutting the argument was protecting is reachable by
+    // switching hands. Against that, the axe now does the one thing it is for wherever it is pointed, which is
+    // what has been asked for twice.
+    // The knife keeps 6: it is aimed at creatures and has no business reaching through a crown for a trunk.
+    const LEAF_SEE_THROUGH = (window.__LST !== undefined) ? window.__LST : (axe ? OKMARGIN * 2 : 6);   // window.__LST overrides it live (same pattern as __UNIBR / __TFREEZE) so the pine number and the axe number can be A/B'd against the SAME tree — the world re-randomises on every reload, so that is the only way to compare them honestly                        // voxels of needles a trunk can hide behind — a pine crown is a few voxels of needle around the bole
     // ── AND THE SAME TEST HAS TO SEE A FELLED TREE (user 2026-08-07) ── it read W and only W, and a tree
     // on the ground is NOT in W: the whole log, needles and bark alike, is one off-grid rigid body. So on a
     // fallen pine this pass found nothing at all, aimId stayed 0, and the march below was left to decide by
@@ -14999,7 +15167,30 @@
         if (!firstLeaf) { firstLeaf = [lx, ly, lz]; leafT = t; aimId = lv; aimBody = inB; aimT = t; }
         return 0;
       }
-      if (!inB && (floatTab[lv] || (isWater(lv) && !solidTab[lv]))) return 0;   // ── PASS-THROUGH IS NOT AN AIM (user 2026-08-07) ── grass strands, blooms, twigs, cones and open water: the march's obstruction test and aimHitId both walk straight THROUGH these, but this pass stopped on them and set aimT to a STRAND's distance — which makes every `t >= aimT` gate below vacuous, since the ray passes that distance almost immediately. Ice keeps solidTab, so a frozen lake is still a thing you can aim at.
+      // ── AND WOOD IS NEVER PASS-THROUGH (user 2026-08-21: "still not voxel accurate on the axe, it's still
+      // hitting the foliage when it should be hitting the wood. seems to be worse in the oak/cherry forests") ──
+      // this line walked the aim ray straight through EVERY TRUNK IN THE GAME, and that is not hyperbole: there
+      // are exactly four woodTab ids (49-52) and all four are floatTab, so `woodTab` is a strict subset of the
+      // set this line skips. Everything below it that reads wood — the `!firstLeaf` stop, the whole leaf/trunk
+      // see-through — was unreachable for a ray that had already met a leaf. aimId stayed the LEAF, aimWood went
+      // false, and phChopLeaves took the entire swing. MEASURED with __vb.chopAim(): crosshair on an oak bole,
+      // `{ aimId: 197 (a leaf), aimWood: false, leafHit: 3, path: 'leaves' }`.
+      // WHY IT READS AS AN OAK/CHERRY PROBLEM. It is not one — it is every tree — but a PINE hides its bole in a
+      // few voxels of needle and many sight lines reach bark with no leaf in front at all. Those lines fall to
+      // `aimSky` (aimId 0 -> aimWood true) and work by accident. An oak bole sits in the middle of a broad crown,
+      // so essentially every line meets a leaf first and there is no accident left to save it.
+      // AND IT IS WHY RAISING LEAF_SEE_THROUGH DID NOTHING, twice: 6 -> 24 -> 120 all tuned a comparison that
+      // could never be evaluated.
+      // THE TAB CANNOT BE FIXED INSTEAD, and that is worth writing down. floatTab is set for twigs by walking
+      // STICKV/STICKB's own voxels (assets/material-tabs.js) — and a twig is MADE OF BARK, the same palette ids
+      // as the trunk it fell from, which is the id-sharing this codebase keeps re-learning. There is no id-level
+      // difference between "a twig lying on the floor" and "the bole of an oak" to key on, so the distinction has
+      // to be made HERE, where the question is "is this what the crosshair means".
+      // WHAT IT COSTS: a twig on the ground is no longer walked past by the aim either, so an axe swing that
+      // grazes one now stops on it. That is a fair trade — an axe swing at the forest floor does nothing today
+      // (soil is digOnlyTab) — but it is the 2026-08-07 "pass-through is not an aim" rule shrinking by exactly
+      // the wood ids, and if twigs ever start stealing swings this line is why.
+      if (!inB && !woodTab[lv] && (floatTab[lv] || (isWater(lv) && !solidTab[lv]))) return 0;   // ── PASS-THROUGH IS NOT AN AIM (user 2026-08-07) ── grass strands, blooms, twigs, cones and open water: the march's obstruction test and aimHitId both walk straight THROUGH these, but this pass stopped on them and set aimT to a STRAND's distance — which makes every `t >= aimT` gate below vacuous, since the ray passes that distance almost immediately. Ice keeps solidTab, so a frozen lake is still a thing you can aim at.
       if (!inB && snowTab[lv]) {                       // ── SNOW IS COVER, NOT A TARGET (user 2026-08-07: "the tool shouldn't register the snow, but the material under the snow") ── the same rule as LEAF vs TRUNK: remember the blanket, then keep walking for what it is sitting on. landSnowAt caps a stack at 3 layers, so the budget below always reaches the ground.
         if (!firstSnow) { firstSnow = true; snowT = t; if (!firstLeaf) { aimId = lv; aimBody = inB; aimT = t; } }   // …and the snow itself is only the FALLBACK aim, for a drift with nothing reachable under it
         return 0;
@@ -15066,7 +15257,12 @@
     const aimSky = aimId === 0;
     const aimWood = !aimBody && (!!woodTab[aimId] || aimSky);
     const aimTW = aimSky ? 0 : aimT;                   // nothing was hit, so there is no "past the crosshair" to enforce
+    CHOP_AIM.aimId = aimId; CHOP_AIM.aimBody = aimBody; CHOP_AIM.aimT = aimT; CHOP_AIM.aimWood = aimWood;
+    CHOP_AIM.aimSky = aimSky; CHOP_AIM.leafHit = leafHit; CHOP_AIM.leafT = firstLeaf ? leafT : null;
+    CHOP_AIM.gap = (firstLeaf && aimT !== Infinity) ? +(aimT - leafT).toFixed(2) : null;
+    CHOP_AIM.lst = LEAF_SEE_THROUGH; CHOP_AIM.firstLeaf = firstLeaf ? firstLeaf.slice() : null; CHOP_AIM.path = 'none';
     if ((leafHit === 3 || (leafHit === false && firstLeaf))          // the leaf wins: nothing behind it, or the ray ran out inside the crown
+        && (CHOP_AIM.path = 'leaves')
         && phChopLeaves(firstLeaf[0], firstLeaf[1], firstLeaf[2], CHOP_RAD * base * 0.5, Math.max(2, Math.round(C_BITE * 0.5)))) return true;   // FOLIAGE is nobody's own material: half the tool's sphere (user)   // a FALLEN crown is not in W, so this misses and the march below takes it with okBody instead
     let S = null;
     // ── VOXEL-ACCURATE (user 2026-08-05) ── walk the exact voxels the crosshair ray passes through. The
@@ -15092,7 +15288,7 @@
       const bAt = phBodyIdAt(x, y, z);
       if (bAt && bodyTool(bAt) && (!okBody || okBody(bAt)) &&
           (phChopBody(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, C_MIN, C_BITE, okBody) ||
-           phChopBody(x, y, z, C_RAD, C_MIN, C_BITE, okBody))) return 1;   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
+           phChopBody(x, y, z, C_RAD, C_MIN, C_BITE, okBody))) { CHOP_AIM.path = 'body'; CHOP_AIM.hitId = bAt; return 1; }   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
       const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
       // ROCK needs the pick, WOOD needs a cutting edge, everything else soft yields to whatever is in hand.
       // …and the carve is confined to that same material, so the sphere cannot spill into the next one.
@@ -15141,9 +15337,32 @@
       // THE TREE STILL FALLS. phChopDecor only moves voxels, so the connectivity check that drops a severed
       // trunk is run straight after it — phTreeSettle (sim/chop-tree.js), the same block physChopAt runs, on
       // the shape this column belongs to. Latched into the march's own `S` so a swing pays treeShapeAt once.
-      if (id && decorTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat)) {
+      // ── AND THE SPHERE SITS INSIDE THE MATERIAL, NOT ON ITS SKIN (user 2026-08-21: "the chunk doesn't break off
+      // the same as when the player is point blank. it takes off a larger flatter chunk vs a smaller spherical
+      // chunk … it also is coming off the wrong place") ── this is a regression with a paper trail: the tree path
+      // that used to carve standing wood took its bite CHOP_DEEP further along the ray for exactly this reason,
+      // and its own note records the symptom in the user's words from 2026-08-05 — "centred on the surface
+      // sample, most of it hung in open air and the chunk came out a flat cap". The 2026-08-20 pass deleted that
+      // path to give wood the pick's mechanics and the decor branch never had the push, so the flat cap came back.
+      // WHY IT READS AS A DISTANCE PROBLEM. It is really an ANGLE problem, and angle covaries with distance: up
+      // close you look UP or DOWN at a bole, so the ray enters through the near face and drives on into solid
+      // wood, and a sphere centred there is surrounded. Standing back the line goes flat, the ray clips the near
+      // face tangentially, and half the sphere hangs in open air — so nearest-first spends the whole bite
+      // spreading sideways across the bark instead of biting in. Same numbers, different shape, which is exactly
+      // "larger and flatter" and "off the wrong place".
+      // DEEPER FIRST, SURFACE AS FALLBACK — the identical two-try shape the felled-body branch above already
+      // uses, and for the identical reason: if the pushed centre has run out the far side of a thin branch, the
+      // surface point still gets its turn rather than the swing doing nothing.
+      // ALL THREE TOOLS, because they share this branch and the user asked for parity — a chunk out of a boulder
+      // wants to be a chunk for the same reason a chunk out of a trunk does. C_DEEP already carries the tool's
+      // own scale (CHOP_DEEP * base), so nothing here singles the axe out.
+      // window.__CDEEP overrides it live for A/B, the same pattern as __LST / __TFREEZE.
+      if (id && decorTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true)))
+          && (phChopDecor(x + vx * D_DEEP, y + vy * D_DEEP, z + vz * D_DEEP, CHOP_RAD * mR, mBite, okMat)
+              || phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat))) {
         if (HIVE_TAB[id]) hiveChopped(x, y, z);
         if (woodTab[id]) { if (!S) S = treeShapeAt(x, z); if (S) phTreeSettle(S); }   // …and only wood asks: nothing else can be holding a tree up
+        CHOP_AIM.path = 'decor'; CHOP_AIM.hitId = id; CHOP_AIM.hitT = +t.toFixed(2); CHOP_AIM.rad = CHOP_RAD * mR; CHOP_AIM.bite = mBite;   // the SPHERE and the BITE this swing actually used — 'chopping at a distance does not have the same soi' is a claim about these two numbers, so a test must be able to read them rather than infer them from a voxel diff
         return 1; }   // free gate, the id is already in hand
       // ── AND A HIVE THE CROSSHAIR HAS ALREADY PUNCHED THROUGH IS STILL A HIVE (user 2026-08-19: "fix the hive
       // stall") ── the branch above fires only when the MARCHED VOXEL is itself a hive voxel, and beehive.vox
@@ -15163,7 +15382,7 @@
       // Nothing else moves: same sphere, same bite, same hiveChopped, same BEE_BREAK_F. A chip is still a chip,
       // and the ambush this feature refused stays refused, because the ray has to pass THROUGH the hive's box
       // to get here — which is aiming at it, not clipping a crown on the way to a trunk.
-      if (!id && cut && hiveBoxAt(x, y, z) && phChopDecor(x, y, z, H_RAD, H_BITE, okHive)) { hiveChopped(x, y, z); return 1; }   // `!id` only: an occupied cell is the branch above's business, whatever it holds   // hiveBoxAt memoises its oak scan per cell, so a whole march costs one 3x3 probe
+      if (!id && cut && hiveBoxAt(x, y, z) && phChopDecor(x, y, z, H_RAD, H_BITE, okHive)) { hiveChopped(x, y, z); CHOP_AIM.path = 'hive'; return 1; }   // `!id` only: an occupied cell is the branch above's business, whatever it holds   // hiveBoxAt memoises its oak scan per cell, so a whole march costs one 3x3 probe
       // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
       // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
       // where the trunk was, and a solid-only trigger could never find the tree again — the axe would
@@ -15233,9 +15452,9 @@
     })) return true;
     return false;                                     // the swing never bit anything
   };
-    return { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay };
+    return { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_AIM, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay };
   })();
-  const { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay } = __m_sim_tools;
+  const { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_AIM, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay } = __m_sim_tools;
   const __m_sim_solver = (() => {
   // @module - the positional constraint solver shared by ragdolls and dropped items
   // @exports physStep
@@ -15961,6 +16180,20 @@
   // The desert MOUSE is deliberately NOT here: it has two homes, which is a different thing and is expressed
   // by DES_OAK in tick-creatures giving it a SHARE of its own slots.
   const DES_OAKONLY = { bee: 8, grass_snake: 5 };
+  // ── WHO DIES TO ONE BLOW, WHATEVER SWUNG IT (user 2026-08-21: "make bees 1 hit like the other insects. make
+  // all insects one hit") ── read by `frail` in sim/life/reactions.js, which already exempted the FLY_0 flyers
+  // and the worms on exactly this argument: a creature that size surviving three blows from a shovel reads as
+  // absurd. This is the DESERT band's half of that list, and it has to be a NAME table rather than a slot range
+  // because the band's bugs are not contiguous — they sit at DES_LOAD indices 0, 3, 5, 6, 7 (assets/held-items.js)
+  // interleaved with the cobra, the gecko and the desert mouse, so a range test would be three ranges and would
+  // quietly mean something else the day a species is inserted into the list.
+  // The scorpion and the spider are arachnids rather than insects strictly, and they are IN: "all insects" reads
+  // as "all the bugs" here, and a scorpion left on three would be the one obvious survivor of the rule.
+  // NOT here, deliberately: cobra, gecko and grass_snake (reptiles) and desert_mouse (a mammal, and the one
+  // member of this band that drops meat) — they keep HITS_TO_KILL like every other animal in the game.
+  // The value is 1 and nothing reads it; it is a SET, written as a table so it sits in the same shape as
+  // DES_OAKONLY above and DES_FLYER/DES_HUNT/DES_DASH in main/tick-creatures.js, which key on the same names.
+  const DES_FRAIL = { ant: 1, fly: 1, scorpion: 1, spider: 1, bee: 1 };
   // What tick-life ASKED each band for on the last frame. A plain mirror, written once per frame, because
   // nCard/nFish/nBunny… are consts inside tickBody and main/debug-api.js is concatenated ABOVE it — a tap
   // reading them directly is a ReferenceError that no static check catches and only the first call reveals.
@@ -17397,7 +17630,7 @@
   // BASE 0.14 — measured, the track is -15.2 LUFS integrated, within 0.1 dB of high_score.mp4's -15.1, so the
   // achievement jingle's own twice-tuned 0.09 is the anchor: this sits ~4 dB over it (a moment, not a cue) and
   // still under the tool hits. On the MUSIC bus, so nothing but the master and the new slider can move it.
-  const ANTHEM_AT = 3;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-20: 120 -> 60 -> 30 -> 10 -> 3, and the clock no longer starts on its own — see anthemArmed)
+  const ANTHEM_AT = 60;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-20: 120 -> 60 -> 30 -> 10 -> 3, and the clock no longer starts on its own — see anthemArmed)
   const ANTHEM_GAP = 60;                               // …and a minute of gameplay of SILENCE between one track ending and the next starting (user)
   // ── THE SET (user 2026-08-08, re-cut 2026-08-18) ── the soundtrack, in rotation, then silence for the rest
   // of the session. It moved from game/sound/music/*.mp4 to game/sound/soundtrack/*.mp3 and gained two cuts,
@@ -17451,21 +17684,65 @@
   // starts when the user presses 1. 3 seconds after the player presses 1") ── the play clock used to run from
   // the moment the player took the controls, so the opening track was tied to nothing the player did. Armed by
   // the 1 key instead (ui/input.js), and ANTHEM_AT is the 3 seconds between the press and the music.
-  // A LATCH, not a toggle: only the FIRST press arms it, so pressing 1 again mid-set cannot restart the
-  // playlist or re-trigger a track. Everything after the first cut is unchanged — ANTHEM_GAP still spaces them.
-  let anthemArmed = false;
+  // ── ARMED FROM THE START AGAIN (user 2026-08-21: "have the songs play regularly now. after 60 seconds, then
+  // the first song plays") ── this was a latch the 1 key set (2026-08-20), then one a recording start set
+  // (2026-08-21 morning); both triggers are gone and the clock simply runs. It still ticks only while `locked`
+  // (main/tick-body.js), so the 60 s is 60 s of GAMEPLAY — the count does not run down behind the start prompt
+  // or the esc menu. Everything after the first cut is unchanged: ANTHEM_GAP still spaces them.
+  let anthemArmed = true;
   let playSecs = 0, anthemDone = false;                // the play clock, and the set-is-finished latch
   let anthemIdx = 0, anthemNextAt = ANTHEM_AT;         // which cut comes next, and the play-clock time it is due
   const playAnthem = () => {
     const a9 = anthemSnds[anthemIdx++];
     anthemNextAt = Infinity;                           // nothing is due while one is playing — the ended handler below schedules the next
-    if (anthemIdx >= anthemSnds.length) anthemDone = true;   // that was the fourth: the set is spent and the clock can stop
+    if (anthemIdx >= anthemSnds.length) anthemReshuffle(a9);   // that was the LAST of the set — draw a fresh order and keep going, rather than latching anthemDone and going silent for the session
     try { a9.currentTime = 0; const p9 = a9.play(); if (p9) p9.catch(() => { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; }); } catch (e) { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; }
   };
   // A refused or failed play must not stall the set: the catch above re-arms the next one on the same gap it
   // would have got anyway. `ended` is the normal path — the gap is measured from the moment a track FINISHES,
   // so it is a minute of silence rather than a minute of overlap.
   for (const a9 of anthemSnds) a9.addEventListener('ended', () => { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; });
+  // ── THE RECORDER STARTS THE MUSIC NOW, AND THE 1 KEY IS GONE (user 2026-08-21: "when the player presses r
+  // to record, the award song plays 3 seconds later. remove the 1 keybind" ... "if the user presses r again in
+  // the same session, the award song plays again and so on") ── the soundtrack is scoring the CLIP, so the
+  // thing that starts it is the thing that starts the clip.
+  // ANTHEM_AT is unchanged and still means what it always meant: 3 seconds of gameplay between the trigger and
+  // the first note, so the take opens on a beat of quiet.
+  // CALLED FROM veStartRec, NOT FROM A KEY, so the #veRecBtn button arms it exactly as R does — the trigger is
+  // "a recording began", and there are two ways to begin one.
+  // IT ALWAYS OPENS ON AWARD, and anthemIdx = 0 IS that, by construction rather than by name: ANTHEM_FIRST is
+  // pulled out of the shuffle and unshifted to the front of anthemOrder (see above), so slot 0 is award every
+  // session. The rest of the set follows it on the usual ANTHEM_GAP, in this session's shuffled order.
+  // AND IT IS A RESET, EVERY TIME — that is the second half of the request. A second recording in the same
+  // session gets award again, not "the next song in rotation", so anthemIdx goes back to 0 and the spent-set
+  // latch is cleared. Anything still playing from the last take is stopped first: without that a track from
+  // recording #1 would still be running when recording #2's award starts and the two would sound over each
+  // other. currentTime is rewound with the pause so a stopped track does not resume mid-phrase if the rotation
+  // reaches it again later.
+  // ── AND WHEN THE SET RUNS OUT IT RESHUFFLES INSTEAD OF STOPPING (user 2026-08-21: "then a reshuffle") ──
+  // playAnthem latched anthemDone the moment the last cut STARTED, and tickBody's clock is gated on !anthemDone,
+  // so a long session went permanently silent after one pass of seven tracks. This draws a fresh order and keeps
+  // going. Fisher-Yates over BOTH arrays with the SAME permutation: anthemOrder carries the names the debug tap
+  // reports and anthemSnds the Audio elements, so shuffling one and not the other would report every track under
+  // a neighbour's name. The elements themselves are reordered, never rebuilt — their `ended` listeners ride along.
+  // AWARD IS NOT RE-PINNED. ANTHEM_FIRST is about how a SESSION opens (user 2026-08-19: "play award.mp3 first in
+  // the playlist. shuffle everything else"); re-pinning it every cycle would make the one track you are certain
+  // to have heard already the one you hear most.
+  const anthemReshuffle = (justPlayed) => {
+    for (let i9 = anthemOrder.length - 1; i9 > 0; i9--) {
+      const j9 = (Math.random() * (i9 + 1)) | 0;
+      let t9 = anthemOrder[i9]; anthemOrder[i9] = anthemOrder[j9]; anthemOrder[j9] = t9;
+      t9 = anthemSnds[i9]; anthemSnds[i9] = anthemSnds[j9]; anthemSnds[j9] = t9;
+    }
+    // …and the new cycle never opens on the cut that is playing RIGHT NOW: a 1-in-7 immediate repeat is the one
+    // ordering a listener would actually notice, and a single swap removes it without biasing anything else.
+    if (justPlayed && anthemSnds[0] === justPlayed && anthemSnds.length > 1) {
+      let t9 = anthemOrder[0]; anthemOrder[0] = anthemOrder[1]; anthemOrder[1] = t9;
+      t9 = anthemSnds[0]; anthemSnds[0] = anthemSnds[1]; anthemSnds[1] = t9;
+    }
+    anthemIdx = 0; anthemDone = false;
+    console.log('[vb] anthem RESHUFFLE:', anthemOrder.map((t9) => t9[0]).join(' -> '));
+  };
   const SWAP_MS = 240;                                 // how long a tool swap takes to rise back into frame — short enough that it never delays a swing
   let swapT0 = -1e9, prevHeldIt = -1, prevHeldSlot;    // …and when the current one started (see the view-model block). prevHeldSlot is the SLOT OBJECT the hand was last drawing from — undefined to start, so the first frame with anything in hand counts as a change   // …and when the current one started (see the view-model block)
   let lSwapT0 = -1e9, prevLeftIt = -1;                 // …and the OFF hand's own pair (user 2026-08-19: the left hand should share the right's mechanics). Its own clock, because the two hands change item independently — a craft pair forming swaps the LEFT hand while the right keeps what it was holding
@@ -18934,7 +19211,14 @@
       || (shaft && (B.kind | 0) === 5);
     // …and the WORM band goes the same way (user): something that size surviving three
     // blows reads as absurd for the same reason the butterflies were exempted.
-    const frail = best < FLY_END || (best >= WORM_0 && best < WORM_END);
+    // ── AND EVERY BUG IN THE DESERT BAND, THE BEE INCLUDED (user 2026-08-21: "make bees 1 hit like the other
+    // insects. make all insects one hit") ── the FLY_0 band the rule started with holds only the butterflies,
+    // moths, fireflies and dragonflies, so the ant, the housefly, the bee, the scorpion and the spider were still
+    // riding the desert band's default three and the bee read as the exception to a rule the player had already
+    // been taught. They are the same size class as everything the two lines above exempt. The list is DES_FRAIL
+    // (sim/life/slots.js) — by NAME, because the band's bugs are not contiguous; see the note there.
+    const desFrail = best >= MAM_END && best < DES_END && !!DES_FRAIL[((DESERTS[((best - MAM_END) / DES_PER) | 0] || {}).name)];
+    const frail = best < FLY_END || (best >= WORM_0 && best < WORM_END) || desFrail;
     if (!B.dying && !oneBlow && !frail) {
       B.hits = (B.hits | 0) + 1;
       B.hurtAt = performance.now();                    // …and WHEN, which is what keeps the population controller from retiring it mid-fight (see the grace in main/tick-creatures.js)
@@ -19139,6 +19423,438 @@
   }
   $('kbBtn').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.remove('hidden'); kbRefresh(); });
 
+  const __m_ui_mp4_remux = (() => {
+  // @module — fragmented-MP4 → flat-MP4 remux, so an export opens in an NLE
+  // @exports veMp4Parse, veRemuxFmp4, rmBox, rmTable
+  // ═══════════════ MAKE EVERY EXPORT OPEN IN DAVINCI RESOLVE ═══════════════ (user 2026-08-21)
+  // MediaRecorder can only emit a FRAGMENTED mp4. Its `moov` is ~1.2 KB and the `stts`/`stsz`/`stsc`/`stco` sample
+  // tables inside it are EMPTY — the real samples are described by `trun` boxes in the 20-odd `moof` fragments spread
+  // through the file. Browsers and ffmpeg read that happily. DaVinci Resolve does not: it reads the moov sample
+  // tables, counts zero samples, and refuses the file, which is why dragging an export into it did nothing at all.
+  // Diagnosed on `voxelbit-clip (32).mp4` — `mvex`+`trex` present, `nb_frames=N/A` on both streams, 20 moof/mdat pairs.
+  // This walks the fragments, rebuilds the flat sample tables the moov should have had, and re-emits ftyp+moov+mdat.
+  // ── IT IS A REMUX, NOT A RE-ENCODE ── every compressed byte is passed through untouched, so it costs no quality
+  // (the export is already a second encode; a third was never acceptable — see the standing no-quality-sacrifice rule)
+  // and near-zero time. It also never reads the media into JS: the sample bytes are carried as `blob.slice()`
+  // references and only the ~42 KB of box headers is ever parsed, so a 900 MB export costs 900 MB of nothing.
+  // The per-sample durations from the `trun`s are written into `stts` VERBATIM, so the file keeps the exact frame
+  // timing the encoder produced. Forcing a uniform cadence here would resample motion, which is the same mistake as
+  // dropping `-fps_mode passthrough` from the ffmpeg recipe — don't.
+  const RM_HDR = 8, RM_NONSYNC = 0x00010000;              // sample_is_non_sync_sample is bit 16 of the 32-bit sample_flags; the low 16 are sample_degradation_priority
+  const rmType = (dv, p) => String.fromCharCode(dv.getUint8(p), dv.getUint8(p + 1), dv.getUint8(p + 2), dv.getUint8(p + 3));
+  const rmWalk = (dv, start, end, cb) => {                // iterate the child boxes of one already-in-memory range
+    let p = start;
+    while (p + RM_HDR <= end) {
+      let sz = dv.getUint32(p), h = RM_HDR;
+      const ty = rmType(dv, p + 4);
+      if (sz === 1) { if (p + 16 > end) break; sz = Number(dv.getBigUint64(p + 8)); h = 16; }
+      else if (sz === 0) sz = end - p;                    // "to end of file" — legal for the last box
+      if (sz < h || p + sz > end) break;                  // truncated or nonsense: stop rather than read past it
+      cb(ty, p + h, p + sz, p);
+      p += sz;
+    }
+  };
+  const rmFind = (dv, start, end, ty) => { let r = null; rmWalk(dv, start, end, (t, b, e, s) => { if (t === ty && !r) r = { body: b, end: e, start: s }; }); return r; };
+  const rmPath = (dv, box, ...tys) => { let cur = box; for (const t of tys) { if (!cur) return null; cur = rmFind(dv, cur.body, cur.end, t); } return cur; };
+
+  // ── TOP-LEVEL SCAN WITHOUT READING THE FILE ── only the 8/16-byte headers are fetched, so the multi-MB `mdat`
+  // payloads are located and then left on disk. 42 slices for a 360 MB export.
+  const rmScan = async (blob) => {
+    const out = [];
+    let p = 0;
+    while (p + RM_HDR <= blob.size) {
+      const buf = await blob.slice(p, Math.min(p + 16, blob.size)).arrayBuffer();
+      if (buf.byteLength < RM_HDR) break;
+      const dv = new DataView(buf);
+      let sz = dv.getUint32(0), h = RM_HDR;
+      const ty = rmType(dv, 4);
+      if (sz === 1) { if (buf.byteLength < 16) break; sz = Number(dv.getBigUint64(8)); h = 16; }
+      else if (sz === 0) sz = blob.size - p;
+      if (sz < h || p + sz > blob.size) break;
+      out.push({ ty, start: p, body: p + h, end: p + sz });
+      p += sz;
+    }
+    return out;
+  };
+
+  // ── BOX WRITERS ── every table is sized exactly, so the moov can be built twice (once to learn its length, once
+  // with the real chunk offsets that length determines) and come out byte-identical both times.
+  const rmBox = (ty, ...parts) => {                       // parts: Uint8Array pieces of the payload
+    let n = 0; for (const q of parts) n += q.length;
+    const out = new Uint8Array(RM_HDR + n), dv = new DataView(out.buffer);
+    dv.setUint32(0, out.length);
+    for (let i = 0; i < 4; i++) out[4 + i] = ty.charCodeAt(i);
+    let o = RM_HDR; for (const q of parts) { out.set(q, o); o += q.length; }
+    return out;
+  };
+  const rmU32 = (...v) => { const a = new Uint8Array(v.length * 4), d = new DataView(a.buffer); v.forEach((x, i) => d.setUint32(i * 4, x >>> 0)); return a; };
+  const rmTable = (ty, ver, rows, wide) => {              // a full-box table: version/flags, entry_count, then `rows` flat u32s
+    const a = new Uint8Array(8 + rows.length * 4), d = new DataView(a.buffer);
+    d.setUint32(0, (ver & 0xff) << 24);
+    d.setUint32(4, rows.length / wide);
+    for (let i = 0; i < rows.length; i++) d.setUint32(8 + i * 4, rows[i] >>> 0);
+    return rmBox(ty, a);
+  };
+
+  // ── FULL-BOX DURATION PATCHING ── mvhd/tkhd/mdhd are copied from the source byte-for-byte (matrix, display size,
+  // language, volume and all) and only their duration field is rewritten, because a fragmented init writes 0 there.
+  // Chrome emits VERSION 1 of all three, so the 64-bit layout is the live path and the v0 branch is the safety net.
+  const rmCopyPatch = (src, box, kind, dur) => {
+    const out = src.slice(box.start, box.end), dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    const ver = dv.getUint8(RM_HDR);
+    const at = RM_HDR + (kind === 'tkhd' ? (ver === 1 ? 28 : 20) : (ver === 1 ? 24 : 16));   // byte offset of the DURATION field inside the box body. mvhd/mdhd share a layout (…creation, modification, timescale, duration); tkhd carries track_ID + a reserved word where the other two carry timescale, so its duration sits one word further in
+    if (ver === 1) dv.setBigUint64(at, BigInt(Math.max(0, Math.round(dur))));
+    else dv.setUint32(at, Math.min(0xfffffffe, Math.max(0, Math.round(dur))));
+    return out;
+  };
+  const rmTimescale = (dv, box, kind) => {                // mvhd/mdhd only
+    const ver = dv.getUint8(box.body);
+    return dv.getUint32(box.body + (ver === 1 ? 20 : 12));
+  };
+
+  // ═══════════════ THE PARSE ═══════════════
+  // Reads a fragmented mp4 down to a flat per-track sample list and returns null for anything it cannot safely
+  // handle. It backs TWO callers: the remux below, and the WebCodecs export in ui/video-editor.js, which needs
+  // exactly the same thing — every sample's byte range, decode time and sync flag — to feed a VideoDecoder.
+  // Sample fields: { size, dur, cts, sync, off, dts } with `off` absolute in `blob` and `dts` in the track timescale.
+  const veMp4Parse = async (blob) => {
+    const boxes = await rmScan(blob);
+    const moovB = boxes.find((b) => b.ty === 'moov'), ftypB = boxes.find((b) => b.ty === 'ftyp');
+    const moofs = boxes.filter((b) => b.ty === 'moof');
+    if (!moovB) return null;                              // not an mp4 at all. A file with no `moof` is NOT rejected here: that is the flat case, and since the WebCodecs recorder muxes its own takes it is now the COMMON one
+    const moovRaw = new Uint8Array(await blob.slice(moovB.start, moovB.end).arrayBuffer());
+    const mdv = new DataView(moovRaw.buffer);
+    const mv = { body: RM_HDR, end: moovRaw.length, start: 0 };   // `moovRaw` is the moov box itself, re-based to 0
+    const fragmented = !!rmFind(mdv, mv.body, mv.end, 'mvex');
+
+    // ── TRACK TEMPLATES ── everything the flat moov needs that is NOT a sample table, kept as raw source bytes.
+    const mvhdB = rmFind(mdv, mv.body, mv.end, 'mvhd');
+    if (!mvhdB) return null;
+    const movTs = rmTimescale(mdv, mvhdB, 'mvhd');
+    const tracks = new Map();
+    rmWalk(mdv, mv.body, mv.end, (ty, b, e, s) => {
+      if (ty !== 'trak') return;
+      const trak = { body: b, end: e, start: s };
+      const tkhd = rmFind(mdv, b, e, 'tkhd'), mdia = rmFind(mdv, b, e, 'mdia');
+      if (!tkhd || !mdia) return;
+      const mdhd = rmFind(mdv, mdia.body, mdia.end, 'mdhd'), hdlr = rmFind(mdv, mdia.body, mdia.end, 'hdlr');
+      const minf = rmFind(mdv, mdia.body, mdia.end, 'minf');
+      if (!mdhd || !hdlr || !minf) return;
+      const stbl = rmPath(mdv, minf, 'stbl'), stsd = rmPath(mdv, minf, 'stbl', 'stsd');
+      if (!stbl || !stsd) return;
+      const tver = mdv.getUint8(tkhd.body);
+      const id = mdv.getUint32(tkhd.body + (tver === 1 ? 20 : 12));
+      const mhd = rmFind(mdv, minf.body, minf.end, 'vmhd') || rmFind(mdv, minf.body, minf.end, 'smhd');
+      const dinf = rmFind(mdv, minf.body, minf.end, 'dinf');
+      if (!mhd || !dinf) return;
+      const kind = rmType(mdv, mhd.start + 4) === 'vmhd' ? 'video' : 'audio';
+      let avcC = null;                                    // the decoder's `description`. A visual sample entry buries its child boxes behind 78 bytes of fixed fields, so the search has to start past them
+      if (kind === 'video') rmWalk(mdv, stsd.body + 8, stsd.end, (t2, b2, e2) => { if (avcC) return; const c = rmFind(mdv, b2 + 78, e2, 'avcC'); if (c) avcC = moovRaw.slice(c.body, c.end); });
+      tracks.set(id, { id, kind, avcC, tkhd, mdhd, hdlr, mhd, dinf, stsd, stbl, mediaTs: rmTimescale(mdv, mdhd, 'mdhd'),
+                       defDur: 0, defSize: 0, defFlags: 0, defDesc: 1,
+                       samples: [], chunks: [], sumDur: 0, t0: 0, tfdtSeen: false });
+    });
+    if (!tracks.size) return null;
+
+    // ── A FLAT FILE ALREADY HAS ITS SAMPLE TABLES ── and since the WebCodecs recorder muxes its takes itself
+    // (see veWCRecStart), the common case is now a file with no `mvex` at all. Refusing those here is what silently
+    // sent the export back to the MediaRecorder path — it looked like a recorder bug and was a parser gap.
+    if (!fragmented) {
+      for (const t of tracks.values()) {
+        const rd = (ty) => rmFind(mdv, t.stbl.body, t.stbl.end, ty);
+        const stsz = rd('stsz'), stts = rd('stts'), stsc = rd('stsc'), stco = rd('stco'), co64 = rd('co64'), stss = rd('stss'), ctts = rd('ctts');
+        if (!stsz || !stts || !stsc || !(stco || co64)) continue;
+        const n = mdv.getUint32(stsz.body + 8), uni = mdv.getUint32(stsz.body + 4);
+        if (!n) continue;
+        const size = (i) => (uni || mdv.getUint32(stsz.body + 12 + i * 4));
+        const dur = new Array(n);                         // stts is run-length: (count, delta) pairs
+        { let i = 0; const e = mdv.getUint32(stts.body + 4);
+          for (let k = 0; k < e && i < n; k++) { const c = mdv.getUint32(stts.body + 8 + k * 8), d = mdv.getUint32(stts.body + 12 + k * 8);
+            for (let j = 0; j < c && i < n; j++) dur[i++] = d; }
+          while (i < n) dur[i++] = dur[i - 2] || 0; }
+        const cts = new Array(n).fill(0);
+        if (ctts) { let i = 0; const e = mdv.getUint32(ctts.body + 4), v1 = mdv.getUint8(ctts.body) === 1;
+          for (let k = 0; k < e && i < n; k++) { const c = mdv.getUint32(ctts.body + 8 + k * 8);
+            const o = v1 ? mdv.getInt32(ctts.body + 12 + k * 8) : mdv.getUint32(ctts.body + 12 + k * 8);
+            for (let j = 0; j < c && i < n; j++) cts[i++] = o; } }
+        const sync = new Array(n).fill(!stss);            // no stss ⇒ EVERY sample is a sync sample, which is the audio case
+        if (stss) { const e = mdv.getUint32(stss.body + 4);
+          for (let k = 0; k < e; k++) { const q = mdv.getUint32(stss.body + 8 + k * 4) - 1; if (q >= 0 && q < n) sync[q] = true; } }
+        const nch = mdv.getUint32((stco || co64).body + 4);
+        const chOff = (i) => (co64 ? Number(mdv.getBigUint64(co64.body + 8 + i * 8)) : mdv.getUint32(stco.body + 8 + i * 4));
+        const runs = [];                                  // stsc gives (first_chunk, samples_per_chunk) and runs until the next entry
+        { const e = mdv.getUint32(stsc.body + 4);
+          for (let k = 0; k < e; k++) runs.push({ first: mdv.getUint32(stsc.body + 8 + k * 12) - 1, per: mdv.getUint32(stsc.body + 12 + k * 12), desc: mdv.getUint32(stsc.body + 16 + k * 12) }); }
+        let si = 0, clock = 0;
+        for (let c = 0; c < nch && si < n; c++) {
+          let r = runs[0];
+          for (const q of runs) if (q.first <= c) r = q;
+          let off = chOff(c);
+          for (let j = 0; j < r.per && si < n; j++) {
+            const sz = size(si);
+            t.samples.push({ size: sz, dur: dur[si], sync: sync[si], cts: cts[si], off, dts: clock });
+            off += sz; clock += dur[si]; si++;
+          }
+        }
+        t.sumDur = clock; t.t0 = 0;
+      }
+      const liveFlat = [...tracks.values()].filter((t) => t.samples.length);
+      if (!liveFlat.length) return null;
+      return { movTs, moovRaw, mvhdB, ftypB, tracks, live: liveFlat, chunkOrder: [], fragmented };
+    }
+
+    // ── trex DEFAULTS ── a trun may omit duration/size/flags per sample and inherit them from tfhd, which may in
+    // turn inherit from here. Miss this chain and every sample lands with a zero duration.
+    const mvex = rmFind(mdv, mv.body, mv.end, 'mvex');
+    rmWalk(mdv, mvex.body, mvex.end, (ty, b) => {
+      if (ty !== 'trex') return;
+      const t = tracks.get(mdv.getUint32(b + 4));
+      if (!t) return;
+      t.defDesc = mdv.getUint32(b + 8) || 1; t.defDur = mdv.getUint32(b + 12); t.defSize = mdv.getUint32(b + 16); t.defFlags = mdv.getUint32(b + 20);
+    });
+
+    // ── WALK THE FRAGMENTS ── one `trun` becomes one CHUNK, which keeps stsc to a couple of entries and preserves the
+    // original track interleave (the chunks are emitted in file order below, not grouped by track).
+    if (!moofs.length) return null;                       // fragmented per the moov, but carrying no fragments
+    const chunkOrder = [];
+    for (const mf of moofs) {
+      const raw = new Uint8Array(await blob.slice(mf.start, mf.end).arrayBuffer());
+      const fdv = new DataView(raw.buffer);
+      const moofBase = mf.start;                          // absolute; `default-base-is-moof` and the spec default both land here
+      let prevRunEnd = moofBase;                          // spec: with no base-data-offset, a later traf starts where the previous one's data ended
+      rmWalk(fdv, RM_HDR, raw.length, (ty, tb, te) => {
+        if (ty !== 'traf') return;
+        const tfhd = rmFind(fdv, tb, te, 'tfhd');
+        if (!tfhd) return;
+        let p = tfhd.body + 4;
+        const fl = fdv.getUint32(tfhd.body) & 0xffffff;
+        const trackId = fdv.getUint32(p); p += 4;
+        const t = tracks.get(trackId);
+        let base = (fl & 0x020000) ? moofBase : prevRunEnd;
+        if (fl & 0x000001) { base = Number(fdv.getBigUint64(p)); p += 8; }
+        const desc = (fl & 0x000002) ? (p += 4, fdv.getUint32(p - 4)) : (t ? t.defDesc : 1);
+        const dDur = (fl & 0x000008) ? (p += 4, fdv.getUint32(p - 4)) : (t ? t.defDur : 0);
+        const dSize = (fl & 0x000010) ? (p += 4, fdv.getUint32(p - 4)) : (t ? t.defSize : 0);
+        const dFlags = (fl & 0x000020) ? (p += 4, fdv.getUint32(p - 4)) : (t ? t.defFlags : 0);
+        if (!t) return;
+        const tfdt = rmFind(fdv, tb, te, 'tfdt');
+        if (tfdt) {                                       // ── ABSORB A TIMELINE GAP ── the export PAUSES the recorder across every clip seek (see veExport), so a fragment can legitimately start later than the samples before it imply. Stretch the previous sample to cover it, exactly as a muxer would, or the tracks drift apart by the gap
+          const dver = fdv.getUint8(tfdt.body);
+          const bt = dver === 1 ? Number(fdv.getBigUint64(tfdt.body + 4)) : fdv.getUint32(tfdt.body + 4);
+          if (t.tfdtSeen && t.samples.length) { const last = t.samples[t.samples.length - 1], nd = Math.max(0, last.dur + (bt - t.sumDur)); t.sumDur += nd - last.dur; last.dur = nd; }   // ── tfdt IS AUTHORITATIVE, IN BOTH DIRECTIONS ── the per-sample durations in a trun are the encoder's estimate and drift from it (measured: +217 ticks over 101 frames on clip 29), while baseMediaDecodeTime is where the fragment REALLY starts. Absorb the difference into the previous sample either way. Growing alone was not enough — the common case is the run OVERSHOOTING, which then pushed every later frame late and the tracks apart
+          if (!t.tfdtSeen) { t.sumDur = bt; t.t0 = bt; }   // a first fragment may legitimately begin at a non-zero media time; that offset is a START, so it is subtracted back out of every duration below
+          t.tfdtSeen = true;
+        }
+        let runCursor = null;
+        rmWalk(fdv, tb, te, (ty2, rb) => {
+          if (ty2 !== 'trun') return;
+          const rfl = fdv.getUint32(rb) & 0xffffff, n = fdv.getUint32(rb + 4);
+          let q = rb + 8;
+          let start = runCursor === null ? base : runCursor;
+          if (rfl & 0x000001) { start = base + fdv.getInt32(q); q += 4; }
+          const firstFlags = (rfl & 0x000004) ? (q += 4, fdv.getUint32(q - 4)) : null;
+          const first = t.samples.length;
+          let bytes = 0;
+          for (let i = 0; i < n; i++) {
+            const dur = (rfl & 0x000100) ? (q += 4, fdv.getUint32(q - 4)) : dDur;
+            const size = (rfl & 0x000200) ? (q += 4, fdv.getUint32(q - 4)) : dSize;
+            const sfl = (rfl & 0x000400) ? (q += 4, fdv.getUint32(q - 4)) : (i === 0 && firstFlags !== null ? firstFlags : dFlags);
+            const cts = (rfl & 0x000800) ? (q += 4, fdv.getInt32(q - 4)) : 0;   // read SIGNED: a v1 ctts is negative-capable and misreading it as unsigned would put frames a billion ticks apart
+            t.samples.push({ size, dur, sync: !(sfl & RM_NONSYNC), cts, off: start + bytes, dts: t.sumDur });   // `off`/`dts` are for the demux caller; the remux itself works off the chunk ranges and never reads them
+            t.sumDur += dur; bytes += size;
+          }
+          const ch = { trackId, srcStart: start, bytes, count: n, first, desc: desc || 1, out: 0 };
+          t.chunks.push(ch); chunkOrder.push(ch);
+          runCursor = start + bytes;
+          prevRunEnd = runCursor;
+        });
+      });
+    }
+    const live = [...tracks.values()].filter((t) => t.samples.length);
+    if (!live.length) return null;
+    return { movTs, moovRaw, mvhdB, ftypB, tracks, live, chunkOrder, fragmented };
+  };
+
+  // ═══════════════ THE REMUX ═══════════════
+  // Returns a new Blob, or null when there is nothing to do (already flat, or a container this cannot safely touch).
+  // Null is not an error — the caller downloads the original, which is exactly what shipped before this existed.
+  const veRemuxFmp4 = async (blob) => {
+    const P = await veMp4Parse(blob);
+    if (!P || !P.fragmented) return null;                 // already flat: its tables are real and there is nothing to rebuild
+    const { movTs, moovRaw, mvhdB, ftypB, live, chunkOrder } = P;
+
+    // ── LAYOUT ── ftyp + moov + mdat, in that order, which IS faststart. The moov's length depends on nothing but the
+    // entry counts, so it is built once with placeholder offsets purely to measure it, then again for real.
+    const ftyp = ftypB ? new Uint8Array(await blob.slice(ftypB.start, ftypB.end).arrayBuffer())
+                       : rmBox('ftyp', new Uint8Array([0x69, 0x73, 0x6f, 0x6d, 0, 0, 2, 0, 0x69, 0x73, 0x6f, 0x6d, 0x69, 0x73, 0x6f, 0x32, 0x61, 0x76, 0x63, 0x31, 0x6d, 0x70, 0x34, 0x31]));
+    let mdatBytes = 0; for (const ch of chunkOrder) mdatBytes += ch.bytes;
+    const wide = mdatBytes + 0x10000 > 0xffffffff;        // a >4 GB payload needs a 64-bit mdat and co64 offsets; the slack covers ftyp+moov, which cannot be sized until after this decision
+    const mdatHdr = wide ? 16 : RM_HDR;
+
+    const buildMoov = () => {
+      const parts = [rmCopyPatch(moovRaw, mvhdB, 'mvhd', Math.max(...live.map((t) => ((t.sumDur - t.t0) / t.mediaTs) * movTs)))];
+      for (const t of live) {
+        const stts = [];                                  // run-length: {count, delta}
+        for (const s of t.samples) { const n = stts.length; if (n && stts[n - 1] === s.dur) stts[n - 2]++; else stts.push(1, s.dur); }
+        const sizes = t.samples.map((s) => s.size);
+        const sync = [], ctts = [];
+        let allSync = true, anyCts = false;
+        t.samples.forEach((s, i) => { if (s.sync) sync.push(i + 1); else allSync = false; if (s.cts) anyCts = true; });
+        for (const s of t.samples) { const n = ctts.length; if (n && ctts[n - 1] === s.cts) ctts[n - 2]++; else ctts.push(1, s.cts); }
+        const stsc = [];
+        t.chunks.forEach((ch, i) => { const n = stsc.length; if (n && stsc[n - 2] === ch.count && stsc[n - 1] === ch.desc) return; stsc.push(i + 1, ch.count, ch.desc); });
+        const offs = [];
+        for (const ch of t.chunks) { if (wide) { offs.push(Math.floor(ch.out / 0x100000000), ch.out >>> 0); } else offs.push(ch.out); }
+        const stblParts = [moovRaw.slice(t.stsd.start, t.stsd.end), rmTable('stts', 0, stts, 2), rmTable('stsc', 0, stsc, 3)];
+        const szA = new Uint8Array(12 + sizes.length * 4), szD = new DataView(szA.buffer);
+        szD.setUint32(4, 0); szD.setUint32(8, sizes.length);
+        sizes.forEach((v, i) => szD.setUint32(12 + i * 4, v));
+        stblParts.push(rmBox('stsz', szA));
+        stblParts.push(rmTable(wide ? 'co64' : 'stco', 0, offs, wide ? 2 : 1));
+        if (!allSync) stblParts.push(rmTable('stss', 0, sync, 1));
+        if (anyCts) stblParts.push(rmTable('ctts', ctts.some((v, i) => i % 2 === 1 && v < 0) ? 1 : 0, ctts, 2));
+        const trakDur = ((t.sumDur - t.t0) / t.mediaTs) * movTs;
+        parts.push(rmBox('trak',
+          rmCopyPatch(moovRaw, t.tkhd, 'tkhd', trakDur),
+          rmBox('mdia',
+            rmCopyPatch(moovRaw, t.mdhd, 'mdhd', t.sumDur - t.t0),
+            moovRaw.slice(t.hdlr.start, t.hdlr.end),
+            rmBox('minf', moovRaw.slice(t.mhd.start, t.mhd.end), moovRaw.slice(t.dinf.start, t.dinf.end), rmBox('stbl', ...stblParts)))));
+      }
+      return rmBox('moov', ...parts);
+    };
+    const probe = buildMoov();                            // measured only — its chunk offsets are all zero
+    let cursor = ftyp.length + probe.length + mdatHdr;
+    for (const ch of chunkOrder) { ch.out = cursor; cursor += ch.bytes; }
+    const moov = buildMoov();
+    if (moov.length !== probe.length) return null;        // the two passes must agree or every offset written is wrong; bail to the original rather than ship a broken file
+
+    const mhdr = new Uint8Array(mdatHdr), hd = new DataView(mhdr.buffer);
+    if (wide) { hd.setUint32(0, 1); hd.setBigUint64(8, BigInt(mdatBytes + 16)); } else hd.setUint32(0, mdatBytes + RM_HDR);
+    for (let i = 0; i < 4; i++) mhdr[4 + i] = 'mdat'.charCodeAt(i);   // the type word sits at 4 in BOTH layouts — a 64-bit box is size=1, type, then largesize
+    const parts = [ftyp, moov, mhdr];
+    for (const ch of chunkOrder) parts.push(blob.slice(ch.srcStart, ch.srcStart + ch.bytes));   // the media rides through as slice REFERENCES — never read into JS, so file size costs no heap
+    return new Blob(parts, { type: 'video/mp4' });
+  };
+    return { veMp4Parse, veRemuxFmp4, rmBox, rmTable };
+  })();
+  const { veMp4Parse, veRemuxFmp4, rmBox, rmTable } = __m_ui_mp4_remux;
+  const __m_ui_mp4_mux = (() => {
+  // @module — write a flat mp4 from freshly encoded samples
+  // @exports veMp4Mux, veAvcStsd
+  // ═══════════════ THE MUXER ═══════════════ (user 2026-08-21)
+  // ui/mp4-remux.js rebuilds the tables of a file that already exists. This builds one from nothing: it takes the
+  // EncodedVideoChunks a WebCodecs VideoEncoder produced, plus the AAC samples copied straight out of the recording,
+  // and writes the mp4 around them. It exists because MediaRecorder cannot be told what time a frame is.
+  // ── WHY THE EXPORT STOPPED USING MediaRecorder ── measured on four shipped exports: EVERY frame interval in them is
+  // an integer multiple of 8.33 ms, the user's 120 Hz refresh period. MediaRecorder timestamps each requestFrame() by
+  // the WALL CLOCK at the moment the compositor happened to present a frame, so the source's real frame times are
+  // discarded and replaced by the refresh clock. Even the best export had only 48.6% of frames on a steady cadence —
+  // 25.7% were held for three refreshes instead of two. That is the stutter, it is baked in at capture time, and no
+  // encoder setting can undo it. A VideoEncoder honours the timestamp handed to it, so the export can lay frames on an
+  // exactly even grid instead. Nothing else fixes this; the pump, the codec and the quiet gate were all tried first.
+  const MX_HDR = 8;
+  const mxNow = 0;                                        // creation/modification time: fixed, not Date.now(). A muxer that stamps the clock produces a different file for the same input, which makes every A/B byte-compare useless
+  const mxU8 = (...v) => new Uint8Array(v);
+  const mxU16 = (v) => new Uint8Array([(v >> 8) & 0xff, v & 0xff]);
+  const mxU32s = (...v) => { const a = new Uint8Array(v.length * 4), d = new DataView(a.buffer); v.forEach((x, i) => d.setUint32(i * 4, x >>> 0)); return a; };
+  const mxU64 = (v) => { const a = new Uint8Array(8), d = new DataView(a.buffer); d.setBigUint64(0, BigInt(Math.max(0, Math.round(v)))); return a; };
+  const mxStr = (s, n) => { const a = new Uint8Array(n); for (let i = 0; i < Math.min(s.length, n - 1); i++) a[i + 1] = s.charCodeAt(i); a[0] = Math.min(s.length, n - 1); return a; };   // a "Pascal" fixed-width string — the shape `compressorname` in a visual sample entry wants
+  const MX_MATRIX = mxU32s(0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000);   // the identity display matrix, 16.16 / 2.30 fixed point
+
+  // ── AN AVC SAMPLE ENTRY ── built from the encoder's own `description`, which IS an avcC box payload (SPS+PPS). It
+  // has to come from the encoder rather than be copied from the recording: the export re-encodes at its own bitrate
+  // and, with ?vescale, its own size, so the recording's SPS would describe the wrong stream.
+  const veAvcStsd = (w, h, avcC) => rmBox('stsd', mxU32s(0, 1), rmBox('avc1',
+    mxU8(0, 0, 0, 0, 0, 0), mxU16(1),                    // reserved[6], data_reference_index = 1 (the self-contained `url ` in dinf)
+    mxU16(0), mxU16(0), mxU32s(0, 0, 0),                 // pre_defined, reserved, pre_defined[3]
+    mxU16(w), mxU16(h),
+    mxU32s(0x00480000, 0x00480000, 0),                   // 72 dpi horizontal and vertical, then reserved
+    mxU16(1), mxStr('voxelbit', 32), mxU16(0x18), mxU16(0xffff),   // frame_count = 1, compressorname, depth = 24, pre_defined = -1
+    rmBox('avcC', avcC)));
+
+  // tracks: [{ kind:'video'|'audio', timescale, width, height, stsd (a complete stsd BOX), samples:[{ size, dur, cts,
+  //            sync }], data:[BlobPart] parallel to samples }]. Returns a Blob: ftyp + moov + mdat, in that order,
+  //            which IS faststart, with the tables Resolve needs already populated.
+  const veMp4Mux = (tracks, movieTs) => {
+    const live = tracks.filter((t) => t.samples.length);
+    if (!live.length) return null;
+    movieTs = movieTs || 1000;
+
+    // ── CHUNKING ── one chunk per track per second of media. A single chunk per track would be legal and smaller, but
+    // it puts each track's data in one contiguous slab, so a player has to seek the whole file's length every second.
+    // Interleaving by time is what every other muxer does and costs a few hundred bytes of stco.
+    for (const t of live) {
+      t.chunks = [];
+      let i = 0, clock = 0;
+      while (i < t.samples.length) {
+        const first = i, at = clock;
+        let bytes = 0;
+        while (i < t.samples.length && (clock - at) < t.timescale) { bytes += t.samples[i].size; clock += t.samples[i].dur; i++; }
+        t.chunks.push({ first, count: i - first, bytes, at, out: 0 });
+      }
+      t.dur = clock;
+    }
+    const order = [];                                     // every chunk from every track, in TIME order, so the file interleaves
+    for (const t of live) for (const c of t.chunks) order.push({ t, c });
+    order.sort((a, b) => (a.c.at / a.t.timescale) - (b.c.at / b.t.timescale));
+
+    let mdatBytes = 0; for (const q of order) mdatBytes += q.c.bytes;
+    const wide = mdatBytes + 0x100000 > 0xffffffff;       // >4 GB of media needs a 64-bit mdat and co64 offsets
+    const mdatHdr = wide ? 16 : MX_HDR;
+    const movDur = Math.max(...live.map((t) => (t.dur / t.timescale) * movieTs));
+
+    const buildMoov = () => {
+      const parts = [rmBox('mvhd', mxU8(1, 0, 0, 0), mxU64(mxNow), mxU64(mxNow), mxU32s(movieTs), mxU64(movDur),
+                           mxU32s(0x10000), mxU16(0x100), mxU16(0), mxU32s(0, 0), MX_MATRIX, mxU32s(0, 0, 0, 0, 0, 0),
+                           mxU32s(live.length + 1))];      // version 1 throughout: a long 4K take can exceed a 32-bit duration, and mixing versions is how the duration field ends up written at the wrong offset
+      live.forEach((t, ti) => {
+        const id = ti + 1, vid = t.kind === 'video';
+        const stts = [], ctts = [], sync = [], stsc = [], offs = [];
+        let allSync = true, anyCts = false;
+        for (const s of t.samples) { const n = stts.length; if (n && stts[n - 1] === s.dur) stts[n - 2]++; else stts.push(1, s.dur); }
+        t.samples.forEach((s, i) => { if (s.sync) sync.push(i + 1); else allSync = false; if (s.cts) anyCts = true; });
+        for (const s of t.samples) { const n = ctts.length; if (n && ctts[n - 1] === (s.cts | 0)) ctts[n - 2]++; else ctts.push(1, s.cts | 0); }
+        t.chunks.forEach((c, i) => { const n = stsc.length; if (n && stsc[n - 2] === c.count) return; stsc.push(i + 1, c.count, 1); });
+        for (const c of t.chunks) { if (wide) offs.push(Math.floor(c.out / 0x100000000), c.out >>> 0); else offs.push(c.out); }
+        const szA = new Uint8Array(12 + t.samples.length * 4), szD = new DataView(szA.buffer);
+        szD.setUint32(8, t.samples.length);
+        t.samples.forEach((s, i) => szD.setUint32(12 + i * 4, s.size));
+        const stbl = [t.stsd, rmTable('stts', 0, stts, 2), rmTable('stsc', 0, stsc, 3), rmBox('stsz', szA),
+                      rmTable(wide ? 'co64' : 'stco', 0, offs, wide ? 2 : 1)];
+        if (!allSync) stbl.push(rmTable('stss', 0, sync, 1));
+        if (anyCts) stbl.push(rmTable('ctts', ctts.some((v, i) => i % 2 === 1 && v < 0) ? 1 : 0, ctts, 2));
+        parts.push(rmBox('trak',
+          rmBox('tkhd', mxU8(1, 0, 0, 3), mxU64(mxNow), mxU64(mxNow), mxU32s(id, 0), mxU64((t.dur / t.timescale) * movieTs),
+                mxU32s(0, 0), mxU16(0), mxU16(vid ? 0 : 1), mxU16(vid ? 0 : 0x100), mxU16(0), MX_MATRIX,
+                mxU32s(vid ? (t.width << 16) : 0, vid ? (t.height << 16) : 0)),   // tkhd flags 3 = enabled | in-movie; width/height here are 16.16 DISPLAY size, which is what an NLE reads for the timeline resolution
+          rmBox('mdia',
+            rmBox('mdhd', mxU8(1, 0, 0, 0), mxU64(mxNow), mxU64(mxNow), mxU32s(t.timescale), mxU64(t.dur), mxU16(0x55c4), mxU16(0)),   // 0x55c4 = 'und' packed as three 5-bit letters
+            rmBox('hdlr', mxU32s(0, 0), mxU8(...(vid ? [0x76, 0x69, 0x64, 0x65] : [0x73, 0x6f, 0x75, 0x6e])), mxU32s(0, 0, 0), mxU8(0)),
+            rmBox('minf',
+              vid ? rmBox('vmhd', mxU8(0, 0, 0, 1), mxU16(0), mxU32s(0), mxU16(0)) : rmBox('smhd', mxU32s(0), mxU16(0), mxU16(0)),
+              rmBox('dinf', rmBox('dref', mxU32s(0, 1), rmBox('url ', mxU32s(1)))),   // flag 1 on the url = the media is in THIS file
+              rmBox('stbl', ...stbl)))));
+      });
+      return rmBox('moov', ...parts);
+    };
+    const probe = buildMoov();                            // built once only to learn its length, which is what the chunk offsets below depend on
+    const ftyp = rmBox('ftyp', mxU8(0x69, 0x73, 0x6f, 0x6d), mxU32s(512), mxU8(0x69, 0x73, 0x6f, 0x6d, 0x69, 0x73, 0x6f, 0x32, 0x61, 0x76, 0x63, 0x31, 0x6d, 0x70, 0x34, 0x31));
+    let cursor = ftyp.length + probe.length + mdatHdr;
+    for (const q of order) { q.c.out = cursor; cursor += q.c.bytes; }
+    const moov = buildMoov();
+    if (moov.length !== probe.length) return null;        // the two passes must agree or every offset just written is wrong
+
+    const mhdr = new Uint8Array(mdatHdr), hd = new DataView(mhdr.buffer);
+    if (wide) { hd.setUint32(0, 1); hd.setBigUint64(8, BigInt(mdatBytes + 16)); } else hd.setUint32(0, mdatBytes + MX_HDR);
+    for (let i = 0; i < 4; i++) mhdr[4 + i] = 'mdat'.charCodeAt(i);
+    const out = [ftyp, moov, mhdr];
+    for (const q of order) for (let i = 0; i < q.c.count; i++) out.push(q.t.data[q.c.first + i]);   // Blob parts, so an audio sample can ride through as a slice of the recording and never enter JS memory
+    return new Blob(out, { type: 'video/mp4' });
+  };
+    return { veMp4Mux, veAvcStsd };
+  })();
+  const { veMp4Mux, veAvcStsd } = __m_ui_mp4_mux;
   const __m_ui_video_editor = (() => {
   // @module — screen recording, the clip timeline, red annotations, the export
   // @exports BASE_VIG, VE, renderDist, veAudioDest, vePanel, veTapEl, veToggleRec
@@ -19165,6 +19881,11 @@
       : ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm'])) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return ''; };   // LIVE-CAPTURE codec: VP8 webm FIRST. It fixes BOTH complaints — VP8 is 2-5× cheaper to encode than VP9 (no more render-loop lag) AND webm scrubs cleanly in the editor, whereas MediaRecorder's fragmented mp4 has no seek index → the export's frame-by-frame seek stalled and froze the output. mp4 stays only as a last resort for browsers with no webm recording (Safari). The export re-encodes to mp4 regardless, so live quality only needs to be decent.
   const veBitrate = (w, h) => Math.min(100e6, Math.max(28e6, Math.round((w || 1280) * (h || 720) * VE.capHz * 0.2)));   // …and the rate follows the CAPTURE rate (was a hard 60): at 120 Hz twice the frames share the bits, so a fixed number would have halved the quality per frame the moment the capture rate went up   // QUALITY (user: "download looks lower"): the export is a SECOND encode on top of the recording (trim+annotate needs a re-compress), so 16 Mbps compounded into visible loss. Scale the bitrate to the actual resolution × 60 fps at ~0.2 bpp so BOTH the recording and the re-encode stay near-transparent: ~28 Mbps at 1080p, ~44 at 1440p, capped at 100 for 4K/high-DPI. Bigger files, but the download now matches the preview. STILL the RECORDING rate — the master wants to be generous because the export re-encodes it. The EXPORT rate is veExportRate() below.
 
+  // ── IS THE WEBCODECS EXPORT AVAILABLE? ── declared HERE, above its first use, because VE_OVER_KEY below calls it
+  // during module init: a `const` read before its own declaration is a TDZ throw, and in this build that is a black
+  // screen with one line in the console. Same class of bug as the const-order boot failure in game/index.html.
+  const veWCReady = () => typeof VideoEncoder !== 'undefined' && typeof VideoDecoder !== 'undefined' && typeof VideoFrame !== 'undefined' && typeof EncodedVideoChunk !== 'undefined';
+
   // ── EXPORT SIZE BUDGET (user: 45 s of 3822×1890 came out a 906 MB download) ──
   // MediaRecorder treats videoBitsPerSecond as a SUGGESTION and consistently OVERSHOOTS it. Measured on this
   // content through this exact pipeline (video → canvas → captureStream(0) → requestFrame → recorder):
@@ -19180,7 +19901,12 @@
   // user's own hardware, which is what makes a "under 500 MB" promise keepable rather than a guess.
   const VE_OVERSHOOT_SEED = 1.95;
   let veOvershoot = VE_OVERSHOOT_SEED;
-  try { const s = parseFloat(localStorage.getItem('vb_ve_overshoot')); if (isFinite(s) && s >= 1 && s <= 3) veOvershoot = s; } catch (e) {}
+  // ── THE KEY IS VERSIONED ── everything above was measured on MediaRecorder, which overshoots by ~1.95x. A WebCodecs
+  // VideoEncoder honours its `bitrate` closely, so a stored 1.95 from the old path would halve the first WebCodecs
+  // export's bitrate and quietly cost quality. `2` starts that measurement over; veCalibrate refines it as before.
+  const VE_OVER_KEY = veWCReady() ? 'vb_ve_overshoot2' : 'vb_ve_overshoot';
+  if (veWCReady()) veOvershoot = 1.05;
+  try { const s = parseFloat(localStorage.getItem(VE_OVER_KEY)); if (isFinite(s) && s >= 1 && s <= 3) veOvershoot = s; } catch (e) {}
   const VE_EXPORT_BPP = 0.10;              // half the recording's 0.2 — this pass only has to preserve an already-compressed master, so the second generation needs far fewer bits than the first
   const VE_RATE_FLOOR = 1.5e6;             // below this a budget is unmeetable rather than merely lossy; the estimate turns amber instead of quietly lying
   const veSizeSel = $('veSize'), veEstEl = $('veEst');
@@ -19200,9 +19926,9 @@
   const veCalibrate = (bytes, dur, reqRate) => {
     if (!(bytes > 0 && dur > 0.5 && reqRate > 0)) return;
     const seen = (bytes * 8 - 192000 * dur) / dur / reqRate;
-    if (!isFinite(seen) || seen < 1 || seen > 3) return;
+    if (!isFinite(seen) || seen < 0.5 || seen > 3) return;   // the floor is 0.5, not 1: a VideoEncoder can land UNDER its requested rate on easy content, and refusing to learn that would keep over-estimating forever
     veOvershoot = Math.round((veOvershoot + seen) / 2 * 1000) / 1000;
-    try { localStorage.setItem('vb_ve_overshoot', String(veOvershoot)); } catch (e) {}
+    try { localStorage.setItem(VE_OVER_KEY, String(veOvershoot)); } catch (e) {}
   };
   const veUpdateEst = () => {
     if (!veEstEl) return;
@@ -19291,7 +20017,234 @@
     veBtnEl.classList.toggle('recording', on);
     veRecBtn.classList.toggle('on', on); veRecBtn.textContent = on ? '■ stop' : '● rec';
   };
-  const veStartRec = () => {
+  // ═══════════════ THE WEBCODECS RECORDER ═══════════════ (user 2026-08-21: "it should match the fps as the ingame playback")
+  // The capture rate used to be held down by VE_PIX_BUDGET, and that budget was a property of MEDIARECORDER, not of
+  // the machine. Measured on this hardware, at 3834x1658 off the live WebGPU canvas while the game was rendering:
+  //   MediaRecorder budget (the old cap)   240 Mpixel/s   -> 30 fps at 3832x1902
+  //   WebCodecs, one frame per paint       514 Mpixel/s   -> kept up with EVERY painted frame
+  //   WebCodecs, fed as fast as it accepts  571 Mpixel/s
+  // So the encoder was never the limit — the MediaStream plumbing in front of it was. Encoding the canvas directly
+  // doubles the capture rate at 4K, 30 fps -> 60. (120 fps at that size would need 875 Mpixel/s, past what this
+  // hardware does at all, so 60 is the honest ceiling rather than a tuning choice.)
+  // `new VideoFrame(canvas)` reads the WebGPU canvas correctly — verified, 11 distinct pictures out of 12 paints.
+  // Audio still goes through MediaRecorder, but an AUDIO-ONLY one: no pixels, so none of the cost that capped the
+  // video, and it lands as AAC in a fragmented mp4 that ui/mp4-remux.js already knows how to read. Its samples and
+  // its `stsd` are copied into the muxed take untouched.
+  const VE_WC_PIX_BUDGET = 480e6;                         // conservative against the measured 571: the game has to keep rendering underneath, and a queue that grows is handled by dropping (see veWCPush) rather than by stalling the render loop
+  const VE_WC_AMIME = 'audio/mp4;codecs=mp4a.40.2';
+  const VE_A_TAIL_MS = 300;                               // how long the audio keeps running after the last frame, so its tail is captured rather than lost to stop()
+  const veWCRecReady = () => veWCReady() && !!window.MediaRecorder && MediaRecorder.isTypeSupported(VE_WC_AMIME);
+  // ?vehz=N forces the rate the capture cadence is derived from. Read HERE rather than inside veProbeHz, because
+  // that probe returns early on any machine it cannot measure and the override went with it — so the flag did
+  // nothing exactly when it was most needed. Applied at use, it cannot be skipped.
+  const VE_HZ_FORCE = (() => { const m = /[?&]vehz=(\d+)/.exec(location.search); return m ? Math.max(24, Math.min(240, +m[1])) : 0; })();
+  // ?veav=N shifts the recorded audio N ms LATER against the picture (negative = earlier). The lead below is
+  // computed, not guessed, so this should sit at 0 — it exists because the capture path has latencies nothing in
+  // here can observe (the tap runs at the audio graph, ahead of whatever the speakers add) and the only honest way
+  // to settle the last few milliseconds is to watch a clip and dial it.
+  const VE_AV_TRIM = (() => { const m = /[?&]veav=(-?\d+)/.exec(location.search); return m ? Math.max(-500, Math.min(500, +m[1])) : 0; })();
+
+  // One frame per gated paint. Never blocks: if the encoder is behind, the frame is dropped and counted, because
+  // stalling here would stall the GAME — and the export reconstructs a constant-rate timeline anyway.
+  const veWCPush = (now) => {
+    const R = VE.wc;
+    if (!R || !R.enc || R.enc.state !== 'configured' || R.err) return;
+    // ── PACE BY TIME, NOT BY A PAINT COUNT ── capEvery is refresh/capHz, which only gives capHz if the game paints
+    // at exactly the refresh rate. It does not: this render loop has no v-sync. Measured, a window painting ~143 fps
+    // against a probed 60 Hz refresh gave capEvery 1, so every paint was pushed — 143 frames a second, all labelled
+    // 60. An 8 s take then came out spanning 19 s: SLOW MOTION. A wall-clock interval yields capHz whatever the
+    // paint rate is. The 0.95 leaves room for jitter, so a paint arriving a hair early is not skipped outright.
+    if (now - R.last < R.minMs) return;                   // not a drop — simply not this paint's turn
+    R.last = now;
+    if (R.enc.encodeQueueSize > 4) { R.dropped++; return; }
+    if (R.t0 < 0) R.t0 = now;
+    try {
+      const f = new VideoFrame(canvas, { timestamp: Math.max(0, Math.round((now - R.t0) * 1000)), alpha: 'discard' });
+      R.ts.push(f.timestamp);
+      R.enc.encode(f, { keyFrame: (R.n % R.gop) === 0 });
+      f.close(); R.n++;
+    } catch (e) { R.err = e; console.warn('[vb] wc recorder push failed', e); }
+  };
+
+  // Returns true when it has taken the take over; false means "use the MediaRecorder path below".
+  const veWCRecStart = async () => {
+    if (!veWCRecReady()) return false;
+    // Shrink the canvas to the trace resolution BEFORE reading its size — see veCaptureNative in render/targets.js.
+    // Every failure path below has to put it back, or a refused take would leave the game rendering at capture size.
+    veCaptureNative(true);
+    const off = () => { veCaptureNative(false); return false; };
+    const w = (canvas.width | 0) & ~1, h = (canvas.height | 0) & ~1;
+    if (w < 16 || h < 16 || w > 4096) return off();       // hardware AVC encoders top out at 4096 wide; past that fall back rather than fail silently at export time
+    const refresh = VE_HZ_FORCE || VE.refreshHz || 60;
+    const maxFps = Math.max(12, VE_WC_PIX_BUDGET / Math.max(1, w * h));
+    const capEvery = Math.max(1, Math.ceil(refresh / maxFps));
+    const capHz = refresh / capEvery;
+    let cfg = null;
+    for (const codec of VE_ENC_TRY) {
+      const c = { codec, width: w, height: h, bitrate: veBitrate(w, h), framerate: Math.max(1, Math.round(capHz)), avc: { format: 'avc' }, latencyMode: 'realtime' };
+      const sup = await VideoEncoder.isConfigSupported(c).catch(() => null);
+      if (sup && sup.supported) { cfg = c; break; }
+    }
+    if (!cfg || VE.recording) return off();               // …and re-check VE.recording: this awaited, so a second R press could have started a take underneath us
+    const R = { enc: null, n: 0, t0: -1, gop: Math.max(1, Math.round(2 * capHz)), ts: [], samples: [], data: [],
+                desc: null, dropped: 0, err: null, aRec: null, aChunks: [], w, h, capHz,
+                last: -1e9, minMs: (1000 / capHz) * 0.95, aT0: -1 };
+    try {
+      R.enc = new VideoEncoder({
+        output: (ch, meta) => {
+          if (!R.desc && meta && meta.decoderConfig && meta.decoderConfig.description) R.desc = new Uint8Array(meta.decoderConfig.description);
+          const b = new Uint8Array(ch.byteLength); ch.copyTo(b);
+          R.samples.push({ size: b.length, dur: 0, cts: 0, sync: ch.type === 'key' });   // dur is filled at stop, from the timestamps actually captured
+          R.data.push(b);
+        },
+        error: (e) => { R.err = e; console.warn('[vb] wc recorder', e); },
+      });
+      R.enc.configure(cfg);
+    } catch (e) { console.warn('[vb] wc recorder configure failed — using MediaRecorder', e); return off(); }
+    const adest = veAudioDest();
+    if (adest) {
+      try {
+        R.aRec = new MediaRecorder(adest.stream, { mimeType: VE_WC_AMIME, audioBitsPerSecond: 192000 });
+        R.aRec.ondataavailable = (e) => { if (e.data && e.data.size) R.aChunks.push(e.data); };
+        R.aT0 = performance.now();                        // ── THE AUDIO CLOCK'S ORIGIN ── rAF timestamps and performance.now() share a time origin, so this is directly comparable with R.t0 below
+        R.aRec.start(1000);                               // same one-second timeslice as the old path, for the same reason: a lost tab costs a second, not the take
+      } catch (e) { console.warn('[vb] wc recorder: no audio', e); R.aRec = null; }
+    }
+    VE.wc = R;
+    VE.capEvery = 1; VE.capHz = capHz; VE.capMs = 1000 / capHz - 0.6; VE.paintN = 0;   // capEvery 1: veWCPush does its own pacing (above), so the render loop hands it every paint and it decides
+    VE.pushFrame = veWCPush;
+    VE.recording = true;
+    veRecUI(true);
+    console.log('[vb] rec (webcodecs)', w + 'x' + h, '@', capHz.toFixed(1), 'fps (refresh', refresh + ', every', capEvery + ' paints)');
+    /* ── AND IT NO LONGER STARTS THE MUSIC (user 2026-08-21: "remove the r playing the song function. keep the
+       recorder on r") ── it did for one day. R is the recorder and nothing else again, and the soundtrack is
+       back on its own clock — see ANTHEM_AT in ui/audio.js. */
+    return true;
+  };
+
+  const veWCRecStop = async () => {
+    const R = VE.wc; if (!R) return;
+    VE.wc = null; VE.pushFrame = null; VE.recording = false; VE.recTrack = null;
+    veRecUI(false);
+    veCaptureNative(false);                               // back to the full-size canvas before anything below can throw
+    try { if (R.enc && R.enc.state !== 'closed') await R.enc.flush(); } catch (e) {}
+    try { if (R.enc && R.enc.state !== 'closed') R.enc.close(); } catch (e) {}
+    // ── LET THE AUDIO OVERRUN, THEN CUT IT BACK ── MediaRecorder does not hand over the last fraction of a second
+    // when it is stopped: measured, the audio covered 99.2-99.4% of the wall clock it ran for, a fixed ~130 ms
+    // shortfall whatever the take's length, and that missing tail is the end of the last sound (user 2026-08-21:
+    // "the audio seemed to cut off at the end"). Waiting here costs a quarter second before the editor opens and
+    // guarantees there is more audio than picture; the excess is trimmed to the video's own length below, so the
+    // two still end together.
+    await new Promise((r) => setTimeout(r, VE_A_TAIL_MS));
+    let aBlob = null;
+    if (R.aRec) {
+      try {
+        aBlob = await new Promise((res) => {
+          const done = () => res(R.aChunks.length ? new Blob(R.aChunks, { type: 'audio/mp4' }) : null);
+          R.aRec.onstop = done; R.aRec.onerror = done;
+          if (R.aRec.state === 'inactive') done(); else R.aRec.stop();
+        });
+      } catch (e) { aBlob = null; }
+    }
+    if (!R.samples.length || !R.desc) { console.warn('[vb] wc recorder produced nothing'); return; }
+    // ── DURATIONS COME FROM THE CAPTURE TIMES, QUANTISED TO A FRAME GRID ── the encoder emits chunks in submission
+    // order, so ts[i] belongs to samples[i]. The last frame has no successor and gets the median of the rest.
+    // ── AND THE GRID IS NOT OPTIONAL ── the first version wrote raw microsecond durations against a 1,000,000
+    // timescale. Every duration was then a different number (19700, 16800, 6200, 91600 …), no sane frame rate can
+    // be derived from that, and the file came out declaring **r_frame_rate = 1000000/1** — one million fps. Players
+    // and filters that conform to r_frame_rate then try to build a million frames a second: ffmpeg expanded a 252
+    // frame take to 3,287,900, the editor preview stuttered, and playback showed GREEN frames (user 2026-08-21).
+    // Rounding each duration to a whole number of capture slots, with one slot = 1000 ticks, makes the declared
+    // rate exactly capHz while still keeping a real gap as a real gap. MediaRecorder's own takes always did this —
+    // timescale 30000, r_frame_rate 60/1 — which is why this never came up before the recorder was replaced.
+    const gaps = [];
+    for (let i = 1; i < R.ts.length; i++) gaps.push(R.ts[i] - R.ts[i - 1]);
+    const sorted = gaps.slice().sort((a, b) => a - b);
+    // ── THE SLOT IS WHAT WAS ACTUALLY CAPTURED ── deriving it from capHz assumes the pacing hit its target, and
+    // when it did not the whole take was rescaled. A LOW percentile, not the median: rounding each gap to a whole
+    // number of slots can only round a short gap UP, so a coarse slot inflates every gap below it. Measured with a
+    // median slot: gaps of 8-14 ms against a 13.7 ms slot stretched a 20.06 s take into 22.13 s of video, and the
+    // audio — which was right — then ran progressively further ahead. That is the drift behind "the sound for the
+    // eating plays much before". p10 sits under almost every real gap, so almost nothing is forced upwards.
+    const pctl = (f) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))] : Math.round(1e6 / Math.max(1, R.capHz || 60));
+    const period = Math.max(Math.round(1e6 / 240), Math.min(pctl(0.5), Math.max(1, pctl(0.10))));
+    const med = pctl(0.5);
+    const TS = Math.max(1, Math.round(1e6 / period * 1000));   // one slot = 1000 ticks, so gcd(durations) = 1000 and r_frame_rate lands on the real rate
+    // ── AND THE ROUNDING IS CUMULATIVE, NOT PER-FRAME ── each frame's slot is chosen from the running REAL time,
+    // so an error made on one frame is paid back by the next instead of accumulating. Rounding each gap on its own
+    // lets a consistent bias run away over a long take, which is exactly how a few milliseconds a frame became
+    // seconds of A/V drift.
+    let realAcc = 0, slotAcc = 0;
+    for (let i = 0; i < R.samples.length; i++) {
+      realAcc += i + 1 < R.ts.length ? R.ts[i + 1] - R.ts[i] : med;
+      const want = Math.round(realAcc / period);
+      const dur = Math.max(1, want - slotAcc);
+      slotAcc += dur;
+      R.samples[i].dur = dur * 1000;
+    }
+    const tracks = [{ kind: 'video', timescale: TS, width: R.w, height: R.h, stsd: veAvcStsd(R.w, R.h, R.desc), samples: R.samples, data: R.data }];
+    if (aBlob) {
+      try {
+        const AP = await veMp4Parse(aBlob);
+        const at = AP && AP.live.find((t) => t.kind === 'audio');
+        if (at && at.samples.length) {
+          // ── THE TWO TRACKS DO NOT START AT THE SAME INSTANT ── the audio recorder starts inside veWCRecStart,
+          // while video timestamp 0 is the FIRST PUSH, which cannot happen until the next frame has been rendered
+          // — and veCaptureNative has just rebuilt every screen texture, so that frame is a slow one. Muxing both
+          // from 0 then plays audio recorded BEFORE the first picture alongside it, i.e. every sound arrives early
+          // (user 2026-08-21: "I'll eat an apple but the sound for the eating plays much before").
+          // Both clocks are performance.now(), so the lead is directly measurable — drop that much audio off the
+          // front. Trimming audio is the right side to correct: dropping video would throw away real frames, and
+          // padding it would invent them.
+          const lead = Math.max(0, ((R.t0 >= 0 && R.aT0 >= 0) ? R.t0 - R.aT0 : 0) + VE_AV_TRIM);
+          const skip = lead * at.mediaTs / 1000;             // FRACTIONAL ticks — the remainder is not thrown away, see below
+          const aS = [], aD = [];
+          let acc = 0, dropped = 0, first = true;
+          for (const q of at.samples) {
+            if (acc + q.dur <= skip) { acc += q.dur; dropped++; continue; }
+            let dur = q.dur;
+            // ── AND THE SUB-FRAME REMAINDER ── dropping whole AAC frames can only correct in ~21 ms steps and
+            // always rounds the trim DOWN, so it left an audio lead of 0-21 ms. Ears are far more sensitive to
+            // audio arriving EARLY than late, and ~20 ms is already at the threshold — which is what was left
+            // after the drift fix (user: "still slightly before the eating animation"). Holding the FIRST
+            // surviving frame longer by the remainder pushes every later frame back by exactly it, so the
+            // alignment lands on the microsecond instead of the nearest frame. Only that one frame is affected.
+            if (first) { dur += Math.max(0, Math.round(skip - acc)); first = false; }
+            aS.push({ size: q.size, dur, cts: 0, sync: true });
+            aD.push(aBlob.slice(q.off, q.off + q.size));
+            acc += q.dur;
+          }
+          // ── AND CUT THE OVERRUN ── the wait above deliberately captured more audio than picture. Keep one extra
+          // frame past the video so nothing is clipped early, and drop the rest: a track running seconds past the
+          // last frame is its own bug (it was what made audio look "longer" back when the video was inflated).
+          const vidTicks = R.samples.reduce((k, q) => k + q.dur, 0) / TS * at.mediaTs;
+          let keep = 0, used = 0;
+          for (const q of aS) { if (used > vidTicks) break; used += q.dur; keep++; }
+          if (keep < aS.length) { aS.length = keep; aD.length = keep; }
+          // ── AND CHECK THE AUDIO ACTUALLY COVERS THE TAKE ── an audio track shorter than the wall clock it was
+          // recorded over means MediaRecorder under-produced, and if that shortfall is spread through the take
+          // rather than sitting at the end it is DRIFT: sound running further ahead of picture the longer it runs.
+          const wallMs = R.aT0 >= 0 ? performance.now() - R.aT0 : 0;
+          const audMs = at.samples.reduce((k, q) => k + q.dur, 0) / at.mediaTs * 1000;
+          console.log('[vb] rec a/v lead', lead.toFixed(1), 'ms' + (VE_AV_TRIM ? ' (incl. ?veav=' + VE_AV_TRIM + ')' : '') + ' — dropped', dropped, 'off the front,',
+                      at.samples.length - keep - dropped, 'off the tail, of', at.samples.length,
+                      '| audio covered', audMs.toFixed(0), 'ms of', wallMs.toFixed(0),
+                      'ms wall (' + (audMs / Math.max(1, wallMs) * 100).toFixed(1) + '%)');
+          if (aS.length) tracks.push({ kind: 'audio', timescale: at.mediaTs, stsd: AP.moovRaw.slice(at.stsd.start, at.stsd.end), samples: aS, data: aD });
+        }
+      } catch (e) { console.warn('[vb] wc recorder: audio could not be muxed', e); }
+    }
+    const out = veMp4Mux(tracks, 1000);
+    if (!out) { console.warn('[vb] wc recorder: mux failed'); return; }
+    if (R.dropped) console.log('[vb] rec dropped', R.dropped, 'frames to encoder backpressure of', R.n + R.dropped);
+    veLoadBlob(out);
+  };
+
+  const veStartRec = async () => {
+    if (VE.recording || VE.starting) return;              // `starting` matters now that this awaits: R auto-repeats, and two overlapping starts used to corrupt a take
+    VE.starting = true;
+    try { if (await veWCRecStart()) return; } catch (e) { console.warn('[vb] wc recorder start failed — using MediaRecorder', e); }
+    finally { VE.starting = false; }
     if (VE.recording) return;
     // ── NOT WHILE AN EXPORT IS RUNNING ── VE.exporting gates the whole render pass chain (tick-passes.js), so
     // the canvas is not being repainted: the take would be one frozen frame for the length of the export, and
@@ -19321,11 +20274,12 @@
       VE.capEvery = Math.max(1, Math.ceil(refresh / maxFps));
       VE.capHz = refresh / VE.capEvery;
       VE.capMs = 1000 / VE.capHz - 0.6;
-      VE.paintN = 0;
+      VE.paintN = 0; VE.lastPush = 0;                   // lastPush drives the time half of the capture gate in tick-body.js — stale from a previous take, the first push of this one would be skipped
       console.log('[vb] rec', canvas.width + 'x' + canvas.height, '@', VE.capHz.toFixed(1), 'fps (refresh', refresh + ', every', VE.capEvery + ' paints)'); }
     let stream; try { stream = canvas.captureStream(0); } catch (e) { console.warn('[vb] canvas.captureStream failed', e); return; }   // 0 = MANUAL push — the render loop drives it, see above
     VE.recTrack = stream.getVideoTracks()[0] || null;
     if (!VE.recTrack || !VE.recTrack.requestFrame) { console.warn('[vb] canvas capture has no requestFrame — falling back to the sampler'); veReleaseCap(stream); try { stream = canvas.captureStream(VE.capHz); } catch (e2) { return; } VE.recTrack = null; }
+    VE.pushFrame = () => { try { VE.recTrack && VE.recTrack.requestFrame(); } catch (e) {} };   // the render loop calls VE.pushFrame and does not care which recorder is behind it
     VE.recStream = stream;                             // kept so veStopRec can release the canvas capture (see there)   // captures at VE.capHz → matches the game's cadence so playback isn't juddery (user), and no longer at the cost of the game's own frame rate
     const adest = veAudioDest(); if (adest) { try { adest.stream.getAudioTracks().forEach((t) => stream.addTrack(t)); } catch (e) {} }   // mix in the game audio (user) — video-only if it fails
     // ── THE CHUNK LIST IS PER-RECORDER, NOT A MODULE SINGLETON ── it was VE.chunks, and stop() queues
@@ -19368,16 +20322,21 @@
     catch (e) { console.warn('[vb] MediaRecorder start failed', e); VE.rec = null; veReleaseCap(stream); VE.recStream = null; return; }   // was unguarded: a throw here propagated into the keydown handler in ui/input.js and skipped every key below R
     VE.recording = true;
     veRecUI(true);
+    /* ── AND IT NO LONGER STARTS THE MUSIC (user 2026-08-21: "remove the r playing the song function. keep the
+       recorder on r") ── it did for one day. R is the recorder and nothing else again, and the soundtrack is
+       back on its own clock — see ANTHEM_AT in ui/audio.js. */
   };
 
   const veStopRec = () => {
     if (!VE.recording) return;
+    if (VE.wc) { veWCRecStop(); return; }                 // the WebCodecs take muxes itself and loads the result; everything below is MediaRecorder teardown
     try { VE.rec.stop(); } catch (e) {}
     // Release the canvas capture. Without this the compositor keeps feeding a stream nobody reads for
     // the rest of the session. VIDEO tracks only: the audio tracks come from the shared veGameDest node
     // and stopping them would silence every later recording.
     if (VE.recStream) { veReleaseCap(VE.recStream); VE.recStream = null; }
     VE.recording = false;
+    VE.pushFrame = null;
     VE.recTrack = null;                              // the render loop tests this before pushing — a stale track would keep requestFrame firing into a stopped recorder
     veRecUI(false);
   };
@@ -19385,6 +20344,7 @@
 
   // ── LOAD a recorded blob into the editor ──
   const veLoadBlob = (blob) => {
+    VE.blob = blob;                                       // ── KEEP THE BLOB, NOT JUST ITS URL ── the WebCodecs export DEMUXES the take rather than replaying it (see veExportWC), so it needs the bytes. An object URL cannot be read back
     if (VE.blobUrl) URL.revokeObjectURL(VE.blobUrl);
     VE.blobUrl = URL.createObjectURL(blob);
     veVideo.src = VE.blobUrl;
@@ -19556,6 +20516,212 @@
     else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); e.stopPropagation(); if (VE.undone.length) { VE.strokes.push(VE.undone.pop()); veRedraw(); } }
   }, true);
 
+  // ═══════════════ THE WEBCODECS EXPORT ═══════════════ (user 2026-08-21: "on playback the video is STILL stuttering")
+  // The MediaRecorder export below replays the take in real time and re-records whatever the compositor happens to
+  // present. That is the stutter, and it cannot be tuned out — see the measurement in ui/mp4-mux.js: every frame
+  // interval in every shipped export is an integer multiple of the 8.33 ms refresh period, because MediaRecorder
+  // stamps frames with the wall clock rather than with the time the frame actually belongs at.
+  // This path never plays anything. It DEMUXES the recording, decodes every sample, redraws it with the annotations,
+  // and hands each frame to a VideoEncoder with an EXACT timestamp on an even grid. Consequences worth stating:
+  //   * frame pacing is perfect by construction — the output grid is arithmetic, not measured
+  //   * nothing can be dropped: a slow decode makes the export take longer, it does not cost a frame
+  //   * it is not bound to real time, so a 60 s take need not take 60 s
+  //   * the audio is COPIED, not re-encoded — one whole generation of AAC loss removed
+  //   * the file comes out flat, so it opens in an NLE without the remux
+  // Returns true when it produced the download. False means "not applicable" and the caller falls through to the old
+  // path — a webm recording, or a browser without WebCodecs. It must never throw its way out: the take is precious.
+  const veCodecStr = (avcC) => 'avc1.' + [avcC[1], avcC[2], avcC[3]].map((b) => ('0' + b.toString(16)).slice(-2)).join('');
+  const VE_ENC_TRY = ['avc1.640034', 'avc1.640033', 'avc1.640032', 'avc1.64002a', 'avc1.4d0034', 'avc1.42e034'];   // High 5.2 down to Baseline; the first the machine will actually configure wins
+  const veTick = () => new Promise((r) => setTimeout(r, 0));
+  const VE_FILL_MAX = 240;                                // ceiling on repeated frames for one gap: a pathological stall must not inflate the file without bound. 240 is 4 s at 60 fps — far past any real hitch
+  // Pull samples through a sliding ~24 MB window, so a 900 MB take never lands in JS memory and the decoder is not fed
+  // one blob read per frame.
+  const veReader = (blob) => { let base = -1, buf = null;
+    return async (off, size) => {
+      if (base < 0 || off < base || off + size > base + buf.byteLength) {
+        base = off; buf = await blob.slice(off, Math.min(blob.size, off + Math.max(24e6, size))).arrayBuffer();
+      }
+      return new Uint8Array(buf, off - base, size);
+    }; };
+
+  const veExportWC = async () => {
+    // ── SAY WHY, ALWAYS ── these were bare `return false`s, so declining looked exactly like never being called and
+    // the export quietly ran on the stuttering MediaRecorder path instead. That cost a whole debugging round when
+    // the recorder started muxing FLAT mp4s and this parser still only understood fragmented ones.
+    const bail = (why) => { console.warn('[vb] WebCodecs export unavailable —', why, '— using MediaRecorder'); return false; };
+    if (!veWCReady()) return bail('no WebCodecs');
+    if (!VE.blob) return bail('no recording blob');
+    if (!VE.clips.length || veExportDur() <= 0) return bail('nothing on the timeline');
+    let P = null;
+    try { P = await veMp4Parse(VE.blob); } catch (e) { return bail('parse threw: ' + e); }
+    if (!P) return bail('parse returned null — a webm take, or an mp4 shape this cannot read');
+    const vt = P.live.find((t) => t.kind === 'video'), at = P.live.find((t) => t.kind === 'audio');
+    if (!vt) return bail('no video track');
+    if (!vt.avcC) return bail('no avcC in the video sample entry');
+    if (!vt.samples.length) return bail('video track has no samples');
+
+    // ── SELECT, THEN MEASURE, THEN DECODE ── the output frame duration depends on the total frame count, so every
+    // clip's sample range is resolved up front. `from` walks back to the keyframe the first wanted frame needs.
+    const tOf = (t, s) => (s.dts - t.t0) / t.mediaTs;
+    const sel = [];
+    for (const c of VE.clips) {
+      const idx = [];
+      for (let i = 0; i < vt.samples.length; i++) { const q = tOf(vt, vt.samples[i]); if (q >= c.s - 1e-4 && q < c.e - 1e-4) idx.push(i); }
+      if (!idx.length) continue;
+      let from = idx[0];
+      while (from > 0 && !vt.samples[from].sync) from--;   // decoding may not start mid-GOP; the frames before the cut are decoded and thrown away
+      sel.push({ c, first: idx[0], last: idx[idx.length - 1], from, n: idx.length, a: [] });   // the audio range is chosen below, once the frames have said how much of this clip they actually cover
+    }
+    const nFrames = sel.reduce((k, s) => k + s.n, 0);
+    if (!nFrames) return bail('no frames fall inside the kept clips');
+    const durSec = sel.reduce((k, s) => k + (s.c.e - s.c.s), 0);
+    const VE_TS = 1000000;                                // a microsecond timescale: the grid step below then rounds to well under a millisecond of drift across a whole take
+    // ── THE GRID STEP IS SIZED FROM THE VIDEO TRACK'S OWN SPAN ── NOT from durSec/nFrames. Those look equivalent
+    // and are not: `durSec` comes off veVideo.duration, which is the longer of the two TRACKS, and the audio track
+    // keeps running when the paint loop stalls. Measured on a stalled take: video timestamps spanned 3.01 s while
+    // the container reported 7.94 s, so dividing gave a step 2.6x too wide and laid 3 s of video across 8 s — slow
+    // motion, with the copied audio walking away from it. Summing what the FRAMES actually cover cannot drift that
+    // way. The median gap only supplies the tail, since the last frame of a clip has no successor to measure against.
+    const gaps = [];
+    for (const S of sel) for (let i = S.first; i < S.last; i++) gaps.push((vt.samples[i + 1].dts - vt.samples[i].dts) / vt.mediaTs);
+    gaps.sort((a, b) => a - b);
+    const medGap = gaps.length ? gaps[gaps.length >> 1] : durSec / nFrames;
+    // ── AUDIO FOLLOWS THE PICTURE ── each clip's audio is taken over what its FRAMES cover, not over the clip's
+    // nominal length. The two are the same for a healthy take and diverge badly for a short-captured one: the audio
+    // track is a real-time MediaStream and keeps running when the video track falls behind, so selecting on the
+    // nominal range exported 4.9 s of sound against 1.3 s of picture. Sound now stops where the picture stops.
+    for (const S of sel) {
+      S.lo = tOf(vt, vt.samples[S.first]);
+      S.span = tOf(vt, vt.samples[S.last]) - S.lo + medGap;
+      S.a = at ? at.samples.filter((s) => { const q = tOf(at, s); return q >= S.lo - 1e-4 && q < S.lo + S.span - 1e-4; }) : [];
+    }
+    let baseSlot = 0;                                     // where each clip starts on the output grid; clips butt together
+    for (const S of sel) { S.base = baseSlot; baseSlot += Math.round(S.span * 1e6 / Math.max(1, Math.round(medGap * VE_TS))); }
+    // ── THE GRID STEP IS THE TAKE'S TYPICAL CADENCE (the median gap), NOT its average ── the average is dragged
+    // down by every long gap, which then makes the base rate lower than the rate the game actually painted at and
+    // forces most frames into a slot they do not belong in. The median is what "one frame" really cost, so a steady
+    // stretch maps one frame to one slot and only a genuine hitch spans several.
+    // The step is the 25th-percentile gap, floored at 144 fps and never coarser than the median. For a steady take
+    // (a real capture is very nearly constant) p25, the median and the mean are the same number and this changes
+    // nothing. For a BURSTY one it matters: a step at the median sends every gap shorter than typical into a slot
+    // that is already taken, and those frames are then dropped. Measured on a bursty test take, a median step lost
+    // 112 of 641 unique frames; p25 keeps them. Duplicates cost ~130 bytes, dropped frames cost content.
+    const pct = (f) => gaps.length ? gaps[Math.min(gaps.length - 1, Math.floor(gaps.length * f))] : medGap;
+    const frameDur = Math.max(Math.round(VE_TS / 144), Math.min(Math.round(medGap * VE_TS), Math.max(1, Math.round(pct(0.25) * VE_TS))));
+
+    const btn = $('veExport'), label0 = btn.textContent;
+    btn.disabled = true; btn.textContent = 'exporting…'; vePause();
+    const VESC = (() => { const m = /[?&]vescale=([0-9.]+)/.exec(location.search); return m ? Math.max(0.25, Math.min(1, parseFloat(m[1]))) : 1; })();
+    const vw = Math.round((veVideo.videoWidth || 1280) * VESC) & ~1, vh = Math.round((veVideo.videoHeight || 720) * VESC) & ~1;
+    const cvs = document.createElement('canvas'); cvs.width = vw; cvs.height = vh;
+    const g = cvs.getContext('2d', { alpha: false, willReadFrequently: false });   // ── NOT `desynchronized` ── that flag drops the internal double buffer, which is fine for MediaRecorder's requestFrame() but NOT for `new VideoFrame(canvas)`: with no stable back buffer the constructor kept handing the encoder a STALE picture, so the export encoded the same frame over and over. Measured: 89% of the exported frames were duplicates and the download played at 2.15 unique fps
+    const lw = Math.max(2, vw * 0.004);
+    const reqRate = veExportRate(vw, vh, durSec).rate;
+    let dec = null, enc = null, failed = null, outIdx = 0, desc = null, drew = false;
+    const encSamples = [], encData = [];
+    VE.exporting = true; veUpdateButtons();
+    try {
+      let encCfg = null;
+      for (const codec of VE_ENC_TRY) {
+        const cfg = { codec, width: vw, height: vh, bitrate: Math.round(reqRate), framerate: VE_TS / frameDur, avc: { format: 'avc' }, latencyMode: 'quality' };
+        const sup = await VideoEncoder.isConfigSupported(cfg).catch(() => null);
+        if (sup && sup.supported) { encCfg = cfg; break; }
+      }
+      if (!encCfg) return bail('no AVC encoder configuration at ' + vw + 'x' + vh);
+      enc = new VideoEncoder({
+        output: (ch, meta) => {
+          if (!desc && meta && meta.decoderConfig && meta.decoderConfig.description) desc = new Uint8Array(meta.decoderConfig.description);
+          const b = new Uint8Array(ch.byteLength); ch.copyTo(b);
+          encSamples.push({ size: b.length, dur: frameDur, cts: 0, sync: ch.type === 'key' });
+          encData.push(b);
+        },
+        error: (e) => { failed = failed || e; },
+      });
+      enc.configure(encCfg);
+      const gop = Math.max(1, Math.round(2 * VE_TS / frameDur));   // a keyframe every ~2 s so the file scrubs in an NLE instead of forcing long GOP walks
+      const ready = [];
+      dec = new VideoDecoder({ output: (f) => ready.push(f), error: (e) => { failed = failed || e; } });
+      dec.configure({ codec: veCodecStr(vt.avcC), description: vt.avcC, codedWidth: veVideo.videoWidth || vw, codedHeight: veVideo.videoHeight || vh, optimizeForLatency: false });
+      const read = veReader(VE.blob);
+      let clip = null;
+      const emit = async (f) => {                         // one decoded source frame → at most one encoded output frame
+        const q = f.timestamp / 1e6;
+        if (clip && q >= clip.c.s - 1e-4 && q < clip.c.e - 1e-4) {
+          // ── REAL TIMING, EMITTED AS TRUE CFR ── each frame goes in the slot its OWN timestamp puts it in, and
+          // any slot it skipped is filled by repeating the frame that was already on screen.
+          // Why not an even grid (tried, and it was worse — user: "much worse than before"): the recording's
+          // timestamps are already honest. The game paints on rAF, so a frame stamped at 16.67 ms really is the
+          // world at 16.67 ms. The stutter never came from those times, it came from the export RE-RECORDING them
+          // through MediaRecorder's wall clock a second time. Renumbering frames 0,1,2,… therefore does not remove
+          // an error, it INTRODUCES one: it plays a frame that covered 50 ms for the same span as one that covered
+          // 16, so motion speeds up and slows down. Honest times must survive the export.
+          // Why fill rather than leave the gaps: a variable-frame-rate file plays in a browser and stutters or
+          // freezes in downloaded players — the 2026-07-22 finding, and the user hit it again ("when the person
+          // downloads the file, it's even worse"). Repeating the held frame keeps every slot occupied, so the file
+          // is exactly constant-rate while showing each frame for as long as it truly lasted. A repeat costs a few
+          // hundred bytes because nothing in it changed.
+          const slot = clip.base + Math.max(0, Math.round((q - clip.lo) * 1e6 / frameDur));
+          if (slot < outIdx) { f.close(); return; }        // ── DROP, DON'T SHOVE ── this frame lands in a slot already taken, i.e. the capture delivered two frames closer together than one frame period, so one of them is temporally redundant. Giving it the NEXT slot instead pushes every later frame late and the whole clip stretches (measured: 250 ms of drift over 4.4 s). Dropping is what -fps_mode cfr does, and it is what keeps the running time honest
+          for (let gi = 0; drew && outIdx < slot && gi < VE_FILL_MAX; gi++) {   // hold the PREVIOUS frame — this runs before the new one is drawn, and `drew` keeps it from firing before there is anything to hold
+            const dup = new VideoFrame(cvs, { timestamp: outIdx * frameDur, duration: frameDur, alpha: 'discard' });
+            enc.encode(dup, { keyFrame: outIdx % gop === 0 });
+            dup.close(); outIdx++;
+          }
+          g.drawImage(f, 0, 0, vw, vh);
+          if (VE.strokes.length) veStrokePaint(g, 0, 0, vw, vh, lw);
+          drew = true;
+          const of = new VideoFrame(cvs, { timestamp: outIdx * frameDur, duration: frameDur, alpha: 'discard' });
+          enc.encode(of, { keyFrame: outIdx % gop === 0 });
+          of.close();
+          if (++outIdx % 15 === 0) btn.textContent = 'exporting ' + Math.min(99, Math.round(outIdx * 100 / nFrames)) + '%';
+        }
+        f.close();                                        // MANDATORY: a VideoFrame holds a GPU surface, and 4K frames exhaust the pool within a second or two of leaking them
+      };
+      for (const S of sel) {
+        clip = S;
+        outIdx = Math.max(outIdx, S.base);                 // clips butt together on the output grid; never start one behind where the last ended
+        for (let i = S.from; i <= S.last && !failed; i++) {
+          const s = vt.samples[i];
+          dec.decode(new EncodedVideoChunk({ type: s.sync ? 'key' : 'delta', timestamp: Math.round(tOf(vt, s) * 1e6),
+                                             duration: Math.round(s.dur / vt.mediaTs * 1e6), data: await read(s.off, s.size) }));
+          while (ready.length) await emit(ready.shift());
+          while (!failed && (dec.decodeQueueSize > 8 || enc.encodeQueueSize > 8)) { await veTick(); while (ready.length) await emit(ready.shift()); }   // BACKPRESSURE, not a buffer: without it a 4K take queues thousands of frames and the tab is killed for memory
+        }
+        if (failed) break;
+        await dec.flush();
+        while (ready.length) await emit(ready.shift());
+        outIdx = Math.max(outIdx, S.base + Math.round(S.span * 1e6 / frameDur));   // the next clip starts after everything this one covered, so a trimmed-out stretch does not leave a hole
+      }
+      if (failed) throw failed;
+      await enc.flush();
+      // every sample already carries frameDur: the output is constant-rate by construction, so stts is one row
+      if (!desc || !encSamples.length) return bail('encoder produced no avcC/samples');
+      const tracks = [{ kind: 'video', timescale: VE_TS, width: vw, height: vh, stsd: veAvcStsd(vw, vh, desc), samples: encSamples, data: encData }];
+      if (at && at.stsd) {
+        const aS = [], aD = [];
+        for (const S of sel) for (const s of S.a) { aS.push({ size: s.size, dur: s.dur, cts: 0, sync: true }); aD.push(VE.blob.slice(s.off, s.off + s.size)); }   // ── AUDIO IS COPIED ── the AAC the recorder already made, passed through as Blob slices: no second encode, no quality loss, and no memory
+        if (aS.length) tracks.push({ kind: 'audio', timescale: at.mediaTs, stsd: P.moovRaw.slice(at.stsd.start, at.stsd.end), samples: aS, data: aD });
+      }
+      const out = veMp4Mux(tracks, 1000);
+      if (!out) return bail('mux failed');
+      veCalibrate(out.size, durSec, reqRate);
+      const url = URL.createObjectURL(out), a2 = document.createElement('a');
+      a2.href = url; a2.download = 'voxelbit-clip.mp4'; document.body.appendChild(a2); a2.click(); a2.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      veUpdateEst(); if (VE.clips.length) veSeek(VE.clips[0].s);
+      return true;
+    } catch (e) {
+      console.warn('[vb] WebCodecs export failed — falling back to the recorder', e);
+      return false;
+    } finally {
+      try { if (dec && dec.state !== 'closed') dec.close(); } catch (e) {}
+      try { if (enc && enc.state !== 'closed') enc.close(); } catch (e) {}
+      VE.exporting = false;
+      btn.disabled = false; btn.textContent = label0;
+      veUpdateButtons();
+    }
+  };
+
   // ── EXPORT ── COMPOSITED, not a raw element capture. The old path recorded veVideo.captureStream() while the clip
   // played in real time, so anything that hitched the page during those seconds — above all the game still rendering
   // full-tilt behind the panel — was burned into the file as dropped/long frames. That is why it looked fine in the
@@ -19564,6 +20730,7 @@
   // decoder produced, and the game loop is suspended for the duration so nothing competes for the GPU.
   const veExport = async () => {
     if (!VE.clips.length || VE.dur <= 0) return;
+    if (await veExportWC()) return;                       // ── THE DEFAULT PATH ── everything below is the MediaRecorder fallback, kept for webm takes and for any browser without WebCodecs. It is the one that stutters; see veExportWC
     const mime = vePickExportMime(); if (!mime) return;
     const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm';   // download extension follows the container the recorder actually produced
     const btn = $('veExport'), label0 = btn.textContent; btn.disabled = true; btn.textContent = 'exporting…'; vePause();
@@ -19633,8 +20800,9 @@
       cancelAnimationFrame(pump); pump = null;
       rec.stop(); await veCap(stopped, 5000, 'recorder stop');
       if (aborted) return;                                 // closed mid-run: no truncated download the player never asked for, and no veCalibrate off a part-length file (the finally still releases VE.exporting and the button)
-      const out = new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' });
-      veCalibrate(out.size, expDur, reqRate);              // what the encoder ACTUALLY did → next export's estimate is this machine's, not a hardcoded guess
+      let out = new Blob(chunks, { type: ext === 'mp4' ? 'video/mp4' : 'video/webm' });
+      veCalibrate(out.size, expDur, reqRate);              // what the encoder ACTUALLY did → next export's estimate is this machine's, not a hardcoded guess. Measured on the RAW recorder output, BEFORE the remux below, because the encoder is what it is calibrating
+      if (ext === 'mp4') { try { const flat = await veRemuxFmp4(out); if (flat) out = flat; } catch (e) { console.warn('[vb] remux failed — downloading the fragmented original', e); } }   // ── SO THE FILE OPENS IN AN NLE ── MediaRecorder only emits a FRAGMENTED mp4 and DaVinci Resolve refuses those outright (user 2026-08-21: dragging an export in did nothing). See ui/mp4-remux.js: it is a lossless table rebuild, 25 ms on a 360 MB export, and any failure falls through to the original rather than costing the user their take
       const url = URL.createObjectURL(out), a2 = document.createElement('a');
       a2.href = url; a2.download = 'voxelbit-clip.' + ext; document.body.appendChild(a2); a2.click(); a2.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
@@ -20204,18 +21372,11 @@
   // take the pointer away mid-game. The listener is gone; setLightMode and lightMode stay wired (the esc-menu
   // suppression and cursSync still read them, harmlessly false forever), so restoring the key is re-adding
   // this one listener.
-  // ── 1 STARTS THE MUSIC (user 2026-08-20) ── the soundtrack's opening cut is now something the player asks
-  // for rather than something that arrives on a timer. Only the first press counts (anthemArmed is a latch in
-  // ui/audio.js) and the 3 s gap to the first track is ANTHEM_AT, so this listener does one thing: start the
-  // clock, from zero, at the press.
-  // Gated like every other gameplay key: not while the console or a text field has the keyboard, not in the
-  // editor, and not while the video panel is up — otherwise typing a "1" anywhere would fire the soundtrack.
-  document.addEventListener('keydown', (e) => {
-    if (e.code !== 'Digit1' || e.repeat || anthemArmed) return;
-    if (ED.on || CMD.open || dead || !vePanel.classList.contains('hidden')) return;
-    if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
-    anthemArmed = true; playSecs = 0;                  // …from zero, so the 3 s is measured from the press and not from whatever the clock had reached
-  });
+  // ── 1 NO LONGER DOES ANYTHING (user 2026-08-21: "remove the 1 keybind") ── it armed the soundtrack from
+  // 2026-08-20 to 2026-08-21, and for part of that day the RECORDER armed it instead. Both triggers are gone:
+  // the soundtrack runs on its own clock again (ANTHEM_AT, ui/audio.js), R is the recorder and nothing else, and
+  // this key does nothing. The listener is DELETED rather than left inert, because a dead keydown handler on
+  // Digit1 is a key nobody can reuse and nothing tells you why.
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (locked) return;                    // clicking the world takes control back and ends light mode…
     // …EXCEPT WHILE THE HELD-ITEM / STACK-COUNT PANEL IS OPEN (user 2026-08-18) ── #pkPanel is pointer-events:none with
@@ -22209,6 +23370,7 @@
       const f = phFlood(S);
       return { oak: !!S.oak, total: f.total, reached: f.reached, orphans: f.orphans, ms: PH.stats.lastFloodMs };
     },
+    chopAim() { return { ...CHOP_AIM }; },            // what the LAST swing's aim pre-pass decided, and WHICH branch of the march then spent the swing ('leaves' is the only one that can take foliage off a crosshair resting on wood) — see sim/tools.js
     physSwing() { const r = chopSwing(); if (r) playToolHit(); else if (aimHitId()) playBlocked(); return r; },   // the tap drives exactly what a click does, sound included
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
     arrowChopAt(x, y, z) { return arrowChop(x | 0, y | 0, z | 0); },   // the ARROW's carve, at a chosen voxel. Driving it through a real shot is unmeasurable: the shaft picks its own impact, and a creature in the way cancels the chop outright.
@@ -22986,6 +24148,8 @@
     snowRoll(v) { if (v !== undefined) SNOW_ROLL_MAX = v | 0; return SNOW_ROLL_MAX; },   // max drop the settle-roll may take; 0 = unlimited (the old behaviour)
     snowShelf(v) { if (v !== undefined) SNOW_SHELF = v | 0; return SNOW_SHELF; },   // A/B the crown shelf rule in-session
     snowCrown(v) { if (v !== undefined) SNOW_ON_CROWN = v ? 1 : 0; return SNOW_ON_CROWN; },   // A/B canopy snow in-session
+    matTabs(id) { const v = id | 0; return { wood: !!woodTab[v], fol: !!foliaTab[v], float: !!floatTab[v], decor: !!decorTab[v],
+      axeOnly: !!axeOnlyTab[v], pickOnly: !!pickOnlyTab[v], digOnly: !!digOnlyTab[v], solid: !!solidTab[v], snow: !!snowTab[v] }; },   // EVERY material tab this id is in, in one read — the chop paths branch on five of them and guessing from the id number is how a test measures the wrong thing
     isFoliaId(id) { return !!foliaTab[id | 0]; },       // needles/leaves — canopy snow rests on THESE, not on wood
     birdsNear(n) { const o = [], P0 = P;                 // FLYING songbirds only — they live in birds[], not the creature pool
       for (let i = 0; i < birds.length; i++) { const b = birds[i]; if (!b || !b.init) continue;
@@ -23262,6 +24426,34 @@
           worstId, worstCol: palette[worstId] || null,
           traced: !!(LIFE_UNI && uniTraced(B)), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)) }); }
       return out; },
+    birdDraw() {                                     // ── IS EVERY PERCHED BIRD ACTUALLY DRAWN? ── the one question the mammal taps above cannot answer for them.
+      // A perched bird has TWO render paths and only ever one of them at a time: beyond UNI_BIRD_R it is grid-stamped
+      // into W, inside it drops the stamp (sim/life/stamped.js) and competes for a drop slot. Lose that competition
+      // with the stamp already gone and it is drawn by NOTHING — invisible, in plain sight, which is exactly what a
+      // voxel diff and a slot census both report as healthy. `blind` is that set, and it should always be empty.
+      const o = [], blind = [];
+      for (let j = CARD_0; j < CARD_END; j++) { const B = wbf[j];
+        if (!B || !B.init) continue;
+        const d = Math.round(Math.hypot(B.x - P.x, B.z - P.z));
+        // STAMP INTEGRITY, not just "does it think it is stamped": B.sCells are the world indices the bird
+        // wrote and B.sPrev what was there before, so a cell that no longer holds a bird id is a bird voxel
+        // something else has overwritten — a stamp that is present in the ledger and absent from the screen.
+        let live = 0; const sn = B.sN | 0;
+        for (let k = 0; k < sn; k++) { const v = W[B.sCells[k]]; if (v && v !== B.sPrev[k]) live++; }
+        const r = { j, d, colour: ['cardinal', 'blue', 'robin', 'pink'][B.bird | 0] || '?',
+                    traced: !!(LIFE_UNI && UNI_BIRDS), stamped: sn > 0, sN: sn, live,
+                    intact: sn > 0 ? +(live / sn).toFixed(2) : 0, drawn: !!lifeIsDrawn(j) };
+        // BLIND = the player cannot see it by ANY path: no drop slot, and its grid stamp is gone or gutted.
+        // UNI_BIRDS is false today, so every perched bird lives or dies by its stamp alone.
+        r.blind = !r.drawn && (sn === 0 || r.intact < 0.34);
+        o.push(r); if (r.blind) blind.push(r);
+      }
+      const near = o.filter((r) => r.stamped);
+      return { n: o.length, uniBirds: !!UNI_BIRDS, stamped: near.length, unstamped: o.length - near.length,
+               gutted: o.filter((r) => r.stamped && r.intact < 0.34).length,
+               blind: blind.length, blindNearest: blind.sort((a, b) => a.d - b.d).slice(0, 8),
+               byColour: o.reduce((a, r) => (a[r.colour] = (a[r.colour] || 0) + 1, a), {}),
+               blindByColour: blind.reduce((a, r) => (a[r.colour] = (a[r.colour] || 0) + 1, a), {}) }; },
     mammals() { const b = (a, z) => { let n = 0, near = 0; const pos = []; for (let j = a; j < z; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2) { n++; pos.push([Math.round(O.x), Math.round(O.z), Math.round(O.hx || 0), Math.round(O.hz || 0)]); if ((O.x - P.x) ** 2 + (O.z - P.z) ** 2 < 400 * 400) near++; } } return { active: n, within400: near, pos }; };   /*TEMP-DEBUG: live land-mammal census + positions/homes*/
       return { bunny: b(BUNNY_0, BUNNY_END), armadillo: b(ARM_0, ARM_END), skunk: b(SKUNK_0, SKUNK_END), porcupine: b(PORC_0, FLAM_0), flamingo: b(FLAM_0, FLAM_END), p: [Math.round(P.x), Math.round(P.z)] }; },
     edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, paused: ED.paused, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pw: ED.pw, pd: ED.pd, pal: palette.length }; },
@@ -24139,10 +25331,6 @@
     // It sits at the TOP for the same reason the old gate did: this must not run part-way through a tick.
     // The push captures the frame PRESENTED LAST tick, which is what makes it a whole frame rather than a
     // half-drawn one.
-    if (VE.recording && VE.recTrack) {
-      VE.paintN = (VE.paintN | 0) + 1;
-      if (VE.paintN % (VE.capEvery || 1) === 0) { try { VE.recTrack.requestFrame(); } catch (e) {} }
-    }
     const dt = Math.min(0.05, (now - prevT) / 1000); prevT = now;
     // ── VITALS ── UNCONDITIONAL, and that matters: this first sat further down beside the hazard checks, which
     // are inside the `if (P.fly) … else` movement branch, so the vitals silently stopped the moment fly mode
@@ -24186,7 +25374,7 @@
     if (dead) { mx = 0; mz = 0; }
     const ml = Math.hypot(mx, mz); if (ml > 0) { mx /= ml; mz /= ml; }
     if (P.fly) {
-      const spd = sprint ? 170 : 60;
+      const spd = sprint ? 255 : 90;              // ── x1.5 (user 2026-08-21: "make the fly speed 1.5x faster") ── was 170/60. BOTH arms scale, so sprint keeps the 2.83x ratio over the cruise it has always had; and vy reads the same `spd`, so up/down speeds up with forward instead of the climb quietly falling behind.
       const k = 1 - Math.exp(-10 * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
       let vy = 0; if (keys.has(binds.jump)) vy += spd; if (keys.has(binds.crouch)) vy -= spd;   // fly down = crouch (Alt) only; Ctrl no longer descends (user removed it)
@@ -24202,6 +25390,7 @@
       // waterline with 17 of its 20 voxels in open air. Swimming is a WAIST-DEEP question (user 2026-08-05).
       // inWater keeps the old probe: it gates horizontal drag and drowning, where ankle-deep is the right call.
       const swimming = waterAt(Math.floor(P.x), Math.floor(P.y + SWIM_DEEP), Math.floor(P.z));
+      P.swim = swimming;                               // published for moveAxis's step-up gate (sim/player.js) — set HERE, above the two horizontal moves below, so it is this frame's answer and not last frame's
       // ── THE PLAYER BREAKS THE SURFACE ── same splash a fish throws, either direction (user 2026-08-05).
       // Keyed off the STATE CHANGE, so wading along at the waterline cannot chatter; scaled by how hard the
       // crossing was, so a dive throws spray and stepping in off a beach barely ripples.
@@ -24378,8 +25567,32 @@
       // ── IS IT SNOWING WHERE THE PLAYER IS? ── freezeK is ONE GLOBAL scalar driving solidTab[WATER_T], so
       // this has always been camera-relative and cannot be per-column. Two ways the answer is now no in
       // the oak forest: it is raining there (the rain ramp), or nothing falls there at all (OAK_SNOW).
+      // ── AND "NOT THE OAK FOREST" IS NOT THE SAME QUESTION AS "IS IT SNOWING HERE" (user 2026-08-21: "the oak
+      // forest water freezes over when it snows in other biomes. prevent this from happening") ── the test below
+      // asked only about oak, so every column that is not oak counted as snowing. THE DESERT IS NOT OAK AND GETS
+      // NO SNOW: stand on the sand during a storm and snowHere went true, freezeK climbed, solidTab[WATER_T]
+      // flipped — and because that flag is GLOBAL, every lake in the world skinned over, the oak forest's
+      // included. That is the report almost word for word: it snows in another biome and your water freezes.
+      // dryHere is the BLANKET'S OWN TEST, verbatim — tick-snow.js computes wSharp(max(desertM, oakWeather)) per
+      // settling column and refuses the column when it is high. Asking the identical expression here is what
+      // makes "there is ice" and "there is snow on the ground" answer the same way at both borders instead of
+      // only at the oak one. The OAK_SNOW arm is carried through so all four states of the matrix at the top of
+      // world/window.js stay coherent: with snow switched back on in the oak, the desert must still stay liquid.
+      // ── …AND THE OAK BAND NEVER ICES AT ALL, BLOSSOM INCLUDED ── the second half of the same request, and it
+      // needs its own term because dryHere cannot express it. cherryW ramps over CHBW = 300, so oakWeather is
+      // dragged down for 300 voxels of PURE OAK either side of the blossom, and wSharp turns that into a `< 0.5`
+      // well before the pink starts: standing among oak trees beside an oak lake, watching it freeze. Keying the
+      // refusal on oakM — the BIOME, not the weather — is exact, and it costs the blossom its ice. That is a
+      // deliberate trade and not an oversight: the blossom is inside the oak forest, so "the oak forest does not
+      // freeze" has to include it or the border comes straight back. It still SNOWS there (the 2026-08-18 rule
+      // is untouched — this line moves ice only).
+      // WHAT THIS STILL CANNOT DO: freezeK is ONE GLOBAL scalar driving a material flag, so ice has never been
+      // per-column and this does not make it so. Stand in the pines and an oak lake across the treeline still
+      // freezes with everything else. Fixing THAT is per-column ice, which is a far larger change.
       const oakHere = Math.max(0, Math.min(1, wSharp(oakWeather(P.x, P.z))));   // wSharp so the ice follows the same tightened weather border the blanket and the flakes do   // oakWeather, not oakM (user 2026-08-18): the blossom band is inside oakM but it SNOWS there now, so its lakes freeze like the pines'
-      const snowHere = snowOn && (OAK_SNOW ? true : oakHere < 0.5) && (!RAIN_ON || rainSkyK * oakHere < 0.5);
+      const dryHere = Math.max(0, Math.min(1, wSharp(Math.max(desertM(P.x, P.z), OAK_SNOW ? 0 : oakWeather(P.x, P.z)))));   // 1 = no snow falls on this column — tick-snow.js's dmS, asked at the camera
+      const oakBand = oakM(P.x, P.z) > 0.5;            // the BIOME, not the weather: the one test cherryW cannot drag down
+      const snowHere = snowOn && !oakBand && dryHere < 0.5 && (!RAIN_ON || rainSkyK * oakHere < 0.5);
       // ── AND THE ANTI-WAVE FLOOR IS ABOUT WHERE THE SNOW IS, NOT WHERE YOU ARE (user 2026-08-18: "the water in
       // the oak forest seems to freeze") ── the 0.4 below pins freezeK at the shader's wave-suppression
       // threshold while water-snow is still draining, so a white blanket is never seen bobbing on a swell.
@@ -24390,7 +25603,7 @@
       // Safe to drop the floor here because there is no water-snow near the camera to protect: landSnowAt
       // refuses to settle any where oakWeather says oak (the dmS gate in tick-snow.js), so the case the floor
       // exists for cannot arise in the biome this exempts.
-      const oakDry = oakHere >= 0.5;                   // the SAME halfway line snowHere splits on, so the two can never disagree about which biome this is
+      const oakDry = oakBand || dryHere >= 0.5;        // the SAME two terms snowHere splits on, so the two can never disagree about whether this column gets weather
       freezeK = (snowHere && now >= snowFreezeAt) ? Math.min(1, freezeK + dt / 5)
         : Math.max((snowWN > snowWHead && !oakDry) ? 0.4 : 0, freezeK - dt / 5);   // water freezes over 5 s and thaws back over 5 s — but only from SNOW_FREEZE_DELAY (10 s) after the storm starts, so the flakes you can see have reached the ground before the river skins over
       const nowSolid = freezeK > 0.6;
@@ -24891,8 +26104,25 @@
       // move, so it is stable exactly when the held thing is: eating the last apple nulls the slot (reference
       // changes -> swap), a pickup merging into the stack keeps it (no swap, the stack merely grew), and two
       // full stacks of the same fruit are two different objects (swap, which is the report).
+      // ── …BUT A BITE IS NOT A SWAP (user 2026-08-21: "when the player eats, it drops down the food in hand.
+      // it glitches out first thing. dont drop the food in hand. just play the eating animation") ── the note
+      // four lines up already predicts this failure in the user's own words — "the swap would fire and drop the
+      // apple out of frame" — and `eatIt` was added to prevent it. It prevents the ITEM half only. The SLOT half
+      // was added later (2026-08-20, two stacks of the same fruit) and walked straight back into it: tryEat
+      // spends the stack in the same call that arms the animation, so eating the LAST of a stack sets
+      // slots[selSlot] = null on the very first frame of the chew, sNow goes object -> null, the swap arms, and
+      // `hy -= 0.62 * swapF * swapF` drops the food out of frame as you bite it. First thing, every time.
+      // THE CHANGE IS STILL CONSUMED — prevHeldIt/prevHeldSlot are updated whether or not the swap arms — so
+      // this cannot merely DEFER the drop to a later frame. Only the arming is skipped.
+      // AND ONLY WHILE THE HAND IS STILL SHOWING THE FOOD. `!heldIt() || heldIt() === eatIt` is the same pair of
+      // states the showId line further down already calls the only two possible during a bite: the stack is
+      // spent (0) or it still has fruit in it (eatIt). Scroll to an axe mid-chew and heldIt() is neither, so
+      // that swap fires exactly as it should. When the strip finally retires, eatIt drops to 0, hNow changes
+      // once more and the empty hand a finished apple leaves behind still swaps — which is the documented
+      // behaviour and is untouched.
       { const hNow = heldIt() || eatIt || 0, sNow = slots[selSlot] || null;
-        if (hNow !== prevHeldIt || sNow !== prevHeldSlot) { prevHeldIt = hNow; prevHeldSlot = sNow; swapT0 = now; } }
+        if (hNow !== prevHeldIt || sNow !== prevHeldSlot) { prevHeldIt = hNow; prevHeldSlot = sNow;
+          if (!(eatF >= 0 && (!heldIt() || heldIt() === eatIt))) swapT0 = now; } }
       const swapR = Math.max(0, 1 - (now - swapT0) / SWAP_MS);
       const swapF = swapR * swapR * (3 - 2 * swapR);   // 1 → 0 across the swap, SMOOTHSTEPPED and not quantised: this is a camera move, not a character animation, and stepping it at 24 fps read as a stutter (user)
       const hcfg = heldCfg(heldIt() || eatIt || 1);    // the shown item's OWN pose (during a grab flight this is the grabbed item's; through a bite it stays the fruit's even once the stack is gone)
@@ -28495,6 +29725,18 @@
         emitBuf[o4 + 8] = Yw9[0] * right[0] + Yw9[2] * right[2]; emitBuf[o4 + 9] = Yw9[0] * up[0] + Yw9[2] * up[2]; emitBuf[o4 + 10] = Yw9[0] * fwd[0] + Yw9[2] * fwd[2]; emitBuf[o4 + 11] = 0;
         emitBuf[o4 + 12] = right[1]; emitBuf[o4 + 13] = up[1]; emitBuf[o4 + 14] = fwd[1]; emitBuf[o4 + 15] = 0;   // LEVEL frame: Zw is world up, exactly as the emit's own fast path assumes
         emitWho[emitN] = R9[5]; emitAna[emitN] = 0; emitKnd[emitN] = LIFE_K_BIRD;
+        // ── AND A PERCHED BIRD HAS NO FALLBACK EITHER (user 2026-08-21: "I believe I saw a pink bird
+        // disappear") ── emitMust is the bit sim/life/slots.js added on 2026-08-20 for the land mammals, whose
+        // note says "the four land mammals are the only life with TWO render paths". They are not. A perched
+        // bird has exactly the same deal and gives up exactly the same thing: crossing inside UNI_BIRD_R it
+        // calls unstampWorm and drops its grid stamp (sim/life/stamped.js), then relies on a drop slot. Lose
+        // the competition with the stamp already surrendered and it is drawn by NEITHER path — the precise
+        // failure that note describes for an armadillo at 291 voxels, on a population of 421 instead of 96.
+        // IT WAS ALSO READING A STALE BIT. emitMust is a frame-reused Uint8Array and only the creature loop
+        // (main/tick-creatures.js) writes it; this block never did. So a bird inherited whatever creature held
+        // that emit index last frame, which is why the symptom is intermittent and why it moves around: the
+        // same bird is "must draw" or not depending on what was staged before it.
+        emitMust[emitN] = 1;
         emitAnc[emitN * 3] = R9[0]; emitAnc[emitN * 3 + 1] = R9[1]; emitAnc[emitN * 3 + 2] = R9[2];
         { const cx8 = emitBuf[o4], cy8 = emitBuf[o4 + 1], cz8 = emitBuf[o4 + 2];
           const r8 = LIFE_FRUST_R + (lifeIsDrawn(R9[5]) ? LIFE_FRUST_HYST : 0);
@@ -28795,6 +30037,17 @@
       if (showCoords) hudParts.push(`x ${(P.x / 10).toFixed(1)}\ny ${(P.y / 10).toFixed(1)}\nz ${(P.z / 10).toFixed(1)}`);   // coords in metres, one axis per line
       if (showTime) hudParts.push(`${clock}${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}${cycleSpeed !== 1 ? '  x' + cycleSpeed.toFixed(1) : ''}`);
       hudEl.textContent = hudParts.join('\n\n');
+    }
+    // ── HAND THE FRAME TO THE RECORDER, AFTER IT IS DRAWN ── this used to sit at the TOP of tickBody, capturing
+    // whatever was presented LAST tick. That was right for MediaRecorder, whose requestFrame() asks the COMPOSITOR
+    // for the last composited image. It is wrong for the WebCodecs recorder, which reads the canvas itself with
+    // `new VideoFrame(canvas)`: before this frame's passes have run there is nothing valid in the WebGPU canvas to
+    // read, and the take opened with EMPTY frames — measured, indices 0-4 and 9 came out pure green, 130 bytes
+    // each, and green is what a zeroed YUV plane looks like (user 2026-08-21: "theres green screens now").
+    // Here the frame has been submitted, so what is read is the picture that was just rendered.
+    if (VE.recording && VE.pushFrame) {
+      VE.paintN = (VE.paintN | 0) + 1;
+      if (VE.paintN % (VE.capEvery || 1) === 0) VE.pushFrame(now);
     }
     // FRAME PACING: off the PREVIOUS frame's GPU completion — up to 2 frames in flight, so the CPU's frame
     // prep (worldgen slices, uniforms, JS) overlaps GPU execution instead of serializing with it. This used to

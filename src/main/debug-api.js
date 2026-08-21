@@ -657,6 +657,7 @@
       const f = phFlood(S);
       return { oak: !!S.oak, total: f.total, reached: f.reached, orphans: f.orphans, ms: PH.stats.lastFloodMs };
     },
+    chopAim() { return { ...CHOP_AIM }; },            // what the LAST swing's aim pre-pass decided, and WHICH branch of the march then spent the swing ('leaves' is the only one that can take foliage off a crosshair resting on wood) — see sim/tools.js
     physSwing() { const r = chopSwing(); if (r) playToolHit(); else if (aimHitId()) playBlocked(); return r; },   // the tap drives exactly what a click does, sound included
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
     arrowChopAt(x, y, z) { return arrowChop(x | 0, y | 0, z | 0); },   // the ARROW's carve, at a chosen voxel. Driving it through a real shot is unmeasurable: the shaft picks its own impact, and a creature in the way cancels the chop outright.
@@ -1434,6 +1435,8 @@
     snowRoll(v) { if (v !== undefined) SNOW_ROLL_MAX = v | 0; return SNOW_ROLL_MAX; },   // max drop the settle-roll may take; 0 = unlimited (the old behaviour)
     snowShelf(v) { if (v !== undefined) SNOW_SHELF = v | 0; return SNOW_SHELF; },   // A/B the crown shelf rule in-session
     snowCrown(v) { if (v !== undefined) SNOW_ON_CROWN = v ? 1 : 0; return SNOW_ON_CROWN; },   // A/B canopy snow in-session
+    matTabs(id) { const v = id | 0; return { wood: !!woodTab[v], fol: !!foliaTab[v], float: !!floatTab[v], decor: !!decorTab[v],
+      axeOnly: !!axeOnlyTab[v], pickOnly: !!pickOnlyTab[v], digOnly: !!digOnlyTab[v], solid: !!solidTab[v], snow: !!snowTab[v] }; },   // EVERY material tab this id is in, in one read — the chop paths branch on five of them and guessing from the id number is how a test measures the wrong thing
     isFoliaId(id) { return !!foliaTab[id | 0]; },       // needles/leaves — canopy snow rests on THESE, not on wood
     birdsNear(n) { const o = [], P0 = P;                 // FLYING songbirds only — they live in birds[], not the creature pool
       for (let i = 0; i < birds.length; i++) { const b = birds[i]; if (!b || !b.init) continue;
@@ -1710,6 +1713,34 @@
           worstId, worstCol: palette[worstId] || null,
           traced: !!(LIFE_UNI && uniTraced(B)), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)) }); }
       return out; },
+    birdDraw() {                                     // ── IS EVERY PERCHED BIRD ACTUALLY DRAWN? ── the one question the mammal taps above cannot answer for them.
+      // A perched bird has TWO render paths and only ever one of them at a time: beyond UNI_BIRD_R it is grid-stamped
+      // into W, inside it drops the stamp (sim/life/stamped.js) and competes for a drop slot. Lose that competition
+      // with the stamp already gone and it is drawn by NOTHING — invisible, in plain sight, which is exactly what a
+      // voxel diff and a slot census both report as healthy. `blind` is that set, and it should always be empty.
+      const o = [], blind = [];
+      for (let j = CARD_0; j < CARD_END; j++) { const B = wbf[j];
+        if (!B || !B.init) continue;
+        const d = Math.round(Math.hypot(B.x - P.x, B.z - P.z));
+        // STAMP INTEGRITY, not just "does it think it is stamped": B.sCells are the world indices the bird
+        // wrote and B.sPrev what was there before, so a cell that no longer holds a bird id is a bird voxel
+        // something else has overwritten — a stamp that is present in the ledger and absent from the screen.
+        let live = 0; const sn = B.sN | 0;
+        for (let k = 0; k < sn; k++) { const v = W[B.sCells[k]]; if (v && v !== B.sPrev[k]) live++; }
+        const r = { j, d, colour: ['cardinal', 'blue', 'robin', 'pink'][B.bird | 0] || '?',
+                    traced: !!(LIFE_UNI && UNI_BIRDS), stamped: sn > 0, sN: sn, live,
+                    intact: sn > 0 ? +(live / sn).toFixed(2) : 0, drawn: !!lifeIsDrawn(j) };
+        // BLIND = the player cannot see it by ANY path: no drop slot, and its grid stamp is gone or gutted.
+        // UNI_BIRDS is false today, so every perched bird lives or dies by its stamp alone.
+        r.blind = !r.drawn && (sn === 0 || r.intact < 0.34);
+        o.push(r); if (r.blind) blind.push(r);
+      }
+      const near = o.filter((r) => r.stamped);
+      return { n: o.length, uniBirds: !!UNI_BIRDS, stamped: near.length, unstamped: o.length - near.length,
+               gutted: o.filter((r) => r.stamped && r.intact < 0.34).length,
+               blind: blind.length, blindNearest: blind.sort((a, b) => a.d - b.d).slice(0, 8),
+               byColour: o.reduce((a, r) => (a[r.colour] = (a[r.colour] || 0) + 1, a), {}),
+               blindByColour: blind.reduce((a, r) => (a[r.colour] = (a[r.colour] || 0) + 1, a), {}) }; },
     mammals() { const b = (a, z) => { let n = 0, near = 0; const pos = []; for (let j = a; j < z; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2) { n++; pos.push([Math.round(O.x), Math.round(O.z), Math.round(O.hx || 0), Math.round(O.hz || 0)]); if ((O.x - P.x) ** 2 + (O.z - P.z) ** 2 < 400 * 400) near++; } } return { active: n, within400: near, pos }; };   /*TEMP-DEBUG: live land-mammal census + positions/homes*/
       return { bunny: b(BUNNY_0, BUNNY_END), armadillo: b(ARM_0, ARM_END), skunk: b(SKUNK_0, SKUNK_END), porcupine: b(PORC_0, FLAM_0), flamingo: b(FLAM_0, FLAM_END), p: [Math.round(P.x), Math.round(P.z)] }; },
     edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, paused: ED.paused, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pw: ED.pw, pd: ED.pd, pal: palette.length }; },

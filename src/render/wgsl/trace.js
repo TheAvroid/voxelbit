@@ -26,7 +26,7 @@
     // cell, so a taller drop would straddle a cell boundary and grazing rays would slice pieces off it.
     const RAIN_MULT : f32 = 5.0; const RAIN_HW : f32 = 0.30; const RAIN_HH : f32 = 1.05;
     const RAIN_THR : f32 = 0.9755;                                                                   // SAME lattice occupancy as snow (~2.45%), so rain is exactly as dense as the snowfall it replaces and costs the same to march. A drop covers 2.1 x 0.6 voxels against a flake's 1 x 1, so it is ~25% more screen per drop and a great deal more legible; this is the one number to move if the storm wants to be heavier or lighter
-    const RAIN_GATE : f32 = 350.0;                                                                   // how far WEST of the camera the oak mask is sampled to decide "could this ray see rain at all" — 150 for the flake march's own reach plus 200 for how far the border's meander can wander over the +-150 of z the same disc covers
+    const RAIN_GATE : f32 = 350.0;                                                                   // how far past the oak BAND's own edge the camera still counts as "could this ray see the oak forest at all" (see oakNear below, which measures a wrapped DISTANCE and so needs no direction) — 150 for the flake march's own reach plus 200 for how far the border's meander can wander over the +-150 of z the same disc covers
     const LVT : u32 = ${LAVA_T}u; const LVB : u32 = ${LAVA_B}u; const LVR : u32 = ${LAVA_R}u; const LVY : u32 = ${LAVA_Y}u;
     // ── THE DESERT, ON THE GPU ── falling flakes are traced voxels in a world-space lattice, not particles the
     // CPU places, so the JS gate that keeps the BLANKET off the sand cannot reach them: without this it snows
@@ -53,8 +53,8 @@
     // as flakes falling on ground that refuses them.
     fn pwrapG(d : f32) -> f32 { return d - floor(d / f32(${BIOP}) + 0.5) * f32(${BIOP}); }
     fn desertMask(x : f32, z : f32) -> f32 {
-      let c = f32(${SPWX + DESC - desWob(SPWZ)}) + (dVnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * ${DESW}.0
-                                 + (dVnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * ${DESW * 0.35};
+      let c = f32(${SPWX + DESC - desWob(SPWZ)}) + (dVnoise(z * ${WOB_DES1} + 27.9, 83.1) - 0.5) * ${DESW}.0
+                                 + (dVnoise(z * ${WOB_DES2} + 11.2, 51.7) - 0.5) * ${DESW * 0.35};   // the frequencies are INTERPOLATED from world/window.js (WOB_DES1/DES2/OAK/CH), never typed: a hand-copied one drifted to ~1.9x and put the falling snow on a different border from the blanket (see the note there)
       let t = 0.5 + (f32(${DESH}) - abs(pwrapG(x - c))) / ${DESB}.0;   // a BAND on a wrapped distance now, exactly as the JS desertM is
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
@@ -72,12 +72,15 @@
     // culls a flake where this says oak, the rain march culls a drop where it says pine, and both dither on
     // it, so the two weathers cross-fade across the border exactly as the canopies and the ground cover do.
     fn oakWobG(z : f32) -> f32 {                       // = the JS oakWob(z), which is deliberately part-shared with desWob so the two borders stay broadly parallel
-      return ((dVnoise(z * 0.0011 + 27.9, 83.1) - 0.5) * ${DESW}.0
-            + (dVnoise(z * 0.0043 + 11.2, 51.7) - 0.5) * ${DESW * 0.35}) * 0.6
-           + (dVnoise(z * 0.0027 + 143.7, 61.3) - 0.5) * ${OAKW}.0;
+      return ((dVnoise(z * ${WOB_DES1} + 27.9, 83.1) - 0.5) * ${DESW}.0
+            + (dVnoise(z * ${WOB_DES2} + 11.2, 51.7) - 0.5) * ${DESW * 0.35}) * 0.6
+           + (dVnoise(z * ${WOB_OAK} + 143.7, 61.3) - 0.5) * ${OAKW}.0;
     }
-    fn oakMask(x : f32, z : f32) -> f32 {              // 1 = deep oak forest (WEST), 0 = pine forest — the mirror of desertMask
-      let c = f32(${SPWX + OAKC - oakWob(SPWZ)}) + oakWobG(z);   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
+    // the band's CENTRE LINE at this z — its own function because the oakNear gate below has to measure the
+    // camera's distance to the band, and a second copy of this expression is a second thing to keep in step.
+    fn oakCentreG(z : f32) -> f32 { return f32(${SPWX + OAKC - oakWob(SPWZ)}) + oakWobG(z); }   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
+    fn oakMask(x : f32, z : f32) -> f32 {              // 1 = deep oak forest, 0 = pine forest — the mirror of desertMask
+      let c = oakCentreG(z);
       let t = 0.5 + (f32(${OAKH}) - abs(pwrapG(x - c))) / ${OAKB}.0;   // a BAND, like the JS oakM: a half-plane has no west edge for the cycle to close against
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
@@ -91,7 +94,7 @@
     // and the blanket the CPU now lays there appears under a clear sky — the two halves of the weather
     // disagreeing in the one way the desert note above exists to prevent.
     fn chWobG(z : f32) -> f32 {                        // = the JS chWob(z): 0.6 of the OAK meander (which already carries 0.36 of the desert's) plus one independent octave, so all three borders stay broadly parallel
-      return oakWobG(z) * 0.6 + (dVnoise(z * 0.0019 + 211.3, 97.7) - 0.5) * ${CHW}.0;
+      return oakWobG(z) * 0.6 + (dVnoise(z * ${WOB_CH} + 211.3, 97.7) - 0.5) * ${CHW}.0;
     }
     fn cherryMask(x : f32, z : f32) -> f32 {           // 1 = inside the blossom band, 0 = the oak forest either side of it. A DISTANCE from the centre line, not a side of it — that is what makes it a band rather than a half-plane
       let b = f32(${SPWX - CHOFF - chWob(SPWZ)}) + chWobG(z);   // pinned at the spawn's own z exactly as the JS is, or how far spawn sits inside the band is a per-session lottery
@@ -195,7 +198,30 @@
         // The RAW mask, with RAIN_GATE's margin, is the right bound: true across the whole blend and false only
         // well inside the biomes that never cull. The SMOOTH transition belongs on the per-flake test below,
         // which reads the FLAKE's own position — a gate on the camera can only ever be on or off.
-        let oakNear = ${(!OAK_SNOW || RAIN_ON) ? 'oakWeather(ro.x + winOf.x - RAIN_GATE, ro.z + winOf.z) > 0.0' : 'false'};
+        // ── AND IT IS A DISC, NOT A DIRECTION (user 2026-08-21: "its snowing in the pine forest, but is having the
+        // snow fall in the oak forest … the snow just instantly appearing when switching biomes") ── the note above
+        // is right about WHAT this gate must be and the old expression stopped being it, twice over. Both faults
+        // are in the one line, and both were introduced by changes elsewhere that had no reason to look here:
+        //   * "oakMask is monotone in x, so the WEST extreme is the maximum over the disc" was true of a HALF-PLANE.
+        //     oakM became a BAND on 2026-08-18 so the cycle could close, and a band is not monotone in anything:
+        //     sampling one side of the camera says nothing about the other.
+        //   * BAND_MIRROR (2026-08-20) then put the oak forest EAST of the pines. minus-RAIN_GATE samples WEST, so on
+        //     the border the player actually walks the margin now points away from the forest it exists to find.
+        // WHAT THE PLAYER SAW. Standing in the pines, the sample landed in more pine, oakNear went false, and the
+        // per-flake cull below did not run AT ALL — so it snowed across every oak column in view, out to the march's
+        // own 150-voxel reach. Then walking east the gate flipped true at a fixed camera x (~125 voxels PAST the
+        // treeline, inside the oak), and the whole flake field started being culled between one step and the next.
+        // That is both halves of the report: too far out, and then a switch rather than a fade. The BLANKET was
+        // never affected because tick-snow.js asks wSharp per settling column with no camera gate at all, which is
+        // exactly why the ground snow reads as correct and the falling snow does not.
+        // THE FIX IS THE BOUND THE NOTE ALREADY ASKS FOR, stated properly: is the camera within RAIN_GATE of the oak
+        // BAND, measured on the wrapped distance to its centre line. Direction-free, so it cannot care which way
+        // round BAND_MIRROR has the world; wrapped, so it stays true in every period of the cycle; and still one
+        // mask sample, uniform across the workgroup, so the pine forest and the deep desert pay what they always did.
+        // It uses oakM's own reach (OAKH + OAKB/2 — outside that the mask is exactly 0) rather than oakWeather's,
+        // because oakWeather <= oakM everywhere and a bound that is too WIDE only costs a little work, while one
+        // that is too narrow is the bug above.
+        let oakNear = ${(!OAK_SNOW || RAIN_ON) ? 'abs(pwrapG(ro.x + winOf.x - oakCentreG(ro.z + winOf.z))) < f32(' + (OAKH + OAKB * 0.5) + ') + RAIN_GATE' : 'false'};
         {                                                            // near field: DDA over the 3-voxel flake lattice — a flake stays WHOLE from sky to ground.
           // A tile-binned producer pass was tried here (enumerate+bin flakes once, pixels read their tile): the TRACE
           // side dropped to +0.35 ms, but on this driver ANY producer dispatch with atomics OR workgroup barriers costs

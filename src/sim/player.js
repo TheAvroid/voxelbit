@@ -17,6 +17,7 @@
   // voxels deep, so a waist test almost never fired and the bob the user was looking for simply never ran.
   // 5 is knee-deep: it engages in an ordinary lake while still leaving a shallow wade as walking.
   const SWIM_DEEP = 5;
+  const SWIM_STEP = 12;                                // how far a SWIMMER may auto-step, against 5 on land — sized off the measurement in moveAxis: float depth 6 + the steepest bank on a measured lake 4, plus margin
   const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 4.5;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
   const WATER_SPD = 0.344;                             // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
@@ -289,9 +290,31 @@
       if (axis === 0) P.x += dd; else if (axis === 1) P.y += dd; else P.z += dd;
       if (boxFree(P.x, P.y, P.z, hh)) continue;
       const bodyBlk = boxBodyHit;                      // WHAT refused, captured NOW: every boxFree below overwrites the flag
-      if (axis !== 1 && (P.onGround || !boxFree(P.x, P.y - 1.4, P.z, hh))) {   // step-up even during downhill micro-air — no brief catches
+      // ── …AND WHILE SWIMMING (user 2026-08-21: "the player has a hard time getting out of the water onto
+      // land") ── the two conditions above are both about having the GROUND under you: standing on it, or being
+      // a moment of micro-air away from it downhill. A swimmer has neither — P.onGround is false and there is
+      // open water for 1.4 below — so the step-up never fired in water at all, and swimming into a bank stopped
+      // you dead against it however low the bank was.
+      // NOR COULD YOU RISE OVER IT. The Space spring targets the EYE at WL + 1 + SWIM_RISE, which on a 20-voxel
+      // body still puts the FEET under the waterline: holding Space floats you AT the surface, it does not lift
+      // you above the bank. So the only way out was to hunt along the shore for somewhere shallow enough that
+      // `swimming` went false and P.onGround came back — which is the difficulty being reported.
+      // SAME 5-VOXEL LIMIT AS ON LAND, deliberately: hauling out is the same move as stepping up a kerb. A sheer
+      // face still refuses it, because the step needs a FREE box at that height to land in — this cannot climb a
+      // cliff out of the sea any more than it can on dry ground.
+      if (axis !== 1 && (P.onGround || P.swim || !boxFree(P.x, P.y - 1.4, P.z, hh))) {   // step-up even during downhill micro-air — no brief catches
         let stepped = false;
-        for (let up = 1; up <= 5; up++) if (boxFree(P.x, P.y + up, P.z, hh)) { P.y += up; stepped = true; break; }   // auto-step up to 5 voxels / 50 cm (user; was 3)
+        // ── AND A SWIMMER GETS A TALLER ONE, BECAUSE IT HAS FURTHER TO REACH ── MEASURED on a lake: the body
+        // floats with its FEET 6 voxels under the waterline (identical holding Space or not — SWIM_RISE targets
+        // the EYE at WL + 12, which on a 20-voxel body is feet at WL - 6), while the banks around that same lake
+        // stand 1 to 4 voxels PROUD of the water, median 1. So hauling out is a climb of 6 + 1 = 7 voxels at the
+        // median and 10 at the steepest bank there — against a step limit of 5. The swimmer could not step out
+        // anywhere. That is the whole of "a hard time getting out of the water onto land": not a blocked move,
+        // an out-of-reach one, and it is why holding Space does not help either.
+        // 12 covers the worst bank measured with margin and is still not a climbing tool: the step needs a FREE
+        // box at that height to land in, so a sheer cliff out of deep water refuses it exactly as it does on land.
+        const upMax = P.swim ? SWIM_STEP : 5;
+        for (let up = 1; up <= upMax; up++) if (boxFree(P.x, P.y + up, P.z, hh)) { P.y += up; stepped = true; break; }   // auto-step up to 5 voxels / 50 cm (user; was 3)
         if (stepped) continue;
       }
       // ── A CREATURE'S BOX IS NOT THE VOXEL GRID (2026-08-10) ── the clamps below resolve against
@@ -329,7 +352,7 @@
     maybeRecenter();
     P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
-    P.fallT = 0; uwT = 0;                               // fresh lungs on respawn
+    P.fallT = 0; P.fallPk = undefined; P.noFall = 1; uwT = 0;   // fresh lungs on respawn — and a clean fall ledger, for the reason cmdGoTo clears the same pair: P.fallPk is a world y left over from wherever you died, and the lift loop above can leave you over the ground
     vitReset();                                         // …and a full bar of hearts and hunger
     smoothEye = P.y + EYE;
   }

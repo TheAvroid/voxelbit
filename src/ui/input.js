@@ -74,18 +74,11 @@
   // take the pointer away mid-game. The listener is gone; setLightMode and lightMode stay wired (the esc-menu
   // suppression and cursSync still read them, harmlessly false forever), so restoring the key is re-adding
   // this one listener.
-  // ── 1 STARTS THE MUSIC (user 2026-08-20) ── the soundtrack's opening cut is now something the player asks
-  // for rather than something that arrives on a timer. Only the first press counts (anthemArmed is a latch in
-  // ui/audio.js) and the 3 s gap to the first track is ANTHEM_AT, so this listener does one thing: start the
-  // clock, from zero, at the press.
-  // Gated like every other gameplay key: not while the console or a text field has the keyboard, not in the
-  // editor, and not while the video panel is up — otherwise typing a "1" anywhere would fire the soundtrack.
-  document.addEventListener('keydown', (e) => {
-    if (e.code !== 'Digit1' || e.repeat || anthemArmed) return;
-    if (ED.on || CMD.open || dead || !vePanel.classList.contains('hidden')) return;
-    if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
-    anthemArmed = true; playSecs = 0;                  // …from zero, so the 3 s is measured from the press and not from whatever the clock had reached
-  });
+  // ── 1 NO LONGER DOES ANYTHING (user 2026-08-21: "remove the 1 keybind") ── it armed the soundtrack from
+  // 2026-08-20 to 2026-08-21, and for part of that day the RECORDER armed it instead. Both triggers are gone:
+  // the soundtrack runs on its own clock again (ANTHEM_AT, ui/audio.js), R is the recorder and nothing else, and
+  // this key does nothing. The listener is DELETED rather than left inert, because a dead keydown handler on
+  // Digit1 is a key nobody can reuse and nothing tells you why.
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (locked) return;                    // clicking the world takes control back and ends light mode…
     // …EXCEPT WHILE THE HELD-ITEM / STACK-COUNT PANEL IS OPEN (user 2026-08-18) ── #pkPanel is pointer-events:none with

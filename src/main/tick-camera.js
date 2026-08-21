@@ -214,8 +214,25 @@
       // move, so it is stable exactly when the held thing is: eating the last apple nulls the slot (reference
       // changes -> swap), a pickup merging into the stack keeps it (no swap, the stack merely grew), and two
       // full stacks of the same fruit are two different objects (swap, which is the report).
+      // ── …BUT A BITE IS NOT A SWAP (user 2026-08-21: "when the player eats, it drops down the food in hand.
+      // it glitches out first thing. dont drop the food in hand. just play the eating animation") ── the note
+      // four lines up already predicts this failure in the user's own words — "the swap would fire and drop the
+      // apple out of frame" — and `eatIt` was added to prevent it. It prevents the ITEM half only. The SLOT half
+      // was added later (2026-08-20, two stacks of the same fruit) and walked straight back into it: tryEat
+      // spends the stack in the same call that arms the animation, so eating the LAST of a stack sets
+      // slots[selSlot] = null on the very first frame of the chew, sNow goes object -> null, the swap arms, and
+      // `hy -= 0.62 * swapF * swapF` drops the food out of frame as you bite it. First thing, every time.
+      // THE CHANGE IS STILL CONSUMED — prevHeldIt/prevHeldSlot are updated whether or not the swap arms — so
+      // this cannot merely DEFER the drop to a later frame. Only the arming is skipped.
+      // AND ONLY WHILE THE HAND IS STILL SHOWING THE FOOD. `!heldIt() || heldIt() === eatIt` is the same pair of
+      // states the showId line further down already calls the only two possible during a bite: the stack is
+      // spent (0) or it still has fruit in it (eatIt). Scroll to an axe mid-chew and heldIt() is neither, so
+      // that swap fires exactly as it should. When the strip finally retires, eatIt drops to 0, hNow changes
+      // once more and the empty hand a finished apple leaves behind still swaps — which is the documented
+      // behaviour and is untouched.
       { const hNow = heldIt() || eatIt || 0, sNow = slots[selSlot] || null;
-        if (hNow !== prevHeldIt || sNow !== prevHeldSlot) { prevHeldIt = hNow; prevHeldSlot = sNow; swapT0 = now; } }
+        if (hNow !== prevHeldIt || sNow !== prevHeldSlot) { prevHeldIt = hNow; prevHeldSlot = sNow;
+          if (!(eatF >= 0 && (!heldIt() || heldIt() === eatIt))) swapT0 = now; } }
       const swapR = Math.max(0, 1 - (now - swapT0) / SWAP_MS);
       const swapF = swapR * swapR * (3 - 2 * swapR);   // 1 → 0 across the swap, SMOOTHSTEPPED and not quantised: this is a camera move, not a character animation, and stepping it at 24 fps read as a stutter (user)
       const hcfg = heldCfg(heldIt() || eatIt || 1);    // the shown item's OWN pose (during a grab flight this is the grabbed item's; through a bite it stays the fruit's even once the stack is gone)

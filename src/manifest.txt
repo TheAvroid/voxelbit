@@ -57,6 +57,8 @@ sim/particles.js
 sim/vitals.js
 sim/life/reactions.js
 ui/keybinds.js
+ui/mp4-remux.js
+ui/mp4-mux.js
 ui/video-editor.js
 ui/settings.js
 ui/input.js

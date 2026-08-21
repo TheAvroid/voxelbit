@@ -244,8 +244,22 @@
       let realSun = select(u.sunDir, -u.sunDir, isMoon());            // the ACTUAL sun (u.sunDir carries the up-body; −it is the down-body). Both are continuous across the dusk/dawn swap.
       let realMoon = -realSun;                                         // the moon is the opposite point — so as the sun sets in the west, the moon RISES in the east, both drawn from their OWN elevation
       { let s = dot(rd, realSun); let up = smoothstep(-0.03, 0.06, realSun.y);   // ── SUN disc: only while the sun is above the horizon; it sinks below the map at dusk and rises at dawn (no pop) ──
-        c += SUN_COL * 6.0 * smoothstep(0.999939, 0.999962, s) * up;  // hard-edged disc, halved
-        c += SUN_COL * 0.5 * pow(max(s, 0.0), 2600.0) * up; }         // GLARE — a tight corona hugging the disc
+        // ── 25% SMALLER (user 2026-08-21: "make the sun 25% smaller") ── s is cos(angle from the sun), so the
+        // size lives in these thresholds as an ANGLE and not as a radius: 25% off is cos(0.75 * acos(edge)) for
+        // each of the two, worked out rather than eyeballed. The disc was 1.2657 degrees across and is 0.9493
+        // now (for scale, the real sun is ~0.53, so it is still generous — this brings it nearer, not past).
+        //   outer 0.999939 -> 0.99996569   (0.6329 deg -> 0.4747)
+        //   inner 0.999962 -> 0.99997862   (0.4995 deg -> 0.3746)
+        // BOTH thresholds move, so the soft edge between them scales with the disc instead of staying the width
+        // it was — the sun reads as the same object, smaller, rather than as a smaller core with the old fringe.
+        // AND THE GLARE GOES WITH IT, which is the half that makes the change visible at all. The corona is
+        // pow(s, n) and its angular width goes as 1/sqrt(n), so shrinking it 25% is n / 0.75^2 = 2600 -> 4622.
+        // Left alone it would have kept the old radius and the sun would still have read the same size, just
+        // with a smaller hard core inside an unchanged halo.
+        // BRIGHTNESS IS UNTOUCHED (6.0 and 0.5), and so is every LIGHTING term: the sun that lights the world is
+        // u.sunDir and its irradiance, computed nowhere near here. This is the sun you can SEE, only.
+        c += SUN_COL * 6.0 * smoothstep(0.99996569, 0.99997862, s) * up;  // hard-edged disc, halved
+        c += SUN_COL * 0.5 * pow(max(s, 0.0), 4622.0) * up; }         // GLARE — a tight corona hugging the disc
       // ── THE MOON IS AN OBJECT, NOT A GLOW (user 2026-08-19: "the moon seems to be transparent, make the moon
       // completely solid") ── it used to be an ADDITIVE c += mt * ..., so whatever the sky already held
       // showed straight through it. Worse, the whole star / milky way / nebula / meteor block below runs AFTER
