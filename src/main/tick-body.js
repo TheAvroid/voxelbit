@@ -25,7 +25,7 @@
     // Since the hunger rework (2026-08-17) this only rides the hit KICK down — health itself no longer changes
     // with time in either direction, so there is nothing here a dropped frame could get wrong.
     vitTick(dt);
-    if (locked && !anthemDone) { playSecs += dt; if (playSecs >= anthemNextAt) playAnthem(); }   // ── PLAY CLOCK ── counts only while the player HAS THE CONTROLS: the loading screen, the press-any-button prompt, the esc menu and the death screen are not gameplay, and a backgrounded tab stops rAF outright. Two minutes of PLAYING, not two minutes of the page being open.
+    if (locked && anthemArmed && !anthemDone) { playSecs += dt; if (playSecs >= anthemNextAt) playAnthem(); }   // ── PLAY CLOCK ── counts only while the player HAS THE CONTROLS: the loading screen, the press-any-button prompt, the esc menu and the death screen are not gameplay, and a backgrounded tab stops rAF outright. Two minutes of PLAYING, not two minutes of the page being open.
     fpsEma = fpsEma * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
     FT[ftI] = dt * 1000;                               // frame-time ring (1% lows / spike hunting); FTB is filled at the end of the body
     if (CPROF) { cpLast = performance.now(); tbT0 = cpLast; upN = 0; upB = 0; cpEvt = 0;

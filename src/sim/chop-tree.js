@@ -164,6 +164,51 @@
   // instead of the tree falling at the trunk.
   // ok(v): which of the tree's materials THIS swing may take. Without it the sphere takes whatever tree
   // voxel is nearest, and NEEDLES outnumber bark everywhere in the crown — see the gather loop below.
+  // == DOES THIS CUT DROP THE TREE? == everything that happens AFTER a swing has removed wood: the
+  // connectivity flood, the birds in a crown that just came loose, the separation into rigid bodies, and
+  // the hive that was hanging in it. Lifted out of physChopAt (2026-08-20) so the axe's DECOR-style carve
+  // can run the identical settle: the axe now chunks wood through phChopDecor, exactly as the pick chunks
+  // stone, and a carve that cannot fell a tree would have quietly turned felling off.
+  // ONE copy, called from both, so the two paths can never drift on what makes a tree fall.
+  const phTreeSettle = (S) => {
+    let f = phFlood(S);
+    if (f.orphans > PH.fellOrphans && phFlushBirds(S)) f = phFlood(S);   // a whole crown just came loose: the birds in it die with it, then re-test with their grid stamp gone (see phFlushBirds)
+    const bodies = f.orphans > 0 ? phSeparate(S, f) : [];
+    // ── FELLING THE OAK BREAKS THE HIVE HANGING IN IT (user 2026-08-19: "make the bees attack the player if
+    // the player cuts down the tree that the beehive was located on") ── and it posts the SAME record a smashed
+    // hive does, into the same ledger, rather than being a second kind of event. The hive is destroyed either
+    // way — it is not part of the oak's shape (stampModel writes it beside the tree, so phPresent answers 0 for
+    // every one of its voxels and phFlood never sees it), so the moment its branch leaves W it is hanging on
+    // nothing and the support sweep drops it — and everything the ledger already carries is exactly what this
+    // event needs: recruiting at BEE_BREAK_R, the 18 s clock, the leash, HIVE_DONE so it can only happen once.
+    // hiveBroke is idempotent, so this and the 1 Hz watch in main/tick-creatures.js racing to the same hive
+    // still post one record between them.
+    // ── WHAT IS TESTED IS THE HANGER, NOT THE SEPARATION ── `bodies.length` is the wrong question: phSeparate
+    // makes a body out of ANY orphaned component, so a clipped leaf clump would post a break and the swarm
+    // would ambush a player who never touched the hive. The right question is the one the hive's own placement
+    // answers: it hangs from ONE bark voxel, face-adjacent to its top-centre course (world/terrain.js resolves
+    // the anchor at hy + HIVEV.sz, directly over the stamp column). If that voxel is still bark the hive is
+    // still hanging; if this cut took it — into the felled trunk, into a severed limb, or out as chips — the
+    // hive is coming down and the swarm is owed its answer. One W read on the 3% of oaks that carry a hive.
+    // ── AND THE RECORD GOES AT THE HIVE, NOT AT THE NOTCH ── BEE_RAGE_LEASH measures wreck-to-PLAYER and is
+    // the escape, and a feller is standing at the BASE of the tree: anchoring there would put the wreck under
+    // the player's own feet and hand the swarm a leash centred on wherever the axe was. hiveBroke posts at
+    // h.wx/wy/wz, so a felled hive and a smashed one give the player the identical 220 to run.
+    // The course is read over the hive's own 3x3 footprint rather than at the single anchor voxel: a limb is
+    // several voxels wide, and testing one cell makes the whole hook hostage to that cell being bark at boot
+    // (stampOak stamps in MODE 1 and refuses a cell terrain already holds, so a blocked anchor would read
+    // "not hanging" on an untouched world and ambush the first swing at the tree). Nine reads, and it goes
+    // false only when the limb over the hive is gone entirely — which is what felling the tree does.
+    if (S.oak && S.tr && S.tr.hv) { const hvF = S.tr.hv, hay = hvF.by + hvF.sz;   // the branch course: the hive's top voxel sits one below it (world/terrain.js resolves the anchor at hy + HIVEV.sz)
+      if (hay >= 1 && hay < WY) { let hang = 0;
+        for (let dz = -1; dz <= 1 && !hang; dz++) for (let dx = -1; dx <= 1; dx++) {
+          if (woodTab[W[gwrap(hvF.bx + dx, WX) + hay * WX + gwrap(hvF.bz + dz, WZ) * WX * WY]]) { hang = 1; break; } }
+        if (!hang) hiveBroke(hvF); }
+    }
+    PH.stats.lastFlood = { total: f.total, reached: f.reached, orphans: f.orphans,
+      detached: bodies.length, n: (PH.stats.lastFlood ? PH.stats.lastFlood.n + 1 : 1) };
+    return { f, bodies };                             // the caller wants both: the flood's counts and the bodies the separation actually made
+  };
   const physChopAt = (wx, wy, wz, rad, S0, minBite, bite, ok) => {
     const S = S0 || treeShapeAt(Math.round(wx), Math.round(wz));
     if (!S) return { hit: false, why: 'no tree here' };   // …'pine' until 2026-08-17: treeShapeAt answers for oaks now too
@@ -226,42 +271,7 @@
     spawnChopSparks(wx, wy, wz);                      // the bite landed — 4 embers at the impact (user)
     PH.stats.chops++; PH.stats.voxRemoved += removed;
     phSpawnChunk(S, chipCells);                       // the bite the axe took + the shaken leaves fly off as real bodies
-    let f = phFlood(S);
-    if (f.orphans > PH.fellOrphans && phFlushBirds(S)) f = phFlood(S);   // a whole crown just came loose: the birds in it die with it, then re-test with their grid stamp gone (see phFlushBirds)
-    const bodies = f.orphans > 0 ? phSeparate(S, f) : [];
-    // ── FELLING THE OAK BREAKS THE HIVE HANGING IN IT (user 2026-08-19: "make the bees attack the player if
-    // the player cuts down the tree that the beehive was located on") ── and it posts the SAME record a smashed
-    // hive does, into the same ledger, rather than being a second kind of event. The hive is destroyed either
-    // way — it is not part of the oak's shape (stampModel writes it beside the tree, so phPresent answers 0 for
-    // every one of its voxels and phFlood never sees it), so the moment its branch leaves W it is hanging on
-    // nothing and the support sweep drops it — and everything the ledger already carries is exactly what this
-    // event needs: recruiting at BEE_BREAK_R, the 18 s clock, the leash, HIVE_DONE so it can only happen once.
-    // hiveBroke is idempotent, so this and the 1 Hz watch in main/tick-creatures.js racing to the same hive
-    // still post one record between them.
-    // ── WHAT IS TESTED IS THE HANGER, NOT THE SEPARATION ── `bodies.length` is the wrong question: phSeparate
-    // makes a body out of ANY orphaned component, so a clipped leaf clump would post a break and the swarm
-    // would ambush a player who never touched the hive. The right question is the one the hive's own placement
-    // answers: it hangs from ONE bark voxel, face-adjacent to its top-centre course (world/terrain.js resolves
-    // the anchor at hy + HIVEV.sz, directly over the stamp column). If that voxel is still bark the hive is
-    // still hanging; if this cut took it — into the felled trunk, into a severed limb, or out as chips — the
-    // hive is coming down and the swarm is owed its answer. One W read on the 3% of oaks that carry a hive.
-    // ── AND THE RECORD GOES AT THE HIVE, NOT AT THE NOTCH ── BEE_RAGE_LEASH measures wreck-to-PLAYER and is
-    // the escape, and a feller is standing at the BASE of the tree: anchoring there would put the wreck under
-    // the player's own feet and hand the swarm a leash centred on wherever the axe was. hiveBroke posts at
-    // h.wx/wy/wz, so a felled hive and a smashed one give the player the identical 220 to run.
-    // The course is read over the hive's own 3x3 footprint rather than at the single anchor voxel: a limb is
-    // several voxels wide, and testing one cell makes the whole hook hostage to that cell being bark at boot
-    // (stampOak stamps in MODE 1 and refuses a cell terrain already holds, so a blocked anchor would read
-    // "not hanging" on an untouched world and ambush the first swing at the tree). Nine reads, and it goes
-    // false only when the limb over the hive is gone entirely — which is what felling the tree does.
-    if (S.oak && S.tr && S.tr.hv) { const hvF = S.tr.hv, hay = hvF.by + hvF.sz;   // the branch course: the hive's top voxel sits one below it (world/terrain.js resolves the anchor at hy + HIVEV.sz)
-      if (hay >= 1 && hay < WY) { let hang = 0;
-        for (let dz = -1; dz <= 1 && !hang; dz++) for (let dx = -1; dx <= 1; dx++) {
-          if (woodTab[W[gwrap(hvF.bx + dx, WX) + hay * WX + gwrap(hvF.bz + dz, WZ) * WX * WY]]) { hang = 1; break; } }
-        if (!hang) hiveBroke(hvF); }
-    }
-    PH.stats.lastFlood = { total: f.total, reached: f.reached, orphans: f.orphans,   // WHAT THE TREE FLOOD DECIDED — the one read that separates "the game thinks it is still attached" (orphans 0) from "it came loose but no body was made" (orphans > 0, detached 0)
-      detached: bodies.length, n: (PH.stats.lastFlood ? PH.stats.lastFlood.n + 1 : 1) };
+    const { f, bodies } = phTreeSettle(S);
     return { hit: true, removed, total: f.total, reached: f.reached, orphans: f.orphans,
              detached: bodies.length, bodyVox: bodies.map((b) => b.n),
              floodMs: PH.stats.lastFloodMs, sepMs: PH.stats.lastSepMs };

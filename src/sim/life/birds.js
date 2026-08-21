@@ -18,7 +18,7 @@
   // added, take this back to 12 and give the traced creatures their slots back some other way, because an
   // uneven split shows up as one species being rarer than the others rather than as anything subtle.
   let birdKills = 0;                                   // songbirds brought down by a shaft — the flock refills itself, so a headcount alone proves nothing
-  const birds = Array.from({ length: BIRD_N }, () => ({ th: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0, mode: 0, swoopT0: 0, swoopA: 0, swO: 0, edge: false, fi: 0, sp: 0 }));   // the rest ride the compacted creature slots. mode: 0 wander / 1 thermal soar / 2 swoop
+  const birds = Array.from({ length: BIRD_N }, () => ({ th: 0, turnBias: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0, mode: 0, swoopT0: 0, swoopA: 0, swO: 0, edge: false, fi: 0, sp: 0 }));   // the rest ride the compacted creature slots. mode: 0 wander / 1 thermal soar / 2 swoop
   const bird = birds[0];                               // the original singleton name, kept for the editor path + the primary hitbox
   const birdStep = (b, bi, tb, dt) => {                // one bird's flight for this frame → its world pose. Identical maths for every bird; only the seed state differs.
         // ── PROCEDURAL POPULATION ── the flyers follow the SAME ring rule as every other creature: a bird that falls
@@ -28,7 +28,18 @@
         // pixel — fine for a worm you walk up to, useless for a bird meant to be seen. Birds ride a TIGHTER ring:
         // they arrive well inside the view and cross it. Nothing pops, because at 400+ voxels and 14 m up a bird is
         // a speck against open sky either way.
-        const bKeep = Math.min(renderDist + 64, 1040), bOut = bKeep * 0.50, bIn = bKeep * 0.24;
+        // ── AND THEY ARRIVE FROM THE FOG, NOT OUT OF CLEAR SKY (user 2026-08-20: "the song birds seem to just
+        // appear out of the sky … do they not have the same render distance as everything else?") ── they did
+        // not, and it was deliberate: this band was 0.24-0.50 of the keep radius against the ground life's
+        // 0.78-0.94, on the reasoning that a bird placed on the horizon is a single pixel and one meant to be
+        // SEEN should arrive well inside the view. The note even claimed nothing pops "because at 400+ voxels
+        // and 14 m up a bird is a speck against open sky". That is the flaw: a speck against OPEN SKY is
+        // exactly where a new one is easiest to catch, because there is nothing else up there to look at.
+        // A bird recycles at bKeep, so 0.24-0.50 also meant it appeared less than halfway out and then had to
+        // cross the whole ring again — the shortest possible time between an appearance and the next one.
+        // Same band as every other creature now: it fades in at the fog line and flies toward you, which is
+        // what "the same render distance as everything else" means.
+        const bKeep = Math.min(renderDist + 64, 1040), bOut = bKeep * 0.94, bIn = bKeep * 0.78;
         if (b.init) { const ddx = b.x - P.x, ddz = b.z - P.z;
           if (ddx * ddx + ddz * ddz > bKeep * bKeep) b.init = false; }   // left the ring → respawn it ahead of you instead
         // ── FORESTS ONLY, NEVER THE DESERT (user 2026-08-17: "the birds should be oak and pine forests only.
@@ -55,6 +66,30 @@
         // oakM 0.2 with no blossom under it at all. A one-directional containment on a moving body is not
         // containment, which is the same lesson BIO_CHLINE records for the walkers.
         const pinkMe = BIRD_PINK >= 0 && b.sp === BIRD_PINK;
+        // ── AND THEY ROOST AT NIGHT (user 2026-08-20: "have the song birds stop flying at night") ── the sun's
+        // own elevation, derived from tday exactly as main/tick-camera.js derives it, so this cannot drift out
+        // of step with the sky: ang -> el -> sin(el) IS the y of the sun vector that lights the world.
+        // TWO THRESHOLDS, not one, and they are the same shape as the desert's BIRD_OUT/BIRD_IN pair above and
+        // for the same reason: a single line at dusk would put a bird one flap either side of it into a spawn/
+        // retire loop along the boundary. They stop being PLACED while the sun is under 0.06 and the ones
+        // already up are retired at 0.02, so the flock thins out through the last of the light and the sky is
+        // empty by dark rather than emptying with a pop.
+        // Retired, not landed: a songbird has no perched pose in this system — the birds that sit in trees are
+        // a separate, grid-stamped population (see the perched-bird stamp) and they are already there all
+        // night. This is the FLYING flock going to roost, which is what an empty night sky means.
+        const sunEl = Math.sin(Math.sin(tday * Math.PI * 2 - Math.PI / 2) * 1.05);
+        // ── THE FLOCK GOES TO ROOST A BIRD AT A TIME (user 2026-08-20: "the song birds in the sky seem to be
+        // dissapeared too") ── the pair of thresholds this replaces did stop the boundary flicker they were
+        // written for, but they still retired all nine birds on the SAME frame, so the sky emptied in one
+        // blink. Measured across dusk: sky 9 -> 0 between two samples. Same shape as the ground's dusk ramp in
+        // main/tick-life.js, and the identical window (+0.10 down to -0.06, ending where moonMode takes the
+        // sky), so the birds land while the meadow is thinning rather than after it: the flock SIZE follows
+        // the light, and a slot beyond it goes home. Monotonic through dusk and dawn, so there is nothing for
+        // a bird on the boundary to oscillate against — which is what the two thresholds were guarding.
+        const roostT = Math.max(0, Math.min(1, (sunEl + 0.06) / 0.16));
+        const roostK = roostT * roostT * (3 - 2 * roostT);
+        const flockUp = Math.round(BIRD_N * roostK);   // how many of the nine still have light to fly in
+        if (b.init && bi >= flockUp) b.init = false;
         if (b.init && (desertM(b.x, b.z) > BIRD_OUT || (pinkMe ? !chOut(b.x, b.z) : chOut(b.x, b.z)))) b.init = false;
         if (!b.init) {                                // placed out past the fog, never in plain view, and staggered so they never read as a formation
           // ── AND IF THERE IS NOWHERE LEGAL, DO NOT PLACE IT AT ALL ── stand deep in the desert and every
@@ -84,7 +119,7 @@
             // slot, because a slot recycles and the player walks: the same slot legitimately carries a robin
             // over the oak wood and a pink bird ten minutes later inside the blossom.
             const inCh = chOut(bx9, bz9);
-            ok = desertM(bx9, bz9) <= BIRD_IN && (!inCh || BIRD_PINK >= 0);   // blossom is legal only when there IS a pink bird to put in it
+            ok = bi < flockUp && desertM(bx9, bz9) <= BIRD_IN && (!inCh || BIRD_PINK >= 0);   // …and nothing takes to the air after dusk (see the roost note above)   // blossom is legal only when there IS a pink bird to put in it
             if (ok) pinkHere = inCh;
           }
           b.off = !ok;
@@ -94,6 +129,7 @@
           b.z = Math.max(rect.zlo + 60, Math.min(rect.zhi - 60, b.z));
           b.g = hmap[gwrap(Math.floor(b.x), WX) + gwrap(Math.floor(b.z), WZ) * WX] || P.y;
           b.th = Math.random() * Math.PI * 2; b.pyPrev = b.g + BIRD_ALT; b.init = true;
+          b.turnBias = (Math.random() - 0.5) * 1.3;   // ±0.65 rad — what stops the whole flock taking the SAME escape heading off the same wall (see the edge block below)
           b.dying = false; b.rag = false; b.ragBody = null; b.ragParts = null; b.ragIt = 0;   // a recycled slot must not inherit the last bird's death: `rag` would keep it from ever being drawn, and a stale ragIt would build the next corpse from the wrong pose
           b.altO = Math.random() * 30; b.tRe = tb + Math.random() * 3;   // staggered whim timers → independent behaviour
           b.flapT0 = tb - Math.random() * 0.5;         // desynced wingbeats
@@ -128,7 +164,26 @@
         // back toward the middle well before the edge. Not a player leash (the bird still never follows you); it just
         // refuses to fly out of the world.
         if (b.x < rect.xlo + 90 || b.x > rect.xhi - 90 || b.z < rect.zlo + 90 || b.z > rect.zhi - 90) {
-          const want = Math.atan2((rect.xlo + rect.xhi) * 0.5 - b.x, (rect.zlo + rect.zhi) * 0.5 - b.z);
+          // ── STEER OFF THE WALL, NOT AT A SHARED POINT (user 2026-08-20: "a very large amount of birds will
+          // fly in one location") ── this used to aim every edge bird at the rect CENTRE, which is a single
+          // world point and therefore a point ATTRACTOR: every bird that touches the boundary flies the same
+          // course to the same spot, and the ones that get there first are still circling it when the next
+          // arrive. That is a flock knot, and it is worse the longer birds spend in the edge band.
+          // WHY IT SHOWS UP WHEN YOU WALK INTO THE PINES and not standing still: the band is measured off the
+          // GENERATED rect, and the rect only tracks you as fast as generation can build it. Pine forest is
+          // the heaviest terrain in the world to generate, so walking into it is exactly when the rect lags
+          // furthest behind the player — the interior shrinks, birds ahead of you fall into the edge band in
+          // numbers, and they all set off for the same coordinate. On a fast machine the rect keeps up (a
+          // harness walk measured a 33-voxel lag and never more than 2 birds in the band at once), which is
+          // why this reproduces on a real session and not in a test.
+          // The fix keeps the purpose — never fly out of the world, where the hmap is stale and the
+          // terrain-follow flies blind — and drops the shared destination: turn away from the wall (or walls)
+          // actually being approached, along the INWARD NORMAL, offset by a per-bird bias so the flock fans
+          // out along the boundary instead of collapsing onto one heading.
+          let ix = 0, iz = 0;
+          if (b.x < rect.xlo + 90) ix = 1; else if (b.x > rect.xhi - 90) ix = -1;
+          if (b.z < rect.zlo + 90) iz = 1; else if (b.z > rect.zhi - 90) iz = -1;
+          const want = Math.atan2(ix, iz) + b.turnBias;   // a corner gives the diagonal, which is still the way out
           let dth = want - b.th;
           while (dth > Math.PI) dth -= 2 * Math.PI; while (dth < -Math.PI) dth += 2 * Math.PI;
           b.omT = Math.max(-1.0, Math.min(1.0, dth * 1.2)); b.mode = 0; b.edge = true;   // the steer-home urge overrides whatever whim it was on

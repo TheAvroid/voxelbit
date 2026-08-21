@@ -22,6 +22,17 @@
       let sf = dot(u.sunDir, u.fwd);
       let dayK = clamp(u.sunDir.y * 3.0, 0.0, 1.0);
       var glow = vec3<f32>(0.0);
+      // ── THE MOON'S RAYS COME FROM ITS HALO, NOT FROM A LOWER THRESHOLD (user 2026-08-20: "the god rays
+      // from the moon look terrible: try again") ── the first attempt dropped this threshold to 0.55 at night
+      // so the moon's bare disc would register. It did, and it looked exactly as bad as the report says: the
+      // disc is ~20 px, so only the handful of the 24 jittered taps that happened to land ON it contributed,
+      // and the half-res buffer turned that into a visible dot LATTICE with hard radial spikes coming off it.
+      // The threshold was never the real problem — the SOURCE was. The sun scatters beautifully here because
+      // it has a broad, smooth halo in the sky for the march to walk through; the moon had none. So the moon
+      // now gets one (see the halo beside the disc in PRE's skyColor) and this stays exactly as it was, tuned
+      // for a bright smooth source, which is what it is now given.
+      let bLo = 0.86;
+      let bHi = 1.00;
       if (sf > 0.05 && dayK > 0.0 && (u32(u.fx) & 1u) != 0u) {
         let sunNDC = vec2<f32>(dot(u.sunDir, u.right) / (sf * u.tanH * u.aspect), dot(u.sunDir, u.up) / (sf * u.tanH));
         let sunPix = vec2<f32>((sunNDC.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - sunNDC.y * 0.5) * u.canvasRes.y);
@@ -36,7 +47,7 @@
             let s4 = textureSampleLevel(src, samp, suv, 0.0);
             let b = max(s4.r, max(s4.g, s4.b));
             let white = min(s4.r, min(s4.g, s4.b)) / max(b, 0.001);   // 1 = white (the sun disc/halo), low = saturated sky
-            glow += s4.rgb * (smoothstep(0.86, 1.0, b) * smoothstep(0.45, 0.8, white) * s4.a * decay);
+            glow += s4.rgb * (smoothstep(bLo, bHi, b) * smoothstep(0.45, 0.8, white) * s4.a * decay);
           }
           else { break; }                                          // exact early-out, unchanged: a straight ray leaving the screen never comes back
           decay *= 0.96;
@@ -70,7 +81,15 @@
       // a flare is made at the lens, not at the subject, and blurring one along with the scene reads as a smudge.
       if (u.dof.x > 0.0) {
         let cocA = textureSampleLevel(dofT, samp, uv, 0.0).a;       // this pixel's own SIGNED circle of confusion, encoded to 0..1
-        let R = abs(cocA * 2.0 - 1.0) * u.dof.y;
+        var R = abs(cocA * 2.0 - 1.0) * u.dof.y;
+        // ── AND IT EASES OFF AT THE FRAME EDGE (user 2026-08-20, bit 7) ── near-field geometry clipped by the
+        // border reads as a SMEAR rather than as a lens: there is no in-focus subject beside it for the eye to
+        // refer the blur to, so it looks like the renderer failed rather than like depth. Blur is scaled down
+        // over the outer quarter of the frame, to a third rather than to zero — killing it outright would put a
+        // hard sharp/soft seam exactly where the eye is most sensitive to one. The CENTRE is untouched, so the
+        // subject you are actually looking at keeps the full effect.
+        { let e = max(abs(uv.x * 2.0 - 1.0), abs(uv.y * 2.0 - 1.0));   // BAKED IN (user 2026-08-20) — it was panel bit 7 for a few hours
+          R *= mix(1.0, 0.33, smoothstep(0.74, 1.0, e)); }
         let isSky = src4.a > 0.5;                                   // ...and whether it is sky at all - read by the tap below
         if (R > 0.8) {
           // ── THE TAP COUNT FOLLOWS THE DISC (user 2026-08-07: "it takes off some fps") ── a flat 32 was
@@ -109,7 +128,12 @@
         // to 65% and thickens the deck to ~75% cover, and god rays kept firing at full strength through it:
         // bright shafts under a heavy overcast, which reads as a bug rather than as weather. u.hurtV.w is
         // the rain scalar (0 outside the oak forest and outside a storm), so fair weather is unchanged.
-        col += glow * (0.055 * dayK) * (1.0 - 0.35 * u.hurtV.w) * select(vec3<f32>(1.0, 0.93, 0.78), vec3<f32>(0.55, 0.65, 1.0) * 1.1, isMoon());   // strong warm sun shafts / cool MOON RAYS — the rays, not the fog
+        // ── AND THE GAIN RISES A LITTLE WITH THE NIGHT ── the moon's halo is a fainter, smaller source than
+        // the sun's, so the same 0.055 under-reads. 1.8x at full night rather than the 4x the first attempt
+        // used: with a smooth halo to scatter from, the march no longer needs to be shouted at, and 4x was
+        // most of what made the spikes read as spikes. Eased on nightK so it cannot step at the dusk and dawn
+        // moon swaps, which is the standing rule for anything keyed to night in this engine.
+        col += glow * (mix(0.055, 0.10, nightK()) * dayK) * (1.0 - 0.35 * u.hurtV.w) * select(vec3<f32>(1.0, 0.93, 0.78), vec3<f32>(0.55, 0.65, 1.0) * 1.1, isMoon());   // strong warm sun shafts / cool MOON RAYS — the rays, not the fog
         // ── LENS FLARE: ghosts along the sun→centre axis + streak + bloom, gated by on-screen sun visibility
         // ── GHOST FOOTPRINT FIRST ── sv is a FRAME CONSTANT (a fixed 3×3 tap around the sun pixel), yet it was
         // computed on EVERY pixel of the canvas: nine texture fetches per pixel to decide a value that is the same

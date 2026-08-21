@@ -217,6 +217,15 @@
     // knife looked broken before). ~2r^2 is a fair count of solid cells a half-filled sphere of radius r
     // can offer, so the requirement can never exceed what is reachable.
     const cap = Math.max(2, Math.floor(2.0 * C_RAD * C_RAD));
+    // ── THE WOOD MINIMUM STAYS (tried and REVERTED, user 2026-08-20) ── it was briefly dropped to 2, the
+    // floor phChopDecor is handed on every other material, so that wood would "have the same chunk mechanics
+    // as the pick and shovel". It does not, and the user reverted it to this — ea97b7f's version — the same
+    // day: the pick and the shovel chew into a solid mass, where an axe is supposed to cut a NOTCH, and taking
+    // the first two voxels the ray meets makes every swing after the first shave the near fringe of the hole
+    // it just made instead of biting deep. That is verbatim what CHOP_LAST's own comment records happening at
+    // a floor of 4, and it is what the chunk coming off the tree looked wrong for.
+    // So the axe still marches until it finds somewhere that can give a FULL piece, and CHOP_LAST's 15 is the
+    // fallback for a trunk too notched to offer one. Do not re-propose the decor floor here.
     const C_MIN = Math.max(2, Math.min(Math.round(CHOP_MINBITE * kS), cap));
     const C_LAST = Math.max(2, Math.min(Math.round(CHOP_LAST * kS), cap));
     // ── THE HIVE'S OWN SPHERE AND BITE ── exactly what the decor branch below already hands a hive voxel
@@ -247,7 +256,20 @@
     // first meets foliage, keep walking a short way. If WOOD is close behind it, the crosshair was on the
     // trunk and the leaf was only in the way — hand the swing to the wood path. The leaf wins only when
     // nothing solid is hiding behind it, which is exactly when the player really is pointing at foliage.
-    const LEAF_SEE_THROUGH = 6;                        // voxels of needles a trunk can hide behind — a pine crown is a few voxels of needle around the bole
+    // ── AND AN OAK CROWN IS NOT A PINE CROWN (user 2026-08-20: "im hitting the wood but its hitting the
+    // foilage behind it") ── 6 was measured off a PINE, whose trunk stands inside a few voxels of needle, and
+    // it is the whole reason the rule works there. An oak's bole sits in the MIDDLE of a broad canopy: sighted
+    // from outside the crown at branch height the ray crosses 17 to 29 voxels of leaf before it reaches bark
+    // (measured on an 86k oak at ten heights: 8, 9, 12, 17, 22, 24, 25, 27, 29, 29). Every one of those is
+    // past 6, so the wood behind was never accepted, aimId stayed the LEAF, aimWood went false — and with the
+    // aim on a leaf `okMat` falls to its permissive arm and the swing takes a sphere of FOLIAGE. The crosshair
+    // is on the trunk and the axe eats the canopy, which is exactly the report.
+    // Tool-dependent, because the number means "how far can the thing I am trying to hit hide": an AXE is for
+    // wood, so it looks through a whole oak canopy for it. Everything else keeps the pine number — the knife
+    // included, which is aimed at creatures and has no business reaching through a crown for a trunk.
+    // 24, not unlimited: past a crown's depth it would stop being "the leaf was in the way" and start being
+    // "there is a tree somewhere over there", and a player who really is aiming at leaves must still get them.
+    const LEAF_SEE_THROUGH = (window.__LST !== undefined) ? window.__LST : (axe ? 24 : 6);   // window.__LST overrides it live (same pattern as __UNIBR / __TFREEZE) so the pine number and the axe number can be A/B'd against the SAME tree — the world re-randomises on every reload, so that is the only way to compare them honestly                        // voxels of needles a trunk can hide behind — a pine crown is a few voxels of needle around the bole
     // ── AND THE SAME TEST HAS TO SEE A FELLED TREE (user 2026-08-07) ── it read W and only W, and a tree
     // on the ground is NOT in W: the whole log, needles and bark alike, is one off-grid rigid body. So on a
     // fallen pine this pass found nothing at all, aimId stayed 0, and the march below was left to decide by
@@ -370,7 +392,13 @@
       // should have gone 54 -> 39 -> 24 was MEASURED stalling at 28-31: the two swings the threshold is sized
       // for never lifted 15 hive voxels each. This is the same rule the line above already states — the carve
       // is confined to the material the crosshair is on — applied to the one decor id it did not cover.
-      const okMat = HIVE_TAB[id] ? okHive : (digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v])));
+      // ── AND WOOD IS ITS OWN MATERIAL HERE TOO (user 2026-08-20: "remove all of the chunk mechanics
+      // associated with the axe, and bring them in again matching the stone pick. make it wood instead. no
+      // difference") ── the arm below is the literal mirror of the pick's: the pick confines its sphere to
+      // pickOnlyTab, so the axe confines its sphere to woodTab. Without it a wood id fell through to the
+      // permissive third arm, which admits every other decorTab id in range — and the thing always within ten
+      // voxels of a trunk is its own canopy, so the bite would have been spent on leaves.
+      const okMat = HIVE_TAB[id] ? okHive : (woodTab[id] ? isWood : (digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]))));
       const mS = soi(id);                            // this material's BITE factor (own = full, anything else = half) — unchanged by the SOI doubling
       const mR = soiR(id);                           // …and its REACH, the doubled one on the tool's own material
       // the BITE follows the sphere it came out of — scaled from PH.chopBite, not from C_BITE, which
@@ -382,7 +410,30 @@
       // does nothing at all until it is past BEE_BREAK_F, so a chip is still just a chip. That is the whole of
       // the tool's involvement: it posts a fact about the world to a ledger and returns. It does not know what
       // a bee is, and the swing itself is untouched — same gate, same sphere, same bite, same return value.
-      if (id && decorTab[id] && !woodTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat)) { if (HIVE_TAB[id]) hiveChopped(x, y, z); return 1; }   // …but NOT wood: a standing trunk belongs to the tree path below, which is what fells it   // free gate, the id is already in hand
+      // ── AND LEAVES ARE NOT WHAT THE PLAYER MEANT (user 2026-08-20: "when the axe hits the wood, it should
+      // take chunks of the wood, not leaves") ── this is the cost of routing wood through the decor branch.
+      // That branch fires on the FIRST decor voxel the ray meets, and a crown is decor: aim at a trunk through
+      // the needles and the march stopped on a leaf, so `id` was foliage, okMat fell to the permissive arm and
+      // the swing took a sphere of LEAVES centred on the leaf. The old wood path never had this problem — it
+      // carried `t >= aimTW`, i.e. do not cut before the thing the crosshair is actually on.
+      // The aim pre-pass has already done the hard part: it looks THROUGH up to LEAF_SEE_THROUGH of foliage and
+      // reports the trunk behind it, so aimWood is true and aimT is the distance to the WOOD. All that is
+      // needed is to let the march walk past the leaves in front of it, which is what this does.
+      // Only while the aim means wood. A crosshair genuinely resting on a leaf has aimWood false and the leaf
+      // branch above it still takes the leaf, which is the "a leaf yields to ANYTHING" rule.
+      if (aimWood && id && foliaTab[id] && !woodTab[id] && t < aimTW) { return 0; }   // `return 0` = keep walking. NOT `continue`: this body is a CALLBACK (see the note at the voxRay call above), so a continue here is a syntax error and the whole bundle stops parsing — a game that never boots at all, which is exactly what it did
+      // ══ ONE CARVE FOR EVERY MATERIAL, WOOD INCLUDED ══ this line used to carry `!woodTab[id]`, which is what
+      // sent a standing trunk to the tree path below and gave the axe a chunk rule of its own. It is gone. Wood
+      // now takes the identical branch stone and soil take: the same phChopDecor, the same CHOP_RAD * mR sphere
+      // centred on the marched voxel, the same mBite, the same confined okMat, and the same "take what is
+      // there, refuse only when the sphere is empty". There is no longer an axe chunk mechanic to differ.
+      // THE TREE STILL FALLS. phChopDecor only moves voxels, so the connectivity check that drops a severed
+      // trunk is run straight after it — phTreeSettle (sim/chop-tree.js), the same block physChopAt runs, on
+      // the shape this column belongs to. Latched into the march's own `S` so a swing pays treeShapeAt once.
+      if (id && decorTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true))) && phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat)) {
+        if (HIVE_TAB[id]) hiveChopped(x, y, z);
+        if (woodTab[id]) { if (!S) S = treeShapeAt(x, z); if (S) phTreeSettle(S); }   // …and only wood asks: nothing else can be holding a tree up
+        return 1; }   // free gate, the id is already in hand
       // ── AND A HIVE THE CROSSHAIR HAS ALREADY PUNCHED THROUGH IS STILL A HIVE (user 2026-08-19: "fix the hive
       // stall") ── the branch above fires only when the MARCHED VOXEL is itself a hive voxel, and beehive.vox
       // is a HOLLOW SHELL: 54 voxels wrapped one deep around a 3x3x3 pocket of air. Two swings from a fixed
@@ -429,8 +480,12 @@
         // off-grid body, this path stands aside and the body path above takes the swing. Aim at a STANDING
         // trunk and nothing here changes — which is deliberate: gating on distance instead moved the carve
         // onto the bole and felled a pine in 2 swings instead of ~9, and that is a balance call, not a fix.
-        if (aimWood && t >= aimTW && (physChopAt(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_CUT, S, C_MIN, C_BITE, isWood).hit ||
-                                      physChopAt(x, y, z, C_CUT, S, C_MIN, C_BITE, isWood).hit)) return 1;   // whatever that branch was holding up now drops through supFlush, fed by physChopAt's own gpuPatch
+        // ── THE TREE CARVE IS GONE (user 2026-08-20) ── physChopAt used to cut standing wood here, with its own
+        // sphere centre, its own minimum and its own chunk. That was the axe chunk mechanic, and it is removed:
+        // wood is carved by the decor branch above, which is the pick's. physChopAt itself stays — it is what
+        // __vb.physChopFull drives for tests, and phTreeSettle was lifted out of it — but nothing in a swing
+        // calls it any more. What is left of this block is the AIM: S latches the tree so the branch above can
+        // settle it, and the return below stops a swing that is not this tree's from walking on underground.
         if (aimWood) return 0;   // ── AND ONLY A TREE SWING OWNS THE VOXEL ── this swallowed EVERY marched voxel once S latched, which made the obstruction test below unreachable anywhere inside a pine's footprint: dirt could never stop the swing, so the ray walked on UNDERGROUND firing a radius-10 wood grab from each voxel for the rest of its reach. A swing that does not belong to the tree now falls through to the stump and obstruction tests exactly as it would outside the footprint.
       }
       // ── ORPHANED WOOD ── a STUMP is wood that belongs to no tree: treeShapeAt stops answering for that

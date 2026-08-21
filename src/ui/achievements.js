@@ -3,7 +3,48 @@
   let clashT0 = -1e9, clashSparked = true;
   let vbAch = {};                                      // achievements RESET on refresh (was localStorage vb_ach — user asked for per-session)
   const achSnd = regSnd(new Audio('sound/high_score.mp4'), 0.09);   // achievement jingle — 0.5 → 0.25 (2026-07-16), then 40% off (user 2026-07-20): 0.25 → 0.15, then 40% again (user 2026-08-07): 0.15 → 0.09
-  const dualRocks = () => !dead && !grabAnim && !!(slots[selSlot] && slots[selSlot].it === 2 && slots[selSlot].n >= 2);
+  // ── THE OFF HAND IS OPT-IN, ON E (user 2026-08-20: "by default, items just go into the right hand, but if
+  // the player presses e, then the items split into the left hand as well") ── it used to split ITSELF the
+  // instant the selected stack reached two, which meant the player never chose to be dual-wielding and could
+  // not choose not to be. OFF on every refresh and not persisted, the same rule the coords HUD and the volume
+  // slider follow: this is a pose the player asks for in the moment, not a saved preference.
+  // ══ DUAL WIELD IS OFF (user 2026-08-20: "remove the dual wield mechanics from the game. keep the code.
+  // besides the dual rocks to create the stone knife. with the advancement and everything of course.") ══
+  // Same shape as CRAFT_ON below: one boolean, everything else left standing. DUAL_ON false means shift+E
+  // does nothing and the off hand never fills itself.
+  // THE KNIFE IS THE STATED EXCEPTION and it keeps working end to end — the clash, the sparks, the knife, and
+  // the "sharp edge" achievement. It needs the second rock DRAWN, or two hands meet in the middle of the
+  // screen with one of them empty, so the off hand still shows a rock FOR THE LENGTH OF THE CLASH (see the
+  // clash term beside dualIt in main/tick-camera.js). That is the gesture animating, not a wield.
+  const DUAL_ON = false;
+  let dualOn = false;
+  // …and it is ANY stack, not just rocks. The off-hand renderer already draws an arbitrary id — the craft
+  // pair's other half goes through it — so restricting the split to rock.vox was only ever the old automatic
+  // rule's own shape. Returns the ITEM so both callers below read one answer: 0 = the off hand is empty.
+  const dualHeldIt = () => (DUAL_ON && dualOn && !dead && !grabAnim && slots[selSlot] && (slots[selSlot].n | 0) >= 2) ? slots[selSlot].it : 0;
+  // ── THE KNIFE RECIPE'S OWN PREDICATE ── two rocks in the selected stack, and nothing to do with the split.
+  // dualRocks USED to be dualHeldIt() === 2, which tied the knife to a feature that is now switched off; this
+  // is the same test the clash always meant and it survives DUAL_ON going false.
+  // ══ THE ROCK CLASH IS OFF (user 2026-08-20: "remove the shift + left click mechanic for the rocks") ══ one
+  // boolean, the same shape CRAFT_ON and DUAL_ON use, and every line of the gesture is left standing: the
+  // two-handed drive in tick-camera, the spark burst at impact, the knife it mints and the "sharp edge"
+  // achievement are all still here and simply never start, because nothing can satisfy the predicate below.
+  // WHAT THIS COSTS: the knife had exactly one recipe and this was it, so with the stone-age bench also off
+  // there is now no way to obtain a knife in play. That follows from the request rather than being overlooked —
+  // set CLASH_ON true to give it back, and nothing else needs touching.
+  const CLASH_ON = false;
+  const clashRocks = () => CLASH_ON && !dead && !grabAnim && !!(slots[selSlot] && slots[selSlot].it === 2 && (slots[selSlot].n | 0) >= 2);
+  // ── AND THE ROCK CLASH NOW WAITS FOR THE SPLIT ── it is the one gesture that needs a rock in EACH hand, so
+  // "two rocks in one fist" was never a state it should have fired from; with the split off, the same
+  // shift+click falls through to the stone age bench below instead, which is the gesture that DOES apply.
+  const dualRocks = () => clashRocks();
+  // ── WOULD THE OFF HAND TAKE THIS INCOMING ITEM? ── asked by startGrab (sim/life/stamped.js) to decide which
+  // hand a pickup FLIES to. It must agree with what tick-camera will actually draw there or the item lands in a
+  // hand that is not holding it — the 2026-08-19 report, in the other direction. The answer is now simply "is
+  // the split on, and is this another of what I am already holding", because that is the only thing the off
+  // hand shows on its own account any more (user 2026-08-20: "the dual wield is still happening, even though
+  // the player is not pressing e for dual wield").
+  const offHandWants = (it) => !!(dualOn && !dead && slots[selSlot] && slots[selSlot].it === it);
   const achEl = $('achv'), achNameEl = $('achName'), clashHintEl = $('clashHint');
   let achHideT = 0;
   // 24 slots: 20 as before, plus a 4-slot POLLEN band at the top (user 2026-08-18 — the bees). The tear band's
@@ -12,6 +53,17 @@
   // ducklings and bees cutting each other's effects short, which is the exact bug sim/particles.js records being
   // fixed twice. THREE places know this number: the emit loop in main/tick-emit.js, the drop-slot reserve in
   // main/tick-life.js, and the bands in sim/particles.js — all three moved together.
+  // ── …AND THE RESERVE IS COMPACTED (user 2026-08-20, from their own __vb.lifeWhy(): 512 alive, 55 drawn) ──
+  // This pool used to be reserved WHOLE every frame — all 56 slots held whether a single spark was alive or
+  // not — out of 128 total. After the item drops, the cardinal and the flock that left 55 for every creature
+  // in the world, and the player's own diagnostic came back `drawn: 55` against 512 alive with the verdict
+  // "healthy": nothing was failing to spawn, there was simply nowhere to draw it. Perched songbirds were
+  // unaffected throughout because they are grid-stamped into W and never take a slot at all, which is exactly
+  // what made this look like a creature bug for eight rounds.
+  // sparkSlot maps each spark to a slot ONLY while it is alive, so the world's life gets everything the
+  // particles are not using. Indices into sparks3d stay stable; only the slot each one writes to moves.
+  const sparkSlot = new Int16Array(128);             // spark index → drop slot this frame, or -1 when not alive
+  let lifeSlotBase = 9;                              // first NON-particle slot: where the flock + creatures start
   const sparks3d = [null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null,
@@ -100,6 +152,19 @@
   //                    tool actually added — so the object you watched land is the object you now hold
   // `lit` is a latch rather than a time test because tick-camera has to spawn the sparks EXACTLY once, which
   // is the same reason the clash carries clashSparked beside clashT0.
+  // ══ THE STONE AGE BENCH IS OFF (user 2026-08-20: "remove the crafting mechanic from the game. keep the
+  // code, just remove it from play, we will work on it another day") ══ ONE switch, and it is read by
+  // craftOpen alone. Everything else — the menu, the costs, the two-handed gesture, the preview and its glide,
+  // the unaffordable red, the E/Enter/Escape bindings, the swing guards that keep the bench modal — is left
+  // exactly as it is and simply never runs, because none of it can start without a bench that opened. That is
+  // deliberate: a feature switched off at its single entry point comes back by flipping one boolean, where a
+  // feature deleted from six files comes back as an archaeology exercise.
+  // TURNING IT BACK ON: set CRAFT_ON to true. Nothing else needs touching.
+  // WHAT THE PLAYER LOSES MEANWHILE: shift+click with a rock and a stick now falls through to the ordinary
+  // swing, and the axe/pick/shovel/hoe/spear have no other source — the 2026-08-19 note at craftMenu records
+  // that the knife, hoe and spear were taken OUT of the starting rotation precisely because this bench was
+  // where they came from. The rock CLASH still makes a knife: that is its own recipe and always was.
+  const CRAFT_ON = false;
   const CRAFT_IMPACT = 260, CRAFT_FLY = 300;         // ms: hands meeting, and the chosen tool's glide to the hand
   const CRAFT = { open: false, idx: 0, t0: 0, lit: false, fly: 0 };
   const craftK = (now) => {                          // 0..1, how far the two hands have closed on centre
@@ -108,8 +173,10 @@
     return k <= 0 ? 0 : (k >= 1 ? 1 : k * k);        // accelerating in, like the clash's own drive
   };
   const craftOpen = () => {
+    if (!CRAFT_ON) return false;                     // ── the whole feature's OFF switch (see CRAFT_ON above) ── refusing to open is enough: CRAFT.open stays false forever, so every gesture, guard and draw downstream of it is dead by construction rather than by a second flag each
     if (CRAFT.open || !craftPair()) return false;
     CRAFT.open = true; CRAFT.idx = 0; CRAFT.t0 = performance.now(); CRAFT.lit = false; CRAFT.fly = 0;
+    pendKillT = 0;   // ── AND THE SWING IN FLIGHT IS CANCELLED ── the hit registers 250 ms after the click, not at it, so a shift+click landing inside another swing's window left a chop armed to fire while the preview was already hovering on the crosshair. The two guards on the ARM (reactions.js, tick-camera.js) cannot see one that was armed before the bench existed
     return true;
   };
   const craftClose = () => { CRAFT.open = false; CRAFT.lit = false; CRAFT.fly = 0; };
@@ -138,6 +205,13 @@
     if (!craftAfford(it)) { craftClose(); return; }    // re-checked at the LANDING, not just at Enter: the glide is 300 ms and a stack can be dropped or thrown in that time
     craftTake(CRAFT_A, c.rock); craftTake(CRAFT_B, c.stick); slotTidy();
     const k = addItem(it); if (k >= 0) selSlot = k;     // …and it lands IN THE RIGHT HAND, selected, exactly as a crafted knife does
+    // ── AND IT DOES NOT "SWAP" IN (user 2026-08-20: the glide "is very buggy") ── the view-model's tool-swap
+    // animation fires on any change of held item: the tool drops 0.62 out of frame and rises back in over
+    // SWAP_MS. That is right for scrolling the hotbar and wrong here — the object the player just watched fly
+    // into the fist was immediately yanked back out of it and lifted in again, which is most of what read as
+    // broken. Consuming the change here (prevHeldIt already up to date, swapT0 long past) means the tick's
+    // swap test finds nothing new next frame, so the tool simply stays where the flight put it.
+    prevHeldIt = heldIt() || 0; prevHeldSlot = slots[selSlot] || null; swapT0 = -1e9;   // BOTH halves of the swap key, or the slot half fires the animation this line exists to suppress
     craftClose();
     unlockAch('stoneAge', 'stone age');
   };

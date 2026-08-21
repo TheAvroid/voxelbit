@@ -1,7 +1,7 @@
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
-      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { tday = t; resetHist = 1; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
+      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { if (t === undefined) return tday; tday = t; resetHist = 1; return tday; },   // GETTER when called bare: it used to assign `undefined` and NaN the clock, and tday feeds NIGHT_K -> every life count -> NaN, i.e. one stray `__vb.tod()` silently emptied the world give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
     palLen() { return { len: palette.length, over: palette.length > 256 }; },
     palMints(lo) { return palMintLog.filter((m) => m[0] >= (lo || 0)); },
     palTrace() { const out = []; for (let i = 0; i < palTrace.length; i++) out.push({ stage: palTrace[i][0], len: palTrace[i][1], spent: (i ? palTrace[i][1] - palTrace[i - 1][1] : palTrace[i][1]) }); return out; },   // slots each load stage cost
@@ -58,6 +58,78 @@
     uniInfo() { return { on: LIFE_UNI, visW: VIS_W, sec: UF[1530], blue: BLUEB_ITEM0, robin: ROBIN_ITEM0, birdsDrawn: uniBirdN, birdsWant: uniBirdWant, cursor: UF[1103] }; },
     itemInfo() { return { n: itemsRef ? itemsRef.length : 0, cells: itemMapF32.length >> 2, card: CARD_ITEM0, bunny: BUNNY_ITEM0, arm: ARMADILLO_ITEM0, armN: ARMADILLO_NFRAMES, skunk: SKUNK_ITEM0, skunkN: SKUNK_NFRAMES, porc: PORCUPINE_ITEM0, porcN: PORCUPINE_NFRAMES, worm: WORM_ITEM0 }; },   // item-table census for the unification tests
    // the 8-bit palette ceiling — breaching it corrupts voxel SOLIDITY, not just colour
+    // ── THE VIEW-MODEL'S PUBLISHED POSE ── the right hand's anchor/axes/item (pickA/pickX at 48/52) beside the
+    // craft preview's own (UF_PICK3). Both live in tick-camera's closure and both are written every frame, so
+    // a test of the craft glide — does the flying tool actually ARRIVE where the hand will draw it? — has no
+    // other way to compare the two. `red` is the unaffordable lane (pick3Y.w).
+    viewPose() { return {
+      hand:  { p: [+UF[48].toFixed(4), +UF[49].toFixed(4), +UF[50].toFixed(4)], s: +UF[51].toFixed(4), ax: [+UF[52].toFixed(4), +UF[53].toFixed(4), +UF[54].toFixed(4)], it: UF[55] | 0 },
+      off:   { p: [+UF[1092].toFixed(4), +UF[1093].toFixed(4), +UF[1094].toFixed(4)], s: +UF[1095].toFixed(4), it: UF[1099] | 0 },
+      craft: { p: [+UF[UF_PICK3].toFixed(4), +UF[UF_PICK3 + 1].toFixed(4), +UF[UF_PICK3 + 2].toFixed(4)], s: +UF[UF_PICK3 + 3].toFixed(4), ax: [+UF[UF_PICK3 + 4].toFixed(4), +UF[UF_PICK3 + 5].toFixed(4), +UF[UF_PICK3 + 6].toFixed(4)], it: UF[UF_PICK3 + 7] | 0, red: UF[UF_PICK3 + 11] } }; },
+    dualSplit(v) { if (v !== undefined) dualOn = !!v; return { on: dualOn, it: dualHeldIt() }; },   // drive/read the E split headlessly
+    // ── PICKUP TABLE (user 2026-08-20: "audit all objects in the terrain. make sure everything can be picked
+    // up accurately") ── the STATIC half of the audit; pickAudit(x,y,z) further down is the per-voxel half that
+    // says whether a pickup leaves part of an object standing. Every DECORATION MODEL the world stamps, listed with the palette ids it actually
+    // wears and which right-click set claims them. Built from the models rather than from a hand-written list,
+    // so a decoration added later shows up here as unclaimed instead of being silently forgotten.
+    //   claimed  — ids the pick ray will trigger on
+    //   passthru — ids the ray sees straight through (grass/fern/water): never a trigger, and fine for a
+    //              stem or a blade, wrong for a whole object
+    //   blind    — ids that are neither: the ray STOPS on them and then nothing matches, so the right-click
+    //              is swallowed. This is the column that says "cannot pick this up".
+    //   maxVox   — the biggest single model in the group, against the flood CAP the pickup uses: a cap below
+    //              this leaves part of the object standing.
+    pickTable() {
+      const idsOf = (ms) => { const o = new Set(); for (const m of (ms || [])) if (m && m.vox) for (const q of m.vox) o.add(q >>> 24); return [...o]; };
+      const sizeOf = (ms) => (ms || []).reduce((a, m) => Math.max(a, m && m.vox ? m.vox.length : 0), 0);
+      const one = (m) => (m ? [m] : []);
+      const G = [
+        ['rock.vox (field stone)', one(typeof ROCKV !== 'undefined' && ROCKV), 40],
+        ['rocks26 boulders', typeof ROCK26 !== 'undefined' ? ROCK26 : [], 300],
+        ['desert rocks', typeof DROCK !== 'undefined' ? DROCK : [], 300],
+        ['stick_1/stick_2', typeof STICKV !== 'undefined' ? STICKV : [], 24],
+        ['blossom twig', typeof STICKB !== 'undefined' ? STICKB : [], 24],
+        ['pinecone', one(typeof CONEV !== 'undefined' && CONEV), 24],
+        ['pinecone (large)', one(typeof CONEVL !== 'undefined' && CONEVL), 24],
+        ['flowers', (typeof FLOWERV !== 'undefined' ? FLOWERV : []).concat(typeof FLOWERV_CH !== 'undefined' ? FLOWERV_CH : []), 64],
+        ['mushrooms', typeof MUSHV !== 'undefined' ? MUSHV : [], 64],
+        ['fern2', typeof FERN2V !== 'undefined' ? FERN2V : [], 0],
+        ['lily pad', typeof LILYV !== 'undefined' ? LILYV : [], 0],
+        ['giant lily pad', typeof LILYPAD_GIGV !== 'undefined' ? LILYPAD_GIGV : [], 0],
+        ['fallen log', one(typeof LOGV !== 'undefined' && LOGV), 0],
+        ['cacti', typeof CACTI !== 'undefined' ? CACTI : [], 0],
+        ['desert shrubs', typeof SHRUBV !== 'undefined' ? SHRUBV : [], 0],
+        ['fruit', typeof FRUITV !== 'undefined' ? FRUITV : [], 0],
+        ['beehive', one(typeof HIVEV !== 'undefined' && HIVEV), 0],
+      ];
+      const claim = (i) => (PICK_ROCK.has(i) ? 'rock' : PICK_BOULDER.has(i) ? 'boulder' : PICK_CONE.has(i) ? 'cone'
+        : PICK_STICK.has(i) ? 'stick' : FRUIT_IDS.has(i) ? 'fruit'
+        : (typeof PICK_FLOWER !== 'undefined' && PICK_FLOWER.has(i)) ? 'flower' : null);
+      return G.filter((g) => g[1] && g[1].length).map(([name, ms, cap]) => {
+        const ids = idsOf(ms), cl = {}, pt = [], bl = [];
+        for (const i of ids) { const c = claim(i); if (c) (cl[c] = cl[c] || []).push(i); else if (PASSTHRU.has(i)) pt.push(i); else bl.push(i); }
+        const mx = sizeOf(ms);
+        return { name, models: ms.length, ids: ids.length, claimed: cl, passthru: pt, blind: bl,
+                 maxVox: mx, cap, capShort: cap > 0 && mx > cap };
+      });
+    },
+    // ── THE PUT-DOWN LEDGER ── how many objects the player has placed, and what the PICKUP RAY would make of
+    // whatever the crosshair is on: the first non-passthru voxel it stops at, and whether the ledger claims it.
+    placed() {
+      const cp2 = Math.cos(P.pitch), sp2 = Math.sin(P.pitch);
+      const d = [Math.sin(P.yaw) * cp2, sp2, Math.cos(P.yaw) * cp2];
+      let hitI = -1, hitV = 0, hx = 0, hy = 0, hz = 0;
+      for (let t = 0.6; t < 45; t += 0.3) {
+        const x = Math.floor(P.x + d[0] * t), y = Math.floor(smoothEye + d[1] * t), z = Math.floor(P.z + d[2] * t);
+        if (y < 1 || y >= WY) break;
+        const ii = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+        const v = W[ii]; if (!v || PASSTHRU.has(v)) continue;
+        hitI = ii; hitV = v; hx = x; hy = y; hz = z; break;
+      }
+      const e = hitI >= 0 ? placedAt(hitI) : null;
+      return { n: PLACED.length, hit: hitI >= 0 ? { x: hx, y: hy, z: hz, id: hitV } : null,
+               claimed: !!e, it: e ? e.it : 0, last: PLACED.length ? { it: PLACED[PLACED.length - 1].it, y: PLACED[PLACED.length - 1].y, cells: PLACED[PLACED.length - 1].cells.length } : null };
+    },
     hurtInfo() { return { flash: +UF[UF_HURTB + 3].toFixed(3), world: [UF[UF_HURTB] + winOX, UF[UF_HURTB + 1], UF[UF_HURTB + 2] + winOZ], half: [UF[UF_HURTH], UF[UF_HURTH + 1], UF[UF_HURTH + 2]], dyn: UF[UF_HURTH + 3], slot: HURT.slot }; },   // dyn = the dynamic-life slot the wounded animal is DRAWN in (0 = grid-stamped, matched by bounds instead)   // the knife hit-flash box the tracer is tinting inside right now
     swing(offMs) { swingStart = performance.now() - (offMs || 0); }, drop() { dropHeld(); },
     sel(i) { selSlot = Math.max(0, Math.min(slots.length - 1, i | 0)); },
@@ -286,6 +358,35 @@
     solidAt2(x, y, z) { return solid(x, y, z); },      // what the PLAYER actually collides with (cones exempted) — solidAt reports the raw table
     boxFreeAt(x, y, z) { return boxFree(x, y, z, HEIGHT); },   // can the player's whole box sit here?
     lifeUidAt(s) { return lifeUid[s | 0]; },           // which pool slot is DRAWN in drop slot s (2000+slot), or -1
+    // ── WHY IS THERE NO LIFE RIGHT NOW? (user 2026-08-20, after ~8 rounds of "the life is disappearing") ──
+    // ONE call that answers it, because every mechanism that can empty this world is silent and they all look
+    // identical from the canvas: the picture is perfect and the creatures are simply not there. The four are
+    // DEATH (`dead` retires every band — measured 522 -> 49 in full daylight the instant the player died), the
+    // EDITOR (`ED.on`, same gate, same effect), NIGHT (sun elevation under -0.06; the perched songbirds stay,
+    // which is the tell), and a TICK THROW (the loop is caught in main/tick.js, so a fault leaves a rendered
+    // frame and no error anywhere the player can see). Guessing between them from a screenshot is impossible,
+    // and each has a completely different fix — hence a tap that just says which.
+    lifeWhy() {
+      const t = tday, sun = Math.sin(Math.sin(t * Math.PI * 2 - Math.PI / 2) * 1.05);
+      const nk = Math.max(0, Math.min(1, (sun + 0.06) / 0.16));
+      const lb = this.lifeBands(), bands = {};
+      let alive = 0, want = 0;
+      for (const k in lb.bands) { const b = lb.bands[k], w = lb.want[k === 'duckMom' ? 'duck' : k];
+        alive += b.alive; if (typeof w === 'number') want += w;
+        if (b.alive || w) bands[k] = b.alive + '/' + (w === undefined ? '-' : w); }
+      const errs = this.errLog();
+      const why = [];
+      if (typeof dead !== 'undefined' && dead) why.push('PLAYER IS DEAD — every band is retired until you respawn');
+      if (ED.on) why.push('ASSET EDITOR IS OPEN (ED.on) — the world is frozen and all life retired');
+      if (sun < -0.06) why.push('NIGHT — day species are gone by design; perched songbirds stay');
+      else if (nk < 1) why.push('DUSK/DAWN — populations are ramping (NIGHT_K ' + nk.toFixed(2) + ')');
+      if (errs.length) why.push('TICK ERRORS LOGGED (' + errs.length + ') — see errLog(); a throw aborts the frame before the creatures are emitted');
+      if (!why.length && alive < want * 0.5) why.push('NO KNOWN CAUSE — placement is failing; report this line');
+      return { verdict: why.length ? why : ['healthy'], alive, want,
+        clock: { tday: +t.toFixed(3), sunEl: +sun.toFixed(3), night: sun < -0.06, nightK: +nk.toFixed(2) },
+        player: { dead: typeof dead === 'undefined' ? '?' : !!dead, hp: VIT.hp, hpMax: VIT_HP_MAX, editor: !!ED.on },
+        draw: this.lifeBudget(), bands, errs: errs.slice(0, 2).map((e) => e.msg.slice(0, 160)) };
+    },
     lifeBudget() { return { base: 25, total: DROP_SLOTS, drawn: lifeUid.filter((u) => u >= 2000).length }; },
     // ── THE SLOT LADDER, AS THE GAME ACTUALLY BUILT IT ── every band boundary used to be a hard-coded integer
     // repeated across eleven fragments, and a missed one does not throw: it silently mis-classifies (a bunny
@@ -344,7 +445,7 @@
       // creatures when the true figure was 75 — a fifth of the budget, invented. It is the same failure as the
       // harness printing "(none)" over a game loop that was throwing: an instrument that cannot be wrong about
       // the number it exists to report. Read off the array, like the emit and the drop-slot reserve both do.
-      const first9 = 5 + sparks3d.length;
+      const first9 = lifeSlotBase;   // 0-7 item drops, 8 cardinal, 9.. the particle band, then creatures
       return { slots: { firstCreature: first9, flock: BIRD_N - 1, flockDrawn: BIRD_SLOTS, firstFree: first9 + BIRD_SLOTS, total: DROP_SLOTS, forTraced: DROP_SLOTS - (first9 + BIRD_SLOTS) }, kinds: acc };
     },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
@@ -518,6 +619,20 @@
           ageMs: Math.round(performance.now() - b.born) })) };
     },
     physChop(x, y, z, r) { return physChopAt(x, y, z, r); },
+    // ── THE AXE'S WOOD SWING, BY COORDINATE ── the same two calls sim/tools.js makes for a wood voxel now that
+    // wood goes through the PICK's carve: phChopDecor confined to woodTab, then phTreeSettle on whatever tree
+    // owns the column. Exists because aiming a headless crosshair at a bole is close to impossible — from any
+    // distance where the ray reaches the trunk the crown is dense enough to stop it first, and teleporting
+    // inside the crown gets the player ejected. Returns what the carve took and what the settle decided.
+    woodChop(x, y, z, rad, bite) {
+      const before = PH.stats.voxRemoved | 0;
+      const ok = phChopDecor(x | 0, y | 0, z | 0, rad === undefined ? 10 : rad, bite === undefined ? 30 : bite, (v) => !!woodTab[v]);
+      if (!ok) return { hit: false, took: 0 };
+      const S = treeShapeAt(x | 0, z | 0);
+      const st = S ? phTreeSettle(S) : null;
+      return { hit: true, took: (PH.stats.voxRemoved | 0) - before, tree: !!S,
+               orphans: st ? st.f.orphans : 0, detached: st ? st.bodies.length : 0, bodies: PH.bodies.length };
+    },
     // the full chop signature, so a test can vary ONE parameter at a time — the material filter in particular,
     // which decides whether the flood is asked about a tree that still has all its needles or one it does not.
     physChopFull(x, y, z, rad, minBite, bite, woodOnly) {
@@ -814,7 +929,7 @@
       if (mouse2 && !was) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); eatHold = true; }   // …and ARMS THE EATING HOLD, so a test can hold the button down and watch a stack go bite by bite. The real handler arms it from the pickup outcome; there is no pickup on this path, so a press here is always the eat-or-nothing case.
       else if (!mouse2 && was) { bowRel = performance.now();
         if (BOW_IT && heldIt() === BOW_IT) stopBowStretch();
-        if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); playSwish(); }
+        if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; if (shootArrow()) playSwish(); }   // …and the whoosh only when a shaft actually leaves — shootArrow now spends an arrow and refuses on an empty quiver
         else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) throwSpear(); eatHold = false; }   // …and the SPEAR throw, so a test drives exactly what the mouse does   // …including LOOSING the arrow
       return mouse2; },
     heldShown() { return shownIt; },                  // the item id actually DRAWN in the hand — a bow reports its current draw frame
@@ -1270,7 +1385,7 @@
       const R = Math.min(96, rad === undefined ? 64 : rad), bw = 2 * R + 1;
       const x0 = Math.round(P.x) - R, z0 = Math.round(P.z) - R;
       const at = (x, y, z) => W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
-      const seen = new Set(), out = [];
+      const seen = new Set(), out = []; let attached = 0;
       for (let iz = 0; iz < bw; iz++) for (let ix = 0; ix < bw; ix++) {
         const wx = x0 + ix, wz = z0 + iz;
         let lo = -1;
@@ -1283,12 +1398,27 @@
         for (let y = lo; y < WY - 1; y++) { const v = at(wx, y, wz); if (!(v && woodTab[v])) break; run++; }
         if (run < 10) continue;                        // which is a long unbroken vertical run of wood, not a couple of courses of limb
         if (lo > hmap[gwrap(wx, WX) + gwrap(wz, WZ) * WX] + 24) continue;   // and starts near the ground, not up in the canopy
+        // -- AND IS IT ACTUALLY LOOSE? (2026-08-20) -- everything above is a HEURISTIC for "this looks like a
+        // trunk", and on a big oak it is wrong: a mature oak throws near-vertical limbs that clear the +24
+        // canopy guard by a voxel or two, run ten courses of unbroken wood, and of course have air beneath
+        // them - because they are branches. Audited across 14 boxes of oak forest this reported 22 floating
+        // trunks and the resolver called all 22 of them ANCHORED, class `drape`: not one was loose. A tool
+        // that cries floater at every big oak is worse than no tool, so the geometry test now only nominates
+        // a candidate and the SUPPORT RESOLVER returns the verdict - the same flood supWhy runs, which is what
+        // the game itself uses to decide whether a voxel falls. Anchored columns are counted as `attached`
+        // rather than dropped silently, so the sweep still shows its working.
+        {
+          const ii0 = gwrap(wx, WX) + lo * WX + gwrap(wz, WZ) * WX * WY;
+          SUP.res.clear(); SUP.ancS.clear(); SUP.flS.clear(); SUP.busy.clear(); supColMemo = new Map();
+          const v = supFlood(ii0, true);
+          if (v && v.anchored) { attached++; continue; }
+        }
         const key = ((wx / 12) | 0) + ',' + ((wz / 12) | 0);   // cluster columns of the same trunk together
         if (seen.has(key)) { const e = out.find((q) => q.key === key); if (e) { e.cols++; if (drop > e.drop) e.drop = drop; } continue; }
         seen.add(key); out.push({ key, cols: 1, drop, base: lo, at: [wx, lo, wz] });
       }
       out.sort((a, b) => b.drop - a.drop);
-      return { floating: out.length, worstDrop: out.length ? out[0].drop : 0, top: out.slice(0, 8) };
+      return { floating: out.length, attached, worstDrop: out.length ? out[0].drop : 0, top: out.slice(0, 8) };
     },
     supSeed(x, y, z) { const ii = gwrap(Math.floor(x), WX) + (y | 0) * WX + gwrap(Math.floor(z), WZ) * WX * WY; if (W[ii]) supPush(ii); return !!W[ii]; },   // hand the resolver a specific voxel to adjudicate
     // ── NAMED supWhy, NOT supProbe (2026-08-08) ── this was a SECOND `supProbe` key in the same object

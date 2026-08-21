@@ -63,7 +63,14 @@
       // …and an OAK-ONLY species (DES_OAKONLY, sim/life/slots.js) takes its WHOLE population from this term,
       // because nDesertOf gave it zero. One expression, not a second branch: for the mouse both operands are
       // character for character what they were, so its arithmetic is untouched.
-      const oakN = desSlot && DESERTS[desSp] ? Math.min(DES_PER - nDesertOf(desSp), DES_OAKONLY[DESERTS[desSp].name] ? nOakOf(desSp) : (DES_OAK[DESERTS[desSp].name] | 0)) : 0;
+      // ── THE MOUSE'S OAK HALF NEEDED THE NIGHT GATE TOO (user 2026-08-20) ── nOakOf carries the dusk ramp
+      // for the bee and the grass snake, and its own comment in tick-life.js records exactly why an oak-only
+      // species cannot rely on nDesert going to zero. The desert MOUSE reaches this line by the OTHER arm —
+      // DES_OAK, a plain constant 4 — and that arm was never gated on anything. Measured at dusk: every other
+      // ground creature had thinned to nothing and the desert band still held 4, which is these mice, out
+      // foraging in the dark on their own. Same nightK, so both arms of the same expression now go quiet
+      // together instead of one of them staying up all night.
+      const oakN = desSlot && DESERTS[desSp] ? Math.min(DES_PER - nDesertOf(desSp), DES_OAKONLY[DESERTS[desSp].name] ? nOakOf(desSp) : nightK(DES_OAK[DESERTS[desSp].name] | 0)) : 0;
       const oakSlot = oakN > 0 && desIx >= nDesertOf(desSp) && desIx < nDesertOf(desSp) + oakN;   // the TAIL of the species' band is the oak population — a pure function of the slot number, so there is no per-body state to go stale across a recycle
       // ── AND THE ONE TAG THE FIVE BIOME GATES ALL READ ── see bioHomeOK in sim/nav.js. BIO_ANY is what every
       // creature in the game was before today, and its arithmetic there is the old test unchanged. The two new
@@ -93,7 +100,37 @@
         : (wormSlot ? (wk - WORM_0 < nWorm || (B.init && B.rel))
         : (isBaby ? (!!DUCKB_ITEM0 && (orphan ? B.init : (mom5.init && sib < (mom5.nBab || 0))))   // a duckling exists only while its mother does, up to her brood size — unless she was KILLED, in which case it carries on alone until it is killed too
         : (duckSlot ? (wk - DUCK_0 < nDuck) : (wk < nAct)))))))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles  [three extra ) close the porcSlot + skunkSlot + armSlot branches]
-      if (ED.on || dead || !active || (flamSlot ? !FLAMINGO_ITEM0 : (porcSlot ? !PORCUPINE_WALK.length : (skunkSlot ? !SKUNK_WALK.length : (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck/skunk/porcupine) must clear its stamp
+      // ── A CREATURE THE PLAYER IS FIGHTING IS NOT SURPLUS (user 2026-08-20: "I was hitting an armadillo and it
+      // dissapeared") ── `active` is the population controller's verdict, and it is a COUNT: when the target
+      // drops, whichever slots fall outside it are retired on the spot. Two ordinary things drop it out from
+      // under a fight — nMam goes to 0 the moment moonMode flips, so every land mammal is deleted at moonrise,
+      // and the count also thins as the player walks and the biome fraction under the ring changes. Either way
+      // the animal you are three hits into simply stops existing, with no death, no poof and no meat.
+      // Six seconds of grace from the last landed hit. It is deliberately keyed on being HURT rather than on
+      // distance: a creature the player has committed to is worth a slot whatever the target says, and one
+      // that gets away clean is back to being surplus a few seconds later. It cannot leak a slot — hurtAt is
+      // only ever set by a hit, and reapDeaths retires the animal on the killing blow long before this expires.
+      const fighting = B.hurtAt !== undefined && (now - B.hurtAt) < 6000;
+      // ── …AND NEITHER IS ONE YOU ARE LOOKING AT (user 2026-08-20: "the life is STILL dissapearing" — "a skunk
+      // specifically at that particular moment") ── the grace above only covers a creature being HIT. The
+      // ordinary case is worse and needs no fight at all: `active` is `slot index < target`, so the moment the
+      // target falls the HIGHEST-NUMBERED bodies are retired, and which ones those are has nothing to do with
+      // where they are standing. Measured walking in broad daylight, deep in the oak forest with the night
+      // ramp nowhere near it: nMam stepped 14 -> 12 in a single frame — and nBunny, nArmadillo and nSkunk are
+      // all nMam, so that one step deleted about six animals at once, in the open, with no death and no poof.
+      // The cause is the count itself: it scales on bioFracAt, a 24-point ring sample, so walking flips one
+      // sample across the treeline ~900 vox away and the whole population quantises down a notch.
+      // The target is right; retiring an animal in the player's face to reach it is not. A surplus body is now
+      // spared while it is NEAR, and goes the instant it is beyond SURP_NEAR — at which range a pop is a few
+      // pixels on the horizon and nobody has ever reported one. SURP_GRACE bounds it so this can only ever
+      // DELAY a retirement, never veto it: the night still empties on schedule, a few seconds late at worst,
+      // and the population cannot drift above its target for longer than that. Costs one distance test on a
+      // body the loop was about to discard anyway.
+      const SURP_NEAR2 = 110 * 110, SURP_GRACE = 12000;
+      if (active) B.surpT = undefined; else if (B.init && B.surpT === undefined) B.surpT = now;
+      const spared = !active && B.init && (now - (B.surpT || now)) < SURP_GRACE
+        && ((B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z)) < SURP_NEAR2;
+      if (ED.on || dead || (!active && !fighting && !spared) || (flamSlot ? !FLAMINGO_ITEM0 : (porcSlot ? !PORCUPINE_WALK.length : (skunkSlot ? !SKUNK_WALK.length : (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck/skunk/porcupine) must clear its stamp
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       // ── FLYER COMPOSITION DRIFT ── isDfly is read ONLY at spawn, so the butterfly/dragonfly split freezes into the band
@@ -806,7 +843,15 @@
         // report that mattered. Doubled to 18, exactly as the porcupine's 9 -> 18 and the skunk's 24 -> 48 do,
         // so the three now share one rule rather than the flamingo being the exception nobody wrote down.
         // Eased on the same ramp below, so a hit accelerates it rather than teleporting it to full speed.
-        const spdTgt = skunkSlot ? (B.aflee ? 48 : 24) : (porcSlot || flamSlot ? (B.aflee ? 18 : 9) : 9);   // SKUNK: 24→48 on flee. PORCUPINE: 9→18 — DOUBLE the pace when the player is near (user). ARMADILLO (else): constant 9. All eased via B.aspd below.
+        const spdTgt = skunkSlot ? (B.aflee ? 48 : 24) : (porcSlot ? (B.aflee ? 18 : 9) : (flamSlot ? (B.aflee ? 36 : 9) : 9));
+        // ── AND THE FLAMINGO'S FLEE IS SET AGAINST WHAT IT ACHIEVES, NOT WHAT IT IS ASKED FOR (user 2026-08-20:
+        // "when the flamingo enters 48 fps mode, it doesnt appear to move faster") ── the 18 above was already
+        // double the 9 base and the animation rate is on the SAME flag and the SAME dt*6 ramp, so nothing was out
+        // of step. MEASURED though, a flamingo walks 4.5 vox/s and flees at 9.0: exactly 2x, and exactly HALF of
+        // both targets, because navBrake2 gives up about half the march threading between blossom trunks. A bird
+        // 'fleeing' at 9 is moving at its own quoted walking pace, which is why the 48 fps legs read as frantic
+        // over a body that ambles. 36 is what makes the ACHIEVED flee 18 — twice the 9 it is supposed to walk at.
+        // The porcupine keeps 18: it is not in the blossom, it does not pay that toll, and it already bolts.   // SKUNK: 24→48 on flee. PORCUPINE: 9→18 — DOUBLE the pace when the player is near (user). ARMADILLO (else): constant 9. All eased via B.aspd below.
         B.aspd = (B.aspd === undefined) ? spdTgt : B.aspd + (spdTgt - B.aspd) * Math.min(1, dt * 6);   // ease the pace toward the target (bunny-style ramp) so the speed-up/-down isn't an instant snap
         B.th = cardTh(B.ah);                             // HOISTED from below the advance — nothing between the two positions ever read B.th, so the non-arbiter path is unchanged; the brake needs the heading the marcher is ACTUALLY walking this frame, not last frame's
         if (walkOK(B.ah)) {
@@ -1881,6 +1926,7 @@
       // they would spend the whole duck allowance on babies and the mother would never be the one drawn.
       emitKnd[emitN] = fishSlot ? (LIFE_K_FISH + Math.min(LIFE_FISH_MAX - 1, B.fsp | 0)) : (wormSlot ? LIFE_K_WORM : (isBaby ? LIFE_K_BABY : (duckSlot ? LIFE_K_DUCK
         : (wk < FLY_END ? (B.dfly ? LIFE_K_DFLY : LIFE_K_FLYER) : LIFE_K_OTHER))));   // wk < FLY_END is the flyer band: butterflies by day, fireflies by night, dragonflies at the top of it
+      emitMust[emitN] = (bunnySlot || armSlot || skunkSlot || porcSlot) ? 1 : 0;   // a mammal only reaches the emit by SKIPPING its grid stamp (the branches above `continue` when they stamp), so reaching here means slot-or-nothing — see emitMust in sim/life/slots.js
       emitAnc[emitN * 3] = px3; emitAnc[emitN * 3 + 1] = py3; emitAnc[emitN * 3 + 2] = pz3;
       { const cx8 = emitBuf[o4], cy8 = emitBuf[o4 + 1], cz8 = emitBuf[o4 + 2];   // the camera-space anchor written above
         const r8 = LIFE_FRUST_R + (lifeIsDrawn(wk) ? LIFE_FRUST_HYST : 0);

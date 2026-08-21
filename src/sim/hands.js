@@ -26,9 +26,17 @@
     for (let i = 0; i < slots.length; i++) if (!slots[i]) return true;
     return slots.length < SLOT_MAX;
   };
+  // ── AND THE HOTBAR NEVER SHOWS FEWER THAN FOUR (user 2026-08-20: "there should always be 4 slots btw") ──
+  // the trailing-empty rule below grows the bar one slot at a time, so a player carrying a single axe saw a
+  // two-slot hotbar that widened as they picked things up. SLOT_MIN pads it instead: the bar is a fixed frame
+  // the player can aim the wheel at from the first second, and the trailing-empty rule still governs
+  // everything ABOVE four, so a full bar behaves exactly as it did. Clamped by SLOT_MAX so raising one
+  // without the other cannot overrun the ceiling.
+  const SLOT_MIN = Math.min(4, SLOT_MAX);
   const slotTidy = () => {                             // keep EXACTLY one trailing empty: pickups always have a home, and the wheel never lands on a run of blanks
-    while (slots.length > 1 && !slots[slots.length - 1] && !slots[slots.length - 2]) slots.pop();
+    while (slots.length > SLOT_MIN && !slots[slots.length - 1] && !slots[slots.length - 2]) slots.pop();
     if ((slots.length === 0 || slots[slots.length - 1]) && slots.length < SLOT_MAX) slots.push(null);   // …but never PAST the ceiling: at SLOT_MAX a full hotbar simply has no trailing empty, which is what makes canAdd below say no
+    while (slots.length < SLOT_MIN) slots.push(null);   // …and never FEWER than SLOT_MIN, however little the player is carrying
     if (selSlot >= slots.length) selSlot = Math.max(0, slots.length - 1);
   };
   slotTidy();                                          // start with the trailing empty already in place
@@ -113,5 +121,5 @@
       T, sx, sy: sy2, sz, vx, vy: vy0, vz,   // …the BOW hovers and spins like everything else again (user)
       ex: sx + vx * T, ey: sy2 + vy0 * T + 0.5 * TOSS_G * T * T, ez: sz + vz * T,   // exact arc endpoint — the settle blend starts here
       q0: upFlip ? m2q(Xh, [-Xh[2], 0, Xh[0]], [0, -1, 0]) : m2q(Xh, [Xh[2], 0, -Xh[0]], [0, 1, 0]) });
-    if (drops.length > 4) drops.shift();               // the composite renders up to 4 at once
+    if (drops.length > 8) drops.shift();   // ── 8 ITEM DROPS, NOT 4 (user 2026-08-20: "have the max number of floating hand held items on the field 8 instead of 4") ── drops.shift() DELETES the oldest, so a fifth drop did not just stop being drawn, it stopped existing. The render band moved with it: see the band map at dropCursor in main/tick-life.js
   }

@@ -126,9 +126,18 @@
     // and not a uniform: no slider, no keybind, no per-frame float. FOL_LOBE is the forward-lobe exponent and
     // it matters more than the strength does — it sets how wide an arc around the sun the glow fires over, and
     // dropping it 4 → 2 did more than doubling strength did. ?nofol compiles the whole thing out for an A/B.
-    const FOLBACK : bool = ${location.search.includes('nofol') ? 'false' : 'true'};
+    // ── AND IT IS A SWITCH NOW, NOT A COMPILE FLAG (user 2026-08-20: put it on the L toggle) ── it was a
+    // const driven by ?nofol, which meant judging it needed a reload. Bit 6 of the panel mask, read through
+    // NG, so it flips live. The TRACE gate that shoots a sun ray for leaves reads the same bit, so turning it
+    // off stops paying for those rays as well as stopping the draw — an A/B that measures cost, not just look.
+    const FOLBACK_URL : bool = ${location.search.includes('nofol') ? 'false' : 'true'};   // ?nofol still forces it off for a reload-free-of-panel-state A/B
     const FOL_STR : f32 = 1.2;                                      // 30% of the tuned 4.0
     const FOL_LOBE : f32 = 2.0;
+    // ── HOW FAR THE PER-VOXEL GRAIN REACHES (user 2026-08-20) ── see the note at the albedo branch in TRACE.
+    // 80 is roughly where a voxel drops under a pixel at this field of view and resolution, and 260 is where
+    // even a clump of them does; between the two the jitter eases off rather than ending on a line.
+    const GRAIN_NEAR : f32 = 80.0;
+    const GRAIN_FAR  : f32 = 260.0;
     // 9 body grain (felled chunks), 10 terrain grain, 11 creature grain, 12 sun penumbra,
     // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading, 17 volumetric light,
     // 18 water reflect, 19 water refract, 20 water foam, 21 water ice, 22 water glisten, 23 water waves.
@@ -221,7 +230,7 @@
     // MET_PER, 55% of those chances taken, is a meteor about every 42 seconds of night: roughly ten across one
     // night of the 20-minute cycle. MET_Q is the BLOCK — 0.004 rad is about 0.23 deg, i.e. ~6 px across at 1080p
     // and a 70 deg field, which is a chunky pixel rather than a dot. Raise MET_Q and the streak gets blockier.
-    const MET_PER : f32 = 8.0;   // HALVED RATE (user 2026-08-19: "decrease the rate of shooting stars by 50%") — 4.0 -> 8.0 doubles each slot's window, so with the slot COUNT unchanged at 8 the meteors stay evenly spaced and simply arrive half as often     // window per slot. With 8 slots, a 1.4 s life and 80% of windows taken, roughly 2.2 meteors are alive somewhere in the sky at any moment — about one in five frames has one IN VIEW, because a 72-degree view is a small part of a sphere. That last factor is the whole reason the first attempt (2 slots, 46 s) was invisible: it put one meteor every 42 s ANYWHERE, i.e. perhaps one in view a minute.
+    const MET_PER : f32 = 16.0;  // HALVED AGAIN (user 2026-08-20: "cut the shooting star rate in half in the night sky") — 8.0 -> 16.0, the same lever as the 2026-08-19 halving and for the same reason: doubling each slot's window with the slot COUNT unchanged at 8 keeps them evenly spaced and simply arrives half as often. About one meteor every 2.8 minutes of night somewhere in the sky   // HALVED RATE (user 2026-08-19: "decrease the rate of shooting stars by 50%") — 4.0 -> 8.0 doubles each slot's window, so with the slot COUNT unchanged at 8 the meteors stay evenly spaced and simply arrive half as often     // window per slot. With 8 slots, a 1.4 s life and 80% of windows taken, roughly 2.2 meteors are alive somewhere in the sky at any moment — about one in five frames has one IN VIEW, because a 72-degree view is a small part of a sphere. That last factor is the whole reason the first attempt (2 slots, 46 s) was invisible: it put one meteor every 42 s ANYWHERE, i.e. perhaps one in view a minute.
     const MOON_PIV : f32 = 0.52;   // the photo's own mid-tone: contrast is expanded ABOUT this, not about black
     const MOON_CON : f32 = 1.75;   // …and by this much
     const MOON_MID : f32 = 0.50;   // …landing on THIS output level. Separating the input pivot from the output mid-point is what keeps the gain from simply pushing the face into the ceiling: at PIV 0.46 / CON 2.30 with no offset, 34% of the disc clipped at 255 and the highlands went featureless — brighter, but no more legible than before. See the note at moonRGB
@@ -301,10 +310,25 @@
         {
           let mwd = dot(rd, MW_N);
           let mwp = vec2<f32>(dot(rd, MW_T), dot(rd, MW_B));          // an in-band coordinate to clump on
-          let band = exp(-mwd * mwd * 24.0);                          // about 12 degrees to half strength
+          let band = exp(-mwd * mwd * 18.0);                          // about 14 degrees to half strength — widened from 24 (user 2026-08-20) so the band blends into the dome haze below rather than sitting in a ring of nothing
           let clump = 0.45 + 0.40 * vn2(mwp * 4.7) + 0.30 * vn2(mwp * 12.3);
           let rift = 1.0 - 0.60 * smoothstep(0.30, 0.78, vn2(mwp * 2.9 + vec2<f32>(11.3, 4.7)));   // the dark dust lane that splits the real band down its length
           c += vec3<f32>(0.0205, 0.0216, 0.0300) * band * clump * rift * night * hz;   // the "fog": ~3.4x its original strength (user 2026-08-19: "add more fog")
+          // ── AND A BROAD HAZE OVER THE WHOLE DOME (user 2026-08-20: "add more fog to the night sky, there
+          // only seem to be a couple of areas with the fog") ── the fog up to now WAS the band above, and a
+          // band is by definition a couple of areas: it is exp(-mwd^2 * 18) — about 14 degrees to half
+          // strength along ONE great circle — so most of the sky carried none at all. This is the same haze
+          // colour spread across everything at about a third of the band's peak, so the band stays the
+          // brightest thing up there and the rest of the sky stops being flat black between the stars.
+          // SAMPLED IN THE BAND'S OWN TANGENT FRAME. MW_T/MW_B project a unit direction into the unit disc,
+          // which is seam-free everywhere; an azimuth/elevation parameterisation would draw a hard line down
+          // the sky at +/-pi, which is exactly the kind of cutoff the 2026-08-19 horizon fix removed. The disc
+          // maps the two hemispheres onto each other, so mwd — the signed distance off the band plane — is
+          // folded into both octaves' coordinates to stop the pattern mirroring itself across the band.
+          let hzc = vec2<f32>(dot(rd, MW_T), dot(rd, MW_B));
+          let haze = 0.35 + 0.45 * vn2(hzc * 2.1 + vec2<f32>(mwd * 3.7, -mwd * 2.9))
+                          + 0.30 * vn2(hzc * 5.3 + vec2<f32>(-mwd * 2.1, mwd * 4.3));
+          c += vec3<f32>(0.0205, 0.0216, 0.0300) * 0.33 * haze * night * hz;
         }
         // ── AND IT NO LONGER SEEDS STARS (user 2026-08-19: "the milky way seems to add more stars to the sky,
         // prevent that from happening") ── the threshold used to fall inside the band (0.9985 - 0.0011 * band)
@@ -353,7 +377,15 @@
             let ce = cos(el);
             let A = vec3<f32>(ce * sin(az), sin(el), ce * cos(az));
             let R = normalize(cross(A, vec3<f32>(0.0, 1.0, 0.0)));
-            var D = vec3<f32>(0.0, -1.0, 0.0) + R * (ih3(k0, 37, 53) * 1.6 - 0.8);   // meteors FALL — down, with a lean, and the lean is what stops a dozen of them looking like one animation
+            // ── AND THEY DO NOT ALL FALL STRAIGHT DOWN (user 2026-08-20: "the shooting stars seem to go
+            // downwards most of the time. make it go horizontal more often as well") ── this was
+            // down + R * (+/-0.8), i.e. a unit vertical with a bounded sideways nudge, so the steepest possible
+            // path was still atan(0.8) = 39 degrees off vertical and EVERY meteor read as falling. Choosing the
+            // ANGLE instead of a lateral offset spreads them evenly from near-vertical to near-horizontal:
+            // +/-1.25 rad is +/-72 degrees, so a good half of them now cross the sky rather than drop down it.
+            // cos stays positive over that range, so none of them travels upward — they are still meteors.
+            let lean = (ih3(k0, 37, 53) * 2.0 - 1.0) * 1.25;
+            var D = vec3<f32>(0.0, -cos(lean), 0.0) + R * sin(lean);
             D = normalize(D - A * dot(D, A));                         // re-seated into the plane through A, so the path is a great circle and the rate below is an honest angular speed
             let Bm = cross(A, D);
             let thH = (0.42 + ih3(k0, 59, 67) * 0.34) * tau;          // where the HEAD is now, as an angle from A

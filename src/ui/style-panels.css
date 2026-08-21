@@ -56,10 +56,15 @@
   #kbPanel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; overflow-y: auto; background: rgba(6,8,12,0.72); z-index: 30; }
   /* NO scrim on the held-item editor (user): the whole point is watching the item while you tune it.
      The card sits to the LEFT so the hand, which is on the right, is never behind it. */
-  /* TOP RIGHT (user 2026-08-17) — was left-anchored and vertically centred, which sat the card over the
-     held item you are trying to look at while you drag its sliders. */
-  #pkPanel { position: fixed; inset: 0 0 auto auto; display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-start; padding: 12px 12px 0 0;
-    padding-left: 24px; background: none; pointer-events: none; z-index: 30; }
+  /* TOP LEFT (user 2026-08-20: "put the held item and stack count boxes on the left side instead of the
+     right") — it was top RIGHT from 2026-08-17, moved there because a left-anchored, vertically centred card
+     sat over the held item you are trying to look at while dragging its sliders. Top LEFT keeps that away from
+     the view model, which lives in the bottom right of the frame, so both complaints are satisfied at once.
+     Three properties carry the side and they must all flip together: `inset` anchors the box, `align-items`
+     decides which edge the cards line up on inside it, and the asymmetric padding is the gutter. Flipping only
+     the inset leaves the cards hugging their right edges against the left of the screen. */
+  #pkPanel { position: fixed; inset: 0 auto auto 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; padding: 12px 0 0 12px;
+    padding-right: 24px; background: none; pointer-events: none; z-index: 30; }
   #pkCard, #sbCard { pointer-events: auto; }
   /* ── THE STACK-COUNT CARD SITS UNDER THE ITEM ONE (user 2026-08-17: "underneath the current item
      positioning box") ── the panel was a ROW with one child, so a second card would have landed beside it
@@ -99,7 +104,12 @@
      shared rule above (#ntCard is in that list), so nothing about the frame is restated here. */
   #ntPanel { position: fixed; inset: 0 0 auto auto; display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-start;
     padding: 12px 12px 0 0; padding-left: 24px; background: none; pointer-events: none; z-index: 30; }
-  #ntCard { pointer-events: auto; min-width: 300px; }
+  /* ── A CARD IN THE CORNER, NOT A BANNER (user 2026-08-20: "put it on the top right") ── the panel is
+     anchored top-right and always was, but with no max-width the card grew to fit the hint line on ONE line
+     and reached 1055 px of a 1280 viewport, which lands it across the whole screen rather than in the corner.
+     The cap makes the hint wrap instead, and .ntRow is already a space-between flex so the labels and their
+     buttons close up with it. min-width stays so two short rows cannot collapse it to a sliver. */
+  #ntCard { pointer-events: auto; min-width: 300px; max-width: 430px; }
   .ntRow { display: flex; justify-content: space-between; align-items: center; gap: 26px; padding: 5px 2px; border-bottom: 1px solid #1a212c; }
   .ntRow:last-child { border-bottom: none; }
   .ntRow button { min-width: 62px; background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 4px 14px; color: #dfe6ee; cursor: pointer; font: inherit;

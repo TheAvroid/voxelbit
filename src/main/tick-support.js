@@ -98,7 +98,7 @@
       B.born = now; B.kind = 2; B.dieT = 0; B.glow = false; B.glowT = 0; B.rel = true; B.init = true;
       drops.splice(i, 1);
     }
-    for (let di = 0; di < 4; di++) {                   // dropped items → camera space (voxel units), hovering + spinning (+ launch flight out of the hand)
+    for (let di = 0; di < 8; di++) {                   // dropped items → camera space (voxel units), hovering + spinning (+ launch flight out of the hand)
       const o2 = 68 + di * 16;
       if (grabGhost && di === 0) {                     // ── THE FLIGHT ── a world object in the first drop slot, so the hand is never borrowed (user)
         const g = grabGhost, rx = g.x - cam[0], ry = g.y - cam[1], rz = g.z - cam[2];
@@ -121,13 +121,21 @@
       const rE = rK * rK * (3 - 2 * rK);
       dr.spin = (dr.spin === undefined ? dr.ph : dr.spin) + Math.min(64, now - (dr.spinT || now)) * 0.0012 * (1 - rE);
       dr.spinT = now;
-      const restY = itemHalfH ? (itemHalfH[dr.it - 1] || 4.5) : 4.5;   // bottom on the ground: dr.y is the first AIR voxel of the column
+      const restY = dropRestY(dr.it);                  // bottom on the ground: dr.y is the first AIR voxel of the column   // …and an UPRIGHT drop rests on its length, not its height — see dropRestY in assets/held-items.js
       const a2 = dr.spin, ca2 = Math.cos(a2), sa2 = Math.sin(a2);
       let px3 = dr.x + 0.5, py3 = dr.y + (9.0 + (restY - 9.0) * rE) + Math.sin(now * 0.002 + dr.ph) * 1.3 * (1 - rE), pz3 = dr.z + 0.5;   // anchor 9 up while it hovers: the axe (half-height 4.5) bottoms out >= 3 voxels clear of the ground
       // The BOW's art has its +z on the UNDERSIDE — the held pose (pitch ≈ +90°) turns that face downward,
       // so a drop that maps +z to world up shows it upside down (user). Flip the rest frame for the strip.
       const flipUp = !!(BOW_IT && BOW_NOCK && dr.it >= BOW_IT && dr.it < BOW_NOCK + BOW_FRAMES);
       let Xw = [ca2, 0, sa2], Yw = flipUp ? [-sa2, 0, ca2] : [sa2, 0, -ca2], Zw = flipUp ? [0, -1, 0] : [0, 1, 0];   // RIGHT-handed (Y = Z×X) either way — an improper frame here turns into a bogus quat mid-flight
+      // ── AN ARROW COMES TO REST STANDING, STONE HEAD UP (user 2026-08-20) ── the frame above lays a model's
+      // local z along world up, which is right for an axe or an apple and wrong for a shaft: the arrow runs
+      // tip -> fletching along local +y (see the POINT-FIRST note below), so that frame put its length flat on
+      // the ground. Mapping local -y to world up stands it on its fletching with the stone leading skyward.
+      // X stays the spinning horizontal axis so the settle still turns it, and Z is chosen to keep the frame
+      // RIGHT-handed: Z x X = [sa,0,-ca] x [ca,0,sa] = [0,-1,0] = Y, which is the same Y = Z×X test the line
+      // above is written to satisfy. An improper frame here becomes a bogus quaternion, not a visible mistake.
+      if (dropUpright(dr.it)) { Xw = [ca2, 0, sa2]; Yw = [0, -1, 0]; Zw = [sa2, 0, -ca2]; }
       const tE = (now - dr.born) / 1000;
       const spinQ0 = m2q(Xw, Yw, Zw);
       // ── POINT-FIRST FLIGHT ── an arrow is not a tumbling drop: its nose tracks the VELOCITY the whole
@@ -183,7 +191,7 @@
     }
     if (CPROF) cpMark(4);
     lifeUid.fill(-1); lifeAna.fill(1);                 // ── dynamic-life ledger reset ── slots not claimed this frame stay analytic-only/empty
-    { const bSlot = 4, o2 = dropOff(bSlot);             // ── flying cardinal → drop slot 4 ── off-grid DDA model, free wandering flight (no home; never follows the player). ONE slot number, stitched to its float offset by the one function that knows how: the raw UF writes below want the offset, birdWrite wants the INDEX
+    { const bSlot = 8, o2 = dropOff(bSlot);             // ── flying cardinal → drop slot 8 (was 4, moved when the item-drop band grew to 8) ── off-grid DDA model, free wandering flight (no home; never follows the player). ONE slot number, stitched to its float offset by the one function that knows how: the raw UF writes below want the offset, birdWrite wants the INDEX
       if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is ALWAYS GRID-STAMPED (real world voxels → full lighting), exactly like every other model — NO trace-inject exception (user)
         UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot (no trace-inject in the editor)
         if (ED.frames.length && !ED.paused && ED.bun) {  // ── BEHAVIOR state machine: wander (75% HOP / 25% ROTATE 50-50) at 24 fps; FLEE the player at 48 fps when near. Whole-hop-per-action INTEGER position, baked rotation (ED.spin=0). ──

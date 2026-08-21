@@ -44,12 +44,17 @@
       up = [up[0] * cr - right[0] * sr, up[1] * cr - right[1] * sr, up[2] * cr - right[2] * sr];
       right = r2;
     }
+    giveStartKit();                                    // ── THE STARTING KIT, once ── a no-op after the first frame that finds the tools loaded; see giveStartKit in assets/held-items.js for why it cannot be called from the loader itself
     cmpUpdate();                                       // ── compass ── one transform write per frame
-    // ── DUAL-WIELD ROCK ── the left hand is showing one of the SELECTED stack's rocks. Declared out here, and
+    // ── DUAL-WIELD ── the left hand is showing a second one out of the SELECTED stack. Declared out here, and
     // not inside either block that wants it, because the LEFT HAND block below and the badge count directly
     // above disagreed about it for as long as both existed — and one condition spelled twice is how they got
     // to disagree. Both now read this.
-    const dualRock = !dead && !!slots[selSlot] && slots[selSlot].it === 2 && (slots[selSlot].n | 0) >= 2;
+    // 0 = the off hand shows nothing on its own account; otherwise the ITEM it is showing. The split itself is
+    // OFF (DUAL_ON in ui/achievements.js), so in practice the only thing that fills this is the ROCK CLASH —
+    // and only while the clash is actually running, the same rule the craft pair follows: a gesture shows both
+    // hands because it is happening, never as a standing wield.
+    const dualIt = dualHeldIt() || ((now - clashT0) < 620 && dualRocks() ? 2 : 0);
     { const hs = slots[selSlot];                       // ── HELD-STACK COUNT ── x2..x8 top right, hidden at one (user)
       // ── THE ROCK IN THE LEFT HAND IS NOT IN THE PILE (user 2026-08-18) ── the badge counted the whole stack
       // while dual-wielding, so two rocks read "x2" with both of them visibly in your hands and nothing else to
@@ -58,7 +63,7 @@
       // show x2, and the number always matches the rocks you cannot already see. Only the steady dual-wield
       // subtracts — a left-hand GRAB FLIGHT is an incoming pickup, not one of these rocks, and lgrab below is
       // deliberately not part of this.
-      const nHold = hs && !dead ? Math.max(0, (hs.n | 0) - (dualRock ? 1 : 0)) : 0;
+      const nHold = hs && !dead ? Math.max(0, (hs.n | 0) - (dualIt ? 1 : 0)) : 0;
       stackFull = !!(hs && !dead && stackable(hs.it) && (hs.n | 0) >= STACK_MAX);   // ── FULL STACK ── on the TRUE count, not nHold, and only for something that stacks at all: a tool is a stack of one and must never read as maxed (user 2026-08-19)
       if (nHold !== stackShown) { stackShown = nHold;
         // ── STACKBADGE ── stackShown is the latch; the uniform write itself lives in the per-frame heldCfg line, which would otherwise zero it.
@@ -150,7 +155,7 @@
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
     UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
-    { if (mouse0 && locked && !dead && now - swingStart >= 570) { swingStart = now; pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)
+    { if (mouse0 && locked && !dead && !CRAFT.open && now - swingStart >= 570) { swingStart = now; pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)   // …but never THROUGH the stone age bench (user 2026-08-20): the mousedown guard in reactions.js stops a fresh click, and this stops a button that was already down from re-arming a swing every 570 ms while the player chooses
       if (mouse2 && eatHold && locked) tryEat();                  // ── HOLD RIGHT CLICK TO KEEP EATING (user 2026-08-11) ── the mousedown takes the first bite; from here the held button takes another every EAT_MS until the stack is gone. tryEat itself carries the rest of the rule (dead / editor / mid-pickup / nothing edible in hand / the bite floor), so holding a bow or a rock still just draws or winds up; `eatHold` is the one thing it cannot know — whether this press was a grab or a bite. Same auto-repeat the left button has had.
       reapDeaths(now);                                 // creatures whose red flash has run out now actually die (see tryKillCreature)
       shTick(now);                                     // …and the scroll-up hint appears ten seconds into play, and rides the esc menu (see shTick)
@@ -196,7 +201,21 @@
       // to the axe's, the swap would fire and drop the apple out of frame, and the core would never be seen.
       const eatF = eatAnimFrame(now), eatIt = eatF >= 0 ? eatAnim.it : 0;
       const eatBase = eatF >= 0 ? (eatAnim.base || eatAnim.it) : 0;   // the run the frame counter walks. Same as eatIt for every food that IS its own strip head; the worm's held id heads a crawl cycle instead, so its strip lives elsewhere (assets/held-items.js WORM_EAT0)
-      { const hNow = heldIt() || eatIt || 0; if (hNow !== prevHeldIt) { prevHeldIt = hNow; swapT0 = now; } }   // ── TOOL SWAP ── keyed off the ITEM, so a pickup or a craft landing in the hand animates too. The empty hand a finished apple leaves behind still swaps — eatIt goes to 0 with the animation, one frame after the core.
+      // ── TOOL SWAP ── keyed off the ITEM, so a pickup or a craft landing in the hand animates too. The empty
+      // hand a finished apple leaves behind still swaps — eatIt goes to 0 with the animation, one frame after
+      // the core.
+      // ── …AND OFF THE SLOT AS WELL (user 2026-08-20: "if theres 2 of the same objects in the player inventory
+      // … theres no transition animation like there is with everything else") ── the item id alone cannot see a
+      // scroll from one apple stack to another. A stack caps at STACK_MAX, so the next apple opens a SECOND
+      // slot, and wheeling between the two changed `heldIt()` from apple to apple: no change, no swap, and the
+      // hand simply cut from one to the next while every other scroll animated.
+      // THE SLOT OBJECT, NOT ITS INDEX. slotTidy compacts the hotbar and moves stacks between indices without
+      // anything changing in the hand, and an index test would fire a swap for that. The reference survives the
+      // move, so it is stable exactly when the held thing is: eating the last apple nulls the slot (reference
+      // changes -> swap), a pickup merging into the stack keeps it (no swap, the stack merely grew), and two
+      // full stacks of the same fruit are two different objects (swap, which is the report).
+      { const hNow = heldIt() || eatIt || 0, sNow = slots[selSlot] || null;
+        if (hNow !== prevHeldIt || sNow !== prevHeldSlot) { prevHeldIt = hNow; prevHeldSlot = sNow; swapT0 = now; } }
       const swapR = Math.max(0, 1 - (now - swapT0) / SWAP_MS);
       const swapF = swapR * swapR * (3 - 2 * swapR);   // 1 → 0 across the swap, SMOOTHSTEPPED and not quantised: this is a camera move, not a character animation, and stepping it at 24 fps read as a stutter (user)
       const hcfg = heldCfg(heldIt() || eatIt || 1);    // the shown item's OWN pose (during a grab flight this is the grabbed item's; through a bite it stays the fruit's even once the stack is gone)
@@ -301,7 +320,20 @@
         // goes to its slot and the tool stays out. An EMPTY hand still takes it, since there is nothing to lose.
         if (k >= 1) { const wasEmpty = !slots[selSlot];
           const as = addItem(grabAnim.it);
-          if (as >= 0 && wasEmpty) selSlot = as;
+          if (as >= 0 && wasEmpty) { selSlot = as;
+            // ── AND IT DOES NOT "SWAP" IN (user 2026-08-20: "when picking up an item, it glitches … it like
+            // glitches downwards") ── the same double animation the craft glide had. The empty-hand branch
+            // above eases the item's world position INTO the held pose, so at k = 1 it is already sitting
+            // exactly where the hand holds it; granting it then changed heldIt(), the view-model's swap fired
+            // on the NEXT frame, and the object the player had just watched fly into their fist was dropped
+            // 0.62 out of frame and lifted back in. Measured: a 0.76 dip on an empty-hand pickup.
+            // The swap comment upstream says a pickup landing in the hand should animate — and it should, but
+            // the FLIGHT is that animation now. It was written when the flight flew to the middle of the
+            // player and only reached the hand at the end (see the note in this very branch), which is when a
+            // swap was the only thing that presented the item at all.
+            // Consuming BOTH halves of the swap key, for the reason craftLand does: leaving the slot half
+            // would fire the animation this line exists to suppress.
+            prevHeldIt = heldIt() || 0; prevHeldSlot = slots[selSlot] || null; swapT0 = -1e9; }
           grabAnim = null; grabGhost = null; }
       } else grabGhost = null;
       set3(48, [hx, hy, hz], hcfg.scale);
@@ -393,12 +425,18 @@
         //   launched as a projectile on release — see shootArrow.)
         const lgrab = grabAnim && grabAnim.left && !dead;
         {
-        // ── AND THE OFF-HAND HOLDS THE OTHER HALF OF A CRAFT PAIR (user 2026-08-19) ── dualRock draws the SAME
-        // stack twice, which is why it only ever shows a second rock; a rock-and-stick pair is two different
-        // items in two different slots, so the id has to be looked up rather than assumed. craftOther is
+        // ── AND THE OFF-HAND HOLDS THE OTHER HALF OF A CRAFT PAIR (user 2026-08-19) ── dualIt draws the SAME
+        // stack twice, so it can only ever show a second of what the right hand holds; a rock-and-stick pair is
+        // two different items in two different slots, so the id has to be looked up rather than assumed. It
+        // also takes PRECEDENCE below, because a split stack is a pose the player asked for. craftOther is
         // whichever half is NOT selected, so the gesture reads the same whichever hand the player filled first,
         // which is the user's own rule. It shows as soon as the pair EXISTS, so the bench advertises itself.
-        const cpair = (typeof craftPair === 'function') ? craftPair() : null;
+        // ── AND ONLY WHILE THE BENCH GESTURE IS ACTUALLY RUNNING (user 2026-08-20) ── this used to show the
+        // moment a rock and a stick were both in the hotbar, on the argument that the bench should advertise
+        // itself (2026-08-19). It is the same thing the player is now reporting as dual wield they did not ask
+        // for: carrying materials filled the off hand on its own. CRAFT.open is the honest gate — the two
+        // halves are shown meeting each other because the gesture is happening, not as a standing hint.
+        const cpair = (typeof CRAFT !== 'undefined' && CRAFT.open && typeof craftPair === 'function') ? craftPair() : null;
         const craftOther = cpair ? (slots[selSlot] && slots[selSlot].it === 2 ? 3 : 2) : 0;
         // Once the two halves have met they are GONE — the same disappearance the rock clash does when its two
         // rocks become a knife. From CRAFT.lit the hands are empty and only the preview remains.
@@ -411,12 +449,12 @@
         // one off the ground takes its place, when what actually happens is that the stack grows by one.
         // The resting item now wins. A flight only takes the hand when the hand is EMPTY — which is the case
         // the fly-to-hand animation was written for, and the case where there is nothing to evict.
-        const lRest = craftGone ? 0 : (dualRock ? 2 : (craftOther || 0));   // what this hand is holding on its own account
+        const lRest = craftGone ? 0 : (dualIt || craftOther || 0);   // what this hand is holding on its own account
         const lid = lRest || (lgrab ? grabAnim.it : 0);
         if (lid !== prevLeftIt) { prevLeftIt = lid; lSwapT0 = now; }   // …the off hand's swap clock, armed on ITS item changing   // …the same predicate the badge count subtracts by, so the hand and the number can never disagree about whether a rock is being dual-wielded
         if (!lid) { UF[1095] = 0; UF[UF_VITG + 1] = 0; }   // …and the off-hand badge goes with the hand: a count left standing would draw glyphs beside nothing                      // pick2A.w = 0 → zero bounding radius hides the left hand (pick2 sits after the 64 drop slots: 1092..1107)
         else {
-          const c2 = heldCfg(lgrab ? grabAnim.it : (dualRock ? 2 : (craftOther || 2)));   // mirrored pose OF WHATEVER IS SHOWN: anchor x negated, yaw/roll negated (still a proper rotation — no handedness flip). It read heldCfg(2) unconditionally, which hung a stick on the rock's pose the moment the off-hand could hold something else
+          const c2 = heldCfg(lgrab ? grabAnim.it : (dualIt || craftOther || 2));   // mirrored pose OF WHATEVER IS SHOWN: anchor x negated, yaw/roll negated (still a proper rotation — no handedness flip). It read heldCfg(2) unconditionally, which hung a stick on the rock's pose the moment the off-hand could hold something else
           const cy4 = Math.cos(-c2.yaw), sy4 = Math.sin(-c2.yaw), cp4 = Math.cos(c2.pitch), sp4 = Math.sin(c2.pitch), cr4 = Math.cos(-c2.roll), sr4 = Math.sin(-c2.roll);
           let LAX = [cr4 * cy4, sr4 * cp4 + cr4 * sy4 * sp4, sr4 * sp4 - cr4 * sy4 * cp4];
           let LAY = [-sr4 * cy4, cr4 * cp4 - sr4 * sy4 * sp4, cr4 * sp4 + sr4 * sy4 * cp4];
@@ -511,7 +549,7 @@
             // badge means what it says. cpair names both slots, so the off-hand's is simply the one that is not
             // selected, which needs no search and cannot pick up a third slot that happens to hold the same item.
             let n2 = 0;
-            if (!dualRock && cpair) { const si2 = (cpair.rock === selSlot) ? cpair.stick : cpair.rock;
+            if (!dualIt && cpair) { const si2 = (cpair.rock === selSlot) ? cpair.stick : cpair.rock;
               if (slots[si2]) n2 = slots[si2].n | 0; }
             if (bi2 && bi2.w && n2 > 1 && lz > 0.05) {
               const tH2 = UF[3], asp2 = UF[7], CW2 = UF[42], CH2 = UF[43], az2 = Math.max(0.05, lz);
@@ -577,21 +615,59 @@
         //     reached the hand and then SNAPPED to the held pose. It is slerped into the right hand's own axes
         //     instead — the same qslerp the right hand's pickup uses for the same reason, and the same reason
         //     that block gives: three axes lerped independently collapse mid-flight and read as a flip.
+        // ── AND THE TARGET IS THE POSE THE HAND WILL ACTUALLY BE IN, WHICH IS NOT THE HAND'S CURRENT ONE ──
+        // (user 2026-08-20: "the transition … is very buggy"). Three separate things were wrong, and all three
+        // are about aiming at the wrong pose rather than about the interpolation:
+        //   * ROTATION. It slerped into AX/AY/AZ, the RIGHT HAND'S LIVE AXES. Those are built from
+        //     `heldCfg(heldIt())` — and while the bench is open the hand is still holding the STICK or the
+        //     ROCK that opened it, so the preview turned itself to match a twig and then snapped to the axe's
+        //     pose the frame it landed. The target is the CRAFTED TOOL'S own pose, c3, which is what the hand
+        //     will be showing one frame later — built here from the same three lines the hand builds its axes
+        //     with (see the AX/AY/AZ triple far above), so the two agree by construction.
+        //   * POSITION. It flew to c3.x/y/z, the bare rest anchor, while the hand draws every item at that
+        //     anchor PLUS the walk/breathe bob. Landing a bob-width off and then popping is exactly the jitter
+        //     the user is describing when they are moving. heldBob is that offset, computed once per frame for
+        //     precisely this kind of re-use, so the flight ends where the tool is about to be drawn.
+        //   * `crK` is NOT read here on purpose, even though the hand's own anchor is driven to screen centre
+        //     by it while the bench is open. That drive dies with the bench on the very frame this lands, so
+        //     the hand the tool is joining is the RESTING hand, not the one still reaching into the gesture.
+        const cyT = Math.cos(c3.yaw), syT = Math.sin(c3.yaw), cpT = Math.cos(c3.pitch), spT = Math.sin(c3.pitch), crT = Math.cos(c3.roll), srT = Math.sin(c3.roll);
+        const TAX = [crT * cyT, srT * cpT + crT * syT * spT, srT * spT - crT * syT * cpT];
+        const TAY = [-srT * cyT, crT * cpT - srT * syT * spT, crT * spT + srT * syT * cpT];
+        const TAZ = [syT, -cyT * spT, cyT * cpT];
+        const tx5 = c3.x + heldBob[0], ty5 = c3.y + heldBob[1], tz5 = c3.z;   // where the hand will draw it next frame — anchor + the bob it rides
         const bob5 = Math.sin(now * 0.0021) * 0.010;
         let cx5 = 0, cy5v = -0.055, cz5 = 1.35 + 0.25 * ease, cs5 = c3.scale * 0.85, fe = 0;
+        // ── THE REFUSAL LANE IS READ BEFORE THE FLIGHT, NOT AFTER IT (user 2026-08-20: "when the new item is
+        // crafted, it blinks red briefly") ── craftLand SPENDS the sticks and rocks, and it runs from inside the
+        // block below, i.e. part-way through this frame. Asking craftAfford afterwards asks it of a hotbar that
+        // has just paid: on the single frame the tool lands, the answer flipped to "cannot afford" and the
+        // preview painted itself HURT_RED for that one frame before vanishing into the hand. That is the blink.
+        // Latched here, before anything is spent, and `flying` holds it at 0 for the rest of the glide —
+        // craftConfirm already refuses an unaffordable Enter, so a preview in flight is by construction one
+        // that was paid for and can never legitimately turn red mid-air.
+        const flying = !!CRAFT.fly;
+        const noPay5 = !flying && !craftAfford(cIt);
         if (CRAFT.fly) {
           const fk = Math.min(1, (now - CRAFT.fly) / CRAFT_FLY);
           fe = fk * fk * (3 - 2 * fk);              // smoothstepped: it leaves gently and arrives gently
-          cx5 += (c3.x - cx5) * fe; cy5v += (c3.y - cy5v) * fe; cz5 += (c3.z - cz5) * fe;
+          cx5 += (tx5 - cx5) * fe; cy5v += (ty5 - cy5v) * fe; cz5 += (tz5 - cz5) * fe;
           cs5 += (c3.scale - cs5) * fe;
-          const M5 = q2m(qslerp(m2q(CAX, CAY, CAZ), m2q(AX, AY, AZ), fe));   // …into the RIGHT hand's orientation, so it arrives already held rather than mid-turn
+          const M5 = q2m(qslerp(m2q(CAX, CAY, CAZ), m2q(TAX, TAY, TAZ), fe));   // …into the pose the TOOL is held at, so it arrives already held rather than mid-turn
           CAX = M5[0]; CAY = M5[1]; CAZ = M5[2];
           if (fk >= 1) craftLand();                  // arrived — spend the halves, hand the tool over, close the bench
         }
         cy5v += bob5 * (1 - fe);                     // the hover, damped out by the flight
         set3(UF_PICK3, [cx5, cy5v, cz5], cs5);   // …and smaller than in the hand while it hovers: it is being shown to you, not swung. The glide above grows it back to the hand's own scale on the way in
         set3(UF_PICK3 + 4, CAX, cIt);
-        set3(UF_PICK3 + 8, CAY, 0);
+        // ── AND IT GOES RED WHEN YOU CANNOT PAY FOR IT (user 2026-08-20) ── pick3Y.w is the refusal lane: 1 when
+        // the hotbar is short of the sticks or rocks THIS tool costs, 0 when it can be made. The composite paints
+        // the whole preview in HURT_RED from it, which is the same wound red an animal flashes when it is hit, so
+        // "cannot afford" reads at a glance and reads as the colour this game already means "no" with.
+        // Recomputed per frame rather than latched at cycle time: a stack can be thrown or eaten while the bench
+        // hangs open, and the answer has to follow the hotbar, not the moment the player scrolled onto the tool.
+        // …but NOT during the flight — see the noPay5 latch above the glide.
+        set3(UF_PICK3 + 8, CAY, noPay5 ? 1 : 0);
         set3(UF_PICK3 + 12, CAZ, 0);
       }
     }

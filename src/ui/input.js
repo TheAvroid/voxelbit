@@ -46,12 +46,18 @@
   // unhandled rejection every time the player clicked back into a windowed game would be worse than the bubble.
   const escLock = () => { try { const k = navigator.keyboard;
     if (k && k.lock && document.fullscreenElement) k.lock(['Escape']).catch(() => {}); } catch (e) {} };
-  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); cursSync(); return; } canvas.requestPointerLock(); escLock(); };
+  // ── AND A LOCK REQUEST IN FLIGHT IS NOT "UNLOCKED" (user 2026-08-20: "when pressing l, then clicking in the
+  // game, then pressing l again, the voxelbit title appears briefly") ── requestPointerLock is ASYNCHRONOUS:
+  // `locked` stays false until pointerlockchange fires a frame or two later, and setLightMode's very next line
+  // shows lockEl whenever `locked` is false. So closing the panel put the title card up for those frames and
+  // then took it away again, which is the flash. lockPend covers exactly that window and nothing else.
+  let lockPend = false;
+  const tryLock = () => { if (CDPTEST) { locked = true; lockEl.classList.add('hidden'); crossEl.classList.remove('hidden'); cmpVis(); cursSync(); return; } lockPend = true; canvas.requestPointerLock(); escLock(); };
   const setLightMode = (on) => {                        // L: hand the cursor to the light panel, and nothing else
     lightMode = !!on;
     if (lightMode) { try { document.exitPointerLock(); } catch (e) {} if (CDPTEST) { locked = false; crossEl.classList.add('hidden'); } }   // …and under ?cdp there is no real pointer lock to exit (tryLock fakes the other half the same way), so drop the flag by hand or a test can never see the cursor come free
     else if (!locked) tryLock();
-    lockEl.classList.toggle('hidden', locked || dead || lightMode || !vePanel.classList.contains('hidden'));
+    lockEl.classList.toggle('hidden', locked || lockPend || dead || lightMode || !vePanel.classList.contains('hidden'));   // lockPend: a request is in flight, so this is not the "click to play" state — see tryLock
     cursSync();
   };
   document.addEventListener('keydown', (e) => {        // ── , / . ── step the held bow through its draw frames and PIN it there, so the arrow can be placed frame by frame (user)
@@ -68,6 +74,18 @@
   // take the pointer away mid-game. The listener is gone; setLightMode and lightMode stay wired (the esc-menu
   // suppression and cursSync still read them, harmlessly false forever), so restoring the key is re-adding
   // this one listener.
+  // ── 1 STARTS THE MUSIC (user 2026-08-20) ── the soundtrack's opening cut is now something the player asks
+  // for rather than something that arrives on a timer. Only the first press counts (anthemArmed is a latch in
+  // ui/audio.js) and the 3 s gap to the first track is ANTHEM_AT, so this listener does one thing: start the
+  // clock, from zero, at the press.
+  // Gated like every other gameplay key: not while the console or a text field has the keyboard, not in the
+  // editor, and not while the video panel is up — otherwise typing a "1" anywhere would fire the soundtrack.
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Digit1' || e.repeat || anthemArmed) return;
+    if (ED.on || CMD.open || dead || !vePanel.classList.contains('hidden')) return;
+    if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    anthemArmed = true; playSecs = 0;                  // …from zero, so the 3 s is measured from the press and not from whatever the clock had reached
+  });
   lockEl.addEventListener('click', tryLock);
   canvas.addEventListener('click', () => { if (locked) return;                    // clicking the world takes control back and ends light mode…
     // …EXCEPT WHILE THE HELD-ITEM / STACK-COUNT PANEL IS OPEN (user 2026-08-18) ── #pkPanel is pointer-events:none with
@@ -115,6 +133,7 @@
   let freshLock = false;                               // set when pointer lock is (re)acquired — the FIRST mousemove after it can carry a huge accumulated delta (the browser warps the cursor to centre on lock); swallow that one so the camera never snaps (user: "camera angle changes abruptly")
   document.addEventListener('pointerlockchange', () => {
     const wasLocked = locked;
+    lockPend = false;                                  // …the request this covers has been answered, either way (see tryLock)
     locked = document.pointerLockElement === canvas;
     if (locked && !wasLocked) freshLock = true;
     lockEl.classList.toggle('hidden', locked || dead || lightMode || CMD.open || performance.now() - CMD.escAt < 1600 || !vePanel.classList.contains('hidden'));   // …or while the COMMAND LINE is up, or across the re-lock retry after Escape dismissed it (user)   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
@@ -255,7 +274,13 @@
       if (e.code === 'ArrowRight') { e.preventDefault(); craftCycle(1); return; }
       if (e.code === 'ArrowLeft') { e.preventDefault(); craftCycle(-1); return; }
       if (e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); craftConfirm(); return; }
+      if (e.code === 'KeyE') { e.preventDefault(); craftClose(); return; }
       if (e.code === 'Escape') { craftClose(); return; }   // no preventDefault: ESC also releases the pointer lock, and taking that away would trap the cursor
+      // ── E BACKS OUT OF THE BENCH (user 2026-08-20: "have the player be able to exit out of the crafting by
+      // pressing e again") ── it sits INSIDE the chooser block, so E means "close this" only while the bench is
+      // up and is free to mean anything else otherwise. It is free to be here at all because the dual-wield
+      // split moved to shift+E on the same request, so plain E no longer does anything during play. ESC still
+      // works and still gives up the pointer lock; E is the one that leaves you looking where you were.
     }   // ── T ── open the command line (user)
     keys.add(e.code);
     if (e.code === binds.drop) { dropHeld(); }
@@ -267,6 +292,7 @@
     if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; if (!P.fly) { P.noFall = 1; P.fallPk = undefined; } }   // toggle fly (user re-added the F keybind 2026-07-22)
     // R-key recording is BACK ON with the #veBtn button (user 2026-08-02, reversing the 2026-07-23 disable).
     if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
+    if (e.code === 'KeyE' && e.shiftKey && !ED.on && DUAL_ON) { dualOn = !dualOn; }   // …and DUAL_ON gates the whole binding (user 2026-08-20: dual wield removed from play, code kept) — see ui/achievements.js   // SHIFT+E — SPLIT THE STACK INTO BOTH HANDS (user 2026-08-20: "ONLY enable dual wield if the user presses shift + e"; it was plain E earlier the same day). The modifier is what frees plain E to close the crafting bench above — one key, two meanings, told apart by shift rather than by mode. Guarded on !ED.on because the asset editor already owns E for its move-gizmo (see the ED.on block below), and a key cannot mean two things at once in the same mode.
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
     if (e.code === 'KeyP') { snowOn = !snowOn;               // P — toggle the snow storm (user); mirrors the settings snow button EXACTLY so the two stay in sync
       if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 300000; }

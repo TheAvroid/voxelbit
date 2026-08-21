@@ -25,6 +25,12 @@
       idx.sort((a, b) => (emitVis[b] - emitVis[a]) || (emitDp[a] - emitDp[b]));   // IN THE FRUSTUM first, then nearest — both passes below walk this one order
       emitTake.fill(0, 0, emitN); emitKcnt.fill(0);
       let nT = 0;
+      for (let i = 0; i < emitN && nT < avail; i++) {  // PASS 0: bodies with NO other render path (see emitMust) — a mammal that dropped its grid stamp to be traced
+        const j = idx[i];
+        if (!emitMust[j]) continue;
+        if (!emitVis[j] || emitDp[j] > LIFE_DRAW2) break;   // same visible-then-near order as the passes below, so this cannot reserve a slot for a speck
+        emitTake[j] = 1; nT++; emitKcnt[emitKnd[j]]++;      // counted against its kind, so PASS 1 does not hand the same kind its floor a second time
+      }
       for (let i = 0; i < emitN && nT < avail; i++) {  // PASS 1: the nearest LIFE_FLOOR of every kind present, so none can be shut out
         const j = idx[i], k = emitKnd[j];
         if (!emitVis[j] || emitDp[j] > LIFE_DRAW2) break;   // visible-first then near-first, so the first one off-frustum OR past the draw radius ends the guarantee for everybody. A kind with nothing on screen reserves nothing, which is the point: a slot held for a creature behind you is a slot not spent on one in front.
@@ -88,7 +94,9 @@
       const v = W[gwrap(Math.floor(P.x), WX) + ey * WX + gwrap(Math.floor(P.z), WZ) * WX * WY];
       return !!(v && foliaTab[v]); })();
     for (let si2 = 0; si2 < sparks3d.length; si2++) {   // ── clash/death sparks + death SMOKE + tears + POLLEN → drop slots 5-28 ── read off the array rather than a literal 20, so growing the pool needs one edit and not three ── real voxels on short arcs, fading out (sp4.smoke picks the look)
-      const o3 = 68 + (5 + si2) * 16, sp4 = sparks3d[si2];
+      const sl3 = sparkSlot[si2];
+      if (sl3 < 0) { const spX = sparks3d[si2]; if (spX && (now - spX.born) / 1000 > spX.life) sparks3d[si2] = null; continue; }   // no slot = not alive; still reap the expired one
+      const o3 = dropOff(sl3), sp4 = sparks3d[si2];   // dropOff, not 68 + slot*16 — a compacted band still has to stitch the two halves   // …9, not 5: the item-drop band is 0-7 now and the cardinal took 8 (user 2026-08-20)
       const tS = sp4 ? (now - sp4.born) / 1000 : 1e9;
       if (!sp4 || tS > sp4.life) { UF[o3 + 7] = 0; if (sp4) sparks3d[si2] = null; continue; }
       if (eyeFol && sp4.petal) { UF[o3 + 7] = 0; continue; }   // …and the leaf is hidden, not retired: sparks3d[si2] is left alone so it resumes falling from the right place when the eye leaves the crown
@@ -107,9 +115,27 @@
       let itn = petal ? (sp4.pit || PETAL_IT) : ((sp4.foam && FOAM_IT) ? FOAM_IT : ((sp4.red && HITRED_IT) ? HITRED_IT : ((sp4.gold && HITGOLD_IT) ? HITGOLD_IT : SPARK_IT))), vsc = 1.0;   // …the only place the three differ
       if (petal) {                                     // ── THE CRADLE ── one sine along the petal's own fixed horizontal axis, so it swings left-right across the fall line the way a leaf does. The descent stays linear: no acceleration, no yaw, nothing that reads as tumbling.
         const sw4 = Math.sin(tS * sp4.rate + sp4.ph) * sp4.sway;   // sp4.sway, not the PETAL_SWAY constant: each petal is issued its OWN swing width at birth (see spawnPetal), so a drift differs in the size of its arcs as well as in their phase
-        py4 = sp4.y - PETAL_FALL * tS;
-        px4 = sp4.x + sp4.ax * sw4;
-        pz4 = sp4.z + sp4.az * sw4;
+        py4 = sp4.y - PETAL_FALL * tS;                 // …plus the WORLD WIND the petal was BORN into (sp4.wvx/wvz, frozen in spawnPetal)
+        px4 = sp4.x + sp4.ax * sw4 + (sp4.wvx || 0) * tS;
+        pz4 = sp4.z + sp4.az * sw4 + (sp4.wvz || 0) * tS;
+        // ── AND IT LANDS ON THE GROUND IT IS OVER NOW (user 2026-08-20: "the swaying falling leaves seem to be
+        // glitching out") ── spawnPetal fixes `life` at birth as (spawnY - ground UNDER THE TREE) / PETAL_FALL,
+        // which was exact while a petal fell straight down. The wind carries it up to ~35 voxels sideways, so
+        // the ground it actually arrives over is not the ground it was measured against: onto rising ground it
+        // kept falling and BURROWED (measured 136 samples inside terrain, up to 6.9 voxels deep), and over
+        // falling ground its clock ran out and it BLINKED OUT in mid-air (13 of them, up to 5 voxels up).
+        // Both are one line of arithmetic that stopped being true the moment the petal could travel.
+        // Re-aimed every frame at the column it is really above: clamp so it can never sink, and re-time the
+        // remaining fall so it neither dies early nor outlives PETAL_MAXLIFE. One hmap read for at most 32
+        // petals — the same lookup the fish and the flakes already do per body, per frame.
+        // ── THE SAME HEIGHT SOURCE spawnPetal USED (user 2026-08-20: "the swaying voxel leafs keep
+        // dissapearing") ── this first read hmap while spawnPetal measures the ground with H(). Where the two
+        // disagree the petal is judged to have ALREADY LANDED on the frame it is born, `life` is re-timed to
+        // its current age, and it expires immediately — a leaf that appears in the crown and is gone before it
+        // has fallen a voxel. One source for both, so "where is the ground here" cannot have two answers.
+        { const gp = H(Math.round(px4), Math.round(pz4));
+          if (py4 <= gp) py4 = gp;                     // landed: rest ON the hillside, never inside it
+          sp4.life = Math.min(PETAL_MAXLIFE, tS + Math.max(0, (py4 - gp) / PETAL_FALL)); }   // …and it lives exactly as long as the fall it still has left
       } else if (smoke) {                                     // ONE individual voxel, off the grid like a snowflake: a per-voxel wandering DRIFT (sin/cos, like the flakes' wind sway) as it floats up, then CENTRE it on its position so it spins about its own middle (not a corner)
         itn = SMOKE_IT; vsc = 1.0;                     // 10 cm voxel — exactly a snowflake's size (user)
         px4 += Math.sin(tS * 1.6 + sp4.ph) * 1.4;
@@ -154,7 +180,7 @@
       lifeDrawnPrev.fill(0);                           // …and the O(1) "was this pool creature drawn" flags, rebuilt from the same numbers
       for (let s9 = 0; s9 < DROP_SLOTS; s9++) { const u9 = lifeUid[s9]; if (u9 >= 2000) lifeDrawnPrev[u9 - 2000] = 1; }
       lifeUidPrev.set(lifeUid); lifeAncPrev.set(lifeAnc); lifeItemPrev.set(lifeItem);
-      UF[1528] = lifeDbg; UF[1529] = LIFE_TRACE ? 1 : 0; UF[1530] = UNI_SEC; UF[1531] = 0;   // lifeCfg.z = which secondary rays see creatures (see UNI_SEC_DEF). REPORTING ONLY since the fold - no shader reads it any more, so changing it mid-session does nothing; pick the config with ?uni&sec=N or window.__SEC before load.
+      UF[1528] = lifeDbg; UF[1529] = LIFE_TRACE ? 1 : 0; UF[1530] = UNI_SEC; UF[1531] = lifeSlotBase;   // lifeCfg.w = first NON-particle slot, now the COMPACTED one   // lifeCfg.w = the first NON-particle drop slot — the composite reads THIS instead of a literal that went stale when the spark pool grew (user 2026-08-20)   // lifeCfg.z = which secondary rays see creatures (see UNI_SEC_DEF). REPORTING ONLY since the fold - no shader reads it any more, so changing it mid-session does nothing; pick the config with ?uni&sec=N or window.__SEC before load.
     }
     {                                                  // ── RIGID BODIES → u.physB ──
       // Same convention the creature models use: anchor + the three LOCAL axes, all expressed in CAMERA

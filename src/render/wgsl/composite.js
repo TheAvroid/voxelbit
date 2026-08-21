@@ -195,6 +195,25 @@
       return mix(c, vec3<f32>(lum), RAIN_SKY_DESAT * rk) * (1.0 - RAIN_SKY_DIM * rk);
     }
     fn skyBaseR(rd : vec3<f32>) -> vec3<f32> { return skyRain(skyBase(rd)); }
+    // ══ THE WORLD'S DISTANCE FOG, ONCE (user 2026-08-20: "unify the render paths") ══ this lived as three
+    // byte-identical copies inside COMPOSITE's shading branches, and every object drawn OUTSIDE those branches
+    // — a creature, a drop, the held tool — had to remember to haze itself. That is the shape of the bug class
+    // this is meant to retire: the fog pass ending before the creatures were drawn is exactly how fish, birds
+    // and drops ended up sitting at full saturation in front of a hazed treeline.
+    // Two terms, unchanged: an exponential on distance, and a hard ramp into the render-distance wall so
+    // nothing pops at the edge of the generated world. LG(5u) still switches the whole thing off in one place.
+    // IT LIVES HERE, NOT IN PRE, and that is not a preference: it calls skyBaseR, which is declared four
+    // lines up in THIS file, and WGSL has no forward declarations — a call above its definition is a compile
+    // error, which in this codebase is a game that never boots. PRE is prepended to every pipeline, so the
+    // obvious home for a shared helper is the one place this one cannot go.
+    // A FUNCTION, not a macro-by-copy: anything that draws a world-space surface can now ask for the same haze
+    // at the same distance and cannot get a stale version of the formula.
+    fn worldFog(col : vec3<f32>, rd : vec3<f32>, dist : f32) -> vec3<f32> {
+      if (!LG(5u)) { return col; }                                 // LIGHT DEBUG bit 5: distance fog
+      var fogA = 1.0 - exp(-dist * 0.0006);
+      fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, dist * length(vec2<f32>(rd.x, rd.z))));
+      return mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
+    }
     fn cloudDen(p : vec3<f32>, thr : f32) -> f32 {                   // cumulus deck between CLOUD_LO and CLOUD_HI, wind-drifted. thr is a PARAMETER rather than a global because rain lowers it and WGSL has no mutable module scope; the caller computes it once instead of ~36 times a sky pixel.
       let hf = clamp((p.y - CLOUD_LO) / (CLOUD_HI - CLOUD_LO), 0.0, 1.0);
       let q = vec3<f32>(p.x + u.time * 9.0, p.y, p.z + u.time * 3.5) * 0.0021;
@@ -332,10 +351,7 @@
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         let alb = alb4.rgb * alb4.rgb;
         col = alb * (3.1 + 0.6 * sin(u.time * 2.1)) + vec3<f32>(0.65, 0.13, 0.0);   // molten orange, glowing, gentle pulse
-        var fogA = 1.0 - exp(-irr.b * 0.0006);
-        fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
-        if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
-        col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
+        col = worldFog(col, rd, irr.b);                            // ── ONE FOG (see worldFog in PRE) ── this was three byte-identical copies of the same four lines
       } else if (face == 6u) {                                       // ── PHYSICALLY-BASED WATER ── Gerstner surface, RAY-TRACED reflection + refraction, Beer–Lambert absorption + single scattering. The voxel aesthetic survives on purpose: the surface is still stepped 10 cm columns, the mirror image is the voxel world itself, glints stay discrete.
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         let alb = alb4.rgb * alb4.rgb;
@@ -445,10 +461,7 @@
             col = mix(col, sparkC, spark * column * gk * 0.85 * irr.r * (1.0 - waterIceK));   // translucent voxel glint (mix, not add — reads as a bright cube on the surface)
           }
         }
-        var fogA = 1.0 - exp(-irr.b * 0.0006);
-        fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
-        if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
-        col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
+        col = worldFog(col, rd, irr.b);                            // ── ONE FOG (see worldFog in PRE) ── this was three byte-identical copies of the same four lines
       } else {
         let irr = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         let alb = alb4.rgb * alb4.rgb;
@@ -540,7 +553,7 @@
         // the TRACE gate above was widened to shoot that ray for leaves, or it would be zero on every one of
         // these pixels and nothing would ever glow. So a leaf deep inside a crown stays dark and only the
         // canopy edge lights up, which is the real behaviour.
-        if (FOLBACK && ((slRaw >> 11u) & 1u) != 0u) {
+        if (FOLBACK_URL && ((slRaw >> 11u) & 1u) != 0u) {   // BAKED IN (user 2026-08-20: "bake in all the new graphic settings") — it was panel bit 6 for a few hours; ?nofol still compiles it out for an A/B
           let tr = pow(max(dot(rd, u.sunDir), 0.0), FOL_LOBE);      // rd runs FROM the eye INTO the scene, so looking toward the sun is dot(rd, sunDir) -> 1. Do NOT flip this: dot(-rd, ...) peaks when the sun is BEHIND you, which is exactly when wrap is 0, so the two factors can never both be large and the whole term goes dead.
           let wrap = clamp(-dot(n, u.sunDir), 0.0, 1.0);            // …how far the face is turned AWAY from the sun, which is the side the light has to travel through
           col += alb * vec3<f32>(1.15, 1.35, 0.70) * sunTintR() * (tr * wrap * irr.r * FOL_STR);   // transmitted light is warmer and more saturated than the reflected colour — it has been filtered by the leaf. irr.r is what keeps a leaf deep inside a crown dark: see the sunOrg note in TRACE, without which that term is zero on every pixel this fires on.
@@ -548,10 +561,7 @@
         let glowY = u.camPos.y + rd.y * irr.b;                                                   // the shared 4-bit glow field: bedrock hits = LAVA orange, surface hits = FIREFLY warm yellow
         if (glowY < 28.0) { col += alb * lavaG * vec3<f32>(1.0, 0.44, 0.13) * 3.6; }             // lava: linear decode, unchanged
         else { col += alb * lavaG * lavaG * vec3<f32>(1.0, 0.82, 0.30) * 4.6; }                  // firefly: sqrt-encoded in TRACE → SQUARED decode restores the physical falloff curve
-        var fogA = 1.0 - exp(-irr.b * 0.0006);
-        fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, irr.b * length(vec2<f32>(rd.x, rd.z))));
-        if (!LG(5u)) { fogA = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
-        col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
+        col = worldFog(col, rd, irr.b);                            // ── ONE FOG (see worldFog in PRE) ── this was three byte-identical copies of the same four lines
       }
       // Distance to the nearest FOREGROUND surface drawn over the g-buffer (creature, drop, held item), or -1 if the scene
       // itself is what you see. The UNDERWATER block at the bottom needs this: it attenuates by the in-water path, and using
@@ -569,12 +579,13 @@
         let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, DROP_N);             // JS COMPACTS live creatures into consecutive slots from 9 and passes the count — the loop never wastes pixels on empty slots (the fixed 64 loop tanked fps over busy water)
         let tiV = (wgid.y * ((u32(u.res.x) + 7u) / 8u) + wgid.x) * ${VIS_W}u;   // this workgroup IS one 8×8 tile — read its four prepass mask words (under ?uni the stride is 8: words 0-3 primary, 4-7 the grown SECONDARY mask)
         let visM0 = visb[tiV]; let visM1 = visb[tiV + 1u]; let visM2 = visb[tiV + 2u]; let visM3 = visb[tiV + 3u];   // FOUR words now (128 slots) and all four stay in REGISTERS: re-fetching the word from storage per iteration measured 4× the per-slot cost
+        let lifeBase = i32(u.lifeCfg.w + 0.5);
         for (var di = 0; di < dropN; di++) {                         // slots 0..3 = dropped items, slot 4 = the flying cardinal, slots 5..8 = clash sparks, 9+ = live creatures (compacted)
           { let mw = select(select(visM0, visM1, di >= 32), select(visM2, visM3, di >= 96), di >= 64); let mrem = mw >> (u32(di) & 31u); if (mrem == 0u) { di = i32(u32(di) | 31u); continue; } if ((mrem & 1u) == 0u) { di += i32(countTrailingZeros(mrem)) - 1; continue; } }   // ── TILE CULL, BIT-SCANNED ── same mask, same slots visited, but the loop JUMPS to the next slot whose sphere touches this 8×8 tile rather than testing them one at a time. The mask words stay in registers on purpose: re-fetching the word from storage each iteration measured 4× the per-slot cost.
           let dXv = dropV(di * 4 + 1);
           let dit = i32(dXv.w + 0.5);
           if (dit < 1) { continue; }                                 // itemId checked FIRST — an empty slot costs one uniform load, not four
-          let tInj = u.lifeCfg.y > 0.5 && (di == 4 || di >= 25) && face != 6u && (u32(lifeMotV(di).w + 0.5) & 1u) == 0u;   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies). Creature base → 25 (20 death-burst slots 5-24: 4 sparks + 16 individual smoke voxels, user).
+          let tInj = u.lifeCfg.y > 0.5 && (di == 8 || di >= lifeBase) && face != 6u && (u32(lifeMotV(di).w + 0.5) & 1u) == 0u;   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies). Creature base → 25 (20 death-burst slots 5-24: 4 sparks + 16 individual smoke voxels, user).
           // …with ONE exception: a model that carries TRANSLUCENT voxels still comes down here, because TRACE
           // walked straight past them (see the alpha test there) and something has to draw them over the pixel
           // it left behind. Only the translucent voxels are drawn on that pass — the opaque body is already in
@@ -623,7 +634,7 @@
                 if (vaxD == 0) { nl.x = -f32(istD.x); } else if (vaxD == 1) { nl.y = -f32(istD.y); } else { nl.z = -f32(istD.z); }
                 let nc = dXv.xyz * nl.x + dYv.xyz * nl.y + dZv.xyz * nl.z;
                 let nw = u.right * nc.x + u.up * nc.y + u.fwd * nc.z;
-                if (di == 4 || di >= 25) {                           // the CARDINAL + ALL WORLD CREATURES incl. worms + lily pads — the EXACT world surface model (shadowed sun + sky + bounce + fog). Creature base → 25 (20 death-burst slots 5-24).
+                if (di == 8 || di >= lifeBase) {                           // the CARDINAL + ALL WORLD CREATURES incl. worms + lily pads — the EXACT world surface model (shadowed sun + sky + bounce + fog). Creature base → 25 (20 death-burst slots 5-24).
                   var sunC = 0.0;                                    // REAL sun occlusion: a creature under the canopy sits in tree shade exactly like the ground below it
                   if (${location.search.includes('noshadow') ? 0 : 1} == 1 && dot(nw, u.sunDir) > 0.0 && u.sunDir.y > -0.04) {   // (deterministic un-jittered ray, no denoiser in the path — none of the irr-coupling translucency/shimmer; ?noshadow disables for A/B)
                     let cSp = u.camPos + rd * bestT + nw * 0.6;
@@ -681,7 +692,7 @@
                   col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogB);
                   if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} &&
                       cell.r > 0.88 && cell.g > 0.88 && cell.b > 0.88) { col = mix(behind, col, 0.6); }   // FIREFLY WINGS (the white voxels) — 40% translucent
-                } else if (di >= 5) {                                // slots 5-24: clash/death SPARKS + death SMOKE (dYv.w = fade)
+                } else if (di >= 9) {                                // slots 5-24: clash/death SPARKS + death SMOKE (dYv.w = fade)
                   if (dit == ${SMOKE_IT || 9997}) {                  // DEATH SMOKE — each slot is ONE individual white VOXEL (like a snowflake), 24% opacity, fading (col here still holds the scene BEHIND it → mix = true translucency). Off-grid look comes from its own continuous position + snowflake spin in the emit.
                     col = mix(col, vec3<f32>(1.0), 0.24 * dYv.w);
                   } else if (dit == ${HITRED_IT || 9996}) {          // ── BLOOD ── the SAME red the animal itself flashes (user 2026-08-05). It reuses the hit
@@ -843,7 +854,38 @@
                       }
                       aoF = 1.0 - 0.14 * f32(occ);    // up to ~0.44 in a full crevice; ~0.86–0.72 for typical creases
                     }
-                    col = cell.rgb * heldLight(nw) * aoF;             // world-matched sun + sky + ground bounce, gated by the eye's own marched sun/sky visibility — see heldLight in PRE. The health row calls the SAME function, which is the whole reason it lives there and not here.
+                    // ── THE CRAFT PREVIEW GOES RED WHEN IT CANNOT BE AFFORDED (user 2026-08-20) ── the whole tool,
+                    // not an outline or a tint: pick3Y.w is 1 while the hotbar is short of what this recipe costs
+                    // (see the lane's note in tick-camera). HURT_RED is the animal hit flash's own constant rather
+                    // than a second red of its own, which is what the user asked for — "similar to how the life
+                    // voxels look when the player hits it" — and means the two can never drift apart.
+                    // AND IT IS LIT THE WAY THE FLASH LIGHTS THE ANIMAL (user 2026-08-20: "is the red … the
+                    // exact same … as the life when they have been hit? if not make it so"). The flash's rule is
+                    // two FLOORS on the wounded surface's own visibility — sun >= 0.55, sky >= 0.75 (see the
+                    // hurtGlow line in TRACE) — and those two maxes are transcribed here onto heldCfg.x/.y,
+                    // which are the viewmodel's equivalents of exactly those two scalars. So the tool now
+                    // carries the same albedo constant AND the same lighting rule as the animal, and keeps its
+                    // own face shading through aoF, which is the whole point of a FLOOR: the trace note is
+                    // explicit that pinning the terms to full flattened the animal and blew it out.
+                    //   * NOT the BLOOD voxel's version of the same two lines (HITRED_IT above), even though it
+                    //     exists for this reason: a blood drop is a lone voxel in the air with no shadow test,
+                    //     so it PINS the two at 0.55/0.75 rather than flooring them. Measured against a real
+                    //     wounded animal standing in open sun that is 31/255 too DARK, because the animal's own
+                    //     sun visibility there is ~1.0 and max() keeps it.
+                    //   * the min() ceiling stays. heldLight runs past 1.0 in open sun and HURT_RED's own note
+                    //     says what happens then: the red channel saturates and the tonemap flattens it to pale
+                    //     salmon, which is what the first cut of this did.
+                    // The two can never be bit-identical and should not be chased any further: a creature is a
+                    // TRACED surface that goes through SVGF and TAA, and these are analytic composite pixels
+                    // that deliberately never enter the denoiser (see the health-row note below).
+                    let noPay = (hand == 2 && pY.w > 0.5);
+                    var lit5 = heldLight(nw) * aoF;
+                    if (noPay) {
+                      let hDir = sunTintR() * max(dot(nw, u.sunDir), 0.0) * max(u.heldCfg.x, 0.55) * select(0.0, 1.0, LG(16u));
+                      let hSky = mix(HORIZON, ZENITH, 0.5 + 0.5 * nw.y) * 0.95 * dayScale() * max(select(1.0, u.heldCfg.y, LG(1u)), 0.75);
+                      lit5 = min((hDir + hSky + ambFloor()) * aoF, vec3<f32>(1.0));
+                    }
+                    col = select(cell.rgb, HURT_RED, noPay) * lit5;             // world-matched sun + sky + ground bounce, gated by the eye's own marched sun/sky visibility — see heldLight in PRE. The health row calls the SAME function, which is the whole reason it lives there and not here.
                   }
                   break;
                 }

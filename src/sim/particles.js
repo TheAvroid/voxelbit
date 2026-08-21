@@ -1,5 +1,5 @@
   // @module - splash, spark and debris particle pools and their per-frame step
-  // @exports ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
+  // @exports ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
   // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
   // something breaks the surface — a fish launching, the same fish coming back down, and the player going
   // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is
@@ -129,7 +129,7 @@
   // THE CRADLE IS NOT A SPIN. A real petal rocks side to side along ONE horizontal axis as it sinks — it does not
   // yaw. So each petal picks a fixed axis (ax, az) at birth and slides along it on a sine; the emit's rotation
   // is pinned to identity for these, which is the whole of "dont make them spin".
-  const PETAL_GAP = 130;                               // ms between attempts — HALVED with the band above (user 2026-08-19); one of the two is useless without the other — with 16 slots and a ~10 s fall this keeps the band saturated, so the air stays evenly dressed rather than pulsing
+  const PETAL_GAP = 65;   // ── DOUBLED 2026-08-20 (user: "double the rate at which petals fall from all the trees … not the speed but the frequency") ── 130 -> 65 ms between attempts. NOTE the band (PETAL_LO..PETAL_HI, 32 slots) is the real ceiling: a petal lives up to PETAL_MAXLIFE, so once the band is full a shorter gap buys nothing and the extra attempts are simply skipped. Halving the gap raises the rate wherever the band has room — under a lone tree, at the edge of a wood — and is a no-op in a dense canopy that was already saturating it. Raising the CEILING means growing sparks3d, which comes straight out of the creature draw budget (see voxelbit-drop-slot-bands), so it is deliberately not done here.                               // ms between attempts — HALVED with the band above (user 2026-08-19); one of the two is useless without the other — with 16 slots and a ~10 s fall this keeps the band saturated, so the air stays evenly dressed rather than pulsing
   const PETAL_FALL = 3.5;                              // vox/s. A leaf does not drop, it descends: 0.35 m/s reads as weightless where the snow's own fall reads as weather
   // ── THE CRADLE HAD TO GET WIDER *AND* QUICKER (user 2026-08-19: "make the leafs have more of a left to right
   // sway motion vs just falling down straight") ── amplitude on its own is not the lever, and the arithmetic
@@ -147,6 +147,22 @@
   // watch for a second or two rather than needing the whole fall to declare itself.
   // NOT stepped to 24 fps, and deliberately: this is a rigid voxel travelling through space, not a frame flip.
   // hurtHop below records the same call for the same reason — quantising continuous motion reads as a stutter.
+  // ── AND A WIND THAT ACTUALLY CARRIES THEM (user 2026-08-20: "can you make them sway in the wind, they just
+  // seem to fall down vertically. make them go more horizontally") ── the cradle below is a SYMMETRIC rock: it
+  // swings a petal either side of its own fall line and returns it, so however wide it is set the petal still
+  // lands on the spot it left. The note further down even records reading-as-wind as the failure mode it was
+  // tuned AWAY from. That was the wrong target: what is wanted is a net horizontal CARRY, so a petal leaves the
+  // crown and travels.
+  // ONE wind for the whole world, turning slowly, so every petal in view drifts the same way at the same
+  // moment — that coherence is what reads as weather rather than as each leaf wandering on its own. It is a
+  // pure function of the clock (no state, nothing to desync across a reload) and it is deliberately never
+  // still: the slowest term never brings the speed to zero, so there is no dead calm to notice.
+  const PETAL_WIND = 2.9;                              // vox/s of carry at full strength — against PETAL_FALL 3.5 that is a ~40 degree slant, so a petal from a 60-voxel crown travels ~50 voxels downwind
+  const petalWind = (ms) => {                          // → [vx, vz] this instant
+    const a = 2.0 + Math.sin(ms * 0.000041) * 1.25;    // direction wanders ~±72 degrees over ~2.5 min
+    const g = PETAL_WIND * (0.66 + 0.34 * Math.sin(ms * 0.000087 + 1.7));   // …and gusts between 2/3 and full over ~1.2 min
+    return [Math.cos(a) * g, Math.sin(a) * g];
+  };
   const PETAL_SWAY = 1.75;                             // voxels either side of the fall line, before the per-petal ±25% (was 1.2)
   const PETAL_ROCK = 2.0;                              // rad/s, the MEAN rock rate — a 3.1 s swing where it was 5.7 s
   const PETAL_MAXLIFE = 14;                            // a petal from a giant's crown would otherwise hold a slot for 20 s
@@ -166,6 +182,15 @@
       ph: Math.random() * 6.283, smoke: false, foam: false,
       petal: true, pit: pit || PETAL_IT, ax: Math.cos(a), az: Math.sin(a),   // the fixed cradle axis
       rate: PETAL_ROCK * (0.8 + Math.random() * 0.4),  // its own rock rate (±20% of the mean), so a drift of petals is never in step
+      // ── THE WIND IS SAMPLED ONCE, HERE (user 2026-08-20: "the swaying falling leaves seem to be glitching
+      // out") ── the carry is applied downstream as `wind * age`, so reading the LIVE wind there recomputed a
+      // petal's entire accumulated drift against a vector that had since turned: every time the wind moved, all
+      // the petals jumped sideways at once and the oldest jumped furthest, because their age is the multiplier.
+      // A drift has to be integrated, not re-derived. Freezing the vector at birth is that integral for the
+      // only interval that matters: the wind wanders ~±72 degrees over ~2.5 minutes and a petal lives at most
+      // 14 seconds, so over one lifetime it is very nearly constant anyway — and petals born minutes apart
+      // still ride different gusts, which is the variety the live sample was reaching for in the first place.
+      wvx: petalWind(performance.now())[0], wvz: petalWind(performance.now())[1],
       sway: PETAL_SWAY * (0.75 + Math.random() * 0.5) };   // …and its own swing WIDTH. The rate spread alone only de-PHASES them: sixteen petals tracing arcs of identical width still read as one emitter running sixteen copies of one animation, which is the look the wider cradle would otherwise have made more obvious rather than less
   }
   // ── WHERE A PETAL LEAVES THE TREE (user 2026-08-19: "the falling leaf voxels seem to fall from above the
@@ -262,21 +287,39 @@
     if (now < petalNext) return;
     petalNext = now + PETAL_GAP;
     const c0x = Math.floor(P.x / OKCELL), c0z = Math.floor(P.z / OKCELL);
-    for (let att = 0; att < 6; att++) {                // a few draws, not a scan: out of the blossom every draw misses and the whole thing costs six oakAt calls every 260 ms
+    // ── THE SHED IS SHARED OUT BY CROWN SIZE, NOT PER TREE (user 2026-08-20: "the smaller trees seem to have
+    // the leafs fall at a faster rate then the bigger trees … not faster in terms of movement, but just more
+    // single voxel leafs are falling. balance this out") ──
+    // The old loop drew cells until it found a tree and shed from THAT one, so every tree in the world shed at
+    // the same rate whatever its size. Equal counts are not equal DENSITY: oak footprints run 1088 to 12768
+    // voxels of ground (8 models, 11.7x), so the same leaves-per-second poured into a twelfth of the area under
+    // a sapling is twelve times the visible fall. That is exactly the report — the little trees look like they
+    // are shedding harder, and arithmetically they are.
+    // WEIGHTED RESERVOIR, not a rejection test. A per-draw "accept with probability size/maxSize" would have
+    // corrected the balance by throwing attempts away, and the band is a POPULATION (see PETAL_LO): fewer
+    // accepted attempts is fewer leaves in the air everywhere, which is not what "balance this out" asks for.
+    // Every draw is still made, exactly one tree is still chosen, and the choice is proportional to crown
+    // footprint — so the total rate is unchanged to the frame and only its distribution moves.
+    // The weight is FOOTPRINT AREA (sx*sy) rather than voxel count: leaves land on the ground under the crown,
+    // so what the eye compares is leaves per square metre of shade, not leaves per leaf.
+    let pk = null, pw = 0;                             // reservoir: the tree chosen so far, and the total weight seen
+    const offer = (kind, t, w) => { pw += w; if (Math.random() * pw < w) pk = { kind, t }; };   // A-Res, one slot: P(keep) = w / sum-so-far leaves each candidate holding exactly its own share
+    for (let att = 0; att < 6; att++) {                // a few draws, not a scan: out of the blossom every draw misses and the whole thing costs six oakAt calls every 130 ms
       const t = oakAt(c0x + ((Math.random() * 5) | 0) - 2, c0z + ((Math.random() * 5) | 0) - 2);
       if (!t) {                                      // ── NO OAK IN THIS CELL: TRY A PINE (user 2026-08-19) ── the same draw, the same attempt budget, the same band. Oaks are asked FIRST only because the oak grid is the one this loop was already walking; in the pine forest every oak draw misses and the pine gets the attempt, and in the oak forest the reverse. Neither can starve the other of the band, because a band slot is taken by whichever tree the cell actually holds
         if (!PETALN_IT) continue;
         const cp = Math.floor(P.x / TCELL), czp = Math.floor(P.z / TCELL);   // the PINE grid is TCELL, not OKCELL — the two forests are on different cell sizes and reusing the oak's would sample the wrong lattice
         const tp = treeAt(cp + ((Math.random() * 5) | 0) - 2, czp + ((Math.random() * 5) | 0) - 2);
-        if (!tp) continue;
-        const qp = pinePoint(tp); if (!qp || !stillLeafy(qp)) continue;
-        spawnPetal(qp[0], qp[1], qp[2], PETALN_IT);
-        return;
+        if (tp) offer(1, tp, MSX * MSY);               // the pine is ONE model, so every pine carries one weight — the same footprint measure the oaks are weighed on, so a pine and an oak of equal shade shed equally
+        continue;
       }                                // ── EVERY OAK SHEDS NOW, NOT ONLY THE BLOSSOM (user 2026-08-19) ── the `!t.blos` reject that stood here is gone; the flag survives as the thing that picks WHICH leaf falls. Four varieties, and each reads its own off the SAME descriptor the stamp used, so a leaf can never disagree with the crown it came from — the cherry's pink/white split (`wht`) and the oak's dark/light split (`lite`, user 2026-08-19) are the same arrangement, one flag choosing between two remapped ramps
-      const q = petalPoint(t); if (!q || !stillLeafy(q)) continue;
-      spawnPetal(q[0], q[1], q[2], t.blos ? (t.wht ? PETALW_IT : PETAL_IT) : (t.lite && PETALGL_IT ? PETALGL_IT : PETALG_IT));
-      return;
+      const om = OAKV[t.k];
+      if (om) offer(0, t, om.sx * om.sy);
     }
+    if (!pk) return;
+    if (pk.kind === 1) { const qp = pinePoint(pk.t); if (!qp || !stillLeafy(qp)) return; spawnPetal(qp[0], qp[1], qp[2], PETALN_IT); return; }
+    const q = petalPoint(pk.t); if (!q || !stillLeafy(q)) return;
+    spawnPetal(q[0], q[1], q[2], pk.t.blos ? (pk.t.wht ? PETALW_IT : PETAL_IT) : (pk.t.lite && PETALGL_IT ? PETALGL_IT : PETALG_IT));
   }
   // ── A LIVE TAP ── window.__vbPetal rather than a __vb.* method: main/debug-api.js is one shared fragment and
   // this probes one effect, so it is handed out the way world/gen-pool.js hands out __vbOak. Costs nothing
@@ -288,6 +331,33 @@
   //                        with __vb.idAt() up its own column and the "is it inside the canopy" question is
   //                        answered against the world's real voxels rather than against the model.
   window.__vbPetal = {
+    // ── WHO ACTUALLY SHEDS ── runs the reservoir's own draw n times over the trees around the player and
+    // returns how often each oak MODEL won, beside that model's ground footprint. The two columns should be in
+    // the same ratio: that IS the 2026-08-20 balance fix, and a histogram is the only way to see it (a leaf in
+    // the air carries its leaf id, not the tree it came off).
+    pick(n) {
+      const cnt = {}, c0x = Math.floor(P.x / OKCELL), c0z = Math.floor(P.z / OKCELL);
+      const cp = Math.floor(P.x / TCELL), czp = Math.floor(P.z / TCELL);
+      for (let i = 0; i < (n || 2000); i++) {
+        let pk = null, pw = 0;
+        const offer = (kind, k, w) => { pw += w; if (Math.random() * pw < w) pk = kind + ':' + k; };
+        for (let att = 0; att < 6; att++) {
+          const t = oakAt(c0x + ((Math.random() * 5) | 0) - 2, c0z + ((Math.random() * 5) | 0) - 2);
+          if (!t) { const tp = treeAt(cp + ((Math.random() * 5) | 0) - 2, czp + ((Math.random() * 5) | 0) - 2);
+                    if (tp) offer('pine', 0, MSX * MSY); continue; }
+          const om = OAKV[t.k]; if (om) offer('oak', t.wx + ',' + t.wz + ',' + t.k, om.sx * om.sy);
+        }
+        if (pk) cnt[pk] = (cnt[pk] || 0) + 1;
+      }
+      // Keyed on the TREE, not the model: a histogram by model only says how many of each kind stand nearby.
+      // picks/foot is the number that must come out flat — that is "every crown sheds at the same density".
+      const rows = Object.keys(cnt).map((k) => { const p3 = k.split(':')[1].split(',');
+        const foot = k.startsWith('pine') ? MSX * MSY : OAKV[+p3[2]].sx * OAKV[+p3[2]].sy;
+        return { tree: k.split(':')[0] + ' ' + (p3[2] === undefined ? '' : 'k' + p3[2]), picks: cnt[k], foot, per1k: +(cnt[k] / foot * 1000).toFixed(2) }; });
+      rows.sort((a, b) => a.foot - b.foot);
+      const pk9 = rows.map((r) => r.per1k);
+      return { trees: rows.length, rows, per1kMin: Math.min(...pk9), per1kMax: Math.max(...pk9) };
+    },
     live() { const n = performance.now();
       return sparks3d.slice(PETAL_LO, PETAL_HI).map((s) => {
         if (!s || !s.petal) return null;
@@ -295,7 +365,8 @@
         const sw = Math.sin(tS * s.rate + s.ph) * s.sway;
         return { t: +tS.toFixed(2), life: +s.life.toFixed(1), it: s.pit | 0, rate: +s.rate.toFixed(2), wide: +s.sway.toFixed(2),
           x0: +s.x.toFixed(2), y0: +s.y.toFixed(2), z0: +s.z.toFixed(2), off: +sw.toFixed(2),
-          x: +(s.x + s.ax * sw).toFixed(2), y: +(s.y - PETAL_FALL * tS).toFixed(2), z: +(s.z + s.az * sw).toFixed(2) }; }); },
+          wvx: +(s.wvx || 0).toFixed(2), wvz: +(s.wvz || 0).toFixed(2),   // the WIND this petal was born into — the tap has to carry it or it reports a position the emit does not draw
+          x: +(s.x + s.ax * sw + (s.wvx || 0) * tS).toFixed(2), y: +(s.y - PETAL_FALL * tS).toFixed(2), z: +(s.z + s.az * sw + (s.wvz || 0) * tS).toFixed(2) }; }); },
     spawn(n) { const out = [], c0x = Math.floor(P.x / OKCELL), c0z = Math.floor(P.z / OKCELL);
       for (let i = 0; i < (n || 200); i++) {
         const t = oakAt(c0x + ((Math.random() * 5) | 0) - 2, c0z + ((Math.random() * 5) | 0) - 2);

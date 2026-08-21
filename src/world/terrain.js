@@ -180,7 +180,18 @@
     // The mask is tested AFTER the salt, not before it, purely for cost: oakM is 6 vnoise where this whole
     // function is otherwise a handful of hashes, and boulderAt runs on every 34-voxel cell in the world plus
     // ~16 more probes per mushroom site. Same rejections, a quarter of the mask evaluations.
-    if (ihash(cx * 61 + 43, cz * 67 + 29) > 0.5625 && oakM(bx, bz) > 0.5) return null;
+    // ── AND THE HAND STONE GETS A QUARTER BACK (user 2026-08-20: "increase the amount of hand held rocks in
+    // the oak/cherry forest by 25%") ── 0.5625 -> 0.703125 for TIER 0 ONLY, which is rock.vox: the small
+    // pickable field stone, and the only tier crafting can actually use. The three boulder tiers keep 0.5625,
+    // because the two cuts above were about landmarks and nothing has asked for more of those.
+    // THE SAME SALT AND THE SAME DRAW, with only the threshold moved. Raising a threshold on an existing roll
+    // is a SUPERSET: every stone that stood there yesterday still stands there and new ones appear between
+    // them. Rolling a second, independent draw for the increase would have re-decided the whole field and
+    // moved rocks the player has already walked past, which is the thing this function's other notes keep
+    // guarding against.
+    // The blossom band needs no test of its own — it sits well inside oakM > 0.5, so "oak/cherry forest" is
+    // exactly what this line already selects (the same reasoning flowerAt gives for `inCh`).
+    if (ihash(cx * 61 + 43, cz * 67 + 29) > (size === 0 ? 0.703125 : 0.5625) && oakM(bx, bz) > 0.5) return null;
     // ── AND THE BIG ONES HALVED AGAIN ON TOP (user 2026-08-17: "reduce the large rocks in half") ──
     // ANSWERING THE QUESTION THAT CAME WITH IT: yes, the cut above already thins the large rocks, because
     // it is a flat rate on every tier — after it the oak forest carries 56.25% of the pine forest's big

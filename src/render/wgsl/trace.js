@@ -104,10 +104,10 @@
     // decided on the CPU and the falling flakes here, so if only one side sharpened its border the other would
     // disagree across the whole ramp — snow settling under a clear sky, or flakes falling on ground that
     // refuses them. Every weather test on this side goes through it, exactly as every one on that side does.
-    fn wSharpG(m : f32) -> f32 {                       // widened to 0.06..0.94 AND made LINEAR in step with the JS — see world/window.js. The two MUST match or the flakes and the blanket disagree across the band
+    fn wSharpG(m : f32) -> f32 {                       // 0.06..0.70 and LINEAR, in step with the JS — see world/window.js, which carries the reasoning. The two MUST match or the flakes and the blanket disagree across the band: this decides where a FLAKE is culled and wSharp decides where the BLANKET settles, so a stale copy here is snow lying under a clear sky
       if (m <= 0.06) { return 0.0; }
-      if (m >= 0.94) { return 1.0; }
-      return (m - 0.06) / 0.88;
+      if (m >= 0.70) { return 1.0; }
+      return (m - 0.06) / 0.64;
     }
     fn cherryMaskW(x : f32, z : f32) -> f32 {          // the blossom band as the WEATHER sees it — cherryMask's twin on the wider CHBW ramp (world/window.js cherryW). Same centre and same CHHALF, so WHERE it snows is identical and only the fade length differs
       let b = f32(${SPWX - CHOFF - chWob(SPWZ)}) + chWobG(z);
@@ -511,7 +511,15 @@
         let vcW = vec3<i32>(floor(pos - h.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));   // WORLD coords — grain must not swim when the window shifts
         if (bHit) { albedo = bCol * select(1.0, 0.88 + 0.24 * ih3(bVc.x, bVc.y, bVc.z), LG(9u)); isRock = isRockV(bVox); }   // felled chunk: palette colour + genuinely MODEL-LOCAL grain, at the SAME +/-12% amplitude static terrain uses, so a fallen trunk reads exactly like a standing one
         else if (cSlot != 0u) { albedo = cCell * select(1.0, 0.95 + 0.10 * ih3(cVc.x, cVc.y, cVc.z), LG(11u)); }   // creature: its cell color (baked self-AO included) + MODEL-LOCAL grain — GENTLE (±5%) so a model's authored colour transitions dominate the random per-voxel noise (user: adjacent whites read very differently); stable as it moves/rotates, matches the analytic path
-        else { albedo = pal[h.vox].rgb * select(1.0, 0.88 + 0.24 * ivhash(vcW), LG(10u)); isRock = isRockV(h.vox); }
+        // ── AND THE GRAIN FADES OUT WITH DISTANCE (user 2026-08-20) ── the +/-12% per-voxel jitter is what makes
+        // stone and bark read as MATERIAL up close. Past a few dozen voxels a voxel is smaller than a pixel, so
+        // the same jitter stops being texture and becomes per-pixel noise — which is the speckled carpet the
+        // mid-distance canopy turns into, and it is noise TAA then has to spend its history fighting. Faded
+        // toward 1.0 (the plain palette colour) over 80..260 voxels: near-field material is untouched, the
+        // treeline resolves into trees, and it costs one smoothstep on a value the branch already has.
+        // It rides the same LG(10u) switch, so the debug bit still turns the whole thing off in one place.
+        else { let gk = 1.0 - smoothstep(GRAIN_NEAR, GRAIN_FAR, t);
+               albedo = pal[h.vox].rgb * select(1.0, mix(1.0, 0.88 + 0.24 * ivhash(vcW), gk), LG(10u)); isRock = isRockV(h.vox); }
         if (u.hurtB.w > 0.0) {                                       // ── HIT FLASH ── the animal just hit, blinking red (user)
           // WHOSE pixel is this? A trace-injected creature carries its dynamic-life slot in cSlot, so the
           // wounded animal is identified exactly, pixel for pixel, however it moves. The old box could
@@ -617,7 +625,7 @@
         // Beer–Lambert absorption — the G-buffer albedo stays the pure surface color + foam.)
         var seed = ((gid.x * 1973u) ^ (gid.y * 9277u) ^ (u32(u.frame) * 26699u)) | 1u;
         let sp = pos + h.n * 0.02;
-        if (${location.search.includes('nosun') ? 0 : 1} == 1 && (dot(h.n, u.sunDir) > 0.0 || (FOLBACK && isFol(h.vox))) && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night (?nosun disables for A/B)
+        if (${location.search.includes('nosun') ? 0 : 1} == 1 && (dot(h.n, u.sunDir) > 0.0 || (FOLBACK_URL && isFol(h.vox))) && u.sunDir.y > -0.04) {        // cone-jittered sun ray; skipped entirely at night (?nosun disables for A/B)
           let st = onbT(u.sunDir); let sb = cross(u.sunDir, st);
           let jitK = select(0.0, mix(0.028, 0.009, nightK()), LG(12u));                   // bit 12: sun PENUMBRA — off = a pin-sharp, perfectly hard shadow edge   // …and NIGHT BIT 0 tightens the cone toward the moon's own angular radius. 0.028 rad is a soft edge tuned for the SUN through a canopy; the same cone under a light a twentieth as bright gives a penumbra the denoiser cannot resolve, so a moon shadow arrived as a smudge. The mix rides nightK(), so noon is bit-identical.
           let sdir = normalize(u.sunDir + st * ((rand(&seed) * 2.0 - 1.0) * jitK) + sb * ((rand(&seed) * 2.0 - 1.0) * jitK));

@@ -24,12 +24,22 @@
   const AUTO_PICK_R = 16;                              // AUTO-PICKUP radius (vox) — walk this close and a FREE hand slot vacuums the item up
   function autoPickup() {                              // proximity grab: RADIAL, not the view-ray march tryPickup() uses — you never have to aim at it
     if (grabAnim || dead) return;                      // one flight at a time — startGrab would clobber the item already in the air
-    if (!slots.some((s) => !s)) return;                // only an EMPTY slot auto-grabs; topping up an existing stack stays a deliberate right-click
+    // ── IT TOPS UP A STACK NOW (user 2026-08-20: "I can pick up the steak if I have an empty hand, but its not
+    // stacking to the steak in hand like it used to") ── this was `slots.some((s) => !s)`: only an EMPTY slot
+    // auto-grabbed, and topping up an existing stack was a deliberate right-click. That rule was written when
+    // the hotbar had spare slots. SLOT_MAX is 5 and the player now spawns with axe, pick, shovel and bow, so
+    // the moment anything lands in the fifth slot there is no empty slot left and this early return killed
+    // auto-pickup ENTIRELY — walk over a steak while holding steaks and nothing happens, which is exactly the
+    // report. The question is asked PER DROP now, with canAdd, which is the same test tryPickup's own drop
+    // loop uses: a drop is grabbed if there is anywhere for it to go, whether that is an empty slot or a stack
+    // of its own kind with room. Nothing else can auto-grab that could not before — canAdd is false for a full
+    // hotbar with no matching stack, which is what the old line was really trying to say.
     const tNow = performance.now();
     let bi = -1, bd = AUTO_PICK_R * AUTO_PICK_R;       // nearest wins, so a pile drains one item per flight instead of grabbing at random
     for (let i = 0; i < drops.length; i++) {
       const dr = drops[i];
       if (dr.T && (tNow - dr.born) / 1000 < dr.T) continue;   // still mid-toss — let it land before it can be re-grabbed (else a Q-toss boomerangs straight back)
+      if (!canAdd(dr.it)) continue;                    // …and there has to be somewhere for it to go — see the note above
       const ox = dr.x + 0.5 - P.x, oy = dr.y + dropAnchor(dr) - smoothEye, oz = dr.z + 0.5 - P.z;
       const d2 = ox * ox + oy * oy + oz * oz;
       if (d2 < bd) { bd = d2; bi = i; }
@@ -49,11 +59,17 @@
   let musVol = 1;   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
-  let sndVol = 1;   // ── SOUND IS BACK ON (user 2026-08-19: "turn the volume back on by default") ── it was set to 0 on
-                    // 2026-08-18 ("turn off the volume for the time being"), and "for the time being" has ended. 1 is the
-                    // 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
+  let ambVol = 1;   // ── AMBIENCE (user 2026-08-20: "add a new audio slider called ambience. this adjusts the ambience
+                    // sound. song birds/wind etc. put it under music") ── the fourth bus, and the one BUS_AMB has
+                    // been riding without since it was named: busVol answered a literal 1 for it, so the forest
+                    // and desert beds moved only with the master. Same rule as the two above it — 100% on every
+                    // refresh, persisted to vb_amb — so the sound box has one behaviour and not four.
+                    // It reaches the desert bed as well as the forest one for free: both register on BUS_AMB and
+                    // ambBiomeTick recomputes their levels through sndLevel every frame, so a drag moves the bed
+                    // that is playing right now rather than the next one to start.
+  let sndVol = 1;   // ── SOUND IS BACK ON (user 2026-08-20: "turn the volume on by default") ── it was muted earlier the same day ("turn off volume by default"), which was itself a repeat of 2026-08-18, and this is the third time the switch has moved. 1 is the 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
                     // preference: a saved vb_vol is written by the slider and re-read there, so a player who turns it down
-                    // still gets their setting — this only decides where a fresh load begins.
+                    // still gets their setting for that session — this only decides where a fresh load begins.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
   let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
   const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
@@ -66,7 +82,7 @@
   // "not sfx" would have meant the forest bed AND the score at once, and applyVol could no longer tell which
   // slider owns a sound. Every registered sound names exactly one bus instead.
   const BUS_AMB = 0, BUS_SFX = 1, BUS_MUS = 2;
-  const busVol = (bus) => bus === BUS_SFX ? sfxVol : bus === BUS_MUS ? musVol : 1;   // BUS_AMB rides the master alone
+  const busVol = (bus) => bus === BUS_SFX ? sfxVol : bus === BUS_MUS ? musVol : ambVol;   // …and BUS_AMB has its own slider now, where it used to ride the master alone
   const sndLevel = (base, bus, gain) => Math.min(1, base * SND_GAIN * sndVol * busVol(bus) * (gain === undefined ? 1 : gain));
   const regBus = (a, base, bus) => { a.volume = sndLevel(base, bus); sndReg.push({ a, base, bus }); return a; };
   const regSnd = (a, base, sfx) => regBus(a, base, sfx === false ? BUS_AMB : BUS_SFX);   // SFX unless a caller opts out — a new sound is an effect until someone says otherwise, so nothing can silently escape the slider
@@ -260,7 +276,7 @@
   // BASE 0.14 — measured, the track is -15.2 LUFS integrated, within 0.1 dB of high_score.mp4's -15.1, so the
   // achievement jingle's own twice-tuned 0.09 is the anchor: this sits ~4 dB over it (a moment, not a cue) and
   // still under the tool hits. On the MUSIC bus, so nothing but the master and the new slider can move it.
-  const ANTHEM_AT = 60;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-08: was 120)
+  const ANTHEM_AT = 3;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-20: 120 -> 60 -> 30 -> 10 -> 3, and the clock no longer starts on its own — see anthemArmed)
   const ANTHEM_GAP = 60;                               // …and a minute of gameplay of SILENCE between one track ending and the next starting (user)
   // ── THE SET (user 2026-08-08, re-cut 2026-08-18) ── the soundtrack, in rotation, then silence for the rest
   // of the session. It moved from game/sound/music/*.mp4 to game/sound/soundtrack/*.mp3 and gained two cuts,
@@ -310,6 +326,13 @@
   const anthemSnds = anthemOrder.map(([n9, g9]) => regMus(new Audio('sound/soundtrack/' + n9 + '.mp3'), g9));   // soundtrack/*.mp3, not music/*.mp4 — see the set above. The old .mp4s are left in place; nothing reads them.
   console.log('[vb] anthem order:', anthemOrder.map((t9) => t9[0]).join(' -> '));
   const anthemSnd = anthemSnds[0];                     // the first cut, still named for the taps that read it
+  // ── THE CLOCK DOES NOT START UNTIL THE PLAYER PRESSES 1 (user 2026-08-20: "make it where the first song
+  // starts when the user presses 1. 3 seconds after the player presses 1") ── the play clock used to run from
+  // the moment the player took the controls, so the opening track was tied to nothing the player did. Armed by
+  // the 1 key instead (ui/input.js), and ANTHEM_AT is the 3 seconds between the press and the music.
+  // A LATCH, not a toggle: only the FIRST press arms it, so pressing 1 again mid-set cannot restart the
+  // playlist or re-trigger a track. Everything after the first cut is unchanged — ANTHEM_GAP still spaces them.
+  let anthemArmed = false;
   let playSecs = 0, anthemDone = false;                // the play clock, and the set-is-finished latch
   let anthemIdx = 0, anthemNextAt = ANTHEM_AT;         // which cut comes next, and the play-clock time it is due
   const playAnthem = () => {
@@ -323,7 +346,7 @@
   // so it is a minute of silence rather than a minute of overlap.
   for (const a9 of anthemSnds) a9.addEventListener('ended', () => { if (!anthemDone) anthemNextAt = playSecs + ANTHEM_GAP; });
   const SWAP_MS = 240;                                 // how long a tool swap takes to rise back into frame — short enough that it never delays a swing
-  let swapT0 = -1e9, prevHeldIt = -1;                  // …and when the current one started (see the view-model block)
+  let swapT0 = -1e9, prevHeldIt = -1, prevHeldSlot;    // …and when the current one started (see the view-model block). prevHeldSlot is the SLOT OBJECT the hand was last drawing from — undefined to start, so the first frame with anything in hand counts as a change   // …and when the current one started (see the view-model block)
   let lSwapT0 = -1e9, prevLeftIt = -1;                 // …and the OFF hand's own pair (user 2026-08-19: the left hand should share the right's mechanics). Its own clock, because the two hands change item independently — a craft pair forming swaps the LEFT hand while the right keeps what it was holding
   let swingStart = -1e9, mouse0 = false, mouse2 = false;   // mouse2: RIGHT button HELD — the wind-up for a rock throw (right-hold, then left-click)               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
   let pendKillT = 0;                                   // pending creature-hit: armed at swing start, FIRES ~250 ms in — when the axe visually LANDS on screen (user: only register the hit when the axe hits), not at the click

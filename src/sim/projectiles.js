@@ -1,5 +1,5 @@
   // @module — arrows and spears: launch, arc, impact, and the pick-up flood
-  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, launchThrown, shootArrow, throwSpear, twigLeafCells
+  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, launchThrown, shootArrow, throwSpear, twigLeafCells
   // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
   // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
   const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
@@ -264,14 +264,37 @@
       chopAt: hitSlot < 0 && hitBird < 0 && py >= 1 ? [Math.round(px), Math.round(py), Math.round(pz)] : null,   // …or the voxel it is about to knock a chunk out of
       ex: px, ey: py, ez: pz,                          // the real impact point, not the analytic parabola's guess
       q0: m2q(Xh, [Xh[2], 0, -Xh[0]], [0, 1, 0]) });
-    if (drops.length > 4) drops.shift();                // …and never more than the composite can draw
+    if (drops.length > 8) drops.shift();   // ── 8 ITEM DROPS, NOT 4 (user 2026-08-20: "have the max number of floating hand held items on the field 8 instead of 4") ── drops.shift() DELETES the oldest, so a fifth drop did not just stop being drawn, it stopped existing. The render band moved with it: see the band map at dropCursor in main/tick-life.js
     unlockProjectile();                                // it is away and flying — the discovery is earned (user)
     return true;
   };
   // ── THE BOW ── the draw IS the power (user). Loosing is only allowed past half draw, so this runs 0.5 at
   // the earliest release to 1.0 at a full pull; ARROW_V is what a full draw is worth.
+  // ── AND A SHOT COSTS AN ARROW (user 2026-08-20: "when the player shoots an arrow with bow, have the number
+  // of arrows go down") ── the bow was never consumed and neither was its ammunition, so the eight the player
+  // spawns with were infinite. The arrows are NOT in the hand — the hand holds the bow — so this spends one
+  // from wherever the hotbar keeps them, the way craftTake spends materials across slots.
+  // PAID BEFORE IT FLIES, which is the rule the spear below records the hard way: check the slot first, and a
+  // launch that cannot be paid for never happens. Here that also means an empty quiver simply releases the
+  // string with nothing on it, rather than firing a shaft the player does not own.
+  const arrowTake = () => {
+    if (!ARROW_IT) return false;
+    for (let i = 0; i < slots.length; i++) { const s9 = slots[i];
+      if (s9 && s9.it === ARROW_IT && (s9.n | 0) > 0) { s9.n -= 1; if (s9.n <= 0) slots[i] = null; slotTidy(); return true; } }
+    return false;
+  };
+  // ── THE BOW IS UNLIMITED (user 2026-08-20: "just have the bow shoot unlimited arrows. keep the shooting down
+  // the arrow mechanic though") ── one switch, and everything above it stays: arrowTake, the pay-before-it-flies
+  // ordering and the refund are all still here and still correct, they are simply not consulted. Set ARROW_COST
+  // true and the quiver is live again with no other edit — the same shape CRAFT_ON and DUAL_ON use.
+  // Arrows still EXIST: a loosed shaft lands as an ordinary drop and can be picked up, stacked and thrown, and
+  // the badge bake for them is still in ui/hud.js. What changes is only whether drawing the bow costs one.
+  const ARROW_COST = false;
   const shootArrow = () => { const dk = Math.min(1, Math.max(0, (bowRel - bowT0) / BOW_DRAW_MS));
-    return launchThrown(ARROW_IT, ARROW_V * dk, ARROW_UP * dk, 'arrow'); };
+    if (ARROW_COST && !arrowTake()) return false;      // empty quiver — nothing flies, and nothing is spent
+    if (launchThrown(ARROW_IT, ARROW_V * dk, ARROW_UP * dk, 'arrow')) return true;
+    if (ARROW_COST) addItem(ARROW_IT);                 // …and the launch itself refused (dead, editor): give it straight back rather than eat it
+    return false; };
   // ── THE SPEAR ── heavier and slower than an arrow, and it LEAVES YOUR HAND: the spear is the projectile,
   // so throwing it costs you the item until you walk over and pick it up again (user).
   const SPEAR_WIND_MS = 320, SPEAR_V = ARROW_V * 0.62, SPEAR_UP = ARROW_UP;
@@ -302,6 +325,16 @@
   // that is the established design here rather than a shortfall.
   for (const sm of STICKB) for (const p of sm.vox) { const id = p >>> 24; if (!BLOSLEAF.includes(id)) PICK_STICK.add(id); }
   const PICK_TWIG = new Set([...PICK_STICK, ...PICK_CONE]);   // the one set the right-click flood walks: a stick and a pinecone are told apart by the ids the COMPONENT turns out to contain, not by which set the first voxel matched. Kept as a union so the classifier still works if the two ever share ids again (they did — see palOwn).
+  // ── AND A FALLEN LOG IS NOT A TWIG (user 2026-08-20: "audit all objects in the terrain") ── found by
+  // __vb.pickTable(): log.vox wears ids 49/50/51/52 and every one of them is in PICK_STICK, because both are
+  // pine-trunk browns out of a FULL 256-entry palette. So the right-click flood claimed a 372-voxel log,
+  // stopped at the twig's 24-cell cap, handed the player a twig and left a 24-voxel bite out of the log.
+  // The cone/stick collision two lines up was solved by asking what ids the component CONTAINS; that cannot
+  // work here, because the log's ids are a SUBSET of the stick's — there is no id a log has that a stick does
+  // not. SIZE is the honest discriminator and it is not close: the biggest stick model is 17 voxels and the
+  // log is 372. Read off the models rather than written down, so re-authoring stick_2.vox cannot leave it stale.
+  const TWIG_MAX = STICKV.concat(STICKB).reduce((a, m) => Math.max(a, m.vox.length), 0) || 24;
+  const TWIG_CAP = TWIG_MAX * 2 + 1;                   // …and TWO fused sticks are still two sticks: the cap admits a pair (a scatter can drop them touching) and the +1 is what lets the caller SEE that it overflowed rather than guessing at a full bucket
   // ── AND THE FRUIT (user 2026-08-17: "have the player able to right click an apple from a tree and pick it
   // up") ── the apple and the orange do NOT share the twig's problem, and that is worth saying because it is
   // why this is two sets instead of one union with a component classifier. FRUITC is minted in palette.js and
@@ -460,6 +493,29 @@
   // animals walk through, which is also what they did for the whole time the shrubs were soft.
   const WORM_PASS = new Set([...PICK_CONE, ...PICK_STICK, ...PICK_ROCK, ...SHRUBC, ...SHRUBF]);        // worms crawl OVER small ground clutter (pinecones/sticks/field stones) instead of tripping on it → getting stuck → teleporting (user)
   const PASSTHRU = new Set([...GRASS, ...FERNIDS, WATER_T, WATER_B]);   // the pick ray sees through soft decor + water
+  // ── THE MEADOW FLOWER, PICKABLE (user 2026-08-20: "have the flowers in the terrain be able to be picked up
+  // via right click") ── the PETALS only. The plant's one green (id 62, measured via __vbFlowerMat) is a GRASS
+  // id — the flowers share the meadow's palette, which is why they cost the full table nothing — so flooding
+  // over it would eat the grass the flower is standing in. Petals are unambiguous and they are the whole of
+  // what reads as the flower.
+  // AND THE TWO GREEN VOXELS ARE LEFT STANDING, deliberately. They sit at model z=0..1, they wear the grass's
+  // own id, and they are surrounded by grass of that id: what is left behind after the bloom comes away is
+  // indistinguishable from the grass beside it. Removing them would mean guessing which of several identical
+  // green voxels in that column belonged to the plant, and guessing wrong takes the player's meadow apart.
+  // IT LIVES *HERE*, BELOW PASSTHRU, AND NOT UP WITH THE OTHER PICK_ SETS. It is derived by subtracting
+  // PASSTHRU, and PASSTHRU is a `const` declared further down this file: reading it from the PICK_ block
+  // above is a temporal-dead-zone throw at load, which in this codebase is a game that never boots (it did —
+  // "Cannot access 'PASSTHRU' before initialization", caught by __vb.errLog).
+  // BUILT OFF THE MODELS, NOT OFF FLOWERIDS. FLOWERIDS is derived in assets/bow.js from FLOWERV's voxels
+  // BEFORE the pink twin is minted (its own comment says so), so it can miss an id the blossom variant wears —
+  // __vb.pickTable() caught exactly one, id 80, sitting on a plant no right-click could trigger. Reading the
+  // models themselves is the same source stampFlower draws from, so the trigger set and the thing standing in
+  // the world cannot disagree however the derivation changes later.
+  const PICK_FLOWER = new Set();
+  for (const m of (typeof FLOWERV === 'undefined' ? [] : FLOWERV).concat(typeof FLOWERV_CH === 'undefined' ? [] : FLOWERV_CH))
+    for (const q of m.vox) { const i = q >>> 24; if (!PASSTHRU.has(i)) PICK_FLOWER.add(i); }
+  const FLOWER_CAP = (typeof FLOWERV === 'undefined' ? [] : FLOWERV.concat(typeof FLOWERV_CH === 'undefined' ? [] : FLOWERV_CH))
+    .reduce((a, m) => Math.max(a, m.vox.length), 0) + 4;   // the biggest flower model, plus slack: a cap under the model leaves half a bloom standing
   function floodScan(x, y, z, ids, cap) {              // READ-ONLY half of floodRemove: which cells the region covers, and which ids it is MADE of.
     const found = []; const kinds = new Set(); const q = [[x, y, z]]; const seen = new Set();   // `kinds` is what lets a caller tell two decorations apart when they share palette ids
     while (q.length && found.length <= cap) {

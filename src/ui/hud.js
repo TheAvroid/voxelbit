@@ -12,7 +12,14 @@
     // the moonlight contrast pass now runs unconditionally in render/wgsl/pre.js, and the moon is always drawn
     // full and solid there. The remaining bit NUMBERS are deliberately unchanged: they are persisted in
     // localStorage as vb_night, so renumbering would silently re-map every existing player's switches.
-    ['shooting stars', 5, 'occasional meteors, drawn as blocks'],
+    // ── AND THE LIST IS EMPTY AGAIN (user 2026-08-20: "bake in all the new graphic settings. remove the
+    // graphical panel") ── back-lit leaves and edge focus were rows for a few hours and are now unconditional
+    // in the shaders; shooting stars had already been baked in on 2026-08-19 and its row drove nothing.
+    // This is the SECOND time the panel has emptied out, and the machinery is left standing for the same
+    // reason it was the first: ntPanel's markup, ntShow/ntRefresh/ntSave and this list are a working switch
+    // board, and re-exposing a term means adding its row back and restoring one call, not rebuilding a panel.
+    // Nothing reads nightMask now — every NG() call is gone from the shaders again — so a stored vb_night is
+    // inert rather than wrong.
   ];
   // ── WHAT IS ON OUT OF THE BOX ── bit 4 because the firefly light is EXISTING shipped behaviour and this
   // row is only its switch: defaulting it off would be a silent removal. Bit 5 because the shooting stars were
@@ -25,7 +32,7 @@
   // Bits 0, 1, 4 and 6 are no longer rows. 0/1 (moonlight, moon phase) and 4 (firefly light) are BAKED IN
   // and always on; 6 (nebulas) was removed from the game outright. Only bits 2, 3 and 5 remain switchable,
   // and their NUMBERS are deliberately unchanged — a stored vb_night mask would otherwise silently remap.
-  const NIGHT_DEF = (1 << 5);   // bits 0/1 are no longer rows; anything still set for them in a stored mask is simply never read
+  const NIGHT_DEF = (1 << 5) | (1 << 6) | (1 << 7);   // …6 and 7 default ON: back-lit leaves has been on since 2026-08-08 and edge focus is a correction, so the defaults are the game as it was plus the fix   // bits 0/1 are no longer rows; anything still set for them in a stored mask is simply never read
   let nightMask = NIGHT_DEF;
   // 128 and not (1 << NIGHT_ROWS.length): the rows no longer START at bit 0, so the row COUNT is not the bit
   // WIDTH — bounding by it would reject every stored mask that has the nebula bit set.
@@ -125,7 +132,27 @@
   if (WORM_ITEM0) pickCfgs[WORM_ITEM0] = { ...PICK_DEFS[WORM_ITEM0] };
   if (WORM_EAT0) for (let f = 0; f < FOOD_EAT_N; f++) pickCfgs[WORM_EAT0 + f] = { ...PICK_DEFS[WORM_EAT0 + f] };
   if (APPLE_IT) for (let f = 0; f < FOOD_EAT_N; f++) { pickCfgs[APPLE_IT + f] = { ...PICK_DEFS[APPLE_IT + f] }; pickCfgs[ORANGE_IT + f] = { ...PICK_DEFS[ORANGE_IT + f] }; }
+  // ── THE PICKED FLOWER (user 2026-08-20) ── every variant takes the SAME pose and the SAME name, for the
+  // reason the blossom twig shares the green twig's: the held-pose and stack-badge panels group by NAME, so one
+  // entry per variant would be six separate poses to drag and six chances for them to drift. They are one
+  // object — a stem held upright in the fist — and the models are the same 3x3x8 plant, so one bake is right
+  // for all of them. It starts on the TWIG's pose, which is the closest thing already tuned: a thin upright
+  // stalk held at the same end. Drag it in __vb.pick() and the copy row prints the line to paste back here.
+  // ── THE USER'S OWN BAKE (2026-08-20), copied from the held-item panel's copy row ── it replaces the
+  // starting guess (the twig's angles at two thirds scale), which held the bloom face-on and too close.
+  // ONE POSE FOR ALL SIX VARIANTS, and that is not an approximation: ITEM_NAMES calls every one of them
+  // 'flower', the panel groups by NAME, so this IS the single entry the user dragged — the rose they happened
+  // to be holding and the other four and the pink twin are the same 3x3x8 plant on the same stem.
+  // NOTE a SAVED pose (vb_pick5) wins over this default, so if the sliders have already been dragged this
+  // session, clear it or drag it again to see this take.
+  { const fp = { x: 0.89, y: -0.31, z: 1.02, yaw: -0.14, pitch: -1.21, roll: -1.64, scale: 0.055 };
+    if (FLOWER_IT0) for (let f = 0; f < FLOWERV.length; f++) PICK_DEFS[FLOWER_IT0 + f] = { ...fp };
+    if (FLOWER_CH_IT0) for (let f = 0; f < FLOWERV_CH.length; f++) PICK_DEFS[FLOWER_CH_IT0 + f] = { ...fp }; }
+  if (FLOWER_IT0) for (let f = 0; f < FLOWERV.length; f++) pickCfgs[FLOWER_IT0 + f] = { ...PICK_DEFS[FLOWER_IT0 + f] };
+  if (FLOWER_CH_IT0) for (let f = 0; f < FLOWERV_CH.length; f++) pickCfgs[FLOWER_CH_IT0 + f] = { ...PICK_DEFS[FLOWER_CH_IT0 + f] };
   const ITEM_NAMES = { 1: 'axe', 2: 'rock', 3: 'twig', 4: 'pinecone' };
+  if (FLOWER_IT0) for (let f = 0; f < FLOWERV.length; f++) ITEM_NAMES[FLOWER_IT0 + f] = 'flower';
+  if (FLOWER_CH_IT0) for (let f = 0; f < FLOWERV_CH.length; f++) ITEM_NAMES[FLOWER_CH_IT0 + f] = 'flower';
   if (STICK_BLOS_IT) ITEM_NAMES[STICK_BLOS_IT] = 'twig';   // ── THE SAME NAME AS ITEM 3, DELIBERATELY ── the held-pose and stack-badge panels group by NAME (see the peers helpers below), so the green twig and the blossom twig share one pose, one badge placement and one saved bake. Without this the pink one is a nameless id: no pose entry, no badge trim, and neither panel can bind to it.
   ITEM_NAMES[KNIFE_IT] = 'knife';
   if (PICK_IT) ITEM_NAMES[PICK_IT] = 'pick';
@@ -205,6 +232,10 @@
   // Keyed on STICK_IT and not the literal 3 so an item-list change cannot silently move this onto something else.
   if (STICK_IT) SB_DEFS[STICK_IT] = { x: -51.5, y: 0, size: 1, tilt: -0.26 };
   if (STICK_BLOS_IT) SB_DEFS[STICK_BLOS_IT] = { x: -51.5, y: 0, size: 1, tilt: -0.26 };   // the blossom twig is the same object in the hand, so it carries the same badge placement
+  // THE ARROW (user bake 2026-08-20), copied from the panel's copy row. One id — held-items.js pushes a single
+  // item for arrow.vox — and it is the only tool in the starting kit that comes as a stack, so it is the only
+  // one of the five whose badge is ever drawn.
+  if (ARROW_IT) SB_DEFS[ARROW_IT] = { x: 25, y: 0, size: 1, tilt: -0.26 };   // re-baked from the panel (user 2026-08-20), x 15.5 -> 25
   const sbCfgs = {}; for (const id in SB_DEFS) sbCfgs[id] = { ...SB_DEFS[id] };
   const sbFor = (it) => sbCfgs[it] || SB_BASE;         // read-only fallback: an id with no name (nothing the hand shows) takes the base rather than minting an entry from a render loop
   // ── THE KEY IS BUMPED TO …3 (user 2026-08-18) ── the trim's UNIT changed with the slider fix: x/y used to be
@@ -372,8 +403,7 @@
       const ae = document.activeElement; if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
       e.preventDefault();
       const want = pkPanel.classList.contains('hidden');
-      if (want) ntShow(false);                         // …and only ONE of the two free-cursor panels is ever up: they both drive setLightMode, so leaving the other open means its close hands the pointer back under a panel that is still on screen
-      pkShow(want);                                    // rebinds the sliders to whatever is in the hand right now
+      pkShow(want);                                    // rebinds the sliders to whatever is in the hand right now   // …and NOT ntShow any more: the graphics panel has no rows left (see NIGHT_ROWS), and a panel with nothing in it is worse than no panel — the same call this line briefly carried is what the 2026-08-19 note took out for the same reason
     });
     $('pkReset').addEventListener('click', (e) => { e.stopPropagation();   // …and reset takes the whole strip back too, for the same reason a drag moves it
       for (const id in pickCfgs) if (ITEM_NAMES[id] === ITEM_NAMES[pkIt]) Object.assign(pickCfgs[id], PICK_DEFS[id]);
@@ -391,8 +421,8 @@
     // self-contained edit in one file.
     const ntPanel = document.createElement('div');
     ntPanel.id = 'ntPanel'; ntPanel.className = 'hidden';
-    ntPanel.innerHTML = '<div id="ntCard"><h2>night</h2><div id="ntRows"></div>'
-      + '<div class="ntHint">night only — every one of these is behind the same compare on the sun\'s elevation, so by day they cost nothing</div>'
+    ntPanel.innerHTML = '<div id="ntCard"><h2>graphics</h2><div id="ntRows"></div>'
+      + '<div class="ntHint">L opens this. the night rows sit behind one compare on the sun elevation, so by day they cost nothing; the others are live at all hours</div>'
       + '<div style="text-align:center"><button id="ntReset">reset</button><button id="ntClose">done</button></div></div>';
     document.body.appendChild(ntPanel);
     const ntRows = $('ntRows');
@@ -412,7 +442,11 @@
     const ntSave = () => { try { localStorage.setItem('vb_night', String(nightMask)); } catch (e) {} };
     function ntRefresh() { for (const [, bit] of NIGHT_ROWS) { const b = $('ntB' + bit), on = (nightMask & (1 << bit)) !== 0;
       b.textContent = on ? 'on' : 'off'; b.classList.toggle('on', on); } }
-    const ntShow = (on) => { if (on) pkShow(false); ntPanel.classList.toggle('hidden', !on); setLightMode(on); if (on) ntRefresh(); };
+    // ── THEY NO LONGER SHUT EACH OTHER (user 2026-08-20) ── the mutual close existed because both panels are
+    // free-cursor and both drive setLightMode, so with one closing while the other stayed up the pointer went
+    // back under a panel still on screen. They now open and close TOGETHER off one key, so that can no longer
+    // happen — and they no longer overlap either: the held-item cards are top-LEFT and graphics is top-RIGHT.
+    const ntShow = (on) => { ntPanel.classList.toggle('hidden', !on); setLightMode(on); if (on) ntRefresh(); };
     // ── L OPENS NOTHING (user 2026-08-19: "disable the panel completely on the l toggle") ── the night
     // panel emptied out over the course of the day: moonlight, moon phase, firefly light, the milky way,
     // the nebulas and the star twinkle were baked in or removed one by one, and the last row, the shooting
@@ -422,6 +456,13 @@
     // are simply unreachable: re-exposing a night feature means adding its row back and restoring these
     // five lines, not rebuilding the panel. Nothing reads nightMask any more — every NG() call is gone
     // from the shaders — so the stored vb_night value is inert rather than wrong.
+    // ── L OPENS ALL THREE, AND THERE IS ONE LISTENER (user 2026-08-20: "what happened to the hand held object
+    // boxes on the left? bring them to the l toggle. you shouldnt have taken them off") ── the graphics panel
+    // was given its own KeyL handler when it came back, which made TWO listeners on the key: the one above
+    // opened the held-item and stack-count cards, this one then opened graphics, and ntShow's pkShow(false)
+    // closed the two that had just appeared. The boxes were not removed — they were being shut a frame after
+    // they opened. The listener is gone; the handler above drives all three, which is what "everything on the
+    // l toggle" asked for in the first place.
     $('ntClose').addEventListener('click', (e) => { e.stopPropagation(); ntShow(false); });
     $('ntReset').addEventListener('click', (e) => { e.stopPropagation(); nightMask = NIGHT_DEF; resetHist = 1; ntSave(); ntRefresh(); });
     ntPanel.addEventListener('click', (e) => { e.stopPropagation();

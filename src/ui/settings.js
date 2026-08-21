@@ -343,6 +343,14 @@
   musSlider.addEventListener('click', (e) => e.stopPropagation());
   musSlider.addEventListener('input', (e) => { e.stopPropagation(); musVol = parseFloat(musSlider.value) / 100; applyVol(); musShow(); sliderFill(musSlider);
     try { localStorage.setItem('vb_mus', String(musVol)); } catch (err) {} });
+  const ambSlider = $('ambSlider'), ambLabel = $('ambLabel');   // AMBIENCE — the fourth bus: the forest and desert beds (persisted vb_amb, reset to 100% on load like the three above it). applyVol() re-levels every registered sound, and ambBiomeTick recomputes the two beds every frame, so this moves the bed that is playing rather than the next one to start.
+  ambSlider.value = Math.round(ambVol * 100); sliderFill(ambSlider);
+  const ambShow = () => { ambLabel.textContent = 'ambience ' + Math.round(ambVol * 100) + '%'; };
+  ambShow();
+  ambSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
+  ambSlider.addEventListener('click', (e) => e.stopPropagation());
+  ambSlider.addEventListener('input', (e) => { e.stopPropagation(); ambVol = parseFloat(ambSlider.value) / 100; applyVol(); ambShow(); sliderFill(ambSlider);
+    try { localStorage.setItem('vb_amb', String(ambVol)); } catch (err) {} });
   const sensSlider = $('sensSlider'), sensLabel = $('sensLabel');   // MOUSE LOOK SENSITIVITY — scales the yaw/pitch multiplier (persisted vb_sens)
   sensSlider.value = Math.round(lookSens * 100); sliderFill(sensSlider);
   const sensShow = () => { sensLabel.textContent = 'sensitivity ' + Math.round(lookSens * 100) + '%'; };

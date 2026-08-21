@@ -3,6 +3,21 @@
   // 0 = empty hand, 1 = stone axe (.vox), 2 = pebble rock, 3 = twig. Add future pickups to `items`.
   let pickWGSL = 'const ITEMN : i32 = 0; const PICKSTEPS : i32 = 1; const TRA_LO : i32 = 536870912; const TRA_HI : i32 = -1; const TRA2_LO : i32 = 536870912; const TRA2_HI : i32 = -1;\n    const ITEMD : array<vec4<i32>, 1> = array<vec4<i32>, 1>(vec4<i32>(0));\n    @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;';
   let itemHalfH = null;                              // per-item half height in voxels — a settled drop rests its BOTTOM on the ground, so it needs its own size
+  let itemHalfD = null;                              // …and per-item half DEPTH, which is the vertical extent of anything that settles STANDING UP (see dropUpright)
+  // ── WHAT LIES DOWN AND WHAT STANDS UP (user 2026-08-20: "when the player presses q on the arrow and drops
+  // it, have the stone part of the arrow facing upwards vertically. currently the arrows lie horizontal") ──
+  // ONE predicate and ONE resting half-extent, here, because the drop's POSE (main/tick-support.js) and the
+  // height every pickup aims at (dropAnchor in sim/life/stamped.js) are computed in two different files off
+  // the same intent. Split across two literals they would drift, and a drop you cannot pick up because the
+  // aim test thinks it is somewhere else is exactly the failure that costs an afternoon.
+  // The arrow is the only upright one today: the tools and the food all read fine lying flat, and a rock has
+  // no up at all.
+  const dropUpright = (it) => !!(ARROW_IT && it === ARROW_IT);
+  // A standing arrow's vertical extent is its LENGTH — the model runs tip -> fletching along local y, and the
+  // upright frame maps that axis to world up — so it rests on half its DEPTH, not half its height.
+  const dropRestY = (it) => { const i = (it | 0) - 1;
+    if (dropUpright(it)) return itemHalfD ? (itemHalfD[i] || 4.5) : 4.5;
+    return itemHalfH ? (itemHalfH[i] || 4.5) : 4.5; };
   let itemMapF32 = new Float32Array(4);                // ITEMMAP lives in a STORAGE BUFFER (binding 13) — as a var<private> constant array it silently broke past ~2.6k entries (the butterfly frames pushed it over; FXC-side limit, no compile error)
   // ── THE TWO FRUIT, AND THE STRIP THEY ARE EATEN THROUGH ── each is a RUN of FOOD_EAT_N consecutive item ids
   // exactly as the bow's draw is: APPLE_IT + f is frame f, and APPLE_IT itself (frame 0) is the whole fruit, so
@@ -12,6 +27,50 @@
   // bite, main/tick-camera.js's frame pick, ui/hud.js's pose) is in a later fragment that needs the binding
   // itself, not a copy of the 0 it started as.
   let APPLE_IT = 0, ORANGE_IT = 0, FOOD_EAT_N = 0;
+  let FLOWER_IT0 = 0, FLOWER_CH_IT0 = 0;               // first held id of the five meadow flower variants, and of the blossom band's pink twin (0 = flowers.vox never loaded)
+  // ── WHAT EACH HELD ITEM LOOKS LIKE AS WORLD GEOMETRY (user 2026-08-20: "apply the flower put down logic to
+  // all hand held items in the game. the items become static in the terrain") ── an item's `cells` are raw RGB,
+  // which is what the held-item DDA wants and exactly what cannot be written into the world: W stores PALETTE
+  // IDS. The source .vox model has them, so it is recorded here as each item is registered rather than
+  // reconstructed later by colour-matching, which would drift and could mint new entries out of a table that
+  // is already full.
+  // Keyed by ITEM ID. An item with no entry cannot be put down — see tryPlaceItem, which refuses rather than
+  // guessing. That is every item built from something other than one .vox model: the axe, the knife, the bow's
+  // draw strip and the food-bite strips are assembled frame by frame and have no single model to stamp.
+  // AT FRAGMENT TOP LEVEL, not inside the loader. The loader is a function; a const declared in there is
+  // invisible to sim/life/stamped.js, and `typeof PLACE_MODEL !== 'undefined'` then quietly answers false and
+  // every placement is refused with no error anywhere — which is exactly what it did on the first cut.
+  const PLACE_MODEL = {};
+  // ══ THE STARTING KIT (user 2026-08-20: "have the player just spawn with a axe, pickaxe, and shovel, bow and
+  // arrow") ══ the hotbar has started EMPTY since the stone-age bench was written to be where tools came from,
+  // and that bench is switched off (CRAFT_ON in ui/achievements.js), so without this the player now spawns with
+  // nothing and no way to get anything.
+  // IT IS CALLED FROM THE TICK, not from the item loader where it belongs by subject. Two orderings have to be
+  // satisfied at once and only the tick satisfies both: the ITEM IDS do not exist until the async loader has
+  // built the table (PICK_IT and friends are 0 until their .vox lands, and item 0 is the empty hand), while
+  // addItem, selSlot and ITEM_NAMES live in sim/hands.js and ui/hud.js — fragments 40 and 63 against this
+  // one's 23. Calling them from inside the loader is a temporal-dead-zone throw during boot, which is a game
+  // that hangs on "uploading world" with nothing in the console. It did.
+  let kitGiven = false;
+  function giveStartKit() {
+    if (kitGiven || !PICK_IT) return;                // …and not before the tools have loaded: a kit handed out early would be four empty hands
+    kitGiven = true;
+    // ORDER IS THE HOTBAR ORDER, left to right, and the axe goes in first so slot 1 is what the player holds
+    // when the world appears. One of each: a tool is not consumed.
+    // ── NO ARROWS (user 2026-08-20: "dont have the arrow in hand on spawn, just have the bow shoot unlimited
+    // arrows … there should be one free slot in the player hand") ── the bow no longer needs them (ARROW_COST
+    // in sim/projectiles.js), so a starting quiver would be four slots of clutter with nothing to spend it on.
+    // ── AND NOW THE AXE ALONE (user 2026-08-20: "only have the player spawn with an axe") ── the pick, the
+    // shovel and the bow are off the list rather than the list being rebuilt, so restoring any of them is one
+    // entry back in this array and nothing else moves: `selSlot = 0` below already means "hold the first thing
+    // in the kit", which is the axe either way, and slotTidy's standing trailing empty still guarantees a free
+    // slot for the first pickup. Item id 1 IS the stone axe — it predates the *_IT constants, which is why it
+    // is the one entry here written as a literal.
+    const kit = [[1, 1]];
+    for (const [it, n] of kit) { if (!it) continue; for (let q = 0; q < n; q++) if (addItem(it) < 0) break; }
+    selSlot = 0;                                     // …and the axe is in hand, not the last thing added
+    console.log('[vb] starting kit', kit.filter((k) => k[0]).map((k) => (ITEM_NAMES[k[0]] || k[0]) + (k[1] > 1 ? ' x' + k[1] : '')).join(', '));
+  }
   {
     const items = [];                                  // {w, d, h, cells: [[r,g,b] | null]} — x = width, y = depth, z = height
     // ── PARALLEL PREFETCH ── kick EVERY creature/tool .vox fetch off at once so the network runs concurrently (was ~50 serial round-trips, one await per frame — the slow part of boot).
@@ -83,24 +142,34 @@
         } }
       console.log('[vb] stone_axe.vox', psx, psy, psz, 'voxels', pvox.length / 4);
     } catch (e) { console.warn('[vb] stone_axe.vox missing — held tool disabled', e); items.push({ w: 0, d: 0, h: 0, cells: [] }); }
+    // ── WHAT EACH HELD ITEM LOOKS LIKE AS WORLD GEOMETRY (user 2026-08-20: "apply the flower put down logic
+    // to all hand held items in the game. the items become static in the terrain") ── an item's `cells` are raw
+    // RGB, which is what the held-item DDA wants and exactly what cannot be written into the world: W stores
+    // PALETTE IDS. The source .vox model has them, so it is recorded here as each item is registered rather
+    // than reconstructed later by colour-matching, which would drift and could mint new palette entries out of
+    // a table that is already full.
+    // Keyed by ITEM ID. An item with no entry simply cannot be put down — see tryPlaceItem, which refuses
+    // rather than guessing. That is every item built from something other than one .vox model: the axe, the
+    // knife, the bow's draw strip and the food-bite strips are assembled frame by frame and have no single
+    // model to stamp.
     const modelToItem = (m) => { const cells = new Array(m.sx * m.sy * m.sz).fill(null);   // sparse decoration model → dense item grid (held/drop DDA wants the raw RGB)
       for (const p of m.vox) cells[(p & 255) + ((p >> 8) & 255) * m.sx + ((p >> 16) & 255) * m.sx * m.sy] = palette[p >>> 24];
       return { w: m.sx, d: m.sy, h: m.sz, cells }; };
     ROCK_IT = items.length + 1;                                       // held field-stone id (1-based) — used to bake AO + gate its stony grain so it reads like a static world rock
-    if (ROCKV) items.push(modelToItem(ROCKV));                        // ROCK — the exact field stone (rock.vox), held as picked up
+    if (ROCKV) { items.push(modelToItem(ROCKV)); PLACE_MODEL[ROCK_IT] = ROCKV; }                        // ROCK — the exact field stone (rock.vox), held as picked up
     else { const dk = [103, 101, 97], lt = [122, 120, 114];           // fallback: the old 3×3 pebble slab
       const cells = new Array(3 * 3 * 2).fill(null);
       for (let y = 0; y < 3; y++) for (let x = 0; x < 3; x++) cells[x + y * 3] = dk;
       cells[1 + 1 * 3 + 9] = lt;
       items.push({ w: 3, d: 3, h: 2, cells }); }
     STICK_IT = items.length + 1;                                      // held stick id — AO + grain so it reads like a static twig
-    if (STICKV.length) items.push(modelToItem(STICKV[0]));            // STICK — stick_1.vox, held as picked up
+    if (STICKV.length) { items.push(modelToItem(STICKV[0])); PLACE_MODEL[STICK_IT] = STICKV[0]; }            // STICK — stick_1.vox, held as picked up
     else { const ca = [126, 95, 59], cb = [111, 83, 52];              // fallback: the old 7-voxel twig
       const cells = new Array(7 * 1 * 2).fill(null);
       for (let x = 0; x < 7; x++) { if (x < 5) cells[x] = (x & 1) ? cb : ca; else cells[x + 7] = (x & 1) ? cb : ca; }
       items.push({ w: 7, d: 1, h: 2, cells }); }
     CONE_IT = items.length + 1;                                       // held pinecone id — AO + grain so it reads like a static cone
-    items.push(CONEV ? modelToItem(CONEV) : { w: 0, d: 0, h: 0, cells: [] });   // PINECONE (item 4) — pickable ground/tree cones; keep the slot even if the .vox is missing so ids stay stable
+    items.push(CONEV ? modelToItem(CONEV) : { w: 0, d: 0, h: 0, cells: [] }); if (CONEV) PLACE_MODEL[CONE_IT] = CONEV;   // PINECONE (item 4) — pickable ground/tree cones; keep the slot even if the .vox is missing so ids stay stable
     SPARK_IT = items.length + 1;                                      // CLASH SPARK — one bright 10 cm voxel, rendered through the drops path (never in inventory)
     items.push({ w: 1, d: 1, h: 1, cells: [[255, 208, 112]] });
     HITRED_IT = items.length + 1;                                     // ── HIT VOXEL (user 2026-08-05) ── striking a life form throws RED voxels rather than the rocks' amber embers. Identical particle in every other way — same arc, spin and lifetime — so the DEATH poof can keep the original sparks.
@@ -143,9 +212,9 @@
     } catch (e) { console.warn('[vb] stone_knife.vox missing — clash still sparks, no knife', e); items.push({ w: 0, d: 0, h: 0, cells: [] }); }
     // STONE PICK (user) — the rock tool. APPENDED here, after every fixed id: 1-4 are hard-coded in
     // PICK_DEFS/ITEM_NAMES, so slotting it in among them would silently hand the twig the pinecone's pose.
-    if (PICKV) { PICK_IT = items.length + 1; items.push(modelToItem(PICKV)); console.log('[vb] stone_pick.vox item', PICK_IT, PICKV.sx, PICKV.sy, PICKV.sz); }
-    if (ARROWV) { ARROW_IT = items.length + 1; items.push(modelToItem(ARROWV)); console.log('[vb] arrow item', ARROW_IT); }
-    if (SHOVV) { SHOVEL_IT = items.length + 1; items.push(modelToItem(SHOVV)); console.log('[vb] stone_shovel.vox item', SHOVEL_IT, SHOVV.sx, SHOVV.sy, SHOVV.sz); }
+    if (PICKV) { PICK_IT = items.length + 1; items.push(modelToItem(PICKV)); PLACE_MODEL[PICK_IT] = PICKV; console.log('[vb] stone_pick.vox item', PICK_IT, PICKV.sx, PICKV.sy, PICKV.sz); }
+    if (ARROWV) { ARROW_IT = items.length + 1; items.push(modelToItem(ARROWV)); PLACE_MODEL[ARROW_IT] = ARROWV; console.log('[vb] arrow item', ARROW_IT); }
+    if (SHOVV) { SHOVEL_IT = items.length + 1; items.push(modelToItem(SHOVV)); PLACE_MODEL[SHOVEL_IT] = SHOVV; console.log('[vb] stone_shovel.vox item', SHOVEL_IT, SHOVV.sx, SHOVV.sy, SHOVV.sz); }
     if (BOWSTRIP && BOWSTRIP.withArrow && BOWSTRIP.withArrow.length) {
       // TWO consecutive runs of the same length: BOW_IT + f is frame f WITH the arrow on it, BOW_NOCK + f
       // is the identical frame without it. Loosing the arrow is a swap between the two (user).
@@ -236,8 +305,8 @@
         ms[0].cells.filter(Boolean).length + '->' + ms[ms.length - 1].cells.filter(Boolean).length, 'vox'); }   // …appended after the pick, same reason: ids 1-4 are hard-coded elsewhere
     // …and the HOE and SPEAR (user), appended last of the tools so no existing id moves. Poses are stored
     // by NAME now, so the table can grow safely, but leaving the bow strip's run where it is costs nothing.
-    if (HOEV) { HOE_IT = items.length + 1; items.push(modelToItem(HOEV)); console.log('[vb] stone_hoe.vox item', HOE_IT, HOEV.sx, HOEV.sy, HOEV.sz); }
-    if (SPEARV) { SPEAR_IT = items.length + 1; items.push(modelToItem(SPEARV)); console.log('[vb] stone_spear.vox item', SPEAR_IT, SPEARV.sx, SPEARV.sy, SPEARV.sz); }
+    if (HOEV) { HOE_IT = items.length + 1; items.push(modelToItem(HOEV)); PLACE_MODEL[HOE_IT] = HOEV; console.log('[vb] stone_hoe.vox item', HOE_IT, HOEV.sx, HOEV.sy, HOEV.sz); }
+    if (SPEARV) { SPEAR_IT = items.length + 1; items.push(modelToItem(SPEARV)); PLACE_MODEL[SPEAR_IT] = SPEARV; console.log('[vb] stone_spear.vox item', SPEAR_IT, SPEARV.sx, SPEARV.sy, SPEARV.sz); }
     // ── THE APPLE AND THE ORANGE, AND THE STRIP THEY ARE EATEN THROUGH (user 2026-08-17: "have the player able
     // to right click an apple from a tree and pick it up … then the player can right click to eat it … play the
     // apple eating animation as there should already be one") ── the animation DID already exist and nothing in
@@ -903,8 +972,19 @@
     // while ui/hud.js's ITEM_NAMES still spelled `4: 'pinecone'` and the held pose table still keyed poses to
     // 1..4: the game came up with a twig named pinecone. Appending cannot renumber anything that already exists.
     // Any future item belongs here too, not beside its relatives.
-    if (STICKB.length) { STICK_BLOS_IT = items.length + 1; items.push(modelToItem(STICKB[0])); }
-    const HELD_ITEMS = new Set([1, ROCK_IT, STICK_BLOS_IT, STICK_IT, CONE_IT, KNIFE_IT, PICK_IT, SHOVEL_IT, BOW_IT, MEAT_IT, HOE_IT, SPEAR_IT].filter(Boolean));   // …the blossom twig is a held item too, or it renders through the wrong path in the hand
+    if (STICKB.length) { STICK_BLOS_IT = items.length + 1; items.push(modelToItem(STICKB[0])); PLACE_MODEL[STICK_BLOS_IT] = STICKB[0]; }
+    // ── THE MEADOW FLOWERS, PICKABLE (user 2026-08-20: "have the flowers in the terrain be able to be picked
+    // up via right click") ── one item per VARIANT, in FLOWERV's own order, then the blossom band's pink twin
+    // after them. Per-variant rather than one generic flower because the scatter plants patches of a single
+    // species (see flowerAt's FLWPATCH note) and picking a rose out of a rose patch has to hand you a rose.
+    // sim/life/stamped.js maps a picked plant back to its variant through flowerAt, which is the same
+    // descriptor the stamp used, so the flower in the hand is the flower that was standing there.
+    // Appended at the END, obeying the note above this line: item ids are POSITIONAL and anything inserted
+    // earlier renumbers every item after it.
+    if (FLOWERV.length) { FLOWER_IT0 = items.length + 1; for (const m of FLOWERV) { PLACE_MODEL[items.length + 1] = m; items.push(modelToItem(m)); } }
+    if (FLOWERV_CH.length) { FLOWER_CH_IT0 = items.length + 1; for (const m of FLOWERV_CH) { PLACE_MODEL[items.length + 1] = m; items.push(modelToItem(m)); } }
+    const HELD_ITEMS = new Set([1, ROCK_IT, STICK_BLOS_IT, STICK_IT, CONE_IT, KNIFE_IT, PICK_IT, SHOVEL_IT, BOW_IT, MEAT_IT, HOE_IT, SPEAR_IT,
+      ...(FLOWER_IT0 ? FLOWERV.map((m, i) => FLOWER_IT0 + i) : []), ...(FLOWER_CH_IT0 ? FLOWERV_CH.map((m, i) => FLOWER_CH_IT0 + i) : [])].filter(Boolean));   // …a flower is carried in the hand, so it takes the held path's AO bake like every other tool   // …the blossom twig is a held item too, or it renders through the wrong path in the hand
     for (let i = creatureStart - 1; i < items.length; i++) {
       if (!items[i] || !items[i].cells || !items[i].cells.length) continue;
       // ── STATIC LIGHTING ON WHAT YOU CARRY (user) ── held and dropped items now get the SAME baked
@@ -924,6 +1004,7 @@
     }
     if (!flat.length) flat.push(0, 0, 0, 0);
     itemHalfH = items.map((m) => (m.h || 9) * 0.5);   // …and each item's half height, for the resting pose of a dropped item (see the drop block)
+    itemHalfD = items.map((m) => (m.d || 9) * 0.5);   // …and its half depth, which is what an UPRIGHT drop rests on (see dropRestY)
     itemMapF32 = new Float32Array(flat);               // → storage buffer at binding 13 (created with the other GPU buffers)
     const maxSteps = Math.max(...items.map(it => it.w + it.d + it.h + 3));
     // ── WHICH ITEMS HOLD A TRANSLUCENT VOXEL ── the composite has to walk a trace-injected creature's model a
@@ -949,6 +1030,7 @@
       else { if (tra2Hi < 0) tra2Lo = id9; tra2Hi = id9; }            // past the first gap - run 2, widening
     }
     console.log('[vb] translucent item ids', traHi > 0 ? traLo + '..' + traHi : 'none', tra2Hi > 0 ? '+ ' + tra2Lo + '..' + tra2Hi : '');
+
     // ── LIVE ARROW TURN ── re-cut the two bow runs for a new orientation and overwrite ONLY their colours.
     // fetchBowStrip fixed the grid across every orientation, so the dimensions baked into ITEMD above stay
     // true and nothing has to be recompiled — the change is one buffer write over a contiguous range.

@@ -219,6 +219,7 @@
     const frail = best < FLY_END || (best >= WORM_0 && best < WORM_END);
     if (!B.dying && !oneBlow && !frail) {
       B.hits = (B.hits | 0) + 1;
+      B.hurtAt = performance.now();                    // …and WHEN, which is what keeps the population controller from retiring it mid-fight (see the grace in main/tick-creatures.js)
       if (B.hits < need) {
         B.hurt = 1;
         B.hopT0 = performance.now();                    // the BOUNCE lands on every hit — it is what shows hits two and three registering
@@ -256,7 +257,7 @@
     const onWater = B.kind === 6;
     drops.push({ x: lx, y: onWater ? WL : hmap[gwrap(lx, WX) + gwrap(lz, WZ) * WX], z: lz, it: MEAT_IT, ph: Math.random() * 6.28,
       born: performance.now(), T: 0, q0: [0, 0, 0, 1] });
-    if (drops.length > 4) drops.shift();                // the composite renders up to 4 at once
+    if (drops.length > 8) drops.shift();   // ── 8 ITEM DROPS, NOT 4 (user 2026-08-20: "have the max number of floating hand held items on the field 8 instead of 4") ── drops.shift() DELETES the oldest, so a fifth drop did not just stop being drawn, it stopped existing. The render band moved with it: see the band map at dropCursor in main/tick-life.js
   };
   // …and now that the ragdoll and the poof both exist, a bird cut out of its perch gets the SAME death as one
   // struck directly: it goes rigid, drops out of the tree, and the yellow sparks fire where it lands. No red
@@ -296,7 +297,12 @@
   };
   document.addEventListener('mousedown', (e) => {
     if (!locked) return;
-    if (e.button === 2) { if (!mouse2) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); } mouse2 = true; tryPickup(); eatHold = !grabAnim; if (eatHold) tryEat(); }   // …and with food in hand and nothing to grab, you EAT it (user)   // …and the string starts creaking under the pull (user)   // …the bow starts DRAWING here (user), and the right button stays HELD as the throw wind-up
+    // ── RIGHT CLICK ALSO PUTS THE HELD ITEM DOWN (user 2026-08-20) ── tested AFTER the pickup, so aiming at something
+    // grabbable still grabs: a flower in the hand must not stop you picking up the rock in front of you. It
+    // leaves eatHold FALSE when it plants, which is what makes planting one-per-click — holding the button
+    // would otherwise carpet the ground through the same auto-repeat that eats a stack of apples.
+    if (e.button === 2) { if (!mouse2) { bowT0 = performance.now(); if (BOW_IT && heldIt() === BOW_IT) playBowStretch(); } mouse2 = true; tryPickup();
+      if (!grabAnim && tryPlaceItem()) { eatHold = false; } else { eatHold = !grabAnim; if (eatHold) tryEat(); } }   // …and with food in hand and nothing to grab, you EAT it (user)   // …and the string starts creaking under the pull (user)   // …the bow starts DRAWING here (user), and the right button stays HELD as the throw wind-up
     if (e.button === 0 && ED.on) {                     // ASSET EDITOR: left-click the stamped cardinal to SELECT it (pause) / click again to resume; then , . scrub the frames
       const n = ED.frames.length;
       if (n) {                                         // AABB slab test against the model's bounding box — forgiving for a small SPARSE model (an exact-voxel ray slips through the gaps)
@@ -338,25 +344,42 @@
       return;                                          // no swing this click: the hand is empty now
     }
     if (e.button === 0 && !dead) {
-      if (e.shiftKey && dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }
+      // ── THE BENCH OWNS SHIFT+CLICK WHILE IT IS OPEN (user 2026-08-20, re-asking for shift+click to be what
+      // crafts) ── the `!CRAFT.open` is why the gesture actually commits. The comment below used to claim the
+      // clash and the bench were "mutually exclusive by construction"; they are not. dualRocks() is n >= 2, not
+      // n === 2, so a player holding the 3 rocks an axe costs with a stick in another slot satisfies BOTH — and
+      // this line, being first, took every shift+click and clashed the rocks together instead of making the tool
+      // the player was looking at. Nothing about the knife changes: with the bench closed this is still the first
+      // test, so two rocks and a shift+click are still a knife.
+      if (e.shiftKey && !CRAFT.open && dualRocks() && (slots[selSlot].n === 2 || canAdd(KNIFE_IT)) && performance.now() - clashT0 > 700) { clashT0 = performance.now(); clashSparked = false; return; }
       // ── …AND THE SAME GESTURE OPENS THE STONE AGE BENCH FOR A ROCK + A STICK (user 2026-08-19) ── tested AFTER
-      // the clash, so two rocks still make a knife and nothing about that path changes. The two are mutually
-      // exclusive by construction anyway: dualRocks needs a rock stack of 2 in the selected slot, craftPair
-      // needs the OTHER half in a different slot. Same 700 ms re-arm, and the same `return` — the click is the
-      // gesture, so it must not also swing the tool.
+      // the clash, so two rocks still make a knife and nothing about that path changes. Same 700 ms re-arm, and
+      // the same `return` — the click is the gesture, so it must not also swing the tool.
+      // WITH THE BENCH CLOSED the clash still wins a tie, and that is deliberate: a knife is the recipe for two
+      // rocks and the bench is the recipe for a rock and a stick, so selecting the STICK is what asks for the
+      // bench. (This IS a tie the old comment said could not happen — three rocks in the selected slot and a
+      // stick in another satisfies both — so it is a rule, not an accident.)
       // ── SHIFT + CLICK IS BOTH HALVES OF THE BENCH (user 2026-08-19: "instead of enter to craft something its
-      // shift + left click") ── the same gesture opens it and commits it, which is why this is tested BEFORE
-      // the open below: while the bench is up, a shift+click can only mean "make this one". Enter still works
-      // (ui/input.js keeps it) — this is an addition, not a replacement, and it costs nothing to leave both.
+      // shift + left click", and again 2026-08-20) ── the same gesture opens it and commits it, which is why
+      // this is tested BEFORE the open below: while the bench is up, a shift+click can only mean "make this
+      // one". Enter still works (ui/input.js keeps it) — a second way in costs nothing.
       if (e.shiftKey && CRAFT.open) { craftConfirm(); return; }
       if (e.shiftKey && !CRAFT.open && performance.now() - clashT0 > 700 && craftOpen()) { clashT0 = performance.now(); return; }   // clash instead of swing — only when the knife will have somewhere to go (exactly-2 rocks frees this slot)
+      // ── AND AN UNSHIFTED CLICK WHILE THE BENCH IS OPEN DOES NOTHING (user 2026-08-20: "the player can still
+      // hit objects while theres a crafted item in the middle of the screen") ── the bench is a MODAL chooser:
+      // both hands are drawn into it, the tool they were holding is hidden from CRAFT.lit, and the preview
+      // hovers on the crosshair. A swing from there had no hand to come from and no tool to swing, yet it still
+      // chopped whatever the crosshair was resting on — the player was breaking blocks and killing animals
+      // through the menu. Swallowed rather than passed through: `mouse0` is deliberately NOT set either, so
+      // holding the button down through the whole gesture cannot auto-repeat a swing the moment it closes.
+      if (CRAFT.open) return;
       mouse0 = true;
       if (performance.now() - swingStart >= 570) { swingStart = performance.now(); pendKillT = swingStart + 250; }   // …and no whoosh here either (user 2026-08-07) — see playToolHit   // a click is IGNORED until the current swing's full 570 ms animation finishes — no mid-swing restart (user; applies to every held item). Holding still auto-repeats via the tick loop. The creature-hit is ARMED here but registers 250 ms in, when the axe visually lands (user).
     }
   });
   document.addEventListener('mouseup', (e) => { if (e.button === 2) { if (mouse2) { bowRel = performance.now();   // …and releasing LOOSES it, running 03→06 (user)
       if (BOW_IT && heldIt() === BOW_IT) stopBowStretch();   // the pull is over — a half-draw must not leave the creak ringing over the release
-      if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; shootArrow(); playSwish(); }   // …and the shaft leaves with the whoosh (user)   // …the ARROW LEAVES the bow (user): the bare strip takes over and a projectile flies
+      if (BOW_IT && heldIt() === BOW_IT && (bowRel - bowT0) > BOW_DRAW_MS * 0.5) { bowLoosed = true; if (shootArrow()) playSwish(); }   // …and the shaft leaves with the whoosh (user) — only when one actually leaves: an empty quiver releasing the string with a whoosh and no arrow is the one way this could lie about what happened   // …the ARROW LEAVES the bow (user): the bare strip takes over and a projectile flies
       else if (SPEAR_IT && heldIt() === SPEAR_IT && (bowRel - bowT0) > 90) { if (throwSpear()) playSwish(); }   // …and the SPEAR flies out of the raised hand (user)
       }
     mouse2 = false; eatHold = false; }

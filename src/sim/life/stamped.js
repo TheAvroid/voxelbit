@@ -308,14 +308,141 @@
       // the player, was granted, and only then appeared out in the left hand, which is the jump reported.
       // The test now matches what tick-camera will actually SHOW in that hand (its craftOther), so the flight
       // ends where the item ends up:
-      //   holding a rock  + picking a rock  -> dual wield, left
-      //   holding a rock  + picking a stick -> craft pair, left
-      //   holding a stick + picking a rock  -> craft pair, left
-      //   holding a stick + picking a stick -> NOT left: the off-hand shows no second stick, so it would fly
-      //                                       to a hand that is not going to be holding it
-      left: (() => { const h9 = slots[selSlot] && slots[selSlot].it;
-        return (h9 === 2 && (it === 2 || it === 3)) || (h9 === 3 && it === 2); })() };
+      // ── AND IT IS ONE PREDICATE NOW, NOT A TABLE OF PAIRS (user 2026-08-20: "the dual wield is still
+      // happening, even though the player is not pressing e for dual wield") ── the four cases spelled out here
+      // were written when the off hand filled ITSELF: a second rock always, and the other half of a craft pair
+      // as soon as one existed. Both of those are gone — the split is opt-in on shift+E and the craft pair only
+      // shows while the bench gesture is running — so this table sent rocks and sticks flying to a hand that
+      // was going to be empty when they arrived. offHandWants (ui/achievements.js) is the same question the
+      // renderer answers, asked once, so the flight can no longer disagree with the hand.
+      left: offHandWants(it) };
   };
+  // == PUT A HELD ITEM DOWN (user 2026-08-20: "have the player be able to place the flowers back into the
+  // terrain by place right click", then "apply the flower put down logic to all hand held items in the game.
+  // the items become static in the terrain") == the mirror of the pickup, built out of the SAME pieces the
+  // generator stamps decorations with, so a put-down object is ordinary world geometry:
+  //   * the MODEL is PLACE_MODEL[item] (assets/held-items.js) - the source .vox, carrying palette ids. An item
+  //     assembled from frames rather than from one model has no entry and simply cannot be put down.
+  //   * the ROTATION comes off the placement column with flowerAt's own salt, so two things put down side by
+  //     side do not stand in identical poses.
+  //   * the write is stampModel's mode 1 (empty cells and soft decor), transcribed rather than called, because
+  //     stampModel writes W and hands nothing back and a live edit needs the touched cells for gpuPatch. The
+  //     rotation cases below are its four, verbatim.
+  const PLACED = [], PLACED_IDX = new Map(), PLACED_MAX = 512;   // the ledger - see placedAt below
+  // -- WHY THE SEAT IS A MAXIMUM (user 2026-08-20: "sometimes planting a flower on the first try doesnt work.
+  // have it apply on the first try consistently") -- it used to seat on the column the ray happened to hit and
+  // then refuse outright if any of the model's cells landed in solid ground. On flat ground that is always
+  // fine; on a one-voxel step - which is most of this terrain - one column of a 3x3 footprint is a voxel
+  // higher than the rest, that cell comes back solid, and the whole placement is refused. That is exactly
+  // "sometimes the first try does nothing", and re-aiming a few centimetres is what made it work.
+  // Seating on the HIGHEST free cell across the WHOLE footprint means no cell can be inside terrain, so the
+  // refusal below is unreachable on ordinary ground and the first click lands every time. It is the same rule
+  // the land mammals are seated by, and for the same reason.
+  const freeTop = (gx, gz, from) => { let y = from; while (y < WY && W[gwrap(gx, WX) + y * WX + gwrap(gz, WZ) * WX * WY]) y++; return y; };
+  function tryPlaceItem() {
+    if (dead || grabAnim) return false;
+    const it = heldIt(); if (!it) return false;
+    const m = (typeof PLACE_MODEL !== 'undefined') ? PLACE_MODEL[it] : null;
+    if (!m || !m.vox || !m.vox.length) return false;   // nothing to stamp - the item falls through to the eat/draw path untouched
+    const cp2 = Math.cos(P.pitch), sp2 = Math.sin(P.pitch);
+    const d = [Math.sin(P.yaw) * cp2, sp2, Math.cos(P.yaw) * cp2];
+    let hx = 0, hy = -1, hz = 0;
+    // ── THE SAME REACH A TOOL BREAKS AT (user 2026-08-20: "make the reach of placing hand held objects down
+    // the same as using tools to break things") ── it was a flat 30, picked when this only planted flowers.
+    // chopSwing marches min(REACH_3D, REACH_H / |cos pitch|), and so does the aim thud and the kill test, all
+    // three off the same two constants "so they can never drift apart" (sim/tools.js). Putting a thing down is
+    // the same arm at the same distance, so it reads off those constants too rather than carrying a fourth
+    // number. The BOTH-CAPS form matters: a flat 3D radius lets you reach much further along the ground when
+    // looking down than standing up, which is exactly the asymmetry REACH_H exists to remove.
+    const cpP = Math.cos(P.pitch);
+    const PLACE_REACH = Math.min(REACH_3D, REACH_H / Math.max(0.15, Math.abs(cpP)));
+    for (let t = 0.6; t < PLACE_REACH; t += 0.3) {
+      const x = Math.floor(P.x + d[0] * t), y = Math.floor(smoothEye + d[1] * t), z = Math.floor(P.z + d[2] * t);
+      if (y < 1 || y >= WY) return false;
+      const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+      if (!v || PASSTHRU.has(v)) continue;             // grass and ferns are what a plant grows THROUGH, so they are not the ground
+      hx = x; hy = y; hz = z; break;
+    }
+    if (hy < 0) return false;                          // nothing under the crosshair within reach
+    const rot = (ihash(hx * 61 + 31, hz * 67 + 43) * 3.99) | 0;
+    const fw = (rot & 1) ? m.sy : m.sx, fd = (rot & 1) ? m.sx : m.sy;
+    const bx = hx - (fw >> 1), bz = hz - (fd >> 1);
+    // …ON THE COLUMN YOU AIMED AT, starting at the solid voxel the ray stopped on so a gap lower down the
+    // column (beside a fallen log, under an overhang) can never be mistaken for the surface.
+    // NOT the max over the footprint, which the first cut used: on rolling ground the highest of nine columns
+    // is routinely a voxel or two above the one under the crosshair, so the object floated over the spot it was
+    // aimed at — and, measured, ended up ABOVE the pick ray's own path through that column, which is why a
+    // put-down flower could not then be picked back up. Seating where the player pointed is what makes the two
+    // agree.
+    const gy = freeTop(hx, hz, hy);
+    if (gy < 1 || gy >= WY - m.sz) return false;
+    if (gy <= WL + 1) return false;                    // not in the water - the scatter refuses beaches and shallows for the same reason (see flowerAt)
+    const cells = [], ids = [];
+    for (let i = 0; i < m.vox.length; i++) {
+      const p = m.vox[i];
+      const x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+      let rx, rz;
+      if (rot === 0) { rx = x; rz = y; }
+      else if (rot === 1) { rx = m.sy - 1 - y; rz = x; }
+      else if (rot === 2) { rx = m.sx - 1 - x; rz = m.sy - 1 - y; }
+      else { rx = y; rz = m.sx - 1 - x; }
+      const ay = gy + z; if (ay < 1 || ay >= WY) return false;
+      const ii = gwrap(bx + rx, WX) + ay * WX + gwrap(bz + rz, WZ) * WX * WY;
+      const cur = W[ii];
+      if (cur !== 0 && cur < DECOR_MIN) continue;      // ── SKIPPED, NOT REFUSED (user 2026-08-20: "sometimes planting a flower on the first try doesnt work") ── this is stampModel's mode-1 rule and mode 1 SKIPS: it may grow through grass, never through stone. Refusing the whole placement because one voxel of a 3x3 footprint landed in a one-voxel step is what made the first click do nothing on any uneven ground, and re-aiming a few centimetres is what appeared to fix it. The generator clips its own decorations against terrain exactly like this, everywhere, all the time
+      cells.push(ii); ids.push(p >>> 24);
+    }
+    if (!cells.length) return false;                   // every voxel of it was blocked — there is genuinely nowhere to put this down
+    for (let i = 0; i < cells.length; i++) W[cells[i]] = ids[i];
+    gpuPatch(cells);
+    // -- AND IT IS REMEMBERED, SO IT CAN BE PICKED BACK UP (user 2026-08-20: "when the player puts down the
+    // flower after having picked it up, it cant be picked up again") -- the pickup identifies things by
+    // PALETTE ID, and a put-down axe wears ids no PICK_ set claims, while a put-down flower stands where
+    // flowerAt has never planted one so the variant lookup came back empty. A LEDGER answers both exactly:
+    // these cells, this item. That is cheaper and more honest than reverse-engineering the object from its ids.
+    // Bounded, and self-healing: entries are checked against the world before being honoured (see placedAt), so
+    // one whose ground was dug out or whose region re-streamed is dropped rather than handing over an item that
+    // is no longer standing there.
+    const ent = { it, cells, ids, x: hx, y: gy, z: hz };
+    PLACED.push(ent); for (const ii of cells) PLACED_IDX.set(ii, ent);
+    while (PLACED.length > PLACED_MAX) { const old = PLACED.shift(); for (const ii of old.cells) if (PLACED_IDX.get(ii) === old) PLACED_IDX.delete(ii); }
+    const sl = slots[selSlot];                         // and it costs one out of the stack, the exact inverse of the pickup
+    if (sl) { sl.n -= 1; if (sl.n <= 0) slots[selSlot] = null; slotTidy(); }
+    return true;
+  }
+  // Is this voxel part of something the player put down, and is that thing still all there? Returns the ledger
+  // entry or null, dropping any entry the world has since disagreed with.
+  function placedAt(ii) {
+    const e = PLACED_IDX.get(ii); if (!e) return null;
+    for (let i = 0; i < e.cells.length; i++) if (W[e.cells[i]] !== e.ids[i]) {   // dug out, overwritten, or re-streamed - it is not this object any more
+      placedForget(e);
+      return null;
+    }
+    return e;
+  }
+  function placedForget(e) { const k = PLACED.indexOf(e); if (k >= 0) PLACED.splice(k, 1);
+    for (const c of e.cells) if (PLACED_IDX.get(c) === e) PLACED_IDX.delete(c); }
+  function placedTake(e) {                             // lift the whole object back out of the world
+    for (const c of e.cells) W[c] = 0;
+    gpuPatch(e.cells);
+    placedForget(e);
+  }
+  // -- WHICH FLOWER WAS THIS? -- flowerAt is the SAME function that decided what to plant here, so asking it
+  // again is not a guess: it returns the variant index the stamp used, and the blossom band's pink twin is a
+  // different set with its own item run. The 3x3 sweep is because a flower model is 3 voxels across, so the
+  // petal the ray hit may be one cell off the stem the generator seeded on - and FLWCELL is 8, so a footprint
+  // can straddle two cells. Nearest match wins; 0 means the ray hit a petal no GENERATED flower claims, which
+  // is the ordinary case for one the player planted - the ledger above answers those.
+  function flowerItemAt(x, z) {
+    if (typeof flowerAt !== 'function' || !FLOWER_IT0) return 0;
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const f = flowerAt(Math.floor((x + dx) / FLWCELL), Math.floor((z + dz) / FLWCELL));
+      if (!f || Math.abs(f.wx - x) > 1 || Math.abs(f.wz - z) > 1) continue;
+      const base = f.ch ? FLOWER_CH_IT0 : FLOWER_IT0;
+      return base ? base + f.k : 0;
+    }
+    return 0;
+  }
   function tryPickup() {                               // march the view ray; first pickable id wins, first solid stops it
     if (grabAnim) return;                              // one flight at a time — a second grab mid-flight would overwrite (and lose) the first item
     const cp2 = Math.cos(P.pitch), sp2 = Math.sin(P.pitch);
@@ -353,8 +480,14 @@
     for (let t = 0.6; t < 45; t += 0.3) {
       const x = Math.floor(P.x + d[0] * t), y = Math.floor(smoothEye + d[1] * t), z = Math.floor(P.z + d[2] * t);
       if (y < 0 || y >= WY) return;
-      const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+      const ii9 = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+      const v = W[ii9];
       if (!v || PASSTHRU.has(v)) continue;
+      // ── SOMETHING THE PLAYER PUT DOWN COMES BACK UP AS ITSELF ── tested FIRST, and before any palette-id
+      // branch, because the ledger is exact where the id sets are only a guess: a put-down flower stands where
+      // no generated one does, and a put-down axe wears ids no PICK_ set claims at all.
+      { const pe = placedAt(ii9);
+        if (pe) { if (canAdd(pe.it)) { placedTake(pe); startGrab(pe.it, x + 0.5, y + 0.5, z + 0.5); } return; } }
       if (PICK_ROCK.has(v) && canAdd(2)) { const c = floodRemove(x, y, z, PICK_ROCK, 40); if (c.length) { startGrab(2, x + 0.5, y + 0.5, z + 0.5); gpuPatch(c); } }   // cap fits the rounded dome (~23 voxels at rr 2.3)
       else if (PICK_BOULDER.has(v) && canAdd(2)) {     // MEDIUM boulder → one rock; it raised hmap when stamped, so re-derive the freed columns or drops/toss hover on phantom ground
         const c = floodRemove(x, y, z, PICK_BOULDER, 300);   // sized for the biggest medium boulder (rr≈4 ≈ 200 voxels) — a too-small cap leaves a half-eaten rock
@@ -366,7 +499,12 @@
         // cone's browns land on the sticks'. This branch used to be two, stick first, which made a pinecone pick up as a stick EVERY time — the cone branch was unreachable (user).
         // Ordering cannot fix a subset, so identify the WHOLE component instead: flood once over the union, then ask whether it contains any id a pinecone can never have.
         // The real fix is giving pinecone.vox its own palette entries (the loader comment above says it is supposed to have them); ~50 duplicate slots are reclaimable. Until then, this is exact.
-        const sc = floodScan(x, y, z, PICK_TWIG, 24);   // one flood, read-only — nothing is destroyed until we know what it is AND that there is room for it
+        const sc = floodScan(x, y, z, PICK_TWIG, TWIG_CAP);   // one flood, read-only — nothing is destroyed until we know what it is AND that there is room for it
+        // ── TOO BIG TO BE A TWIG (user 2026-08-20) ── a FALLEN LOG wears the same four pine browns a stick
+        // does (see TWIG_CAP in sim/projectiles.js), so without this the flood claimed a 372-voxel log, took
+        // the cap's worth out of it and handed over a twig. TWIG_MAX is the biggest stick model there is, so
+        // anything past two of them is not sticks: leave it alone entirely rather than gouge it.
+        if (sc.cells.length > TWIG_MAX * 2) return;
         if (sc.cells.length) {
           let isCone = true; for (const q3 of sc.kinds) if (!PICK_CONE.has(q3)) { isCone = false; break; }   // any stick-exclusive id present → it is a stick
           // ── A BLOSSOM TWIG STAYS PINK IN THE HAND ── decided by WHERE it was picked up rather than by the ids
@@ -386,6 +524,8 @@
       }
       else if (FRUIT_IDS.has(v)) { const fr = fruitAt(x, y, z);   // ── AN APPLE OR AN ORANGE, OFF THE BRANCH (user 2026-08-17) ── fruitAt (sim/projectiles.js) owns the whole verdict: which species, which cells, and whether this is one fruit rather than a cherry or a fused pair
         if (fr && canAdd(fr.it)) { for (const ii of fr.cells) W[ii] = 0; startGrab(fr.it, x + 0.5, y + 0.5, z + 0.5); gpuPatch(fr.cells); } }   // the FLESH comes away and the stalk stays on the tree — see the note in projectiles.js
+      else if (PICK_FLOWER.has(v)) { const fit = flowerItemAt(x, z);   // ── A MEADOW FLOWER (user 2026-08-20) ── the bloom comes away and its two grass-green voxels stay, exactly as a fruit's stalk does (see PICK_FLOWER in sim/projectiles.js)
+        if (fit && canAdd(fit)) { const c = floodRemove(x, y, z, PICK_FLOWER, FLOWER_CAP); if (c.length) { startGrab(fit, x + 0.5, y + 0.5, z + 0.5); gpuPatch(c); } } }
       return;
     }
   }
@@ -417,12 +557,15 @@
     for (let t = 0.6; t < 45; t += 0.3) {              // voxel rocks / sticks / cones — first pickable wins, first solid stops
       const x = Math.floor(P.x + d[0] * t), y = Math.floor(smoothEye + d[1] * t), z = Math.floor(P.z + d[2] * t);
       if (y < 0 || y >= WY) return false;
-      const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+      const ii9 = gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
+      const v = W[ii9];
       if (!v || PASSTHRU.has(v)) continue;
+      { const pe = placedAt(ii9); if (pe) return canAdd(pe.it); }   // …and the crosshair squares up on it too, through the same verdict
       if ((PICK_ROCK.has(v) || PICK_BOULDER.has(v)) && canAdd(2)) return true;
       if (PICK_STICK.has(v) && canAdd(3)) return true;
       if (PICK_CONE.has(v) && canAdd(4)) return true;
       if (FRUIT_IDS.has(v)) { const fr = fruitAt(x, y, z); return !!fr && canAdd(fr.it); }   // …and a fruit, through the SAME verdict the click uses, so the square never lights on a cherry or on a fused pair the pick would refuse
+      if (PICK_FLOWER.has(v)) { const fi = flowerItemAt(x, z); return !!fi && canAdd(fi); }   // …and a flower, through the SAME verdict too: the crosshair must not square up on a petal flowerAt no longer claims
       return false;                                    // solid but not pickable → the ray is blocked
     }
     return false;
@@ -433,7 +576,7 @@
     const nw = performance.now();
     const rK = Math.min(1, Math.max(0, (nw - dr.born - DROP_REST_MS) / DROP_REST_EASE));
     const rE = rK * rK * (3 - 2 * rK);
-    const restY = itemHalfH ? (itemHalfH[dr.it - 1] || 4.5) : 4.5;
+    const restY = dropRestY(dr.it);                     // …the SAME resting extent the pose uses, or a standing arrow is drawn at one height and grabbed at another
     return 9.0 + (restY - 9.0) * rE + Math.sin(nw * 0.002 + dr.ph) * 1.3 * (1 - rE);
   };
   // Is this drop still LEVITATING? Exactly dropAnchor's rK < 1, spelled out against the same two constants

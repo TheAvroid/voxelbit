@@ -689,6 +689,15 @@
   // at the cost of something in front of you. Creatures stay ALIVE out to LIFE_KEEP (~1040) as they always did;
   // this governs only which of them get one of the 28 slots.
   const LIFE_DRAW = 420, LIFE_DRAW2 = LIFE_DRAW * LIFE_DRAW;
+  // ── AND ONE BIT SAYING "THIS BODY HAS NOWHERE ELSE TO BE DRAWN" (user 2026-08-20: "the land mammals and
+  // insects are not rendering properly. they either dissapear or dont render at all") ── the four land mammals
+  // are the only life with TWO render paths: grid-stamped into W when far, trace-injected into a drop slot when
+  // near (uniTraced). Crossing inward they DROP the stamp and join this competition — and if they lose it they
+  // are drawn by neither path. Measured walking with the budget saturated at 55/55: an armadillo invisible at
+  // 291 voxels, repeatedly. Nothing else in the world can do that; a worm that loses is merely a worm that was
+  // never stamped. The budget is not the bug — the ORDER is, so a body with no fallback is claimed before the
+  // per-kind floors and a far worm gives up the slot instead. Costs nothing: the same number is still drawn.
+  const emitMust = new Uint8Array(EMIT_CAP);
   const emitKnd = new Uint8Array(EMIT_CAP), emitTake = new Uint8Array(EMIT_CAP), emitKcnt = new Int32Array(LIFE_KINDS);
   const emitVis = new Uint8Array(EMIT_CAP);            // …and whether this creature is in the FRUSTUM at all — see the rank note at the emit
   // ── AND THE RANK IS VISIBILITY FIRST, DISTANCE SECOND ── the sort key used to be squared XZ distance and
