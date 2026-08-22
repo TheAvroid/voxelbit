@@ -1,3 +1,44 @@
+    // ── THE ASSET EDITOR'S FREE-MOVING EXHIBITS ── staged into emitBuf exactly as a world creature is, which is
+    // the whole point of them: a lane is grid-stamped and therefore integer-positioned and axis-aligned, while
+    // anything that arrives here carries a float position and a free heading and is depth-tested against the
+    // scene. Nothing in the render path was ever gated on the editor — ED.on appears three times in the creature
+    // code and all three are in the SIM (stepping and spawning), so the emit has always been able to draw these;
+    // it simply had nothing feeding it. ui/editor.js edExStage builds the list, edExStep moves it.
+    // The frame is the creature emit's own level frame (main/tick-creatures.js: Xw = [Hz, 0, -Hx], Yw = [-Hx, 0,
+    // -Hz], Zw = world up), copied rather than derived so an exhibit faces its heading the way every other
+    // creature does. Getting that convention wrong by hand is what had the first ladybug flying backwards.
+    if (ED.on && ED.ex.length) {
+      for (let ei = 0; ei < ED.ex.length && emitN < EMIT_CAP; ei++) {
+        const E = ED.ex[ei], o4 = emitN * 16;
+        const ex9 = E.hx + E.x, ey9 = E.hy + E.y, ez9 = E.hz + E.z;
+        const rx9 = ex9 - cam[0], ry9 = ey9 - cam[1], rz9 = ez9 - cam[2];
+        // ── THIS MODEL'S HEAD IS AT +y, AND THE CONVENTION IS −y ── every world creature is authored with its
+        // head down model −y, which is why the creature basis (main/tick-creatures.js) is Yw = −flight: model
+        // +y points backwards, so the head leads. Measured off ladybug.vox rather than guessed from a
+        // screenshot, which is what got this wrong twice: down its 4-deep axis, y=0 is 8 voxels and mostly red
+        // (the elytra) while y=2 and y=3 are 2 voxels each and entirely dark — the narrow black head, at +y.
+        // Its 8-wide axis is the WINGSPAN, not the body: the dark band there runs down the MIDDLE (x=3,4),
+        // which is the elytra split, not a head at one end.
+        // So half a turn on the RENDER heading, and `flip` per exhibit rather than a constant, because the next
+        // model may well be authored the usual way round. The motion still integrates E.th untouched, so it
+        // goes exactly where it was going and now faces it.
+        const thR = E.flip ? E.th + Math.PI : E.th;
+        const Hx9 = Math.sin(thR), Hz9 = Math.cos(thR);
+        const Xw9 = [Hz9, 0, -Hx9], Yw9 = [-Hx9, 0, -Hz9];
+        emitBuf[o4] = rx9 * right[0] + ry9 * right[1] + rz9 * right[2]; emitBuf[o4 + 1] = rx9 * up[0] + ry9 * up[1] + rz9 * up[2]; emitBuf[o4 + 2] = rx9 * fwd[0] + ry9 * fwd[1] + rz9 * fwd[2]; emitBuf[o4 + 3] = 1;
+        emitBuf[o4 + 4] = Xw9[0] * right[0] + Xw9[2] * right[2]; emitBuf[o4 + 5] = Xw9[0] * up[0] + Xw9[2] * up[2]; emitBuf[o4 + 6] = Xw9[0] * fwd[0] + Xw9[2] * fwd[2];
+        emitBuf[o4 + 7] = E.item0 + (E.ph === 'land' ? 0 : Math.floor(E.aclk) % E.n);   // E.aclk is an accumulated FRAME position (ui/editor.js), so a rate change speeds the beat up instead of jumping it — and a LANDED exhibit holds frame 00 (user)   // its own clock, so the whole school does not flap in lockstep
+        emitBuf[o4 + 8] = Yw9[0] * right[0] + Yw9[2] * right[2]; emitBuf[o4 + 9] = Yw9[0] * up[0] + Yw9[2] * up[2]; emitBuf[o4 + 10] = Yw9[0] * fwd[0] + Yw9[2] * fwd[2]; emitBuf[o4 + 11] = 0;
+        emitBuf[o4 + 12] = right[1]; emitBuf[o4 + 13] = up[1]; emitBuf[o4 + 14] = fwd[1]; emitBuf[o4 + 15] = 0;
+        // emitMust = 1: an exhibit has NO second render path. A world mammal that loses the drop-slot
+        // competition still has its grid stamp to fall back on; this has nothing, and would simply vanish.
+        emitWho[emitN] = ei; emitAna[emitN] = 0; emitKnd[emitN] = LIFE_K_FLYER; emitMust[emitN] = 1;
+        emitAnc[emitN * 3] = ex9; emitAnc[emitN * 3 + 1] = ey9; emitAnc[emitN * 3 + 2] = ez9;
+        { const cx8 = emitBuf[o4], cy8 = emitBuf[o4 + 1], cz8 = emitBuf[o4 + 2];
+          emitVis[emitN] = (cz8 + LIFE_FRUST_R > 0 && (Math.abs(cx8) - fsX * cz8) * fnX <= LIFE_FRUST_R && (Math.abs(cy8) - fsY * cz8) * fnY <= LIFE_FRUST_R) ? 1 : 0; }
+        emitDp[emitN] = rx9 * rx9 + ry9 * ry9 + rz9 * rz9; emitN++;
+      }
+    }
     if (uniBirds.length) {                             // == UNIFIED PERCHED SONGBIRDS == staged like every other creature so PASS 1's floor and PASS 2's distance ranking both apply to them; injecting them AFTER the allocator measured 0 of 180 drawn, because PASS 2 always fills what is left.
       uniBirdWant = uniBirds.length; uniBirdN = 0;
       uniBirds.sort((a9, b9) => a9[6] - b9[6]);        // nearest first: EMIT_CAP is 216 staged poses and 180 birds on top of ~110 other creatures would overrun it, so the far ones are dropped BEFORE the ranking rather than corrupting it

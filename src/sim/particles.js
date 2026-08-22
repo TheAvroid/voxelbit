@@ -1,5 +1,5 @@
   // @module - splash, spark and debris particle pools and their per-frame step
-  // @exports ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
+  // @exports ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
   // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
   // something breaks the surface — a fish launching, the same fish coming back down, and the player going
   // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is
@@ -96,6 +96,7 @@
     }
     return smokeSlot;
   };
+  const petalClear = () => { for (let i = PETAL_LO; i < PETAL_HI; i++) sparks3d[i] = null; };   // drop every leaf CURRENTLY in the air — the gate in petalTick stops new ones, but a petal lives up to PETAL_MAXLIFE, so without this a handful keep drifting past the stage for ten seconds after the editor opens. A free slot is `!s` (see bandSlot), so null is retirement.
   const TEAR_LIFE = 0.7;                               // FIXED, like the splash — a tear that lasted a random 0.75-1.0 read as flickering
   function spawnTear(wx, wy, wz) {
     const slot = bandSlot(TEAR_LO, TEAR_HI); if (slot < 0) return;   // same rule as the splash: skip this tear rather than cut a live one short
@@ -282,6 +283,18 @@
   };
   let petalNext = 0;
   function petalTick() {
+    // ── NOT ON THE ASSET-EDITOR STAGE (user 2026-08-21: "the asset editor is getting falling leaves? fix this.
+    // also there is a peice of a pine tree at the top of it") ── both reports are this one emitter. The stage
+    // hides the world and retires every creature, but the shed kept running, and it reads the world
+    // ANALYTICALLY: oakAt/treeAt answer "is there a tree in this cell" straight from the generator, so being
+    // teleported onto a platform in the sky above the pine forest does not stop it finding pines to shed from.
+    // The leaves are what the user saw falling, and the "piece of a pine tree" on top of the frog is one of
+    // them — a pine-needle petal (PETALN_IT) drifting across the model, not a voxel stamped into it: a scan of
+    // the whole play space above the plane found the frog's own 16 colours and nothing else.
+    // The gate belongs HERE rather than at the call site in main/tick-life.js, which is the same file that
+    // already gates the lake census and the flock on !ED.on and simply missed this line between them — inside
+    // the function it cannot be forgotten by a second caller. Same shape as the guard on spawnSplash below.
+    if (ED.on) return;
     if (!PETAL_IT || !PETALG_IT) return;               // OAKV.length is no longer part of the gate: the pine sheds too, and petalPoint already refuses per-tree if the oak set is missing
     const now = performance.now();
     if (now < petalNext) return;

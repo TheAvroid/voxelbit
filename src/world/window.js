@@ -219,7 +219,7 @@
   // sim/nav.js's BIO_SANDLINE reasoning depends on.
   const BIOP = 10800;                                  // one full cycle: SIX strips of 2160 — oak, cherry, oak, pine, desert, pine. 6 * W by construction, never a sum of measured pieces
   const pwrap = (d) => d - Math.floor(d / BIOP + 0.5) * BIOP;   // signed distance into [-BIOP/2, BIOP/2). floor(x + 0.5) rather than Math.round because the WGSL port must agree with this bit for bit, and WGSL's round() breaks ties to EVEN where Math.round breaks them upward
-  const DESOFF = 2440, DESB = 450, DESW = 1000;        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
+  const DESOFF = 1080, DESB = 450, DESW = 1000;        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
   // History, because the number has moved three times and each move had a different reason: 500 -> 300 (user
   // 2026-08-15) because 50 m of dense pine hid the thing the spawn camera was aimed at; then 300 -> 80; then
   // 80 -> 1500 below, which abandons "the sand is visible from spawn" outright rather than tuning it, because
@@ -343,7 +343,26 @@
   // WHAT THE PLAYER SEES: pines are gated `oakM > 0.5 -> reject` (terrain.js treeAt) and oaks on `oakM < 0.5 -> reject` (oakAt), so the canopies split on the
   // mask MIDPOINT and the treeline is a line, 280 voxels dead ahead of the start yaw. Behind the player: 1880 of oak, then the blossom.
   // AND IT CANNOT BE DONE BY NUDGING SPWX ─ the note under CHOFF records a first attempt that tried; the bands are anchored to SPWX and simply come along.
-  const OAKOFF = 280, OAKB = 450, OAKW = 540;         // how far the oak/pine line sits EAST of spawn; blend width; the INDEPENDENT half of the meander. 1220 -> 2300 = the blossom's east midpoint (spawn+140) plus one full strip W, so the PURE oak between the pink and the pines is 2160 like everything else. Spawn is still 2300 WEST of this line, so oakM(SPWX,SPWZ) is still exactly 1 and "spawn is in the oak forest by construction" still holds — the cherry band simply sits inside it
+  // ── AND THE WHOLE ARRANGEMENT SLID 1360 EAST, SO SPAWN IS IN THE PINE FOREST (user 2026-08-21: "spawn me in
+  // the pine forest by default") ── the same translation move the 2026-08-20 (600) and 2026-08-21 (340) slides
+  // made, for the same reason and by the same rule: every offset moves by the SAME amount, so the arrangement is
+  // TRANSLATED and never reshaped. Every strip is still 2160 wide, BIOP is untouched, and the equal-strip
+  // invariant holds to the voxel — only where spawn sits inside the pattern changed. Walking SPWX still cannot
+  // work (see the note in world/build.js): the bands are anchored to SPWX itself, so moving the player moves the
+  // forest with them. THE CURRENT MAP, signed distances from spawn along +x, spawn at 0:
+  //     desert  -3240 .. -1080
+  //     pine    -1080 .. +1080   <- spawn is DEAD CENTRE, 1080 from either edge
+  //     oak     +1080 .. +3240
+  //     cherry  +3240 .. +5400
+  // 1360 is not a taste number: it is the old pine strip's own half-width (the strip ran -2440..-280, centre
+  // -1360), so sliding by exactly that lands spawn on the centre line. 1080 of clearance against a blend that
+  // reaches OAKB/2 = 225 either side of a line means the meander (bounded at 235.7 — see the note under
+  // OAKWOFF) cannot put spawn anywhere but pure pine: worst case is 1080 - 235.7 - 225 = 619.3 of pure pine
+  // still between spawn and the nearest edge. Measured after the change with __vb.om/cm/dm at spawn: 0/0/0.
+  // SPYAW is UNCHANGED at +pi/2 (east): the player now looks down 1080 of pine to the oak line rather than
+  // standing on it, so the note above SPYAW that says "at the blossom with the pine treeline at your back"
+  // describes the arrangement this slide replaced.
+  const OAKOFF = -1080, OAKB = 450, OAKW = 540;         // where the oak/pine line sits (the line is at -OAKOFF, so a NEGATIVE value puts it EAST of spawn — 1080 east, since the 2026-08-21 pine slide above); blend width; the INDEPENDENT half of the meander. 1220 -> 2300 = the blossom's east midpoint (spawn+140) plus one full strip W, so the PURE oak between the pink and the pines is 2160 like everything else. Spawn is still 2300 WEST of this line, so oakM(SPWX,SPWZ) is still exactly 1 and "spawn is in the oak forest by construction" still holds — the cherry band simply sits inside it
   const oakWob = (z) => desWob(z) * 0.6 + (vnoise(z * WOB_OAK + 143.7, 61.3) - 0.5) * OAKW;
   // ── THE WEST EDGE, AND WHY IT SITS WHERE IT DOES ── it is the OTHER oak strip, and as of 2026-08-19 it is
   // set the same way the east one is: the blossom's west midpoint (spawn - 2020) less one full strip W, i.e.
@@ -375,7 +394,7 @@
   // (Those three numbers are pre-2026-08-21: the 340 slide above makes them centre +1880, blossom 1880..4040, and
   // spawn 280 from the pine line. The RELATION each states — outer strip, equal halves — is what the slide preserves,
   // and it preserves it exactly, because all four offsets moved together.)
-  const OAKWOFF = -4040;                               // the WEST boundary, as a signed distance from spawn: the blossom's west midpoint (-2020) less one strip W
+  const OAKWOFF = -5400;                               // the WEST boundary, as a signed distance from spawn: the blossom's west midpoint less one strip W, carried 1360 east with everything else by the pine slide (was -4040). OAKC/OAKH are derived from this and OAKOFF, and OAKFAR/OAKNEAR/OAKWFAR/OAKWNEAR from those, so the whole oak geometry follows these two numbers and nothing else has to move
   // ── THE BANDS ARE MIRRORED ABOUT SPAWN (user 2026-08-20: "can you flip the map? I want to be running into
   // the sun while running in the direction of the cherry forest. I want the sun to stay east though") ──
   // the SUN is untouched: tick-camera derives it from tday alone, and at dawn (tday 0.25) its vector is
@@ -449,7 +468,7 @@
   // so every strip keeps its 2160: the blossom's east midpoint goes from spawn+140 to spawn-940, and spawn
   // therefore sits 940 east of the pink and 1220 west of the pines, i.e. inside the oak strip with room on
   // both sides. BIOP is unchanged, the six strips are unchanged, and only the PHASE of the pattern moved.
-  const CHOFF = BAND_MIRROR * 2960, CHHALF = 980, CHB = 200, CHW = 260;   // ── UNCHANGED BY THE EQUAL-STRIP PASS (user 2026-08-19: "make all of the biomes the exact same size... double the size of the bands") ── this band was doubled on 2026-08-18 (1080 -> 2160 measured between mask midpoints, 2 * (CHHALF + CHB/2)) and 2160 is precisely the width every OTHER strip has now grown to, so nothing here moves: spawn still sits 140 inside the EAST edge with the whole 2020 of blossom ahead in the facing direction, bit for bit   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander   // CHOFF is MIRRORED (see BAND_MIRROR): the blossom's centre is SPWX - CHOFF, so a negative CHOFF puts it EAST of spawn, in the sunrise. Magnitude unchanged.
+  const CHOFF = BAND_MIRROR * 4320, CHHALF = 980, CHB = 200, CHW = 260;   // ── UNCHANGED BY THE EQUAL-STRIP PASS (user 2026-08-19: "make all of the biomes the exact same size... double the size of the bands") ── this band was doubled on 2026-08-18 (1080 -> 2160 measured between mask midpoints, 2 * (CHHALF + CHB/2)) and 2160 is precisely the width every OTHER strip has now grown to, so nothing here moves: spawn still sits 140 inside the EAST edge with the whole 2020 of blossom ahead in the facing direction, bit for bit   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander   // CHOFF is MIRRORED (see BAND_MIRROR): the blossom's centre is SPWX - CHOFF, so a negative CHOFF puts it EAST of spawn, in the sunrise. Magnitude unchanged.
   const chWob = (z) => oakWob(z) * 0.6 + (vnoise(z * WOB_CH + 211.3, 97.7) - 0.5) * CHW;   // carries 0.6 of the OAK meander for the reason oakWob carries 0.6 of the desert's: two free meanders converge and let bands touch. Its own half is small because this band has the least room of the three
   const cherryM = (x, z) => {                          // 1 = inside the blossom band, 0 = the oak forest either side of it
     const b = SPWX - CHOFF + chWob(z) - chWob(SPWZ);   // pinned at the spawn's own z, so the wobble cancels there and spawn's position in the band is not a per-session lottery

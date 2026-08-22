@@ -86,7 +86,10 @@
   const skunkBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 4, hz: 4 }));   // SOLID world-skunk hitboxes — a touch taller than the armadillo (rounder body); nearest few, republished each frame
   const porcBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 4, hz: 4 }));   // SOLID world-porcupine hitboxes (user's 4th land mammal) — same extents as the skunk; nearest few, republished each frame
   const flamBoxes = Array.from({ length: 4 }, () => ({ active: false, cx: 0, cy: 0, cz: 0, hx: 4, hy: 4, hz: 4 }));   // …and the FLAMINGO's, or it is the one land-band creature the player walks straight through: sim/player.js tests exactly these arrays, so a band with no array is a body with no collision
-  const bfly = { init: false, x: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0 };   // the editor butterfly's wander state — slot 4
+  // One reused pose object for the editor stage's flyer — birdWrite reads {x,y,z,Xw,Yw,Zw,item} and keeps no
+  // reference, so a single instance rewritten each frame allocates nothing in the hot loop.
+  const edPose = { x: 0, y: 0, z: 0, Xw: [1, 0, 0], Yw: [0, 0, -1], Zw: [0, 1, 0], item: 0, uid: 7001 };
+  const bfly = { init: false, x: 0, y: 0, z: 0, th: 0, om: 0, omT: 0, tRe: 0, t: 0 };   // the EDITOR STAGE FLYER's wander state — offset from its lane's base (x/y/z), heading, the eased turn integrator (om toward omT, retargeted at tRe) and the run's own clock. Driven in main/tick-support.js, cleared by edExit. Named for the butterfly this was first written for; it is whatever ED_STAGE puts in the side lane with `fly` set.
   const cardSlainPerch = new Set(), CARD_SLAIN_CAP = 512;   // perches whose bird the player KILLED — see findPineCrown. Module scope on purpose: the kill handler and the placement search are ~4000 lines apart.
   const cardPerchKey = (tx, tz, bi) => tx + '|' + tz + '|' + bi;
   // ── REACH, AND THE ONE NUMBER THAT SIZES EVERY POPULATION BEHIND IT ── (user 2026-08-17: "unify the render
@@ -120,7 +123,16 @@
   // wrong animals. Widen a band by editing its _N here and every loop, spawn gate, census and tap moves with it.
   // MAM_END is kept as its own name because the mammal loops mean "end of the mammal band" while the full-pool
   // loops mean "end of the pool" (DES_END), and those two were the same number until the desert band landed.
-  const FLY_N = 16, DUCK_N = 4, BABY_N = 12, WORM_N = 32, FISH_N = 32, MAM_PER = 24, DES_N = 9, DES_PER = 8;
+  // ── FLY_N 16 -> 20 (user 2026-08-22: "increase the butterfly frequency by 25%") ── the flyer band was
+  // SATURATED: nActD is itself capped at 16 and the day target is round(nActD * 2.5), so at every shipped
+  // view distance the ask was 40 and the band width alone decided the answer. Raising the multiplier on its
+  // own would therefore have changed NOTHING — the width is the lever, and the day target in main/tick-life.js
+  // now reads FLY_N rather than a second literal 16 so the two can never drift apart again.
+  // Scoped to the DAY: the night branch is nActD >> 1 and is not clamped by this, so the fireflies are
+  // untouched. The desert is untouched too — bioFracLifeAt zeroes the target in the sand and the biome gate
+  // refuses a BIO_ANY spawn there, so the extra four go to pine, oak and the blossom, which is every biome
+  // that has butterflies at all.
+  const FLY_N = 20, DUCK_N = 4, BABY_N = 12, WORM_N = 32, FISH_N = 32, MAM_PER = 24, DES_N = 10, DES_PER = 8;   // DES_N 9 -> 10 for the LADYBUG (user 2026-08-22)
   // ── PERCHED SONGBIRDS: THE ONE WIDTH THAT TRACKS THE REACH ── 180 was the pool at CARD_KEEP_V0 and it was
   // SATURATED there: the oak wood's measured 1.24e-4 birds/vox² offers 180 perches inside a 680 disc and the
   // census reached 179 of them. At 1040 the same wood offers 421, so the pool grows with the area and the
@@ -168,7 +180,53 @@
   //     hive would have taken every bee in the world and the flower visiting would never have been seen.
   // The desert MOUSE is deliberately NOT here: it has two homes, which is a different thing and is expressed
   // by DES_OAK in tick-creatures giving it a SHARE of its own slots.
-  const DES_OAKONLY = { bee: 8, grass_snake: 5 };
+  const DES_OAKONLY = { bee: 8, grass_snake: 5, ladybug: 6 };
+  // ── AND ONE OF THEM IS NOT OAK-ONLY AT ALL (user 2026-08-22: "implement the ladybug into the oak and pine
+  // forests") ── DES_OAKONLY is really two facts wearing one name: "takes no desert slots, and its whole
+  // head-count is this number", plus "and it lives in the oak". The ladybug wants the first and not the
+  // second. Rather than duplicate the head-count plumbing for a second table, this widens the BIOME half
+  // only: a name in here keeps every one of DES_OAKONLY's counting rules and is tagged BIO_ANY instead of
+  // BIO_OAKF, which sim/nav.js defines as "anywhere that is not sand" — precisely oak and pine.
+  const DES_ANYFOREST = { ladybug: 1 };
+  // ── AND WHOSE MODEL FACES THE WRONG WAY ── the render basis in main/tick-creatures.js takes model −y as the
+  // head end. A species baked by tools/bake_desert_life.py always does; one adopted from the asset editor's
+  // scene-graph loader need not, and the ladybug's head is at +y. A named table rather than a magic term at
+  // the one call site, so the next editor model promoted to world life has somewhere obvious to say so.
+  const DES_BACKWARDS = { ladybug: 1 };
+  // ── LADYBUG LANDING BOUNDS ── a descent SUSPENDS the three altitude authorities that keep a flyer above the
+  // canopy (the cruise servo and two floors, main/tick-creatures.js), which is the only way it can reach the
+  // ground at all — and is exactly how it ended up wedged in crowns, worst in the pine forest where they are
+  // tallest and densest (user 2026-08-22: "ladybug is getting stuck on trees very frequently"). So a descent is
+  // only ever committed down a column PROVEN clear, from no higher than DROP_MAX, and it gives up after
+  // DROP_MAX_S if it has not arrived. Anything else and it keeps flying the butterfly's lane untouched.
+  const LBUG_DROP_MAX = 30, LBUG_DROP_MAX_S = 8, LBUG_CRUISE = 14;
+  // ── …AND WHO KEEPS ITS OLD HOME AND GAINS THE OAK FOREST ── the value is how many of the species' OWN
+  // DES_PER slots go to the oak population, CLAMPED in main/tick-creatures.js to whatever its desert head-count
+  // leaves spare. That clamp is the contract: raise DES_RARITY and the slots go BACK to the desert, the oak
+  // population shrinks, and DES_END never moves — so every `< DES_END` loop in the game still covers the pool
+  // it always did.
+  //   desert_mouse 4 — two homes rather than one (user 2026-08-17).
+  //   fly 3 — ADDED to the oak forest (user 2026-08-22: "can you add these flies to the oak forest"). DES_OAK
+  //     and not DES_OAKONLY on purpose: oak-only would have taken the whole species off the sand, and "add to"
+  //     is not "move to". At DES_RARITY 0.75 the desert asks for 6 of its 8, so the clamp hands the oak the 2
+  //     that are genuinely spare.
+  // It lives HERE beside DES_OAKONLY rather than inside the creature tick because the two are one fact — where
+  // a desert-band species lives — and because main/debug-api.js's oakLife census has to read both to report
+  // the oak population honestly. As a local const it could not, and the census silently showed an empty forest.
+  const DES_OAK = { desert_mouse: 4, fly: 5 };          // fly 3 -> 5: this share, not FLY_BUNCH, is what decides how many flies the oak forest actually gets, so a bunch of 5 needs 5 slots here (user 2026-08-22)
+  // How many flies share one bunch. 4 of the species' 8 slots means two bunches in the world at once rather
+  // than one big knot, which is what a fly reads as — and if the oak share takes some of those slots the bunches
+  // simply get smaller instead of one of them vanishing.
+  const FLY_BUNCH = 5;                                 // 5, to match the editor swarm the user tuned against (user 2026-08-22: "add 2 more flies to the pack. there are only 3. the asset editor has 5")
+  // ── AND THE BUNCH ITSELF HAS TO GO SOMEWHERE (user 2026-08-22: "the flys just seem to be moving in one
+  // location") ── MEASURED before the fix: over 37.6 s each world fly travelled 13x13 voxels, which is exactly
+  // the orbit diameter 2*BEE_ORBIT_R, and the anchor moved 0.00 on both axes. The ring was right and the post
+  // it hangs on was nailed down. The editor swarm had already been given a drifting centre and this never got
+  // it. Same shape as the editor's: the drift owns its OWN heading, because the per-fly heading is overwritten
+  // by the ring tangent every frame and integrating the drift on that just re-draws the circle.
+  const FLY_BN_SPD = 10.0;                             // 2x (user 2026-08-22: "double the motion speed of the flies. the pack needs to be moving in space twice as fast")                              // anchor travel, voxels/s — well under the ring's own tangential speed so the bunch still reads as a bunch
+  const FLY_BN_TURN = 0.85;                            // rad/s of wander on the drift heading
+  const FLY_BN_R = 44;                                 // how far the bunch may roam from where it formed, before it is steered home
   // ── WHO DIES TO ONE BLOW, WHATEVER SWUNG IT (user 2026-08-21: "make bees 1 hit like the other insects. make
   // all insects one hit") ── read by `frail` in sim/life/reactions.js, which already exempted the FLY_0 flyers
   // and the worms on exactly this argument: a creature that size surviving three blows from a shovel reads as
@@ -182,7 +240,7 @@
   // member of this band that drops meat) — they keep HITS_TO_KILL like every other animal in the game.
   // The value is 1 and nothing reads it; it is a SET, written as a table so it sits in the same shape as
   // DES_OAKONLY above and DES_FLYER/DES_HUNT/DES_DASH in main/tick-creatures.js, which key on the same names.
-  const DES_FRAIL = { ant: 1, fly: 1, scorpion: 1, spider: 1, bee: 1 };
+  const DES_FRAIL = { ant: 1, fly: 1, scorpion: 1, spider: 1, bee: 1, ladybug: 1 };   // a ladybug is an insect: same one-hit frailty as the fly it flies beside
   // What tick-life ASKED each band for on the last frame. A plain mirror, written once per frame, because
   // nCard/nFish/nBunny… are consts inside tickBody and main/debug-api.js is concatenated ABOVE it — a tap
   // reading them directly is a ReferenceError that no static check catches and only the first call reveals.

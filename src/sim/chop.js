@@ -151,12 +151,12 @@
   // bounding box and it runs once, at the moment of the lift.
   const CONE_WAKE_PAD = 26;                            // a crown radius, for a LIFT whose bbox is only the trunk
   const coneWake = (x0, x1, y0, y1, z0, z1, pad) => {
-    const PADW = pad === undefined ? CONE_WAKE_PAD : pad;   // cones AND canopy snow — both hang off a crown and both are stranded when it goes
+    const PADW = pad === undefined ? CONE_WAKE_PAD : pad;   // cones, canopy snow AND fruit — all three hang off a crown and all three are stranded when it goes
     for (let z2 = z0 - PADW; z2 <= z1 + PADW; z2++)
       for (let y2 = Math.max(1, y0 - PADW); y2 <= Math.min(WY - 1, y1 + PADW); y2++)
         for (let x2 = x0 - PADW; x2 <= x1 + PADW; x2++) {
           const jj = gwrap(x2, WX) + y2 * WX + gwrap(z2, WZ) * WX * WY;
-          const v2 = W[jj]; if (!v2 || !(coneTab[v2] || snowTab[v2])) continue;
+          const v2 = W[jj]; if (!v2 || !(coneTab[v2] || snowTab[v2] || hangTab[v2])) continue;   // hangTab is the FRUIT (assets/material-tabs.js) — cones and snow were the only two hangers this knew about, so a felled oak left its apples and oranges in the air
           // ── ONLY WAKE WHAT COULD ACTUALLY BE HANGING ── waking every cone and snow voxel in the box pushed
           // HUNDREDS OF THOUSANDS of cells during a storm (measured: 400k queued, a 368k backlog against a
           // 2 ms/frame budget). The resolver then took minutes to reach a genuine floater, so cones and snow sat
@@ -365,6 +365,7 @@
         // Drop cleanly onto the cut face first; phStep starts the topple once it has actually landed.
         b.tipArm = 1; b.tipArmT = performance.now();
         b.noAbsorb = true;                           // the TOPPLING TRUNK is the tree falling, not debris — it must never fly into the player
+        b.fellWhole = 1;                             // …and it BREAKS when it lands (sim/solver.js arms this, sim/chop-tree.js does it), which is also where noAbsorb is lifted
         b.slowFall = PH.fallSlow;                    // the trunk falls in the slowed time base (see PH.fallSlow); everything else keeps normal gravity
         b.omega[0] = b.omega[1] = b.omega[2] = 0;    // no spin at all until it is down
         b.vel[0] = b.vel[2] = 0;                     // …and straight down, so it meets the stump square

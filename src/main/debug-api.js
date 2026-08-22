@@ -56,7 +56,7 @@
                solidIds: FLOWERIDS.filter((i) => solidTab[i]),
                solidCols: FLOWERIDS.filter((i) => solidTab[i]).map((i) => palette[i]) }; },
     uniInfo() { return { on: LIFE_UNI, visW: VIS_W, sec: UF[1530], blue: BLUEB_ITEM0, robin: ROBIN_ITEM0, birdsDrawn: uniBirdN, birdsWant: uniBirdWant, cursor: UF[1103] }; },
-    itemInfo() { return { n: itemsRef ? itemsRef.length : 0, cells: itemMapF32.length >> 2, card: CARD_ITEM0, bunny: BUNNY_ITEM0, arm: ARMADILLO_ITEM0, armN: ARMADILLO_NFRAMES, skunk: SKUNK_ITEM0, skunkN: SKUNK_NFRAMES, porc: PORCUPINE_ITEM0, porcN: PORCUPINE_NFRAMES, worm: WORM_ITEM0 }; },   // item-table census for the unification tests
+    itemInfo() { return { n: itemsRef ? itemsRef.length : 0, cells: itemMapF32.length >> 2, lbug: LBUG_ITEM0, lbugN: LBUG_NFRAMES, koi: KOI_ITEM0, koiN: KOI_NFRAMES, bfly: BFLY_ITEM0, bflyN: BFLY_NFRAMES, card: CARD_ITEM0, bunny: BUNNY_ITEM0, arm: ARMADILLO_ITEM0, armN: ARMADILLO_NFRAMES, skunk: SKUNK_ITEM0, skunkN: SKUNK_NFRAMES, porc: PORCUPINE_ITEM0, porcN: PORCUPINE_NFRAMES, worm: WORM_ITEM0 }; },   // item-table census for the unification tests
    // the 8-bit palette ceiling — breaching it corrupts voxel SOLIDITY, not just colour
     // ── THE VIEW-MODEL'S PUBLISHED POSE ── the right hand's anchor/axes/item (pickA/pickX at 48/52) beside the
     // craft preview's own (UF_PICK3). Both live in tick-camera's closure and both are written every frame, so
@@ -449,6 +449,8 @@
       return { slots: { firstCreature: first9, flock: BIRD_N - 1, flockDrawn: BIRD_SLOTS, firstFree: first9 + BIRD_SLOTS, total: DROP_SLOTS, forTraced: DROP_SLOTS - (first9 + BIRD_SLOTS) }, kinds: acc };
     },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
+    edLoad: edLoadVox, edLoad2: edLoadVox2, edSeqs: edSeqsAt,   // stage an animation off the asset tree — __vb.edLoad('assets/life/frog.vox', 'tongue'), or several run together as one: __vb.edLoad(path, ['ribbet', 'hop']); edLoad2 puts a SECOND model in the side lane beside it; and __vb.edSeqs(path) lists what a .vox holds
+
     edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; if (ED.giz) ED.rgiz = false; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
     edRgiz(v) { ED.paused = true; ED.rgiz = v === undefined ? !ED.rgiz : !!v; if (ED.rgiz) ED.giz = false; edEnsureRgizCols(); edLayout(); return { rgiz: ED.rgiz, rings: ED.rgizBoxes.map((g) => g.kind) }; },   // rotate-gizmo test tap
     edRot(kind, dir) { edApplyRot(kind, dir); const n = ED.frames.length, f = n ? ED.frames[((ED.sel % n) + n) % n] : null; return f ? { sx: f.sx, sy: f.sy, sz: f.sz, nvox: f.vox.length } : null; },   // rotate + report dims (test)
@@ -796,7 +798,7 @@
     // every row, and over 0.85 for a body that has not moved far from where it was admitted.
     oakLife() { const o = []; const nmO = (i) => (DESERTS[i] || {}).name || '?';
       for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j]; const sp = ((j - MAM_END) / DES_PER) | 0;
-        if (!DES_OAKONLY[nmO(sp)] || !B || !B.init || typeof B.x !== 'number') continue;
+        if ((!DES_OAKONLY[nmO(sp)] && !DES_OAK[nmO(sp)]) || !B || !B.init || typeof B.x !== 'number') continue;   // BOTH habitat routes: oak-only species and the ones that merely have a share here
         o.push({ j, sp: nmO(sp), idx: (j - MAM_END) % DES_PER, kind: B.kind | 0,
           x: Math.round(B.x), y: Math.round(B.y || 0), z: Math.round(B.z),
           om: +oakM(B.x, B.z).toFixed(2), dm: +desertM(B.x, B.z).toFixed(2),
@@ -1743,7 +1745,49 @@
                blindByColour: blind.reduce((a, r) => (a[r.colour] = (a[r.colour] || 0) + 1, a), {}) }; },
     mammals() { const b = (a, z) => { let n = 0, near = 0; const pos = []; for (let j = a; j < z; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2) { n++; pos.push([Math.round(O.x), Math.round(O.z), Math.round(O.hx || 0), Math.round(O.hz || 0)]); if ((O.x - P.x) ** 2 + (O.z - P.z) ** 2 < 400 * 400) near++; } } return { active: n, within400: near, pos }; };   /*TEMP-DEBUG: live land-mammal census + positions/homes*/
       return { bunny: b(BUNNY_0, BUNNY_END), armadillo: b(ARM_0, ARM_END), skunk: b(SKUNK_0, SKUNK_END), porcupine: b(PORC_0, FLAM_0), flamingo: b(FLAM_0, FLAM_END), p: [Math.round(P.x), Math.round(P.z)] }; },
-    edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, paused: ED.paused, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pw: ED.pw, pd: ED.pd, pal: palette.length }; },
+    edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, paused: ED.paused, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pw: ED.pw, pd: ED.pd, pal: palette.length, borrowed: edBorrowN(), blinkE: ED.blinkE | 0, blink: !!ED.blink, box: ED.box ? { cx: ED.box.cx, cy: ED.box.cy, cz: ED.box.cz, hx: ED.box.hx, hy: ED.box.hy, hz: ED.box.hz } : null, hop: [ED.hopX | 0, ED.hopY | 0, ED.hopZ | 0],
+      n2: ED.frames2.length, sel2: ED.sel2 | 0, seq: ED.seq1 || '', seq2: ED.seq2 || '', fly2: !!ED.flyer2, spin2: ED.spin2 | 0, box2: ED.box2 ? { cx: ED.box2.cx, cy: ED.box2.cy, cz: ED.box2.cz, hx: ED.box2.hx, hy: ED.box2.hy, hz: ED.box2.hz } : null, hop2: [ED.hop2X | 0, ED.hop2Y | 0, ED.hop2Z | 0] }; },   // …and the SIDE lane, which runs its own frame index and its own march count: reporting only lane 1 would say nothing about half of what is on the stage   // box = the extent edLayout actually stamped (what the click test picks against); hop = the accumulated per-cycle march   // borrowed = palette entries the stage is holding so the import shows its EXACT colours; every one is given back by edExit
+    dropItems(a, b) { const o = []; for (let i = a | 0; i <= (b === undefined ? a | 0 : b | 0); i++) o.push(i + ':' + Math.round(UF[dropOff(i) + 7])); return o; },   // the ITEM id in each drop slot — 0 is empty. A non-zero slot nobody writes is a stale pose the shader will still draw
+    // ── PUT THE PLAYER IN A NAMED BIOME ── the desert band and the oak forest are the only places several
+    // species populate at all, and a test that cannot reach one cannot check them: measured, __vb.lifeWhy()
+    // reported "healthy" with no desert entry in its want map at every spot I could teleport to by hand, so
+    // every desert-band census read empty and every change to that band went unverified. This walks outward
+    // along +x in strides until the biome field says it has arrived, then teleports. Returns where it landed
+    // and the field values there, so a caller can tell "found it" from "gave up".
+    gotoBiome(which, maxD) {
+      const f = which === 'desert' ? desertM : which === 'pine' ? ((x, z) => (oakM(x, z) < 0.5 && desertM(x, z) < 0.5) ? 1 : 0) : oakM;   // 'pine' is the DEFAULT forest — neither of the two named bands — so it is expressed as the absence of both rather than a field of its own
+      const lim = maxD || 400000;
+      for (let d = 0; d <= lim; d += 512) {
+        for (const sgn of (d === 0 ? [1] : [1, -1])) {
+          const x = P.x + sgn * d, z = P.z;
+          if (f(x, z) > 0.5) {
+            P.x = x; P.z = z; P.y = H(x, z) + 3; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1;   // the same three lines __vb.tp ends with — the streamer catches up on its own
+            return { found: which, at: [Math.round(x), Math.round(z)], dist: d,
+              oak: +oakM(x, z).toFixed(2), desert: +desertM(x, z).toFixed(2) }; }
+        }
+      }
+      return { found: null, searched: lim, oakHere: +oakM(P.x, P.z).toFixed(2), desertHere: +desertM(P.x, P.z).toFixed(2) };
+    },
+    // ── EVERY MATERIAL TABLE FOR ONE ID ── __vbFlowerMat answers this for flowers only, which is no help when
+    // the question is "is this voxel a mushroom" and mushTab is module-scoped. One tap, all the tables.
+    matTabs(id) { const i = id | 0; return { id: i, solid: !!solidTab[i], decor: !!decorTab[i], wood: !!woodTab[i],
+      folia: !!foliaTab[i], cone: !!coneTab[i], snow: !!snowTab[i], hang: !!hangTab[i], mush: !!mushTab[i],
+      float: !!floatTab[i], axe: !!axeOnlyTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i] }; },
+    // …and WHERE the nearest one of a given table is, so a rare decoration can actually be found to test on.
+    findMat(tab, rad) { const R = Math.min(160, rad || 90), T = { mush: mushTab, cone: coneTab, hang: hangTab, wood: woodTab }[tab];
+      if (!T) return { err: 'unknown table' };
+      let best = null, bd = 1e9;
+      for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) {
+        const x = Math.round(P.x) + dx, z = Math.round(P.z) + dz, g = H(x, z);
+        for (let y = Math.max(1, g - 2); y < Math.min(WY - 1, g + 20); y++) {
+          const v = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+          if (!v || !T[v]) continue;
+          const d = dx * dx + dz * dz; if (d < bd) { bd = d; best = [x, y, z, v]; }
+          break; } }
+      return best ? { at: best.slice(0, 3), id: best[3], dist: Math.round(Math.sqrt(bd)) } : { none: true, searched: R }; },
+    edEx() { return ED.ex.map((E) => ({ m: E.model, it: E.item0, n: E.n, kind: E.kind, lead: E.lead,
+      at: [Math.round(E.hx + E.x), Math.round(E.hy + E.y), Math.round(E.hz + E.z)], ph: E.ph, gy: E.gy, flee: !!E.flee,
+      off: [+E.x.toFixed(1), +E.y.toFixed(1), +E.z.toFixed(1)], th: +E.th.toFixed(2) })); },   // the editor stage's TRACE-INJECTED exhibits, live
     dbg() { return { smoothEye, pickRock: [...PICK_ROCK], passthru: [...PASSTHRU] }; },
     htest(n) { let bad = 0; for (let i = 0; i < (n || 1000); i++) { const x = ((Math.random() * 2e6) | 0) - 1e6, z = ((Math.random() * 2e6) | 0) - 1e6;
       const hv = H(x, z); if (hv !== makeHRow(z)(x) || hv !== makeHCol(x)(z)) bad++; } return bad; },

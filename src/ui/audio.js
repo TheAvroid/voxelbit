@@ -51,15 +51,23 @@
   }
   document.addEventListener('contextmenu', (e) => e.preventDefault());
   // ── MASTER VOLUME ── every sound registers its BASE volume; the menu slider scales them all (persisted vb_vol)
-  let sfxVol = 1;   // ── SFX (user 2026-08-07) ── a second bus under the master, for the sounds the WORLD MAKES: every
+  // ── AND ALL FOUR ARE REMEMBERED ACROSS A REFRESH (user 2026-08-21: "have the browser remember my settings on
+  // refresh") ── every one of these four sliders already WROTE its key; none of them read it back, so the value
+  // survived only until F5. That was deliberate once (the "volume-resets-to-100 rule" the comments above argue
+  // for, so a fresh load always begins at full volume) and it is what the user has now asked to change, so the
+  // rule is gone rather than argued with. Read with the same guarded parse vb_sens uses below: a corrupt or
+  // out-of-range entry falls back to the default rather than muting the game, and localStorage in a private
+  // window throws on access, which is why every one of these sits in its own try.
+  const volGet = (k, d) => { try { const v = parseFloat(localStorage.getItem(k)); return (v >= 0 && v <= 1) ? v : d; } catch (e) { return d; } };
+  let sfxVol = volGet('vb_sfx', 1);   // ── SFX (user 2026-08-07) ── a second bus under the master, for the sounds the WORLD MAKES: every
                     // tool, hit, footstep, bowstring, pickup and jingle. The forest loop is the one thing it does not
                     // touch — an SFX slider that also rode the ambience would just be the master slider twice over.
                     // Resets to 100% on refresh and persists to vb_sfx, matching sndVol exactly rather than inventing a
                     // second rule for two sliders sitting in the same box (see the volume-resets-to-100 note below).
-  let musVol = 1;   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
+  let musVol = volGet('vb_mus', 1);   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
-  let ambVol = 1;   // ── AMBIENCE (user 2026-08-20: "add a new audio slider called ambience. this adjusts the ambience
+  let ambVol = volGet('vb_amb', 1);   // ── AMBIENCE (user 2026-08-20: "add a new audio slider called ambience. this adjusts the ambience
                     // sound. song birds/wind etc. put it under music") ── the fourth bus, and the one BUS_AMB has
                     // been riding without since it was named: busVol answered a literal 1 for it, so the forest
                     // and desert beds moved only with the master. Same rule as the two above it — 100% on every
@@ -67,7 +75,7 @@
                     // It reaches the desert bed as well as the forest one for free: both register on BUS_AMB and
                     // ambBiomeTick recomputes their levels through sndLevel every frame, so a drag moves the bed
                     // that is playing right now rather than the next one to start.
-  let sndVol = 1;   // ── SOUND IS BACK ON (user 2026-08-20: "turn the volume on by default") ── it was muted earlier the same day ("turn off volume by default"), which was itself a repeat of 2026-08-18, and this is the third time the switch has moved. 1 is the 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
+  let sndVol = volGet('vb_vol', 1);   // ── SOUND IS BACK ON (user 2026-08-20: "turn the volume on by default") ── it was muted earlier the same day ("turn off volume by default"), which was itself a repeat of 2026-08-18, and this is the third time the switch has moved. 1 is the 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
                     // preference: a saved vb_vol is written by the slider and re-read there, so a player who turns it down
                     // still gets their setting for that session — this only decides where a fresh load begins.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)

@@ -1,5 +1,5 @@
   // @module — the asset editor: platform, gizmos, .vox parse, pose bakes
-  // @exports BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edLayout, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSnapCount, edSnapErrs, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk
+  // @exports BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, ED_LANE_RUN, edExStep, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edBorrowN, edLayout, edLoadVox, edLoadVox2, edMixPick, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSeqsAt, edSnapCount, edSnapErrs, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk
   // ── ASSET EDITOR PLATFORM ── a floating white stage (1-voxel-thick plane, 1 m grid in light grey) stamped just above
   // the tallest content near the player. Import .vox frames (multi-file or multi-model), they line up left→right in
   // sequence order; , / . cycle the selected frame (amber ring), ←/→ move it within the sequence. Every voxel write goes
@@ -11,6 +11,37 @@
     if (W[ii] !== id) { W[ii] = id; cells.push(ii); }
     return ii; };
   const edPlaneId = (x, z) => ((x - ED.x0) % 10 === 0 || (z - ED.z0) % 10 === 0) ? ED_GREY : ED_WHITE;   // 1 m squares = every 10th voxel is a grey gridline
+  // ── WHERE THE SIDE LANE STANDS ── three numbers, all measured against the camera edEnter sets up (50 voxels
+  // back from the stage centre, aimed at the middle), because that is the shot the editor opens on.
+  // ACROSS: −44, four gridlines and a bit clear of the subject — far enough to read as a second stand rather
+  // than a model that has drifted, near enough to stay in frame. It is NEGATIVE for a reason worth stating,
+  // since either sign looks equally arbitrary in the source: POSITIVE puts the exhibit directly BEHIND THE
+  // HELD-ITEM VIEWMODEL, which occupies the lower right of every frame — screenshotted, the frog on that side
+  // spent its whole run peeking out from around the pick handle. The left half of the shot is empty.
+  // UP-STAGE: +50, which is exactly the camera's own distance from the stage centre. A sequence that TRAVELS
+  // (the croak-and-leap carries −10 in z a cycle) otherwise starts level with the middle and spends the back
+  // half of its run BEHIND the viewer — measured, it left the frame three leaps in and did not come back until
+  // the run restarted. Starting it a camera-distance up-stage puts the whole run in front of you: it hops down
+  // the side of the stage toward you, and begins again at the far end.
+  // RUNWAY: 50 voxels, five leaps, and NOT the whole 105 of stage the centre lane gets (tick-support.js bounds
+  // that one by the stage). The three are solved together, against that shot and the WORST aspect ratio a
+  // player is likely to have:
+  //     FOV 72 deg (ui/hud.js) -> tan 36 = 0.727 of the distance in visible half-height,
+  //     x 16:9 = 1.29*d of visible half-WIDTH; anything wider only helps.
+  //     closest approach  d = back(50) + ED_LANE_BACK(50) - ED_LANE_RUN(50) = 50  ->  half-width 64
+  //     the model needs  |ED_LANE| + its own half-width (~5) = 49  <  64, a quarter of the frame in hand.
+  // Checked the other way too: at the START of the run (d = 100) the lane sits at 0.34 of the half-width, well
+  // inside the frame. −48 across with a 60 runway was tried first and rejected — that closes to d = 40, i.e. 51
+  // of half-width against a 53 requirement, and the frog was half off the edge on its last hop. What showed it
+  // was a screenshot at the closest hop on a 16:9 window, not the arithmetic; the arithmetic came after.
+  // ED_LANE_RUN is the one of the three that leaves this module (@exports, top of file): the march it bounds is
+  // counted in main/tick-support.js, while where the lane STANDS is decided here. A fragment is its own scope —
+  // reading it over there without exporting it throws inside tickBody, which freezes the sim behind a perfectly
+  // rendered frame and says nothing (only __vb.errLog() knows). It cost a debugging round once already.
+  // A FLYER ORBITS, so it needs its own, tighter offset: measured at the -44 lane with a 30 orbit it swung
+  // between 14 and 74 voxels off centre, and the far half of that is outside the ~51 the shot holds at that
+  // depth, so it spent much of its run off the left edge. -26 with the 20 orbit below keeps it between 6 and 46.
+  const ED_LANE = -44, ED_FLY_LANE = -26, ED_LANE_BACK = 50, ED_LANE_RUN = 50;
   const edHudUpd = () => { edHudEl.textContent = ED.frames.length
     ? 'frame ' + ED.sel + '/' + (ED.frames.length - 1)                 // just the frame counter — no vox filename, no keybind hints (user)
     : 'asset editor — press ESC, then import a .vox to begin'; };
@@ -57,13 +88,39 @@
     ED.rgizBoxes.push({ kind: 'yaw',   min: [cx - Rr - 1, cy - t, cz - Rr - 1], max: [cx + Rr + 1, cy + t, cz + Rr + 1] });   // flat pick-slab, thin in Y
     ED.rgizBoxes.push({ kind: 'pitch', min: [cx - t, cy - Rr - 1, cz - Rr - 1], max: [cx + t, cy + Rr + 1, cz + Rr + 1] });   // upright pick-slab, thin in X
   };
-  const edOffset = (axis, d) => { const n = ED.frames.length; if (!n) return; const f = ED.frames[((ED.sel % n) + n) % n];   // nudge the selected frame one voxel along an axis + restamp
-    f.ox = (f.ox || 0) + (axis === 0 ? d : 0); f.oy = (f.oy || 0) + (axis === 1 ? d : 0); f.oz = (f.oz || 0) + (axis === 2 ? d : 0); edLayout(); };
+  // ── MOVING A FRAME CARRIES EVERY FRAME AFTER IT (user 2026-08-21: "if I move a frame (for example frame 5) I
+  // want all of the frames that come after it to be moved to the current frames position") ── aligning an
+  // imported sequence used to be N separate jobs: each frame is box-centred on its OWN footprint (see edLayout),
+  // and a cycle whose model grows or shrinks — the frog hop runs 9x7 to 7x10 — lands every frame somewhere
+  // slightly different, so the same nudge had to be repeated frame by frame down the whole strip. Now the tail
+  // of the sequence is dragged along with whatever frame you are holding, so walking FORWARD through a cycle
+  // costs one correction per frame instead of one per frame per frame after it: set frame 0, step to frame 1
+  // (which is already sitting where 0 is), correct only the DIFFERENCE, and so on.
+  // It is an ABSOLUTE copy, not a relative ripple, which is what the request says and it matters in one place:
+  // going BACK to an earlier frame after later ones were tuned individually overwrites that later tuning rather
+  // than shifting it. That is also the only way "moved to the current frame's position" can mean anything exact.
+  // Flip ED_FOLLOW to 0 for the old one-frame-at-a-time behaviour, or to 2 for the relative ripple.
+  // Every mover goes through here — the [e] gizmo drag (ui/input.js), the arrow nudges and __vb.edOff — so this
+  // is the one place it has to be said. Rotation is deliberately NOT carried: [r] is per-frame by nature, and a
+  // sequence whose frames are rotated to a common heading is exactly what the bake tables are for.
+  const ED_FOLLOW = 1;                                 // 1 = later frames snap to this frame's offset; 2 = they SHIFT by the same delta (relative); 0 = off
+  const edOffset = (axis, d) => { const n = ED.frames.length; if (!n) return; const s = ((ED.sel % n) + n) % n; const f = ED.frames[s];   // nudge the selected frame one voxel along an axis + restamp
+    f.ox = (f.ox || 0) + (axis === 0 ? d : 0); f.oy = (f.oy || 0) + (axis === 1 ? d : 0); f.oz = (f.oz || 0) + (axis === 2 ? d : 0);
+    if (ED_FOLLOW) for (let i = s + 1; i < n; i++) { const g = ED.frames[i];
+      if (ED_FOLLOW === 2) { g.ox = (g.ox || 0) + (axis === 0 ? d : 0); g.oy = (g.oy || 0) + (axis === 1 ? d : 0); g.oz = (g.oz || 0) + (axis === 2 ? d : 0); }
+      else { g.ox = f.ox; g.oy = f.oy; g.oz = f.oz; } }   // …the tail of the strip comes with it. Only frames AFTER the selected one: everything before it is work you have already signed off.
+    edLayout(); };
   const edSaveOffsets = () => { try { const m = {}; for (const f of ED.frames) { const hasRot = f.rot && f.rot.length; if (f.ox || f.oy || f.oz || hasRot) m[f.name] = hasRot ? [f.ox || 0, f.oy || 0, f.oz || 0, f.rot.slice()] : [f.ox, f.oy, f.oz]; } localStorage.setItem(ED.offKey || 'vb_edoffsets', JSON.stringify(m)); } catch (e) {} };   // AUTOSAVE on release → the CURRENT variant's offset namespace (ED.offKey); 4th element = the rotation step list
   const edFrameOffs = (frames) => frames.map((f, i) => ({ frame: i, name: f.name, ox: f.ox || 0, oy: f.oy || 0, oz: f.oz || 0, rot: (f.rot || []).slice() }));   // rot = ordered 90° steps ('y+'/'y-'/'p+'/'p-') so the export carries rotation too
-  const edCopyOffsets = () => {                          // export BOTH bunnies at once (user) — labelled by lane so I can bake each variant's positions
-    const out = { [ED.name1 || 'left']: edFrameOffs(ED.frames) };
-    if (ED.frames2.length) out[ED.name2 || 'right'] = edFrameOffs(ED.frames2);
+  const edCopyOffsets = () => {                          // export BOTH lanes at once (user) — labelled by lane so I can bake each variant's positions
+    // The label carries the ANIMATION as well as the model. Two lanes holding two animations of the SAME model
+    // — which is exactly what one scene-graph .vox staged twice is — would otherwise both key on 'frog' and the
+    // second would overwrite the first in this object, silently exporting one lane's offsets as both. The
+    // suffixed form also matches the saved-offset namespace ('vb_edoffsets_frog_ribbet+hop'), so what comes out
+    // of the clipboard names the same thing the bake table is called.
+    const lbl = (nm, sq, dflt) => (nm || dflt) + (sq && sq !== nm ? '_' + sq : '');   // …but not when the animation is named after the model it is the only one of: 'ladybug', never 'ladybug_ladybug'
+    const out = { [lbl(ED.name1, ED.seq1, 'left')]: edFrameOffs(ED.frames) };
+    if (ED.frames2.length) out[lbl(ED.name2, ED.seq2, 'right')] = edFrameOffs(ED.frames2);
     const txt = JSON.stringify(out); try { navigator.clipboard.writeText(txt); } catch (e) {} return txt; };
   const edRotVox = (vox, sx, sy, q) => {               // rotate a frame's voxels q×90° about the vertical axis (non-destructive display rotation); dims swap on odd turns
     q = ((q % 4) + 4) % 4;
@@ -89,14 +146,19 @@
     ED.fcells2 = [];
     for (const r of ED.ring) { const id = edPlaneId(r.x, r.z); if (W[r.ii] !== id) { W[r.ii] = id; cells.push(r.ii); } }
     ED.ring = [];
-    const LANE = ED.frames2.length ? 24 : 0;           // side-by-side lanes when a SECOND bunny is loaded; centred on the stage when the editable bunny is solo
+    // ── THE PREVIEW LANE STEPS ASIDE; THE EDITABLE ONE KEEPS THE MIDDLE ── both lanes used to move, ±24 about
+    // the stage centre, which is right for COMPARING two variants of one model side by side (what it was written
+    // for — two bunnies) and wrong the moment one of them is the subject and the other is a side exhibit.
+    // edEnter frames the camera on the stage CENTRE, so an editable model pushed off it is the one thing you
+    // cannot line the gizmos up against comfortably. The offset is one-sided now: lane 1 stays under the camera,
+    // lane 2 alone moves out.
     const wrapIn = (v, lo, range) => lo + (((v - lo) % (range + 1) + (range + 1)) % (range + 1));   // fit a model start into [lo, lo+range] so the whole footprint stays in bounds after a forward-march shift
     const n = ED.frames.length;
     if (n) {                                           // ── EDITABLE bunny — LEFT lane ──
       const f = ED.frames[((ED.sel % n) + n) % n];
-      const vsrc0 = (ED.blink && f.voxBlink) ? f.voxBlink : f.vox;        // eye-blink variant while the blink phase is lit (playing only)
+      const vsrc0 = (ED.blinkE === 1 && f.voxBlinkL) ? f.voxBlinkL : (ED.blinkE === 2 && f.voxBlinkR) ? f.voxBlinkR : (ED.blink && f.voxBlink) ? f.voxBlink : f.vox;   // eye-blink variant while the blink phase is lit (playing only) — blinkE 1/2 is the ONE-EYE-AT-A-TIME wink, and it falls through to the both-eyes variant for every model that has no per-side pair
       const rv = edRotVox(vsrc0, f.sx, f.sy, ED.paused ? 0 : (-ED.spin & 3));   // no whole-animation spin while editing/paused — pausing ALWAYS parks the model at SOUTH: that's the only heading you align (gizmo offsets are south-space; armOffset derives the rest)
-      const bx = ED.x0 + ((ED.pw - rv.sx) >> 1) - LANE, bz = ED.z0 + ((ED.pd - rv.sy) >> 1);   // LEFT lane
+      const bx = ED.x0 + ((ED.pw - rv.sx) >> 1), bz = ED.z0 + ((ED.pd - rv.sy) >> 1);   // CENTRE lane — where edEnter aimed the camera
       f.bx = bx; f.bz = bz;
       let ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;              // per-frame alignment offset (live gizmo edit)
       if (ED.arm && !ED.paused) { const e = armOffset(ED.spin, f.name, f.sx, f.sy, ED.bakes || ARMADILLO_BAKES); ox = e[0] || 0; oy = e[1] || 0; oz = e[2] || 0; }   // WALKING creature → South alignment AUTO-DERIVED onto the current heading (rigid rotation + parity fix, same as the world stamp). Paused = the live gizmo offset so you can adjust — always in SOUTH.
@@ -128,10 +190,18 @@
       } else { ED.gizBoxes = []; ED.rgizBoxes = []; }
     }
     const n2 = ED.frames2.length;
-    if (n2) {                                          // ── PREVIEW bunny — RIGHT lane (animates, no gizmos/ring) ──
-      const f2 = ED.frames2[((ED.sel % n2) + n2) % n2];
-      const rv2 = edRotVox((ED.blink && f2.voxBlink) ? f2.voxBlink : f2.vox, f2.sx, f2.sy, 0);
-      const bx2 = ED.x0 + ((ED.pw - rv2.sx) >> 1) + LANE, bz2 = ED.z0 + ((ED.pd - rv2.sy) >> 1);   // RIGHT lane
+    if (n2) {                                          // ── PREVIEW model — SIDE lane (animates, no gizmos/ring) ──
+      // ED.sel2, NOT ED.sel: the two lanes hold animations of DIFFERENT LENGTHS (tongue 24 frames against the
+      // croak-and-leap's 31), and indexing the preview off the editable lane's frame number would play only as
+      // many frames as the shorter one has. Its clock is in tick-support.js.
+      const f2 = ED.frames2[((ED.sel2 % n2) + n2) % n2];
+      // The preview blinks on the SAME phase as the editable model, per-side wink included — two frogs on one
+      // stage, one of them with its eyes nailed open, reads as a bug.
+      const vsrc2 = (ED.blinkE === 1 && f2.voxBlinkL) ? f2.voxBlinkL : (ED.blinkE === 2 && f2.voxBlinkR) ? f2.voxBlinkR : (ED.blink && f2.voxBlink) ? f2.voxBlink : f2.vox;
+      const rv2 = edRotVox(vsrc2, f2.sx, f2.sy, ED.flyer2 ? (-ED.spin2 & 3) : 0);   // a FLYER faces where it is going; a stationary exhibit keeps the heading it was authored in
+      // The up-stage offset exists to give a MARCHING model its runway in front of the viewer. A flyer does not
+      // march, it orbits its own home, so it takes the lane's sideways offset and stands level with the middle.
+      const bx2 = ED.x0 + ((ED.pw - rv2.sx) >> 1) + (ED.flyer2 ? ED_FLY_LANE : ED_LANE), bz2 = ED.z0 + ((ED.pd - rv2.sy) >> 1) + (ED.flyer2 ? 0 : ED_LANE_BACK);   // SIDE lane — across, and up-stage only if it travels
       const ox2 = f2.ox || 0, oy2 = f2.oy || 0, oz2 = f2.oz || 0;
       const xB2 = ED.paused ? (bx2 + ox2) : wrapIn(bx2 + ox2 + (ED.hop2X || 0), ED.x0, Math.max(1, ED.pw - rv2.sx));
       const zB2 = ED.paused ? (bz2 + oz2) : wrapIn(bz2 + oz2 + (ED.hop2Z || 0), ED.z0, Math.max(1, ED.pd - rv2.sy));
@@ -154,8 +224,10 @@
     const t = ED.frames; ED.frames = ED.frames2; ED.frames2 = t;
     const tk = ED.offKey; ED.offKey = ED.off2; ED.off2 = tk;
     const tn = ED.name1; ED.name1 = ED.name2; ED.name2 = tn;
+    const ts = ED.seq1; ED.seq1 = ED.seq2; ED.seq2 = ts;
+    ED.mix = []; ED.mixT0 = 0;                          // the PLAYLIST does not survive a swap: what lands in the editable lane is the one cycle that was live, looping on its own. Aligning frames that swap out from under you is not something the editor should offer, and the swap is how you reach the side lane's frames at all.
     const hx = ED.hopX, hy = ED.hopY, hz = ED.hopZ; ED.hopX = ED.hop2X; ED.hopY = ED.hop2Y; ED.hopZ = ED.hop2Z; ED.hop2X = hx; ED.hop2Y = hy; ED.hop2Z = hz;
-    ED.sel = 0; ED.paused = false; ED.giz = false; ED.rgiz = false;   // fresh scrub/gizmo state for the newly-editable bunny
+    ED.sel = 0; ED.sel2 = 0; ED.paused = false; ED.giz = false; ED.rgiz = false;   // fresh scrub/gizmo state for the newly-editable model — both lanes, since each carries its own frame index
     edLayout(); };
   const edSelStep = (d) => { const n = ED.frames.length; if (!n) return; ED.paused = true; ED.sel = ((ED.sel + d) % n + n) % n; edLayout(); };   // scrubbing pauses the animation
   const edMoveStep = (d, wrap) => { const n = ED.frames.length; if (n < 2) return; ED.paused = true; const s = ((ED.sel % n) + n) % n; let j = s + d;
@@ -216,7 +288,101 @@
       edColCache.set(key, cid);
     }
     return cid; };
-  const edParseVox = (pv, name) => {                   // ALL SIZE/XYZI pairs — a multi-model .vox is an animation, each model one frame
+  // ── THE STAGE SHOWS THE ART, NOT THE NEAREST THING THE WORLD PALETTE CAN SPARE ──
+  // edCol above is the right allocator for a creature that has to live in the world: it reuses, shares within
+  // PAL_TOL, and once the 256-entry table is full it SUBSTITUTES the nearest legal colour. Measured on frog.vox's
+  // hop: 12 of its 16 colours were substituted, off by as much as 73/255, and the frog's darkest green landed on
+  // WATER_B — which is what the user saw ("looks like water voxels on the legs"). The material exclusion has been
+  // widened to cover water (assets/palette.js), but that only stops the WRONG THING; it cannot stop the wrong
+  // SHADE, because the table has no room and the greens nearest a frog belong to foliage, which is excluded.
+  // So the editor stops asking the world palette for a colour it does not have, and BORROWS one instead. Entering
+  // the editor already hides the world (edEnter zeroes occupancy; edExit rebuilds it) and already borrows the
+  // world's VOXELS under a promise to put them back (ED.prev), so borrowing its palette entries under the same
+  // promise costs nothing visible: while the stage is up, nothing wearing a borrowed id is on screen. The held
+  // viewmodel is unaffected — item models carry their own raw .vox RGB and never index this table.
+  // The id borrowed is the one whose colour is CLOSEST to the one asked for, so if a borrow ever has to be given
+  // back mid-import the model degrades to what it looks like today rather than to noise.
+  const edBorrow = new Map();                          // borrowed palette id → the [r, g, b] it held before the editor took it
+  const edExactCache = new Map();                      // source colour → id for the CURRENT import; deliberately NOT edColCache, which outlives the editor and would hand a borrowed id to the world long after it was given back
+  const edPalPinned = () => { const p2 = new Set([ED_WHITE, ED_GREY, ED_HLITE]);   // the stage's own colours are on screen the whole time — never borrow the floor out from under the model
+    if (gizCol) for (const c of gizCol) p2.add(c);
+    if (rgizCol) for (const c of rgizCol) p2.add(c);
+    return p2; };
+  const edPalRestore = () => { if (!edBorrow.size) { edExactCache.clear(); return 0; }
+    const n = edBorrow.size;
+    for (const [id, c] of edBorrow) palette[id] = c;
+    edBorrow.clear(); edExactCache.clear(); palSync();
+    return n; };
+  const edBorrowN = () => edBorrow.size;               // a GETTER for the same reason edSnapCount is one
+  const edColExact = (r, g, b) => {
+    const key = (r << 16) | (g << 8) | b;
+    const hit = edExactCache.get(key);
+    if (hit !== undefined) return hit;
+    for (let i = 1; i < palette.length; i++) { const c = palette[i];
+      if (c && c[0] === r && c[1] === g && c[2] === b && !edBorrow.has(i)) { edExactCache.set(key, i); return i; } }   // the table already holds this exact colour → use it and borrow nothing (the frog's orange, its black and its red all land here)
+    const pin = edPalPinned();
+    let bd = 1e9, best = -1;
+    for (let i = 1; i < palette.length; i++) { const c = palette[i];
+      if (!c || edBorrow.has(i) || pin.has(i) || palOwn.has(i) || edMatBad(i)) continue;   // the same exclusions the substitute walk uses — a borrowed id keeps its MATERIAL flags, so it has to be an inert one
+      const d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
+      if (d < bd) { bd = d; best = i; } }
+    if (best < 0) { const sub = edCol(r, g, b); edExactCache.set(key, sub); return sub; }   // nothing left to borrow (an import with more colours than the table has inert ids) → the old substitute, so a huge file still loads
+    edBorrow.set(best, palette[best]);
+    palette[best] = [r, g, b];
+    edExactCache.set(key, best);
+    return best; };
+  const edVoxSeqs = (pv) => {                          // the NAMED animations inside ONE .vox → [{ name, ids: [model index, …] }], each id list already in frame order
+    // A .vox that holds several animations keeps them in its SCENE GRAPH, not in separate files. frog.vox is one
+    // MAIN with 34 SIZE/XYZI pairs and an nTRN/nGRP/nSHP tree that says which of them are 'ribbet' (14 frames),
+    // 'tongue' (24) and 'hop' (17). edParseVox below walks the SIZE/XYZI pairs alone — which is right for the
+    // per-frame files every creature ships as, and wrong here: it hands back all three cycles concatenated in
+    // file order, each model appearing once however many times its animation actually plays it. So read the graph.
+    // Two things about the format decide the shape of this:
+    //   * the FRAME LIST lives on the nSHP — one entry per frame, '_f' the frame index, repeats included, because
+    //     'ribbet' genuinely plays model 1 twice. Sorting on '_f' rather than trusting file order is free.
+    //   * the NAME lives on the nTRN ABOVE the group, and MagicaVoxel nests a second nTRN called 'frames' inside
+    //     every animation. Taking the OUTERMOST name is what makes this return ribbet/tongue/hop instead of three
+    //     sequences all called 'frames'.
+    // Returns [] for a file with no scene graph (every single-model creature frame), which is what keeps this
+    // invisible to the pose builders: they never pass a sequence name, so nothing below even calls it.
+    const dvv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+    const nodes = new Map();
+    const rdStr = (o) => { const n = dvv.getInt32(o, true); let t = '';
+      for (let i = 0; i < n; i++) t += String.fromCharCode(pv[o + 4 + i]);
+      return [t, o + 4 + n]; };
+    const rdDict = (o) => { const n = dvv.getInt32(o, true); o += 4; const d = {};
+      for (let i = 0; i < n; i++) { const k = rdStr(o); const v = rdStr(k[1]); d[k[0]] = v[0]; o = v[1]; }
+      return [d, o]; };
+    const walk = (off, end) => { while (off + 12 <= end) {
+      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+      const bsz = dvv.getUint32(off + 4, true), csz = dvv.getUint32(off + 8, true);
+      if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+      if (id === 'nTRN' || id === 'nGRP' || id === 'nSHP') {
+        let o = off + 12; const nid = dvv.getInt32(o, true); o += 4;
+        const at = rdDict(o); o = at[1];
+        const rec = { t: id, name: at[0]._name || '' };
+        if (id === 'nTRN') rec.child = dvv.getInt32(o, true);   // …then reserved / layer / numFrames and the per-frame transform dicts, none of which this needs: the chunk header already says where the next chunk starts
+        else if (id === 'nGRP') { const nc = dvv.getInt32(o, true); o += 4; rec.kids = [];
+          for (let i = 0; i < nc; i++) { rec.kids.push(dvv.getInt32(o, true)); o += 4; } }
+        else { const nm = dvv.getInt32(o, true); o += 4; rec.models = [];
+          for (let i = 0; i < nm; i++) { const mi = dvv.getInt32(o, true); o += 4; const md = rdDict(o); o = md[1];
+            rec.models.push([mi, md[0]._f === undefined ? i : +md[0]._f]); } }
+        nodes.set(nid, rec); }
+      off += 12 + bsz + csz;
+    } };
+    try { walk(8, pv.length); } catch (e) { return []; }
+    if (!nodes.size) return [];
+    const gather = (nid, ids, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
+      if (r.t === 'nTRN') gather(r.child, ids, seen);
+      else if (r.t === 'nGRP') { for (const k of r.kids) gather(k, ids, seen); }
+      else for (const m of r.models.slice().sort((a, b) => a[1] - b[1])) ids.push(m[0]); };
+    const out = [];
+    const scan = (nid, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
+      if (r.t === 'nTRN' && r.name) { const ids = []; gather(nid, ids, new Set()); if (ids.length) out.push({ name: r.name, ids }); return; }   // OUTERMOST name wins → never descend into a named animation looking for more
+      if (r.t === 'nTRN') scan(r.child, seen); else if (r.t === 'nGRP') for (const k of r.kids) scan(k, seen); };
+    scan(nodes.has(0) ? 0 : nodes.keys().next().value, new Set());
+    return out; };
+  const edParseVox = (pv, name, seq, exact) => {              // ALL SIZE/XYZI pairs — a multi-model .vox is an animation, each model one frame — or, with `seq`, just the one NAMED animation out of a scene-graph file (see edVoxSeqs)
     const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
     const models = []; const ppal = new Uint8Array(1024); let hasPal = false;
     const walk = (off, end) => { while (off + 12 <= end) {
@@ -230,15 +396,21 @@
     } };
     walk(8, pv.length);
     const out = [];
-    models.forEach((m, k) => { if (!m.raw) return;
+    let pick = null;
+    if (seq) { const qs = edVoxSeqs(pv), q = qs.find((t) => t.name.toLowerCase() === String(seq).toLowerCase());
+      if (q) pick = q.ids;                             // that animation's models, in ITS frame order, repeats and all
+      else console.warn('[vb] editor: ' + name + ' has no animation named ' + seq + (qs.length ? ' — it holds ' + qs.map((t) => t.name).join(', ') : ' (no scene graph)') + '; loading every model'); }
+    const order = pick || models.map((m, k) => k);     // no sequence asked for (every creature's per-frame files, every pose builder) → exactly the old behaviour, model order untouched
+    order.forEach((mi, k) => { const m = models[mi]; if (!m || !m.raw) return;
       const cmap = new Map(), mvox = [];
       for (let i = 0; i < m.raw.length; i += 4) {
         const ci = m.raw[i + 3];
         let cid = cmap.get(ci);
-        if (cid === undefined) { cid = edCol(ppal[(ci - 1) * 4], ppal[(ci - 1) * 4 + 1], ppal[(ci - 1) * 4 + 2]); cmap.set(ci, cid); }
+        if (cid === undefined) { const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
+          cid = exact ? edColExact(cr, cg, cb) : edCol(cr, cg, cb); cmap.set(ci, cid); }   // exact = an EDITOR import, which BORROWS a palette entry rather than accepting the nearest colour the world can spare; every world pose builder leaves it unset and keeps edCol
         mvox.push(m.raw[i] | (m.raw[i + 1] << 8) | (m.raw[i + 2] << 16) | (cid << 24));   // model z-up → world y at stamp time
       }
-      out.push({ sx: m.sx, sy: m.sy, sz: m.sz, vox: mvox, name: name + (models.length > 1 ? ' #' + (k + 1) : ''),
+      out.push({ sx: m.sx, sy: m.sy, sz: m.sz, vox: mvox, name: pick ? String(k).padStart(2, '0') + '.vox' : name + (models.length > 1 ? ' #' + (mi + 1) : ''),   // a named sequence numbers its frames 00.vox, 01.vox … — the naming every bake table, the saved-offset namespace and edExportSeq already speak, so alignment work on it saves and exports like a frame folder
         ox: 0, oy: 0, oz: 0,                              // per-frame gizmo offsets (voxels) — nudge a frame into alignment with [e] arrows; persisted + copied for baking (Task 1)
         raw: new Uint8Array(m.raw), pal: hasPal ? new Uint8Array(ppal) : null });   // byte-faithful copies — export rebuilds real .vox files from these, not from engine ids
     });
@@ -400,46 +572,451 @@
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = gsurf + 1 - BUNNY_FOOTZ + Math.round(B.bOy || 0);   // feet on the surface + the baked hop-bob
     stampApply(B, poses[fi][hf], gx, gy, gz, gx + ',' + gy + ',' + gz + ',' + (jump ? 'J' : B.bst) + ',' + fi + ',' + hf);
   };
-  const edBuildFrames = (list, offKey, bakeOff, name) => {   // parse [{name, u8}] → frames with baked + saved offsets + the eye-blink variant. Shared by BOTH lanes. offKey namespaces the per-frame offsets so each bunny variant keeps its OWN positions though the frames share names 00-10.vox. bakeOff = committed default (undefined → cardinal default; object → that variant's bake; null → none). name = model id (gates the eye-blink colour)
+  const edBuildFrames = (list, offKey, bakeOff, name, exact) => {   // parse [{name, u8}] → frames with baked + saved offsets + the eye-blink variant. Shared by BOTH lanes. offKey namespaces the per-frame offsets so each bunny variant keeps its OWN positions though the frames share names 00-10.vox. bakeOff = committed default (undefined → cardinal default; object → that variant's bake; null → none). name = model id (gates the eye-blink colour)
     const frames = [];
-    for (const f of list) { try { frames.push(...edParseVox(f.u8, f.name)); } catch (e) { console.warn('[vb] editor: bad .vox', f.name, e); } }
+    for (const f of list) { try { frames.push(...edParseVox(f.u8, f.name, f.seq, exact)); } catch (e) { console.warn('[vb] editor: bad .vox', f.name, e); } }   // f.seq (optional) = ONE named animation out of a scene-graph .vox; absent for every per-frame file, which is all the pose builders pass
     if (!frames.length) return frames;
+    // ── TWO NAMED ANIMATIONS BECOME ONE (user 2026-08-22: "just bake the 2 frames together in one sequence") ──
+    // edParseVox numbers the frames of a NAMED animation 00.vox upward, per animation, so concatenating two of
+    // them out of the same file hands back 00-13 followed by 00-16: two frames called 00.vox, two called 01.vox
+    // and so on. Every downstream lookup is by NAME — the bake table below, the saved-offset namespace,
+    // edSaveOffsets, edExportSeq — so a colliding pair does not merely look odd, it makes the second half
+    // uneditable and unbakeable, because both halves answer to the same key.
+    // Renumber straight through, and do it HERE: before the bake is applied and before localStorage is read,
+    // which is the only point at which the names are still nobody's business but this function's.
+    // Guarded on more than one entry CARRYING A SEQ. A multi-FILE import (the per-frame .vox folders every
+    // creature ships as) also arrives as a list of several, and there the names are the real filenames the
+    // whole pipeline speaks — renumbering those would silently detach every pose builder from its bake.
+    if (list.filter((f) => f.seq).length > 1) frames.forEach((f, i) => { f.name = String(i).padStart(2, '0') + '.vox'; });
     const bake = bakeOff === undefined ? { '04.vox': [0, 1, 0], '05.vox': [0, 1, 0] } : bakeOff;   // BAKED alignment applied even with no saved edits; cardinal default for manual imports, each bunny passes its own. A 4th element (array) = the baked ROTATION step list.
     if (bake) for (const f of frames) { const b = bake[f.name]; if (b) { f.ox = b[0]; f.oy = b[1]; f.oz = b[2]; if (Array.isArray(b[3])) f.rot = b[3].slice(); } }
     try { const m = JSON.parse(localStorage.getItem(offKey || 'vb_edoffsets') || '{}'); for (const f of frames) { const o = m[f.name]; if (o) { f.ox = o[0] | 0; f.oy = o[1] | 0; f.oz = o[2] | 0; if (Array.isArray(o[3])) f.rot = o[3].slice(); } } } catch (e) {}   // a live saved edit still overrides the bake (offsets AND rotation)
     for (const f of frames) if (f.rot && f.rot.length) for (const s of f.rot) edRotStep(f, s[0] === 'y' ? 'yaw' : 'pitch', s[1] === '+' ? 1 : -1);   // REPLAY the baked/saved rotation onto the loaded .vox — this is where 'rotation in the bake' happens (before the eye-blink variant is built, so it inherits the rotation)
     for (const f of frames) {                            // EYE BLINK: build a variant where each pitch-black eye voxel is recolored to its NEAREST body-colour voxel — red plumage for the cardinal, TAN for the bunny (user). Same cadence/mechanism as the other blinking life forms.
       const reds = [], body = [], tan = [], blacks = [], blackCols = [];
+      // ── WHICH VOXEL IS THE EYE ── pitch-black, for every creature authored before the frog. The FROG's eye is
+      // the RED voxel that stands proud of the side of its head (user 2026-08-21: "make the frogs red eyes
+      // blink"): measured, each eye is a red voxel at the surface with a black one tucked directly behind it,
+      // and that black is walled in by green on all five other sides — invisible. So the old detector was
+      // faithfully recolouring a voxel nobody can see, which is exactly why the frog never appeared to blink.
+      // The hidden black is excluded from the CANDIDATES too: it sits one voxel from the eye and would win the
+      // nearest-colour search outright, shutting the eye to black — a hole rather than a closed lid. Skipping it
+      // leaves the nearest green (1.41 away) to do the job.
+      const EYE_RGB = name === 'frog' ? [221, 59, 39] : null;
       for (let i = 0; i < f.vox.length; i++) { const c = palette[f.vox[i] >>> 24]; if (!c) continue;
-        if (c[0] < 30 && c[1] < 30 && c[2] < 30) { blacks.push(i); blackCols.push(f.vox[i]); }   // the pitch-black eye — index (to recolour) + colour (so a black-furred model can blink INTO its own black)
+        const dark = c[0] < 30 && c[1] < 30 && c[2] < 30;
+        if (EYE_RGB ? (c[0] === EYE_RGB[0] && c[1] === EYE_RGB[1] && c[2] === EYE_RGB[2]) : dark) { blacks.push(i); blackCols.push(f.vox[i]); }   // the eye — index (to recolour) + colour (so a black-furred model can blink INTO its own black)
+        else if (EYE_RGB && dark) { /* the pupil behind a coloured eye: hidden, and never a lid colour */ }
         else { body.push(f.vox[i]);
           if (c[0] > 130 && c[0] > c[1] * 1.7 && c[0] > c[2] * 1.7) reds.push(f.vox[i]);   // cardinal plumage / the armadillo's saturated orange shell
           else if (c[0] >= c[1] && c[1] >= c[2] && c[0] - c[2] > 12) tan.push(f.vox[i]); } }   // warm & DESCENDING (r≥g≥b) = tan / light-brown; excludes pink (blue elevated → b>g) and greys
       const cands = name === 'skunk' ? (blackCols.length ? blackCols : body)   // SKUNK eyes blink to the nearest BLACK voxel — its black fur, not the tan fallback (user)
                   : (name === 'armadillo' || name === 'porcupine') ? (tan.length ? tan : body)   // armadillo + porcupine eyes blink to the nearest LIGHT-BROWN voxel — not a red shell nor a pink face voxel (user)
                   : (reds.length ? reds : body);           // cardinal → red plumage; bunny (no red) → nearest body voxel = its tan
-      if (blacks.length && cands.length) { const vb = f.vox.slice();
-        for (const bi of blacks) { const p = f.vox[bi], ex = p & 255, ey = (p >> 8) & 255, ez = (p >> 16) & 255;
-          let best = cands[0], bd = 1e9; for (const r of cands) { const dx = (r & 255) - ex, dy = ((r >> 8) & 255) - ey, dz = ((r >> 16) & 255) - ez, d2 = dx * dx + dy * dy + dz * dz; if (d2 < bd) { bd = d2; best = r; } }
+      const shut = (idxs) => { const vb = f.vox.slice();   // close THESE eye voxels: each takes the colour of the nearest candidate voxel, so the lid reads as the skin around it
+        for (const bi of idxs) { const p = f.vox[bi], ex = p & 255, ey = (p >> 8) & 255, ez = (p >> 16) & 255;
+          let bd = 1e9; const tied = [];
+          for (const r of cands) { const dx = (r & 255) - ex, dy = ((r >> 8) & 255) - ey, dz = ((r >> 16) & 255) - ez, d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < bd - 1e-6) { bd = d2; tied.length = 0; tied.push(r); } else if (d2 <= bd + 1e-6) tied.push(r); }
+          // ── A TIE GOES TO THE TYPICAL COLOUR, NOT TO ARRAY ORDER ── measured on the frog: its eye has FOUR
+          // candidates all exactly 1.41 away — three shades of head green and one cream from the chin below —
+          // and taking whichever the voxel list happened to reach first shut the eye to CREAM, a pale dot where
+          // a lid should be. So among the tied set take the MEDOID: the colour with the least total distance to
+          // the others, i.e. the one most typical of the skin around that eye. Three greens outvote one cream.
+          // Unique nearest candidates (the usual case, and every creature authored before the frog) have a tied
+          // set of one and are untouched by this.
+          let best = tied[0];
+          if (tied.length > 1) { let bs = 1e18;
+            for (const a of tied) { const ca = palette[a >>> 24]; let sum = 0;
+              for (const b2 of tied) { const cb = palette[b2 >>> 24];
+                sum += (ca[0] - cb[0]) * (ca[0] - cb[0]) + (ca[1] - cb[1]) * (ca[1] - cb[1]) + (ca[2] - cb[2]) * (ca[2] - cb[2]); }
+              if (sum < bs) { bs = sum; best = a; } } }
           vb[bi] = (p & 0x00ffffff) | ((best >>> 24) << 24); }
-        f.voxBlink = vb; }
+        return vb; };
+      if (blacks.length && cands.length) {
+        f.voxBlink = shut(blacks);                       // BOTH eyes at once — what every creature before the frog does
+        // ── ONE EYE AT A TIME (user 2026-08-21: "have one eye blink first, then .5 seconds later the other eye") ──
+        // split the eye voxels laterally on the model's own centre line and build a variant per side, so the tick
+        // can shut them independently. Model space, before edRotVox, so the two sides rotate with everything else
+        // and a spun model still winks the eye the viewer expects. A model whose eyes do not fall on both sides of
+        // the centre (one eye, or a face in profile) simply gets no per-side variants and keeps the both-at-once
+        // blink above — which is why nothing else in the game changes.
+        const half = f.sx / 2;
+        const L = blacks.filter((i) => (f.vox[i] & 255) < half), R = blacks.filter((i) => (f.vox[i] & 255) >= half);
+        if (L.length && R.length) { f.voxBlinkL = shut(L); f.voxBlinkR = shut(R); }
+      }
     }
     return frames; };
+  const edSeqOf = (list) => list.filter((f) => f.seq).map((f) => f.seq).join('+');   // 'ribbet+hop' for a concatenation, 'tongue' for one, '' for a plain multi-file import — the same string edLoadVox builds its offset namespace from
   const edImportBufs = (list, offKey, bakeOff, name) => {   // LEFT/editable lane — resets the scrub + repaints
-    const frames = edBuildFrames(list, offKey, bakeOff, name);
+    if (!ED.frames2.length) edPalRestore();            // a fresh single-object load starts from a clean table: give back what the last import borrowed. Skipped while the PREVIEW lane holds frames, whose stamped voxels are still wearing borrowed ids — those go back at exit.
+    const frames = edBuildFrames(list, offKey, bakeOff, name, true);
     if (!frames.length) return 0;
-    ED.offKey = offKey || 'vb_edoffsets'; ED.name1 = name || '';   // remembered so gizmo autosave writes back to the SAME variant's namespace
+    ED.offKey = offKey || 'vb_edoffsets'; ED.name1 = name || ''; ED.seq1 = edSeqOf(list);   // remembered so gizmo autosave writes back to the SAME variant's namespace, and so the export can tell two animations of one model apart
     ED.frames = frames; ED.sel = 0; ED.paused = false;
     palSync(); edLayout();
     return frames.length; };
   const edImportBufs2 = (list, offKey, bakeOff, name) => {   // RIGHT/preview lane — loads alongside, never touches the primary's scrub/selection
-    const frames = edBuildFrames(list, offKey, bakeOff, name);
-    ED.frames2 = frames; ED.off2 = offKey || ''; ED.name2 = name || '';
+    const frames = edBuildFrames(list, offKey, bakeOff, name, true);
+    ED.frames2 = frames; ED.off2 = offKey || ''; ED.name2 = name || ''; ED.seq2 = edSeqOf(list); ED.sel2 = 0;
     return frames.length; };
+  const EDVOX = {};                                    // asset path → Promise<ArrayBuffer|null>: re-opening the editor re-uses the first fetch, and nothing is fetched at BOOT for a panel most sessions never open
+  const edFetchVox = (path) => { if (!EDVOX[path]) EDVOX[path] = fetch(path).then((r) => r.ok ? r.arrayBuffer() : null).catch(() => null); return EDVOX[path]; };
+  const edLoadVox = async (path, seq, nm, bake) => {   // stage an animation straight off the asset tree: edLoadVox('assets/life/frog.vox', 'hop') — or SEVERAL run together as one: edLoadVox('assets/life/frog.vox', ['ribbet', 'hop'])
+    const ab = await edFetchVox(path);
+    if (!ab || ab.byteLength < 8) { console.warn('[vb] editor: could not load ' + path); return 0; }
+    const file = path.slice(path.lastIndexOf('/') + 1), id = nm || file.replace(/\.vox$/, '');
+    edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.seq2 = ''; ED.sel2 = 0; ED.flyer2 = false; ED.mix = []; ED.mixT0 = 0; ED.bun = null; ED.arm = null; ED.bunny = false;   // same clean single-object load the file picker does, and edClearStamp FIRST for the reason its comment gives
+    const seqs = Array.isArray(seq) ? seq : [seq];      // one buffer, read once per animation named — edBuildFrames concatenates them in the order given and renumbers the result 00-30
+    const u8 = new Uint8Array(ab);
+    const n = edImportBufs(seqs.map((q) => ({ name: file, u8, seq: q })), 'vb_edoffsets_' + id + (seq ? '_' + seqs.join('+') : ''), bake || null, id);   // own offset namespace per animation, or per COMBINATION: aligning the frog's croak-and-leap can't disturb work saved against either cycle on its own. `|| null` and never undefined: edBuildFrames reads undefined as "no table given, use the cardinal/bunny default", which belongs to neither of these
+    edHudUpd();
+    return n; };
+  const edMixPick = () => {                             // draw the editable lane's next cycle by weight and hand the lane to it
+    const m = ED.mix; if (!m.length) return;
+    let tot = 0;
+    for (const e of m) tot += e.w;
+    let r = Math.random() * tot, i = 0;
+    for (; i < m.length - 1; i++) { r -= m[i].w; if (r < 0) break; }   // last entry takes whatever float error leaves over, so a draw can never fall off the end
+    const e = m[i];
+    ED.mixI = i; ED.frames = e.frames; ED.seq1 = e.seq; ED.offKey = e.offKey; ED.sel = 0;
+    return i; };
+  const edLoadMix = async (path, specs, nm) => {        // stage a WEIGHTED PLAYLIST of animations out of one .vox on the editable lane
+    // One buffer, read once per animation named. Each entry keeps its OWN bake and its OWN offset namespace:
+    // the cycles are picked and played whole, so their frames never share a numbering and must never share a
+    // key — both 'ribbet' and 'hop' number themselves 00.vox upward, and one namespace would collide on every
+    // name and make the second cycle unalignable.
+    const ab = await edFetchVox(path);
+    if (!ab || ab.byteLength < 8) { console.warn('[vb] editor: could not load ' + path); return 0; }
+    const file = path.slice(path.lastIndexOf('/') + 1), id = nm || file.replace(/\.vox$/, '');
+    edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.seq2 = ''; ED.sel2 = 0; ED.flyer2 = false; ED.bun = null; ED.arm = null; ED.bunny = false;
+    edPalRestore();
+    const u8 = new Uint8Array(ab), mix = [];
+    for (const sp of specs) {
+      const offKey = 'vb_edoffsets_' + id + (sp.seq ? '_' + sp.seq : '');
+      const frames = edBuildFrames([{ name: file, u8, seq: sp.seq }], offKey, sp.bake || null, id, true);
+      if (frames.length) mix.push({ frames, seq: sp.seq || '', offKey, w: Math.max(0, +sp.w || 0) });
+    }
+    if (!mix.length) return 0;
+    ED.mix = mix; ED.mixI = 0; ED.mixT0 = 0; ED.name1 = id; ED.paused = false;
+    ED.hopX = ED.hopY = ED.hopZ = 0;
+    edMixPick();
+    palSync(); edLayout(); edHudUpd();
+    return ED.frames.length; };
+  const edLoadVox2 = async (path, seq, nm, bake, fly) => {   // …and the same into the SIDE lane, ALONGSIDE what is already staged: edLoadVox2('assets/life/frog.vox', ['ribbet', 'hop'])
+    // Deliberately NOT edLoadVox with a lane argument: that one opens a CLEAN stage (it clears lane 2, the
+    // creature AI and the stamped cells first), which is exactly what a fresh single-object load should do and
+    // exactly what a second exhibit must not do. Nothing here touches lane 1's frames, scrub or selection.
+    const ab = await edFetchVox(path);
+    if (!ab || ab.byteLength < 8) { console.warn('[vb] editor: could not load ' + path); return 0; }
+    const file = path.slice(path.lastIndexOf('/') + 1), id = nm || file.replace(/\.vox$/, '');
+    ED.flyer2 = !!fly; ED.spin2 = 0; bfly.init = false;   // set BEFORE the import: edImportBufs2 ends in edLayout, which already needs to know whether this lane stands still or flies
+    const seqs = Array.isArray(seq) ? seq : [seq], u8 = new Uint8Array(ab);
+    const n = edImportBufs2(seqs.map((q) => ({ name: file, u8, seq: q })), 'vb_edoffsets_' + id + (seq ? '_' + seqs.join('+') : ''), bake || null, id);   // its OWN offset namespace, same shape as lane 1's: aligning what is on the side can't move what is in the middle, and this is the namespace that combination's saved edits already live in
+    palSync(); edLayout(); edHudUpd();                 // edImportBufs2 does neither (it is the "load alongside, don't disturb the primary" call) — but a stage load is the last thing to happen, so the borrowed colours have to reach the GPU and the model has to be stamped
+    return n; };
+  const edSeqsAt = async (path) => { const ab = await edFetchVox(path);   // "what animations are in this file?" — the listing behind __vb.edSeqs
+    return ab ? edVoxSeqs(new Uint8Array(ab)).map((q) => ({ name: q.name, frames: q.ids.length })) : []; };
+  // ── WHAT THE STAGE OPENS ON (user 2026-08-21: "load in frog.vox into the asset editor … the jumping animation
+  // … should be called hop within the file") ── ONE named model, named here, fetched on demand. NOT the ordered
+  // fall-through chain that used to live inside edEnter: that asked "stage whatever creature happens to be
+  // loaded", so removing its head only promoted the next link, and the same "remove X from the editor" request
+  // came in five times before it was deleted on 2026-08-19 (the note in edEnter has the full list). This is one
+  // line naming one file and one animation, so changing what the stage opens on is editing it, and going back to
+  // an empty stage is setting it to null — neither can surface a creature nobody asked for.
+  // ── THE THREE CYCLES, EACH BAKED ON ITS OWN (user 2026-08-22, every value pasted back from the editor's
+  // export button) ── frog.vox holds 'ribbet' (14 frames), 'tongue' (24) and 'hop' (17) as separate cycles in
+  // its scene graph, and the stage plays them as a WEIGHTED PLAYLIST rather than as one concatenation: see
+  // ED_STAGE below. Three tables, not one, because each cycle is picked and played whole and so keeps its own
+  // frame numbering and its own 'vb_edoffsets_frog_<seq>' namespace — alignment work on the tongue cannot move
+  // the hop, and neither can be knocked out of step by the other's length.
+  // EVERY TABLE BUT THE HOP'S BEGINS AND ENDS AT ZERO, which is the property that makes the mix work rather
+  // than an accident of the alignment: the cycle offset is last-minus-first (main/tick-support.js), so a croak
+  // or a tongue-flick leaves the frog exactly where it stood and only a LEAP moves it. Any cycle can therefore
+  // follow any other with no step at the join.
+  const FROG_RIBBET_BAKE = { '05.vox': [0, 0, -1], '06.vox': [0, 0, -1], '07.vox': [0, 0, -1] };
+  // The tongue: one lean out and back over sixteen of its twenty-four frames.
+  //   oz  0 0 0 0 -1 -2 -2 -3 -3 -3 -3 -3 -3 -3 -3 -3 -2 -2 -1 -1 0 0 0 0
+  const FROG_TONGUE_BAKE = {
+    '04.vox': [0, 0, -1], '05.vox': [0, 0, -2], '06.vox': [0, 0, -2], '07.vox': [0, 0, -3],
+    '08.vox': [0, 0, -3], '09.vox': [0, 0, -3], '10.vox': [0, 0, -3], '11.vox': [0, 0, -3],
+    '12.vox': [0, 0, -3], '13.vox': [0, 0, -3], '14.vox': [0, 0, -3], '15.vox': [0, 0, -3],
+    '16.vox': [0, 0, -2], '17.vox': [0, 0, -2], '18.vox': [0, 0, -1], '19.vox': [0, 0, -1] };
+  // The hop. The arc of the leap is NOT in frog.vox: every one of its 17 frames has its lowest voxel at model-z
+  // 0, so stamped as authored the frog stretches and lands but never leaves the ground. Aligned by hand on the
+  // stage rather than derived:
+  //   oy  0 0 0 0 2 3 4 5 5 3 1 0 0 0 0 0 0     rises 5 voxels (50 cm) over frames 07-08
+  //   oz  0 0 0 -1 -3 -4 -5 -6 -7 -8 -8 -8 -8 -9 -10 -10 -10     one metre forward across the leap
+  // Frames 00-02 are the crouch and carry nothing, so they are absent: edBuildFrames applies a table entry only
+  // where one exists and leaves the rest at zero. This is the ONE table whose last frame is not zero, which is
+  // what makes the leap the only thing that moves the frog down the stage.
+  const FROG_HOP_BAKE = { '03.vox': [0, 0, -1], '04.vox': [0, 2, -3], '05.vox': [0, 3, -4], '06.vox': [0, 4, -5],
+    '07.vox': [0, 5, -6], '08.vox': [0, 5, -7], '09.vox': [0, 3, -8], '10.vox': [0, 1, -8], '11.vox': [0, 0, -8],
+    '12.vox': [0, 0, -8], '13.vox': [0, 0, -9], '14.vox': [0, 0, -10], '15.vox': [0, 0, -10], '16.vox': [0, 0, -10] };
+  // ── WHAT THE STAGE OPENS ON ── ONE named model per lane, named here, fetched on demand. NOT the ordered
+  // fall-through chain that used to live inside edEnter: that asked "stage whatever creature happens to be
+  // loaded", so removing its head only promoted the next link, and the same "remove X from the editor" request
+  // came in five times before it was deleted on 2026-08-19 (the note in edEnter has the full list).
+  // ── THE FROG'S MIX (user 2026-08-22: "jump = 50%, ribbet = 40%, tongue = 10%") ── `mix` is a weighted
+  // playlist on the EDITABLE lane: at every cycle boundary the frog picks its next cycle by these weights and
+  // plays it whole. The three `w` values ARE the percentages, and they are the only thing to edit to change the
+  // mix — nothing else reads them, and they need not sum to 100 (the pick normalises).
+  // The pick is RANDOM rather than a fixed rotation. 50/40/10 is 5:4:1, so a deterministic order would be a
+  // visibly periodic ten-cycle loop; a weighted draw gives the same long-run split and lets the frog croak
+  // twice running, which is what an animal does. By TIME the split lands at 51/37/12 rather than 50/40/10,
+  // because the three cycles are different lengths (17, 14 and 24 frames plus a 600 ms hold) — the weights are
+  // per OCCURRENCE, which is the reading that makes "50% of the time it jumps" true of what you watch.
+  // WHY THE PLAYLIST AND NOT ONE CONCATENATED SEQUENCE, which is what this was before: a concatenation fixes
+  // the ratio at one-of-each, and hitting 5:4:1 with it means repeating segments — 165 frames of hand-written
+  // table for one loop, still periodic, and every repeat of the hop needs its own cumulative z. The playlist
+  // carries that in the accumulator instead, and the ratio is three numbers.
+  // The editable lane can carry it because a swap only ever happens while PLAYING: pausing to scrub or to drag
+  // a gizmo freezes the live cycle, so frames never move under you mid-alignment.
+  // ── WHAT THE STAGE OPENS ON ── the FROG on the editable lane, running its weighted mix, and the LADYBUG
+  // flying loose beside it. Two different render paths on purpose, because the two jobs are different:
+  //   * The frog is a LANE — grid-stamped into W, so it is clickable, scrubbable and its per-frame offsets can
+  //     be dragged and exported. That is the alignment workstation, and it is where the top-centre frame
+  //     counter reads. It hops the length of the platform and wraps at the border.
+  //   * The ladybug is an EXHIBIT — trace-injected through the drop slots, never written into W, so it carries
+  //     a float position and a free heading and flies the way the world's butterflies do. Nothing about it can
+  //     be clicked; when it needs aligning it comes back to the lane (that is what the previous stage did).
+  // `mix` weights are the percentages, and they are the only thing to edit to change the split.
+  // `flip` says this model's head is at +y where the engine's convention is −y (main/tick-emit.js).
+  // A `hold: true` on the exhibit pins it in place for frame-by-frame work — deliberately absent here, so it
+  // wanders, bobs and lands (user 2026-08-22: "have the ladybug flying around like it was previously").
+  const ED_STAGE = { path: 'assets/life/frog.vox', name: 'frog',
+    mix: [{ seq: 'hop', bake: FROG_HOP_BAKE, w: 50 },
+          { seq: 'ribbet', bake: FROG_RIBBET_BAKE, w: 40 },
+          { seq: 'tongue', bake: FROG_TONGUE_BAKE, w: 10 }],
+    exhibits: [
+      { model: 'ladybug', kind: 'fly', at: [-26, 15, 6], r: 22, spd: 22, bob: 4, flip: true },
+      // ── THE KOI ── swims the world's open-water fish steering: long lazy sweeps rather than the flyer's
+      // flutter (a ±0.5 rad/s turn retargeted every 2-5 s, against ±2 every 0.4-1.2), slower, and a gentler
+      // rise and fall. No `flip`: its 26 voxels assemble into a 5 x 10 x 4 body whose long axis is y and whose
+      // tail tapers to a single voxel at the far end, so its head already lies down −y where the engine
+      // expects it. It carries no swim cycle of its own — koi.vox is one assembled pose, not a strip.
+      // `spd` is unread for a swimmer — FISH_CFG owns its speed, so the koi cruises and flees at exactly the
+      // rates the lakes do. `r` still bounds where it may wander, since the stage is 242 across and a lake is not.
+      { model: 'koi', kind: 'swim', at: [30, 13, 14], r: 26, bob: 3 },
+      // ── FIVE FLIES IN A BUNCH (user 2026-08-22) ── `swarm` rather than `school`: each steers for itself
+      // around a shared point, so they mill about near one another instead of flying in formation. A tight
+      // orbit (7) is what keeps them a bunch; `jink` gives them the fast, hard little turns a fly makes rather
+      // than a butterfly's drift, and `hover` stops them settling on the deck the ladybug lands on.
+      // The fly needs no loader of its own — it already ships as a desert creature, frames and all.
+      { model: 'fly', kind: 'fly', at: [4, 18, -4], r: 30, spd: 11, swarm: 5, hover: true } ] };   // for a swarm r/spd drive the CENTRE's drift; BEE_ORBIT_R/W/Y own the circling
+  // ── TRACE-INJECTED EXHIBITS ── everything on the stage that MOVES FREELY. A lane is grid-stamped: its voxels
+  // go into W, which pins it to integer positions and the four cardinal headings — that is what made the first
+  // ladybug step along the grid and face only N/S/E/W. An exhibit is never stamped; it is staged into emitBuf
+  // (main/tick-emit.js) exactly as a world creature is, so it carries a float position and a free heading.
+  // The emit addresses a model by ITEM ID, so an exhibit's frames must be in the item table —
+  // assets/held-items.js edStripItems loads them out of the scene-graph .vox files for exactly this.
+  const edExItem = (name) => {                          // model name → { item0, n } in the item table, or null if its frames never loaded
+    if (name === 'ladybug') return LBUG_NFRAMES ? { item0: LBUG_ITEM0, n: LBUG_NFRAMES } : null;
+    if (name === 'koi') return KOI_NFRAMES ? { item0: KOI_ITEM0, n: KOI_NFRAMES } : null;
+    const f = FISHES.find((q) => q.name === name);      // every world fish species is already a strip
+    if (f) return { item0: f.item0, n: f.n };
+    const g = DESERTS.find((q) => q.name === name);     // …and so is every desert creature, the fly among them
+    return g ? { item0: g.item0, n: g.n } : null; };
+  const edExStage = () => {                             // build ED.ex from ED_STAGE.exhibits, at the stage's own coordinates
+    ED.ex = [];
+    if (!ED_STAGE || !ED_STAGE.exhibits) return 0;
+    const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2;
+    for (const sp of ED_STAGE.exhibits) {
+      const it = edExItem(sp.model);
+      if (!it) { console.warn('[vb] editor: no item strip for exhibit ' + sp.model + ' - skipped'); continue; }
+      // A SCHOOL is one leader with the rest trailing it in formation; a SWARM is several that each steer for
+      // themselves round the SAME point. Flies want the second — a knot of them jinking about near each other,
+      // with no one of them leading — so `swarm` makes every copy independent where `school` makes followers.
+      const nCopies = Math.max(1, (sp.school | 0) || (sp.swarm | 0));
+      const isSwarm = !(sp.school | 0) && (sp.swarm | 0) > 1;
+      for (let i = 0; i < nCopies; i++) {
+        const at = sp.at || [0, 12, 0], t0 = Math.random() * 4;   // t0 desyncs the copies of a school; bph rides it so the bob starts at zero
+        ED.ex.push({ model: sp.model, item0: it.item0, n: it.n, kind: sp.kind || 'fly', fps: sp.fps || 24,
+          hx: cx + at[0], hy: ED.y + 1 + at[1], hz: cz + at[2],   // HOME — the point it orbits, never left behind. A swarm shares ONE home: the ring puts them apart, so jittering it too would only smear the circle
+          r: sp.r || 28, spd: sp.spd || 20, bob: sp.bob === undefined ? 4 : sp.bob, aclk: 0, flee: false, fleeT: 0,
+          flip: !!sp.flip,                              // the model's head is at +y rather than the usual −y (main/tick-emit.js)
+          hold: !!sp.hold,                              // HOVER IN PLACE — see the note on the exhibit itself
+          // gy = the vertical OFFSET that sets the model down on the plane. The stage plane's top face is
+          // ED.y + 1 and a drop model is anchored at its centre, so a 2-high ladybug rests with its centre one
+          // voxel above that. Derived from this exhibit's own hy so it stays right if `at` moves.
+          gy: (ED.y + 2) - (ED.y + 1 + at[1]), ph: 'fly', next: 4 + Math.random() * 8,
+          lead: (isSwarm || i === 0) ? -1 : ED.ex.length - i,   // followers point at the leader's index in ED.ex; a swarm has no leader at all
+          // Spread the swarm's homes a little so they do not start stacked in one voxel, and give each its own
+          // retarget cadence — identical clocks would have them all jink on the same frame, which reads as one
+          // object rather than five insects.
+          hover: !!sp.hover, orbit: isSwarm, ph9: Math.random() * 6.283,   // a swarm member never lands: it rides its own phase on the shared ring
+          hub: isSwarm && i > 0 ? ED.ex.length - i : -1,   // which member owns the drifting centre (-1 = this one does)
+          cx: 0, cy: 0, cz: 0, dth: Math.random() * 6.283,   // the ring centre as an offset from home (only the hub's is driven), and the heading it drifts along — separate from E.th, which the orbit owns
+          rank: i, x: 0, y: 0, z: 0, th: Math.random() * 6.2831853, om: 0, omT: 0, tRe: 0, t: t0, bph: t0 });   // bph anchors the bob's phase; seeded to t0 so the FIRST cycle also starts at zero rather than mid-swing
+      }
+    }
+    return ED.ex.length; };
+  // ── AND HOW THEY MOVE ── the world's own steering, taken from main/tick-creatures.js rather than invented:
+  // retarget the turn on a timer, ease the angular velocity toward that target, integrate the heading, advance
+  // along it. That integrator is what gives a flyer its loose fluttery arc and a fish its long lazy sweep; the
+  // only difference between the two kinds is how hard and how often they turn.
+  //   FLY  (the kind-0 butterfly/dragonfly block): omT = ±2 rad/s, retargeted every 0.4-1.2 s.
+  //   SWIM (the open-water fish branch):           omT = ±0.5 rad/s, retargeted every 2-5 s.
+  // Both ease at 9/s, the shared glide constant every creature in the world turns on. SPEED is the one number
+  // not copied: the world flies a butterfly at 56 vox/s, which crosses everything the stage camera can see in
+  // about two seconds. The stage is a preview, so it runs at a pace you can watch.
+  const edExStep = (dt) => {
+    if (!ED.ex.length || ED.paused) return;
+    const d9 = Math.min(0.1, dt || 0.016);              // a stalled tab must not teleport an exhibit across the stage on the catch-up frame
+    for (const E of ED.ex) {
+      E.t += d9;
+      // ── HOVERING IN PLACE (user 2026-08-22: "can you have the ladybug fly in place temporarily? I need to
+      // adjust the positionings of the frame") ── the clock above still runs, so the WINGS KEEP BEATING; only
+      // the wander, the landing and the bob are held. Position and heading are pinned, which is the point: a
+      // model that is drifting and turning cannot be judged frame against frame. The heading is a right angle
+      // so it presents side-on to the camera edEnter sets up, where the wing sweep reads most clearly.
+      if (E.hold) { E.x = 0; E.y = 0; E.z = 0; E.th = Math.PI / 2; E.om = 0; E.omT = 0; E.ph = 'fly'; E.aclk += E.fps * d9; continue; }   // the clock still runs: holding a model STILL is not holding it on one frame
+      // ── A SWARM ORBITS, IT DOES NOT STEER (user 2026-08-22: "the bees already do this when they are chasing
+      // the player, same mechanic just passive") ── this is the hive orbit out of main/tick-creatures.js, with
+      // the exhibit's home standing in for the hive: each member holds its OWN phase on one ring, the vertical
+      // term runs at 1.7× that phase offset per individual so they weave rather than rise together, and the
+      // heading is tangent to the circle. Held KINEMATICALLY — no wander, no eased turn, no containment — which
+      // is why it stays a bunch by construction instead of by a tether fighting an overshoot.
+      // The three constants are the bees' own (sim/life/slots.js), read rather than copied: 1.9 rad/s across
+      // 6.5 voxels is 12.4 vox/s of apparent circling, which is what makes it read as hovering rather than
+      // flying somewhere.
+      if (E.orbit) {
+        // ── THE RING'S CENTRE DRIFTS (user 2026-08-22: "have the fly swarm move around more. it stays pretty
+        // still") ── orbiting a FIXED point is a swarm spinning on the spot; the bees' chase version rides a
+        // moving centre (the player), and this is the same thing with a wander in its place. ONE member owns
+        // the drift and the rest read it, so the ring translates whole instead of five flies each wandering
+        // off — which is what would pull the bunch apart.
+        // The drift is the ordinary flyer wander, slowed: an eased turn on a retarget timer, steered back when
+        // it passes E.r. Well under the orbit's own 12.4 vox/s, so the circling still reads as the motion and
+        // the drift as the swarm going somewhere.
+        if (E.hub < 0) {
+          // A GENTLE turn target and a long dwell, deliberately: at ±1.1 rad/s against 11 vox/s the drift's own
+          // turn radius is ~10 voxels, so it looped inside a 25-voxel patch and never used the room it had
+          // (measured over 4434 samples: 25 x 25 of a 60-wide area). ±0.45 gives a ~24-voxel radius, so it makes
+          // long runs across its range instead of circling one spot.
+          // ── THE DRIFT STEERS ON ITS OWN HEADING (E.dth), NOT E.th ── E.th is the RENDER heading and the
+          // orbit below overwrites it every frame with the tangent to the ring. Integrating the drift on it
+          // meant steering on a heading spinning at BEE_ORBIT_W, so the centre traced a circle of spd/1.9 ≈ 5.8
+          // voxels and no turn-rate or radius change could widen it — measured, 24 x 25 of travel whether the
+          // turn target was ±1.1 or ±0.45, which is what gave the bug away.
+          if (E.t > E.tRe) { E.omT = (Math.random() - 0.5) * 0.9; E.tRe = E.t + 1.6 + Math.random() * 2.4; }
+          if (E.cx * E.cx + E.cz * E.cz > E.r * E.r) {
+            const inT = Math.atan2(-E.cx, -E.cz), dth = Math.atan2(Math.sin(inT - E.dth), Math.cos(inT - E.dth));
+            E.omT = Math.max(-4, Math.min(4, dth * 3));
+          }
+          E.om += (E.omT - E.om) * (1 - Math.exp(-6 * d9)); E.dth += E.om * d9;
+          E.cx += Math.sin(E.dth) * E.spd * d9; E.cz += Math.cos(E.dth) * E.spd * d9;
+          E.cy = Math.sin(E.t * 0.55) * 3;               // …and a slow rise and fall, so it does not swim one flat plane
+        }
+        const H9 = E.hub >= 0 ? ED.ex[E.hub] : E;        // every member reads the hub's centre, so the bunch travels together
+        E.ph9 += BEE_ORBIT_W * d9;
+        E.x = H9.cx + Math.sin(E.ph9) * BEE_ORBIT_R;
+        E.z = H9.cz + Math.cos(E.ph9) * BEE_ORBIT_R;
+        E.y = H9.cy + Math.sin(E.ph9 * 1.7 + E.rank) * BEE_ORBIT_Y;
+        E.th = E.ph9 + 1.5708;
+        // ── AND THE WINGS STILL BEAT ── this branch and the hold above both `continue` past the steering, and
+        // the animation clock lived at the END of that steering path, so a swarm member advanced its orbit and
+        // never its frame: five flies circling on frame 0 with their wings frozen (user 2026-08-22). Every path
+        // out of this loop has to carry the clock; only a LANDED exhibit is meant to hold a frame, and that one
+        // is pinned deliberately in main/tick-emit.js rather than by forgetting to tick.
+        E.aclk += E.fps * d9;
+        continue;
+      }
+      if (E.lead >= 0) continue;                        // followers are placed off the leader, below — they do not steer
+      const fly = E.kind === 'fly';
+      if (E.t > E.tRe) { E.omT = (Math.random() - 0.5) * (fly ? 4.0 : 1.0); E.tRe = E.t + (fly ? 0.4 + Math.random() * 0.8 : 2 + Math.random() * 3); }
+      if (E.x * E.x + E.z * E.z > E.r * E.r) {          // outside its orbit → come about, hard enough to actually turn round
+        const inTh = Math.atan2(-E.x, -E.z), dth = Math.atan2(Math.sin(inTh - E.th), Math.cos(inTh - E.th));
+        E.omT = Math.max(-5, Math.min(5, dth * 3));
+      }
+      // ── LANDING (user 2026-08-22: "have the lady bug land on the platform periodically") ── four phases on
+      // one clock: fly, come down, sit, climb away. A LANDED exhibit stops dead — no steering, no advance, no
+      // bob — and main/tick-emit.js holds it on frame 00 while `ph` says 'land', so the wings are still rather
+      // than mid-flap. The descent and the climb keep flying horizontally, so it banks down onto the deck and
+      // lifts off again instead of dropping and rising on the spot.
+      if (fly) {
+        // ── STARTLED (user 2026-08-22: "do the same thing to the ladybug") ── the world flyers' own numbers,
+        // read live from the same FLY_* constants main/tick-creatures.js uses, so the stage bug and the forest
+        // butterflies cannot drift apart. Measured to the player's chest (P.y + 2), the same test they use.
+        const dxF = (E.hx + E.x) - P.x, dyF = (E.hy + E.y) - P.y - 2, dzF = (E.hz + E.z) - P.z;
+        if (dxF * dxF + dyF * dyF + dzF * dzF < FLY_THREAT_R * FLY_THREAT_R) E.fleeT = E.t + FLY_FLEE_HOLD;
+        E.flee = E.t < (E.fleeT || 0);
+        // A startled bug does not settle, and one already down gets off the deck: without this the speed would
+        // double while it sat there, or it would calmly touch down with the player on top of it.
+        if (E.flee && (E.ph === 'down' || E.ph === 'land')) E.ph = 'up';
+        if (E.ph === 'fly' && !E.flee && !E.hover && E.t > E.next) E.ph = 'down';
+        else if (E.ph === 'down' && Math.abs(E.y - E.gy) < 0.5) { E.ph = 'land'; E.y = E.gy; E.next = E.t + 3 + Math.random() * 4; }
+        else if (E.ph === 'land' && E.t > E.next) E.ph = 'up';
+        // ── AND THE BOB IS RE-PHASED ON TAKEOFF ── it is sin(t · rate) on a FREE-RUNNING clock, so resuming it
+        // at whatever phase t had reached snapped the model from the ~0 it climbed to up to a full bob amplitude
+        // in one frame — the upward glitch after takeoff (user 2026-08-22). Anchoring the phase here starts the
+        // bob at zero and rising, which is continuous with the climb it just finished.
+        else if (E.ph === 'up' && Math.abs(E.y) < 0.5) { E.ph = 'fly'; E.bph = E.t; E.next = E.t + 6 + Math.random() * 10; }
+      }
+      if (E.ph === 'land') continue;                    // sitting still: the heading it landed on is the heading it keeps
+      // ── A SWIMMER RUNS ON THE WORLD'S OWN FISH NUMBERS ── read live out of FISH_CFG rather than copied into
+      // constants here, so the stage and the lakes cannot drift apart: retune sim/life/fish.js (or
+      // __vb.fishCfg.baseSpeed = … from the console) and this moves with it. What it takes:
+      //   baseSpeed  cruise, and fleeMult × that when the player is inside threatR — EXACTLY double, which is
+      //              the "twice as fast when the player is near" the world fish already do.
+      //   fleeHold   the flee state lingers after the threat leaves, so it cannot flicker at the boundary.
+      //   yawRate / fleeYawRate  the heading-change cap, sharper while fleeing because double speed needs
+      //              harder banking — clamped rather than eased into, exactly as the creature tick clamps it.
+      //   animFps    the tail beat, which scales with the speed: 24 at cruise, 48 fleeing.
+      // The FLAP does not scale with the bolt, deliberately: the world butterflies' does not either (their
+      // frame index rides a shared clock), and matching them is the whole point. The fish are the other way —
+      // FISH_CFG says the tail beat scales, so below it does.
+      let spdN = E.spd * (fly && E.flee ? FLY_FLEE_MULT : 1), fpsN = E.fps;
+      if (!fly) {
+        // The threat test is the creature tick's own, including its vertical term (main/tick-creatures.js
+        // measures to P.y + 2, roughly the player's chest) — a stage swimmer flies well above head height, so a
+        // flat distance would have it bolting from a player standing harmlessly underneath it. No predator scan:
+        // that walks the duck band, and nothing lives on the stage but what ED_STAGE puts there.
+        const C = FISH_CFG, dx9 = (E.hx + E.x) - P.x, dy9 = (E.hy + E.y) - P.y - 2, dz9 = (E.hz + E.z) - P.z;
+        if (dx9 * dx9 + dy9 * dy9 + dz9 * dz9 < C.threatR * C.threatR) E.fleeT = E.t + C.fleeHold;
+        E.flee = E.t < (E.fleeT || 0);
+        const mul = E.flee ? C.fleeMult : 1;
+        spdN = C.baseSpeed * mul; fpsN = C.animFps * mul;
+        const yr = E.flee ? C.fleeYawRate : C.yawRate;
+        if (E.om > yr) E.om = yr; else if (E.om < -yr) E.om = -yr;
+      }
+      E.om += (E.omT - E.om) * (1 - Math.exp(-9 * d9)); E.th += E.om * d9;
+      E.x += Math.sin(E.th) * spdN * d9; E.z += Math.cos(E.th) * spdN * d9;
+      // ── THE ANIMATION RIDES ITS OWN CLOCK, NOT t × fps ── the rate CHANGES the moment a fish flees, and
+      // `floor(t · fps)` jumps the frame index when fps does. Accumulating frames instead means the beat just
+      // gets quicker from where it already was, which is the same reason the world keeps B.animClk.
+      E.aclk = (E.aclk || 0) + fpsN * d9;
+      if (E.ph === 'down') E.y += (E.gy - E.y) * (1 - Math.exp(-2.2 * d9));        // settle onto the deck
+      else if (E.ph === 'up') E.y += (0 - E.y) * (1 - Math.exp(-2.2 * d9));        // …and climb back to the cruising height, where the bob takes over again
+      else E.y = Math.sin((E.t - (E.bph || 0)) * (fly ? 2.2 : 1.1)) * E.bob;
+    }
+    // ── THE SCHOOL ── every follower is placed off the LEADER rather than steering for itself, which is how the
+    // world keeps its ducklings together: a fixed offset behind and to the side, rotated into the leader's
+    // heading, so the formation turns with it instead of smearing on every corner. Each keeps its own bob phase.
+    for (const E of ED.ex) {
+      if (E.lead < 0) continue;
+      const L = ED.ex[E.lead]; if (!L) continue;
+      E.aclk = (E.aclk || 0) + (L.fps || 24) * d9;      // a follower beats on the leader's rate, so a school stays in step
+      const back = 7 + ((E.rank - 1) >> 1) * 7, side = ((E.rank & 1) ? 5 : -5) * (1 + (((E.rank - 1) >> 1) * 0.35));
+      const Hx = Math.sin(L.th), Hz = Math.cos(L.th);
+      E.x = L.x - Hx * back + Hz * side; E.z = L.z - Hz * back - Hx * side;
+      E.th = L.th; E.y = Math.sin((E.t - (E.bph || 0)) * 1.1 + E.rank) * E.bob;
+    } };
+  const edStage = () => { if (!ED_STAGE) return;
+    edFetchVox(ED_STAGE.path).then(async () => { if (!ED.on || ED.frames.length) return;   // closed again, or a manual import landed while the fetch was in flight — never clobber what is on the stage
+      const n = ED_STAGE.mix ? await edLoadMix(ED_STAGE.path, ED_STAGE.mix, ED_STAGE.name)
+                             : await edLoadVox(ED_STAGE.path, ED_STAGE.seq, ED_STAGE.name, ED_STAGE.bake);
+      const sd = ED_STAGE.side;
+      // A `side` entry, if one is ever named again, is chained INSIDE the primary's load and re-tests the same
+      // guard rather than running beside it: a manual import landing between the two would take the stage
+      // (edImportBufs clears lane 2), and an unconditional second load would then park a model next to it.
+      if (n && sd && ED.on && ED.frames.length) await edLoadVox2(sd.path || ED_STAGE.path, sd.seq, sd.name || ED_STAGE.name, sd.bake, sd.fly);
+      if (ED.on) edExStage(); }); };                    // …and the free-moving exhibits, which need no fetch of their own: their frames were loaded into the item table at boot
   const edEnter = () => {
     if (ED.on) return;
     ED.on = true; ED.ret = { x: P.x, y: P.y, z: P.z, yaw: P.yaw, pitch: P.pitch, fly: P.fly };   // fly saved too — the editor turns it ON for the framing below, exit restores what the player had
     cmpVis();                                          // hide the top-centre compass while in the editor (user)
+    petalClear();                                      // …and clear the leaves already falling: petalTick refuses to shed once ED.on, but the ones mid-flight would drift past the stage for another ten seconds (user 2026-08-21)
     // ── THE STAGE LOOKS FOR LOW GROUND (user 2026-08-18: the grove needs headroom) ── it used to plant itself
     // exactly at the player, and then had to sit above the tallest thing on its own footprint for brick purity.
     // Land next to a giant oak and the stage rides up with it, and since a model is stamped UPWARD from the
@@ -562,13 +1139,15 @@
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
+    edStage();                                         // …and load what the stage opens on (async; the guard inside it is what makes a manual import mid-fetch win)
   };
   const edExit = () => {
     if (!ED.on) return;
     ED.on = false;
+    edPalRestore();                                    // hand the borrowed palette entries back BEFORE the world comes out of the void below — those ids are coloured for the world, not for the model that just left the stage
     const cells = [];
     for (const [ii, pv] of ED.prev) if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); }
-    ED.prev.clear(); ED.frames = []; ED.frames2 = []; ED.sel = -1; ED.fcells = []; ED.fcells2 = []; ED.ring = []; ED.box = null; ED.box2 = null; ED.bun = null; ED.arm = null; bfly.init = false;   // both lanes + creature AI cleared → no stale editor hitbox lingers after exit
+    ED.prev.clear(); ED.frames = []; ED.frames2 = []; ED.sel = -1; ED.sel2 = 0; ED.seq1 = ''; ED.seq2 = ''; ED.mix = []; ED.mixT0 = 0; ED.fcells = []; ED.fcells2 = []; ED.ring = []; ED.box = null; ED.box2 = null; ED.bun = null; ED.arm = null; bfly.init = false;   // both lanes + creature AI cleared → no stale editor hitbox lingers after exit
     gpuPatch(cells, true, cells.length, false);        // track=false: this RESTORES the world the editor borrowed — it is a rollback, not an edit
     rebuildBricks(0, WX, 0, WZ); uploadBricks();       // bring the whole world back from the void (occupancy was zeroed on enter)
     const r = ED.ret; if (r) { P.x = r.x; P.y = r.y; P.z = r.z; P.yaw = r.yaw; P.pitch = r.pitch; P.fly = !!r.fly; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
@@ -576,7 +1155,21 @@
     cmpVis();                                          // restore the compass (if locked + setting on) now the editor is closed
   };
   edBtnEl.addEventListener('click', (e) => { e.stopPropagation(); ED.on ? edExit() : edEnter(); });
-  // (boot straight into the pine forest — the asset editor no longer auto-opens on refresh; open it with the editor button. user 2026-07-22)
+  // ── THE EDITOR OPENS ON REFRESH (user 2026-08-22: "load me straight into the editor on refresh") ── this
+  // was removed on 2026-07-22 and is back by request. It waits for the world to be ready rather than firing at
+  // parse time: edEnter reads hmap and W to choose the stage's ground and height, and picks nonsense from a
+  // world that has not generated — the stage lands at the world floor with the player inside it.
+  // Deliberately NOT inside edEnter itself: opening the editor is otherwise always something the player did.
+  // ── …BUT NOT IN A TEST SESSION ── entering the editor zeroes the brick occupancy, stamps a plane into W and
+  // unstamps the worms, so a headless run that boots straight into it is measuring the STAGE and not the world.
+  // Measured the moment this went in: tools/vbtest.py reported 736,804 pool-vs-inline voxel diffs and "gen
+  // caught up: False" — not a worldgen regression (deepHash was bit-identical) but every terrain probe reading
+  // the editor's floating platform. `?cdp` is the flag every test tool already passes, so tests boot the world
+  // and players boot the editor; a test that wants the stage opens it the way they all already do, __vb.ed(true).
+  const edBoot = () => { if (ED.on) return;
+    if (typeof W === 'undefined' || !W || !hmap || !hmap.length || !rect) { setTimeout(edBoot, 120); return; }
+    edEnter(); };
+  if (!location.search.includes('cdp')) setTimeout(edBoot, 0);
   $('edCopy').addEventListener('click', (e) => { e.stopPropagation();   // copy the per-frame offsets → paste back to be baked into the code (replaces the .vox exporter)
     const btn2 = e.currentTarget; if (!ED.frames.length) { btn2.dataset.lbl = 'nothing to copy'; setTimeout(() => { btn2.dataset.lbl = 'export'; }, 1500); return; }   // icon button now — flash the hover LABEL + a green pulse instead of replacing the SVG with text
     edCopyOffsets(); btn2.classList.add('copied'); btn2.dataset.lbl = 'copied ✓ — paste it to me'; setTimeout(() => { btn2.classList.remove('copied'); btn2.dataset.lbl = 'export'; }, 2000); });
@@ -585,7 +1178,10 @@
     const list = [];
     for (const f of [...edFileEl.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
       list.push({ name: f.name, u8: new Uint8Array(await f.arrayBuffer()) });
-    if (list.length) { edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows. edClearStamp runs FIRST, as its comment says: edImportBufs ends in edLayout, which stamps the new model, so clearing afterwards erased what had just been laid out and the import stayed invisible until the next repaint (up to 3.4 s).
+    if (list.length === 1) { const qs = edVoxSeqs(list[0].u8);   // ONE file holding several NAMED animations (frog.vox = ribbet/tongue/hop): stage the first rather than all three concatenated, and say what the others are called so the second one is reachable
+      if (qs.length > 1) { list[0].seq = qs[0].name;
+        console.log('[vb] editor: ' + list[0].name + ' holds ' + qs.length + ' animations — ' + qs.map((q) => q.name + ' (' + q.ids.length + ' frames)').join(', ') + '. Staged ' + qs[0].name + "; __vb.edLoad('assets/…/" + list[0].name + "', '" + (qs[1] ? qs[1].name : qs[0].name) + "') stages another."); } }
+    if (list.length) { edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.seq2 = ''; ED.sel2 = 0; ED.flyer2 = false; ED.mix = []; ED.mixT0 = 0; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows. edClearStamp runs FIRST, as its comment says: edImportBufs ends in edLayout, which stamps the new model, so clearing afterwards erased what had just been laid out and the import stayed invisible until the next repaint (up to 3.4 s).
     edFileEl.value = '';
   });
 

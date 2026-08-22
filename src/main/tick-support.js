@@ -193,7 +193,8 @@
     lifeUid.fill(-1); lifeAna.fill(1);                 // ── dynamic-life ledger reset ── slots not claimed this frame stay analytic-only/empty
     { const bSlot = 8, o2 = dropOff(bSlot);             // ── flying cardinal → drop slot 8 (was 4, moved when the item-drop band grew to 8) ── off-grid DDA model, free wandering flight (no home; never follows the player). ONE slot number, stitched to its float offset by the one function that knows how: the raw UF writes below want the offset, birdWrite wants the INDEX
       if (ED.on) {                                       // ── EDITOR STAGE ── advance the animation; the model is ALWAYS GRID-STAMPED (real world voxels → full lighting), exactly like every other model — NO trace-inject exception (user)
-        UF[o2 + 7] = 0; for (const B2 of birdBoxes) B2.active = false;   // item id 0 hides the drop slot (no trace-inject in the editor)
+        for (const B2 of birdBoxes) B2.active = false;
+        UF[o2 + 7] = 0;   // the cardinal's slot stays empty on the stage; the editor's free-moving exhibits ride the live-creature band instead (main/tick-emit.js)
         if (ED.frames.length && !ED.paused && ED.bun) {  // ── BEHAVIOR state machine: wander (75% HOP / 25% ROTATE 50-50) at 24 fps; FLEE the player at 48 fps when near. Whole-hop-per-action INTEGER position, baked rotation (ED.spin=0). ──
           const B = ED.bun, nJ = B.nJ, block = nJ * 3, HOP_END = 6;
           const rot2 = (ox, oz, h) => { let x = ox, z = oz; for (let k = 0; k < (h & 3); k++) { const nx = -z, nz = x; x = nx; z = nz; } return [x, z]; };
@@ -227,7 +228,7 @@
           const sel = (B.h & 3) * block + B.action * nJ + af;
           const blink = (now % 3400) < 160;
           if (sel !== ED.sel || blink !== ED.blink || B.px !== ED.bhx || B.pz !== ED.bhz) {
-            ED.sel = sel; ED.blink = blink; ED.spin = 0; ED.bhx = B.px; ED.bhz = B.pz;
+            ED.sel = sel; ED.sel2 = sel; ED.blink = blink; ED.spin = 0; ED.bhx = B.px; ED.bhz = B.pz;
             ED.hopX = B.px; ED.hopY = 0; ED.hopZ = B.pz; ED.hop2X = ED.hop2Y = ED.hop2Z = 0;
             edLayout(); }
         }
@@ -252,10 +253,12 @@
           if (ED.name1 === 'skunk' || ED.name1 === 'porcupine') { const fps = (A.flee ? 24 : 12) * (ED.name1 === 'skunk' ? SKUNK_ANIM_MUL : 1); A.afps = (A.afps === undefined) ? fps : A.afps + (fps - A.afps) * Math.min(1, dt * 6); A.aframe = (A.aframe || 0) + dt * A.afps; }   // SKUNK + PORCUPINE (user): ease 12↔24 fps (double when fleeing) on a frame-position clock — matches the world creature, no frame jump   // skunk at HALF rate here too, so the editor preview matches the world (user 2026-08-06)
           const fi = ((ED.name1 === 'skunk' || ED.name1 === 'porcupine') ? Math.floor(A.aframe) : Math.floor(now / frameMs)) % n, blink = (now % 3400) < 160, hx = Math.round(A.px), hz = Math.round(A.pz);
           if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink || hx !== ED.hopX || hz !== ED.hopZ || (A.hd & 3) !== ED.spin) {
-            ED.sel = fi; ED.blink = blink; ED.spin = A.hd & 3;   // face the march direction (cardinal)
+            ED.sel = fi; ED.sel2 = fi; ED.blink = blink; ED.spin = A.hd & 3;   // face the march direction (cardinal); sel2 tracks sel here because these branches drive ONE model and any compare variant beside it is the same animation at the same length
             ED.hopX = hx; ED.hopY = 0; ED.hopZ = hz; ED.hop2X = ED.hop2Y = ED.hop2Z = 0;
             edLayout(); }
         }
+        else if (ED.frames.length && ED.paused) { ED.playT0 = 0; ED.mixT0 = 0;   // PARKED for alignment: drop the run's clock so resuming starts a fresh run from the base position rather than dropping the model back into the middle of a field it cannot be aligned in
+          if (ED.blinkE || ED.blink) { ED.blinkE = 0; ED.blink = false; edLayout(); } }   // …and open the eyes: a model parked mid-wink would be aligned against a lid, and nothing else repaints while paused
         else if (ED.frames.length && !ED.paused) {       // ── playing → 24 fps + continuous forward march (manual .vox imports) ──
           // ── THE FLAMINGO LOOPS WITHOUT THE TAIL (user 2026-08-18: "have the flamingo cycle through the first
           // 10 frames. repeatedly.") ── every other import gets a 600 ms hold on its last frame, which suits a
@@ -265,10 +268,137 @@
           // FLAMINGO AT 12 fps (user 2026-08-18: "play the flamingo at 12 fps in the editor") — the same
           // arrangement the skunk already has on the walking branch above, and for the same reason: the editor
           // should preview a creature at the rate it actually ships at, not at the 24 fps house default.
-          const n = ED.frames.length, frameMs = 1000 / (ED.name1 === 'flamingo' ? 12 : 24), pauseMs = ED.name1 === 'flamingo' ? 0 : 600, cyc = n * frameMs + pauseMs;
-          const t = now % cyc, fi = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;
-          const blink = (now % 3400) < 160;
-          if (fi !== (((ED.sel % n) + n) % n) || blink !== ED.blink) { ED.sel = fi; ED.blink = blink; ED.spin = 0;
+          // ── THE CLOCK STARTS WHEN THE RUN DOES (user 2026-08-21: "play it in a cycle, moving forward … just make
+          // sure the jumping animation has the correct positionings") ── `now` is the page clock, so a cycle
+          // counter taken straight off it is however many cycles have elapsed since LOAD, not since the model
+          // started playing. That is the real reason the marching frog was wrong the moment its hop was baked:
+          // opening the editor nine cycles into the page put the first hop 90 voxels downrange, and it had
+          // wrapped off the far side of the stage before anybody saw the first frame. Anchoring the clock at the
+          // start of the run makes cycle 0 the first cycle, so the run begins at the base position, under the
+          // camera edEnter framed, and every hop after it continues from where the last one landed.
+          // The anchor is cleared on PAUSE (just above this branch), so aligning a frame and resuming starts a
+          // fresh run from the base rather than resuming mid-field.
+          if (!ED.playT0) ED.playT0 = now;
+          const tt = now - ED.playT0;
+          edExStep(dt);
+          const frameMs = 1000 / (ED.name1 === 'flamingo' ? 12 : 24), pauseMs = ED.name1 === 'flamingo' ? 0 : 600;
+          // ── A WEIGHTED PLAYLIST ON THE EDITABLE LANE (user 2026-08-22: "jump = 50%, ribbet = 40%,
+          // tongue = 10%") ── ED.mix holds the whole cycles the model may play and their weights; at every
+          // cycle boundary the lane draws its next one and plays it whole. An EMPTY mix is every other load
+          // there has ever been — one sequence, looping — and takes none of this.
+          // The clock cannot be `tt % cyc` while mixing: the cycles are different lengths (hop 17 frames,
+          // ribbet 14, tongue 24), so there is no one modulus. ED.mixT0 is when the live cycle began and
+          // advances by that cycle's own length, which keeps the boundaries exact rather than accumulating
+          // float drift off `now`.
+          let mixSwap = false;
+          if (ED.mix.length) {
+            if (!ED.mixT0) ED.mixT0 = now;              // first frame of the run, and after a pause dropped the clock
+            // ── THE CROSSING WRAPS AT A CYCLE BOUNDARY, NOT WHEREVER THE MODEL HAPPENS TO BE (user 2026-08-22:
+            // "when it reaches the wall, then gets teleported to the other side, the positionings are not
+            // correct anymore") ── the border crossing was being done by edLayout's wrapIn, which folds the
+            // TOTAL position: base + this frame's own offset + the accumulator. Two things follow from that and
+            // both are wrong. It fires mid-leap — measured, the frog went from −116 to +117 with the accumulator
+            // unchanged at −110, i.e. it teleported partway through a hop. And wrapIn's period is
+            // `ED.pd - rv.sy`, the CURRENT frame's rotated footprint, which the hop changes as the frog stretches
+            // (9x7 to 7x10): consecutive frames straddling the boundary fold by different amounts, so the arc
+            // itself comes apart on the far side. That is the "positionings are not correct anymore".
+            // So the ACCUMULATOR wraps instead, and only here — at a cycle boundary, where the frog is grounded
+            // between leaps. The margin keeps the per-frame total (up to 10 more in a leap) inside wrapIn's
+            // range, so wrapIn stays the safety net it was and never fires on the stage's own model.
+            const halfRun = Math.max(8, (Math.min(ED.pw, ED.pd) >> 1) - 14), fullRun = halfRun * 2;
+            // A `for`, not an `if`: a stalled tab or a long frame can leave several cycles' worth of time on
+            // the clock, and stepping one entry per tick would play them in slow motion until it caught up.
+            // Bounded so a wildly stale clock cannot spin here — past that it simply re-anchors.
+            for (let g = 0; ; g++) {
+              const nn = ED.frames.length, cy = nn * frameMs + pauseMs;
+              if (now - ED.mixT0 < cy) break;
+              if (g >= 8) { ED.mixT0 = now; break; }
+              // ── BANK THE FINISHED CYCLE'S TRAVEL ── each cycle contributes its OWN last-minus-first offset,
+              // so a croak or a tongue-flick (delta 0) leaves the frog where it stands and only a leap moves
+              // it. An ACCUMULATOR rather than the cycle-count × delta used below: with a mix there is no
+              // single delta to multiply, and the number of leaps so far is not the number of cycles so far.
+              const lf = ED.frames[nn - 1] || {}, f0 = ED.frames[0] || {};
+              let ax = ED.hopX + ((lf.ox || 0) - (f0.ox || 0)), ay = ED.hopY + ((lf.oy || 0) - (f0.oy || 0)), az = ED.hopZ + ((lf.oz || 0) - (f0.oz || 0));
+              if (ax > halfRun) ax -= fullRun; else if (ax < -halfRun) ax += fullRun;   // off one edge of the platform and straight back on at the other, which is what "goes to the border and disappears to the other side" means
+              if (az > halfRun) az -= fullRun; else if (az < -halfRun) az += fullRun;
+              if (Math.abs(ay) > 48) { ay = 0; }   // …but a model may NOT climb the sky one cycle at a time: vertical drift is a fault, not a crossing, so it is reset rather than wrapped
+              ED.hopX = ax; ED.hopY = ay; ED.hopZ = az;
+              ED.mixT0 += cy;
+              edMixPick();
+              mixSwap = true;
+            }
+          }
+          const n = ED.frames.length, cyc = n * frameMs + pauseMs;
+          const t = ED.mix.length ? (now - ED.mixT0) : (tt % cyc);
+          const fi = t < n * frameMs ? Math.floor(t / frameMs) : n - 1;
+          // ── THE SIDE LANE RUNS ITS OWN CLOCK ── it used to be indexed straight off `fi`, which is only
+          // correct while both lanes hold animations of the SAME length: true for the two bunny variants this
+          // was written for, false for two builds out of one scene-graph file (tongue 24 frames against the
+          // concatenated croak-and-leap's 31). Driven off a 24-frame clock the longer one would play frames
+          // 0-23 and then sit on 23 for the hold, so the frog would crouch into its leap and never land.
+          // Same frame rate and same hold, its own length: two animations that do not divide simply drift
+          // apart, which is what two independent exhibits should do.
+          const n2c = ED.frames2.length, frameMs2 = 1000 / (ED.name2 === 'flamingo' ? 12 : 24);
+          // NO END-OF-CYCLE HOLD FOR A FLYER. The 600 ms beat suits a one-shot action — it reads as the pose
+          // landing before the cycle restarts — and is exactly wrong on a WING FLAP, which has to loop
+          // seamlessly: held, the ladybug stops dead with its wings open six times a second's worth of frames
+          // into every second. The RATE stays the house 24 fps.
+          const pauseMs2 = (ED.name2 === 'flamingo' || ED.flyer2) ? 0 : 600;
+          const cyc2 = n2c ? n2c * frameMs2 + pauseMs2 : 1, t2 = tt % cyc2;
+          const fi2 = n2c ? (t2 < n2c * frameMs2 ? Math.floor(t2 / frameMs2) : n2c - 1) : 0;
+          // ── THE SIDE LANE CAN FLY (user 2026-08-22: the ladybug "has to behave like the other flying
+          // insects, like the butterfly for example") ── the same eased-turn wander the world's butterflies and
+          // dragonflies fly on, with their numbers: retarget the turn every 0.4-1.2 s to ±2 rad/s, ease the
+          // angular velocity toward it at 9/s, integrate the heading, advance along it. That integrator is what
+          // gives a flyer its characteristic loose, fluttery arc rather than a circle or a straight line, so it
+          // is copied rather than re-invented (main/tick-creatures.js, the kind-0 block).
+          // SPEED IS THE ONE NUMBER NOT COPIED: the world flies them at 56 vox/s, which crosses everything the
+          // stage camera can see in about two seconds. 22 is the same motion at a pace you can actually watch,
+          // and the stage is a preview, not the world.
+          // The wander is CONTAINED: past ED_FLY_R from its home it steers back in, so it orbits the side lane
+          // rather than leaving the shot or reaching the stage edge, where edLayout's wrapIn would fold it
+          // across to the far side.
+          const ED_FLY_SPD = 22, ED_FLY_R = 20, ED_FLY_Y = 14, ED_FLY_BOB = 4;
+          let flyMoved = false;
+          if (ED.flyer2 && n2c) {
+            const F = bfly;
+            if (!F.init) { F.init = true; F.x = 0; F.z = 0; F.y = ED_FLY_Y; F.th = Math.random() * 6.2831853; F.om = 0; F.omT = 0; F.tRe = 0; F.t = 0; }
+            F.t += dt;
+            if (F.t > F.tRe) { F.omT = (Math.random() - 0.5) * 4.0; F.tRe = F.t + 0.4 + Math.random() * 0.8; }
+            if (F.x * F.x + F.z * F.z > ED_FLY_R * ED_FLY_R) {   // outside its orbit → turn back toward home, hard enough to actually come about
+              const inTh = Math.atan2(-F.x, -F.z), d9 = Math.atan2(Math.sin(inTh - F.th), Math.cos(inTh - F.th));
+              F.omT = Math.max(-5, Math.min(5, d9 * 3));
+            }
+            F.om += (F.omT - F.om) * (1 - Math.exp(-9 * dt)); F.th += F.om * dt;
+            F.x += Math.sin(F.th) * ED_FLY_SPD * dt; F.z += Math.cos(F.th) * ED_FLY_SPD * dt;
+            F.y = ED_FLY_Y + Math.sin(F.t * 2.2) * ED_FLY_BOB;
+            // ── FACING, WITH A DEAD BAND ── the model is GRID-STAMPED, so it can only face the four cardinals;
+            // snapping on the nearest one alone makes a heading drifting along a quadrant boundary flip back and
+            // forth every few frames. Re-snap only once the heading is 56° off what it is showing — 45° plus a
+            // hysteresis band — so a turn reads as one clean step.
+            const want = ((-Math.round(F.th / (Math.PI / 2))) % 4 + 4) % 4;   // th 0 is +z. The mapping was 180 degrees out and the ladybug flew backwards (user 2026-08-22); the stamp's cardinal order runs the opposite way round from the heading angle
+            if (want !== ED.spin2) {
+              const cur = [Math.PI, Math.PI / 2, 0, -Math.PI / 2][ED.spin2 | 0];
+              if (Math.abs(Math.atan2(Math.sin(F.th - cur), Math.cos(F.th - cur))) > 0.98) { ED.spin2 = want; flyMoved = true; }
+            }
+            const hx = Math.round(F.x), hy = Math.round(F.y), hz = Math.round(F.z);
+            if (hx !== ED.hop2X || hy !== ED.hop2Y || hz !== ED.hop2Z) { ED.hop2X = hx; ED.hop2Y = hy; ED.hop2Z = hz; flyMoved = true; }
+          }
+          // ── BLINKING, ON THE WORLD'S OWN CLOCK (user 2026-08-21: "make the frogs red eyes blink just like the
+          // life in the world" / "have one eye blink first, then .5 seconds later the other eye") ── the world's
+          // universal blink (main/tick-creatures.js) is 150 ms shut and then 1.1-2.4 s open, randomised per
+          // creature; this branch had its own 160-every-3400 instead, which is neither. So take the world's
+          // numbers, and stagger the pair: the near eye shuts, the far one follows half a second later, and the
+          // random gap is measured from the end of the pair so the rhythm stays the world's rather than becoming
+          // a metronome. SHUT + STAGGER never overlap (150 < 500), so no both-eyes-closed variant is needed.
+          // Only a model with a per-side pair takes this path — see edBuildFrames. Everything else keeps the
+          // both-eyes blink it has always had, on the cadence it has always had, so no other creature moves.
+          const BLINK_SHUT = 150, BLINK_STAG = 500, BLINK_PAIR = BLINK_STAG + BLINK_SHUT;
+          if (!ED.blinkT0 || now >= ED.blinkT0 + BLINK_PAIR + ED.blinkGap) { ED.blinkT0 = now; ED.blinkGap = 1100 + Math.random() * 1300; }
+          const bt = now - ED.blinkT0, winks = !!(ED.frames[0] && ED.frames[0].voxBlinkL);
+          const eyeP = !winks ? 0 : bt < BLINK_SHUT ? 1 : (bt >= BLINK_STAG && bt < BLINK_PAIR) ? 2 : 0;
+          const blink = winks ? false : (now % 3400) < 160;
+          if (fi !== (((ED.sel % n) + n) % n) || fi2 !== ED.sel2 || mixSwap || flyMoved || blink !== ED.blink || eyeP !== ED.blinkE) { ED.sel = fi; ED.sel2 = fi2; ED.blink = blink; ED.blinkE = eyeP; ED.spin = 0;
             // ── THE FLAMINGO ANIMATES IN PLACE (user 2026-08-18: "in the center of it, animated") ── this
             // branch normally walks the model forward by the per-frame offset delta once per cycle, which is
             // what makes an imported walk cycle travel. The flamingo is the stage's opening exhibit and is
@@ -278,11 +408,66 @@
             // quietly walk it off the middle.
             // A ZEROED k RATHER THAN AN EARLY RETURN: the ED.box / ED.box2 publishes below this block still
             // have to run, and returning here would silently stop the hit box following the model.
-            const k = ED.name1 === 'flamingo' ? 0 : Math.floor(now / cyc);
+            // ── THE STAGED MODEL STAYS WHERE YOU PUT IT (user 2026-08-21: "I cant click on the frog anymore to
+            // edit it" / "you also didnt bake the frog correctly") ── k was the CYCLE COUNT, and the offsets it
+            // multiplies are last-frame-minus-first, so any sequence with a forward delta crept across the stage
+            // one cycle-length per cycle, forever, with wrapIn teleporting it out the far side when it ran off.
+            // Invisible while every import sat at zero offsets (delta 0 = k times nothing); the moment the frog's
+            // hop was baked the delta became -10 in z and the frog marched away and wrapped — measured hopZ
+            // -90, -100, -110 … and the stamped centre jumping -114 -> +116 across the stage. That breaks the one
+            // thing the stage is for: you cannot align a model you have to chase, and the click test could not
+            // find it either.
+            // So the accumulation is gone and the cycle plays IN PLACE. The travel the animation itself carries
+            // is untouched — the frog still leaps its metre inside the cycle, because that lives in the frames'
+            // own offsets, which edLayout applies either way; it simply starts each hop from the same spot
+            // instead of from where the last one ended. The flamingo was already pinned to 0 by name for exactly
+            // this reason ("in the center of it, animated"), which made it two out of two for this branch, so the
+            // special case is now the rule and the name test is gone with it.
+            // ── AND THE CYCLES ACCUMULATE, SO THE FROG TRAVELS ── k is the number of COMPLETED runs, off the
+            // anchored clock above. The frame's own offset already carries the hop's travel inside one cycle
+            // (0 → −10 in z for the frog), so k × that delta is exactly where the previous hops left it: the
+            // arithmetic is continuous across the boundary by construction — the last frame of run k sits at
+            // (k+1)·delta and the first frame of run k+1 sits at the same place — which is what keeps the
+            // positions right rather than snapping between hops.
+            // Nothing else is added: no wander, no bob, no physics. The only thing that ever moves the model
+            // besides its own frames is this one multiple of its own authored travel.
+            // ── AND THE RUN RESTARTS ON A CYCLE BOUNDARY, NEVER MID-HOP ── the stage is 242 voxels and the frog
+            // covers 10 a cycle, so a run that accumulates forever eventually walks off it. edLayout's wrapIn
+            // catches that and folds the model back inside, but wrapIn works on the TOTAL position, so it fires
+            // whenever the model happens to cross the edge — measured at frame 6 of a hop, teleporting the frog
+            // from z −115 to +113 halfway through its leap. A hop cut in half is precisely the "wrong
+            // positioning" this is meant to avoid.
+            // So bound the cycle COUNT instead of the position. k only changes between cycles, so wrapping k can
+            // only ever move the model at a boundary — where it is grounded, at the end of a completed hop — and
+            // the run simply starts again from the base position it was framed at. kmax is how many whole cycles
+            // of this model's own travel fit on the stage from the centre out, so the frog gets 10 hops of
+            // runway before it starts over, and a sequence that travels nowhere (delta 0) is unaffected.
+            const lf0 = ED.frames[n - 1] || {}, ff0 = ED.frames[0] || {};
+            const dxC = (lf0.ox || 0) - (ff0.ox || 0), dyC = (lf0.oy || 0) - (ff0.oy || 0), dzC = (lf0.oz || 0) - (ff0.oz || 0);
+            const spanXZ = Math.max(1, (Math.min(ED.pw, ED.pd) >> 1) - 16), spanY = 48;   // stage half-width less a margin for the model itself; the vertical allowance is deliberately small — nothing should be climbing the sky one cycle at a time
+            const kmax = Math.min(dxC ? Math.floor(spanXZ / Math.abs(dxC)) : 1e9,
+                                  dzC ? Math.floor(spanXZ / Math.abs(dzC)) : 1e9,
+                                  dyC ? Math.floor(spanY / Math.abs(dyC)) : 1e9);
+            const k = kmax >= 1e9 ? 0 : Math.floor(tt / cyc) % (kmax + 1);   // a sequence that goes nowhere stays at k=0 rather than multiplying zero forever
             const lf = ED.frames[n - 1] || {}, f0 = ED.frames[0] || {};
-            ED.hopX = k * ((lf.ox || 0) - (f0.ox || 0)); ED.hopY = k * ((lf.oy || 0) - (f0.oy || 0)); ED.hopZ = k * ((lf.oz || 0) - (f0.oz || 0));
-            const n2 = ED.frames2.length, l2 = n2 ? ED.frames2[n2 - 1] : {}, g2 = n2 ? ED.frames2[0] : {};
-            ED.hop2X = k * ((l2.ox || 0) - (g2.ox || 0)); ED.hop2Y = k * ((l2.oy || 0) - (g2.oy || 0)); ED.hop2Z = k * ((l2.oz || 0) - (g2.oz || 0));
+            // Skipped while a PLAYLIST is running: k × delta assumes every cycle travels the same distance,
+            // which is the one thing a mix of croaks, flicks and leaps does not do. The accumulator above owns
+            // ED.hop* in that case, and has already banked this boundary.
+            if (!ED.mix.length) { ED.hopX = k * ((lf.ox || 0) - (f0.ox || 0)); ED.hopY = k * ((lf.oy || 0) - (f0.oy || 0)); ED.hopZ = k * ((lf.oz || 0) - (f0.oz || 0)); }
+            // …and the side lane's march is counted on ITS cycle, for the same reason its frame index is:
+            // k is "completed runs", so multiplying the side lane's own travel by the CENTRE lane's run count
+            // put it wherever the other animation's length happened to leave it — the two would only agree if
+            // the cycles were the same length, which is exactly what they are not. ED_LANE_RUN, not spanXZ:
+            // the side lane is bounded by what stays IN SHOT from the stage camera, not by what fits on the
+            // stage — see the constant in ui/editor.js.
+            const l2 = n2c ? ED.frames2[n2c - 1] : {}, g2 = n2c ? ED.frames2[0] : {};
+            const dx2 = (l2.ox || 0) - (g2.ox || 0), dy2 = (l2.oy || 0) - (g2.oy || 0), dz2 = (l2.oz || 0) - (g2.oz || 0);
+            const kmax2 = Math.min(dx2 ? Math.floor(ED_LANE_RUN / Math.abs(dx2)) : 1e9,
+                                   dz2 ? Math.floor(ED_LANE_RUN / Math.abs(dz2)) : 1e9,
+                                   dy2 ? Math.floor(spanY / Math.abs(dy2)) : 1e9);
+            const k2 = kmax2 >= 1e9 ? 0 : Math.floor(tt / cyc2) % (kmax2 + 1);
+            // Not while it FLIES: the wander above owns ED.hop2* in that case, and a cycle march would fight it.
+            if (!ED.flyer2) { ED.hop2X = k2 * dx2; ED.hop2Y = k2 * dy2; ED.hop2Z = k2 * dz2; }
             edLayout(); }
         }
         if (ED.box) { birdBox.cx = ED.box.cx; birdBox.cy = ED.box.cy; birdBox.cz = ED.box.cz; birdBox.hx = ED.box.hx; birdBox.hy = ED.box.hy; birdBox.hz = ED.box.hz; birdBox.active = true; }   // SOLID hitbox for the EDITABLE bunny — republished every frame from the last edLayout AABB; boxFree() already tests every birdBox

@@ -28,7 +28,8 @@
   // skipping was already right in both; behaviour skipping was missing from both.
   const edMatBad = (i) => (typeof cactusTab !== 'undefined' && cactusTab[i]) ||
                           (typeof coneTab !== 'undefined' && coneTab[i]) ||
-                          (typeof foliaTab !== 'undefined' && foliaTab[i]);
+                          (typeof foliaTab !== 'undefined' && foliaTab[i]) ||
+                          (typeof WATER_T !== 'undefined' && (i === WATER_T || i === WATER_B));   // ── AND WATER (user 2026-08-21: "looks like water voxels on the legs") ── the same class of bug as the cactus above, found the same way: the frog's darkest green (34,142,92) is nearest, among the ids this walk was still willing to hand out, to WATER_B (43,106,134), so every frog leg was stamped as water. A water id is not a blue: the trace gives it reflection, refraction and foam, and freezing flips its solidity (see the ice note in world/window.js), so the legs read as glass and would have behaved like it. Two ids, and they are named rather than table-driven because water has no tab of its own — it IS the pair.
   const edNearShareOK = (r, g, b) => {                 // tolerance reuse, minus the ids that MEAN something
     let bd = 1e9, best;
     for (let i = DECOR_MIN; i < palette.length; i++) { const c = palette[i];

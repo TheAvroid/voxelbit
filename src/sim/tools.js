@@ -457,7 +457,19 @@
       const mR = soiR(id);                           // …and its REACH, the doubled one on the tool's own material
       // the BITE follows the sphere it came out of — scaled from PH.chopBite, not from C_BITE, which
       // already carries the tool's own factor and would apply it a second time.
-      const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS)) : Math.max(2, Math.round(PH.chopBite * mS * (dig ? DIG_BITE : 1)));
+      // ── A MUSHROOM COMES APART IN FOUR, NOT TWO (user 2026-08-22: "cut the red mushroom in 4s instead of
+      // halves. when the player cuts it down") ── the number of pieces a decoration yields is just its voxel
+      // count divided by the bite, so halving the bite on mushroom ids doubles the pieces and changes nothing
+      // else: same sphere, same nearest-first order, same materials. Keyed on mushTab (assets/material-tabs.js),
+      // which is the cluster's own id set, so ferns and logs beside it keep the bite they have always had.
+      // The bite, not the sphere: a tool's own-material SOI is inert on ordinary geometry (measured twice).
+      // MEASURED: halving alone was not enough. The bite went 15 -> 8 and the mushroom still came apart in two,
+      // because a single cap is small enough that 15 and 8 both round to the same two bites — the piece count is
+      // ceil(voxels / bite), not voxels / bite, so it only moves when the bite crosses a boundary. A QUARTER of
+      // the original bite is what actually yields four (user 2026-08-22: "the red mushroom still breaks in 2
+      // instead of 4"). Read the live number off __vb.chopAim().bite rather than re-deriving it.
+      const mushQ = mushTab[id] ? 0.25 : 1;
+      const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS * mushQ)) : Math.max(2, Math.round(PH.chopBite * mS * mushQ * (dig ? DIG_BITE : 1)));
       // ── AND A BEEHIVE IS THE ONE PIECE OF DECOR THAT ANSWERS BACK (user 2026-08-17: "if the player breaks
       // open the beehive, have bees fly out of it, attacking the player") ── asked AFTER the carve, because the
       // question is "is the hive open NOW". hiveChopped (sim/life/slots.js) counts what is left of the box and

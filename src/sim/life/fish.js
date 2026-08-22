@@ -2,11 +2,26 @@
   // The AI itself runs in the creature tick (SWIM ⇄ FLEE states + ballistic AIR arcs) on the shared body predicate
   // fishBodyAt/fishFits/fishReach — the planner can only ever choose moves the mover will accept, which is the
   // anti-deadlock invariant that fixed "endlessly swims against the terrain".
+  // ── FLYER FLIGHT RESPONSE ── butterflies and dragonflies (creature kind 0) bolt at double speed when the
+  // player closes on them, the way the fish do. Kept beside FISH_CFG because it is the same mechanism and the
+  // two want reading together; the firefly (kind 1) is deliberately outside it — it drifts at 26 and a startled
+  // firefly is not a thing the night should have.
+  // The MULTIPLIER matches the fish exactly. The RADIUS does not, and should not: a fish cruises at 22 and a
+  // butterfly at 56, so the fish's 56-voxel sphere is two and a half seconds of fish travel but one second of
+  // butterfly travel — shared, it would leave every butterfly permanently spooked. 30 is about half a second
+  // of its own cruise, which is the same "it noticed you" beat the fish get.
+  const FLY_THREAT_R = 30, FLY_FLEE_HOLD = 1.2, FLY_FLEE_MULT = 2.0;
   const FISH_CFG = {
     baseSpeed: 22,          // vox/s normal cruise — the tail-beat plays at animFps at this speed
     fleeMult: 2.0,          // flee speed = baseSpeed × this, EXACTLY (the animation scales with it: 24 → 48 fps)
     animFps: 24,            // swim-strip rate at baseSpeed, on the SIM clock — render fps never touches it
-    threatR: 28,            // player/predator distance (vox) that triggers the flee state
+    // ── SPHERE OF INFLUENCE ── DOUBLED 28 -> 56 (user 2026-08-22: "double the sphere of influence of the koi
+    // fish ... make all the fish have the same soi"). They already did: this is one shared number with exactly
+    // two readers — the creature tick's threat scan for every world fish, and the editor stage's koi, which was
+    // wired to read this same bag rather than a copy. There is no per-species threat radius to bring into line,
+    // so raising it here raises it for the koi, the salmon, the minnow, the bass, the blue gill, the catfish and
+    // the betta together. 5.6 m: a fish now breaks well before you are on top of it.
+    threatR: 56,            // player/predator distance (vox) that triggers the flee state
     fleeHold: 1.2,          // s the flee state lingers after the threat leaves the radius (no flicker at the boundary)
     predatorKinds: [3],     // wbf creature kinds fish flee from (3 = ducks); set [] to disable predator flight
     schoolSpecies: [],      // NO schooling (user: fish must spread out EVENLY + consistently). Schooling spawned fish ±4.5 vox around a schoolmate — a knot that bypassed the ≥14-vox even-spacing AND wasn't re-validated for deep water (so shallow-placed schoolmates got recycled → 'sometimes no fish'). Empty = every fish swims alone, spread ≥14 apart across the water spots. Re-add ['salmon','minnow'] to restore shoaling.

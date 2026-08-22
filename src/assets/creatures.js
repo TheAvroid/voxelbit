@@ -9,6 +9,12 @@
   let DFLY_ITEM0 = 0, DFLY_NFRAMES = 0;                // DRAGONFLY flap frames (assets/life/dragonfly) — one colour, 6 frames. Flies the butterfly's kind-0 code path verbatim; only its HOME differs (water, not meadow)
   let BFLY_PINK = -1;                                  // index into BFLY_COLS of the 'pink' folder, or -1 if it never loaded — set in assets/held-items.js as the colours are parsed, because the index is a LOAD-ORDER fact and not a constant
   let BFLY_COLS = [];                                  // first item id of each loaded color's 8 frames, in folder order: orange, red, blue, lime, pink, purple. Colour is picked by a spatial hash of the creature's cell (B.col), so adding colours scatters them evenly and procedurally with no other change
+  // ── EDITOR-STAGE EXHIBITS ── models whose frames live in ONE scene-graph .vox rather than a folder of
+  // numbered files, loaded into the same item table so the stage can TRACE-INJECT them (assets/held-items.js
+  // edStripItems). That is the whole reason they are here: an item id is what the emit addresses a model by,
+  // and only an emitted model gets a sub-voxel position and a free heading. Grid-stamping cannot.
+  let LBUG_ITEM0 = 0, LBUG_NFRAMES = 0;                // LADYBUG (assets/life/ladybug.vox) — flies the stage on the butterfly's own steering
+  let KOI_ITEM0 = 0, KOI_NFRAMES = 0;                  // KOI (assets/life/koi.vox) — swims the stage like the world's fish
   let FFLY_ITEM0 = 0, FFLY_NFRAMES = 0;                // firefly frames (assets/life/firefly) — replaces the butterflies AT NIGHT; the yellow abdomen voxel glows via the drops dYv.w lane
   let WORM_ITEM0 = 0, WORM_NFRAMES = 0;                // inchworm crawl frames (assets/life/worm) — a GROUND crawler, active day and night (pool slots 24+)
   let BETTA_FSP = -1;                                  // index into FISHES of the betta, or -1 if its frames never loaded. A LOAD-ORDER fact, captured in assets/held-items.js, never written as a literal

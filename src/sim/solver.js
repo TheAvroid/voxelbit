@@ -32,7 +32,7 @@
       // b.ay is the body's own up-axis in world space, refreshed at the end of every step, so its Y
       // component IS cos(tilt) — 1 upright, 0 flat on its side.
       const up = b.ay[1];
-      if (up <= PH.tipDone || performance.now() - b.tipT0 > PH.tipMaxMs) b.tipping = 0;   // committed (or stuck) — hand it back to plain physics
+      if (up <= PH.tipDone || performance.now() - b.tipT0 > PH.tipMaxMs) { b.tipping = 0; b.fellDown = 1; }   // committed (or stuck) — hand it back to plain physics, and RECORD that it went over (see the break-on-impact block below)
       else {
         // A FLOOR on the topple-axis component left the contact solver free to inject rotation about the
         // OTHER two axes — impulses off the stump, the crown clipping ground — and that cross-axis spin is
@@ -56,6 +56,29 @@
         b.omega[2] = wAxis * b.tipAz + perpZ * k;
         b.sleepT = 0;                                  // a half-fallen trunk must not doze off mid-tilt
       }
+    }
+    // ── THE TREE BREAKS ON IMPACT, NOT ON THE CUT (user 2026-08-22: "can you make the trees break in pieces
+    // when it falls over? not at the moment the player chomps the tree down, but the moment the tree hits the
+    // terrain") ── armed at the fell (sim/chop.js sets fellWhole beside noAbsorb) and fired here, once the
+    // topple drive has handed back to plain physics AND the trunk has been in contact for a few frames.
+    // Debounced rather than fired on the first contact, because a trunk going over can clip its own stump or
+    // a rise on the way down and neither is the landing. phShatterTree lifts noAbsorb on the pieces, so the
+    // tree becomes collectable at the same moment it breaks — the two halves of the ask are one event.
+    // ── AND IT HAS TO HAVE ACTUALLY GONE OVER ── gating on `!b.tipping` alone was wrong and MEASURED wrong:
+    // a freshly severed trunk is ARMED (tipArm) but not yet TIPPING, so the gate passed while the tree was
+    // still standing on its own stump and it burst into four pieces upright, at the cut — the exact thing the
+    // user asked to move away from. fellDown is set only where the topple drive completes, so a tree that has
+    // not fallen cannot break, however long it rests there.
+    // ── …OR IT IS SIMPLY LYING DOWN (user 2026-08-22: "also sometimes they dont break at all") ── fellDown is
+    // set only where the topple DRIVE completes, and a trunk can end up flat without that ever happening: it
+    // can be knocked over by the pieces of another tree, slide off its own stump, or be armed and never seated
+    // so `tipping` is never entered at all. Those trees landed and stayed whole. b.ay[1] is the body's own
+    // up-axis in world space, so testing it against the same tipDone the drive uses asks the only question
+    // that matters — is this thing on its side — and a standing tree reads ~1 and still cannot break.
+    if (b.fellWhole && !b.tipping && (b.fellDown || b.ay[1] <= PH.tipDone)) {
+      if ((b.contacts | 0) > 0) {
+        if ((b.fellLandT = (b.fellLandT | 0) + 1) >= PH.fellLandFrames) { b.fellWhole = 0; phShatterTree(b); return; }
+      } else b.fellLandT = 0;
     }
     // RESTING LATCH: a body that was in contact last step and is barely moving does not re-accumulate
     // gravity. Without this, every contact-free step re-added 3.3 vox/s of fall which the next step's
@@ -201,7 +224,17 @@
       if (W[ii]) continue;                           // only into empty air — never overwrite terrain
       W[ii] = b.id[i]; cells.push(ii);
     }
-    if (cells.length) gpuPatch(cells, false);
+    // ── AND THE RESOLVER HAS TO BE TOLD (user 2026-08-22, screenshot: leaf clusters hanging in mid-air) ──
+    // sim/support-rules.js opens with "every mutation of W funnels through here", and this was the one that
+    // did not: physRetire writes voxels straight into the grid and patched the GPU, and NOTHING ever asked
+    // whether they were held up. A body is retired when it goes to SLEEP, and sleep is judged on low motion
+    // alone — a small piece can doze off resting on ANOTHER BODY, or simply stop between contacts, and then be
+    // baked into the world in mid-air, permanently, because no later pass revisits a cell nobody queued.
+    // Rare before; my fell-shatter made it common by producing up to 24 pieces per tree, most of them under
+    // retireMax (6) and so all candidates for exactly this path.
+    // Queue them instead of trying to judge support here: the flood is the authority on what holds what, and
+    // an anchored bake costs one dedupe hit while a floating one is dropped the way any other orphan is.
+    if (cells.length) { gpuPatch(cells, false); for (let k = 0; k < cells.length; k++) supPush(cells[k]); }
     PH.stats.retired++;
     return true;
   };
@@ -272,7 +305,7 @@
         if (k >= 1) { PH.bodies.splice(i, 1); PH.stats.absorbed++; }
         continue;
       }
-      if (b.n > PH.absorbSize) { b.tooBig = true; continue; }   // ── TOO BIG TO CARRY (user) ── it stays where it is until the player breaks it down. No on-screen message (user): the chunk simply not coming to you is the feedback. tooBig is kept purely so __vb.phys() can report which chunks were refused.
+      if (b.n > PH.absorbSize && !b.fellLoot) { b.tooBig = true; continue; }   // fellLoot: a piece of a tree the player felled (sim/chop-tree.js) is exempt — see the note there   // ── TOO BIG TO CARRY (user) ── it stays where it is until the player breaks it down. No on-screen message (user): the chunk simply not coming to you is the feedback. tooBig is kept purely so __vb.phys() can report which chunks were refused.
       if (!b.absorbAt || tNow < b.absorbAt) {          // no break scheduled it (or not yet) — but a LOOSE one at rest comes in when you walk up to it (user)
         // …only once it has settled: a chunk mid-tumble keeps its arc. But a small chunk on uneven ground
         // can jitter forever without ever formally sleeping — which left ARROW chunks uncollectable no

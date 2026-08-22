@@ -578,6 +578,120 @@
       DFLY_NFRAMES = dloaded.length;
       console.log('[vb] dragonfly', DFLY_NFRAMES, 'frames -> items', DFLY_ITEM0, '..', items.length);
     } catch (e) { console.warn('[vb] dragonfly frames missing - skipped', e); DFLY_NFRAMES = 0; }
+    // ── ONE .VOX, EVERY FRAME ── the loaders above each walk a FOLDER of numbered files and take the first
+    // SIZE/XYZI pair out of each. The newer creature art ships the other way round: one file whose scene graph
+    // holds the whole cycle (ladybug 6 models, koi 9), which those loaders read as a single frame. This walks
+    // ALL the pairs in one file instead, in file order, and commits them as one strip.
+    // It exists so the ASSET EDITOR can trace-inject its exhibits. The editor's own parser (ui/editor.js
+    // edParseVox) already reads these files, but into engine palette ids for GRID-STAMPING, and a grid stamp is
+    // integer-positioned and axis-aligned by construction. The emit addresses a model by ITEM ID, so a model
+    // that is not in this table cannot move sub-voxel or hold a free heading, however it is animated.
+    const edStripItems = async (path, tag) => {
+      const bv = await abuf(path), bdv = new DataView(bv.buffer);
+      const models = []; const bpal = new Uint8Array(1024); let hasPal = false; const shp = [];
+      const nodes = new Map(); let anyAnim = false;
+      const rdStr = (o) => { const n = bdv.getInt32(o, true); let t = '';
+        for (let i = 0; i < n; i++) t += String.fromCharCode(bv[o + 4 + i]);
+        return [t, o + 4 + n]; };
+      const rdDict = (o) => { const n = bdv.getInt32(o, true); o += 4; const r = {};
+        for (let i = 0; i < n; i++) { const k = rdStr(o), v = rdStr(k[1]); r[k[0]] = v[0]; o = v[1]; }
+        return [r, o]; };
+      const walk = (off, end) => { while (off + 12 <= end) {
+        const id = String.fromCharCode(bv[off], bv[off + 1], bv[off + 2], bv[off + 3]);
+        const sz = bdv.getUint32(off + 4, true), csz = bdv.getUint32(off + 8, true);
+        if (id === 'SIZE') models.push({ w: bdv.getUint32(off + 12, true), d: bdv.getUint32(off + 16, true), h: bdv.getUint32(off + 20, true), raw: null });
+        else if (id === 'XYZI') { const m = models.find((mm) => !mm.raw); if (m) { const n = bdv.getUint32(off + 12, true); m.raw = bv.subarray(off + 16, off + 16 + n * 4); } }
+        else if (id === 'RGBA') { bpal.set(bv.subarray(off + 12, off + 12 + 1024)); hasPal = true; }
+        // ── THE FRAME ORDER IS IN THE SCENE GRAPH, NOT THE FILE ── an nSHP carries one entry per frame with
+        // '_f' the frame index, and MagicaVoxel does not write the models in that order. Measured on
+        // ladybug.vox: file order is 0..5 but the animation is 1, 2, 0, 3, 4, 5, so a loader that trusts the
+        // file plays a jumbled flap AND puts the wrong model first. Frames 1 and 5 are the wings-SHUT poses
+        // (4 voxels wide against 8 for the open ones), which is why a landed ladybug held on "frame 00" sat
+        // there with its wings spread (user 2026-08-22). ui/editor.js edVoxSeqs reads the same structure for
+        // the frog's named cycles; this is the single-animation case of it.
+        else if (id === 'nSHP') { let o = off + 12; const nid = bdv.getInt32(o, true); o += 4; const at = rdDict(o); o = at[1];
+          const nm = bdv.getInt32(o, true); o += 4; const mine = [];
+          for (let i = 0; i < nm; i++) { const mi = bdv.getInt32(o, true); o += 4; const md = rdDict(o); o = md[1];
+            shp.push([mi, md[0]._f === undefined ? i : +md[0]._f]); mine.push(mi); }
+          nodes.set(nid, { t: 'S', models: mine }); if (nm > 1) anyAnim = true; }
+        // ── …AND THE TRANSFORMS, BECAUSE NOT EVERY SCENE GRAPH IS AN ANIMATION ── koi.vox is nine models of
+        // one to five voxels each, positioned by nTRN into ONE fish (assembled: 5 x 10 x 4, 26 voxels). Read as
+        // frames it is nine single-voxel "poses"; read as parts it is a koi. The two shapes are told apart by
+        // whether a single nSHP carries several models (an animation, one entry per frame with '_f') or every
+        // nSHP carries one and the graph places them (a composite).
+        else if (id === 'nTRN') { let o = off + 12; const nid = bdv.getInt32(o, true); o += 4; const at = rdDict(o); o = at[1];
+          const child = bdv.getInt32(o, true); o += 12;                 // child, then reserved + layer, which this does not need
+          const nf = bdv.getInt32(o, true); o += 4;                     // numFrames — the transform dict follows; frame 0 is the placement
+          let tx = 0, ty = 0, tz = 0;
+          if (nf > 0) { const fr = rdDict(o); const t = (fr[0]._t || '').split(' ');
+            tx = +t[0] || 0; ty = +t[1] || 0; tz = +t[2] || 0; }
+          nodes.set(nid, { t: 'T', child, tx, ty, tz }); }
+        else if (id === 'nGRP') { let o = off + 12; const nid = bdv.getInt32(o, true); o += 4; const at = rdDict(o); o = at[1];
+          const nc = bdv.getInt32(o, true); o += 4; const kids = [];
+          for (let i = 0; i < nc; i++) { kids.push(bdv.getInt32(o, true)); o += 4; }
+          nodes.set(nid, { t: 'G', kids }); }
+        else if (id === 'MAIN') { walk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
+        off += 12 + sz + csz;
+      } };
+      walk(8, bv.length);
+      // ── A COMPOSITE IS ASSEMBLED INTO ONE FRAME ── walk the graph from the root, carrying the translation
+      // down, and stamp every part into a single grid sized to their union. MagicaVoxel centres a model on its
+      // transform, hence the `- (size >> 1)`: the same rule the extent measurement was checked against.
+      const parts = [];
+      if (!anyAnim && nodes.size) {
+        const go = (nid, tx, ty, tz, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
+          if (r.t === 'T') go(r.child, tx + r.tx, ty + r.ty, tz + r.tz, seen);
+          else if (r.t === 'G') { for (const k of r.kids) go(k, tx, ty, tz, seen); }
+          else for (const mi of r.models) parts.push([mi, tx, ty, tz]); };
+        go(nodes.has(0) ? 0 : nodes.keys().next().value, 0, 0, 0, new Set());
+      }
+      if (parts.length > 1 && hasPal) {
+        let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;
+        const put = (fn) => { for (const [mi, tx, ty, tz] of parts) { const m = models[mi]; if (!m || !m.raw) continue;
+          const ox = tx - (m.w >> 1), oy = ty - (m.d >> 1), oz = tz - (m.h >> 1);
+          for (let i = 0; i < m.raw.length; i += 4) fn(m.raw[i] + ox, m.raw[i + 1] + oy, m.raw[i + 2] + oz, m.raw[i + 3]); } };
+        put((x, y, z) => { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z; });
+        const W9 = x1 - x0 + 1, D9 = y1 - y0 + 1, H9 = z1 - z0 + 1;
+        const cells = new Array(W9 * D9 * H9).fill(null);
+        put((x, y, z, ci) => { cells[(x - x0) + (y - y0) * W9 + (z - z0) * W9 * D9] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; });
+        const it0 = items.length + 1;
+        items.push({ w: W9, d: D9, h: H9, cells });
+        console.log('[vb] ' + tag + ' composite ' + W9 + 'x' + D9 + 'x' + H9 + ' from ' + parts.length + ' parts -> item ' + it0);
+        return { item0: it0, n: 1 };
+      }
+      // No scene graph (every per-frame .vox the other loaders read) → file order, which is what it always was.
+      const order = shp.length ? shp.slice().sort((a, b) => a[1] - b[1]).map((q) => q[0]) : models.map((m, i) => i);
+      const loaded = [];
+      for (const mi of order) { const m = models[mi]; if (!m) continue;
+        if (!m.raw || !hasPal) continue;
+        const cells = new Array(m.w * m.d * m.h).fill(null);
+        for (let i = 0; i < m.raw.length; i += 4) { const ci = m.raw[i + 3];
+          cells[m.raw[i] + m.raw[i + 1] * m.w + m.raw[i + 2] * m.w * m.d] = [bpal[(ci - 1) * 4], bpal[(ci - 1) * 4 + 1], bpal[(ci - 1) * 4 + 2]]; }
+        loaded.push({ w: m.w, d: m.d, h: m.h, cells });
+      }
+      if (!loaded.length) throw new Error(tag + ': no models in ' + path);
+      const it0 = items.length + 1;                                   // commit the whole strip at once — an orphan half-set would let a frame index read into the next creature's frames
+      for (const it of loaded) items.push(it);
+      console.log('[vb] ' + tag + ' ' + loaded.length + ' frames -> items ' + it0 + ' .. ' + items.length);
+      return { item0: it0, n: loaded.length };
+    };
+    try { const r = await edStripItems('assets/life/ladybug.vox', 'ladybug'); LBUG_ITEM0 = r.item0; LBUG_NFRAMES = r.n; }
+    catch (e) { console.warn('[vb] ladybug frames missing - skipped', e); LBUG_NFRAMES = 0; }
+    try { const r = await edStripItems('assets/life/koi.vox', 'koi'); KOI_ITEM0 = r.item0; KOI_NFRAMES = r.n; }
+    catch (e) { console.warn('[vb] koi frames missing - skipped', e); KOI_NFRAMES = 0; }
+    // ── THE KOI IS A WORLD FISH TOO (user 2026-08-22: "implement the koi in the pine and oak forest") ── it is
+    // loaded above as a SCENE GRAPH rather than a numbered frame folder, so it misses the FISHES loop entirely
+    // and existed only for the asset editor. Registering the strip it already produced costs no second load.
+    // SPLICED IN BEFORE THE BETTA, not pushed: tick-creatures.js picks an ordinary fish with
+    // `wk % (FISHES.length - 1)`, an exclusion that names the betta only by it being LAST. Pushing the koi
+    // after it would have handed every ordinary pool a betta and hidden the koi in the cherry band — the exact
+    // inversion of what was asked. BETTA_FSP moves up with it so the two facts stay consistent.
+    if (KOI_NFRAMES > 0) {
+      const kf = items[KOI_ITEM0 - 1];                                // the strip's first frame: `half` is half the model's LONG axis (model y), same as the fish loop
+      const kEnt = { name: 'koi', item0: KOI_ITEM0, n: KOI_NFRAMES, half: Math.max(2, (kf ? kf.d : 8) * 0.5) };
+      if (BETTA_FSP >= 0) { FISHES.splice(BETTA_FSP, 0, kEnt); BETTA_FSP++; } else FISHES.push(kEnt);
+      console.log('[vb] koi registered as world fish, FISHES', FISHES.map((f) => f.name).join('/'), 'betta@', BETTA_FSP);
+    }
     try {                                                             // FIREFLY wing frames — same treatment; 3×3×3, 4 voxels (dark body, YELLOW abdomen, 2 white wings)
       if (location.search.includes('nobfly')) throw new Error('disabled by ?nobfly flag');
       const loaded = [];
@@ -736,6 +850,21 @@
         const fitD = mamFitOf(items, it0); if (fitD) MAMFIT[sp] = fitD;
         console.log('[vb] desert ' + sp, loaded.length, 'frames -> items', it0, '..', items.length);
       } catch (e) { if (!String(e).includes('no frames')) console.warn('[vb] desert ' + sp + ' skipped', e); }
+    }
+    // ── THE LADYBUG IS A WORLD CREATURE TOO (user 2026-08-22: "implement the ladybug into the oak and pine
+    // forests") ── loaded far above as a scene graph for the asset editor, so it never reached the DES_LOAD
+    // loop. It MUST be appended HERE, after that loop, and not beside its own loader:
+    //   * tick-life.js walks the SAND species by a running index that skips DES_OAKONLY names, so a species
+    //     added after the seven desert ones cannot move their head-counts. Added BEFORE them, it moves all of
+    //     them — every desert species' slot band shifts by one.
+    //   * and desSp is `desSlot ? … : 0`, so EVERY non-desert creature in the game reads DESERTS[0]. With the
+    //     ladybug sitting at index 0, DES_BACKWARDS matched for all of them and the whole world's life
+    //     rendered facing backwards (user, same day: "you seemed to have made all the life go backwards now").
+    //     The flip below is now also gated on desSlot, so index 0 can never be consulted by a non-desert body
+    //     again — but the ordering is the actual fix, and the head-count reason above needs it regardless.
+    if (LBUG_NFRAMES > 0) {
+      DESERTS.push({ name: 'ladybug', item0: LBUG_ITEM0, n: LBUG_NFRAMES });
+      const fitL = mamFitOf(items, LBUG_ITEM0); if (fitL) MAMFIT.ladybug = fitL;
     }
     console.log('[vb] desert creatures:', DESERTS.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');
     console.log('[vb] fish species:', FISHES.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');

@@ -43,8 +43,9 @@
       // DES_HUNT and DES_MEAT are tables: keyed on the NAME, not the index, so re-ordering the load list
       // cannot silently turn some other animal into a flyer. A member is kind 0 — the butterfly's whole code
       // path, its speed, its altitude servo and its arbiter branch — rather than the band's default kind 2.
-      const DES_FLYER = { fly: 1, bee: 1 };
+      const DES_FLYER = { fly: 1, bee: 1, ladybug: 1 };   // the LADYBUG flies (user 2026-08-22) — it takes the fly's whole air behaviour, minus the bunching, which keys on the name 'fly' below
       const desFly = desSlot && DESERTS[desSp] && !!DES_FLYER[DESERTS[desSp].name];
+      const desLbug = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ladybug';   // it flies like the others (DES_FLYER) but it is the only one that LANDS — see the state machine below
       const desBee = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'bee';   // …and the ONE member with errands. Everything else about it is the fly.
       const DES_FLY_UP = 16;                             // …and rides this much higher than a butterfly's glide line   // ── DESERT CREATURES ── appended after the mammals, DES_PER slots per species, species index off the slot the same way the fish take B.fsp
       const flamSlot = wk >= FLAM_0 && wk < FLAM_END, porcSlot = wk >= PORC_0 && wk < PORC_0 + MAM_PER, skunkSlot = wk >= SKUNK_0 && wk < SKUNK_END, armSlot = wk >= ARM_0 && wk < ARM_END, bunnySlot = wk >= BUNNY_0 && wk < BUNNY_END, fishSlot = wk >= FISH_0 && wk < FISH_END, wormSlot = wk >= WORM_0 && wk < WORM_END, duckSlot = wk >= DUCK_0 && wk < BABY_END, lilySlot = wk >= CARD_0 && wk < CARD_END;
@@ -58,7 +59,6 @@
       // unchanged so every `< DES_END` loop in the game (particles, projectiles, the debug taps) still covers
       // exactly the pool it always did. If DES_RARITY is ever raised the clamp gives the slots BACK to the
       // desert rather than overrunning the band — the oak population shrinks, nothing breaks.
-      const DES_OAK = { desert_mouse: 4 };
       const desIx = desSlot ? (wk - MAM_END) % DES_PER : 0;
       // …and an OAK-ONLY species (DES_OAKONLY, sim/life/slots.js) takes its WHOLE population from this term,
       // because nDesertOf gave it zero. One expression, not a second branch: for the mouse both operands are
@@ -77,7 +77,7 @@
       // values are the whole of this change's biome logic: the oak mouse, and the PORCUPINE, which the user
       // removed from the oak forest on the same day (2026-08-17) and which is therefore the one forest species
       // that no longer means "either forest". The other three land mammals are deliberately still BIO_ANY.
-      const bioMe = oakSlot ? BIO_OAKF : (desSlot ? BIO_SAND : (flamSlot ? BIO_CHERRY : (porcSlot ? BIO_PINEF : BIO_ANY)));   // the FLAMINGO is the cherry forest's own, and the only creature that takes BIO_CHERRY   // (the pink bird takes BIO_CHERRY at its own spawn site — it is not in this pool)
+      const bioMe = oakSlot ? (DES_ANYFOREST[(DESERTS[desSp] || {}).name] ? BIO_ANY : BIO_OAKF) : (desSlot ? BIO_SAND : (flamSlot ? BIO_CHERRY : (porcSlot ? BIO_PINEF : BIO_ANY)));   // DES_ANYFOREST widens an oak-only species to BOTH forests (sim/life/slots.js)   // the FLAMINGO is the cherry forest's own, and the only creature that takes BIO_CHERRY   // (the pink bird takes BIO_CHERRY at its own spawn site — it is not in this pool)
       const isBaby = wk >= BABY_0 && wk < BABY_END, sib = isBaby ? (wk - BABY_0) % 3 : 0;
       const mom5 = isBaby ? wbf[DUCK_0 + (((wk - BABY_0) / 3) | 0)] : null;   // the first three ducklings belong to the first mother, the next three to the second, and so on (3 each)
       // ── ORPHANED (user 2026-08-05: "killing the mom kills all the baby ducks — each duck has to be killed")
@@ -320,7 +320,16 @@
             // numbers, and the bee is smaller than a bird so it takes the tighter end.
             // It is gated on the OAK flyers alone: the desert species keep their annulus exactly, so the
             // sand is untouched. FLY_LEASH (84) then holds a bee near wherever it arrived.
-            const beeRing = desFly && oakSlot;
+            // ── THE BEE'S RING IS THE BEE'S (user 2026-08-22: "when the player spawns, all the life clusters on
+            // spawn ... this has been a very persistent problem. The life needs to be evenly spread out") ──
+            // this read desFly, which is the DES_FLYER table, so it covered the fly as well as the bee and then
+            // the ladybug the moment that was added to fly. The ring is TIGHT on purpose — LIFE_KEEP * 0.10 to
+            // 0.26 — because it exists to put bees at the hive the player is standing under (beeHomeHive just
+            // below). Every other oak flyer inherited it and spawned in a 104-270 disc around the player while
+            // every other band used 416-978. MEASURED at spawn: the desert band's median distance was 162 with
+            // a max of 264, against 679-881 medians and ~1000 maxima for every other band. desBee is
+            // name-exact, so the bee keeps its hive ring and nothing else borrows it.
+            const beeRing = desBee && oakSlot;
             const inR = beeRing ? LIFE_KEEP * 0.10 : (desSlot ? Math.min(LIFE_IN, LIFE_KEEP * 0.40) : LIFE_IN);
             const outR = beeRing ? LIFE_KEEP * 0.26 : LIFE_OUT;
             const d5 = Math.sqrt(inR * inR + Math.random() * (outR * outR - inR * inR));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
@@ -604,6 +613,32 @@
         B.stallT = undefined; B.stallX = undefined; B.stallZ = undefined; B.noMove = 0;   // fish stall watchdog
         B.wvM = undefined; B.thrX = undefined; B.thrZ = undefined; B.chase = 0;           // duck waterline filter, fish threat memory, heel-distance gait
         B.blink = false; B.blinkT = 0;                                                    // …beside B.blinked, which was already reset
+        // ── FLIES COME IN A BUNCH, NOT ONE BY ONE (user 2026-08-22: "I see individual flies? can remove the
+        // single flies and add the bunch of flies?") ── the desert scatter gives every slot its own spot with
+        // DES_APART between them, which is right for a scorpion and wrong for a fly: it reads as a lone insect
+        // hanging in the air. So a fly ADOPTS a live bunch-mate's anchor when that bunch has room, and only
+        // opens a new one when none has — the flamingo's pairing rule, with a count of FLY_BUNCH instead of 2.
+        // The anchor is a POINT, kept on the creature rather than in a cell table, because the bunch has no
+        // home cell of its own: it is wherever the first fly of that bunch happened to be placed.
+        if (desFly && DESERTS[desSp] && DESERTS[desSp].name === 'fly') {
+          const lo9 = MAM_END + desSp * DES_PER, hi9 = lo9 + DES_PER;
+          let host = null, hostN = 0;
+          for (let j9 = lo9; j9 < hi9; j9++) { const O = wbf[j9];
+            if (!O || O === B || !O.init || !O.bn) continue;                             // !O.bn, not O.bnx: the anchor is a shared object now and the old field name silently matched nobody, so every fly opened its own bunch
+            let n9 = 0;
+            for (let k9 = lo9; k9 < hi9; k9++) { const Q = wbf[k9];
+              if (Q && Q.init && Q.bn === O.bn) n9++; }                              // identity, not coordinates: the anchor MOVES now, so comparing its x/z stopped
+            if (n9 < FLY_BUNCH && (!host || n9 < hostN)) { host = O; hostN = n9; }   // the emptiest bunch with room, so they fill evenly rather than piling into the first
+          }
+          // The anchor is ONE SHARED OBJECT rather than a copy per fly. A copy is what made the drift awkward:
+          // every member would have to integrate the same wander and they would diverge on rounding alone.
+          // Shared, the bunch has exactly one position and one heading, and `st` lets whichever member ticks
+          // first that frame own the step — without it N flies would advance it N times and the bunch would
+          // travel at N x FLY_BN_SPD, faster the more of them there are.
+          if (host) B.bn = host.bn;
+          else B.bn = { x: B.x, y: B.y, z: B.z, ox: B.x, oz: B.z, th: Math.random() * 6.2831853, om: 0, omT: 0, tRe: 0, st: -1 };
+          B.bnPh = Math.random() * 6.2831853;          // its own place on the ring, so the bunch is a bunch and not one fly with copies
+        } else B.bn = undefined;
         B.om = 0; B.omT = 0; B.turnAcc = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0; B.trail = undefined; B.beeM = undefined;   // …and B.beeM undefined re-seeds the BEE's errand machine from scratch: a recycled slot that kept beeM 2 would go on pinning itself to the previous occupant's flower hundreds of voxels away, every frame, exactly the way a stale B.bh snapped a re-placed bunny back to its old cell (see the note below). It is in THIS list and not beside the bee code for the same reason every other field here is: one place to look for what a fresh occupant must not inherit.   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash, panic, wound-up yaw or (ant leader) RECORDED PATH: a stale trail is a line of followers snapped back to where the previous occupant walked (turnAcc: a recycled duck inheriting most of a circle reads its very first bank as an over-wound spin and unwinds the long way round for nothing)
         // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading.
         // THIS LINE WAS DEAD: it used to sit after a `//` on the line above, so the trailing comment ate it. The
@@ -803,7 +838,20 @@
       // lane would hover permanently above the head of the person it is attacking and could never once be
       // inside the sting box. Zero, not a smaller number: the rage servo below aims it at P.y + BEE_RAGE_Y and
       // gAir + 6 is the floor it must not fight.
-      const flyUp = desFly ? ((desBee && (B.beeM === 1 || B.beeM === 2 || B.beeM === 5)) ? 0 : DES_FLY_UP) : 0;
+      // ── A LANDING LADYBUG IS EXEMPT FROM THE FLYER FLOOR ── MEASURED without this: all six sat permanently
+      // in 'down' and never reached the deck. The floor CLIMBS at 34 voxels/s while the landing ease pulls at
+      // 2.2 * (ground - y), so the two settle into an equilibrium ~20 voxels up and the arrival test
+      // (|y - ground| < 0.5) can never fire. The floor is right for a flyer that is flying and simply does not
+      // apply to one that is deliberately setting down, so it is suppressed for exactly those two states —
+      // 'up' keeps it, which is what lifts the ladybug back into the lane when it takes off again.
+      const lbDown = B.lbPh === 'down' || B.lbPh === 'land';
+      // ── AND THE LADYBUG FLIES THE BUTTERFLY'S LANE, NOT THE FLY'S (user 2026-08-22: "the ladybug seems to
+      // have a different pathfinding then the butterfly. [I want] the ladybug on the exact same path finding as
+      // the butterfly") ── it needs desFly to FLY at all (that flag is what makes a desert-band species airborne
+      // rather than a walker), but desFly also carries DES_FLY_UP, which exists to lift a housefly 16 voxels
+      // above every other flyer's glide line. Zero here puts it on exactly the butterfly's altitude, and the
+      // horizontal wander is already the shared kind-0 arbiter, so the two now steer identically.
+      const flyUp = (desFly && !desLbug) ? ((desBee && (B.beeM === 1 || B.beeM === 2 || B.beeM === 5)) ? 0 : DES_FLY_UP) : 0;
       if (B.kind === 4) {                              // LILY PAD: slow drift on the water + constant free rotation; movement heading (mth) is independent of the visual spin
         if (tb3 > B.tRe) { B.mth += (Math.random() - 0.5) * 1.2; B.tRe = tb3 + 3 + Math.random() * 4; }
         if (!bfWater(B.x + Math.sin(B.mth) * 5, B.z + Math.cos(B.mth) * 5)) B.mth += 2.6 * dt;   // shore/dry ahead — curl the drift away
@@ -1257,8 +1305,25 @@
       // deleted because the drift itself is still wanted if the pads come back; a NaN position is not.
       if (B.kind === 4) { B.th += (B.spin || 0) * dt; const mth9 = B.mth || 0; Hx2 = Math.sin(mth9); Hz2 = Math.cos(mth9); }   // lily: spin the MODEL (th) freely while drifting along mth
       else { Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }
+      // ── A FLYER BOLTS WHEN THE PLAYER IS ON IT (user 2026-08-22: "do the same thing to the butterfly.
+      // double its speed when the player gets near") ── the same shape the fish have, and their numbers where
+      // they transfer: FLY_FLEE_MULT is exactly 2, and FLY_FLEE_HOLD keeps the state from flickering at the rim
+      // the way FISH_CFG.fleeHold does. The RADIUS is the flyers' own — a butterfly at 56 vox/s crosses the
+      // fish's 56-voxel sphere in a second, so sharing it would leave every butterfly permanently spooked.
+      // Distance is measured to the player's chest, the same P.y + 2 the fish threat scan uses: a butterfly
+      // lives above head height and a flat test would trigger on someone walking underneath it.
+      // ── AND IT SITS HERE, NOT IN THE FLYER BRANCH ── the flyers have TWO steering paths, `else if (NAVARB)`
+      // and the fallback `else` below it, and NAVARB is on, so a check written into the fallback never runs at
+      // all: measured, B.fleeT stayed undefined and the speed never moved off 56. This line is past the whole
+      // by-kind chain, on the way to the speed every creature is about to be given, so neither path can miss it.
+      // SPEED ONLY — the heading is untouched. That is the "it darts off" the request asked for rather than a
+      // fish's escape-heading fan, and a startled butterfly bolting along its own wander reads correctly.
+      if ((B.kind | 0) === 0) {
+        const td0 = (B.x - P.x) * (B.x - P.x) + (B.y - P.y - 2) * (B.y - P.y - 2) + (B.z - P.z) * (B.z - P.z);
+        if (td0 < FLY_THREAT_R * FLY_THREAT_R) B.fleeT = tb3 + FLY_FLEE_HOLD;
+      }
       const spd5 = iceLock ? 0 : (B.kind === 6 ? (B.spd || 6) : (B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? (B.chase > 9 ? 10 : (B.chase > 3.5 ? 7 : 1.5)) : 7)   // fish ride their live burst-glide speed; lilies drift; ducklings hustle when behind, dawdle at heel
-        : (B.kind === 2 ? ((bunnySlot || armSlot || skunkSlot || porcSlot || flamSlot) ? (B.bspd || 0) : (desSlot && DESERTS[desSp] ? ((B.chase > 6 ? 34 : (B.chase > 3.6 ? 22 : (B.chase > 0 ? 13 : 0))) || DES_SPD[DESERTS[desSp].name] || 16) * ((DES_DASH[DESERTS[desSp].name] && ((P.x - B.x) * (P.x - B.x) + (P.z - B.z) * (P.z - B.z)) < DES_DASH_R * DES_DASH_R) ? DES_DASH[DESERTS[desSp].name] : 1) : 16)) : (B.kind === 1 ? 26 : 56)))));   // bunny/armadillo/skunk/porcupine drive their OWN motion (bspd 0 → no shared glide); worm 1.6 m/s (continuous), firefly 2.6, butterfly 5.6  [extra ) closes the iceLock ternary]
+        : (B.kind === 2 ? ((bunnySlot || armSlot || skunkSlot || porcSlot || flamSlot) ? (B.bspd || 0) : (desSlot && DESERTS[desSp] ? ((B.chase > 6 ? 34 : (B.chase > 3.6 ? 22 : (B.chase > 0 ? 13 : 0))) || DES_SPD[DESERTS[desSp].name] || 16) * ((DES_DASH[DESERTS[desSp].name] && ((P.x - B.x) * (P.x - B.x) + (P.z - B.z) * (P.z - B.z)) < DES_DASH_R * DES_DASH_R) ? DES_DASH[DESERTS[desSp].name] : 1) : 16)) : (B.kind === 1 ? 26 : 56 * (tb3 < (B.fleeT || 0) ? FLY_FLEE_MULT : 1))))));   // bunny/armadillo/skunk/porcupine drive their OWN motion (bspd 0 → no shared glide); worm 1.6 m/s (continuous), firefly 2.6, butterfly 5.6  [extra ) closes the iceLock ternary]
       const mamSlot = bunnySlot || armSlot || skunkSlot || porcSlot || flamSlot;   // the LAND MAMMALS share B.kind 2 with the worm but drive their own march; the worm's arbiter wiring is theirs alone
       // ── DESERT STEERING OVERRIDE ── runs AFTER both kind-2 branches have chosen a heading, because the
       // desert creatures take the NAV-ARBITER branch (wormArb below is true for them) and anything written
@@ -1690,16 +1755,16 @@
         B.gRef = Math.max(gAir, (B.gRef || gAir) - 9 * dt);
         const tgtR5 = Math.max(gAir + 3, P.y + BEE_RAGE_Y + Math.sin(B.beePh * 1.7 + wk) * BEE_ATK_YS);
         B.beeGA = gAir; B.beeTgt = tgtR5;              // read by window.__vbBee (sim/life/slots.js) — mode 5 only, so an ordinary bee pays nothing
-        B.y += Math.max(-26 * dt, Math.min(30 * dt, (tgtR5 - B.y) * (1 - Math.exp(-4 * dt))));
+        if (!lbDown) B.y += Math.max(-26 * dt, Math.min(30 * dt, (tgtR5 - B.y) * (1 - Math.exp(-4 * dt))));   // a LANDING ladybug is exempt: this servo pulls toward the cruise altitude at 4/s against the landing ease's 2.2/s, so the two just met at an equilibrium ~20 voxels up and the arrival test never fired (MEASURED: stuck at 211.84 against a ground of 191, which is exactly gAir + 6 + DES_FLY_UP)
       } else {
         B.gRef = Math.max(gAir, (B.gRef || gAir) - 9 * dt);   // GROUND MEMORY: rises instantly with terrain, sinks slowly — stays HIGH crossing gorges (no diving in) but settles to the
         const cruise = B.gRef + (B.kind ? 8 : 12);            // local ground on flats/slopes, so the cruise line sits in the open UNDERSTORY below the canopy ('caught on trees' fix —
         let stepY = (cruise - B.y) * (1 - Math.exp(-4 * dt)); // the old terrain-max stencil pinned cruise AT canopy height on any slope)
         stepY = Math.max(-26 * dt, Math.min(30 * dt, stepY)); // RATE-CAPPED — a reference jump must never become a visible teleport
-        if (!(stepY > 0 && (bfObst(B.x, B.y + 3, B.z) || bfObst(B.x, B.y + 6, B.z)))) B.y += stepY;   // never ease UP into foliage overhead (two probes — gappy pine crowns fooled one)
-        if (B.y < B.gRef + 7 + flyUp) B.y = Math.min(B.gRef + 7 + flyUp, B.y + 34 * dt);   // floors are APPROACHED at climb speed, never snapped
+        if (!lbDown && !(stepY > 0 && (bfObst(B.x, B.y + 3, B.z) || bfObst(B.x, B.y + 6, B.z)))) B.y += stepY;   // …and a LANDING ladybug is exempt from this one too: it is a FOURTH altitude authority (ground-memory cruise, gRef + 8), separate from the tgtR5 servo and the two floors, and with only those three suppressed a descent settled at exactly gRef + 7 and timed out every time (MEASURED: 795 'down' samples, 0 landings)   // never ease UP into foliage overhead (two probes — gappy pine crowns fooled one)
+        if (!lbDown && B.y < B.gRef + 7 + flyUp) B.y = Math.min(B.gRef + 7 + flyUp, B.y + 34 * dt);   // floors are APPROACHED at climb speed, never snapped   // floors are APPROACHED at climb speed, never snapped
       }
-      if (B.kind < 2 && B.y < gAir + 6 + flyUp) B.y = Math.min(gAir + 6 + flyUp, B.y + 34 * dt);   // the fly's floor rides DES_FLY_UP above every other flyer's   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline); gAir so the floor and the feasibility predicate agree on where the ground is
+      if (!lbDown && B.kind < 2 && B.y < gAir + 6 + flyUp) B.y = Math.min(gAir + 6 + flyUp, B.y + 34 * dt);   // the fly's floor rides DES_FLY_UP above every other flyer's   // absolute local-ground floor (FLYERS only — a worm lives at ground+2, a duck at the waterline); gAir so the floor and the feasibility predicate agree on where the ground is
       if (NAVARB && B.kind < 2 && B.y !== yPrev5 && !navFitsAir(B.x, B.y, B.z) && navFitsAir(B.x, yPrev5, B.z)) { B.y = yPrev5; navVetoY++; }   // ── VERTICAL, SAME PREDICATE ── the altitude servo is the flyer's other motion axis and it used to write y with no feasibility test at all. It is not a teleport, so it is not rewritten here; it is VETOED by navFitsAir, so both axes now answer to one predicate.
       if (B.jumpV === undefined) { const yDn9 = yBudD > 30 ? yBudD : 30, yUp9 = yBudD > 34 ? yBudD : 34;
         B.y = Math.max(yPrev5 - yDn9 * dt, Math.min(yPrev5 + yUp9 * dt, B.y)); }   // GLOBAL vertical budget: whatever the branches above did, the frame's total climb/descent stays at flutter speed — teleports impossible. A LEAPING salmon is exempt: its arc is real ballistics and this cap would flatten the rise and make the fall float.
@@ -1713,6 +1778,104 @@
       // vouches for y >= nvY + 2, a bloom's HEAD voxel is the second voxel above nvY (fillColumn puts a stalk in
       // the first air voxel and the head on top of it), and the bee sits on top of THAT — so its lowest voxel is
       // already a voxel clear of the band's floor. The orbit hangs in the crown band, higher still.
+      // ── AND THE BUNCH IS HELD, NOT STEERED ── the same kinematic circle the bee's hive orbit uses two blocks
+      // down, for the same reason: a swarm that STEERS toward a point overshoots it and comes apart, while one
+      // that rides a phase on a ring is a bunch by construction. Each fly has its own phase and the vertical
+      // term runs at 1.7x it, so they weave past each other instead of rising together.
+      // The mover above ran and its answer is overwritten, which is what the bee block's own note argues for:
+      // no second mover, just two states whose position is decided rather than integrated.
+      if (desFly && B.bn) {
+        const A9 = B.bn;
+        if (A9.st !== tb3) {                           // ONE step per frame for the whole bunch, whoever gets here first
+          A9.st = tb3;
+          if (tb3 > A9.tRe) { A9.omT = (Math.random() - 0.5) * FLY_BN_TURN * 2; A9.tRe = tb3 + 1.6 + Math.random() * 2.4; }
+          const dx9 = A9.x - A9.ox, dz9 = A9.z - A9.oz;
+          if (dx9 * dx9 + dz9 * dz9 > FLY_BN_R * FLY_BN_R) {   // outside its roam: steer for home on the SHORT way round, rather than snapping or bouncing
+            let e9 = Math.atan2(-dx9, -dz9) - A9.th;
+            e9 = Math.atan2(Math.sin(e9), Math.cos(e9));
+            A9.omT = Math.max(-2, Math.min(2, e9 * 2));
+          }
+          A9.om += (A9.omT - A9.om) * (1 - Math.exp(-6 * dt));
+          A9.th += A9.om * dt;
+          A9.x += Math.sin(A9.th) * FLY_BN_SPD * dt;
+          A9.z += Math.cos(A9.th) * FLY_BN_SPD * dt;
+          // ── AND AT THE FLY'S OWN CRUISE LANE, NOT THE BUTTERFLY'S (user 2026-08-22: "the flies seem to be
+          // very low to the ground, bring them up where around the butterflies are") ── this rode bfSurf + 6,
+          // which is the BASE flyer floor with DES_FLY_UP left off, so the bunch sat 16 voxels below the lane
+          // that constant exists to put a fly in. The kinematic ring below overwrites B.y outright, so the
+          // real floor sites (the `gAir + 6 + flyUp` lines above) never get a say for a bunched fly — the
+          // anchor has to carry the whole altitude rule itself. gAir, not bare ground: with NAVARB on, a
+          // flyer's ground is the nav field's top-of-air, so a bunch drifting under a crown clears it instead
+          // of threading through the canopy.
+          const gr9 = bfSurf(A9.x, A9.z);
+          const ga9 = (NAVARB && nvOn) ? Math.max(gr9, nvTopAir(nvIdx(A9.x, A9.z))) : gr9;
+          const g9 = ga9 + 6 + DES_FLY_UP;
+          A9.y += (g9 - A9.y) * (1 - Math.exp(-1.5 * dt));
+        }
+        B.bnPh += BEE_ORBIT_W * dt;
+        B.x = A9.x + Math.sin(B.bnPh) * BEE_ORBIT_R;
+        B.z = A9.z + Math.cos(B.bnPh) * BEE_ORBIT_R;
+        B.y = A9.y + Math.sin(B.bnPh * 1.7 + wk) * BEE_ORBIT_Y;
+        // ── THE RING IS KINEMATIC, SO IT HAS TO CHECK WHAT IT FLIES INTO (user 2026-08-22: "flys seem to be
+        // bugged completely. stuck in trees") ── the anchor clears the canopy at ITS OWN column (nvTopAir
+        // above), but a ring member sits BEE_ORBIT_R away, where the crown can be taller — and because the
+        // position is assigned rather than integrated, nothing else in the tick ever gets to veto it. MEASURED:
+        // 1 of 5 flies sitting inside a leaf (id 195). Lift it out along +y, bounded, which is the one
+        // direction guaranteed to leave a crown.
+        for (let s9 = 0; s9 < 14 && bfObst(B.x, B.y, B.z); s9++) B.y += 1;
+        B.th = B.bnPh + 1.5708;                        // face along the ring, the one place a bunched fly's heading is set
+        Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
+        B.om = 0; B.omT = 0; B.trap = 0; B.noMove = 0;
+      }
+      // ── THE WORLD LADYBUG LANDS, LIKE THE EDITOR ONE (user 2026-08-22: "im not 100% if the ladybug even
+      // lands? the real world ladybug should match the asset editor ladybug") ── it was registered as a
+      // DES_FLYER, which gave it the fly's whole air behaviour and nothing else, so it never came down. Same
+      // four states and the same timings as the exhibit in ui/editor.js: it cruises 6-16 s, settles, sits
+      // 3-7 s holding frame 00, then climbs back. Ground is gAir, not bare terrain, so it sets down on top of
+      // whatever it is over rather than sinking into a crown. A frightened ladybug abandons a landing and
+      // climbs, which is the exhibit's rule too — B.fleeT is the flyer flee the butterfly and fly share.
+      // ── THE WORLD LADYBUG LANDS, LIKE THE EDITOR ONE (user 2026-08-22) ── and it does it WITHOUT ever
+      // flying into a tree. A descent has to suspend the three altitude authorities that hold a flyer above the
+      // canopy — the cruise servo and the two floors above — because they are what makes it a flyer; there is
+      // no way to reach the ground with them running. Suspending them blindly is what wedged it in crowns.
+      // So the column is PROVEN CLEAR before the descent is committed: a straight-down probe from the body to
+      // the surface, no higher than LBUG_DROP_MAX, and if anything is in the way it simply keeps flying and
+      // asks again in a couple of seconds. Once committed there is still a deadline (LBUG_DROP_MAX_S) and an
+      // abort if something moves under it, so a descent can never become a permanent snag.
+      // Everything else about its flight is the butterfly's, untouched: flyUp is 0 for it and the horizontal
+      // wander is the shared kind-0 arbiter (user, three times: "the exact same flight mechanics as the butterfly").
+      if (desLbug) {
+        if (!B.lbPh) { B.lbPh = 'fly'; B.lbNext = tb3 + 6 + Math.random() * 10; }
+        const flee9 = tb3 < (B.fleeT || 0);
+        const cruise9 = gLoc + LBUG_CRUISE;
+        if (B.lbPh === 'fly') {
+          if (!flee9 && tb3 > B.lbNext) {
+            // ── AND IT LANDS ON OPEN GROUND, NOT ON A TREETOP ── bfSurf is the top of the COLUMN, which under a
+            // pine is the canopy: MEASURED, every one of 135 landings sat 14-31 voxels above the terrain, i.e.
+            // on the crown. That reads as "it never lands" from the ground (user, twice) and it is also what
+            // put it among the branches. Requiring the column's surface to be within a few voxels of the
+            // TERRAIN confines landings to clearings — visible, and with nothing to snag on on the way down.
+            const terr9 = H(Math.round(B.x), Math.round(B.z));
+            let clear9 = (B.y - gLoc) < LBUG_DROP_MAX && (gLoc - terr9) < 3;
+            for (let y9 = Math.floor(B.y); clear9 && y9 > gLoc + 1; y9--) if (bfObst(B.x, y9, B.z)) clear9 = false;
+            // Pin the COLUMN at the moment of commit and come straight down it. Letting it keep drifting while
+            // it descended is why it arrived high: the target height was computed for the column it committed
+            // over, and by touchdown it was somewhere else entirely — MEASURED at 13-25 voxels above the ground
+            // under it. Straight down also keeps the clear-column probe above honest, since that probe tested
+            // exactly this column and no other.
+            if (clear9) { B.lbPh = 'down'; B.lbGy = gLoc + 1; B.lbX = B.x; B.lbZ = B.z; B.lbT = tb3 + LBUG_DROP_MAX_S; }
+            else B.lbNext = tb3 + 2 + Math.random() * 3;   // canopy overhead — keep flying, ask again shortly
+          }
+        } else if (B.lbPh === 'down') {
+          if (flee9 || tb3 > B.lbT || (B.y - 1.5 > B.lbGy && bfObst(B.x, B.y - 1.5, B.z))) B.lbPh = 'up';   // startled, took too long, or something moved in UNDER it — the height test matters: without it the probe reads the very ground it is landing on as an obstruction and every descent aborted a metre short (MEASURED: 866 'down' samples, 0 landings)
+          else if (B.y - B.lbGy < 0.5) { B.lbPh = 'land'; B.y = B.lbGy; B.lbNext = tb3 + 3 + Math.random() * 4; }   // lbX/lbZ were already pinned at commit
+        } else if (B.lbPh === 'land') {
+          if (flee9 || tb3 > B.lbNext) B.lbPh = 'up';
+        } else if (B.lbPh === 'up' && B.y > cruise9) { B.lbPh = 'fly'; B.lbNext = tb3 + 6 + Math.random() * 10; }
+        if (B.lbPh === 'down') { B.x = B.lbX; B.z = B.lbZ; B.y += (B.lbGy - B.y) * (1 - Math.exp(-2.2 * dt)); B.om = 0; B.omT = 0; }
+        else if (B.lbPh === 'land') { B.y = B.lbGy; B.x = B.lbX; B.z = B.lbZ; B.om = 0; B.omT = 0; B.trap = 0; Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }   // sitting still: the heading it landed on is the heading it keeps
+        else if (B.lbPh === 'up') B.y += (cruise9 - B.y) * (1 - Math.exp(-2.2 * dt));
+      }
       if (desBee && (B.beeM === 2 || B.beeM === 4)) {
         if (B.beeM === 2) {                            // SITTING: pinned over the bloom's own column, easing down onto the head. BEE_DOWN rather than a snap so the last of the approach reads as a landing, and the same ease lifts it off when the clock runs out.
           B.x = B.beeTx; B.z = B.beeTz;
@@ -1782,7 +1945,7 @@
         B.trap = (B.trap || 0) + dt;
       }
       if (B.kind < 3 && bfObst(B.x, B.y, B.z)) continue;   // body-in-solid hide (skip emission) — LAND/AIR creatures only: a duck/lily bobbing into the water voxel layer is normal
-      const bobA = iceLock ? 0 : (B.kind === 2 || B.kind === 6 ? 0 : (B.kind === 4 ? 0.12 : (B.kind === 3 ? (isBaby ? 0.18 : 0.25) : (B.kind === 1 ? 1.1 : 2.2))));   // frozen duck → dead still (no bob); else worms/fish don't bob, water floats keep the cosmetic bob SMALL — the wave riding is the real motion, a deep bob dip re-sank the bottom rows
+      const bobA = (iceLock || B.lbPh === 'land') ? 0 : (B.kind === 2 || B.kind === 6 ? 0 : (B.kind === 4 ? 0.12 : (B.kind === 3 ? (isBaby ? 0.18 : 0.25) : (B.kind === 1 ? 1.1 : 2.2))));   // …and a LANDED LADYBUG is dead still for the same reason a frozen duck is: the flight bob is a RENDER term (below), not a change to B.y, so pinning the body in the tick left it visibly hovering on the spot (user 2026-08-22: "when the lady bug lands, it hovers. it should stay still")   // frozen duck → dead still (no bob); else worms/fish don't bob, water floats keep the cosmetic bob SMALL — the wave riding is the real motion, a deep bob dip re-sank the bottom rows
       const bobF = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? 2.3 : 1.6) : (B.kind === 1 ? 2.6 : 6.8));
       const hop3 = hurtHop(B);   // BOUNCE (user): a short arc up and back down over the flash window
       const px3 = B.x + (armSlot ? (B.aRoX || 0) : 0), pz3 = B.z + (armSlot ? (B.aRoZ || 0) : 0), py3 = hop3 + B.y + (bunnySlot ? (B.bOy || 0) : (armSlot ? (B.aRoY || 0) : Math.sin(tb3 * bobF + wk * 1.9) * bobA));   // ARMADILLO: shift by its per-heading/per-frame alignment offset so it centres like the editor (user). BUNNY: the lift is the BAKED oy. Worm bob stays 0.
@@ -1791,7 +1954,16 @@
         const hy = B.kind === 4 ? 1.3 : (B.kind === 3 ? (isBaby ? 1.5 : 2.5) : 1.2);   // lily box a touch taller so the pad's shadow projects clear of the pad (not tucked underneath)
         cshadList.push([px3 - winOX, py3, pz3 - winOZ, hxz, hy, dp2]);
       }
-      const HxR = Math.sin(B.th), HzR = Math.cos(B.th);   // RENDER yaw — for lilies this spins freely, independent of drift
+      // ── A MODEL AUTHORED THE OTHER WAY ROUND (user 2026-08-22: "the lady bug is flying backwards") ── the
+      // basis below is built on the convention that model −y is the head end, and every creature baked by
+      // tools/bake_desert_life.py honours it. The ladybug does not: it came in through edStripItems as a
+      // scene-graph .vox authored for the asset editor, where its head is the narrow all-dark end at +y —
+      // established there by inspecting the model rather than by eye, after two wrong guesses off screenshots
+      // (x is the WINGSPAN; the dark band down the middle is the elytra split). So it is a flat 180°, and it
+      // is applied to the RENDER yaw only: the creature's own steering, spacing and flee logic all keep
+      // working in B.th, exactly as the editor exhibit's `flip` does in main/tick-emit.js.
+      const thR9 = (desSlot && DES_BACKWARDS[(DESERTS[desSp] || {}).name]) ? B.th + Math.PI : B.th;   // desSlot FIRST: desSp is 0 for every non-desert body, so without it this asks about DESERTS[0] on behalf of the whole world
+      const HxR = Math.sin(thR9), HzR = Math.cos(thR9);   // RENDER yaw — for lilies this spins freely, independent of drift
       const mamMir = (bunnySlot || armSlot || skunkSlot || porcSlot || flamSlot) ? -1 : 1;   // HANDEDNESS: the grid stamp maps model (x,y,z) to world (+x,+z,+y) - determinant -1, a REFLECTION - while the emit basis below is right-handed, so the two paths draw one .vox as mirror images. The four land mammals are grid-stamped, so the emit branch below never runs for them and has never been corrected; -1 is that correction, scoped to them so nothing already on the trace path moves.
       let Xw = [HzR * mamMir, 0, -HxR * mamMir], Yw = [-HxR, 0, -HzR], Zw = null;   // level frame — Zw = up, right-handed (Yw×Zw = Xw); model −y (the head end) leads
       if (B.kind === 6 && B.jumpV === undefined) {     // ── FISH ORIENTATION ── upright always: free yaw, a SUBTLE nose pitch from the low-passed climb/dive, and ROLL
@@ -1870,6 +2042,7 @@
       // becoming another, and it is only ever a frame-count mismatch.
       const fi3 = (B.kind === 2 && (skunkSlot || porcSlot || flamSlot)) ? (Math.floor(B.aframe || 0) % nfr)
         : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * desRate) % nfr)   // …and the desert rate applies HERE, which is the branch a kind-2 creature actually takes — putting it only on the line below meant the scorpion silently stayed at 24   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
+        : B.lbPh === 'land' ? 0                          // LANDED LADYBUG: frame 00 is the wings-SHUT pose, and holding it is what makes a landing read as a landing rather than a hover at ground level (the editor exhibit does the same in main/tick-emit.js)
         : Math.floor((tb3 + wk * 0.37) * desRate) % nfr;   // per-species rate for the desert set; everything else keeps the 24 fps house rule                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
       let glow = 0;
       if (B.kind === 1) {                              // GLOW (fireflies only): random dark spell, then the yellow abdomen holds BRIGHT for a full 2 s

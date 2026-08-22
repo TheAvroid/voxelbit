@@ -78,6 +78,15 @@
   const snowTab = new Uint8Array(256);
   snowTab[SNOW[0]] = 1; snowTab[SNOW[1]] = 1;
   const floatTab = new Uint8Array(256);
+  // ── EVERYTHING THAT HANGS OFF A CROWN AND IS STRANDED WHEN THE CROWN LEAVES ── read by coneWake
+  // (sim/chop.js), whose filter was `coneTab || snowTab` and therefore covered the two hangers that existed
+  // when it was written. FRUIT arrived on 2026-08-17, months later, and was never added to it — so felling an
+  // oak woke its cones and its canopy snow and left its apples and oranges hanging in the air, to be picked up
+  // only incidentally, whenever some cleared cell happened to fall within 26 of one. That is the user's
+  // 2026-08-22 report: "the oranges that were connected to it were just floating in the air. then after 5
+  // seconds they fell." A named table rather than a longer `||` chain, so the NEXT thing that hangs off a
+  // crown has one obvious place to register itself instead of a third condition to be forgotten from.
+  const hangTab = new Uint8Array(256);
   const coneTab = new Uint8Array(256);                 // PINECONE ids — no hitbox for the PLAYER (see solid()); every other system still treats them normally
   for (const i of [...GRASS, ...FLOWERIDS, ...OAKMOSS]) floatTab[i] = 1;   // OAKMOSS rides with GRASS: same surface-scatter class, oak-canopy colour (see assets/palette.js)   // FLOWERIDS replaces BLOOM (user 2026-08-18): the flowers are an authored MODEL now, so the ids come off its own voxels — see assets/bow.js
   for (const m of STICKV.concat(STICKB)) for (const q of m.vox) floatTab[q >>> 24] = 1;            // twigs (user) — and the AUTHORED pink pair, whose browns are already flagged (they are the same ids) but whose four leaf pinks are its own and would otherwise miss the whole ground-scatter class
@@ -181,7 +190,7 @@
   //   * canopy SNOW, crown see-through (`isFol` in render/wgsl/dda.js is generated from foliageIds) and the
   //     backlit-leaf transmission in composite.js all follow. The last is a bonus rather than a cost: a backlit
   //     cherry glowing red is what a backlit cherry does.
-  for (const i of FRUITC) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
+  for (const i of FRUITC) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); hangTab[i] = 1; }
   // ── AND THE FRUIT'S STALK IS CANOPY TOO, WHENEVER IT HAS AN ID OF ITS OWN ── FRUIT_STEM_ID (assets/bow.js)
   // is 0 today, so this loop does nothing and the stalk wears the oak leaf id exactly as it always has; the
   // line exists so that minting the brown the user asked for is a ONE-WORD change over there rather than a
@@ -190,7 +199,7 @@
   // hanging in a walk-through crown, so giving it woodTab/solidity to match its new colour would be the exact
   // trade the beehive comment below argues against — a hitbox in a crown you walk through, a chop ray that
   // reads it as the trunk behind the needles, and a STRUCTURE component whose only anchor is a DRAPE.
-  if (FRUIT_STEM_ID) { solidTab[FRUIT_STEM_ID] = 0; foliaTab[FRUIT_STEM_ID] = 1; foliageIds.push(FRUIT_STEM_ID); }
+  if (FRUIT_STEM_ID) { solidTab[FRUIT_STEM_ID] = 0; foliaTab[FRUIT_STEM_ID] = 1; foliageIds.push(FRUIT_STEM_ID); hangTab[FRUIT_STEM_ID] = 1; }
   // ── AND A BEEHIVE IS A SOLID OBJECT YOU CUT OUT OF THE TREE ── solid + decorTab + axeOnly, which is the LOG's
   // pairing and not the leaves'. Three deliberate choices in that:
   //   * SOLID, because a 50 cm box in a crown you could walk through would read as a decal. It also gives it an
@@ -336,7 +345,7 @@
     n: FLOWERV.concat(FLOWERV_CH).reduce((a, m) => a + m.vox.reduce((b, q) => b + ((q >>> 24) === i ? 1 : 0), 0), 0),   // how many voxels of the six models wear it — a shared id nothing is painted with is not a leak worth paying for
     z: FLOWERV.concat(FLOWERV_CH).flatMap((m) => m.vox.filter((q) => (q >>> 24) === i).map((q) => (q >> 16) & 255)).sort((a, b) => a - b),   // …and how high up the plant, which is what says whether an id left out of decorTab would leave a stub or a hole
     petal: FLOWERHEAD.indexOf(i) >= 0, decor: !!decorTab[i], solid: !!solidTab[i], float: !!floatTab[i],
-    folia: !!foliaTab[i], wood: !!woodTab[i], cone: !!coneTab[i], snow: !!snowTab[i],
+    folia: !!foliaTab[i], wood: !!woodTab[i], cone: !!coneTab[i], snow: !!snowTab[i], hang: !!hangTab[i],
     axe: !!axeOnlyTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i],
     grass: GRASS.indexOf(i) >= 0, oakmoss: OAKMOSS.indexOf(i) >= 0, shrub: SHRUBC.indexOf(i) >= 0 || SHRUBF.indexOf(i) >= 0 }));
   if (palette.length > 256) console.error('[vb] PALETTE OVERFLOW', palette.length, '— world ids are u8, decoration colors must be quantized harder');

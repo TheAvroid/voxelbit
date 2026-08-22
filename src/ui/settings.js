@@ -112,9 +112,14 @@
   const SNOW_PASS = new Set([...GRASS, ...FLOWERIDS]);   // the WHOLE flower, stem included — a flake should fall through the plant, not perch on its stalk (was BLOOM's six heads; user 2026-08-18)   // landings fall THROUGH grass/blooms and bury them — ferns are OUT: snow settles ON their fronds
   const SNOW_FERN = new Set(FERNIDS);                  // fern-topped columns skip the settle-roll (fronds sit above the ground beside them, so rolling would always shed the flake)
   const SNOW_SKIP = new Set([WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y]);                                    // …but never land on lava; surface water is FROZEN while it snows, so flakes settle on the ice
-  let showCoords = false;   // COORDS HUD (user): the x/y/z lines start HIDDEN on EVERY refresh — the player re-enables them in settings each session (NOT restored from vb_coords, like the volume-resets-to-100 rule)
+  // ── THE HUD TOGGLES ARE REMEMBERED TOO (user 2026-08-21: "have the browser remember my settings on refresh") ──
+  // coords and time were the two that wrote their key and never read it: mkToggle below persists every button it
+  // wires, so the write was already there and only the boot-time read was missing. Both used to start hidden on
+  // purpose, under the same rule the four volume sliders followed (see ui/audio.js); that rule is what the user
+  // has now reversed, and fps/res were already reading their keys, so this makes all four buttons behave alike.
+  let showCoords = false; try { showCoords = localStorage.getItem('vb_coords') === '1'; } catch (e) {}   // COORDS HUD (user) — default OFF, persisted vb_coords
   let showFps = true; try { showFps = localStorage.getItem('vb_fps') !== '0'; } catch (e) {}            // FPS HUD toggle (user) — persisted vb_fps
-  let showTime = false;     // TIME (clock) HUD (user): also HIDDEN on every refresh — player re-enables it in settings (not restored from vb_time)
+  let showTime = false; try { showTime = localStorage.getItem('vb_time') === '1'; } catch (e) {}     // TIME (clock) HUD (user) — default OFF, persisted vb_time
   let showRes = false; try { showRes = localStorage.getItem('vb_res') === '1'; } catch (e) {}          // RESOLUTION HUD readout toggle (user): default OFF, persisted vb_res — toggled in settings like fps
   { const snowBtn = $('snowBtn');
     const mkToggle = (id, get, set, key) => {            // wire a green/red on-off HUD toggle button (coords/fps/time)
@@ -327,7 +332,7 @@
   volSlider.addEventListener('click', (e) => e.stopPropagation());
   volSlider.addEventListener('input', (e) => { e.stopPropagation(); sndVol = parseFloat(volSlider.value) / 100; applyVol(); volShow(); sliderFill(volSlider);
     try { localStorage.setItem('vb_vol', String(sndVol)); } catch (err) {} });
-  const sfxSlider = $('sfxSlider'), sfxLabel = $('sfxLabel');   // SOUND EFFECTS — the second audio bus (persisted vb_sfx, reset to 100% on load like the master). applyVol() re-levels every registered sound, so this reaches sounds that are already playing, not just the next one to start.
+  const sfxSlider = $('sfxSlider'), sfxLabel = $('sfxLabel');   // SOUND EFFECTS — the second audio bus (persisted vb_sfx, and RESTORED on load like the master — user 2026-08-21). applyVol() re-levels every registered sound, so this reaches sounds that are already playing, not just the next one to start.
   sfxSlider.value = Math.round(sfxVol * 100); sliderFill(sfxSlider);
   const sfxShow = () => { sfxLabel.textContent = 'sfx ' + Math.round(sfxVol * 100) + '%'; };
   sfxShow();
@@ -335,7 +340,7 @@
   sfxSlider.addEventListener('click', (e) => e.stopPropagation());
   sfxSlider.addEventListener('input', (e) => { e.stopPropagation(); sfxVol = parseFloat(sfxSlider.value) / 100; applyVol(); sfxShow(); sliderFill(sfxSlider);
     try { localStorage.setItem('vb_sfx', String(sfxVol)); } catch (err) {} });
-  const musSlider = $('musSlider'), musLabel = $('musLabel');   // MUSIC — the third audio bus (persisted vb_mus, reset to 100% on load like the two above it). applyVol() re-levels every registered sound, so dragging this mid-anthem moves the track that is ALREADY playing, not just the next one.
+  const musSlider = $('musSlider'), musLabel = $('musLabel');   // MUSIC — the third audio bus (persisted vb_mus, and RESTORED on load like the two above it — user 2026-08-21). applyVol() re-levels every registered sound, so dragging this mid-anthem moves the track that is ALREADY playing, not just the next one.
   musSlider.value = Math.round(musVol * 100); sliderFill(musSlider);
   const musShow = () => { musLabel.textContent = 'music ' + Math.round(musVol * 100) + '%'; };
   musShow();
@@ -343,7 +348,7 @@
   musSlider.addEventListener('click', (e) => e.stopPropagation());
   musSlider.addEventListener('input', (e) => { e.stopPropagation(); musVol = parseFloat(musSlider.value) / 100; applyVol(); musShow(); sliderFill(musSlider);
     try { localStorage.setItem('vb_mus', String(musVol)); } catch (err) {} });
-  const ambSlider = $('ambSlider'), ambLabel = $('ambLabel');   // AMBIENCE — the fourth bus: the forest and desert beds (persisted vb_amb, reset to 100% on load like the three above it). applyVol() re-levels every registered sound, and ambBiomeTick recomputes the two beds every frame, so this moves the bed that is playing rather than the next one to start.
+  const ambSlider = $('ambSlider'), ambLabel = $('ambLabel');   // AMBIENCE — the fourth bus: the forest and desert beds (persisted vb_amb, and RESTORED on load like the three above it — user 2026-08-21). applyVol() re-levels every registered sound, and ambBiomeTick recomputes the two beds every frame, so this moves the bed that is playing rather than the next one to start.
   ambSlider.value = Math.round(ambVol * 100); sliderFill(ambSlider);
   const ambShow = () => { ambLabel.textContent = 'ambience ' + Math.round(ambVol * 100) + '%'; };
   ambShow();

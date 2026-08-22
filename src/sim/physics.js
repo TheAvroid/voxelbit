@@ -23,6 +23,12 @@
     gravity: 200,                                    // matches the player's GRAVITY so falls read at the same scale
     linDamp: 0.05, angDamp: 0.18, restitution: 0.0, friction: 0.6,
     sleepLin: 1.2, sleepAng: 0.30, sleepFrames: 40,
+    // ── HOW A FELLED TREE BREAKS WHEN IT LANDS ── see phShatterTree (sim/chop-tree.js). fellPieceVox is the
+    // target length of a log in voxels and fellPieceMax the ceiling, which exists because maxBodies is 16:
+    // a tree that asked for more pieces than the budget can hold would lose its tail rather than gain detail.
+    // fellLandFrames debounces the trigger — a toppling trunk can graze the ground on the way over, and one
+    // glancing contact must not be read as the landing.
+    fellPieceVox: 9, fellPieceMax: 6, fellLandFrames: 3,   // 14/4 -> 9/6: "cut the tree trunks in half again" (user 2026-08-22). With the two cross-cuts that is up to 24 pieces, which is maxBodies — phShatterTree's merge folds any it cannot seat into the first piece rather than dropping them
     abAll: new Float64Array([1e30, 1e30, 1e30, -1e30, -1e30, -1e30]),   // union of every live body's world AABB — phBodySolid's O(1) "nowhere near anything" reject
     sleepAngFree: 24,                                // at or under this many voxels, rest is judged on LINEAR motion alone — a cone is 13 and its spin is solver noise, not motion
     retireFar: 64,                                   // …and a SETTLED body up to this size is baked back too, once it is further than retireFarR away — see the sleep site. 64 covers a cone (13) and a needle tuft without touching anything the player would call a log.

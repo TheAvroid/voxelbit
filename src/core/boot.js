@@ -41,10 +41,10 @@
         while (strip.children.length > 1) strip.removeChild(strip.firstElementChild);   // the arrived digit becomes the resting row
         delete strip.dataset.busy; }, 95); });   // the roll must finish well inside the 150 ms tick: at 140 ms it occasionally straddled one and the gate dropped that number (measured — the drum skipped 0.6)
   };   // the version tag counts v0.0 → v1.0 on its OWN steady clock (user: "irrelevant of the loading bar"). Tying it to the bar made it tick unevenly, because the bar is a 9 s ease-out whose rate is deliberately front-loaded. Only the LOADING one animates — the esc menu's is static.
-  const VER_TO = 1.2;                                  // ── WHAT THE DRUM COUNTS UP TO ── the shipped version, and the ONE place it is written for the animation
+  const VER_TO = 1.3;                                  // ── WHAT THE DRUM COUNTS UP TO ── the shipped version, and the ONE place it is written for the animation
   // (the static tag on the lock screen is in 10-body.html — keep the two in step). Scaling the ramp by it
   // rather than hardcoding 1 keeps the tick even: the counter is linear in TIME over LOAD_VER_MS, so 1.2 is
-  // simply thirteen steps at the same cadence, and toFixed(1) still yields the two digits verSet rolls.
+  // simply thirteen steps at the same cadence (fourteen at 1.3), and toFixed(1) still yields the two digits verSet rolls.
   let loadDone = false, loadFinishing = false;   // loadFinishing guards the crawl below: finishLoad's OWN transitionend must not restart it and drag the bar back off 100%                                 // set by finishLoad → the readout is pinned to 100% so it can't under-read the compositor mid finish-sweep (user: "the loading bar never reaches 100%")
   const readScale = () => { const t = getComputedStyle(loadFillEl).transform; return t && t !== 'none' ? (new DOMMatrixReadOnly(t)).a : 0; };
   const loadNumStep = () => {                            // the % text + sheen mirror whatever the compositor has the bar at right now
@@ -91,7 +91,7 @@
     loadTo(t, 0.45);
     if (t >= 0.85 && !loadTailArmed) { loadTailArmed = true; setTimeout(() => loadTo(0.97, 6), 60); }
   };
-  const finishLoad = () => { loadFinishing = true; loadFillEl.style.transition = 'transform 0.85s cubic-bezier(0.25, 0.9, 0.3, 1)'; loadFillEl.style.transform = 'scaleX(1)'; setTimeout(() => { loadDone = true; loadPctEl.textContent = '100%'; verSet('1.0'); loadGlossEl.style.width = '100%'; }, 850); };   // verSet, NOT textContent: assigning text here destroyed the drum markup (the .vd cells) and left plain text behind.   // world ready → GLIDE the last stretch to full over 0.85 s so it never snaps (user: "jumps from 80% to 100%"); the % follows the compositor the whole way, then pins to a true 100% once the glide has actually arrived
+  const finishLoad = () => { loadFinishing = true; loadFillEl.style.transition = 'transform 0.85s cubic-bezier(0.25, 0.9, 0.3, 1)'; loadFillEl.style.transform = 'scaleX(1)'; setTimeout(() => { loadDone = true; loadPctEl.textContent = '100%'; verSet(VER_TO.toFixed(1)); loadGlossEl.style.width = '100%'; }, 850); };   // …and the FINAL number is VER_TO, not a literal: this said '1.0' from when that WAS the version, so the drum spent the whole load counting up to VER_TO and then snapped back to 1.0 at the moment the world arrived — the one frame of it anybody actually reads (user 2026-08-21 asked for v1.3 and this is why the loading screen would still have said v1.0)   // verSet, NOT textContent: assigning text here destroyed the drum markup (the .vd cells) and left plain text behind.   // world ready → GLIDE the last stretch to full over 0.85 s so it never snaps (user: "jumps from 80% to 100%"); the % follows the compositor the whole way, then pins to a true 100% once the glide has actually arrived
   const palTrace = [];                                 // ── WHERE THE 256 WENT ── palette.length sampled at every load stage, so the ceiling can be attributed to a LOADER instead of guessed at. __vb.palTrace() reads it.
   const stage = async (msg) => { try { palTrace.push([msg, palette.length]); } catch (e) {} loadMsgEl.textContent = msg; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); };
 

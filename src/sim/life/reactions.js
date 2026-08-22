@@ -333,8 +333,21 @@
             if (ok && tmin < bestT) { bestT = tmin; bestK = g.kind; } }
           if (bestK) { ED.dragRing = bestK === 'yaw' ? 0 : 1; ED.dragRAcc = 0; return; }   // dragging this ring — mousemove rotates in 90° steps, both directions
         }
-        const f = ED.frames[((ED.sel % n) + n) % n], ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;
-        const bmin = [f.bx + ox, ED.y + 1 + oy, f.bz + oz], bmax = [f.bx + ox + f.sx, ED.y + 1 + oy + f.sz, f.bz + oz + f.sy];
+        // ── PICK THE BOX THAT WAS ACTUALLY STAMPED ── this used to rebuild the model's extent from f.bx/f.bz plus
+        // the frame's own offsets, and that reproduces where the model is only while it is standing still at its
+        // base position. It misses two things edLayout applies: the marching hop (ED.hopX/Y/Z, added while
+        // PLAYING and wrapped back onto the stage), and the rotated footprint (f.sxR/f.syR — sx/sy are the
+        // unrotated dims). Both were invisible for as long as every import had zero offsets, because then the
+        // cycle offset last-minus-first is zero and the model never marches. Baking the frog's hop (see
+        // FROG_BAKE) made it -10 in z, the frog started hopping across the stage, and the pick box stayed
+        // behind at the base position: clicking the frog stopped selecting it (user 2026-08-21).
+        // edLayout already computes the true extent of the voxels it wrote, publishes it as ED.box, and the
+        // frame loop hands that same box to birdBox as the player's collision volume. So ask IT rather than
+        // deriving a second answer that can disagree — one box, one source, and it cannot drift again.
+        const f = ED.frames[((ED.sel % n) + n) % n], EB = ED.box;
+        const ox = f.ox || 0, oy = f.oy || 0, oz = f.oz || 0;
+        const bmin = EB ? [EB.cx - EB.hx, EB.cy - EB.hy, EB.cz - EB.hz] : [f.bx + ox, ED.y + 1 + oy, f.bz + oz];
+        const bmax = EB ? [EB.cx + EB.hx, EB.cy + EB.hy, EB.cz + EB.hz] : [f.bx + ox + f.sx, ED.y + 1 + oy + f.sz, f.bz + oz + f.sy];   // the fallback is the old derivation, for the one case ED.box is null: a model clipped entirely off the stage, which stamps nothing to measure
         let tmin = 0.1, tmax = 300;
         for (let a = 0; a < 3; a++) { const iv = 1 / (Math.abs(dd[a]) < 1e-9 ? 1e-9 : dd[a]);
           let ta = (bmin[a] - eo[a]) * iv, tb = (bmax[a] - eo[a]) * iv; if (ta > tb) { const s = ta; ta = tb; tb = s; }

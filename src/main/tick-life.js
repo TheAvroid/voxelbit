@@ -202,8 +202,8 @@
       const hereOK = desertM(P.x, P.z) <= 0.15 && (!chNear(P.x) || cherryM(P.x, P.z) <= 0.15);
       return hereOK ? Math.max(0.75, Math.min(1, ok / 24)) : Math.min(1, ok / 24);
     };
-    const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); flyers cap at 16 — slots 16-19 moms, 20-31 ducklings, 32-39 worms, 40-54 lilies
-    const nAct = Math.round((moonMode ? Math.max(2, nActD >> 1) : Math.min(16, Math.round(nActD * 2.5))) * bioFracLifeAt((MAM_KEEP * 0.78 + MAM_OUT) * 0.5));   // …and the flyers too, for the same reason   // BUTTERFLIES doubled (user 2026-07-18): 1.25 -> 2.5, still bounded by the 16 flyer slots   // FIREFLIES half as frequent (night); BUTTERFLIES +25% (user 2026-07-18), still capped by the 16 flyer slots (0-15)
+    const nActD = Math.max(3, Math.min(16, Math.round(Math.PI * rdV * rdV / (200 * 200) / 2)));   // HALF the original density (user); this is the DENSITY term only — the flyer count is clamped to FLY_N (the slot ladder in sim/life/slots.js), never to a literal here
+    const nAct = Math.round((moonMode ? Math.max(2, nActD >> 1) : Math.min(FLY_N, Math.round(nActD * 3.125))) * bioFracLifeAt((MAM_KEEP * 0.78 + MAM_OUT) * 0.5));   // …and the flyers too, for the same reason   // BUTTERFLIES doubled (user 2026-07-18): 1.25 -> 2.5, then +25% (user 2026-08-22): 2.5 -> 3.125 AND the clamp raised from a literal 16 to FLY_N (20, sim/life/slots.js). BOTH halves are needed and each is inert alone: the multiplier decides the count only at short view distances, the clamp decides it at every shipped one. Together they are exactly 1.25x the old number at every render distance   // FIREFLIES half as frequent (night) and NOT clamped by FLY_N, which is why widening the band left the night exactly as it was
     const nWorm = WORM_NFRAMES ? nightKN(Math.round(Math.max(11, Math.min(22, Math.round(nActD * 1.4))) * bioFracLifeAt((MAM_KEEP * 0.78 + MAM_OUT) * 0.5))) : 0;   // …scaled by the LEGAL area (see bioFracLifeAt): unscaled it asked the desert for 22 and got 0   // NOCTURNAL: worms stay out after dark, thinned (see NIGHT_NOCT)   // NOT scaled by bioFrac: a worm is admitted in the blossom as well as both forests, so its legal area is the whole world bar the sand — scaling it would thin the one population the cherry forest is supposed to have   // ground worms, day AND night — CUT 30% (user 2026-07-18): 32→22 cap, 16→11 floor
     // ── THE FOUR LAND MAMMALS, SCALED TO THE REACH (2026-08-17) ── the ceiling was a flat 7 and the count
     // landed on 6 at every shipped view, over a spawn disc of MAM_OUT = 0.94 * 680 = 639. MAM_KEEP is CARD_KEEP
@@ -300,7 +300,26 @@
       for (let i = 0; i < sparks3d.length; i++) { const sp = sparks3d[i];
         const live = sp && (now - sp.born) / 1000 <= sp.life;
         sparkSlot[i] = (live && sN < PART_CAP) ? (9 + sN++) : -1; }
-      lifeSlotBase = 9 + sN; }
+      // ── THE EDITOR'S LIFE STARTS ABOVE THE ANALYTIC BAND ── render/wgsl/trace.js walks the drop slots and
+      // steps straight over 5..24: "the 20 death-burst slots are analytic-only". That band is a CONSTANT in the
+      // shader while this base is computed here, and the two only agree because the world always has particles:
+      // sN saturates at PART_CAP 28, so live creatures land at 37 and clear it.
+      // The asset editor has no weather and no sparks, so sN is 0 and the base would be 9 — every creature slot
+      // would fall INSIDE the band the tracer skips. That is why a trace-injected model with a correct pose, a
+      // valid item and a claimed slot rendered perfectly in the world and drew nothing at all on the stage: the
+      // tracer never walked it. Found by writing the identical pose in both and comparing.
+      // Floored at 25 rather than widening the shader's skip: that band is analytic by design and nothing else
+      // wants it moved, the editor has 103 slots free either way, and a uniform is easier to keep honest than a
+      // constant that lives in two languages.
+      lifeSlotBase = ED.on ? Math.max(25, 9 + sN) : 9 + sN;
+      // ── AND THE GAP IT OPENS MUST BE BLANKED ── the shader walks slots 0..dropN, and dropN is the live count,
+      // so every slot BELOW the base is walked whether or not anything wrote it this frame. In the world there
+      // is no gap: the base sits exactly at 9 + sN, one past the last spark. The editor's floor jumps it to 25
+      // and leaves 9..24 written by nobody — holding whatever a previous frame left there, which the composite
+      // then draws. That is the loose green voxels: stale leaf/petal poses from before the editor opened,
+      // pinned in place because nothing updates them any more (user 2026-08-22).
+      // Item id 0 is the empty-slot marker every other drop writer uses, so one store per orphaned slot clears it.
+      for (let s9 = 9 + sN; s9 < lifeSlotBase; s9++) UF[dropOff(s9) + 7] = 0; }
     let dropCursor = lifeSlotBase;             // COMPACTION: live creatures emit to consecutive slots ABOVE the particle band (5 + pool size, so 29 now that pollen took four); the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists. (5-24 = the 20 fixed death-burst slots: 4 sparks + 16 individual smoke voxels, user)
     // ── THE FLOCK NO LONGER TAKES THE WHOLE BUDGET (user 2026-08-05: ducklings, salmon and ducks all missing) ──
     // all eleven remaining songbirds used to be written unconditionally, ahead of every other creature, which

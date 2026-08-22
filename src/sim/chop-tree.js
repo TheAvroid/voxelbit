@@ -329,3 +329,96 @@
     wakeFrom(out, 6);
     return phBuildBody({ bx: x0, gy: y0, bz: z0 }, keys, { sx, sz }, idMap);
   };
+
+  // ── A FELLED TREE BREAKS WHEN IT LANDS, NOT WHEN IT IS CUT (user 2026-08-22: "can you make the trees break
+  // in pieces when it falls over? not at the moment the player chomps the tree down, but the moment the tree
+  // hits the terrain. Then the player can just absorb the tree all in one go.") ── the fell already produces
+  // ONE body for the trunk-and-crown (phSeparate sorts components largest-first precisely so the trunk is not
+  // starved of a slot), and it stays one body on the ground, so the tree had to be chopped up again where it
+  // lay. This breaks it on impact instead and makes the pieces collectable, which is the second half of the
+  // ask: noAbsorb is what marks a toppling trunk as scenery rather than loot, and once it is DOWN it is loot.
+  //
+  // Split along the body's LONGEST local axis, which for a trunk is its length — so the pieces are logs rather
+  // than an arbitrary dice. The parent is spliced out first for the same reason the chop path does it: the
+  // rebuild may reclaim slots and would otherwise trip over the body it is replacing.
+  const phShatterTree = (b) => { phSrc = 'treeLand';
+    const i = PH.bodies.indexOf(b); if (i < 0) return 0;
+    const sx = b.sx, sz = b.sz, key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (let k = 0; k < b.n; k++) {
+      if (b.lx[k] < x0) x0 = b.lx[k]; if (b.lx[k] > x1) x1 = b.lx[k];
+      if (b.ly[k] < y0) y0 = b.ly[k]; if (b.ly[k] > y1) y1 = b.ly[k];
+      if (b.lz[k] < z0) z0 = b.lz[k]; if (b.lz[k] > z1) z1 = b.lz[k];
+    }
+    const LO = [x0, y0, z0], EX = [x1 - x0, y1 - y0, z1 - z0];
+    // ── TWO CUTS, NOT ONE (user 2026-08-22: "the big trees seem to break away in discs, cut the discs in half,
+    // so they break apart in chunks instead") ── slicing on the longest axis alone gives slabs that span the
+    // WHOLE crown on the other two, which on a big oak is a dinner plate of leaves: correct as physics, wrong
+    // as a broken tree. The second cut is along the next-longest axis, so a piece is bounded on two sides and
+    // reads as a chunk. Two divisions there rather than a free count — this is "cut the disc in half", and the
+    // piece budget is spent on length first, which is where a trunk actually wants to break.
+    const axis = EX[1] >= EX[0] && EX[1] >= EX[2] ? 1 : (EX[0] >= EX[2] ? 0 : 2);   // the trunk's length: local y for a standing model, and the fell does not change the LOCAL frame
+    const rest = [0, 1, 2].filter((q) => q !== axis);
+    const axis2 = EX[rest[0]] >= EX[rest[1]] ? rest[0] : rest[1];
+    const axis3 = rest[0] === axis2 ? rest[1] : rest[0];   // the remaining axis — "cut the chunks in half again" (user 2026-08-22), so a piece is bounded on all THREE sides
+    const span = EX[axis] + 1, span2 = EX[axis2] + 1, span3 = EX[axis3] + 1;
+    // One piece per PH.fellPieceVox of length, bounded by what the slot budget can actually hold: asking for
+    // more pieces than there are slots does not make more pieces, it makes phSubBody fail partway and lose the
+    // tail of the tree. Two is the floor — a "break" that yields one piece is the bug this replaces.
+    const want = Math.max(2, Math.min(PH.fellPieceMax, Math.round(span / PH.fellPieceVox)));
+    const SPLIT2 = 2, SPLIT3 = 2;
+    const buckets = [];
+    for (let q = 0; q < want * SPLIT2 * SPLIT3; q++) buckets.push([]);
+    const idMap = new Map();
+    const LC = [b.lx, b.ly, b.lz];
+    for (let k = 0; k < b.n; k++) {
+      const kk = key(b.lx[k], b.ly[k], b.lz[k]);
+      idMap.set(kk, b.id[k]);
+      let q = ((LC[axis][k] - LO[axis]) / span * want) | 0; if (q < 0) q = 0; if (q >= want) q = want - 1;
+      let q2 = ((LC[axis2][k] - LO[axis2]) / span2 * SPLIT2) | 0; if (q2 < 0) q2 = 0; if (q2 >= SPLIT2) q2 = SPLIT2 - 1;
+      let q3 = ((LC[axis3][k] - LO[axis3]) / span3 * SPLIT3) | 0; if (q3 < 0) q3 = 0; if (q3 >= SPLIT3) q3 = SPLIT3 - 1;
+      buckets[(q * SPLIT2 + q2) * SPLIT3 + q3].push(kk);
+    }
+    PH.bodies.splice(i, 1);                            // out of the list BEFORE rebuilding, exactly as the body-chop path above does
+    // ── AND NOTHING IS THROWN AWAY TO FIT ── this used to filter buckets to >= 2 cells and `break` out of the
+    // build when phMakeRoom refused, which silently DELETED every remaining piece: a tree that broke late in a
+    // busy scene could lose most of itself. Same merge rule the body-chop path above uses — a piece that cannot
+    // have a slot rides with the first one instead of ceasing to exist.
+    const keep = [];
+    for (const comp of buckets) {
+      if (!comp.length) continue;
+      if (keep.length && (comp.length < 2 || !phMakeRoom(keep.length))) { keep[0] = keep[0].concat(comp); continue; }
+      keep.push(comp);
+    }
+    if (keep.length < 2) {                             // nothing to gain — put it back untouched rather than rebuild an identical body
+      PH.bodies.push(b); b.fellWhole = 0; b.noAbsorb = false; b.fellLoot = 1; return 0;   // same rule for the un-split trunk: loot, but walked up to
+    }
+    let made = 0;
+    for (const comp of keep) {
+      const nb = phSubBody(b, comp, idMap);
+      nb.c26 = b.c26;
+      nb.sleeping = false; nb.sleepT = 0;
+      nb.fellWhole = 0;                                // a piece never re-shatters
+      nb.noAbsorb = false;                             // …and IS loot now: this is the "absorb the tree all in one go" half
+      // ── AND SIZE MUST NOT REFUSE IT (user 2026-08-22: "I want the player to be able to absorb the entire
+      // tree that fell") ── PH.absorbSize is 200 voxels and a crown chunk is thousands, so every piece was
+      // being marked tooBig and left as scenery however finely it was cut: getting a 28,000-voxel crown under
+      // 200 would take seven more halvings, which is not a broken tree, it is sawdust. The limit exists to
+      // stop someone pocketing a hillside, and a tree they have just felled is the one mass they are OWED —
+      // so the pieces of a fell carry an exemption instead of the number being lowered for everything.
+      nb.fellLoot = 1;
+      // ── COLLECTED BY WALKING UP TO IT, NOT FROM ACROSS THE MAP (user 2026-08-22: "the player can seem to
+      // just obsorb the tree chunks at any distnace. make it the same absorb distance as the raw steak") ──
+      // this used to set absorbAt, and in sim/solver.js that is not a delay, it is a BYPASS: once the timer
+      // elapses the whole distance test is skipped, because absorbAt means "the player carved this, it is
+      // owed to them" and a carved chip flies to the hand. A felled tree is not a carve — leaving absorbAt
+      // unset drops these into the ordinary loose-debris path, which requires the piece to have settled and
+      // to be inside PH.absorbR: exactly the reach a dropped steak uses.
+      nb.omega[0] += (Math.random() - 0.5) * 0.4; nb.omega[2] += (Math.random() - 0.5) * 0.4;   // a nudge so the break reads as a break rather than a seam appearing — NO upward kick, which threw pieces on top of each other and left them propped in the air
+      PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(nb); made++;
+    }
+    if (!made) { PH.bodies.push(b); b.fellWhole = 0; return 0; }   // never destroy the tree because the budget was full
+    PH.stats.fellBreaks = (PH.stats.fellBreaks | 0) + 1;
+    PH.stats.fellPieces = (PH.stats.fellPieces | 0) + made;
+    return made;
+  };
