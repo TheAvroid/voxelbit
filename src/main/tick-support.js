@@ -281,7 +281,14 @@
           if (!ED.playT0) ED.playT0 = now;
           const tt = now - ED.playT0;
           edExStep(dt);
-          const frameMs = 1000 / (ED.name1 === 'flamingo' ? 12 : 24), pauseMs = ED.name1 === 'flamingo' ? 0 : 600;
+          // ── AND NOTHING HOLDS ON ITS LAST FRAME ANY MORE (user 2026-08-22: "when I drag in a animation
+          // sequence. have it play the frames continously. right now its plays till the end pauses, then plays
+          // the frames again") ── this was 600 ms for everything except the flamingo. The hold was written for
+          // a ONE-SHOT action, where the beat reads as the pose landing before the cycle restarts, and the
+          // flamingo was special-cased to 0 because a walk has no such beat. Now that the stage opens empty and
+          // every model arrives by drag-and-drop, a walk is the common case and the one-shot is the exception —
+          // so the exception is what needs asking for, not the loop.
+          const frameMs = 1000 / (ED.name1 === 'flamingo' ? 12 : 24), pauseMs = 0;
           // ── A WEIGHTED PLAYLIST ON THE EDITABLE LANE (user 2026-08-22: "jump = 50%, ribbet = 40%,
           // tongue = 10%") ── ED.mix holds the whole cycles the model may play and their weights; at every
           // cycle boundary the lane draws its next one and plays it whole. An EMPTY mix is every other load

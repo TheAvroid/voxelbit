@@ -715,8 +715,16 @@
 
   // ── WebGPU init ────────────────────────────────────────────────────────────
   if (!navigator.gpu) fail('WebGPU not available — use Chrome/Edge 113+');
-  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  // ?igpu — boot this instance on the INTEGRATED adapter (UHD 770) instead of the discrete card, so an AI/CDP test
+  // browser stops competing with the played game for the 4070. Whole-flag match, never includes(): ?igpu would
+  // otherwise also fire on a future ?noigpu, which is the exact trap the ?uni/?nouni note in held-items.js records.
+  const IGPU_ADAPTER = /[?&]igpu\b/.test(location.search);
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: IGPU_ADAPTER ? 'low-power' : 'high-performance' });
   if (!adapter) fail('no WebGPU adapter');
+  // powerPreference is only a HINT. If the hint is ignored the test silently runs on the 4070 and the whole
+  // point is lost, so record what we actually got — assertable from a test, the way __vbGpuErr is.
+  window.__vbAdapter = Object.assign({ requested: IGPU_ADAPTER ? 'low-power' : 'high-performance' }, adapter.info ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, device: adapter.info.device, description: adapter.info.description } : {});
+  if (IGPU_ADAPTER) console.warn('[vb] ?igpu → adapter:', JSON.stringify(window.__vbAdapter));
   const SIZE384 = 768 * 768 * 384, SIZE256 = 768 * 768 * 256;   // the minimum deep world wants 226 MB; fall back gracefully
   let lim = Math.min(adapter.limits.maxStorageBufferBindingSize, adapter.limits.maxBufferSize);
   // DEV: ?worldcap=<bytes> pretends the adapter is smaller, so the weak-device fallback ladder
@@ -900,6 +908,12 @@
   let winOX = 0, winOZ = 0;                            // world coord of the window corner (multiples of 8)
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
   const gwrap = (v, n) => ((v % n) + n) % n;
+  // ── HOW FAR THE PLAYER STARTS FROM THE BAND ANCHOR ── the biome bands are anchored to SPWX, so the player
+  // is placed at SPWX + SPOX instead of moving SPWX itself (see sim/player.js). Declared HERE because the
+  // STREAMING WINDOW has to be centred on the player rather than on the anchor: HALF is at most 1024 and SPOX
+  // is 2160, so a window built around the anchor does not contain the player at all — which is the world
+  // loading in around you after you have already spawned (user 2026-08-22).
+  let SPOX = 0;
   let SPWX = 0, SPWZ = 0;                              // world spawn — placeholder; RANDOMISED on every refresh at boot (user 2026-07-20), see the spawn block below
   let SPYAW = 1.5708; const SPPITCH = -0.044;   // ── FACING EAST, AT THE BLOSSOM, WITH THE PINE TREELINE AT YOUR BACK (user 2026-08-21: "spin the player
   // around facing the cherry forest") ── heading is (sin(yaw), cos(yaw)), so +pi/2 looks down +x, and +x is where the pink is: the blossom's centre is
@@ -4391,6 +4405,8 @@
   let BIRD_ITEM0 = 0, BIRD_NFRAMES = 0, BIRD_GLIDE = 1;   // dit (1-based item id) of flap frame 0, frame count, and the frame held while GLIDING — FRAME 01 (user), not the auto-picked widest one, which landed on 00
   let BFLY_ITEM0 = 0, BFLY_NFRAMES = 0;                // butterfly flap frames (assets/life/butterfly/<color>) — orange flies over the editor stage; ALL colors fly the forest BY DAY
   let DFLY_ITEM0 = 0, DFLY_NFRAMES = 0;                // DRAGONFLY flap frames (assets/life/dragonfly) — one colour, 6 frames. Flies the butterfly's kind-0 code path verbatim; only its HOME differs (water, not meadow)
+  let BFLY_YELLOW = -1;                                // index into BFLY_COLS of the SYNTHETIC yellow (built from the pink set at load) — the forests' pink stand-in
+  let BFLY_HASHN = 0;                                  // how many colours the per-cell hash may pick from: the authored ones only, so the synthetic yellow is never rolled at random
   let BFLY_PINK = -1;                                  // index into BFLY_COLS of the 'pink' folder, or -1 if it never loaded — set in assets/held-items.js as the colours are parsed, because the index is a LOAD-ORDER fact and not a constant
   let BFLY_COLS = [];                                  // first item id of each loaded color's 8 frames, in folder order: orange, red, blue, lime, pink, purple. Colour is picked by a spatial hash of the creature's cell (B.col), so adding colours scatters them evenly and procedurally with no other change
   // ── EDITOR-STAGE EXHIBITS ── models whose frames live in ONE scene-graph .vox rather than a folder of
@@ -4398,6 +4414,72 @@
   // edStripItems). That is the whole reason they are here: an item id is what the emit addresses a model by,
   // and only an emitted model gets a sub-voxel position and a free heading. Grid-stamping cannot.
   let LBUG_ITEM0 = 0, LBUG_NFRAMES = 0;                // LADYBUG (assets/life/ladybug.vox) — flies the stage on the butterfly's own steering
+  // ── THE NAMED ANIMATIONS INSIDE ONE .vox ── lives HERE, at the top level of an early fragment, because two
+  // very different callers need it and neither may be the one that declares it: assets/held-items.js reads it
+  // during the boot asset load, and ui/editor.js reads it when staging. It began in the editor, which the
+  // loader could not see (the load runs long before that fragment is evaluated). Moving it into the loader
+  // then hid it from the EDITOR — it landed inside that file's nested init function rather than at top level,
+  // so it was function-scoped, and every editor stage failed with "edVoxSeqs is not defined" and an empty
+  // stage. Top level of a file both can see is the only placement that satisfies both.
+  // ── MOVED HERE FROM ui/editor.js (2026-08-22) ── it is a pure .vox SCENE-GRAPH reader that mints nothing
+  // and touches no editor state, and it has to be declared BEFORE this loader rather than after it: the asset
+  // load runs during boot, well before the editor fragment is evaluated, so calling it across the bundle threw
+  // "Cannot access 'edVoxSeqs' before initialization" and the frog silently loaded zero frames (the catch
+  // below swallowed it). Same class as the const-order black screen. The editor still calls it — it is later
+  // in the bundle, so the binding is live by then.
+const edVoxSeqs = (pv) => {                          // the NAMED animations inside ONE .vox → [{ name, ids: [model index, …] }], each id list already in frame order
+  // A .vox that holds several animations keeps them in its SCENE GRAPH, not in separate files. frog.vox is one
+  // MAIN with 34 SIZE/XYZI pairs and an nTRN/nGRP/nSHP tree that says which of them are 'ribbet' (14 frames),
+  // 'tongue' (24) and 'hop' (17). edParseVox below walks the SIZE/XYZI pairs alone — which is right for the
+  // per-frame files every creature ships as, and wrong here: it hands back all three cycles concatenated in
+  // file order, each model appearing once however many times its animation actually plays it. So read the graph.
+  // Two things about the format decide the shape of this:
+  //   * the FRAME LIST lives on the nSHP — one entry per frame, '_f' the frame index, repeats included, because
+  //     'ribbet' genuinely plays model 1 twice. Sorting on '_f' rather than trusting file order is free.
+  //   * the NAME lives on the nTRN ABOVE the group, and MagicaVoxel nests a second nTRN called 'frames' inside
+  //     every animation. Taking the OUTERMOST name is what makes this return ribbet/tongue/hop instead of three
+  //     sequences all called 'frames'.
+  // Returns [] for a file with no scene graph (every single-model creature frame), which is what keeps this
+  // invisible to the pose builders: they never pass a sequence name, so nothing below even calls it.
+  const dvv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+  const nodes = new Map();
+  const rdStr = (o) => { const n = dvv.getInt32(o, true); let t = '';
+    for (let i = 0; i < n; i++) t += String.fromCharCode(pv[o + 4 + i]);
+    return [t, o + 4 + n]; };
+  const rdDict = (o) => { const n = dvv.getInt32(o, true); o += 4; const d = {};
+    for (let i = 0; i < n; i++) { const k = rdStr(o); const v = rdStr(k[1]); d[k[0]] = v[0]; o = v[1]; }
+    return [d, o]; };
+  const walk = (off, end) => { while (off + 12 <= end) {
+    const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+    const bsz = dvv.getUint32(off + 4, true), csz = dvv.getUint32(off + 8, true);
+    if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+    if (id === 'nTRN' || id === 'nGRP' || id === 'nSHP') {
+      let o = off + 12; const nid = dvv.getInt32(o, true); o += 4;
+      const at = rdDict(o); o = at[1];
+      const rec = { t: id, name: at[0]._name || '' };
+      if (id === 'nTRN') rec.child = dvv.getInt32(o, true);   // …then reserved / layer / numFrames and the per-frame transform dicts, none of which this needs: the chunk header already says where the next chunk starts
+      else if (id === 'nGRP') { const nc = dvv.getInt32(o, true); o += 4; rec.kids = [];
+        for (let i = 0; i < nc; i++) { rec.kids.push(dvv.getInt32(o, true)); o += 4; } }
+      else { const nm = dvv.getInt32(o, true); o += 4; rec.models = [];
+        for (let i = 0; i < nm; i++) { const mi = dvv.getInt32(o, true); o += 4; const md = rdDict(o); o = md[1];
+          rec.models.push([mi, md[0]._f === undefined ? i : +md[0]._f]); } }
+      nodes.set(nid, rec); }
+    off += 12 + bsz + csz;
+  } };
+  try { walk(8, pv.length); } catch (e) { return []; }
+  if (!nodes.size) return [];
+  const gather = (nid, ids, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
+    if (r.t === 'nTRN') gather(r.child, ids, seen);
+    else if (r.t === 'nGRP') { for (const k of r.kids) gather(k, ids, seen); }
+    else for (const m of r.models.slice().sort((a, b) => a[1] - b[1])) ids.push(m[0]); };
+  const out = [];
+  const scan = (nid, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
+    if (r.t === 'nTRN' && r.name) { const ids = []; gather(nid, ids, new Set()); if (ids.length) out.push({ name: r.name, ids }); return; }   // OUTERMOST name wins → never descend into a named animation looking for more
+    if (r.t === 'nTRN') scan(r.child, seen); else if (r.t === 'nGRP') for (const k of r.kids) scan(k, seen); };
+  scan(nodes.has(0) ? 0 : nodes.keys().next().value, new Set());
+  return out; };
+  let FROG_ITEM0 = 0, FROG_NFRAMES = 0;                // the frog's THREE cycles, loaded back to back so one item0 + one length addresses all of them
+  let FROG_CYC = [];                                   // [{ off, n, move }] per cycle in strip order — hop MOVES the frog, ribbet and tongue play in place                // FROG, the 'hop' cycle out of assets/life/frog.vox (the file also holds 'ribbet' and 'tongue')
   let KOI_ITEM0 = 0, KOI_NFRAMES = 0;                  // KOI (assets/life/koi.vox) — swims the stage like the world's fish
   let FFLY_ITEM0 = 0, FFLY_NFRAMES = 0;                // firefly frames (assets/life/firefly) — replaces the butterflies AT NIGHT; the yellow abdomen voxel glows via the drops dYv.w lane
   let WORM_ITEM0 = 0, WORM_NFRAMES = 0;                // inchworm crawl frames (assets/life/worm) — a GROUND crawler, active day and night (pool slots 24+)
@@ -5020,6 +5102,31 @@
           for (const it of loaded) items.push(it);
         } catch (e) { console.warn('[vb] butterfly color', cname, 'missing - skipped', e); }
       }
+    // ── A YELLOW BUTTERFLY, BUILT RATHER THAN AUTHORED (user 2026-08-22: "in the oak and pine forest, make the
+    // pink butterfly a yellow one instead ... leave the cherry forest butterflies alone") ── there is no
+    // yellow/ folder, and the butterfly is 10 voxels: 6 wing cells carrying the colour and 4 near-black body
+    // cells (measured on pink/00.vox: two pinks at (243,154,174) and (243,165,182), four greys at 42-57).
+    // So the yellow is the PINK SET with its saturated cells remapped and its body left alone — same geometry,
+    // same 8 frames, same flap. Keyed on saturation rather than on the two exact pinks so a re-authored pink
+    // still yields a yellow: max-min > 24 is true of every wing cell and false of every grey one.
+    // Appended to BFLY_COLS so B.col can address it, but NOT counted in BFLY_HASHN, so nothing rolls it at
+    // random — it appears exactly where a pink would have, and only outside the cherry band.
+    BFLY_HASHN = BFLY_COLS.length;
+    if (BFLY_PINK >= 0) {
+      const src0 = BFLY_COLS[BFLY_PINK], yel = [];
+      for (let f = 0; f < 8; f++) { const it = items[src0 - 1 + f]; if (!it) break;
+        const cells = it.cells.map((c) => { if (!c) return null;
+          const mx = Math.max(c[0], c[1], c[2]), mn = Math.min(c[0], c[1], c[2]);
+          if (mx - mn <= 24) return [c[0], c[1], c[2]];        // body grey — untouched
+          const l = mx / 255;                                  // keep the cell's own lightness so the two wing shades stay distinct
+          return [Math.round(250 * l), Math.round(214 * l), Math.round(86 * l)];
+        });
+        yel.push({ w: it.w, d: it.d, h: it.h, cells });
+      }
+      if (yel.length === 8) { BFLY_YELLOW = BFLY_COLS.length; BFLY_COLS.push(items.length + 1);
+        for (const it of yel) items.push(it);
+        console.log('[vb] butterfly yellow synthesised from pink -> col', BFLY_YELLOW); }
+    }
     if (BFLY_COLS.length) { BFLY_ITEM0 = BFLY_COLS[0]; BFLY_NFRAMES = 8;
       console.log('[vb] butterfly 8 frames x', BFLY_COLS.length, 'colors -> items', BFLY_ITEM0, '..', items.length); }
     try {                                                             // ── DRAGONFLY ── one 6-frame strip, parsed exactly like a butterfly colour (raw .vox palette, full 3D grid).
@@ -5060,7 +5167,12 @@
     // edParseVox) already reads these files, but into engine palette ids for GRID-STAMPING, and a grid stamp is
     // integer-positioned and axis-aligned by construction. The emit addresses a model by ITEM ID, so a model
     // that is not in this table cannot move sub-voxel or hold a free heading, however it is animated.
-    const edStripItems = async (path, tag) => {
+    // `seq` names ONE animation inside a multi-cycle .vox (frog.vox holds ribbet/tongue/hop). Without it the
+    // `order` line below sorts EVERY nSHP's frames together on '_f', which for a three-cycle file interleaves
+    // them — all three start at _f 0. edVoxSeqs (ui/editor.js) reads the same scene graph the editor does and
+    // returns that cycle's model ids in ITS frame order, repeats included. It only parses; it mints no palette
+    // ids, which matters here because this loader's whole point is raw sRGB cells (the table is full).
+    const edStripItems = async (path, tag, seq) => {
       const bv = await abuf(path), bdv = new DataView(bv.buffer);
       const models = []; const bpal = new Uint8Array(1024); let hasPal = false; const shp = [];
       const nodes = new Map(); let anyAnim = false;
@@ -5134,7 +5246,10 @@
         return { item0: it0, n: 1 };
       }
       // No scene graph (every per-frame .vox the other loaders read) → file order, which is what it always was.
-      const order = shp.length ? shp.slice().sort((a, b) => a[1] - b[1]).map((q) => q[0]) : models.map((m, i) => i);
+      let order = shp.length ? shp.slice().sort((a, b) => a[1] - b[1]).map((q) => q[0]) : models.map((m, i) => i);
+      if (seq) { const qs = edVoxSeqs(bv), q9 = qs.find((t) => t.name.toLowerCase() === String(seq).toLowerCase());
+        if (q9) order = q9.ids;
+        else console.warn('[vb] ' + tag + ': no animation named ' + seq + (qs.length ? ' — holds ' + qs.map((t) => t.name).join(', ') : ' (no scene graph)')); }
       const loaded = [];
       for (const mi of order) { const m = models[mi]; if (!m) continue;
         if (!m.raw || !hasPal) continue;
@@ -5153,6 +5268,30 @@
     catch (e) { console.warn('[vb] ladybug frames missing - skipped', e); LBUG_NFRAMES = 0; }
     try { const r = await edStripItems('assets/life/koi.vox', 'koi'); KOI_ITEM0 = r.item0; KOI_NFRAMES = r.n; }
     catch (e) { console.warn('[vb] koi frames missing - skipped', e); KOI_NFRAMES = 0; }
+    // ── THE FROG'S HOP ── frog.vox holds three named cycles; the world takes 'hop' (17 frames). The LEAP ITSELF
+    // IS NOT IN THE FILE: every hop frame has its lowest voxel at model-z 0, so played as authored the frog
+    // crouches, stretches and lands without ever leaving the ground. FROG_HOP_OFF (sim/life/slots.js) carries
+    // the arc, and the sim applies it as MOTION rather than baking it into the voxels — which is the whole
+    // point, because that same table is what carries the frog forward a metre per leap.
+    // ── ALL THREE CYCLES, NOT JUST THE HOP (user 2026-08-22: "why is this frog acting different to the asset
+    // editor frog?? it should be an exact copy ... continuously playing the jumping animation") ── it was: the
+    // world loaded 'hop' alone, so hopping was the only thing it COULD do. The editor stages the same file as a
+    // weighted mix of hop/ribbet/tongue, and the sim now picks between them on the same weights.
+    // Loaded BACK TO BACK with nothing between, so the three land contiguously in `items` and one item0 plus
+    // one length addresses the lot — which is what the emit's _it0 + frame indexing needs. FROG_CYC records
+    // where each begins; `move` marks the one that carries the frog forward.
+    try {
+      const order9 = [['hop', 1], ['ribbet', 0], ['tongue', 0]];
+      let base9 = 0, tot9 = 0; FROG_CYC = [];
+      for (const [nm9, mv9] of order9) {
+        const r = await edStripItems('assets/life/frog.vox', 'frog:' + nm9, nm9);
+        if (!base9) base9 = r.item0;
+        FROG_CYC.push({ name: nm9, off: r.item0 - base9, n: r.n, move: mv9 });
+        tot9 = (r.item0 - base9) + r.n;
+      }
+      FROG_ITEM0 = base9; FROG_NFRAMES = tot9;
+      console.log('[vb] frog cycles', FROG_CYC.map((c) => c.name + '@' + c.off + 'x' + c.n).join(' '), '-> item0', FROG_ITEM0, 'of', FROG_NFRAMES);
+    } catch (e) { console.warn('[vb] frog frames missing - skipped', e); FROG_NFRAMES = 0; FROG_CYC = []; }
     // ── THE KOI IS A WORLD FISH TOO (user 2026-08-22: "implement the koi in the pine and oak forest") ── it is
     // loaded above as a SCENE GRAPH rather than a numbered frame folder, so it misses the FISHES loop entirely
     // and existed only for the asset editor. Registering the strip it already produced costs no second load.
@@ -5339,6 +5478,15 @@
     if (LBUG_NFRAMES > 0) {
       DESERTS.push({ name: 'ladybug', item0: LBUG_ITEM0, n: LBUG_NFRAMES });
       const fitL = mamFitOf(items, LBUG_ITEM0); if (fitL) MAMFIT.ladybug = fitL;
+    }
+    // …and the FROG, on the same terms and for the same reasons (appended AFTER the DES_LOAD loop, see above).
+    // ── THE FROG IS NOT IN THE WORLD (user 2026-08-22: "remove the frog from the field") ── the FRAMES stay
+    // loaded above, so the asset editor can still stage frog.vox and everything that reads FROG_CYC/FROG_OFF
+    // keeps working; only the DESERTS registration is withheld, which is the single thing that puts a species
+    // on the map. Putting it back is this block uncommented plus DES_N going back to 11.
+    if (false && FROG_NFRAMES > 0) {
+      DESERTS.push({ name: 'frog', item0: FROG_ITEM0, n: FROG_NFRAMES });
+      const fitF = mamFitOf(items, FROG_ITEM0); if (fitF) MAMFIT.frog = fitF;
     }
     console.log('[vb] desert creatures:', DESERTS.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');
     console.log('[vb] fish species:', FISHES.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');
@@ -7191,7 +7339,11 @@
   // CHOFF / OAKOFF / OAKWOFF in world/window.js, which now place spawn in the middle of the oak strip east of
   // the blossom rather than 140 voxels inside the blossom's own east edge.
   { let g = 0; while ((H(SPWX, SPWZ) <= WL + 6 || nearCave(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random pick in open water cannot hang the boot
-  winOX = Math.round(SPWX / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
+  // 2160 = the middle of the oak strip east of the anchor (OAKOFF is -1080, so the oak/pine line is 1080 east
+  // and the pure strip runs 1080..3240). Same water/gorge guard the anchor gets, applied at the offset spot.
+  SPOX = 2160;
+  { let g = 0; while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX += 16; }
+  winOX = Math.round((SPWX + SPOX) / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
 
   // ── GEN POOL ── the ENTIRE generator (terrain sweep + every stamp pass) runs on a pool of worker threads.
   // Each worker is built from THE SAME function sources (fn.toString() — bit-exact by construction, like the row
@@ -7601,7 +7753,7 @@
     }
   `;
   const DROP_SLOTS = 128, DROP_HALF = 64;             // DROP_HALF = how many slots live in the original 'drops' array; every slot at or above it lives in 'dropsB'
-  const PHYS_MAX = 24;                                // ── RIGID BODY CAPACITY (user 2026-08-11, was 16) ── the ONE number. PH.maxBodies takes it, physB's WGSL length is 5 vec4 x it, and EVERY offset below is derived from it.
+  const PHYS_MAX = 256;                               // ── RIGID BODY CAPACITY (user 2026-08-22, was 128/48/24, was 16) ── the ONE number. PH.maxBodies takes it, physB's WGSL length is 5 vec4 x it, and EVERY offset below is derived from it.
   //   physB sits in the MIDDLE of the struct, so raising this moves the entire tail (physC, physBound, heldCfg, lgt, hurtB, hurtH, dropsB, lifeMot, dof). Those used to be literals in tick-emit/tick-camera/debug-api; they are named now, because a
   //   missed literal here does not throw - it silently feeds each field its neighbour's numbers (a wrong hit-flash box, held-item lighting reading the light-debug mask). Never write a literal float index at or past UF_PHYSB again.
   const UF_PHYSB = 1532;                              // physB base - everything BEFORE it is fixed history (see UF_OLD_LEN)
@@ -11171,8 +11323,19 @@
   const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 4.5;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
   const WATER_SPD = 0.344;                             // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
-  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: SPYAW, pitch: SPPITCH, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0, sink: 0 };
-  P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
+  // ── THE PLAYER STARTS IN THE OAK FOREST (user 2026-08-22: "spawn me automatically in the oak forest") ──
+  // and this is a PLAYER offset, not a world one, which is the whole point. The biome bands are anchored to
+  // SPWX itself (oakM/cherryM/desertM in world/window.js all read x relative to it), so moving SPWX carries
+  // every band along with it and the player lands in exactly the same biome — the note in world/build.js
+  // records a first attempt that did precisely that and hit cherry on 5 boots out of 5. Offsetting only where
+  // the BODY is placed leaves worldgen bit-identical and simply starts the player further along the strip.
+  // 2160 = the middle of the oak. OAKOFF is -1080, so the oak/pine line sits 1080 EAST of the anchor and the
+  // pure-oak strip runs 1080..3240; MEASURED before this, oakM at spawn was 0.000, still 0.000 at +600 and
+  // only 0.029 by +900 — the player was starting a full kilometre inside the PINE forest, every single boot.
+  // The walk is the same guard build.js uses on the anchor: never start in water or a gorge.
+  // SPOX itself is computed in world/build.js, before the streaming window is sized around it.
+  const P = { x: SPWX + SPOX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: SPYAW, pitch: SPPITCH, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0, sink: 0 };
+  P.y = hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
   const keys = new Set();
   // Is this world point inside a rigid body? A fallen tree is NOT in W — that is the whole point of the
@@ -11498,9 +11661,9 @@
     else resetHist = 1;
   }
   function respawn() {
-    P.x = SPWX + 0.5; P.z = SPWZ + 0.5; P.yaw = SPYAW; P.pitch = SPPITCH; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0;   // respawning always lifts you back out of the sand + faces the baked spawn direction
+    P.x = SPWX + SPOX + 0.5; P.z = SPWZ + 0.5; P.yaw = SPYAW;   // …and a RESPAWN lands in the oak too P.pitch = SPPITCH; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0;   // respawning always lifts you back out of the sand + faces the baked spawn direction
     maybeRecenter();
-    P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
+    P.y = hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
     P.fallT = 0; P.fallPk = undefined; P.noFall = 1; uwT = 0;   // fresh lungs on respawn — and a clean fall ledger, for the reason cmdGoTo clears the same pair: P.fallPk is a world y left over from wherever you died, and the lift loop above can leave you over the ground
     vitReset();                                         // …and a full bar of hearts and hunger
@@ -13065,12 +13228,35 @@
     gravity: 200,                                    // matches the player's GRAVITY so falls read at the same scale
     linDamp: 0.05, angDamp: 0.18, restitution: 0.0, friction: 0.6,
     sleepLin: 1.2, sleepAng: 0.30, sleepFrames: 40,
-    // ── HOW A FELLED TREE BREAKS WHEN IT LANDS ── see phShatterTree (sim/chop-tree.js). fellPieceVox is the
-    // target length of a log in voxels and fellPieceMax the ceiling, which exists because maxBodies is 16:
-    // a tree that asked for more pieces than the budget can hold would lose its tail rather than gain detail.
-    // fellLandFrames debounces the trigger — a toppling trunk can graze the ground on the way over, and one
-    // glancing contact must not be read as the landing.
-    fellPieceVox: 9, fellPieceMax: 6, fellLandFrames: 3,   // 14/4 -> 9/6: "cut the tree trunks in half again" (user 2026-08-22). With the two cross-cuts that is up to 24 pieces, which is maxBodies — phShatterTree's merge folds any it cannot seat into the first piece rather than dropping them
+    // ── HALVED AGAIN, AND THE CEILING RAISED TO ALLOW IT (user 2026-08-22: "cut the tree chunks in half
+    // again" then "raise the uniform for the tree chunks") ── 6 x 2 x 2 = 24 pieces was EXACTLY PHYS_MAX, so a
+    // single felled oak consumed the entire rigid-body budget: measured pieces 24 / bodies 24, and felling a
+    // second tree then evicted a piece of the first, which DELETES it. PHYS_MAX is now 48 (render/buffers.js),
+    // so 12 x 2 x 2 = 48 fits with the same headroom-of-one-tree the old numbers had.
+    // ── ONE CHUNK SIZE FOR THE WHOLE GAME (user 2026-08-22: "all of the chunks across the game need to be a
+    // similar size. the oak trunks are much bigger then the pine tree chunks") ── the split used to be a fixed
+    // COUNT, so chunk size tracked tree size: MEASURED, a pine of 8,039 voxels and an oak of 86,365 both broke
+    // into 42 pieces, median 143 against 1,592 — an eleven-fold difference. Driving the count from VOLUME makes
+    // the chunk the constant and the count the variable, which is the way round the player actually perceives.
+    // 700 is the pine's own largest piece today, so pines keep chunks they already had and the oak's come down
+    // to match. An 86k oak wants ~123 pieces at that size, which is why PHYS_MAX went to 128.
+    fellChunkVox: 350, fellLandFrames: 3,   // halved again (user 2026-08-22: "we need smaller chunks to absorb by the player"). An 86k oak wants ~247 pieces at this size, which is why PHYS_MAX went to 256
+    // ── AND IT BREAKS ON A CLOCK, NOT ON A LANDING (user 2026-08-22: "have the tree turn into chunks after 10
+    // seconds of becoming an rigid body") ── which also removes the last thing that needed the topple drive to
+    // have finished, so the fall can be left to plain physics.
+    fellBreakMs: 10000,
+    // ── AND THE NEW PIECES MUST NOT REST ON EACH OTHER ── the `resting` latch in sim/solver.js turns gravity
+    // OFF for a body with any contact and little speed. A shatter makes every piece at once, in contact with
+    // its neighbours and all at rest, so the whole cluster held ITSELF up: a trunkless crown hanging in the
+    // air over the debris that did fall (user 2026-08-22, screenshot). For this long after a break the latch
+    // cannot apply, so gravity acts, the cluster separates, and each piece finds its own ground.
+    fellSettleMs: 900,
+    // ── ONE NUDGE, NOT A DRIVE ── a cut trunk is a column balanced on its own stump, and real physics leaves a
+    // balanced column standing: MEASURED after the topple drive was removed, a severed pine sat at the same y
+    // for 20 s and fell asleep after 752 ms — the floating pine trees. This is a single impulse in a RANDOM
+    // direction at the moment of the cut, after which nothing steers it, so trees no longer all go the same way
+    // (the complaint the drive was removed for) but they do go over.
+    fellNudge: 3.2, fellSpin: 0.5,   // 14/4 -> 9/6: "cut the tree trunks in half again" (user 2026-08-22). With the two cross-cuts that is up to 24 pieces, which is maxBodies — phShatterTree's merge folds any it cannot seat into the first piece rather than dropping them
     abAll: new Float64Array([1e30, 1e30, 1e30, -1e30, -1e30, -1e30]),   // union of every live body's world AABB — phBodySolid's O(1) "nowhere near anything" reject
     sleepAngFree: 24,                                // at or under this many voxels, rest is judged on LINEAR motion alone — a cone is 13 and its spin is solver noise, not motion
     retireFar: 64,                                   // …and a SETTLED body up to this size is baked back too, once it is further than retireFarR away — see the sleep site. 64 covers a cone (13) and a needle tuft without touching anything the player would call a log.
@@ -13080,11 +13266,21 @@
     //   maxProbes was 160, but an 8-voxel bucketing of a 35x93x36 crown yields ~300 buckets — so barely
     //   half the body's surface cells carried a probe, and a narrow stump could pass clean between them.
     //   Probes only cost a grid lookup during contact GENERATION (once per substep), so 512 is cheap.
-    treeLifeMs: 600000, chunkLifeMs: 600000,         // ── LIFETIMES (user 2026-08-11) ── EVERYTHING the player made unstatic is deleted 10 min after it broke loose — a felled trunk and a chop chunk alike (was 5 min / 60 s). Two knobs so the trunk can still be retuned apart from the debris, but they are deliberately equal now.
+    treeLifeMs: 600000, chunkLifeMs: 600000, fellLifeMs: 300000,   // fellLifeMs: the pieces of a FELLED tree, 5 min (user 2026-08-22: "make the chunks of the tree dissapear after 5 minutes"). Its own number so the general chunk and the standing-trunk lifetimes are untouched         // ── LIFETIMES (user 2026-08-11) ── EVERYTHING the player made unstatic is deleted 10 min after it broke loose — a felled trunk and a chop chunk alike (was 5 min / 60 s). Two knobs so the trunk can still be retuned apart from the debris, but they are deliberately equal now.
     //                                                 Told apart by noAbsorb, which marks the toppling trunk and nothing else.
-    absorbR: 16,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
+    // ── WIDER AND LESS FUSSY (user 2026-08-22: "the player is still not picking up every chunk. maybe make the
+    // absorption more sensitive?") ── 16 was a reach for the odd chip; a felled tree now leaves dozens of pieces
+    // spread over the whole footprint of the crown, and walking each one down individually is the chore that
+    // produced the report. Paired with the stillness rule below being relaxed, since the chunks that got missed
+    // were the ones still jostling against their neighbours when the player walked past.
+    absorbR: 26,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
     absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
-    absorbSize: 200,                                 // ── TOO BIG TO CARRY (user) ── a chunk over this many voxels REFUSES to be absorbed: break it down first. Measured on a felled pine, one tree yields chunks of ~7, 12 and 139 voxels plus 800+ voxel trunk sections; 200 lets an armful through and turns the big sections into something you have to work on. Chopping one splits/shrinks it (phChopBody takes a ~30-voxel bite and can sever a long piece in two) until the parts drop under this and vacuum up normally.
+    // ── RAISED TO COVER EVERY CHUNK THE GAME MAKES (user 2026-08-22: "make sure all chunks can be absorbed no
+    // problem") ── 200 predates the felled-tree shatter, whose pieces are exactly fellChunkVox (350) each, so
+    // every one of them was over the line and only got through on the fellLoot exemption. Anything the game
+    // breaks off is now collectable on the ordinary rule, and the exemption stays as a backstop rather than as
+    // the thing holding it up. Kept a little above 350 so a piece that swallows a short tail still fits.
+    absorbSize: 600,                                 // above the chunker's natural SPREAD, not just its target: pieces aim at fellChunkVox (350) but a connected piece that swallows its last shell runs to ~460, and at 420 those few were refused while everything around them was collected                                 // ── TOO BIG TO CARRY (user) ── a chunk over this many voxels REFUSES to be absorbed: break it down first. Measured on a felled pine, one tree yields chunks of ~7, 12 and 139 voxels plus 800+ voxel trunk sections; 200 lets an armful through and turns the big sections into something you have to work on. Chopping one splits/shrinks it (phChopBody takes a ~30-voxel bite and can sever a long piece in two) until the parts drop under this and vacuum up normally.
     //                                                 absorbFly = the flight itself, left at 420 ms so the transition stays smooth rather than snapping in
     chopBite: 30,                                    // voxels an axe swing takes out — a FIXED count, so every chunk is the same size (user). 40 -> 30, a 25% reduction (user 2026-08-02)
     absorbY: -12,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE — dropped 3 MORE voxels (user, -9 → -12), so it arrives lower still than the waist chest. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container
@@ -13673,6 +13869,13 @@
     if (oi < 0) for (let i = 0; i < PH.bodies.length; i++) { if (PH.bodies[i].absorbing) continue;
       if (oi < 0 || PH.bodies[i].born < PH.bodies[oi].born) oi = i; }   // nothing but scenery left: the budget is genuinely exhausted, so fall back to the oldest — still never one in flight
     if (oi < 0) return false;
+    // ── AND RECLAIMING IS NOT DESTROYING ── this used to splice the victim and let its voxels cease to exist.
+    // physRetire writes a body's voxels back into W at its resting pose (into EMPTY cells only, so it can never
+    // overwrite terrain) and queues them for the support resolver, so what it gives back either stands where it
+    // fell or is dropped like any other orphan. Deleting is now only the fallback for a body that cannot be
+    // written back at all. Same rule the user asked for on the felled tree: nothing disappears un-absorbed.
+    const vb9 = PH.bodies[oi];
+    if (!physRetire(vb9)) PH.stats.reclaimLost = (PH.stats.reclaimLost | 0) + 1;
     PH.bodies.splice(oi, 1); PH.stats.reclaimed++;
     return true;
   };
@@ -14011,12 +14214,22 @@
         // ── ARMED, NOT DRIVING ── the drive PRESCRIBES rotation, which the contact solver cannot argue
         // with, so starting it at the cut let the trunk rotate straight through its own stump (user).
         // Drop cleanly onto the cut face first; phStep starts the topple once it has actually landed.
+        // ── THE TOPPLE DRIVE, BACK (user 2026-08-22: "can you bring back the tilting physics for the trees?")
+        // ── removed earlier the same day when the shared fall direction read as an auto-tilt; the tree standing
+        // straight up on its stump was worse. It keeps its own random scatter (PH.fellSpread) so trees do not
+        // all go the same way, and it now runs at FULL gravity rather than the old 0.39 slow-motion.
         b.tipArm = 1; b.tipArmT = performance.now();
         b.noAbsorb = true;                           // the TOPPLING TRUNK is the tree falling, not debris — it must never fly into the player
         b.fellWhole = 1;                             // …and it BREAKS when it lands (sim/solver.js arms this, sim/chop-tree.js does it), which is also where noAbsorb is lifted
-        b.slowFall = PH.fallSlow;                    // the trunk falls in the slowed time base (see PH.fallSlow); everything else keeps normal gravity
-        b.omega[0] = b.omega[1] = b.omega[2] = 0;    // no spin at all until it is down
-        b.vel[0] = b.vel[2] = 0;                     // …and straight down, so it meets the stump square
+        // ── FULL GRAVITY (user 2026-08-22: "the trees seem to have space like gravity" / "make it more
+        // realistic") ── slowFall is a MULTIPLIER on gravity in sim/solver.js, not a flag: undefined means 1.
+        // Setting it to 0 when the staged fall was removed meant gravity x 0 — the trunk had none at all, and
+        // what little motion it had came from the one nudge at the cut. 1 is ordinary gravity, which is also
+        // what "more realistic" asks for: the old 0.39 was a deliberate slow-motion for the staged topple and
+        // there is no staged topple any more.
+        b.slowFall = 1;
+        b.omega[0] = b.omega[1] = b.omega[2] = 0;    // the drive owns the rotation from here — no spin until it is going over
+        b.vel[0] = b.vel[2] = 0;                     // …and straight down onto the cut face, so it meets the stump square
       }
       if (!b.noAbsorb) b.absorbAt = performance.now() + PH.absorbMs;   // BROKEN PIECES are collectable too (user): before this only swing-carved chunks had a timer, so separated pieces lay on the ground forever
       PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(b); made.push(b);
@@ -14045,6 +14258,7 @@
       // 26 it has always had; only the oaks, whose crowns run 44 to 114, take the cheap path.
       const wSpan = Math.max(bx1 - bx0, bz1 - bz0);
       coneWake(bx0, bx1, by0, by1, bz0, bz1, wSpan >= 40 ? 4 : undefined);
+      petalClearBox(bx0, bx1, bz0, bz1);             // …and the leaves already falling out of the crown that just left: see the note on petalClearBox
     }
     PH.stats.separations += made.length;
     PH.stats.lastSepMs = +(performance.now() - t0).toFixed(2);
@@ -14409,6 +14623,58 @@
   // Split along the body's LONGEST local axis, which for a trunk is its length — so the pieces are logs rather
   // than an arbitrary dice. The parent is spliced out first for the same reason the chop path does it: the
   // rebuild may reclaim slots and would otherwise trip over the body it is replacing.
+  // ── AND THE STUMP BREAKS TOO (user 2026-08-22: "have the tree trunk thats still connected to the terrain
+  // break into chunks as well") ── the part below the cut is rooted in the ground, so phSeparate never orphans
+  // it and it survives the fell as world voxels. This lifts it out of W at the same moment the trunk breaks and
+  // hands it back as the same connected, chunk9-sized bodies, so the whole tree ends up as collectable chunks
+  // and no stump is left standing. Wood only: the grass and soil around the base are not the tree.
+  const phShatterStump = (b) => {
+    if (!b.origin || !b.sx || !b.sz) return 0;
+    const ox = b.origin[0] | 0, oy = b.origin[1] | 0, oz = b.origin[2] | 0, sx = b.sx | 0, sz = b.sz | 0;
+    const cells = [], idMap = new Map(), out = [];
+    const sxz = sx * sz;
+    for (let my = 0; my < 40; my++) {
+      const wy = oy + my; if (wy < 1 || wy >= WY) continue;
+      for (let mz = 0; mz < sz; mz++) for (let mx = 0; mx < sx; mx++) {
+        const ii = gwrap(ox + mx, WX) + wy * WX + gwrap(oz + mz, WZ) * WX * WY;
+        const v = W[ii]; if (!v || !woodTab[v]) continue;
+        const kk = mx + mz * sx + my * sxz;
+        cells.push(kk); idMap.set(kk, v); out.push(ii);
+      }
+    }
+    if (cells.length < 8) return 0;                    // nothing left worth breaking — a cut flush with the ground
+    for (const ii of out) W[ii] = 0;
+    gpuPatch(out, false);
+    wakeFrom(out, 6);                                  // whatever was resting on the stump is asked again
+    const present = new Set(cells), used = new Set();
+    const free9 = Math.max(1, PH.maxBodies - PH.bodies.length);
+    const chunk9 = Math.max(PH.fellChunkVox, Math.ceil(cells.length / free9));
+    let made = 0;
+    for (let q = 0; q < cells.length; q++) {
+      const seed = cells[q]; if (used.has(seed)) continue;
+      const grp = [seed]; used.add(seed);
+      for (let h = 0; h < grp.length && grp.length < chunk9; h++) {
+        const kk = grp[h];
+        const mx = kk % sx, mz = ((kk / sx) | 0) % sz, my = (kk / sxz) | 0;
+        for (let d = 0; d < 27 && grp.length < chunk9; d++) {
+          const ax = mx + (d % 3) - 1, ay = my + ((((d / 3) | 0) % 3)) - 1, az = mz + (((d / 9) | 0)) - 1;
+          if (ax < 0 || ax >= sx || az < 0 || az >= sz || ay < 0) continue;
+          const nk = ax + az * sx + ay * sxz;
+          if (!present.has(nk) || used.has(nk)) continue;
+          used.add(nk); grp.push(nk);
+        }
+      }
+      if (PH.bodies.length >= PH.maxBodies) break;     // out of slots: what is left simply stays out of W rather than being destroyed… see below
+      const nb = phBuildBody({ bx: ox, gy: oy, bz: oz }, grp, { sx, sz }, idMap);
+      if (!nb) break;
+      nb.fellLoot = 1; nb.noAbsorb = false;
+      nb.absorbAt = undefined;
+      nb.noRest = performance.now() + PH.fellSettleMs;
+      PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(nb); made++;
+    }
+    PH.stats.stumpChunks = (PH.stats.stumpChunks | 0) + made;
+    return made;
+  };
   const phShatterTree = (b) => { phSrc = 'treeLand';
     const i = PH.bodies.indexOf(b); if (i < 0) return 0;
     const sx = b.sx, sz = b.sz, key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
@@ -14425,27 +14691,113 @@
     // as a broken tree. The second cut is along the next-longest axis, so a piece is bounded on two sides and
     // reads as a chunk. Two divisions there rather than a free count — this is "cut the disc in half", and the
     // piece budget is spent on length first, which is where a trunk actually wants to break.
-    const axis = EX[1] >= EX[0] && EX[1] >= EX[2] ? 1 : (EX[0] >= EX[2] ? 0 : 2);   // the trunk's length: local y for a standing model, and the fell does not change the LOCAL frame
-    const rest = [0, 1, 2].filter((q) => q !== axis);
-    const axis2 = EX[rest[0]] >= EX[rest[1]] ? rest[0] : rest[1];
-    const axis3 = rest[0] === axis2 ? rest[1] : rest[0];   // the remaining axis — "cut the chunks in half again" (user 2026-08-22), so a piece is bounded on all THREE sides
-    const span = EX[axis] + 1, span2 = EX[axis2] + 1, span3 = EX[axis3] + 1;
-    // One piece per PH.fellPieceVox of length, bounded by what the slot budget can actually hold: asking for
-    // more pieces than there are slots does not make more pieces, it makes phSubBody fail partway and lose the
-    // tail of the tree. Two is the floor — a "break" that yields one piece is the bug this replaces.
-    const want = Math.max(2, Math.min(PH.fellPieceMax, Math.round(span / PH.fellPieceVox)));
-    const SPLIT2 = 2, SPLIT3 = 2;
-    const buckets = [];
-    for (let q = 0; q < want * SPLIT2 * SPLIT3; q++) buckets.push([]);
-    const idMap = new Map();
-    const LC = [b.lx, b.ly, b.lz];
+    // ── EVERY PIECE THE SAME SIZE (user 2026-08-22: "all of the felled tree chunks have the exact same chunk
+    // size") ── a spatial GRID cannot do that: a crown is dense in the middle and thin at the rim, so equal
+    // boxes hold wildly unequal numbers of voxels (measured: median 261, largest 1105 — a 4x spread from cells
+    // that were the same shape). Counting is the only way to make the SIZE the constant, so the cells are
+    // ordered and then cut every PH.fellChunkVox of them, which makes each piece exactly that many voxels.
+    // MORTON order, not raw x/y/z: interleaving the bits keeps the run of cells that lands in one piece
+    // spatially COMPACT, so a chunk is a lump of tree rather than a thin sheet spanning the whole crown. That
+    // is the whole reason to pay for a sort here — sorting on one axis would give equal counts and terrible
+    // shapes. 8 bits per axis covers the largest model this game has.
+    const mort9 = (x, y, z) => { let m = 0;
+      for (let q = 0; q < 8; q++) m |= (((x >> q) & 1) << (3 * q)) | (((y >> q) & 1) << (3 * q + 1)) | (((z >> q) & 1) << (3 * q + 2));
+      return m; };
+    const cellsM = [], idMap = new Map();
     for (let k = 0; k < b.n; k++) {
       const kk = key(b.lx[k], b.ly[k], b.lz[k]);
       idMap.set(kk, b.id[k]);
-      let q = ((LC[axis][k] - LO[axis]) / span * want) | 0; if (q < 0) q = 0; if (q >= want) q = want - 1;
-      let q2 = ((LC[axis2][k] - LO[axis2]) / span2 * SPLIT2) | 0; if (q2 < 0) q2 = 0; if (q2 >= SPLIT2) q2 = SPLIT2 - 1;
-      let q3 = ((LC[axis3][k] - LO[axis3]) / span3 * SPLIT3) | 0; if (q3 < 0) q3 = 0; if (q3 >= SPLIT3) q3 = SPLIT3 - 1;
-      buckets[(q * SPLIT2 + q2) * SPLIT3 + q3].push(kk);
+      cellsM.push([mort9(b.lx[k] - LO[0], b.ly[k] - LO[1], b.lz[k] - LO[2]), kk]);
+    }
+    cellsM.sort((p9, q9) => p9[0] - q9[0]);
+    // The count is still bounded by the slots that are actually free — a piece with nowhere to live cannot be
+    // made — so a very large tree in a busy scene gets fewer, bigger chunks rather than losing any of itself.
+    // ── THE CHUNK SIZE NEVER GROWS; THE BREAK WAITS INSTEAD (user 2026-08-22: "some chunks are still too big.
+    // they arent even being absorbed") ── this used to raise chunk9 when slots were short, which is how a
+    // second tree felled into the first one's debris came out in 10,027-voxel lumps, 30 of them over the
+    // absorb limit. Size is the thing the player feels, so it is fixed: if there is not room to break this
+    // tree into uniform pieces right now, the tree stays whole and tries again on the next tick — a few
+    // seconds late once the earlier debris has been collected or expired, and always the right size.
+    const free9 = Math.max(1, PH.maxBodies - PH.bodies.length - 1);
+    const chunk9 = PH.fellChunkVox;
+    if (free9 < Math.ceil(b.n / chunk9)) return 0;      // NOT spliced out, fellWhole NOT cleared — see the caller
+    // ── A PIECE MUST BE ONE CONNECTED LUMP (user 2026-08-22: "make it where chunks voxels have to be touching
+    // eachother and cannot be seperated by air") ── slicing the Morton order every chunk9 cells gets the SIZE
+    // right and says nothing about connectivity: Morton keeps neighbours near each other in the ordering but
+    // does not guarantee a run is contiguous, so a piece could hold two separate blobs bound together only by
+    // the body transform — and the far one then hangs in the air with nothing around it, which is what a
+    // "floating voxel" off a chunk actually is. So a piece is GROWN instead: seed at the lowest unused cell in
+    // Morton order (compact and deterministic) and flood 26-connected through unused cells until it has
+    // chunk9 of them. Connectivity is a hard constraint and the size is the target: where a connected region
+    // runs out early the piece is simply smaller, because the alternative is a piece with a hole of air in it.
+    const present = new Set();
+    for (let q = 0; q < cellsM.length; q++) present.add(cellsM[q][1]);
+    const sxz = sx * sz;
+    // ── AND THE PIECE COUNT MUST FIT THE BODY CAP ── growth is greedy, so it makes MORE pieces than
+    // ceil(n / chunk9): a run stops when it has enough, and the pocket it walked past becomes a piece of its
+    // own. MEASURED on an 86k oak at chunk9 350: 493 pieces against a PHYS_MAX of 256 — and a body past the
+    // cap cannot even be uploaded (main/tick-emit.js skips nb >= PHYS_MAX), so it would be invisible AND
+    // physical. Growing chunk9 and re-running is the fix that keeps every piece CONNECTED: bigger pieces, same
+    // rule, never a piece stitched together across air just to hit a number.
+    // ── BALANCED MULTI-SOURCE GROWTH ── every piece must be ONE CONNECTED LUMP (voxels touching, never split
+    // by air) and they must all be about the SAME SIZE. Growing pieces one at a time cannot do both: a greedy
+    // blob takes its quota and walks past cells that then have nobody to join, and folding those pockets back
+    // in afterwards either lets one piece run away (measured: median 353, largest 1749) or, with a ceiling on
+    // the host, leaves the pockets stranded as scraps (median 8, p90 1072 — bimodal, which is worse).
+    // So all K pieces grow AT ONCE from K seeds spread through the Morton order, claiming one cell each per
+    // round. Nothing is stranded because every frontier advances together, every piece is connected because it
+    // only ever claims a neighbour of a cell it already owns, and the sizes come out even because they grow at
+    // the same rate. Anything left over is a region no seed could reach — genuinely disconnected geometry —
+    // and becomes its own piece rather than being stitched across air to something else.
+    const K = Math.max(2, Math.ceil(b.n / chunk9));   // room for this many was checked above
+    const ownOf = new Map();
+    const queues = [], buckets = [];
+    for (let q = 0; q < K; q++) {
+      const seed = cellsM[Math.min(cellsM.length - 1, Math.floor(q * cellsM.length / K))][1];
+      if (ownOf.has(seed)) { queues.push([]); buckets.push([]); continue; }
+      ownOf.set(seed, q); queues.push([seed]); buckets.push([seed]);
+    }
+    const nbrs9 = (kk, out) => { let m = 0;
+      const mx = kk % sx, mz = ((kk / sx) | 0) % sz, my = (kk / sxz) | 0;
+      for (let d = 0; d < 27; d++) {
+        const ax = mx + (d % 3) - 1, ay = my + ((((d / 3) | 0) % 3)) - 1, az = mz + (((d / 9) | 0)) - 1;
+        if (ax < 0 || ax >= sx || az < 0 || az >= sz || ay < 0) continue;   // model-local bounds: no wrap, or a piece would reach round to the far face
+        out[m++] = ax + az * sx + ay * sxz;
+      }
+      return m; };
+    const nb9 = new Int32Array(27);
+    // One SHELL per piece per round: pop a single frontier cell and claim every unclaimed neighbour of it.
+    // All K frontiers advance at the same rate, so the pieces come out the same size, and a cell with no
+    // unclaimed neighbours is simply dropped from the frontier — the earlier version pushed it BACK, which
+    // made queues that never emptied, stalled the growth, and left 61,024 cells for the island pass to sweep
+    // up as one piece. Head pointers rather than shift(): these arrays run to tens of thousands of entries.
+    const heads = new Int32Array(K);
+    let live = true;
+    while (live) {
+      live = false;
+      for (let q = 0; q < K; q++) {
+        const qq = queues[q];
+        if (heads[q] >= qq.length) continue;
+        const kk = qq[heads[q]++];
+        const m = nbrs9(kk, nb9);
+        for (let t = 0; t < m; t++) { const nk = nb9[t];
+          if (!present.has(nk) || ownOf.has(nk)) continue;
+          ownOf.set(nk, q); buckets[q].push(nk); qq.push(nk);
+        }
+        if (heads[q] < qq.length) live = true;
+      }
+    }
+    // Whatever no seed reached is a disconnected island: give each its own piece rather than attaching it to
+    // something it does not touch. This is the case that MUST stay separate — it is exactly the floating-voxel
+    // bug when it is not.
+    for (let q = 0; q < cellsM.length; q++) { const kk = cellsM[q][1];
+      if (ownOf.has(kk)) continue;
+      const grp = [kk]; ownOf.set(kk, -1);
+      for (let h = 0; h < grp.length; h++) { const m = nbrs9(grp[h], nb9);
+        for (let t = 0; t < m; t++) { const nk = nb9[t];
+          if (!present.has(nk) || ownOf.has(nk)) continue;
+          ownOf.set(nk, -1); grp.push(nk); } }
+      buckets.push(grp);
     }
     PH.bodies.splice(i, 1);                            // out of the list BEFORE rebuilding, exactly as the body-chop path above does
     // ── AND NOTHING IS THROWN AWAY TO FIT ── this used to filter buckets to >= 2 cells and `break` out of the
@@ -14455,7 +14807,15 @@
     const keep = [];
     for (const comp of buckets) {
       if (!comp.length) continue;
-      if (keep.length && (comp.length < 2 || !phMakeRoom(keep.length))) { keep[0] = keep[0].concat(comp); continue; }
+      // ── A FREE SLOT, NOT A MADE ONE (user 2026-08-22: "when the tree lands on the terrain from being felled,
+      // some of the chunks dissapear. dont let chunks dissapear, unless absorbed by the player") ── this asked
+      // phMakeRoom, and phMakeRoom MAKES room by deleting the oldest body outright. Called once per piece with
+      // up to 48 pieces, it was evicting the earlier pieces of the very tree it was breaking, which is exactly
+      // the chunks vanishing on impact. A plain capacity test cannot destroy anything: what will not fit merges
+      // into the first piece instead, so the tree keeps every voxel it had however tight the budget is.
+      // The bucket COUNT already fits the free slots, so nothing here has to be merged away to make space —
+      // only true slivers (a bucket the partition left with a voxel or two) ride with the first piece.
+      if (keep.length && comp.length < 2) { keep[0] = keep[0].concat(comp); continue; }
       keep.push(comp);
     }
     if (keep.length < 2) {                             // nothing to gain — put it back untouched rather than rebuild an identical body
@@ -14463,6 +14823,7 @@
     }
     let made = 0;
     for (const comp of keep) {
+      if (PH.bodies.length >= PH.maxBodies) break;     // hard guard: a body past the cap is one the uniform cannot carry
       const nb = phSubBody(b, comp, idMap);
       nb.c26 = b.c26;
       nb.sleeping = false; nb.sleepT = 0;
@@ -14475,6 +14836,7 @@
       // stop someone pocketing a hillside, and a tree they have just felled is the one mass they are OWED —
       // so the pieces of a fell carry an exemption instead of the number being lowered for everything.
       nb.fellLoot = 1;
+      nb.noRest = performance.now() + PH.fellSettleMs;   // …and it may not rest on its siblings for a moment (see PH.fellSettleMs)
       // ── COLLECTED BY WALKING UP TO IT, NOT FROM ACROSS THE MAP (user 2026-08-22: "the player can seem to
       // just obsorb the tree chunks at any distnace. make it the same absorb distance as the raw steak") ──
       // this used to set absorbAt, and in sim/solver.js that is not a delay, it is a BYPASS: once the timer
@@ -14486,6 +14848,7 @@
       PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(nb); made++;
     }
     if (!made) { PH.bodies.push(b); b.fellWhole = 0; return 0; }   // never destroy the tree because the budget was full
+    phShatterStump(b);                                 // …and the part still rooted in the ground goes with it
     PH.stats.fellBreaks = (PH.stats.fellBreaks | 0) + 1;
     PH.stats.fellPieces = (PH.stats.fellPieces | 0) + made;
     return made;
@@ -14749,8 +15112,14 @@
     const cells = new Array(n);
     const id0 = W[comp[0]] || 0;
     let woody = false;                                 // read BEFORE phBodyFromCells, which takes these voxels out of W
+    // ── AND WHETHER IT IS FRUIT, TESTED OVER EVERY CELL ── a fruit component is flesh plus a stalk, and the
+    // first version keyed on comp[0] alone: whichever of the two happened to be first decided whether the
+    // piece was loot, so most apples could be picked up and some could not (user 2026-08-22). Read here for the
+    // same reason `woody` is — a few lines later these cells are no longer in W to ask.
+    let fruity9 = false;
     for (let i = 0; i < n; i++) { const ii = comp[i];
       if (woodTab[W[ii]]) woody = true;
+      if (hangTab[W[ii]]) fruity9 = true;
       cells[i] = [supWorldX(ii % WX), ((ii / WX) | 0) % WY, supWorldZ((ii / (WX * WY)) | 0)]; }
     phSrc = 'support';
     const fb = phBodyFromCells(cells);
@@ -14767,6 +15136,22 @@
     // where it lands and is collected by walking up to it, inside PH.absorbR.
     fb.absorbAt = 0;
     fb.nearR = PH.absorbR;
+    // ── FRUIT STAYS A BODY UNTIL IT IS PICKED UP (user 2026-08-22: "the oranges and apples seem to go static on
+    // the terrain when the tree falls. make them also turn into rigid bodies that can be picked up") ── it
+    // ALREADY became one here; what put it back in the ground was physRetire. A fruit is about three voxels and
+    // PH.retireMax is 6, so the moment it settled it was under the line and got baked into W as scenery — an
+    // apple you cannot pick up, lying where it fell. fellLoot is the existing "this is loot, do not retire it"
+    // flag (sim/solver.js honours it on both retire paths and on the absorbSize gate), so the fruit borrows it
+    // rather than growing a second flag that means the same thing.
+    if (fruity9) fb.fellLoot = 1;                    // see the read above — it has to happen before phBodyFromCells empties these cells
+    // ── AND ANYTHING BIG THE RESOLVER SHEDS GETS CHUNKED LIKE A TREE ── supDrop hands back whatever the
+    // support flood found as ONE body, however large: felling an oak leaves crown parts that come through here
+    // at 430-650 voxels, over the absorb limit and nothing like the size of a proper chunk (user 2026-08-22:
+    // "some chunks are still too big. they arent even being absorbed"). fellWhole routes them through
+    // phShatterTree on the usual clock, so they end up the same uniform, connected, collectable pieces a
+    // felled trunk does. Small drops — a cone, a fruit, a needle tuft — are already the right size and are
+    // left exactly as they were.
+    if (fb.n > PH.fellChunkVox) { fb.fellWhole = 1; fb.fellLoot = 1; }
     PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(fb); PH.stats.chunks++;
     { let dx0 = 1e9, dx1 = -1e9, dy0 = 1e9, dy1 = -1e9, dz0 = 1e9, dz1 = -1e9;   // the FELL itself comes through here
       // ── THE BOX IS BUILT IN WORLD COORDS, NOT GRID COORDS (2026-08-10) ── x and z are TOROIDAL, so a plain
@@ -15449,7 +15834,7 @@
       // grazes one now stops on it. That is a fair trade — an axe swing at the forest floor does nothing today
       // (soil is digOnlyTab) — but it is the 2026-08-07 "pass-through is not an aim" rule shrinking by exactly
       // the wood ids, and if twigs ever start stealing swings this line is why.
-      if (!inB && !woodTab[lv] && (floatTab[lv] || (isWater(lv) && !solidTab[lv]))) return 0;   // ── PASS-THROUGH IS NOT AN AIM (user 2026-08-07) ── grass strands, blooms, twigs, cones and open water: the march's obstruction test and aimHitId both walk straight THROUGH these, but this pass stopped on them and set aimT to a STRAND's distance — which makes every `t >= aimT` gate below vacuous, since the ray passes that distance almost immediately. Ice keeps solidTab, so a frozen lake is still a thing you can aim at.
+      if (!inB && !woodTab[lv] && !foliaTab[lv] && (floatTab[lv] || (isWater(lv) && !solidTab[lv]))) return 0;   // …and FOLIAGE is never pass-through either: a BUSH's leaves carry floatTab where a tree's do not (measured: id 58 float true, ids 92/197 false), so any path that reaches this test with a leaf is one ordering change away from walking through the very thing the crosshair is on and taking the wood behind it (user 2026-08-22)   // ── PASS-THROUGH IS NOT AN AIM (user 2026-08-07) ── grass strands, blooms, twigs, cones and open water: the march's obstruction test and aimHitId both walk straight THROUGH these, but this pass stopped on them and set aimT to a STRAND's distance — which makes every `t >= aimT` gate below vacuous, since the ray passes that distance almost immediately. Ice keeps solidTab, so a frozen lake is still a thing you can aim at.
       if (!inB && snowTab[lv]) {                       // ── SNOW IS COVER, NOT A TARGET (user 2026-08-07: "the tool shouldn't register the snow, but the material under the snow") ── the same rule as LEAF vs TRUNK: remember the blanket, then keep walking for what it is sitting on. landSnowAt caps a stack at 3 layers, so the budget below always reaches the ground.
         if (!firstSnow) { firstSnow = true; snowT = t; if (!firstLeaf) { aimId = lv; aimBody = inB; aimT = t; } }   // …and the snow itself is only the FALLBACK aim, for a drift with nothing reachable under it
         return 0;
@@ -15728,7 +16113,7 @@
   const { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_AIM, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay } = __m_sim_tools;
   const __m_sim_solver = (() => {
   // @module - the positional constraint solver shared by ragdolls and dropped items
-  // @exports physStep
+  // @exports physStep, physRetire
   // ── SOLVER ── sequential impulse / PGS, fixed 60 Hz, PH.iters iterations, no pair state between steps.
   const phStep = (b, h) => {
     if (b.sleeping || b.absorbing) return;             // an absorbing chunk is driven by its flight curve, not by physics
@@ -15786,34 +16171,16 @@
         b.sleepT = 0;                                  // a half-fallen trunk must not doze off mid-tilt
       }
     }
-    // ── THE TREE BREAKS ON IMPACT, NOT ON THE CUT (user 2026-08-22: "can you make the trees break in pieces
-    // when it falls over? not at the moment the player chomps the tree down, but the moment the tree hits the
-    // terrain") ── armed at the fell (sim/chop.js sets fellWhole beside noAbsorb) and fired here, once the
-    // topple drive has handed back to plain physics AND the trunk has been in contact for a few frames.
-    // Debounced rather than fired on the first contact, because a trunk going over can clip its own stump or
-    // a rise on the way down and neither is the landing. phShatterTree lifts noAbsorb on the pieces, so the
-    // tree becomes collectable at the same moment it breaks — the two halves of the ask are one event.
-    // ── AND IT HAS TO HAVE ACTUALLY GONE OVER ── gating on `!b.tipping` alone was wrong and MEASURED wrong:
-    // a freshly severed trunk is ARMED (tipArm) but not yet TIPPING, so the gate passed while the tree was
-    // still standing on its own stump and it burst into four pieces upright, at the cut — the exact thing the
-    // user asked to move away from. fellDown is set only where the topple drive completes, so a tree that has
-    // not fallen cannot break, however long it rests there.
-    // ── …OR IT IS SIMPLY LYING DOWN (user 2026-08-22: "also sometimes they dont break at all") ── fellDown is
-    // set only where the topple DRIVE completes, and a trunk can end up flat without that ever happening: it
-    // can be knocked over by the pieces of another tree, slide off its own stump, or be armed and never seated
-    // so `tipping` is never entered at all. Those trees landed and stayed whole. b.ay[1] is the body's own
-    // up-axis in world space, so testing it against the same tipDone the drive uses asks the only question
-    // that matters — is this thing on its side — and a standing tree reads ~1 and still cannot break.
-    if (b.fellWhole && !b.tipping && (b.fellDown || b.ay[1] <= PH.tipDone)) {
-      if ((b.contacts | 0) > 0) {
-        if ((b.fellLandT = (b.fellLandT | 0) + 1) >= PH.fellLandFrames) { b.fellWhole = 0; phShatterTree(b); return; }
-      } else b.fellLandT = 0;
-    }
+    // ── THE TREE BREAKS ON A CLOCK (user 2026-08-22: "have the tree turn into chunks after 10 seconds of
+    // becoming an rigid body") ── armed at the fell (sim/chop.js sets fellWhole beside noAbsorb) and fired
+    // PH.fellBreakMs after the body was born. This replaces a landing test that had to know the trunk was
+    // down, which in turn needed the topple drive to have run — and that drive is what made every tree tilt
+    // the same way. A clock needs none of it, so the fall can be plain physics and the break still happens.
     // RESTING LATCH: a body that was in contact last step and is barely moving does not re-accumulate
     // gravity. Without this, every contact-free step re-added 3.3 vox/s of fall which the next step's
     // impulse cancelled — a limit cycle that kept a visibly stationary body above the sleep threshold
     // forever. Self-correcting: if the support goes away, contacts hit 0 and gravity resumes next step.
-    const resting = (b.contacts | 0) > 0 && Math.hypot(b.vel[0], b.vel[1], b.vel[2]) < PH.sleepLin;   // NB: this stays ON during a topple. Exempting tipping bodies reopened the gravity/impulse limit cycle the latch exists to stop, and a driven topple does not need gravity to turn anyway.
+    const resting = !(b.noRest !== undefined && performance.now() < b.noRest) && (b.contacts | 0) > 0 && Math.hypot(b.vel[0], b.vel[1], b.vel[2]) < PH.sleepLin;   // noRest: a freshly shattered piece is in contact with its siblings and would otherwise hold itself up — see PH.fellSettleMs   // NB: this stays ON during a topple. Exempting tipping bodies reopened the gravity/impulse limit cycle the latch exists to stop, and a driven topple does not need gravity to turn anyway.
     if (!resting) b.vel[1] -= PH.gravity * (b.slowFall === undefined ? 1 : b.slowFall) * h;   // a felled trunk falls in a slowed time base — see PH.fallSlow
     const ld = Math.exp(-PH.linDamp * h), ad = Math.exp(-PH.angDamp * h);
     b.vel[0] *= ld; b.vel[1] *= ld; b.vel[2] *= ld;
@@ -15898,9 +16265,26 @@
     // resting body micro-settles, and requiring one meant the countdown decayed faster than it grew —
     // a body that had visibly stopped stayed awake forever. Free fall cannot false-trigger it: one step
     // of gravity is already 3.3 vox/s, well over sleepLin.
-    if (lin < PH.sleepLin && angOK) {
+    if ((b.contacts | 0) > 0) b.cT = performance.now();   // when it last actually touched the world
+    // ── AND IT MAY NOT FALL ASLEEP IN OPEN AIR (user 2026-08-22, screenshot: small clusters hanging in the
+    // sky after the chunks fall) ── sleep was judged on low motion ALONE, deliberately, because contacts
+    // flicker in and out as a body micro-settles. But a body whose support GOES AWAY — the chunk it was
+    // resting on absorbed, the branch under it carved — keeps its near-zero velocity for the 40 frames the
+    // counter needs and drops off to sleep in mid-air. A sleeping body skips the step entirely, so it can
+    // never fall again: MEASURED after a fell, 11 bodies unsupported in air, one with contacts 0, sleeping
+    // true, nine voxels up with nothing solid beneath it. Half a second of grace keeps the flicker tolerance
+    // the original wanted while making "has not touched anything for a while" disqualifying.
+    const heldRecently = (performance.now() - (b.cT === undefined ? 0 : b.cT)) < 500;
+    if (lin < PH.sleepLin && angOK && heldRecently) {
       if (!b.tipping && ++b.sleepT >= PH.sleepFrames) { b.sleeping = true; b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0;
-        if (b.n <= PH.retireMax) b.retire = true;
+        // ── A PIECE OF A FELLED TREE IS NEVER BAKED BACK IN (user 2026-08-22: "theres also still voxels from
+        // the tree after it had been felled", alongside "dont let chunks dissapear, unless absorbed by the
+        // player") ── those two asks pull opposite ways for every OTHER chunk, and retiring is the compromise:
+        // the voxels survive, as world geometry. For a tree the player just felled it is the wrong trade — the
+        // whole point of the pieces is that they are COLLECTABLE, and a retired one is terrain you cannot pick
+        // up, sitting where the tree came down. So fellLoot keeps its slot and leaves only by being absorbed or
+        // by expiring on fellLifeMs (5 min). MEASURED before this: 4 pieces of one oak baked into the world.
+        if (b.n <= PH.retireMax && !b.fellLoot) b.retire = true;
         // ── AND SETTLED SCRAP FAR FROM THE PLAYER GOES BACK IN THE GRID TOO ── MEASURED: PH.bodies sits
         // pinned at 16/16 in ordinary play with nothing being chopped, because the support resolver sheds a
         // needle or a cone here and there and each one holds a slot for the full chunkLifeMs. A saturated
@@ -15917,7 +16301,7 @@
         // paths ran on chunks the player was walking toward. The distance gate alone already covers the concern:
         // retireFarR is 48 and the largest nearR anything sets is 16 (absorbR, and the arrow's is the same), so
         // a body eligible here is three times further away than any reach that could collect it.
-        else if (!b.noAbsorb && b.n <= PH.retireFar) {
+        else if (!b.noAbsorb && !b.fellLoot && b.n <= PH.retireFar) {   // …and the distance path is exempt for the same reason
           const rdx = b.pos[0] - P.x, rdy = b.pos[1] - smoothEye, rdz = b.pos[2] - P.z;
           if (rdx * rdx + rdy * rdy + rdz * rdz > PH.retireFarR * PH.retireFarR) b.retire = true;
         } }
@@ -15996,7 +16380,12 @@
     const tNow = performance.now();
     for (let i = PH.bodies.length - 1; i >= 0; i--) {
       const b = PH.bodies[i];
-      if (!b.absorbing && tNow - b.born > (b.noAbsorb ? PH.treeLifeMs : PH.chunkLifeMs)) {
+      // ── THE FELL'S BREAK CLOCK LIVES HERE, NOT IN THE PER-BODY STEP ── phStep returns immediately for a
+      // SLEEPING body, and a severed trunk resting on its own stump is asleep inside a second, so a break
+      // tested in there could never fire on the one case it exists for (measured: 20 s, still one 8,016-voxel
+      // body). This sweep visits every body whatever its state, and it already owns tNow.
+      if (b.fellWhole && !b.absorbing && tNow - b.born > PH.fellBreakMs) { if (phShatterTree(b)) { b.fellWhole = 0; continue; } }   // a 0 means it could not break YET (no room for uniform pieces) — keep the flag and try again next tick
+      if (!b.absorbing && tNow - b.born > (b.noAbsorb ? PH.treeLifeMs : (b.fellLoot ? PH.fellLifeMs : PH.chunkLifeMs))) {   // fellLoot = a piece of a tree the player felled (sim/chop-tree.js): 5 minutes, not 10
         PH.bodies.splice(i, 1); PH.stats.expired = (PH.stats.expired | 0) + 1;   // ── EXPIRED (user) ── see treeLifeMs / chunkLifeMs
         continue;                                      // one already flying into the player finishes its flight — it is about to be gone anyway
       }
@@ -16018,7 +16407,14 @@
       if (b.absorbing) {
         const k = Math.min(1, (tNow - b.absorbT0) / PH.absorbFly);
         const e = k * k * (3 - 2 * k);                 // smoothstep — leaves the ground gently, arrives fast
-        const tx = P.x, ty = smoothEye + PH.absorbY, tz = P.z;   // tracked live so the chunk follows a moving player
+        // ── AND A BIG CHUNK AIMS LOWER THAN A CHIP (user 2026-08-22: "the chunks from the tree appear too high
+        // being absorbed into the player ... the chunks absorbed from the tools are fine") ── absorbY places the
+        // body's CENTRE 12 voxels under the eye, which is chest height for the 30-voxel chip that number was
+        // tuned on. A felled-tree chunk is 350 voxels — several voxels tall — so its centre at chest puts its
+        // TOP across the view. Dropping the target by the body's own half-height makes the arrival read the
+        // same whatever the size, and leaves the chip exactly where it already was (half of ~3 is ~1.5).
+        const half9 = b.gpu ? 0.5 * Math.max(b.gpu.bw | 0, b.gpu.bh | 0, b.gpu.bd | 0) : 0;
+        const tx = P.x, ty = smoothEye + PH.absorbY - half9, tz = P.z;   // tracked live so the chunk follows a moving player
         b.pos[0] = b.absorbP[0] + (tx - b.absorbP[0]) * e;
         b.pos[1] = b.absorbP[1] + (ty - b.absorbP[1]) * e + Math.sin(e * Math.PI) * 3;   // slight arc so it lifts rather than slides
         b.pos[2] = b.absorbP[2] + (tz - b.absorbP[2]) * e;
@@ -16053,7 +16449,7 @@
         // SIZE IS STILL THE ONLY OTHER GATE, deliberately: PH.absorbSize is the user's own "too big to carry,"
         // break it down first" rule and this does not touch it.
         const vJ = b.vel[0] * b.vel[0] + b.vel[1] * b.vel[1] + b.vel[2] * b.vel[2];
-        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || vJ < 4))) continue;   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
+        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || b.fellLoot || vJ < 4))) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
         const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
         const rA = b.nearR || PH.absorbR;               // an ARROW's chunk keeps its own, much shorter reach (user)
         if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;
@@ -16082,9 +16478,9 @@
     PH.stats.stepMs = +(performance.now() - t0).toFixed(3);
   };
 
-    return { physStep };
+    return { physStep, physRetire };
   })();
-  const { physStep } = __m_sim_solver;
+  const { physStep, physRetire } = __m_sim_solver;
   // ── flying cardinal ── free WANDERING flight (no home, no leash — it goes where it goes; it does NOT follow the player): the turn rate
   // drifts to a new random target every few seconds (varied, believable arcs — never a fixed circle) and it terrain-follows via hmap so it
   // always clears the canopy. Pose is written into drop slot 4 each frame (see the drops uniform section) and DDA-raytraced off-grid —
@@ -16447,7 +16843,7 @@
   // untouched. The desert is untouched too — bioFracLifeAt zeroes the target in the sand and the biome gate
   // refuses a BIO_ANY spawn there, so the extra four go to pine, oak and the blossom, which is every biome
   // that has butterflies at all.
-  const FLY_N = 20, DUCK_N = 4, BABY_N = 12, WORM_N = 32, FISH_N = 32, MAM_PER = 24, DES_N = 10, DES_PER = 8;   // DES_N 9 -> 10 for the LADYBUG (user 2026-08-22)
+  const FLY_N = 20, DUCK_N = 4, BABY_N = 12, WORM_N = 32, FISH_N = 32, MAM_PER = 24, DES_N = 10, DES_PER = 8;   // DES_N 9 -> 10 for the LADYBUG; the FROG's 11th slot was withdrawn when it was removed from the field (user 2026-08-22)
   // ── PERCHED SONGBIRDS: THE ONE WIDTH THAT TRACKS THE REACH ── 180 was the pool at CARD_KEEP_V0 and it was
   // SATURATED there: the oak wood's measured 1.24e-4 birds/vox² offers 180 perches inside a 680 disc and the
   // census reached 179 of them. At 1040 the same wood offers 421, so the pool grows with the area and the
@@ -16495,14 +16891,14 @@
   //     hive would have taken every bee in the world and the flower visiting would never have been seen.
   // The desert MOUSE is deliberately NOT here: it has two homes, which is a different thing and is expressed
   // by DES_OAK in tick-creatures giving it a SHARE of its own slots.
-  const DES_OAKONLY = { bee: 8, grass_snake: 5, ladybug: 6 };
+  const DES_OAKONLY = { bee: 8, grass_snake: 5, ladybug: 6 };   // (frog withdrawn — see assets/held-items.js)
   // ── AND ONE OF THEM IS NOT OAK-ONLY AT ALL (user 2026-08-22: "implement the ladybug into the oak and pine
   // forests") ── DES_OAKONLY is really two facts wearing one name: "takes no desert slots, and its whole
   // head-count is this number", plus "and it lives in the oak". The ladybug wants the first and not the
   // second. Rather than duplicate the head-count plumbing for a second table, this widens the BIOME half
   // only: a name in here keeps every one of DES_OAKONLY's counting rules and is tagged BIO_ANY instead of
   // BIO_OAKF, which sim/nav.js defines as "anywhere that is not sand" — precisely oak and pine.
-  const DES_ANYFOREST = { ladybug: 1 };
+  const DES_ANYFOREST = { ladybug: 1 };       // the frog lives in BOTH forests too, and near water within them (see DES_WATER)
   // ── AND WHOSE MODEL FACES THE WRONG WAY ── the render basis in main/tick-creatures.js takes model −y as the
   // head end. A species baked by tools/bake_desert_life.py always does; one adopted from the asset editor's
   // scene-graph loader need not, and the ladybug's head is at +y. A named table rather than a magic term at
@@ -16515,6 +16911,34 @@
   // only ever committed down a column PROVEN clear, from no higher than DROP_MAX, and it gives up after
   // DROP_MAX_S if it has not arrived. Anything else and it keeps flying the butterfly's lane untouched.
   const LBUG_DROP_MAX = 30, LBUG_DROP_MAX_S = 8, LBUG_CRUISE = 14;
+  // ── SPECIES THAT WANT TO BE NEAR WATER ── the dragonfly does this by taking its spawn point out of
+  // `waterSpots` (main/tick-creatures.js); a name in here asks for the same treatment, which is what the user
+  // meant by "around water, similar to the dragonflies in that way". The number is how far from the water it
+  // may be placed — a frog sits ON the bank, not in the lake, so it is a shore radius rather than a wet test.
+  const DES_WATER = { frog: 14 };
+  // ── THE FROG'S PER-FRAME OFFSETS, ALL THREE CYCLES ── frog.vox's frames are NOT self-aligned: every hop
+  // frame sits with its lowest voxel at model-z 0, and the ribbet and the tongue both lean the body forward
+  // and back without the art moving. ui/editor.js aligned all three by hand against the stage
+  // (FROG_RIBBET_BAKE / FROG_TONGUE_BAKE / FROG_HOP_BAKE) and the editor applies them to every frame it draws.
+  // The world applied the HOP table only, as travel, and drew ribbet and tongue raw — which is why the user
+  // reported "all of the alignments are wrong. the positionings are wrong": two of the three cycles had no
+  // alignment at all. Same numbers as the editor's, indexed by FRAME instead of filename and stored [up,
+  // forward] because the sim applies them along the creature's own heading rather than stamping them in.
+  // Applied UNIFORMLY: a cycle whose table returns to zero (ribbet, tongue) leans and comes back on the spot;
+  // the hop's last entry is deliberately non-zero, and that is the whole difference between a lean and a leap.
+  const FROG_OFF = {
+    hop: [[0, 0], [0, 0], [0, 0], [0, -1], [2, -3], [3, -4], [4, -5], [5, -6], [5, -7],
+      [3, -8], [1, -8], [0, -8], [0, -8], [0, -9], [0, -10], [0, -10], [0, -10]],
+    ribbet: [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, -1], [0, -1], [0, -1],
+      [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]],
+    tongue: [[0, 0], [0, 0], [0, 0], [0, 0], [0, -1], [0, -2], [0, -2], [0, -3],
+      [0, -3], [0, -3], [0, -3], [0, -3], [0, -3], [0, -3], [0, -3], [0, -3],
+      [0, -2], [0, -2], [0, -1], [0, -1], [0, 0], [0, 0], [0, 0], [0, 0]] };
+  // The editor's own weights (ui/editor.js ED_STAGE mix, user 2026-08-22: "jump = 50%, ribbet = 40%,
+  // tongue = 10%"). Indexed to match FROG_CYC's load order: hop, ribbet, tongue.
+  const FROG_MIX = [50, 40, 10];
+  const FROG_ZERO = [0, 0];                            // shared no-offset entry, so the per-frame lookup never allocates
+  const FROG_HOP_FPS = 24, FROG_REST_MIN = 1.2, FROG_REST_MAX = 3.5;   // 24 fps is the house rule; the rest between leaps is what stops it crossing the map
   // ── …AND WHO KEEPS ITS OLD HOME AND GAINS THE OAK FOREST ── the value is how many of the species' OWN
   // DES_PER slots go to the oak population, CLAMPED in main/tick-creatures.js to whatever its desert head-count
   // leaves spare. That clamp is the contract: raise DES_RARITY and the slots go BACK to the desert, the oak
@@ -16528,7 +16952,7 @@
   // It lives HERE beside DES_OAKONLY rather than inside the creature tick because the two are one fact — where
   // a desert-band species lives — and because main/debug-api.js's oakLife census has to read both to report
   // the oak population honestly. As a local const it could not, and the census silently showed an empty forest.
-  const DES_OAK = { desert_mouse: 4, fly: 5 };          // fly 3 -> 5: this share, not FLY_BUNCH, is what decides how many flies the oak forest actually gets, so a bunch of 5 needs 5 slots here (user 2026-08-22)
+  const DES_OAK = { desert_mouse: 4, fly: 8 };          // fly 5 -> 8, its WHOLE band in the oak (user 2026-08-22: "double the rate of flies spawning in bunches"). At FLY_BUNCH 5 that is two bunches, 5 and 3, rather than one of 5 — and never a lone fly, since the adoption below always fills the emptiest bunch with room before opening a new one          // fly 3 -> 5: this share, not FLY_BUNCH, is what decides how many flies the oak forest actually gets, so a bunch of 5 needs 5 slots here (user 2026-08-22)
   // How many flies share one bunch. 4 of the species' 8 slots means two bunches in the world at once rather
   // than one big knot, which is what a fly reads as — and if the oak share takes some of those slots the bunches
   // simply get smaller instead of one of them vanishing.
@@ -18596,7 +19020,7 @@
   }
   const __m_sim_particles = (() => {
   // @module - splash, spark and debris particle pools and their per-frame step
-  // @exports ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
+  // @exports petalClearBox, ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
   // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
   // something breaks the surface — a fish launching, the same fish coming back down, and the player going
   // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is
@@ -18693,6 +19117,18 @@
     }
     return smokeSlot;
   };
+  // ── AND THE ONES ALREADY IN THE AIR WHEN THE CROWN GOES (user 2026-08-22: "falling leaves still happen even
+  // when the tree is felled") ── the SPAWN side was already right: both the oak and the pine paths ask
+  // stillLeafy first, so nothing new is shed from a crown that has left W. What kept falling is the backlog —
+  // PETAL_MAXLIFE is 14 s and one is shed every PETAL_GAP (65 ms), so at the instant a tree comes down as many
+  // as 32 leaves are mid-descent under it and go on drifting out of empty air for another quarter minute.
+  // Cleared by the fell's OWN box (sim/chop.js, the same bounds coneWake gets), so a neighbouring tree's shed
+  // is untouched — petalClear() below drops every leaf in the world and is far too blunt for this.
+  // s.x/s.z are the petal's BIRTH point (the emit adds drift on top), which is what makes a box test valid.
+  const petalClearBox = (x0, x1, z0, z1) => { let n = 0;
+    for (let i = PETAL_LO; i < PETAL_HI; i++) { const s = sparks3d[i]; if (!s) continue;
+      if (s.x >= x0 && s.x <= x1 && s.z >= z0 && s.z <= z1) { sparks3d[i] = null; n++; } }
+    return n; };
   const petalClear = () => { for (let i = PETAL_LO; i < PETAL_HI; i++) sparks3d[i] = null; };   // drop every leaf CURRENTLY in the air — the gate in petalTick stops new ones, but a petal lives up to PETAL_MAXLIFE, so without this a handful keep drifting past the stage for ten seconds after the editor opens. A free slot is `!s` (see bandSlot), so null is retirement.
   const TEAR_LIFE = 0.7;                               // FIXED, like the splash — a tear that lasted a random 0.75-1.0 read as flickering
   function spawnTear(wx, wy, wz) {
@@ -19060,9 +19496,9 @@
   const KNIFE_HITS_TO_KILL = 2;                        // …and the STONE KNIFE takes two (user 2026-08-19, was three) — it is a cutting edge, so it sits with the arrow between the axe's one blow and every blunt hand tool's three
   const ARROW_HITS_TO_KILL = 1;                        // ── A BOW KILLS OUTRIGHT (user 2026-08-19: "make life one shot with the bow/arrow") ── was two. The bow is now the axe's peer: the one weapon that ends it in a single hit, and the only one that does so at range
   const FLAM_ARROW_HITS = 2;                           // …except the FLAMINGO, which takes two (user). Its own constant rather than a branch: the exception is a property of the bird, and the next one to want it is one entry in the same place
-    return { ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS };
+    return { petalClearBox, ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS };
   })();
-  const { ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS } = __m_sim_particles;
+  const { petalClearBox, ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS } = __m_sim_particles;
   const __m_sim_vitals = (() => {
   // @module - player vitals: a FIVE-POINT health bar, the damage the hazards take off it, and the food that puts it back
   // @exports VIT, VIT_HP_MAX, VIT_FOOD_MAX, vitFoods, vitTick, vitHurt, vitEat, vitReset, vitSprintOK, vitOnAttack, vitOnMine, vitRedLevel, vitGoldLevel, vitExhaust, EXH_STEP
@@ -19365,7 +19801,9 @@
     // keys, so being shoved, sliding or swimming all count honestly. A voxel is 10 cm, hence the 0.1. The
     // dist < 3 guard drops teleports (the debug tp, a respawn, a world wrap) — otherwise one jump across the
     // map charges thousands of metres and empties the bar in a frame.
-    // FLYING IS FREE, as it was before the delete: it is a debug mode, not a way to play.
+    // FLYING IS FREE, and deliberately so: it is a debug mode, not a way to play. (Briefly removed on
+    // 2026-08-22 when "it puts me in god mode" was read as a complaint; it was a description — the user wants
+    // exactly this. Restored the same day, along with the hazard gates in main/tick-body.js.)
     if (!P.fly) {
       const dx = P.x - VIT.lx, dz = P.z - VIT.lz;
       const dist = Math.sqrt(dx * dx + dz * dz) * 0.1;
@@ -22579,7 +23017,7 @@
   const ED_LANE = -44, ED_FLY_LANE = -26, ED_LANE_BACK = 50, ED_LANE_RUN = 50;
   const edHudUpd = () => { edHudEl.textContent = ED.frames.length
     ? 'frame ' + ED.sel + '/' + (ED.frames.length - 1)                 // just the frame counter — no vox filename, no keybind hints (user)
-    : 'asset editor — press ESC, then import a .vox to begin'; };
+    : 'import a .vox to begin'; };                     // the ESC hint went with the drag-and-drop support (user 2026-08-22): a file can be dropped straight onto the page, so there is no cursor to free first
   let gizCol = null;                                   // [e] MOVE-GIZMO (Task 1): 3 stubby arrows (X red / Y green-up / Z blue) you aim at + drag to nudge the frame into alignment
   const edEnsureGizCols = () => { if (!gizCol) { gizCol = [edCol(240, 60, 55), edCol(70, 210, 70), edCol(80, 130, 255)]; palSync(); } };
   const GIZ_LEN = 13, GIZ_GAP = 2, GIZ_HEAD = 3;
@@ -22657,6 +23095,40 @@
     const out = { [lbl(ED.name1, ED.seq1, 'left')]: edFrameOffs(ED.frames) };
     if (ED.frames2.length) out[lbl(ED.name2, ED.seq2, 'right')] = edFrameOffs(ED.frames2);
     const txt = JSON.stringify(out); try { navigator.clipboard.writeText(txt); } catch (e) {} return txt; };
+  const edParseVox = (pv, name, seq, exact) => {              // ALL SIZE/XYZI pairs — a multi-model .vox is an animation, each model one frame — or, with `seq`, just the one NAMED animation out of a scene-graph file (see edVoxSeqs)
+    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+    const models = []; const ppal = new Uint8Array(1024); let hasPal = false;
+    const walk = (off, end) => { while (off + 12 <= end) {
+      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
+      if (id === 'SIZE') models.push({ sx: pdv.getUint32(off + 12, true), sy: pdv.getUint32(off + 16, true), sz: pdv.getUint32(off + 20, true), raw: null });
+      else if (id === 'XYZI') { const m = models.find((mm) => !mm.raw); if (m) { const n = pdv.getUint32(off + 12, true); m.raw = pv.subarray(off + 16, off + 16 + n * 4); } }
+      else if (id === 'RGBA') { ppal.set(pv.subarray(off + 12, off + 12 + 1024)); hasPal = true; }
+      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+      off += 12 + bsz + csz;
+    } };
+    walk(8, pv.length);
+    const out = [];
+    let pick = null;
+    if (seq) { const qs = edVoxSeqs(pv), q = qs.find((t) => t.name.toLowerCase() === String(seq).toLowerCase());
+      if (q) pick = q.ids;                             // that animation's models, in ITS frame order, repeats and all
+      else console.warn('[vb] editor: ' + name + ' has no animation named ' + seq + (qs.length ? ' — it holds ' + qs.map((t) => t.name).join(', ') : ' (no scene graph)') + '; loading every model'); }
+    const order = pick || models.map((m, k) => k);     // no sequence asked for (every creature's per-frame files, every pose builder) → exactly the old behaviour, model order untouched
+    order.forEach((mi, k) => { const m = models[mi]; if (!m || !m.raw) return;
+      const cmap = new Map(), mvox = [];
+      for (let i = 0; i < m.raw.length; i += 4) {
+        const ci = m.raw[i + 3];
+        let cid = cmap.get(ci);
+        if (cid === undefined) { const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
+          cid = exact ? edColExact(cr, cg, cb) : edCol(cr, cg, cb); cmap.set(ci, cid); }   // exact = an EDITOR import, which BORROWS a palette entry rather than accepting the nearest colour the world can spare; every world pose builder leaves it unset and keeps edCol
+        mvox.push(m.raw[i] | (m.raw[i + 1] << 8) | (m.raw[i + 2] << 16) | (cid << 24));   // model z-up → world y at stamp time
+      }
+      out.push({ sx: m.sx, sy: m.sy, sz: m.sz, vox: mvox, name: pick ? String(k).padStart(2, '0') + '.vox' : name + (models.length > 1 ? ' #' + (mi + 1) : ''),   // a named sequence numbers its frames 00.vox, 01.vox … — the naming every bake table, the saved-offset namespace and edExportSeq already speak, so alignment work on it saves and exports like a frame folder
+        ox: 0, oy: 0, oz: 0,                              // per-frame gizmo offsets (voxels) — nudge a frame into alignment with [e] arrows; persisted + copied for baking (Task 1)
+        raw: new Uint8Array(m.raw), pal: hasPal ? new Uint8Array(ppal) : null });   // byte-faithful copies — export rebuilds real .vox files from these, not from engine ids
+    });
+    return out;
+  };
   const edRotVox = (vox, sx, sy, q) => {               // rotate a frame's voxels q×90° about the vertical axis (non-destructive display rotation); dims swap on odd turns
     q = ((q % 4) + 4) % 4;
     let cur = vox, cx = sx, cy = sy;
@@ -22838,15 +23310,34 @@
   // The id borrowed is the one whose colour is CLOSEST to the one asked for, so if a borrow ever has to be given
   // back mid-import the model degrades to what it looks like today rather than to noise.
   const edBorrow = new Map();                          // borrowed palette id → the [r, g, b] it held before the editor took it
+  // ── AND THE MATERIAL, NOT JUST THE COLOUR (user 2026-08-22: "the black patches on the cow are dissapearing
+  // ... theres seems to be an issue of colors flashing") ── a borrowed id kept whatever solidTab/foliaTab flags
+  // it already carried, and plenty of the table's entries carry NONE: measured on cow.vox, its 21 colours all
+  // borrowed exact ids (borrowed: 21, so the colour path was working perfectly), but two of its blacks landed
+  // on ids 236 and 237 and one white on 148 — none of which are solidTab. A voxel whose id is not solid is not
+  // opaque, so the tracer walks straight through it: those patches were not the wrong colour, they were not
+  // being drawn at all, and which ones vanished shifted with the view. So the borrow now takes the two flags
+  // that decide whether a stamped voxel is a voxel, under the same promise to give them back.
+  const edBorrowMat = new Map();                       // borrowed palette id → [solidTab, foliaTab] as they were
+  // Applied to EVERY id the editor stamps, not only the borrowed ones. The exact-match branch below reuses an
+  // id the table already holds, and the table is full of greys that carry no material at all — measured on
+  // cow.vox, three of its shades matched ids 237/148/252 exactly and every one of them was non-solid, so those
+  // voxels were invisible for the same reason the borrowed ones were. Fixing only the borrow left 3 of 21
+  // still see-through, which is why this is a function and not two lines inside the borrow.
+  const edMakeDrawable = (i) => {
+    if (!edBorrowMat.has(i)) edBorrowMat.set(i, [solidTab[i], foliaTab[i]]);
+    solidTab[i] = 1; foliaTab[i] = 0;
+    return i; };
   const edExactCache = new Map();                      // source colour → id for the CURRENT import; deliberately NOT edColCache, which outlives the editor and would hand a borrowed id to the world long after it was given back
   const edPalPinned = () => { const p2 = new Set([ED_WHITE, ED_GREY, ED_HLITE]);   // the stage's own colours are on screen the whole time — never borrow the floor out from under the model
     if (gizCol) for (const c of gizCol) p2.add(c);
     if (rgizCol) for (const c of rgizCol) p2.add(c);
     return p2; };
-  const edPalRestore = () => { if (!edBorrow.size) { edExactCache.clear(); return 0; }
+  const edPalRestore = () => { if (!edBorrow.size && !edBorrowMat.size) { edExactCache.clear(); return 0; }
     const n = edBorrow.size;
     for (const [id, c] of edBorrow) palette[id] = c;
-    edBorrow.clear(); edExactCache.clear(); palSync();
+    for (const [id, m] of edBorrowMat) { solidTab[id] = m[0]; foliaTab[id] = m[1]; }
+    edBorrow.clear(); edBorrowMat.clear(); edExactCache.clear(); palSync();
     return n; };
   const edBorrowN = () => edBorrow.size;               // a GETTER for the same reason edSnapCount is one
   const edColExact = (r, g, b) => {
@@ -22854,7 +23345,7 @@
     const hit = edExactCache.get(key);
     if (hit !== undefined) return hit;
     for (let i = 1; i < palette.length; i++) { const c = palette[i];
-      if (c && c[0] === r && c[1] === g && c[2] === b && !edBorrow.has(i)) { edExactCache.set(key, i); return i; } }   // the table already holds this exact colour → use it and borrow nothing (the frog's orange, its black and its red all land here)
+      if (c && c[0] === r && c[1] === g && c[2] === b && !edBorrow.has(i)) { edMakeDrawable(i); edExactCache.set(key, i); return i; } }   // the table already holds this exact colour → use it and borrow nothing (the frog's orange, its black and its red all land here)
     const pin = edPalPinned();
     let bd = 1e9, best = -1;
     for (let i = 1; i < palette.length; i++) { const c = palette[i];
@@ -22863,94 +23354,13 @@
       if (d < bd) { bd = d; best = i; } }
     if (best < 0) { const sub = edCol(r, g, b); edExactCache.set(key, sub); return sub; }   // nothing left to borrow (an import with more colours than the table has inert ids) → the old substitute, so a huge file still loads
     edBorrow.set(best, palette[best]);
+    // Make it DRAW. Solid so the tracer stops on it, and not foliage so it is not treated as see-through
+    // canopy. Safe for exactly the reason the colour borrow is safe: entering the editor hides the world, so
+    // nothing else wearing this id is on screen while the stage is up, and edPalRestore puts both flags back.
+    edMakeDrawable(best);
     palette[best] = [r, g, b];
     edExactCache.set(key, best);
     return best; };
-  const edVoxSeqs = (pv) => {                          // the NAMED animations inside ONE .vox → [{ name, ids: [model index, …] }], each id list already in frame order
-    // A .vox that holds several animations keeps them in its SCENE GRAPH, not in separate files. frog.vox is one
-    // MAIN with 34 SIZE/XYZI pairs and an nTRN/nGRP/nSHP tree that says which of them are 'ribbet' (14 frames),
-    // 'tongue' (24) and 'hop' (17). edParseVox below walks the SIZE/XYZI pairs alone — which is right for the
-    // per-frame files every creature ships as, and wrong here: it hands back all three cycles concatenated in
-    // file order, each model appearing once however many times its animation actually plays it. So read the graph.
-    // Two things about the format decide the shape of this:
-    //   * the FRAME LIST lives on the nSHP — one entry per frame, '_f' the frame index, repeats included, because
-    //     'ribbet' genuinely plays model 1 twice. Sorting on '_f' rather than trusting file order is free.
-    //   * the NAME lives on the nTRN ABOVE the group, and MagicaVoxel nests a second nTRN called 'frames' inside
-    //     every animation. Taking the OUTERMOST name is what makes this return ribbet/tongue/hop instead of three
-    //     sequences all called 'frames'.
-    // Returns [] for a file with no scene graph (every single-model creature frame), which is what keeps this
-    // invisible to the pose builders: they never pass a sequence name, so nothing below even calls it.
-    const dvv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
-    const nodes = new Map();
-    const rdStr = (o) => { const n = dvv.getInt32(o, true); let t = '';
-      for (let i = 0; i < n; i++) t += String.fromCharCode(pv[o + 4 + i]);
-      return [t, o + 4 + n]; };
-    const rdDict = (o) => { const n = dvv.getInt32(o, true); o += 4; const d = {};
-      for (let i = 0; i < n; i++) { const k = rdStr(o); const v = rdStr(k[1]); d[k[0]] = v[0]; o = v[1]; }
-      return [d, o]; };
-    const walk = (off, end) => { while (off + 12 <= end) {
-      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
-      const bsz = dvv.getUint32(off + 4, true), csz = dvv.getUint32(off + 8, true);
-      if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
-      if (id === 'nTRN' || id === 'nGRP' || id === 'nSHP') {
-        let o = off + 12; const nid = dvv.getInt32(o, true); o += 4;
-        const at = rdDict(o); o = at[1];
-        const rec = { t: id, name: at[0]._name || '' };
-        if (id === 'nTRN') rec.child = dvv.getInt32(o, true);   // …then reserved / layer / numFrames and the per-frame transform dicts, none of which this needs: the chunk header already says where the next chunk starts
-        else if (id === 'nGRP') { const nc = dvv.getInt32(o, true); o += 4; rec.kids = [];
-          for (let i = 0; i < nc; i++) { rec.kids.push(dvv.getInt32(o, true)); o += 4; } }
-        else { const nm = dvv.getInt32(o, true); o += 4; rec.models = [];
-          for (let i = 0; i < nm; i++) { const mi = dvv.getInt32(o, true); o += 4; const md = rdDict(o); o = md[1];
-            rec.models.push([mi, md[0]._f === undefined ? i : +md[0]._f]); } }
-        nodes.set(nid, rec); }
-      off += 12 + bsz + csz;
-    } };
-    try { walk(8, pv.length); } catch (e) { return []; }
-    if (!nodes.size) return [];
-    const gather = (nid, ids, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
-      if (r.t === 'nTRN') gather(r.child, ids, seen);
-      else if (r.t === 'nGRP') { for (const k of r.kids) gather(k, ids, seen); }
-      else for (const m of r.models.slice().sort((a, b) => a[1] - b[1])) ids.push(m[0]); };
-    const out = [];
-    const scan = (nid, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
-      if (r.t === 'nTRN' && r.name) { const ids = []; gather(nid, ids, new Set()); if (ids.length) out.push({ name: r.name, ids }); return; }   // OUTERMOST name wins → never descend into a named animation looking for more
-      if (r.t === 'nTRN') scan(r.child, seen); else if (r.t === 'nGRP') for (const k of r.kids) scan(k, seen); };
-    scan(nodes.has(0) ? 0 : nodes.keys().next().value, new Set());
-    return out; };
-  const edParseVox = (pv, name, seq, exact) => {              // ALL SIZE/XYZI pairs — a multi-model .vox is an animation, each model one frame — or, with `seq`, just the one NAMED animation out of a scene-graph file (see edVoxSeqs)
-    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
-    const models = []; const ppal = new Uint8Array(1024); let hasPal = false;
-    const walk = (off, end) => { while (off + 12 <= end) {
-      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
-      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
-      if (id === 'SIZE') models.push({ sx: pdv.getUint32(off + 12, true), sy: pdv.getUint32(off + 16, true), sz: pdv.getUint32(off + 20, true), raw: null });
-      else if (id === 'XYZI') { const m = models.find((mm) => !mm.raw); if (m) { const n = pdv.getUint32(off + 12, true); m.raw = pv.subarray(off + 16, off + 16 + n * 4); } }
-      else if (id === 'RGBA') { ppal.set(pv.subarray(off + 12, off + 12 + 1024)); hasPal = true; }
-      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
-      off += 12 + bsz + csz;
-    } };
-    walk(8, pv.length);
-    const out = [];
-    let pick = null;
-    if (seq) { const qs = edVoxSeqs(pv), q = qs.find((t) => t.name.toLowerCase() === String(seq).toLowerCase());
-      if (q) pick = q.ids;                             // that animation's models, in ITS frame order, repeats and all
-      else console.warn('[vb] editor: ' + name + ' has no animation named ' + seq + (qs.length ? ' — it holds ' + qs.map((t) => t.name).join(', ') : ' (no scene graph)') + '; loading every model'); }
-    const order = pick || models.map((m, k) => k);     // no sequence asked for (every creature's per-frame files, every pose builder) → exactly the old behaviour, model order untouched
-    order.forEach((mi, k) => { const m = models[mi]; if (!m || !m.raw) return;
-      const cmap = new Map(), mvox = [];
-      for (let i = 0; i < m.raw.length; i += 4) {
-        const ci = m.raw[i + 3];
-        let cid = cmap.get(ci);
-        if (cid === undefined) { const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
-          cid = exact ? edColExact(cr, cg, cb) : edCol(cr, cg, cb); cmap.set(ci, cid); }   // exact = an EDITOR import, which BORROWS a palette entry rather than accepting the nearest colour the world can spare; every world pose builder leaves it unset and keeps edCol
-        mvox.push(m.raw[i] | (m.raw[i + 1] << 8) | (m.raw[i + 2] << 16) | (cid << 24));   // model z-up → world y at stamp time
-      }
-      out.push({ sx: m.sx, sy: m.sy, sz: m.sz, vox: mvox, name: pick ? String(k).padStart(2, '0') + '.vox' : name + (models.length > 1 ? ' #' + (mi + 1) : ''),   // a named sequence numbers its frames 00.vox, 01.vox … — the naming every bake table, the saved-offset namespace and edExportSeq already speak, so alignment work on it saves and exports like a frame folder
-        ox: 0, oy: 0, oz: 0,                              // per-frame gizmo offsets (voxels) — nudge a frame into alignment with [e] arrows; persisted + copied for baking (Task 1)
-        raw: new Uint8Array(m.raw), pal: hasPal ? new Uint8Array(ppal) : null });   // byte-faithful copies — export rebuilds real .vox files from these, not from engine ids
-    });
-    return out;
-  };
   const edExportSeq = () => {                          // one single-model .vox per frame, numbered in CURRENT sequence order (00.vox, 01.vox, … — the cardinal-flight naming)
     ED.frames.forEach((f, i) => {
       const n = f.raw.length / 4, hasPal = !!f.pal;
@@ -23319,26 +23729,15 @@
   // `flip` says this model's head is at +y where the engine's convention is −y (main/tick-emit.js).
   // A `hold: true` on the exhibit pins it in place for frame-by-frame work — deliberately absent here, so it
   // wanders, bobs and lands (user 2026-08-22: "have the ladybug flying around like it was previously").
-  const ED_STAGE = { path: 'assets/life/frog.vox', name: 'frog',
-    mix: [{ seq: 'hop', bake: FROG_HOP_BAKE, w: 50 },
-          { seq: 'ribbet', bake: FROG_RIBBET_BAKE, w: 40 },
-          { seq: 'tongue', bake: FROG_TONGUE_BAKE, w: 10 }],
-    exhibits: [
-      { model: 'ladybug', kind: 'fly', at: [-26, 15, 6], r: 22, spd: 22, bob: 4, flip: true },
-      // ── THE KOI ── swims the world's open-water fish steering: long lazy sweeps rather than the flyer's
-      // flutter (a ±0.5 rad/s turn retargeted every 2-5 s, against ±2 every 0.4-1.2), slower, and a gentler
-      // rise and fall. No `flip`: its 26 voxels assemble into a 5 x 10 x 4 body whose long axis is y and whose
-      // tail tapers to a single voxel at the far end, so its head already lies down −y where the engine
-      // expects it. It carries no swim cycle of its own — koi.vox is one assembled pose, not a strip.
-      // `spd` is unread for a swimmer — FISH_CFG owns its speed, so the koi cruises and flees at exactly the
-      // rates the lakes do. `r` still bounds where it may wander, since the stage is 242 across and a lake is not.
-      { model: 'koi', kind: 'swim', at: [30, 13, 14], r: 26, bob: 3 },
-      // ── FIVE FLIES IN A BUNCH (user 2026-08-22) ── `swarm` rather than `school`: each steers for itself
-      // around a shared point, so they mill about near one another instead of flying in formation. A tight
-      // orbit (7) is what keeps them a bunch; `jink` gives them the fast, hard little turns a fly makes rather
-      // than a butterfly's drift, and `hover` stops them settling on the deck the ladybug lands on.
-      // The fly needs no loader of its own — it already ships as a desert creature, frames and all.
-      { model: 'fly', kind: 'fly', at: [4, 18, -4], r: 30, spd: 11, swarm: 5, hover: true } ] };   // for a swarm r/spd drive the CENTRE's drift; BEE_ORBIT_R/W/Y own the circling
+  // ── THE STAGE OPENS EMPTY (user 2026-08-22: "clean the editor out") ── it used to auto-load the frog and
+  // three exhibits beside it (a ladybug, a koi and a five-fly swarm). Every one of those was SCAFFOLDING for
+  // building those creatures, and all four now live in the world, so the editor was opening onto a menagerie
+  // that no longer had anything to do with what anyone opened it for.
+  // Set to null rather than deleted: edStage() and edExStage() both already early-return on a falsy stage, so
+  // this is the supported "nothing staged" state and not a hole. Re-staging something is one object literal —
+  // `{ path, name, seq|mix, bake, side, exhibits }` — and the loaders it feeds are all untouched.
+  // Drop a .vox anywhere over the page to stage it, or use the file button; both go through edStageFiles.
+  const ED_STAGE = null;
   // ── TRACE-INJECTED EXHIBITS ── everything on the stage that MOVES FREELY. A lane is grid-stamped: its voxels
   // go into W, which pins it to integer positions and the four cardinal headings — that is what made the first
   // ladybug step along the grid and face only N/S/E/W. An exhibit is never stamped; it is staged into emitBuf
@@ -23537,7 +23936,10 @@
       E.x = L.x - Hx * back + Hz * side; E.z = L.z - Hz * back - Hx * side;
       E.th = L.th; E.y = Math.sin((E.t - (E.bph || 0)) * 1.1 + E.rank) * E.bob;
     } };
-  const edStage = () => { if (!ED_STAGE) return;
+  const edStage = () => {
+    // Nothing configured to auto-stage (ED_STAGE is null since the clean-out) → put back whatever was last
+    // dropped in, so reopening the editor resumes where it was left rather than on a bare plane.
+    if (!ED_STAGE) { if (!ED.frames.length) edRestore(); return; }
     edFetchVox(ED_STAGE.path).then(async () => { if (!ED.on || ED.frames.length) return;   // closed again, or a manual import landed while the fetch was in flight — never clobber what is on the stage
       const n = ED_STAGE.mix ? await edLoadMix(ED_STAGE.path, ED_STAGE.mix, ED_STAGE.name)
                              : await edLoadVox(ED_STAGE.path, ED_STAGE.seq, ED_STAGE.name, ED_STAGE.bake);
@@ -23672,11 +24074,13 @@
       P.y = ED.y + 1;                                   // feet planted on the plane (NOT floating at eye-mid-height)
       P.yaw = 0; P.pitch = Math.atan2(midH - EYE, back);   // aim the eye at the model's vertical centre → the object sits framed in front of the camera
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
+    edMode(1);                                          // entered the stage → next refresh comes back to it
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
     edStage();                                         // …and load what the stage opens on (async; the guard inside it is what makes a manual import mid-fetch win)
   };
   const edExit = () => {
+    edMode(0);                                          // left the stage → next refresh comes up in the world
     if (!ED.on) return;
     ED.on = false;
     edPalRestore();                                    // hand the borrowed palette entries back BEFORE the world comes out of the void below — those ids are coloured for the world, not for the model that just left the stage
@@ -23704,21 +24108,126 @@
   const edBoot = () => { if (ED.on) return;
     if (typeof W === 'undefined' || !W || !hmap || !hmap.length || !rect) { setTimeout(edBoot, 120); return; }
     edEnter(); };
-  if (!location.search.includes('cdp')) setTimeout(edBoot, 0);
+  // …and it only opens on boot if that is where the player LEFT OFF. `?cdp` still forces the world, for the
+  // reason the block above documents: a test that boots onto the stage measures the stage.
+  { let want9 = '0'; try { want9 = localStorage.getItem(ED_MODE) || '0'; } catch (e) {}
+    if (want9 === '1' && !location.search.includes('cdp')) setTimeout(edBoot, 0); }
   $('edCopy').addEventListener('click', (e) => { e.stopPropagation();   // copy the per-frame offsets → paste back to be baked into the code (replaces the .vox exporter)
     const btn2 = e.currentTarget; if (!ED.frames.length) { btn2.dataset.lbl = 'nothing to copy'; setTimeout(() => { btn2.dataset.lbl = 'export'; }, 1500); return; }   // icon button now — flash the hover LABEL + a green pulse instead of replacing the SVG with text
     edCopyOffsets(); btn2.classList.add('copied'); btn2.dataset.lbl = 'copied ✓ — paste it to me'; setTimeout(() => { btn2.classList.remove('copied'); btn2.dataset.lbl = 'export'; }, 2000); });
   edFileEl.addEventListener('click', (e) => e.stopPropagation());
-  edFileEl.addEventListener('change', async () => {
+  // ── STAGE A SET OF .vox FILES ── shared by the file picker and by DRAG-AND-DROP (user 2026-08-22:
+  // "can you make it where the player can just drag a .vox file into the window to place it inside the
+  // asset editor automatically"). Lifted out of the picker's handler unchanged so the two routes cannot
+  // drift: a dropped file gets the same multi-cycle detection, the same clean-single-object reset and the
+  // same numeric-aware name sort that a picked one does.
+  const edStageFiles = async (srcFiles) => {
     const list = [];
-    for (const f of [...edFileEl.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
+    for (const f of srcFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
       list.push({ name: f.name, u8: new Uint8Array(await f.arrayBuffer()) });
     if (list.length === 1) { const qs = edVoxSeqs(list[0].u8);   // ONE file holding several NAMED animations (frog.vox = ribbet/tongue/hop): stage the first rather than all three concatenated, and say what the others are called so the second one is reachable
       if (qs.length > 1) { list[0].seq = qs[0].name;
         console.log('[vb] editor: ' + list[0].name + ' holds ' + qs.length + ' animations — ' + qs.map((q) => q.name + ' (' + q.ids.length + ' frames)').join(', ') + '. Staged ' + qs[0].name + "; __vb.edLoad('assets/…/" + list[0].name + "', '" + (qs[1] ? qs[1].name : qs[0].name) + "') stages another."); } }
+    // Remember the FIRST file of the set: restoring one model is the case that matters, and storing a whole
+    // multi-file strip would blow the quota for no gain. `restored` marks a load that CAME from storage, so
+    // putting it back does not rewrite what it was just read from.
+    if (list.length === 1 && !edRestoring) edRemember(list[0].name, list[0].u8);
     if (list.length) { edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.seq2 = ''; ED.sel2 = 0; ED.flyer2 = false; ED.mix = []; ED.mixT0 = 0; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows. edClearStamp runs FIRST, as its comment says: edImportBufs ends in edLayout, which stamps the new model, so clearing afterwards erased what had just been laid out and the import stayed invisible until the next repaint (up to 3.4 s).
-    edFileEl.value = '';
-  });
+  };
+  edFileEl.addEventListener('change', async () => { await edStageFiles([...edFileEl.files]); edFileEl.value = ''; });
+  // Drop anywhere over the page while the stage is open. dragover MUST preventDefault or the browser
+  // never fires drop and simply navigates to the file instead — which in a canvas app looks like the
+  // editor closing itself. Filtered to .vox so dragging anything else still does the browser's thing,
+  // and gated on ED.on so a stray drop during normal play cannot restage the world.
+  // ── CLICK AN OBJECT TO SELECT IT, DELETE TO REMOVE IT (user 2026-08-22) ── the crosshair ray is tested
+  // against each lane's published AABB (edLayout writes ED.box / ED.box2 from the voxels it actually stamped,
+  // so the box is the model rather than a guess). Nearest hit wins, which is the only rule that behaves when
+  // the two lanes overlap on screen. Selecting does not disturb playback — it only says what Delete means.
+  const edRayBox = (bx, ox, oy, oz, dx, dy, dz) => {   // slab test → distance along the ray, or -1
+    if (!bx) return -1;
+    let t0 = 0, t1 = 1e9;
+    const lo = [bx.cx - bx.hx, bx.cy - bx.hy, bx.cz - bx.hz], hi = [bx.cx + bx.hx, bx.cy + bx.hy, bx.cz + bx.hz];
+    const o = [ox, oy, oz], d = [dx, dy, dz];
+    for (let a = 0; a < 3; a++) {
+      if (Math.abs(d[a]) < 1e-6) { if (o[a] < lo[a] || o[a] > hi[a]) return -1; continue; }
+      let ta = (lo[a] - o[a]) / d[a], tb = (hi[a] - o[a]) / d[a];
+      if (ta > tb) { const q = ta; ta = tb; tb = q; }
+      if (ta > t0) t0 = ta; if (tb < t1) t1 = tb;
+      if (t0 > t1) return -1;
+    }
+    return t0;
+  };
+  const edPickLane = () => {                            // which lane the crosshair is on, or 0
+    const cp = Math.cos(P.pitch), dx = Math.sin(P.yaw) * cp, dy = Math.sin(P.pitch), dz = Math.cos(P.yaw) * cp;
+    const t1 = edRayBox(ED.box, P.x, smoothEye, P.z, dx, dy, dz);
+    const t2 = edRayBox(ED.box2, P.x, smoothEye, P.z, dx, dy, dz);
+    if (t1 < 0 && t2 < 0) return 0;
+    if (t2 < 0 || (t1 >= 0 && t1 <= t2)) return 1;
+    return 2;
+  };
+  // Remembered across refreshes, with the model's BYTES, so reopening the editor puts back what was staged
+  // rather than an empty plane. Small by construction — these are creature .vox files, tens of KB — and any
+  // storage failure (quota, private mode) is swallowed: a stage that cannot be remembered is not an error.
+  // ── WHICH SIDE THE PLAYER WAS ON, REMEMBERED (user 2026-08-22: "it should rememeber if I was in the asset
+  // editor or in the real world") ── the editor used to open on EVERY refresh, which was right when it was the
+  // thing being worked on and wrong as a permanent default. Absent means the WORLD: someone who has never
+  // opened the stage, or who left it, gets the oak forest the world already spawns them into.
+  const ED_MODE = 'vb_edmode';
+  const edMode = (on) => { try { localStorage.setItem(ED_MODE, on ? '1' : '0'); } catch (e) {} };
+  const ED_KEEP = 'vb_edstage';
+  let edRestoring = 0;                                  // set while a restore is replaying storage, so it does not write back what it just read
+  const edRemember = (name, u8) => { try {
+      let bin = ''; for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+      localStorage.setItem(ED_KEEP, JSON.stringify({ name, b64: btoa(bin) }));
+    } catch (e) { /* quota or a private window — the stage simply will not persist */ } };
+  const edForget = () => { try { localStorage.removeItem(ED_KEEP); } catch (e) {} };
+  const edRestore = async () => { try {
+      const raw = localStorage.getItem(ED_KEEP); if (!raw) return 0;
+      const j = JSON.parse(raw); if (!j || !j.b64) return 0;
+      const bin = atob(j.b64), u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      // A real File, not a {name, u8} shim: edStageFiles reads its inputs with f.arrayBuffer(), so a plain
+      // object throws into this catch and the restore silently does nothing. Going through File means the
+      // restore takes byte-for-byte the same path a drop does, including the multi-cycle detection.
+      edRestoring = 1;
+      try { return await edStageFiles([new File([u8], j.name)]); } finally { edRestoring = 0; }
+    } catch (e) { return 0; } };
+  document.addEventListener('mousedown', (e) => { if (!ED.on || e.button !== 0) return;
+    const L = edPickLane(); if (L) ED.objSel = L; }, true);
+  document.addEventListener('keydown', (e) => { if (!ED.on) return;
+    if (e.code !== 'Delete' && e.code !== 'Backspace') return;
+    // Prefer an explicit click, then the crosshair, then simply "the model that is staged". Requiring the ray
+    // to hit was too strict to be useful: with one object on the plane the intent is never ambiguous, and a
+    // Delete that silently does nothing because the crosshair drifted a voxel off the box is worse than one
+    // that removes the obvious thing.
+    const L = ED.objSel || edPickLane() || (ED.frames.length ? 1 : (ED.frames2.length ? 2 : 0));
+    if (!L) return;
+    e.preventDefault(); e.stopPropagation();
+    edClearStamp();
+    if (L === 2) { ED.frames2 = []; ED.box2 = null; ED.seq2 = ''; ED.sel2 = 0; ED.flyer2 = false; }
+    else { ED.frames = []; ED.box = null; ED.seq1 = ''; ED.sel = 0; ED.mix = []; ED.mixT0 = 0; ED.playT0 = 0; edForget(); }
+    ED.objSel = 0; edLayout();
+    console.log('[vb] editor: deleted lane ' + L);
+  }, true);
+  // ── DRAG A .vox ANYWHERE OVER THE PAGE ── on DOCUMENT with capture, not on window in the bubble phase
+  // (user 2026-08-22: "Im draging it over the screen and letting it go but nothing is happening"). The canvas
+  // and the HUD both sit over the whole viewport and either can consume the event before it reaches window,
+  // and a dragover that is not preventDefault()ed means the browser never fires `drop` at all — it just
+  // navigates to the file, which in a canvas app looks like nothing happening. Capture gets it first; the
+  // `files` test keeps ordinary text/selection drags working normally.
+  const edHasFiles = (e) => !!(e.dataTransfer && e.dataTransfer.types && [...e.dataTransfer.types].indexOf('Files') >= 0);
+  document.addEventListener('dragover', (e) => { if (!ED.on || !edHasFiles(e)) return;
+    e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy'; }, true);
+  document.addEventListener('dragenter', (e) => { if (!ED.on || !edHasFiles(e)) return;
+    e.preventDefault(); e.stopPropagation(); }, true);
+  document.addEventListener('drop', async (e) => {
+    if (!ED.on || !e.dataTransfer) return;
+    const fs = [...e.dataTransfer.files].filter((f) => /\.vox$/i.test(f.name));
+    if (!fs.length) return;                            // not a .vox — leave it to the browser rather than swallowing the drop silently
+    e.preventDefault(); e.stopPropagation();
+    await edStageFiles(fs);
+    console.log('[vb] editor: staged ' + fs.length + ' dropped file(s) — ' + fs.map((f) => f.name).join(', '));
+  }, true);
 
     return { BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, ED_LANE_RUN, edExStep, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edBorrowN, edLayout, edLoadVox, edLoadVox2, edMixPick, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSeqsAt, edSnapCount, edSnapErrs, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk };
   })();
@@ -23974,6 +24483,7 @@
       return { species: DESERTS.map((d) => d.name + '@' + d.item0 + 'x' + d.n), nDesert: (typeof nDesert === 'undefined' ? 'UNDEFINED' : nDesert), perSpecies: (typeof nDesertOf === 'undefined' ? 'OUT-OF-SCOPE (tick-local)' : DESERTS.map((d, i) => d.name + ':' + nDesertOf(i))),
         home: DESERTS.map((d) => d.name + ':' + (DES_OAKONLY[d.name] ? 'oak x' + DES_OAKONLY[d.name] : 'sand')),   // the band is two biomes now — an oak-only species must read 0 in perSpecies and its whole count here, and a sand species must read the reverse
         DES_N, DES_PER, MAM_END, DES_END, pool: DES_END, slots: o }; },   // why a desert-band slot is or is not live
+    om(x, z) { return { oak: +oakM(x, z).toFixed(3), cherry: +cherryM(x, z).toFixed(3), desert: +desertM(x, z).toFixed(3) }; },   // the three band weights at a point — 'am I in the oak' answered directly rather than inferred from a walk
     dm(x, z) { return +desertM(x, z).toFixed(3); },   // biome weight at a world point: 0 = pine forest, 1 = open desert. The gates all key on this, so a test that wants to say "in the desert" has to be able to ask
     om(x, z) { return +oakM(x, z).toFixed(3); },
     cm(x, z) { return +cherryM(x, z).toFixed(3); },
@@ -27959,7 +28469,14 @@
           if (!ED.playT0) ED.playT0 = now;
           const tt = now - ED.playT0;
           edExStep(dt);
-          const frameMs = 1000 / (ED.name1 === 'flamingo' ? 12 : 24), pauseMs = ED.name1 === 'flamingo' ? 0 : 600;
+          // ── AND NOTHING HOLDS ON ITS LAST FRAME ANY MORE (user 2026-08-22: "when I drag in a animation
+          // sequence. have it play the frames continously. right now its plays till the end pauses, then plays
+          // the frames again") ── this was 600 ms for everything except the flamingo. The hold was written for
+          // a ONE-SHOT action, where the beat reads as the pose landing before the cycle restarts, and the
+          // flamingo was special-cased to 0 because a walk has no such beat. Now that the stage opens empty and
+          // every model arrives by drag-and-drop, a walk is the common case and the one-shot is the exception —
+          // so the exception is what needs asking for, not the loop.
+          const frameMs = 1000 / (ED.name1 === 'flamingo' ? 12 : 24), pauseMs = 0;
           // ── A WEIGHTED PLAYLIST ON THE EDITABLE LANE (user 2026-08-22: "jump = 50%, ribbet = 40%,
           // tongue = 10%") ── ED.mix holds the whole cycles the model may play and their weights; at every
           // cycle boundary the lane draws its next one and plays it whole. An EMPTY mix is every other load
@@ -29083,7 +29600,8 @@
       // path, its speed, its altitude servo and its arbiter branch — rather than the band's default kind 2.
       const DES_FLYER = { fly: 1, bee: 1, ladybug: 1 };   // the LADYBUG flies (user 2026-08-22) — it takes the fly's whole air behaviour, minus the bunching, which keys on the name 'fly' below
       const desFly = desSlot && DESERTS[desSp] && !!DES_FLYER[DESERTS[desSp].name];
-      const desLbug = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ladybug';   // it flies like the others (DES_FLYER) but it is the only one that LANDS — see the state machine below
+      const desLbug = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ladybug';
+      const desFrog = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'frog';   // the one creature that HOPS: see the leap block below   // it flies like the others (DES_FLYER) but it is the only one that LANDS — see the state machine below
       const desBee = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'bee';   // …and the ONE member with errands. Everything else about it is the fly.
       const DES_FLY_UP = 16;                             // …and rides this much higher than a butterfly's glide line   // ── DESERT CREATURES ── appended after the mammals, DES_PER slots per species, species index off the slot the same way the fish take B.fsp
       const flamSlot = wk >= FLAM_0 && wk < FLAM_END, porcSlot = wk >= PORC_0 && wk < PORC_0 + MAM_PER, skunkSlot = wk >= SKUNK_0 && wk < SKUNK_END, armSlot = wk >= ARM_0 && wk < ARM_END, bunnySlot = wk >= BUNNY_0 && wk < BUNNY_END, fishSlot = wk >= FISH_0 && wk < FISH_END, wormSlot = wk >= WORM_0 && wk < WORM_END, duckSlot = wk >= DUCK_0 && wk < BABY_END, lilySlot = wk >= CARD_0 && wk < CARD_END;
@@ -29283,6 +29801,17 @@
             const pool7 = free.length ? free : lakeSpots;
             const L7 = pool7[tries % pool7.length];
             sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
+          } else if (desSlot && DESERTS[desSp] && DES_WATER[DESERTS[desSp].name]) {
+            // ── A WATERSIDE SPECIES (user 2026-08-22: the frog "around water, similar to the dragonflies in
+            // that way") ── the same waterSpots home the dragonfly takes, walked by `tries` so one pool cannot
+            // monopolise every slot. The difference is the RADIUS and what happens at the edge: a dragonfly is
+            // placed OVER the water and rejected if it drifts ashore, and a frog is the exact opposite — it
+            // wants the bank, so it is placed in a ring around the spot and the wet ones are rejected below.
+            if (!waterSpots.length) continue;          // no water in the window → no frog, the same deal the dragonfly gets. Falling through to the inland annulus would put frogs in dry forest, which is the thing being asked against
+            const rW = DES_WATER[DESERTS[desSp].name];
+            const L6 = waterSpots[(wk + tries) % waterSpots.length];
+            const aW = Math.random() * 6.2831853, rr6 = rW * (0.45 + 0.55 * Math.sqrt(Math.random()));
+            sx = L6.x + Math.cos(aW) * rr6; sz = L6.z + Math.sin(aW) * rr6;
           } else if (wantK === 0 && isDfly) {          // DRAGONFLY: same kind-0 creature, but its home is WATER (user: only over lakes and rivers).
             const L8 = waterSpots[(wk + tries) % waterSpots.length];   // walk the spots as tries advance so one crowded pool can't monopolise every slot
             sx = L8.x + (Math.random() - 0.5) * 30; sz = L8.z + (Math.random() - 0.5) * 30;
@@ -29557,6 +30086,7 @@
             PH.stats.mamRockOK = (PH.stats.mamRockOK | 0) + 1;
           }
           if (wantK === 0 && isDfly && !bfWater(sx, sz)) continue;    // the jitter may have thrown it ashore — a dragonfly only ever starts over real water
+          if (desSlot && DESERTS[desSp] && DES_WATER[DESERTS[desSp].name] && bfWater(sx, sz)) continue;   // …and the mirror of it: a frog starts ON THE BANK, never in the lake
           if (wantK === 0 && !isDfly && bfWater(sx, sz)) continue;    // …and a BUTTERFLY never starts over water (user: limit butterflies over lakes); it may still drift out over one
           if ((wantK === 3 || wantK === 4) && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
           // ── BETTAS SCHOOL (user 2026-08-18: "make the betta fish swim in schools") ── the 14-voxel floor is an
@@ -29602,7 +30132,7 @@
           if (wantK === 6 || ((wantK === 2 || !bfRoofed(sx, sy, sz)) && !bfObst(sx, sy, sz))) {   // a fish spot was already fully validated (real deep water) — bfObst would see the WATER voxels as solid and reject every one; worms live happily UNDER the canopy — the roof test starved dense-forest placement ('worms only near spawn')
             B.x = sx; B.z = sz; B.y = sy; placed = true;
             const cx = Math.floor(sx / 64), cz = Math.floor(sz / 64);   // color = spatial hash of the 64-vox cell → world-anchored variety, all 3 colors present
-            B.col = ((Math.imul(cx, 374761393) ^ Math.imul(cz, 668265263)) >>> 0) % Math.max(1, BFLY_COLS.length);
+            B.col = ((Math.imul(cx, 374761393) ^ Math.imul(cz, 668265263)) >>> 0) % Math.max(1, BFLY_HASHN || BFLY_COLS.length);   // HASHN, not length: the synthetic yellow sits past the authored colours and must never be rolled at random — it stands in for pink, below
             // ── AND THE BLOSSOM GETS ONE COLOUR (user 2026-08-18: "have butterflies but only pink butterflies") ──
             // the spatial hash above is what scatters the six colours evenly across the world; here it is simply
             // overridden. Scoped to the flyer kinds and guarded on BFLY_PINK >= 0 so a missing pink/ folder
@@ -29610,6 +30140,13 @@
             // LILY size index (the lily path is inert today, nLily = 0, but the field is genuinely shared), which
             // is the other reason this is not written as a blanket assignment.
             if (BFLY_PINK >= 0 && wantK === 0 && !isDfly && cherryM(sx, sz) > BIO_FOREST) B.col = BFLY_PINK;
+            // ── AND PINK IS THE CHERRY BAND'S ALONE (user 2026-08-22: "make the pink butterfly a yellow one
+            // instead. remove the pink butterflies in the pine and oak forests. leave the cherry forest
+            // butterflies alone") ── the line above FORCES pink inside the band; outside it the hash could
+            // still roll pink on its own, which is where the forest pinks came from. Substituting rather than
+            // re-rolling keeps the per-cell colour map stable: a cell that was pink is now yellow, and every
+            // other cell keeps the colour it had. Runs after the cherry line, so the band is untouched.
+            else if (BFLY_YELLOW >= 0 && wantK === 0 && !isDfly && B.col === BFLY_PINK) B.col = BFLY_YELLOW;
           }
         }
         if (!placed) { if (B.sN) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
@@ -30914,6 +31451,70 @@
         else if (B.lbPh === 'land') { B.y = B.lbGy; B.x = B.lbX; B.z = B.lbZ; B.om = 0; B.omT = 0; B.trap = 0; Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }   // sitting still: the heading it landed on is the heading it keeps
         else if (B.lbPh === 'up') B.y += (cruise9 - B.y) * (1 - Math.exp(-2.2 * dt));
       }
+      // ── THE FROG HOPS (user 2026-08-22: "pursue implementing the frog in") ── it is a kind-2 ground creature
+      // and the walker above has already slid it along, which is exactly what a frog must not do. The leap is
+      // PRESCRIBED, not integrated: FROG_OFF (sim/life/slots.js) holds all three cycles' per-frame offsets as
+      // ui/editor.js aligned them by hand against the stage, [up, forward], and playing the hop carries it one
+      // metre forward and five voxels up over 17 frames. Between leaps it sits perfectly still, which is what
+      // makes the hop read as a hop — a frog that drifts between jumps just looks like it is skating.
+      // The frame is driven from here too (B.fgF), because the shared kind-2 frame clock would run the cycle
+      // continuously and the animation would not line up with the travel it is supposed to be causing.
+      // ── THE FROG IS THE EDITOR'S FROG (user 2026-08-22: "it should be an exact copy") ── same file, same
+      // three cycles, same weights: hop 50 / ribbet 40 / tongue 10 (FROG_MIX). Only the HOP carries it
+      // anywhere; ribbet and tongue play where it sits, which is what stops it looking like it is permanently
+      // mid-jump. Structured like the BUNNY, which the user pointed at: position is ASSIGNED from an anchor
+      // plus the baked per-frame offset rather than integrated, and the ground comes from navWalkStand — the
+      // walkable standing height. bfSurf is the top of the COLUMN, which under a crown is the canopy, and
+      // using it is what had the frog clipping through terrain.
+      if (desFrog && FROG_CYC.length) {
+        const fitF = DESERTS[desSp] ? MAMFIT[DESERTS[desSp].name] : null;
+        const seatF = fitF ? fitF.seat : 2;
+        if (B.fgP === undefined) { B.fgP = -1; B.fgC = -1; B.fgF = 0; B.fgX = B.x; B.fgZ = B.z; B.fgG = navWalkStand(B.x, B.z); B.fgRest = tb3 + FROG_REST_MIN + Math.random() * (FROG_REST_MAX - FROG_REST_MIN); }
+        if (B.fgP < 0) {                               // ── SITTING ── pinned on its anchor, holding frame 0
+          B.x = B.fgX; B.z = B.fgZ; B.y = B.fgG + seatF; B.fgF = 0;
+          B.om = 0; B.omT = 0; B.trap = 0;
+          if (tb3 > B.fgRest && !(tb3 < (B.fleeT || 0))) {
+            let w9 = Math.random() * (FROG_MIX[0] + FROG_MIX[1] + FROG_MIX[2]), c9 = 0;
+            while (c9 < FROG_MIX.length - 1 && w9 > FROG_MIX[c9]) { w9 -= FROG_MIX[c9]; c9++; }
+            if (c9 >= FROG_CYC.length) c9 = 0;
+            if (FROG_CYC[c9].move) {                   // a LEAP has to have somewhere to land: no water, no cliff, nothing in the way
+              const H8 = FROG_OFF.hop, far = -H8[H8.length - 1][1];
+              let ok9 = false;
+              for (let t9 = 0; t9 < 6 && !ok9; t9++) {
+                const th9 = t9 === 0 ? B.th + (Math.random() - 0.5) * 1.2 : Math.random() * 6.2831853;
+                const nx9 = B.x + Math.sin(th9) * far, nz9 = B.z + Math.cos(th9) * far;
+                if (bfWater(nx9, nz9)) continue;
+                const g9 = navWalkStand(nx9, nz9);
+                if (g9 === undefined || Math.abs(g9 - B.fgG) > 6) continue;
+                if (bfObst(nx9, g9 + seatF + 1, nz9)) continue;
+                B.th = th9; ok9 = true;
+              }
+              if (!ok9) { B.fgRest = tb3 + 0.6; c9 = -1; }   // boxed in — sit, and try a different cycle shortly
+            }
+            if (c9 >= 0) { B.fgC = c9; B.fgP = 0; B.fgX = B.x; B.fgZ = B.z; }
+          }
+        } else {                                       // ── PLAYING A CYCLE ── frame and position both read off it
+          const C9 = FROG_CYC[B.fgC] || FROG_CYC[0];
+          B.fgP += FROG_HOP_FPS * dt;
+          const i9 = Math.max(0, Math.min(C9.n - 1, Math.floor(B.fgP)));
+          B.fgF = C9.off + i9;
+          // EVERY cycle gets its own table, not just the hop: ribbet and tongue lean the body and come back,
+          // and drawing them without their offsets is what put the frog's alignment out. One expression for all
+          // three — the hop is simply the one whose table does not return to zero.
+          const T9 = FROG_OFF[C9.name], o9 = (T9 && T9[Math.min(T9.length - 1, i9)]) || FROG_ZERO;
+          const fwd9 = -o9[1];
+          B.x = B.fgX + Math.sin(B.th) * fwd9; B.z = B.fgZ + Math.cos(B.th) * fwd9;
+          B.y = B.fgG + seatF + o9[0];                 // the arc rides the ANCHOR's ground, so a leap is a clean parabola rather than a terrain-follow
+          B.om = 0; B.omT = 0; B.trap = 0;
+          if (B.fgP >= C9.n) {                         // finished — commit where it ended up and settle
+            B.fgP = -1; B.fgX = B.x; B.fgZ = B.z; B.fgF = 0;
+            const gN = navWalkStand(B.x, B.z); if (gN !== undefined) B.fgG = gN;   // re-derive at the NEW anchor, exactly as the bunny does after a baked jump
+            B.y = B.fgG + seatF;
+            B.fgRest = tb3 + FROG_REST_MIN + Math.random() * (FROG_REST_MAX - FROG_REST_MIN);
+          }
+        }
+        Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
+      }
       if (desBee && (B.beeM === 2 || B.beeM === 4)) {
         if (B.beeM === 2) {                            // SITTING: pinned over the bloom's own column, easing down onto the head. BEE_DOWN rather than a snap so the last of the approach reads as a landing, and the same ease lifts it off when the clock runs out.
           B.x = B.beeTx; B.z = B.beeTz;
@@ -31080,6 +31681,7 @@
       // becoming another, and it is only ever a frame-count mismatch.
       const fi3 = (B.kind === 2 && (skunkSlot || porcSlot || flamSlot)) ? (Math.floor(B.aframe || 0) % nfr)
         : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * desRate) % nfr)   // …and the desert rate applies HERE, which is the branch a kind-2 creature actually takes — putting it only on the line below meant the scorpion silently stayed at 24   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
+        : B.fgF !== undefined ? B.fgF                 // the FROG's frame is driven by its leap (above), not by the shared clock — the arc and the animation are the same seventeen frames
         : B.lbPh === 'land' ? 0                          // LANDED LADYBUG: frame 00 is the wings-SHUT pose, and holding it is what makes a landing read as a landing rather than a hover at ground level (the editor exhibit does the same in main/tick-emit.js)
         : Math.floor((tb3 + wk * 0.37) * desRate) % nfr;   // per-species rate for the desert set; everything else keeps the 24 fps house rule                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
       let glow = 0;

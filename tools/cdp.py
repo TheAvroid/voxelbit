@@ -162,6 +162,13 @@ def boot(url, ready_expr='!!(window.__vb && __vb.pos)', timeout=180, quiet=True)
     ticking once the canvas has been clicked. Returns (proc, ws, errors) where errors is
     a FUNCTION - call it for everything the page has complained about up to that moment.
     """
+    # VB_IGPU=1 boots every test instance on the INTEGRATED adapter (appends ?igpu, which asks for
+    # powerPreference 'low-power'), so an AI test browser stops competing with the played game for the
+    # discrete card. Central here because every tool reaches Chrome through boot() -- no per-tool edit.
+    # Needs the iGPU enabled in BIOS: with no integrated adapter present the hint is silently ignored and
+    # the test runs on the dGPU anyway, which is exactly what window.__vbAdapter exists to make assertable.
+    if os.environ.get('VB_IGPU') == '1' and 'igpu' not in url:
+        url += ('&' if '?' in url else '?') + 'igpu'
     p = launch(url)
     ws = WS(wait_target())
     ws.call('Page.enable'); ws.call('Runtime.enable'); ws.call('Log.enable')

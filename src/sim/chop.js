@@ -25,6 +25,13 @@
     if (oi < 0) for (let i = 0; i < PH.bodies.length; i++) { if (PH.bodies[i].absorbing) continue;
       if (oi < 0 || PH.bodies[i].born < PH.bodies[oi].born) oi = i; }   // nothing but scenery left: the budget is genuinely exhausted, so fall back to the oldest — still never one in flight
     if (oi < 0) return false;
+    // ── AND RECLAIMING IS NOT DESTROYING ── this used to splice the victim and let its voxels cease to exist.
+    // physRetire writes a body's voxels back into W at its resting pose (into EMPTY cells only, so it can never
+    // overwrite terrain) and queues them for the support resolver, so what it gives back either stands where it
+    // fell or is dropped like any other orphan. Deleting is now only the fallback for a body that cannot be
+    // written back at all. Same rule the user asked for on the felled tree: nothing disappears un-absorbed.
+    const vb9 = PH.bodies[oi];
+    if (!physRetire(vb9)) PH.stats.reclaimLost = (PH.stats.reclaimLost | 0) + 1;
     PH.bodies.splice(oi, 1); PH.stats.reclaimed++;
     return true;
   };
@@ -363,12 +370,22 @@
         // ── ARMED, NOT DRIVING ── the drive PRESCRIBES rotation, which the contact solver cannot argue
         // with, so starting it at the cut let the trunk rotate straight through its own stump (user).
         // Drop cleanly onto the cut face first; phStep starts the topple once it has actually landed.
+        // ── THE TOPPLE DRIVE, BACK (user 2026-08-22: "can you bring back the tilting physics for the trees?")
+        // ── removed earlier the same day when the shared fall direction read as an auto-tilt; the tree standing
+        // straight up on its stump was worse. It keeps its own random scatter (PH.fellSpread) so trees do not
+        // all go the same way, and it now runs at FULL gravity rather than the old 0.39 slow-motion.
         b.tipArm = 1; b.tipArmT = performance.now();
         b.noAbsorb = true;                           // the TOPPLING TRUNK is the tree falling, not debris — it must never fly into the player
         b.fellWhole = 1;                             // …and it BREAKS when it lands (sim/solver.js arms this, sim/chop-tree.js does it), which is also where noAbsorb is lifted
-        b.slowFall = PH.fallSlow;                    // the trunk falls in the slowed time base (see PH.fallSlow); everything else keeps normal gravity
-        b.omega[0] = b.omega[1] = b.omega[2] = 0;    // no spin at all until it is down
-        b.vel[0] = b.vel[2] = 0;                     // …and straight down, so it meets the stump square
+        // ── FULL GRAVITY (user 2026-08-22: "the trees seem to have space like gravity" / "make it more
+        // realistic") ── slowFall is a MULTIPLIER on gravity in sim/solver.js, not a flag: undefined means 1.
+        // Setting it to 0 when the staged fall was removed meant gravity x 0 — the trunk had none at all, and
+        // what little motion it had came from the one nudge at the cut. 1 is ordinary gravity, which is also
+        // what "more realistic" asks for: the old 0.39 was a deliberate slow-motion for the staged topple and
+        // there is no staged topple any more.
+        b.slowFall = 1;
+        b.omega[0] = b.omega[1] = b.omega[2] = 0;    // the drive owns the rotation from here — no spin until it is going over
+        b.vel[0] = b.vel[2] = 0;                     // …and straight down onto the cut face, so it meets the stump square
       }
       if (!b.noAbsorb) b.absorbAt = performance.now() + PH.absorbMs;   // BROKEN PIECES are collectable too (user): before this only swing-carved chunks had a timer, so separated pieces lay on the ground forever
       PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(b); made.push(b);
@@ -397,6 +414,7 @@
       // 26 it has always had; only the oaks, whose crowns run 44 to 114, take the cheap path.
       const wSpan = Math.max(bx1 - bx0, bz1 - bz0);
       coneWake(bx0, bx1, by0, by1, bz0, bz1, wSpan >= 40 ? 4 : undefined);
+      petalClearBox(bx0, bx1, bz0, bz1);             // …and the leaves already falling out of the crown that just left: see the note on petalClearBox
     }
     PH.stats.separations += made.length;
     PH.stats.lastSepMs = +(performance.now() - t0).toFixed(2);

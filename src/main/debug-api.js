@@ -249,6 +249,7 @@
       return { species: DESERTS.map((d) => d.name + '@' + d.item0 + 'x' + d.n), nDesert: (typeof nDesert === 'undefined' ? 'UNDEFINED' : nDesert), perSpecies: (typeof nDesertOf === 'undefined' ? 'OUT-OF-SCOPE (tick-local)' : DESERTS.map((d, i) => d.name + ':' + nDesertOf(i))),
         home: DESERTS.map((d) => d.name + ':' + (DES_OAKONLY[d.name] ? 'oak x' + DES_OAKONLY[d.name] : 'sand')),   // the band is two biomes now — an oak-only species must read 0 in perSpecies and its whole count here, and a sand species must read the reverse
         DES_N, DES_PER, MAM_END, DES_END, pool: DES_END, slots: o }; },   // why a desert-band slot is or is not live
+    om(x, z) { return { oak: +oakM(x, z).toFixed(3), cherry: +cherryM(x, z).toFixed(3), desert: +desertM(x, z).toFixed(3) }; },   // the three band weights at a point — 'am I in the oak' answered directly rather than inferred from a walk
     dm(x, z) { return +desertM(x, z).toFixed(3); },   // biome weight at a world point: 0 = pine forest, 1 = open desert. The gates all key on this, so a test that wants to say "in the desert" has to be able to ask
     om(x, z) { return +oakM(x, z).toFixed(3); },
     cm(x, z) { return +cherryM(x, z).toFixed(3); },

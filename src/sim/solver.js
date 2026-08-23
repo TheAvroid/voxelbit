@@ -1,5 +1,5 @@
   // @module - the positional constraint solver shared by ragdolls and dropped items
-  // @exports physStep
+  // @exports physStep, physRetire
   // ── SOLVER ── sequential impulse / PGS, fixed 60 Hz, PH.iters iterations, no pair state between steps.
   const phStep = (b, h) => {
     if (b.sleeping || b.absorbing) return;             // an absorbing chunk is driven by its flight curve, not by physics
@@ -57,34 +57,16 @@
         b.sleepT = 0;                                  // a half-fallen trunk must not doze off mid-tilt
       }
     }
-    // ── THE TREE BREAKS ON IMPACT, NOT ON THE CUT (user 2026-08-22: "can you make the trees break in pieces
-    // when it falls over? not at the moment the player chomps the tree down, but the moment the tree hits the
-    // terrain") ── armed at the fell (sim/chop.js sets fellWhole beside noAbsorb) and fired here, once the
-    // topple drive has handed back to plain physics AND the trunk has been in contact for a few frames.
-    // Debounced rather than fired on the first contact, because a trunk going over can clip its own stump or
-    // a rise on the way down and neither is the landing. phShatterTree lifts noAbsorb on the pieces, so the
-    // tree becomes collectable at the same moment it breaks — the two halves of the ask are one event.
-    // ── AND IT HAS TO HAVE ACTUALLY GONE OVER ── gating on `!b.tipping` alone was wrong and MEASURED wrong:
-    // a freshly severed trunk is ARMED (tipArm) but not yet TIPPING, so the gate passed while the tree was
-    // still standing on its own stump and it burst into four pieces upright, at the cut — the exact thing the
-    // user asked to move away from. fellDown is set only where the topple drive completes, so a tree that has
-    // not fallen cannot break, however long it rests there.
-    // ── …OR IT IS SIMPLY LYING DOWN (user 2026-08-22: "also sometimes they dont break at all") ── fellDown is
-    // set only where the topple DRIVE completes, and a trunk can end up flat without that ever happening: it
-    // can be knocked over by the pieces of another tree, slide off its own stump, or be armed and never seated
-    // so `tipping` is never entered at all. Those trees landed and stayed whole. b.ay[1] is the body's own
-    // up-axis in world space, so testing it against the same tipDone the drive uses asks the only question
-    // that matters — is this thing on its side — and a standing tree reads ~1 and still cannot break.
-    if (b.fellWhole && !b.tipping && (b.fellDown || b.ay[1] <= PH.tipDone)) {
-      if ((b.contacts | 0) > 0) {
-        if ((b.fellLandT = (b.fellLandT | 0) + 1) >= PH.fellLandFrames) { b.fellWhole = 0; phShatterTree(b); return; }
-      } else b.fellLandT = 0;
-    }
+    // ── THE TREE BREAKS ON A CLOCK (user 2026-08-22: "have the tree turn into chunks after 10 seconds of
+    // becoming an rigid body") ── armed at the fell (sim/chop.js sets fellWhole beside noAbsorb) and fired
+    // PH.fellBreakMs after the body was born. This replaces a landing test that had to know the trunk was
+    // down, which in turn needed the topple drive to have run — and that drive is what made every tree tilt
+    // the same way. A clock needs none of it, so the fall can be plain physics and the break still happens.
     // RESTING LATCH: a body that was in contact last step and is barely moving does not re-accumulate
     // gravity. Without this, every contact-free step re-added 3.3 vox/s of fall which the next step's
     // impulse cancelled — a limit cycle that kept a visibly stationary body above the sleep threshold
     // forever. Self-correcting: if the support goes away, contacts hit 0 and gravity resumes next step.
-    const resting = (b.contacts | 0) > 0 && Math.hypot(b.vel[0], b.vel[1], b.vel[2]) < PH.sleepLin;   // NB: this stays ON during a topple. Exempting tipping bodies reopened the gravity/impulse limit cycle the latch exists to stop, and a driven topple does not need gravity to turn anyway.
+    const resting = !(b.noRest !== undefined && performance.now() < b.noRest) && (b.contacts | 0) > 0 && Math.hypot(b.vel[0], b.vel[1], b.vel[2]) < PH.sleepLin;   // noRest: a freshly shattered piece is in contact with its siblings and would otherwise hold itself up — see PH.fellSettleMs   // NB: this stays ON during a topple. Exempting tipping bodies reopened the gravity/impulse limit cycle the latch exists to stop, and a driven topple does not need gravity to turn anyway.
     if (!resting) b.vel[1] -= PH.gravity * (b.slowFall === undefined ? 1 : b.slowFall) * h;   // a felled trunk falls in a slowed time base — see PH.fallSlow
     const ld = Math.exp(-PH.linDamp * h), ad = Math.exp(-PH.angDamp * h);
     b.vel[0] *= ld; b.vel[1] *= ld; b.vel[2] *= ld;
@@ -169,9 +151,26 @@
     // resting body micro-settles, and requiring one meant the countdown decayed faster than it grew —
     // a body that had visibly stopped stayed awake forever. Free fall cannot false-trigger it: one step
     // of gravity is already 3.3 vox/s, well over sleepLin.
-    if (lin < PH.sleepLin && angOK) {
+    if ((b.contacts | 0) > 0) b.cT = performance.now();   // when it last actually touched the world
+    // ── AND IT MAY NOT FALL ASLEEP IN OPEN AIR (user 2026-08-22, screenshot: small clusters hanging in the
+    // sky after the chunks fall) ── sleep was judged on low motion ALONE, deliberately, because contacts
+    // flicker in and out as a body micro-settles. But a body whose support GOES AWAY — the chunk it was
+    // resting on absorbed, the branch under it carved — keeps its near-zero velocity for the 40 frames the
+    // counter needs and drops off to sleep in mid-air. A sleeping body skips the step entirely, so it can
+    // never fall again: MEASURED after a fell, 11 bodies unsupported in air, one with contacts 0, sleeping
+    // true, nine voxels up with nothing solid beneath it. Half a second of grace keeps the flicker tolerance
+    // the original wanted while making "has not touched anything for a while" disqualifying.
+    const heldRecently = (performance.now() - (b.cT === undefined ? 0 : b.cT)) < 500;
+    if (lin < PH.sleepLin && angOK && heldRecently) {
       if (!b.tipping && ++b.sleepT >= PH.sleepFrames) { b.sleeping = true; b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0;
-        if (b.n <= PH.retireMax) b.retire = true;
+        // ── A PIECE OF A FELLED TREE IS NEVER BAKED BACK IN (user 2026-08-22: "theres also still voxels from
+        // the tree after it had been felled", alongside "dont let chunks dissapear, unless absorbed by the
+        // player") ── those two asks pull opposite ways for every OTHER chunk, and retiring is the compromise:
+        // the voxels survive, as world geometry. For a tree the player just felled it is the wrong trade — the
+        // whole point of the pieces is that they are COLLECTABLE, and a retired one is terrain you cannot pick
+        // up, sitting where the tree came down. So fellLoot keeps its slot and leaves only by being absorbed or
+        // by expiring on fellLifeMs (5 min). MEASURED before this: 4 pieces of one oak baked into the world.
+        if (b.n <= PH.retireMax && !b.fellLoot) b.retire = true;
         // ── AND SETTLED SCRAP FAR FROM THE PLAYER GOES BACK IN THE GRID TOO ── MEASURED: PH.bodies sits
         // pinned at 16/16 in ordinary play with nothing being chopped, because the support resolver sheds a
         // needle or a cone here and there and each one holds a slot for the full chunkLifeMs. A saturated
@@ -188,7 +187,7 @@
         // paths ran on chunks the player was walking toward. The distance gate alone already covers the concern:
         // retireFarR is 48 and the largest nearR anything sets is 16 (absorbR, and the arrow's is the same), so
         // a body eligible here is three times further away than any reach that could collect it.
-        else if (!b.noAbsorb && b.n <= PH.retireFar) {
+        else if (!b.noAbsorb && !b.fellLoot && b.n <= PH.retireFar) {   // …and the distance path is exempt for the same reason
           const rdx = b.pos[0] - P.x, rdy = b.pos[1] - smoothEye, rdz = b.pos[2] - P.z;
           if (rdx * rdx + rdy * rdy + rdz * rdz > PH.retireFarR * PH.retireFarR) b.retire = true;
         } }
@@ -267,7 +266,12 @@
     const tNow = performance.now();
     for (let i = PH.bodies.length - 1; i >= 0; i--) {
       const b = PH.bodies[i];
-      if (!b.absorbing && tNow - b.born > (b.noAbsorb ? PH.treeLifeMs : PH.chunkLifeMs)) {
+      // ── THE FELL'S BREAK CLOCK LIVES HERE, NOT IN THE PER-BODY STEP ── phStep returns immediately for a
+      // SLEEPING body, and a severed trunk resting on its own stump is asleep inside a second, so a break
+      // tested in there could never fire on the one case it exists for (measured: 20 s, still one 8,016-voxel
+      // body). This sweep visits every body whatever its state, and it already owns tNow.
+      if (b.fellWhole && !b.absorbing && tNow - b.born > PH.fellBreakMs) { if (phShatterTree(b)) { b.fellWhole = 0; continue; } }   // a 0 means it could not break YET (no room for uniform pieces) — keep the flag and try again next tick
+      if (!b.absorbing && tNow - b.born > (b.noAbsorb ? PH.treeLifeMs : (b.fellLoot ? PH.fellLifeMs : PH.chunkLifeMs))) {   // fellLoot = a piece of a tree the player felled (sim/chop-tree.js): 5 minutes, not 10
         PH.bodies.splice(i, 1); PH.stats.expired = (PH.stats.expired | 0) + 1;   // ── EXPIRED (user) ── see treeLifeMs / chunkLifeMs
         continue;                                      // one already flying into the player finishes its flight — it is about to be gone anyway
       }
@@ -289,7 +293,14 @@
       if (b.absorbing) {
         const k = Math.min(1, (tNow - b.absorbT0) / PH.absorbFly);
         const e = k * k * (3 - 2 * k);                 // smoothstep — leaves the ground gently, arrives fast
-        const tx = P.x, ty = smoothEye + PH.absorbY, tz = P.z;   // tracked live so the chunk follows a moving player
+        // ── AND A BIG CHUNK AIMS LOWER THAN A CHIP (user 2026-08-22: "the chunks from the tree appear too high
+        // being absorbed into the player ... the chunks absorbed from the tools are fine") ── absorbY places the
+        // body's CENTRE 12 voxels under the eye, which is chest height for the 30-voxel chip that number was
+        // tuned on. A felled-tree chunk is 350 voxels — several voxels tall — so its centre at chest puts its
+        // TOP across the view. Dropping the target by the body's own half-height makes the arrival read the
+        // same whatever the size, and leaves the chip exactly where it already was (half of ~3 is ~1.5).
+        const half9 = b.gpu ? 0.5 * Math.max(b.gpu.bw | 0, b.gpu.bh | 0, b.gpu.bd | 0) : 0;
+        const tx = P.x, ty = smoothEye + PH.absorbY - half9, tz = P.z;   // tracked live so the chunk follows a moving player
         b.pos[0] = b.absorbP[0] + (tx - b.absorbP[0]) * e;
         b.pos[1] = b.absorbP[1] + (ty - b.absorbP[1]) * e + Math.sin(e * Math.PI) * 3;   // slight arc so it lifts rather than slides
         b.pos[2] = b.absorbP[2] + (tz - b.absorbP[2]) * e;
@@ -324,7 +335,7 @@
         // SIZE IS STILL THE ONLY OTHER GATE, deliberately: PH.absorbSize is the user's own "too big to carry,"
         // break it down first" rule and this does not touch it.
         const vJ = b.vel[0] * b.vel[0] + b.vel[1] * b.vel[1] + b.vel[2] * b.vel[2];
-        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || vJ < 4))) continue;   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
+        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || b.fellLoot || vJ < 4))) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
         const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
         const rA = b.nearR || PH.absorbR;               // an ARROW's chunk keeps its own, much shorter reach (user)
         if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;

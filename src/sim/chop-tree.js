@@ -341,6 +341,58 @@
   // Split along the body's LONGEST local axis, which for a trunk is its length — so the pieces are logs rather
   // than an arbitrary dice. The parent is spliced out first for the same reason the chop path does it: the
   // rebuild may reclaim slots and would otherwise trip over the body it is replacing.
+  // ── AND THE STUMP BREAKS TOO (user 2026-08-22: "have the tree trunk thats still connected to the terrain
+  // break into chunks as well") ── the part below the cut is rooted in the ground, so phSeparate never orphans
+  // it and it survives the fell as world voxels. This lifts it out of W at the same moment the trunk breaks and
+  // hands it back as the same connected, chunk9-sized bodies, so the whole tree ends up as collectable chunks
+  // and no stump is left standing. Wood only: the grass and soil around the base are not the tree.
+  const phShatterStump = (b) => {
+    if (!b.origin || !b.sx || !b.sz) return 0;
+    const ox = b.origin[0] | 0, oy = b.origin[1] | 0, oz = b.origin[2] | 0, sx = b.sx | 0, sz = b.sz | 0;
+    const cells = [], idMap = new Map(), out = [];
+    const sxz = sx * sz;
+    for (let my = 0; my < 40; my++) {
+      const wy = oy + my; if (wy < 1 || wy >= WY) continue;
+      for (let mz = 0; mz < sz; mz++) for (let mx = 0; mx < sx; mx++) {
+        const ii = gwrap(ox + mx, WX) + wy * WX + gwrap(oz + mz, WZ) * WX * WY;
+        const v = W[ii]; if (!v || !woodTab[v]) continue;
+        const kk = mx + mz * sx + my * sxz;
+        cells.push(kk); idMap.set(kk, v); out.push(ii);
+      }
+    }
+    if (cells.length < 8) return 0;                    // nothing left worth breaking — a cut flush with the ground
+    for (const ii of out) W[ii] = 0;
+    gpuPatch(out, false);
+    wakeFrom(out, 6);                                  // whatever was resting on the stump is asked again
+    const present = new Set(cells), used = new Set();
+    const free9 = Math.max(1, PH.maxBodies - PH.bodies.length);
+    const chunk9 = Math.max(PH.fellChunkVox, Math.ceil(cells.length / free9));
+    let made = 0;
+    for (let q = 0; q < cells.length; q++) {
+      const seed = cells[q]; if (used.has(seed)) continue;
+      const grp = [seed]; used.add(seed);
+      for (let h = 0; h < grp.length && grp.length < chunk9; h++) {
+        const kk = grp[h];
+        const mx = kk % sx, mz = ((kk / sx) | 0) % sz, my = (kk / sxz) | 0;
+        for (let d = 0; d < 27 && grp.length < chunk9; d++) {
+          const ax = mx + (d % 3) - 1, ay = my + ((((d / 3) | 0) % 3)) - 1, az = mz + (((d / 9) | 0)) - 1;
+          if (ax < 0 || ax >= sx || az < 0 || az >= sz || ay < 0) continue;
+          const nk = ax + az * sx + ay * sxz;
+          if (!present.has(nk) || used.has(nk)) continue;
+          used.add(nk); grp.push(nk);
+        }
+      }
+      if (PH.bodies.length >= PH.maxBodies) break;     // out of slots: what is left simply stays out of W rather than being destroyed… see below
+      const nb = phBuildBody({ bx: ox, gy: oy, bz: oz }, grp, { sx, sz }, idMap);
+      if (!nb) break;
+      nb.fellLoot = 1; nb.noAbsorb = false;
+      nb.absorbAt = undefined;
+      nb.noRest = performance.now() + PH.fellSettleMs;
+      PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(nb); made++;
+    }
+    PH.stats.stumpChunks = (PH.stats.stumpChunks | 0) + made;
+    return made;
+  };
   const phShatterTree = (b) => { phSrc = 'treeLand';
     const i = PH.bodies.indexOf(b); if (i < 0) return 0;
     const sx = b.sx, sz = b.sz, key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
@@ -357,27 +409,113 @@
     // as a broken tree. The second cut is along the next-longest axis, so a piece is bounded on two sides and
     // reads as a chunk. Two divisions there rather than a free count — this is "cut the disc in half", and the
     // piece budget is spent on length first, which is where a trunk actually wants to break.
-    const axis = EX[1] >= EX[0] && EX[1] >= EX[2] ? 1 : (EX[0] >= EX[2] ? 0 : 2);   // the trunk's length: local y for a standing model, and the fell does not change the LOCAL frame
-    const rest = [0, 1, 2].filter((q) => q !== axis);
-    const axis2 = EX[rest[0]] >= EX[rest[1]] ? rest[0] : rest[1];
-    const axis3 = rest[0] === axis2 ? rest[1] : rest[0];   // the remaining axis — "cut the chunks in half again" (user 2026-08-22), so a piece is bounded on all THREE sides
-    const span = EX[axis] + 1, span2 = EX[axis2] + 1, span3 = EX[axis3] + 1;
-    // One piece per PH.fellPieceVox of length, bounded by what the slot budget can actually hold: asking for
-    // more pieces than there are slots does not make more pieces, it makes phSubBody fail partway and lose the
-    // tail of the tree. Two is the floor — a "break" that yields one piece is the bug this replaces.
-    const want = Math.max(2, Math.min(PH.fellPieceMax, Math.round(span / PH.fellPieceVox)));
-    const SPLIT2 = 2, SPLIT3 = 2;
-    const buckets = [];
-    for (let q = 0; q < want * SPLIT2 * SPLIT3; q++) buckets.push([]);
-    const idMap = new Map();
-    const LC = [b.lx, b.ly, b.lz];
+    // ── EVERY PIECE THE SAME SIZE (user 2026-08-22: "all of the felled tree chunks have the exact same chunk
+    // size") ── a spatial GRID cannot do that: a crown is dense in the middle and thin at the rim, so equal
+    // boxes hold wildly unequal numbers of voxels (measured: median 261, largest 1105 — a 4x spread from cells
+    // that were the same shape). Counting is the only way to make the SIZE the constant, so the cells are
+    // ordered and then cut every PH.fellChunkVox of them, which makes each piece exactly that many voxels.
+    // MORTON order, not raw x/y/z: interleaving the bits keeps the run of cells that lands in one piece
+    // spatially COMPACT, so a chunk is a lump of tree rather than a thin sheet spanning the whole crown. That
+    // is the whole reason to pay for a sort here — sorting on one axis would give equal counts and terrible
+    // shapes. 8 bits per axis covers the largest model this game has.
+    const mort9 = (x, y, z) => { let m = 0;
+      for (let q = 0; q < 8; q++) m |= (((x >> q) & 1) << (3 * q)) | (((y >> q) & 1) << (3 * q + 1)) | (((z >> q) & 1) << (3 * q + 2));
+      return m; };
+    const cellsM = [], idMap = new Map();
     for (let k = 0; k < b.n; k++) {
       const kk = key(b.lx[k], b.ly[k], b.lz[k]);
       idMap.set(kk, b.id[k]);
-      let q = ((LC[axis][k] - LO[axis]) / span * want) | 0; if (q < 0) q = 0; if (q >= want) q = want - 1;
-      let q2 = ((LC[axis2][k] - LO[axis2]) / span2 * SPLIT2) | 0; if (q2 < 0) q2 = 0; if (q2 >= SPLIT2) q2 = SPLIT2 - 1;
-      let q3 = ((LC[axis3][k] - LO[axis3]) / span3 * SPLIT3) | 0; if (q3 < 0) q3 = 0; if (q3 >= SPLIT3) q3 = SPLIT3 - 1;
-      buckets[(q * SPLIT2 + q2) * SPLIT3 + q3].push(kk);
+      cellsM.push([mort9(b.lx[k] - LO[0], b.ly[k] - LO[1], b.lz[k] - LO[2]), kk]);
+    }
+    cellsM.sort((p9, q9) => p9[0] - q9[0]);
+    // The count is still bounded by the slots that are actually free — a piece with nowhere to live cannot be
+    // made — so a very large tree in a busy scene gets fewer, bigger chunks rather than losing any of itself.
+    // ── THE CHUNK SIZE NEVER GROWS; THE BREAK WAITS INSTEAD (user 2026-08-22: "some chunks are still too big.
+    // they arent even being absorbed") ── this used to raise chunk9 when slots were short, which is how a
+    // second tree felled into the first one's debris came out in 10,027-voxel lumps, 30 of them over the
+    // absorb limit. Size is the thing the player feels, so it is fixed: if there is not room to break this
+    // tree into uniform pieces right now, the tree stays whole and tries again on the next tick — a few
+    // seconds late once the earlier debris has been collected or expired, and always the right size.
+    const free9 = Math.max(1, PH.maxBodies - PH.bodies.length - 1);
+    const chunk9 = PH.fellChunkVox;
+    if (free9 < Math.ceil(b.n / chunk9)) return 0;      // NOT spliced out, fellWhole NOT cleared — see the caller
+    // ── A PIECE MUST BE ONE CONNECTED LUMP (user 2026-08-22: "make it where chunks voxels have to be touching
+    // eachother and cannot be seperated by air") ── slicing the Morton order every chunk9 cells gets the SIZE
+    // right and says nothing about connectivity: Morton keeps neighbours near each other in the ordering but
+    // does not guarantee a run is contiguous, so a piece could hold two separate blobs bound together only by
+    // the body transform — and the far one then hangs in the air with nothing around it, which is what a
+    // "floating voxel" off a chunk actually is. So a piece is GROWN instead: seed at the lowest unused cell in
+    // Morton order (compact and deterministic) and flood 26-connected through unused cells until it has
+    // chunk9 of them. Connectivity is a hard constraint and the size is the target: where a connected region
+    // runs out early the piece is simply smaller, because the alternative is a piece with a hole of air in it.
+    const present = new Set();
+    for (let q = 0; q < cellsM.length; q++) present.add(cellsM[q][1]);
+    const sxz = sx * sz;
+    // ── AND THE PIECE COUNT MUST FIT THE BODY CAP ── growth is greedy, so it makes MORE pieces than
+    // ceil(n / chunk9): a run stops when it has enough, and the pocket it walked past becomes a piece of its
+    // own. MEASURED on an 86k oak at chunk9 350: 493 pieces against a PHYS_MAX of 256 — and a body past the
+    // cap cannot even be uploaded (main/tick-emit.js skips nb >= PHYS_MAX), so it would be invisible AND
+    // physical. Growing chunk9 and re-running is the fix that keeps every piece CONNECTED: bigger pieces, same
+    // rule, never a piece stitched together across air just to hit a number.
+    // ── BALANCED MULTI-SOURCE GROWTH ── every piece must be ONE CONNECTED LUMP (voxels touching, never split
+    // by air) and they must all be about the SAME SIZE. Growing pieces one at a time cannot do both: a greedy
+    // blob takes its quota and walks past cells that then have nobody to join, and folding those pockets back
+    // in afterwards either lets one piece run away (measured: median 353, largest 1749) or, with a ceiling on
+    // the host, leaves the pockets stranded as scraps (median 8, p90 1072 — bimodal, which is worse).
+    // So all K pieces grow AT ONCE from K seeds spread through the Morton order, claiming one cell each per
+    // round. Nothing is stranded because every frontier advances together, every piece is connected because it
+    // only ever claims a neighbour of a cell it already owns, and the sizes come out even because they grow at
+    // the same rate. Anything left over is a region no seed could reach — genuinely disconnected geometry —
+    // and becomes its own piece rather than being stitched across air to something else.
+    const K = Math.max(2, Math.ceil(b.n / chunk9));   // room for this many was checked above
+    const ownOf = new Map();
+    const queues = [], buckets = [];
+    for (let q = 0; q < K; q++) {
+      const seed = cellsM[Math.min(cellsM.length - 1, Math.floor(q * cellsM.length / K))][1];
+      if (ownOf.has(seed)) { queues.push([]); buckets.push([]); continue; }
+      ownOf.set(seed, q); queues.push([seed]); buckets.push([seed]);
+    }
+    const nbrs9 = (kk, out) => { let m = 0;
+      const mx = kk % sx, mz = ((kk / sx) | 0) % sz, my = (kk / sxz) | 0;
+      for (let d = 0; d < 27; d++) {
+        const ax = mx + (d % 3) - 1, ay = my + ((((d / 3) | 0) % 3)) - 1, az = mz + (((d / 9) | 0)) - 1;
+        if (ax < 0 || ax >= sx || az < 0 || az >= sz || ay < 0) continue;   // model-local bounds: no wrap, or a piece would reach round to the far face
+        out[m++] = ax + az * sx + ay * sxz;
+      }
+      return m; };
+    const nb9 = new Int32Array(27);
+    // One SHELL per piece per round: pop a single frontier cell and claim every unclaimed neighbour of it.
+    // All K frontiers advance at the same rate, so the pieces come out the same size, and a cell with no
+    // unclaimed neighbours is simply dropped from the frontier — the earlier version pushed it BACK, which
+    // made queues that never emptied, stalled the growth, and left 61,024 cells for the island pass to sweep
+    // up as one piece. Head pointers rather than shift(): these arrays run to tens of thousands of entries.
+    const heads = new Int32Array(K);
+    let live = true;
+    while (live) {
+      live = false;
+      for (let q = 0; q < K; q++) {
+        const qq = queues[q];
+        if (heads[q] >= qq.length) continue;
+        const kk = qq[heads[q]++];
+        const m = nbrs9(kk, nb9);
+        for (let t = 0; t < m; t++) { const nk = nb9[t];
+          if (!present.has(nk) || ownOf.has(nk)) continue;
+          ownOf.set(nk, q); buckets[q].push(nk); qq.push(nk);
+        }
+        if (heads[q] < qq.length) live = true;
+      }
+    }
+    // Whatever no seed reached is a disconnected island: give each its own piece rather than attaching it to
+    // something it does not touch. This is the case that MUST stay separate — it is exactly the floating-voxel
+    // bug when it is not.
+    for (let q = 0; q < cellsM.length; q++) { const kk = cellsM[q][1];
+      if (ownOf.has(kk)) continue;
+      const grp = [kk]; ownOf.set(kk, -1);
+      for (let h = 0; h < grp.length; h++) { const m = nbrs9(grp[h], nb9);
+        for (let t = 0; t < m; t++) { const nk = nb9[t];
+          if (!present.has(nk) || ownOf.has(nk)) continue;
+          ownOf.set(nk, -1); grp.push(nk); } }
+      buckets.push(grp);
     }
     PH.bodies.splice(i, 1);                            // out of the list BEFORE rebuilding, exactly as the body-chop path above does
     // ── AND NOTHING IS THROWN AWAY TO FIT ── this used to filter buckets to >= 2 cells and `break` out of the
@@ -387,7 +525,15 @@
     const keep = [];
     for (const comp of buckets) {
       if (!comp.length) continue;
-      if (keep.length && (comp.length < 2 || !phMakeRoom(keep.length))) { keep[0] = keep[0].concat(comp); continue; }
+      // ── A FREE SLOT, NOT A MADE ONE (user 2026-08-22: "when the tree lands on the terrain from being felled,
+      // some of the chunks dissapear. dont let chunks dissapear, unless absorbed by the player") ── this asked
+      // phMakeRoom, and phMakeRoom MAKES room by deleting the oldest body outright. Called once per piece with
+      // up to 48 pieces, it was evicting the earlier pieces of the very tree it was breaking, which is exactly
+      // the chunks vanishing on impact. A plain capacity test cannot destroy anything: what will not fit merges
+      // into the first piece instead, so the tree keeps every voxel it had however tight the budget is.
+      // The bucket COUNT already fits the free slots, so nothing here has to be merged away to make space —
+      // only true slivers (a bucket the partition left with a voxel or two) ride with the first piece.
+      if (keep.length && comp.length < 2) { keep[0] = keep[0].concat(comp); continue; }
       keep.push(comp);
     }
     if (keep.length < 2) {                             // nothing to gain — put it back untouched rather than rebuild an identical body
@@ -395,6 +541,7 @@
     }
     let made = 0;
     for (const comp of keep) {
+      if (PH.bodies.length >= PH.maxBodies) break;     // hard guard: a body past the cap is one the uniform cannot carry
       const nb = phSubBody(b, comp, idMap);
       nb.c26 = b.c26;
       nb.sleeping = false; nb.sleepT = 0;
@@ -407,6 +554,7 @@
       // stop someone pocketing a hillside, and a tree they have just felled is the one mass they are OWED —
       // so the pieces of a fell carry an exemption instead of the number being lowered for everything.
       nb.fellLoot = 1;
+      nb.noRest = performance.now() + PH.fellSettleMs;   // …and it may not rest on its siblings for a moment (see PH.fellSettleMs)
       // ── COLLECTED BY WALKING UP TO IT, NOT FROM ACROSS THE MAP (user 2026-08-22: "the player can seem to
       // just obsorb the tree chunks at any distnace. make it the same absorb distance as the raw steak") ──
       // this used to set absorbAt, and in sim/solver.js that is not a delay, it is a BYPASS: once the timer
@@ -418,6 +566,7 @@
       PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(nb); made++;
     }
     if (!made) { PH.bodies.push(b); b.fellWhole = 0; return 0; }   // never destroy the tree because the budget was full
+    phShatterStump(b);                                 // …and the part still rooted in the ground goes with it
     PH.stats.fellBreaks = (PH.stats.fellBreaks | 0) + 1;
     PH.stats.fellPieces = (PH.stats.fellPieces | 0) + made;
     return made;

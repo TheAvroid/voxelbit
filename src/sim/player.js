@@ -21,8 +21,19 @@
   const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 4.5;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
   const WATER_SPD = 0.344;                             // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
-  const P = { x: SPWX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: SPYAW, pitch: SPPITCH, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0, sink: 0 };
-  P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
+  // ── THE PLAYER STARTS IN THE OAK FOREST (user 2026-08-22: "spawn me automatically in the oak forest") ──
+  // and this is a PLAYER offset, not a world one, which is the whole point. The biome bands are anchored to
+  // SPWX itself (oakM/cherryM/desertM in world/window.js all read x relative to it), so moving SPWX carries
+  // every band along with it and the player lands in exactly the same biome — the note in world/build.js
+  // records a first attempt that did precisely that and hit cherry on 5 boots out of 5. Offsetting only where
+  // the BODY is placed leaves worldgen bit-identical and simply starts the player further along the strip.
+  // 2160 = the middle of the oak. OAKOFF is -1080, so the oak/pine line sits 1080 EAST of the anchor and the
+  // pure-oak strip runs 1080..3240; MEASURED before this, oakM at spawn was 0.000, still 0.000 at +600 and
+  // only 0.029 by +900 — the player was starting a full kilometre inside the PINE forest, every single boot.
+  // The walk is the same guard build.js uses on the anchor: never start in water or a gorge.
+  // SPOX itself is computed in world/build.js, before the streaming window is sized around it.
+  const P = { x: SPWX + SPOX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: SPYAW, pitch: SPPITCH, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0, sink: 0 };
+  P.y = hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
   const keys = new Set();
   // Is this world point inside a rigid body? A fallen tree is NOT in W — that is the whole point of the
@@ -348,9 +359,9 @@
     else resetHist = 1;
   }
   function respawn() {
-    P.x = SPWX + 0.5; P.z = SPWZ + 0.5; P.yaw = SPYAW; P.pitch = SPPITCH; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0;   // respawning always lifts you back out of the sand + faces the baked spawn direction
+    P.x = SPWX + SPOX + 0.5; P.z = SPWZ + 0.5; P.yaw = SPYAW;   // …and a RESPAWN lands in the oak too P.pitch = SPPITCH; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0;   // respawning always lifts you back out of the sand + faces the baked spawn direction
     maybeRecenter();
-    P.y = hmap[gwrap(SPWX, WX) + gwrap(SPWZ, WZ) * WX];
+    P.y = hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
     P.fallT = 0; P.fallPk = undefined; P.noFall = 1; uwT = 0;   // fresh lungs on respawn — and a clean fall ledger, for the reason cmdGoTo clears the same pair: P.fallPk is a world y left over from wherever you died, and the lift loop above can leave you over the ground
     vitReset();                                         // …and a full bar of hearts and hunger

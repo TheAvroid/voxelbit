@@ -23,12 +23,35 @@
     gravity: 200,                                    // matches the player's GRAVITY so falls read at the same scale
     linDamp: 0.05, angDamp: 0.18, restitution: 0.0, friction: 0.6,
     sleepLin: 1.2, sleepAng: 0.30, sleepFrames: 40,
-    // ── HOW A FELLED TREE BREAKS WHEN IT LANDS ── see phShatterTree (sim/chop-tree.js). fellPieceVox is the
-    // target length of a log in voxels and fellPieceMax the ceiling, which exists because maxBodies is 16:
-    // a tree that asked for more pieces than the budget can hold would lose its tail rather than gain detail.
-    // fellLandFrames debounces the trigger — a toppling trunk can graze the ground on the way over, and one
-    // glancing contact must not be read as the landing.
-    fellPieceVox: 9, fellPieceMax: 6, fellLandFrames: 3,   // 14/4 -> 9/6: "cut the tree trunks in half again" (user 2026-08-22). With the two cross-cuts that is up to 24 pieces, which is maxBodies — phShatterTree's merge folds any it cannot seat into the first piece rather than dropping them
+    // ── HALVED AGAIN, AND THE CEILING RAISED TO ALLOW IT (user 2026-08-22: "cut the tree chunks in half
+    // again" then "raise the uniform for the tree chunks") ── 6 x 2 x 2 = 24 pieces was EXACTLY PHYS_MAX, so a
+    // single felled oak consumed the entire rigid-body budget: measured pieces 24 / bodies 24, and felling a
+    // second tree then evicted a piece of the first, which DELETES it. PHYS_MAX is now 48 (render/buffers.js),
+    // so 12 x 2 x 2 = 48 fits with the same headroom-of-one-tree the old numbers had.
+    // ── ONE CHUNK SIZE FOR THE WHOLE GAME (user 2026-08-22: "all of the chunks across the game need to be a
+    // similar size. the oak trunks are much bigger then the pine tree chunks") ── the split used to be a fixed
+    // COUNT, so chunk size tracked tree size: MEASURED, a pine of 8,039 voxels and an oak of 86,365 both broke
+    // into 42 pieces, median 143 against 1,592 — an eleven-fold difference. Driving the count from VOLUME makes
+    // the chunk the constant and the count the variable, which is the way round the player actually perceives.
+    // 700 is the pine's own largest piece today, so pines keep chunks they already had and the oak's come down
+    // to match. An 86k oak wants ~123 pieces at that size, which is why PHYS_MAX went to 128.
+    fellChunkVox: 350, fellLandFrames: 3,   // halved again (user 2026-08-22: "we need smaller chunks to absorb by the player"). An 86k oak wants ~247 pieces at this size, which is why PHYS_MAX went to 256
+    // ── AND IT BREAKS ON A CLOCK, NOT ON A LANDING (user 2026-08-22: "have the tree turn into chunks after 10
+    // seconds of becoming an rigid body") ── which also removes the last thing that needed the topple drive to
+    // have finished, so the fall can be left to plain physics.
+    fellBreakMs: 10000,
+    // ── AND THE NEW PIECES MUST NOT REST ON EACH OTHER ── the `resting` latch in sim/solver.js turns gravity
+    // OFF for a body with any contact and little speed. A shatter makes every piece at once, in contact with
+    // its neighbours and all at rest, so the whole cluster held ITSELF up: a trunkless crown hanging in the
+    // air over the debris that did fall (user 2026-08-22, screenshot). For this long after a break the latch
+    // cannot apply, so gravity acts, the cluster separates, and each piece finds its own ground.
+    fellSettleMs: 900,
+    // ── ONE NUDGE, NOT A DRIVE ── a cut trunk is a column balanced on its own stump, and real physics leaves a
+    // balanced column standing: MEASURED after the topple drive was removed, a severed pine sat at the same y
+    // for 20 s and fell asleep after 752 ms — the floating pine trees. This is a single impulse in a RANDOM
+    // direction at the moment of the cut, after which nothing steers it, so trees no longer all go the same way
+    // (the complaint the drive was removed for) but they do go over.
+    fellNudge: 3.2, fellSpin: 0.5,   // 14/4 -> 9/6: "cut the tree trunks in half again" (user 2026-08-22). With the two cross-cuts that is up to 24 pieces, which is maxBodies — phShatterTree's merge folds any it cannot seat into the first piece rather than dropping them
     abAll: new Float64Array([1e30, 1e30, 1e30, -1e30, -1e30, -1e30]),   // union of every live body's world AABB — phBodySolid's O(1) "nowhere near anything" reject
     sleepAngFree: 24,                                // at or under this many voxels, rest is judged on LINEAR motion alone — a cone is 13 and its spin is solver noise, not motion
     retireFar: 64,                                   // …and a SETTLED body up to this size is baked back too, once it is further than retireFarR away — see the sleep site. 64 covers a cone (13) and a needle tuft without touching anything the player would call a log.
@@ -38,11 +61,21 @@
     //   maxProbes was 160, but an 8-voxel bucketing of a 35x93x36 crown yields ~300 buckets — so barely
     //   half the body's surface cells carried a probe, and a narrow stump could pass clean between them.
     //   Probes only cost a grid lookup during contact GENERATION (once per substep), so 512 is cheap.
-    treeLifeMs: 600000, chunkLifeMs: 600000,         // ── LIFETIMES (user 2026-08-11) ── EVERYTHING the player made unstatic is deleted 10 min after it broke loose — a felled trunk and a chop chunk alike (was 5 min / 60 s). Two knobs so the trunk can still be retuned apart from the debris, but they are deliberately equal now.
+    treeLifeMs: 600000, chunkLifeMs: 600000, fellLifeMs: 300000,   // fellLifeMs: the pieces of a FELLED tree, 5 min (user 2026-08-22: "make the chunks of the tree dissapear after 5 minutes"). Its own number so the general chunk and the standing-trunk lifetimes are untouched         // ── LIFETIMES (user 2026-08-11) ── EVERYTHING the player made unstatic is deleted 10 min after it broke loose — a felled trunk and a chop chunk alike (was 5 min / 60 s). Two knobs so the trunk can still be retuned apart from the debris, but they are deliberately equal now.
     //                                                 Told apart by noAbsorb, which marks the toppling trunk and nothing else.
-    absorbR: 16,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
+    // ── WIDER AND LESS FUSSY (user 2026-08-22: "the player is still not picking up every chunk. maybe make the
+    // absorption more sensitive?") ── 16 was a reach for the odd chip; a felled tree now leaves dozens of pieces
+    // spread over the whole footprint of the crown, and walking each one down individually is the chore that
+    // produced the report. Paired with the stillness rule below being relaxed, since the chunks that got missed
+    // were the ones still jostling against their neighbours when the player walked past.
+    absorbR: 26,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
     absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
-    absorbSize: 200,                                 // ── TOO BIG TO CARRY (user) ── a chunk over this many voxels REFUSES to be absorbed: break it down first. Measured on a felled pine, one tree yields chunks of ~7, 12 and 139 voxels plus 800+ voxel trunk sections; 200 lets an armful through and turns the big sections into something you have to work on. Chopping one splits/shrinks it (phChopBody takes a ~30-voxel bite and can sever a long piece in two) until the parts drop under this and vacuum up normally.
+    // ── RAISED TO COVER EVERY CHUNK THE GAME MAKES (user 2026-08-22: "make sure all chunks can be absorbed no
+    // problem") ── 200 predates the felled-tree shatter, whose pieces are exactly fellChunkVox (350) each, so
+    // every one of them was over the line and only got through on the fellLoot exemption. Anything the game
+    // breaks off is now collectable on the ordinary rule, and the exemption stays as a backstop rather than as
+    // the thing holding it up. Kept a little above 350 so a piece that swallows a short tail still fits.
+    absorbSize: 600,                                 // above the chunker's natural SPREAD, not just its target: pieces aim at fellChunkVox (350) but a connected piece that swallows its last shell runs to ~460, and at 420 those few were refused while everything around them was collected                                 // ── TOO BIG TO CARRY (user) ── a chunk over this many voxels REFUSES to be absorbed: break it down first. Measured on a felled pine, one tree yields chunks of ~7, 12 and 139 voxels plus 800+ voxel trunk sections; 200 lets an armful through and turns the big sections into something you have to work on. Chopping one splits/shrinks it (phChopBody takes a ~30-voxel bite and can sever a long piece in two) until the parts drop under this and vacuum up normally.
     //                                                 absorbFly = the flight itself, left at 420 ms so the transition stays smooth rather than snapping in
     chopBite: 30,                                    // voxels an axe swing takes out — a FIXED count, so every chunk is the same size (user). 40 -> 30, a 25% reduction (user 2026-08-02)
     absorbY: -12,                                     // height the chunk is absorbed at, RELATIVE TO THE EYE — dropped 3 MORE voxels (user, -9 → -12), so it arrives lower still than the waist chest. (Briefly raised to +1 on 2026-08-02, reverted at user request.) One number to retune.                 // a felled pine is far more complex than Teardown's flat-bottomed container

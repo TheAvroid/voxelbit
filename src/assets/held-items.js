@@ -546,6 +546,31 @@
           for (const it of loaded) items.push(it);
         } catch (e) { console.warn('[vb] butterfly color', cname, 'missing - skipped', e); }
       }
+    // ── A YELLOW BUTTERFLY, BUILT RATHER THAN AUTHORED (user 2026-08-22: "in the oak and pine forest, make the
+    // pink butterfly a yellow one instead ... leave the cherry forest butterflies alone") ── there is no
+    // yellow/ folder, and the butterfly is 10 voxels: 6 wing cells carrying the colour and 4 near-black body
+    // cells (measured on pink/00.vox: two pinks at (243,154,174) and (243,165,182), four greys at 42-57).
+    // So the yellow is the PINK SET with its saturated cells remapped and its body left alone — same geometry,
+    // same 8 frames, same flap. Keyed on saturation rather than on the two exact pinks so a re-authored pink
+    // still yields a yellow: max-min > 24 is true of every wing cell and false of every grey one.
+    // Appended to BFLY_COLS so B.col can address it, but NOT counted in BFLY_HASHN, so nothing rolls it at
+    // random — it appears exactly where a pink would have, and only outside the cherry band.
+    BFLY_HASHN = BFLY_COLS.length;
+    if (BFLY_PINK >= 0) {
+      const src0 = BFLY_COLS[BFLY_PINK], yel = [];
+      for (let f = 0; f < 8; f++) { const it = items[src0 - 1 + f]; if (!it) break;
+        const cells = it.cells.map((c) => { if (!c) return null;
+          const mx = Math.max(c[0], c[1], c[2]), mn = Math.min(c[0], c[1], c[2]);
+          if (mx - mn <= 24) return [c[0], c[1], c[2]];        // body grey — untouched
+          const l = mx / 255;                                  // keep the cell's own lightness so the two wing shades stay distinct
+          return [Math.round(250 * l), Math.round(214 * l), Math.round(86 * l)];
+        });
+        yel.push({ w: it.w, d: it.d, h: it.h, cells });
+      }
+      if (yel.length === 8) { BFLY_YELLOW = BFLY_COLS.length; BFLY_COLS.push(items.length + 1);
+        for (const it of yel) items.push(it);
+        console.log('[vb] butterfly yellow synthesised from pink -> col', BFLY_YELLOW); }
+    }
     if (BFLY_COLS.length) { BFLY_ITEM0 = BFLY_COLS[0]; BFLY_NFRAMES = 8;
       console.log('[vb] butterfly 8 frames x', BFLY_COLS.length, 'colors -> items', BFLY_ITEM0, '..', items.length); }
     try {                                                             // ── DRAGONFLY ── one 6-frame strip, parsed exactly like a butterfly colour (raw .vox palette, full 3D grid).
@@ -586,7 +611,12 @@
     // edParseVox) already reads these files, but into engine palette ids for GRID-STAMPING, and a grid stamp is
     // integer-positioned and axis-aligned by construction. The emit addresses a model by ITEM ID, so a model
     // that is not in this table cannot move sub-voxel or hold a free heading, however it is animated.
-    const edStripItems = async (path, tag) => {
+    // `seq` names ONE animation inside a multi-cycle .vox (frog.vox holds ribbet/tongue/hop). Without it the
+    // `order` line below sorts EVERY nSHP's frames together on '_f', which for a three-cycle file interleaves
+    // them — all three start at _f 0. edVoxSeqs (ui/editor.js) reads the same scene graph the editor does and
+    // returns that cycle's model ids in ITS frame order, repeats included. It only parses; it mints no palette
+    // ids, which matters here because this loader's whole point is raw sRGB cells (the table is full).
+    const edStripItems = async (path, tag, seq) => {
       const bv = await abuf(path), bdv = new DataView(bv.buffer);
       const models = []; const bpal = new Uint8Array(1024); let hasPal = false; const shp = [];
       const nodes = new Map(); let anyAnim = false;
@@ -660,7 +690,10 @@
         return { item0: it0, n: 1 };
       }
       // No scene graph (every per-frame .vox the other loaders read) → file order, which is what it always was.
-      const order = shp.length ? shp.slice().sort((a, b) => a[1] - b[1]).map((q) => q[0]) : models.map((m, i) => i);
+      let order = shp.length ? shp.slice().sort((a, b) => a[1] - b[1]).map((q) => q[0]) : models.map((m, i) => i);
+      if (seq) { const qs = edVoxSeqs(bv), q9 = qs.find((t) => t.name.toLowerCase() === String(seq).toLowerCase());
+        if (q9) order = q9.ids;
+        else console.warn('[vb] ' + tag + ': no animation named ' + seq + (qs.length ? ' — holds ' + qs.map((t) => t.name).join(', ') : ' (no scene graph)')); }
       const loaded = [];
       for (const mi of order) { const m = models[mi]; if (!m) continue;
         if (!m.raw || !hasPal) continue;
@@ -679,6 +712,30 @@
     catch (e) { console.warn('[vb] ladybug frames missing - skipped', e); LBUG_NFRAMES = 0; }
     try { const r = await edStripItems('assets/life/koi.vox', 'koi'); KOI_ITEM0 = r.item0; KOI_NFRAMES = r.n; }
     catch (e) { console.warn('[vb] koi frames missing - skipped', e); KOI_NFRAMES = 0; }
+    // ── THE FROG'S HOP ── frog.vox holds three named cycles; the world takes 'hop' (17 frames). The LEAP ITSELF
+    // IS NOT IN THE FILE: every hop frame has its lowest voxel at model-z 0, so played as authored the frog
+    // crouches, stretches and lands without ever leaving the ground. FROG_HOP_OFF (sim/life/slots.js) carries
+    // the arc, and the sim applies it as MOTION rather than baking it into the voxels — which is the whole
+    // point, because that same table is what carries the frog forward a metre per leap.
+    // ── ALL THREE CYCLES, NOT JUST THE HOP (user 2026-08-22: "why is this frog acting different to the asset
+    // editor frog?? it should be an exact copy ... continuously playing the jumping animation") ── it was: the
+    // world loaded 'hop' alone, so hopping was the only thing it COULD do. The editor stages the same file as a
+    // weighted mix of hop/ribbet/tongue, and the sim now picks between them on the same weights.
+    // Loaded BACK TO BACK with nothing between, so the three land contiguously in `items` and one item0 plus
+    // one length addresses the lot — which is what the emit's _it0 + frame indexing needs. FROG_CYC records
+    // where each begins; `move` marks the one that carries the frog forward.
+    try {
+      const order9 = [['hop', 1], ['ribbet', 0], ['tongue', 0]];
+      let base9 = 0, tot9 = 0; FROG_CYC = [];
+      for (const [nm9, mv9] of order9) {
+        const r = await edStripItems('assets/life/frog.vox', 'frog:' + nm9, nm9);
+        if (!base9) base9 = r.item0;
+        FROG_CYC.push({ name: nm9, off: r.item0 - base9, n: r.n, move: mv9 });
+        tot9 = (r.item0 - base9) + r.n;
+      }
+      FROG_ITEM0 = base9; FROG_NFRAMES = tot9;
+      console.log('[vb] frog cycles', FROG_CYC.map((c) => c.name + '@' + c.off + 'x' + c.n).join(' '), '-> item0', FROG_ITEM0, 'of', FROG_NFRAMES);
+    } catch (e) { console.warn('[vb] frog frames missing - skipped', e); FROG_NFRAMES = 0; FROG_CYC = []; }
     // ── THE KOI IS A WORLD FISH TOO (user 2026-08-22: "implement the koi in the pine and oak forest") ── it is
     // loaded above as a SCENE GRAPH rather than a numbered frame folder, so it misses the FISHES loop entirely
     // and existed only for the asset editor. Registering the strip it already produced costs no second load.
@@ -865,6 +922,15 @@
     if (LBUG_NFRAMES > 0) {
       DESERTS.push({ name: 'ladybug', item0: LBUG_ITEM0, n: LBUG_NFRAMES });
       const fitL = mamFitOf(items, LBUG_ITEM0); if (fitL) MAMFIT.ladybug = fitL;
+    }
+    // …and the FROG, on the same terms and for the same reasons (appended AFTER the DES_LOAD loop, see above).
+    // ── THE FROG IS NOT IN THE WORLD (user 2026-08-22: "remove the frog from the field") ── the FRAMES stay
+    // loaded above, so the asset editor can still stage frog.vox and everything that reads FROG_CYC/FROG_OFF
+    // keeps working; only the DESERTS registration is withheld, which is the single thing that puts a species
+    // on the map. Putting it back is this block uncommented plus DES_N going back to 11.
+    if (false && FROG_NFRAMES > 0) {
+      DESERTS.push({ name: 'frog', item0: FROG_ITEM0, n: FROG_NFRAMES });
+      const fitF = mamFitOf(items, FROG_ITEM0); if (fitF) MAMFIT.frog = fitF;
     }
     console.log('[vb] desert creatures:', DESERTS.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');
     console.log('[vb] fish species:', FISHES.map((f) => f.name + '(' + f.n + 'f @' + f.item0 + ')').join(', ') || 'none');

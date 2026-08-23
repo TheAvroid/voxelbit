@@ -1,7 +1,15 @@
   // ── WebGPU init ────────────────────────────────────────────────────────────
   if (!navigator.gpu) fail('WebGPU not available — use Chrome/Edge 113+');
-  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  // ?igpu — boot this instance on the INTEGRATED adapter (UHD 770) instead of the discrete card, so an AI/CDP test
+  // browser stops competing with the played game for the 4070. Whole-flag match, never includes(): ?igpu would
+  // otherwise also fire on a future ?noigpu, which is the exact trap the ?uni/?nouni note in held-items.js records.
+  const IGPU_ADAPTER = /[?&]igpu\b/.test(location.search);
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: IGPU_ADAPTER ? 'low-power' : 'high-performance' });
   if (!adapter) fail('no WebGPU adapter');
+  // powerPreference is only a HINT. If the hint is ignored the test silently runs on the 4070 and the whole
+  // point is lost, so record what we actually got — assertable from a test, the way __vbGpuErr is.
+  window.__vbAdapter = Object.assign({ requested: IGPU_ADAPTER ? 'low-power' : 'high-performance' }, adapter.info ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, device: adapter.info.device, description: adapter.info.description } : {});
+  if (IGPU_ADAPTER) console.warn('[vb] ?igpu → adapter:', JSON.stringify(window.__vbAdapter));
   const SIZE384 = 768 * 768 * 384, SIZE256 = 768 * 768 * 256;   // the minimum deep world wants 226 MB; fall back gracefully
   let lim = Math.min(adapter.limits.maxStorageBufferBindingSize, adapter.limits.maxBufferSize);
   // DEV: ?worldcap=<bytes> pretends the adapter is smaller, so the weak-device fallback ladder

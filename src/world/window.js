@@ -81,6 +81,12 @@
   let winOX = 0, winOZ = 0;                            // world coord of the window corner (multiples of 8)
   const rect = { xlo: 0, xhi: 0, zlo: 0, zhi: 0 };     // the fully-GENERATED world rectangle (8-aligned) — only terrain inside it is ever traced
   const gwrap = (v, n) => ((v % n) + n) % n;
+  // ── HOW FAR THE PLAYER STARTS FROM THE BAND ANCHOR ── the biome bands are anchored to SPWX, so the player
+  // is placed at SPWX + SPOX instead of moving SPWX itself (see sim/player.js). Declared HERE because the
+  // STREAMING WINDOW has to be centred on the player rather than on the anchor: HALF is at most 1024 and SPOX
+  // is 2160, so a window built around the anchor does not contain the player at all — which is the world
+  // loading in around you after you have already spawned (user 2026-08-22).
+  let SPOX = 0;
   let SPWX = 0, SPWZ = 0;                              // world spawn — placeholder; RANDOMISED on every refresh at boot (user 2026-07-20), see the spawn block below
   let SPYAW = 1.5708; const SPPITCH = -0.044;   // ── FACING EAST, AT THE BLOSSOM, WITH THE PINE TREELINE AT YOUR BACK (user 2026-08-21: "spin the player
   // around facing the cherry forest") ── heading is (sin(yaw), cos(yaw)), so +pi/2 looks down +x, and +x is where the pink is: the blossom's centre is

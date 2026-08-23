@@ -299,7 +299,9 @@
     // keys, so being shoved, sliding or swimming all count honestly. A voxel is 10 cm, hence the 0.1. The
     // dist < 3 guard drops teleports (the debug tp, a respawn, a world wrap) — otherwise one jump across the
     // map charges thousands of metres and empties the bar in a frame.
-    // FLYING IS FREE, as it was before the delete: it is a debug mode, not a way to play.
+    // FLYING IS FREE, and deliberately so: it is a debug mode, not a way to play. (Briefly removed on
+    // 2026-08-22 when "it puts me in god mode" was read as a complaint; it was a description — the user wants
+    // exactly this. Restored the same day, along with the hazard gates in main/tick-body.js.)
     if (!P.fly) {
       const dx = P.x - VIT.lx, dz = P.z - VIT.lz;
       const dist = Math.sqrt(dx * dx + dz * dz) * 0.1;

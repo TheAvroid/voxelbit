@@ -164,7 +164,7 @@
     }
   `;
   const DROP_SLOTS = 128, DROP_HALF = 64;             // DROP_HALF = how many slots live in the original 'drops' array; every slot at or above it lives in 'dropsB'
-  const PHYS_MAX = 24;                                // ── RIGID BODY CAPACITY (user 2026-08-11, was 16) ── the ONE number. PH.maxBodies takes it, physB's WGSL length is 5 vec4 x it, and EVERY offset below is derived from it.
+  const PHYS_MAX = 256;                               // ── RIGID BODY CAPACITY (user 2026-08-22, was 128/48/24, was 16) ── the ONE number. PH.maxBodies takes it, physB's WGSL length is 5 vec4 x it, and EVERY offset below is derived from it.
   //   physB sits in the MIDDLE of the struct, so raising this moves the entire tail (physC, physBound, heldCfg, lgt, hurtB, hurtH, dropsB, lifeMot, dof). Those used to be literals in tick-emit/tick-camera/debug-api; they are named now, because a
   //   missed literal here does not throw - it silently feeds each field its neighbour's numbers (a wrong hit-flash box, held-item lighting reading the light-debug mask). Never write a literal float index at or past UF_PHYSB again.
   const UF_PHYSB = 1532;                              // physB base - everything BEFORE it is fixed history (see UF_OLD_LEN)

@@ -7,6 +7,8 @@
   let BIRD_ITEM0 = 0, BIRD_NFRAMES = 0, BIRD_GLIDE = 1;   // dit (1-based item id) of flap frame 0, frame count, and the frame held while GLIDING — FRAME 01 (user), not the auto-picked widest one, which landed on 00
   let BFLY_ITEM0 = 0, BFLY_NFRAMES = 0;                // butterfly flap frames (assets/life/butterfly/<color>) — orange flies over the editor stage; ALL colors fly the forest BY DAY
   let DFLY_ITEM0 = 0, DFLY_NFRAMES = 0;                // DRAGONFLY flap frames (assets/life/dragonfly) — one colour, 6 frames. Flies the butterfly's kind-0 code path verbatim; only its HOME differs (water, not meadow)
+  let BFLY_YELLOW = -1;                                // index into BFLY_COLS of the SYNTHETIC yellow (built from the pink set at load) — the forests' pink stand-in
+  let BFLY_HASHN = 0;                                  // how many colours the per-cell hash may pick from: the authored ones only, so the synthetic yellow is never rolled at random
   let BFLY_PINK = -1;                                  // index into BFLY_COLS of the 'pink' folder, or -1 if it never loaded — set in assets/held-items.js as the colours are parsed, because the index is a LOAD-ORDER fact and not a constant
   let BFLY_COLS = [];                                  // first item id of each loaded color's 8 frames, in folder order: orange, red, blue, lime, pink, purple. Colour is picked by a spatial hash of the creature's cell (B.col), so adding colours scatters them evenly and procedurally with no other change
   // ── EDITOR-STAGE EXHIBITS ── models whose frames live in ONE scene-graph .vox rather than a folder of
@@ -14,6 +16,72 @@
   // edStripItems). That is the whole reason they are here: an item id is what the emit addresses a model by,
   // and only an emitted model gets a sub-voxel position and a free heading. Grid-stamping cannot.
   let LBUG_ITEM0 = 0, LBUG_NFRAMES = 0;                // LADYBUG (assets/life/ladybug.vox) — flies the stage on the butterfly's own steering
+  // ── THE NAMED ANIMATIONS INSIDE ONE .vox ── lives HERE, at the top level of an early fragment, because two
+  // very different callers need it and neither may be the one that declares it: assets/held-items.js reads it
+  // during the boot asset load, and ui/editor.js reads it when staging. It began in the editor, which the
+  // loader could not see (the load runs long before that fragment is evaluated). Moving it into the loader
+  // then hid it from the EDITOR — it landed inside that file's nested init function rather than at top level,
+  // so it was function-scoped, and every editor stage failed with "edVoxSeqs is not defined" and an empty
+  // stage. Top level of a file both can see is the only placement that satisfies both.
+  // ── MOVED HERE FROM ui/editor.js (2026-08-22) ── it is a pure .vox SCENE-GRAPH reader that mints nothing
+  // and touches no editor state, and it has to be declared BEFORE this loader rather than after it: the asset
+  // load runs during boot, well before the editor fragment is evaluated, so calling it across the bundle threw
+  // "Cannot access 'edVoxSeqs' before initialization" and the frog silently loaded zero frames (the catch
+  // below swallowed it). Same class as the const-order black screen. The editor still calls it — it is later
+  // in the bundle, so the binding is live by then.
+const edVoxSeqs = (pv) => {                          // the NAMED animations inside ONE .vox → [{ name, ids: [model index, …] }], each id list already in frame order
+  // A .vox that holds several animations keeps them in its SCENE GRAPH, not in separate files. frog.vox is one
+  // MAIN with 34 SIZE/XYZI pairs and an nTRN/nGRP/nSHP tree that says which of them are 'ribbet' (14 frames),
+  // 'tongue' (24) and 'hop' (17). edParseVox below walks the SIZE/XYZI pairs alone — which is right for the
+  // per-frame files every creature ships as, and wrong here: it hands back all three cycles concatenated in
+  // file order, each model appearing once however many times its animation actually plays it. So read the graph.
+  // Two things about the format decide the shape of this:
+  //   * the FRAME LIST lives on the nSHP — one entry per frame, '_f' the frame index, repeats included, because
+  //     'ribbet' genuinely plays model 1 twice. Sorting on '_f' rather than trusting file order is free.
+  //   * the NAME lives on the nTRN ABOVE the group, and MagicaVoxel nests a second nTRN called 'frames' inside
+  //     every animation. Taking the OUTERMOST name is what makes this return ribbet/tongue/hop instead of three
+  //     sequences all called 'frames'.
+  // Returns [] for a file with no scene graph (every single-model creature frame), which is what keeps this
+  // invisible to the pose builders: they never pass a sequence name, so nothing below even calls it.
+  const dvv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+  const nodes = new Map();
+  const rdStr = (o) => { const n = dvv.getInt32(o, true); let t = '';
+    for (let i = 0; i < n; i++) t += String.fromCharCode(pv[o + 4 + i]);
+    return [t, o + 4 + n]; };
+  const rdDict = (o) => { const n = dvv.getInt32(o, true); o += 4; const d = {};
+    for (let i = 0; i < n; i++) { const k = rdStr(o); const v = rdStr(k[1]); d[k[0]] = v[0]; o = v[1]; }
+    return [d, o]; };
+  const walk = (off, end) => { while (off + 12 <= end) {
+    const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+    const bsz = dvv.getUint32(off + 4, true), csz = dvv.getUint32(off + 8, true);
+    if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+    if (id === 'nTRN' || id === 'nGRP' || id === 'nSHP') {
+      let o = off + 12; const nid = dvv.getInt32(o, true); o += 4;
+      const at = rdDict(o); o = at[1];
+      const rec = { t: id, name: at[0]._name || '' };
+      if (id === 'nTRN') rec.child = dvv.getInt32(o, true);   // …then reserved / layer / numFrames and the per-frame transform dicts, none of which this needs: the chunk header already says where the next chunk starts
+      else if (id === 'nGRP') { const nc = dvv.getInt32(o, true); o += 4; rec.kids = [];
+        for (let i = 0; i < nc; i++) { rec.kids.push(dvv.getInt32(o, true)); o += 4; } }
+      else { const nm = dvv.getInt32(o, true); o += 4; rec.models = [];
+        for (let i = 0; i < nm; i++) { const mi = dvv.getInt32(o, true); o += 4; const md = rdDict(o); o = md[1];
+          rec.models.push([mi, md[0]._f === undefined ? i : +md[0]._f]); } }
+      nodes.set(nid, rec); }
+    off += 12 + bsz + csz;
+  } };
+  try { walk(8, pv.length); } catch (e) { return []; }
+  if (!nodes.size) return [];
+  const gather = (nid, ids, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
+    if (r.t === 'nTRN') gather(r.child, ids, seen);
+    else if (r.t === 'nGRP') { for (const k of r.kids) gather(k, ids, seen); }
+    else for (const m of r.models.slice().sort((a, b) => a[1] - b[1])) ids.push(m[0]); };
+  const out = [];
+  const scan = (nid, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
+    if (r.t === 'nTRN' && r.name) { const ids = []; gather(nid, ids, new Set()); if (ids.length) out.push({ name: r.name, ids }); return; }   // OUTERMOST name wins → never descend into a named animation looking for more
+    if (r.t === 'nTRN') scan(r.child, seen); else if (r.t === 'nGRP') for (const k of r.kids) scan(k, seen); };
+  scan(nodes.has(0) ? 0 : nodes.keys().next().value, new Set());
+  return out; };
+  let FROG_ITEM0 = 0, FROG_NFRAMES = 0;                // the frog's THREE cycles, loaded back to back so one item0 + one length addresses all of them
+  let FROG_CYC = [];                                   // [{ off, n, move }] per cycle in strip order — hop MOVES the frog, ribbet and tongue play in place                // FROG, the 'hop' cycle out of assets/life/frog.vox (the file also holds 'ribbet' and 'tongue')
   let KOI_ITEM0 = 0, KOI_NFRAMES = 0;                  // KOI (assets/life/koi.vox) — swims the stage like the world's fish
   let FFLY_ITEM0 = 0, FFLY_NFRAMES = 0;                // firefly frames (assets/life/firefly) — replaces the butterflies AT NIGHT; the yellow abdomen voxel glows via the drops dYv.w lane
   let WORM_ITEM0 = 0, WORM_NFRAMES = 0;                // inchworm crawl frames (assets/life/worm) — a GROUND crawler, active day and night (pool slots 24+)

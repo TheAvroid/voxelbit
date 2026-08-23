@@ -132,7 +132,7 @@
   // untouched. The desert is untouched too — bioFracLifeAt zeroes the target in the sand and the biome gate
   // refuses a BIO_ANY spawn there, so the extra four go to pine, oak and the blossom, which is every biome
   // that has butterflies at all.
-  const FLY_N = 20, DUCK_N = 4, BABY_N = 12, WORM_N = 32, FISH_N = 32, MAM_PER = 24, DES_N = 10, DES_PER = 8;   // DES_N 9 -> 10 for the LADYBUG (user 2026-08-22)
+  const FLY_N = 20, DUCK_N = 4, BABY_N = 12, WORM_N = 32, FISH_N = 32, MAM_PER = 24, DES_N = 10, DES_PER = 8;   // DES_N 9 -> 10 for the LADYBUG; the FROG's 11th slot was withdrawn when it was removed from the field (user 2026-08-22)
   // ── PERCHED SONGBIRDS: THE ONE WIDTH THAT TRACKS THE REACH ── 180 was the pool at CARD_KEEP_V0 and it was
   // SATURATED there: the oak wood's measured 1.24e-4 birds/vox² offers 180 perches inside a 680 disc and the
   // census reached 179 of them. At 1040 the same wood offers 421, so the pool grows with the area and the
@@ -180,14 +180,14 @@
   //     hive would have taken every bee in the world and the flower visiting would never have been seen.
   // The desert MOUSE is deliberately NOT here: it has two homes, which is a different thing and is expressed
   // by DES_OAK in tick-creatures giving it a SHARE of its own slots.
-  const DES_OAKONLY = { bee: 8, grass_snake: 5, ladybug: 6 };
+  const DES_OAKONLY = { bee: 8, grass_snake: 5, ladybug: 6 };   // (frog withdrawn — see assets/held-items.js)
   // ── AND ONE OF THEM IS NOT OAK-ONLY AT ALL (user 2026-08-22: "implement the ladybug into the oak and pine
   // forests") ── DES_OAKONLY is really two facts wearing one name: "takes no desert slots, and its whole
   // head-count is this number", plus "and it lives in the oak". The ladybug wants the first and not the
   // second. Rather than duplicate the head-count plumbing for a second table, this widens the BIOME half
   // only: a name in here keeps every one of DES_OAKONLY's counting rules and is tagged BIO_ANY instead of
   // BIO_OAKF, which sim/nav.js defines as "anywhere that is not sand" — precisely oak and pine.
-  const DES_ANYFOREST = { ladybug: 1 };
+  const DES_ANYFOREST = { ladybug: 1 };       // the frog lives in BOTH forests too, and near water within them (see DES_WATER)
   // ── AND WHOSE MODEL FACES THE WRONG WAY ── the render basis in main/tick-creatures.js takes model −y as the
   // head end. A species baked by tools/bake_desert_life.py always does; one adopted from the asset editor's
   // scene-graph loader need not, and the ladybug's head is at +y. A named table rather than a magic term at
@@ -200,6 +200,34 @@
   // only ever committed down a column PROVEN clear, from no higher than DROP_MAX, and it gives up after
   // DROP_MAX_S if it has not arrived. Anything else and it keeps flying the butterfly's lane untouched.
   const LBUG_DROP_MAX = 30, LBUG_DROP_MAX_S = 8, LBUG_CRUISE = 14;
+  // ── SPECIES THAT WANT TO BE NEAR WATER ── the dragonfly does this by taking its spawn point out of
+  // `waterSpots` (main/tick-creatures.js); a name in here asks for the same treatment, which is what the user
+  // meant by "around water, similar to the dragonflies in that way". The number is how far from the water it
+  // may be placed — a frog sits ON the bank, not in the lake, so it is a shore radius rather than a wet test.
+  const DES_WATER = { frog: 14 };
+  // ── THE FROG'S PER-FRAME OFFSETS, ALL THREE CYCLES ── frog.vox's frames are NOT self-aligned: every hop
+  // frame sits with its lowest voxel at model-z 0, and the ribbet and the tongue both lean the body forward
+  // and back without the art moving. ui/editor.js aligned all three by hand against the stage
+  // (FROG_RIBBET_BAKE / FROG_TONGUE_BAKE / FROG_HOP_BAKE) and the editor applies them to every frame it draws.
+  // The world applied the HOP table only, as travel, and drew ribbet and tongue raw — which is why the user
+  // reported "all of the alignments are wrong. the positionings are wrong": two of the three cycles had no
+  // alignment at all. Same numbers as the editor's, indexed by FRAME instead of filename and stored [up,
+  // forward] because the sim applies them along the creature's own heading rather than stamping them in.
+  // Applied UNIFORMLY: a cycle whose table returns to zero (ribbet, tongue) leans and comes back on the spot;
+  // the hop's last entry is deliberately non-zero, and that is the whole difference between a lean and a leap.
+  const FROG_OFF = {
+    hop: [[0, 0], [0, 0], [0, 0], [0, -1], [2, -3], [3, -4], [4, -5], [5, -6], [5, -7],
+      [3, -8], [1, -8], [0, -8], [0, -8], [0, -9], [0, -10], [0, -10], [0, -10]],
+    ribbet: [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, -1], [0, -1], [0, -1],
+      [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]],
+    tongue: [[0, 0], [0, 0], [0, 0], [0, 0], [0, -1], [0, -2], [0, -2], [0, -3],
+      [0, -3], [0, -3], [0, -3], [0, -3], [0, -3], [0, -3], [0, -3], [0, -3],
+      [0, -2], [0, -2], [0, -1], [0, -1], [0, 0], [0, 0], [0, 0], [0, 0]] };
+  // The editor's own weights (ui/editor.js ED_STAGE mix, user 2026-08-22: "jump = 50%, ribbet = 40%,
+  // tongue = 10%"). Indexed to match FROG_CYC's load order: hop, ribbet, tongue.
+  const FROG_MIX = [50, 40, 10];
+  const FROG_ZERO = [0, 0];                            // shared no-offset entry, so the per-frame lookup never allocates
+  const FROG_HOP_FPS = 24, FROG_REST_MIN = 1.2, FROG_REST_MAX = 3.5;   // 24 fps is the house rule; the rest between leaps is what stops it crossing the map
   // ── …AND WHO KEEPS ITS OLD HOME AND GAINS THE OAK FOREST ── the value is how many of the species' OWN
   // DES_PER slots go to the oak population, CLAMPED in main/tick-creatures.js to whatever its desert head-count
   // leaves spare. That clamp is the contract: raise DES_RARITY and the slots go BACK to the desert, the oak
@@ -213,7 +241,7 @@
   // It lives HERE beside DES_OAKONLY rather than inside the creature tick because the two are one fact — where
   // a desert-band species lives — and because main/debug-api.js's oakLife census has to read both to report
   // the oak population honestly. As a local const it could not, and the census silently showed an empty forest.
-  const DES_OAK = { desert_mouse: 4, fly: 5 };          // fly 3 -> 5: this share, not FLY_BUNCH, is what decides how many flies the oak forest actually gets, so a bunch of 5 needs 5 slots here (user 2026-08-22)
+  const DES_OAK = { desert_mouse: 4, fly: 8 };          // fly 5 -> 8, its WHOLE band in the oak (user 2026-08-22: "double the rate of flies spawning in bunches"). At FLY_BUNCH 5 that is two bunches, 5 and 3, rather than one of 5 — and never a lone fly, since the adoption below always fills the emptiest bunch with room before opening a new one          // fly 3 -> 5: this share, not FLY_BUNCH, is what decides how many flies the oak forest actually gets, so a bunch of 5 needs 5 slots here (user 2026-08-22)
   // How many flies share one bunch. 4 of the species' 8 slots means two bunches in the world at once rather
   // than one big knot, which is what a fly reads as — and if the oak share takes some of those slots the bunches
   // simply get smaller instead of one of them vanishing.

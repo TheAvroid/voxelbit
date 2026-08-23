@@ -45,7 +45,8 @@
       // path, its speed, its altitude servo and its arbiter branch — rather than the band's default kind 2.
       const DES_FLYER = { fly: 1, bee: 1, ladybug: 1 };   // the LADYBUG flies (user 2026-08-22) — it takes the fly's whole air behaviour, minus the bunching, which keys on the name 'fly' below
       const desFly = desSlot && DESERTS[desSp] && !!DES_FLYER[DESERTS[desSp].name];
-      const desLbug = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ladybug';   // it flies like the others (DES_FLYER) but it is the only one that LANDS — see the state machine below
+      const desLbug = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ladybug';
+      const desFrog = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'frog';   // the one creature that HOPS: see the leap block below   // it flies like the others (DES_FLYER) but it is the only one that LANDS — see the state machine below
       const desBee = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'bee';   // …and the ONE member with errands. Everything else about it is the fly.
       const DES_FLY_UP = 16;                             // …and rides this much higher than a butterfly's glide line   // ── DESERT CREATURES ── appended after the mammals, DES_PER slots per species, species index off the slot the same way the fish take B.fsp
       const flamSlot = wk >= FLAM_0 && wk < FLAM_END, porcSlot = wk >= PORC_0 && wk < PORC_0 + MAM_PER, skunkSlot = wk >= SKUNK_0 && wk < SKUNK_END, armSlot = wk >= ARM_0 && wk < ARM_END, bunnySlot = wk >= BUNNY_0 && wk < BUNNY_END, fishSlot = wk >= FISH_0 && wk < FISH_END, wormSlot = wk >= WORM_0 && wk < WORM_END, duckSlot = wk >= DUCK_0 && wk < BABY_END, lilySlot = wk >= CARD_0 && wk < CARD_END;
@@ -245,6 +246,17 @@
             const pool7 = free.length ? free : lakeSpots;
             const L7 = pool7[tries % pool7.length];
             sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
+          } else if (desSlot && DESERTS[desSp] && DES_WATER[DESERTS[desSp].name]) {
+            // ── A WATERSIDE SPECIES (user 2026-08-22: the frog "around water, similar to the dragonflies in
+            // that way") ── the same waterSpots home the dragonfly takes, walked by `tries` so one pool cannot
+            // monopolise every slot. The difference is the RADIUS and what happens at the edge: a dragonfly is
+            // placed OVER the water and rejected if it drifts ashore, and a frog is the exact opposite — it
+            // wants the bank, so it is placed in a ring around the spot and the wet ones are rejected below.
+            if (!waterSpots.length) continue;          // no water in the window → no frog, the same deal the dragonfly gets. Falling through to the inland annulus would put frogs in dry forest, which is the thing being asked against
+            const rW = DES_WATER[DESERTS[desSp].name];
+            const L6 = waterSpots[(wk + tries) % waterSpots.length];
+            const aW = Math.random() * 6.2831853, rr6 = rW * (0.45 + 0.55 * Math.sqrt(Math.random()));
+            sx = L6.x + Math.cos(aW) * rr6; sz = L6.z + Math.sin(aW) * rr6;
           } else if (wantK === 0 && isDfly) {          // DRAGONFLY: same kind-0 creature, but its home is WATER (user: only over lakes and rivers).
             const L8 = waterSpots[(wk + tries) % waterSpots.length];   // walk the spots as tries advance so one crowded pool can't monopolise every slot
             sx = L8.x + (Math.random() - 0.5) * 30; sz = L8.z + (Math.random() - 0.5) * 30;
@@ -519,6 +531,7 @@
             PH.stats.mamRockOK = (PH.stats.mamRockOK | 0) + 1;
           }
           if (wantK === 0 && isDfly && !bfWater(sx, sz)) continue;    // the jitter may have thrown it ashore — a dragonfly only ever starts over real water
+          if (desSlot && DESERTS[desSp] && DES_WATER[DESERTS[desSp].name] && bfWater(sx, sz)) continue;   // …and the mirror of it: a frog starts ON THE BANK, never in the lake
           if (wantK === 0 && !isDfly && bfWater(sx, sz)) continue;    // …and a BUTTERFLY never starts over water (user: limit butterflies over lakes); it may still drift out over one
           if ((wantK === 3 || wantK === 4) && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
           // ── BETTAS SCHOOL (user 2026-08-18: "make the betta fish swim in schools") ── the 14-voxel floor is an
@@ -564,7 +577,7 @@
           if (wantK === 6 || ((wantK === 2 || !bfRoofed(sx, sy, sz)) && !bfObst(sx, sy, sz))) {   // a fish spot was already fully validated (real deep water) — bfObst would see the WATER voxels as solid and reject every one; worms live happily UNDER the canopy — the roof test starved dense-forest placement ('worms only near spawn')
             B.x = sx; B.z = sz; B.y = sy; placed = true;
             const cx = Math.floor(sx / 64), cz = Math.floor(sz / 64);   // color = spatial hash of the 64-vox cell → world-anchored variety, all 3 colors present
-            B.col = ((Math.imul(cx, 374761393) ^ Math.imul(cz, 668265263)) >>> 0) % Math.max(1, BFLY_COLS.length);
+            B.col = ((Math.imul(cx, 374761393) ^ Math.imul(cz, 668265263)) >>> 0) % Math.max(1, BFLY_HASHN || BFLY_COLS.length);   // HASHN, not length: the synthetic yellow sits past the authored colours and must never be rolled at random — it stands in for pink, below
             // ── AND THE BLOSSOM GETS ONE COLOUR (user 2026-08-18: "have butterflies but only pink butterflies") ──
             // the spatial hash above is what scatters the six colours evenly across the world; here it is simply
             // overridden. Scoped to the flyer kinds and guarded on BFLY_PINK >= 0 so a missing pink/ folder
@@ -572,6 +585,13 @@
             // LILY size index (the lily path is inert today, nLily = 0, but the field is genuinely shared), which
             // is the other reason this is not written as a blanket assignment.
             if (BFLY_PINK >= 0 && wantK === 0 && !isDfly && cherryM(sx, sz) > BIO_FOREST) B.col = BFLY_PINK;
+            // ── AND PINK IS THE CHERRY BAND'S ALONE (user 2026-08-22: "make the pink butterfly a yellow one
+            // instead. remove the pink butterflies in the pine and oak forests. leave the cherry forest
+            // butterflies alone") ── the line above FORCES pink inside the band; outside it the hash could
+            // still roll pink on its own, which is where the forest pinks came from. Substituting rather than
+            // re-rolling keeps the per-cell colour map stable: a cell that was pink is now yellow, and every
+            // other cell keeps the colour it had. Runs after the cherry line, so the band is untouched.
+            else if (BFLY_YELLOW >= 0 && wantK === 0 && !isDfly && B.col === BFLY_PINK) B.col = BFLY_YELLOW;
           }
         }
         if (!placed) { if (B.sN) unstampWorm(B); B.init = false; continue; }     // no open spot this frame — stay hidden, retry next
@@ -1876,6 +1896,70 @@
         else if (B.lbPh === 'land') { B.y = B.lbGy; B.x = B.lbX; B.z = B.lbZ; B.om = 0; B.omT = 0; B.trap = 0; Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th); }   // sitting still: the heading it landed on is the heading it keeps
         else if (B.lbPh === 'up') B.y += (cruise9 - B.y) * (1 - Math.exp(-2.2 * dt));
       }
+      // ── THE FROG HOPS (user 2026-08-22: "pursue implementing the frog in") ── it is a kind-2 ground creature
+      // and the walker above has already slid it along, which is exactly what a frog must not do. The leap is
+      // PRESCRIBED, not integrated: FROG_OFF (sim/life/slots.js) holds all three cycles' per-frame offsets as
+      // ui/editor.js aligned them by hand against the stage, [up, forward], and playing the hop carries it one
+      // metre forward and five voxels up over 17 frames. Between leaps it sits perfectly still, which is what
+      // makes the hop read as a hop — a frog that drifts between jumps just looks like it is skating.
+      // The frame is driven from here too (B.fgF), because the shared kind-2 frame clock would run the cycle
+      // continuously and the animation would not line up with the travel it is supposed to be causing.
+      // ── THE FROG IS THE EDITOR'S FROG (user 2026-08-22: "it should be an exact copy") ── same file, same
+      // three cycles, same weights: hop 50 / ribbet 40 / tongue 10 (FROG_MIX). Only the HOP carries it
+      // anywhere; ribbet and tongue play where it sits, which is what stops it looking like it is permanently
+      // mid-jump. Structured like the BUNNY, which the user pointed at: position is ASSIGNED from an anchor
+      // plus the baked per-frame offset rather than integrated, and the ground comes from navWalkStand — the
+      // walkable standing height. bfSurf is the top of the COLUMN, which under a crown is the canopy, and
+      // using it is what had the frog clipping through terrain.
+      if (desFrog && FROG_CYC.length) {
+        const fitF = DESERTS[desSp] ? MAMFIT[DESERTS[desSp].name] : null;
+        const seatF = fitF ? fitF.seat : 2;
+        if (B.fgP === undefined) { B.fgP = -1; B.fgC = -1; B.fgF = 0; B.fgX = B.x; B.fgZ = B.z; B.fgG = navWalkStand(B.x, B.z); B.fgRest = tb3 + FROG_REST_MIN + Math.random() * (FROG_REST_MAX - FROG_REST_MIN); }
+        if (B.fgP < 0) {                               // ── SITTING ── pinned on its anchor, holding frame 0
+          B.x = B.fgX; B.z = B.fgZ; B.y = B.fgG + seatF; B.fgF = 0;
+          B.om = 0; B.omT = 0; B.trap = 0;
+          if (tb3 > B.fgRest && !(tb3 < (B.fleeT || 0))) {
+            let w9 = Math.random() * (FROG_MIX[0] + FROG_MIX[1] + FROG_MIX[2]), c9 = 0;
+            while (c9 < FROG_MIX.length - 1 && w9 > FROG_MIX[c9]) { w9 -= FROG_MIX[c9]; c9++; }
+            if (c9 >= FROG_CYC.length) c9 = 0;
+            if (FROG_CYC[c9].move) {                   // a LEAP has to have somewhere to land: no water, no cliff, nothing in the way
+              const H8 = FROG_OFF.hop, far = -H8[H8.length - 1][1];
+              let ok9 = false;
+              for (let t9 = 0; t9 < 6 && !ok9; t9++) {
+                const th9 = t9 === 0 ? B.th + (Math.random() - 0.5) * 1.2 : Math.random() * 6.2831853;
+                const nx9 = B.x + Math.sin(th9) * far, nz9 = B.z + Math.cos(th9) * far;
+                if (bfWater(nx9, nz9)) continue;
+                const g9 = navWalkStand(nx9, nz9);
+                if (g9 === undefined || Math.abs(g9 - B.fgG) > 6) continue;
+                if (bfObst(nx9, g9 + seatF + 1, nz9)) continue;
+                B.th = th9; ok9 = true;
+              }
+              if (!ok9) { B.fgRest = tb3 + 0.6; c9 = -1; }   // boxed in — sit, and try a different cycle shortly
+            }
+            if (c9 >= 0) { B.fgC = c9; B.fgP = 0; B.fgX = B.x; B.fgZ = B.z; }
+          }
+        } else {                                       // ── PLAYING A CYCLE ── frame and position both read off it
+          const C9 = FROG_CYC[B.fgC] || FROG_CYC[0];
+          B.fgP += FROG_HOP_FPS * dt;
+          const i9 = Math.max(0, Math.min(C9.n - 1, Math.floor(B.fgP)));
+          B.fgF = C9.off + i9;
+          // EVERY cycle gets its own table, not just the hop: ribbet and tongue lean the body and come back,
+          // and drawing them without their offsets is what put the frog's alignment out. One expression for all
+          // three — the hop is simply the one whose table does not return to zero.
+          const T9 = FROG_OFF[C9.name], o9 = (T9 && T9[Math.min(T9.length - 1, i9)]) || FROG_ZERO;
+          const fwd9 = -o9[1];
+          B.x = B.fgX + Math.sin(B.th) * fwd9; B.z = B.fgZ + Math.cos(B.th) * fwd9;
+          B.y = B.fgG + seatF + o9[0];                 // the arc rides the ANCHOR's ground, so a leap is a clean parabola rather than a terrain-follow
+          B.om = 0; B.omT = 0; B.trap = 0;
+          if (B.fgP >= C9.n) {                         // finished — commit where it ended up and settle
+            B.fgP = -1; B.fgX = B.x; B.fgZ = B.z; B.fgF = 0;
+            const gN = navWalkStand(B.x, B.z); if (gN !== undefined) B.fgG = gN;   // re-derive at the NEW anchor, exactly as the bunny does after a baked jump
+            B.y = B.fgG + seatF;
+            B.fgRest = tb3 + FROG_REST_MIN + Math.random() * (FROG_REST_MAX - FROG_REST_MIN);
+          }
+        }
+        Hx2 = Math.sin(B.th); Hz2 = Math.cos(B.th);
+      }
       if (desBee && (B.beeM === 2 || B.beeM === 4)) {
         if (B.beeM === 2) {                            // SITTING: pinned over the bloom's own column, easing down onto the head. BEE_DOWN rather than a snap so the last of the approach reads as a landing, and the same ease lifts it off when the clock runs out.
           B.x = B.beeTx; B.z = B.beeTz;
@@ -2042,6 +2126,7 @@
       // becoming another, and it is only ever a frame-count mismatch.
       const fi3 = (B.kind === 2 && (skunkSlot || porcSlot || flamSlot)) ? (Math.floor(B.aframe || 0) % nfr)
         : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * desRate) % nfr)   // …and the desert rate applies HERE, which is the branch a kind-2 creature actually takes — putting it only on the line below meant the scorpion silently stayed at 24   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
+        : B.fgF !== undefined ? B.fgF                 // the FROG's frame is driven by its leap (above), not by the shared clock — the arc and the animation are the same seventeen frames
         : B.lbPh === 'land' ? 0                          // LANDED LADYBUG: frame 00 is the wings-SHUT pose, and holding it is what makes a landing read as a landing rather than a hover at ground level (the editor exhibit does the same in main/tick-emit.js)
         : Math.floor((tb3 + wk * 0.37) * desRate) % nfr;   // per-species rate for the desert set; everything else keeps the 24 fps house rule                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
       let glow = 0;

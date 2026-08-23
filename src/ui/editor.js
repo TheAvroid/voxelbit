@@ -44,7 +44,7 @@
   const ED_LANE = -44, ED_FLY_LANE = -26, ED_LANE_BACK = 50, ED_LANE_RUN = 50;
   const edHudUpd = () => { edHudEl.textContent = ED.frames.length
     ? 'frame ' + ED.sel + '/' + (ED.frames.length - 1)                 // just the frame counter — no vox filename, no keybind hints (user)
-    : 'asset editor — press ESC, then import a .vox to begin'; };
+    : 'import a .vox to begin'; };                     // the ESC hint went with the drag-and-drop support (user 2026-08-22): a file can be dropped straight onto the page, so there is no cursor to free first
   let gizCol = null;                                   // [e] MOVE-GIZMO (Task 1): 3 stubby arrows (X red / Y green-up / Z blue) you aim at + drag to nudge the frame into alignment
   const edEnsureGizCols = () => { if (!gizCol) { gizCol = [edCol(240, 60, 55), edCol(70, 210, 70), edCol(80, 130, 255)]; palSync(); } };
   const GIZ_LEN = 13, GIZ_GAP = 2, GIZ_HEAD = 3;
@@ -122,6 +122,40 @@
     const out = { [lbl(ED.name1, ED.seq1, 'left')]: edFrameOffs(ED.frames) };
     if (ED.frames2.length) out[lbl(ED.name2, ED.seq2, 'right')] = edFrameOffs(ED.frames2);
     const txt = JSON.stringify(out); try { navigator.clipboard.writeText(txt); } catch (e) {} return txt; };
+  const edParseVox = (pv, name, seq, exact) => {              // ALL SIZE/XYZI pairs — a multi-model .vox is an animation, each model one frame — or, with `seq`, just the one NAMED animation out of a scene-graph file (see edVoxSeqs)
+    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
+    const models = []; const ppal = new Uint8Array(1024); let hasPal = false;
+    const walk = (off, end) => { while (off + 12 <= end) {
+      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
+      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
+      if (id === 'SIZE') models.push({ sx: pdv.getUint32(off + 12, true), sy: pdv.getUint32(off + 16, true), sz: pdv.getUint32(off + 20, true), raw: null });
+      else if (id === 'XYZI') { const m = models.find((mm) => !mm.raw); if (m) { const n = pdv.getUint32(off + 12, true); m.raw = pv.subarray(off + 16, off + 16 + n * 4); } }
+      else if (id === 'RGBA') { ppal.set(pv.subarray(off + 12, off + 12 + 1024)); hasPal = true; }
+      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
+      off += 12 + bsz + csz;
+    } };
+    walk(8, pv.length);
+    const out = [];
+    let pick = null;
+    if (seq) { const qs = edVoxSeqs(pv), q = qs.find((t) => t.name.toLowerCase() === String(seq).toLowerCase());
+      if (q) pick = q.ids;                             // that animation's models, in ITS frame order, repeats and all
+      else console.warn('[vb] editor: ' + name + ' has no animation named ' + seq + (qs.length ? ' — it holds ' + qs.map((t) => t.name).join(', ') : ' (no scene graph)') + '; loading every model'); }
+    const order = pick || models.map((m, k) => k);     // no sequence asked for (every creature's per-frame files, every pose builder) → exactly the old behaviour, model order untouched
+    order.forEach((mi, k) => { const m = models[mi]; if (!m || !m.raw) return;
+      const cmap = new Map(), mvox = [];
+      for (let i = 0; i < m.raw.length; i += 4) {
+        const ci = m.raw[i + 3];
+        let cid = cmap.get(ci);
+        if (cid === undefined) { const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
+          cid = exact ? edColExact(cr, cg, cb) : edCol(cr, cg, cb); cmap.set(ci, cid); }   // exact = an EDITOR import, which BORROWS a palette entry rather than accepting the nearest colour the world can spare; every world pose builder leaves it unset and keeps edCol
+        mvox.push(m.raw[i] | (m.raw[i + 1] << 8) | (m.raw[i + 2] << 16) | (cid << 24));   // model z-up → world y at stamp time
+      }
+      out.push({ sx: m.sx, sy: m.sy, sz: m.sz, vox: mvox, name: pick ? String(k).padStart(2, '0') + '.vox' : name + (models.length > 1 ? ' #' + (mi + 1) : ''),   // a named sequence numbers its frames 00.vox, 01.vox … — the naming every bake table, the saved-offset namespace and edExportSeq already speak, so alignment work on it saves and exports like a frame folder
+        ox: 0, oy: 0, oz: 0,                              // per-frame gizmo offsets (voxels) — nudge a frame into alignment with [e] arrows; persisted + copied for baking (Task 1)
+        raw: new Uint8Array(m.raw), pal: hasPal ? new Uint8Array(ppal) : null });   // byte-faithful copies — export rebuilds real .vox files from these, not from engine ids
+    });
+    return out;
+  };
   const edRotVox = (vox, sx, sy, q) => {               // rotate a frame's voxels q×90° about the vertical axis (non-destructive display rotation); dims swap on odd turns
     q = ((q % 4) + 4) % 4;
     let cur = vox, cx = sx, cy = sy;
@@ -303,15 +337,34 @@
   // The id borrowed is the one whose colour is CLOSEST to the one asked for, so if a borrow ever has to be given
   // back mid-import the model degrades to what it looks like today rather than to noise.
   const edBorrow = new Map();                          // borrowed palette id → the [r, g, b] it held before the editor took it
+  // ── AND THE MATERIAL, NOT JUST THE COLOUR (user 2026-08-22: "the black patches on the cow are dissapearing
+  // ... theres seems to be an issue of colors flashing") ── a borrowed id kept whatever solidTab/foliaTab flags
+  // it already carried, and plenty of the table's entries carry NONE: measured on cow.vox, its 21 colours all
+  // borrowed exact ids (borrowed: 21, so the colour path was working perfectly), but two of its blacks landed
+  // on ids 236 and 237 and one white on 148 — none of which are solidTab. A voxel whose id is not solid is not
+  // opaque, so the tracer walks straight through it: those patches were not the wrong colour, they were not
+  // being drawn at all, and which ones vanished shifted with the view. So the borrow now takes the two flags
+  // that decide whether a stamped voxel is a voxel, under the same promise to give them back.
+  const edBorrowMat = new Map();                       // borrowed palette id → [solidTab, foliaTab] as they were
+  // Applied to EVERY id the editor stamps, not only the borrowed ones. The exact-match branch below reuses an
+  // id the table already holds, and the table is full of greys that carry no material at all — measured on
+  // cow.vox, three of its shades matched ids 237/148/252 exactly and every one of them was non-solid, so those
+  // voxels were invisible for the same reason the borrowed ones were. Fixing only the borrow left 3 of 21
+  // still see-through, which is why this is a function and not two lines inside the borrow.
+  const edMakeDrawable = (i) => {
+    if (!edBorrowMat.has(i)) edBorrowMat.set(i, [solidTab[i], foliaTab[i]]);
+    solidTab[i] = 1; foliaTab[i] = 0;
+    return i; };
   const edExactCache = new Map();                      // source colour → id for the CURRENT import; deliberately NOT edColCache, which outlives the editor and would hand a borrowed id to the world long after it was given back
   const edPalPinned = () => { const p2 = new Set([ED_WHITE, ED_GREY, ED_HLITE]);   // the stage's own colours are on screen the whole time — never borrow the floor out from under the model
     if (gizCol) for (const c of gizCol) p2.add(c);
     if (rgizCol) for (const c of rgizCol) p2.add(c);
     return p2; };
-  const edPalRestore = () => { if (!edBorrow.size) { edExactCache.clear(); return 0; }
+  const edPalRestore = () => { if (!edBorrow.size && !edBorrowMat.size) { edExactCache.clear(); return 0; }
     const n = edBorrow.size;
     for (const [id, c] of edBorrow) palette[id] = c;
-    edBorrow.clear(); edExactCache.clear(); palSync();
+    for (const [id, m] of edBorrowMat) { solidTab[id] = m[0]; foliaTab[id] = m[1]; }
+    edBorrow.clear(); edBorrowMat.clear(); edExactCache.clear(); palSync();
     return n; };
   const edBorrowN = () => edBorrow.size;               // a GETTER for the same reason edSnapCount is one
   const edColExact = (r, g, b) => {
@@ -319,7 +372,7 @@
     const hit = edExactCache.get(key);
     if (hit !== undefined) return hit;
     for (let i = 1; i < palette.length; i++) { const c = palette[i];
-      if (c && c[0] === r && c[1] === g && c[2] === b && !edBorrow.has(i)) { edExactCache.set(key, i); return i; } }   // the table already holds this exact colour → use it and borrow nothing (the frog's orange, its black and its red all land here)
+      if (c && c[0] === r && c[1] === g && c[2] === b && !edBorrow.has(i)) { edMakeDrawable(i); edExactCache.set(key, i); return i; } }   // the table already holds this exact colour → use it and borrow nothing (the frog's orange, its black and its red all land here)
     const pin = edPalPinned();
     let bd = 1e9, best = -1;
     for (let i = 1; i < palette.length; i++) { const c = palette[i];
@@ -328,94 +381,13 @@
       if (d < bd) { bd = d; best = i; } }
     if (best < 0) { const sub = edCol(r, g, b); edExactCache.set(key, sub); return sub; }   // nothing left to borrow (an import with more colours than the table has inert ids) → the old substitute, so a huge file still loads
     edBorrow.set(best, palette[best]);
+    // Make it DRAW. Solid so the tracer stops on it, and not foliage so it is not treated as see-through
+    // canopy. Safe for exactly the reason the colour borrow is safe: entering the editor hides the world, so
+    // nothing else wearing this id is on screen while the stage is up, and edPalRestore puts both flags back.
+    edMakeDrawable(best);
     palette[best] = [r, g, b];
     edExactCache.set(key, best);
     return best; };
-  const edVoxSeqs = (pv) => {                          // the NAMED animations inside ONE .vox → [{ name, ids: [model index, …] }], each id list already in frame order
-    // A .vox that holds several animations keeps them in its SCENE GRAPH, not in separate files. frog.vox is one
-    // MAIN with 34 SIZE/XYZI pairs and an nTRN/nGRP/nSHP tree that says which of them are 'ribbet' (14 frames),
-    // 'tongue' (24) and 'hop' (17). edParseVox below walks the SIZE/XYZI pairs alone — which is right for the
-    // per-frame files every creature ships as, and wrong here: it hands back all three cycles concatenated in
-    // file order, each model appearing once however many times its animation actually plays it. So read the graph.
-    // Two things about the format decide the shape of this:
-    //   * the FRAME LIST lives on the nSHP — one entry per frame, '_f' the frame index, repeats included, because
-    //     'ribbet' genuinely plays model 1 twice. Sorting on '_f' rather than trusting file order is free.
-    //   * the NAME lives on the nTRN ABOVE the group, and MagicaVoxel nests a second nTRN called 'frames' inside
-    //     every animation. Taking the OUTERMOST name is what makes this return ribbet/tongue/hop instead of three
-    //     sequences all called 'frames'.
-    // Returns [] for a file with no scene graph (every single-model creature frame), which is what keeps this
-    // invisible to the pose builders: they never pass a sequence name, so nothing below even calls it.
-    const dvv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
-    const nodes = new Map();
-    const rdStr = (o) => { const n = dvv.getInt32(o, true); let t = '';
-      for (let i = 0; i < n; i++) t += String.fromCharCode(pv[o + 4 + i]);
-      return [t, o + 4 + n]; };
-    const rdDict = (o) => { const n = dvv.getInt32(o, true); o += 4; const d = {};
-      for (let i = 0; i < n; i++) { const k = rdStr(o); const v = rdStr(k[1]); d[k[0]] = v[0]; o = v[1]; }
-      return [d, o]; };
-    const walk = (off, end) => { while (off + 12 <= end) {
-      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
-      const bsz = dvv.getUint32(off + 4, true), csz = dvv.getUint32(off + 8, true);
-      if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
-      if (id === 'nTRN' || id === 'nGRP' || id === 'nSHP') {
-        let o = off + 12; const nid = dvv.getInt32(o, true); o += 4;
-        const at = rdDict(o); o = at[1];
-        const rec = { t: id, name: at[0]._name || '' };
-        if (id === 'nTRN') rec.child = dvv.getInt32(o, true);   // …then reserved / layer / numFrames and the per-frame transform dicts, none of which this needs: the chunk header already says where the next chunk starts
-        else if (id === 'nGRP') { const nc = dvv.getInt32(o, true); o += 4; rec.kids = [];
-          for (let i = 0; i < nc; i++) { rec.kids.push(dvv.getInt32(o, true)); o += 4; } }
-        else { const nm = dvv.getInt32(o, true); o += 4; rec.models = [];
-          for (let i = 0; i < nm; i++) { const mi = dvv.getInt32(o, true); o += 4; const md = rdDict(o); o = md[1];
-            rec.models.push([mi, md[0]._f === undefined ? i : +md[0]._f]); } }
-        nodes.set(nid, rec); }
-      off += 12 + bsz + csz;
-    } };
-    try { walk(8, pv.length); } catch (e) { return []; }
-    if (!nodes.size) return [];
-    const gather = (nid, ids, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
-      if (r.t === 'nTRN') gather(r.child, ids, seen);
-      else if (r.t === 'nGRP') { for (const k of r.kids) gather(k, ids, seen); }
-      else for (const m of r.models.slice().sort((a, b) => a[1] - b[1])) ids.push(m[0]); };
-    const out = [];
-    const scan = (nid, seen) => { const r = nodes.get(nid); if (!r || seen.has(nid)) return; seen.add(nid);
-      if (r.t === 'nTRN' && r.name) { const ids = []; gather(nid, ids, new Set()); if (ids.length) out.push({ name: r.name, ids }); return; }   // OUTERMOST name wins → never descend into a named animation looking for more
-      if (r.t === 'nTRN') scan(r.child, seen); else if (r.t === 'nGRP') for (const k of r.kids) scan(k, seen); };
-    scan(nodes.has(0) ? 0 : nodes.keys().next().value, new Set());
-    return out; };
-  const edParseVox = (pv, name, seq, exact) => {              // ALL SIZE/XYZI pairs — a multi-model .vox is an animation, each model one frame — or, with `seq`, just the one NAMED animation out of a scene-graph file (see edVoxSeqs)
-    const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
-    const models = []; const ppal = new Uint8Array(1024); let hasPal = false;
-    const walk = (off, end) => { while (off + 12 <= end) {
-      const id = String.fromCharCode(pv[off], pv[off + 1], pv[off + 2], pv[off + 3]);
-      const bsz = pdv.getUint32(off + 4, true), csz = pdv.getUint32(off + 8, true);
-      if (id === 'SIZE') models.push({ sx: pdv.getUint32(off + 12, true), sy: pdv.getUint32(off + 16, true), sz: pdv.getUint32(off + 20, true), raw: null });
-      else if (id === 'XYZI') { const m = models.find((mm) => !mm.raw); if (m) { const n = pdv.getUint32(off + 12, true); m.raw = pv.subarray(off + 16, off + 16 + n * 4); } }
-      else if (id === 'RGBA') { ppal.set(pv.subarray(off + 12, off + 12 + 1024)); hasPal = true; }
-      else if (id === 'MAIN') { walk(off + 12 + bsz, off + 12 + bsz + csz); off += 12 + bsz + csz; continue; }
-      off += 12 + bsz + csz;
-    } };
-    walk(8, pv.length);
-    const out = [];
-    let pick = null;
-    if (seq) { const qs = edVoxSeqs(pv), q = qs.find((t) => t.name.toLowerCase() === String(seq).toLowerCase());
-      if (q) pick = q.ids;                             // that animation's models, in ITS frame order, repeats and all
-      else console.warn('[vb] editor: ' + name + ' has no animation named ' + seq + (qs.length ? ' — it holds ' + qs.map((t) => t.name).join(', ') : ' (no scene graph)') + '; loading every model'); }
-    const order = pick || models.map((m, k) => k);     // no sequence asked for (every creature's per-frame files, every pose builder) → exactly the old behaviour, model order untouched
-    order.forEach((mi, k) => { const m = models[mi]; if (!m || !m.raw) return;
-      const cmap = new Map(), mvox = [];
-      for (let i = 0; i < m.raw.length; i += 4) {
-        const ci = m.raw[i + 3];
-        let cid = cmap.get(ci);
-        if (cid === undefined) { const cr = ppal[(ci - 1) * 4], cg = ppal[(ci - 1) * 4 + 1], cb = ppal[(ci - 1) * 4 + 2];
-          cid = exact ? edColExact(cr, cg, cb) : edCol(cr, cg, cb); cmap.set(ci, cid); }   // exact = an EDITOR import, which BORROWS a palette entry rather than accepting the nearest colour the world can spare; every world pose builder leaves it unset and keeps edCol
-        mvox.push(m.raw[i] | (m.raw[i + 1] << 8) | (m.raw[i + 2] << 16) | (cid << 24));   // model z-up → world y at stamp time
-      }
-      out.push({ sx: m.sx, sy: m.sy, sz: m.sz, vox: mvox, name: pick ? String(k).padStart(2, '0') + '.vox' : name + (models.length > 1 ? ' #' + (mi + 1) : ''),   // a named sequence numbers its frames 00.vox, 01.vox … — the naming every bake table, the saved-offset namespace and edExportSeq already speak, so alignment work on it saves and exports like a frame folder
-        ox: 0, oy: 0, oz: 0,                              // per-frame gizmo offsets (voxels) — nudge a frame into alignment with [e] arrows; persisted + copied for baking (Task 1)
-        raw: new Uint8Array(m.raw), pal: hasPal ? new Uint8Array(ppal) : null });   // byte-faithful copies — export rebuilds real .vox files from these, not from engine ids
-    });
-    return out;
-  };
   const edExportSeq = () => {                          // one single-model .vox per frame, numbered in CURRENT sequence order (00.vox, 01.vox, … — the cardinal-flight naming)
     ED.frames.forEach((f, i) => {
       const n = f.raw.length / 4, hasPal = !!f.pal;
@@ -784,26 +756,15 @@
   // `flip` says this model's head is at +y where the engine's convention is −y (main/tick-emit.js).
   // A `hold: true` on the exhibit pins it in place for frame-by-frame work — deliberately absent here, so it
   // wanders, bobs and lands (user 2026-08-22: "have the ladybug flying around like it was previously").
-  const ED_STAGE = { path: 'assets/life/frog.vox', name: 'frog',
-    mix: [{ seq: 'hop', bake: FROG_HOP_BAKE, w: 50 },
-          { seq: 'ribbet', bake: FROG_RIBBET_BAKE, w: 40 },
-          { seq: 'tongue', bake: FROG_TONGUE_BAKE, w: 10 }],
-    exhibits: [
-      { model: 'ladybug', kind: 'fly', at: [-26, 15, 6], r: 22, spd: 22, bob: 4, flip: true },
-      // ── THE KOI ── swims the world's open-water fish steering: long lazy sweeps rather than the flyer's
-      // flutter (a ±0.5 rad/s turn retargeted every 2-5 s, against ±2 every 0.4-1.2), slower, and a gentler
-      // rise and fall. No `flip`: its 26 voxels assemble into a 5 x 10 x 4 body whose long axis is y and whose
-      // tail tapers to a single voxel at the far end, so its head already lies down −y where the engine
-      // expects it. It carries no swim cycle of its own — koi.vox is one assembled pose, not a strip.
-      // `spd` is unread for a swimmer — FISH_CFG owns its speed, so the koi cruises and flees at exactly the
-      // rates the lakes do. `r` still bounds where it may wander, since the stage is 242 across and a lake is not.
-      { model: 'koi', kind: 'swim', at: [30, 13, 14], r: 26, bob: 3 },
-      // ── FIVE FLIES IN A BUNCH (user 2026-08-22) ── `swarm` rather than `school`: each steers for itself
-      // around a shared point, so they mill about near one another instead of flying in formation. A tight
-      // orbit (7) is what keeps them a bunch; `jink` gives them the fast, hard little turns a fly makes rather
-      // than a butterfly's drift, and `hover` stops them settling on the deck the ladybug lands on.
-      // The fly needs no loader of its own — it already ships as a desert creature, frames and all.
-      { model: 'fly', kind: 'fly', at: [4, 18, -4], r: 30, spd: 11, swarm: 5, hover: true } ] };   // for a swarm r/spd drive the CENTRE's drift; BEE_ORBIT_R/W/Y own the circling
+  // ── THE STAGE OPENS EMPTY (user 2026-08-22: "clean the editor out") ── it used to auto-load the frog and
+  // three exhibits beside it (a ladybug, a koi and a five-fly swarm). Every one of those was SCAFFOLDING for
+  // building those creatures, and all four now live in the world, so the editor was opening onto a menagerie
+  // that no longer had anything to do with what anyone opened it for.
+  // Set to null rather than deleted: edStage() and edExStage() both already early-return on a falsy stage, so
+  // this is the supported "nothing staged" state and not a hole. Re-staging something is one object literal —
+  // `{ path, name, seq|mix, bake, side, exhibits }` — and the loaders it feeds are all untouched.
+  // Drop a .vox anywhere over the page to stage it, or use the file button; both go through edStageFiles.
+  const ED_STAGE = null;
   // ── TRACE-INJECTED EXHIBITS ── everything on the stage that MOVES FREELY. A lane is grid-stamped: its voxels
   // go into W, which pins it to integer positions and the four cardinal headings — that is what made the first
   // ladybug step along the grid and face only N/S/E/W. An exhibit is never stamped; it is staged into emitBuf
@@ -1002,7 +963,10 @@
       E.x = L.x - Hx * back + Hz * side; E.z = L.z - Hz * back - Hx * side;
       E.th = L.th; E.y = Math.sin((E.t - (E.bph || 0)) * 1.1 + E.rank) * E.bob;
     } };
-  const edStage = () => { if (!ED_STAGE) return;
+  const edStage = () => {
+    // Nothing configured to auto-stage (ED_STAGE is null since the clean-out) → put back whatever was last
+    // dropped in, so reopening the editor resumes where it was left rather than on a bare plane.
+    if (!ED_STAGE) { if (!ED.frames.length) edRestore(); return; }
     edFetchVox(ED_STAGE.path).then(async () => { if (!ED.on || ED.frames.length) return;   // closed again, or a manual import landed while the fetch was in flight — never clobber what is on the stage
       const n = ED_STAGE.mix ? await edLoadMix(ED_STAGE.path, ED_STAGE.mix, ED_STAGE.name)
                              : await edLoadVox(ED_STAGE.path, ED_STAGE.seq, ED_STAGE.name, ED_STAGE.bake);
@@ -1137,11 +1101,13 @@
       P.y = ED.y + 1;                                   // feet planted on the plane (NOT floating at eye-mid-height)
       P.yaw = 0; P.pitch = Math.atan2(midH - EYE, back);   // aim the eye at the model's vertical centre → the object sits framed in front of the camera
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
+    edMode(1);                                          // entered the stage → next refresh comes back to it
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
     edStage();                                         // …and load what the stage opens on (async; the guard inside it is what makes a manual import mid-fetch win)
   };
   const edExit = () => {
+    edMode(0);                                          // left the stage → next refresh comes up in the world
     if (!ED.on) return;
     ED.on = false;
     edPalRestore();                                    // hand the borrowed palette entries back BEFORE the world comes out of the void below — those ids are coloured for the world, not for the model that just left the stage
@@ -1169,19 +1135,124 @@
   const edBoot = () => { if (ED.on) return;
     if (typeof W === 'undefined' || !W || !hmap || !hmap.length || !rect) { setTimeout(edBoot, 120); return; }
     edEnter(); };
-  if (!location.search.includes('cdp')) setTimeout(edBoot, 0);
+  // …and it only opens on boot if that is where the player LEFT OFF. `?cdp` still forces the world, for the
+  // reason the block above documents: a test that boots onto the stage measures the stage.
+  { let want9 = '0'; try { want9 = localStorage.getItem(ED_MODE) || '0'; } catch (e) {}
+    if (want9 === '1' && !location.search.includes('cdp')) setTimeout(edBoot, 0); }
   $('edCopy').addEventListener('click', (e) => { e.stopPropagation();   // copy the per-frame offsets → paste back to be baked into the code (replaces the .vox exporter)
     const btn2 = e.currentTarget; if (!ED.frames.length) { btn2.dataset.lbl = 'nothing to copy'; setTimeout(() => { btn2.dataset.lbl = 'export'; }, 1500); return; }   // icon button now — flash the hover LABEL + a green pulse instead of replacing the SVG with text
     edCopyOffsets(); btn2.classList.add('copied'); btn2.dataset.lbl = 'copied ✓ — paste it to me'; setTimeout(() => { btn2.classList.remove('copied'); btn2.dataset.lbl = 'export'; }, 2000); });
   edFileEl.addEventListener('click', (e) => e.stopPropagation());
-  edFileEl.addEventListener('change', async () => {
+  // ── STAGE A SET OF .vox FILES ── shared by the file picker and by DRAG-AND-DROP (user 2026-08-22:
+  // "can you make it where the player can just drag a .vox file into the window to place it inside the
+  // asset editor automatically"). Lifted out of the picker's handler unchanged so the two routes cannot
+  // drift: a dropped file gets the same multi-cycle detection, the same clean-single-object reset and the
+  // same numeric-aware name sort that a picked one does.
+  const edStageFiles = async (srcFiles) => {
     const list = [];
-    for (const f of [...edFileEl.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
+    for (const f of srcFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
       list.push({ name: f.name, u8: new Uint8Array(await f.arrayBuffer()) });
     if (list.length === 1) { const qs = edVoxSeqs(list[0].u8);   // ONE file holding several NAMED animations (frog.vox = ribbet/tongue/hop): stage the first rather than all three concatenated, and say what the others are called so the second one is reachable
       if (qs.length > 1) { list[0].seq = qs[0].name;
         console.log('[vb] editor: ' + list[0].name + ' holds ' + qs.length + ' animations — ' + qs.map((q) => q.name + ' (' + q.ids.length + ' frames)').join(', ') + '. Staged ' + qs[0].name + "; __vb.edLoad('assets/…/" + list[0].name + "', '" + (qs[1] ? qs[1].name : qs[0].name) + "') stages another."); } }
+    // Remember the FIRST file of the set: restoring one model is the case that matters, and storing a whole
+    // multi-file strip would blow the quota for no gain. `restored` marks a load that CAME from storage, so
+    // putting it back does not rewrite what it was just read from.
+    if (list.length === 1 && !edRestoring) edRemember(list[0].name, list[0].u8);
     if (list.length) { edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.seq2 = ''; ED.sel2 = 0; ED.flyer2 = false; ED.mix = []; ED.mixT0 = 0; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows. edClearStamp runs FIRST, as its comment says: edImportBufs ends in edLayout, which stamps the new model, so clearing afterwards erased what had just been laid out and the import stayed invisible until the next repaint (up to 3.4 s).
-    edFileEl.value = '';
-  });
+  };
+  edFileEl.addEventListener('change', async () => { await edStageFiles([...edFileEl.files]); edFileEl.value = ''; });
+  // Drop anywhere over the page while the stage is open. dragover MUST preventDefault or the browser
+  // never fires drop and simply navigates to the file instead — which in a canvas app looks like the
+  // editor closing itself. Filtered to .vox so dragging anything else still does the browser's thing,
+  // and gated on ED.on so a stray drop during normal play cannot restage the world.
+  // ── CLICK AN OBJECT TO SELECT IT, DELETE TO REMOVE IT (user 2026-08-22) ── the crosshair ray is tested
+  // against each lane's published AABB (edLayout writes ED.box / ED.box2 from the voxels it actually stamped,
+  // so the box is the model rather than a guess). Nearest hit wins, which is the only rule that behaves when
+  // the two lanes overlap on screen. Selecting does not disturb playback — it only says what Delete means.
+  const edRayBox = (bx, ox, oy, oz, dx, dy, dz) => {   // slab test → distance along the ray, or -1
+    if (!bx) return -1;
+    let t0 = 0, t1 = 1e9;
+    const lo = [bx.cx - bx.hx, bx.cy - bx.hy, bx.cz - bx.hz], hi = [bx.cx + bx.hx, bx.cy + bx.hy, bx.cz + bx.hz];
+    const o = [ox, oy, oz], d = [dx, dy, dz];
+    for (let a = 0; a < 3; a++) {
+      if (Math.abs(d[a]) < 1e-6) { if (o[a] < lo[a] || o[a] > hi[a]) return -1; continue; }
+      let ta = (lo[a] - o[a]) / d[a], tb = (hi[a] - o[a]) / d[a];
+      if (ta > tb) { const q = ta; ta = tb; tb = q; }
+      if (ta > t0) t0 = ta; if (tb < t1) t1 = tb;
+      if (t0 > t1) return -1;
+    }
+    return t0;
+  };
+  const edPickLane = () => {                            // which lane the crosshair is on, or 0
+    const cp = Math.cos(P.pitch), dx = Math.sin(P.yaw) * cp, dy = Math.sin(P.pitch), dz = Math.cos(P.yaw) * cp;
+    const t1 = edRayBox(ED.box, P.x, smoothEye, P.z, dx, dy, dz);
+    const t2 = edRayBox(ED.box2, P.x, smoothEye, P.z, dx, dy, dz);
+    if (t1 < 0 && t2 < 0) return 0;
+    if (t2 < 0 || (t1 >= 0 && t1 <= t2)) return 1;
+    return 2;
+  };
+  // Remembered across refreshes, with the model's BYTES, so reopening the editor puts back what was staged
+  // rather than an empty plane. Small by construction — these are creature .vox files, tens of KB — and any
+  // storage failure (quota, private mode) is swallowed: a stage that cannot be remembered is not an error.
+  // ── WHICH SIDE THE PLAYER WAS ON, REMEMBERED (user 2026-08-22: "it should rememeber if I was in the asset
+  // editor or in the real world") ── the editor used to open on EVERY refresh, which was right when it was the
+  // thing being worked on and wrong as a permanent default. Absent means the WORLD: someone who has never
+  // opened the stage, or who left it, gets the oak forest the world already spawns them into.
+  const ED_MODE = 'vb_edmode';
+  const edMode = (on) => { try { localStorage.setItem(ED_MODE, on ? '1' : '0'); } catch (e) {} };
+  const ED_KEEP = 'vb_edstage';
+  let edRestoring = 0;                                  // set while a restore is replaying storage, so it does not write back what it just read
+  const edRemember = (name, u8) => { try {
+      let bin = ''; for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+      localStorage.setItem(ED_KEEP, JSON.stringify({ name, b64: btoa(bin) }));
+    } catch (e) { /* quota or a private window — the stage simply will not persist */ } };
+  const edForget = () => { try { localStorage.removeItem(ED_KEEP); } catch (e) {} };
+  const edRestore = async () => { try {
+      const raw = localStorage.getItem(ED_KEEP); if (!raw) return 0;
+      const j = JSON.parse(raw); if (!j || !j.b64) return 0;
+      const bin = atob(j.b64), u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      // A real File, not a {name, u8} shim: edStageFiles reads its inputs with f.arrayBuffer(), so a plain
+      // object throws into this catch and the restore silently does nothing. Going through File means the
+      // restore takes byte-for-byte the same path a drop does, including the multi-cycle detection.
+      edRestoring = 1;
+      try { return await edStageFiles([new File([u8], j.name)]); } finally { edRestoring = 0; }
+    } catch (e) { return 0; } };
+  document.addEventListener('mousedown', (e) => { if (!ED.on || e.button !== 0) return;
+    const L = edPickLane(); if (L) ED.objSel = L; }, true);
+  document.addEventListener('keydown', (e) => { if (!ED.on) return;
+    if (e.code !== 'Delete' && e.code !== 'Backspace') return;
+    // Prefer an explicit click, then the crosshair, then simply "the model that is staged". Requiring the ray
+    // to hit was too strict to be useful: with one object on the plane the intent is never ambiguous, and a
+    // Delete that silently does nothing because the crosshair drifted a voxel off the box is worse than one
+    // that removes the obvious thing.
+    const L = ED.objSel || edPickLane() || (ED.frames.length ? 1 : (ED.frames2.length ? 2 : 0));
+    if (!L) return;
+    e.preventDefault(); e.stopPropagation();
+    edClearStamp();
+    if (L === 2) { ED.frames2 = []; ED.box2 = null; ED.seq2 = ''; ED.sel2 = 0; ED.flyer2 = false; }
+    else { ED.frames = []; ED.box = null; ED.seq1 = ''; ED.sel = 0; ED.mix = []; ED.mixT0 = 0; ED.playT0 = 0; edForget(); }
+    ED.objSel = 0; edLayout();
+    console.log('[vb] editor: deleted lane ' + L);
+  }, true);
+  // ── DRAG A .vox ANYWHERE OVER THE PAGE ── on DOCUMENT with capture, not on window in the bubble phase
+  // (user 2026-08-22: "Im draging it over the screen and letting it go but nothing is happening"). The canvas
+  // and the HUD both sit over the whole viewport and either can consume the event before it reaches window,
+  // and a dragover that is not preventDefault()ed means the browser never fires `drop` at all — it just
+  // navigates to the file, which in a canvas app looks like nothing happening. Capture gets it first; the
+  // `files` test keeps ordinary text/selection drags working normally.
+  const edHasFiles = (e) => !!(e.dataTransfer && e.dataTransfer.types && [...e.dataTransfer.types].indexOf('Files') >= 0);
+  document.addEventListener('dragover', (e) => { if (!ED.on || !edHasFiles(e)) return;
+    e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy'; }, true);
+  document.addEventListener('dragenter', (e) => { if (!ED.on || !edHasFiles(e)) return;
+    e.preventDefault(); e.stopPropagation(); }, true);
+  document.addEventListener('drop', async (e) => {
+    if (!ED.on || !e.dataTransfer) return;
+    const fs = [...e.dataTransfer.files].filter((f) => /\.vox$/i.test(f.name));
+    if (!fs.length) return;                            // not a .vox — leave it to the browser rather than swallowing the drop silently
+    e.preventDefault(); e.stopPropagation();
+    await edStageFiles(fs);
+    console.log('[vb] editor: staged ' + fs.length + ' dropped file(s) — ' + fs.map((f) => f.name).join(', '));
+  }, true);
 

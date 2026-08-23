@@ -92,5 +92,9 @@
   // CHOFF / OAKOFF / OAKWOFF in world/window.js, which now place spawn in the middle of the oak strip east of
   // the blossom rather than 140 voxels inside the blossom's own east edge.
   { let g = 0; while ((H(SPWX, SPWZ) <= WL + 6 || nearCave(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random pick in open water cannot hang the boot
-  winOX = Math.round(SPWX / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
+  // 2160 = the middle of the oak strip east of the anchor (OAKOFF is -1080, so the oak/pine line is 1080 east
+  // and the pure strip runs 1080..3240). Same water/gorge guard the anchor gets, applied at the offset spot.
+  SPOX = 2160;
+  { let g = 0; while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX += 16; }
+  winOX = Math.round((SPWX + SPOX) / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
 

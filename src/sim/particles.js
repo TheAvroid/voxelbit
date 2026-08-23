@@ -1,5 +1,5 @@
   // @module - splash, spark and debris particle pools and their per-frame step
-  // @exports ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
+  // @exports petalClearBox, ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
   // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
   // something breaks the surface — a fish launching, the same fish coming back down, and the player going
   // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is
@@ -96,6 +96,18 @@
     }
     return smokeSlot;
   };
+  // ── AND THE ONES ALREADY IN THE AIR WHEN THE CROWN GOES (user 2026-08-22: "falling leaves still happen even
+  // when the tree is felled") ── the SPAWN side was already right: both the oak and the pine paths ask
+  // stillLeafy first, so nothing new is shed from a crown that has left W. What kept falling is the backlog —
+  // PETAL_MAXLIFE is 14 s and one is shed every PETAL_GAP (65 ms), so at the instant a tree comes down as many
+  // as 32 leaves are mid-descent under it and go on drifting out of empty air for another quarter minute.
+  // Cleared by the fell's OWN box (sim/chop.js, the same bounds coneWake gets), so a neighbouring tree's shed
+  // is untouched — petalClear() below drops every leaf in the world and is far too blunt for this.
+  // s.x/s.z are the petal's BIRTH point (the emit adds drift on top), which is what makes a box test valid.
+  const petalClearBox = (x0, x1, z0, z1) => { let n = 0;
+    for (let i = PETAL_LO; i < PETAL_HI; i++) { const s = sparks3d[i]; if (!s) continue;
+      if (s.x >= x0 && s.x <= x1 && s.z >= z0 && s.z <= z1) { sparks3d[i] = null; n++; } }
+    return n; };
   const petalClear = () => { for (let i = PETAL_LO; i < PETAL_HI; i++) sparks3d[i] = null; };   // drop every leaf CURRENTLY in the air — the gate in petalTick stops new ones, but a petal lives up to PETAL_MAXLIFE, so without this a handful keep drifting past the stage for ten seconds after the editor opens. A free slot is `!s` (see bandSlot), so null is retirement.
   const TEAR_LIFE = 0.7;                               // FIXED, like the splash — a tear that lasted a random 0.75-1.0 read as flickering
   function spawnTear(wx, wy, wz) {

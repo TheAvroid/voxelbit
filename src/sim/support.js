@@ -256,8 +256,14 @@
     const cells = new Array(n);
     const id0 = W[comp[0]] || 0;
     let woody = false;                                 // read BEFORE phBodyFromCells, which takes these voxels out of W
+    // ── AND WHETHER IT IS FRUIT, TESTED OVER EVERY CELL ── a fruit component is flesh plus a stalk, and the
+    // first version keyed on comp[0] alone: whichever of the two happened to be first decided whether the
+    // piece was loot, so most apples could be picked up and some could not (user 2026-08-22). Read here for the
+    // same reason `woody` is — a few lines later these cells are no longer in W to ask.
+    let fruity9 = false;
     for (let i = 0; i < n; i++) { const ii = comp[i];
       if (woodTab[W[ii]]) woody = true;
+      if (hangTab[W[ii]]) fruity9 = true;
       cells[i] = [supWorldX(ii % WX), ((ii / WX) | 0) % WY, supWorldZ((ii / (WX * WY)) | 0)]; }
     phSrc = 'support';
     const fb = phBodyFromCells(cells);
@@ -274,6 +280,22 @@
     // where it lands and is collected by walking up to it, inside PH.absorbR.
     fb.absorbAt = 0;
     fb.nearR = PH.absorbR;
+    // ── FRUIT STAYS A BODY UNTIL IT IS PICKED UP (user 2026-08-22: "the oranges and apples seem to go static on
+    // the terrain when the tree falls. make them also turn into rigid bodies that can be picked up") ── it
+    // ALREADY became one here; what put it back in the ground was physRetire. A fruit is about three voxels and
+    // PH.retireMax is 6, so the moment it settled it was under the line and got baked into W as scenery — an
+    // apple you cannot pick up, lying where it fell. fellLoot is the existing "this is loot, do not retire it"
+    // flag (sim/solver.js honours it on both retire paths and on the absorbSize gate), so the fruit borrows it
+    // rather than growing a second flag that means the same thing.
+    if (fruity9) fb.fellLoot = 1;                    // see the read above — it has to happen before phBodyFromCells empties these cells
+    // ── AND ANYTHING BIG THE RESOLVER SHEDS GETS CHUNKED LIKE A TREE ── supDrop hands back whatever the
+    // support flood found as ONE body, however large: felling an oak leaves crown parts that come through here
+    // at 430-650 voxels, over the absorb limit and nothing like the size of a proper chunk (user 2026-08-22:
+    // "some chunks are still too big. they arent even being absorbed"). fellWhole routes them through
+    // phShatterTree on the usual clock, so they end up the same uniform, connected, collectable pieces a
+    // felled trunk does. Small drops — a cone, a fruit, a needle tuft — are already the right size and are
+    // left exactly as they were.
+    if (fb.n > PH.fellChunkVox) { fb.fellWhole = 1; fb.fellLoot = 1; }
     PHSRC[phSrc] = (PHSRC[phSrc] || 0) + 1; PH.bodies.push(fb); PH.stats.chunks++;
     { let dx0 = 1e9, dx1 = -1e9, dy0 = 1e9, dy1 = -1e9, dz0 = 1e9, dz1 = -1e9;   // the FELL itself comes through here
       // ── THE BOX IS BUILT IN WORLD COORDS, NOT GRID COORDS (2026-08-10) ── x and z are TOROIDAL, so a plain
