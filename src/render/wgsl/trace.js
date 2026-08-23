@@ -669,7 +669,7 @@
           else {
           if (LG(0u)) { let shT = trace(sunOrg, sdir, sCap, skipW);   // ── OCCLUSION, NOT NEAREST HIT ── this ray only ever asks "is anything in the way".
                         var occ = shT.t >= 0.0;                            // traceAll walks the terrain AND then bodyTrace to find which of the two is CLOSER,
-                        if (!occ) { let shB = bodyTrace(sunOrg, sdir, sCap); occ = shB.t >= 0.0; }   // which this caller throws away. Once terrain has blocked the ray the answer
+                        if (!occ) { let shB = bodyTraceX(sunOrg, sdir, sCap, true); occ = shB.t >= 0.0; }   // which this caller throws away. Once terrain has blocked the ray the answer
                         sunV = select(1.0, 0.0, occ); }                    // cannot change, so the body walk is pure waste. Bit-identical: occluded is occluded.
                         // (bodies included → a felled tree still casts a REAL shadow)
           else { sunV = 1.0; }                        // sun shadows OFF — every sunward surface fully lit

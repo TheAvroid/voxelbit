@@ -1,10 +1,10 @@
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
-      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { if (t === undefined) return tday; tday = t; resetHist = 1; return tday; },   // GETTER when called bare: it used to assign `undefined` and NaN the clock, and tday feeds NIGHT_K -> every life count -> NaN, i.e. one stray `__vb.tod()` silently emptied the world give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
+      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { if (t === undefined) return tday; tday = t; resetHist = 1; return tday; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // give/giveIt put an item in hand (giveIt also SELECTS it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe). tod() is a GETTER when called bare: it used to assign `undefined` and NaN the clock, and tday feeds NIGHT_K -> every life count -> NaN, i.e. one stray `__vb.tod()` silently emptied the world
     palLen() { return { len: palette.length, over: palette.length > 256 }; },
     palMints(lo) { return palMintLog.filter((m) => m[0] >= (lo || 0)); },
-    palTrace() { const out = []; for (let i = 0; i < palTrace.length; i++) out.push({ stage: palTrace[i][0], len: palTrace[i][1], spent: (i ? palTrace[i][1] - palTrace[i - 1][1] : palTrace[i][1]) }); return out; },   // slots each load stage cost
+    palTrace() { const out = []; for (let i = 0; i < palTrace.length; i++) out.push({ at: Math.round(palTrace[i][2] || 0), ms: Math.round((palTrace[i][2] || 0) - (i ? (palTrace[i - 1][2] || 0) : 0)), stage: palTrace[i][0], len: palTrace[i][1], spent: (i ? palTrace[i][1] - palTrace[i - 1][1] : palTrace[i][1]) }); return out; },   // slots each load stage cost
     palAudit() {                                     // WHICH ids are exact-colour duplicates, and is each one safe to reclaim. addCol() pushes unconditionally, so a loader that calls it directly (the .json decor palettes do) mints a fresh id for a colour the table already holds — but a duplicate is only REDUNDANT if nothing tells the two ids apart, and an id carries material flags and pickup-set membership as well as a colour.
       const flags = (i) => [solidTab[i], foliaTab[i], woodTab[i], mushTab[i], rockTopTab[i], decorTab[i], axeOnlyTab[i], pickOnlyTab[i], digOnlyTab[i], sandTab[i], coneTab[i], SUP.CLASS[i] | 0].join(',');
       const picks = (i) => [PICK_ROCK.has(i), PICK_STICK.has(i), PICK_BOULDER.has(i), PICK_CONE.has(i)].map((b) => (b ? 1 : 0)).join(',');
@@ -618,6 +618,7 @@
           vel: b.vel.map((q) => +q.toFixed(2)), omega: b.omega.map((q) => +q.toFixed(3)),
           quat: b.q.map((q) => +q.toFixed(3)), I: b.I.map((q) => Math.round(q)),
           gpu: b.gpu ? { off: b.gpu.off, dims: [b.gpu.bw, b.gpu.bh, b.gpu.bd] } : null,
+          up: b.ay ? +b.ay[1].toFixed(3) : null, tipArm: b.tipArm | 0, tipping: b.tipping | 0, fellDown: b.fellDown | 0, fellWhole: b.fellWhole | 0,
           sleeping: b.sleeping, sleepT: b.sleepT, contacts: b.contacts | 0, deepest: +(b.deepest || 0).toFixed(2),
           ageMs: Math.round(performance.now() - b.born) })) };
     },

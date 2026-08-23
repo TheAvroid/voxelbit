@@ -66,8 +66,8 @@ def main():
     proc = ws = None
     try:
         time.sleep(1.0)
-        print('booting http://localhost:%d/?cdp' % PORT)
-        proc, ws, errors = cdp.boot('http://localhost:%d/?cdp' % PORT,
+        print('booting http://127.0.0.1:%d/?cdp' % PORT)
+        proc, ws, errors = cdp.boot('http://127.0.0.1:%d/?cdp' % PORT,
                                     ready_expr='typeof (window.__vb||{}).palLen=="function"')
         raw = cdp.ev(ws, 'JSON.stringify(Array.from({length:256},(_,i)=>__vb.pal(i)))')
         pal = json.loads(raw)

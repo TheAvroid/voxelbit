@@ -84,10 +84,13 @@
     for (let f = 0; f < 13; f++) pf('assets/food/apple/' + String(f).padStart(2, '0') + '.vox');   // the apple EATING strip — 13 on disk today; the loader still walks until one is missing, so this number only decides how many arrive warm
     for (let f = 0; f < 4; f++) pf('assets/life/firefly/0' + f + '.vox');
     for (let f = 0; f < 12; f++) pf('assets/life/worm/' + String(f).padStart(2, '0') + '.vox');
-    for (const sp of ['salmon', 'minnow', 'betta']) for (let f = 0; f < 12; f++) pf('assets/life/' + sp + '/' + String(f).padStart(2, '0') + '.vox');   // fish swim strips (base.vox is source art, skipped); species without frames simply don't join
+    for (const [fsp9, fnf9] of [['salmon', 13], ['minnow', 13], ['betta', 8], ['bass', 13], ['blue_gill', 13], ['catfish', 13]]) for (let f = 0; f < fnf9; f++) pf('assets/life/' + fsp9 + '/' + String(f).padStart(2, '0') + '.vox');   // fish swim strips. ALL SIX species, at their real on-disk frame counts: the FISH loader walks six but only three were listed here, so bass/blue_gill/catfish ran ~39 fetches strictly one-at-a-time (base.vox is source art, never a frame)
     for (const sp8 of ['cardinal', 'pink_bird']) for (let f = 0; f < 11; f++) pf('assets/life/' + sp8 + '/rotate/' + String(f).padStart(2, '0') + '.vox');
     for (let f = 0; f < 10; f++) pf('assets/life/flamingo/' + String(f).padStart(2, '0') + '.vox');
     pf('assets/life/duck/base.vox'); pf('assets/life/duck/baby.vox');
+    for (const bsp9 of ['blue_bird', 'robin']) { for (let f = 0; f < 8; f++) pf('assets/life/' + bsp9 + '/flight/' + String(f).padStart(2, '0') + '.vox'); for (let f = 0; f < 11; f++) pf('assets/life/' + bsp9 + '/rotate/' + String(f).padStart(2, '0') + '.vox'); }   // the OTHER two songbirds — loadFlight walks four species and the rotate strips load all four, but only cardinal + pink_bird were prefetched above
+    for (const [msp9, mnf9] of [['bunny/rotate/left', 11], ['bunny/rotate/right', 11], ['bunny/jump', 11], ['armadillo/walk', 9], ['skunk', 11], ['porcupine', 7]]) for (let f = 0; f < mnf9; f++) pf('assets/life/' + msp9 + '/' + String(f).padStart(2, '0') + '.vox');   // the land-mammal + bunny filmstrips. Counts are what ships on disk, so the loaders' own break-on-404 probe stays the only serial request each
+    pf('assets/food/orange.vox');
     // ── THE DESERT SET, BY MANIFEST ── this used to prefetch a blind 20 frames per species. Only 58 of those
     // 140 files exist, so every boot spent 82 round-trips collecting 404s — and they were also the bulk of the
     // 97 "expected" console errors that made every test's console check unreadable. tools/bake_desert_life.py
@@ -1252,4 +1255,3 @@
     const ITEMD : array<vec4<i32>, ${items.length}> = array<vec4<i32>, ${items.length}>(${dims.join(', ')});
     @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;`;
   }
-

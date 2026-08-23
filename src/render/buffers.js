@@ -30,7 +30,7 @@
   // Coalesce a set of dirty u32 word indices into contiguous runs — one writeBuffer per run instead of per word.
   // Bridging a small gap re-uploads a few CLEAN words, which is always safe: the CPU array is authoritative,
   // so copying more of it can only bring the GPU closer to it, never further away.
-  const WRUN_GAP = 16;
+  const WRUN_GAP = 16;                                 // MEASURED 2026-08-22: sweeping this 16 -> 1024 moved the per-frame writeBuffer count not at all (78.7 -> 76.6, inside noise), so the ~80 calls are separate BUFFERS, not fragmentation within one. Not a lever; do not re-try it.
   const wrunTmp = [];
   const writeWordRuns = (buf, src, wset) => {
     if (!wset || !wset.size) return;
@@ -167,6 +167,8 @@
   const PHYS_MAX = 256;                               // ── RIGID BODY CAPACITY (user 2026-08-22, was 128/48/24, was 16) ── the ONE number. PH.maxBodies takes it, physB's WGSL length is 5 vec4 x it, and EVERY offset below is derived from it.
   //   physB sits in the MIDDLE of the struct, so raising this moves the entire tail (physC, physBound, heldCfg, lgt, hurtB, hurtH, dropsB, lifeMot, dof). Those used to be literals in tick-emit/tick-camera/debug-api; they are named now, because a
   //   missed literal here does not throw - it silently feeds each field its neighbour's numbers (a wrong hit-flash box, held-item lighting reading the light-debug mask). Never write a literal float index at or past UF_PHYSB again.
+  const PHYS_GRP = 16, PHYS_NG = 16;   // bodies per group sphere, and how many groups — 16 * 16 = 256 = PHYS_MAX. BOTH LITERALS ON PURPOSE: tools/lint-vb.py evaluates the constants in this file to check every ${} array length in the uniform struct, and its parser takes + - * ( ) only, so a PHYS_MAX / PHYS_GRP here would silently stop the struct being checked at all. The guard below is what keeps them honest instead.
+  if (PHYS_GRP * PHYS_NG < PHYS_MAX) console.error('[vb] PHYS_NG is too small for PHYS_MAX: bodies past ' + (PHYS_GRP * PHYS_NG) + ' would sit in no group sphere and bodyTrace would never reach them');
   const UF_PHYSB = 1532;                              // physB base - everything BEFORE it is fixed history (see UF_OLD_LEN)
   const UF_PHYSC = UF_PHYSB + PHYS_MAX * 20;          // x = live body count, y = reactive strength
   const UF_PHYSBOUND = UF_PHYSC + 4;                  // sphere enclosing every live body - the one-compare reject
@@ -258,7 +260,13 @@
   // untouched by the halving either way.
   const HEART_POSE = { x0: -0.200, y: -0.52, z: 1.10, vs: 0.055, gap: 0.100, rig: 0.5 };   // x0 = the FIRST heart, so x0 = -gap*(HEART_N-1)/2 keeps the row centred
   let heartShow = 1;                                  // __vb.hearts(false) hides the row - the A/B lever for what the block costs, and the only way to take a clean screenshot of the frame without it
-  const UF = new Float32Array(UF_BADGE2 + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
+  // ── RIGID-BODY GROUP SPHERES ── one bounding sphere per PHYS_GRP consecutive bodies, so bodyTrace can skip a
+  // whole slab of the debris on one compare instead of rejecting 16 bodies one at a time. Bodies are published
+  // NEAREST-FIRST (main/tick-emit.js), so a group is a depth slab and the groups themselves come front-to-back.
+  // Appended at the VERY end, after badge2, for the reason every field back here is: the JS writes this buffer at
+  // fixed float indices, so a lane inserted above would silently feed each field below it its neighbour's numbers.
+  const UF_PHYSG = UF_BADGE2 + 4;
+  const UF = new Float32Array(UF_PHYSG + PHYS_NG * 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532

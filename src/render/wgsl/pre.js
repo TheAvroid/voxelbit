@@ -74,10 +74,14 @@
       pick3X : vec4<f32>, pick3Y : vec4<f32>, pick3Z : vec4<f32>,
       // ── THE OFF-HAND'S STACK BADGE ── same layout as the right hand's badge lane; its COUNT rides in vitG.y (see render/buffers.js).
       badge2 : vec4<f32>,                                            // x = hunger level 0 (full stomach) .. 4 (empty, and starving). y/z/w spare.
+      // ── RIGID-BODY GROUP SPHERES ── xyz = centre (window coords), w = radius, over PHYS_GRP consecutive bodies;
+      // w <= 0 means the group is empty. Appended at the VERY end, same rule as every field above it.
+      physG : array<vec4<f32>, ${PHYS_NG}>,
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}
     const DROP_N : i32 = ${DROP_SLOTS};                                        // total drop slots (25 fixed + the flock + traced creatures). 128 = exactly four 32-bit tile-mask words; a 129th needs a fifth.
+    const PHYS_GRP : i32 = ${PHYS_GRP};                                        // bodies per group sphere in u.physG — bodyTrace culls a whole slab of the debris on one compare (see render/buffers.js)
     fn dropV(i : i32) -> vec4<f32> { if (i < ${DROP_HALF * 4}) { return u.drops[i]; } return u.dropsB[i - ${DROP_HALF * 4}]; }        // one logical drops[] over the two halves. The index is the loop counter, workgroup-uniform, so this is a scalar branch — and after the bit-scan it only runs for slots that actually touch the tile.
     fn lifeMotV(i : i32) -> vec4<f32> { if (i < ${DROP_HALF}) { return u.lifeMot[i]; } return u.lifeMotB[i - ${DROP_HALF}]; }   // …and one logical lifeMot[]
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};

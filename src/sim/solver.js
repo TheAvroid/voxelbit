@@ -57,11 +57,15 @@
         b.sleepT = 0;                                  // a half-fallen trunk must not doze off mid-tilt
       }
     }
-    // ── THE TREE BREAKS ON A CLOCK (user 2026-08-22: "have the tree turn into chunks after 10 seconds of
-    // becoming an rigid body") ── armed at the fell (sim/chop.js sets fellWhole beside noAbsorb) and fired
-    // PH.fellBreakMs after the body was born. This replaces a landing test that had to know the trunk was
-    // down, which in turn needed the topple drive to have run — and that drive is what made every tree tilt
-    // the same way. A clock needs none of it, so the fall can be plain physics and the break still happens.
+    // ── THE TREE BREAKS WHEN IT HITS THE GROUND (user 2026-08-23: "the tree is supposed to break up in chunks
+    // when it hits the ground") ── armed at the fell (sim/chop.js sets fellWhole beside noAbsorb) and fired by
+    // the motion test in the body sweep below. The FIRST version was a landing test that had to know the trunk
+    // was down, which needed the topple drive to have run — and that drive is what made every tree tilt the
+    // same way; it was replaced by a plain 10 s clock so the fall could be raw physics. Both were wrong, and
+    // measuring the fall says why: a felled body ARRESTS hard when it lands and then creeps and rolls for
+    // another 10-15 s at 2-3.5 vox/s. A clock cannot see the landing at all, and waiting for the creep to stop
+    // broke the tree long after the player watched it come down. The arrest is the landing, it needs to know
+    // nothing about trunks, and the fall stays raw physics. See PH.fellHitVy for the numbers.
     // RESTING LATCH: a body that was in contact last step and is barely moving does not re-accumulate
     // gravity. Without this, every contact-free step re-added 3.3 vox/s of fall which the next step's
     // impulse cancelled — a limit cycle that kept a visibly stationary body above the sleep threshold
@@ -270,7 +274,36 @@
       // SLEEPING body, and a severed trunk resting on its own stump is asleep inside a second, so a break
       // tested in there could never fire on the one case it exists for (measured: 20 s, still one 8,016-voxel
       // body). This sweep visits every body whatever its state, and it already owns tNow.
-      if (b.fellWhole && !b.absorbing && tNow - b.born > PH.fellBreakMs) { if (phShatterTree(b)) { b.fellWhole = 0; continue; } }   // a 0 means it could not break YET (no room for uniform pieces) — keep the flag and try again next tick
+      if (b.fellWhole && !b.absorbing) {                // ── SETTLED, OR THE BACKSTOP EXPIRED ── see PH.fellCalmLin for the measurement this threshold comes from
+        const lin9 = Math.hypot(b.vel[0], b.vel[1], b.vel[2]), ang9 = Math.hypot(b.omega[0], b.omega[1], b.omega[2]);
+        if (b.calmT === undefined || lin9 > PH.fellCalmLin || ang9 > PH.fellCalmAng) b.calmT = tNow;   // still moving — the dwell restarts, so one quiet FRAME mid-topple can never fire it
+        // ── NOT WHILE IT IS STILL GOING OVER (user 2026-08-23: "you dont give it a chance to tilt over and
+        // land on the terrain") ── a severed trunk does not fall straight down. It DROPS ONTO ITS OWN CUT FACE
+        // first (sim/chop.js arms tipArm, the block at the top of this file seats it), and only then does the
+        // topple drive run it over. That seat is an arrest like any other — fall speed collapses, contacts go
+        // up — so the impact test fired there and burst the tree while it was still standing on its stump.
+        // While tipArm or tipping is set the tree has not landed on anything yet, so nothing is armed and the
+        // peak is reset: the fall that counts is the one AFTER it has committed, which is the one the player
+        // watches come down. Bodies that never had a topple (a crown separated by the support pass) have
+        // neither flag and are unaffected.
+        // …but ONLY while it is still upright: a tree that has leaned past PH.fellTiltUp is off its stump, so
+        // the next thing to stop it is the terrain — and MEASURED, that first ground contact often happens
+        // while the drive is STILL RUNNING (up = 0.41, contacts 2, bounced 3 voxels back up, fellDown only
+        // 140 ms later). Blocking on the drive alone threw that impact away and broke the tree 850 ms late.
+        // A body with no topple at all — a crown the support pass separated — has neither flag and is exempt.
+        if ((b.tipArm || b.tipping) && (b.ay ? b.ay[1] : 0) > PH.fellTiltUp) { b.fellPkVy = 0; b.hitT = undefined; b.calmT = tNow; }
+        const down9 = b.vel[1] < 0 ? -b.vel[1] : 0;    // ── IMPACT = THE FALL BEING ARRESTED ── see PH.fellHitVy for the two fells this is measured from
+        if (down9 > (b.fellPkVy || 0)) b.fellPkVy = down9;   // the body's OWN peak fall speed, so the test scales with how far it had to drop
+        // TOUCHED RECENTLY, not touching THIS FRAME: contacts flicker 0<->2 between frames on a body lying on
+        // uneven ground (the sleep rule below ignores them for the same reason). Requiring them every frame
+        // reset the dwell over and over — MEASURED on a landed pine, contacts dropped to 0 every few frames and
+        // the break came 1.6 s after it was already flat. b.cT is the same last-touched stamp the sleep test uses.
+        const touched9 = tNow - (b.cT === undefined ? 0 : b.cT) < PH.fellHitHoldMs;
+        if (!((b.fellPkVy || 0) > PH.fellHitVy && down9 < b.fellPkVy * PH.fellHitFrac && touched9)) b.hitT = undefined;   // airborne, or never really fell — a trunk sitting on its stump never arms this
+        else if (b.hitT === undefined) b.hitT = tNow;
+        const age9 = tNow - b.born;
+        if ((b.hitT !== undefined && tNow - b.hitT > PH.fellHitMs) || (age9 > PH.fellMinMs && tNow - b.calmT > PH.fellCalmMs) || age9 > PH.fellBreakMs) { if (phShatterTree(b)) { b.fellWhole = 0; continue; } }   // a 0 means it could not break YET (no room for uniform pieces) — keep the flag and try again next tick
+      }
       if (!b.absorbing && tNow - b.born > (b.noAbsorb ? PH.treeLifeMs : (b.fellLoot ? PH.fellLifeMs : PH.chunkLifeMs))) {   // fellLoot = a piece of a tree the player felled (sim/chop-tree.js): 5 minutes, not 10
         PH.bodies.splice(i, 1); PH.stats.expired = (PH.stats.expired | 0) + 1;   // ── EXPIRED (user) ── see treeLifeMs / chunkLifeMs
         continue;                                      // one already flying into the player finishes its flight — it is about to be gone anyway

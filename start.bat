@@ -21,7 +21,7 @@ for /f "tokens=5" %%p in ('netstat -ano 2^>nul ^| findstr /c:":8080" ^| findstr 
 REM ── Start the server in its OWN minimised window, then open the game and exit ──
 start "voxelbit server" /min cmd /c call "%~f0" --server
 timeout /t 1 >nul
-start "" http://localhost:8080/
+start "" http://127.0.0.1:8080/
 exit /b
 
 

@@ -711,7 +711,7 @@
   };
   const finishLoad = () => { loadFinishing = true; loadFillEl.style.transition = 'transform 0.85s cubic-bezier(0.25, 0.9, 0.3, 1)'; loadFillEl.style.transform = 'scaleX(1)'; setTimeout(() => { loadDone = true; loadPctEl.textContent = '100%'; verSet(VER_TO.toFixed(1)); loadGlossEl.style.width = '100%'; }, 850); };   // …and the FINAL number is VER_TO, not a literal: this said '1.0' from when that WAS the version, so the drum spent the whole load counting up to VER_TO and then snapped back to 1.0 at the moment the world arrived — the one frame of it anybody actually reads (user 2026-08-21 asked for v1.3 and this is why the loading screen would still have said v1.0)   // verSet, NOT textContent: assigning text here destroyed the drum markup (the .vd cells) and left plain text behind.   // world ready → GLIDE the last stretch to full over 0.85 s so it never snaps (user: "jumps from 80% to 100%"); the % follows the compositor the whole way, then pins to a true 100% once the glide has actually arrived
   const palTrace = [];                                 // ── WHERE THE 256 WENT ── palette.length sampled at every load stage, so the ceiling can be attributed to a LOADER instead of guessed at. __vb.palTrace() reads it.
-  const stage = async (msg) => { try { palTrace.push([msg, palette.length]); } catch (e) {} loadMsgEl.textContent = msg; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); };
+  const stage = async (msg) => { try { palTrace.push([msg, palette.length, performance.now()]); } catch (e) {} loadMsgEl.textContent = msg; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); };
 
   // ── WebGPU init ────────────────────────────────────────────────────────────
   if (!navigator.gpu) fail('WebGPU not available — use Chrome/Edge 113+');
@@ -1730,7 +1730,14 @@
   const rockSeatY = (m, x, z) => { const r = Math.max(2, Math.max(m.sx, m.sy) >> 1), d = (r * 0.7071) | 0;
     return Math.min(H(x, z), H(x - r, z), H(x + r, z), H(x, z - r), H(x, z + r),
                     H(x - d, z - d), H(x + d, z - d), H(x - d, z + d), H(x + d, z + d)); };
-  const groundMin = (x, z, r) => Math.min(H(x, z), H(x - r, z), H(x + r, z), H(x, z - r), H(x, z + r));   // lowest ground under a footprint — nothing floats on slopes
+  const groundMin = (x, z, r) => Math.min(H(x, z), H(x - r, z), H(x + r, z), H(x, z - r), H(x, z + r),
+    H(x - r, z - r), H(x + r, z - r), H(x - r, z + r), H(x + r, z + r));   // lowest ground under a footprint — nothing floats on slopes.
+  // ── THE DIAGONALS ARE NOT OPTIONAL (user 2026-08-23: "oak trees are levitating") ── this sampled a PLUS of
+  // five columns, so a dip on a diagonal was invisible and whatever seated here was left standing over it.
+  // MEASURED over 1400 columns at r=4 against the true minimum of the whole 9x9: the five-point cross reads
+  // 0.22 voxels high on average and up to a full voxel, and the four corners bring the mean error to 0. That
+  // is exactly the trunk-base histogram it produced — 78 boles sitting flat on the ground, 5 hanging one
+  // voxel over it and 1 hanging two. Nine H() calls instead of five, once per stamped object.
 
 
   // ── ROW-CACHED noise ── the bulk fill sweeps rows (fixed wz, ascending wx), so every vnoise stream's z-lattice
@@ -1964,13 +1971,13 @@
   //
   // FORMAT: one entry per FOLDER, "<dir>:<name>,<name>,..." joined with ';'. Names keep their real case
   // (the fetch URL is case-sensitive) and drop the .vox; the empty dir is game/assets itself. Grouping by
-  // folder is what makes this 6465 characters instead of the 26712 the flat paths cost. Folders are emitted
+  // folder is what makes this 6478 characters instead of the 26736 the flat paths cost. Folders are emitted
   // parent-first, siblings in order, so every subtree is a CONTIGUOUS run - ui/console.js relies on that to
   // answer "how many files are under life/tropical_life/pelican" without a second table. It is unpacked
   // lazily, on the first command that needs it, so the boot pays nothing for it.
-  const VOXDEX = [                                     // 959 files in 120 folders
+  const VOXDEX = [                                     // 960 files in 120 folders
     ':palette,palette2',
-    'decoration:beehive,birch,fir_spruce,flowers,lillypad_large,lillypad_medium,lillypad_small,log,lotus,mushroom,pine_puffy,pine_skinny,pinecone,pink_stick_1,pink_stick_2,rock,shell,stick_1,stick_2',
+    'decoration:beehive,birch,birch_forest,fir_spruce,flowers,lillypad_large,lillypad_medium,lillypad_small,log,lotus,mushroom,pine_puffy,pine_skinny,pinecone,pink_stick_1,pink_stick_2,rock,shell,stick_1,stick_2',
     'decoration/rocks:BIG_1_BiG_0,Big_2_BiG_0,Big_3_BiG_0,Big_4_BiG_0,Big_5_BiG_0,Mid_1_MID_0,Mid_2_MID_0,Mid_3_MID_0,Mid_4_MID_0,Mid_4_MID_0_001,Mid_5_MID_0,Runic_1_Runic_0,Runic_2_Runic_0,Runic_3_Runic_0,Runic_4_Runic_0,Runic_5_Runic_0,Runic_6_Runic_0,Runic_7_Runic_0,Small_1_SMall_0,Small_2_SMall_0,Small_3_SMall_0,Small_4_SMall_0,Small_5_SMall_0,Small_6_SMall_0,Small_7_SMall_0,Small_8_SMall_0',
     'foilage:palm_tree,pine4,pine5',
     'foilage/cactus:cactus_1,cactus_2,cactus_3,cactus_4,cactus_5,cactus_6,cactus_7,cactus_8,cactus_9',
@@ -4640,10 +4647,13 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     for (let f = 0; f < 13; f++) pf('assets/food/apple/' + String(f).padStart(2, '0') + '.vox');   // the apple EATING strip — 13 on disk today; the loader still walks until one is missing, so this number only decides how many arrive warm
     for (let f = 0; f < 4; f++) pf('assets/life/firefly/0' + f + '.vox');
     for (let f = 0; f < 12; f++) pf('assets/life/worm/' + String(f).padStart(2, '0') + '.vox');
-    for (const sp of ['salmon', 'minnow', 'betta']) for (let f = 0; f < 12; f++) pf('assets/life/' + sp + '/' + String(f).padStart(2, '0') + '.vox');   // fish swim strips (base.vox is source art, skipped); species without frames simply don't join
+    for (const [fsp9, fnf9] of [['salmon', 13], ['minnow', 13], ['betta', 8], ['bass', 13], ['blue_gill', 13], ['catfish', 13]]) for (let f = 0; f < fnf9; f++) pf('assets/life/' + fsp9 + '/' + String(f).padStart(2, '0') + '.vox');   // fish swim strips. ALL SIX species, at their real on-disk frame counts: the FISH loader walks six but only three were listed here, so bass/blue_gill/catfish ran ~39 fetches strictly one-at-a-time (base.vox is source art, never a frame)
     for (const sp8 of ['cardinal', 'pink_bird']) for (let f = 0; f < 11; f++) pf('assets/life/' + sp8 + '/rotate/' + String(f).padStart(2, '0') + '.vox');
     for (let f = 0; f < 10; f++) pf('assets/life/flamingo/' + String(f).padStart(2, '0') + '.vox');
     pf('assets/life/duck/base.vox'); pf('assets/life/duck/baby.vox');
+    for (const bsp9 of ['blue_bird', 'robin']) { for (let f = 0; f < 8; f++) pf('assets/life/' + bsp9 + '/flight/' + String(f).padStart(2, '0') + '.vox'); for (let f = 0; f < 11; f++) pf('assets/life/' + bsp9 + '/rotate/' + String(f).padStart(2, '0') + '.vox'); }   // the OTHER two songbirds — loadFlight walks four species and the rotate strips load all four, but only cardinal + pink_bird were prefetched above
+    for (const [msp9, mnf9] of [['bunny/rotate/left', 11], ['bunny/rotate/right', 11], ['bunny/jump', 11], ['armadillo/walk', 9], ['skunk', 11], ['porcupine', 7]]) for (let f = 0; f < mnf9; f++) pf('assets/life/' + msp9 + '/' + String(f).padStart(2, '0') + '.vox');   // the land-mammal + bunny filmstrips. Counts are what ships on disk, so the loaders' own break-on-404 probe stays the only serial request each
+    pf('assets/food/orange.vox');
     // ── THE DESERT SET, BY MANIFEST ── this used to prefetch a blind 20 frames per species. Only 58 of those
     // 140 files exist, so every boot spent 82 round-trips collecting 404s — and they were also the bulk of the
     // 97 "expected" console errors that made every test's console check unreadable. tools/bake_desert_life.py
@@ -5808,7 +5818,6 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     const ITEMD : array<vec4<i32>, ${items.length}> = array<vec4<i32>, ${items.length}>(${dims.join(', ')});
     @group(0) @binding(13) var<storage, read> ITEMMAP : array<vec4<f32>>;`;
   }
-
   const __m_world_terrain = (() => {
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
   // @exports BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
@@ -7619,7 +7628,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // Coalesce a set of dirty u32 word indices into contiguous runs — one writeBuffer per run instead of per word.
   // Bridging a small gap re-uploads a few CLEAN words, which is always safe: the CPU array is authoritative,
   // so copying more of it can only bring the GPU closer to it, never further away.
-  const WRUN_GAP = 16;
+  const WRUN_GAP = 16;                                 // MEASURED 2026-08-22: sweeping this 16 -> 1024 moved the per-frame writeBuffer count not at all (78.7 -> 76.6, inside noise), so the ~80 calls are separate BUFFERS, not fragmentation within one. Not a lever; do not re-try it.
   const wrunTmp = [];
   const writeWordRuns = (buf, src, wset) => {
     if (!wset || !wset.size) return;
@@ -7756,6 +7765,8 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const PHYS_MAX = 256;                               // ── RIGID BODY CAPACITY (user 2026-08-22, was 128/48/24, was 16) ── the ONE number. PH.maxBodies takes it, physB's WGSL length is 5 vec4 x it, and EVERY offset below is derived from it.
   //   physB sits in the MIDDLE of the struct, so raising this moves the entire tail (physC, physBound, heldCfg, lgt, hurtB, hurtH, dropsB, lifeMot, dof). Those used to be literals in tick-emit/tick-camera/debug-api; they are named now, because a
   //   missed literal here does not throw - it silently feeds each field its neighbour's numbers (a wrong hit-flash box, held-item lighting reading the light-debug mask). Never write a literal float index at or past UF_PHYSB again.
+  const PHYS_GRP = 16, PHYS_NG = 16;   // bodies per group sphere, and how many groups — 16 * 16 = 256 = PHYS_MAX. BOTH LITERALS ON PURPOSE: tools/lint-vb.py evaluates the constants in this file to check every ${} array length in the uniform struct, and its parser takes + - * ( ) only, so a PHYS_MAX / PHYS_GRP here would silently stop the struct being checked at all. The guard below is what keeps them honest instead.
+  if (PHYS_GRP * PHYS_NG < PHYS_MAX) console.error('[vb] PHYS_NG is too small for PHYS_MAX: bodies past ' + (PHYS_GRP * PHYS_NG) + ' would sit in no group sphere and bodyTrace would never reach them');
   const UF_PHYSB = 1532;                              // physB base - everything BEFORE it is fixed history (see UF_OLD_LEN)
   const UF_PHYSC = UF_PHYSB + PHYS_MAX * 20;          // x = live body count, y = reactive strength
   const UF_PHYSBOUND = UF_PHYSC + 4;                  // sphere enclosing every live body - the one-compare reject
@@ -7847,7 +7858,13 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // untouched by the halving either way.
   const HEART_POSE = { x0: -0.200, y: -0.52, z: 1.10, vs: 0.055, gap: 0.100, rig: 0.5 };   // x0 = the FIRST heart, so x0 = -gap*(HEART_N-1)/2 keeps the row centred
   let heartShow = 1;                                  // __vb.hearts(false) hides the row - the A/B lever for what the block costs, and the only way to take a clean screenshot of the frame without it
-  const UF = new Float32Array(UF_BADGE2 + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
+  // ── RIGID-BODY GROUP SPHERES ── one bounding sphere per PHYS_GRP consecutive bodies, so bodyTrace can skip a
+  // whole slab of the debris on one compare instead of rejecting 16 bodies one at a time. Bodies are published
+  // NEAREST-FIRST (main/tick-emit.js), so a group is a depth slab and the groups themselves come front-to-back.
+  // Appended at the VERY end, after badge2, for the reason every field back here is: the JS writes this buffer at
+  // fixed float indices, so a lane inserted above would silently feed each field below it its neighbour's numbers.
+  const UF_PHYSG = UF_BADGE2 + 4;
+  const UF = new Float32Array(UF_PHYSG + PHYS_NG * 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
@@ -7981,10 +7998,14 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       pick3X : vec4<f32>, pick3Y : vec4<f32>, pick3Z : vec4<f32>,
       // ── THE OFF-HAND'S STACK BADGE ── same layout as the right hand's badge lane; its COUNT rides in vitG.y (see render/buffers.js).
       badge2 : vec4<f32>,                                            // x = hunger level 0 (full stomach) .. 4 (empty, and starving). y/z/w spare.
+      // ── RIGID-BODY GROUP SPHERES ── xyz = centre (window coords), w = radius, over PHYS_GRP consecutive bodies;
+      // w <= 0 means the group is empty. Appended at the VERY end, same rule as every field above it.
+      physG : array<vec4<f32>, ${PHYS_NG}>,
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}
     const DROP_N : i32 = ${DROP_SLOTS};                                        // total drop slots (25 fixed + the flock + traced creatures). 128 = exactly four 32-bit tile-mask words; a 129th needs a fifth.
+    const PHYS_GRP : i32 = ${PHYS_GRP};                                        // bodies per group sphere in u.physG — bodyTrace culls a whole slab of the debris on one compare (see render/buffers.js)
     fn dropV(i : i32) -> vec4<f32> { if (i < ${DROP_HALF * 4}) { return u.drops[i]; } return u.dropsB[i - ${DROP_HALF * 4}]; }        // one logical drops[] over the two halves. The index is the loop counter, workgroup-uniform, so this is a scalar branch — and after the bit-scan it only runs for slots that actually touch the tile.
     fn lifeMotV(i : i32) -> vec4<f32> { if (i < ${DROP_HALF}) { return u.lifeMot[i]; } return u.lifeMotB[i - ${DROP_HALF}]; }   // …and one logical lifeMot[]
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
@@ -8535,7 +8556,10 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // hit, in the SAME window-space convention trace() uses. Because it shares that convention it can be
     // used by the primary ray AND by shadow / AO / reflection rays, which is what makes a felled tree
     // light exactly like a standing one instead of needing baked AO and a box-shaped fake shadow.
-    fn bodyTrace(ro : vec3<f32>, rd : vec3<f32>, maxT : f32) -> Hit {
+    // stopAny: the caller only wants to know WHETHER something is in the way (the sun-shadow ray). The nearest
+    // of several hits costs a full walk of every group the ray touches; ANY hit ends it. Same answer for an
+    // occlusion test, and it can only ever return sooner.
+    fn bodyTraceX(ro : vec3<f32>, rd : vec3<f32>, maxT : f32, stopAny : bool) -> Hit {
       var h : Hit; h.t = -1.0;
       let nB = i32(u.physC.x + 0.5);
       if (nB <= 0) { return h; }
@@ -8546,7 +8570,20 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         if (tc < -u.physBound.w || tc - u.physBound.w > maxT) { return h; }
       }
       var best = maxT;
-      for (var bi = 0; bi < nB; bi++) {
+      // ── SLAB CULL ── the bodies are published nearest-first, so PHYS_GRP consecutive of them form a depth
+      // slab and u.physG holds one sphere per slab. Missing a slab skips all of its bodies on one compare,
+      // which is what keeps a felled tree's ~250 chunks off the per-ray cost of 250 rejections.
+      let nG = (nB + PHYS_GRP - 1) / PHYS_GRP;
+      for (var gi = 0; gi < nG; gi = gi + 1) {
+        let GS = u.physG[gi];
+        if (GS.w <= 0.0) { continue; }
+        let dG = GS.xyz - ro;
+        let tG = dot(dG, rd);
+        if (tG - GS.w > best || tG + GS.w < 0.0) { continue; }
+        if (dot(dG, dG) - tG * tG > GS.w * GS.w) { continue; }
+        let bLo = gi * PHYS_GRP;
+        var bHi = bLo + PHYS_GRP; if (bHi > nB) { bHi = nB; }
+      for (var bi = bLo; bi < bHi; bi++) {
         let A = u.physB[bi * 5]; let Xa = u.physB[bi * 5 + 1]; let Ya = u.physB[bi * 5 + 2];
         let Za = u.physB[bi * 5 + 3]; let E = u.physB[bi * 5 + 4];
         let bw = i32(Xa.w + 0.5); let bh = i32(Ya.w + 0.5); let bd = i32(Za.w + 0.5);
@@ -8587,6 +8624,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
               h.t = best; h.vox = cid; h.vc = vc;
               var nl = vec3<f32>(0.0);
               if (vax == 0) { nl.x = -f32(ist.x); } else if (vax == 1) { nl.y = -f32(ist.y); } else { nl.z = -f32(ist.z); }
+              if (stopAny) { return h; }                        // occlusion only — the face and the nearest-of-many do not matter
               h.n = normalize(Xa.xyz * nl.x + Ya.xyz * nl.y + Za.xyz * nl.z);   // TRUE rotated world normal
               if (abs(h.n.y) >= abs(h.n.x) && abs(h.n.y) >= abs(h.n.z)) { h.face = select(2u, 3u, h.n.y < 0.0); }
               else if (abs(h.n.x) >= abs(h.n.z)) { h.face = select(0u, 1u, h.n.x < 0.0); }
@@ -8600,8 +8638,10 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           if (any(vc < vec3<i32>(0)) || any(vc >= vec3<i32>(bw, bh, bd))) { break; }
         }
       }
+      }
       return h;
     }
+    fn bodyTrace(ro : vec3<f32>, rd : vec3<f32>, maxT : f32) -> Hit { return bodyTraceX(ro, rd, maxT, false); }
     // Static world + rigid bodies, nearest wins. THIS is what secondary rays call, so a falling tree
     // casts a real tree-shaped shadow, darkens its own creases, and shows up in the water.
     fn traceAll(ro : vec3<f32>, rd : vec3<f32>, maxT : f32, skipW : bool) -> Hit {
@@ -9283,7 +9323,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           else {
           if (LG(0u)) { let shT = trace(sunOrg, sdir, sCap, skipW);   // ── OCCLUSION, NOT NEAREST HIT ── this ray only ever asks "is anything in the way".
                         var occ = shT.t >= 0.0;                            // traceAll walks the terrain AND then bodyTrace to find which of the two is CLOSER,
-                        if (!occ) { let shB = bodyTrace(sunOrg, sdir, sCap); occ = shB.t >= 0.0; }   // which this caller throws away. Once terrain has blocked the ray the answer
+                        if (!occ) { let shB = bodyTraceX(sunOrg, sdir, sCap, true); occ = shB.t >= 0.0; }   // which this caller throws away. Once terrain has blocked the ray the answer
                         sunV = select(1.0, 0.0, occ); }                    // cannot change, so the body walk is pure waste. Bit-identical: occluded is occluded.
                         // (bodies included → a felled tree still casts a REAL shadow)
           else { sunV = 1.0; }                        // sun shadows OFF — every sunward surface fully lit
@@ -13241,10 +13281,11 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // 700 is the pine's own largest piece today, so pines keep chunks they already had and the oak's come down
     // to match. An 86k oak wants ~123 pieces at that size, which is why PHYS_MAX went to 128.
     fellChunkVox: 350, fellLandFrames: 3,   // halved again (user 2026-08-22: "we need smaller chunks to absorb by the player"). An 86k oak wants ~247 pieces at this size, which is why PHYS_MAX went to 256
+    fellChunkMax: 600, fellStumpSlots: 8,   // ── THE COARSEST SPLIT STILL WORTH MAKING, AND THE SLOTS HELD BACK FOR THE STUMP ── phShatterTree used to refuse to break at all unless every piece could be exactly fellChunkVox, and a tier-7 oak is 86k voxels = 246 pieces against a PHYS_MAX of 256: measured 243 free in an EMPTY world, so the biggest oaks could never break, ever (user 2026-08-23: "I knocked over a big oak tree and it didnt even fall apart into chunks"). The piece count now takes whatever room there is and only REFUSES below fellChunkMax, so the size still cannot run away to the 10,027-voxel lumps that started this — it just no longer holds the whole tree hostage to the last three slots.
     // ── AND IT BREAKS ON A CLOCK, NOT ON A LANDING (user 2026-08-22: "have the tree turn into chunks after 10
     // seconds of becoming an rigid body") ── which also removes the last thing that needed the topple drive to
     // have finished, so the fall can be left to plain physics.
-    fellBreakMs: 10000,
+    fellBreakMs: 25000, fellRoomPerTry: 8, fellHitVy: 8, fellHitFrac: 0.4, fellHitMs: 60, fellHitHoldMs: 400, fellTiltUp: 0.9, fellCalmLin: 0.8, fellCalmAng: 0.04, fellCalmMs: 500, fellMinMs: 2000,   // ── THE FELL BREAKS WHEN IT HITS THE GROUND (user 2026-08-23: "the tree is supposed to break up in chunks when it hits the ground", "make it more sensitive to when it hits the ground") ── MEASURED per-frame on two ~29k-voxel oaks: the fall is a clean vertical-speed arrest. Tree A peaked at 22.3 vox/s down and collapsed to 6.0 at 1.2 s; tree B peaked at 62.8 and collapsed to 2.2 at 0.6 s. AFTER that the body creeps and rolls for another 10-15 s at 2-3.5 vox/s, which is why waiting for it to go quiet broke the tree a quarter of a minute after the player watched it land. So the impact is the arrest, expressed as a FRACTION of the body's own peak fall speed rather than an absolute: fellHitFrac of peak, held fellHitMs, with at least one contact and only once it has really fallen (peak > fellHitVy - a trunk resting on its stump never arms it). Replayed against the recorded frames that fires at 1373 ms and 1196 ms, both within ~0.6 s of the visible landing, and stays disarmed through the free fall. fellHitMs was 200 and is now 60 (user 2026-08-23: "its at the moment the tree hits the ground or rolls on its side, that it falls apart"): the arrest is ONE FRAME wide - MEASURED on a landing pine, vy -40.51 -> -2.91 between consecutive frames with the body's y locking at 195.4 - and no frame of the fall itself comes near the threshold, so the dwell was buying nothing but delay. It is not zero only so a single glitched frame cannot fire it. fellTiltUp is what separates the two arrests a felled trunk makes: it seats on its own CUT FACE while still bolt upright (up = 1.00) and lands on the TERRAIN once it has leaned over, and MEASURED first ground contact happens at up = 0.41 on a tree that bounced and at -0.15 on one that did not - both far under 0.9, and both while the topple drive was still running. So the block is 'upright AND still toppling', not 'still toppling': a trunk that has tilted more than ~26 deg is past its stump and whatever stops it now is the ground. fellCalm* is the fallback for a tree that never falls fast enough to arm the impact test, and fellBreakMs is the backstop for one that never does either.
     // ── AND THE NEW PIECES MUST NOT REST ON EACH OTHER ── the `resting` latch in sim/solver.js turns gravity
     // OFF for a body with any contact and little speed. A shatter makes every piece at once, in contact with
     // its neighbours and all at rest, so the whole cluster held ITSELF up: a trunkless crown hanging in the
@@ -14677,6 +14718,26 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   };
   const phShatterTree = (b) => { phSrc = 'treeLand';
     const i = PH.bodies.indexOf(b); if (i < 0) return 0;
+    // ── HOW MANY PIECES THERE IS ROOM FOR, DECIDED BEFORE ANY WORK ── this test used to sit AFTER the bbox
+    // scan, the cell build and an n log n Morton sort, all of which a refused break threw away and then
+    // redid on the very next frame, forever, on an 86k-cell body. It only needs b.n, so it runs first.
+    const free9 = Math.max(2, PH.maxBodies - PH.bodies.length - 1 - PH.fellStumpSlots);   // …less a few held back for phShatterStump below, which builds its own bodies
+    const need9 = Math.ceil(b.n / PH.fellChunkMax);
+    if (free9 < need9) {
+      // ── AND IF THERE IS NO ROOM, MAKE SOME (user 2026-08-23: "the pine trees are not breaking apart most of
+      // the time") ── refusing and waiting only works if something else is going to free a slot. After a big
+      // oak has broken there are ~245 chunks alive and PH.maxBodies is 256, so free9 is 2 and EVERY tree felled
+      // afterwards needs more than that: the next tree simply never broke, for the whole five minutes those
+      // chunks live. phMakeRoom retires the OLDEST debris — writing its voxels back into the world, not
+      // deleting them, which is the rule the fell has always followed — and it can never take this tree,
+      // because b is still in PH.bodies and far larger than PH.absorbSize. A few per attempt rather than all
+      // at once: this runs again next tick, so the room arrives over a handful of frames instead of one hitch.
+      for (let r9 = 0; r9 < PH.fellRoomPerTry; r9++) {
+        if (PH.maxBodies - PH.bodies.length - 1 - PH.fellStumpSlots >= need9) break;
+        if (!phMakeRoom(need9 + PH.fellStumpSlots)) break;   // nothing left that may be retired — wait for the backstop
+      }
+      return 0;                                        // NOT spliced out, fellWhole NOT cleared — see the caller
+    }
     const sx = b.sx, sz = b.sz, key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
     let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, z0 = 1e9, z1 = -1e9;
     for (let k = 0; k < b.n; k++) {
@@ -14712,15 +14773,19 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     cellsM.sort((p9, q9) => p9[0] - q9[0]);
     // The count is still bounded by the slots that are actually free — a piece with nowhere to live cannot be
     // made — so a very large tree in a busy scene gets fewer, bigger chunks rather than losing any of itself.
-    // ── THE CHUNK SIZE NEVER GROWS; THE BREAK WAITS INSTEAD (user 2026-08-22: "some chunks are still too big.
-    // they arent even being absorbed") ── this used to raise chunk9 when slots were short, which is how a
-    // second tree felled into the first one's debris came out in 10,027-voxel lumps, 30 of them over the
-    // absorb limit. Size is the thing the player feels, so it is fixed: if there is not room to break this
-    // tree into uniform pieces right now, the tree stays whole and tries again on the next tick — a few
-    // seconds late once the earlier debris has been collected or expired, and always the right size.
-    const free9 = Math.max(1, PH.maxBodies - PH.bodies.length - 1);
+    // ── THE CHUNK SIZE IS A TARGET WITH A FLOOR, NOT A CONSTANT (user 2026-08-22: "some chunks are still too
+    // big. they arent even being absorbed", then 2026-08-23: "I knocked over a big oak tree and it didnt even
+    // fall apart into chunks") ── the first complaint came from raising chunk9 without limit when slots were
+    // short: a second tree felled into the first one's debris came out in 10,027-voxel lumps. Pinning chunk9
+    // instead fixed the size and broke the break: pieces are ceil(n / 350) and a tier-7 oak is 86,365 voxels,
+    // so it demanded 246 slots out of a PHYS_MAX of 256. MEASURED in an otherwise EMPTY world: 12 bodies live,
+    // 243 free, 246 wanted — three short, so the biggest oaks in the game never broke at all, and the retry
+    // above meant they re-ran the whole partition every frame to fail the same way.
+    // So the count is now whatever the free slots allow and the SIZE has a ceiling instead: pieces aim at
+    // fellChunkVox and may coarsen toward fellChunkMax when the scene is busy, and the gate at the top of this
+    // function refuses anything coarser than that. Both complaints are answered — no runaway lumps, and a
+    // felled tree is never held hostage to the last three slots.
     const chunk9 = PH.fellChunkVox;
-    if (free9 < Math.ceil(b.n / chunk9)) return 0;      // NOT spliced out, fellWhole NOT cleared — see the caller
     // ── A PIECE MUST BE ONE CONNECTED LUMP (user 2026-08-22: "make it where chunks voxels have to be touching
     // eachother and cannot be seperated by air") ── slicing the Morton order every chunk9 cells gets the SIZE
     // right and says nothing about connectivity: Morton keeps neighbours near each other in the ordering but
@@ -14749,7 +14814,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // only ever claims a neighbour of a cell it already owns, and the sizes come out even because they grow at
     // the same rate. Anything left over is a region no seed could reach — genuinely disconnected geometry —
     // and becomes its own piece rather than being stitched across air to something else.
-    const K = Math.max(2, Math.ceil(b.n / chunk9));   // room for this many was checked above
+    const K = Math.max(2, Math.min(Math.ceil(b.n / chunk9), free9));   // the ideal count, or every slot there is — the gate at the top already refused anything coarser than fellChunkMax
     const ownOf = new Map();
     const queues = [], buckets = [];
     for (let q = 0; q < K; q++) {
@@ -16171,11 +16236,15 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         b.sleepT = 0;                                  // a half-fallen trunk must not doze off mid-tilt
       }
     }
-    // ── THE TREE BREAKS ON A CLOCK (user 2026-08-22: "have the tree turn into chunks after 10 seconds of
-    // becoming an rigid body") ── armed at the fell (sim/chop.js sets fellWhole beside noAbsorb) and fired
-    // PH.fellBreakMs after the body was born. This replaces a landing test that had to know the trunk was
-    // down, which in turn needed the topple drive to have run — and that drive is what made every tree tilt
-    // the same way. A clock needs none of it, so the fall can be plain physics and the break still happens.
+    // ── THE TREE BREAKS WHEN IT HITS THE GROUND (user 2026-08-23: "the tree is supposed to break up in chunks
+    // when it hits the ground") ── armed at the fell (sim/chop.js sets fellWhole beside noAbsorb) and fired by
+    // the motion test in the body sweep below. The FIRST version was a landing test that had to know the trunk
+    // was down, which needed the topple drive to have run — and that drive is what made every tree tilt the
+    // same way; it was replaced by a plain 10 s clock so the fall could be raw physics. Both were wrong, and
+    // measuring the fall says why: a felled body ARRESTS hard when it lands and then creeps and rolls for
+    // another 10-15 s at 2-3.5 vox/s. A clock cannot see the landing at all, and waiting for the creep to stop
+    // broke the tree long after the player watched it come down. The arrest is the landing, it needs to know
+    // nothing about trunks, and the fall stays raw physics. See PH.fellHitVy for the numbers.
     // RESTING LATCH: a body that was in contact last step and is barely moving does not re-accumulate
     // gravity. Without this, every contact-free step re-added 3.3 vox/s of fall which the next step's
     // impulse cancelled — a limit cycle that kept a visibly stationary body above the sleep threshold
@@ -16384,7 +16453,36 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // SLEEPING body, and a severed trunk resting on its own stump is asleep inside a second, so a break
       // tested in there could never fire on the one case it exists for (measured: 20 s, still one 8,016-voxel
       // body). This sweep visits every body whatever its state, and it already owns tNow.
-      if (b.fellWhole && !b.absorbing && tNow - b.born > PH.fellBreakMs) { if (phShatterTree(b)) { b.fellWhole = 0; continue; } }   // a 0 means it could not break YET (no room for uniform pieces) — keep the flag and try again next tick
+      if (b.fellWhole && !b.absorbing) {                // ── SETTLED, OR THE BACKSTOP EXPIRED ── see PH.fellCalmLin for the measurement this threshold comes from
+        const lin9 = Math.hypot(b.vel[0], b.vel[1], b.vel[2]), ang9 = Math.hypot(b.omega[0], b.omega[1], b.omega[2]);
+        if (b.calmT === undefined || lin9 > PH.fellCalmLin || ang9 > PH.fellCalmAng) b.calmT = tNow;   // still moving — the dwell restarts, so one quiet FRAME mid-topple can never fire it
+        // ── NOT WHILE IT IS STILL GOING OVER (user 2026-08-23: "you dont give it a chance to tilt over and
+        // land on the terrain") ── a severed trunk does not fall straight down. It DROPS ONTO ITS OWN CUT FACE
+        // first (sim/chop.js arms tipArm, the block at the top of this file seats it), and only then does the
+        // topple drive run it over. That seat is an arrest like any other — fall speed collapses, contacts go
+        // up — so the impact test fired there and burst the tree while it was still standing on its stump.
+        // While tipArm or tipping is set the tree has not landed on anything yet, so nothing is armed and the
+        // peak is reset: the fall that counts is the one AFTER it has committed, which is the one the player
+        // watches come down. Bodies that never had a topple (a crown separated by the support pass) have
+        // neither flag and are unaffected.
+        // …but ONLY while it is still upright: a tree that has leaned past PH.fellTiltUp is off its stump, so
+        // the next thing to stop it is the terrain — and MEASURED, that first ground contact often happens
+        // while the drive is STILL RUNNING (up = 0.41, contacts 2, bounced 3 voxels back up, fellDown only
+        // 140 ms later). Blocking on the drive alone threw that impact away and broke the tree 850 ms late.
+        // A body with no topple at all — a crown the support pass separated — has neither flag and is exempt.
+        if ((b.tipArm || b.tipping) && (b.ay ? b.ay[1] : 0) > PH.fellTiltUp) { b.fellPkVy = 0; b.hitT = undefined; b.calmT = tNow; }
+        const down9 = b.vel[1] < 0 ? -b.vel[1] : 0;    // ── IMPACT = THE FALL BEING ARRESTED ── see PH.fellHitVy for the two fells this is measured from
+        if (down9 > (b.fellPkVy || 0)) b.fellPkVy = down9;   // the body's OWN peak fall speed, so the test scales with how far it had to drop
+        // TOUCHED RECENTLY, not touching THIS FRAME: contacts flicker 0<->2 between frames on a body lying on
+        // uneven ground (the sleep rule below ignores them for the same reason). Requiring them every frame
+        // reset the dwell over and over — MEASURED on a landed pine, contacts dropped to 0 every few frames and
+        // the break came 1.6 s after it was already flat. b.cT is the same last-touched stamp the sleep test uses.
+        const touched9 = tNow - (b.cT === undefined ? 0 : b.cT) < PH.fellHitHoldMs;
+        if (!((b.fellPkVy || 0) > PH.fellHitVy && down9 < b.fellPkVy * PH.fellHitFrac && touched9)) b.hitT = undefined;   // airborne, or never really fell — a trunk sitting on its stump never arms this
+        else if (b.hitT === undefined) b.hitT = tNow;
+        const age9 = tNow - b.born;
+        if ((b.hitT !== undefined && tNow - b.hitT > PH.fellHitMs) || (age9 > PH.fellMinMs && tNow - b.calmT > PH.fellCalmMs) || age9 > PH.fellBreakMs) { if (phShatterTree(b)) { b.fellWhole = 0; continue; } }   // a 0 means it could not break YET (no room for uniform pieces) — keep the flag and try again next tick
+      }
       if (!b.absorbing && tNow - b.born > (b.noAbsorb ? PH.treeLifeMs : (b.fellLoot ? PH.fellLifeMs : PH.chunkLifeMs))) {   // fellLoot = a piece of a tree the player felled (sim/chop-tree.js): 5 minutes, not 10
         PH.bodies.splice(i, 1); PH.stats.expired = (PH.stats.expired | 0) + 1;   // ── EXPIRED (user) ── see treeLifeMs / chunkLifeMs
         continue;                                      // one already flying into the player finishes its flight — it is about to be gone anyway
@@ -23737,7 +23835,14 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // this is the supported "nothing staged" state and not a hole. Re-staging something is one object literal —
   // `{ path, name, seq|mix, bake, side, exhibits }` — and the loaders it feeds are all untouched.
   // Drop a .vox anywhere over the page to stage it, or use the file button; both go through edStageFiles.
-  const ED_STAGE = null;
+  // ── THE STAGE OPENS ON THE BIRCH (user 2026-08-23: "in the asset editor can you place birch_forest…") ──
+  // tools/voxelize_birch.py bakes the 24.8 m archviz birch down to a 116-voxel .vox, and this is where it goes.
+  // NOT the ordered fall-through the five removals above killed: that staged "whatever creature happened to be
+  // loaded" and each removal only promoted the next one. This is ONE named asset, and it is one line to take
+  // back out — set it to null and the stage returns to opening on whatever was last dropped in.
+  // A model the player drops in still WINS over this (edStage tries edRestore first), so it is a default and
+  // not a lock. Nothing about the world, and no creature's data, is touched by it.
+  const ED_STAGE = { path: 'assets/decoration/birch_forest.vox', name: 'birch_forest' };
   // ── TRACE-INJECTED EXHIBITS ── everything on the stage that MOVES FREELY. A lane is grid-stamped: its voxels
   // go into W, which pins it to integer positions and the four cardinal headings — that is what made the first
   // ladybug step along the grid and face only N/S/E/W. An exhibit is never stamped; it is staged into emitBuf
@@ -23936,10 +24041,31 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       E.x = L.x - Hx * back + Hz * side; E.z = L.z - Hz * back - Hx * side;
       E.th = L.th; E.y = Math.sin((E.t - (E.bph || 0)) * 1.1 + E.rank) * E.bob;
     } };
-  const edStage = () => {
-    // Nothing configured to auto-stage (ED_STAGE is null since the clean-out) → put back whatever was last
-    // dropped in, so reopening the editor resumes where it was left rather than on a bare plane.
-    if (!ED_STAGE) { if (!ED.frames.length) edRestore(); return; }
+  // ── STAND THE CAMERA BACK FAR ENOUGH TO SEE THE WHOLE MODEL ── the solve is documented in full at the call
+  // in edEnter; it lives in a function because it has to run TWICE. edEnter frames the stage before edStage's
+  // fetch has resolved, so on entry ED.frames is empty and it solves for the H = 12 fallback: back = 50, eye
+  // aimed at voxel 6. For anything tall that is a close-up of the base — measured on the 116-voxel birch,
+  // pitch −0.24 with the crown a long way above the top of the frame, which reads as "the model is not there".
+  // So edStage calls it again once the model has landed and H is known. Re-framing is safe to repeat: it is a
+  // pure function of ED.y/ED.x0/ED.pw and the model height, and it only ever backs the camera OFF.
+  const edFrame = () => {
+    const bf = ED.frames[0]; const H = bf ? bf.sz : 12, midH = H * 0.5;
+    const MARGIN = 1.22, tv = Math.tan(FOV / 2), A = midH - EYE;
+    const edge = (c) => { const disc = midH * midH - 4 * tv * tv * c; return disc <= 0 ? 0 : (midH + Math.sqrt(disc)) / (2 * tv); };
+    const fit = Math.max(edge(-A * EYE), edge((H - EYE) * A));   // the nearer the camera may stand with BOTH edges clear
+    const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2, back = Math.max(50, Math.round(fit * MARGIN));
+    P.x = cx; P.z = cz - back;                          // back along −Z (yaw 0 faces +Z → the model)
+    P.y = ED.y + 1;                                     // feet planted on the plane (NOT floating at eye-mid-height)
+    P.yaw = 0; P.pitch = Math.atan2(midH - EYE, back);   // aim the eye at the model's vertical centre → the object sits framed in front of the camera
+    P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; };
+  const edStage = async () => {
+    if (ED.frames.length) return;                       // a manual import got here first — never clobber what is on the stage
+    // WHAT THE PLAYER LAST DROPPED IN OUTRANKS THE CONFIGURED DEFAULT, so reopening the editor resumes where it
+    // was left. Only when there is nothing remembered does ED_STAGE below get the stage. (edRemember is written
+    // by edStageFiles — the drop and the file picker — and NOT by edLoadVox, so an ED_STAGE load never records
+    // itself as the remembered model and never becomes sticky.)
+    if (await edRestore()) return;
+    if (!ED_STAGE) return;
     edFetchVox(ED_STAGE.path).then(async () => { if (!ED.on || ED.frames.length) return;   // closed again, or a manual import landed while the fetch was in flight — never clobber what is on the stage
       const n = ED_STAGE.mix ? await edLoadMix(ED_STAGE.path, ED_STAGE.mix, ED_STAGE.name)
                              : await edLoadVox(ED_STAGE.path, ED_STAGE.seq, ED_STAGE.name, ED_STAGE.bake);
@@ -23948,6 +24074,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // guard rather than running beside it: a manual import landing between the two would take the stage
       // (edImportBufs clears lane 2), and an unconditional second load would then park a model next to it.
       if (n && sd && ED.on && ED.frames.length) await edLoadVox2(sd.path || ED_STAGE.path, sd.seq, sd.name || ED_STAGE.name, sd.bake, sd.fly);
+      if (n && ED.on) edFrame();                        // NOW the height is known — see edFrame
       if (ED.on) edExStage(); }); };                    // …and the free-moving exhibits, which need no fetch of their own: their frames were loaded into the item table at boot
   const edEnter = () => {
     if (ED.on) return;
@@ -23962,52 +24089,107 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // So try a ring of candidate origins and take the one whose terrain is LOWEST. A coarse stride is enough to
     // choose between them — the fine scan below still decides the actual height — and a meadow twenty metres
     // away routinely sits 40+ voxels under a crown, which is the difference between a grove fitting and not.
-    const stageTop = (sx0, sz0, step) => {
-      let t = WL;
+    // GROUND, not canopy. The stage used to have to clear the tallest SOLID thing on its footprint, which in a
+    // forest is the treetops — see the carve below, which is what removes that requirement. hmap is the ground
+    // surface, so this is one array read per sample instead of a column walk, and ground is smooth where canopy
+    // is spiky: a coarse stride under-reads a canopy badly (a single trunk between two samples) but tracks
+    // ground almost exactly, which is why the two-stage coarse/fine dance this replaces is gone.
+    const stageGround = (sx0, sz0, step) => {
+      let t = WL;                                      // never below the waterline — see ED.y
       for (let z = sz0; z < sz0 + ED.pd; z += step) for (let x = sx0; x < sx0 + ED.pw; x += step) {
-        const gx = gwrap(x, WX), gz = gwrap(z, WZ), b2 = gx + gz * WX * WY;
-        let y = Math.min(WY - 2, hmap[gx + gz * WX] + 118);
-        while (y > WL && !W[b2 + y * WX]) y--;
-        if (y > t) t = y;
+        const h = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
+        if (h > t) t = h;
       }
       return t;
     };
     const clampX = (v) => Math.max(rect.xlo + 4, Math.min(rect.xhi - 4 - ED.pw, v));
     const clampZ = (v) => Math.max(rect.zlo + 4, Math.min(rect.zhi - 4 - ED.pd, v));
     const px0 = Math.round(P.x / 10) * 10 - (ED.pw >> 1), pz0 = Math.round(P.z / 10) * 10 - (ED.pd >> 1);
-    let bestX = clampX(px0), bestZ = clampZ(pz0), bestT = stageTop(bestX, bestZ, 8);
-    // Three rings, not one. A single step lands in the same stand of trees you were standing in; the low ground
-    // that actually buys headroom — a meadow, a shore, a river flat — is usually a few hundred voxels out. The
-    // player is teleported onto the stage regardless, so distance costs nothing, and a coarse stride keeps all
-    // 24 probes cheap enough to run on the button press.
-    for (let ring = 1; ring <= 3; ring++) for (const [ox, oz] of [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-      const cx = clampX(px0 + ox * ring * (ED.pw + 24)), cz = clampZ(pz0 + oz * ring * (ED.pd + 24));
-      const t = stageTop(cx, cz, 8);
-      if (t < bestT) { bestT = t; bestX = cx; bestZ = cz; }
-    }
+    // ── THE STAGE STOPPED HAVING TO CLEAR TREES (user 2026-08-23: "make the trees their proper height") ──
+    // This block used to pick a site by the tallest SOLID thing on its footprint, which in a forest is the
+    // CANOPY, and then sit above it. Everything wrong with the old numbers follows from that one decision:
+    //   * three rings reached ~195 voxels and the best site inside them still topped out at 256-276, so the
+    //     plane landed at 264-288 and a model got 95-119 voxels — even the 116-voxel birch barely fit;
+    //   * widening to the whole region helped but stayed at the mercy of the world: measured across five, the
+    //     room came out 199, 215, 135, 143, 167. There is no search that fixes a world with no clearing in it;
+    //   * and it could not be sampled cheaply, because one trunk between two coarse samples changes the answer.
+    // So the stage CARVES ITS OWN VOLUME instead (see below) and this only has to clear the GROUND. That makes
+    // the search both better and cheaper: ground is smooth, so a coarse stride tracks it, and the lowest ground
+    // in the region is a shore or a flat rather than whatever happened to have no tree on it.
+    let bestX = clampX(px0), bestZ = clampZ(pz0), bestG = stageGround(bestX, bestZ, 4);
+    for (let z = rect.zlo + 4; z <= rect.zhi - 4 - ED.pd; z += 48)
+      for (let x = rect.xlo + 4; x <= rect.xhi - 4 - ED.pw; x += 48) {
+        const g = stageGround(x, z, 8);
+        if (g < bestG) { bestG = g; bestX = x; bestZ = z; }
+      }
+    bestG = stageGround(bestX, bestZ, 1);              // the winner re-measured at full resolution: a 1-voxel spike inside the footprint still has to be cleared
     ED.x0 = bestX; ED.z0 = bestZ;
-    let topMax = WL;                                   // stage must sit above all content on its footprint (its bricks stay PURE — no terrain sharing an 8³ brick with the plane)
-    for (let z = ED.z0; z < ED.z0 + ED.pd; z += 2) for (let x = ED.x0; x < ED.x0 + ED.pw; x += 2) {
-      const gx = gwrap(x, WX), gz = gwrap(z, WZ), b2 = gx + gz * WX * WY;
-      let y = Math.min(WY - 2, hmap[gx + gz * WX] + 118);
-      while (y > WL && !W[b2 + y * WX]) y--;
-      if (y > topMax) topMax = y;
-    }
-    // ── HEADROOM FOR WHAT IS ON THE STAGE (user 2026-08-18: the four birches were not showing) ── the stage
-    // has to clear the tallest terrain on its own footprint (brick purity: an 8³ brick shared with terrain
-    // would draw that terrain), but it was ALSO pinned within 80 of the ceiling, and a model is stamped upward
-    // from it. Measured: WY 384, stage 336, so 46 voxels of room — and the birch grove is 81 tall, so both big
-    // trees were cut off at the waist and it did not read as four trees at all.
-    // Doubling the stage footprint made it worse rather than better: topMax now scans four times the area, so
-    // it is far more likely to find a tall tree to clear.
-    // WY - 160 as the floor buys up to ~158 on flat ground while the topMax term still lifts it clear of
-    // anything underneath. It cannot promise a fixed amount — the terrain decides — which is why the grove is
-    // also sized to fit the worst case rather than the best.
-    ED.y = Math.min(WY - 24, Math.max((topMax + 15) & ~7, WY - 160));   // 8-aligned, clear of the ground below, as low as the ceiling allows
+    // ── HOW LOW THE PLANE MAY SIT ── two floors, and both are real:
+    //   * the GROUND on this footprint, +15 and 8-aligned, so the plane's own brick holds no terrain;
+    //   * the WATERLINE, because the carve below deliberately does not touch water — a plane under WL would
+    //     need the sea cleared out around it, and restoring that is not something a stage should be doing.
+    // THE CEILING THIS LEAVES IS A HARD ONE, so it is written down rather than rediscovered: the lowest legal
+    // plane is (WL + 8) & ~7 = 160 at WL 152. A model is stamped from ED.y + 1 and edLayout drops anything at
+    // y >= WY - 1, so it occupies 161..382 and the tallest that could EVER stand here is 222 voxels — 22.2 m.
+    // (223 looks right from WY - 1 - 160 and is off by one: it loses its top row.)
+    // THAT CEILING IS NOT REACHABLE IN PRACTICE, for the carve-cost reason below: the plane follows the ground
+    // rather than the waterline, so the real room is 383 - ED.y and measured 199-215 over eight worlds. The
+    // shipped birch is baked to 199 (tools/voxelize_birch.py) so it never loses its crown on the worst of them. The .fbx birch measures 24.6 m and
+    // therefore CANNOT be baked at true scale for this world; tools/voxelize_birch.py is set to 22.3 for
+    // exactly this reason, and only a taller WY could change it (WY 384 is what gpu.js trades against the
+    // 2048² window — 2048² x 384 = 1.5 GB).
+    // ── THE PLANE FOLLOWS THE GROUND, AND THE CARVE ONLY EATS WHAT GROWS ON IT ────────────────────────────
+    // It is tempting to drop the plane to the waterline and let the carve cut through the hillside, because
+    // ground stops threatening brick purity once everything above the plane is cleared — and it does work: it
+    // pins the room at a flat 223 on every world instead of the 199-215 this gives.
+    // IT COSTS FAR TOO MUCH. Measured on one platform footprint: a waterline plane has to clear 2,230,000
+    // earth voxels, where a ground-following one clears 152,000 of vegetation — 15x. Two million cells is past
+    // what gpuPatch will move in a frame, so the stage streamed in over several seconds with the world showing
+    // through it, and one run took the browser down outright.
+    // So the plane sits just above the ground and the carve gets the trees and grass only. +8 rather than the
+    // old +15: the plane needs an 8-aligned brick row holding no terrain, and (g + 8) & ~7 is the LOWEST row
+    // that satisfies it — always > g, so the ground is under the row rather than in it. The old +15 bought a
+    // second brick of clearance the carve makes pointless, at up to 8 voxels of model height.
+    ED.y = Math.min(WY - 24, Math.max((bestG + 8) & ~7, (WL + 8) & ~7));
     unstampAllWorms();                                 // clear live worms out of W before the editor freezes the world (else edExit's rebuildBricks would resurrect them)
     bricks.fill(0); bricks2.fill(0); wbricks.fill(0);  // SEPARATE LEVEL: empty occupancy = the whole world vanishes from the tracer (W is untouched — exit rebuilds)
     const cells = [];
     for (let z = ED.z0; z < ED.z0 + ED.pd; z++) for (let x = ED.x0; x < ED.x0 + ED.pw; x++) edSet(x, ED.y, z, edPlaneId(x, z), cells);
+    // ── CARVE THE STAGE VOLUME ── every solid voxel from the plane to the world ceiling, gone for as long as
+    // the editor is open. This is what lets the plane sit on the GROUND rather than above the treetops, and it
+    // is the whole reason a 223-voxel model can stand here at all.
+    // IT IS NOT A NEW MECHANISM. edSet already records each cell's previous value into ED.prev and edExit
+    // already writes every one of them back — that is how the plane itself borrows the world's cells and gives
+    // them back. This just does it for a column instead of a sheet. Nothing here is a terrain EDIT: gpuPatch
+    // runs with track=false, the world is frozen while ED.on, and the support/physics queues never see it, so
+    // no tree gets orphaned and nothing falls when the trees come back on exit.
+    // WATER IS NEVER TOUCHED, and it needs no test: ED.y is floored at (WL + 8) & ~7, so the plane is always
+    // above the waterline and this only ever walks upward from it.
+    // Written as a column walk with the row base hoisted, and bounded by hmap + 118 — the same bound the old
+    // canopy scan used for "nothing grows higher than this" — because the platform is 242 x 242 and the naive
+    // form is 242 x 242 x 222 = 13M edIdx calls on a button press. Most columns end far below the ceiling, and
+    // a column whose vegetation cannot reach the plane at all is skipped outright.
+    // ── CARVE WHOLE BRICKS, NOT THE PLATFORM ── ED.x0/ED.z0 come off the search grid and are not 8-aligned, so
+    // the platform's edge bricks straddle its boundary and hold world geometry from just OUTSIDE it. gpuPatch
+    // marks a WHOLE brick occupied, so a brick that is only partly carved still draws its uncarved remainder:
+    // with the plane above the canopy there was nothing out there to see, but a plane cutting through the
+    // ground showed a ridge of earth and grass along the stage's far edge and left two tree crowns floating
+    // where a canopy overhung the boundary.
+    // A margin does NOT fix that — it just moves the seam outward, which is exactly what an 8-voxel pad did.
+    // Aligning the carve OUT to brick boundaries does fix it, because then every brick is either wholly carved
+    // (nothing left to draw) or never touched (never marked, so never drawn). WX/WZ are multiples of 8, so
+    // gwrap preserves the alignment.
+    const cx0 = ED.x0 & ~7, cx1 = (ED.x0 + ED.pw + 7) & ~7, cz0 = ED.z0 & ~7, cz1 = (ED.z0 + ED.pd + 7) & ~7;
+    for (let z = cz0; z < cz1; z++) {
+      const gz = gwrap(z, WZ);
+      for (let x = cx0; x < cx1; x++) {
+        const gx = gwrap(x, WX), yTop = Math.min(WY - 1, hmap[gx + gz * WX] + 118);
+        if (yTop <= ED.y) continue;                    // nothing on this column reaches the plane
+        const b2 = gx + gz * WX * WY;
+        for (let y = ED.y + 1; y <= yTop; y++) { const ii = b2 + y * WX;
+          if (W[ii]) { if (!ED.prev.has(ii)) ED.prev.set(ii, W[ii]); W[ii] = 0; cells.push(ii); } }   // edSet by index — it would recompute edIdx per voxel, and this is the hot loop
+      }
+    }
     gpuPatch(cells, true, cells.length, false);        // track=false: entering the editor overwrites real world cells with the stage plane, and none of that is a terrain edit
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = true;   // fly ON so the framing below can't be pulled off by gravity while the world is frozen
     smoothEye = P.y + EYE; resetHist = 1;
@@ -24065,15 +24247,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // FOV is read from its own declaration (ui/hud.js) rather than retyped, which is how the 72-vs-36 slip
     // happened the first time. MARGIN leaves air around the model rather than fitting it to the frame edge.
     // Floored at the old 50 so every small model is framed EXACTLY as before — this only ever backs off.
-    { const bf = ED.frames[0]; const H = bf ? bf.sz : 12, midH = H * 0.5;
-      const MARGIN = 1.22, tv = Math.tan(FOV / 2), A = midH - EYE;
-      const edge = (c) => { const disc = midH * midH - 4 * tv * tv * c; return disc <= 0 ? 0 : (midH + Math.sqrt(disc)) / (2 * tv); };
-      const fit = Math.max(edge(-A * EYE), edge((H - EYE) * A));   // the nearer the camera may stand with BOTH edges clear
-      const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2, back = Math.max(50, Math.round(fit * MARGIN));
-      P.x = cx; P.z = cz - back;                        // back along −Z (yaw 0 faces +Z → the model)
-      P.y = ED.y + 1;                                   // feet planted on the plane (NOT floating at eye-mid-height)
-      P.yaw = 0; P.pitch = Math.atan2(midH - EYE, back);   // aim the eye at the model's vertical centre → the object sits framed in front of the camera
-      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
+    edFrame();                                          // …against an EMPTY stage here; edStage re-frames once the model it loads has landed (see edFrame)
     edMode(1);                                          // entered the stage → next refresh comes back to it
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
@@ -24133,6 +24307,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // putting it back does not rewrite what it was just read from.
     if (list.length === 1 && !edRestoring) edRemember(list[0].name, list[0].u8);
     if (list.length) { edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.seq2 = ''; ED.sel2 = 0; ED.flyer2 = false; ED.mix = []; ED.mixT0 = 0; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows. edClearStamp runs FIRST, as its comment says: edImportBufs ends in edLayout, which stamps the new model, so clearing afterwards erased what had just been laid out and the import stayed invisible until the next repaint (up to 3.4 s).
+    if (ED.frames.length) edFrame();                   // …and STAND BACK to suit whatever just arrived. Dropping a tall model used to leave the camera wherever the last one had put it — on a 116-voxel tree that is a close-up of the bare trunk with the crown off the top of the frame, which reads as the import having failed. See edFrame.
   };
   edFileEl.addEventListener('change', async () => { await edStageFiles([...edFileEl.files]); edFileEl.value = ''; });
   // Drop anywhere over the page while the stage is open. dragover MUST preventDefault or the browser
@@ -24235,10 +24410,10 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
-      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { if (t === undefined) return tday; tday = t; resetHist = 1; return tday; },   // GETTER when called bare: it used to assign `undefined` and NaN the clock, and tday feeds NIGHT_K -> every life count -> NaN, i.e. one stray `__vb.tod()` silently emptied the world give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // …and SELECT it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe   // put a specific item in hand (tests: the knife's two-hit kill needs the knife actually held)
+      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { if (t === undefined) return tday; tday = t; resetHist = 1; return tday; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // give/giveIt put an item in hand (giveIt also SELECTS it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe). tod() is a GETTER when called bare: it used to assign `undefined` and NaN the clock, and tday feeds NIGHT_K -> every life count -> NaN, i.e. one stray `__vb.tod()` silently emptied the world
     palLen() { return { len: palette.length, over: palette.length > 256 }; },
     palMints(lo) { return palMintLog.filter((m) => m[0] >= (lo || 0)); },
-    palTrace() { const out = []; for (let i = 0; i < palTrace.length; i++) out.push({ stage: palTrace[i][0], len: palTrace[i][1], spent: (i ? palTrace[i][1] - palTrace[i - 1][1] : palTrace[i][1]) }); return out; },   // slots each load stage cost
+    palTrace() { const out = []; for (let i = 0; i < palTrace.length; i++) out.push({ at: Math.round(palTrace[i][2] || 0), ms: Math.round((palTrace[i][2] || 0) - (i ? (palTrace[i - 1][2] || 0) : 0)), stage: palTrace[i][0], len: palTrace[i][1], spent: (i ? palTrace[i][1] - palTrace[i - 1][1] : palTrace[i][1]) }); return out; },   // slots each load stage cost
     palAudit() {                                     // WHICH ids are exact-colour duplicates, and is each one safe to reclaim. addCol() pushes unconditionally, so a loader that calls it directly (the .json decor palettes do) mints a fresh id for a colour the table already holds — but a duplicate is only REDUNDANT if nothing tells the two ids apart, and an id carries material flags and pickup-set membership as well as a colour.
       const flags = (i) => [solidTab[i], foliaTab[i], woodTab[i], mushTab[i], rockTopTab[i], decorTab[i], axeOnlyTab[i], pickOnlyTab[i], digOnlyTab[i], sandTab[i], coneTab[i], SUP.CLASS[i] | 0].join(',');
       const picks = (i) => [PICK_ROCK.has(i), PICK_STICK.has(i), PICK_BOULDER.has(i), PICK_CONE.has(i)].map((b) => (b ? 1 : 0)).join(',');
@@ -24852,6 +25027,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           vel: b.vel.map((q) => +q.toFixed(2)), omega: b.omega.map((q) => +q.toFixed(3)),
           quat: b.q.map((q) => +q.toFixed(3)), I: b.I.map((q) => Math.round(q)),
           gpu: b.gpu ? { off: b.gpu.off, dims: [b.gpu.bw, b.gpu.bh, b.gpu.bd] } : null,
+          up: b.ay ? +b.ay[1].toFixed(3) : null, tipArm: b.tipArm | 0, tipping: b.tipping | 0, fellDown: b.fellDown | 0, fellWhole: b.fellWhole | 0,
           sleeping: b.sleeping, sleepT: b.sleepT, contacts: b.contacts | 0, deepest: +(b.deepest || 0).toFixed(2),
           ageMs: Math.round(performance.now() - b.born) })) };
     },
@@ -31991,7 +32167,26 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // the primary ray and every secondary ray. physBound is a sphere over all of them: shadow and AO
       // rays that cannot touch any body reject in a single compare.
       let nb = 0, bcx = 0, bcy = 0, bcz = 0, brad = 0;
+      // ── PUBLISH THEM IN SPATIAL (MORTON) ORDER ── u.physG holds one bounding sphere per PHYS_GRP
+      // CONSECUTIVE bodies, so what the array is sorted by decides whether those spheres are tight enough to
+      // cull anything. Camera distance was the obvious key and is the wrong one: it makes each group a thin
+      // depth slab that still spans the pile sideways, so looking down at a felled tree every sphere covers
+      // the whole debris field and none of them ever reject. MEASURED that way, 249 chunks from above: 10.4 ms
+      // sorted vs 9.1 ms unsorted — the cull was pure overhead. Morton order groups bodies that are near each
+      // other in ALL THREE axes, which is what makes a group sphere small, and it does not depend on where the
+      // camera is standing.
+      const mor9 = (n9) => { n9 = n9 & 1023; n9 = (n9 | (n9 << 16)) & 0x30000ff; n9 = (n9 | (n9 << 8)) & 0x300f00f;
+        n9 = (n9 | (n9 << 4)) & 0x30c30c3; n9 = (n9 | (n9 << 2)) & 0x9249249; return n9; };
+      const ord9 = [];
       for (const b of PH.bodies) {
+        if (!b.gpu) continue;
+        const qx9 = Math.max(0, Math.min(1023, ((b.pos[0] - winOX) >> 2))), qy9 = Math.max(0, Math.min(1023, (b.pos[1] >> 2)));
+        const qz9 = Math.max(0, Math.min(1023, ((b.pos[2] - winOZ) >> 2)));
+        ord9.push([mor9(qx9) | (mor9(qy9) << 1) | (mor9(qz9) << 2), b]);
+      }
+      ord9.sort((p9, q9) => p9[0] - q9[0]);
+      for (const pr9 of ord9) {
+        const b = pr9[1];
         if (nb >= PHYS_MAX || !b.gpu) continue;
         phQRot(b.q, PHX, PHAX); phQRot(b.q, PHY, PHAY); phQRot(b.q, PHZ, PHAZ);   // local axes → world
         const o = UF_PHYSB + nb * 20, g = b.gpu;
@@ -32012,6 +32207,23 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           const d = Math.hypot(ax - bcx, ay - bcy, az - bcz) + half;
           if (d > brad) brad = d;
         } }
+      // ── AND A SPHERE PER GROUP OF PHYS_GRP ── bodyTrace walks the array in publish order, which is
+      // nearest-first, so each group is a depth slab and the slabs themselves run front to back. A ray that
+      // misses a slab skips all PHYS_GRP of its bodies on one compare, and once the ray has hit something every
+      // slab beyond it rejects the same way. Radius <= 0 marks a group with nothing in it.
+      for (let g9 = 0; g9 < PHYS_NG; g9++) {
+        const lo9 = g9 * PHYS_GRP, hi9 = Math.min(lo9 + PHYS_GRP, nb), o9 = UF_PHYSG + g9 * 4;
+        if (lo9 >= hi9) { UF[o9 + 3] = -1; continue; }
+        let gx9 = 0, gy9 = 0, gz9 = 0;
+        for (let k9 = lo9; k9 < hi9; k9++) { const q9 = UF_PHYSB + k9 * 20; gx9 += UF[q9]; gy9 += UF[q9 + 1]; gz9 += UF[q9 + 2]; }
+        const m9 = hi9 - lo9; gx9 /= m9; gy9 /= m9; gz9 /= m9;
+        let gr9 = 0;
+        for (let k9 = lo9; k9 < hi9; k9++) { const q9 = UF_PHYSB + k9 * 20;
+          const half9 = UF[q9 + 3] * (Math.hypot(UF[q9 + 7], UF[q9 + 11], UF[q9 + 15]) * 0.5 + 1);   // the same half-diagonal the shader builds radB from, so the group can never be tighter than its members
+          const d9 = Math.hypot(UF[q9] - gx9, UF[q9 + 1] - gy9, UF[q9 + 2] - gz9) + half9;
+          if (d9 > gr9) gr9 = d9; }
+        UF[o9] = gx9; UF[o9 + 1] = gy9; UF[o9 + 2] = gz9; UF[o9 + 3] = gr9;
+      }
       UF[UF_PHYSBOUND] = bcx; UF[UF_PHYSBOUND + 1] = bcy; UF[UF_PHYSBOUND + 2] = bcz; UF[UF_PHYSBOUND + 3] = brad;
       UF[UF_PHYSC] = nb; UF[UF_PHYSC + 1] = Math.max(0, 1 - (now - reactT0) / REACT_FADE); UF[UF_PHYSC + 2] = 0; UF[UF_PHYSC + 3] = 0;   // y = REACTIVE STRENGTH, eased — the mask keys off this, not off nb
     }

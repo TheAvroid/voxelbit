@@ -242,7 +242,26 @@
       // the primary ray and every secondary ray. physBound is a sphere over all of them: shadow and AO
       // rays that cannot touch any body reject in a single compare.
       let nb = 0, bcx = 0, bcy = 0, bcz = 0, brad = 0;
+      // ── PUBLISH THEM IN SPATIAL (MORTON) ORDER ── u.physG holds one bounding sphere per PHYS_GRP
+      // CONSECUTIVE bodies, so what the array is sorted by decides whether those spheres are tight enough to
+      // cull anything. Camera distance was the obvious key and is the wrong one: it makes each group a thin
+      // depth slab that still spans the pile sideways, so looking down at a felled tree every sphere covers
+      // the whole debris field and none of them ever reject. MEASURED that way, 249 chunks from above: 10.4 ms
+      // sorted vs 9.1 ms unsorted — the cull was pure overhead. Morton order groups bodies that are near each
+      // other in ALL THREE axes, which is what makes a group sphere small, and it does not depend on where the
+      // camera is standing.
+      const mor9 = (n9) => { n9 = n9 & 1023; n9 = (n9 | (n9 << 16)) & 0x30000ff; n9 = (n9 | (n9 << 8)) & 0x300f00f;
+        n9 = (n9 | (n9 << 4)) & 0x30c30c3; n9 = (n9 | (n9 << 2)) & 0x9249249; return n9; };
+      const ord9 = [];
       for (const b of PH.bodies) {
+        if (!b.gpu) continue;
+        const qx9 = Math.max(0, Math.min(1023, ((b.pos[0] - winOX) >> 2))), qy9 = Math.max(0, Math.min(1023, (b.pos[1] >> 2)));
+        const qz9 = Math.max(0, Math.min(1023, ((b.pos[2] - winOZ) >> 2)));
+        ord9.push([mor9(qx9) | (mor9(qy9) << 1) | (mor9(qz9) << 2), b]);
+      }
+      ord9.sort((p9, q9) => p9[0] - q9[0]);
+      for (const pr9 of ord9) {
+        const b = pr9[1];
         if (nb >= PHYS_MAX || !b.gpu) continue;
         phQRot(b.q, PHX, PHAX); phQRot(b.q, PHY, PHAY); phQRot(b.q, PHZ, PHAZ);   // local axes → world
         const o = UF_PHYSB + nb * 20, g = b.gpu;
@@ -263,6 +282,23 @@
           const d = Math.hypot(ax - bcx, ay - bcy, az - bcz) + half;
           if (d > brad) brad = d;
         } }
+      // ── AND A SPHERE PER GROUP OF PHYS_GRP ── bodyTrace walks the array in publish order, which is
+      // nearest-first, so each group is a depth slab and the slabs themselves run front to back. A ray that
+      // misses a slab skips all PHYS_GRP of its bodies on one compare, and once the ray has hit something every
+      // slab beyond it rejects the same way. Radius <= 0 marks a group with nothing in it.
+      for (let g9 = 0; g9 < PHYS_NG; g9++) {
+        const lo9 = g9 * PHYS_GRP, hi9 = Math.min(lo9 + PHYS_GRP, nb), o9 = UF_PHYSG + g9 * 4;
+        if (lo9 >= hi9) { UF[o9 + 3] = -1; continue; }
+        let gx9 = 0, gy9 = 0, gz9 = 0;
+        for (let k9 = lo9; k9 < hi9; k9++) { const q9 = UF_PHYSB + k9 * 20; gx9 += UF[q9]; gy9 += UF[q9 + 1]; gz9 += UF[q9 + 2]; }
+        const m9 = hi9 - lo9; gx9 /= m9; gy9 /= m9; gz9 /= m9;
+        let gr9 = 0;
+        for (let k9 = lo9; k9 < hi9; k9++) { const q9 = UF_PHYSB + k9 * 20;
+          const half9 = UF[q9 + 3] * (Math.hypot(UF[q9 + 7], UF[q9 + 11], UF[q9 + 15]) * 0.5 + 1);   // the same half-diagonal the shader builds radB from, so the group can never be tighter than its members
+          const d9 = Math.hypot(UF[q9] - gx9, UF[q9 + 1] - gy9, UF[q9 + 2] - gz9) + half9;
+          if (d9 > gr9) gr9 = d9; }
+        UF[o9] = gx9; UF[o9 + 1] = gy9; UF[o9 + 2] = gz9; UF[o9 + 3] = gr9;
+      }
       UF[UF_PHYSBOUND] = bcx; UF[UF_PHYSBOUND + 1] = bcy; UF[UF_PHYSBOUND + 2] = bcz; UF[UF_PHYSBOUND + 3] = brad;
       UF[UF_PHYSC] = nb; UF[UF_PHYSC + 1] = Math.max(0, 1 - (now - reactT0) / REACT_FADE); UF[UF_PHYSC + 2] = 0; UF[UF_PHYSC + 3] = 0;   // y = REACTIVE STRENGTH, eased — the mask keys off this, not off nb
     }

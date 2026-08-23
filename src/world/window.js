@@ -903,6 +903,13 @@
   const rockSeatY = (m, x, z) => { const r = Math.max(2, Math.max(m.sx, m.sy) >> 1), d = (r * 0.7071) | 0;
     return Math.min(H(x, z), H(x - r, z), H(x + r, z), H(x, z - r), H(x, z + r),
                     H(x - d, z - d), H(x + d, z - d), H(x - d, z + d), H(x + d, z + d)); };
-  const groundMin = (x, z, r) => Math.min(H(x, z), H(x - r, z), H(x + r, z), H(x, z - r), H(x, z + r));   // lowest ground under a footprint — nothing floats on slopes
+  const groundMin = (x, z, r) => Math.min(H(x, z), H(x - r, z), H(x + r, z), H(x, z - r), H(x, z + r),
+    H(x - r, z - r), H(x + r, z - r), H(x - r, z + r), H(x + r, z + r));   // lowest ground under a footprint — nothing floats on slopes.
+  // ── THE DIAGONALS ARE NOT OPTIONAL (user 2026-08-23: "oak trees are levitating") ── this sampled a PLUS of
+  // five columns, so a dip on a diagonal was invisible and whatever seated here was left standing over it.
+  // MEASURED over 1400 columns at r=4 against the true minimum of the whole 9x9: the five-point cross reads
+  // 0.22 voxels high on average and up to a full voxel, and the four corners bring the mean error to 0. That
+  // is exactly the trunk-base histogram it produced — 78 boles sitting flat on the ground, 5 hanging one
+  // voxel over it and 1 hanging two. Nine H() calls instead of five, once per stamped object.
 
 

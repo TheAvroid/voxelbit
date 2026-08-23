@@ -52,6 +52,13 @@ _BEACON = (b'<script>/* dev server: closes the terminal when this tab closes */'
 class NoCache(http.server.SimpleHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'   # KEEP-ALIVE: reuse each TCP connection for many files instead of a fresh handshake per request — the ~60 boot .vox fetches were paying a full connection setup EACH (HTTP/1.0 default), ~155 ms/file
 
+    # ── ALWAYS REACH THIS SERVER AS 127.0.0.1, NEVER AS 'localhost' ── on Windows 'localhost'
+    # resolves to ::1 first and the v6 attempt has to time out before the v4 one is tried, and
+    # that penalty is paid PER REQUEST, not once per connection. Measured on this box against the
+    # same server and the same client: 103 ms/request via localhost vs 0.95 ms/request via
+    # 127.0.0.1. Boot fetches ~380 .vox files, so it was ~1.2 s of the loading screen doing
+    # nothing at all. Nagle was the obvious suspect and was measured and cleared (no change).
+
     def log_message(self, fmt, *args):
         if '/__alive' not in (self.path or ''):    # don't spam the window with heartbeats
             super().log_message(fmt, *args)
@@ -160,7 +167,7 @@ if __name__ == '__main__':
         threading.Thread(target=watchdog, daemon=True).start()
     handler = functools.partial(NoCache, directory=ROOT)
     with ThreadingServer(('', port), handler) as httpd:
-        print('no-cache server (threaded) on http://localhost:%d' % port)
+        print('no-cache server (threaded) on http://127.0.0.1:%d' % port)
         print('serving', ROOT)
         print('building from', os.path.join(os.path.dirname(ROOT), 'src'))
         if '--no-watchdog' not in sys.argv:

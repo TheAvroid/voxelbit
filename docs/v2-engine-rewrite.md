@@ -546,6 +546,75 @@ walk, the `visb` per-tile bitmask, the 16-slot `cshad` AABB array, the drop-slot
 (and its long-standing off-by-one — `memory/voxelbit-drop-slot-bands.md`), and the compacted-slot
 bookkeeping in `tick-creatures.js`.
 
+### 4.2b The debris case — the measurement that sets the TLAS requirement
+
+**Owner, 2026-08-23: *"there is much lag when a tree has broken into chunks."*** This is the single
+worst frame-time regression the player can cause on purpose, it is caused by the mechanic the game is
+named for, and §4.2 is the fix. Recording the measurement here so the fix is gated on it rather than
+assumed.
+
+Measured 2026-08-23 against v1.2 at 1568×756 render res, one Chrome on the box, `__vb.profMin`
+(uncontended per-pass) over 220-frame windows after an 80-frame settle. A 67,204-voxel oak felled by
+coordinate into **221 chunks**, camera parked in fly mode outside `PH.absorbR` so the pile does not
+vacuum into the player mid-measurement:
+
+| camera | nearest chunk | `trace` ms | fps | frame p50 |
+|---|---|---|---|---|
+| **no debris at all**, same three poses | — | **0.25 – 1.28** | 600–707 | 2.4–2.8 |
+| standing 40 past the pile edge, eye level | 56 | **9.19** | 88 | 11.3 |
+| 18 past the edge, mid-height | 46 | **9.29** | 87 | 11.6 |
+| 62 over the top, looking straight down | 74 | **13.70** | 63 | 16.0 |
+
+A second run, the 86,365-voxel oak broken into **254 chunks**, gave 9.44 / 9.62 / 13.06 ms across
+comparable poses — so this is the shape of the cost, not one unlucky pile.
+
+Three things it establishes, each of which is a **requirement on §4.2** rather than a new problem:
+
+1. **It is entirely the tracer, and none of it is the solver.** Across every pose `cprof`'s whole CPU
+   total stayed at 0.94–1.25 ms with its `physics` bucket at **0.015–0.058 ms**. A 254-body sequential-
+   impulse solver at 60 Hz is free. All 8–12.5 ms of it is `bodyTrace`. **Do not read this as a reason
+   to spend v2 effort on debris physics throughput** — §6.3 is for the *fell spike*, which is a
+   different defect with a different cause, and the two must not be conflated in planning.
+
+2. **It scales with screen coverage, not with body count.** The worst pose is the one where debris
+   fills the frame; the same 221 bodies seen small cost a third as much. That is the signature of a
+   per-ray cost, and it is why `memory/voxelbit-chunk-trace-cost.md` insists a debris optimisation is
+   A/B'd **from at least two camera angles, one of them looking straight down** — a lateral-spread bug
+   reads as a win from every other angle.
+
+3. **The v1 mitigation has a ceiling and it has already been reached.** `bodyTrace` walked every live
+   body for every ray — primary, sun-shadow and `traceAll` alike. 2026-08-23 added a slab cull
+   (`u.physG`: one bounding sphere per 16 consecutive bodies, published in **Morton** order — camera
+   distance was tried first and measured *worse than no cull at all*, 10.4 vs 9.1 ms) plus a `stopAny`
+   early-out for the occlusion ray. Measured on 247 chunks: top-down 9.39 → 6.94 ms, ground level 4.15
+   → 3.32 ms. Real, and still an order of magnitude off the 1.2 ms baseline, because a fixed grouping
+   of 16 over a flat array is a stand-in for a TLAS and cannot become one.
+
+**What v2 must therefore deliver, stated as acceptance criteria and not as design intent:**
+
+- **The uniform-grid TLAS must make the cost proportional to what the ray passes through, not to how
+  many bodies exist.** 250 chunks in one pile occupy roughly the footprint of the standing tree; a ray
+  that misses that footprint must touch zero of them, and one that enters it must touch only the cells
+  along its own path.
+- **Every chunk is a Volume in the shared brick pool, on the same terms as terrain.** The dense
+  320-step per-body walk is the other half of the cost: chunk boxes sampled off a live pile ran 12–22
+  voxels per side (≈1,700–6,000 cells) against a pile mean of **337 occupied voxels per chunk**, so the
+  inner DDA is stepping mostly through air with no empty-brick skipping. (Sample of 8 boxes against a
+  254-chunk mean — an exact fill census was not taken and is worth one probe when Phase 2 has a pile to
+  point at.)
+- **The sun-shadow ray keeps its any-hit early-out.** It is bit-identical for an occlusion test and can
+  only ever return sooner; carry it into `traceScene()` as a traversal flag rather than rediscovering
+  it.
+
+**Phase 2 gate.** Fell the largest oak, let it break, and measure the three poses above. Target: the
+debris pile costs **under 2 ms of trace at every pose**, i.e. within ~1 ms of the empty-scene baseline.
+Anything that only improves the ground-level poses has reproduced the camera-distance sort and is a
+regression wearing a win's clothes.
+
+**And §6.1 multiplies this before v2 ships.** 100 ft trees mean far more chunks per tree at the same
+`fellChunkVox`, aimed at the same pile footprint. The pile that measures 13.7 ms today is the *small*
+version of the v2 case, which is why this belongs in Phase 2's gate and not in a later polish pass.
+
 ### 4.3 Material identity by tag, not by palette id
 
 **Do not give injected voxels palette ids.** `memory/voxelbit-unify-render-paths.md` and
@@ -817,6 +886,11 @@ On the largest oak (86,365 voxels, box 114×112×114):
 | every other biting swing | ~11 — `phFlood` ~11 |
 
 At 120 fps that is a **10–16 frame stall** on the fell and a 1.3-frame stall on every swing.
+
+**This is the *fell*, and it is not the same defect as the debris that is left behind.** The pile the
+fell produces costs 9.2–13.7 ms of *trace* for as long as it lies there, and measurement puts
+0.015–0.058 ms of that on the physics solver — see §4.2b. The fell is a one-frame CPU stall solved by
+§6.3; the pile is a sustained GPU cost solved by §4.2. Do not let either one be planned as the other.
 
 **Critical history:** a 2026-08-20 optimisation pass took the fell from ~121 ms to ~89 ms across four
 changes (sparse `phMark` clear, `coneWake` index hoist, `phBuildBody` Set→byte-scratch, gpuPatch
@@ -1586,6 +1660,10 @@ interface must support, and its numbers are what size the three stages.
 - Flat world only. No sphere, no clouds, no physics.
 - **End state:** flat terrain + a few static models + one moving instance, rendering through one path.
   Screenshot-identical to v1 for static terrain (this is the gate — see `voxelbit-ab-screenshot-mad`).
+- **Second gate — the debris pile (§4.2b).** ~250 small instances heaped in one place must cost under
+  2 ms of trace from every camera pose *including straight down*, against v1.2's measured 9.2–13.7 ms.
+  This is the owner's standing complaint about felled trees and it is a Phase 2 acceptance criterion,
+  because it is the TLAS and the shared brick pool that fix it — nothing later in the plan does.
 
 ### Phase 3 — lighting and shadows
 

@@ -121,7 +121,7 @@ def run():
     proc = ws = None
     try:
         time.sleep(1.0)
-        url = 'http://localhost:%d/?cdp' % PORT
+        url = 'http://127.0.0.1:%d/?cdp' % PORT
         print('booting', url)
         t0 = time.time()
         # __vb.tp is the readiness signal: __vb is assigned in one statement, so the

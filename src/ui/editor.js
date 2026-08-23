@@ -764,7 +764,14 @@
   // this is the supported "nothing staged" state and not a hole. Re-staging something is one object literal —
   // `{ path, name, seq|mix, bake, side, exhibits }` — and the loaders it feeds are all untouched.
   // Drop a .vox anywhere over the page to stage it, or use the file button; both go through edStageFiles.
-  const ED_STAGE = null;
+  // ── THE STAGE OPENS ON THE BIRCH (user 2026-08-23: "in the asset editor can you place birch_forest…") ──
+  // tools/voxelize_birch.py bakes the 24.8 m archviz birch down to a 116-voxel .vox, and this is where it goes.
+  // NOT the ordered fall-through the five removals above killed: that staged "whatever creature happened to be
+  // loaded" and each removal only promoted the next one. This is ONE named asset, and it is one line to take
+  // back out — set it to null and the stage returns to opening on whatever was last dropped in.
+  // A model the player drops in still WINS over this (edStage tries edRestore first), so it is a default and
+  // not a lock. Nothing about the world, and no creature's data, is touched by it.
+  const ED_STAGE = { path: 'assets/decoration/birch_forest.vox', name: 'birch_forest' };
   // ── TRACE-INJECTED EXHIBITS ── everything on the stage that MOVES FREELY. A lane is grid-stamped: its voxels
   // go into W, which pins it to integer positions and the four cardinal headings — that is what made the first
   // ladybug step along the grid and face only N/S/E/W. An exhibit is never stamped; it is staged into emitBuf
@@ -963,10 +970,31 @@
       E.x = L.x - Hx * back + Hz * side; E.z = L.z - Hz * back - Hx * side;
       E.th = L.th; E.y = Math.sin((E.t - (E.bph || 0)) * 1.1 + E.rank) * E.bob;
     } };
-  const edStage = () => {
-    // Nothing configured to auto-stage (ED_STAGE is null since the clean-out) → put back whatever was last
-    // dropped in, so reopening the editor resumes where it was left rather than on a bare plane.
-    if (!ED_STAGE) { if (!ED.frames.length) edRestore(); return; }
+  // ── STAND THE CAMERA BACK FAR ENOUGH TO SEE THE WHOLE MODEL ── the solve is documented in full at the call
+  // in edEnter; it lives in a function because it has to run TWICE. edEnter frames the stage before edStage's
+  // fetch has resolved, so on entry ED.frames is empty and it solves for the H = 12 fallback: back = 50, eye
+  // aimed at voxel 6. For anything tall that is a close-up of the base — measured on the 116-voxel birch,
+  // pitch −0.24 with the crown a long way above the top of the frame, which reads as "the model is not there".
+  // So edStage calls it again once the model has landed and H is known. Re-framing is safe to repeat: it is a
+  // pure function of ED.y/ED.x0/ED.pw and the model height, and it only ever backs the camera OFF.
+  const edFrame = () => {
+    const bf = ED.frames[0]; const H = bf ? bf.sz : 12, midH = H * 0.5;
+    const MARGIN = 1.22, tv = Math.tan(FOV / 2), A = midH - EYE;
+    const edge = (c) => { const disc = midH * midH - 4 * tv * tv * c; return disc <= 0 ? 0 : (midH + Math.sqrt(disc)) / (2 * tv); };
+    const fit = Math.max(edge(-A * EYE), edge((H - EYE) * A));   // the nearer the camera may stand with BOTH edges clear
+    const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2, back = Math.max(50, Math.round(fit * MARGIN));
+    P.x = cx; P.z = cz - back;                          // back along −Z (yaw 0 faces +Z → the model)
+    P.y = ED.y + 1;                                     // feet planted on the plane (NOT floating at eye-mid-height)
+    P.yaw = 0; P.pitch = Math.atan2(midH - EYE, back);   // aim the eye at the model's vertical centre → the object sits framed in front of the camera
+    P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; };
+  const edStage = async () => {
+    if (ED.frames.length) return;                       // a manual import got here first — never clobber what is on the stage
+    // WHAT THE PLAYER LAST DROPPED IN OUTRANKS THE CONFIGURED DEFAULT, so reopening the editor resumes where it
+    // was left. Only when there is nothing remembered does ED_STAGE below get the stage. (edRemember is written
+    // by edStageFiles — the drop and the file picker — and NOT by edLoadVox, so an ED_STAGE load never records
+    // itself as the remembered model and never becomes sticky.)
+    if (await edRestore()) return;
+    if (!ED_STAGE) return;
     edFetchVox(ED_STAGE.path).then(async () => { if (!ED.on || ED.frames.length) return;   // closed again, or a manual import landed while the fetch was in flight — never clobber what is on the stage
       const n = ED_STAGE.mix ? await edLoadMix(ED_STAGE.path, ED_STAGE.mix, ED_STAGE.name)
                              : await edLoadVox(ED_STAGE.path, ED_STAGE.seq, ED_STAGE.name, ED_STAGE.bake);
@@ -975,6 +1003,7 @@
       // guard rather than running beside it: a manual import landing between the two would take the stage
       // (edImportBufs clears lane 2), and an unconditional second load would then park a model next to it.
       if (n && sd && ED.on && ED.frames.length) await edLoadVox2(sd.path || ED_STAGE.path, sd.seq, sd.name || ED_STAGE.name, sd.bake, sd.fly);
+      if (n && ED.on) edFrame();                        // NOW the height is known — see edFrame
       if (ED.on) edExStage(); }); };                    // …and the free-moving exhibits, which need no fetch of their own: their frames were loaded into the item table at boot
   const edEnter = () => {
     if (ED.on) return;
@@ -989,52 +1018,107 @@
     // So try a ring of candidate origins and take the one whose terrain is LOWEST. A coarse stride is enough to
     // choose between them — the fine scan below still decides the actual height — and a meadow twenty metres
     // away routinely sits 40+ voxels under a crown, which is the difference between a grove fitting and not.
-    const stageTop = (sx0, sz0, step) => {
-      let t = WL;
+    // GROUND, not canopy. The stage used to have to clear the tallest SOLID thing on its footprint, which in a
+    // forest is the treetops — see the carve below, which is what removes that requirement. hmap is the ground
+    // surface, so this is one array read per sample instead of a column walk, and ground is smooth where canopy
+    // is spiky: a coarse stride under-reads a canopy badly (a single trunk between two samples) but tracks
+    // ground almost exactly, which is why the two-stage coarse/fine dance this replaces is gone.
+    const stageGround = (sx0, sz0, step) => {
+      let t = WL;                                      // never below the waterline — see ED.y
       for (let z = sz0; z < sz0 + ED.pd; z += step) for (let x = sx0; x < sx0 + ED.pw; x += step) {
-        const gx = gwrap(x, WX), gz = gwrap(z, WZ), b2 = gx + gz * WX * WY;
-        let y = Math.min(WY - 2, hmap[gx + gz * WX] + 118);
-        while (y > WL && !W[b2 + y * WX]) y--;
-        if (y > t) t = y;
+        const h = hmap[gwrap(x, WX) + gwrap(z, WZ) * WX];
+        if (h > t) t = h;
       }
       return t;
     };
     const clampX = (v) => Math.max(rect.xlo + 4, Math.min(rect.xhi - 4 - ED.pw, v));
     const clampZ = (v) => Math.max(rect.zlo + 4, Math.min(rect.zhi - 4 - ED.pd, v));
     const px0 = Math.round(P.x / 10) * 10 - (ED.pw >> 1), pz0 = Math.round(P.z / 10) * 10 - (ED.pd >> 1);
-    let bestX = clampX(px0), bestZ = clampZ(pz0), bestT = stageTop(bestX, bestZ, 8);
-    // Three rings, not one. A single step lands in the same stand of trees you were standing in; the low ground
-    // that actually buys headroom — a meadow, a shore, a river flat — is usually a few hundred voxels out. The
-    // player is teleported onto the stage regardless, so distance costs nothing, and a coarse stride keeps all
-    // 24 probes cheap enough to run on the button press.
-    for (let ring = 1; ring <= 3; ring++) for (const [ox, oz] of [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-      const cx = clampX(px0 + ox * ring * (ED.pw + 24)), cz = clampZ(pz0 + oz * ring * (ED.pd + 24));
-      const t = stageTop(cx, cz, 8);
-      if (t < bestT) { bestT = t; bestX = cx; bestZ = cz; }
-    }
+    // ── THE STAGE STOPPED HAVING TO CLEAR TREES (user 2026-08-23: "make the trees their proper height") ──
+    // This block used to pick a site by the tallest SOLID thing on its footprint, which in a forest is the
+    // CANOPY, and then sit above it. Everything wrong with the old numbers follows from that one decision:
+    //   * three rings reached ~195 voxels and the best site inside them still topped out at 256-276, so the
+    //     plane landed at 264-288 and a model got 95-119 voxels — even the 116-voxel birch barely fit;
+    //   * widening to the whole region helped but stayed at the mercy of the world: measured across five, the
+    //     room came out 199, 215, 135, 143, 167. There is no search that fixes a world with no clearing in it;
+    //   * and it could not be sampled cheaply, because one trunk between two coarse samples changes the answer.
+    // So the stage CARVES ITS OWN VOLUME instead (see below) and this only has to clear the GROUND. That makes
+    // the search both better and cheaper: ground is smooth, so a coarse stride tracks it, and the lowest ground
+    // in the region is a shore or a flat rather than whatever happened to have no tree on it.
+    let bestX = clampX(px0), bestZ = clampZ(pz0), bestG = stageGround(bestX, bestZ, 4);
+    for (let z = rect.zlo + 4; z <= rect.zhi - 4 - ED.pd; z += 48)
+      for (let x = rect.xlo + 4; x <= rect.xhi - 4 - ED.pw; x += 48) {
+        const g = stageGround(x, z, 8);
+        if (g < bestG) { bestG = g; bestX = x; bestZ = z; }
+      }
+    bestG = stageGround(bestX, bestZ, 1);              // the winner re-measured at full resolution: a 1-voxel spike inside the footprint still has to be cleared
     ED.x0 = bestX; ED.z0 = bestZ;
-    let topMax = WL;                                   // stage must sit above all content on its footprint (its bricks stay PURE — no terrain sharing an 8³ brick with the plane)
-    for (let z = ED.z0; z < ED.z0 + ED.pd; z += 2) for (let x = ED.x0; x < ED.x0 + ED.pw; x += 2) {
-      const gx = gwrap(x, WX), gz = gwrap(z, WZ), b2 = gx + gz * WX * WY;
-      let y = Math.min(WY - 2, hmap[gx + gz * WX] + 118);
-      while (y > WL && !W[b2 + y * WX]) y--;
-      if (y > topMax) topMax = y;
-    }
-    // ── HEADROOM FOR WHAT IS ON THE STAGE (user 2026-08-18: the four birches were not showing) ── the stage
-    // has to clear the tallest terrain on its own footprint (brick purity: an 8³ brick shared with terrain
-    // would draw that terrain), but it was ALSO pinned within 80 of the ceiling, and a model is stamped upward
-    // from it. Measured: WY 384, stage 336, so 46 voxels of room — and the birch grove is 81 tall, so both big
-    // trees were cut off at the waist and it did not read as four trees at all.
-    // Doubling the stage footprint made it worse rather than better: topMax now scans four times the area, so
-    // it is far more likely to find a tall tree to clear.
-    // WY - 160 as the floor buys up to ~158 on flat ground while the topMax term still lifts it clear of
-    // anything underneath. It cannot promise a fixed amount — the terrain decides — which is why the grove is
-    // also sized to fit the worst case rather than the best.
-    ED.y = Math.min(WY - 24, Math.max((topMax + 15) & ~7, WY - 160));   // 8-aligned, clear of the ground below, as low as the ceiling allows
+    // ── HOW LOW THE PLANE MAY SIT ── two floors, and both are real:
+    //   * the GROUND on this footprint, +15 and 8-aligned, so the plane's own brick holds no terrain;
+    //   * the WATERLINE, because the carve below deliberately does not touch water — a plane under WL would
+    //     need the sea cleared out around it, and restoring that is not something a stage should be doing.
+    // THE CEILING THIS LEAVES IS A HARD ONE, so it is written down rather than rediscovered: the lowest legal
+    // plane is (WL + 8) & ~7 = 160 at WL 152. A model is stamped from ED.y + 1 and edLayout drops anything at
+    // y >= WY - 1, so it occupies 161..382 and the tallest that could EVER stand here is 222 voxels — 22.2 m.
+    // (223 looks right from WY - 1 - 160 and is off by one: it loses its top row.)
+    // THAT CEILING IS NOT REACHABLE IN PRACTICE, for the carve-cost reason below: the plane follows the ground
+    // rather than the waterline, so the real room is 383 - ED.y and measured 199-215 over eight worlds. The
+    // shipped birch is baked to 199 (tools/voxelize_birch.py) so it never loses its crown on the worst of them. The .fbx birch measures 24.6 m and
+    // therefore CANNOT be baked at true scale for this world; tools/voxelize_birch.py is set to 22.3 for
+    // exactly this reason, and only a taller WY could change it (WY 384 is what gpu.js trades against the
+    // 2048² window — 2048² x 384 = 1.5 GB).
+    // ── THE PLANE FOLLOWS THE GROUND, AND THE CARVE ONLY EATS WHAT GROWS ON IT ────────────────────────────
+    // It is tempting to drop the plane to the waterline and let the carve cut through the hillside, because
+    // ground stops threatening brick purity once everything above the plane is cleared — and it does work: it
+    // pins the room at a flat 223 on every world instead of the 199-215 this gives.
+    // IT COSTS FAR TOO MUCH. Measured on one platform footprint: a waterline plane has to clear 2,230,000
+    // earth voxels, where a ground-following one clears 152,000 of vegetation — 15x. Two million cells is past
+    // what gpuPatch will move in a frame, so the stage streamed in over several seconds with the world showing
+    // through it, and one run took the browser down outright.
+    // So the plane sits just above the ground and the carve gets the trees and grass only. +8 rather than the
+    // old +15: the plane needs an 8-aligned brick row holding no terrain, and (g + 8) & ~7 is the LOWEST row
+    // that satisfies it — always > g, so the ground is under the row rather than in it. The old +15 bought a
+    // second brick of clearance the carve makes pointless, at up to 8 voxels of model height.
+    ED.y = Math.min(WY - 24, Math.max((bestG + 8) & ~7, (WL + 8) & ~7));
     unstampAllWorms();                                 // clear live worms out of W before the editor freezes the world (else edExit's rebuildBricks would resurrect them)
     bricks.fill(0); bricks2.fill(0); wbricks.fill(0);  // SEPARATE LEVEL: empty occupancy = the whole world vanishes from the tracer (W is untouched — exit rebuilds)
     const cells = [];
     for (let z = ED.z0; z < ED.z0 + ED.pd; z++) for (let x = ED.x0; x < ED.x0 + ED.pw; x++) edSet(x, ED.y, z, edPlaneId(x, z), cells);
+    // ── CARVE THE STAGE VOLUME ── every solid voxel from the plane to the world ceiling, gone for as long as
+    // the editor is open. This is what lets the plane sit on the GROUND rather than above the treetops, and it
+    // is the whole reason a 223-voxel model can stand here at all.
+    // IT IS NOT A NEW MECHANISM. edSet already records each cell's previous value into ED.prev and edExit
+    // already writes every one of them back — that is how the plane itself borrows the world's cells and gives
+    // them back. This just does it for a column instead of a sheet. Nothing here is a terrain EDIT: gpuPatch
+    // runs with track=false, the world is frozen while ED.on, and the support/physics queues never see it, so
+    // no tree gets orphaned and nothing falls when the trees come back on exit.
+    // WATER IS NEVER TOUCHED, and it needs no test: ED.y is floored at (WL + 8) & ~7, so the plane is always
+    // above the waterline and this only ever walks upward from it.
+    // Written as a column walk with the row base hoisted, and bounded by hmap + 118 — the same bound the old
+    // canopy scan used for "nothing grows higher than this" — because the platform is 242 x 242 and the naive
+    // form is 242 x 242 x 222 = 13M edIdx calls on a button press. Most columns end far below the ceiling, and
+    // a column whose vegetation cannot reach the plane at all is skipped outright.
+    // ── CARVE WHOLE BRICKS, NOT THE PLATFORM ── ED.x0/ED.z0 come off the search grid and are not 8-aligned, so
+    // the platform's edge bricks straddle its boundary and hold world geometry from just OUTSIDE it. gpuPatch
+    // marks a WHOLE brick occupied, so a brick that is only partly carved still draws its uncarved remainder:
+    // with the plane above the canopy there was nothing out there to see, but a plane cutting through the
+    // ground showed a ridge of earth and grass along the stage's far edge and left two tree crowns floating
+    // where a canopy overhung the boundary.
+    // A margin does NOT fix that — it just moves the seam outward, which is exactly what an 8-voxel pad did.
+    // Aligning the carve OUT to brick boundaries does fix it, because then every brick is either wholly carved
+    // (nothing left to draw) or never touched (never marked, so never drawn). WX/WZ are multiples of 8, so
+    // gwrap preserves the alignment.
+    const cx0 = ED.x0 & ~7, cx1 = (ED.x0 + ED.pw + 7) & ~7, cz0 = ED.z0 & ~7, cz1 = (ED.z0 + ED.pd + 7) & ~7;
+    for (let z = cz0; z < cz1; z++) {
+      const gz = gwrap(z, WZ);
+      for (let x = cx0; x < cx1; x++) {
+        const gx = gwrap(x, WX), yTop = Math.min(WY - 1, hmap[gx + gz * WX] + 118);
+        if (yTop <= ED.y) continue;                    // nothing on this column reaches the plane
+        const b2 = gx + gz * WX * WY;
+        for (let y = ED.y + 1; y <= yTop; y++) { const ii = b2 + y * WX;
+          if (W[ii]) { if (!ED.prev.has(ii)) ED.prev.set(ii, W[ii]); W[ii] = 0; cells.push(ii); } }   // edSet by index — it would recompute edIdx per voxel, and this is the hot loop
+      }
+    }
     gpuPatch(cells, true, cells.length, false);        // track=false: entering the editor overwrites real world cells with the stage plane, and none of that is a terrain edit
     P.x = ED.x0 + ED.pw / 2; P.z = ED.z0 + ED.pd / 2; P.y = ED.y + 2; P.vy = 0; P.fly = true;   // fly ON so the framing below can't be pulled off by gravity while the world is frozen
     smoothEye = P.y + EYE; resetHist = 1;
@@ -1092,15 +1176,7 @@
     // FOV is read from its own declaration (ui/hud.js) rather than retyped, which is how the 72-vs-36 slip
     // happened the first time. MARGIN leaves air around the model rather than fitting it to the frame edge.
     // Floored at the old 50 so every small model is framed EXACTLY as before — this only ever backs off.
-    { const bf = ED.frames[0]; const H = bf ? bf.sz : 12, midH = H * 0.5;
-      const MARGIN = 1.22, tv = Math.tan(FOV / 2), A = midH - EYE;
-      const edge = (c) => { const disc = midH * midH - 4 * tv * tv * c; return disc <= 0 ? 0 : (midH + Math.sqrt(disc)) / (2 * tv); };
-      const fit = Math.max(edge(-A * EYE), edge((H - EYE) * A));   // the nearer the camera may stand with BOTH edges clear
-      const cx = ED.x0 + ED.pw / 2, cz = ED.z0 + ED.pd / 2, back = Math.max(50, Math.round(fit * MARGIN));
-      P.x = cx; P.z = cz - back;                        // back along −Z (yaw 0 faces +Z → the model)
-      P.y = ED.y + 1;                                   // feet planted on the plane (NOT floating at eye-mid-height)
-      P.yaw = 0; P.pitch = Math.atan2(midH - EYE, back);   // aim the eye at the model's vertical centre → the object sits framed in front of the camera
-      P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
+    edFrame();                                          // …against an EMPTY stage here; edStage re-frames once the model it loads has landed (see edFrame)
     edMode(1);                                          // entered the stage → next refresh comes back to it
     edBtnEl.classList.add('on'); edRowEl.classList.remove('hidden'); edHudEl.classList.remove('hidden');
     edHudUpd();
@@ -1160,6 +1236,7 @@
     // putting it back does not rewrite what it was just read from.
     if (list.length === 1 && !edRestoring) edRemember(list[0].name, list[0].u8);
     if (list.length) { edClearStamp(); ED.frames2 = []; ED.box2 = null; ED.seq2 = ''; ED.sel2 = 0; ED.flyer2 = false; ED.mix = []; ED.mixT0 = 0; ED.bun = null; ED.arm = null; edImportBufs(list); ED.bunny = false; }   // a manual .vox import is a clean SINGLE-object edit — clear the second lane + creature AI + armadillo walk so only the imported model shows. edClearStamp runs FIRST, as its comment says: edImportBufs ends in edLayout, which stamps the new model, so clearing afterwards erased what had just been laid out and the import stayed invisible until the next repaint (up to 3.4 s).
+    if (ED.frames.length) edFrame();                   // …and STAND BACK to suit whatever just arrived. Dropping a tall model used to leave the camera wherever the last one had put it — on a 116-voxel tree that is a close-up of the bare trunk with the crown off the top of the frame, which reads as the import having failed. See edFrame.
   };
   edFileEl.addEventListener('change', async () => { await edStageFiles([...edFileEl.files]); edFileEl.value = ''; });
   // Drop anywhere over the page while the stage is open. dragover MUST preventDefault or the browser

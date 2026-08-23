@@ -395,6 +395,26 @@
   };
   const phShatterTree = (b) => { phSrc = 'treeLand';
     const i = PH.bodies.indexOf(b); if (i < 0) return 0;
+    // ── HOW MANY PIECES THERE IS ROOM FOR, DECIDED BEFORE ANY WORK ── this test used to sit AFTER the bbox
+    // scan, the cell build and an n log n Morton sort, all of which a refused break threw away and then
+    // redid on the very next frame, forever, on an 86k-cell body. It only needs b.n, so it runs first.
+    const free9 = Math.max(2, PH.maxBodies - PH.bodies.length - 1 - PH.fellStumpSlots);   // …less a few held back for phShatterStump below, which builds its own bodies
+    const need9 = Math.ceil(b.n / PH.fellChunkMax);
+    if (free9 < need9) {
+      // ── AND IF THERE IS NO ROOM, MAKE SOME (user 2026-08-23: "the pine trees are not breaking apart most of
+      // the time") ── refusing and waiting only works if something else is going to free a slot. After a big
+      // oak has broken there are ~245 chunks alive and PH.maxBodies is 256, so free9 is 2 and EVERY tree felled
+      // afterwards needs more than that: the next tree simply never broke, for the whole five minutes those
+      // chunks live. phMakeRoom retires the OLDEST debris — writing its voxels back into the world, not
+      // deleting them, which is the rule the fell has always followed — and it can never take this tree,
+      // because b is still in PH.bodies and far larger than PH.absorbSize. A few per attempt rather than all
+      // at once: this runs again next tick, so the room arrives over a handful of frames instead of one hitch.
+      for (let r9 = 0; r9 < PH.fellRoomPerTry; r9++) {
+        if (PH.maxBodies - PH.bodies.length - 1 - PH.fellStumpSlots >= need9) break;
+        if (!phMakeRoom(need9 + PH.fellStumpSlots)) break;   // nothing left that may be retired — wait for the backstop
+      }
+      return 0;                                        // NOT spliced out, fellWhole NOT cleared — see the caller
+    }
     const sx = b.sx, sz = b.sz, key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
     let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, z0 = 1e9, z1 = -1e9;
     for (let k = 0; k < b.n; k++) {
@@ -430,15 +450,19 @@
     cellsM.sort((p9, q9) => p9[0] - q9[0]);
     // The count is still bounded by the slots that are actually free — a piece with nowhere to live cannot be
     // made — so a very large tree in a busy scene gets fewer, bigger chunks rather than losing any of itself.
-    // ── THE CHUNK SIZE NEVER GROWS; THE BREAK WAITS INSTEAD (user 2026-08-22: "some chunks are still too big.
-    // they arent even being absorbed") ── this used to raise chunk9 when slots were short, which is how a
-    // second tree felled into the first one's debris came out in 10,027-voxel lumps, 30 of them over the
-    // absorb limit. Size is the thing the player feels, so it is fixed: if there is not room to break this
-    // tree into uniform pieces right now, the tree stays whole and tries again on the next tick — a few
-    // seconds late once the earlier debris has been collected or expired, and always the right size.
-    const free9 = Math.max(1, PH.maxBodies - PH.bodies.length - 1);
+    // ── THE CHUNK SIZE IS A TARGET WITH A FLOOR, NOT A CONSTANT (user 2026-08-22: "some chunks are still too
+    // big. they arent even being absorbed", then 2026-08-23: "I knocked over a big oak tree and it didnt even
+    // fall apart into chunks") ── the first complaint came from raising chunk9 without limit when slots were
+    // short: a second tree felled into the first one's debris came out in 10,027-voxel lumps. Pinning chunk9
+    // instead fixed the size and broke the break: pieces are ceil(n / 350) and a tier-7 oak is 86,365 voxels,
+    // so it demanded 246 slots out of a PHYS_MAX of 256. MEASURED in an otherwise EMPTY world: 12 bodies live,
+    // 243 free, 246 wanted — three short, so the biggest oaks in the game never broke at all, and the retry
+    // above meant they re-ran the whole partition every frame to fail the same way.
+    // So the count is now whatever the free slots allow and the SIZE has a ceiling instead: pieces aim at
+    // fellChunkVox and may coarsen toward fellChunkMax when the scene is busy, and the gate at the top of this
+    // function refuses anything coarser than that. Both complaints are answered — no runaway lumps, and a
+    // felled tree is never held hostage to the last three slots.
     const chunk9 = PH.fellChunkVox;
-    if (free9 < Math.ceil(b.n / chunk9)) return 0;      // NOT spliced out, fellWhole NOT cleared — see the caller
     // ── A PIECE MUST BE ONE CONNECTED LUMP (user 2026-08-22: "make it where chunks voxels have to be touching
     // eachother and cannot be seperated by air") ── slicing the Morton order every chunk9 cells gets the SIZE
     // right and says nothing about connectivity: Morton keeps neighbours near each other in the ordering but
@@ -467,7 +491,7 @@
     // only ever claims a neighbour of a cell it already owns, and the sizes come out even because they grow at
     // the same rate. Anything left over is a region no seed could reach — genuinely disconnected geometry —
     // and becomes its own piece rather than being stitched across air to something else.
-    const K = Math.max(2, Math.ceil(b.n / chunk9));   // room for this many was checked above
+    const K = Math.max(2, Math.min(Math.ceil(b.n / chunk9), free9));   // the ideal count, or every slot there is — the gate at the top already refused anything coarser than fellChunkMax
     const ownOf = new Map();
     const queues = [], buckets = [];
     for (let q = 0; q < K; q++) {

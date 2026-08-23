@@ -25,7 +25,7 @@ def run(x, y, z):
     proc = None
     try:
         time.sleep(1.0)
-        proc, ws, errors = cdp.boot('http://localhost:%d/?cdp' % PORT,
+        proc, ws, errors = cdp.boot('http://127.0.0.1:%d/?cdp' % PORT,
                                     ready_expr='typeof (window.__vb||{}).bodySupport=="function"')
         cdp.ev(ws, '__vb.snow(0)')
         cdp.ev(ws, '__vb.tp(%d,%d,%d,0,0)' % (x, max(2, y - 40), z))

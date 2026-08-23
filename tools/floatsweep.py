@@ -96,7 +96,7 @@ def run(seed, nfell):
     proc = None
     try:
         time.sleep(1.0)
-        proc, ws, errors = cdp.boot('http://localhost:%d/?cdp' % PORT,
+        proc, ws, errors = cdp.boot('http://127.0.0.1:%d/?cdp' % PORT,
                                     ready_expr='typeof (window.__vb||{}).bodySupport=="function"')
         print('booted; seed', seed, 'fells', nfell, flush=True)
         cdp.ev(ws, '__vb.snow(0)')

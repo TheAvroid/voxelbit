@@ -146,7 +146,10 @@
     // hit, in the SAME window-space convention trace() uses. Because it shares that convention it can be
     // used by the primary ray AND by shadow / AO / reflection rays, which is what makes a felled tree
     // light exactly like a standing one instead of needing baked AO and a box-shaped fake shadow.
-    fn bodyTrace(ro : vec3<f32>, rd : vec3<f32>, maxT : f32) -> Hit {
+    // stopAny: the caller only wants to know WHETHER something is in the way (the sun-shadow ray). The nearest
+    // of several hits costs a full walk of every group the ray touches; ANY hit ends it. Same answer for an
+    // occlusion test, and it can only ever return sooner.
+    fn bodyTraceX(ro : vec3<f32>, rd : vec3<f32>, maxT : f32, stopAny : bool) -> Hit {
       var h : Hit; h.t = -1.0;
       let nB = i32(u.physC.x + 0.5);
       if (nB <= 0) { return h; }
@@ -157,7 +160,20 @@
         if (tc < -u.physBound.w || tc - u.physBound.w > maxT) { return h; }
       }
       var best = maxT;
-      for (var bi = 0; bi < nB; bi++) {
+      // ── SLAB CULL ── the bodies are published nearest-first, so PHYS_GRP consecutive of them form a depth
+      // slab and u.physG holds one sphere per slab. Missing a slab skips all of its bodies on one compare,
+      // which is what keeps a felled tree's ~250 chunks off the per-ray cost of 250 rejections.
+      let nG = (nB + PHYS_GRP - 1) / PHYS_GRP;
+      for (var gi = 0; gi < nG; gi = gi + 1) {
+        let GS = u.physG[gi];
+        if (GS.w <= 0.0) { continue; }
+        let dG = GS.xyz - ro;
+        let tG = dot(dG, rd);
+        if (tG - GS.w > best || tG + GS.w < 0.0) { continue; }
+        if (dot(dG, dG) - tG * tG > GS.w * GS.w) { continue; }
+        let bLo = gi * PHYS_GRP;
+        var bHi = bLo + PHYS_GRP; if (bHi > nB) { bHi = nB; }
+      for (var bi = bLo; bi < bHi; bi++) {
         let A = u.physB[bi * 5]; let Xa = u.physB[bi * 5 + 1]; let Ya = u.physB[bi * 5 + 2];
         let Za = u.physB[bi * 5 + 3]; let E = u.physB[bi * 5 + 4];
         let bw = i32(Xa.w + 0.5); let bh = i32(Ya.w + 0.5); let bd = i32(Za.w + 0.5);
@@ -198,6 +214,7 @@
               h.t = best; h.vox = cid; h.vc = vc;
               var nl = vec3<f32>(0.0);
               if (vax == 0) { nl.x = -f32(ist.x); } else if (vax == 1) { nl.y = -f32(ist.y); } else { nl.z = -f32(ist.z); }
+              if (stopAny) { return h; }                        // occlusion only — the face and the nearest-of-many do not matter
               h.n = normalize(Xa.xyz * nl.x + Ya.xyz * nl.y + Za.xyz * nl.z);   // TRUE rotated world normal
               if (abs(h.n.y) >= abs(h.n.x) && abs(h.n.y) >= abs(h.n.z)) { h.face = select(2u, 3u, h.n.y < 0.0); }
               else if (abs(h.n.x) >= abs(h.n.z)) { h.face = select(0u, 1u, h.n.x < 0.0); }
@@ -211,8 +228,10 @@
           if (any(vc < vec3<i32>(0)) || any(vc >= vec3<i32>(bw, bh, bd))) { break; }
         }
       }
+      }
       return h;
     }
+    fn bodyTrace(ro : vec3<f32>, rd : vec3<f32>, maxT : f32) -> Hit { return bodyTraceX(ro, rd, maxT, false); }
     // Static world + rigid bodies, nearest wins. THIS is what secondary rays call, so a falling tree
     // casts a real tree-shaped shadow, darkens its own creases, and shows up in the water.
     fn traceAll(ro : vec3<f32>, rd : vec3<f32>, maxT : f32, skipW : bool) -> Hit {
