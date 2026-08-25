@@ -59,7 +59,7 @@
   // as the boulders sitting on the sand, and stranded anything that walked into one.
   const nvStoneTab = new Uint8Array(256);
   const nvInitTabs = () => {
-    for (let id = 0; id < 256; id++) nvPass[id] = (solidTab[id] !== 1 || foliaTab[id] || coneTab[id] || SNOW_PASS.has(id) || SNOW_FERN.has(id)) ? 1 : 0;
+    for (let id = 0; id < 256; id++) nvPass[id] = (solidTab[id] !== 1 || foliaTab[id] || coneTab[id] || snowPassTab[id] || snowFernTab[id]) ? 1 : 0;
     nvPass[0] = 1;
     for (let id = 0; id < 256; id++) nvClut[id] = (nvPass[id] === 0 && WORM_PASS.has(id)) ? 1 : 0;   // the Set is read ONCE per table build, never per voxel — the column scan below indexes this array
     nvStoneTab.fill(0);
@@ -449,7 +449,7 @@
   // forest's roster is a subtraction rather than an addition. Everything that lives there — the worms and the
   // butterflies — is BIO_ANY and always was; what the biome needed was for BIO_ANY to stop meaning "anywhere
   // that is not sand". BIO_CHERRY exists for the one creature that is exclusive to it, the pink bird.
-  const BIO_ANY = 0, BIO_SAND = 1, BIO_OAKF = 2, BIO_PINEF = 3, BIO_CHERRY = 4;
+  const BIO_ANY = 0, BIO_SAND = 1, BIO_OAKF = 2, BIO_PINEF = 3, BIO_CHERRY = 4, BIO_BIRCH = 5;   // BIO_BIRCH: the birch band ALONE, where BIO_OAKF means either broadleaf band — the ant's column is asked for there and not in the oak (sim/life/slots.js DES_BIRCHF)
   // Both borders are 450-voxel smoothstep blends of the same shape (DESB and OAKB), so one pair of numbers
   // serves both. The SAND line is 0.85 and not 0.5 for the measured reason recorded at the spawn gate: forest
   // life legally spawns anywhere up to desertM 0.85, so a midline test called a large legal band foreign and
@@ -487,8 +487,21 @@
     // step a second time. A bee still has to satisfy its own home line below (BIO_OAKF, oakM > 0.5) — and it
     // does, because the blossom sits inside oakM by construction.
     if (!chOK && chNear(x) && cherryM(x, z) > BIO_CHLINE) return false;   // chNear first: bioHomeOK runs for EVERY kind-2 body every frame (~224 of them), and an unguarded mask here was ~450 extra cherryM per frame
-    if (home === BIO_OAKF) return oakM(x, z) > BIO_OAKLINE;
-    if (home === BIO_PINEF) return oakM(x, z) <= BIO_OAKLINE;
+    // ── BIO_OAKF IS THE CLOSED BROADLEAF FOREST, NOT THE OAK BAND (user 2026-08-24: "fix the life in the birch
+    // forest ... the life in the birch forest should match the life in the oak forest") ── the bee, the grass
+    // snake and the desert species' forest populations are all BIO_OAKF, and this line read oakM alone, so the
+    // birch forest refused every one of them: MEASURED 0 bees, 0 grass snakes, 0 flies and 0 desert mice there
+    // against 8, 5, 7 and 4 in the oak. The ladybug was the only one that showed up, and only because
+    // DES_ANYFOREST tags it BIO_ANY.
+    // The two bands are NOT adjacent — the strip order is oak, cherry, oak, pine, BIRCH, desert — so widening
+    // the home does not let one population walk into the other: the pine between them fails both halves of
+    // this test, and each forest keeps its own animals by construction.
+    if (home === BIO_BIRCH) return birchM(x, z) > BIO_OAKLINE;   // …and this one is the birch band and nothing else
+    if (home === BIO_OAKF) return oakM(x, z) > BIO_OAKLINE || birchM(x, z) > BIO_OAKLINE;
+    // ── …AND BIO_PINEF IS THE PINE FOREST, NOT "EVERYTHING THAT IS NOT OAK" ── which is what it meant while
+    // the birch band was the only other thing out there, and it is why the birch came out with 14 porcupines
+    // against the oak forest's 5. Naming the birch here is what makes the two forests' populations match.
+    if (home === BIO_PINEF) return oakM(x, z) <= BIO_OAKLINE && birchM(x, z) <= BIO_OAKLINE;
     return true;
   };
   // Is this body near enough to ITS OWN line for the clip to be worth sampling? Keeps the extra mask calls off
@@ -496,8 +509,9 @@
   // travel — a dashing mouse covers 5.3 voxels at NAV_HZ against a ~100-voxel window — so a walker is always
   // well inside the window before the line itself is within reach.
   const bioNearEdge = (home, x, z) => home === BIO_CHERRY ? Math.abs((chNear(x) ? cherryM(x, z) : 0) - BIO_CHLINE) < 0.35
+    : home === BIO_BIRCH ? Math.abs(birchM(x, z) - BIO_OAKLINE) < 0.35
     : (home === BIO_OAKF || home === BIO_PINEF)
-    ? Math.abs(oakM(x, z) - BIO_OAKLINE) < 0.35 || Math.abs(cherryM(x, z) - BIO_CHLINE) < 0.35
+    ? Math.abs(oakM(x, z) - BIO_OAKLINE) < 0.35 || Math.abs(birchM(x, z) - BIO_OAKLINE) < 0.35 || Math.abs(cherryM(x, z) - BIO_CHLINE) < 0.35   // …the BIRCH line too, or a walker whose home now includes it is never woken near the one border it can actually cross
     // …and a BIO_ANY walker now has a second line it can cross, so it has to be woken near that one too. Without
     // this the containment above would only be consulted near the sand, and a bunny would stroll into the
     // blossom unchecked — the clip is only as good as the window that asks for it.

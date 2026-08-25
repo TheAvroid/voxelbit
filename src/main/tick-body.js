@@ -217,7 +217,7 @@
       windAX += Math.cos(wAng) * wSpd * dt; windAZ += Math.sin(wAng) * wSpd * dt;
       snowFallV = 11.0;                                // CONSTANT fall speed — no motion-based modulation (it read as far flakes speeding up while running)
       snowFallAcc += snowFallV * dt;
-      if (snowOn && now > snowEndT) { snowOn = false; snowNextT = SNOW_AUTO_OFF ? Infinity : now + 300000; snowBtnSync(); }   // a snow EVENT lasts 60 s…
+      if (snowOn && now > snowEndT) { snowOn = false; snowRearm(); snowBtnSync(); }   // a snow EVENT lasts 60 s…
       else if (!snowOn && now > snowNextT) {          // …then waits 5 min for the next (first one is 2 min after refresh)
         // ── BUT NOT AFTER DARK (user 2026-08-19: "dont make it snow at night") ── the arrival is DEFERRED, not
         // cancelled: pushing snowNextT forward by SNOW_NIGHT_RETRY re-asks the same question a few seconds later

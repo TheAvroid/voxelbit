@@ -38,7 +38,14 @@
       // boundary's centre line, and leaves roughly 20 m of empty ground between the two populations.
       const BIO_DESERT = 0.85, BIO_FOREST = 0.15;
       const DES_HUNT = { cobra: 1, scorpion: 1 };         // ── WHO HUNTS THE PLAYER ── (user 2026-08-15)                   // ── PER-SPECIES ANIMATION RATE ── the scorpion reads slow at the house 24 (user 2026-08-15); everything unlisted stays 24
-      const antLead = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) === 0;   // ── THE ANT COLUMN'S HEAD ── slot 0 of the ant band is the only ant that decides anything: it marches on the compass (its own branch in the steering chain below), and every other ant is PLACED on the path it recorded. Keyed on the NAME like desFly, so re-ordering the load list cannot promote some other animal to leader.
+      // ── WHICH COLUMN THIS ANT IS IN ── a species' DES_PER slots are split in two: the desert's own
+      // population first, then the FOREST one (DES_OAK, narrowed to the birch band by DES_BIRCHF —
+      // sim/life/slots.js). Each run is its own column with its own leader and its own breadcrumb trail, so
+      // the base is the first slot of the run this ant belongs to. Without it every birch ant is a follower
+      // of slot 0, which is a DESERT ant: they would queue up behind a leader a biome away and be placed on
+      // a trail recorded in the sand.
+      const antBase = (sp9, k9) => { const ix9 = (k9 - MAM_END) % DES_PER, d9 = nDesertOf(sp9); return ix9 < d9 ? 0 : d9; };
+      const antLead = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) === antBase(desSp, wk);   // ── THE ANT COLUMN'S HEAD ── slot 0 of the ant band is the only ant that decides anything: it marches on the compass (its own branch in the steering chain below), and every other ant is PLACED on the path it recorded. Keyed on the NAME like desFly, so re-ordering the load list cannot promote some other animal to leader.
       // ── WHO IN THE BAND FLIES (user 2026-08-15, + the BEE 2026-08-17) ── a table for the same reason
       // DES_HUNT and DES_MEAT are tables: keyed on the NAME, not the index, so re-ordering the load list
       // cannot silently turn some other animal into a flyer. A member is kind 0 — the butterfly's whole code
@@ -78,7 +85,7 @@
       // values are the whole of this change's biome logic: the oak mouse, and the PORCUPINE, which the user
       // removed from the oak forest on the same day (2026-08-17) and which is therefore the one forest species
       // that no longer means "either forest". The other three land mammals are deliberately still BIO_ANY.
-      const bioMe = oakSlot ? (DES_ANYFOREST[(DESERTS[desSp] || {}).name] ? BIO_ANY : BIO_OAKF) : (desSlot ? BIO_SAND : (flamSlot ? BIO_CHERRY : (porcSlot ? BIO_PINEF : BIO_ANY)));   // DES_ANYFOREST widens an oak-only species to BOTH forests (sim/life/slots.js)   // the FLAMINGO is the cherry forest's own, and the only creature that takes BIO_CHERRY   // (the pink bird takes BIO_CHERRY at its own spawn site — it is not in this pool)
+      const bioMe = oakSlot ? (DES_BIRCHF[(DESERTS[desSp] || {}).name] ? BIO_BIRCH : DES_ANYFOREST[(DESERTS[desSp] || {}).name] ? BIO_ANY : BIO_OAKF) : (desSlot ? BIO_SAND : (flamSlot ? BIO_CHERRY : (porcSlot ? BIO_PINEF : BIO_ANY)));   // DES_ANYFOREST widens an oak-only species to BOTH forests (sim/life/slots.js)   // the FLAMINGO is the cherry forest's own, and the only creature that takes BIO_CHERRY   // (the pink bird takes BIO_CHERRY at its own spawn site — it is not in this pool)
       const isBaby = wk >= BABY_0 && wk < BABY_END, sib = isBaby ? (wk - BABY_0) % 3 : 0;
       const mom5 = isBaby ? wbf[DUCK_0 + (((wk - BABY_0) / 3) | 0)] : null;   // the first three ducklings belong to the first mother, the next three to the second, and so on (3 each)
       // ── ORPHANED (user 2026-08-05: "killing the mom kills all the baby ducks — each duck has to be killed")
@@ -397,7 +404,9 @@
           // The oak test is second and reached only by those two, so no other band pays an oakM sample.
           const dmS = desertM(sx, sz);
           if (bioMe === BIO_SAND ? dmS < BIO_DESERT : dmS > BIO_FOREST) continue;   // an OAK mouse takes the forest end of this, like every other forest creature: it is 1080+ voxels of pine away from the sand and must never be admitted near it
-          if (bioMe === BIO_OAKF || bioMe === BIO_PINEF) { const omS = oakM(sx, sz);
+          if (bioMe === BIO_BIRCH && birchM(sx, sz) < BIO_DESERT) continue;   // the birch band's own admit line, at the same 0.85 every closed-forest home uses
+          if (bioMe === BIO_OAKF || bioMe === BIO_PINEF) {   // …and BOTH broadleaf bands count as "oak" here, the admit half of bioHomeOK's widened home (sim/nav.js)
+            const omS = bioMe === BIO_OAKF ? Math.max(oakM(sx, sz), birchM(sx, sz)) : Math.max(oakM(sx, sz), birchM(sx, sz));
             if (bioMe === BIO_OAKF ? omS < BIO_DESERT : omS > BIO_FOREST) continue; }
           // ── THE BLOSSOM ADMITS TWO KINDS AND REFUSES THE REST (user 2026-08-18) ── the other half of the
           // containment in sim/nav.js, and the half that decides what is BORN here rather than what may walk
@@ -1544,7 +1553,9 @@
       // same death path the rest of the life uses. A dead LEADER also stops laying crumbs, so the followers
       // fall back to the head of the line rather than trailing a body that no longer moves.
       if (desSlot && (B.kind | 0) === 2 && !B.dying && !B.slain && DESERTS[desSp] && DESERTS[desSp].name === 'ant') {
-        const aIdx = (wk - MAM_END) % DES_PER;
+        // RELATIVE to this ant's own run (see antBase): 0 is the leader of THIS column, and every use below —
+        // the leader lookup wbf[wk - aIdx] and the arc length aIdx * ANT_GAP — is correct unchanged.
+        const aIdx = ((wk - MAM_END) % DES_PER) - antBase(desSp, wk);
         if (aIdx === 0) {
           if (!B.trail) B.trail = [{ x: B.x, z: B.z, th: B.th }];
           const t0 = B.trail[0];

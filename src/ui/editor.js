@@ -1,10 +1,78 @@
   // @module — the asset editor: platform, gizmos, .vox parse, pose bakes
-  // @exports BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, ED_LANE_RUN, edExStep, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edBorrowN, edLayout, edLoadVox, edLoadVox2, edMixPick, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSeqsAt, edSnapCount, edSnapErrs, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk
+  // @exports edSzToggle, edSzApply, BUNNY_JUMP_BAKE, BUNNY_ROT_BAKE, BUNNY_ROT_BAKE_R, ED_LANE_RUN, edExStep, edApplyRot, edCol, edCopyOffsets, edEnsureGizCols, edEnsureRgizCols, edEnter, edExit, edExportSeq, edHudUpd, edImportBufs, edBorrowN, edLayout, edLoadVox, edLoadVox2, edMixPick, edMoveStep, edOffset, edParseVox, edRotVox, edRotate, edSaveOffsets, edSelStep, edSeqsAt, edSnapCount, edSnapErrs, edSwapBunnies, stampArmadillo, stampBunny, stampPorcupine, stampSkunk
   // ── ASSET EDITOR PLATFORM ── a floating white stage (1-voxel-thick plane, 1 m grid in light grey) stamped just above
   // the tallest content near the player. Import .vox frames (multi-file or multi-model), they line up left→right in
   // sequence order; , / . cycle the selected frame (amber ring), ←/→ move it within the sequence. Every voxel write goes
   // through edSet which records the ORIGINAL world content once — exiting restores the world exactly and returns the player.
   const edHudEl = $('edHud'), edRowEl = $('edRow'), edBtnEl = $('edBtn'), edFileEl = $('edFile');   // ED state itself is declared up by the player block
+  // ── [Y] TREE SIZE ── one slider that scales the SELECTED frame UNIFORMLY: width, depth and height together, so
+  // the tree keeps its shape and only its size changes (user 2026-08-24: "you seem to be squashing the birch
+  // forest instead of porportionally sizing it down"). The first cut scaled height alone, on the reading that
+  // height IS the proportion; it is not — stretching one axis restyles the tree, and what was wanted was the
+  // same tree, smaller.
+  // NON-DESTRUCTIVE, and that is the whole design: the first scale banks the frame's original voxels and every
+  // later one re-derives from THOSE. Resampling a resampled model compounds its error and cannot be undone;
+  // this way 100% is always bit-identical to the file and dragging back and forth costs nothing.
+  // EXPANDED FROM THE SOURCE, not sampled into the destination: each source voxel is written across the output
+  // block it covers, [floor(x*s), floor((x+1)*s)), which is gap-free when growing by construction and needs no
+  // dense destination grid. Walking the output instead would be a million lookups on a model of nine thousand
+  // voxels. Shrinking simply lands several sources on one cell, which is what shrinking means.
+  const edSzPrep = (f) => {
+    if (f.vox0) return;
+    f.vox0 = f.vox.slice(); f.sxBase = f.sx; f.syBase = f.sy; f.szBase = f.sz;
+  };
+  // The stage is a floating plane and the voxel packing gives z eight bits, so the ceiling is whichever of the
+  // two bites first. Both are read at open time rather than assumed, because the stage sits wherever the ground
+  // near the player let it.
+  const edSzMaxPct = (f) => {
+    const head = Math.min(255, Math.max(8, WY - 2 - ED.y));
+    return Math.max(30, Math.min(200, Math.floor(100 * head / Math.max(1, f.szBase || f.sz))));
+  };
+  const edSzApply = (pct) => {
+    const n = ED.frames.length; if (!n) return;
+    const f = ED.frames[((ED.sel % n) + n) % n]; if (!f) return;
+    edSzPrep(f);
+    const s = Math.max(0.05, Math.min(edSzMaxPct(f), pct) / 100);
+    const nx = Math.max(1, Math.round(f.sxBase * s)), ny = Math.max(1, Math.round(f.syBase * s)), nz = Math.max(1, Math.round(f.szBase * s));
+    const seen = new Map();
+    const src = f.vox0;
+    for (let i = 0; i < src.length; i++) {
+      const p = src[i], cid = p >>> 24;
+      const x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+      const x0 = Math.floor(x * s), x1 = Math.min(nx, Math.max(x0 + 1, Math.floor((x + 1) * s)));
+      const y0 = Math.floor(y * s), y1 = Math.min(ny, Math.max(y0 + 1, Math.floor((y + 1) * s)));
+      const z0 = Math.floor(z * s), z1 = Math.min(nz, Math.max(z0 + 1, Math.floor((z + 1) * s)));
+      for (let zz = z0; zz < z1; zz++) for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++)
+        seen.set(xx + yy * 256 + zz * 65536, cid);
+    }
+    const out = [];
+    for (const [k, cid] of seen) out.push((k & 255) | (((k >> 8) & 255) << 8) | (((k >> 16) & 255) << 16) | (cid << 24));
+    f.vox = out; f.sx = nx; f.sy = ny; f.sz = nz; f.szPct = Math.round(s * 100);
+    const dim = $('edSzDim'); if (dim) dim.textContent = nx + '×' + nz + '×' + ny;
+    const val = $('edSzV'); if (val) val.textContent = f.szPct + '%';
+    edLayout(); edHudUpd();
+  };
+  let edSzWired = false;
+  const edSzToggle = () => {
+    const el = $('edSzPanel'); if (!el) return false;
+    const show = el.classList.contains('hidden');
+    el.classList.toggle('hidden', !show);
+    if (!show) return false;                           // …and the caller drops light mode, which puts the cursor back on the camera
+    const n = ED.frames.length; const f = n ? ED.frames[((ED.sel % n) + n) % n] : null;
+    if (f) edSzPrep(f);
+    const r = $('edSzR');
+    if (r && f) { r.max = String(edSzMaxPct(f)); r.value = String(f.szPct || 100);
+      const v = $('edSzV'); if (v) v.textContent = (f.szPct || 100) + '%';
+      const d = $('edSzDim'); if (d) d.textContent = f.sx + '×' + f.sz + '×' + f.sy;
+      const h = $('edSzHint'); if (h) h.textContent = 'base ' + f.sxBase + '×' + f.szBase + '×' + f.syBase; }
+    if (edSzWired) return;
+    edSzWired = true;
+    // `input` and not `change`: the point of a slider is that the model follows the thumb.
+    if (r) r.addEventListener('input', () => edSzApply(parseInt(r.value, 10) || 100));
+    const rs = $('edSzReset');
+    if (rs) rs.addEventListener('click', () => { if (r) r.value = '100'; edSzApply(100); });
+    return true;                                       // …shown: the caller puts the game in LIGHT MODE for it (ui/input.js)
+  };
   const edIdx = (x, y, z) => gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY;
   const edSet = (x, y, z, id, cells) => { const ii = edIdx(x, y, z);
     if (!ED.prev.has(ii)) ED.prev.set(ii, W[ii]);
@@ -1112,7 +1180,7 @@
     for (let z = cz0; z < cz1; z++) {
       const gz = gwrap(z, WZ);
       for (let x = cx0; x < cx1; x++) {
-        const gx = gwrap(x, WX), yTop = Math.min(WY - 1, hmap[gx + gz * WX] + 118);
+        const gx = gwrap(x, WX), yTop = Math.min(WY - 1, hmap[gx + gz * WX] + CANOPY);   // CANOPY, not 118 (the tallest pine): a crown above the bound is never carved, and the carve marks WHOLE bricks, so it would draw with its own trunk carved away - leaves hanging in the sky
         if (yTop <= ED.y) continue;                    // nothing on this column reaches the plane
         const b2 = gx + gz * WX * WY;
         for (let y = ED.y + 1; y <= yTop; y++) { const ii = b2 + y * WX;

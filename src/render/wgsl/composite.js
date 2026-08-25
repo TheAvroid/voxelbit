@@ -585,7 +585,14 @@
           let dXv = dropV(di * 4 + 1);
           let dit = i32(dXv.w + 0.5);
           if (dit < 1) { continue; }                                 // itemId checked FIRST — an empty slot costs one uniform load, not four
-          let tInj = u.lifeCfg.y > 0.5 && (di == 8 || di >= lifeBase) && face != 6u && (u32(lifeMotV(di).w + 0.5) & 1u) == 0u;   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies). Creature base → 25 (20 death-burst slots 5-24: 4 sparks + 16 individual smoke voxels, user).
+          // -- THE SLOT THE TRACE ACTUALLY INJECTS IS 4, NOT 8 (2026-08-24) -- this test exists to say "TRACE
+          // already drew this one, do not draw it again analytically", so it has to name the same slots the
+          // trace loop does: it starts at di = 4, the FLYING CARDINAL, and resumes at lifeBase. The drop
+          // layout is 0-3 items, 4 cardinal, 5-8 clash sparks, then the particle band (render/buffers.js).
+          // Naming 8 got both ends wrong: the cardinal at 4 was drawn TWICE, once by the trace with full
+          // SVGF and again by this analytic path over the top of it, while the clash spark at 8 was claimed
+          // as already-traced and skipped here -- and the trace skips it too, so nothing drew it at all.
+          let tInj = u.lifeCfg.y > 0.5 && (di == 4 || di >= lifeBase) && face != 6u && (u32(lifeMotV(di).w + 0.5) & 1u) == 0u;   // ── DYNAMIC LIFE ── trace-injected creatures were ALREADY drawn by TRACE with full SVGF; the analytic path only remains for pixels that look THROUGH a water surface (Beer–Lambert) and for the analytic-flagged slots (fireflies). Creature base → 25 (20 death-burst slots 5-24: 4 sparks + 16 individual smoke voxels, user).
           // …with ONE exception: a model that carries TRANSLUCENT voxels still comes down here, because TRACE
           // walked straight past them (see the alpha test there) and something has to draw them over the pixel
           // it left behind. Only the translucent voxels are drawn on that pass — the opaque body is already in

@@ -27,19 +27,30 @@
         if (!buried && STOP_CACHE) { const st = stopS[scol]; if (st !== 0 && ((stopF - st) & 0xffff) < STOP_TTL) return stopY[scol]; }
         const b2 = gx + gz * WX * WY;
         const bcol = (gx >> 3) + (gz >> 3) * BX * BY;  // this column's brick index base (+ (y>>3)*BX per level)
-        let y = Math.min(WY - 2, hmap[gx + gz * WX] + 118);
-        // The scan starts 118 above the terrain (tallest-tree allowance) but most columns are BARE — the old
-        // voxel-at-a-time descent burned ~118 array reads of empty air per column, ~6,400 columns per storm frame,
-        // and profiling put the whole storm CPU side at ~10 ms. An empty 8³ occupancy brick proves the next 8 rows
-        // of THIS column are air, so leap them — exact, and it cuts the scan to a handful of reads.
+        // ── THE CEILING IS THE SKY-CAP, NOT A TREE-HEIGHT LITERAL (2026-08-24) ── this was hmap + 118, one more
+        // of the "tallest pine" constants. A birch reaches CANOPY (world/window.js), and birchAt refuses any
+        // model that would not fit under exactly that number, so the two now agree by construction instead of by
+        // coincidence — a tall crown could not collect snow at all while the scan stopped 118 above the terrain.
+        // Raising it costs almost nothing now that the descent leaps at L2 (below): the extra height is open sky.
+        let y = Math.min(WY - 2, hmap[gx + gz * WX] + CANOPY);
+        // ── AND IT FALLS THROUGH EMPTY SKY 32 AT A TIME (2026-08-24, the snow audit) ── the descent starts well
+        // above the canopy and most columns are BARE, so nearly every iteration was proving the same thing: this
+        // air is air. The 8³ occupancy brick already collapsed that 8 rows at a time; the tracer's own L2
+        // super-bricks collapse it 32 at a time, and they are the SAME bits the DDA leaps on, kept current by the
+        // same gpuPatch. Testing L2 first and only falling back to the finer level inside an occupied super-cell
+        // is exact — an empty L2 cell cannot contain an occupied brick — and it turns the ~15 brick tests it took
+        // to fall from the ceiling to the treetops into about four.
+        const c2col = (gx >> 5) + (gz >> 5) * B2X * B2Y;
         while (y >= WL) {
           const idv = W[b2 + y * WX];
           if (!idv) {
+            const c2 = c2col + (y >> 5) * B2X;
+            if (!((bricks2[c2 >> 5] >>> (c2 & 31)) & 1)) { y = ((y >> 5) << 5) - 1; continue; }   // whole 32-voxel super-cell empty → leap it
             const bb = bcol + (y >> 3) * BX;
             if (!((bricks[bb >> 5] >>> (bb & 31)) & 1)) { y = ((y >> 3) << 3) - 1; continue; }   // whole brick row empty → skip past it
             y--; continue;
           }
-          if (SNOW_PASS.has(idv)) { if (buried) buried.push(b2 + y * WX); y--; continue; }
+          if (snowPassTab[idv]) { if (buried) buried.push(b2 + y * WX); y--; continue; }
           break;
         }
         if (!buried) { stopY[scol] = y; stopS[scol] = stopF; }
@@ -66,6 +77,14 @@
         // blanket settles in the oak forest again.
         // The oak term is in whenever snow is not wanted there, whether that is because it is raining
         // instead or because the biome simply has no weather.
+        // ── AND IT SNOWS IN THE BIRCH FOREST (user 2026-08-24: "make it snow like the pine forest") ── the
+        // birch term is gone from this sum, so the band is simply not named here any more and takes weather the
+        // way the pine forest does. The saturating Math.min went with it: it existed only because the birch band
+        // ABUTS the desert and two refusing masks that each read ~0.5 on their seam summed to 1 under max(). One
+        // refusing neighbour is left, and desertM alone is what the dither was written for — the blanket thins
+        // into the sand on the same hash and the same salt the surface material uses. The FALLING half of the
+        // rule is the matching gate in render/wgsl/trace.js, and both had to move or it snows over ground that
+        // refuses to keep it.
         const dmS = wSharp((RAIN_ON || !OAK_SNOW) ? Math.max(desertM(wx0, wz0), oakWeather(wx0, wz0)) : desertM(wx0, wz0));   // wSharp: the blanket stops nearer the border than the terrain blend does (world/window.js)   // oakWeather cuts the blossom band back out of the oak term, so the blanket SETTLES there (user 2026-08-18)
         if (dmS > 0 && ihash(wx0 * 5 + 17, wz0 * 7 + 29) < dmS) return;
         if ((snowQN - snowHead) + (snowWN - snowWHead) >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
@@ -76,7 +95,7 @@
         if (snowLeadY > scanTop(wx0, wz0, null)) return;
         let wx = wx0, wz = wz0;
         const top0 = W[gwrap(wx0, WX) + scanTop(wx0, wz0, null) * WX + gwrap(wz0, WZ) * WX * WY];
-        for (let hop = 0; hop < ((SNOW_FERN.has(top0) || foliaTab[top0]) ? 0 : 2); hop++) {   // SMOOTH SETTLING: roll to the lowest 4-neighbour column so the blanket levels instead of spiking — unless a fern catches the flake, and a CROWN is the same case for the same reason (user 2026-08-07: canopy coverage measured 18% against the ground's 44%): a canopy sits above the ground beside it, so rolling always sheds the flake off the tree. Bounding the drop only got it to 24% — skipping the roll outright is what the fern precedent already does
+        for (let hop = 0; hop < ((snowFernTab[top0] || foliaTab[top0]) ? 0 : 2); hop++) {   // SMOOTH SETTLING: roll to the lowest 4-neighbour column so the blanket levels instead of spiking — unless a fern catches the flake, and a CROWN is the same case for the same reason (user 2026-08-07: canopy coverage measured 18% against the ground's 44%): a canopy sits above the ground beside it, so rolling always sheds the flake off the tree. Bounding the drop only got it to 24% — skipping the roll outright is what the fern precedent already does
           const t0 = scanTop(wx, wz, null);
           let bx = wx, bz = wz, bt = t0;
           const rMax = SNOW_ROLL_MAX || 1e9;             // the roll LEVELS a blanket; it must not tip one off a tree
@@ -92,7 +111,7 @@
         const y = scanTop(wx, wz, buried);
         const gx = gwrap(wx, WX), gz = gwrap(wz, WZ), b2 = gx + gz * WX * WY;
         const top = W[b2 + y * WX];
-        if (!top || y < WL || y >= WY - 2 || SNOW_SKIP.has(top)) return;   // y == WL allowed — ice and waterline beach sand collect snow; lava never does
+        if (!top || y < WL || y >= WY - 2 || snowSkipTab[top]) return;   // y == WL allowed — ice and waterline beach sand collect snow; lava never does
         // ── AN ANIMAL IS NOT A LANDING SURFACE (2026-08-08) ── scanTop reads W, and a grid-stamped creature
         // IS in W, so a perched bird's back read as ground and collected a snow cap. Two things wrong with
         // that: the blanket rode the bird, and when it flew off the snow was left hanging in mid-air with
@@ -137,6 +156,7 @@
         if (waterAt(wx, WL, wz)) { if (snowRoomW()) snowWI[snowWN++] = ii; }   // landed on the frozen surface — drained continuously after the storm, not on a per-voxel timer
         else if (snowRoomQ()) { snowQI[snowQN++] = ii; }   // landed on GROUND — no expiry stamp; the whole queue drains together once the thaw latches
       };
+      if (CPROF) snLast = performance.now();
       if (snowOn && !dead && !ED.on) {                 // no weather inside the asset-editor void
         const t3 = now / 1000;                         // ── EXACT LANDINGS ── mirror of the shader flake field (u.time = now/1000)
         const fX = -windAX + Math.sin(t3 * 0.6) * 0.8, fZ = -windAZ + Math.cos(t3 * 0.5) * 0.8, fY = snowFallAcc;
@@ -170,6 +190,7 @@
           landSnowAt(wx, wz);
         }
       }
+      if (CPROF) snMark(0);
       let melted = 0;                                  // drain expired snow — dt-scaled so melt pace is fps-independent too; ONLY time-based and ONLY between storms (the cap drops landings instead)
       const meltCap = Math.max(8, Math.round(dt * SNOW_GROUND_RATE));
       // ── WATER SNOW: ONE CONTINUOUS MELT (user) ── the per-voxel expiry timers made the lake melt in STAGGERED BURSTS
@@ -234,6 +255,7 @@
         }
         if (snowHead >= snowQN) { snowGMelting = false; snowGMeltAt = Infinity; }   // queue emptied — stand down until the next storm
       }
+      if (CPROF) snMark(1);
       if (snowWHead > 8192) snowCompactW();            // in-place, no reallocation (was .slice() of a multi-hundred-thousand-entry array)
       if (snowHead > 8192) snowCompactQ();
       if (cells.length) { if (CPROF) cpEvt |= 32; gpuPatch(cells, false); }   // dirty-word brick upload, not the 774 KB whole-table re-upload — same bits, ~1000x less traffic (verified by __vb.bdiff())
@@ -255,6 +277,7 @@
       // which would also drop nvTouch and the hmap lower — a melting blanket does change what a creature can
       // walk on. Only the SUP queue is skipped, for the reason set out at the melt itself.
       if (meltCells.length) { supMute = true; try { gpuPatch(meltCells, false); } finally { supMute = false; } }   // try/finally, NOT two bare statements: tick.js deliberately keeps the loop alive after a throw, so one exception in here would latch the mute for the whole session — no terrain edit ever seeds the support queue again, chopped trees stop falling, carved rock leaves floating slabs, and nothing reports why
+      if (CPROF) snMark(2);
     }
     if (CPROF) cpMark(3);
 

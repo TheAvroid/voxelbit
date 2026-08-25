@@ -285,7 +285,7 @@
   // achievement jingle's own twice-tuned 0.09 is the anchor: this sits ~4 dB over it (a moment, not a cue) and
   // still under the tool hits. On the MUSIC bus, so nothing but the master and the new slider can move it.
   const ANTHEM_AT = 60;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-20: 120 -> 60 -> 30 -> 10 -> 3, and the clock no longer starts on its own — see anthemArmed)
-  const ANTHEM_GAP = 60;                               // …and a minute of gameplay of SILENCE between one track ending and the next starting (user)
+  const ANTHEM_GAP = 120;                              // …and TWO minutes of gameplay of SILENCE between one track ending and the next starting (user 2026-08-24: "make sure the songs have 120 seconds between them", raised from 60). Gameplay seconds, not wall clock: the play clock in tickBody stops with the game, so a track cannot come due while the esc menu is up
   // ── THE SET (user 2026-08-08, re-cut 2026-08-18) ── the soundtrack, in rotation, then silence for the rest
   // of the session. It moved from game/sound/music/*.mp4 to game/sound/soundtrack/*.mp3 and gained two cuts,
   // `ceremony` and `winner`, so it is SIX now rather than four.

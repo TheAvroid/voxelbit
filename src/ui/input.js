@@ -251,6 +251,16 @@
   //  nothing left to tune. It set ?desrel and reloaded; both the flag and the panel were removed together.)
   document.addEventListener('keydown', (e) => {
     if (CMD.open) return;                               // the COMMAND LINE has the keyboard (user)
+    // ── [Y] TREE SIZE, BEFORE THE LOCK GATE ── every other binding below wants the pointer locked, and the
+    // asset editor is the one mode worked with the cursor FREE: the move and rotate gizmos are dragged, and
+    // so is this slider. Behind the gate the key did nothing the moment you released the cursor to use the
+    // thing it opens, which is the only time you want it.
+    // …and opening it hands over the CURSOR (user 2026-08-24: "when the user presses y, the esc menu should
+    // dissapaer and the cursor should free up to be able to move the slider"). setLightMode is the same
+    // mechanism the light and paint panels use, and the reason it is not a bare exitPointerLock: losing the
+    // lock on its own surfaces the pause menu, which would sit on top of the very panel being opened.
+    // Closing with Y again takes the cursor back, so the key is the whole round trip.
+    if (ED.on && e.code === 'KeyY') { setLightMode(!!edSzToggle()); return; }
     if (!locked) return;
     if (e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }
     // ── THE STONE AGE BENCH OWNS THE KEYBOARD WHILE IT IS OPEN (user 2026-08-19) ── placed above every other
@@ -282,13 +292,24 @@
     // change, not a mistake, so it grants ONE free landing, cleared the moment the feet touch down. Set on the
     // toggle rather than tested at the landing: by then P.fly has been false for the whole drop and there is
     // nothing left to distinguish it from walking off a cliff.
-    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; if (!P.fly) { P.noFall = 1; P.fallPk = undefined; } }   // toggle fly (user re-added the F keybind 2026-07-22)
+    // ── F CLEARS THE VITALS, ON BOTH EDGES (user: "if the player presses f to fly, it also clears any
+    // effects") ── sim/vitals.js switches the hazards and both bar overlays off while P.fly is true, but that
+    // is a MASK: without this call the values underneath are untouched, and landing restores the exact red
+    // screen the player pressed F to be rid of. vitReset refills hearts and hunger, zeroes exhaustion, clears
+    // the starve and hurt timers, and re-seeds the walked-distance anchor to the CURRENT position - left at
+    // its old value the next tick bills the player for the whole flight.
+    // Fired on the PRESS rather than on the falling edge because the outcome is identical (nothing can move
+    // either bar mid-flight) and one unconditional call cannot get out of step with the toggle it follows.
+    // ── AND DROPPING OUT OF FLY COSTS NOTHING ── switching fly OFF in mid-air starts a real fall, and the
+    // fall-damage tracker would bill the player for the whole descent. Pressing F is a mode change, not a
+    // mistake, so it grants ONE free landing, cleared the moment the feet touch down.
+    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; vitReset(); if (!P.fly) { P.noFall = 1; P.fallPk = undefined; } }   // toggle fly (user re-added the F keybind 2026-07-22)
     // R-key recording is BACK ON with the #veBtn button (user 2026-08-02, reversing the 2026-07-23 disable).
     if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
     if (e.code === 'KeyE' && e.shiftKey && !ED.on && DUAL_ON) { dualOn = !dualOn; }   // …and DUAL_ON gates the whole binding (user 2026-08-20: dual wield removed from play, code kept) — see ui/achievements.js   // SHIFT+E — SPLIT THE STACK INTO BOTH HANDS (user 2026-08-20: "ONLY enable dual wield if the user presses shift + e"; it was plain E earlier the same day). The modifier is what frees plain E to close the crafting bench above — one key, two meanings, told apart by shift rather than by mode. Guarded on !ED.on because the asset editor already owns E for its move-gizmo (see the ED.on block below), and a key cannot mean two things at once in the same mode.
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
     if (e.code === 'KeyP') { snowOn = !snowOn;               // P — toggle the snow storm (user); mirrors the settings snow button EXACTLY so the two stay in sync
-      if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 300000; }
+      if (snowOn) { snowEndT = performance.now() + 60000; } else { snowRearm(); }
       snowBtnSync(); }
     if (e.code === binds.scaledown) { resNudge(-1); }   // [ and ] — one 10% step on the same grid the settings slider uses (see resNudge)
     if (e.code === binds.scaleup) { resNudge(1); }

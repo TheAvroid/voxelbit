@@ -223,9 +223,9 @@
   // period is the same column as 6940 EAST, i.e. exactly the fourth strip. The pine that remains on both
   // sides of the sand stays on purpose — it is what keeps the desert from ever bordering the oak, which
   // sim/nav.js's BIO_SANDLINE reasoning depends on.
-  const BIOP = 10800;                                  // one full cycle: SIX strips of 2160 — oak, cherry, oak, pine, desert, pine. 6 * W by construction, never a sum of measured pieces
+  const BIOP = 12960;   // SIX strips now, not five: the BIRCH band is a new 2160 strip between the spawn pine and the desert, so the period grows by exactly one strip (6 * W by construction, never a sum of measured pieces)                                  // one full cycle: SIX strips of 2160 — oak, cherry, oak, pine, desert, pine. 6 * W by construction, never a sum of measured pieces
   const pwrap = (d) => d - Math.floor(d / BIOP + 0.5) * BIOP;   // signed distance into [-BIOP/2, BIOP/2). floor(x + 0.5) rather than Math.round because the WGSL port must agree with this bit for bit, and WGSL's round() breaks ties to EVEN where Math.round breaks them upward
-  const DESOFF = 1080, DESB = 450, DESW = 1000;        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
+  const DESOFF = 3240, DESB = 450, DESW = 1000;   // 1080 -> 3240: one strip further west, because the BIRCH band now occupies the strip the sand used to (see BIOP)        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
   // History, because the number has moved three times and each move had a different reason: 500 -> 300 (user
   // 2026-08-15) because 50 m of dense pine hid the thing the spawn camera was aimed at; then 300 -> 80; then
   // 80 -> 1500 below, which abandons "the sand is visible from spawn" outright rather than tuning it, because
@@ -626,8 +626,55 @@
   // the ground is (__vb.gtest is what measures it). So this is a scalar function that takes the height the
   // forest expression just produced and hands back the height the biome wants, and each of the three wraps
   // its own existing expression in it verbatim. The three cannot drift, because there is only one expression.
+  // ── THE BIRCH FOREST ── a band of OAK TERRAIN between the pine forest and the desert. There is no birchH
+  // and H is not touched at all: oakRoll and oakBank are the two shared scalar helpers all three copies of H
+  // call, so widening THEM to cover this band gives the birch forest oak ground without the three-copy edit
+  // that the cherry forest's note calls the one edit in this file that cannot be made safely by inspection.
+  //
+  // IT TAKES THE DESERT'S OLD SLOT, exactly. BIRCHC/BIRCHH are the numbers DESC/DESH had before the sand moved
+  // west, so the strip lands where a strip already fitted and nothing else has to be re-derived.
+  //
+  // AND IT SHARES THE DESERT'S MEANDER, which is not laziness. The long note under OAKOFF works out that two
+  // INDEPENDENT wobbles can converge until two biomes touch with no pine between them; the existing masks
+  // defend against it by part-sharing (oakWob = 0.6 * desWob + its own octave). Using desWob RAW here makes the
+  // birch/desert seam exactly parallel - a constant 2160, convergence impossible - and leaves the birch/oak
+  // seam with the same guarantee the desert/oak seam already had, since |desWob - oakWob| = |0.4*desWob - own|
+  // <= 270 + 270 = 540 against 2160 of nominal gap less 450 of blend, i.e. >= 1170 of pure pine worst case.
+  // ── HOW FAR ABOVE THE GROUND ANYTHING CAN REACH ── and it is not a hint. rebuildBricks force-CLEARS every
+  // brick row above `hmap + CANOPY`; a voxel above it gets no brick bit, the DDA reads an unset brick as air,
+  // and the voxel is INVISIBLE WHILE STILL SOLID. The symptom is unmistakable and cost five rounds the first
+  // time: "the tops of the trees are cut off, but I can walk on the canopy". Everything that reads W - the
+  // audits, collision, chopping - says the world is perfect, because it IS; only the renderer disagrees.
+  // It was a literal 122 in TWO places and 118 in a third, all meaning "the tallest PINE", written when pines
+  // were the tallest thing there was. The birches are 168. So it is one named constant now, read by
+  // terrain.js rebuildBricks, the worker's copy of it in gen-pool.js (a string - __vb.gtest diffs the two and
+  // they must stay identical), and the editor's stage carve.
+  // 192 clears the tallest model with 24 to spare, and it is a COST: those rows are scanned per tile.
+  // RAISE IT BEFORE BAKING ANYTHING TALLER.
+  const CANOPY = 192;
+  const BIRCHOFF = 1080, BIRCHB = 450, BIRCHH = 1080;   // inner edge east of spawn; blend width; half-width to the mask midpoint
+  const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
+  const birchM = (x, z) => {                            // 1 = deep birch forest, 0 = the pine and the sand either side
+    const c = SPWX + BIRCHC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
+    const t = 0.5 + (BIRCHH - Math.abs(pwrap(x - c))) / BIRCHB;
+    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
+  };
+  // The band's absolute reach, for the cheap-out in oakRoll/oakBank. |desWob| <= DESW * 0.675, and the rim is
+  // BIRCHB/2 either side of the line. NOTE there is deliberately no "deep birch" short-circuit to match oak's
+  // OAKNEAR/OAKWNEAR: 2 * BIRCHWMAX + BIRCHB/2 = 1575 is WIDER than BIRCHH = 1080, so no column is guaranteed
+  // to be mask-exactly-1 and such a test could never fire. Only the outside-the-band cheap-out is real.
+  const BIRCHWMAX = DESW * 0.675;
+  const BIRCHFAR = BIRCHC + BIRCHH + 2 * BIRCHWMAX + BIRCHB * 0.5;    // no column east of this can be birch at all
+  const BIRCHWFAR = BIRCHC - BIRCHH - 2 * BIRCHWMAX - BIRCHB * 0.5;   // …nor west of this
   const oakRoll = (h, x, z) => {
     const dx = pwrap(x - SPWX);                        // WRAPPED, like the mask it is short-circuiting for: on a raw distance these two tests answer for the first period only and every later oak forest would come out as pine
+    // ── THE BIRCH FOREST SHARES THIS FIELD ── checked FIRST and returning, because the two bands cannot
+    // overlap: birch reaches at most BIRCHFAR east and oak at most OAKWFAR west, and a whole pine strip sits
+    // between them. Its own cheap-out keeps the pine forest and the sand paying only two compares for it.
+    if (dx < BIRCHFAR && dx > BIRCHWFAR) {
+      const bm = birchM(x, z);
+      if (bm > 0) return bm >= 1 ? oakH(x, z) : h * (1 - bm) + oakH(x, z) * bm;
+    }
     if (dx >= OAKFAR || dx <= OAKWFAR) return h;       // pine forest and desert — the identical double back out, so their terrain is unchanged to the last bit
     if (dx <= OAKNEAR && dx >= OAKWNEAR) return oakH(x, z);   // deep oak — mask is exactly 1, and h * 0 + oakH * 1 is oakH
     const om = oakM(x, z);
@@ -692,7 +739,12 @@
   const OAKBEACH = 24, OAKBEACHY = WL + 4;             // flat shore width in voxels (2.4 m), and its height
   const oakBank = (h, x, z) => {                       // ONE shared scalar helper again, for the reason oakRoll is one: three copies of H and no room for drift
     const dx = pwrap(x - SPWX);                        // wrapped, for the reason oakRoll's is
-    if (dx >= OAKFAR || dx <= OAKWFAR || h <= OAKBEACHY) return h;      // pine forest, desert, and any oak ground already at or under the BEACH - one subtraction and a compare, before the river scan
+    // THE BIRCH FOREST GETS THE SHALLOW BANKS TOO, because it got the rounded hills that make them necessary:
+    // the whole reason this helper exists is that oakH lifts land near water ~42 voxels over WL and the river
+    // lerp then reads as a cliff. A band with oak terrain and pine banks would have exactly that cliff.
+    const bm = (dx < BIRCHFAR && dx > BIRCHWFAR) ? birchM(x, z) : 0;
+    if (bm <= 0 && (dx >= OAKFAR || dx <= OAKWFAR)) return h;   // pine forest and desert - one subtraction and a compare, before the river scan
+    if (h <= OAKBEACHY) return h;                      // …and any ground already at or under the BEACH, in either forest
     const d = bankDist(x, z);
     if (d >= OAKBANKR) return h;                       // no water within the skirt
     // ONE continuous profile from the beach to the hilltop: flat for OAKBEACH, then the same sstep cone to
@@ -702,6 +754,8 @@
     const c = OAKBEACHY + (OAKBANKY + OAKBRISE - OAKBEACHY)
               * sstep(Math.max(0, d - OAKBEACH) / (OAKBANKR - OAKBEACH));
     if (c >= h) return h;
+    if (bm > 0) return bm >= 1 ? c : h * (1 - bm) + c * bm;   // the birch band, faded on its own mask for the same reason the oak rim is
+    if (dx >= OAKFAR || dx <= OAKWFAR) return h;       // outside the oak band entirely — only reachable when the birch cheap-out above let us through
     if (dx > OAKNEAR || dx < OAKWNEAR) { const om = oakM(x, z); return om <= 0 ? h : h * (1 - om) + c * om; }   // the rim: faded in on the same mask oakRoll uses, so a river crossing the biome border changes width gradually instead of stepping
     return c;
   };

@@ -94,7 +94,23 @@
   { let g = 0; while ((H(SPWX, SPWZ) <= WL + 6 || nearCave(SPWX, SPWZ)) && g++ < 8000) SPWX += 16; }   // never spawn in a lake or a gorge — capped so a random pick in open water cannot hang the boot
   // 2160 = the middle of the oak strip east of the anchor (OAKOFF is -1080, so the oak/pine line is 1080 east
   // and the pure strip runs 1080..3240). Same water/gorge guard the anchor gets, applied at the offset spot.
-  SPOX = 2160;
+  // ── SPAWN IN THE BIRCH FOREST (user) ── SPOX, and ONLY SPOX. The note above says why walking SPWX cannot
+  // work: every band is anchored to SPWX, so moving the anchor moves the whole arrangement and lands the
+  // player in the same biome. SPOX is the other half of that pair - a step taken INSIDE the fixed
+  // arrangement, so it is the one number that can change which strip the player stands in without moving a
+  // single boundary. -2160 is the birch band's own centre in anchor coordinates:
+  // BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH) = -(1080 + 1080), pure strip -3240 .. -1080. It was +2160,
+  // the middle of the oak strip.
+  SPOX = -2160;
   { let g = 0; while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX += 16; }
+  // The guard above walks EAST in 16s, and from the band centre it has 1080 of birch to cross before it would
+  // leave the strip. So it is given a birch test as well: if the walk carried the player out of the band, walk
+  // back WEST from the centre instead. Without it a spawn over a lake on the east half could deposit the
+  // player in the pine strip, which is the exact bug the "walking SPWX cannot work" note is about.
+  if (birchM(SPWX + SPOX, SPWZ) <= 0) {
+    SPOX = -2160;
+    let g = 0;
+    while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX -= 16;
+  }
   winOX = Math.round((SPWX + SPOX) / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
 

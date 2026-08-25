@@ -149,6 +149,16 @@
   // Deliberately NOT in decorTab as a pair: bark is (with axeOnly), leaves are not — the same split the pine
   // has, where needles are scenery the axe passes through on its way to the trunk.
   for (const i of OAKBARK) { solidTab[i] = 1; woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }
+  // ── THE BIRCH TRUNK IS WOOD LIKE EVERY OTHER TRUNK ── the oak gets all four of these for free by BORROWING
+  // the pine's ids; the birch MINTS its own (its bark is white, and repointing it onto brown is the one thing
+  // that stops a birch reading as a birch), and a minted id starts with every table saying no. So it has to be
+  // said explicitly, and this line is the whole of it:
+  //   solidTab   a hitbox - without it you walk through the trunk
+  //   woodTab    what the fell/separate machinery keys on to call this a tree
+  //   axeOnlyTab the axe bites it and the pick does not, as with every other trunk
+  //   decorTab   it is a stamped object rather than terrain, so the shovel leaves it alone
+  // The LEAVES need nothing here: they ARE OAKLEAF's ids, so the line below has already made them canopy.
+  for (const i of BIRCHBARK) { solidTab[i] = 1; woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }
   for (const i of OAKLEAF) { solidTab[i] = 0; foliaTab[i] = 1; foliageIds.push(i); }
   // ── THE BLOSSOM IS CANOPY, EXACTLY AS THE GREEN LEAF IS ── the cherry forest stamps the SAME oak models with
   // the leaf ids swapped (assets/bow.js blosRemap), so every material question a crown answers — do I collide, do

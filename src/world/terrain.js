@@ -1,5 +1,5 @@
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports BKCELL, BKMARGIN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -13,9 +13,11 @@
     const mossy = !lake && mossV > 0.52;               // 0.56 → 0.52 ≈ +30% moss coverage
     const dm = desertM(wx, wz);                        // biome weight for this column: 0 = pine forest, 1 = open desert
     const om = oakM(wx, wz);                           // …and the other way: 1 = oak forest (west of the pines), 0 = pine forest. The two masks can never both be non-zero — see the gap arithmetic at OAKOFF
+    const bm = birchM(wx, wz);                         // …and the BIRCH band, which sits between the pine and the sand and wears the OAK's terrain (world/window.js)
     const cm = (om > 0 && chNear(wx)) ? cherryM(wx, wz) : 0;   // chNear FIRST: this line runs once per COLUMN, and cherryM is ~7 vnoise — see the bound's note in world/window.js. The om test alone was not a cheap-out at all, because om > 0 is the whole infinite oak forest           // …and the blossom, which is a SUB-REGION of the oak mask (world/window.js), so `om > 0` is an exact cheap-out rather than an approximation: outside the oak forest cherryM is 0 by construction and the pine forest and the desert pay nothing at all for this biome existing
     const base = gx + gz * WX * WY;
     let surfMoss = false;                              // grass only grows where a MOSS surface voxel actually landed
+    let surfBirch = false;                             // …and in the birch forest the strands match ITS floor, not the pine's
     const yTop = fresh ? (lake ? WL + 1 : h) : WY;     // fresh columns skip writing the empty sky — ~40% faster world builds
     // (the ROCK core — the hottest loop in worldgen, ~180 voxels/column — moved to rockRowSpan: writing it per COLUMN
     // strode WX bytes per voxel, a fresh cache line every write; the row-major pass writes contiguous x-runs instead.
@@ -49,6 +51,10 @@
       // border the change is unmistakable, and it cost nothing.
       // DITHERED against the mask itself, exactly as the desert branch above is, so the green thins out into
       // the litter across the whole rim instead of ending on a line.
+      // ── THE BIRCH FLOOR IS THE LIGHTER GREEN ── ahead of the oak arm because the two masks are disjoint and
+      // this one is cheaper to reject. Dithered against its own mask exactly as the oak and desert arms are, so
+      // the green thins into the pine litter across the whole rim instead of ending on a line.
+      else if (bm > 0 && ihash(wx * 11 + 23, wz * 13 + 41) < bm) { c = BIRCHMOSS[(sh * 4) | 0]; surfMoss = true; surfBirch = true; }
       else if (om > 0 && ihash(wx * 11 + 23, wz * 13 + 41) < om) { c = MOSS[(sh * 4) | 0]; surfMoss = true; }
       else { c = (mossy ? MOSS : NEEDLE)[(sh * 4) | 0]; surfMoss = mossy; }
       W[base + (h - 1) * WX] = c;
@@ -58,7 +64,7 @@
     if (surfMoss && h + 4 < WY) {                      // GRASS STRANDS: moss patches ONLY, 1–4 voxels tall, moss-matched colors
       if (ihash(wx * 3 + 41, wz * 3 + 87) < 0.06) {
         const gh = 1 + ((ihash(wx * 5 + 3, wz * 7 + 9) * 4) | 0);
-        const gc = GRASS[(ihash(wx + 13, wz * 13) * 4) | 0];
+        const gc = (surfBirch ? BIRCHMOSS : GRASS)[(ihash(wx + 13, wz * 13) * 4) | 0];   // the birch forest's strands are its own lighter green — the whole point of the request
         for (let k = 0; k < gh; k++) { const ii = base + (h + k) * WX; if (W[ii]) break; W[ii] = gc; }
       }
     }
@@ -383,6 +389,7 @@
     // CHERRY IS TESTED FIRST because the blossom band is a SUB-REGION of the oak mask — asking oakM first would
     // hand every blossom rock the oak's green.
     const cap = (TWIGPINK.length && chNear(b.bx) && cherryM(b.bx, b.bz) > 0.5) ? TWIGPINK
+              : (OAKMOSS.length && birchM(b.bx, b.bz) > 0.5) ? OAKMOSS   // ── AND THE BIRCH FOREST'S ROCK MOSS IS THE SAME LIGHT GREEN ── OAKMOSS is exactly the oak's brightest leaf colours on float-material ids, so the rule the oak forest follows (moss matches the leaves over it) lands on the identical ramp here, for zero new ids
               : (OAKMOSS.length && oakM(b.bx, b.bz) > 0.5) ? OAKMOSS : GRASS;
     const fw = (b.rot & 1) ? m.sy : m.sx, fd = (b.rot & 1) ? m.sx : m.sy;
     const bx = b.bx - (fw >> 1), bz = b.bz - (fd >> 1);
@@ -571,6 +578,7 @@
     const wz = Math.round(cz * F2CELL + 3 + ihash(cx * 11 + 33, cz * 7 + 15) * (F2CELL - 6));
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── ferns are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (oakM(wx, wz) > 0.5) return null;      // ── NOR IN THE OAK FOREST (user 2026-08-17: "remove the ferns from the oak forest") ── the same halfway gate on the other border, so the fern field thins out across the rim instead of ending on the iso-line. DELIBERATE AND USER-DIRECTED, exactly like the mushroom gate a few passes down: it looks identical to the accidental biome exclusion that gate replaced, so do not "fix" it back.
+    if (birchM(wx, wz) > 0.5) return null;    // ── NOR IN THE BIRCH FOREST (user 2026-08-24: "remove the ferns from the birch forest") ── the third border, on the same halfway test as the two above, so the fern field thins out across the rim instead of ending on the iso-line. USER-DIRECTED, like the oak gate above it: it reads exactly like an accidental biome exclusion and is not one.
     if (H(wx, wz) <= WL + 4) return null;              // no ferns in water or on beaches
     if (nearCave(wx, wz)) return null;
     for (let cz2 = Math.floor((wz - 14) / TCELL); cz2 <= Math.floor((wz + 14) / TCELL); cz2++)   // keep clear of pine trunks — the plant is 23 wide
@@ -777,7 +785,14 @@
     // ihash FIRST, oakM second: `&&` is left-to-right and both are pure, so the order cannot change the answer,
     // but it decides how often the expensive one runs. oakM is ~7 vnoise; this way the 0.625 the cheap draw
     // rejects never pay for it, and flower cells are FLWCELL = 8 apart — dense enough for that to matter.
-    if (ihash(cx * 71 + 5, cz * 79 + 13) > 0.375 && oakM(wx, wz) < 0.5) return null;
+    // ── THE BIRCH FOREST KEEPS THE OAK'S FLOWER RATE (user: "copy how the flowers work in the oak forest
+    // inside of the birch forest") ── this line is the oak's denser meadow: everywhere ELSE only 37.5% of
+    // candidates survive, so the pine forest gets a scattering and the oak gets nearly three times as many.
+    // The birch band read as "not oak" and was thinned with the pines - measured, oak placed on 6.99% of cells
+    // against birch's 2.26%, and 6.99 x 0.375 = 2.62 is exactly that thinning rather than anything else going
+    // wrong. Taking the max is the same move oakRoll/oakBank make for the ground itself: the band is an oak
+    // forest that grows birches, so anything keyed on "is this the oak forest" has to say yes here too.
+    if (ihash(cx * 71 + 5, cz * 79 + 13) > 0.375 && Math.max(oakM(wx, wz), birchM(wx, wz)) < 0.5) return null;
     const px = Math.floor(cx / FLWPATCH), pz = Math.floor(cz / FLWPATCH);
     const set = inCh ? FLOWERV_CH : FLOWERV;           // the blossom band draws from its own one-variant set; everywhere else from the five
     return { wx, wz, ch: inCh ? 1 : 0, k: (ihash(px * 53 + 7, pz * 59 + 17) * (set.length - 0.01)) | 0,
@@ -864,6 +879,7 @@
     const wz = Math.round(cz * PCCELL + 3 + ihash(cx * 3 + 17, cz * 11 + 8) * (PCCELL - 6));
     if (oakM(wx, wz) > 0.5) return null;      // ── NOR IN THE OAK FOREST ── a cone on the ground is a PINE cone: it is the one piece of forest litter that names the tree it fell from, and there are no pines here to have dropped it. (The cones hung IN a crown need no gate — stampTree hangs those, and stampTree no longer runs in this biome.)
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pinecones are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
+    if (birchM(wx, wz) > 0.5) return null;    // ── NOR IN THE BIRCH FOREST (user 2026-08-24: "there seems to be pine cones in the birch. remove them as well") ── the same reason as the oak gate above: a cone on the ground is a PINE cone and no pine dropped it here. birchAt stamps the birches, not stampTree, so nothing hangs cones in these crowns either.
     if (H(wx, wz) <= WL + 4) return null;              // cones stay off beaches and lakebeds
     if (nearCave(wx, wz)) return null;
     return { wx, wz, rot: (ihash(cx + 19, cz + 23) * 3.99) | 0 };
@@ -898,13 +914,15 @@
     }
     if (H(wx, wz) <= WL + 4) return null;              // sticks stay off the beach
     if (nearCave(wx, wz)) return null;
-    return { wx, wz, m: ihash(cx * 11 + 3, cz * 13 + 5) < 0.5 ? 0 : STICKV.length - 1, b: chNear(wx) && cherryM(wx, wz) > 0.5, rot: (ihash(cx + 4, cz + 7) * 3.99) | 0 };   // b = this twig fell off a cherry tree, so its leaf is pink
+    return { wx, wz, m: ihash(cx * 11 + 3, cz * 13 + 5) < 0.5 ? 0 : STICKV.length - 1, b: chNear(wx) && cherryM(wx, wz) > 0.5, bk: birchM(wx, wz) > 0.5, rot: (ihash(cx + 4, cz + 7) * 3.99) | 0 };   // b = this twig fell off a cherry tree, so its leaf is pink
   }
   function stampStick(s, x0, x1, z0, z1) {
     // STICKB is the same two twigs with the leaf recoloured (assets/bow.js) — identical geometry, so the
     // seating, the pickup flood and the float table all behave the same. s.b is decided in stickAt, where the
     // biome is already being sampled, rather than here, so the stamp stays a pure function of the candidate.
-    stampModel((s.b && STICKB.length ? STICKB : STICKV)[s.m], s.rot, s.wx, groundMin(s.wx, s.wz, 2), s.wz, x0, x1, z0, z1, 1);
+    // birch first: the two masks are disjoint (a whole pine strip sits between the bands), so the order
+    // between them cannot matter, but it keeps the cheapest test in front.
+    stampModel((s.bk && STICKBIRCH.length ? STICKBIRCH : (s.b && STICKB.length ? STICKB : STICKV))[s.m], s.rot, s.wx, groundMin(s.wx, s.wz, 2), s.wz, x0, x1, z0, z1, 1);
   }
   const LGCELL = 96;                                   // FALLEN LOG (log.vox): one candidate per 9.6 m cell, 14% kept — rare, solid, walkable
   function logAt(cx, cz) {
@@ -913,6 +931,7 @@
     const wx = Math.round(cx * LGCELL + 6 + ihash(cx * 3 + 9, cz * 7 + 1) * (LGCELL - 12));
     const wz = Math.round(cz * LGCELL + 6 + ihash(cx * 11 + 4, cz * 13 + 2) * (LGCELL - 12));
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── fallen logs are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
+    if (birchM(wx, wz) > 0.5) return null;   // ── NOR IN THE BIRCH FOREST (user: "remove the logs in the birch forest") ── the same > 0.5 halfway test the desert line above uses, and the same one treeAt takes
     if (H(wx, wz) <= WL + 4) return null;
     if (nearCave(wx, wz)) return null;
     return { wx, wz, rot: (ihash(cx * 5 + 21, cz * 3 + 33) * 3.99) | 0 };
@@ -1148,7 +1167,22 @@
   // A separate helper rather than a term inside oakAt: oakAt must keep returning the tree (the rocks, the
   // sticks and the fell all probe it), and only the BIRD question changes.
   function cherryOak(t) { return !!(t && t.blos); }
-  function hiveAt(cx, cz) { const t = oakAt(cx, cz); return (t && t.hv) || null; }
+  // ── ...AND THE BIRCH BAND'S HIVES ANSWER THE SAME QUERY (user 2026-08-24) ── the bee swarm walks a 3x3 of
+  // OAK cells (BEE_HIVE_Q in sim/life/slots.js), and a birch hive lives on the 44-voxel grid, so one oak cell
+  // covers a few birch cells and they have to be enumerated rather than indexed. Guarded on the mask first:
+  // outside the birch band that test is one cheap call and the walk never runs, so the oak forest pays
+  // nothing for this.
+  function hiveAt(cx, cz) {
+    const t = oakAt(cx, cz); if (t && t.hv) return t.hv;
+    const mx = cx * OKCELL + (OKCELL >> 1), mz = cz * OKCELL + (OKCELL >> 1);
+    if (birchM(mx, mz) < 0.5) return null;
+    const b0x = Math.floor(cx * OKCELL / BKCELL), b1x = Math.floor(((cx + 1) * OKCELL - 1) / BKCELL);
+    const b0z = Math.floor(cz * OKCELL / BKCELL), b1z = Math.floor(((cz + 1) * OKCELL - 1) / BKCELL);
+    for (let bz = b0z; bz <= b1z; bz++) for (let bx = b0x; bx <= b1x; bx++) {
+      const b = birchAt(bx, bz); if (b && b.hv) return b.hv;
+    }
+    return null;
+  }
   function stampOak(t, x0, x1, z0, z1) {
     const gy = groundMin(t.wx, t.wz, 4) - t.sink;
     // OAKBLOSV is the same models with every leaf voxel run through the pink ramp, and OAKWHITV through the
@@ -1216,12 +1250,131 @@
   // within R: those scans are exact at any cell size. None of them needed touching; they simply walk more cells.
   const TCELL = 45, TMARGIN = 24;                      // one pine candidate per 4.5 m cell
   const SPVIEW_D = 96, SPVIEW_W = 13;                  // spawn sight-line: 9.6 m ahead, 1.3 m either side of the view axis
+  const BKCELL = 44, BKMARGIN = 128;
+  const BKHIVE = 0.02;                                 // one birch cell in FIFTY carries a beehive (user 2026-08-24: 0.10 -> 0.05 -> "make the beehives 2% in the birch forest"). A landmark rather than furniture, which is the same reasoning OKHIVE's 3.1% of oaks follows                    // one birch candidate per 4.4 m cell; margin covers the widest crown's half-footprint
+  function birchAt(cx, cz) {
+    if (!BIRCHV.length) return null;                   // ?nobirch, or the .json never loaded - one test disables the whole pass, as ?nooaks does
+    if (ihash(cx * 53 + 29, cz * 47 + 11) > 0.76) return null;         // ~24% of cells carry a tree
+    const wx = Math.round(cx * BKCELL + 12 + ihash(cx * 7 + 5, cz * 9 + 13) * (BKCELL - 24));
+    const wz = Math.round(cz * BKCELL + 12 + ihash(cx * 13 + 7, cz * 11 + 3) * (BKCELL - 24));
+    if (birchM(wx, wz) < 0.5) return null;             // BIRCH BAND ONLY - the mirror of the pines' test at the same halfway point
+    const dxs = wx - SPWX, dzs = wz - SPWZ;            // the spawn clearing and the sight-line corridor, at the oak's broadleaf radii: the player now spawns IN this biome
+    if (dxs * dxs + dzs * dzs < 40 * 40) return null;
+    const fwdX = Math.sin(SPYAW), fwdZ = Math.cos(SPYAW);
+    const along = dxs * fwdX + dzs * fwdZ;
+    if (along > 0 && along < SPVIEW_D && Math.abs(dxs * fwdZ - dzs * fwdX) < OKVIEW_W) return null;
+    if (H(wx, wz) <= WL + 4) return null;              // no birches in water or on a beach
+    if (nearCave(wx, wz)) return null;
+    // -- THE TREE MUST FIT UNDER THE SKY, and this is the guard core/gpu.js promises when it explains why the
+    // rung ladder puts window width ahead of world height. The world is 504 tall for these trees, but on a
+    // machine that only binds 384 - or simply on high ground - a 264-voxel birch would have its crown clipped
+    // by the ay >= WY test in the stamp, silently, and a decapitated tree looks like a bug rather than a
+    // fallback. BIRCHV is sorted short-to-tall by the bake, so the fitting models are a PREFIX and the pick is
+    // one walk down from the top. If not even the smallest fits, this column grows nothing.
+    // (the previous build refused a birch whose bole landed inside a boulder, via rockClashCell. That helper
+    // is part of the rock-clash work and is not in this build, so the test is not made here. A birch and a
+    // rock can therefore share a cell; the stamp writes in mode 1 and refuses cells that already hold hard
+    // stone, so the result is a tree growing past a rock rather than through it.)
+    const avail = Math.min(CANOPY, WY - 2 - H(wx, wz));   // CANOPY as well as the ceiling: a model taller than the brick sky-cap would be stamped and then never drawn (world/window.js)
+    if (BIRCHV[0].sz > avail) return null;
+    // BIRCHPICK, not BIRCHV: the same models, repeated in proportion to how full their crowns are, so the
+    // spindly half of the set stops dominating a stand. Sorted by height like BIRCHV, so the fits-under-the-
+    // sky walk is still a prefix. See birchPick in assets/bow.js.
+    let top = BIRCHPICK.length - 1;
+    while (top > 0 && BIRCHV[BIRCHPICK[top]].sz > avail) top--;
+    const k = BIRCHPICK[(ihash(cx * 17 + 3, cz * 19 + 7) * (top + 0.999)) | 0];
+    const t = { wx, wz, k, rot: (ihash(cx + 211, cz + 97) * 3.99) | 0,
+                sink: 1 + ((ihash(cx * 23, cz * 29) * 3) | 0) };   // sink 1-3, and it means what it means for an oak: the stamp writes in mode 1, so courses below local ground are refused rather than punched into the hill
+    // -- AND A BEEHIVE ON ONE BIRCH IN TEN (user 2026-08-24: "attach beehives to some of the birch trees.
+    // make it somewhat rare. say 10%?") -- oakAt's hive block, line for line, against BIRCH_BANCH and this
+    // band's own grid. The Y IS RESOLVED HERE and not at stamp time for oakAt's reason: hiveAt() is the query
+    // the bee swarm reads and it has to answer with a world position, and groundMin is then only paid on the
+    // tenth of cells that actually carry one.
+    // BKHIVE is a bigger number than the oak's OKHIVE for the same visible rarity: OKHIVE is 6% of the two
+    // biggest oak layers, i.e. 3.1% of oaks on a 112-voxel grid, where this is 10% of birches on a 44-voxel
+    // grid. The seat matches stampBirch exactly - groundMin at the TRUNK, less sink, less m.tbz - because a
+    // hive resolved against the box centre would hang at the wrong height on every model that leans.
+    const HB = BIRCH_BANCH[k];
+    if (HIVEV && HB && HB.length && ihash(cx * 61 + 43, cz * 59 + 17) < BKHIVE) {
+      const m = BIRCHV[k];
+      const a = HB[((ihash(cx * 89 + 7, cz * 97 + 31) * (HB.length - 0.01)) | 0)];
+      const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 255;
+      let rx, rz;                                                                 // stampBirch's rotation, verbatim
+      if (t.rot === 0) { rx = ax; rz = ay; }
+      else if (t.rot === 1) { rx = m.sy - 1 - ay; rz = ax; }
+      else if (t.rot === 2) { rx = m.sx - 1 - ax; rz = m.sy - 1 - ay; }
+      else { rx = ay; rz = m.sx - 1 - ax; }
+      const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+      const hx = t.wx - (fw >> 1) + rx, hz = t.wz - (fd >> 1) + rz;
+      const tw = birchTrunkW(t, m);
+      const hy = groundMin(tw.wx, tw.wz, 4) - t.sink - m.tbz + az - HIVEV.sz;     // the same seat stampBirch uses, so the hive's TOP course lands one below the branch it hangs from
+      t.hv = { wx: hx, wy: hy + (HIVEV.sz >> 1), wz: hz,                          // CENTRE of the box - the point a swarm orbits
+               bx: hx, by: hy, bz: hz,                                            // ...and the stampModel anchor (bottom-CENTRE column) it is actually written at
+               sx: HIVEV.sx, sy: HIVEV.sy, sz: HIVEV.sz,
+               tx: t.wx, tz: t.wz, k: t.k, rot: t.rot };
+    }
+    return t;
+  }
+  // stampModel cannot be reused, and the reason is the packing: a birch reaches 264 voxels and the shared
+  // stamper reads height out of eight bits. Here it is nine (x | depth<<8 | height<<16 | colour<<25), and the
+  // top field is a 0..6 INDEX into BIRCHIDS rather than a palette id, because seven bits cannot hold an 8-bit
+  // id. Everything else - the rotation, the clip, the mode-1 test - is stampModel's, line for line.
+  // ── WHERE A PLANTED BIRCH'S TRUNK STANDS, IN THE WORLD ── the model is centred on its BOUNDING BOX but the
+  // bole is not at that centre (up to 83 voxels off — assets/bow.js birchTrunkC), so anything that wants "the
+  // tree's position" in the sense a player would mean it has to rotate the trunk column out of the model and
+  // add it to the box corner. Two callers now: the stamp, which seats the bole on the ground, and the perched
+  // songbird walk in main/tick-nav.js, which must scan the crown around the TRUNK or its bole-exclusion ring
+  // lands in open air on one side and inside the wood on the other. One helper, because when these two
+  // disagreed the trees hung in the sky.
+  function birchTrunkW(t, m) {
+    const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+    const bx = t.wx - (fw >> 1), bz = t.wz - (fd >> 1);
+    if (t.rot === 0) return { wx: bx + m.tcx, wz: bz + m.tcy };
+    if (t.rot === 1) return { wx: bx + m.sy - 1 - m.tcy, wz: bz + m.tcx };
+    if (t.rot === 2) return { wx: bx + m.sx - 1 - m.tcx, wz: bz + m.sy - 1 - m.tcy };
+    return { wx: bx + m.tcy, wz: bz + m.sx - 1 - m.tcx };
+  }
+  function stampBirch(t, x0, x1, z0, z1) {
+    const m = BIRCHV[t.k];
+    const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+    const bx = t.wx - (fw >> 1), bz = t.wz - (fd >> 1);
+    // ── SEAT ON THE GROUND UNDER THE TRUNK, NOT UNDER THE BOUNDING BOX ── this used to read
+    // groundMin(t.wx, t.wz, 4), i.e. the column at the box CENTRE. On these models the bole is up to 83
+    // voxels from that centre (assets/bow.js birchTrunkC), because a crown leans, so on a slope the tree was
+    // seated to a column 8 m away from where it actually stands - and hung in the air on the downhill side.
+    // The trunk centroid is rotated exactly as the voxels are below, so it tracks the tree's own facing.
+    const tw = birchTrunkW(t, m), tcx = tw.wx - bx, tcz = tw.wz - bz;
+    const gy = groundMin(tw.wx, tw.wz, 4) - t.sink - m.tbz;   // seat the BOLE on the ground, not the model's box — m.tbz is how far up the trunk starts (assets/bow.js). Low side of a slope, as the oaks do, so no birch stands on a stalk
+    for (let i = 0; i < m.vox.length; i++) {
+      const p = m.vox[i];
+      const x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 511;
+      let rx, rz;
+      if (t.rot === 0) { rx = x; rz = y; }
+      else if (t.rot === 1) { rx = m.sy - 1 - y; rz = x; }
+      else if (t.rot === 2) { rx = m.sx - 1 - x; rz = m.sy - 1 - y; }
+      else { rx = y; rz = m.sx - 1 - x; }
+      const ax = bx + rx, az = bz + rz;
+      if (ax < x0 || ax >= x1 || az < z0 || az >= z1) continue;
+      const ay = gy + z; if (ay < 1 || ay >= WY) continue;
+      const gx = gwrap(ax, WX), gz = gwrap(az, WZ);
+      const ii = gx + ay * WX + gz * WX * WY;
+      const cur = W[ii];
+      if (cur !== 0 && cur < DECOR_MIN) continue;      // mode 1: grow through ferns and grass, never through terrain
+      W[ii] = BIRCHIDS[p >>> 25];
+    }
+    if (t.hv) stampModel(HIVEV, t.rot, t.hv.bx, t.hv.by, t.hv.bz, x0, x1, z0, z1, 1);   // the BEEHIVE, at the world anchor birchAt already resolved — mode 1, like the tree it hangs in
+  }
   function treeAt(cx, cz) {
     if (ihash(cx * 7 + 13, cz * 11 + 5) > 0.72) return null;
     const wx = Math.round(cx * TCELL + 6 + ihash(cx * 3 + 1, cz * 5 + 2) * (TCELL - 12));
     const wz = Math.round(cz * TCELL + 6 + ihash(cx * 9 + 4, cz * 3 + 8) * (TCELL - 12));
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pines are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (oakM(wx, wz) > 0.5) return null;     // ── NOR IN THE OAK FOREST (user 2026-08-17) ── the same test at the other border. Without it the new biome is a pine wood with oaks in it rather than a biome, and the two canopies interpenetrate right across the 450-voxel blend band. > 0.5 rather than > 0 deliberately: the pines thin out through the rim instead of stopping on the iso-line, which is what makes the two forests read as meeting rather than as abutting.
+    // ── NOR IN THE BIRCH FOREST ── the THIRD border, and the same > 0.5 halfway test the desert and oak
+    // lines above use. Without it the new band is a pine forest wearing oak ground: treeAt only ever
+    // excluded itself from the two biomes that existed when it was written, and a band that is neither
+    // desert nor oak reads to it as ordinary pine country.
+    if (birchM(wx, wz) > 0.5) return null;
     const dxs = wx - SPWX, dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // spawn clearing
     // ── AND A CLEAR LINE OF SIGHT DOWN THE SPAWN HEADING (user 2026-08-16: "try not to have the player spawn
@@ -1386,6 +1539,7 @@
     // (GIGANTIC lake pads REMOVED at user request 2026-07-20 — the lilyGigAt/stampLilyGig pair is left in place, and still
     //  crosses to the gen workers, so re-enabling is a one-line restore of this pass. The small drifting pads are untouched.)
     yield* stampCellsGen(x0, x1, z0, z1, LGCELL, 16, logAt, stampLog);
+    yield* stampCellsGen(x0, x1, z0, z1, BKCELL, BKMARGIN, birchAt, stampBirch);   // ── THE BIRCHES ── beside the oaks and before the pines, for the same reason the oaks sit here: the ground scatter has to be down first (a tree refuses a cell a rock already took), and the pines come last
     yield* stampCellsGen(x0, x1, z0, z1, OKCELL, OKMARGIN, oakAt, stampOak);   // -- THE OAKS -- last of the stamped decor and immediately before the pines, which is where a tree belongs: every ground scatter above has already been laid, and mode 1 lets a crown grow through the ferns and grass rather than leaving a hole where one would have been. The two tree passes never meet - their biome gates are exclusive - so their order relative to each other is free.
     for (const t of treesInRegion(x0, x1, z0, z1)) { stampTree(t, x0, x1, z0, z1); yield; }   // one tree per slice — the old all-at-once pass spiked 10–25 ms per band
   }
@@ -1395,7 +1549,7 @@
       let maxH = 0, cav = 0;                           // nothing exists above terrain + the tallest pine — sky bricks clear without a single voxel read
       for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) { const hv = hmap[x + z * WX]; if (hv > maxH) maxH = hv; if (hv <= CAVE_FLOOR_MAX) cav = 1; }
       if (cav && maxH < HMAX) maxH = HMAX;             // ── GORGE TILE ── stampCave drops a carved column's hmap to the gorge FLOOR while its per-4-voxel-band wall jag deliberately leaves wall standing all the way back up to the pristine surface, so hmap is no longer an upper bound on that column's contents. The cap force-CLEARS every brick above it and the DDA reads an unset brick as air, so intact stone went invisible (it still collided, chopped and anchored support). H() is clamped to HMAX, so that is the honest ceiling for a column whose real height the carve erased. Must stay identical to the copy in gen-pool.js — __vb.gtest diffs the two.
-      const byCap = Math.min(BY, ((maxH + 122) >> 3) + 1);
+      const byCap = Math.min(BY, ((maxH + CANOPY) >> 3) + 1);   // CANOPY, not a literal — world/window.js explains why a number here goes INVISIBLE rather than wrong
       for (let by = 0; by < BY; by++) {
         let occ = 0;
         if (by < byCap) {

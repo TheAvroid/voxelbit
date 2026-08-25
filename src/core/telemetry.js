@@ -22,6 +22,14 @@
   const CP_NAMES = ['physics', 'stream', 'weather', 'snowvox', 'camera', 'life', 'emit', 'encode'];
   const cpEma = new Float64Array(CP_NAMES.length);
   const cpCur = new Float64Array(CP_NAMES.length);     // THIS frame's phase costs (the EMA hides spikes)
+  // ── …AND ONE LEVEL DOWN, INSIDE THE SNOW TICK ── 'snowvox' is a single cprof bucket, and during a storm it
+  // is the largest thing snow adds to the CPU, but it covers three jobs that are optimised in completely
+  // different ways: placing flakes, draining the blanket, and handing the frame's edits to the GPU. Same
+  // idiom and the same arming flag as cpMark, so it is one predictable branch per section when disarmed.
+  const SN_NAMES = ['land', 'melt', 'patch'];
+  const snEma = new Float64Array(SN_NAMES.length);
+  let snLast = 0;
+  const snMark = (i) => { const t = performance.now(); snEma[i] += ((t - snLast) - snEma[i]) * 0.08; snLast = t; };
   const cpMark = (i) => { const t = performance.now(); cpCur[i] = t - cpLast; cpEma[i] += (cpCur[i] - cpEma[i]) * 0.08; cpLast = t; };
   // ── FRAME-TIME RING ── always on (two float stores per frame) so 1% lows / spikes can be read at any moment.
   // FT = the wall gap between frames; FTB = time actually spent INSIDE tickBody. The pair is the whole

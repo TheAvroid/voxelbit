@@ -250,6 +250,39 @@
         home: DESERTS.map((d) => d.name + ':' + (DES_OAKONLY[d.name] ? 'oak x' + DES_OAKONLY[d.name] : 'sand')),   // the band is two biomes now — an oak-only species must read 0 in perSpecies and its whole count here, and a sand species must read the reverse
         DES_N, DES_PER, MAM_END, DES_END, pool: DES_END, slots: o }; },   // why a desert-band slot is or is not live
     om(x, z) { return { oak: +oakM(x, z).toFixed(3), cherry: +cherryM(x, z).toFixed(3), desert: +desertM(x, z).toFixed(3) }; },   // the three band weights at a point — 'am I in the oak' answered directly rather than inferred from a walk
+    birchAt(cx, cz) { return birchAt(cx, cz); },   // the raw cell query, for comparing a stamped tree against the model it came from
+    birchModel(k) { const m = BIRCHV[k]; return m ? { sx: m.sx, sy: m.sy, sz: m.sz, n: m.vox.length, tcx: m.tcx, tcy: m.tcy, tbz: m.tbz } : null; },   // tcx/tcy = the TRUNK centroid, which is what stampBirch seats on (assets/bow.js birchTrunkC)
+    birchAudit(cx, cz) {                            // stamp the model in memory and diff it against the world: what did the world LOSE?
+      const t = birchAt(cx, cz); if (!t) return null;
+      const m = BIRCHV[t.k], gy = groundMin(t.wx, t.wz, 4) - t.sink;
+      const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+      const bx = t.wx - (fw >> 1), bz = t.wz - (fd >> 1);
+      let want = 0, got = 0, aboveWY = 0, blocked = 0, maxWantY = 0, maxGotY = 0;
+      for (let i = 0; i < m.vox.length; i++) { const p2 = m.vox[i];
+        const x = p2 & 255, y = (p2 >> 8) & 255, z = (p2 >> 16) & 511;
+        let rx, rz;
+        if (t.rot === 0) { rx = x; rz = y; } else if (t.rot === 1) { rx = m.sy - 1 - y; rz = x; }
+        else if (t.rot === 2) { rx = m.sx - 1 - x; rz = m.sy - 1 - y; } else { rx = y; rz = m.sx - 1 - x; }
+        const ax = bx + rx, az = bz + rz, ay = gy + z;
+        want++; if (ay > maxWantY) maxWantY = ay;
+        if (ay < 1 || ay >= WY) { aboveWY++; continue; }
+        const v = W[gwrap(ax, WX) + ay * WX + gwrap(az, WZ) * WX * WY];
+        if (v === BIRCHIDS[p2 >>> 25]) { got++; if (ay > maxGotY) maxGotY = ay; } else blocked++;
+      }
+      return { k: t.k, rot: t.rot, sz: m.sz, gy, want, got, aboveWY, blocked, maxWantY, maxGotY, lostTop: maxWantY - maxGotY, WY };
+    },
+    // main-thread anchor lists vs the same derivation off the DECODED models a gen worker rebuilds, which is
+    // the one thing that can make a worker grow a birch and not its beehive
+    birchBanchDbg() {
+      const mine = BIRCH_BANCH.map((a) => a.length);
+      let theirs = null;
+      try { theirs = birchBanch(BIRCHENC.map(birchDec)).map((a) => a.length); } catch (e) { theirs = String(e); }
+      return { hive: !!HIVEV, models: BIRCHV.length, mine, theirs };
+    },
+    birchIds() { return { ids: BIRCHIDS, cols: BIRCHIDS.map((i) => palette[i]), folia: BIRCHIDS.map((i) => !!foliaTab[i]), bark: BIRCHBARK, oakleaf: OAKLEAF, oakmoss: OAKMOSS, models: BIRCHV.length }; },   // what the birch actually spends: which palette id every one of its seven bake colours resolved to, and what the material tables say about each   // …and the BIRCH band, the fourth: 1 = birch forest, 0 = the pine and the sand either side of it. "Which biome is this column" is cm, then om, then bm, then dm — birch before desert because they are neighbours and only birch has a hard edge on the sand
+    flowerAt(cx, cz) { const f = flowerAt(cx, cz); return f ? { wx: f.wx, wz: f.wz, k: f.k, v: f.v } : null; },   // the raw cell query, for comparing flower DENSITY between biomes without conflating it with plant SIZE
+    FLWCELL, FLWPATCH,
+    bm(x, z) { return +birchM(x, z).toFixed(3); },   // …and the BIRCH band, between the pine forest and the sand. Same shape as dm/om so a band sweep can read all three
     dm(x, z) { return +desertM(x, z).toFixed(3); },   // biome weight at a world point: 0 = pine forest, 1 = open desert. The gates all key on this, so a test that wants to say "in the desert" has to be able to ask
     om(x, z) { return +oakM(x, z).toFixed(3); },
     cm(x, z) { return +cherryM(x, z).toFixed(3); },
@@ -450,6 +483,7 @@
       return { slots: { firstCreature: first9, flock: BIRD_N - 1, flockDrawn: BIRD_SLOTS, firstFree: first9 + BIRD_SLOTS, total: DROP_SLOTS, forTraced: DROP_SLOTS - (first9 + BIRD_SLOTS) }, kinds: acc };
     },
     ed(v) { ((v === undefined) ? !ED.on : !!v) ? edEnter() : edExit(); }, edSel: edSelStep, edMove: edMoveStep, edRotate, edImport: edImportBufs, edExport: edExportSeq,
+    edSzPanel: edSzToggle, edSize: edSzApply,   // the [y] tree-height slider: toggle the panel, or set the scale outright — __vb.edSize(140) is the same rescale the thumb does
     edLoad: edLoadVox, edLoad2: edLoadVox2, edSeqs: edSeqsAt,   // stage an animation off the asset tree — __vb.edLoad('assets/life/frog.vox', 'tongue'), or several run together as one: __vb.edLoad(path, ['ribbet', 'hop']); edLoad2 puts a SECOND model in the side lane beside it; and __vb.edSeqs(path) lists what a .vox holds
 
     edGiz(v) { ED.paused = true; ED.giz = v === undefined ? !ED.giz : !!v; if (ED.giz) ED.rgiz = false; edEnsureGizCols(); edLayout(); return { giz: ED.giz, boxes: ED.gizBoxes.map((g) => g.axis) }; }, edOff: edOffset, edCopy2: edCopyOffsets,   // move-gizmo test taps
@@ -1083,7 +1117,14 @@
       // INCONCLUSIVE rather than as a floater, which is precisely where a stranded cone or snow cap lives: the
       // audit that every floater pass has been measured against could not see the top half of a tree. MSZ + 44
       // clears the model, the snow stack on its apex and a boulder on a ridge.
-      ymax = Math.min(WY - 1, ymax + Math.max(64, MSZ + 44));
+      // ── …AND IT HAS TO CLEAR A BIRCH TOO (2026-08-24) ── the note above is exactly right and its number went
+      // stale the moment a taller tree existed: MSZ is pine5.vox's 116, and a birch reaches CANOPY, so the lid
+      // sat through the middle of every birch crown and everything above it came back INCONCLUSIVE. MEASURED
+      // in the birch forest before this line changed: 0 floaters reported against 4,376 unreached voxels, all
+      // of them in components filed as wall-touching — i.e. the audit could not see the half of the tree where
+      // a stranded hive, cone or snow cap actually lives, and answered 'clean' anyway.
+      // CANOPY is the brick sky-cap birchAt itself gates placement on, so no tree in the world can exceed it.
+      ymax = Math.min(WY - 1, ymax + Math.max(64, MSZ + 44, CANOPY + 44));
       const bh = ymax + 1, n = bw * bw * bh;
       const occ = new Uint8Array(n), stk = new Int32Array(n);
       const li = (ix, iy, iz) => ix + iz * bw + iy * bw * bw;
@@ -1140,6 +1181,63 @@
                floaters: real.length, floaterVox: real.reduce((a, b) => a + b.n, 0),
                inconclusive: comps.length - real.length,
                top: (opts && opts.all ? comps : real).slice(0, 12) };
+    },
+    // ── ONE TREE, AND IS ANYTHING IT OWNS LEFT HANGING ── floatAudit is centred on the PLAYER and its box is
+    // capped at radius 96, which is a fair test in the pine and oak woods and a misleading one in the birch.
+    // BKCELL is 44 against crowns up to 91 wide, so a 193-voxel box is mostly other trees' crowns whose trunks
+    // are OUTSIDE it: those are unreachable within the box and get filed 'inconclusive', and the count is then
+    // dominated by the box rather than by the world. MEASURED: the same tree read 22-779 unreached voxels in a
+    // tight box and 5-38 once the box grew by 40, and every one of those was still wall-touching.
+    // Raising floatAudit's own cap is not the answer - its flood stack is an Int32Array over the whole box, so
+    // radius 140 is ~138 MB of scratch. This asks the same question about ONE tree instead, with enough margin
+    // that the neighbours holding up its overlapping crown are inside the box, and reports only the components
+    // that touch no wall - i.e. the ones that really are hanging in the air.
+    treeFloat(x, z, margin) {
+      const S = treeShapeAt(x | 0, z | 0); if (!S) return { none: 'no tree at this column' };
+      const MG = Math.max(4, Math.min(64, margin === undefined ? 40 : margin | 0));
+      const gh = hmap[gwrap(S.bx + (S.R.sx >> 1), WX) + gwrap(S.bz + (S.R.sz >> 1), WZ) * WX];
+      const X0 = S.bx - MG, Z0 = S.bz - MG, bw = S.R.sx + 2 * MG, bd = S.R.sz + 2 * MG;
+      const Y0 = Math.max(0, Math.min(gh - 6, S.gy - 2)), bh = Math.min(WY - Y0, (S.hMax || MSZ) + 18);
+      const n = bw * bd * bh;
+      if (n > 12e6) return { none: 'box too large', n };
+      const occ = new Uint8Array(n), stk = new Int32Array(n);
+      const li = (a, b, c) => a + c * bw + b * bw * bd;
+      const wIdx = (a, b, c) => gwrap(X0 + a, WX) + (Y0 + b) * WX + gwrap(Z0 + c, WZ) * WX * WY;
+      let sp = 0, solid = 0;
+      for (let b = 0; b < bh; b++) for (let c = 0; c < bd; c++) for (let a = 0; a < bw; a++) {
+        const ii = wIdx(a, b, c), v = W[ii]; if (!v) continue;
+        if (stampedIdx.has(ii)) continue;                 // a perched bird is not terrain — the same rule floatAudit follows
+        occ[li(a, b, c)] = 1; solid++;
+      }
+      for (let b = 0; b < 2; b++) for (let c = 0; c < bd; c++) for (let a = 0; a < bw; a++) {
+        const k = li(a, b, c); if (occ[k] === 1) { occ[k] = 2; stk[sp++] = k; } }
+      while (sp > 0) { const k = stk[--sp];
+        const a = k % bw, c = ((k / bw) | 0) % bd, b = (k / (bw * bd)) | 0;
+        for (let d = 0; d < 27; d++) {
+          const ax = a + (d % 3) - 1, ay = b + (((d / 3) | 0) % 3) - 1, az = c + (((d / 9) | 0)) - 1;
+          if (ax < 0 || az < 0 || ay < 0 || ax >= bw || az >= bd || ay >= bh) continue;
+          const q = li(ax, ay, az); if (occ[q] === 1) { occ[q] = 2; stk[sp++] = q; } } }
+      const out = []; let unreached = 0;
+      for (let k = 0; k < n; k++) {
+        if (occ[k] !== 1) continue;
+        let sp2 = 0, cnt = 0, wall = false, at = null; const ids = {};
+        stk[sp2++] = k; occ[k] = 3;
+        while (sp2 > 0) { const q = stk[--sp2]; cnt++;
+          const a = q % bw, c = ((q / bw) | 0) % bd, b = (q / (bw * bd)) | 0;
+          if (a === 0 || c === 0 || a === bw - 1 || c === bd - 1 || b === bh - 1) wall = true;
+          if (!at) at = [X0 + a, Y0 + b, Z0 + c];
+          const v = W[wIdx(a, b, c)]; ids[v] = (ids[v] || 0) + 1;
+          for (let d = 0; d < 27; d++) {
+            const ax = a + (d % 3) - 1, ay = b + (((d / 3) | 0) % 3) - 1, az = c + (((d / 9) | 0)) - 1;
+            if (ax < 0 || az < 0 || ay < 0 || ax >= bw || az >= bd || ay >= bh) continue;
+            const w2 = li(ax, ay, az); if (occ[w2] === 1) { occ[w2] = 3; stk[sp2++] = w2; } } }
+        unreached += cnt;
+        if (!wall) out.push({ n: cnt, at, ids: Object.entries(ids).sort((p2, q2) => q2[1] - p2[1]).slice(0, 3).map(([i, c2]) => i + 'x' + c2) });
+      }
+      out.sort((p2, q2) => q2.n - p2.n);
+      return { tree: { bx: S.bx, bz: S.bz, sx: S.R.sx, sz: S.R.sz, k: S.tr.k === undefined ? null : S.tr.k },
+               box: [bw, bh, bd], margin: MG, solid, unreached,
+               floaters: out.length, floaterVox: out.reduce((p2, q2) => p2 + q2.n, 0), top: out.slice(0, 10) };
     },
     iceCuts() { return { n: iceCutN, frozen: iceSolid, freezeK: +freezeK.toFixed(3), choppable: !!decorTab[WATER_T], pickOnly: !!pickOnlyTab[WATER_T], solid: !!solidTab[WATER_T], WATER_T }; },   // ice-chopping state for a test
     eyeSync() { smoothEye = P.y + EYE; resetHist = 1; return smoothEye; },   // a test that moves P directly must say so: aimVox rays from smoothEye, which only a real teleport resets, so every aim after a hand-set P.y silently missed
@@ -1567,6 +1665,11 @@
       const o = Object.fromEntries(CP_NAMES.map((n, i) => [n, +cpEma[i].toFixed(3)]));
       o.cpuTotal = +CP_NAMES.reduce((a, n, i) => a + cpEma[i], 0).toFixed(3);
       o.upCalls = +cpUpN.toFixed(1); o.upKB = +(cpUpB / 1024).toFixed(1); o.fps = +fpsEma.toFixed(0); return o; },
+    // ── WHERE THE 'snowvox' MILLISECOND GOES ── land = placing flakes (the sprinkle and everything landSnowAt
+    // does per column), melt = draining the blanket, patch = gpuPatch of the frame's landings and thaws plus
+    // the scanTop-cache replay. Needs __vb.cprof(true) armed, like every other phase timer.
+    snowProf() { const o = Object.fromEntries(SN_NAMES.map((n, i) => [n, +snEma[i].toFixed(3)]));
+      o.total = +SN_NAMES.reduce((a, n, i) => a + snEma[i], 0).toFixed(3); o.armed = !!CPROF; return o; },
     ft() { const n = Math.min(ftN, FTR); if (!n) return null;   // frame-time distribution → 1% lows + worst spike
       const a = Array.from(FT.subarray(0, n)).sort((p, q) => p - q);
       const b = Array.from(FTB.subarray(0, n)).sort((p, q) => p - q);
@@ -1757,7 +1860,13 @@
     // along +x in strides until the biome field says it has arrived, then teleports. Returns where it landed
     // and the field values there, so a caller can tell "found it" from "gave up".
     gotoBiome(which, maxD) {
-      const f = which === 'desert' ? desertM : which === 'pine' ? ((x, z) => (oakM(x, z) < 0.5 && desertM(x, z) < 0.5) ? 1 : 0) : oakM;   // 'pine' is the DEFAULT forest — neither of the two named bands — so it is expressed as the absence of both rather than a field of its own
+      // 'pine' is the DEFAULT forest — none of the NAMED bands — so it is expressed as the absence of all of
+      // them rather than a field of its own. birchM has to be in that list: it was written when there were two
+      // named bands, and once the birch forest landed "neither oak nor desert" included it, so every
+      // gotoBiome('pine') since has been teleporting into the birch forest and reporting success (caught
+      // 2026-08-24 while profiling snow, which made the whole measurement the wrong biome's).
+      const f = which === 'desert' ? desertM : which === 'birch' ? birchM
+        : which === 'pine' ? ((x, z) => (oakM(x, z) < 0.5 && desertM(x, z) < 0.5 && birchM(x, z) < 0.5) ? 1 : 0) : oakM;
       const lim = maxD || 400000;
       for (let d = 0; d <= lim; d += 512) {
         for (const sgn of (d === 0 ? [1] : [1, -1])) {
@@ -1765,7 +1874,7 @@
           if (f(x, z) > 0.5) {
             P.x = x; P.z = z; P.y = H(x, z) + 3; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1;   // the same three lines __vb.tp ends with — the streamer catches up on its own
             return { found: which, at: [Math.round(x), Math.round(z)], dist: d,
-              oak: +oakM(x, z).toFixed(2), desert: +desertM(x, z).toFixed(2) }; }
+              oak: +oakM(x, z).toFixed(2), desert: +desertM(x, z).toFixed(2), birch: +birchM(x, z).toFixed(2) }; }
         }
       }
       return { found: null, searched: lim, oakHere: +oakM(P.x, P.z).toFixed(2), desertHere: +desertM(P.x, P.z).toFixed(2) };
@@ -1774,7 +1883,8 @@
     // the question is "is this voxel a mushroom" and mushTab is module-scoped. One tap, all the tables.
     matTabs(id) { const i = id | 0; return { id: i, solid: !!solidTab[i], decor: !!decorTab[i], wood: !!woodTab[i],
       folia: !!foliaTab[i], cone: !!coneTab[i], snow: !!snowTab[i], hang: !!hangTab[i], mush: !!mushTab[i],
-      float: !!floatTab[i], axe: !!axeOnlyTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i] }; },
+      float: !!floatTab[i], axe: !!axeOnlyTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i],
+      fern: !!snowFernTab[i], soft: !!snowPassTab[i] }; },   // …and the two ground-litter tables, so "is this voxel a fern / grass-or-bloom" can be asked from a test without guessing at palette ids
     // …and WHERE the nearest one of a given table is, so a rare decoration can actually be found to test on.
     findMat(tab, rad) { const R = Math.min(160, rad || 90), T = { mush: mushTab, cone: coneTab, hang: hangTab, wood: woodTab }[tab];
       if (!T) return { err: 'unknown table' };

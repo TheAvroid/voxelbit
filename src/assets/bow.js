@@ -322,6 +322,7 @@
   // stick_1 and stick_2 are 'held' models, so their ids come out of palShare in whatever order the parse ran,
   // and an index written here would rot the first time an unrelated decoration minted before them.
   const STICKV = [stk1, stk2].filter(Boolean);
+  let STICKBIRCH = [];                                 // the same two twigs in BIRCH colours — filled after the birch load below, because it needs the bark ids that load MINTS
   const STICKB = [pstk1, pstk2].filter(Boolean);       // the AUTHORED pink twigs, index-parallel to STICKV so world/terrain.js picks a pair rather than a model. Empty if the two files are missing, and stickAt falls back to the green pair
   // The leaf ids the pink twigs actually carry, read off the models rather than assumed: the pickup has to remove
   // them (see twigLeafCells in sim/projectiles.js) and they are NOT the canopy's BLOSLEAF — the user authored a
@@ -506,6 +507,233 @@
       return (p & 0xffffff) | (ramp[q < 0 ? 0 : (q > top ? top : q)] << 24);
     }) };
   }
+  // ── THE BIRCH DECODER ── base64 delta-varint -> Int32Array of packed voxels, x | z<<8 | y<<16 | c<<25.
+  // NOTE THE SHIFTS ARE NOT THE OAK'S: a birch reaches 264 voxels tall and the oak layout gives height only
+  // eight bits, so height has NINE here and the colour seven. The colour stays a 0..6 INDEX into BIRCHIDS
+  // rather than becoming a palette id the way the oak repack does — seven bits cannot hold an 8-bit id, and
+  // the stamp maps it through BIRCHIDS anyway. Registered for the gen workers in world/gen-pool.js.
+  // ── WHERE THE TRUNK ACTUALLY IS ── the centroid of the WOOD in the model's bottom few layers, in model
+  // coordinates. stampBirch centres a model on its BOUNDING BOX, and on these trees the box centre is not
+  // the trunk: measured across the 26, the bole sits up to 83 voxels (8.3 m) away from it, because a crown
+  // leans. Seating the tree on the ground under the BOX therefore samples the wrong column, and on any slope
+  // the tree ends up hanging in the air on the downhill side - which is the "birch floating off the ground"
+  // the user spotted. Sampling under the TRUNK is the fix, and this is the number that makes it possible.
+  const birchTrunkC = (vox, sx, sy, sz) => {
+    // THE DENSEST WOOD COLUMN, NOT THE CENTROID. A mean over the base layers averages across whatever wood
+    // touches the ground - roots, a low branch, the bole - and lands BETWEEN them, in empty space: measured on
+    // model 19, the centroid picked a column holding two stray bark voxels 22 above the ground while the bole
+    // stood elsewhere, so the tree was seated to a column that has no trunk in it. The column with the MOST
+    // wood in the lower third is the bole by construction, and it cannot be empty.
+    const cnt = new Map();
+    const lim = Math.max(4, sz / 3) | 0;
+    for (let i = 0; i < vox.length; i++) { const q = vox[i];
+      if (((q >> 16) & 511) < lim && (q >>> 25) < BIRCHNB) {
+        const k = (q & 255) | ((q >> 8) & 255) << 8;
+        cnt.set(k, (cnt.get(k) || 0) + 1);
+      } }
+    let best = -1, bk = -1;
+    for (const [k, v] of cnt) if (v > best) { best = v; bk = k; }
+    if (bk < 0) return { tcx: sx >> 1, tcy: sy >> 1, tbz: 0 };
+    // ── AND HOW FAR UP THAT COLUMN THE BOLE ACTUALLY STARTS ── the model is trimmed to the extent of ALL its
+    // voxels, LEAVES INCLUDED, so a low branch hanging near the ground sets z = 0 and the trunk can begin well
+    // above it: measured on model 13, the bole's lowest wood sits at z = 28. Seating the model's BOX on the
+    // ground then leaves the trunk starting 28 voxels up, hanging in the air over its own leaves - which is
+    // the birch the user spotted floating. stampBirch subtracts this, which buries the low foliage instead;
+    // mode 1 refuses those cells against the terrain, so the buried leaves simply do not stamp.
+    const tcx = bk & 255, tcy = (bk >> 8) & 255;
+    let tbz = 511;
+    for (let i = 0; i < vox.length; i++) { const q = vox[i];
+      if ((q & 255) === tcx && ((q >> 8) & 255) === tcy && (q >>> 25) < BIRCHNB) {
+        const z = (q >> 16) & 511; if (z < tbz) tbz = z; } }
+    return { tcx, tcy, tbz: tbz === 511 ? 0 : tbz };
+  };
+  const birchDec = (t) => {
+    const b = atob(t.vox);
+    const out = new Int32Array(t.n);
+    let v = 0, sh = 0, acc = 0, k = 0;
+    for (let i = 0; i < b.length; i++) { const c = b.charCodeAt(i);
+      v |= (c & 127) << sh;
+      if (c & 128) { sh += 7; } else { acc += v; out[k++] = acc; v = 0; sh = 0; } }
+    return Object.assign({ sx: t.sx, sy: t.sy, sz: t.sz, wood: t.wood, vox: out }, birchTrunkC(out, t.sx, t.sy, t.sz));
+  };
+  // …and the inverse, because the models now arrive as .vox files and the gen workers still cannot be handed
+  // 1.2M voxels of JavaScript source (world/gen-pool.js stringifies every registered table into the pool's
+  // shared source, and a second copy of the OAKS alone once stopped a boot). So the main thread re-encodes what
+  // it read into the same compact stream the .json used to carry, and each worker decodes its own copy.
+  const birchEnc = (arr) => {
+    const out = new Uint8Array(arr.length * 3);        // 3 bytes/voxel is a safe ceiling: the deltas measured 1-2
+    let k = 0, prev = 0;
+    for (let i = 0; i < arr.length; i++) {
+      let d = arr[i] - prev; prev = arr[i];
+      while (d >= 128) { out[k++] = (d & 127) | 128; d >>>= 7; }
+      out[k++] = d;
+    }
+    let s = '';                                        // chunked: String.fromCharCode.apply blows the stack past ~100k args
+    for (let i = 0; i < k; i += 8192) s += String.fromCharCode.apply(null, out.subarray(i, Math.min(k, i + 8192)));
+    return btoa(s);
+  };
+  // ── WHICH TREE GETS PLANTED, AND WHY IT IS NOT A UNIFORM DRAW (user 2026-08-23: "the tops of the trees are
+  // still cut off", three times) ── the tops are NOT cut. Audited: 723,536 model voxels wanted, 721,170
+  // stamped, zero above WY, zero lost from any crown. What is actually happening is that the SOURCE SET is
+  // half spindly. Measured over the twenty-six, voxels per layer runs 51 to 517, and the thin ones are thin in
+  // the worst way - birch_18_2m carries its first leaf at 57% of its height, birch_25_4m at 70%. Those are
+  // forest-interior trees that self-pruned, and they are perfectly real; a stand made mostly of them is a
+  // field of bare poles with a tuft on each, which is exactly what "cut off" describes.
+  // So the draw is WEIGHTED BY CROWN DENSITY rather than uniform: a tree appears in this table once per 60
+  // voxels-per-layer, capped at 8, so the fullest are eight times likelier than the barest and the barest still
+  // appear. It stays SORTED BY HEIGHT because birchAt's fits-under-the-sky guard walks a prefix of it.
+  const birchPick = (v) => {
+    // TWO MEASUREMENTS PER MODEL, both taken from the model itself so a re-baked or hand-edited .vox is judged
+    // on what it actually contains:
+    //   dens  - voxels per layer. How much tree there is per unit of height.
+    //   bare  - how far up the FIRST leaf sits, as a fraction of total height.
+    const stat = v.map((m) => {
+      let lo = 1e9;
+      for (let i = 0; i < m.vox.length; i++) { const q = m.vox[i];
+        if ((q >>> 25) >= BIRCHNB) { const z = (q >> 16) & 511; if (z < lo) lo = z; } }
+      return { dens: m.vox.length / Math.max(1, m.sz), bare: (lo === 1e9 ? 1 : lo / Math.max(1, m.sz)) };
+    });
+    // ── THE SPINDLY MODELS ARE NOT PLANTED (user 2026-08-23, after asking five times why "the tops of the
+    // trees are cut off") ── they are not cut. Audited: 723,536 model voxels wanted, 721,170 stamped, zero
+    // above the ceiling, zero lost from any crown; and a marker ladder proves the renderer draws to y=483.
+    // What is actually there is the SOURCE SET. Half of these are forest-interior birches that self-pruned:
+    // measured, voxels per layer runs 51 to 517, and birch_18_2m carries its first leaf at 57% of its height,
+    // birch_25_4m at 70%, birch_26_4m at 62%. Rendered on their own they read exactly as the user describes -
+    // a bare pole with a scattered tuft near the top, i.e. a tree whose top has been cut off.
+    // Weighting the draw toward the fuller ones was not enough, because the thin ones still appeared. So they
+    // are refused outright: dens >= 150 AND bare <= 0.5. Fourteen of the twenty-six pass, spanning 12.1 m to
+    // 26 m, so the range of sizes survives.
+    // ALL 26 .vox FILES STAY ON DISK AND STAY EDITABLE - this decides only what the WORLD plants. Fatten a
+    // rejected tree's crown in MagicaVoxel and it starts being planted again, with no code change: the test is
+    // on the art, not on a list of names.
+    // ── THE GATE IS `bare` ALONE, AND dens IS ONLY A WEIGHT (2026-08-24) ── it used to gate on BOTH, with
+    // `dens >= 150` typed against the 26-model set that existed when it was written: 14 passed and the forest
+    // had variety. The set is hand-pruned now, the densest trees went with it, and the SAME absolute number
+    // then admitted 4 of 16 — a whole biome built from four repeating trees, which is what "spread the birch
+    // trees around the birch forest" is not. An absolute threshold over a set someone edits by hand is a
+    // slow-acting bug; it does not fail when you change the number, it fails later when the set moves under it.
+    // Nothing is lost by dropping it, because dens is ALREADY the draw weight below — a sparse tree that is
+    // otherwise fine now appears rarely instead of never, which is what "weighted by fullness" should mean.
+    // `bare` stays a hard gate because it is the one the original complaint was about: a first leaf above half
+    // the tree's height reads as a bare pole with a tuft on it, i.e. "the tops of the trees are cut off".
+    // ── EVERY MODEL IN THE FOLDER IS PLANTED (user 2026-08-24: "why cant you put all 16 models in the birch
+    // forest? go ahead and implement all 16") ── the `bare <= 0.5` gate is gone with the dens one. It was
+    // added when the set was the raw 26-model bake and half of them were forest-interior birches that had
+    // self-pruned: first leaf at 57-70% of height, which rendered as a bare pole with a tuft on top and read
+    // as "the tops of the trees are cut off". That gate was doing the job a CURATED folder does, and the
+    // folder is curated now — hand-pruned from 26 to 16 and hand-edited since. Refusing the owner's own files
+    // is the tool second-guessing the author, so it does not.
+    // The FULLNESS WEIGHTING below is what remains, and it is enough: a sparse tree still appears, just less
+    // often than a full one. If a bare-looking birch turns up again, the fix is to edit or delete that .vox —
+    // which is now a real fix, because the files are what the game loads.
+    const use = v.map((m, i) => i);
+    console.log('[vb] birch: planting all', use.length, 'models, weighted by fullness');
+    // …and the weight is RELATIVE to this set's own median, for the same reason the gate stopped being
+    // absolute: it has to keep meaning "fuller than average here" however many trees are in the folder.
+    const med = use.map((i) => stat[i].dens).sort((a, b) => a - b)[use.length >> 1] || 1;
+    const out = [];
+    for (const i of use) {
+      const w = Math.max(1, Math.min(6, Math.round(3 * stat[i].dens / med)));
+      for (let k = 0; k < w; k++) out.push(i);
+    }
+    return out;
+  };
+  // ── HOW MANY OF THE PACKED COLOUR INDICES ARE BARK ── every birch voxel carries its colour as a 0-based
+  // index into the model palette (bark first, then the four leaf greens), so "is this wood or leaf" is the
+  // test `idx < BIRCHNB`. It was written as a literal 3 in three places and the count then CHANGED to 4
+  // (tools/birch_bark_white.py), which broke all three silently and in different directions: birchPick read
+  // the fourth BARK shade as the lowest leaf and mis-measured how bare a model is, and birchTrunkC stopped
+  // counting that shade as wood — the very test the tree-seating fix depends on. The loader assigns this from
+  // the file, and world/gen-pool.js ships it to the workers, which rebuild BIRCHV through birchDec and would
+  // otherwise disagree with the main thread about which voxels are trunk.
+  let BIRCHNB = 3;
+  let BIRCHV = [], BIRCHENC = [], BIRCHBARK = [], BIRCHIDS = [], BIRCHPICK = [], BIRCH_BANCH = [];
+  // -- WHERE A BEEHIVE HANGS IN A BIRCH (user 2026-08-24: "attach beehives to some of the birch trees") --
+  // Registered as a FUNCTION and re-run per gen worker off that worker's own BIRCHV, exactly as birchPick is
+  // (world/gen-pool.js) and for the same reason: shipping the table would mean snapshotting it at whatever
+  // moment the pool assembled its source, and the birch models arrive from an async load. When it WAS shipped
+  // as a table the workers got an empty list, so a worker-generated region grew the tree and not its hive,
+  // and gtest reported 28 voxels of main-thread hive standing over worker air. Derived on both sides, the two
+  // cannot disagree.
+  // Declared here, above the async birch load that calls it, because anything below that load is unreachable
+  // from inside it - the same temporal dead zone that already caught HIVEV and voxShellAir.
+  const birchBanch = (BV) => {
+    const OUT = [];
+    // -- WHERE A BEEHIVE HANGS IN A BIRCH (user 2026-08-24: "attach beehives to some of the birch trees") --
+    // OAK_BANCH's rule, re-derived for these crowns: a BARK voxel with the hive's whole box of EXTERIOR air
+    // below it. Bark and not leaf for the reason recorded at OAK_BANCH in assets/material-tabs.js - a hive is
+    // solid, so it is STRUCTURE to the support resolver and the structure flood may not enter a drape cell;
+    // hung off leaves it would have no path to the ground and be lifted the first time anything nearby moved.
+    // Built HERE and not beside OAK_BANCH because BIRCHV is filled by this async load, long after
+    // material-tabs.js has run - a table built there would capture an empty list and every birch would offer
+    // no anchor at all. The leaf test is the index into BIRCHIDS rather than foliaTab for the same reason:
+    // material-tabs.js has not run yet, so the tab is still empty here. Indices below BIRCHBARK.length are the
+    // minted bark ids by construction (see the BIRCHIDS build above).
+    // Angle-sorted and capped like the oak's, so the cap costs even coverage rather than one arc of the crown,
+    // and so gen-pool.js can stringify it into every worker without shipping tens of thousands of entries.
+      const BMAX = 24, EDGE = 2, NBK = BIRCHBARK.length;
+      // HIVEV's OWN DIMENSIONS, WRITTEN OUT (2026-08-24) -- reading HIVEV here throws
+      // "Cannot access 'HIVEV' before initialization": it is declared further down the load order, and this
+      // block runs inside the async birch load, which resolves before that declaration is evaluated. The
+      // whole birch load is inside one try/catch, so the throw did not crash anything visibly - it just left
+      // BIRCHV empty and the entire forest gone, reported only by window.__birchErr. A typeof guard is no
+      // help either: typeof on a let in its temporal dead zone throws exactly the same way.
+      // The hive is 5x5x5; if that model is ever resized these three follow it.
+      const hvx = 2, hvy = 2, hvz = 5;
+      for (let k = 0; k < BV.length; k++) {
+        const m = BV[k], sx = m.sx, sy = m.sy, sz = m.sz;
+        // OCCUPANCY, NOT AN EXTERIOR-AIR FLOOD (2026-08-24) -- OAK_BANCH floods the box inward first because
+        // those crowns are baked from a .glb as HOLLOW SHELLS: half the empty space inside an oak dome is a
+        // sealed cavity, so "is empty" does not mean "is outside" and a hive hung there is simply buried.
+        // A birch is not that model - it is scattered branches and leaf clusters with no enclosed volume - so
+        // plain emptiness IS exteriority here, and asking the simpler question keeps this block free of
+        // voxShellAir, which is declared further down and unreachable from inside this async load (the same
+        // temporal dead zone that hid HIVEV, and it fails the same silent way: an empty BIRCHV and no forest).
+        const occ = new Uint8Array(sx * sy * sz);
+        for (const q of m.vox) occ[(q & 255) + ((q >> 8) & 255) * sx + ((q >> 16) & 511) * sx * sy] = 1;
+        const clearBox = (x, y, z, r) => {
+          for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
+            const xx = x + dx, yy = y + dy;
+            if (xx < 0 || xx >= sx || yy < 0 || yy >= sy) return false;
+            for (let d = 1; d <= hvz; d++) { const zz = z - d;
+              if (zz < 0 || occ[xx + yy * sx + zz * sx * sy]) return false; }
+          }
+          return true;
+        };
+        // -- WIDEST CLEARANCE THAT ANY BRANCH ON THIS MODEL CAN OFFER -- OAK_BANCH's rule, and for its reason:
+        // demanding the hive's whole 5x5 footprint is what stops it clipping through the crown, and on its own
+        // it is too strict to be the only test. MEASURED here, requiring the full box left models 0, 2 and 4
+        // with no anchor at all, so three of the five birches in play could never carry a hive and the rate
+        // came out 4.4% against the 10% asked for. So the wide test SELECTS when the model can afford it and
+        // the narrower ones stand behind it: a crown with no roomy branch still gets a hive, just a more
+        // tucked-in one. Ordered widest-first and the first non-empty tier wins, per model.
+        let B = [];
+        for (const rad of [hvx, 1, 0]) {
+          for (const q of m.vox) {
+            const x = q & 255, y = (q >> 8) & 255, z = (q >> 16) & 511;
+            if ((q >>> 25) >= NBK) continue;            // a LEAF - see the support argument above
+            if (x < EDGE || x >= sx - EDGE || y < EDGE || y >= sy - EDGE) continue;
+            if (z < (sz >> 2) || z > sz - 6) continue;  // low enough to be seen from the ground, clear of the very top
+            if (clearBox(x, y, z, rad)) B.push(x | (y << 8) | (z << 16));
+          }
+          if (B.length) break;
+        }
+        const ang = (u) => Math.atan2(((u >> 8) & 255) - sy * 0.5, (u & 255) - sx * 0.5);
+        // A TOTAL ORDER, NOT JUST AN ANGLE (2026-08-24) -- a worker rebuilds BIRCHV from the delta-varint, so its
+        // voxel list can arrive in a different ORDER than the main thread's for the same model. Sorting on the
+        // angle alone leaves ties to be broken by that order, the even sample below then picks different
+        // anchors on each side, and the two disagree about where the hive hangs: gtest reported 25 voxels of
+        // main-thread hive standing over worker air. Breaking ties on the packed coordinate makes the list a
+        // pure function of the SET of voxels, which is the thing both sides really share.
+        B.sort((u, v) => (ang(u) - ang(v)) || (u - v));
+        const out = [];
+        if (B.length <= BMAX) { for (const u of B) out.push(u); }
+        else for (let i = 0; i < BMAX; i++) out.push(B[(((i + 0.5) / BMAX) * B.length) | 0]);
+        OUT.push(out);
+      }
+    
+    return OUT;
+  };
   let OAKV = [], OAKBARK = [], OAKLEAF = [], OAKBLOSV = [], OAKWHITV = [], OAKLITER = [], OAKLITEV = [], BLOSRANK = new Int8Array(256).fill(-1);   // OAKLITER: the LIGHT green oak variety's 4-step ramp — the sorted leaf ids' top two, then the two OAKLITE mints. OAKLITEV: OAKV with every leaf run through it   // BLOSRANK: oak leaf id -> 0..3 by luminance, -1 for everything else. The RAMP is an argument, so one table serves both varieties   // BLOSMAP: oak leaf id -> its cherry-blossom twin; identity for everything else. The workers rebuild the pink crowns from it rather than being handed a second 218k-voxel model set
   try {
     if (location.search.includes('nooaks')) throw new Error('?nooaks');   // A/B switch: an empty OAKV disables the scatter, the material marking and the stamp in one go, the way ?nocacti does
@@ -576,6 +804,226 @@
     console.log('[vb] oaks:', OAKV.length, 'trees,', OAKV.reduce((a, m) => a + m.vox.length, 0), 'voxels,',
       OAKBARK.length, 'bark ids (BORROWED from the pine) +', OAKLEAF.length, 'leaf ids (minted), widest', Math.max(...OAKV.map((m) => Math.max(m.sx, m.sy))), 'tallest', Math.max(...OAKV.map((m) => m.sz)));
   } catch (e) { console.warn('[vb] oak_trees.json missing — oaks skipped', e); OAKV = []; OAKBARK = []; OAKLEAF = []; OAKBLOSV = []; OAKWHITV = []; OAKLITER = []; OAKLITEV = []; }
+  // ══ THE BIRCH FOREST'S TREES (user 2026-08-23) ══ 26 models, 12.1 m to 26.4 m, from
+  // tools/voxelize_birch_forest.py. Three things about this asset are NOT like the oak's, and each one is
+  // forced by the fact that a birch is four times the size of an oak.
+  //
+  // 1. THE BARK IS MINTED, WHERE THE OAK'S IS BORROWED. The oak note above repoints its three bark shades onto
+  //    the pine's woodIds and calls it free — and it IS free, for a brown tree. A birch trunk is WHITE, and on
+  //    the pine's browns it reads as a dead pine rather than a birch; the whiteness with the dark lash marks is
+  //    the single strongest species cue there is. So these three mint. The table has four ids free (measured,
+  //    __vb.palAudit) and the birch spends three of them, which is exactly why the LEAVES could not also mint —
+  //    see 2. They are marked wood/solid/axe-only explicitly in assets/material-tabs.js, which is the property
+  //    borrowing woodIds would have granted for nothing; minting means remembering to say it.
+  // 2. THE LEAVES ARE THE OAK'S OWN IDS, not a second green ramp (user: "make the foilage in the birch forest a
+  //    lighter green. matching the leaves of the lighter green oak tree"). The bake already repointed the
+  //    sampled greens onto oak_trees.json's ramp, so pal[nbark:] IS OAKLEAF colour for colour; taking OAKLEAF's
+  //    ids rather than minting twins costs zero slots and — more to the point — makes every question the game
+  //    asks about a leaf (foliaTab, DRAPE support, snow catch, see-through primary ray) answer identically for
+  //    the two forests, which is what "matching" has to mean for anything except the colour.
+  // 3. THE MODELS ARE NOT SHIPPED TO THE WORKERS. BIRCHV is 1,194,089 voxels against OAKV's 218,367, and
+  //    world/gen-pool.js JSON.stringifies every registered table into the pool's shared source — the note there
+  //    records that a SECOND copy of the oaks alone stopped a boot completing. Stringified, this would be ~12 MB
+  //    of JavaScript that up to 16 workers each parse. So what is registered is BIRCHENC, the base64
+  //    delta-varint the .json already ships in (2.29 MB of string, cheap to parse), and each worker rebuilds
+  //    BIRCHV from it through birchDec — the same "rebuilt here, not shipped" move the pink crowns make.
+  try {
+    // ── THE BIRCHES LOAD FROM THE .vox FOLDER, NOT FROM A BAKED .json (user 2026-08-23: "If I edit the assets
+    // in the .vox folder, I want it to effect the assets in the game as well") ── which is a deliberate break
+    // from how every other decoration in this game works. The rule elsewhere is that a .vox is an AUTHORING
+    // original and the .json is what ships, so editing the .vox does nothing until a tool regenerates the
+    // .json. Here the .vox files ARE the shipped asset: edit one in MagicaVoxel, reload, and the forest
+    // changes. tools/voxelize_birch_forest.py writes them; nothing else stands between the folder and the game.
+    //
+    // WHICH FILES: whatever VOXDEX says is in the folder. VOXDEX is bundle.py's build-time walk of
+    // game/assets (see assets/vox-index.js), so DROPPING A NEW TREE IN is enough - it needs no edit here and
+    // no list to keep in step. It loads before this fragment, which is why this can read it.
+    //
+    // THE PALETTE COMES OUT OF THE FILES TOO, so recolouring in the editor carries as well. Every tree is
+    // written with the same table — bark shades first, then the four leaf greens — and the FIRST FILE READ
+    // DECIDES IT for the whole set, so every tree in the folder must share one palette. NB (how many of the
+    // leading entries are bark) is derived from that table below rather than typed, because the count has
+    // already changed once: the bake writes 3 and tools/birch_bark_white.py rewrites it to 4.
+    // ?nobirch — A/B switch, exactly as ?nooaks is. (The band was emptied outright for a while on 2026-08-23
+    // and put back the same day: "spread the birch trees around the birch forest again". Nothing had to be
+    // rebuilt to restore it, because turning the wood off was only ever a refusal to LOAD — birchAt opens with
+    // `if (!BIRCHV.length) return null`, which switches placement off on the main thread and in the gen workers
+    // together, since they are handed this same array rather than deciding for themselves.)
+    // WHOLE-FLAG MATCH, not includes(): '?cdp&nobirchbirds' CONTAINS 'nobirch', so an includes() test here
+    // silently killed the whole wood whenever the bird-only A/B flag was used — and an A/B that removes the
+    // thing you are trying to hold constant reports a beautiful, meaningless result. It cost one wrong
+    // conclusion (the trees' cost attributed to the birds). Same trap the ?igpu note in core/gpu.js records.
+    if (/[?&]nobirch/.test(location.search)) throw new Error('?nobirch');
+    if (!OAKLEAF.length) throw new Error('no OAKLEAF to share — oaks must load first');   // the leaves borrow the oak's ramp; with no oaks there is nothing to borrow and minting four greens would not fit
+    // VOXDEX is a STRING at runtime, not the array the source literal looks like: bundle.py joins the folder
+    // entries with ';'. ui/console.js reads it the same way — VOXDEX.split(';') — and that is the contract.
+    const bdir = VOXDEX.split(';').find((e) => e.startsWith('foilage/birch_trees:'));
+    const bnames = bdir ? bdir.slice(bdir.indexOf(':') + 1).split(',').filter(Boolean) : [];
+    if (!bnames.length) throw new Error('no .vox in game/assets/foilage/birch_trees');
+    // A MagicaVoxel 150 reader, small enough to keep here: SIZE/XYZI/RGBA out of the chunk tree. Packs into
+    // the same x | z<<8 | y<<16 | index<<25 the stamper reads, with the colour left as a 0..6 INDEX because
+    // seven bits cannot hold a palette id (see stampBirch).
+    // A MagicaVoxel 150 reader. It has to handle a MULTI-PART file, because a .vox coordinate is one byte and
+    // the birches are now scaled past 256: tools/voxelize_birch_forest.py writes a tall tree as a STACK of
+    // parts plus an nTRN/nGRP/nSHP scene graph. The z offset of each part is read out of its nTRN translation
+    // rather than assumed from the order, so moving a part in MagicaVoxel moves it in the world too.
+    const readVox = (buf) => {
+      const d = new DataView(buf), u8 = new Uint8Array(buf);
+      let i = 8, rgba = null;                          // skip 'VOX ' + version
+      const sizes = [], models = [], shp = new Map(), trn = [];
+      const rdStr = (o) => { const n = d.getUint32(o, true); return [String.fromCharCode.apply(null, u8.subarray(o + 4, o + 4 + n)), o + 4 + n]; };
+      const rdDict = (o) => { const n = d.getUint32(o, true); o += 4; const m = {};
+        for (let k = 0; k < n; k++) { let a, b; [a, o] = rdStr(o); [b, o] = rdStr(o); m[a] = b; } return [m, o]; };
+      while (i < buf.byteLength - 12) {
+        const id = String.fromCharCode(u8[i], u8[i + 1], u8[i + 2], u8[i + 3]);
+        const cs = d.getUint32(i + 4, true); i += 12;
+        if (id === 'MAIN') continue;                   // its content is empty; its CHILDREN follow inline
+        if (id === 'SIZE') sizes.push([d.getUint32(i, true), d.getUint32(i + 4, true), d.getUint32(i + 8, true)]);
+        else if (id === 'XYZI') { const n = d.getUint32(i, true), a = new Int32Array(n);
+          for (let k = 0; k < n; k++) { const o = i + 4 + k * 4;
+            a[k] = u8[o] | (u8[o + 1] << 8) | (u8[o + 2] << 16) | ((u8[o + 3] - 1) << 25); }
+          models.push(a); }
+        else if (id === 'RGBA') rgba = u8.subarray(i, i + 1024);
+        else if (id === 'nSHP') { let o = i; const nid = d.getInt32(o, true); o += 4;
+          let dict; [dict, o] = rdDict(o); const nm = d.getUint32(o, true); o += 4;
+          shp.set(nid, d.getInt32(o, true)); }        // first model id is enough: the writer emits one per shape
+        else if (id === 'nTRN') { let o = i; const nid = d.getInt32(o, true); o += 4;
+          let dict; [dict, o] = rdDict(o); const child = d.getInt32(o, true); o += 16;   // child, reserved, layer, nframes
+          let fr; [fr, o] = rdDict(o);
+          const tz = fr._t ? (parseInt(fr._t.split(' ')[2], 10) || 0) : 0;
+          trn.push([child, tz]); }
+        i += cs;
+      }
+      if (!models.length) return null;
+      if (models.length === 1) { const v = models[0]; v.sort();
+        return { sx: sizes[0][0], sy: sizes[0][1], sz: sizes[0][2], vox: v, rgba }; }
+      // STACK THE PARTS. Each nTRN names a child nSHP, which names a model; its _t z is that part's CENTRE in
+      // tree-local space, so the part's base is centre - size/2. Rebased to zero so the tree starts at z 0.
+      const base = new Array(models.length).fill(null);
+      for (const [child, tz] of trn) { const mi = shp.get(child);
+        if (mi !== undefined && mi < models.length) base[mi] = tz - (sizes[mi][2] >> 1); }
+      for (let k = 0; k < models.length; k++) if (base[k] === null) base[k] = 0;   // no scene graph: fall back to sequential stacking
+      let lo = Math.min.apply(null, base);
+      const out = [];
+      let sx = 0, sy = 0, top = 0;
+      for (let k = 0; k < models.length; k++) {
+        const off = base[k] - lo;
+        sx = Math.max(sx, sizes[k][0]); sy = Math.max(sy, sizes[k][1]);
+        top = Math.max(top, off + sizes[k][2]);
+        const a = models[k];
+        for (let j = 0; j < a.length; j++) { const q = a[j];
+          out.push((q & 0x1ffff) | ((((q >> 16) & 511) + off) << 16) | ((q >>> 25) << 25)); }
+      }
+      const v = Int32Array.from(out); v.sort();
+      return { sx, sy, sz: top, vox: v, rgba };
+    };
+    const loaded = [];
+    for (const nm of bnames) {
+      try {
+        const ab = await (await fetch('assets/foilage/birch_trees/' + nm + '.vox')).arrayBuffer();
+        const m = readVox(ab); if (m) { m.name = nm; loaded.push(m); }
+      } catch (e2) { console.warn('[vb] birch: could not read', nm, e2); }
+    }
+    if (!loaded.length) throw new Error('no birch .vox parsed');
+    loaded.sort((a2, b2) => a2.sz - b2.sz);            // SHORT TO TALL: birchAt's height guard walks a PREFIX of this
+    const pal0 = loaded.find((m) => m.rgba);
+    if (!pal0) throw new Error('no RGBA chunk in any birch .vox');
+    // NB 3 -> 4 (user 2026-08-23: "make it multiple shades of white and multiple shades of dark grey"):
+    // pal[0:4] bark, pal[4:8] leaf. tools/birch_bark_white.py writes that table and shifts the four leaves up
+    // by one to make room, so this and the tool must move together — read the wrong NB and the leaves come
+    // back off by one and a crown mints a bark id. FOUR IS A HARD CEILING, not a preference: each bark shade
+    // costs one palette id and they cannot be shared (palOwn below reserves them because they are about to be
+    // called wood), and with the birches unloaded the palette stands at 252/256.
+    // …and NB is DERIVED FROM THE FILE, not typed here. It was a literal 3, then a literal 4, and a literal is
+    // a standing trap: the baker writes the bark ramp and tools/birch_bark_white.py rewrites it to a different
+    // LENGTH, so a bake that is not followed by the tool (or a tool run that is not followed by a re-read)
+    // leaves this number pointing one entry off — and being off by one here does not throw, it silently reads
+    // the first leaf as bark, mints a green id as WOOD, and hands the crown a bark shade. The bark is the run
+    // of leading entries that are not green, using the same green test the tools use, so 3 shades and 4 both
+    // load correctly and the file is the single source of truth.
+    const isGreen = (c) => c[1] > c[0] + 12 && c[1] > c[2] + 12;
+    const bpal0 = [];
+    for (let i = 0; i < 12; i++) bpal0.push([pal0.rgba[i * 4], pal0.rgba[i * 4 + 1], pal0.rgba[i * 4 + 2]]);
+    let NB = 0;
+    while (NB < bpal0.length && !isGreen(bpal0[NB]) && (bpal0[NB][0] || bpal0[NB][1] || bpal0[NB][2])) NB++;
+    const bpal = bpal0.slice(0, NB + 4);
+    if (NB < 1 || NB > 6) throw new Error('birch palette: ' + NB + ' bark shades, expected 1-6');
+    BIRCHNB = NB;                                      // BEFORE birchDec/birchTrunkC/birchPick run below — they all read it
+    // Bark MINTS (a white trunk cannot borrow the pine's browns); leaves take OAKLEAF's ids, matched BY RANK so
+    // the darkest bake green lands on the darkest oak id however the two arrays happen to be ordered.
+    const lum1 = (c) => c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
+    const leafByLum = OAKLEAF.slice().sort((a2, b2) => lum1(palette[a2]) - lum1(palette[b2]));
+    const bleaf = bpal.slice(NB).map((c, i) => [lum1(c), i]).sort((a2, b2) => a2[0] - b2[0]);
+    const leafId = new Array(bpal.length - NB);
+    bleaf.forEach(([, i], r) => { leafId[i] = leafByLum[Math.min(leafByLum.length - 1, r)]; });
+    BIRCHIDS = bpal.map((c, i) => {
+      if (i >= NB) return leafId[i - NB];
+      const n0 = palette.length, id = addCol(c[0], c[1], c[2]);
+      if (palette.length > n0) palOwn.add(id);         // RESERVED for the reason the oak leaves are: these are about to be told they are wood, and a tolerance share would hand that to somebody else's model
+      return id;
+    });
+    BIRCHBARK = [...new Set(BIRCHIDS.slice(0, NB))];
+    // ── THE TWIGS ON THE GROUND ARE BIRCH TWIGS TOO (user: "the twigs on the ground, make them birch twigs.
+    // so they should be white with some dark grey in it + light green leaves") ── a RECOLOUR of stick_1/stick_2
+    // rather than new art, which is what the cherry forest does the other way round: it has AUTHORED pink twigs
+    // (STICKB) because a hue rotation could not make a convincing blossom. Here the target ramps already exist
+    // and are exactly right - the birch's own minted bark, and the oak leaf greens the birch canopy wears - so
+    // remapping beats drawing. Identical geometry, so the seating, the pickup flood and the float table all
+    // behave as they do for the brown twig.
+    // BY RANK, not by index: each ramp is sorted dark-to-light and the model's own ids are too, so the twig's
+    // darkest wood lands on the darkest bark and its lightest on the lightest however either table is ordered.
+    // Wood and leaf are told apart by foliaTab, which is the same question the renderer asks.
+    if (STICKV.length && BIRCHBARK.length && OAKLEAF.length) {
+      const lum9 = (i) => { const c = palette[i]; return c ? c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114 : 0; };
+      const bark9 = BIRCHBARK.slice().sort((a, b) => lum9(a) - lum9(b));
+      const leaf9 = OAKLEAF.slice().sort((a, b) => lum9(a) - lum9(b));
+      const pick9 = (ramp, k, n9) => ramp[n9 < 2 ? ramp.length - 1 : Math.round(k * (ramp.length - 1) / (n9 - 1))];
+      STICKBIRCH = STICKV.map((m) => {
+        const ids9 = [...new Set(m.vox.map((q) => q >>> 24))];
+        // GREENNESS, not foliaTab: assets/material-tabs.js runs AFTER this fragment (src/manifest.txt), so the
+        // tab is still empty here and every id would classify as wood — which is exactly what happened, and it
+        // turned the twig's leaves into bark. The colour itself cannot be out of order.
+        const green9 = (i) => { const c = palette[i]; return !!c && c[1] > c[0] + 12 && c[1] > c[2] + 12; };
+        const wood9 = ids9.filter((i) => !green9(i)).sort((a, b) => lum9(a) - lum9(b));
+        const lv9 = ids9.filter((i) => green9(i)).sort((a, b) => lum9(a) - lum9(b));
+        const map9 = new Map();
+        // ── 80% WHITE, 20% DARK GREY (user) ── and the split is by VOXEL COUNT, not by id count. Spreading the
+        // model's wood ids evenly across the four bark shades sounds equivalent and is not: the twig's ids do
+        // not carry equal numbers of voxels, so an even spread over ids put roughly half the WOOD on the two
+        // greys. Ranked dark-to-light and split at the 20th percentile of voxels, the darkest fifth of the
+        // twig takes the greys and the rest takes the whites, which is what the eye actually counts.
+        const cnt9 = new Map();
+        for (const q of m.vox) cnt9.set(q >>> 24, (cnt9.get(q >>> 24) || 0) + 1);
+        const woodN = wood9.reduce((a, id) => a + (cnt9.get(id) || 0), 0);
+        const greys9 = bark9.slice(0, Math.max(1, bark9.length >> 1));       // the dark half of the birch ramp
+        const whites9 = bark9.slice(Math.max(1, bark9.length >> 1));         // …and the light half
+        // The boundary is the id whose CUMULATIVE share lands closest to 20%, not the first id to cross it. An
+        // id is atomic - every voxel wearing it takes one colour - so "first past the post" overshoots by that
+        // id's whole weight: measured, it gave 30% grey against the 20% asked for. Choosing the nearest
+        // boundary instead splits the error rather than always rounding it up.
+        let cum9 = 0; const acc9 = wood9.map((id) => { cum9 += cnt9.get(id) || 0; return cum9 / Math.max(1, woodN); });
+        let cut9 = 0, bestD = 1e9;
+        for (let i = 0; i < acc9.length; i++) { const d = Math.abs(acc9[i] - 0.20); if (d < bestD) { bestD = d; cut9 = i + 1; } }
+        wood9.forEach((id, i) => {                                          // wood9 is already sorted DARK -> light
+          map9.set(id, i < cut9 ? greys9[Math.min(greys9.length - 1, Math.round(i / Math.max(1, cut9 - 1) * (greys9.length - 1)))]
+                                : whites9[Math.min(whites9.length - 1, Math.round((i - cut9) / Math.max(1, wood9.length - cut9 - 1) * (whites9.length - 1)))]);
+        });
+        lv9.forEach((id, k) => map9.set(id, pick9(leaf9, k, lv9.length)));   // the leaves were already right - light green, on the oak ramp the canopy wears
+        return { sx: m.sx, sy: m.sy, sz: m.sz, vox: m.vox.map((q) => (q & 0xffffff) | ((map9.get(q >>> 24) || (q >>> 24)) << 24)) };
+      });
+      console.log('[vb] birch twigs:', STICKBIRCH.length, 'models recoloured onto', bark9.length, 'bark +', leaf9.length, 'leaf ids');
+    }
+    BIRCHV = loaded.map((m) => Object.assign({ sx: m.sx, sy: m.sy, sz: m.sz, vox: m.vox }, birchTrunkC(m.vox, m.sx, m.sy, m.sz)));
+    // …and the gen workers still cannot be handed 1.2M voxels of source, so they get the same delta-varint the
+    // .json used to ship and rebuild from it. Encoding here costs one pass at boot; see world/gen-pool.js.
+    BIRCHENC = BIRCHV.map((m) => ({ sx: m.sx, sy: m.sy, sz: m.sz, n: m.vox.length, vox: birchEnc(m.vox) }));
+    BIRCHPICK = birchPick(BIRCHV);                     // the density-weighted draw — see birchPick
+    BIRCH_BANCH = birchBanch(BIRCHV);
+    console.log('[vb] birch hive anchors:', BIRCH_BANCH.map((a) => a.length).join('/'));
+    console.log('[vb] birches:', BIRCHV.length, 'trees from .vox,', BIRCHV.reduce((a2, m) => a2 + m.vox.length, 0),
+      'voxels,', BIRCHBARK.length, 'bark ids (MINTED) +', BIRCHIDS.length - NB, 'leaf ids (shared with the oak), tallest',
+      Math.max(...BIRCHV.map((m) => m.sz)));
+  } catch (e) { window.__birchErr = String(e && e.stack || e); console.warn('[vb] birch .vox folder unreadable — birches skipped', e); BIRCHV = []; BIRCHENC = []; BIRCHBARK = []; BIRCHIDS = []; BIRCHPICK = []; BIRCH_BANCH = []; }
   // ── ONE DENSE OCCUPANCY + EXTERIOR-AIR FLOOD FOR A SPARSE MODEL ── the oak crowns baked out of a .glb are
   // HOLLOW SHELLS: measured over all seven, every single leaf voxel has an empty 6-neighbour (2468 of 2468 on
   // the bush, 77513 of 77513 on the giant), so "has air beside it" does not mean "is on the OUTSIDE" — half of

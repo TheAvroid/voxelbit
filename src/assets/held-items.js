@@ -66,7 +66,13 @@
     // in the kit", which is the axe either way, and slotTidy's standing trailing empty still guarantees a free
     // slot for the first pickup. Item id 1 IS the stone axe — it predates the *_IT constants, which is why it
     // is the one entry here written as a literal.
-    const kit = [[1, 1]];
+    // ── AND THE PICK AND THE BOW ARE BACK (user: "put the axe, pick, and bow/arrow in the rotation like it
+    // was ... in the inventory") ── exactly the "one entry back in this array" the note above promises, and
+    // nothing else moves: `selSlot = 0` still means "hold the first thing in the kit", which is still the axe,
+    // and slotTidy's standing trailing empty still guarantees a free slot for the first pickup.
+    // NO ARROWS, deliberately: ARROW_COST is 0 (sim/projectiles.js), so the bow already shoots unlimited and a
+    // starting quiver would be slots of clutter with nothing to spend it on - which is why they came off.
+    const kit = [[1, 1], [PICK_IT, 1], [BOW_IT, 1]];
     for (const [it, n] of kit) { if (!it) continue; for (let q = 0; q < n; q++) if (addItem(it) < 0) break; }
     selSlot = 0;                                     // …and the axe is in hand, not the last thing added
     console.log('[vb] starting kit', kit.filter((k) => k[0]).map((k) => (ITEM_NAMES[k[0]] || k[0]) + (k[1] > 1 ? ' x' + k[1] : '')).join(', '));

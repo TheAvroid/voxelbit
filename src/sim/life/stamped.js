@@ -117,7 +117,14 @@
     // everywhere in this biome — every oak would have scored seq = 0 and been coloured by bi alone, i.e. the
     // per-tree sequence with no neighbourhood balancing at all, which is exactly the skew this replaced.
     const oak = oakM(tx, tz) >= 0.5;                   // >= 0.5 is the SAME line oakAt and treeAt split on, so a tree is always asked about on the grid that actually produced it
+    // -- ...AND A THIRD GRID FOR THE BIRCH -- the argument above is about a 3x3 patch of CANDIDATE CELLS, and the
+    // cell size is the whole of what a biome changes. Running a birch through the PINE grid, which is what this
+    // did before, looks like it works and is meaningless: treeAt returns null across the whole band, so every
+    // birch scored seq = 0 and was coloured by bi alone - the per-tree sequence with no neighbourhood balancing
+    // at all, which is exactly the skew the round-robin exists to remove.
+    const bir = !oak && birchM(tx, tz) >= 0.5;         // the same halfway line birchAt itself splits on
     const bc = oak ? birdColourOn(tx, tz, bi, OKCELL, oakAt, (t) => birdsOnOak(t.wx, t.wz, t.k))
+                   : bir ? birdColourOn(tx, tz, bi, BKCELL, birchAt, (t) => birdsOnBirch(t.wx, t.wz, t.k))
                    : birdColourOn(tx, tz, bi, TCELL, treeAt, (t) => birdsOnPine(t.tx, t.tz));
     // ── AND THE BLOSSOM IS ONE SPECIES, NOT A QUARTER OF FOUR (user 2026-08-18) ── the round-robin above balances
     // three colours across a 3x3 patch, and the cherry forest wants none of that: it wants EVERY perched bird to
@@ -195,6 +202,20 @@
     if (m.sz - 3 < HEIGHT) return 0;
     const mean = 0.63 * (m.sx * m.sy) / (MSX * MSY);
     return Math.min(CARD_OAK_CAP, Math.round(mean * (0.5 + ihash(wx * 0x7F4A + 29, wz * 0x6C08 + 17))));   // its OWN salt, not birdsOnPine's: two scatters keyed alike rank the world alike (see the mammals' one-key-per-species finding). The 0.5..1.5 roll preserves the mean exactly and still leaves the small tiers sometimes empty.
+  };
+  // -- AND HOW MANY A BIRCH CARRIES -- the same expectation the oak uses, against the same pine reference, so a
+  // crown of a given footprint carries the same number of birds whichever forest it grew in (user 2026-08-24:
+  // "the life in the birch forest should match the life in the oak forest"). The birch forest arrives at its
+  // population from the other direction: BKCELL is 44 against OKCELL's 112, so there are far more trees and
+  // each carries about one bird, where an oak wood is a few big crowns carrying several each.
+  // No cherry test and no bush-tier test - neither the blossom nor a 21-voxel shrub exists in this band - but
+  // the height guard stays, because it is a statement about the PLAYER's eye line, not about the model list.
+  // Its own salt, like every other scatter in the game: two keyed alike rank the world alike.
+  const birdsOnBirch = (wx, wz, k) => {
+    const m = BIRCHV[k]; if (!m || !MSX) return 0;
+    if (m.sz - 3 < HEIGHT) return 0;
+    const mean = 0.63 * (m.sx * m.sy) / (MSX * MSY);
+    return Math.min(CARD_OAK_CAP, Math.round(mean * (0.5 + ihash(wx * 0x51E3 + 41, wz * 0x2C9F + 13))));
   };
   let uniBirdN = 0, uniBirdWant = 0;                   // how many perched songbirds reached a drop slot last frame, and how many asked
   const uniBirds = [];                                 // ?uni: perched songbirds staged as [wx, wy, wz, item, th, poolIdx, dp2] and injected into drop slots after the fair-share emit

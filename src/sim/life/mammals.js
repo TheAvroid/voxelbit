@@ -140,7 +140,7 @@
     if (!(x1 > x0 && z1 > z0)) return null;
     const refSolid = (gx, gy, gz) => {               // bfObst's rule, written out again — this validates nvPass, the brick skipping AND staleness, none of which it shares
       const ii = gx + gy * WX + gz * WX * WY, id = W[ii];
-      return id !== 0 && solidTab[id] === 1 && !foliaTab[id] && !coneTab[id] && !SNOW_PASS.has(id) && !SNOW_FERN.has(id) && !stampedIdx.has(ii); };
+      return id !== 0 && solidTab[id] === 1 && !foliaTab[id] && !coneTab[id] && !snowPassTab[id] && !snowFernTab[id] && !stampedIdx.has(ii); };
     const refSolidW = (gx, gy, gz) => {               // …and the WALKER's rule, written out again the same way: the same voxel minus the small ground clutter bfObstW passes. Independent of nvClut, of nvColTop's single-scan trick and of nvK.
       const ii = gx + gy * WX + gz * WX * WY, id = W[ii];
       return refSolid(gx, gy, gz) && !WORM_PASS.has(id); };
@@ -194,7 +194,7 @@
       if (refSolid(rgx, y, rgz) || refSolid(rgx, y + 2, rgz)) consViol++;   // the CONSERVATIVE gate is answered by refSolid, not by the field's own tables — a circular check would report clean while the field lied
       if (solid(Math.floor(x), y, Math.floor(z))) { solViol++;
         const id = W[gwrap(Math.floor(x), WX) + y * WX + gwrap(Math.floor(z), WZ) * WX * WY];
-        if (!(foliaTab[id] || coneTab[id] || SNOW_PASS.has(id) || SNOW_FERN.has(id))) solViolHard++; }
+        if (!(foliaTab[id] || coneTab[id] || snowPassTab[id] || snowFernTab[id])) solViolHard++; }
     }
     return { cells, unbuilt, fresh: cells ? +(fresh / cells).toFixed(4) : -1, staleY, staleC, staleD, staleK, worstDelta: worst, worstK,
       airSamples: air, airFree, conservative: airFree ? +(1 - consViol / airFree).toFixed(4) : -1, consViol,

@@ -35,6 +35,10 @@
     // the chunk the constant and the count the variable, which is the way round the player actually perceives.
     // 700 is the pine's own largest piece today, so pines keep chunks they already had and the oak's come down
     // to match. An 86k oak wants ~123 pieces at that size, which is why PHYS_MAX went to 128.
+    // ── THE MOST OF A TRUNK ONE SWING MAY TAKE ── see the cap in sim/chop-tree.js. A pine offers ~126 wood
+    // voxels inside the axe's radius and an oak more, so a third of that is past chopBite and neither is
+    // affected; a birch offers ~42. chopThin is the floor, so a twig still loses something to a swing.
+    chopFrac: 0.6, chopThin: 4,
     fellChunkVox: 350, fellLandFrames: 3,   // halved again (user 2026-08-22: "we need smaller chunks to absorb by the player"). An 86k oak wants ~247 pieces at this size, which is why PHYS_MAX went to 256
     fellChunkMax: 600, fellStumpSlots: 8,   // ── THE COARSEST SPLIT STILL WORTH MAKING, AND THE SLOTS HELD BACK FOR THE STUMP ── phShatterTree used to refuse to break at all unless every piece could be exactly fellChunkVox, and a tier-7 oak is 86k voxels = 246 pieces against a PHYS_MAX of 256: measured 243 free in an EMPTY world, so the biggest oaks could never break, ever (user 2026-08-23: "I knocked over a big oak tree and it didnt even fall apart into chunks"). The piece count now takes whatever room there is and only REFUSES below fellChunkMax, so the size still cannot run away to the 10,027-voxel lumps that started this — it just no longer holds the whole tree hostage to the last three slots.
     // ── AND IT BREAKS ON A CLOCK, NOT ON A LANDING (user 2026-08-22: "have the tree turn into chunks after 10
@@ -139,17 +143,29 @@
   // of the pops, so 844k probes against 2.25M: same reachability on an intact tree at 37% of the cost.
   // A cut cannot resurrect a glue link the model did not have, and the trunk and the crown are both inside
   // the MAIN component, so no glue link spans the notch: sever the bole and the crown still comes away.
-  const oakShape = (k, rot) => {
-    const key = k * 4 + rot;
-    const hit = OAKSHP.get(key);
-    if (hit) { OAKSHP.delete(key); OAKSHP.set(key, hit); return hit; }   // LRU touch — re-inserting moves it to the young end
-    const m = OAKV[k];
+  // ── ONE SHAPE BUILDER, TWO BROADLEAVES ── the oak and the birch differ only in how a voxel is PACKED
+  // (the birch carries a 9-bit z and a 3-bit palette INDEX, the oak an 8-bit z and the id itself) and in
+  // which table turns that into a world id. Everything downstream - the 6-flood that finds the main body,
+  // the 26-neighbour stray pass, the bole footprint - is identical, and it is delicate enough that two
+  // copies would drift. So the decode is three arguments and the rest is shared verbatim.
+  //   zMask   511 for a birch (models reach 241 courses), 255 for an oak
+  //   idOf    the value stored in A. It must never be 0 for a real voxel - phPresent treats 0 as air -
+  //           which is why the birch stores its index PLUS ONE and its remap table is shifted to match.
+  //   woodOf  is that stored value bark? The bole footprint below is measured from it.
+  //   boleZ0  which course the BOLE starts on, when the model knows better than a min-scan can. Left out,
+  //           the footprint below is measured at the lowest WOOD voxel in the model — right for an oak,
+  //           wrong for a birch whose lowest branch droops 20 courses below its own trunk (model 1 of 16):
+  //           the scan then took that drooping tip for the bole, and since stampBirch seats the model on
+  //           `- m.tbz` the tip is buried and refused, so the anchor scan found no bark in those columns at
+  //           all and every one of those trees came up root -1 (MEASURED: 39 of 40 standing). tbz is the
+  //           same number the stamp seats on, so passing it here is the two agreeing rather than a new rule.
+  const phShapeBuild = (m, rot, zMask, idOf, woodOf, boleZ0) => {
     const sx = (rot & 1) ? m.sy : m.sx, sz = (rot & 1) ? m.sx : m.sy, h = m.sz;
     const A = new Uint8Array(sx * sz * h);
     const cells = new Int32Array(m.vox.length);        // the SPARSE index list — what makes the flood's seed pass O(voxels) instead of O(box), which at 114x112x116 is a 17x difference
     let n = 0;
     for (let i = 0; i < m.vox.length; i++) {
-      const p = m.vox[i], x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & 255;
+      const p = m.vox[i], x = p & 255, y = (p >> 8) & 255, z = (p >> 16) & zMask;
       let rx, rz;                                      // …stampModel's rotation, verbatim
       if (rot === 0) { rx = x; rz = y; }
       else if (rot === 1) { rx = m.sy - 1 - y; rz = x; }
@@ -157,7 +173,7 @@
       else { rx = y; rz = m.sx - 1 - x; }
       const li = rx + rz * sx + z * sx * sz;
       if (!A[li]) cells[n++] = li;
-      A[li] = p >>> 24;
+      A[li] = idOf(p);
     }
     // ── THE LABEL BUFFER IS SCRATCH, NOT AN ALLOCATION (2026-08-19, the oak/cherry felling cost) ── it is
     // transient by its own admission: nothing outside this function ever reads it, and `shp` below does not
@@ -216,12 +232,13 @@
     // models that lean, which on bumpy forest floor is the difference between an anchored tree and one that
     // orphans itself whole the first time it is touched. Rotated with everything else, so it is the bole's
     // real footprint whichever way the tree was placed.
-    let wz0 = 255;
-    for (let i = 0; i < m.vox.length; i++) { const p = m.vox[i]; if (!woodTab[p >>> 24]) continue; const z = (p >> 16) & 255; if (z < wz0) wz0 = z; }
+    let wz0 = boleZ0 === undefined ? zMask : boleZ0;
+    if (boleZ0 === undefined)
+      for (let i = 0; i < m.vox.length; i++) { const p = m.vox[i]; if (!woodOf(p)) continue; const z = (p >> 16) & zMask; if (z < wz0) wz0 = z; }
     let tx0 = 1e9, tx1 = -1e9, tz0 = 1e9, tz1 = -1e9;
     for (let i = 0; i < m.vox.length; i++) {
-      const p = m.vox[i], z = (p >> 16) & 255;
-      if (z > wz0 + 2 || !woodTab[p >>> 24]) continue;   // the lowest three courses of BARK — the bole where it meets the ground
+      const p = m.vox[i], z = (p >> 16) & zMask;
+      if (z > wz0 + 2 || !woodOf(p)) continue;   // the lowest three courses of BARK — the bole where it meets the ground
       const x = p & 255, y = (p >> 8) & 255;
       let rx, rz;
       if (rot === 0) { rx = x; rz = y; }
@@ -232,12 +249,41 @@
       if (rz < tz0) tz0 = rz; if (rz > tz1) tz1 = rz;
     }
     if (tx1 < tx0) { tx0 = 0; tx1 = sx - 1; tz0 = 0; tz1 = sz - 1; }   // a model with no bark at all: fall back to the whole box rather than an empty scan
-    const shp = { A, sx, sz, h, g, cells: n === cells.length ? cells : cells.subarray(0, n), tx0, tx1, tz0, tz1 };
+    return { A, sx, sz, h, g, cells: n === cells.length ? cells : cells.subarray(0, n), tx0, tx1, tz0, tz1 };
+    PH.stats.oakShapes = (PH.stats.oakShapes | 0) + 1;
+  };
+  const oakShape = (k, rot) => {
+    const key = k * 4 + rot;
+    const hit = OAKSHP.get(key);
+    if (hit) { OAKSHP.delete(key); OAKSHP.set(key, hit); return hit; }   // LRU touch — re-inserting moves it to the young end
+    const shp = phShapeBuild(OAKV[k], rot, 255, (p) => p >>> 24, (p) => woodTab[p >>> 24]);
     OAKSHP.set(key, shp);
     while (OAKSHP.size > OAK_SHP_MAX) OAKSHP.delete(OAKSHP.keys().next().value);   // oldest out
-    PH.stats.oakShapes = (PH.stats.oakShapes | 0) + 1;
     return shp;
   };
+  // ── AND THE BIRCH, on its own cache for the same reason the oak has one ── the stored value is the palette
+  // INDEX PLUS ONE (0 is air to phPresent), so BIRCHRM below is BIRCHIDS shifted by one to undo it.
+  // BIRCHIDS shifted up by one, because the shape stores index+1 (phPresent reads 0 as air). Built lazily on
+  // first use: assets/bow.js fills BIRCHIDS during the async birch load, long after this fragment runs, so a
+  // table built at module scope here would capture an empty array and every birch voxel would read as absent.
+  let BIRCHRM = null;
+  const birchRemap = () => {
+    if (BIRCHRM && BIRCHRM.length === BIRCHIDS.length + 1) return BIRCHRM;
+    BIRCHRM = new Uint8Array(BIRCHIDS.length + 1);
+    for (let i = 0; i < BIRCHIDS.length; i++) BIRCHRM[i + 1] = BIRCHIDS[i];
+    return BIRCHRM;
+  };
+  const BIRCHSHP = new Map();
+  const birchShape = (k, rot) => {
+    const key = k * 4 + rot;
+    const hit = BIRCHSHP.get(key);
+    if (hit) { BIRCHSHP.delete(key); BIRCHSHP.set(key, hit); return hit; }
+    const shp = phShapeBuild(BIRCHV[k], rot, 511, (p) => (p >>> 25) + 1, (p) => woodTab[BIRCHIDS[p >>> 25]], BIRCHV[k].tbz || 0);
+    BIRCHSHP.set(key, shp);
+    while (BIRCHSHP.size > OAK_SHP_MAX) BIRCHSHP.delete(BIRCHSHP.keys().next().value);
+    return shp;
+  };
+
   // ── HOW HIGH THE ROOT REACHES ── a pine goes into W through stampTree, which OVERWRITES: its sink 5-8
   // courses are real bark buried in the hill, and `my <= sink` is both the flood's anchor and the carve's
   // "never cut the roots out from under it" guard. stampOak stamps in MODE 1, which REFUSES every cell that
@@ -268,11 +314,46 @@
       if (wx < bx || wx >= bx + fw || wz < bz || wz >= bz + fd) continue;
       const R = oakShape(t.k, t.rot);
       const S = { tr: t, R, bx, bz, gy: groundMin(t.wx, t.wz, 4) - t.sink,   // gy = stampOak's own seat, to the voxel
-                  rm: OAKID, g: R.g, cells: R.cells, root: 0, oak: 1 };
+                  rm: OAKID, g: R.g, cells: R.cells, root: 0, oak: 1, hMax: Math.max(MSZ, R.h) };
       let lo = R.h;                                    // the lowest course of the bole still standing in W — bounded by the bole's own footprint, so ~60 probes and the inner loop shrinks as soon as one column answers
       for (let mz = R.tz0; mz <= R.tz1; mz++) for (let mx = R.tx0; mx <= R.tx1; mx++)
         for (let my = 0; my < lo; my++) { const v = phPresent(S, mx, my, mz); if (v && woodTab[v]) { lo = my; break; } }
       S.root = lo >= R.h ? -1 : lo + OAK_ROOT;         // -1 = no bark left at the base at all, i.e. nothing is holding this tree up any more: no seeds, and whatever still stands comes down on the next touch
+      return S;
+    }
+    return null;
+  };
+  // ── WHICH BIRCH COVERS THIS COLUMN ── the exact mirror of oakShapeAt, and it differs in only two things.
+  // The SEAT: stampBirch seats the BOLE on the ground, not the model's box, so gy carries the same
+  // `- m.tbz` the stamp applies (world/terrain.js). Get that wrong and every carve is offset vertically by
+  // however far up that model's trunk starts - up to 40 voxels.
+  // The FLAG: `oak: 1` reads as "broadleaf" downstream, not "is an oak" — it lets an overlapping crown stand
+  // in for our own in phPresent, and it gathers the ORPHANS 26-connected so a severed tree comes away as one
+  // falling body instead of a shower of diagonal clusters. A birch needs both as much as an oak does: BKCELL
+  // is 44 against crowns up to 86 wide, and stampBirch writes in mode 1, so neighbours really do own cells
+  // inside our footprint. (It is NOT the flood's connectivity — phFlood is 6-connected for every species and
+  // reaches diagonals only through the `g` glue links, so an axe notch severs a birch exactly as it does a
+  // pine. Tried the other way on 2026-08-24 and it broke the fall: the crown parcelled into 25 bodies at the
+  // cut instead of toppling whole.)
+  const BIRCH_ROOT = 2;                                // the same allowance the oak gets: a bole may keep two courses of stump
+  const birchShapeAt = (wx, wz) => {
+    if (!BIRCHV.length) return null;
+    const r = Math.ceil(Math.max(160, BKCELL) / BKCELL) + 1;   // a crown can overhang several cells
+    const c0x = Math.floor(wx / BKCELL), c0z = Math.floor(wz / BKCELL);
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      const t = birchAt(c0x + dx, c0z + dz); if (!t) continue;
+      const m = BIRCHV[t.k]; if (!m) continue;
+      const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+      const bx = t.wx - (fw >> 1), bz = t.wz - (fd >> 1);
+      if (wx < bx || wx >= bx + fw || wz < bz || wz >= bz + fd) continue;
+      const R = birchShape(t.k, t.rot);
+      const tw = birchTrunkW(t, m);
+      const S = { tr: t, R, bx, bz, gy: groundMin(tw.wx, tw.wz, 4) - t.sink - (m.tbz || 0),
+                  rm: birchRemap(), g: R.g, cells: R.cells, root: 0, oak: 1, hMax: Math.max(MSZ, R.h) };
+      let lo = R.h;                                    // the lowest course of bole still standing in W
+      for (let mz = R.tz0; mz <= R.tz1; mz++) for (let mx = R.tx0; mx <= R.tx1; mx++)
+        for (let my = 0; my < lo; my++) { const v = phPresent(S, mx, my, mz); if (v && woodTab[v]) { lo = my; break; } }
+      S.root = lo >= R.h ? -1 : lo + BIRCH_ROOT;       // -1 = no bark left at the base at all
       return S;
     }
     return null;
@@ -285,14 +366,17 @@
       const R = MROT[tr.rot], bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
       if (wx < bx || wx >= bx + R.sx || wz < bz || wz >= bz + R.sz) continue;
       return { tr, R, bx, bz, gy: groundMin(tr.tx, tr.tz, 2) - tr.sink, rm: remap, g: null, cells: null,
-               root: tr.sink, oak: 0 };   // …the same key set in the same order as the oak's, so both kinds of shape share one hidden class at every site that reads them
+               root: tr.sink, oak: 0, hMax: MSZ };   // …the same key set in the same order as the oak's, so both kinds of shape share one hidden class at every site that reads them
     }
     // ── AND OTHERWISE, AN OAK ── extending this rather than adding a second entry point is deliberate: every
     // caller of treeShapeAt (chopSwing, the arrow's carve in sim/projectiles.js, __vb.physChopFull) is asking
     // "which standing tree owns this column", and none of them wants to ask it twice. The two scans can never
     // both answer, because the biome masks are exclusive — treeAt refuses oakM > 0.5 and oakAt refuses
     // oakM < 0.5 — so in the pine forest this costs one bounded scan over empty cells.
-    return oakShapeAt(wx, wz);
+    // …AND THEN THE BIRCH. Three scans, never two answers: treeAt refuses birchM > 0.5 and oakM > 0.5, oakAt
+    // wants oakM >= 0.5, and birchAt wants the birch band - the masks are mutually exclusive by construction,
+    // so outside a forest this costs one bounded walk over empty cells and inside one it stops at the first.
+    return oakShapeAt(wx, wz) || birchShapeAt(wx, wz);
   };
   // 4 emissive embers at an impact point — the death poof's spark half, reused for a landed chop (user).
   // sparks3d is declared further down; this only ever runs from a swing, long after that.
@@ -435,8 +519,18 @@
   let phPres = null;                                 // per-cell "is this voxel still in the world", filled by the flood's seed pass — see the note there
   let oakLabScr = null;                              // see the note in the oak shape builder — reused label buffer, never read outside it
   let phMark = null, phStack = null;
+  // ── EVERY SHAPE CARRIES ITS OWN CEILING (2026-08-24, "half the trees float and half of them fall") ──
+  // MSZ is pine5.vox's height, 116, and it was the my bound in the flood, the component walk, the carve, the
+  // drape and the body re-split. A pine is exactly that tall and an oak is not taller, so for eight months it
+  // read as "the model box" — but a birch reaches 241 courses, and MEASURED, the fraction of each model above
+  // 116 predicts the orphan count on an UNTOUCHED tree to within 1.6 points (tree 2: 28.9% predicted / 29.1%
+  // seen; tree 5: 84.5% / 85.1%). Everything above the ceiling was unreachable from the root, so it was never
+  // seeded, never bodied and never erased: the trunk came away and the crown stayed in the sky. The two
+  // shortest models drop most of their mass below 116 and fell convincingly, which is the "half" the user saw.
+  // Math.max keeps the pine and the oak on the exact buffer sizes and bounds they have today — only a model
+  // TALLER than a pine changes anything, and the models' own geometry is 100% root-connected (tools/birch_connect.py).
   const phFlood = (S) => {
-    const sx = S.R.sx, sz = S.R.sz, nAll = sx * sz * MSZ;
+    const sx = S.R.sx, sz = S.R.sz, hM = S.hMax || MSZ, nAll = sx * sz * hM;
     if (!phMark || phMark.length < nAll) { phMark = new Uint8Array(nAll); phStack = new Int32Array(nAll); }
     else phMark.fill(0, 0, nAll);
     if (!phPres || phPres.length < nAll) phPres = new Uint8Array(nAll);   // …and its partner. Never bulk-cleared: each flood erases exactly what it wrote (see the end of this function), so it is always all-zero on entry
@@ -460,7 +554,7 @@
         if (my <= root && woodTab[v] && !phMark[k]) { phMark[k] = 1; phStack[sp++] = k; }
       }
     } else {
-      for (let my = 0; my < MSZ; my++) for (let mz = 0; mz < sz; mz++) for (let mx = 0; mx < sx; mx++) {
+      for (let my = 0; my < hM; my++) for (let mz = 0; mz < sz; mz++) for (let mx = 0; mx < sx; mx++) {
         const k0 = li(mx, my, mz), v0 = phPresent(S, mx, my, mz);
         phPres[k0] = v0 ? 1 : 0;
         if (v0) { total++;
@@ -473,7 +567,7 @@
         const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
         const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
         const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= hM) continue;
         const nk = li(nx, ny, nz);
         // ── THE SEED PASS ALREADY ASKED ── phPresent is not a lookup, it is a WORLD read: an A[] index, a
         // toroidal wrap on x and z, a W[] fetch and a remap compare. The pass above runs it over every cell
@@ -486,7 +580,7 @@
       if (g && g[k]) {                                // ── THE DIAGONAL LINKS ── 12,505 flagged cells of 86,365 on the giant, so this runs on 14% of the pops and buys 26-connected reachability at 37% of a 26-connected flood (see oakShape)
         for (let d = 0; d < 78; d += 3) {
           const nx = mx + phNb26[d], ny = my + phNb26[d + 1], nz = mz + phNb26[d + 2];
-          if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+          if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= hM) continue;
           const nk = li(nx, ny, nz);
           if (phMark[nk] || !phPres[nk]) continue;   // …the same cached answer the 6-neighbour loop above uses
           phMark[nk] = 1; phStack[sp++] = nk;
@@ -510,7 +604,7 @@
   // falling tree is. Only ever reached when something really did detach, so the 4.3x neighbour cost is paid
   // once per felling rather than once per swing. The pine keeps its own loop verbatim.
   const phComponent = (S, f, start) => {             // one connected component of the ORPHANED cells
-    const { sx, sz, li } = f;
+    const { sx, sz, li } = f; const hM = S.hMax || MSZ;
     const cells = [];
     const c26 = !!S.oak;
     let sp = 0; phStack[sp++] = start; phMark[start] = 2;
@@ -520,7 +614,7 @@
       if (c26) {
         for (let d = 0; d < 78; d += 3) {
           const nx = mx + phNb26[d], ny = my + phNb26[d + 1], nz = mz + phNb26[d + 2];
-          if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+          if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= hM) continue;
           const nk = li(nx, ny, nz);
           if (phMark[nk] || !phPresent(S, nx, ny, nz)) continue;
           phMark[nk] = 2; phStack[sp++] = nk;
@@ -531,7 +625,7 @@
         const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
         const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
         const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= hM) continue;
         const nk = li(nx, ny, nz);
         if (phMark[nk] || !phPresent(S, nx, ny, nz)) continue;
         phMark[nk] = 2; phStack[sp++] = nk;
@@ -544,7 +638,7 @@
   // probed), 5 = face, 4 = edge, <=3 = corner. Probes are taken CORNERS FIRST, which is what collapses a
   // flat-bottomed body from hundreds of candidate contacts to a handful.
   const phBuildBody = (S, cells, f, idMap) => {
-    const { sx, sz } = f, N = cells.length;
+    const { sx, sz } = f, N = cells.length, hM = S.hMax || MSZ;
     const lx = new Int16Array(N), ly = new Int16Array(N), lz = new Int16Array(N), id = new Uint8Array(N);
     let cxs = 0, cys = 0, czs = 0;
     const inComp = new Set(cells);
@@ -572,7 +666,7 @@
       pos: [S.bx + com[0], S.gy + com[1], S.bz + com[2]],   // world position OF THE COM
       origin: [S.bx, S.gy, S.bz],                    // where the local frame sat in W — physValidate proves no duplicate remains
       vel: [0, 0, 0], omega: [0, 0, 0], q: [0, 0, 0, 1],
-      sleeping: false, sleepT: 0, born: performance.now(), sx, sz,
+      sleeping: false, sleepT: 0, born: performance.now(), sx, sz, hMax: S.hMax || MSZ,   // …and the body inherits it, or phChopBody re-splits a felled birch against the pine's ceiling and shatters everything above it
       c26: S.oak ? 1 : 0,                            // ── THIS BODY'S OWN CONNECTIVITY ── an oak is one piece only 26-connected (see oakShape), so chopping a FELLED oak has to re-split it the same way or a single swing shatters the crown into 200 clumps. 0 for everything else, including the {bx,gy,bz} pseudo-shapes phSubBody and phBodyFromCells pass in; phChopBody carries it across to the pieces it makes.
       ax: [1, 0, 0], ay: [0, 1, 0], az: [0, 0, 1] };   // cached world axes — refreshed whenever the body moves, read by phBodySolid
     const rank = [], rankFol = [];                   // 0 = corner (best probe) … 3 = interior (never); rankFol = the foliage cells held back in case the body turns out to be nothing else
@@ -583,7 +677,7 @@
         const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
         const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
         const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= hM) continue;
         if (inComp.has(nx + nz * sx + ny * sx * sz)) filled++;
       }
       if (filled >= 6) continue;                     // INTERIOR — skipped entirely

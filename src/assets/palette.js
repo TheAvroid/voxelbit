@@ -336,6 +336,21 @@
   // THREE, NOT FOUR. The darkest oak leaf (82,115,47) is already within 7/255 of a GRASS shade, so it would buy
   // nothing; the three that matter are the ones a canopy actually reads as. The table has 5 free.
   const OAKMOSS = [addCol(105, 143, 51), addCol(107, 141, 77), addCol(134, 167, 89)];
+  // ── THE BIRCH FOREST FLOOR (user: "make the terrain a light green ... as well as the moss on top of the
+  // rocks") ── a four-step GROUND ramp in the oak canopy's greens, and it costs ZERO ids because every one of
+  // them already exists. It CLIMBS OFF the ramp beside it, the same trick the light oak variety uses: the
+  // three OAKMOSS shades ARE the oak's three brightest leaf colours, and the fourth step the ramp needs is the
+  // darkest oak leaf — which is why OAKMOSS is three and not four in the first place, measured 7/255 from
+  // GRASS[0] and therefore already in the table.
+  // So the birch floor is literally "the lighter green oak tree's leaves", on ground ids rather than canopy
+  // ones: floatTab and mossTab like GRASS, never foliaTab, because ground you can see through is not ground.
+  // NO DARK STEP (user: "the terrain colours ... have dark greens in there and it shouldn't be there") — the
+  // ramp used to open on GRASS[0], which is (83,108,54): the pine floor's own dark green, borrowed only
+  // because a 4-step ramp needed a fourth id and that one was already minted. It is the one shade in here that
+  // does not belong to the light oak's leaves, and at index 0 it is the shade the DARKEST lit ground wears, so
+  // it showed up exactly where the floor is already in shadow. OAKMOSS[0] takes its place: the ramp is now
+  // entirely the light greens, and it still costs zero ids.
+  const BIRCHMOSS = [OAKMOSS[0], OAKMOSS[0], OAKMOSS[1], OAKMOSS[2]];
   for (const i of OAKMOSS) palOwn.add(i);   // reserved: mossCap keys on these, and a tolerance reuse would scatter somebody else's model over the boulders
   // ── THE SECOND OAK, AND IT COSTS TWO IDS (user 2026-08-19: "make the oak trees have 2 shades of green. a
   // lighter green and a darker green. similar to whats done with the cherry trees") ── the cherry forest ships

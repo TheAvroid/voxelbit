@@ -12,7 +12,7 @@
       const id = W[ii];
       if (id === 0 || solidTab[id] !== 1) return false;   // palette truth, exactly as solid() reads it
       if (foliaTab[id] || coneTab[id]) return false;      // LEAVES ARE NOT AN OBSTACLE (user) — flyers pass straight through a crown; cones have no hitbox for the player either
-      if (SNOW_PASS.has(id) || SNOW_FERN.has(id)) return false;   // soft grass/bloom/fern strands
+      if (snowPassTab[id] || snowFernTab[id]) return false;   // soft grass/bloom/fern strands
       return !stampedIdx.has(ii); };                      // …and another creature's own stamped body is not terrain
     const bfObstW = (x, y, z) => {                     // WORM obstacle test — same as bfObst but also passes small ground clutter (cones/sticks/field stones) so a crawling worm never pins on them
       const yy = Math.max(1, Math.min(WY - 1, Math.floor(y)));
@@ -20,7 +20,7 @@
       const id = W[ii];
       if (id === 0 || solidTab[id] !== 1) return false;
       if (foliaTab[id] || coneTab[id]) return false;
-      if (SNOW_PASS.has(id) || SNOW_FERN.has(id) || WORM_PASS.has(id)) return false;
+      if (snowPassTab[id] || snowFernTab[id] || WORM_PASS.has(id)) return false;
       return !stampedIdx.has(ii); };
     const bfSurf = (x, z) => Math.max(hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], WL);
     const bfGlide = (x, z) => {                        // MAX terrain over a wide stencil → the flight height RIDES THE RIMS, gliding over ravines/gorges instead of diving in
@@ -53,7 +53,7 @@
       let ghostOld = 0, phantomOld = 0, obstOld = 0;                    // …and the same three under the PRE-FIX palette-id rule, so before/after come out of one run
       const bfObstLegacy = (xx, yy2, zz) => { const yv = Math.max(1, Math.min(WY - 1, Math.floor(yy2)));
         const idv = W[gwrap(Math.floor(xx), WX) + yv * WX + gwrap(Math.floor(zz), WZ) * WX * WY];
-        return idv !== 0 && !foliaTab[idv] && !SNOW_PASS.has(idv) && !SNOW_FERN.has(idv) && !CREATURE_IDS.has(idv); };
+        return idv !== 0 && !foliaTab[idv] && !snowPassTab[idv] && !snowFernTab[idv] && !CREATURE_IDS.has(idv); };
       const byId = {}, byIdOld = {};
       const x0 = Math.max(rect.xlo + 8, P.x - 320), x1 = Math.min(rect.xhi - 8, P.x + 320);
       const z0 = Math.max(rect.zlo + 8, P.z - 320), z1 = Math.min(rect.zhi - 8, P.z + 320);
@@ -183,12 +183,76 @@
       return g;
     };
     const oakEdgePerch = (tx, tz, k, bi, n) => { const g = oakPerchGeo(k); return g ? crownEdgePerch(tx, tz, bi, n, g.rad, g.st, 0, g.tCh, g.tip, g.scan) : null; };
+    // -- AND THE SAME AGAIN FOR A BIRCH -- every number is read off the model exactly as the oak's is, with one
+    // difference: tCh is 0. The oak needs a bole ring because its trunk sits at the CENTRE of its box, so a
+    // Chebyshev ring about the anchor IS its trunk. A birch's bole is up to 83 voxels off its box centre (the
+    // crown leans - see birchTrunkC in assets/bow.js), so the same ring would mask a piece of open crown and
+    // leave the real trunk unmasked. It is not needed either way: crownEdgePerch only ever accepts a voxel
+    // foliageSet calls a LEAF, so bark cannot be a perch whatever the ring says.
+    const BKPERCH = [];
+    const birchPerchGeo = (k) => {
+      let g = BKPERCH[k]; if (g) return g;
+      const m = BIRCHV[k]; if (!m) return null;
+      const rad = Math.max(m.sx, m.sy) >> 1;
+      BKPERCH[k] = g = { rad, st: Math.max(1, Math.ceil(rad / 9)), tCh: 0, tip: Math.max(4, m.sz >> 3), scan: m.sz + 24 };
+      return g;
+    };
+    const birchEdgePerch = (tx, tz, k, bi, n) => { const g = birchPerchGeo(k); return g ? crownEdgePerch(tx, tz, bi, n, g.rad, g.st, 0, g.tCh, g.tip, g.scan) : null; };
     // ── PERCHED BIRD PLACEMENT ── This used to throw 28 random darts at the disc and keep the first that hit a pine.
     // Random darts give a random DENSITY: some stretches of forest end up thick with birds and others bare, which is
     // the "not consistent throughout the forest" complaint. It also could not see which pines were free, so it wasted
     // most of its tries re-drawing occupied ones. Now every pine in range is enumerated once per frame, the occupied
     // ones are removed, and a placement draws UNIFORMLY from what is left — so bird density is even everywhere the
     // pines are, by construction rather than by luck.
+    // ── THE BIRCH TREE LIST IS CACHED, NOT RE-ENUMERATED EVERY FRAME (2026-08-24, user: "getting frame drops in
+    // the birch forest now") ── buildCardCand runs once a frame while the player walks, and the birch arm of it
+    // walks CARD_KEEP / BKCELL cells each way: 680 / 44 is a 33 x 33 sweep, against the oak's 15 x 15, and
+    // birchAt is the dearer query of the two — every cell that survives its hash pays TWO H() calls (the
+    // waterline test and the fits-under-the-sky test), and H goes through riverAt.
+    // MEASURED with the pass switched off entirely: life 5.46 -> 2.47 ms, cpuTotal 8.00 -> 3.10, fps 175 -> 270,
+    // 1% low 40 -> 98. The sampling profiler put riverAt at 9% of all self time, the largest named cost in the
+    // frame, and it was this walk feeding it.
+    // None of that work changes between frames: which birches exist near a cell is a pure function of the cell.
+    // So it is done once per CELL the player enters — about every 44 voxels, ~2 s at a sprint — and the frame's
+    // candidate list is then filtered out of the cached list, which is only distance and occupancy tests.
+    // Flat Int32Array-style tuples rather than objects: this list runs to a couple of hundred trees and it used
+    // to allocate one object per BIRD per frame.
+    // The radius carries one extra cell because the scan is centred on the cell, not on the player, who may be
+    // up to BKCELL away from where it was taken before the next rebuild.
+    // ── …AND THE SWEEP IS SPREAD OVER FRAMES, NOT PAID IN ONE (2026-08-24) ── caching the list per CELL took the
+    // mean cost right down and turned what was left into a BURST: crossing a birch cell is every 44 voxels, and
+    // the whole 35 x 35 sweep landed on that one frame. MEASURED on a fixed path, against the same walk with the
+    // birch perches switched off entirely: mean life 2.45 vs 1.88 ms — nearly free — but p90 16.5 vs 6.0 and the
+    // 1% low 44 vs 119. The average was fine and the frame the player actually felt was not, which is the whole
+    // of the "frame drops" report.
+    // So the sweep runs BK_ROWS rows a frame into a scratch list and is published when it completes: ~9 frames
+    // for a full sweep, ~140 birchAt calls a frame instead of 1225 in one. The live list stays usable while the
+    // new one builds — it is a candidate list, and a few frames of staleness costs at most a perch offered one
+    // cell late, which the distance and occupancy tests below re-check anyway.
+    // ── AND IT IS DRIVEN FROM THE FRAME, NOT FROM buildCardCand (2026-08-24) ── stepping it inside
+    // buildCardCand deadlocks: that only runs when findPineCrown asks for a perch, findPineCrown only asks
+    // while candidates exist, and until the FIRST sweep completes there are none in this biome — so the
+    // sweep advanced exactly one step and stopped, and the birch forest came up with 0 perched songbirds.
+    // MEASURED with a probe: scanning stuck true at row -21 of -25..25, tree list empty, forever.
+    // main/tick-passes.js calls it beside frame++, the one site that file documents as never skipped.
+    // Its STATE lives in sim/life/slots.js, not here: everything in this fragment is re-initialised every
+    // frame (which is why cardCandF works as a within-frame guard and nothing noticed), so a sweep cursor
+    // declared here restarts from row one on every call and never finishes. MEASURED: 4,288 calls, cursor
+    // pinned at row -21 of -25..25, tree list permanently empty.
+    const birchScanStep = () => {
+      const RB = Math.ceil(CARD_KEEP / BKCELL) + 1;
+      const cx = Math.floor(P.x / BKCELL), cz = Math.floor(P.z / BKCELL);
+      if (!BK.scanning && (cx !== BK.cx || cz !== BK.cz)) { BK.scanning = true; BK.scan = []; BK.dz = -RB; BK.scx = cx; BK.scz = cz; }
+      if (!BK.scanning) return;
+      for (let r = 0; r < BK.rows && BK.dz <= RB; r++, BK.dz++) {
+        for (let dx = -RB; dx <= RB; dx++) {
+          const tr = birchAt(BK.scx + dx, BK.scz + BK.dz); if (!tr) continue;
+          const n = birdsOnBirch(tr.wx, tr.wz, tr.k); if (!n) continue;
+          BK.scan.push(tr.wx, tr.wz, tr.k, n);
+        }
+      }
+      if (BK.dz > RB) { BK.trees = BK.scan; BK.scan = []; BK.cx = BK.scx; BK.cz = BK.scz; BK.scanning = false; }
+    };
     let cardCandF = -1;
     // ── PROCEDURAL BUTTERFLIES ── a butterfly WANDERS, so unlike a perched bird it cannot be pinned to a voxel.
     // What is procedural is its HOME: a deterministic point per 128-vox cell, ~half of cells occupied. Slots activate
@@ -460,7 +524,7 @@
         const ddx = tr.tx - P.x, ddz = tr.tz - P.z, d2 = ddx * ddx + ddz * ddz;
         if (d2 > CARD_KEEP * CARD_KEEP) continue;
         const n = birdsOnPine(tr.tx, tr.tz);
-        for (let i = 0; i < n; i++) if (!owned.has(tr.tx + ',' + tr.tz + ',' + i)) cardCand.push({ tx: tr.tx, tz: tr.tz, k: -1, bi: i, n, d2 , ord: ihash(tr.tx * 397 + 7, tr.tz * 389 + 23) });
+        for (let i = 0; i < n; i++) if (!owned.has(tr.tx + ',' + tr.tz + ',' + i)) cardCand.push({ tx: tr.tx, tz: tr.tz, k: -1, bk: 0, bi: i, n, d2 , ord: ihash(tr.tx * 397 + 7, tr.tz * 389 + 23) });
       }
       // ── AND THE OAKS, ON THEIR OWN GRID (user 2026-08-17) ── the walk above enumerates PINES, and treeAt now
       // returns null everywhere oakM > 0.5, so in the biome the player actually spawns in it found nothing at
@@ -479,7 +543,23 @@
         if (tr.wx <= rect.xlo + mg || tr.wx >= rect.xhi - mg || tr.wz <= rect.zlo + mg || tr.wz >= rect.zhi - mg) continue;
         const ddx = tr.wx - P.x, ddz = tr.wz - P.z, d2 = ddx * ddx + ddz * ddz;
         if (d2 > CARD_KEEP * CARD_KEEP) continue;
-        for (let i = 0; i < n; i++) if (!owned.has(tr.wx + ',' + tr.wz + ',' + i)) cardCand.push({ tx: tr.wx, tz: tr.wz, k: tr.k, bi: i, n, d2 , ord: ihash(tr.wx * 397 + 7, tr.wz * 389 + 23) });
+        for (let i = 0; i < n; i++) if (!owned.has(tr.wx + ',' + tr.wz + ',' + i)) cardCand.push({ tx: tr.wx, tz: tr.wz, k: tr.k, bk: 0, bi: i, n, d2 , ord: ihash(tr.wx * 397 + 7, tr.wz * 389 + 23) });
+      }
+      // -- AND THE BIRCHES, ON THE THIRD GRID (user 2026-08-24) -- without this the birch forest held 19
+      // perched songbirds against the oak forest's 421, and all 19 were on pines at the far edge of the band.
+      // Same enumeration, same occupancy set, same distance ceiling and the same crown-sized rect margin as
+      // the oak pass. A third loop rather than a wider one because BKCELL is 44 against OKCELL's 112 and
+      // TCELL's 45, and walking the coarsest of the three would miss most of the trees on the other two. The
+      // three can never double-count: treeAt, oakAt and birchAt gate on mutually exclusive bands.
+      const BKT = BK.trees;
+      for (let q = 0; q < BKT.length; q += 4) {
+        const twx = BKT[q], twz = BKT[q + 1], tk = BKT[q + 2], n = BKT[q + 3];
+        const g = birchPerchGeo(tk); if (!g) continue;
+        const mg = g.rad + 2;
+        if (twx <= rect.xlo + mg || twx >= rect.xhi - mg || twz <= rect.zlo + mg || twz >= rect.zhi - mg) continue;
+        const ddx = twx - P.x, ddz = twz - P.z, d2 = ddx * ddx + ddz * ddz;
+        if (d2 > CARD_KEEP * CARD_KEEP) continue;
+        for (let i = 0; i < n; i++) if (!owned.has(twx + ',' + twz + ',' + i)) cardCand.push({ tx: twx, tz: twz, k: tk, bk: 1, bi: i, n, d2 , ord: ihash(twx * 397 + 7, twz * 389 + 23) });
       }
     };
     // == PERCHES THE PLAYER HAS CLEARED == the clash test below only sees ACTIVE slots, and a slain bird has init=false, so the perch it just
@@ -499,7 +579,9 @@
         const c = cardCand[k];
         cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();
         if (cardSlainPerch.has(cardPerchKey(c.tx, c.tz, c.bi))) continue;   // a bird was killed on this branch — leave it empty
-        const cr = c.k < 0 ? pineEdgePerch(c.tx, c.tz, c.bi, c.n) : oakEdgePerch(c.tx, c.tz, c.k, c.bi, c.n);   // c.k = the OAKV size tier, or -1 for a pine (one model, no tier)
+        const cr = c.k < 0 ? pineEdgePerch(c.tx, c.tz, c.bi, c.n)
+          : c.bk ? birchEdgePerch(c.tx, c.tz, c.k, c.bi, c.n)
+          : oakEdgePerch(c.tx, c.tz, c.k, c.bi, c.n);   // c.k = the OAKV size tier, or -1 for a pine (one model, no tier)
         if (!cr) continue;
         let clash = false;                             // the cardinal model is ~7 vox across; two stamps closer than that corrupt each other
         for (let j = CARD_0; j < CARD_END; j++) {

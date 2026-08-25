@@ -25,15 +25,18 @@
      toggles and retired again both times when that group was removed. Delete to restore. */
   #lgtPanel { display: none !important; }
   /* ── ARROW ORIENTATION ── top right, shown whenever the cursor is free; each button turns the arrow on the bow a quarter turn */
-  #arwPanel { position: fixed; top: 10px; right: 12px; z-index: 60; background: rgba(12,16,22,0.82); border: 1px solid #2b3648;
+  /* ── TREE SIZE (asset editor, [y]) ── same furniture as #arwPanel, parked BELOW it: both are top-right
+     and the arrow panel is up whenever the cursor is free, which is exactly when this one is usable too. */
+  #edSzPanel { top: 150px !important; }
+  #arwPanel, #edSzPanel { position: fixed; top: 10px; right: 12px; z-index: 60; background: rgba(12,16,22,0.82); border: 1px solid #2b3648;
     border-radius: 10px; padding: 7px 9px 8px; font: 7px/1.6 'px3', Consolas, monospace; letter-spacing: 1px; color: #cfd6e0;
     display: flex; flex-direction: column; gap: 3px; min-width: 124px; box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
-  #arwPanel .arwHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #8fa0b8; padding-bottom: 3px; border-bottom: 1px solid #223046; margin-bottom: 2px; }
-  #arwPanel .arwRow { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-  #arwPanel button { background: #1a2331; border: 1px solid #3d4a60; border-radius: 7px; color: #cfd6e0; font: inherit; padding: 2px 7px; cursor: pointer; min-width: 34px; }
-  #arwPanel button:hover { border-color: #7fd05a; color: #b8ff6e; }
-  #arwPanel .arwSld input[type="range"] { flex: 1; min-width: 0; height: 12px; accent-color: #7fd05a; background: transparent; cursor: pointer; }
-  #arwPanel .arwSld .arwVal { min-width: 14px; text-align: right; color: #9fd07a; }
+  #arwPanel .arwHead, #edSzPanel .arwHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #8fa0b8; padding-bottom: 3px; border-bottom: 1px solid #223046; margin-bottom: 2px; }
+  #arwPanel .arwRow, #edSzPanel .arwRow { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  #arwPanel button, #edSzPanel button { background: #1a2331; border: 1px solid #3d4a60; border-radius: 7px; color: #cfd6e0; font: inherit; padding: 2px 7px; cursor: pointer; min-width: 34px; }
+  #arwPanel button:hover, #edSzPanel button:hover { border-color: #7fd05a; color: #b8ff6e; }
+  #arwPanel .arwSld input[type="range"], #edSzPanel .arwSld input[type="range"] { flex: 1; min-width: 0; height: 12px; accent-color: #7fd05a; background: transparent; cursor: pointer; }
+  #arwPanel .arwSld .arwVal, #edSzPanel .arwSld .arwVal { min-width: 14px; text-align: right; color: #9fd07a; }
   #arwPanel .arwBake { gap: 4px; }
   #arwPanel .arwBake input { flex: 1; min-width: 0; background: #0c1118; border: 1px solid #33405a; border-radius: 7px; color: #9fd07a; font: inherit; padding: 3px 5px; }
   #arwPanel .arwHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; text-align: center; }

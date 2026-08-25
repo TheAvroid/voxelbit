@@ -60,6 +60,11 @@
       if (t <= 0.0) { return 0.0; }
       return dSstep(t);
     }
+    // ── THE BIRCH FOREST TAKES SNOW (user 2026-08-24) ── it used to have a birchMask here refusing flakes over
+    // the band, the falling half of a two-gate rule whose settling half is in main/tick-snow.js. Both are gone.
+    // The pairing itself is the thing worth keeping in mind: that file decides what SETTLES and this decides
+    // what FALLS, so a band named in one and not the other either snows on ground that refuses to keep it, or
+    // collects a blanket under an empty sky.
     // ── AND THE OAK FOREST, ON THE GPU, FOR THE SAME REASON ── read the note above desertMask first: it is
     // the precedent and this is the same move. A falling flake or drop is a traced voxel in a world-space
     // lattice, so the CPU's oakM cannot reach it — the JS gate in landSnowAt decides only what SETTLES. This
@@ -439,10 +444,26 @@
         let ndc3 = (px / u.res) * 2.0 - 1.0;
         let dc3 = normalize(vec3<f32>(ndc3.x * u.tanH * u.aspect, -ndc3.y * u.tanH, 1.0));   // camera-space twin of rd — the drop transforms live in camera space
         let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, DROP_N);
+        // -- WHERE THE PARTICLE BAND REALLY ENDS (user 2026-08-24: "the bees seem to only have their wings
+        // rendered, and nothing else ... I dont see any other forms of life at all") -- this loop used to skip
+        // slots 5..24 as a LITERAL and treat 25+ as creatures. JS does not lay them out that way: the particle
+        // band grows with the live spark pool and main/tick-life.js puts the flock and the creatures at
+        // lifeSlotBase = 9 + sN, which it publishes in lifeCfg.w for exactly this reason. COMPOSITE was already
+        // reading it; TRACE was not, and that split is the whole bug report:
+        //   oak / pine  pollen and cherry petals fill the pool, base = 37, creatures sit ABOVE 24 and draw.
+        //   BIRCH       neither exists here, base = 9, so every creature lands INSIDE 5..24 and this loop
+        //               stepped straight over it. The body is trace-injected and vanished; the WINGS are a
+        //               composite overlay and kept drawing, which is the bee with nothing but wings.
+        // It also explains the rest of the report by construction: the flying flock sits at the same base, so
+        // it disappeared with them; life reappears at the pine edge and over water because those carry enough
+        // particles to push the base past 24; and the ducks FLICKER because the pool size oscillates around
+        // that boundary, taking every creature in and out of the traced band with it.
+        let lifeBase = i32(u.lifeCfg.w + 0.5);   // the ONE number, from the ONE writer - see main/tick-emit.js
+
         let tiV = (wgid.y * ((u32(u.res.x) + 7u) / 8u) + wgid.x) * ${VIS_W}u;   // this workgroup IS one 8×8 tile — read its four prepass mask words (under ?uni the stride is 8: words 0-3 primary, 4-7 the grown SECONDARY mask)
         let visM0 = visb[tiV]; let visM1 = visb[tiV + 1u]; let visM2 = visb[tiV + 2u]; let visM3 = visb[tiV + 3u];   // FOUR words now (128 slots) and all four stay in REGISTERS: re-fetching the word from storage per iteration measured 4× the per-slot cost
-        for (var di = 4; di < dropN; di++) {                         // 4 = flying cardinal, 25+ = live creatures; 0-3 drops + 5-24 sparks/smoke stay analytic
-          if (di >= 5 && di <= 24) { di = 24; continue; }             // the 20 death-burst slots are analytic-only — step OVER the whole band, don't walk it
+        for (var di = 4; di < dropN; di++) {                         // 4 = flying cardinal, lifeBase+ = live creatures; 0-3 drops and the spark/particle band between stay analytic
+          if (di >= 5 && di < lifeBase) { di = lifeBase - 1; continue; }   // the sparks and the particle pool are analytic-only — step OVER the whole band, don't walk it. Bounded by lifeBase, never by a literal that goes stale the moment the pool changes size.
           { let mw = select(select(visM0, visM1, di >= 32), select(visM2, visM3, di >= 96), di >= 64); let mrem = mw >> (u32(di) & 31u); if (mrem == 0u) { di = i32(u32(di) | 31u); continue; } if ((mrem & 1u) == 0u) { di += i32(countTrailingZeros(mrem)) - 1; continue; } }   // ── TILE CULL, BIT-SCANNED ── the mask word says which slots can touch this 8×8 tile; jump straight to the next SET bit (or over an empty word entirely) instead of paying one loop iteration per slot. The iteration was the whole cost — an empty slot cost the same as a live one — so this is what makes the array size stop mattering. NOTE: it mutates di; a later edit that assumes di advances by one, or any drift between dropN and the mask, makes creatures vanish silently.
           if ((u32(lifeMotV(di).w + 0.5) & 1u) != 0u) { continue; } // analytic-only (firefly / empty)
           let dXv = dropV(di * 4 + 1);

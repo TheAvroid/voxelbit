@@ -180,6 +180,12 @@
   //     hive would have taken every bee in the world and the flower visiting would never have been seen.
   // The desert MOUSE is deliberately NOT here: it has two homes, which is a different thing and is expressed
   // by DES_OAK in tick-creatures giving it a SHARE of its own slots.
+  // ── THE BIRCH PERCH SWEEP'S CURSOR ── main/tick-nav.js enumerates the birches that can carry a songbird,
+  // a few cell rows a frame (see birchScanStep there). The state has to live at MODULE scope: that whole
+  // fragment is re-entered every frame, so a cursor declared beside the code that uses it silently restarts
+  // from the first row on every call and the sweep never completes — measured as 4,288 calls with the cursor
+  // pinned at row -21 and zero perched songbirds in the biome.
+  const BK = { rows: 4, trees: [], scan: [], dz: 0, scx: 0, scz: 0, scanning: false, cx: 1 << 30, cz: 1 << 30 };
   const DES_OAKONLY = { bee: 8, grass_snake: 5, ladybug: 6 };   // (frog withdrawn — see assets/held-items.js)
   // ── AND ONE OF THEM IS NOT OAK-ONLY AT ALL (user 2026-08-22: "implement the ladybug into the oak and pine
   // forests") ── DES_OAKONLY is really two facts wearing one name: "takes no desert slots, and its whole
@@ -187,6 +193,11 @@
   // second. Rather than duplicate the head-count plumbing for a second table, this widens the BIOME half
   // only: a name in here keeps every one of DES_OAKONLY's counting rules and is tagged BIO_ANY instead of
   // BIO_OAKF, which sim/nav.js defines as "anywhere that is not sand" — precisely oak and pine.
+  // ── AND ONE OF THEM IS BIRCH-ONLY ── DES_OAK gives a desert species a FOREST population and DES_ANYFOREST
+  // widens where that population may live; this narrows it. A name in here is tagged BIO_BIRCH instead of
+  // BIO_OAKF, so it lives in the birch band and nowhere else — the ant was asked for in the birch forest, and
+  // BIO_OAKF means BOTH broadleaf bands now (sim/nav.js), which would have put a column in the oak wood too.
+  const DES_BIRCHF = { ant: 1 };
   const DES_ANYFOREST = { ladybug: 1 };       // the frog lives in BOTH forests too, and near water within them (see DES_WATER)
   // ── AND WHOSE MODEL FACES THE WRONG WAY ── the render basis in main/tick-creatures.js takes model −y as the
   // head end. A species baked by tools/bake_desert_life.py always does; one adopted from the asset editor's
@@ -241,7 +252,7 @@
   // It lives HERE beside DES_OAKONLY rather than inside the creature tick because the two are one fact — where
   // a desert-band species lives — and because main/debug-api.js's oakLife census has to read both to report
   // the oak population honestly. As a local const it could not, and the census silently showed an empty forest.
-  const DES_OAK = { desert_mouse: 4, fly: 8 };          // fly 5 -> 8, its WHOLE band in the oak (user 2026-08-22: "double the rate of flies spawning in bunches"). At FLY_BUNCH 5 that is two bunches, 5 and 3, rather than one of 5 — and never a lone fly, since the adoption below always fills the emptiest bunch with room before opening a new one          // fly 3 -> 5: this share, not FLY_BUNCH, is what decides how many flies the oak forest actually gets, so a bunch of 5 needs 5 slots here (user 2026-08-22)
+  const DES_OAK = { desert_mouse: 4, fly: 8, ant: 4 };   // …and the ANT (user 2026-08-24: "put ants in the birch forest. just like they were in the desert. them following eachother"). FOUR, which is every slot the species has left: DES_PER is 8 and the desert's own column already holds the other four. A column of four at ANT_GAP 6 is 18 voxels of line, which reads as a column; there is no room for more without taking ants out of the sand.          // fly 5 -> 8, its WHOLE band in the oak (user 2026-08-22: "double the rate of flies spawning in bunches"). At FLY_BUNCH 5 that is two bunches, 5 and 3, rather than one of 5 — and never a lone fly, since the adoption below always fills the emptiest bunch with room before opening a new one          // fly 3 -> 5: this share, not FLY_BUNCH, is what decides how many flies the oak forest actually gets, so a bunch of 5 needs 5 slots here (user 2026-08-22)
   // How many flies share one bunch. 4 of the species' 8 slots means two bunches in the world at once rather
   // than one big knot, which is what a fly reads as — and if the oak share takes some of those slots the bunches
   // simply get smaller instead of one of them vanishing.

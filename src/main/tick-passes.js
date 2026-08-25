@@ -69,6 +69,15 @@
     prevCam.pos = cam; prevCam.right = right; prevCam.up = up; prevCam.fwd = fwd;
     prevCam.tanH = tanH; prevCam.aspect = aspect; prevCam.jit = j;
     if (!veQuiet) resetHist = 0;                       // the TRACE is what consumes the flag, so a quiet frame must NOT clear it — a teleport during an export would otherwise lose its history flush and come back ghosting
+    // ── ONE SLICE OF THE BIRCH PERCH SWEEP ── beside frame++ because that is the one call site this file
+    // documents as NEVER SKIPPED, and the sweep needs exactly that. It cannot live in main/tick-nav.js's
+    // buildCardCand (that only runs when findPineCrown asks for a perch, and nothing asks until the sweep
+    // has produced its first candidates — it advanced one slice and stopped, leaving the birch forest with
+    // zero perched songbirds); nor in main/tick-body.js, which loads BEFORE tick-nav.js, so the call threw
+    // "Cannot access 'birchScanStep' before initialization" inside tickBody every frame, silently; nor at
+    // the lifeSlotBase line in main/tick-life.js, which turns out not to run unconditionally either. Three
+    // wrong homes, each found by probing the sweep's own cursor rather than by reading.
+    birchScanStep();
     frame++;                                           // never skipped: tick-creatures reads ((frame + wk) & 63) to recycle off-water slots, and a frozen counter makes that fire every frame for one slot in 64 and never for the rest
 
     // ── dual-wield overlays ── the shift+left-click hint shows until the discovery is earned

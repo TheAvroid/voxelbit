@@ -42,7 +42,7 @@
             if (gid && (!ok || ok(gid))) avail++;      // the reject has to ask the same question the partition will, or a crown full of needles reads as a full bite and then yields nothing
           }
       if (avail < minBite) continue;                   // grazed it — keep marching, something further along may hold a real bite
-      const sx = b.sx, sz = b.sz, key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
+      const sx = b.sx, sz = b.sz, hM = b.hMax || MSZ, key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
       const cutC = [], keepC = [], idMap = new Map(), inD = [], inK = [];
       for (let k = 0; k < b.n; k++) {
         const ex = b.lx[k] + 0.5 - cx, ey = b.ly[k] + 0.5 - cy, ez = b.lz[k] + 0.5 - cz;
@@ -80,7 +80,7 @@
           if (c26) {
             for (let d = 0; d < 78; d += 3) {
               const nx = mx + phNb26[d], ny = my + phNb26[d + 1], nz = mz + phNb26[d + 2];
-              if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+              if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= hM) continue;
               const nk = key(nx, ny, nz);
               if (left.has(nk)) { left.delete(nk); st.push(nk); }
             }
@@ -90,7 +90,7 @@
             const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
             const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
             const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-            if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+            if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= hM) continue;
             const nk = key(nx, ny, nz);
             if (left.has(nk)) { left.delete(nk); st.push(nk); }
           }
@@ -226,7 +226,7 @@
     for (let dy = -ri; dy <= ri; dy++) for (let dz = -ri; dz <= ri; dz++) for (let dx = -ri; dx <= ri; dx++) {
       const d2 = dx * dx + dy * dy + dz * dz; if (d2 > r2) continue;
       const mx = Math.round(wx) + dx - S.bx, my = Math.round(wy) + dy - S.gy, mz = Math.round(wz) + dz - S.bz;
-      if (mx < 0 || mx >= S.R.sx || mz < 0 || mz >= S.R.sz || my < 0 || my >= MSZ) continue;
+      if (mx < 0 || mx >= S.R.sx || mz < 0 || mz >= S.R.sz || my < 0 || my >= (S.hMax || MSZ)) continue;
       const v = phPresent(S, mx, my, mz); if (!v) continue;
       if (PICK_CONE.has(v)) continue;                // cones are pickable ITEMS, not material. Foliage IS carvable (user: break the canopy into chunks while the tree still stands) — the flood below then decides honestly whether what is left is still attached.
       if (ok && !ok(v)) continue;                    // …but a swing aimed at the TRUNK passes a wood-only filter, or it comes back full of needles (see chopSwing)
@@ -251,7 +251,21 @@
     const ord = new Int32Array(cD.length);
     for (let k = 0; k < ord.length; k++) ord[k] = k;
     ord.sort((a2, b2) => cD[a2] - cD[b2]);           // nearest-first about the material's centre
-    const take = Math.min(bite === undefined ? PH.chopBite : bite, ord.length);  // ALWAYS this many — that is what makes the chunk the same size every swing
+    // ── A SWING TAKES A BITE OUT OF A TRUNK, NEVER MOST OF ONE (user 2026-08-24: "when the axe hits the tree,
+    // a chunk should come out, like everything else ... make the birch trees have the same tool physics as
+    // everything else") ── the bite was a fixed COUNT, which is what makes a chunk the same size every
+    // swing, and it quietly means something different on every thickness of trunk. MEASURED, wood in one
+    // course about the impact: pine 30, oak 38, BIRCH 6. Thirty voxels is a notch in a pine and FIVE courses
+    // of a birch — a clean sever. So the chunk physics ran exactly as they do everywhere else and nobody
+    // ever saw them: the first swing already had the tree falling.
+    // The ceiling is now also a SHARE of the wood the swing can actually reach. A pine offers ~126 voxels
+    // inside the axe's radius and an oak more, so chopFrac of that is well past chopBite and both take
+    // their fixed 30 exactly as before — this cap cannot bind on a trunk thicker than the axe. A birch
+    // offers ~42, so it gives up a third of that a blow and comes apart over several swings, with a chunk
+    // off each one. A hair-thin branch gives up chopThin, which is the difference between chipping a twig
+    // and vaporising it.
+    const take = Math.min(bite === undefined ? PH.chopBite : bite,
+                          Math.max(Math.min(PH.chopThin, ord.length), Math.ceil(ord.length * PH.chopFrac)));
     for (let k = 0; k < take; k++) {
       const j = ord[k], mx = cX[j], my = cY[j], mz = cZ[j];
       const ii = phWorldIdx(S, mx, my, mz);
@@ -508,38 +522,90 @@
       }
       return m; };
     const nb9 = new Int32Array(27);
-    // One SHELL per piece per round: pop a single frontier cell and claim every unclaimed neighbour of it.
-    // All K frontiers advance at the same rate, so the pieces come out the same size, and a cell with no
-    // unclaimed neighbours is simply dropped from the frontier — the earlier version pushed it BACK, which
-    // made queues that never emptied, stalled the growth, and left 61,024 cells for the island pass to sweep
-    // up as one piece. Head pointers rather than shift(): these arrays run to tens of thousands of entries.
+    // ── ONE CELL PER PIECE PER ROUND, NOT ONE SHELL (2026-08-24, user: "make sure when the birch tree breaks
+    // apart into the little chunks all the chunks are the same size") ── this used to pop one frontier cell and
+    // claim EVERY unclaimed neighbour of it, which is a shell, and a shell is not a fixed amount of growth: a
+    // piece inside a solid trunk claims up to 26 cells in the round a piece out on a one-voxel branch claims
+    // two. The frontiers advanced at the same rate in ROUNDS and at wildly different rates in VOXELS, which is
+    // the thing that was supposed to be equal. MEASURED on a 15,508-voxel birch at a target of 350: pieces ran
+    // 201 to 593, a 2.9x spread, with the largest sitting right on absorbSize (600) where a chunk stops being
+    // collectable at all.
+    // Claiming exactly ONE cell per piece per round makes the growth rate the constant, so every piece that is
+    // still growing has the same count at every moment and they can only differ by the round a piece runs out.
+    // The queue holds CANDIDATES rather than owned cells — a neighbour another piece claimed first is popped
+    // and discarded — which is what lets the head pointer stay monotonic. That was the real defect behind the
+    // stalled queues this replaced: it is safe to skip a claimed candidate, and fatal to push a live one back.
     const heads = new Int32Array(K);
+    for (let q = 0; q < K; q++) {                      // seed the frontier with the seed cell's own neighbours
+      if (!queues[q].length) continue;
+      const m0 = nbrs9(queues[q][0], nb9); const qq = queues[q]; qq.length = 0;
+      for (let t = 0; t < m0; t++) if (present.has(nb9[t]) && !ownOf.has(nb9[t])) qq.push(nb9[t]);
+    }
+    // ── AND A PIECE STOPS AT ITS QUOTA, SO THE ONES THAT OUTLIVE THEIR NEIGHBOURS DO NOT RUN AWAY ── growing
+    // at one cell per round equalises the RATE, but not the finish: a seed that lands out on a branch tip is
+    // boxed in after a couple of hundred cells while a seed in open crown keeps claiming long after, so the
+    // sizes still ran 198 to 640 on a 15.6k birch. Capping at the quota is what makes the size itself the
+    // constant. Whatever is then left unclaimed is seeded again below, so nothing is stranded by the cap.
+    // The quota is the target unless the scene is too busy to afford that many pieces, in which case it is
+    // whatever the free slots allow — the same coarsening rule the count had, moved onto the size.
+    const cap9 = Math.max(chunk9, Math.ceil(b.n / K));
     let live = true;
     while (live) {
       live = false;
       for (let q = 0; q < K; q++) {
+        if (buckets[q].length >= cap9) continue;      // full — its frontier is left for the re-seed pass below
         const qq = queues[q];
-        if (heads[q] >= qq.length) continue;
-        const kk = qq[heads[q]++];
-        const m = nbrs9(kk, nb9);
+        let got = -1;
+        while (heads[q] < qq.length) { const c = qq[heads[q]++]; if (!ownOf.has(c)) { got = c; break; } }
+        if (got < 0) continue;
+        ownOf.set(got, q); buckets[q].push(got);
+        const m = nbrs9(got, nb9);
         for (let t = 0; t < m; t++) { const nk = nb9[t];
-          if (!present.has(nk) || ownOf.has(nk)) continue;
-          ownOf.set(nk, q); buckets[q].push(nk); qq.push(nk);
+          if (present.has(nk) && !ownOf.has(nk)) qq.push(nk);
         }
-        if (heads[q] < qq.length) live = true;
+        live = true;
       }
     }
-    // Whatever no seed reached is a disconnected island: give each its own piece rather than attaching it to
-    // something it does not touch. This is the case that MUST stay separate — it is exactly the floating-voxel
-    // bug when it is not.
+    // ── WHAT THE FULL PIECES LEFT BEHIND ── every cell the capped pass did not reach, grown into further
+    // pieces of the same quota by the same 26-connected rule. In Morton order, so a new piece starts next to
+    // the last one and stays a compact lump; capped, so these are the same size as the rest; and connected,
+    // because it only ever claims a neighbour of a cell it already owns. This also subsumes the old
+    // disconnected-island sweep — an island is simply a leftover no seed could reach, and it now becomes one
+    // or more properly-sized pieces instead of a single lump of whatever size the island happened to be.
     for (let q = 0; q < cellsM.length; q++) { const kk = cellsM[q][1];
       if (ownOf.has(kk)) continue;
-      const grp = [kk]; ownOf.set(kk, -1);
-      for (let h = 0; h < grp.length; h++) { const m = nbrs9(grp[h], nb9);
-        for (let t = 0; t < m; t++) { const nk = nb9[t];
+      const bi = buckets.length;                     // its REAL piece index, not a -1 marker: the merge below needs to know who owns a cell
+      const grp = [kk]; ownOf.set(kk, bi);
+      for (let h = 0; h < grp.length && grp.length < cap9; h++) { const m = nbrs9(grp[h], nb9);
+        for (let t = 0; t < m && grp.length < cap9; t++) { const nk = nb9[t];
           if (!present.has(nk) || ownOf.has(nk)) continue;
-          ownOf.set(nk, -1); grp.push(nk); } }
+          ownOf.set(nk, bi); grp.push(nk); } }
       buckets.push(grp);
+    }
+    // ── A SCRAP JOINS THE PIECE IT IS ALREADY TOUCHING ── the passes above cannot help leaving a few: a
+    // region smaller than the quota is a whole piece, and the last piece grown out of a bigger one is
+    // whatever remains. MEASURED on a felled birch that was a dozen pieces of 4 to 41 voxels beside eight of
+    // exactly 350, which is not "all the chunks are the same size" however even the big ones are. Each of
+    // those also costs a body slot and is too small to read as a piece of tree.
+    // A scrap is folded into the SMALLEST piece it is 26-adjacent to, so the result stays one connected lump
+    // — that adjacency is the whole safety argument, and it is why a scrap with no neighbour at all (a
+    // genuinely detached island) is left alone rather than stitched across air to something it does not
+    // touch. Smallest host, so the fold evens the sizes out instead of feeding whichever piece it met first.
+    const MINP = Math.max(2, cap9 >> 2);
+    for (let q = 0; q < buckets.length; q++) {
+      const bk = buckets[q];
+      if (!bk.length || bk.length >= MINP) continue;
+      let host = -1, hostN = 1 << 30;
+      for (let i2 = 0; i2 < bk.length; i2++) {
+        const m = nbrs9(bk[i2], nb9);
+        for (let t = 0; t < m; t++) { const ow = ownOf.get(nb9[t]);
+          if (ow === undefined || ow === q || !present.has(nb9[t])) continue;
+          const n2 = buckets[ow].length;
+          if (n2 && n2 < hostN) { hostN = n2; host = ow; } }
+      }
+      if (host < 0) continue;                        // nothing touches it — a real island, and it stays its own piece
+      for (let i2 = 0; i2 < bk.length; i2++) { ownOf.set(bk[i2], host); buckets[host].push(bk[i2]); }
+      bk.length = 0;
     }
     PH.bodies.splice(i, 1);                            // out of the list BEFORE rebuilding, exactly as the body-chop path above does
     // ── AND NOTHING IS THROWN AWAY TO FIT ── this used to filter buckets to >= 2 cells and `break` out of the

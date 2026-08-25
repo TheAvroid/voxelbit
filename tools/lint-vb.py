@@ -560,6 +560,13 @@ def check_modules(masked, offsets, mods, where):
 # that string to something unregistered is the one shape this cannot see.
 WORKER_DECLS = {          # names the pool writes into its worker preamble by hand
     'WX', 'WZ', 'OX', 'OZ', 'BX', 'W', 'hmap', 'touched', 'MROT', 'remap', 'rivScope',
+    # BIRCHV / BIRCHPICK are DERIVED in the preamble, not registered: BIRCHV is ~205k voxels and shipping it
+    # as a table would put megabytes of JavaScript into every worker. BIRCHENC (the delta-varint) and
+    # birchDec/birchPick ARE registered, which is what keeps this honest.
+    # BIRCH_BANCH joins them (2026-08-24): the beehive anchor list per model, derived in the preamble off the
+    # worker's own BIRCHV rather than shipped, because the birch models arrive from an async load and a
+    # shipped table would be whatever snapshot the pool happened to take. birchBanch IS registered.
+    'BIRCHV', 'BIRCHPICK', 'BIRCH_BANCH',
     'gwrap', 'rivCache', 'caveCache', 'takeRows', 'ORPH_SCRATCH', 'ORPHAN_OK',
     'WY', 'onmessage', 'postMessage', 'self',
     # OAKBLOSV is DERIVED in the preamble, not registered: it is OAKV with the leaf ids run through BLOSMAP,

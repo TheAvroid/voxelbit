@@ -13,7 +13,15 @@
   let dofLock = 0, dofCocK = DOF_COC * dofStr;         // __vb.dof() overrides: pin the focal plane / the aperture to A/B the effect at a fixed strength (0 = autofocus)
   let vigOn = true; try { vigOn = localStorage.getItem('vb_vig') !== '0'; } catch (e) {}
   let snowOn = false;                                  // ── VOXEL SNOW ── starts CLEAR, then the first storm arrives 60 s after refresh (user 2026-08-06). Weather-driven; the button (and P) still forces one on/off by hand.
-  let snowEndT = 0, snowNextT = 120000;   // ── FIRST STORM 120 s AFTER REFRESH (user 2026-08-06, raised 60 -> 120 on 2026-08-17) ── snowNextT is the ARRIVAL of the first storm, snowEndT the end of the CURRENT one. Only the arrival moved: an event still RUNS for 60 s and still re-arms on the normal 5-minute cadence, both of which live on the toggle path in ui/input.js and below. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one.
+  // ── STORMS ARE NOT SCHEDULED (user 2026-08-24: "just keep the snow off by default at least for now") ──
+  // false = nothing arrives on its own: no first storm, and no 5-minute cadence re-armed when one ends. The
+  // snow itself is untouched and fully live — the settings button, the P key and __vb.snow()/__vb.snowHold()
+  // start one exactly as they always did, and it then runs its full 60 s and melts on the usual clock. This
+  // replaces SNOW_AUTO_OFF, which only covered the storm-END path and left the two toggle sites re-arming the
+  // cadence behind it. Flip to true and the weather is back, first storm 120 s after refresh.
+  const SNOW_SCHEDULE = false;
+  const snowRearm = () => { snowNextT = SNOW_SCHEDULE ? performance.now() + 300000 : Infinity; };   // the ONE place the next arrival is armed, so the three callers cannot drift
+  let snowEndT = 0, snowNextT = SNOW_SCHEDULE ? 120000 : Infinity;   // ── FIRST STORM 120 s AFTER REFRESH (user 2026-08-06, raised 60 -> 120 on 2026-08-17) ── snowNextT is the ARRIVAL of the first storm, snowEndT the end of the CURRENT one. Only the arrival moved: an event still RUNS for 60 s and still re-arms on the normal 5-minute cadence, both of which live on the toggle path in ui/input.js and below. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one. Note snowOn:true alone would NOT work: that tick ends a storm the instant now > snowEndT, so an unscheduled 'on' is switched straight back off on frame one.
   // ── AND IT DOES NOT SNOW AT NIGHT (user 2026-08-19: "dont make it snow at night") ── the gate is on the
   // storm's ARRIVAL only, in main/tick-body.js. sunUp() mirrors main/tick-camera.js's own sun elevation
   // (ang = tday*2pi - pi/2, el = sin(ang)*1.05, elevation = sin(el)) and uses the SAME -0.06 threshold that
@@ -48,7 +56,6 @@
   // one switch. Both finish far inside the 300 s gap between storms, so the sky is back to its fair-weather self
   // — bit-identical, not merely close: see the rainK note in COMPOSITE — long before the next storm arrives.
   const RAIN_SKY_IN = 10, RAIN_SKY_OUT = 20;
-  const SNOW_AUTO_OFF = false;   // storms RECUR again (user 2026-08-06): each event 60 s, then every 5 min. true made the first storm the last one — it armed snowNextT to Infinity on the way out.
   let heldSunV = 1;                                    // eased sun visibility at the player — gates the held item's DIRECT term so a tool in shade reads like the world around it (u.heldCfg.x)
   let heldSkyV = 1;                                    // …and eased SKY visibility — gates its AMBIENT + ground bounce, the term the world gets from irr.g (u.heldCfg.y). Without it a tool kept full open-sky ambient under a canopy or in a cave while the world around it went dark.
   const HELD_SKY_DIRS = [[0, 1, 0], [0.707, 0.707, 0], [-0.707, 0.707, 0], [0, 0.707, 0.707], [0, 0.707, -0.707]];   // straight up + four at 45°; each ray's y component IS its cosine weight, so the average is cosine-weighted like the world's hemisphere ray
@@ -112,6 +119,16 @@
   const SNOW_PASS = new Set([...GRASS, ...FLOWERIDS]);   // the WHOLE flower, stem included — a flake should fall through the plant, not perch on its stalk (was BLOOM's six heads; user 2026-08-18)   // landings fall THROUGH grass/blooms and bury them — ferns are OUT: snow settles ON their fronds
   const SNOW_FERN = new Set(FERNIDS);                  // fern-topped columns skip the settle-roll (fronds sit above the ground beside them, so rolling would always shed the flake)
   const SNOW_SKIP = new Set([WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y]);                                    // …but never land on lava; surface water is FROZEN while it snows, so flakes settle on the ice
+  // ── …AND THE SAME THREE AS FLAT TABLES (2026-08-24, the snow audit) ── every one of these is keyed by a
+  // PALETTE ID, i.e. a number under 256, which is what solidTab/foliaTab/coneTab and the rest of the material
+  // tables already are: a Uint8Array indexed straight by the id. As Sets they were being hashed on the hottest
+  // paths in the engine — the snow descent tests one per voxel it falls past, and nav's nvBuildCell, the
+  // mammal seat scan and the worm walk each ask two or three per cell. The Sets stay as the readable
+  // DEFINITION and these are derived from them, so there is one source of truth and no chance of drift.
+  const snowPassTab = new Uint8Array(256), snowFernTab = new Uint8Array(256), snowSkipTab = new Uint8Array(256);
+  for (const i of SNOW_PASS) snowPassTab[i] = 1;
+  for (const i of SNOW_FERN) snowFernTab[i] = 1;
+  for (const i of SNOW_SKIP) snowSkipTab[i] = 1;
   // ── THE HUD TOGGLES ARE REMEMBERED TOO (user 2026-08-21: "have the browser remember my settings on refresh") ──
   // coords and time were the two that wrote their key and never read it: mkToggle below persists every button it
   // wires, so the write was already there and only the boot-time read was missing. Both used to start hidden on
@@ -299,7 +316,7 @@
     snowShow();
     snowBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
     snowBtn.addEventListener('click', (e) => { e.stopPropagation(); snowOn = !snowOn;
-      if (snowOn) { snowEndT = performance.now() + 60000; } else { snowNextT = performance.now() + 300000; }
+      if (snowOn) { snowEndT = performance.now() + 60000; } else { snowRearm(); }
       snowShow(); });
     // ── FULLSCREEN toggle (user) ── requestFullscreen needs a user gesture; the click qualifies. The label + .on state
     // follow the real fullscreen status (F11 or the OS chrome can change it out from under us), so fullscreenchange drives the sync.

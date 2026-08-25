@@ -115,7 +115,7 @@
   let phSrc = '?';   // which path built the body — stamped onto it below. Cheap, and it is what identified a sweep that was tearing perched birds into debris (user 2026-08-05).
   const phSpawnChunk = (S, quads) => { phSrc = 'treeChunk';
     if (!quads.length) return;
-    const sx = S.R.sx, sz = S.R.sz;
+    const sx = S.R.sx, sz = S.R.sz, hM = S.hMax || MSZ;
     const key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
     const idMap = new Map();
     for (let i = 0; i < quads.length; i += 4) idMap.set(key(quads[i], quads[i + 1], quads[i + 2]), quads[i + 3]);
@@ -133,7 +133,7 @@
           const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
           const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
           const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-          if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= MSZ) continue;
+          if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= hM) continue;
           const nk = key(nx, ny, nz);
           if (left.has(nk)) { left.delete(nk); st.push(nk); }
         }
@@ -222,16 +222,16 @@
   const SNOW_CAP_HEAD = 3;                             // courses above the model box a carried stack may reach — landSnowAt's own 3-layer cap
   const CONE_CLUSTER_MAX = 64;                         // a pinecone is ~13 voxels; this is a runaway guard, not a tuning knob
   const phDrapeWith = (S, comp, f, claimed) => {
-    const add = [], sx = f.sx, sz = f.sz;
+    const add = [], sx = f.sx, sz = f.sz, hM = S.hMax || MSZ;
     const li = (mx, my, mz) => mx + mz * sx + my * sx * sz;
     const inComp = new Set(comp);
-    const inBox = (mx, my, mz) => mx >= 0 && mx < sx && mz >= 0 && mz < sz && my >= 0 && my < MSZ + SNOW_CAP_HEAD && S.gy + my > 0 && S.gy + my < WY - 1;
+    const inBox = (mx, my, mz) => mx >= 0 && mx < sx && mz >= 0 && mz < sz && my >= 0 && my < hM + SNOW_CAP_HEAD && S.gy + my > 0 && S.gy + my < WY - 1;
     let nSnow = 0, nCone = 0;
     for (const k of comp) {
       const mx = k % sx, mz = ((k / sx) | 0) % sz, my = (k / (sx * sz)) | 0;
       // ── IT RESTS ON US: SNOW, STRAIGHT UP ── landSnowAt caps a stack at 3, so this is a few steps at most
       if (!snowTab[W[phWorldIdx(S, mx, my, mz)]]) {     // a snow voxel's own stack is already in here
-        for (let y2 = my + 1; y2 < MSZ + SNOW_CAP_HEAD && S.gy + y2 < WY - 1; y2++) {
+        for (let y2 = my + 1; y2 < hM + SNOW_CAP_HEAD && S.gy + y2 < WY - 1; y2++) {
           const ii = phWorldIdx(S, mx, y2, mz);
           if (!snowTab[W[ii]] || claimed.has(ii)) break;
           claimed.add(ii); add.push(li(mx, y2, mz)); nSnow++;
@@ -288,7 +288,7 @@
     // tests stay — a listed cell can still have been marked by an earlier component, or been removed from W.
     // A PINE keeps the box scan (its shape carries cells: null) and does not care: 36 x 35 x MSZ is 146k, an
     // eighth of the oak's box, and it is the oak that is felt.
-    const list9 = S.cells, nAll9 = list9 ? list9.length : f.sx * f.sz * MSZ;
+    const list9 = S.cells, nAll9 = list9 ? list9.length : f.sx * f.sz * (S.hMax || MSZ);
     for (let q9 = 0; q9 < nAll9; q9++) {
       const k = list9 ? list9[q9] : q9;
       if (phMark[k] !== 0) continue;
