@@ -604,14 +604,39 @@
     // whatever the free slots allow — the same coarsening rule the count had, moved onto the size.
     const cap9 = Math.max(chunk9, Math.ceil(b.n / K));
     let live = true;
+    // ── AND A PIECE IS BOUNDED IN EXTENT, NOT ONLY IN COUNT (user 2026-08-26: "the birch is leaving these
+    // long trunks in tact … make sure all the chunks are the same size") ── growing to cap9 CELLS makes every
+    // piece the same VOLUME, and it already did: measured on a felled birch, 27 pieces from 56 to 389 voxels,
+    // median 340. It says nothing about SHAPE. A birch bole is a few voxels across, so the only direction a
+    // seed inside it can grow is ALONG the trunk, and the same 300 voxels come out as a rod: measured
+    // 4 x 56 x 7, aspect 14, against a median longest axis of 16. That rod is the "long trunk left intact".
+    // So a cell is refused if taking it would push this piece's bounding box past fellChunkSpan on any axis.
+    // Refusing is not discarding — the cell stays unowned and the re-seed pass below gives it its own piece,
+    // which is exactly the extra cut the trunk needs. 22 is above the median piece today, so a compact chunk
+    // is untouched and only the rods are split.
+    const bxa = new Int32Array(K).fill(1e9), bxb = new Int32Array(K).fill(-1e9);
+    const bya = new Int32Array(K).fill(1e9), byb = new Int32Array(K).fill(-1e9);
+    const bza = new Int32Array(K).fill(1e9), bzb = new Int32Array(K).fill(-1e9);
+    for (let q = 0; q < K; q++) { if (!buckets[q].length) continue;
+      const s9 = buckets[q][0], sx9 = s9 % sx, sz9 = ((s9 / sx) | 0) % sz, sy9 = (s9 / sxz) | 0;
+      bxa[q] = bxb[q] = sx9; bya[q] = byb[q] = sy9; bza[q] = bzb[q] = sz9; }
+    const SPAN9 = PH.fellChunkSpan;
     while (live) {
       live = false;
       for (let q = 0; q < K; q++) {
         if (buckets[q].length >= cap9) continue;      // full — its frontier is left for the re-seed pass below
         const qq = queues[q];
-        let got = -1;
-        while (heads[q] < qq.length) { const c = qq[heads[q]++]; if (!own[c]) { got = c; break; } }
+        let got = -1, gx = 0, gy = 0, gz = 0;
+        while (heads[q] < qq.length) { const c = qq[heads[q]++]; if (own[c]) continue;
+          const cx9 = c % sx, cz9 = ((c / sx) | 0) % sz, cy9 = (c / sxz) | 0;
+          if (Math.max(bxb[q], cx9) - Math.min(bxa[q], cx9) >= SPAN9) continue;   // …would make this piece a rod
+          if (Math.max(byb[q], cy9) - Math.min(bya[q], cy9) >= SPAN9) continue;
+          if (Math.max(bzb[q], cz9) - Math.min(bza[q], cz9) >= SPAN9) continue;
+          got = c; gx = cx9; gy = cy9; gz = cz9; break; }
         if (got < 0) continue;
+        if (gx < bxa[q]) bxa[q] = gx; if (gx > bxb[q]) bxb[q] = gx;
+        if (gy < bya[q]) bya[q] = gy; if (gy > byb[q]) byb[q] = gy;
+        if (gz < bza[q]) bza[q] = gz; if (gz > bzb[q]) bzb[q] = gz;
         own[got] = q + 1; buckets[q].push(got);
         const m = nbrs9(got, nb9);
         for (let t = 0; t < m; t++) { const nk = nb9[t];
@@ -629,10 +654,21 @@
     for (let q = 0; q < b.n; q++) { const kk = cellK[q];
       if (own[kk]) continue;
       const bi = buckets.length;                     // its REAL piece index, not a -1 marker: the merge below needs to know who owns a cell
+      // The SAME extent bound the main grow uses. Without it this pass undoes that work: the cells the grow
+      // refused for making a rod are exactly the cells this one picks up, and it would rebuild the rod from
+      // them — measured, the worst piece was still 18 x 40 x 12 with the cap on the main loop alone.
       const grp = [kk]; own[kk] = bi + 1;
+      let rxa = kk % sx, rxb = rxa, rza = ((kk / sx) | 0) % sz, rzb = rza, rya = (kk / sxz) | 0, ryb = rya;
       for (let h = 0; h < grp.length && grp.length < cap9; h++) { const m = nbrs9(grp[h], nb9);
         for (let t = 0; t < m && grp.length < cap9; t++) { const nk = nb9[t];
           if (!present[nk] || own[nk]) continue;
+          const ux = nk % sx, uz = ((nk / sx) | 0) % sz, uy = (nk / sxz) | 0;
+          if (Math.max(rxb, ux) - Math.min(rxa, ux) >= PH.fellChunkSpan) continue;
+          if (Math.max(ryb, uy) - Math.min(rya, uy) >= PH.fellChunkSpan) continue;
+          if (Math.max(rzb, uz) - Math.min(rza, uz) >= PH.fellChunkSpan) continue;
+          if (ux < rxa) rxa = ux; if (ux > rxb) rxb = ux;
+          if (uy < rya) rya = uy; if (uy > ryb) ryb = uy;
+          if (uz < rza) rza = uz; if (uz > rzb) rzb = uz;
           own[nk] = bi + 1; grp.push(nk); } }
       buckets.push(grp);
     }

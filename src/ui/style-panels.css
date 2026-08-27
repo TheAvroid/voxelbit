@@ -97,8 +97,12 @@
   .kbKey { min-width: 96px; text-align: center; background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 5px 10px; color: #cfe0f4; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.12s, color 0.12s; }
   .kbKey:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
   .kbKey.listen { border-color: #7fd05a; color: #b8ff6e; }
-  #kbClose { display: block; margin: 14px auto 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
-  #kbClose:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
+  /* The two panel buttons share ONE rule so `reset` cannot drift from `done` (user 2026-08-26: "have the
+     reset button match the styling of the done button"). They sit in #kbBtns, a centred flex row, which is
+     why the auto margin that used to centre #kbClose on its own is gone — the row does that now. */
+  #kbBtns { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
+  #kbClose, #setReset { display: block; margin: 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
+  #kbClose:hover, #setReset:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
   /* ── NIGHT PANEL (L) ── one switch per night-only look term. Anchored exactly where the held-item panel is,
      because it TOOK ITS KEY and the two are never up together — landing in the same place is what makes that
      read as one panel being swapped for another rather than as a second thing appearing somewhere new. The

@@ -457,8 +457,12 @@
   .kbKey { min-width: 96px; text-align: center; background: #1a2331; border: 1px solid #33405a; border-radius: 9px; padding: 5px 10px; color: #cfe0f4; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.12s, color 0.12s; }
   .kbKey:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
   .kbKey.listen { border-color: #7fd05a; color: #b8ff6e; }
-  #kbClose { display: block; margin: 14px auto 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
-  #kbClose:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
+  /* The two panel buttons share ONE rule so `reset` cannot drift from `done` (user 2026-08-26: "have the
+     reset button match the styling of the done button"). They sit in #kbBtns, a centred flex row, which is
+     why the auto margin that used to centre #kbClose on its own is gone — the row does that now. */
+  #kbBtns { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
+  #kbClose, #setReset { display: block; margin: 0; background: #1a2331; border: 1px solid #33405a; border-radius: 10px; padding: 7px 26px; color: #dfe6ee; cursor: pointer; font: inherit; transition: transform 0.15s ease-out, box-shadow 0.15s, border-color 0.15s, color 0.15s; }
+  #kbClose:hover, #setReset:hover { border-color: #d2a453; color: #ffd76a; transform: translateY(-3px); box-shadow: 0 6px 14px rgba(0,0,0,0.5); }   /* non-toggle → gold outline + lift */
   /* ── NIGHT PANEL (L) ── one switch per night-only look term. Anchored exactly where the held-item panel is,
      because it TOOK ITS KEY and the two are never up together — landing in the same place is what makes that
      read as one panel being swapped for another rather than as a second thing appearing somewhere new. The
@@ -572,9 +576,9 @@
 <div id="kbCard4">
   <h2>sound</h2>
   <div class="optRows">
-  <div id="volWrap"><span id="volLabel">volume 80%</span><input type="range" id="volSlider" min="0" max="100" step="10" value="80"></div>
+  <div id="volWrap"><span id="volLabel">volume 100%</span><input type="range" id="volSlider" min="0" max="100" step="10" value="100"></div>
   <div id="sfxWrap"><span id="sfxLabel">sfx 100%</span><input type="range" id="sfxSlider" min="0" max="100" step="10" value="100"></div>
-  <div id="musWrap"><span id="musLabel">music 100%</span><input type="range" id="musSlider" min="0" max="100" step="10" value="100"></div>
+  <div id="musWrap"><span id="musLabel">music 80%</span><input type="range" id="musSlider" min="0" max="100" step="10" value="80"></div>
   <div id="ambWrap"><span id="ambLabel">ambience 100%</span><input type="range" id="ambSlider" min="0" max="100" step="10" value="100"></div>
   </div>
 </div>
@@ -604,7 +608,7 @@
   <div id="sensWrap"><span id="sensLabel">sensitivity 30%</span><input type="range" id="sensSlider" min="0" max="100" step="10" value="30"></div>
   </div>
   <div id="kbRows"></div>
-  <div style="text-align:center"><button id="setReset">reset</button><button id="kbClose">done</button></div>
+  <div id="kbBtns"><button id="kbClose">done</button><button id="setReset">reset</button></div>
 </div></div></div>
 <div id="pkPanel" class="hidden"><div id="pkCard">
   <h2>held item</h2>
@@ -6447,7 +6451,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   }
   const __m_world_terrain = (() => {
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -7732,7 +7736,8 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // Both are read by the birch arm of boulderAt's treeClash — see the note there for why the berth is the
   // trunk's and not the crown's. 83 is assets/bow.js birchTrunkC's worst case across the loaded set.
   const BK_BOLE = 7, BK_LEAN = 83;
-  const BKHIVE = 0.02;                                 // one birch cell in FIFTY carries a beehive (user 2026-08-24: 0.10 -> 0.05 -> "make the beehives 2% in the birch forest"). A landmark rather than furniture, which is the same reasoning OKHIVE's 3.1% of oaks follows                    // one birch candidate per 4.4 m cell; margin covers the widest crown's half-footprint
+  const BK_SPAWN = 44;                                 // the spawn clearing measured at the BOLE — a little wider than the 40 the box test uses, so the trunk's own width cannot creep back in
+  const BKHIVE = 0.01;                                 // one birch cell in a HUNDRED carries a beehive (user 2026-08-24: 0.10 -> 0.05 -> 0.02; 2026-08-26: "make birch 1%"). A landmark rather than furniture, which is the same reasoning OKHIVE's 3.1% of oaks follows                    // one birch candidate per 4.4 m cell; margin covers the widest crown's half-footprint
   function birchAt(cx, cz) {
     if (!BIRCHV.length) return null;                   // ?nobirch, or the .json never loaded - one test disables the whole pass, as ?nooaks does
     if (ihash(cx * 53 + 29, cz * 47 + 11) > 0.76) return null;         // ~24% of cells carry a tree
@@ -7765,16 +7770,31 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     while (top > 0 && BIRCHV[BIRCHPICK[top]].sz > avail) top--;
     const k = BIRCHPICK[(ihash(cx * 17 + 3, cz * 19 + 7) * (top + 0.999)) | 0];
     const t = { wx, wz, k, rot: (ihash(cx + 211, cz + 97) * 3.99) | 0,
-                sink: 1 + ((ihash(cx * 23, cz * 29) * 3) | 0) };   // sink 1-3, and it means what it means for an oak: the stamp writes in mode 1, so courses below local ground are refused rather than punched into the hill
-    // -- AND A BEEHIVE ON ONE BIRCH IN TEN (user 2026-08-24: "attach beehives to some of the birch trees.
-    // make it somewhat rare. say 10%?") -- oakAt's hive block, line for line, against BIRCH_BANCH and this
-    // band's own grid. The Y IS RESOLVED HERE and not at stamp time for oakAt's reason: hiveAt() is the query
-    // the bee swarm reads and it has to answer with a world position, and groundMin is then only paid on the
-    // tenth of cells that actually carry one.
-    // BKHIVE is a bigger number than the oak's OKHIVE for the same visible rarity: OKHIVE is 6% of the two
-    // biggest oak layers, i.e. 3.1% of oaks on a 112-voxel grid, where this is 10% of birches on a 44-voxel
-    // grid. The seat matches stampBirch exactly - groundMin at the TRUNK, less sink, less m.tbz - because a
-    // hive resolved against the box centre would hang at the wrong height on every model that leans.
+                sink: 1 + ((ihash(cx * 23, cz * 29) * 3) | 0) };
+    // ── AND THE SPAWN CLEARING IS MEASURED AT THE BOLE (user 2026-08-26: "never spawn players in trees") ──
+    // the test near the top of this function compares SPAWN against wx/wz, which is the model's BOUNDING-BOX
+    // CENTRE. On these models the bole is up to BK_LEAN (83) from that centre, because the crowns lean, so a
+    // birch whose box passed the 40-voxel clearing could still put its TRUNK on top of the player. MEASURED
+    // on a fresh world: three bark voxels inside the player's own collision box at spawn, nearest trunk 15
+    // voxels away. Same lesson the boulder arm records — anything that means "where this birch stands" has to
+    // go through birchTrunkW, never through the cell. It is re-tested HERE rather than moved because the bole
+    // is not known until the model is picked, and the cheap box test above still rejects most cells first.
+    { const m8 = BIRCHV[k];
+      if (m8) { const tw8 = birchTrunkW(t, m8);
+        const sdx = tw8.wx - SPWX, sdz = tw8.wz - SPWZ;
+        if (sdx * sdx + sdz * sdz < BK_SPAWN * BK_SPAWN) return null; } }   // sink 1-3, and it means what it means for an oak: the stamp writes in mode 1, so courses below local ground are refused rather than punched into the hill
+    // -- AND A BEEHIVE ON ONE BIRCH IN A HUNDRED (user 2026-08-24: "attach beehives to some of the birch trees.
+    // make it somewhat rare. say 10%?", walked down to 5% and then 2% the same day, and to 1% on 2026-08-26)
+    // -- oakAt's hive block, line for line, against BIRCH_BANCH and this band's own grid. The Y IS RESOLVED
+    // HERE and not at stamp time for oakAt's reason: hiveAt() is the query the bee swarm reads and it has to
+    // answer with a world position, and groundMin is then only paid on the hundredth of cells that carry one.
+    // BKHIVE is a SMALLER number than the oak's OKHIVE but sits on a denser grid, and the two land in the same
+    // place on the ground: OKHIVE is 6% of the two biggest oak layers, i.e. 3.1% of oaks on a 79-voxel cell at
+    // a 78% pass rate = one hive per 51 m square, where this is 1% of birches on a 44-voxel cell at a 76% pass
+    // rate = one per 50 m square. Ground density is the number to compare, never the raw percentage — the two
+    // bands' cells differ by 3.2x in area. The seat matches stampBirch exactly - groundMin at the TRUNK, less
+    // sink, less m.tbz - because a hive resolved against the box centre would hang at the wrong height on
+    // every model that leans.
     const HB = BIRCH_BANCH[k];
     if (HIVEV && HB && HB.length && ihash(cx * 61 + 43, cz * 59 + 17) < BKHIVE) {
       const m = BIRCHV[k];
@@ -8065,9 +8085,9 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       if (occ) bricks2[c >> 5] |= 1 << (c & 31); else bricks2[c >> 5] &= ~(1 << (c & 31));
     }
   }
-    return { BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion };
+    return { BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion };
   })();
-  const { BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion } = __m_world_terrain;
+  const { BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion } = __m_world_terrain;
   async function buildWorld(withStages) {             // boot builds EVERYTHING the saved view distance can reach — no in-game waiting, like the classic full builds
     const bh = Math.min(HALF, Math.ceil((RD_FIXED + 96) / 8) * 8);
     const cx = winOX + HALF, cz = winOZ + HALF;
@@ -8232,7 +8252,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const tables = { NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
     const fns = { ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, bankEval, bankDist, desWob, desertM, birchM, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
@@ -13500,15 +13520,36 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       P.pitch = Math.max(-1.5, Math.min(1.5, Math.atan2(ly - (P.y + EYE), Math.max(2, Math.hypot(lx, lz))))); }
     cmdSay('→ ' + label + ' — ' + d0 + ' voxels');
   };
+  // ── ONE TABLE, AND THE DISPATCH READS IT ── /help lists what the command line accepts (user 2026-08-26),
+  // and it lists it by walking the SAME array cmdRun matches against, so a command can never exist without
+  // appearing here or appear here without existing. `names[0]` is the command, the rest are aliases; a bare
+  // /spawn or /locate already prints its own targets, which is why this stays a one-line summary each rather
+  // than trying to reproduce the species and biome lists that those two build at runtime.
+  const CMD_HELP = [
+    { names: ['spawn'], args: '<creature|item|vox>', what: 'put something in front of you — /spawn porcupine, /spawn stone_axe, /spawn palm_tree' },
+    { names: ['locate', 'find', 'goto'], args: '<biome|creature|vox>', what: 'travel to the nearest one — /locate desert, /locate bee' },
+    { names: ['help', 'commands', '?'], args: '', what: 'this list' },
+  ];
+  const cmdHelp = () => {
+    const line9 = CMD_HELP.map((c) => '/' + c.names[0] + (c.args ? ' ' + c.args : '')).join('   ');
+    cmdSay(line9 + '   —   ' + CMD_HELP.map((c) => c.names.length > 1 ? '/' + c.names[0] + ' = ' + c.names.slice(1).map((n) => '/' + n).join(', ') : null).filter(Boolean).join(';  '));
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('[vb] commands:');
+      for (const c of CMD_HELP) { console.log('  /' + c.names[0] + (c.args ? ' ' + c.args : '') + (c.names.length > 1 ? '   (also /' + c.names.slice(1).join(', /') + ')' : ''));
+        console.log('      ' + c.what); }
+    }
+  };
   const cmdRun = (line) => {
     const t = String(line || '').trim();
     if (!t) return;
-    const m = t.match(/^\/?(\w+)\s*(.*)$/);
+    const m = t.match(/^\/?([\w?]+)\s*(.*)$/);       // …[\w?] so a bare /? reaches the help entry rather than falling through as unparsable
     if (!m) { cmdSay('?'); return; }
     const c = m[1].toLowerCase();
-    if (c === 'spawn') cmdSpawn(m[2]);
-    else if (c === 'locate' || c === 'find' || c === 'goto') cmdLocate(m[2]);
-    else cmdSay('unknown command: ' + m[1] + ' (/spawn, /locate)');
+    const hit = CMD_HELP.find((h) => h.names.indexOf(c) >= 0);
+    if (!hit) { cmdSay('unknown command: ' + m[1] + ' — try /help'); return; }
+    if (hit.names[0] === 'spawn') cmdSpawn(m[2]);
+    else if (hit.names[0] === 'locate') cmdLocate(m[2]);
+    else cmdHelp();
   };
   // CAPTURE phase, on the document: this has to work even when the input never got focus, or the line
   // cannot be dismissed and the keyboard stays captured (user: "pressing esc should disable the command line").
@@ -14229,6 +14270,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // than staying whole (see phShatterTree). NB: every property below shares this ONE line — a `//` put
     // among them eats the rest of it, which is how fellHitVy..fellCalmAng went missing for a build and
     // sent every tree to the 25 s backstop instead of breaking on impact.
+    fellChunkSpan: 22,
     fellBakeR: 120, fellBakeMs: 20000,
     fellBreakMs: 25000, fellRoomPerTry: 8, fellRoomTries: 10, fellHitVy: 8, fellHitFrac: 0.4, fellHitMs: 60, fellHitHoldMs: 400, fellTiltUp: 0.9, fellCalmLin: 0.8, fellCalmAng: 0.04, fellCalmMs: 500, fellMinMs: 2000,   // ── THE FELL BREAKS WHEN IT HITS THE GROUND (user 2026-08-23: "the tree is supposed to break up in chunks when it hits the ground", "make it more sensitive to when it hits the ground") ── MEASURED per-frame on two ~29k-voxel oaks: the fall is a clean vertical-speed arrest. Tree A peaked at 22.3 vox/s down and collapsed to 6.0 at 1.2 s; tree B peaked at 62.8 and collapsed to 2.2 at 0.6 s. AFTER that the body creeps and rolls for another 10-15 s at 2-3.5 vox/s, which is why waiting for it to go quiet broke the tree a quarter of a minute after the player watched it land. So the impact is the arrest, expressed as a FRACTION of the body's own peak fall speed rather than an absolute: fellHitFrac of peak, held fellHitMs, with at least one contact and only once it has really fallen (peak > fellHitVy - a trunk resting on its stump never arms it). Replayed against the recorded frames that fires at 1373 ms and 1196 ms, both within ~0.6 s of the visible landing, and stays disarmed through the free fall. fellHitMs was 200 and is now 60 (user 2026-08-23: "its at the moment the tree hits the ground or rolls on its side, that it falls apart"): the arrest is ONE FRAME wide - MEASURED on a landing pine, vy -40.51 -> -2.91 between consecutive frames with the body's y locking at 195.4 - and no frame of the fall itself comes near the threshold, so the dwell was buying nothing but delay. It is not zero only so a single glitched frame cannot fire it. fellTiltUp is what separates the two arrests a felled trunk makes: it seats on its own CUT FACE while still bolt upright (up = 1.00) and lands on the TERRAIN once it has leaned over, and MEASURED first ground contact happens at up = 0.41 on a tree that bounced and at -0.15 on one that did not - both far under 0.9, and both while the topple drive was still running. So the block is 'upright AND still toppling', not 'still toppling': a trunk that has tilted more than ~26 deg is past its stump and whatever stops it now is the ground. fellCalm* is the fallback for a tree that never falls fast enough to arm the impact test, and fellBreakMs is the backstop for one that never does either.
     // ── AND THE NEW PIECES MUST NOT REST ON EACH OTHER ── the `resting` latch in sim/solver.js turns gravity
@@ -16063,14 +16105,39 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // whatever the free slots allow — the same coarsening rule the count had, moved onto the size.
     const cap9 = Math.max(chunk9, Math.ceil(b.n / K));
     let live = true;
+    // ── AND A PIECE IS BOUNDED IN EXTENT, NOT ONLY IN COUNT (user 2026-08-26: "the birch is leaving these
+    // long trunks in tact … make sure all the chunks are the same size") ── growing to cap9 CELLS makes every
+    // piece the same VOLUME, and it already did: measured on a felled birch, 27 pieces from 56 to 389 voxels,
+    // median 340. It says nothing about SHAPE. A birch bole is a few voxels across, so the only direction a
+    // seed inside it can grow is ALONG the trunk, and the same 300 voxels come out as a rod: measured
+    // 4 x 56 x 7, aspect 14, against a median longest axis of 16. That rod is the "long trunk left intact".
+    // So a cell is refused if taking it would push this piece's bounding box past fellChunkSpan on any axis.
+    // Refusing is not discarding — the cell stays unowned and the re-seed pass below gives it its own piece,
+    // which is exactly the extra cut the trunk needs. 22 is above the median piece today, so a compact chunk
+    // is untouched and only the rods are split.
+    const bxa = new Int32Array(K).fill(1e9), bxb = new Int32Array(K).fill(-1e9);
+    const bya = new Int32Array(K).fill(1e9), byb = new Int32Array(K).fill(-1e9);
+    const bza = new Int32Array(K).fill(1e9), bzb = new Int32Array(K).fill(-1e9);
+    for (let q = 0; q < K; q++) { if (!buckets[q].length) continue;
+      const s9 = buckets[q][0], sx9 = s9 % sx, sz9 = ((s9 / sx) | 0) % sz, sy9 = (s9 / sxz) | 0;
+      bxa[q] = bxb[q] = sx9; bya[q] = byb[q] = sy9; bza[q] = bzb[q] = sz9; }
+    const SPAN9 = PH.fellChunkSpan;
     while (live) {
       live = false;
       for (let q = 0; q < K; q++) {
         if (buckets[q].length >= cap9) continue;      // full — its frontier is left for the re-seed pass below
         const qq = queues[q];
-        let got = -1;
-        while (heads[q] < qq.length) { const c = qq[heads[q]++]; if (!own[c]) { got = c; break; } }
+        let got = -1, gx = 0, gy = 0, gz = 0;
+        while (heads[q] < qq.length) { const c = qq[heads[q]++]; if (own[c]) continue;
+          const cx9 = c % sx, cz9 = ((c / sx) | 0) % sz, cy9 = (c / sxz) | 0;
+          if (Math.max(bxb[q], cx9) - Math.min(bxa[q], cx9) >= SPAN9) continue;   // …would make this piece a rod
+          if (Math.max(byb[q], cy9) - Math.min(bya[q], cy9) >= SPAN9) continue;
+          if (Math.max(bzb[q], cz9) - Math.min(bza[q], cz9) >= SPAN9) continue;
+          got = c; gx = cx9; gy = cy9; gz = cz9; break; }
         if (got < 0) continue;
+        if (gx < bxa[q]) bxa[q] = gx; if (gx > bxb[q]) bxb[q] = gx;
+        if (gy < bya[q]) bya[q] = gy; if (gy > byb[q]) byb[q] = gy;
+        if (gz < bza[q]) bza[q] = gz; if (gz > bzb[q]) bzb[q] = gz;
         own[got] = q + 1; buckets[q].push(got);
         const m = nbrs9(got, nb9);
         for (let t = 0; t < m; t++) { const nk = nb9[t];
@@ -16088,10 +16155,21 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     for (let q = 0; q < b.n; q++) { const kk = cellK[q];
       if (own[kk]) continue;
       const bi = buckets.length;                     // its REAL piece index, not a -1 marker: the merge below needs to know who owns a cell
+      // The SAME extent bound the main grow uses. Without it this pass undoes that work: the cells the grow
+      // refused for making a rod are exactly the cells this one picks up, and it would rebuild the rod from
+      // them — measured, the worst piece was still 18 x 40 x 12 with the cap on the main loop alone.
       const grp = [kk]; own[kk] = bi + 1;
+      let rxa = kk % sx, rxb = rxa, rza = ((kk / sx) | 0) % sz, rzb = rza, rya = (kk / sxz) | 0, ryb = rya;
       for (let h = 0; h < grp.length && grp.length < cap9; h++) { const m = nbrs9(grp[h], nb9);
         for (let t = 0; t < m && grp.length < cap9; t++) { const nk = nb9[t];
           if (!present[nk] || own[nk]) continue;
+          const ux = nk % sx, uz = ((nk / sx) | 0) % sz, uy = (nk / sxz) | 0;
+          if (Math.max(rxb, ux) - Math.min(rxa, ux) >= PH.fellChunkSpan) continue;
+          if (Math.max(ryb, uy) - Math.min(rya, uy) >= PH.fellChunkSpan) continue;
+          if (Math.max(rzb, uz) - Math.min(rza, uz) >= PH.fellChunkSpan) continue;
+          if (ux < rxa) rxa = ux; if (ux > rxb) rxb = ux;
+          if (uy < rya) rya = uy; if (uy > ryb) ryb = uy;
+          if (uz < rza) rza = uz; if (uz > rzb) rzb = uz;
           own[nk] = bi + 1; grp.push(nk); } }
       buckets.push(grp);
     }
@@ -19803,7 +19881,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
                     // touch — an SFX slider that also rode the ambience would just be the master slider twice over.
                     // Resets to 100% on refresh and persists to vb_sfx, matching sndVol exactly rather than inventing a
                     // second rule for two sliders sitting in the same box (see the volume-resets-to-100 note below).
-  let musVol = volGet('vb_mus', 1);   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
+  let musVol = volGet('vb_mus', 0.8);   // ── AND THE SCORE STARTS AT 80% (user 2026-08-26: "make the music at 80%. make volume back at 100") — the DEFAULT only; a saved vb_mus still wins   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
   let ambVol = volGet('vb_amb', 1);   // ── AMBIENCE (user 2026-08-20: "add a new audio slider called ambience. this adjusts the ambience
@@ -19814,7 +19892,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
                     // It reaches the desert bed as well as the forest one for free: both register on BUS_AMB and
                     // ambBiomeTick recomputes their levels through sndLevel every frame, so a drag moves the bed
                     // that is playing right now rather than the next one to start.
-  let sndVol = volGet('vb_vol', 0.8);   // ── AND IT STARTS AT 80% (user 2026-08-26: "turn the default sound to 80%") ── the DEFAULT only, so a player who has ever touched the slider keeps their own number: volGet returns the saved vb_vol when there is one   // ── SOUND IS BACK ON (user 2026-08-20: "turn the volume on by default") ── it was muted earlier the same day ("turn off volume by default"), which was itself a repeat of 2026-08-18, and this is the third time the switch has moved. 1 is the 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
+  let sndVol = volGet('vb_vol', 1);   // ── SOUND IS BACK ON (user 2026-08-20: "turn the volume on by default") ── it was muted earlier the same day ("turn off volume by default"), which was itself a repeat of 2026-08-18, and this is the third time the switch has moved. 1 is the 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
                     // preference: a saved vb_vol is written by the slider and re-read there, so a player who turns it down
                     // still gets their setting for that session — this only decides where a fresh load begins.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)

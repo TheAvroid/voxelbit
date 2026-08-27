@@ -64,7 +64,7 @@
                     // touch — an SFX slider that also rode the ambience would just be the master slider twice over.
                     // Resets to 100% on refresh and persists to vb_sfx, matching sndVol exactly rather than inventing a
                     // second rule for two sliders sitting in the same box (see the volume-resets-to-100 note below).
-  let musVol = volGet('vb_mus', 1);   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
+  let musVol = volGet('vb_mus', 0.8);   // ── AND THE SCORE STARTS AT 80% (user 2026-08-26: "make the music at 80%. make volume back at 100") — the DEFAULT only; a saved vb_mus still wins   // ── MUSIC (user 2026-08-08) ── the third bus: the score, and nothing else. Same rule as the two
                     // sliders it sits under — starts at 100% on every refresh and persists to vb_mus — so the sound
                     // box has one behaviour and not three. Only the anthem rides it today (see ANTHEM_AT below).
   let ambVol = volGet('vb_amb', 1);   // ── AMBIENCE (user 2026-08-20: "add a new audio slider called ambience. this adjusts the ambience
@@ -75,7 +75,7 @@
                     // It reaches the desert bed as well as the forest one for free: both register on BUS_AMB and
                     // ambBiomeTick recomputes their levels through sndLevel every frame, so a drag moves the bed
                     // that is playing right now rather than the next one to start.
-  let sndVol = volGet('vb_vol', 0.8);   // ── AND IT STARTS AT 80% (user 2026-08-26: "turn the default sound to 80%") ── the DEFAULT only, so a player who has ever touched the slider keeps their own number: volGet returns the saved vb_vol when there is one   // ── SOUND IS BACK ON (user 2026-08-20: "turn the volume on by default") ── it was muted earlier the same day ("turn off volume by default"), which was itself a repeat of 2026-08-18, and this is the third time the switch has moved. 1 is the 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
+  let sndVol = volGet('vb_vol', 1);   // ── SOUND IS BACK ON (user 2026-08-20: "turn the volume on by default") ── it was muted earlier the same day ("turn off volume by default"), which was itself a repeat of 2026-08-18, and this is the third time the switch has moved. 1 is the 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
                     // preference: a saved vb_vol is written by the slider and re-read there, so a player who turns it down
                     // still gets their setting for that session — this only decides where a fresh load begins.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)

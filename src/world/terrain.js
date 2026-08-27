@@ -1,5 +1,5 @@
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -1284,7 +1284,8 @@
   // Both are read by the birch arm of boulderAt's treeClash — see the note there for why the berth is the
   // trunk's and not the crown's. 83 is assets/bow.js birchTrunkC's worst case across the loaded set.
   const BK_BOLE = 7, BK_LEAN = 83;
-  const BKHIVE = 0.02;                                 // one birch cell in FIFTY carries a beehive (user 2026-08-24: 0.10 -> 0.05 -> "make the beehives 2% in the birch forest"). A landmark rather than furniture, which is the same reasoning OKHIVE's 3.1% of oaks follows                    // one birch candidate per 4.4 m cell; margin covers the widest crown's half-footprint
+  const BK_SPAWN = 44;                                 // the spawn clearing measured at the BOLE — a little wider than the 40 the box test uses, so the trunk's own width cannot creep back in
+  const BKHIVE = 0.01;                                 // one birch cell in a HUNDRED carries a beehive (user 2026-08-24: 0.10 -> 0.05 -> 0.02; 2026-08-26: "make birch 1%"). A landmark rather than furniture, which is the same reasoning OKHIVE's 3.1% of oaks follows                    // one birch candidate per 4.4 m cell; margin covers the widest crown's half-footprint
   function birchAt(cx, cz) {
     if (!BIRCHV.length) return null;                   // ?nobirch, or the .json never loaded - one test disables the whole pass, as ?nooaks does
     if (ihash(cx * 53 + 29, cz * 47 + 11) > 0.76) return null;         // ~24% of cells carry a tree
@@ -1317,16 +1318,31 @@
     while (top > 0 && BIRCHV[BIRCHPICK[top]].sz > avail) top--;
     const k = BIRCHPICK[(ihash(cx * 17 + 3, cz * 19 + 7) * (top + 0.999)) | 0];
     const t = { wx, wz, k, rot: (ihash(cx + 211, cz + 97) * 3.99) | 0,
-                sink: 1 + ((ihash(cx * 23, cz * 29) * 3) | 0) };   // sink 1-3, and it means what it means for an oak: the stamp writes in mode 1, so courses below local ground are refused rather than punched into the hill
-    // -- AND A BEEHIVE ON ONE BIRCH IN TEN (user 2026-08-24: "attach beehives to some of the birch trees.
-    // make it somewhat rare. say 10%?") -- oakAt's hive block, line for line, against BIRCH_BANCH and this
-    // band's own grid. The Y IS RESOLVED HERE and not at stamp time for oakAt's reason: hiveAt() is the query
-    // the bee swarm reads and it has to answer with a world position, and groundMin is then only paid on the
-    // tenth of cells that actually carry one.
-    // BKHIVE is a bigger number than the oak's OKHIVE for the same visible rarity: OKHIVE is 6% of the two
-    // biggest oak layers, i.e. 3.1% of oaks on a 112-voxel grid, where this is 10% of birches on a 44-voxel
-    // grid. The seat matches stampBirch exactly - groundMin at the TRUNK, less sink, less m.tbz - because a
-    // hive resolved against the box centre would hang at the wrong height on every model that leans.
+                sink: 1 + ((ihash(cx * 23, cz * 29) * 3) | 0) };
+    // ── AND THE SPAWN CLEARING IS MEASURED AT THE BOLE (user 2026-08-26: "never spawn players in trees") ──
+    // the test near the top of this function compares SPAWN against wx/wz, which is the model's BOUNDING-BOX
+    // CENTRE. On these models the bole is up to BK_LEAN (83) from that centre, because the crowns lean, so a
+    // birch whose box passed the 40-voxel clearing could still put its TRUNK on top of the player. MEASURED
+    // on a fresh world: three bark voxels inside the player's own collision box at spawn, nearest trunk 15
+    // voxels away. Same lesson the boulder arm records — anything that means "where this birch stands" has to
+    // go through birchTrunkW, never through the cell. It is re-tested HERE rather than moved because the bole
+    // is not known until the model is picked, and the cheap box test above still rejects most cells first.
+    { const m8 = BIRCHV[k];
+      if (m8) { const tw8 = birchTrunkW(t, m8);
+        const sdx = tw8.wx - SPWX, sdz = tw8.wz - SPWZ;
+        if (sdx * sdx + sdz * sdz < BK_SPAWN * BK_SPAWN) return null; } }   // sink 1-3, and it means what it means for an oak: the stamp writes in mode 1, so courses below local ground are refused rather than punched into the hill
+    // -- AND A BEEHIVE ON ONE BIRCH IN A HUNDRED (user 2026-08-24: "attach beehives to some of the birch trees.
+    // make it somewhat rare. say 10%?", walked down to 5% and then 2% the same day, and to 1% on 2026-08-26)
+    // -- oakAt's hive block, line for line, against BIRCH_BANCH and this band's own grid. The Y IS RESOLVED
+    // HERE and not at stamp time for oakAt's reason: hiveAt() is the query the bee swarm reads and it has to
+    // answer with a world position, and groundMin is then only paid on the hundredth of cells that carry one.
+    // BKHIVE is a SMALLER number than the oak's OKHIVE but sits on a denser grid, and the two land in the same
+    // place on the ground: OKHIVE is 6% of the two biggest oak layers, i.e. 3.1% of oaks on a 79-voxel cell at
+    // a 78% pass rate = one hive per 51 m square, where this is 1% of birches on a 44-voxel cell at a 76% pass
+    // rate = one per 50 m square. Ground density is the number to compare, never the raw percentage — the two
+    // bands' cells differ by 3.2x in area. The seat matches stampBirch exactly - groundMin at the TRUNK, less
+    // sink, less m.tbz - because a hive resolved against the box centre would hang at the wrong height on
+    // every model that leans.
     const HB = BIRCH_BANCH[k];
     if (HIVEV && HB && HB.length && ihash(cx * 61 + 43, cz * 59 + 17) < BKHIVE) {
       const m = BIRCHV[k];

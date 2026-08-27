@@ -749,15 +749,36 @@
       P.pitch = Math.max(-1.5, Math.min(1.5, Math.atan2(ly - (P.y + EYE), Math.max(2, Math.hypot(lx, lz))))); }
     cmdSay('→ ' + label + ' — ' + d0 + ' voxels');
   };
+  // ── ONE TABLE, AND THE DISPATCH READS IT ── /help lists what the command line accepts (user 2026-08-26),
+  // and it lists it by walking the SAME array cmdRun matches against, so a command can never exist without
+  // appearing here or appear here without existing. `names[0]` is the command, the rest are aliases; a bare
+  // /spawn or /locate already prints its own targets, which is why this stays a one-line summary each rather
+  // than trying to reproduce the species and biome lists that those two build at runtime.
+  const CMD_HELP = [
+    { names: ['spawn'], args: '<creature|item|vox>', what: 'put something in front of you — /spawn porcupine, /spawn stone_axe, /spawn palm_tree' },
+    { names: ['locate', 'find', 'goto'], args: '<biome|creature|vox>', what: 'travel to the nearest one — /locate desert, /locate bee' },
+    { names: ['help', 'commands', '?'], args: '', what: 'this list' },
+  ];
+  const cmdHelp = () => {
+    const line9 = CMD_HELP.map((c) => '/' + c.names[0] + (c.args ? ' ' + c.args : '')).join('   ');
+    cmdSay(line9 + '   —   ' + CMD_HELP.map((c) => c.names.length > 1 ? '/' + c.names[0] + ' = ' + c.names.slice(1).map((n) => '/' + n).join(', ') : null).filter(Boolean).join(';  '));
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('[vb] commands:');
+      for (const c of CMD_HELP) { console.log('  /' + c.names[0] + (c.args ? ' ' + c.args : '') + (c.names.length > 1 ? '   (also /' + c.names.slice(1).join(', /') + ')' : ''));
+        console.log('      ' + c.what); }
+    }
+  };
   const cmdRun = (line) => {
     const t = String(line || '').trim();
     if (!t) return;
-    const m = t.match(/^\/?(\w+)\s*(.*)$/);
+    const m = t.match(/^\/?([\w?]+)\s*(.*)$/);       // …[\w?] so a bare /? reaches the help entry rather than falling through as unparsable
     if (!m) { cmdSay('?'); return; }
     const c = m[1].toLowerCase();
-    if (c === 'spawn') cmdSpawn(m[2]);
-    else if (c === 'locate' || c === 'find' || c === 'goto') cmdLocate(m[2]);
-    else cmdSay('unknown command: ' + m[1] + ' (/spawn, /locate)');
+    const hit = CMD_HELP.find((h) => h.names.indexOf(c) >= 0);
+    if (!hit) { cmdSay('unknown command: ' + m[1] + ' — try /help'); return; }
+    if (hit.names[0] === 'spawn') cmdSpawn(m[2]);
+    else if (hit.names[0] === 'locate') cmdLocate(m[2]);
+    else cmdHelp();
   };
   // CAPTURE phase, on the document: this has to work even when the input never got focus, or the line
   // cannot be dismissed and the keyboard stays captured (user: "pressing esc should disable the command line").
