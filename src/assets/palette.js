@@ -502,6 +502,8 @@
   // ids are reclaimed and sit below DECOR_MIN where a blanket sweep marks everything solid. Letting that sweep
   // stand is the whole hitbox: `solid()` reads solidTab and nothing else. They keep decorTab, so they are still
   // soft to any tool and still choppable — only walking through them stops.
+  const leafSndTab = new Uint8Array(256);
+  const stepGrassTab = new Uint8Array(256);          // per-id "is this GREEN GROUND" — the surface the walking loop plays on, filled in material-tabs.js           // "this material sounds like foliage when a tool hits it" - see the note beside its fill in assets/material-tabs.js
   const foliaTab = new Uint8Array(256);              // per-id CANOPY flag. Leaves collide with NOTHING (user): not the player, not rigid bodies, not creature navigation. What is left of this flag is rendering (see-through when the eye is inside a crown), the perched-bird SUPPORT test (which is placement, not collision — birds have to be able to sit in a canopy), and letting a stamp overwrite needles. Was: walk-through for the player, but the cinematic camera must still steer around it or it flies straight through pine crowns
   for (const f of foliageIds) foliaTab[f] = 1;
   const mushTab = new Uint8Array(256);                 // per-id BOUNCY flag — mushroom voxels trampoline the player (filled once MUSHV loads)

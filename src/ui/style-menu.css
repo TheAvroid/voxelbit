@@ -27,6 +27,7 @@
     font: 7px/1 'px3', Consolas, monospace; letter-spacing: 1px; color: #ffd76a; white-space: nowrap;
     text-shadow: 0 1px 3px rgba(0,0,0,0.9); opacity: 0; transition: opacity 0.18s ease-out; pointer-events: none; }
   #kbBtn:hover::after, #pkBtn:hover::after, #edBtn:hover::after, #dcBtn:hover::after, #veBtn:hover::after, #edCopy:hover::after { opacity: 1; }   /* HOVER (user): the tile lifts and the icon goes GOLD (user 2026-08-08 — was green) (svg fill is currentColor, so the colour carries) */
-  #edBtn.on { border-color: #7fd05a; color: #b8ff6e; }
+  #edBtn.on { border-color: #d2a453; color: #ffd76a; }
+   /* ACTIVE (editor open) — the SAME gold as the hover above, not a second shade. This was the last green left on the ESC row: the hover went gold on 2026-08-08 and the active state was missed, so opening the editor turned its icon green while every other lit control on the row was gold. Held-open and hovered read alike, which is fine — against the grey resting colour, lit vs unlit is the distinction that has to survive. */
   #edCopy.copied { border-color: #7fd05a; color: #b8ff6e; }   /* green pulse on export → confirms the copy without replacing the icon */
   #edCopy.copied::after { opacity: 1; }                        /* …and surface the "copied ✓" label even if the cursor isn't on it */

@@ -39,12 +39,36 @@
     // voxels inside the axe's radius and an oak more, so a third of that is past chopBite and neither is
     // affected; a birch offers ~42. chopThin is the floor, so a twig still loses something to a swing.
     chopFrac: 0.6, chopThin: 4,
+    // ── …AND THE SAME RULE ON THE PATH A SWING ACTUALLY TAKES ── chopFrac above caps the bite in
+    // physChopAt, and physChopAt has not been in a swing since 2026-08-20, when wood was moved onto the
+    // pick's carve (sim/tools.js). So the 2026-08-24 fix for "make the birch trees have the same tool
+    // physics as everything else" went into code the player never reaches, and its own note — "nobody ever
+    // saw them: the first swing already had the tree falling" — stayed true.
+    // This is that cap for phChopDecor, and it is expressed in the unit the problem is actually in: COURSES
+    // OF TRUNK PER BLOW. MEASURED, wood in the impact's own course inside the axe's sphere — birch 4-8,
+    // pine 21-27, oak 33-41. A flat 30 is 0.8 of an oak course and 1.3 of a pine's, which is a notch; on a
+    // birch it is FIVE COURSES, a 50 cm slice taken clean through a trunk 3 voxels thick. That is the whole
+    // of "it stops rendering a portion of the trunk instead of the chunk mechanic": the piece removed is
+    // trunk-shaped and sits exactly where the trunk was, so nothing reads as a chunk coming off.
+    // The cap binds exactly when the median course is below chopBite / chopCourse, so 2.0 puts that boundary
+    // at 15 voxels — and it is chosen to be INERT above, not tuned. MEASURED on trunks confirmed by an
+    // unbroken 14-course run of wood in one column: pine 17-18, oak 18-22, birch 6-8. Every pine and oak
+    // swing still takes its full 30, with room to spare as the notch deepens and the measure drifts down a
+    // voxel or two; only something genuinely thinner than the axe's own bite can bind it. chopThin is the
+    // floor, so a twig still loses something. Do not raise chopBite without re-checking this ratio: the two
+    // numbers are one rule, and the boundary between them is the whole design.
+    chopCourse: 2.0,
     fellChunkVox: 350, fellLandFrames: 3,   // halved again (user 2026-08-22: "we need smaller chunks to absorb by the player"). An 86k oak wants ~247 pieces at this size, which is why PHYS_MAX went to 256
     fellChunkMax: 600, fellStumpSlots: 8,   // ── THE COARSEST SPLIT STILL WORTH MAKING, AND THE SLOTS HELD BACK FOR THE STUMP ── phShatterTree used to refuse to break at all unless every piece could be exactly fellChunkVox, and a tier-7 oak is 86k voxels = 246 pieces against a PHYS_MAX of 256: measured 243 free in an EMPTY world, so the biggest oaks could never break, ever (user 2026-08-23: "I knocked over a big oak tree and it didnt even fall apart into chunks"). The piece count now takes whatever room there is and only REFUSES below fellChunkMax, so the size still cannot run away to the 10,027-voxel lumps that started this — it just no longer holds the whole tree hostage to the last three slots.
     // ── AND IT BREAKS ON A CLOCK, NOT ON A LANDING (user 2026-08-22: "have the tree turn into chunks after 10
     // seconds of becoming an rigid body") ── which also removes the last thing that needed the topple drive to
     // have finished, so the fall can be left to plain physics.
-    fellBreakMs: 25000, fellRoomPerTry: 8, fellHitVy: 8, fellHitFrac: 0.4, fellHitMs: 60, fellHitHoldMs: 400, fellTiltUp: 0.9, fellCalmLin: 0.8, fellCalmAng: 0.04, fellCalmMs: 500, fellMinMs: 2000,   // ── THE FELL BREAKS WHEN IT HITS THE GROUND (user 2026-08-23: "the tree is supposed to break up in chunks when it hits the ground", "make it more sensitive to when it hits the ground") ── MEASURED per-frame on two ~29k-voxel oaks: the fall is a clean vertical-speed arrest. Tree A peaked at 22.3 vox/s down and collapsed to 6.0 at 1.2 s; tree B peaked at 62.8 and collapsed to 2.2 at 0.6 s. AFTER that the body creeps and rolls for another 10-15 s at 2-3.5 vox/s, which is why waiting for it to go quiet broke the tree a quarter of a minute after the player watched it land. So the impact is the arrest, expressed as a FRACTION of the body's own peak fall speed rather than an absolute: fellHitFrac of peak, held fellHitMs, with at least one contact and only once it has really fallen (peak > fellHitVy - a trunk resting on its stump never arms it). Replayed against the recorded frames that fires at 1373 ms and 1196 ms, both within ~0.6 s of the visible landing, and stays disarmed through the free fall. fellHitMs was 200 and is now 60 (user 2026-08-23: "its at the moment the tree hits the ground or rolls on its side, that it falls apart"): the arrest is ONE FRAME wide - MEASURED on a landing pine, vy -40.51 -> -2.91 between consecutive frames with the body's y locking at 195.4 - and no frame of the fall itself comes near the threshold, so the dwell was buying nothing but delay. It is not zero only so a single glitched frame cannot fire it. fellTiltUp is what separates the two arrests a felled trunk makes: it seats on its own CUT FACE while still bolt upright (up = 1.00) and lands on the TERRAIN once it has leaned over, and MEASURED first ground contact happens at up = 0.41 on a tree that bounced and at -0.15 on one that did not - both far under 0.9, and both while the topple drive was still running. So the block is 'upright AND still toppling', not 'still toppling': a trunk that has tilted more than ~26 deg is past its stump and whatever stops it now is the ground. fellCalm* is the fallback for a tree that never falls fast enough to arm the impact test, and fellBreakMs is the backstop for one that never does either.
+    // fellRoomTries: after this many ticks of failing to make room, a felled tree BREAKS COARSE rather
+    // than staying whole (see phShatterTree). NB: every property below shares this ONE line — a `//` put
+    // among them eats the rest of it, which is how fellHitVy..fellCalmAng went missing for a build and
+    // sent every tree to the 25 s backstop instead of breaking on impact.
+    fellBakeR: 120, fellBakeMs: 20000,
+    fellBreakMs: 25000, fellRoomPerTry: 8, fellRoomTries: 10, fellHitVy: 8, fellHitFrac: 0.4, fellHitMs: 60, fellHitHoldMs: 400, fellTiltUp: 0.9, fellCalmLin: 0.8, fellCalmAng: 0.04, fellCalmMs: 500, fellMinMs: 2000,   // ── THE FELL BREAKS WHEN IT HITS THE GROUND (user 2026-08-23: "the tree is supposed to break up in chunks when it hits the ground", "make it more sensitive to when it hits the ground") ── MEASURED per-frame on two ~29k-voxel oaks: the fall is a clean vertical-speed arrest. Tree A peaked at 22.3 vox/s down and collapsed to 6.0 at 1.2 s; tree B peaked at 62.8 and collapsed to 2.2 at 0.6 s. AFTER that the body creeps and rolls for another 10-15 s at 2-3.5 vox/s, which is why waiting for it to go quiet broke the tree a quarter of a minute after the player watched it land. So the impact is the arrest, expressed as a FRACTION of the body's own peak fall speed rather than an absolute: fellHitFrac of peak, held fellHitMs, with at least one contact and only once it has really fallen (peak > fellHitVy - a trunk resting on its stump never arms it). Replayed against the recorded frames that fires at 1373 ms and 1196 ms, both within ~0.6 s of the visible landing, and stays disarmed through the free fall. fellHitMs was 200 and is now 60 (user 2026-08-23: "its at the moment the tree hits the ground or rolls on its side, that it falls apart"): the arrest is ONE FRAME wide - MEASURED on a landing pine, vy -40.51 -> -2.91 between consecutive frames with the body's y locking at 195.4 - and no frame of the fall itself comes near the threshold, so the dwell was buying nothing but delay. It is not zero only so a single glitched frame cannot fire it. fellTiltUp is what separates the two arrests a felled trunk makes: it seats on its own CUT FACE while still bolt upright (up = 1.00) and lands on the TERRAIN once it has leaned over, and MEASURED first ground contact happens at up = 0.41 on a tree that bounced and at -0.15 on one that did not - both far under 0.9, and both while the topple drive was still running. So the block is 'upright AND still toppling', not 'still toppling': a trunk that has tilted more than ~26 deg is past its stump and whatever stops it now is the ground. fellCalm* is the fallback for a tree that never falls fast enough to arm the impact test, and fellBreakMs is the backstop for one that never does either.
     // ── AND THE NEW PIECES MUST NOT REST ON EACH OTHER ── the `resting` latch in sim/solver.js turns gravity
     // OFF for a body with any contact and little speed. A shatter makes every piece at once, in contact with
     // its neighbours and all at rest, so the whole cluster held ITSELF up: a trunkless crown hanging in the
@@ -335,28 +359,89 @@
   // reaches diagonals only through the `g` glue links, so an axe notch severs a birch exactly as it does a
   // pine. Tried the other way on 2026-08-24 and it broke the fall: the crown parcelled into 25 bodies at the
   // cut instead of toppling whole.)
+  // ── WHICH BIRCH REALLY OWNS A COLUMN ── birchShapeAt used to return the FIRST tree whose bounding BOX
+  // covered the column, and on this grid that is close to a coin toss. BKCELL is 44, the footprints run 29 to
+  // 61 wide and the crowns LEAN, so overlapping boxes are not the exception: MEASURED in one stand, 119 of
+  // 9,316 tree pairs overlap, and 3.3% of birches resolved their OWN TRUNK column to a neighbour.
+  // Everything downstream then works on the wrong tree, and the two halves of that are exactly the two
+  // symptoms the user reported: a swing carves THIS trunk and phTreeSettle floods THAT one, so the tree that
+  // was cut is never re-tested and stays standing with its base gone, while the neighbour is re-tested for a
+  // cut it never took and sheds. "Knock one tree down and it knocks another down" and the floating birches are
+  // one bug. MEASURED before this: a trunk severed clean through - 87 of the 139 voxels in its base column
+  // gone, 20 courses of nothing left - reported orphans 0, detached 0, and the tree did not move.
+  // The BOX is the wrong question, because a birch fills very little of its own. This is the right one: does
+  // this tree's geometry actually stand in this column, and is any of it BARK? Bark beats leaf beats nothing,
+  // and the bole distance breaks a tie - so the tree whose trunk is really here wins over a neighbour whose
+  // canopy merely reaches across, and a column under two crowns goes to the nearer of them.
+  // A 2D MASK, and per MODEL rather than per (model, rotation): a rotation is a transpose of the same mask, so
+  // the QUERY is rotated into model space instead (the inverse of stampBirch's own four cases). One pass over
+  // the model's 8-16k voxels, ~3 KB held for the session. Deliberately NOT the dense rotated shape: that cache
+  // is three entries deep (OAK_SHP_MAX) precisely because each one is megabytes, and asking it about every
+  // candidate would evict the tree being chopped to answer a question about its neighbour.
+  const BKCOL = [];                                    // per-model column mask: bit 0 = the model stands in this column, bit 1 = some of it is bark
+  const birchColMask = (k) => {
+    let a = BKCOL[k]; if (a) return a;
+    const m = BIRCHV[k]; if (!m || !BIRCHIDS.length) return null;   // BIRCHIDS is filled by the async .vox load - never cache a mask built before woodTab could answer
+    a = new Uint8Array(m.sx * m.sy);
+    for (let i = 0; i < m.vox.length; i++) { const p = m.vox[i];
+      a[(p & 255) + ((p >> 8) & 255) * m.sx] |= woodTab[BIRCHIDS[p >>> 25]] ? 3 : 1; }
+    BKCOL[k] = a; return a;
+  };
+  const birchColAt = (t, m, wx, wz) => {               // 0 = this tree is not in this column at all, 1 = leaf only, 2 = bark
+    const a = birchColMask(t.k); if (!a) return 0;
+    const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+    const rx = wx - (t.wx - (fw >> 1)), rz = wz - (t.wz - (fd >> 1));
+    let x, y;                                          // ...stampBirch's rotation, inverted
+    if (t.rot === 0) { x = rx; y = rz; }
+    else if (t.rot === 1) { x = rz; y = m.sy - 1 - rx; }
+    else if (t.rot === 2) { x = m.sx - 1 - rx; y = m.sy - 1 - rz; }
+    else { x = m.sx - 1 - rz; y = rx; }
+    if (x < 0 || x >= m.sx || y < 0 || y >= m.sy) return 0;
+    const v = a[x + y * m.sx];
+    return (v & 2) ? 2 : (v & 1) ? 1 : 0;
+  };
+  // ...and the sweep radius is MEASURED off the models, exactly as oakRad is, instead of the literal 160 that
+  // stood here. 160 made it 11 x 11 = 121 cells; the widest birch footprint is 61, so a tree centred more than
+  // three cells away cannot reach this column whatever it is, and 7 x 7 = 49 covers it. That matters now that
+  // the loop can no longer stop at the first hit: the full sweep is cheaper than the old one was, hit or miss.
+  let BK_MAXD = -1;
+  const birchRad = () => {
+    if (BK_MAXD < 0) { let d = 0; for (const m of BIRCHV) d = Math.max(d, m.sx, m.sy); BK_MAXD = d; }
+    return Math.ceil(BK_MAXD / BKCELL) + 1;
+  };
   const BIRCH_ROOT = 2;                                // the same allowance the oak gets: a bole may keep two courses of stump
   const birchShapeAt = (wx, wz) => {
     if (!BIRCHV.length) return null;
-    const r = Math.ceil(Math.max(160, BKCELL) / BKCELL) + 1;   // a crown can overhang several cells
+    const r = birchRad();                              // a crown can overhang several cells
     const c0x = Math.floor(wx / BKCELL), c0z = Math.floor(wz / BKCELL);
+    let bt = null, bm = null, bsc = -1, bd = 0;        // the best claim on this column so far - see birchColAt above
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
       const t = birchAt(c0x + dx, c0z + dz); if (!t) continue;
       const m = BIRCHV[t.k]; if (!m) continue;
       const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
       const bx = t.wx - (fw >> 1), bz = t.wz - (fd >> 1);
       if (wx < bx || wx >= bx + fw || wz < bz || wz >= bz + fd) continue;
-      const R = birchShape(t.k, t.rot);
-      const tw = birchTrunkW(t, m);
-      const S = { tr: t, R, bx, bz, gy: groundMin(tw.wx, tw.wz, 4) - t.sink - (m.tbz || 0),
-                  rm: birchRemap(), g: R.g, cells: R.cells, root: 0, oak: 1, hMax: Math.max(MSZ, R.h) };
-      let lo = R.h;                                    // the lowest course of bole still standing in W
-      for (let mz = R.tz0; mz <= R.tz1; mz++) for (let mx = R.tx0; mx <= R.tx1; mx++)
-        for (let my = 0; my < lo; my++) { const v = phPresent(S, mx, my, mz); if (v && woodTab[v]) { lo = my; break; } }
-      S.root = lo >= R.h ? -1 : lo + BIRCH_ROOT;       // -1 = no bark left at the base at all
-      return S;
+      const sc = birchColAt(t, m, wx, wz);
+      const tw0 = birchTrunkW(t, m), ex = wx - tw0.wx, ez = wz - tw0.wz, d = ex * ex + ez * ez;
+      if (sc > bsc || (sc === bsc && d < bd)) { bt = t; bm = m; bsc = sc; bd = d; }
     }
-    return null;
+    if (!bt) return null;
+    // A score of 0 still answers. Every caller is asking "which tree owns this column", and chopSwing
+    // deliberately latches a shape while the ray is still in the crown's airspace short of the bole, so
+    // refusing here would take the axe's reach away. What has changed is only that a tree with real geometry
+    // in this column can no longer lose to one that merely boxes it.
+    const t = bt, m = bm;
+    const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+    const bx = t.wx - (fw >> 1), bz = t.wz - (fd >> 1);
+    const R = birchShape(t.k, t.rot);
+    const tw = birchTrunkW(t, m);
+    const S = { tr: t, R, bx, bz, gy: groundMin(tw.wx, tw.wz, 4) - t.sink - (m.tbz || 0),
+                rm: birchRemap(), g: R.g, cells: R.cells, root: 0, oak: 1, hMax: Math.max(MSZ, R.h) };
+    let lo = R.h;                                      // the lowest course of bole still standing in W
+    for (let mz = R.tz0; mz <= R.tz1; mz++) for (let mx = R.tx0; mx <= R.tx1; mx++)
+      for (let my = 0; my < lo; my++) { const v = phPresent(S, mx, my, mz); if (v && woodTab[v]) { lo = my; break; } }
+    S.root = lo >= R.h ? -1 : lo + BIRCH_ROOT;         // -1 = no bark left at the base at all
+    return S;
   };
   const treeShapeAt = (wx, wz) => {                  // which pine covers this world column, and its exact local frame
     const c0x = Math.floor(wx / TCELL), c0z = Math.floor(wz / TCELL);
@@ -519,6 +604,7 @@
   let phPres = null;                                 // per-cell "is this voxel still in the world", filled by the flood's seed pass — see the note there
   let oakLabScr = null;                              // see the note in the oak shape builder — reused label buffer, never read outside it
   let phMark = null, phStack = null;
+  let phInC = null;                                  // per-cell "is this voxel in the body being built" — see phBuildBody. Same all-zero-on-entry discipline as phPres.
   // ── EVERY SHAPE CARRIES ITS OWN CEILING (2026-08-24, "half the trees float and half of them fall") ──
   // MSZ is pine5.vox's height, 116, and it was the my bound in the flood, the component walk, the carve, the
   // drape and the body re-split. A pine is exactly that tall and an oak is not taller, so for eight months it
@@ -637,28 +723,47 @@
   // classification: count filled 6-neighbours per voxel — 6 = interior (can never touch anything, never
   // probed), 5 = face, 4 = edge, <=3 = corner. Probes are taken CORNERS FIRST, which is what collapses a
   // flat-bottomed body from hundreds of candidate contacts to a handful.
+  // Timed: the shatter calls this once PER CHUNK (~27 for a big oak) inside one frame, so it is the
+  // term that decides whether a tree breaking up is a hitch. __vb.phys().stats.build* is the tap;
+  // zero the counters, fell a tree, read ms/kvox.
   const phBuildBody = (S, cells, f, idMap) => {
-    const { sx, sz } = f, N = cells.length, hM = S.hMax || MSZ;
+    const t0 = performance.now();
+    const b = phBuildBody0(S, cells, f, idMap);
+    PH.stats.buildMs = (PH.stats.buildMs || 0) + (performance.now() - t0);
+    PH.stats.buildN = (PH.stats.buildN | 0) + 1;
+    PH.stats.buildVox = (PH.stats.buildVox | 0) + cells.length;
+    return b;
+  };
+  const phBuildBody0 = (S, cells, f, idMap) => {
+    const { sx, sz } = f, N = cells.length, hM = S.hMax || MSZ, nAll = sx * sz * hM;
     const lx = new Int16Array(N), ly = new Int16Array(N), lz = new Int16Array(N), id = new Uint8Array(N);
     let cxs = 0, cys = 0, czs = 0;
-    const inComp = new Set(cells);
+    let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;   // the TIGHT bbox, folded into this pass — consumed by the GPU shape below
+    // MEMBERSHIP MARKER instead of `new Set(cells)`. Same index space as phMark/phPres and the same
+    // discipline: always all-zero on entry, because the surface pass below erases exactly what this
+    // wrote. A Set of a felled oak's 15.6k keys cost ~1 ms to build and turned the 6-neighbour test
+    // into ~94k hash probes; a byte array makes both near-free. Worth doing carefully because the
+    // shatter runs phBuildBody once PER CHUNK — a big oak breaks into ~27 of them in one frame.
+    if (!phInC || phInC.length < nAll) phInC = new Uint8Array(nAll);
+    for (let i = 0; i < N; i++) phInC[cells[i]] = 1;
     for (let i = 0; i < N; i++) {
       const k = cells[i], mx = k % sx, mz = ((k / sx) | 0) % sz, my = (k / (sx * sz)) | 0;
       lx[i] = mx; ly[i] = my; lz[i] = mz;
       id[i] = idMap ? idMap.get(k) : W[phWorldIdx(S, mx, my, mz)];   // LIVE voxel (covers pinecones, absent from R.A) unless the caller already carved it out
       cxs += mx + 0.5; cys += my + 0.5; czs += mz + 0.5;
+      if (mx < x0) x0 = mx; if (mx > x1) x1 = mx;
+      if (my < y0) y0 = my; if (my > y1) y1 = my;
+      if (mz < z0) z0 = mz; if (mz > z1) z1 = mz;
     }
     const mass = N, com = [cxs / N, cys / N, czs / N];
     let Ixx = 0, Iyy = 0, Izz = 0;
     const cube = 1 / 6;                              // a solid 1x1x1 voxel about its own centre
-    for (let i = 0; i < N; i++) {
-      const rx = lx[i] + 0.5 - com[0], ry = ly[i] + 0.5 - com[1], rz = lz[i] + 0.5 - com[2];
-      Ixx += ry * ry + rz * rz + 2 * cube; Iyy += rx * rx + rz * rz + 2 * cube; Izz += rx * rx + ry * ry + 2 * cube;
-    }
     let rMax = 0;                                    // farthest voxel from the COM — sets the tip speed, which sets how finely this body must be stepped
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < N; i++) {                    // inertia and rMax read the same r, so they share one pass
       const rx = lx[i] + 0.5 - com[0], ry = ly[i] + 0.5 - com[1], rz = lz[i] + 0.5 - com[2];
-      const d2 = rx * rx + ry * ry + rz * rz; if (d2 > rMax) rMax = d2;
+      const xx = rx * rx, yy = ry * ry, zz = rz * rz;
+      Ixx += yy + zz + 2 * cube; Iyy += xx + zz + 2 * cube; Izz += xx + yy + 2 * cube;
+      const d2 = xx + yy + zz; if (d2 > rMax) rMax = d2;
     }
     rMax = Math.sqrt(rMax);
     const b = { n: N, mass, com, id, lx, ly, lz, rMax, I: [Ixx, Iyy, Izz],
@@ -669,49 +774,56 @@
       sleeping: false, sleepT: 0, born: performance.now(), sx, sz, hMax: S.hMax || MSZ,   // …and the body inherits it, or phChopBody re-splits a felled birch against the pine's ceiling and shatters everything above it
       c26: S.oak ? 1 : 0,                            // ── THIS BODY'S OWN CONNECTIVITY ── an oak is one piece only 26-connected (see oakShape), so chopping a FELLED oak has to re-split it the same way or a single swing shatters the crown into 200 clumps. 0 for everything else, including the {bx,gy,bz} pseudo-shapes phSubBody and phBodyFromCells pass in; phChopBody carries it across to the pieces it makes.
       ax: [1, 0, 0], ay: [0, 1, 0], az: [0, 0, 1] };   // cached world axes — refreshed whenever the body moves, read by phBodySolid
-    const rank = [], rankFol = [];                   // 0 = corner (best probe) … 3 = interior (never); rankFol = the foliage cells held back in case the body turns out to be nothing else
+    // SURFACE RANK. 0 = corner (the best probe) … 5 = face-locked; 6 = interior and skipped. Held in
+    // parallel typed arrays rather than `rank.push([filled, i])`: a felled crown is nearly all surface,
+    // so the pair form allocated ~10k two-element arrays per body and then handed them to a comparator
+    // sort. `filled` is 0..5, so a 6-bucket counting sort is exact, allocation-free, and stable —
+    // it emits the identical order the comparator sort did.
+    const sIdx = new Int32Array(N), sFil = new Uint8Array(N);
+    const fIdx = new Int32Array(N), fFil = new Uint8Array(N);   // foliage, held back in case the body turns out to be nothing else
+    let sn = 0, fn = 0;
+    const rowZ = sx, rowY = sx * sz;                 // phInC is indexed x + z*sx + y*sx*sz, so a neighbour is one add
     for (let i = 0; i < N; i++) {
-      const mx = lx[i], my = ly[i], mz = lz[i];
+      const mx = lx[i], my = ly[i], mz = lz[i], k = mx + mz * rowZ + my * rowY;
       let filled = 0;
-      for (let d = 0; d < 6; d++) {
-        const nx = mx + (d === 0 ? 1 : d === 1 ? -1 : 0);
-        const ny = my + (d === 2 ? 1 : d === 3 ? -1 : 0);
-        const nz = mz + (d === 4 ? 1 : d === 5 ? -1 : 0);
-        if (nx < 0 || nx >= sx || nz < 0 || nz >= sz || ny < 0 || ny >= hM) continue;
-        if (inComp.has(nx + nz * sx + ny * sx * sz)) filled++;
-      }
+      if (mx + 1 < sx && phInC[k + 1]) filled++;
+      if (mx - 1 >= 0 && phInC[k - 1]) filled++;
+      if (my + 1 < hM && phInC[k + rowY]) filled++;
+      if (my - 1 >= 0 && phInC[k - rowY]) filled++;
+      if (mz + 1 < sz && phInC[k + rowZ]) filled++;
+      if (mz - 1 >= 0 && phInC[k - rowZ]) filled++;
       if (filled >= 6) continue;                     // INTERIOR — skipped entirely
-      if (foliaTab[id[i]]) { rankFol.push([filled, i]); continue; }   // LEAVES HAVE NO HITBOX (user): needles never generate a contact, so a crown clips into the ground instead of standing the trunk up on it
-      rank.push([filled, i]);
+      if (foliaTab[id[i]]) { fFil[fn] = filled; fIdx[fn++] = i; continue; }   // LEAVES HAVE NO HITBOX (user): needles never generate a contact, so a crown clips into the ground instead of standing the trunk up on it
+      sFil[sn] = filled; sIdx[sn++] = i;
     }
-    if (!rank.length) { for (const r of rankFol) rank.push(r); }   // …unless the body is ALL leaves (a chunk chopped out of pure canopy), which would otherwise have no contacts at all and fall through the world
-    rank.sort((p, q) => p[0] - q[0]);                // corners first
-    b.surfN = rank.length;
+    for (let i = 0; i < N; i++) phInC[cells[i]] = 0;   // erase exactly what we wrote — phInC must be all-zero for the next body
+    const rFil = sn ? sFil : fFil, rIdx = sn ? sIdx : fIdx, rn = sn || fn;   // …the fallback is a body that is ALL leaves (a chunk chopped out of pure canopy), which would otherwise have no contacts at all and fall through the world
+    const cnt = new Int32Array(7);                   // corners first
+    for (let i = 0; i < rn; i++) cnt[rFil[i]]++;
+    for (let d = 0, acc = 0; d < 6; d++) { const c = cnt[d]; cnt[d] = acc; acc += c; }
+    const ord = new Int32Array(rn);
+    for (let i = 0; i < rn; i++) ord[cnt[rFil[i]]++] = rIdx[i];
+    b.surfN = rn;
     // SPATIAL STRATIFICATION. Corner-first alone samples only the extremities — for a felled trunk that
     // is the crown tips, and the flat CUT FACE got no probes at all, so the body sank straight through
     // the stump it should have been resting on. Bucket the surface into 8-voxel cells, take the
     // best-ranked (most corner-like) voxel from each, and only then fill any remaining slots with the
     // next-best overall. Keeps Teardown's corner preference AND guarantees every face is represented.
     const seenB = new Set(), pr = [], inPr = new Set();
-    for (let i = 0; i < rank.length && pr.length < PH.maxProbes; i++) {
-      const idx = rank[i][1];
+    for (let i = 0; i < rn && pr.length < PH.maxProbes; i++) {
+      const idx = ord[i];
       const bkey = (lx[idx] >> 3) | ((ly[idx] >> 3) << 8) | ((lz[idx] >> 3) << 16);
       if (seenB.has(bkey)) continue;
       seenB.add(bkey); pr.push(idx); inPr.add(idx);
     }
-    for (let i = 0; i < rank.length && pr.length < PH.maxProbes; i++) {
-      const idx = rank[i][1];
+    for (let i = 0; i < rn && pr.length < PH.maxProbes; i++) {
+      const idx = ord[i];
       if (!inPr.has(idx)) { pr.push(idx); inPr.add(idx); }   // was pr.indexOf(idx) — the same answer (the bucket pass only ever pushes distinct indices) at O(1). On a pine's ~2k surface cells the linear scan is invisible; a felled oak has 8,852 bark voxels against a 512-probe budget, which is 4.5M comparisons on the one swing that already costs the most.
     }
     b.probes = new Int32Array(pr);
     // ── GPU SHAPE ── a TIGHT bbox around the component (a felled crown is a fraction of the full model
-    // box) uploaded as one dense id grid. The renderer DDAs this; W never sees it.
-    let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;
-    for (let i = 0; i < N; i++) {
-      if (lx[i] < x0) x0 = lx[i]; if (lx[i] > x1) x1 = lx[i];
-      if (ly[i] < y0) y0 = ly[i]; if (ly[i] > y1) y1 = ly[i];
-      if (lz[i] < z0) z0 = lz[i]; if (lz[i] > z1) z1 = lz[i];
-    }
+    // box) uploaded as one dense id grid. The renderer DDAs this; W never sees it. The bbox itself was
+    // folded into the decode pass at the top of this function.
     const bw = x1 - x0 + 1, bh = y1 - y0 + 1, bd = z1 - z0 + 1, cells2 = bw * bh * bd;
     phReclaim(cells2);                               // make room by retiring the oldest fallen debris (see phReclaim)
     if (bodyTop + cells2 > BODYCAP) { b.gpu = null; PH.stats.noGpu = (PH.stats.noGpu | 0) + 1; return b; }   // still no room (one body larger than the whole buffer) — simulates but is NOT DRAWN, which on screen is indistinguishable from the chunk vanishing. Counted so that case can be told apart from a body that was genuinely lost.

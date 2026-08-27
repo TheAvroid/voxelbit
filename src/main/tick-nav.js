@@ -120,15 +120,33 @@
     //   tip   how far below the crown's highest candidate a perch must sit
     //   scanH how high above the local ground the downward column scan starts
     //   n     birds this tree carries, so the stride that keeps them off each other's perch scales with it
+    // ── A PERCH IS A BRANCH, NOT LITTER ON THE FLOOR (user: "some of the song birds are on the ground when they
+    // should be in the birch trees") ── this walk accepts any voxel in foliageSet, and foliageSet is a MATERIAL
+    // test: it says "this id is canopy", not "this voxel is a canopy". In the birch forest that is a real
+    // difference, because the birch TWIGS lying on the ground are a recolour of stick_1/stick_2 onto the
+    // birch's own bark and the oak leaf greens the birch canopy wears (assets/bow.js STICKBIRCH) - so a twig in
+    // the leaf litter answers this test exactly as a branch does. Worse, the `low` filter below deliberately
+    // PREFERS candidates well under the crown tip, so a twig outranked every real branch on the tree.
+    // MEASURED: 2 of 421 perched songbirds sat 1-3 voxels above the terrain, standing on ids 195/196, each on a
+    // cluster of birch bark plus oak-leaf green about four voxels across. It is deterministic per tree, so
+    // those two trees put a bird on the floor every time the player walks past.
+    // The floor is ground CLEARANCE, and the two numbers it sits between are far apart: the litter models are
+    // at most 3 or 4 voxels tall, and the lowest legitimate perch measured anywhere is 12 (a pine at a biome
+    // edge), against a birch-forest median of ~60. 6 is the middle of that gap and cannot be near either end.
+    // Applied in the shared walk rather than the birch arm, because the same trap is set in the other two
+    // biomes: fruit and berries are canopy ids too (assets/material-tabs.js), and one lying on the floor of the
+    // oak forest is the same voxel wearing the same id.
+    const PERCH_CLEAR = 6;
     const crownEdgePerch = (tx, tz, bi, n, rad, st, tL1, tCh, tip, scanH) => {
       const cands = []; let crownTop = -1;
       for (let dx = -rad; dx <= rad; dx += st) for (let dz = -rad; dz <= rad; dz += st) {
         if (Math.abs(dx) + Math.abs(dz) < tL1) continue;   // skip the trunk core (pine)
         if (Math.max(Math.abs(dx), Math.abs(dz)) < tCh) continue;   // …or the bole (oak)
         const x = tx + dx, z = tz + dz, gx = gwrap(x, WX), gz = gwrap(z, WZ), col = gx + gz * WX * WY;
-        const yTop = Math.min(WY - 2, hmap[gx + gz * WX] + scanH);
+        const hCol = hmap[gx + gz * WX];
+        const yTop = Math.min(WY - 2, hCol + scanH);
         for (let y = yTop; y > WL; y--) { const id = W[col + y * WX]; if (!id) continue;   // first voxel from the top (air above by construction)
-          if (foliageSet[id]) { if (y > crownTop) crownTop = y;
+          if (foliageSet[id] && y - hCol >= PERCH_CLEAR) { if (y > crownTop) crownTop = y;
             if (isAir(x + 1, y, z) || isAir(x - 1, y, z) || isAir(x, y, z + 1) || isAir(x, y, z - 1)) cands.push([x, y, z]); }   // outer rim = a horizontal neighbour is open air
           break; }
       }
@@ -522,7 +540,7 @@
         const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
         const ddx = tr.tx - P.x, ddz = tr.tz - P.z, d2 = ddx * ddx + ddz * ddz;
-        if (d2 > CARD_KEEP * CARD_KEEP) continue;
+        if (d2 > CARD_KEEP * CARD_KEEP || d2 < CARD_IN * CARD_IN) continue;   // …and CARD_IN is the floor that keeps a bird from perching where you can watch it arrive
         const n = birdsOnPine(tr.tx, tr.tz);
         for (let i = 0; i < n; i++) if (!owned.has(tr.tx + ',' + tr.tz + ',' + i)) cardCand.push({ tx: tr.tx, tz: tr.tz, k: -1, bk: 0, bi: i, n, d2 , ord: ihash(tr.tx * 397 + 7, tr.tz * 389 + 23) });
       }
@@ -542,7 +560,7 @@
         const mg = g.rad + 2;                          // …and the rect margin is the CROWN's, not the pine's flat 10: the walk samples out to rad, and past the generated rect that reads stale toroidal window data and could perch a bird on a crown that is not there
         if (tr.wx <= rect.xlo + mg || tr.wx >= rect.xhi - mg || tr.wz <= rect.zlo + mg || tr.wz >= rect.zhi - mg) continue;
         const ddx = tr.wx - P.x, ddz = tr.wz - P.z, d2 = ddx * ddx + ddz * ddz;
-        if (d2 > CARD_KEEP * CARD_KEEP) continue;
+        if (d2 > CARD_KEEP * CARD_KEEP || d2 < CARD_IN * CARD_IN) continue;   // …and CARD_IN is the floor that keeps a bird from perching where you can watch it arrive
         for (let i = 0; i < n; i++) if (!owned.has(tr.wx + ',' + tr.wz + ',' + i)) cardCand.push({ tx: tr.wx, tz: tr.wz, k: tr.k, bk: 0, bi: i, n, d2 , ord: ihash(tr.wx * 397 + 7, tr.wz * 389 + 23) });
       }
       // -- AND THE BIRCHES, ON THE THIRD GRID (user 2026-08-24) -- without this the birch forest held 19
@@ -558,7 +576,7 @@
         const mg = g.rad + 2;
         if (twx <= rect.xlo + mg || twx >= rect.xhi - mg || twz <= rect.zlo + mg || twz >= rect.zhi - mg) continue;
         const ddx = twx - P.x, ddz = twz - P.z, d2 = ddx * ddx + ddz * ddz;
-        if (d2 > CARD_KEEP * CARD_KEEP) continue;
+        if (d2 > CARD_KEEP * CARD_KEEP || d2 < CARD_IN * CARD_IN) continue;   // …and CARD_IN is the floor that keeps a bird from perching where you can watch it arrive
         for (let i = 0; i < n; i++) if (!owned.has(twx + ',' + twz + ',' + i)) cardCand.push({ tx: twx, tz: twz, k: tk, bk: 1, bi: i, n, d2 , ord: ihash(twx * 397 + 7, twz * 389 + 23) });
       }
     };

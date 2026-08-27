@@ -180,7 +180,19 @@
         if (bw < 1) { continue; }
         let vsB = A.w;
         let dA = A.xyz - ro;
-        let hw = f32(bw) * 0.5; let hh2 = f32(bh) * 0.5; let hd = f32(bd) * 0.5;
+        // ── THE REJECT SPHERE IS ABOUT THE CENTRE OF MASS, SO ITS RADIUS MUST BE MEASURED FROM THERE ──
+        // this took the box's half-diagonal, which is the right radius about the box CENTRE and the wrong
+        // one about A.xyz, because A.xyz is the COM and E.xyz says where in the box that is. On a pine the
+        // two are nearly the same point and nothing shows. A felled BIRCH is a long bole with the whole
+        // crown's mass at one end: MEASURED on one, box 61 x 110 x 49 with the COM at y 71.4 of 110, so the
+        // sphere came out 68.5 where the far corner is 83.6 away - 15 voxels of the body sticking out of
+        // its own bounding sphere. Every ray aimed at that part was rejected BEFORE the DDA ran, so it drew
+        // as nothing while the body was whole, simulated and solid; and as the tree fell and turned,
+        // different parts crossed back inside the sphere and popped into view. Exactly the user's words:
+        // "a portion of the trunk disappears, but as it falls, it reappears" (2026-08-26).
+        // The farthest corner from an interior point is the one built from the larger span on each axis,
+        // so this is exact, and E.xyz is already in a register - it costs three max()es.
+        let hw = max(E.x, f32(bw) - E.x); let hh2 = max(E.y, f32(bh) - E.y); let hd = max(E.z, f32(bd) - E.z);
         let radB = vsB * (sqrt(hw * hw + hh2 * hh2 + hd * hd) + 1.0);
         let tcB = dot(dA, rd);
         if (tcB - radB > best || tcB + radB < 0.0) { continue; }
@@ -206,7 +218,20 @@
         var tH = teB;
         let off = i32(E.w + 0.5);
         var iB = off + vc.x + vc.y * bw + vc.z * bw * bh;
-        for (var q2 = 0; q2 < 320; q2++) {                          // 320 >= the longest diagonal of a pine box
+        // ── THE WALK IS BOUNDED BY THIS BODY'S OWN BOX, NOT BY A PINE'S (user 2026-08-26: "a portion of the
+        // trunk disappears, but as it falls, it reappears") ── this read q2 < 320, and its own comment said
+        // what it was sized against: the longest diagonal of a PINE box, 35 x 36 x 116. A felled BIRCH is
+        // 61 x 241 x 49, whose DDA needs up to 351 cells, and the box is ~98% AIR (8,240 voxels in 430,584
+        // cells) so a ray really does have to march hundreds of empty cells to reach the trunk inside it.
+        // Past 320 the walk gave up and reported NO HIT, so that part of the body drew as nothing while the
+        // rest of it drew normally - and as the body fell and turned, different parts came back inside the
+        // budget and popped into view. "It disappeared but it is still being rendered" is exactly right.
+        // bw + bh + bd is the most cells a 3D DDA can visit in a bw x bh x bd box, so this is exact for any
+        // model that exists or ever will, and it costs nothing: the walk already breaks the moment it leaves
+        // the box, and only a ray that was crossing the whole thing was ever near the old ceiling.
+        // The same stale-literal trap as CANOPY and the hmap+118/122 bounds - see voxelbit-tallest-pine-constants.
+        let qMax = bw + bh + bd;
+        for (var q2 = 0; q2 < qMax; q2++) {
           let cid = bodyVox[u32(iB)];
           if (cid != 0u) {
             if (tH * vsB < best) {

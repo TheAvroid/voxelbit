@@ -48,6 +48,7 @@
     // number in the game that COULD gate this — `vitSprintOK` is a constant true kept only for __vb.vit(). Both of
     // the conditions below are ones the player can see themselves doing, which is the property that matters.
     const sprint = keys.has(binds.sprint) && !crouching;
+    P.sprint = sprint;                                 // …published because the footstep loop runs at twice the rate while sprinting (ui/audio.js), and it must read the KEY, not a speed threshold: sprintJump and the sand slowdown both move the speed without changing what the player is doing
     const fx = Math.sin(P.yaw), fz = Math.cos(P.yaw);
     let mx = 0, mz = 0;
     if (keys.has(binds.forward)) { mx += fx; mz += fz; }

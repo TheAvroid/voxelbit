@@ -1,5 +1,5 @@
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BKCELL, BKMARGIN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -247,6 +247,35 @@
             const m9 = OAKV[t9.k]; if (!m9) continue;
             const need = halfw + (Math.max(m9.sx, m9.sy) >> 1);
             const dx9 = bx - t9.wx, dz9 = bz - t9.wz;
+            if (dx9 * dx9 + dz9 * dz9 < need * need) return true;
+          }
+      }
+      // ── AND THE BIRCHES, WHICH IS THE SAME OVERSIGHT ONE BIOME LATER (user 2026-08-26: "sometimes birch
+      // trees spawn inside rocks") ── the two probes above are PINES and OAKS, and treeAt returns null for
+      // every column where birchM > 0.5 (see its own guard). So in the birch band this test was inert in
+      // exactly the way the oak note above describes: it walked its cells, found nothing, and passed every
+      // candidate, and the rock — stamped in mode 2, OVERWRITE, and long before the trees — was punched
+      // straight through the bole. birchAt opens with a hash that rejects 76% of cells and a band test right
+      // after, so a rock anywhere else pays four cheap ops per cell for this.
+      // THE BERTH IS THE BOLE'S, NOT THE CROWN'S, and that is the one way this differs from the oak arm above.
+      // A rock standing under a birch canopy is fine and the stamp already handles it (mode 1 refuses cells
+      // holding hard stone), so pushing rocks out by a 264-voxel model's half-footprint would strip the birch
+      // forest of its boulders to fix something that was never wrong. What the report is about is stone
+      // INSIDE the trunk, so the trunk is what gets the clearance.
+      // AND IT MUST BE THE TRUNK'S OWN POSITION: on these models the bole sits up to 83 voxels from the
+      // bounding-box centre (assets/bow.js birchTrunkC — a crown leans), which is why a test at t.wx/t.wz
+      // would miss the very case being reported. Same helper the stamp and the perched-bird walk use, so
+      // there is one answer in the game to "where does this birch actually stand". The cell walk is widened
+      // by that same 83 or a tree whose box centre is outside the reach could still have its bole inside it.
+      if (BIRCHV.length) {
+        const reach = halfw + BK_BOLE + BK_LEAN;
+        for (let cz2 = Math.floor((bz - reach) / BKCELL); cz2 <= Math.floor((bz + reach) / BKCELL); cz2++)
+          for (let cx2 = Math.floor((bx - reach) / BKCELL); cx2 <= Math.floor((bx + reach) / BKCELL); cx2++) {
+            const t9 = birchAt(cx2, cz2); if (!t9) continue;
+            const m9 = BIRCHV[t9.k]; if (!m9) continue;
+            const tw9 = birchTrunkW(t9, m9);           // the BOLE, not the box centre
+            const need = halfw + BK_BOLE;
+            const dx9 = bx - tw9.wx, dz9 = bz - tw9.wz;
             if (dx9 * dx9 + dz9 * dz9 < need * need) return true;
           }
       }
@@ -1251,6 +1280,10 @@
   const TCELL = 45, TMARGIN = 24;                      // one pine candidate per 4.5 m cell
   const SPVIEW_D = 96, SPVIEW_W = 13;                  // spawn sight-line: 9.6 m ahead, 1.3 m either side of the view axis
   const BKCELL = 44, BKMARGIN = 128;
+  // The bole's own half-width plus a gap, and how far a bole can sit from its model's bounding-box centre.
+  // Both are read by the birch arm of boulderAt's treeClash — see the note there for why the berth is the
+  // trunk's and not the crown's. 83 is assets/bow.js birchTrunkC's worst case across the loaded set.
+  const BK_BOLE = 7, BK_LEAN = 83;
   const BKHIVE = 0.02;                                 // one birch cell in FIFTY carries a beehive (user 2026-08-24: 0.10 -> 0.05 -> "make the beehives 2% in the birch forest"). A landmark rather than furniture, which is the same reasoning OKHIVE's 3.1% of oaks follows                    // one birch candidate per 4.4 m cell; margin covers the widest crown's half-footprint
   function birchAt(cx, cz) {
     if (!BIRCHV.length) return null;                   // ?nobirch, or the .json never loaded - one test disables the whole pass, as ?nooaks does

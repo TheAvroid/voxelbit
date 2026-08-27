@@ -261,6 +261,13 @@
       }
       PH.acc -= PH.dt; k++;
     }
+    // How much CATCH-UP this frame actually cost: k is the number of fixed steps run, and a frame that runs
+    // more than one is repaying a previous slow frame. __vb.phStat().stepK / accMs / stepKMax.
+    PH.stats.stepK = k;
+    PH.stats.stepKMax = Math.max(PH.stats.stepKMax | 0, k);
+    PH.stats.accMs = +(PH.acc * 1000).toFixed(1);
+    if (k > 1) PH.stats.catchUpFrames = (PH.stats.catchUpFrames | 0) + 1;
+    PH.stats.stepFrames = (PH.stats.stepFrames | 0) + 1;
     // ── ABSORB ── a chunk the axe knocked loose is drawn INTO the player a moment after it breaks away.
     // NO ITEM is granted: this used to call startGrab(3, …), the twig pickup, which stuffed the hotbar
     // with sticks every swing (user 2026-08-02). Chopping debris is scrap, not loot.
@@ -302,7 +309,49 @@
         if (!((b.fellPkVy || 0) > PH.fellHitVy && down9 < b.fellPkVy * PH.fellHitFrac && touched9)) b.hitT = undefined;   // airborne, or never really fell — a trunk sitting on its stump never arms this
         else if (b.hitT === undefined) b.hitT = tNow;
         const age9 = tNow - b.born;
-        if ((b.hitT !== undefined && tNow - b.hitT > PH.fellHitMs) || (age9 > PH.fellMinMs && tNow - b.calmT > PH.fellCalmMs) || age9 > PH.fellBreakMs) { if (phShatterTree(b)) { b.fellWhole = 0; continue; } }   // a 0 means it could not break YET (no room for uniform pieces) — keep the flag and try again next tick
+        // ── AND ONCE IT HAS BEEN REFUSED, IT RETRIES EVERY TICK (user 2026-08-26: "sometimes the birch tree
+        // doesnt break into chunks when it falls") ── phShatterTree's no-room arm returns 0 under a comment
+        // promising "this runs again next tick, so the room arrives over a handful of frames", but the call
+        // only happened while one of the three triggers below still held. So a trunk refused on its landing
+        // frame relied on a trigger still being true later to be asked again, rather than on the next tick.
+        // HONESTLY: this is a safety net, not a measured fix. Every tree broke in 2.0-3.9 s across 24 fells,
+        // including a scene saturated to 256 bodies (13 refusals, still broke) and a pool squeezed to 18
+        // (1 refusal, broke in 2.2 s) — the retry has never been the thing that rescued one. It is here
+        // because the no-room arm's own contract says next tick and this is what makes that true, and it is
+        // what lets the coarse fallback's counter climb at all. b.shatTry is set the moment it is refused.
+        // (An earlier note here claimed a 25 s stall. That was my own broken build — a `//` appended inside
+        //  PH's one-line literal had eaten fellHitVy..fellCalmAng, so the impact test could never pass and
+        //  every tree sat until the fellBreakMs backstop. Fixed; the number was an artefact, not behaviour.)
+        // WHICH TRIGGER BROKE IT, recorded so an audit can tell a tree that broke on IMPACT (the intended
+        // path) from one that sat there until the fellBreakMs backstop — the two look identical from outside
+        // and only the second is the "it didn't break" report. __vb.phStat().breakWhy / breakAge.
+        const bHit9 = b.hitT !== undefined && tNow - b.hitT > PH.fellHitMs;
+        const bCalm9 = age9 > PH.fellMinMs && tNow - b.calmT > PH.fellCalmMs;
+        const bBack9 = age9 > PH.fellBreakMs;
+        if ((b.shatTry | 0) > 0 || bHit9 || bCalm9 || bBack9) {
+          const why9 = bHit9 ? 'hit' : bCalm9 ? 'calm' : bBack9 ? 'backstop' : 'retry';
+          if (phShatterTree(b)) { b.fellWhole = 0;
+            PH.stats.breakWhy = why9; PH.stats.breakAge = Math.round(age9);
+            PH.stats.breakN = (PH.stats.breakN | 0) + 1;
+            PH.stats['break_' + why9] = (PH.stats['break_' + why9] | 0) + 1;
+            continue; } }   // a 0 means it could not break YET (no room for uniform pieces) — keep the flag and try again next tick
+      }
+      // ── A FELLED TREE'S PIECES BAKE ONCE YOU HAVE WALKED AWAY FROM THEM ── the two retire arms in the
+      // settle block above both exclude fellLoot, so every chunk of every tree holds a body slot for the full
+      // fellLifeMs (5 min), and that is the cost that ACCUMULATES while you clear a stand: MEASURED felling
+      // six birches from one spot, PH.bodies 0 -> 256 and the TRACE pass 3.29 -> 5.91 ms, 249 fps -> 147,
+      // because every ray walks every rigid body. Distance is what decides it — 104 chunks left behind cost
+      // nothing measurable, 256 underfoot cost +80%.
+      // IT HAS TO LIVE HERE AND NOT UP THERE. Those arms run on the single frame a body falls asleep, and a
+      // chunk settles at the foot of the tree you are standing at, so the distance test could never pass and
+      // then the body sleeps and is never re-asked. MEASURED: the arm fired zero times at 260 voxels and zero
+      // at 120 before it moved. This pass visits every body every tick, sleeping ones included.
+      // Baking is not deletion — physRetire writes the voxels into W at their resting pose, so the pile looks
+      // identical and is still there to chop; it stops being a box the tracer steps. Gated far beyond any
+      // reach that could collect one (fellBakeR against an absorbR of 16) plus fellBakeMs of settled age.
+      if (b.fellLoot && b.sleeping && !b.absorbing && !b.retire && tNow - b.born > PH.fellBakeMs && (frame & 15) === (b.n & 15)) {
+        const fdx = b.pos[0] - P.x, fdy = b.pos[1] - smoothEye, fdz = b.pos[2] - P.z;
+        if (fdx * fdx + fdy * fdy + fdz * fdz > PH.fellBakeR * PH.fellBakeR) { b.retire = true; PH.stats.fellBaked = (PH.stats.fellBaked | 0) + 1; }
       }
       if (!b.absorbing && tNow - b.born > (b.noAbsorb ? PH.treeLifeMs : (b.fellLoot ? PH.fellLifeMs : PH.chunkLifeMs))) {   // fellLoot = a piece of a tree the player felled (sim/chop-tree.js): 5 minutes, not 10
         PH.bodies.splice(i, 1); PH.stats.expired = (PH.stats.expired | 0) + 1;   // ── EXPIRED (user) ── see treeLifeMs / chunkLifeMs

@@ -12,6 +12,7 @@
   // 12 -> 9 birds costs three of the flock and still leaves the traced creatures 31 slots, up from the 28 they
   // had before any of this.
   const BIRD_N = 9;
+  const BIRD_RING_N = 12;                              // ring samples per placement, 30 degrees apart — every legal one is a candidate (see the placement below)
   const BIRD_SLOTS = BIRD_N - 1;                       // every flying bird that is not bird 0 gets a slot, always. Bird 0 owns the dedicated drop slot 4
   // 9 divides by 3, which is the species count today (cardinal / blue_bird / robin) so the round-robin split
   // below still comes out exact — three of each. It was 12 to divide by 1/2/3/4; if a FOURTH species is ever
@@ -53,7 +54,10 @@
         //   * BIRD_IN 0.35 refuses a SPAWN. Tighter than the recycle line so a fresh bird never appears
         //     already half-way to being culled, which would flicker the flock along the border.
         // The two are the same shape as the ground life's BIO_DESERT/BIO_FOREST pair and for the same reason.
-        const BIRD_OUT = 0.85, BIRD_IN = 0.35;
+        // BIRD_TURN is where the flock BANKS BACK, and it is the line that actually contains them now — see the
+        // turn-away in the flight section below. BIRD_GRAD is how far apart the mask is sampled to find which way
+        // out is; BIRD_POP is how far a bird must be before the backstop recycle is allowed to fire at all.
+        const BIRD_OUT = 0.85, BIRD_IN = 0.35, BIRD_TURN = 0.45, BIRD_GRAD = 64, BIRD_POP2 = 420 * 420;
         // ── AND THE BLOSSOM IS THE OTHER PLACE THE FLOCK DOES NOT GO (user 2026-08-18: "dont spawn any
         // songbirds") ── this file gated on desertM ALONE, so the sky over every forest was the same sky; a
         // cherry forest is "not desert" and the cardinals, blue birds and robins would have kept crossing it.
@@ -90,7 +94,18 @@
         const roostK = roostT * roostT * (3 - 2 * roostT);
         const flockUp = Math.round(BIRD_N * roostK);   // how many of the nine still have light to fly in
         if (b.init && bi >= flockUp) b.init = false;
-        if (b.init && (desertM(b.x, b.z) > BIRD_OUT || (pinkMe ? !chOut(b.x, b.z) : chOut(b.x, b.z)))) b.init = false;
+        // ── AND THE DESERT RECYCLE MAY NOT FIRE IN PLAIN VIEW (user 2026-08-26: "when a bird seems to fly over
+        // the desert, it just instantly dissapears") ── this is a hard `init = false` and the block right below
+        // re-places the slot out past the fog in the SAME call, so a bird crossing the line where you can see it
+        // does not fly away, it BLINKS. The threshold pair was picked on the assumption that deep desert is also
+        // far away, but desertM is sampled AT THE BIRD, not at the player: stand at the dune edge and a bird a
+        // hundred voxels out is already past 0.85. Two changes, and the first is the one that matters:
+        // the flock now banks back at BIRD_TURN (below), so a bird should never reach BIRD_OUT while you are
+        // watching; and if one still does, the recycle waits until it is BIRD_POP away, where a 12-voxel bird
+        // against the sky is a couple of pixels. Distance-gating the DESERT arm only — the blossom containment is
+        // a different report with a different shape and is left exactly as it was.
+        const dpv2 = (b.x - P.x) * (b.x - P.x) + (b.z - P.z) * (b.z - P.z);
+        if (b.init && ((desertM(b.x, b.z) > BIRD_OUT && dpv2 > BIRD_POP2) || (pinkMe ? !chOut(b.x, b.z) : chOut(b.x, b.z)))) b.init = false;
         if (!b.init) {                                // placed out past the fog, never in plain view, and staggered so they never read as a formation
           // ── AND IF THERE IS NOWHERE LEGAL, DO NOT PLACE IT AT ALL ── stand deep in the desert and every
           // candidate on the ring is sand, so the flock has to be able to answer "none". Eight tries around
@@ -109,19 +124,32 @@
           // so any slot can take any legal spot and the two skies stay disjoint just the same.
           let pinkHere = false;
           let a0 = 0, r0 = 0, ok = false;
-          for (let q = 0; q < 8 && !ok; q++) {
-            a0 = (bi / BIRD_N) * Math.PI * 2 + Math.random() * 1.4 + q * 0.7854;
-            r0 = bIn + Math.random() * Math.max(1, bOut - bIn);
-            const bx9 = P.x + Math.cos(a0) * r0, bz9 = P.z + Math.sin(a0) * r0;
+          // ── EVERY LEGAL ANGLE, THEN PICK ONE ── this loop used to stop at the FIRST legal spot while turning
+          // a fixed +45 degrees per try, and that is a boundary attractor as surely as the rect-centre one the
+          // flight code above replaced. Walk in from the desert and the legal arc is whatever lies forest-side:
+          // every bird whose own base angle points at the sand fails, rotates the SAME WAY, and lands just past
+          // the same edge of that arc — nine birds converging on one bearing, which is the knot at the treeline
+          // (user 2026-08-26: "still cluster a bunch of song birds into one area … right at the edge of the pine
+          // forest"). MEASURED standing there before this: up to 4 of the 9 inside 220 voxels of one another.
+          // Collecting the legal angles and choosing UNIFORMLY among them spreads the flock across the whole arc
+          // instead of stacking it against the boundary, for the same handful of mask samples the loop already
+          // spent. The per-bird base angle and its jitter stay — they are what keeps two birds off the same slot
+          // when the ring is entirely legal, which is the deep-forest case this must not disturb.
             // ── AND THE BLOSSOM SWAPS THE FLOCK RATHER THAN EMPTYING IT ── the pink bird is admitted ONLY
             // inside the band and the three ordinary songbirds ONLY outside it, so the two skies are disjoint
             // and a bird is never drawn over the wrong forest. the species is decided per CANDIDATE POINT, not per
             // slot, because a slot recycles and the player walks: the same slot legitimately carries a robin
             // over the oak wood and a pink bird ten minutes later inside the blossom.
+          const ringA = [], ringR = [], ringC = [];
+          for (let q = 0; q < BIRD_RING_N; q++) {
+            const aq = (bi / BIRD_N) * Math.PI * 2 + Math.random() * 1.4 + q * (Math.PI * 2 / BIRD_RING_N);
+            const rq = bIn + Math.random() * Math.max(1, bOut - bIn);
+            const bx9 = P.x + Math.cos(aq) * rq, bz9 = P.z + Math.sin(aq) * rq;
             const inCh = chOut(bx9, bz9);
-            ok = bi < flockUp && desertM(bx9, bz9) <= BIRD_IN && (!inCh || BIRD_PINK >= 0);   // …and nothing takes to the air after dusk (see the roost note above)   // blossom is legal only when there IS a pink bird to put in it
-            if (ok) pinkHere = inCh;
+            if (bi < flockUp && desertM(bx9, bz9) <= BIRD_IN && (!inCh || BIRD_PINK >= 0)) { ringA.push(aq); ringR.push(rq); ringC.push(inCh); }
           }
+          if (ringA.length) { const p9 = (Math.random() * ringA.length) | 0;
+            a0 = ringA[p9]; r0 = ringR[p9]; pinkHere = ringC[p9]; ok = true; }
           b.off = !ok;
           if (!ok) return null;                       // no forest within the ring — the sky over the desert stays empty
           b.x = P.x + Math.cos(a0) * r0; b.z = P.z + Math.sin(a0) * r0;
@@ -187,6 +215,19 @@
           let dth = want - b.th;
           while (dth > Math.PI) dth -= 2 * Math.PI; while (dth < -Math.PI) dth += 2 * Math.PI;
           b.omT = Math.max(-1.0, Math.min(1.0, dth * 1.2)); b.mode = 0; b.edge = true;   // the steer-home urge overrides whatever whim it was on
+        // ── AND THE SAND IS A WALL TOO ── same steer, same per-bird bias, one threshold earlier than the recycle.
+        // The inward normal is the falling direction of the mask itself, sampled at ±BIRD_GRAD on each axis, so it
+        // works on both faces of the band (the sand is a BAND with pine on both sides — see world/window.js) with
+        // no notion of which side the bird is on. Deep enough in and the mask saturates flat, which reads as a zero
+        // gradient; that case just turns round. Four mask samples, and only for a bird actually in the band.
+        // The world edge above still wins: flying out of the generated rect is the worse failure of the two.
+        } else if (desertM(b.x, b.z) > BIRD_TURN) {
+          const gx = desertM(b.x + BIRD_GRAD, b.z) - desertM(b.x - BIRD_GRAD, b.z);
+          const gz = desertM(b.x, b.z + BIRD_GRAD) - desertM(b.x, b.z - BIRD_GRAD);
+          const want = (gx || gz) ? Math.atan2(-gx, -gz) + b.turnBias : b.th + Math.PI;
+          let dth = want - b.th;
+          while (dth > Math.PI) dth -= 2 * Math.PI; while (dth < -Math.PI) dth += 2 * Math.PI;
+          b.omT = Math.max(-1.0, Math.min(1.0, dth * 1.2)); b.mode = 0; b.edge = true;
         } else b.edge = false;
         b.om += (b.omT - b.om) * (1 - Math.exp(-2.5 * dt));   // turn rate eases toward target — smooth, believable arcs, no snap turns
         b.om = Math.max(-1.1, Math.min(1.1, b.om));

@@ -235,6 +235,14 @@
       lifeUidPrev.set(lifeUid); lifeAncPrev.set(lifeAnc); lifeItemPrev.set(lifeItem);
       UF[1528] = lifeDbg; UF[1529] = LIFE_TRACE ? 1 : 0; UF[1530] = UNI_SEC; UF[1531] = lifeSlotBase;   // lifeCfg.w = first NON-particle slot, now the COMPACTED one   // lifeCfg.w = the first NON-particle drop slot — the composite reads THIS instead of a literal that went stale when the spark pool grew (user 2026-08-20)   // lifeCfg.z = which secondary rays see creatures (see UNI_SEC_DEF). REPORTING ONLY since the fold - no shader reads it any more, so changing it mid-session does nothing; pick the config with ?uni&sec=N or window.__SEC before load.
     }
+    // ── HOW FAR A BODY REACHES FROM ITS ANCHOR ── and the anchor is the CENTRE OF MASS, not the middle of
+    // the box, so a half-diagonal is the wrong number: it is the radius about the box centre. comL says
+    // where the COM sits inside the box, and the farthest corner from an interior point is the one built
+    // from the larger span on each axis. See the note beside radB in render/wgsl/dda.js for what the old
+    // number cost - a felled birch had 15 voxels of itself outside its own cull sphere and did not draw.
+    const bodyRad = (g) => Math.hypot(Math.max(g.comL[0], g.bw - g.comL[0]),
+                                      Math.max(g.comL[1], g.bh - g.comL[1]),
+                                      Math.max(g.comL[2], g.bd - g.comL[2])) + 1;
     {                                                  // ── RIGID BODIES → u.physB ──
       // Same convention the creature models use: anchor + the three LOCAL axes, all expressed in CAMERA
       // space, so the shader's DDA runs in the body's own grid with no matrix inverse.
@@ -278,7 +286,7 @@
         for (const b of PH.bodies) {                     // radius = farthest body centre + its own half-diagonal
           if (!b.gpu) continue;
           const g = b.gpu, ax = b.pos[0] - winOX, ay = b.pos[1], az = b.pos[2] - winOZ;
-          const half = Math.hypot(g.bw, g.bh, g.bd) * 0.5 + 1;
+          const half = bodyRad(g);                       // …from the COM, not the box centre — see bodyRad
           const d = Math.hypot(ax - bcx, ay - bcy, az - bcz) + half;
           if (d > brad) brad = d;
         } }
@@ -294,7 +302,9 @@
         const m9 = hi9 - lo9; gx9 /= m9; gy9 /= m9; gz9 /= m9;
         let gr9 = 0;
         for (let k9 = lo9; k9 < hi9; k9++) { const q9 = UF_PHYSB + k9 * 20;
-          const half9 = UF[q9 + 3] * (Math.hypot(UF[q9 + 7], UF[q9 + 11], UF[q9 + 15]) * 0.5 + 1);   // the same half-diagonal the shader builds radB from, so the group can never be tighter than its members
+          const half9 = UF[q9 + 3] * (Math.hypot(Math.max(UF[q9 + 16], UF[q9 + 7] - UF[q9 + 16]),
+                                                 Math.max(UF[q9 + 17], UF[q9 + 11] - UF[q9 + 17]),
+                                                 Math.max(UF[q9 + 18], UF[q9 + 15] - UF[q9 + 18])) + 1);   // the same radius the shader builds radB from, so the group can never be tighter than its members
           const d9 = Math.hypot(UF[q9] - gx9, UF[q9 + 1] - gy9, UF[q9 + 2] - gz9) + half9;
           if (d9 > gr9) gr9 = d9; }
         UF[o9] = gx9; UF[o9 + 1] = gy9; UF[o9 + 2] = gz9; UF[o9 + 3] = gr9;

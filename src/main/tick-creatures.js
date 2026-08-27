@@ -138,7 +138,21 @@
       if (active) B.surpT = undefined; else if (B.init && B.surpT === undefined) B.surpT = now;
       const spared = !active && B.init && (now - (B.surpT || now)) < SURP_GRACE
         && ((B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z)) < SURP_NEAR2;
-      if (ED.on || dead || (!active && !fighting && !spared) || (flamSlot ? !FLAMINGO_ITEM0 : (porcSlot ? !PORCUPINE_WALK.length : (skunkSlot ? !SKUNK_WALK.length : (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))))))))) { if (B.sCells) unstampWorm(B); B.init = false; continue; }   // an inactive/hidden grid-stamped creature (worm/duck/skunk/porcupine) must clear its stamp
+      const surp9 = !active && !fighting && !spared;
+      if (ED.on || dead || (flamSlot ? !FLAMINGO_ITEM0 : (porcSlot ? !PORCUPINE_WALK.length : (skunkSlot ? !SKUNK_WALK.length : (armSlot ? !ARMADILLO_ITEM0 : (bunnySlot ? !BUNNY_ITEM0 : (wantK === 6 ? !FISHES.length : (wantK === 5 ? !CARD_NFRAMES : (wantK === 2 ? !WORM_NFRAMES : (wantK === 3 ? !DUCK_ITEM0 : (wantK === 1 ? !FFLY_NFRAMES : !BFLY_COLS.length))))))))))) { if (B.sCells) unstampWorm(B); B.init = false; B.dieT = 0; continue; }   // an inactive/hidden grid-stamped creature (worm/duck/skunk/porcupine) must clear its stamp
+      // ── AND A SURPLUS ANIMAL SHRINKS AWAY, IT DOES NOT VANISH (user 2026-08-26: "I just saw a bunny
+      // dissapear") ── the population target is a moving number: bioFracAt is a 24-point ring sample, so
+      // walking flips one sample across a treeline and the whole count quantises down a notch. The `spared`
+      // rule above already stops that deleting an animal in your face, but only for SURP_GRACE, and only
+      // inside SURP_NEAR — which is 110 voxels, and at 10 cm per voxel that is ELEVEN METRES, not the
+      // horizon its note assumes. A bunny at 11 m is a whole bunny. So the surplus arm no longer clears
+      // init at all: it starts the SAME 0.7 s shrink the dusk/dawn line below uses, and the timer there
+      // finishes the job. Nothing else changes — the editor, death and a missing asset still take effect on
+      // the frame they happen, because those are not the population drifting, they are the world stopping.
+      // surpDie marks whose fade this is, so an animal the count hands back gets a reprieve while a
+      // dusk/dawn fade (which is a kind CHANGE, not a surplus) is left alone to finish.
+      if (surp9) { if (B.init && !B.dieT) { B.dieT = now; B.surpDie = 1; } }
+      else if (B.surpDie) { B.surpDie = 0; B.dieT = 0; }
       const tb3 = now / 1000;
       if (B.init && (B.kind | 0) !== wantK && !B.dieT) B.dieT = now;   // dusk/dawn — the wrong creature shrinks away over 0.7 s, the right one fades in at a fresh spot
       // ── FLYER COMPOSITION DRIFT ── isDfly is read ONLY at spawn, so the butterfly/dragonfly split freezes into the band
@@ -279,8 +293,25 @@
             const r9 = 45 * Math.sqrt(Math.random()), a9 = Math.random() * 6.2831853;   // a DISC of the near-test's own radius, not a box: sqrt() makes it uniform by AREA (a raw radius crowds the middle), and staying inside 45 keeps the fish in the home-disc the cap counted it against — a ±45 SQUARE would reach 63 into the neighbouring spot's and corrupt both counts
             sx = L9.x + Math.cos(a9) * r9; sz = L9.z + Math.sin(a9) * r9;   // off-water landings are rejected by the bfWater gate below and simply retried, so a ragged shoreline costs retries, not fish
             hcx = Math.floor(sx / FLY_CELL); hcz = Math.floor(sz / FLY_CELL);   // a home cell → the leash keeps it in its pool, the recycle judges by home like a butterfly's
-          } else if (!desSlot && (wantK === 0 || wantK === 2)) {   // desSlot deliberately falls through to the ANNULUS below: the home-finders (findWormHome/findSkunkHome/…) pick from procedural grids that do no biome test, so a desert creature routed through one is placed in the forest and then rejected by the gate on every retry — it would simply never spawn     // BUTTERFLY / WORM: take a procedural home rather than a random point on the ring
+          } else if (!desSlot && (wantK === 0 || wantK === 2)) {   // desSlot deliberately falls through to the ANNULUS below: the home-finders (findWormHome/findSkunkHome/…) pick fro
+            // ── A REFUSED HOME IS NOT WORTH RE-ASKING SIXTY TIMES A SECOND ── the finder below tries up to 12
+            // cells internally, and the LIFE_IN floor added under it rejects whatever it returns when the only
+            // free cells are the ones near the player. Without this that whole search ran every frame for every
+            // slot that could not be filled: MEASURED at +9% frame average and +43% p99 before the cooldown.
+            // 250 ms is four attempts a second, which fills a slot the moment you walk far enough for a legal
+            // cell to exist and is invisible against a spawn ring 800 voxels out.
+            // …from procedural grids that do no biome test, so a desert creature routed through one is placed in the forest and then rejected by the gate on every retry — it would simply never spawn. BUTTERFLY / WORM: take a procedural home rather than a random point on the ring.
+            if (B.homeCd && now < B.homeCd) continue;
             const h = wantK === 0 ? findFlyHome(wk) : (flamSlot ? findFlamHome() : (porcSlot ? findPorcHome() : (skunkSlot ? findSkunkHome() : (armSlot ? findArmHome() : (bunnySlot ? findBunnyHome() : findWormHome(wk)))))); if (!h) break;
+            // ── AND NOT WHERE YOU CAN WATCH IT ARRIVE (user 2026-08-26: "bees for examaple just pop into view")
+            // ── the ANNULUS below floors every other spawn at LIFE_IN, but the home-finders never looked at
+            // the player at all: they pick a free cell off their own grid, so a bunny's home could be the cell
+            // you are standing next to. MEASURED over 880 frames of walking: walkers arriving as close as 76
+            // voxels, 12 of them inside 200. Same floor the annulus uses, so there is one answer in the game
+            // to "how close may life appear", and the same `continue` the trunk test below uses — the finder
+            // is asked up to 12 times a frame and most tries are rejected downstream anyway, so a refusal
+            // costs a retry and nothing else. Life already placed nearby is untouched; this is only ARRIVAL.
+            if ((h.x - P.x) * (h.x - P.x) + (h.z - P.z) * (h.z - P.z) < LIFE_IN * LIFE_IN) { B.homeCd = now + 250; continue; }
           if (wantK === 2) {                           // a home inside a trunk is unreachable, and the leash below would grind the worm against it forever
             const tc = treeAt(Math.floor(h.x / TCELL), Math.floor(h.z / TCELL));
             if (tc && (tc.tx - h.x) * (tc.tx - h.x) + (tc.tz - h.z) * (tc.tz - h.z) < 14 * 14) continue;
@@ -349,8 +380,14 @@
             // a max of 264, against 679-881 medians and ~1000 maxima for every other band. desBee is
             // name-exact, so the bee keeps its hive ring and nothing else borrows it.
             const beeRing = desBee && oakSlot;
-            const inR = beeRing ? LIFE_KEEP * 0.10 : (desSlot ? Math.min(LIFE_IN, LIFE_KEEP * 0.40) : LIFE_IN);
-            const outR = beeRing ? LIFE_KEEP * 0.26 : LIFE_OUT;
+            // The bee band moved OUT, 0.10-0.26 -> 0.26-0.42 (user 2026-08-26: "bees for examaple just pop into
+            // view"). This is the fallback the ring takes when no hive is in reach, and at 0.10 it started 104
+            // voxels away — ten metres, measured arriving as close as 181. It stays a TIGHT band on purpose,
+            // because that is what keeps a swarm regional rather than scattered across the whole disc; it is
+            // simply a band you cannot watch fill. The hive path above has its own, closer floor for the same
+            // reason in reverse: there the point is to fill the hive you are walking up to.
+            const inR = beeRing ? LIFE_KEEP * 0.26 : (desSlot ? Math.min(LIFE_IN, LIFE_KEEP * 0.40) : LIFE_IN);
+            const outR = beeRing ? LIFE_KEEP * 0.42 : LIFE_OUT;
             const d5 = Math.sqrt(inR * inR + Math.random() * (outR * outR - inR * inR));   // worms, flyers and fallback ducks all share the one AREA-uniform annulus now (was three different inner floors: 40 / 50 / 50)
             sx = P.x + Math.sin(a5) * d5; sz = P.z + Math.cos(a5) * d5;
             // ── A SWARMER IS BORN AT ITS HIVE (user 2026-08-17: "it doesnt look like the bees are swarming
@@ -376,8 +413,21 @@
             // part worth watching — and it is a little further out than it was (14-32 against 10-24) now
             // that the player is routinely standing at the hive this places around.
             if (beeRing && desIx < BEE_HIVE_N) { const hv9 = beeHomeHive(P.x, P.z, tb3, LIFE_OUT);
-              if (hv9) { const ja = Math.random() * 6.2832, jr = 14 + Math.random() * 18;
-                sx = hv9.wx + Math.cos(ja) * jr; sz = hv9.wz + Math.sin(ja) * jr; beeAtHive = true; }
+              // FARTHEST POINT ON THE RING, NOT A RANDOM ONE. The ring is only 14-32 across, so which side of
+              // the hive the bee lands on is the whole difference between appearing behind it and appearing in
+              // front of you. Take the best of BEE_POP_TRIES and refuse the placement outright if even that is
+              // inside BEE_POP_MIN — the slot simply waits, and the hive fills the moment you are not on top
+              // of it. Refusing costs nothing: this runs every tick, and an empty hive you are standing in is
+              // less wrong than a bee blinking into existence at arm's length.
+              if (hv9) { let bd9 = -1, bx9 = 0, bz9 = 0;
+                for (let t9 = 0; t9 < BEE_POP_TRIES; t9++) {
+                  const ja = Math.random() * 6.2832, jr = 14 + Math.random() * 18;
+                  const cx9 = hv9.wx + Math.cos(ja) * jr, cz9 = hv9.wz + Math.sin(ja) * jr;
+                  const dq9 = (cx9 - P.x) * (cx9 - P.x) + (cz9 - P.z) * (cz9 - P.z);
+                  if (dq9 > bd9) { bd9 = dq9; bx9 = cx9; bz9 = cz9; }
+                }
+                if (bd9 < BEE_POP_MIN * BEE_POP_MIN) continue;
+                sx = bx9; sz = bz9; beeAtHive = true; }
             }
           }
           const antHeel = desSlot && DESERTS[desSp] && DESERTS[desSp].name === 'ant' && ((wk - MAM_END) % DES_PER) > 0;

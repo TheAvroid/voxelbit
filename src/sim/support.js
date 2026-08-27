@@ -491,7 +491,7 @@
   // ── CHOP DECOR ── a mushroom belongs to no tree, so physChopAt (which works in a pine's model frame)
   // can never reach it. This is the same nearest-first, fixed-count carve done straight in world
   // coordinates, so a bite out of a mushroom is the same size as a bite out of a trunk.
-  const phChopDecor = (wx, wy, wz, rad, bite, ok) => {   // ok(v): which materials THIS tool may take. Without it the sphere eats anything choppable it reaches, whatever it was aimed at.
+  const phChopDecor = (wx, wy, wz, rad, bite, ok, course) => {   // ok(v): which materials THIS tool may take. Without it the sphere eats anything choppable it reaches, whatever it was aimed at. course: cap the bite at this many COURSES of what it is cutting (see PH.chopCourse) — passed for WOOD only, left out everywhere else, where this function is byte-for-byte what it was.
     const r = rad, r2 = r * r;
     const cD = [], cI = [], cX = [], cY = [], cZ = [], cV = [];
     const ri = Math.ceil(r);                         // WHOLE-voxel steps (see physChopAt) — a fractional radius made every index undefined
@@ -512,13 +512,69 @@
         if (stampedIdx.has(ii)) continue;            // a creature standing on one of the shared palette ids is not mushroom geometry. stampedIdx, NOT cellStamped: that one only scans animals within 20 voxels of the PLAYER, so a bird 30 voxels away was unprotected and got carved into chunks (user 2026-08-05).
         cD.push(d2); cI.push(ii); cX.push(x); cY.push(y); cZ.push(z); cV.push(v);
       }
-      if (spare < 0 && cD.length >= want) spare = 1;   // walk ONE more shell, then stop: shells go out nearest-first, so the true nearest `want` are all in hand by then
+      if (spare < 0 && !course && cD.length >= want) spare = 1;   // walk ONE more shell, then stop: shells go out nearest-first, so the true nearest `want` are all in hand by then
     }
+    // ── …EXCEPT WHEN THE BITE IS PRICED IN COURSES ── the early-out above is why this cap could not simply
+    // reuse physChopAt's `ord.length * chopFrac`: the gather STOPS once it holds `want` candidates, so
+    // ord.length is about the bite size for every material and a fraction of it would say the same thing on
+    // a birch as on a boulder. Priced against the impact's own COURSE the question is answerable, but only
+    // off a full sweep — which is ~4,200 cells at the axe's radius, once per click, and only for wood.
     if (!cD.length) return false;
     const ord = new Int32Array(cD.length);
     for (let k = 0; k < ord.length; k++) ord[k] = k;
     ord.sort((a2, b2) => cD[a2] - cD[b2]);
-    const take = Math.min(bite === undefined ? PH.chopBite : bite, ord.length);
+    let take = Math.min(bite === undefined ? PH.chopBite : bite, ord.length);
+    if (course) {
+      // ── HOW THICK IS THE THING UNDER THE AXE ── and the only honest answer is the CONNECTED cross-section
+      // of the piece being cut, measured course by course and taken at the median.
+      // Two cheaper readings were tried and both are wrong, in opposite directions:
+      //   · every wood voxel in the course, anywhere in the sphere — a radius-10 sphere in a birch stand
+      //     reaches the next trunk over, so the same 3-voxel bole read 21 thick on a crowded tree and 6 on a
+      //     lone one, and one swing took a slice off one birch and a bite out of the next.
+      //   · the same thing inside a small window on the impact — that fixes the neighbours and breaks the
+      //     centring: the blow lands on the NEAR FACE of a bole, not its axis, so half the window is air and
+      //     a pine read 6 thick and gave up a birch-sized bite.
+      // A 4-connected flood over the course, seeded at the candidate nearest the impact column, has neither
+      // problem: it walks the whole bole whichever face was struck, and it cannot reach a neighbour, because
+      // two trunks that do not touch are not connected. The MEDIAN over courses is what makes it steady as
+      // the notch deepens (one course of twenty) and past a fork (a limb is one course, the bole is the rest).
+      const D2 = 2 * ri + 1, DN = D2 * D2;
+      const occ2 = new Uint8Array(DN), stk2 = new Int32Array(DN);
+      const head2 = new Int32Array(2 * ri + 1).fill(-1), next2 = new Int32Array(cY.length);
+      for (let k = 0; k < cY.length; k++) { const q = cY[k] - cy0 + ri;
+        if (q < 0 || q >= head2.length) { next2[k] = -1; continue; }
+        next2[k] = head2[q]; head2[q] = k; }
+      const wid = [];
+      for (let q = 0; q < head2.length; q++) {
+        if (head2[q] < 0) continue;
+        let seed = -1, bd2 = 1e9;
+        for (let k = head2[q]; k >= 0; k = next2[k]) {
+          const ex = cX[k] - cx0 + ri, ez = cZ[k] - cz0 + ri;
+          if (ex < 0 || ex >= D2 || ez < 0 || ez >= D2) continue;
+          occ2[ex + ez * D2] = 1;
+          const hd = (cX[k] - cx0) * (cX[k] - cx0) + (cZ[k] - cz0) * (cZ[k] - cz0);
+          if (hd < bd2) { bd2 = hd; seed = ex + ez * D2; }
+        }
+        if (seed >= 0) {
+          let sp2 = 0, n2 = 0;
+          occ2[seed] = 2; stk2[sp2++] = seed;
+          while (sp2 > 0) { const c2 = stk2[--sp2]; n2++;
+            const ex = c2 % D2, ez = (c2 / D2) | 0;
+            if (ex + 1 < D2 && occ2[c2 + 1] === 1) { occ2[c2 + 1] = 2; stk2[sp2++] = c2 + 1; }
+            if (ex > 0 && occ2[c2 - 1] === 1) { occ2[c2 - 1] = 2; stk2[sp2++] = c2 - 1; }
+            if (ez + 1 < D2 && occ2[c2 + D2] === 1) { occ2[c2 + D2] = 2; stk2[sp2++] = c2 + D2; }
+            if (ez > 0 && occ2[c2 - D2] === 1) { occ2[c2 - D2] = 2; stk2[sp2++] = c2 - D2; }
+          }
+          wid.push(n2);
+        }
+        for (let k = head2[q]; k >= 0; k = next2[k]) { const ex = cX[k] - cx0 + ri, ez = cZ[k] - cz0 + ri;
+          if (ex >= 0 && ex < D2 && ez >= 0 && ez < D2) occ2[ex + ez * D2] = 0; }   // hand the scratch back clean for the next course
+      }
+      wid.sort((a2, b2) => a2 - b2);
+      const mC = wid.length ? wid[wid.length >> 1] : 0;
+      take = Math.min(take, Math.max(Math.min(PH.chopThin, ord.length), Math.ceil(mC * course)));
+      PH.stats.lastCourse = { thick: mC, courses: wid.length, take, cap: Math.ceil(mC * course) };   // the one read that says whether the cap bound, and on what thickness
+    }
     let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;
     for (let k = 0; k < take; k++) { const j = ord[k];
       if (cX[j] < x0) x0 = cX[j]; if (cX[j] > x1) x1 = cX[j];

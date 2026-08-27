@@ -251,10 +251,52 @@
         DES_N, DES_PER, MAM_END, DES_END, pool: DES_END, slots: o }; },   // why a desert-band slot is or is not live
     om(x, z) { return { oak: +oakM(x, z).toFixed(3), cherry: +cherryM(x, z).toFixed(3), desert: +desertM(x, z).toFixed(3) }; },   // the three band weights at a point — 'am I in the oak' answered directly rather than inferred from a walk
     birchAt(cx, cz) { return birchAt(cx, cz); },   // the raw cell query, for comparing a stamped tree against the model it came from
+    // ── DOES ANY BIRCH BOLE STAND INSIDE A BOULDER? ── the audit for the report boulderAt's treeClash birch
+    // arm answers (user 2026-08-26: "sometimes birch trees spawn inside rocks"). Walks the birch cell grid and
+    // takes each tree's TRUNK, not its bounding-box centre — the bole sits up to BK_LEAN from it, which is the
+    // whole reason a cell-centre test missed this. A rock is treated as a cylinder of its bounding half-width,
+    // which OVER-counts (rocks are not cylinders), but it is the same measure on both sides of a change, so it
+    // is what a before/after is read off.
+    // How many boulders stand in the same window — the denominator for the birch arm's cost: a rock whose
+    // footprint would cover a bole is refused outright (rocks yield, trees do not), so this is what pays for it.
+    rockCount(r) { const R = r || 700, c0x = Math.floor(P.x / BCELL), c0z = Math.floor(P.z / BCELL), CR = Math.ceil(R / BCELL);
+      const by = [0, 0, 0, 0]; let n = 0;
+      for (let dz = -CR; dz <= CR; dz++) for (let dx = -CR; dx <= CR; dx++) {
+        const b = boulderAt(c0x + dx, c0z + dz); if (!b) continue; n++; by[b.size | 0]++; }
+      return { rocks: n, byTier: by }; },
+    birchRockAudit(r) {
+      const R = r || 700, out = [];
+      let trees = 0, inside = 0;
+      const c0x = Math.floor(P.x / BKCELL), c0z = Math.floor(P.z / BKCELL), CR = Math.ceil(R / BKCELL);
+      const BR = Math.ceil((BK_BOLE + 45) / BCELL);
+      for (let dz = -CR; dz <= CR; dz++) for (let dx = -CR; dx <= CR; dx++) {
+        const t = birchAt(c0x + dx, c0z + dz); if (!t) continue;
+        const m = BIRCHV[t.k]; if (!m) continue;
+        trees++;
+        const tw = birchTrunkW(t, m);
+        const b0x = Math.floor(tw.wx / BCELL), b0z = Math.floor(tw.wz / BCELL);
+        for (let bz2 = -BR; bz2 <= BR; bz2++) { let hit = false;
+          for (let bx2 = -BR; bx2 <= BR; bx2++) {
+            const b = boulderAt(b0x + bx2, b0z + bz2); if (!b) continue;
+            const rm = b.size === 0 ? ROCKV : ROCK26[b.mi]; if (!rm) continue;
+            const half = Math.max(rm.sx, rm.sy) >> 1;
+            const d = Math.hypot(tw.wx - b.bx, tw.wz - b.bz);
+            if (d < half) { inside++; hit = true;
+              if (out.length < 8) out.push({ bole: [tw.wx, tw.wz], rock: [b.bx, b.bz], d: Math.round(d), rockHalf: half, tier: b.size });
+              break; } }
+          if (hit) break; }
+      }
+      return { birches: trees, bolesInsideRock: inside, examples: out };
+    },
     birchModel(k) { const m = BIRCHV[k]; return m ? { sx: m.sx, sy: m.sy, sz: m.sz, n: m.vox.length, tcx: m.tcx, tcy: m.tcy, tbz: m.tbz } : null; },   // tcx/tcy = the TRUNK centroid, which is what stampBirch seats on (assets/bow.js birchTrunkC)
     birchAudit(cx, cz) {                            // stamp the model in memory and diff it against the world: what did the world LOSE?
       const t = birchAt(cx, cz); if (!t) return null;
-      const m = BIRCHV[t.k], gy = groundMin(t.wx, t.wz, 4) - t.sink;
+      // ── SEATED WHERE THE STAMP SEATS IT ── this read groundMin(t.wx, t.wz, 4) - t.sink, i.e. the column at
+      // the model's BOX CENTRE and no tbz. stampBirch does neither: it seats the BOLE, at the trunk centroid,
+      // less m.tbz (world/terrain.js). So the diff ran up to 40 courses out and reported a healthy tree as
+      // almost entirely missing - MEASURED, got 155 of 8,787 on a tree the physics flood reads as whole.
+      // An audit that lies this way is worse than none, because the number it prints looks like the bug.
+      const m = BIRCHV[t.k], tw0 = birchTrunkW(t, m), gy = groundMin(tw0.wx, tw0.wz, 4) - t.sink - (m.tbz || 0);
       const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
       const bx = t.wx - (fw >> 1), bz = t.wz - (fd >> 1);
       let want = 0, got = 0, aboveWY = 0, blocked = 0, maxWantY = 0, maxGotY = 0;
@@ -278,6 +320,29 @@
       let theirs = null;
       try { theirs = birchBanch(BIRCHENC.map(birchDec)).map((a) => a.length); } catch (e) { theirs = String(e); }
       return { hive: !!HIVEV, models: BIRCHV.length, mine, theirs };
+    },
+    // ── WHICH BIRCHES ARE HANGING ON NOTHING ── floatAudit answers the same question for the WORLD grid and
+    // is the right tool for a felled crown left in the sky, but it cannot name the tree. This walks every
+    // birch cell within `rad` and asks each tree's own root flood how much of it is no longer reachable from
+    // the bole, which is what "sometimes they float" is when it is a number. 0 on an untouched stand.
+    birchFloatAudit(rad) {
+      const R = Math.ceil((rad === undefined ? 220 : rad) / BKCELL);
+      const c0x = Math.floor(P.x / BKCELL), c0z = Math.floor(P.z / BKCELL);
+      const bad = []; let n = 0, orphTot = 0;
+      for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+        const t = birchAt(c0x + dx, c0z + dz); if (!t) continue;
+        const m = BIRCHV[t.k]; if (!m) continue;
+        const tw0 = birchTrunkW(t, m);
+        const S = treeShapeAt(tw0.wx, tw0.wz); if (!S) continue;
+        n++;
+        const fw0 = (t.rot & 1) ? m.sy : m.sx, fd0 = (t.rot & 1) ? m.sx : m.sy;
+        const own = S.bx === t.wx - (fw0 >> 1) && S.bz === t.wz - (fd0 >> 1);   // did the lookup answer with THIS tree? (see birchColAt in sim/physics.js). BOTH axes: one of them agrees by luck often enough to hide the bug this audit exists for
+        const f = phFlood(S); orphTot += f.orphans;
+        if (f.orphans) bad.push({ wx: t.wx, wz: t.wz, k: t.k, root: S.root, own,
+          total: f.total, orphans: f.orphans, frac: +(f.orphans / Math.max(1, f.total)).toFixed(3) });
+      }
+      bad.sort((a, b) => b.orphans - a.orphans);
+      return { trees: n, withOrphans: bad.length, orphanVox: orphTot, worst: bad.slice(0, 12) };
     },
     birchIds() { return { ids: BIRCHIDS, cols: BIRCHIDS.map((i) => palette[i]), folia: BIRCHIDS.map((i) => !!foliaTab[i]), bark: BIRCHBARK, oakleaf: OAKLEAF, oakmoss: OAKMOSS, models: BIRCHV.length }; },   // what the birch actually spends: which palette id every one of its seven bake colours resolved to, and what the material tables say about each   // …and the BIRCH band, the fourth: 1 = birch forest, 0 = the pine and the sand either side of it. "Which biome is this column" is cm, then om, then bm, then dm — birch before desert because they are neighbours and only birch has a hard edge on the sand
     flowerAt(cx, cz) { const f = flowerAt(cx, cz); return f ? { wx: f.wx, wz: f.wz, k: f.k, v: f.v } : null; },   // the raw cell query, for comparing flower DENSITY between biomes without conflating it with plant SIZE
@@ -641,6 +706,21 @@
         return 1;
       });
       return out; },
+    // The counters ONLY. __vb.phys() maps every body through toFixed, so it cannot be sampled per frame
+    // without becoming the thing it is measuring.
+    // The walking loop: what the tick decided underfoot, and what the element is actually doing. new Audio()
+    // is never in the DOM, so there is no querySelector route to it — this is the only way to see it.
+    stepDbg() { return { ...STEP_DBG, dur: +(stepGrass.duration || 0).toFixed(3), loop: !!stepGrass.loop,
+      t: +(stepGrass.currentTime || 0).toFixed(2), vol: +(stepGrass.volume || 0).toFixed(4) }; },
+    phStat() { const s = PH.stats; let big = 0; for (const b of PH.bodies) if (b.n > 1000) big++;
+      return { buildMs: s.buildMs || 0, buildN: s.buildN | 0, buildVox: s.buildVox | 0,
+        shatterMs: s.shatterMs || 0, shatterN: s.shatterN | 0, shatterVox: s.shatterVox | 0, shatterRefused: s.shatterRefused | 0, shatterCoarse: s.shatterCoarse | 0,
+        fellBaked: s.fellBaked | 0, stepK: s.stepK | 0, stepKMax: s.stepKMax | 0, accMs: s.accMs || 0,
+        catchUpFrames: s.catchUpFrames | 0, stepFrames: s.stepFrames | 0, stepMs: s.stepMs,
+        breakWhy: s.breakWhy || null, breakAge: s.breakAge | 0, breakN: s.breakN | 0,
+        breakHit: s.break_hit | 0, breakCalm: s.break_calm | 0, breakBackstop: s.break_backstop | 0, breakRetry: s.break_retry | 0, lastRefuse: s.lastRefuse || null, lastShatterMs: s.lastShatterMs,
+        sepMs: s.lastSepMs, floodMs: s.lastFloodMs, bodies: PH.bodies.length, big,
+        supQ: SUP.q.length - SUP.qh, supMs: SUP.stats.ms || 0 }; },
     phys(v) {                                          // ── VOXEL DESTRUCTION ── enable/inspect
       if (v !== undefined) { PH.on = !!v; if (!PH.on) { PH.bodies.length = 0; PH.acc = 0; bodyTop = 0; } }
       return { on: PH.on, dt: PH.dt, iters: PH.iters, bodies: PH.bodies.length, awake: PH.bodies.filter((b) => !b.sleeping).length,
@@ -664,7 +744,7 @@
     // inside the crown gets the player ejected. Returns what the carve took and what the settle decided.
     woodChop(x, y, z, rad, bite) {
       const before = PH.stats.voxRemoved | 0;
-      const ok = phChopDecor(x | 0, y | 0, z | 0, rad === undefined ? 10 : rad, bite === undefined ? 30 : bite, (v) => !!woodTab[v]);
+      const ok = phChopDecor(x | 0, y | 0, z | 0, rad === undefined ? 10 : rad, bite === undefined ? 30 : bite, (v) => !!woodTab[v], PH.chopCourse);   // …including the per-course cap, or this tap stops being the swing it exists to reproduce
       if (!ok) return { hit: false, took: 0 };
       const S = treeShapeAt(x | 0, z | 0);
       const st = S ? phTreeSettle(S) : null;
@@ -696,7 +776,13 @@
       return { oak: !!S.oak, total: f.total, reached: f.reached, orphans: f.orphans, ms: PH.stats.lastFloodMs };
     },
     chopAim() { return { ...CHOP_AIM }; },            // what the LAST swing's aim pre-pass decided, and WHICH branch of the march then spent the swing ('leaves' is the only one that can take foliage off a crosshair resting on wood) — see sim/tools.js
-    physSwing() { const r = chopSwing(); if (r) playToolHit(); else if (aimHitId()) playBlocked(); return r; },   // the tap drives exactly what a click does, sound included
+    physSwing() { const r = chopSwing(); if (r) playToolHit(); else { const a9 = aimHitId(); if (a9) playBlocked(a9); } return r; },
+    // The two answers that decide whether a swing bites or THUDS: what the crosshair is on (aimHitId, which
+    // walks past foliage) versus what chopSwing actually spent the swing on. When they disagree you get
+    // block.mp4 on a tree you are plainly aiming at — see the birch report.
+    swingProbe() { const aim = aimHitId(); const r = chopSwing();
+      return { aimId: aim, aimWood: !!woodTab[aim], carved: !!r, path: CHOP_AIM.path,
+               blocked: !r && !!aim, woodHit: !!CHOP_AIM.woodHit, foliaHit: !!CHOP_AIM.foliaHit }; },   // the tap drives exactly what a click does, sound included
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
     arrowChopAt(x, y, z) { return arrowChop(x | 0, y | 0, z | 0); },   // the ARROW's carve, at a chosen voxel. Driving it through a real shot is unmeasurable: the shaft picks its own impact, and a creature in the way cancels the chop outright.
     // Stake an arrow into a chosen creature exactly as a landed shot does, so the "it goes when the animal
@@ -1559,6 +1645,19 @@
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
       for (const b of PH.bodies) { b.sleeping = f; if (f) { b.vel[0] = b.vel[1] = b.vel[2] = 0; b.omega[0] = b.omega[1] = b.omega[2] = 0; } }
       return PH.bodies.map((b) => ({ vox: b.n, pos: b.pos.map((q) => +q.toFixed(2)), sleeping: b.sleeping })); },
+    // ── DOES EACH BODY FIT INSIDE ITS OWN CULL SPHERE? ── the reject sphere in bodyTraceX is centred on the
+    // body's ANCHOR, which is its centre of mass, so its radius has to be measured from there and not from
+    // the middle of the box. `short` is how far the old half-diagonal fell short: > 0 means that much of the
+    // body was outside its own sphere and simply did not draw. MEASURED at 10.5-15.1 on felled birches,
+    // ~0 on pines, which is why only the birch ever showed it. Must stay <= 0.
+    bodyBox() { return PH.bodies.map((b) => { if (!b.gpu) return { vox: b.n, gpu: null };
+      const g = b.gpu, hw = g.bw / 2, hh = g.bh / 2, hd = g.bd / 2;
+      const radBox = Math.hypot(hw, hh, hd) + 1;                       // what the shader uses: half-diagonal about the COM
+      let radCom = 0;                                                  // what it NEEDS: farthest box corner FROM THE COM
+      for (const cx of [0, g.bw]) for (const cy of [0, g.bh]) for (const cz of [0, g.bd])
+        radCom = Math.max(radCom, Math.hypot(cx - g.comL[0], cy - g.comL[1], cz - g.comL[2]));
+      return { vox: b.n, box: [g.bw, g.bh, g.bd], comL: g.comL.map((q) => +q.toFixed(1)),
+               radBox: +radBox.toFixed(1), radCom: +radCom.toFixed(1), short: +(radCom - radBox).toFixed(1) }; }); },
     physValidate() {                                   // invariants the system must hold; ok:true = pass
       const out = { problems: [], bodies: PH.bodies.length, dupVoxels: 0 };
       let nan = 0;
@@ -1848,6 +1947,16 @@
                blind: blind.length, blindNearest: blind.sort((a, b) => a.d - b.d).slice(0, 8),
                byColour: o.reduce((a, r) => (a[r.colour] = (a[r.colour] || 0) + 1, a), {}),
                blindByColour: blind.reduce((a, r) => (a[r.colour] = (a[r.colour] || 0) + 1, a), {}) }; },
+    // ── DID THAT ANIMAL FADE, OR DID IT POP? ── per-slot 0 = empty, 1 = live, 2 = fading (dieT set). A
+    // retirement that goes 1 -> 0 between two frames was INSTANT and is the bug the bunny report is about;
+    // 2 -> 0 is the 0.7 s shrink finishing, which is what the player should ever see.
+    lifeFade() { let live = 0, fading = 0; const st = [], kd = [], dd = [];
+      for (let j = 0; j < wbf.length; j++) { const B = wbf[j];
+        st.push(!B || !B.init ? 0 : (B.dieT ? 2 : 1));
+        kd.push(B ? (B.kind | 0) : -1);
+        dd.push(B && B.init ? Math.round(Math.hypot(B.x - P.x, B.z - P.z)) : -1);
+        if (B && B.init) { live++; if (B.dieT) fading++; } }
+      return { live, fading, st, kd, dd }; },
     mammals() { const b = (a, z) => { let n = 0, near = 0; const pos = []; for (let j = a; j < z; j++) { const O = wbf[j]; if (O && O.init && (O.kind | 0) === 2) { n++; pos.push([Math.round(O.x), Math.round(O.z), Math.round(O.hx || 0), Math.round(O.hz || 0)]); if ((O.x - P.x) ** 2 + (O.z - P.z) ** 2 < 400 * 400) near++; } } return { active: n, within400: near, pos }; };   /*TEMP-DEBUG: live land-mammal census + positions/homes*/
       return { bunny: b(BUNNY_0, BUNNY_END), armadillo: b(ARM_0, ARM_END), skunk: b(SKUNK_0, SKUNK_END), porcupine: b(PORC_0, FLAM_0), flamingo: b(FLAM_0, FLAM_END), p: [Math.round(P.x), Math.round(P.z)] }; },
     edState() { return { on: ED.on, n: ED.frames.length, sel: ED.sel, paused: ED.paused, order: ED.frames.map((f) => f.name), y: ED.y, x0: ED.x0, z0: ED.z0, pw: ED.pw, pd: ED.pd, pal: palette.length, borrowed: edBorrowN(), blinkE: ED.blinkE | 0, blink: !!ED.blink, box: ED.box ? { cx: ED.box.cx, cy: ED.box.cy, cz: ED.box.cz, hx: ED.box.hx, hy: ED.box.hy, hz: ED.box.hz } : null, hop: [ED.hopX | 0, ED.hopY | 0, ED.hopZ | 0],
@@ -1884,9 +1993,10 @@
     matTabs(id) { const i = id | 0; return { id: i, solid: !!solidTab[i], decor: !!decorTab[i], wood: !!woodTab[i],
       folia: !!foliaTab[i], cone: !!coneTab[i], snow: !!snowTab[i], hang: !!hangTab[i], mush: !!mushTab[i],
       float: !!floatTab[i], axe: !!axeOnlyTab[i], pick: !!pickOnlyTab[i], dig: !!digOnlyTab[i],
-      fern: !!snowFernTab[i], soft: !!snowPassTab[i] }; },   // …and the two ground-litter tables, so "is this voxel a fern / grass-or-bloom" can be asked from a test without guessing at palette ids
+      fern: !!snowFernTab[i], soft: !!snowPassTab[i],   // …and the two ground-litter tables, so "is this voxel a fern / grass-or-bloom" can be asked from a test without guessing at palette ids
+      cactus: !!cactusTab[i], leafSnd: !!leafSndTab[i], stepGrass: !!stepGrassTab[i] }; },   // …and WHICH IMPACT TAKE it plays: leafSnd is the whole answer to "does this rustle when hit", which is otherwise unaskable from a test
     // …and WHERE the nearest one of a given table is, so a rare decoration can actually be found to test on.
-    findMat(tab, rad) { const R = Math.min(160, rad || 90), T = { mush: mushTab, cone: coneTab, hang: hangTab, wood: woodTab }[tab];
+    findMat(tab, rad) { const R = Math.min(160, rad || 90), T = { mush: mushTab, cone: coneTab, hang: hangTab, wood: woodTab, pick: pickOnlyTab, dig: digOnlyTab, axe: axeOnlyTab, cactus: cactusTab, leafSnd: leafSndTab }[tab];   // …cactus/leafSnd added so the desert's plants, which are sparse enough that a ring scan misses them, can be found to swing at   // …the three TOOL tables too: 'where is the nearest rock' is the question a tool-sound test has to ask, and it had no way to
       if (!T) return { err: 'unknown table' };
       let best = null, bd = 1e9;
       for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) {

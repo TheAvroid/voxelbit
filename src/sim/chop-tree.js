@@ -407,7 +407,19 @@
     PH.stats.stumpChunks = (PH.stats.stumpChunks | 0) + made;
     return made;
   };
-  const phShatterTree = (b) => { phSrc = 'treeLand';
+  // Timed alongside phBuildBody: a felled trunk breaking up is the single biggest frame in the game,
+  // and it is one call. __vb.phStat() is the tap.
+  const phShatterTree = (b) => {
+    const t0 = performance.now();
+    const r = phShatterTree0(b);
+    const ms = performance.now() - t0;
+    PH.stats.shatterMs = (PH.stats.shatterMs || 0) + ms;
+    PH.stats.shatterN = (PH.stats.shatterN | 0) + 1;
+    PH.stats.shatterVox = (PH.stats.shatterVox | 0) + b.n;
+    PH.stats.lastShatterMs = +ms.toFixed(2);
+    return r;
+  };
+  const phShatterTree0 = (b) => { phSrc = 'treeLand';
     const i = PH.bodies.indexOf(b); if (i < 0) return 0;
     // ── HOW MANY PIECES THERE IS ROOM FOR, DECIDED BEFORE ANY WORK ── this test used to sit AFTER the bbox
     // scan, the cell build and an n log n Morton sort, all of which a refused break threw away and then
@@ -427,7 +439,30 @@
         if (PH.maxBodies - PH.bodies.length - 1 - PH.fellStumpSlots >= need9) break;
         if (!phMakeRoom(need9 + PH.fellStumpSlots)) break;   // nothing left that may be retired — wait for the backstop
       }
-      return 0;                                        // NOT spliced out, fellWhole NOT cleared — see the caller
+      // Counted, because "sometimes it doesn't break" is only ever diagnosable from how often this arm is
+      // taken and whether phMakeRoom is still finding anything to retire (user 2026-08-26).
+      PH.stats.shatterRefused = (PH.stats.shatterRefused | 0) + 1;
+      const free8 = PH.maxBodies - PH.bodies.length - 1 - PH.fellStumpSlots;
+      PH.stats.lastRefuse = { need: need9, free: free8, vox: b.n, bodies: PH.bodies.length };
+      // ── AND IT GIVES UP WAITING AND BREAKS COARSE (user 2026-08-26: "sometimes the birch tree doesnt break
+      // into chunks when it falls. make sure all the trees break into chunks when it hits the terrain") ──
+      // this arm used to return 0 and wait. That is only ever a delay while phMakeRoom still finds debris to
+      // retire, which is the common case — measured, every tree broke: 2.0-3.9 s over 24 fells, a scene
+      // saturated to 256 bodies took 13 refusals and still broke, and a pool squeezed to 18 slots broke in
+      // 2.2 s off one refusal. This fallback did not fire in ANY of those, and that is the point: it is the
+      // answer to the case none of them reached, where phMakeRoom has nothing left it may take and the
+      // arithmetic comes out the same on every retry. A tree that never breaks is a worse answer than a tree
+      // that breaks into bigger pieces, so after fellRoomTries ticks of getting nowhere it splits into
+      // whatever room there IS. If it ever starts firing often, the pool is the thing to look at, not this.
+      // Nothing below needs changing to allow it: K is already Math.min(ideal, free9), so the coarse split is
+      // the path the code always took when the budget was tight — the gate above simply never let it run.
+      // The floor is 2 usable slots, because one body is not a break; under that it still has to wait.
+      // fellChunkMax is therefore back to what its own note calls it — the coarsest split worth PREFERRING,
+      // not a size that can hold a whole tree hostage. b.shatTry rides on the body, so each trunk gets its
+      // own budget and a tree felled into a busy scene is not punished for one felled earlier.
+      b.shatTry = (b.shatTry | 0) + 1;
+      if (b.shatTry < PH.fellRoomTries || free8 < 2) return 0;   // NOT spliced out, fellWhole NOT cleared — see the caller
+      PH.stats.shatterCoarse = (PH.stats.shatterCoarse | 0) + 1;   // …and past here the split below runs on free9 instead of need9
     }
     const sx = b.sx, sz = b.sz, key = (mx, my, mz) => mx + mz * sx + my * sx * sz;
     let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, z0 = 1e9, z1 = -1e9;
@@ -455,13 +490,28 @@
     const mort9 = (x, y, z) => { let m = 0;
       for (let q = 0; q < 8; q++) m |= (((x >> q) & 1) << (3 * q)) | (((y >> q) & 1) << (3 * q + 1)) | (((z >> q) & 1) << (3 * q + 2));
       return m; };
-    const cellsM = [], idMap = new Map();
+    const cellK = new Uint32Array(b.n), mor = new Uint32Array(b.n), idMap = new Map();
     for (let k = 0; k < b.n; k++) {
       const kk = key(b.lx[k], b.ly[k], b.lz[k]);
       idMap.set(kk, b.id[k]);
-      cellsM.push([mort9(b.lx[k] - LO[0], b.ly[k] - LO[1], b.lz[k] - LO[2]), kk]);
+      cellK[k] = kk; mor[k] = mort9(b.lx[k] - LO[0], b.ly[k] - LO[1], b.lz[k] - LO[2]);
     }
-    cellsM.sort((p9, q9) => p9[0] - q9[0]);
+    // 3-PASS LSD RADIX ON THE 24-BIT MORTON CODE. Was cellsM.sort(comparator) over b.n two-element arrays:
+    // on a 15.6k-voxel trunk that is 15.6k allocations plus ~210k comparator calls, and this whole function
+    // runs inside ONE frame. The radix gives the identical order (the code is 8 bits per axis, so 24 bits is
+    // exact) with no per-cell allocation and no comparison at all.
+    {
+      const n9 = b.n, tmpK = new Uint32Array(n9), tmpM = new Uint32Array(n9), cnt9 = new Int32Array(256);
+      let srcK = cellK, srcM = mor, dstK = tmpK, dstM = tmpM;
+      for (let sh = 0; sh < 24; sh += 8) {
+        cnt9.fill(0);
+        for (let i9 = 0; i9 < n9; i9++) cnt9[(srcM[i9] >>> sh) & 255]++;
+        for (let d9 = 0, acc = 0; d9 < 256; d9++) { const c9 = cnt9[d9]; cnt9[d9] = acc; acc += c9; }
+        for (let i9 = 0; i9 < n9; i9++) { const p9 = cnt9[(srcM[i9] >>> sh) & 255]++; dstK[p9] = srcK[i9]; dstM[p9] = srcM[i9]; }
+        const t9 = srcK; srcK = dstK; dstK = t9; const u9 = srcM; srcM = dstM; dstM = u9;
+      }
+      if (srcK !== cellK) cellK.set(srcK);            // an odd pass count leaves the answer in the scratch
+    }
     // The count is still bounded by the slots that are actually free — a piece with nowhere to live cannot be
     // made — so a very large tree in a busy scene gets fewer, bigger chunks rather than losing any of itself.
     // ── THE CHUNK SIZE IS A TARGET WITH A FLOOR, NOT A CONSTANT (user 2026-08-22: "some chunks are still too
@@ -486,9 +536,14 @@
     // Morton order (compact and deterministic) and flood 26-connected through unused cells until it has
     // chunk9 of them. Connectivity is a hard constraint and the size is the target: where a connected region
     // runs out early the piece is simply smaller, because the alternative is a piece with a hole of air in it.
-    const present = new Set();
-    for (let q = 0; q < cellsM.length; q++) present.add(cellsM[q][1]);
-    const sxz = sx * sz;
+    // MEMBERSHIP AND OWNERSHIP AS FLAT ARRAYS. The region grow below probes both once per 27-neighbour per
+    // popped cell — ~840k Map/Set hash lookups for a big trunk, all in the one frame the tree breaks up.
+    // Indexed exactly like key(), bounded above by this body's own top voxel (nbrs9 now refuses ay > y1,
+    // which changes nothing: no cell above y1 was ever present). own holds piece index + 1, so 0 means
+    // unowned and the array needs no fill.
+    const sxz = sx * sz, nAll9 = (y1 + 2) * sxz;
+    const present = new Uint8Array(nAll9), own = new Int32Array(nAll9);
+    for (let q = 0; q < b.n; q++) present[cellK[q]] = 1;
     // ── AND THE PIECE COUNT MUST FIT THE BODY CAP ── growth is greedy, so it makes MORE pieces than
     // ceil(n / chunk9): a run stops when it has enough, and the pocket it walked past becomes a piece of its
     // own. MEASURED on an 86k oak at chunk9 350: 493 pieces against a PHYS_MAX of 256 — and a body past the
@@ -506,18 +561,17 @@
     // the same rate. Anything left over is a region no seed could reach — genuinely disconnected geometry —
     // and becomes its own piece rather than being stitched across air to something else.
     const K = Math.max(2, Math.min(Math.ceil(b.n / chunk9), free9));   // the ideal count, or every slot there is — the gate at the top already refused anything coarser than fellChunkMax
-    const ownOf = new Map();
     const queues = [], buckets = [];
     for (let q = 0; q < K; q++) {
-      const seed = cellsM[Math.min(cellsM.length - 1, Math.floor(q * cellsM.length / K))][1];
-      if (ownOf.has(seed)) { queues.push([]); buckets.push([]); continue; }
-      ownOf.set(seed, q); queues.push([seed]); buckets.push([seed]);
+      const seed = cellK[Math.min(b.n - 1, Math.floor(q * b.n / K))];
+      if (own[seed]) { queues.push([]); buckets.push([]); continue; }
+      own[seed] = q + 1; queues.push([seed]); buckets.push([seed]);
     }
     const nbrs9 = (kk, out) => { let m = 0;
       const mx = kk % sx, mz = ((kk / sx) | 0) % sz, my = (kk / sxz) | 0;
       for (let d = 0; d < 27; d++) {
         const ax = mx + (d % 3) - 1, ay = my + ((((d / 3) | 0) % 3)) - 1, az = mz + (((d / 9) | 0)) - 1;
-        if (ax < 0 || ax >= sx || az < 0 || az >= sz || ay < 0) continue;   // model-local bounds: no wrap, or a piece would reach round to the far face
+        if (ax < 0 || ax >= sx || az < 0 || az >= sz || ay < 0 || ay > y1) continue;   // model-local bounds: no wrap, or a piece would reach round to the far face. The ay > y1 arm is what lets `present`/`own` be flat arrays sized to this body.
         out[m++] = ax + az * sx + ay * sxz;
       }
       return m; };
@@ -539,7 +593,7 @@
     for (let q = 0; q < K; q++) {                      // seed the frontier with the seed cell's own neighbours
       if (!queues[q].length) continue;
       const m0 = nbrs9(queues[q][0], nb9); const qq = queues[q]; qq.length = 0;
-      for (let t = 0; t < m0; t++) if (present.has(nb9[t]) && !ownOf.has(nb9[t])) qq.push(nb9[t]);
+      for (let t = 0; t < m0; t++) if (present[nb9[t]] && !own[nb9[t]]) qq.push(nb9[t]);
     }
     // ── AND A PIECE STOPS AT ITS QUOTA, SO THE ONES THAT OUTLIVE THEIR NEIGHBOURS DO NOT RUN AWAY ── growing
     // at one cell per round equalises the RATE, but not the finish: a seed that lands out on a branch tip is
@@ -556,12 +610,12 @@
         if (buckets[q].length >= cap9) continue;      // full — its frontier is left for the re-seed pass below
         const qq = queues[q];
         let got = -1;
-        while (heads[q] < qq.length) { const c = qq[heads[q]++]; if (!ownOf.has(c)) { got = c; break; } }
+        while (heads[q] < qq.length) { const c = qq[heads[q]++]; if (!own[c]) { got = c; break; } }
         if (got < 0) continue;
-        ownOf.set(got, q); buckets[q].push(got);
+        own[got] = q + 1; buckets[q].push(got);
         const m = nbrs9(got, nb9);
         for (let t = 0; t < m; t++) { const nk = nb9[t];
-          if (present.has(nk) && !ownOf.has(nk)) qq.push(nk);
+          if (present[nk] && !own[nk]) qq.push(nk);
         }
         live = true;
       }
@@ -572,14 +626,14 @@
     // because it only ever claims a neighbour of a cell it already owns. This also subsumes the old
     // disconnected-island sweep — an island is simply a leftover no seed could reach, and it now becomes one
     // or more properly-sized pieces instead of a single lump of whatever size the island happened to be.
-    for (let q = 0; q < cellsM.length; q++) { const kk = cellsM[q][1];
-      if (ownOf.has(kk)) continue;
+    for (let q = 0; q < b.n; q++) { const kk = cellK[q];
+      if (own[kk]) continue;
       const bi = buckets.length;                     // its REAL piece index, not a -1 marker: the merge below needs to know who owns a cell
-      const grp = [kk]; ownOf.set(kk, bi);
+      const grp = [kk]; own[kk] = bi + 1;
       for (let h = 0; h < grp.length && grp.length < cap9; h++) { const m = nbrs9(grp[h], nb9);
         for (let t = 0; t < m && grp.length < cap9; t++) { const nk = nb9[t];
-          if (!present.has(nk) || ownOf.has(nk)) continue;
-          ownOf.set(nk, bi); grp.push(nk); } }
+          if (!present[nk] || own[nk]) continue;
+          own[nk] = bi + 1; grp.push(nk); } }
       buckets.push(grp);
     }
     // ── A SCRAP JOINS THE PIECE IT IS ALREADY TOUCHING ── the passes above cannot help leaving a few: a
@@ -598,13 +652,13 @@
       let host = -1, hostN = 1 << 30;
       for (let i2 = 0; i2 < bk.length; i2++) {
         const m = nbrs9(bk[i2], nb9);
-        for (let t = 0; t < m; t++) { const ow = ownOf.get(nb9[t]);
-          if (ow === undefined || ow === q || !present.has(nb9[t])) continue;
+        for (let t = 0; t < m; t++) { const ow = own[nb9[t]] - 1;
+          if (ow < 0 || ow === q || !present[nb9[t]]) continue;
           const n2 = buckets[ow].length;
           if (n2 && n2 < hostN) { hostN = n2; host = ow; } }
       }
       if (host < 0) continue;                        // nothing touches it — a real island, and it stays its own piece
-      for (let i2 = 0; i2 < bk.length; i2++) { ownOf.set(bk[i2], host); buckets[host].push(bk[i2]); }
+      for (let i2 = 0; i2 < bk.length; i2++) { own[bk[i2]] = host + 1; buckets[host].push(bk[i2]); }
       bk.length = 0;
     }
     PH.bodies.splice(i, 1);                            // out of the list BEFORE rebuilding, exactly as the body-chop path above does

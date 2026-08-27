@@ -839,7 +839,20 @@
   // back out — set it to null and the stage returns to opening on whatever was last dropped in.
   // A model the player drops in still WINS over this (edStage tries edRestore first), so it is a default and
   // not a lock. Nothing about the world, and no creature's data, is touched by it.
-  const ED_STAGE = { path: 'assets/decoration/birch_forest.vox', name: 'birch_forest' };
+  // ── AND IT IS THE FROG AGAIN (user 2026-08-26: "I want you to bring back the frog like it used to be") ──
+  // restored VERBATIM from 4089eb6, the last commit that carried it: the same weighted mix and the same three
+  // exhibits at the same coordinates. The birch_forest one-liner that replaced it on 2026-08-23 is gone.
+  const ED_STAGE = { path: 'assets/life/frog.vox', name: 'frog',
+    mix: [{ seq: 'hop', bake: FROG_HOP_BAKE, w: 50 },
+          { seq: 'ribbet', bake: FROG_RIBBET_BAKE, w: 40 },
+          { seq: 'tongue', bake: FROG_TONGUE_BAKE, w: 10 }],
+    // ── AND THE STAGE IS THE FROG ALONE (user 2026-08-26: "remove the flies, koi and ladybug from the asset
+    // editor") ── the ladybug, the koi and the five-fly swarm were the trace-injected exhibits; all three are
+    // gone. `exhibits` is dropped rather than emptied because edExStage already early-returns on a falsy one,
+    // so the absent key IS the supported "nothing but the lane" state — the same way ED_STAGE itself may be
+    // null. Nothing else is touched: edExItem still resolves all three models, so putting any of them back is
+    // this key and one line per exhibit, at the coordinates recorded in git history (4089eb6).
+  };
   // ── TRACE-INJECTED EXHIBITS ── everything on the stage that MOVES FREELY. A lane is grid-stamped: its voxels
   // go into W, which pins it to integer positions and the four cardinal headings — that is what made the first
   // ladybug step along the grid and face only N/S/E/W. An exhibit is never stamped; it is staged into emitBuf
@@ -1262,6 +1275,14 @@
     rebuildBricks(0, WX, 0, WZ); uploadBricks();       // bring the whole world back from the void (occupancy was zeroed on enter)
     const r = ED.ret; if (r) { P.x = r.x; P.y = r.y; P.z = r.z; P.yaw = r.yaw; P.pitch = r.pitch; P.fly = !!r.fly; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
     edBtnEl.classList.remove('on'); edRowEl.classList.add('hidden'); edHudEl.classList.add('hidden');
+    // ── AND THE [Y] SIZE PANEL, WHICH IS NOT PART OF THE EDITOR HUD ────────────────────────
+    // #edSzPanel is toggled straight from ui/input.js and lives OUTSIDE edHud, so hiding the HUD
+    // above never touched it: leaving the editor with the slider up left it floating over the
+    // game. Worse than the panel is what it implies -- showing it puts the game in LIGHT MODE
+    // (the cursor is handed to the slider), and nothing here dropped that either, so the player
+    // came back to a free cursor and a camera that would not turn. Both go together, because
+    // they were only ever turned on together.
+    { const sz = $('edSzPanel'); if (sz && !sz.classList.contains('hidden')) { sz.classList.add('hidden'); setLightMode(false); } }
     cmpVis();                                          // restore the compass (if locked + setting on) now the editor is closed
   };
   edBtnEl.addEventListener('click', (e) => { e.stopPropagation(); ED.on ? edExit() : edEnter(); });
@@ -1346,7 +1367,13 @@
   // opened the stage, or who left it, gets the oak forest the world already spawns them into.
   const ED_MODE = 'vb_edmode';
   const edMode = (on) => { try { localStorage.setItem(ED_MODE, on ? '1' : '0'); } catch (e) {} };
-  const ED_KEEP = 'vb_edstage';
+  // ── KEY BUMPED ONCE (user 2026-08-26: "remove the birch tree from the asset editor and add the frog. I
+  // still dont see the frog") ── the frog default was already back in ED_STAGE and testing showed it, but a
+  // FRESH profile is why: whatever the player last DROPPED is remembered here and outranks the default (see
+  // edStage), and a birch .vox dropped in during the birch work was still sitting in the old key. Nothing
+  // reads 'vb_edstage' any more, so that entry is simply abandoned — one clean forget for everyone, no
+  // migration code, and anything dropped from now on persists under the new name exactly as before.
+  const ED_KEEP = 'vb_edstage2';
   let edRestoring = 0;                                  // set while a restore is replaying storage, so it does not write back what it just read
   const edRemember = (name, u8) => { try {
       let bin = ''; for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);

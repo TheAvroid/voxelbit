@@ -408,8 +408,12 @@
     CHOP_AIM.aimSky = aimSky; CHOP_AIM.leafHit = leafHit; CHOP_AIM.leafT = firstLeaf ? leafT : null;
     CHOP_AIM.gap = (firstLeaf && aimT !== Infinity) ? +(aimT - leafT).toFixed(2) : null;
     CHOP_AIM.lst = LEAF_SEE_THROUGH; CHOP_AIM.firstLeaf = firstLeaf ? firstLeaf.slice() : null; CHOP_AIM.path = 'none';
+    CHOP_AIM.rockHit = false; CHOP_AIM.woodHit = false; CHOP_AIM.foliaHit = false;   // ── WHAT DID THIS SWING LAND ON? ── pick on stone, axe on wood, anything on foliage. NOT CHOP_AIM.leafHit, which is the aim pre-pass's see-through state and a NUMBER. cleared HERE, on the one line every
+    // swing runs before it decides anything, so a swing that bites nothing cannot leave the last one's answer standing and hand the
+    // sound to the wrong blow. ui/audio.js reads it (CHOP_AIM is exported and audio.js is 6 fragments below this one) to pick the
+    // impact take: rock under a pick has its own recording, everything else keeps the generic break takes.
     if ((leafHit === 3 || (leafHit === false && firstLeaf))          // the leaf wins: nothing behind it, or the ray ran out inside the crown
-        && (CHOP_AIM.path = 'leaves')
+        && (CHOP_AIM.path = 'leaves') && (CHOP_AIM.foliaHit = true)
         && phChopLeaves(firstLeaf[0], firstLeaf[1], firstLeaf[2], CHOP_RAD * base * 0.5, Math.max(2, Math.round(C_BITE * 0.5)))) return true;   // FOLIAGE is nobody's own material: half the tool's sphere (user)   // a FALLEN crown is not in W, so this misses and the march below takes it with okBody instead
     let S = null;
     // ── VOXEL-ACCURATE (user 2026-08-05) ── walk the exact voxels the crosshair ray passes through. The
@@ -435,7 +439,7 @@
       const bAt = phBodyIdAt(x, y, z);
       if (bAt && bodyTool(bAt) && (!okBody || okBody(bAt)) &&
           (phChopBody(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, C_MIN, C_BITE, okBody) ||
-           phChopBody(x, y, z, C_RAD, C_MIN, C_BITE, okBody))) { CHOP_AIM.path = 'body'; CHOP_AIM.hitId = bAt; return 1; }   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
+           phChopBody(x, y, z, C_RAD, C_MIN, C_BITE, okBody))) { CHOP_AIM.path = 'body'; CHOP_AIM.hitId = bAt; CHOP_AIM.rockHit = pick && !!pickOnlyTab[bAt]; CHOP_AIM.woodHit = axe && !!woodTab[bAt]; CHOP_AIM.foliaHit = !!leafSndTab[bAt]; return 1; }   // …a knocked-loose clump of leaves or fronds is still foliage   // …a felled LOG is wood under an axe, so bucking one sounds like chopping one   // …and a boulder CHUNK lying on the ground is still rock under a pick, so it gets the rock take too   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
       const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
       // ROCK needs the pick, WOOD needs a cutting edge, everything else soft yields to whatever is in hand.
       // …and the carve is confined to that same material, so the sphere cannot spill into the next one.
@@ -517,11 +521,19 @@
       // own scale (CHOP_DEEP * base), so nothing here singles the axe out.
       // window.__CDEEP overrides it live for A/B, the same pattern as __LST / __TFREEZE.
       if (id && decorTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true)))
-          && (phChopDecor(x + vx * D_DEEP, y + vy * D_DEEP, z + vz * D_DEEP, CHOP_RAD * mR, mBite, okMat)
-              || phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat))) {
+          && (phChopDecor(x + vx * D_DEEP, y + vy * D_DEEP, z + vz * D_DEEP, CHOP_RAD * mR, mBite, okMat, woodTab[id] ? PH.chopCourse : 0)
+              || phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat, woodTab[id] ? PH.chopCourse : 0))) {
         if (HIVE_TAB[id]) hiveChopped(x, y, z);
-        if (woodTab[id]) { if (!S) S = treeShapeAt(x, z); if (S) phTreeSettle(S); }   // …and only wood asks: nothing else can be holding a tree up
-        CHOP_AIM.path = 'decor'; CHOP_AIM.hitId = id; CHOP_AIM.hitT = +t.toFixed(2); CHOP_AIM.rad = CHOP_RAD * mR; CHOP_AIM.bite = mBite;   // the SPHERE and the BITE this swing actually used — 'chopping at a distance does not have the same soi' is a claim about these two numbers, so a test must be able to read them rather than infer them from a voxel diff
+        // ── THE SETTLE BELONGS TO THE TREE THE BITE CAME OUT OF ── and that is not necessarily the one `S`
+        // latched. S is taken at the FIRST column the march finds a tree in, which is deliberately open air
+        // short of the bole (see the note below), and in a birch stand the crown the ray enters first is
+        // routinely a different tree from the trunk it ends on: BKCELL is 44 against footprints up to 61, so
+        // the crowns interleave. Flooding the latched tree then re-tests a tree nobody cut - it sheds, or comes
+        // down - while the tree that just lost 30 voxels of bole is never asked and stays standing on nothing.
+        // Re-resolving at the CARVE column costs the same one treeShapeAt a swing (this branch returns), and it
+        // is the column the axe actually took material from, which is the only column the question is about.
+        if (woodTab[id]) { const Sw = treeShapeAt(x, z); if (Sw) S = Sw; if (S) phTreeSettle(S); }   // …and only wood asks: nothing else can be holding a tree up
+        CHOP_AIM.path = 'decor'; CHOP_AIM.hitId = id; CHOP_AIM.rockHit = pick && !!pickOnlyTab[id]; CHOP_AIM.woodHit = axe && !!woodTab[id]; CHOP_AIM.foliaHit = !!leafSndTab[id];   // canopy, flowers and ferns all sound like foliage - one table, filled in assets/material-tabs.js woodTab and foliaTab are disjoint (bark vs needle), so these cannot both be true   // pickOnlyTab is set beside decorTab on every rock and ore id (assets/material-tabs.js), so this is exactly 'the pick's own material', not a colour test CHOP_AIM.hitT = +t.toFixed(2); CHOP_AIM.rad = CHOP_RAD * mR; CHOP_AIM.bite = mBite;   // the SPHERE and the BITE this swing actually used — 'chopping at a distance does not have the same soi' is a claim about these two numbers, so a test must be able to read them rather than infer them from a voxel diff
         return 1; }   // free gate, the id is already in hand
       // ── AND A HIVE THE CROSSHAIR HAS ALREADY PUNCHED THROUGH IS STILL A HIVE (user 2026-08-19: "fix the hive
       // stall") ── the branch above fires only when the MARCHED VOXEL is itself a hive voxel, and beehive.vox
@@ -541,7 +553,7 @@
       // Nothing else moves: same sphere, same bite, same hiveChopped, same BEE_BREAK_F. A chip is still a chip,
       // and the ambush this feature refused stays refused, because the ray has to pass THROUGH the hive's box
       // to get here — which is aiming at it, not clipping a crown on the way to a trunk.
-      if (!id && cut && hiveBoxAt(x, y, z) && phChopDecor(x, y, z, H_RAD, H_BITE, okHive)) { hiveChopped(x, y, z); CHOP_AIM.path = 'hive'; return 1; }   // `!id` only: an occupied cell is the branch above's business, whatever it holds   // hiveBoxAt memoises its oak scan per cell, so a whole march costs one 3x3 probe
+      if (!id && cut && hiveBoxAt(x, y, z) && phChopDecor(x, y, z, H_RAD, H_BITE, okHive)) { hiveChopped(x, y, z); CHOP_AIM.path = 'hive'; CHOP_AIM.woodHit = true; return 1; }   // WOOD: the hive is the one carve that set no material at all, and it hangs on a BIRCH — so chopping one was a way to get the generic click off a tree (user 2026-08-26)   // `!id` only: an occupied cell is the branch above's business, whatever it holds   // hiveBoxAt memoises its oak scan per cell, so a whole march costs one 3x3 probe
       // Find the pine ONCE, then keep cutting along the rest of the ray. The trigger is any non-air voxel
       // PLUS a sparse probe every 4 voxels: after the first swing punches a hole the ray sees only air
       // where the trunk was, and a solid-only trigger could never find the tree again — the axe would
@@ -589,7 +601,24 @@
       // The reason it had no test on the sampled voxel no longer holds either — the march samples every
       // voxel exactly now, not every half voxel, so a swing meant for a stump lands ON the stump and
       // aimId is its bark. Anything else the player is pointing at keeps its own swing.
-      if (cut && aimWood && t >= aimTW && phChopDecor(x, y, z, C_CUT, C_BITE, (v) => !!woodTab[v])) return 1;   // …and, like the tree path, it stands aside for a crosshair resting on a felled log
+      // ── AND THIS CARVE HAS TO SETTLE THE TREE TOO (user 2026-08-26: "the trunk gets cropped") ── it did
+      // not, and neither did the fallback below, and between them they are where nearly every swing after
+      // the first one goes. The decor branch above needs a SOLID voxel at the crosshair to fire; once the
+      // first bite has opened the notch the ray passes through air where the wood was, so `id` is 0, that
+      // branch is skipped, and the swing lands here instead. This path removes wood and returns, and
+      // NOTHING then asks whether the tree is still standing.
+      // MEASURED on four birches, one swing per 600 ms: swing 0 reports path 'decor' and every swing after
+      // it reports path 'none' while `total` keeps falling ~4 voxels a swing. Orphans appear on swing 1 or
+      // 5 - 7,443 of 7,601, then 15,390 of 15,575 - and never clear. The tree is cut clean through and
+      // stays exactly where it is, which is the whole of "the trunk gets cropped": the axe eats the bole
+      // and the tree above it never moves. Rare on a pine or an oak only because their trunks are thick
+      // enough that the ray keeps finding fresh wood at the crosshair and the decor branch keeps firing.
+      // ── AND THE PATH IS NAMED ── CHOP_AIM.path read 'none' for every one of those swings, which says a
+      // swing did nothing when it had in fact just carved the tree. That is what made this take four
+      // separate reproductions to find, so both arms are labelled now.
+      if (cut && aimWood && t >= aimTW && phChopDecor(x, y, z, C_CUT, C_BITE, (v) => !!woodTab[v], PH.chopCourse)) {
+        const Ss = treeShapeAt(x, z); if (Ss) phTreeSettle(Ss);
+        CHOP_AIM.path = 'stump'; CHOP_AIM.hitId = id; CHOP_AIM.woodHit = axe; return 1; }   // the carve here is woodTab-filtered, so only the TOOL is still in question   // …and, like the tree path, it stands aside for a crosshair resting on a felled log
       // ── WATER IS NOT AN OBSTRUCTION (user 2026-08-05: "let me use tools underwater") ── a water voxel is a
       // non-zero id like any other, so this test used to STOP the swing dead at the surface: the pick bounced
       // off the lake instead of the rock beneath it, and nothing submerged could be worked at all. A FROZEN
@@ -606,7 +635,9 @@
       if (y2 < 1 || y2 >= WY) return false;
       if (aimBody && phBodyIdAt(x2, y2, z2) && bodyTool(phBodyIdAt(x2, y2, z2)) && phChopBody(x2, y2, z2, C_RAD, C_LAST, C_BITE, okBody)) return true;   // the crosshair must be ON a body and the sampled voxel INSIDE one — the same exactness the main march gets from its bAt gate. Ungated, this took a 15-voxel bite out of any felled log within radius 10 of ANY voxel on a 107-long ray.   // …and a reduced bite off a fallen trunk still counts   // still the aimed material only: the whole point of the safety net is a notched TRUNK, and letting it fall back to needles is the bug it would be papering over
       if (aimWood && S && physChopAt(x2, y2, z2, C_RAD, S, C_LAST, C_BITE, isWood).hit) return true;   // …still wood only, for the same reason the main march is
-      if (cut && aimWood && woodTab[W[gwrap(x2, WX) + y2 * WX + gwrap(z2, WZ) * WX * WY]] && phChopDecor(x2, y2, z2, C_RAD, C_LAST, (v) => !!woodTab[v])) return true;   // …and the last splinters of a stump   // same rule as the main pass: the crosshair has to be on wood
+      if (cut && aimWood && woodTab[W[gwrap(x2, WX) + y2 * WX + gwrap(z2, WZ) * WX * WY]] && phChopDecor(x2, y2, z2, C_RAD, C_LAST, (v) => !!woodTab[v], PH.chopCourse)) {
+        const Sf = treeShapeAt(x2, z2); if (Sf) phTreeSettle(Sf);   // …the same settle the stump path above now runs, and for the same reason
+        CHOP_AIM.path = 'last'; CHOP_AIM.woodHit = axe; return true; }   // …and wood-only here too   // …and the last splinters of a stump   // same rule as the main pass: the crosshair has to be on wood
       return false;
     })) return true;
     return false;                                     // the swing never bit anything

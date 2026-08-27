@@ -361,6 +361,10 @@
       // across, so landing at the pine's distance puts the player under the canopy instead of in front of it.
       oak: () => { const g = nearestCell(OKCELL, 40, (cx, cz) => { const t = oakAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; });
         return g ? { x: g.x + 24, z: g.z, what: 'oak' } : null; },
+      // …and the THIRD forest's tree. Stood off 16: a birch crown is narrower than an oak's 118 but
+      // wider than a pine, so it sits between their two numbers.
+      birch: () => { const g = nearestCell(BKCELL, 40, (cx, cz) => { const t = birchAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; });
+        return g ? { x: g.x + 16, z: g.z, what: 'birch' } : null; },
       rock: () => { const g = nearestCell(BCELL, 60, (cx, cz) => { const b = boulderAt(cx, cz); return b ? { x: b.bx, z: b.bz } : null; });
         return g ? { x: g.x + 8, z: g.z, what: 'rock' } : null; },
       log: () => { const g = nearestCell(LGCELL, 40, (cx, cz) => { const l = logAt(cx, cz); return l ? { x: l.wx, z: l.wz } : null; });
@@ -416,7 +420,15 @@
       // ── AND PINE FOREST IS NOW A CONJUNCTION, NOT THE ABSENCE OF SAND ── it used to be `desertM <= 0.005`,
       // which was exact while there were two biomes and is WRONG the moment there are three: the oak forest
       // satisfies it perfectly, so /locate pine_forest from the oak side answered "you are already there".
-      pine_forest: () => biomeSeek((x, z) => desertM(x, z) <= 0.005 && oakM(x, z) <= 0.005, 'the pine forest'),
+      // ── AND THE BIRCH TERM, WHICH THE TWO NOTES ABOVE PREDICTED WOULD BE NEEDED ────────────
+      // Both of them say it outright: a biome test written as the ABSENCE of the others breaks the
+      // moment another arrives. The birch forest arrived in this very commit, and birch ground has
+      // desertM 0 and oakM 0 -- so it satisfied this test perfectly and /locate pine_forest walked
+      // you into a birch wood and announced the pines. Third time this exact shape has bitten;
+      // adding the term rather than rewriting the pattern, because the pattern is right and it is
+      // the MISSING CONJUNCT that is wrong each time.
+      pine_forest: () => biomeSeek((x, z) => desertM(x, z) <= 0.005 && oakM(x, z) <= 0.005 && birchM(x, z) <= 0.005, 'the pine forest'),
+      birch_forest: () => biomeSeek((x, z) => birchM(x, z) >= 0.995, 'the birch forest'),
       // ── AND OAK IS A CONJUNCTION NOW TOO (2026-08-18) ── the note above this predicted exactly this: a fourth
       // biome breaks any "biome" test written as the absence of the others. The cherry forest sits INSIDE oakM
       // (cherryM is a sub-region of it — see world/window.js), so `oakM >= 0.995` is satisfied perfectly from
@@ -444,6 +456,8 @@
   const CMD_LOC_ALIAS = { water: 'lake', pond: 'lake', stream: 'river', forest: 'tree', boulder: 'rock',
     stone: 'rock', mushrooms: 'mushroom', ferns: 'fern', ravine: 'gorge', cave: 'gorge', canyon: 'gorge', logs: 'log', trees: 'tree', rocks: 'rock', lakes: 'lake',
     pine: 'tree', sand: 'desert', dunes: 'desert', pineforest: 'pine_forest', pines: 'pine_forest',
+    birches: 'birch_forest', birchforest: 'birch_forest', birchwood: 'birch_forest', birch_wood: 'birch_forest',   // singular 'birch' is the TREE, plural is the BAND -- the same split pine/pines already uses
+
     oaks: 'oak', oakforest: 'oak_forest', oakwood: 'oak_forest',   // NOTE 'forest' stays pointed at 'tree' (nearest single pine) — it predates the biome and changing it would silently redirect an existing command
     cacti: 'cactus', saguaro: 'cactus', cactuses: 'cactus', shrubs: 'shrub', bush: 'shrub', bushes: 'shrub',
     desert_rocks: 'desert_rock', desertrock: 'desert_rock', sticks: 'stick', twigs: 'stick', pinecones: 'pinecone', cones: 'pinecone',

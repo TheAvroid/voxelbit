@@ -338,7 +338,7 @@
           supPush(phWorldIdx(S, mx2, my2, mz2)); }
         continue;
       }
-      const compS = phDrapeWith(S, comp, f, snowClaim);   // …and it takes its drape with it: snow above, cones below (see phDrapeWith). AFTER the slot machinery above, which prices a component by its own material
+      const compS = phDrapeWith(S, comp, f, snowClaim);
       const b = phBuildBody(S, compS, f);
       for (const c of compS) {
         const mx2 = c % f.sx, mz2 = ((c / f.sx) | 0) % f.sz, my2 = (c / (f.sx * f.sz)) | 0;
@@ -412,8 +412,21 @@
       // not need a crown radius of reach — 4 covers the voxel or two of drape that can overhang a lifted mass.
       // Chosen at 40 so nothing that exists today changes: a felled PINE is 36 wide (MSX/MSY) and keeps the
       // 26 it has always had; only the oaks, whose crowns run 44 to 114, take the cheap path.
+      // ── AND 40 WAS TUNED AROUND THE TWO TREES THAT EXISTED (2026-08-26) ── the note above picked 40 so a
+      // felled PINE (36 wide) kept the 26 it had always had and only the oaks took the cheap path. A BIRCH
+      // crown is 29 to 61, which lands ON that line: MEASURED, a fell with wSpan 32 took the expensive arm
+      // and coneWake cost ~18 ms of a 27 ms phSeparate, iterating (32 + 52)^3 = 593,000 cells on the one
+      // frame the tree comes down. Two voxels wider and the same tree pays 40^3 = 64,000. That is both the
+      // fall hitch and why it is INTERMITTENT - the birch straddles the threshold.
+      // The question the pad actually answers is "could drape be hanging OUTSIDE this component's box", and
+      // the thing that answers it is whether the box is TRUNK-shaped, not whether it is oak-sized. A bare
+      // trunk section is 3 to 8 voxels across; every crown that exists is 29 or more. 16 sits in the middle
+      // of a gap that wide, so the classification is unambiguous for every model, and the pine joins the oak
+      // on the cheap path for exactly the reason the oak is already on it: when the component IS the crown,
+      // its own box already contains the drape and the pad is pure volume.
+      const CONE_WAKE_TRUNK = 16;                    // a box wider than this is a crown, not a bole
       const wSpan = Math.max(bx1 - bx0, bz1 - bz0);
-      coneWake(bx0, bx1, by0, by1, bz0, bz1, wSpan >= 40 ? 4 : undefined);
+      coneWake(bx0, bx1, by0, by1, bz0, bz1, wSpan >= CONE_WAKE_TRUNK ? 4 : undefined);
       petalClearBox(bx0, bx1, bz0, bz1);             // …and the leaves already falling out of the crown that just left: see the note on petalClearBox
     }
     PH.stats.separations += made.length;

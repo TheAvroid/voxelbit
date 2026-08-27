@@ -11,6 +11,7 @@
   // ── player ── 10 cm voxels: 1.8 m tall, eye 1.65 m; old-engine feel
   const EYE = 18.5, HEIGHT = 20, CR_EYE = 11.5, CR_HEIGHT = 13, HW = 2.6;   // a proper 2 m / 20-voxel person
   const WALK = 46, SPRINT = 1.85, CROUCHM = 0.45, JUMP = 66, GRAVITY = 200;
+  const STEP_DOWN = 3;                                 // how far below the feet the footstep surface scan may reach — one step's worth on a slope, see tick-camera
   const SWIM_UP = 18, SWIM_SINK = 13, SWIM_EASE = 6.5;  // rise / sink ceilings in vox/s and how briskly the body eases between them (1/s). ALL RAISED HARD (user 2026-08-07: floating was "very slow and mushy", the bob has to be obvious): 2x the ceilings and 3x the ease, so a tap of Space lifts you visibly and letting go drops you back just as plainly
   // SWIM_DEEP: how deep the water must be over the FEET before the body starts swimming instead of walking.
   // 10 (waist) was right in principle and wrong in practice — MEASURED, the lakes in this world are only 4-5
@@ -354,6 +355,17 @@
     return hit;
   }
   function maybeRecenter() {
+    // ── NEVER WHILE THE ASSET EDITOR IS OPEN (user 2026-08-26: "theres a bug in the asset editor") ── the
+    // editor builds a world that a recentre cannot survive. edEnter zeroes the brick occupancy, stamps the
+    // stage plane into W and CARVES the volume above it, recording every borrowed cell in ED.prev keyed by
+    // WORLD INDEX. A recentre re-wraps the toroidal window, so those indices then address different columns
+    // entirely: the stage plane is wiped out of W (measured — every sample across the platform read 0 with
+    // the model still hanging in the air above nothing, which is the screenshot), and worse, edExit would
+    // later write each saved id back into whatever cell now owns that index and quietly corrupt the terrain.
+    // The editor is a 242x242 stage with fly ON, so this is two seconds of flying away from it.
+    // Refusing the recentre keeps the stage intact and costs nothing: the world beyond it is deliberately
+    // empty already (see the occupancy fill in edEnter), so there is no terrain out there to stream to.
+    if (ED.on) { resetHist = 1; return; }
     const thr = Math.max(200, HALF * 0.45);
     if (Math.abs(P.x - (winOX + HALF)) > thr || Math.abs(P.z - (winOZ + HALF)) > thr) recenter(P.x, P.z);
     else resetHist = 1;

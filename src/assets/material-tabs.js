@@ -291,6 +291,45 @@
   // PINE_ANCH plays with cones, and 96 sectors is ten times the most fruit any tree carries.
   const OAK_ANCH = [], OAK_BANCH = [];
   { const AMAX = 96, BMAX = 32, EDGE = 3;
+  // NOTE THE POSITION: this sits after EVERY foliaTab write (OAKLEAF, OAKLITE, BLOSLEAF, BLOSWHITE,
+  // BLOSCHERRY, FRUITC and the fruit stem, all added above), for the same reason the fol[] table below
+  // says it is built after the FRUITC loop. Filled at the top of this file instead, it would have copied
+  // a foliaTab holding only the PINE's needles and no broadleaf would have sounded like a leaf at all.
+  // ── WHAT SOUNDS LIKE FOLIAGE ── one table, because the impact sound asks ONE question and the answer is a
+  // union of three sets that are otherwise unrelated: the canopy (foliaTab), the flowers and the ferns.
+  // floatTab is not it - that is the surface-scatter class and carries grass, moss, twigs and pinecones too.
+  // Filled here rather than tested three ways in sim/tools.js so a swing costs one byte lookup, and so the
+  // next soft plant only has to be added in one place. FLOWERIDS and FERNIDS are both derived in
+  // assets/bow.js from the models' own voxels, so neither is a hand-written id list that can drift.
+  for (let i = 0; i < 256; i++) if (foliaTab[i]) leafSndTab[i] = 1;
+  for (const i of FLOWERIDS) leafSndTab[i] = 1;      // user 2026-08-26: "also play the leaf sound for the flowers too"
+  for (const i of FERNIDS) leafSndTab[i] = 1;        // …"and the ferns play the leaf sound"
+  // ── AND EVERYTHING GREEN IN THE DESERT (user 2026-08-26: "give the cactus and other foilage in the desert
+  // the leaf sound. basically anything green in the desert gets the leaf sound") ── cacti and the scrub were
+  // the last plants in the world with no material take of their own, which since the generic click was
+  // deleted means they were landing SILENT. cactusTab covers all nine models by id, and it is filled from
+  // CACTI's own voxels well above this line, so it is the honest set rather than a hand-listed one.
+  // SHRUBC is the scrub's green and SHRUBF its bloom. The bloom is not green and is included anyway, for the
+  // same reason material-tabs already marks both together a hundred lines up: a bush whose leaves rustle and
+  // whose flowers do not is worse than either, and the flowers were given this take three requests ago.
+  for (let i = 0; i < 256; i++) if (cactusTab[i]) leafSndTab[i] = 1;
+  for (const i of SHRUBC) leafSndTab[i] = 1;
+  for (const i of SHRUBF) leafSndTab[i] = 1;
+  // ── AND WHAT THE PLAYER IS WALKING ON (user 2026-08-26: "play this sound anytime the player is walking on
+  // grass") ── the GREEN ground, by the palette arrays that mint it rather than by a hand-listed id range:
+  // MOSS is the forest floor's four greens, OAKMOSS the oak/cherry band's three brighter ones (BIRCHMOSS is
+  // built from OAKMOSS's own ids, so listing it would be listing them twice), and GRASS is the strands that
+  // stand in a patch — walking through those is walking on grass by any reading of it. The browns beside
+  // them in DIRT and the desert's sand are deliberately NOT here: this is the grass step, not a generic one.
+  for (const i of MOSS) stepGrassTab[i] = 1;
+  for (const i of OAKMOSS) stepGrassTab[i] = 1;
+  for (const i of GRASS) stepGrassTab[i] = 1;
+  // ── AND THE BARE EARTH TOO (user 2026-08-26: "play the grass footsteps on the dirt as well") ── DIRT is the
+  // brown three that MOSS is scattered over, and it is what the OAK floor mostly is: measured there, the whole
+  // box footprint read 9/10/11 with no moss in it, which is why the loop kept cutting out as you walked. The
+  // table is no longer "grass" strictly speaking — it is the SOFT GROUND the walking loop plays on. Sand is
+  // still deliberately out: the desert has its own bed and a grass rustle over dunes is the wrong sound.
+  for (const i of DIRT) stepGrassTab[i] = 1;
     const fol = new Uint8Array(256); for (const f of foliageIds) fol[f] = 1;   // built AFTER the FRUITC loop above, so a berry on a bush reads as canopy and can never be mistaken for a branch
     for (let k = 0; k < OAKV.length; k++) {
       const m = OAKV[k], sx = m.sx, sy = m.sy, sz = m.sz;

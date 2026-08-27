@@ -13,18 +13,17 @@
   //
   // FORMAT: one entry per FOLDER, "<dir>:<name>,<name>,..." joined with ';'. Names keep their real case
   // (the fetch URL is case-sensitive) and drop the .vox; the empty dir is game/assets itself. Grouping by
-  // folder is what makes this 6664 characters instead of the 27957 the flat paths cost. Folders are emitted
+  // folder is what makes this 6600 characters instead of the 27518 the flat paths cost. Folders are emitted
   // parent-first, siblings in order, so every subtree is a CONTIGUOUS run - ui/console.js relies on that to
   // answer "how many files are under life/tropical_life/pelican" without a second table. It is unpacked
   // lazily, on the first command that needs it, so the boot pays nothing for it.
-  const VOXDEX = [                                     // 1008 files in 123 folders
+  const VOXDEX = [                                     // 992 files in 122 folders
     ':palette,palette2',
     'decoration:beehive,birch,birch_forest,fir_spruce,flowers,lillypad_large,lillypad_medium,lillypad_small,log,lotus,mushroom,pine_puffy,pine_skinny,pinecone,pink_stick_1,pink_stick_2,rock,shell,stick_1,stick_2',
     'decoration/rocks:BIG_1_BiG_0,Big_2_BiG_0,Big_3_BiG_0,Big_4_BiG_0,Big_5_BiG_0,Mid_1_MID_0,Mid_2_MID_0,Mid_3_MID_0,Mid_4_MID_0,Mid_4_MID_0_001,Mid_5_MID_0,Runic_1_Runic_0,Runic_2_Runic_0,Runic_3_Runic_0,Runic_4_Runic_0,Runic_5_Runic_0,Runic_6_Runic_0,Runic_7_Runic_0,Small_1_SMall_0,Small_2_SMall_0,Small_3_SMall_0,Small_4_SMall_0,Small_5_SMall_0,Small_6_SMall_0,Small_7_SMall_0,Small_8_SMall_0',
     'foilage:palm_tree,pine4,pine5',
     'foilage/birch_trees:1,10,11,12,13,14,15,16,2,3,4,5,6,7,8,9',
     'foilage/birch_trees/old:1,10,11,12,13,14,15,16,2,3,4,5,6,7,8,9',
-    'foilage/birch_trees/temp:1,10,11,12,13,14,15,16,2,3,4,5,6,7,8,9',
     'foilage/cactus:cactus_1,cactus_2,cactus_3,cactus_4,cactus_5,cactus_6,cactus_7,cactus_8,cactus_9',
     'foilage/desert_shrub:1,2,3,4,5,6',
     'foilage/oak_trees:oak_1,oak_2,oak_3,oak_4,oak_5,oak_6,oak_7',

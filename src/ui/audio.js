@@ -75,7 +75,7 @@
                     // It reaches the desert bed as well as the forest one for free: both register on BUS_AMB and
                     // ambBiomeTick recomputes their levels through sndLevel every frame, so a drag moves the bed
                     // that is playing right now rather than the next one to start.
-  let sndVol = volGet('vb_vol', 1);   // ── SOUND IS BACK ON (user 2026-08-20: "turn the volume on by default") ── it was muted earlier the same day ("turn off volume by default"), which was itself a repeat of 2026-08-18, and this is the third time the switch has moved. 1 is the 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
+  let sndVol = volGet('vb_vol', 0.8);   // ── AND IT STARTS AT 80% (user 2026-08-26: "turn the default sound to 80%") ── the DEFAULT only, so a player who has ever touched the slider keeps their own number: volGet returns the saved vb_vol when there is one   // ── SOUND IS BACK ON (user 2026-08-20: "turn the volume on by default") ── it was muted earlier the same day ("turn off volume by default"), which was itself a repeat of 2026-08-18, and this is the third time the switch has moved. 1 is the 2026-08-06 full-volume start. Like the two buses above it this is the value on every REFRESH, not a
                     // preference: a saved vb_vol is written by the slider and re-read there, so a player who turns it down
                     // still gets their setting for that session — this only decides where a fresh load begins.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
@@ -284,7 +284,7 @@
   // BASE 0.14 — measured, the track is -15.2 LUFS integrated, within 0.1 dB of high_score.mp4's -15.1, so the
   // achievement jingle's own twice-tuned 0.09 is the anchor: this sits ~4 dB over it (a moment, not a cue) and
   // still under the tool hits. On the MUSIC bus, so nothing but the master and the new slider can move it.
-  const ANTHEM_AT = 60;                                // seconds of GAMEPLAY before the FIRST track — not of page life, see the play clock in tickBody (user 2026-08-20: 120 -> 60 -> 30 -> 10 -> 3, and the clock no longer starts on its own — see anthemArmed)
+  const ANTHEM_AT = 120;                               // seconds of GAMEPLAY before the FIRST track (user 2026-08-26: "have the music start 120 seconds after the game has refreshed") - 60 -> 120, which also makes it equal to ANTHEM_GAP, so the opening silence and every silence after it are the same two minutes — not of page life, see the play clock in tickBody (user 2026-08-20: 120 -> 60 -> 30 -> 10 -> 3, and the clock no longer starts on its own — see anthemArmed)
   const ANTHEM_GAP = 120;                              // …and TWO minutes of gameplay of SILENCE between one track ending and the next starting (user 2026-08-24: "make sure the songs have 120 seconds between them", raised from 60). Gameplay seconds, not wall clock: the play clock in tickBody stops with the game, so a track cannot come due while the esc menu is up
   // ── THE SET (user 2026-08-08, re-cut 2026-08-18) ── the soundtrack, in rotation, then silence for the rest
   // of the session. It moved from game/sound/music/*.mp4 to game/sound/soundtrack/*.mp3 and gained two cuts,
@@ -360,8 +360,12 @@
   // to record, the award song plays 3 seconds later. remove the 1 keybind" ... "if the user presses r again in
   // the same session, the award song plays again and so on") ── the soundtrack is scoring the CLIP, so the
   // thing that starts it is the thing that starts the clip.
-  // ANTHEM_AT is unchanged and still means what it always meant: 3 seconds of gameplay between the trigger and
-  // the first note, so the take opens on a beat of quiet.
+  // ── STALE FROM HERE TO THE RESHUFFLE NOTE (flagged 2026-08-26) ── the paragraphs above and below describe a
+  // 1-key trigger and a recorder trigger, and BOTH ARE GONE: ui/video-editor.js does not mention the anthem at
+  // all any more, anthemArmed is simply true from the start, and the only live use of ANTHEM_AT is the first
+  // track of the session. In particular ANTHEM_AT is NOT "3 seconds between a trigger and the first note" - it
+  // is 120 seconds of gameplay from the moment the player takes the controls. Kept for the history, not as a
+  // description of the code.
   // CALLED FROM veStartRec, NOT FROM A KEY, so the #veRecBtn button arms it exactly as R does — the trigger is
   // "a recording began", and there are two ways to begin one.
   // IT ALWAYS OPENS ON AWARD, and anthemIdx = 0 IS that, by construction rather than by name: ANTHEM_FIRST is
@@ -442,34 +446,154 @@
   // pool 5 dB under the loudness-matched number it started the day at. The bass shelf below went UP in the
   // same breath, which is the point of doing both at once: the strike keeps its weight while the crack
   // stops carrying the mix.
-  const TOOLHIT_N = 4;
-  const toolHitSnds = [];
-  for (let i = 0; i < TOOLHIT_N; i++) {
-    const src = 'sound/tool_hit/0' + i + '.mp4';
-    toolHitSnds.push([regSnd(new Audio(src), 0.2036), regSnd(new Audio(src), 0.2036)]);   // two voices per take so the same one can overlap itself
-  }
-  let toolHitV = 0;
-  const TOOLHIT_BASS_DB = 10.9, TOOLHIT_BASS_HZ = 190;   // lift below ~190 Hz (user 2026-08-07: "increase the bass") — the weight of a struck tool lives under the crack, and these takes are recorded thin
-  // BASS +40% (user 2026-08-07), 8 dB → 10.9: read as AMPLITUDE, the way every other percentage in this file
-  // is. The shelf was lifting the low band 10^(8/20) = 2.51x; 2.51 x 1.4 = 3.52x, which is 10.9 dB. Scaling
-  // the dB number itself by 1.4 would have said 11.2 dB — a quarter of a dB apart, inaudible either way, so
-  // the reading costs nothing and amplitude is the one that stays consistent with the volume cuts above.
-  // ── ROUTE EVERY TAKE, NOT JUST THE ONE PLAYING ── an element may be handed to createMediaElementSource
-  // ONCE, ever, and the video recorder claims every registered sound when a capture starts. Tapping lazily
-  // per-take lost that race: measured, 6 of 8 voices had the filter and the two whose take had not come up yet
-  // were claimed dry by the recorder and could never be filtered again for the rest of the session. So all
-  // eight are routed together, on the first input event — which always precedes both the first swing and the
-  // first capture, and means the context is running rather than suspended when it happens.
-  let toolHitRouted = false;
-  const routeToolHits = () => {
-    if (toolHitRouted || !audioCtx()) return;
-    for (const t of toolHitSnds) for (const a of t) bassTap(a, TOOLHIT_BASS_DB, TOOLHIT_BASS_HZ);
-    toolHitRouted = true;
+  // ── A SHUFFLE BAG, NOT A COIN (user 2026-08-26: "its like I hear the same sound multiple times in a row") ──
+  // Every take pool here drew with Math.random() on each swing, which is uniform and is NOT what "varied"
+  // sounds like: an independent draw repeats itself 1/n of the time, so the four generic takes said the same
+  // thing twice in a row on a QUARTER of swings and the five wood takes on a fifth of them. A held chop
+  // repeats every 570 ms, so that is an audible stutter every few seconds - and it was audible.
+  // A bag is the fix the soundtrack already uses (see anthemReshuffle): Fisher-Yates a permutation, hand out
+  // one take at a time, reshuffle when it is spent. Every take is then heard once before any is heard twice.
+  // AND THE SEAM IS THE PART THAT IS EASY TO MISS. A fresh shuffle can open with the take the last bag closed
+  // on, which is exactly the back-to-back repeat this exists to remove - rarer than before but not gone. So a
+  // new bag whose first entry matches the last one played swaps it with the end. That cannot loop and it costs
+  // one compare per reshuffle.
+  // With n = 2 (the rock pair) a bag is strict alternation, which is the most variety two takes can give.
+  const sndBag = (n) => {
+    const order = []; for (let i = 0; i < n; i++) order.push(i);
+    let at = n, last = -1;                             // start SPENT, so the first draw shuffles rather than always opening on take 0
+    return () => {
+      if (at >= n) {
+        for (let k = n - 1; k > 0; k--) { const j = (Math.random() * (k + 1)) | 0; const t = order[k]; order[k] = order[j]; order[j] = t; }
+        if (n > 1 && order[0] === last) { const t = order[0]; order[0] = order[n - 1]; order[n - 1] = t; }
+        at = 0;
+      }
+      last = order[at++];
+      return last;
+    };
   };
-  document.addEventListener('pointerdown', routeToolHits);
-  document.addEventListener('keydown', routeToolHits);
-  const playToolHit = () => { const t = toolHitSnds[(Math.random() * TOOLHIT_N) | 0]; const a = t[toolHitV++ & 1];
-    routeToolHits();                                   // belt and braces if no gesture listener ever ran
+  // ── sound/tool_hit/ IS GONE ── the four generic takes, their two-voice pool, their shuffle bag and the
+  // 190 Hz bass shelf that was tuned for them all lived here. Deleted with the files (user 2026-08-26); the
+  // three material families in playToolHit are the whole impact set now. routeToolHits went with them: it
+  // existed solely to tap that shelf onto those eight voices before the video recorder could claim them, and
+  // the rock/wood/leaf takes are deliberately not tapped (see the note below), so there is nothing left to
+  // route. If a shelf is ever wanted on the material takes, re-read that note first — the ONE-SHOT
+  // createMediaElementSource rule it records is the reason the old one ran on the first input event.
+  // ── AND STONE HAS ITS OWN IMPACT (user 2026-08-26) ── the four takes above are the sound of something
+  // COMING APART and they played for every tool on every material; a pick on rock is a different event and
+  // now sounds like one. The two takes are the two hits inside the delivered rock_sounds.mp3, split on the
+  // 0.42 s of silence between them (0.085-0.935 and 1.335-2.210), downmixed to mono and levelled to the same
+  // -20.2 LUFS as each other. Source kept at source/audio/environment/rock_sounds.mp3, which is gitignored
+  // like every other source: only the two cuts ship.
+  // BASE 0.213, not a guess: the tool_hit takes are -19.8 LUFS at 0.2036, these measure -20.2, so
+  // 0.2036 x 10^(0.4/20) = 0.213 puts a pick on rock at exactly the weight of an axe on a trunk. Two voices
+  // per take for the same reason the takes above have them - a held click auto-repeats every 570 ms and the
+  // tail must not cut itself off.
+  // DELIBERATELY NOT BASS-TAPPED. The deleted generic takes carried a 10.9 dB shelf under 190 Hz, tuned
+  // by ear against those four recordings; these are a different recording and are shipped as delivered. If
+  // they want weight, tap them the same way - but note the ONE-SHOT createMediaElementSource rule, so
+  // they would have to be routed with the others, not lazily.
+  // ── RE-CUT FROM A CLEAN TAKE, AND THERE ARE FIVE (user 2026-08-26) ── the first pair came out of a
+  // recording with WIND under it. MEASURED on the replacement: a steady noise floor at -48.6 dB RMS against
+  // hits at -20 to -27, and band by band the wind sat below ~2.5 kHz, worst under 100 Hz (15.7 dB SNR there
+  // against 39.7 above 8 kHz) while the rock's own energy peaks at 800 Hz - 2.5 kHz.
+  // So it is two steps, not one: a 120 Hz high-pass takes the rumble the hit barely uses, and afftdn does the
+  // 250-2500 Hz overlap that no EQ can, profiled on the 0.45 s of pure wind the recording opens with.
+  // MEASURED after: wind -48.6 -> -68.9 (20.4 dB down) with the hit moving 0.17 dB. nr=20 rather than the 30
+  // that was also tried - both leave the hit alone, and the quieter setting is the one less likely to warble.
+  // NOTE afftdn is an FFT filter and DELAYS the signal ~50 ms, so the cut points were re-found on the CLEANED
+  // file; reusing the raw timestamps shifts every take into the previous one's tail.
+  // BASE 0.275, and it is peak-limited rather than loudness-matched: these are peaky (crest ~22 dB), so
+  // levelling them to tool_hit's -21.5 dB RMS would have clipped. They are pushed to -1.5 dBTP instead, which
+  // lands the set at -24.1 RMS, and the base makes up the 2.6 dB: 0.2036 x 10^(2.6/20).
+  // ── ONE LEVEL FOR EVERY IMPACT TAKE (user 2026-08-26: "make the Db is consistent across all of the
+  // impact sounds") ── the three sets were levelled to their own ceilings and carried three different bases
+  // to compensate. They matched by EAR, which is not the same as matching, and the files did not: wood -21.7,
+  // rock -24.1, leaf -28.4 dB RMS. Every take is now normalised to the SAME -28.5, so the eleven of them
+  // measure -28.5 to -28.8 - a 0.28 dB spread - and one base serves all three.
+  // WHY -28.5 AND NOT LOUDER: the target is set by the peakiest take, because none of them may pass
+  // -1.5 dBTP. Crest factors are wood 8-10 dB, rock 20-23, leaf 27, so the LEAF is the binding one at
+  // -1.5 - 26.8 = -28.3. Anything hotter clips the leaf before the wood is even close.
+  // 0.464 then carries the set back to the tool_hit anchor: those measure -21.5 dB RMS at 0.2036, this is
+  // 7.15 dB quieter as a file, and 0.2036 x 10^(7.15/20) = 0.464. Perceived weight is unchanged; what moved
+  // is that it is now ONE number, so the next set only has to hit -28.5 to belong.
+  // NOTE this also flattens the take-to-take variation each set came with (wood spread 2.5 dB, rock 2.6).
+  // That is what "consistent" asks for; if the hits want their natural unevenness back, normalise per SET
+  // to this mean instead of per FILE and the bases stay exactly as they are.
+  const IMPACT_BASE = 0.464;
+  const ROCKHIT_N = 5;
+  const rockHitSnds = [];
+  for (let i = 0; i < ROCKHIT_N; i++) {
+    const src = 'sound/impact_sounds/rock/0' + i + '.mp4';
+    rockHitSnds.push([regSnd(new Audio(src), IMPACT_BASE), regSnd(new Audio(src), IMPACT_BASE)]);
+  }
+  let rockHitV = 0;
+  const rockHitPick = sndBag(ROCKHIT_N);
+  // ── AND WOOD UNDER AN AXE HAS ITS OWN TOO (user 2026-08-26) ── same move as the rock takes above. The
+  // delivered wood_sounds.mp4 holds SIX hits and the sixth is deliberately dropped on the user's
+  // instruction, so this is five: the silences between them are 1.5 s wide, which makes the cuts unambiguous
+  // (3.535, 5.381, 7.250, 9.003, 10.814 - and the 12.799 that is not used).
+  // LEVELLED ON RMS, NOT LUFS. These are 0.37-0.48 s and the EBU gate wants 400 ms blocks, so integrated
+  // loudness is unusable on them - two of the five measured -70 LUFS, i.e. the gate found nothing at all.
+  // Peak and RMS are length-independent and the clips are close to the tool_hit takes in length (0.53-0.58),
+  // so RMS is the honest comparison: the source set sits at -35.1 dB against tool_hit's -21.5, and one common
+  // +13.6 dB brings the set to a -21.7 mean while preserving the 2.5 dB of spread the takes came with.
+  // Peaks land at -10 to -12 dB, nowhere near clipping, so the base is simply tool_hit's own 0.2036.
+  // NOT BASS-TAPPED, like the rock takes - see the note there.
+  const WOODHIT_N = 5;
+  const woodHitSnds = [];
+  for (let i = 0; i < WOODHIT_N; i++) {
+    const src = 'sound/impact_sounds/wood/0' + i + '.mp4';
+    woodHitSnds.push([regSnd(new Audio(src), IMPACT_BASE), regSnd(new Audio(src), IMPACT_BASE)]);
+  }
+  let woodHitV = 0;
+  const woodHitPick = sndBag(WOODHIT_N);
+  // ── AND FOLIAGE (user 2026-08-26: "anytime any of the tools or weapons hit a leaf or foilage") ── no tool
+  // gate on this one, deliberately: a leaf gives way to anything, which is the same rule the leaf CARVE
+  // already follows (see phChopLeaves in sim/tools.js, reached with no tool test at all).
+  // leaf_impact.mp4 needed no denoising - it is digital silence either side of one sound at 1.00-1.72 s, so
+  // "isolate it" is a trim and nothing more. ONE take, so no bag: sndBag(1) would return 0 for ever anyway.
+  // BASE 0.451: peak-limited to -1.5 dBTP like the rock takes, which leaves it at -28.4 dB RMS, and the base
+  // carries the 6.9 dB back up to tool_hit's -21.5. That puts a leaf at the same WEIGHT as a struck trunk,
+  // which is a choice rather than a measurement - if a leaf should be softer than an axe in oak, this is the
+  // one number to drop.
+  // ── AND THE LEAF PLAYS WELL UNDER THE REST (user 2026-08-26: "lower the leaf sound by 25%", then "turn the
+  // leaf volume down by another 25%") ── as a LEVEL, not as a file: the eleven takes stay normalised to the
+  // same -28.5 dB RMS, which is what "consistent" bought, and only the playback gain moves.
+  // TWO cuts of 25%, COMPOUNDED rather than added: 0.75 x 0.75 = 0.5625, so 0.464 -> 0.261. Read as amplitude
+  // like every other percentage in this file, which makes it -5.0 dB against the rock and wood takes.
+  // Taking 50% off in one step would have been a different (and quieter) number - 0.232 - and the second
+  // request was "another 25%", i.e. a quarter off what it is NOW.
+  // Foliage giving way to a blade should not weigh anything like stone breaking.
+  const LEAF_BASE = IMPACT_BASE * 0.75 * 0.75;
+  const LEAFHIT_N = 1;
+  const leafHitSnds = [];
+  for (let i = 0; i < LEAFHIT_N; i++) {
+    const src = 'sound/impact_sounds/leaf/0' + i + '.mp4';
+    leafHitSnds.push([regSnd(new Audio(src), LEAF_BASE), regSnd(new Audio(src), LEAF_BASE)]);
+  }
+  let leafHitV = 0;
+  const leafHitPick = sndBag(LEAFHIT_N);
+  const playToolHit = () => {
+    // Which material this blow landed on, set by chopSwing on the swing it just spent (sim/tools.js).
+    // tool_hit is still the fallback and still carries every other case: a knife on wood, a shovel in soil,
+    // a pick on anything that is not stone.
+    const rock = !!CHOP_AIM.rockHit, wood = !rock && !!CHOP_AIM.woodHit;
+    const leaf = !rock && !wood && !!CHOP_AIM.foliaHit;
+    // ── THE GENERIC CLICK IS GONE (user 2026-08-26: "can you remove the lego sound entirely from the files?
+    // I thought I did but its still playing the sound") ── it WAS deleted, from sound/tool_hit/; it came back
+    // because I restored those four files on the same day, having read the 404s they left as a fault. They are
+    // deleted again, for good, and the code that reached for them with them.
+    // AND WHAT IT COVERED IS NOW SILENT, by choice (user 2026-08-26: "its ok, make the hits silent … I'll
+    // fill it in later with other sounds"). Measured across the palette before deciding, because it is more
+    // than the odd case the old note claimed: soil and sand (every `dig` id), the plain stone variants,
+    // mushroom caps and fern fronds all landed on the generic take, so a shovel in earth makes no sound at
+    // all until those are recorded. That is the intended state, not an oversight — three families play, and
+    // everything else waits. Adding one is a bag, a base and an arm on the chain below, exactly as these are.
+    if (!rock && !wood && !leaf) return;
+    const t = rock ? rockHitSnds[rockHitPick()]
+            : wood ? woodHitSnds[woodHitPick()]
+                   : leafHitSnds[leafHitPick()];
+    const a = t[(rock ? rockHitV++ : wood ? woodHitV++ : leafHitV++) & 1];
     try { a.currentTime = 0; const p = a.play(); if (p) p.catch(() => {}); } catch (e) {} };
   // ── AND WHEN IT DOESN'T (user 2026-08-07) ── the dull thud of a tool that landed square on material it
   // cannot work: the pick on soil or a trunk, the shovel on stone, bare hands on a boulder. The four takes
@@ -484,9 +608,86 @@
   // ── DOWN A FURTHER 25% TO 0.1305 (user 2026-08-07) ── 0.174 x 0.75, linear (-2.5 dB), read as amplitude
   // like every other percentage here. The tool-hit takes are untouched at 0.2036, so the gap between a bite
   // and a bounce widens again rather than the whole pair sliding down together.
+  // ── WALKING ON GRASS (user 2026-08-26: "play this sound anytime the player is walking on grass … repeat it
+  // when neccessary … make sure it blends in smoothly") ── ONE looping element rather than a step-triggered
+  // one-shot, because that is what the recording is: 6.2 s of someone walking, not a single footfall. Its
+  // ends were cut MID-SILENCE, in the gaps between two footfalls, and the leading and trailing silence were
+  // trimmed to sum to the recording's own 0.70 s stride — so the wrap lands exactly where the next step would
+  // have, and loop=true needs no crossfade to hide a seam that is not there. (tools: the source was 47.6 s of
+  // h264+aac VIDEO, 12.9 MB; the shipped file is audio-only mono AAC, 83 KB. See source/audio/environment.)
+  // BASE 0.62 against an I of -39.1 LUFS: the forest bed measures -42.3 and is the thing this has to sit just
+  // above, because a footstep you cannot hear over the wind is not a footstep. The recording arrived at -56
+  // LUFS with only 20 dB of peak headroom, so the +17 dB it took to get here is most of what there was.
+  // FADED, NOT SWITCHED: stopping dead on the frame the player releases a key clicks, and starting dead drops
+  // you into the middle of a footfall. STEP_FADE ramps the element's own gain, and the element keeps running
+  // while faded out so the loop's phase carries on — start walking again and you rejoin the stride you left.
+  const STEP_DBG = { walk: false, grass: false, spd: 0, at: 0, playing: false };   // what the tick decided and what the element is doing — __vb.stepDbg()
+  const STEP_FADE = 0.09;
+  const STEP_BASE = 0.496;                             // -20% (user 2026-08-26: "lower the footsteps volume by 20%") — 0.62 x 0.8, read as AMPLITUDE like every other percentage in this file
+  const stepGrass = regSnd(new Audio('sound/footsteps/grass.mp4'), STEP_BASE);
+  stepGrass.loop = true;
+  let stepWant = 0, stepAt = 0, stepStarted = false;
+  // ── AND TWICE THE CADENCE WHEN SPRINTING (user 2026-08-26: "when the player sprints, play the grass steps
+  // a twice speed") ── playbackRate on the element, so the stride doubles and the loop's own seam stays where
+  // it was: at 2x the 6.208 s loop is 3.104 s and the wrap still lands in the same mid-silence gap it was cut
+  // in, because the cut is a property of the audio and not of the rate.
+  // preservesPitch is set EXPLICITLY rather than left to the default. It is true by default in current
+  // browsers, which is what we want — a footfall an octave up is a different surface, not a faster walker —
+  // but the default is the kind of thing that differs across engines, and the vendor-prefixed spellings are
+  // still what older WebKit and Gecko read.
+  const stepRate = (r) => {
+    if (stepGrass.playbackRate !== r) stepGrass.playbackRate = r;
+    if (stepGrass.preservesPitch === false) stepGrass.preservesPitch = true;
+  };
+  try { stepGrass.preservesPitch = true; stepGrass.mozPreservesPitch = true; stepGrass.webkitPreservesPitch = true; } catch (e) {}
+  const stepSurface = (on, dt, fast) => {              // called once a frame from the camera tick
+    stepWant = on ? 1 : 0;
+    stepRate(fast ? 2 : 1);
+    STEP_DBG.rate = stepGrass.playbackRate;
+    const k = 1 - Math.exp(-(dt > 0 ? dt : 0.016) / STEP_FADE);
+    stepAt += (stepWant - stepAt) * k;
+    if (stepAt < 0.004) { stepAt = 0; if (stepStarted) { try { stepGrass.pause(); } catch (e) {} stepStarted = false; }
+      STEP_DBG.at = 0; STEP_DBG.playing = false; return; }
+    // Level BEFORE play(), not after: the element carries its REGISTERED volume while paused, so starting it
+    // first would sound one frame at full before the ramp caught up — a click on every footfall you begin.
+    // Re-applied every frame for the reason the ambience block records: applyVol() rewrites every registered
+    // element when a slider moves, so a remembered value would go stale the moment the player touched one.
+    const v9 = sndLevel(STEP_BASE, BUS_SFX, stepAt);
+    if (stepGrass.volume !== v9) stepGrass.volume = v9;
+    if (!stepStarted) { stepStarted = true; try { const p = stepGrass.play(); if (p) p.catch(() => { stepStarted = false; }); } catch (e) { stepStarted = false; } }
+    STEP_DBG.at = stepAt; STEP_DBG.playing = stepStarted && !stepGrass.paused;
+  };
   const blockSnds = [regSnd(new Audio('sound/block.mp4'), 0.1305), regSnd(new Audio('sound/block.mp4'), 0.1305)];
   let blockV = 0;
-  const playBlocked = () => { const a = blockSnds[blockV++ & 1];
+  // ── AND THE BOUNCE KNOWS WHAT IT BOUNCED OFF (user 2026-08-26: "sometimes the lego sound still plays when
+  // the player hits the birch tree") ── block.mp4 is a hard plastic knock, and it was the ONE impact left in
+  // the game that never asked what it landed on: every other route here is material-aware (rock takes on
+  // stone, wood takes on wood, the leaf take on anything soft), so a swing that connects with a birch and
+  // fails to bite was the only way to still get the old generic click off a tree. That is the report.
+  // It is deliberately NOT just silenced, and not promoted to a full bite either: a bounce still has to sound
+  // different from a chop or the two become indistinguishable and the swing stops reading as wasted. So it
+  // plays the tool's own MATERIAL take at the bounce's quieter level — a dull wood knock on wood, a stone
+  // knock on stone — and keeps block.mp4 for everything else, which is what it was recorded for.
+  // BLOCK_DUCK carries the takes down to the bounce: they are levelled to IMPACT_BASE for a bite, and the
+  // whole point of the block level is that a bounce sits under a bite (see the note above).
+  const BLOCK_DUCK = 0.64;
+  const playBlocked = (id) => {
+    const wood = id !== undefined && !!woodTab[id], rock = !wood && id !== undefined && !!pickOnlyTab[id];
+    // …and SOFT counts too: a cactus that refuses the bite was answering with the generic knock, which is
+    // the one sound "anything green in the desert gets the leaf sound" is meant to replace. leafSndTab is the
+    // same table playToolHit reads, so the bounce and the bite can never disagree about what a plant is.
+    const soft = !wood && !rock && id !== undefined && !!leafSndTab[id];
+    if (wood || rock || soft) {
+      const t = wood ? woodHitSnds[woodHitPick()] : rock ? rockHitSnds[rockHitPick()] : leafHitSnds[leafHitPick()];
+      const a = t[(wood ? woodHitV++ : rock ? rockHitV++ : leafHitV++) & 1];
+      const wasVol = a.volume;
+      try { a.volume = Math.max(0, Math.min(1, wasVol * BLOCK_DUCK)); a.currentTime = 0;
+        const p = a.play(); if (p) p.catch(() => {});
+        a.addEventListener('ended', () => { try { a.volume = wasVol; } catch (e) {} }, { once: true });
+      } catch (e) { try { a.volume = wasVol; } catch (e2) {} }
+      return;
+    }
+    const a = blockSnds[blockV++ & 1];
     try { a.currentTime = 0; const p = a.play(); if (p) p.catch(() => {}); } catch (e) {} };
   // ── EATING (user 2026-08-07) ── the sound existed and nothing could trigger it, because nothing could be
   // eaten: raw meat could be picked up, held and dropped, and that was all. So this is the smallest consume

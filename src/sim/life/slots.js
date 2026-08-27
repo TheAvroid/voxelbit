@@ -103,6 +103,20 @@
   // 1040 IS THE WORLD'S EDGE, NOT A PREFERENCE: the generated rect reaches min(HALF, renderDist + 96) = 1024
   // here, and a spawn outside the rect is rejected outright because its hmap is stale. Nothing can see further
   // than this without a bigger window (the 3x-view-distance project).
+  // ── HOW CLOSE A PERCH MAY BE OFFERED ── buildCardCand filtered on CARD_KEEP alone, i.e. an OUTER radius and
+  // no floor, so a slot needing a perch could take a tree 49 voxels away and the bird appeared in the canopy
+  // beside you (measured: 322 placements, 22 inside 200 voxels). The comment on the recycle assumed birds
+  // activate "at the frontier"; nothing made that true. 470 is deliberately gentler than the ground life's
+  // LIFE_IN — it excludes 20% of the disc rather than 61%, because CARD_N is sized against the perch supply
+  // in that disc and starving it would leave slots unfilled instead of birds unseen.
+  // 470 -> 240. 470 was set the same day to stop birds perching where you could watch them arrive, and it
+  // did, but it also emptied the whole inner disc: MEASURED standing in deep pine, the NEAREST of the 421
+  // perched songbirds was 466 voxels away — 47 m of birdless trees around the player — and every newly placed
+  // bird landed in a band at the floor. Walk into the pine forest off the desert and all 421 fill at once
+  // (nothing rate-limits the placement), so that band is a wall of birds along the treeline, which is the
+  // report. 240 keeps a 12-voxel bird's arrival at 24 m, far enough not to read as a pop and near enough that
+  // the trees around you hold birds like the rest of the forest does.
+  const CARD_IN = 240;
   const CARD_KEEP = 1040;
   const CARD_KEEP_V0 = 680;                            // …and the reach every population below was TUNED at, kept as a NAME so the growth is arithmetic instead of a magic 2.34
   // ── AND A REACH DILUTES UNLESS THE COUNTS FOLLOW ── what the player reads as "how alive is this forest" is
@@ -488,6 +502,13 @@
   const BEE_BREAK_R = BEE_RAGE_R * 2;
   const BEE_RAGE_WIN = 12;         // …and how long the wreck keeps calling. SHORTER than BEE_RAGE_S below, which is what stops a bee whose rage has just ended from re-entering off the very same record, forever.
   const BEE_RAGE_S = 18;           // seconds one bee stays angry. Long enough to be a chase across a clearing, and bounded for the reason BEE_HIVE_S is bounded: nothing may capture a bee for the rest of the session.
+  // ── AND A BEE MAY NOT MATERIALISE IN YOUR FACE (user 2026-08-26: "bees for examaple just pop into view") ──
+  // the hive placement puts a bee 14-32 voxels from the HIVE and never looks at where the player is, so
+  // standing at one you watch them appear two metres away. Ordinary life is floored at LIFE_IN (~811); the
+  // bee cannot use that number, because the whole point of the hive anchor is to fill the hive you are
+  // walking up to. 60 voxels is 6 m — far enough that a bee is a few pixels arriving, near enough that
+  // stepping back off a hive is all it takes for the ring's far side to qualify and the hive to fill.
+  const BEE_POP_MIN = 60, BEE_POP_TRIES = 8;
   const BEE_RAGE_LEASH = 220;      // ── THE GIVE-UP DISTANCE ── measured from the HIVE and not from the bee, because a swarm defends a PLACE. 22 m of running ends it, and the escape is a real choice: WALK is 46 vox/s against the bee's own 56, so walking away cannot work and SPRINTING (46 x 1.85 = 85) always can.
   const BEE_RAGE_GAP = BEE_RAGE_WIN;   // …and a bee that has just calmed down may not be recruited again until every record that could have called it is stale
   // ── …AND BEE_RAGE_Y WAS NOT THE BUG, WHICH HAD TO BE CHECKED FIRST ── the sting test is a horizontal

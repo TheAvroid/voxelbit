@@ -1,3 +1,16 @@
+  // ── THE FACTORY STATE OF EVERY CONTROL, READ OFF THE MARKUP BEFORE ANY SAVED VALUE TOUCHES IT ──
+  // The reset button at the bottom of the panel restores these (user 2026-08-26: "a reset button in the
+  // settings menu … resets all the settings to default"). Snapshotted rather than written out as a second
+  // table on purpose: html/10-body.html already carries every default as the control's authored value, and a
+  // duplicate list is a list that drifts — the volume default moved earlier today and would have had to move
+  // in two places. This runs at the TOP of the fragment because the wiring below overwrites each control with
+  // whatever localStorage held, and after that the markup value is gone.
+  const SET_SLIDERS = ['volSlider', 'sfxSlider', 'musSlider', 'ambSlider', 'todSlider', 'resSlider', 'dofStrSlider', 'sensSlider'];
+  const SET_TOGGLES = ['snowBtn', 'vigBtn', 'crdBtn', 'fpsBtn', 'timeBtn', 'resHudBtn'];   // the on/off text buttons; the compass is icon-only and is handled by its own flag
+  const SET_KEYS = ['vb_vol', 'vb_sfx', 'vb_mus', 'vb_amb', 'vb_sens', 'vb_scale', 'vb_lgt', 'vb_vig', 'vb_wrefl',
+                    'vb_binds', 'vb_coords', 'vb_fps', 'vb_time', 'vb_res', 'vb_cmp', 'vb_dofstr2'];
+  const SET_DEF = {};
+  for (const id of SET_SLIDERS.concat(SET_TOGGLES)) { const el = $(id); if (el) SET_DEF[id] = el.tagName === 'INPUT' ? el.value : el.textContent.trim(); }
   // ── DEPTH OF FIELD ── persisted (vb_dof), default ON, and declared HERE for the same reason vigOn is: the
   // settings-panel wiring further down reads it, so a declaration below that point is a TDZ error at boot.
   const DOF_COC = 0.0105;                              // max circle of confusion as a fraction of the canvas HEIGHT (~11 px at 1080p) — a fraction, not a pixel count, so the look is identical at every resolution and render scale
@@ -298,6 +311,29 @@
         setInterval(() => { const sig = (onBow() ? 'b' : '') + tgt() + '|' + bowLock; if (sig === arwWatch) return; arwWatch = sig; arwPaint(); }, 200); });   // the hand can change without the panel being touched
     }
     mkToggle('crdBtn', () => showCoords, (v) => showCoords = v, 'vb_coords');   // COORDS on/off
+    // ── RESET ── every control back to the state the markup ships, driven through the controls' OWN handlers
+    // rather than by writing the variables behind them: a synthetic input/click runs the same listener a real
+    // one does, so the live value, the label, the slider fill and the persisted key all move together and this
+    // can never fall out of step with a control that changes later. The saved keys are removed FIRST so that
+    // anything not represented by a control on this panel also returns to its default on the next load.
+    // The compass is the one button with no on/off text — it is an icon — so it is driven off cmpOn, the same
+    // flag ui/input.js toggles, and its default is documented there as ON.
+    // Bindings are not a control here: they are rebuilt from DEFBINDS and re-rendered with kbRefresh().
+    { const setResetEl = $('setReset');
+      if (setResetEl) {
+        setResetEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+        setResetEl.addEventListener('click', (e) => { e.stopPropagation();
+          for (const k of SET_KEYS) { try { localStorage.removeItem(k); } catch (err) {} }
+          for (const id of SET_SLIDERS) { const el = $(id); if (!el || SET_DEF[id] === undefined) continue;
+            el.value = SET_DEF[id]; el.dispatchEvent(new Event('input')); }
+          for (const id of SET_TOGGLES) { const el = $(id); if (!el || SET_DEF[id] === undefined) continue;
+            if (el.textContent.trim() !== SET_DEF[id]) el.click(); }
+          if (!cmpOn) { const cb = $('cmpBtn'); if (cb) cb.click(); }
+          for (const a in DEFBINDS) binds[a] = DEFBINDS[a];
+          try { localStorage.removeItem('vb_binds'); } catch (err) {}
+          kbRefresh();
+        });
+      } }
     mkToggle('fpsBtn', () => showFps, (v) => showFps = v, 'vb_fps');            // FPS on/off
     mkToggle('timeBtn', () => showTime, (v) => showTime = v, 'vb_time');        // TIME on/off
     mkToggle('resHudBtn', () => showRes, (v) => showRes = v, 'vb_res');         // RESOLUTION readout on/off

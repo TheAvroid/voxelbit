@@ -164,7 +164,7 @@
       if (pendKillT && now >= pendKillT) { pendKillT = 0;
         const am9 = aimedCreature();                     // ANY tool: whatever the crosshair is genuinely on takes the swing (user)
         if (am9 >= 0) hitCreature(am9);                  // …otherwise chopSwing carves a grid-stamped animal's voxels out of the world and it comes apart in pieces instead of dying
-        else if (chopSwing()) { playToolHit(); vitOnMine(); } else { tryKillCreature(); if (aimHitId()) playBlocked(); } }   // …and if it bit NOTHING but the crosshair was on something solid, it BOUNCED — the thud (user 2026-08-07). Nothing under the crosshair at all stays silent: a whiff is not a bounce   // it BIT something — one of the four break takes (user)   // an axe that bites a trunk spends the swing on the tree; otherwise it can still kill   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
+        else if (chopSwing()) { playToolHit(); vitOnMine(); } else { tryKillCreature(); const a9 = aimHitId(); if (a9) playBlocked(a9); } }   // …and if it bit NOTHING but the crosshair was on something solid, it BOUNCED — the thud (user 2026-08-07). Nothing under the crosshair at all stays silent: a whiff is not a bounce   // it BIT something — one of the four break takes (user)   // an axe that bites a trunk spends the swing on the tree; otherwise it can still kill   // the axe LANDS on screen ~250 ms into the chop → NOW the hit registers (1 hit = 1 kill; the death poof — 4 sparks + 4 smoke columns together — fires from the creature)
       // SWING — Teardown-style 3 phases over 570 ms (user-tuned): WINDUP raises the tool up-back (0–35%),
       // the STRIKE slams it down to the MIDDLE of the screen (35–55%, accelerating), then it eases back to rest (55–100%).
       const swT = (now - swingStart) / 570;
@@ -262,6 +262,43 @@
       const spd2 = Math.hypot(P.hvx, P.hvz);           // view-model BOB — phase tied to distance walked (smooth at any speed), amplitude eased in/out
       bobAmp += ((P.onGround && !P.fly ? Math.min(1, spd2 / WALK) : 0) - bobAmp) * (1 - Math.exp(-8 * dt));
       bobPh += spd2 * dt * 0.225;                      // slower phase + wide sweep = long smooth strides
+      // ── AND THE GRASS UNDERFOOT (user 2026-08-26: "play this sound anytime the player is walking on grass")
+      // ── off the SAME spd2/onGround/fly the bob above reads, so the loop can never disagree with what the
+      // camera says the player is doing: if the head is bobbing, a step is landing.
+      // A BOX SWEEP, NOT A POINT. The player is 5.2 voxels wide (HW 2.6 at a decimetre scale), so the voxel
+      // holding them up is very often NOT the one under P.x/P.z — measured standing still on level moss, the
+      // centre column read AIR while 21 voxels under the box were solid moss. Same lesson the contact tests
+      // elsewhere record: sweep the footprint or the answer flickers as you walk over uneven ground.
+      // MAJORITY, not any: crossing a stone path with one blade of grass at the edge of the box is a stone
+      // step. floor(P.y) - 1 is the voxel plane the feet rest on, and stepGrassTab is MOSS + OAKMOSS + strands.
+      {
+        const walk9 = P.onGround && !P.fly && !P.swim && spd2 > WALK * 0.25;
+        let gr9 = false, solid9 = 0, grass9 = 0;
+        if (walk9) {
+          // PER COLUMN, SCANNING DOWN — not one flat plane. floor(P.y) - 1 is where the feet rest on level
+          // ground, but the box is 5.2 wide and on a slope part of it overhangs the step below, so a single
+          // plane reads the dirt of a cliff FACE while the player is plainly walking on the grass on top.
+          // Measured: at one spot the plane held 5 solids and none were grass, while the row beneath held
+          // eight moss voxels. So each column reports the first solid at or just below the feet, which is
+          // what "the surface I am standing on" means, and STEP_DOWN bounds it to a step's worth.
+          const fy9 = Math.floor(P.y) - 1;
+          for (let x9 = Math.floor(P.x - HW); x9 <= Math.floor(P.x + HW); x9++) {
+            const xb9 = gwrap(x9, WX);
+            for (let z9 = Math.floor(P.z - HW); z9 <= Math.floor(P.z + HW); z9++) {
+              const zb9 = gwrap(z9, WZ) * WX * WY;
+              for (let d9 = 0; d9 <= STEP_DOWN; d9++) {
+                const y9 = fy9 - d9; if (y9 < 0 || y9 >= WY) break;
+                const id9 = W[xb9 + y9 * WX + zb9];
+                if (id9) { solid9++; if (stepGrassTab[id9]) grass9++; break; }
+              }
+            }
+          }
+          gr9 = solid9 > 0 && grass9 * 2 >= solid9;
+        }
+        STEP_DBG.solid = solid9; STEP_DBG.gr = grass9;
+        STEP_DBG.walk = walk9; STEP_DBG.grass = gr9; STEP_DBG.spd = spd2;
+        stepSurface(gr9, dt, !!P.sprint);
+      }
       // ── AND THE CAMERA TAKES A SHARE OF IT (user 2026-08-19: "add camera bob to the player while he is
       // walking/sprinting. dont apply this to flying") ── off the SAME bobPh/bobAmp the hand uses, so the head
       // and the tool can never drift out of step, and the flying/airborne case is already handled: bobAmp eases
