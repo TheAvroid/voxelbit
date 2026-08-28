@@ -12,7 +12,9 @@
       if (patchN >= PATCHMAX) patchFlush();            // stage full mid-frame → dispatch what we have and keep going (bounded memory, unchanged result)
       patchIdx[patchN++] = ii >> 2;                    // duplicates are fine: patchEncode reads the FINAL word value from W32
       const gx = ii % WX, gy = ((ii / WX) | 0) % WY, gz = (ii / (WX * WY)) | 0;
-      bset.add((gx >> 3) + (gy >> 3) * BX + (gz >> 3) * BX * BY);
+      const b9 = (gx >> 3) + (gy >> 3) * BX + (gz >> 3) * BX * BY;
+      bset.add(b9);
+      if (W[ii]) pgBocc[b9] = 1;                       // this batch LEFT something in that brick — see the rescan below
       stopS[gx + gz * WX] = 0;                         // scanTop cache: this column's top may have moved
       if (track) nvTouch(gx, gz);                      // ── NAVFIELD ── every runtime TERRAIN mutation of W funnels through here, so this is the ONE place the nav column index has to be told anything (chop/dig, till, pickup, snow settle). track=false is precisely the two cases the field must IGNORE: a perched bird's grid stamp only ever overwrites air or needles with cells stampedIdx already excludes, so its solidity contribution is nil before AND after; and the editor's stage plane is a frozen borrow of the world that gets rolled back voxel for voxel.
       if (track) {
@@ -35,10 +37,22 @@
     // that dozed off on ground the player then carved away had nothing else in the game to tell it (see
     // phWakeNear). The box is in WINDOW coords; phWakeNear un-wraps it to world before testing the bodies.
     if (track && phWakeHook && cx1 >= cx0) phWakeHook(cx0, cx1, cy0, cy1, cz0, cz1);
+    // ── THE OCCUPANCY RESCAN IS ONLY NEEDED WHEN THE BATCH EMPTIED EVERYTHING IT TOUCHED (2026-08-27) ──
+    // this walked all 64 rows of every touched brick — up to 128 word reads — to decide ONE bit, however
+    // trivial the edit. Occupancy is "is any cell in this brick non-zero", so a batch that WROTE a non-zero
+    // cell into the brick has already answered it: occupied, no scan possible to disagree. Only a brick
+    // whose every touched cell came out ZERO can have changed in the direction that needs looking, and then
+    // the scan runs exactly as before. Same bit, same bricks, no approximation.
+    // It matters because the perched songbirds re-stamp ~97 birds a frame across ~390 bricks, and both
+    // halves of a re-stamp mostly leave the cell non-zero: the stamp writes a bird voxel, and the un-stamp
+    // RESTORES the foliage it overwrote rather than clearing it (see unstampWorm). MEASURED at 842 birds,
+    // gpuPatch self-time 0.26 ms a frame, the single largest item the band costs.
+    // pgBocc is cleared as each brick is read, so the array never needs sweeping.
     for (const b of bset) {
       const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
       let occ = 0;
-      scan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {
+      if (pgBocc[b]) { occ = 1; pgBocc[b] = 0; }
+      else scan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {
         const rw = (y * WX + z * WX * WY + bx * 8) >> 2;             // whole u32 words — 4 voxels per test
         if (W32[rw] | W32[rw + 1]) { occ = 1; break scan; }
       }

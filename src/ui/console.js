@@ -506,8 +506,13 @@
       // (CMD_LIFE_HAB) rather than a two-place one like the mouse's 'sandoroak', because that is the literal
       // truth: DES_OAKONLY gives them zero of the desert head-count, so /locate bee out on the sand should
       // walk you to the oak wood and not stand you in the dunes watching an empty sky.
+      // ── …AND A WATERSIDE SPECIES IS NEITHER (user 2026-08-27) ── the frog is in DES_OAKONLY for its
+      // head-count, so it would claim 'oakforest' and walk the player into a dry wood. DES_WATER is the
+      // honest tag and it is read FIRST: the fallback then sends them to a lake, and `shore` gives it the
+      // duck's bank walk rather than the fish's, which is where a frog actually is — on the edge, not in it.
       T[nm] = { lo: MAM_END + i * DES_PER, hi: MAM_END + (i + 1) * DES_PER,
-        hab: DES_OAKONLY[nm] ? 'oakforest' : (nm === 'desert_mouse' ? 'sandoroak' : 'desert'), line: nm === 'ant', off: nm === 'ant' ? 12 : 6 }; }
+        hab: DES_WATER[nm] ? 'water' : (DES_OAKONLY[nm] ? 'oakforest' : (nm === 'desert_mouse' ? 'sandoroak' : 'desert')),
+        shore: DES_WATER[nm] ? 1 : 0, line: nm === 'ant', off: nm === 'ant' ? 12 : 6 }; }
     return T;
   };
   const cmdLifeOf = (key) => {                         // name -> band, forgiving about spelling: exact, then alias, then a trailing plural

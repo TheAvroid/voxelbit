@@ -298,7 +298,24 @@
         // while the drive is STILL RUNNING (up = 0.41, contacts 2, bounced 3 voxels back up, fellDown only
         // 140 ms later). Blocking on the drive alone threw that impact away and broke the tree 850 ms late.
         // A body with no topple at all — a crown the support pass separated — has neither flag and is exempt.
-        if ((b.tipArm || b.tipping) && (b.ay ? b.ay[1] : 0) > PH.fellTiltUp) { b.fellPkVy = 0; b.hitT = undefined; b.calmT = tNow; }
+        // ── …AND THE COVER EXPIRES (user 2026-08-27: "I knocked down a birch tree and it did not break") ──
+        // this block had no deadline, and b.tipping does NOT clear when the trunk is over: it clears when the
+        // trunk gets over OR when the drive's hard stop runs out, and that stop is PH.tipMaxMs — 15 SECONDS.
+        // A trunk the drive cannot roll (wedged on a neighbour, blocked by terrain, or paused by
+        // tipBlockDepth) therefore sat at up ~1.0 with tipping set for the full 15 s, and every frame of it
+        // reset BOTH the impact test and the calm dwell. Nothing could break it but the fellBreakMs backstop
+        // at 25 s, which is exactly the report: knocked down, and it does not come apart.
+        // The BIRCH forest is where this shows up because BKCELL is 44 and the crowns are 100+ voxels wide —
+        // the densest stand in the game, so a severed birch leaning onto its neighbour is ordinary, not rare.
+        // What the block is FOR is the trunk's seat on its own CUT FACE, and that is over inside ~2 s
+        // (tipArmMs 1600 + tipHoldMs 380). Past fellStuckMs a trunk still within ~26 deg of vertical is not
+        // going over, it is STUCK, and whatever is holding it up is the thing it landed on — which is the
+        // definition of the arrest this suppression was hiding. So the cover runs off b.tipArmT (stamped at
+        // the cut, never restamped — a drive RE-ARMED by the hung-up path is therefore not re-covered) and
+        // expires. MEASURED over 47 felled birches: every one broke on impact in 1.8-4.8 s and none reached
+        // this deadline, so the healthy path is untouched; a stuck trunk now breaks at ~3.1 s instead of 15+.
+        if ((b.tipArm || b.tipping) && (b.ay ? b.ay[1] : 0) > PH.fellTiltUp
+            && (b.tipArmT === undefined || tNow - b.tipArmT < PH.fellStuckMs)) { b.fellPkVy = 0; b.hitT = undefined; b.calmT = tNow; }
         const down9 = b.vel[1] < 0 ? -b.vel[1] : 0;    // ── IMPACT = THE FALL BEING ARRESTED ── see PH.fellHitVy for the two fells this is measured from
         if (down9 > (b.fellPkVy || 0)) b.fellPkVy = down9;   // the body's OWN peak fall speed, so the test scales with how far it had to drop
         // TOUCHED RECENTLY, not touching THIS FRAME: contacts flicker 0<->2 between frames on a body lying on

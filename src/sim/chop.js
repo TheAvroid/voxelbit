@@ -323,11 +323,27 @@
           if (b2.absorbing) continue;                  // …nor a chunk already on its way to the player (see phMakeRoom)
           if (b2.n > PH.absorbSize) continue;          // never trade a felled log for another one
           if (b2.n < sn) { sn = b2.n; si = q2; } }
-        if (si >= 0 && sn < comp.length) { PH.stats.evicted++; PH.bodies.splice(si, 1); shed9++; continue; }
+        // ── AND SHEDDING IS NOT DESTROYING EITHER ── this spliced the victim outright, which is the one path
+        // in the fell that let real geometry cease to exist: the very next line calls erasing "the last
+        // resort, not the first" and phMakeRoom below has retired its victims since the reclaim work, but
+        // this arm — which runs FIRST, and is the one that actually fires when a stand is being cleared —
+        // never learned it. MEASURED felling 22 birches from one spot: evicted 6, i.e. six live chunks of
+        // already-felled trees deleted out of the world to seat the next trunk. physRetire writes them back
+        // into W at their resting pose (empty cells only, then queued for the support resolver), so a shed
+        // chunk stays on the ground to be chopped instead of vanishing while the player watches.
+        if (si >= 0 && sn < comp.length) { PH.stats.evicted++;
+          if (!physRetire(PH.bodies[si])) PH.stats.evictLost = (PH.stats.evictLost | 0) + 1;
+          PH.bodies.splice(si, 1); shed9++; continue; }
         if (phMakeRoom()) { shed9++; continue; }        // shed an airborne leaf — erasing real geometry is the last resort, not the first
         break;                                         // nothing left to shed: fall through to the requeue below, which still never erases
       }
       if (PH.bodies.length >= PH.maxBodies) {         // still full — REQUEUE, never erase (the invariant: no component of >= 3 voxels is ever destroyed by the support system)
+        // COUNTED, because this arm is invisible from outside and it is the one that turns "I knocked it down"
+        // into "it did not break": the trunk never becomes a body here, so nothing ever arms fellWhole, and the
+        // only thing that can still rescue it is the support resolver forcing a slot some frames later.
+        // fellNoSlot counts every component; fellNoSlotBig counts the tree-sized ones, which are the reports.
+        PH.stats.fellNoSlot = (PH.stats.fellNoSlot | 0) + 1;
+        if (comp.length > PH.fellChunkVox) PH.stats.fellNoSlotBig = (PH.stats.fellNoSlotBig | 0) + 1;
         // This used to delete the whole component outright, which is a silent hole in the world rather
         // than a floater, and it stranded whatever had been resting on it. The cells stay exactly where
         // they are and go to the resolver instead: it retries every frame, and after SUP_BLOCK_MAX blocked

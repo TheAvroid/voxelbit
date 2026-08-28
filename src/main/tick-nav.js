@@ -271,7 +271,7 @@
       }
       if (BK.dz > RB) { BK.trees = BK.scan; BK.scan = []; BK.cx = BK.scx; BK.cz = BK.scz; BK.scanning = false; }
     };
-    let cardCandF = -1;
+    let cardCandF = -1, cardCandI = 0;                 // …and the SWEEP CURSOR into the ord-sorted candidate list (see findPineCrown)
     // ── PROCEDURAL BUTTERFLIES ── a butterfly WANDERS, so unlike a perched bird it cannot be pinned to a voxel.
     // What is procedural is its HOME: a deterministic point per 128-vox cell, ~half of cells occupied. Slots activate
     // the nearest free homes, the butterfly is leashed loosely to its home, and it recycles when the HOME leaves
@@ -530,6 +530,55 @@
     };
     const CARD_PER_TREE = 3;                           // several birds to a pine, but not a roost — unlimited clumped them and the spread measured worse
     const cardCand = [];
+    // ── THE TREE GRIDS ARE ENUMERATED INCREMENTALLY (user 2026-08-27: "the frames vary wildly when running
+    // through the world") ── buildCardCand walks a CARD_KEEP disc of BOTH cell grids — ~2,400 pine cells at
+    // TCELL 45 and ~440 oak cells at OKCELL 112 — and it runs on every frame in which any bird needs a perch,
+    // which while you are moving is every frame. Each cell is a treeAt/oakAt call: an ihash, then desertM,
+    // oakM and birchM, then H() and nearCave. That is why riverAt was 7.9% of the profile while running and
+    // nothing at all while standing still.
+    //
+    // The expensive half of that question does not change as you walk. treeAt and oakAt read ihash, the biome
+    // masks and the spawn constants and NOTHING ELSE — no W, no rect, no player — so for a loaded world they
+    // are pure functions of the cell, and a cached answer is not an approximation of the call, it IS the call.
+    // What genuinely changes per frame is the cheap half: distance from the player, the rect margin, and
+    // ownership. Those stay where they are and are re-evaluated every time, so the candidate list is exact.
+    // The store is a sliding toroidal window: a cell maps to one entry by its low bits, and the entry carries
+    // the cell it was computed for, so a stale wrap is a miss and recomputes rather than answering for the
+    // wrong tree. Walking away and back re-derives; there is no eviction pass and no allocation in steady state.
+    // Nothing about WHICH trees are offered, in what order, or how many perches each carries is altered —
+    // which is the whole point, because those are what the flock's placement and spacing are made of.
+    const TCW = 64, TCM = TCW - 1;                     // 64 > the 49-cell pine span; power of two so the wrap is a mask
+    const tcX = new Int32Array(TCW * TCW).fill(0x7fffffff), tcZ = new Int32Array(TCW * TCW).fill(0x7fffffff);
+    const tcV = new Array(TCW * TCW).fill(null);
+    const ocX = new Int32Array(TCW * TCW).fill(0x7fffffff), ocZ = new Int32Array(TCW * TCW).fill(0x7fffffff);
+    const ocV = new Array(TCW * TCW).fill(null);
+    const treeAtC = (cx, cz) => { const i = (cx & TCM) + (cz & TCM) * TCW;
+      if (tcX[i] !== cx || tcZ[i] !== cz) { tcX[i] = cx; tcZ[i] = cz; tcV[i] = treeAt(cx, cz); }
+      return tcV[i]; };
+    const oakAtC = (cx, cz) => { const i = (cx & TCM) + (cz & TCM) * TCW;
+      if (ocX[i] !== cx || ocZ[i] !== cz) { ocX[i] = cx; ocZ[i] = cz; ocV[i] = oakAt(cx, cz); }
+      return ocV[i]; };
+    // …and the ONE thing that can move a tree under a loaded world: H re-rolls the spawn, and treeAt/oakAt
+    // both carve a clearing and a sight-line corridor around it. sim/player.js calls this from rerollSpawn.
+    cardCacheClear = () => { tcX.fill(0x7fffffff); tcZ.fill(0x7fffffff); ocX.fill(0x7fffffff); ocZ.fill(0x7fffffff); };
+    // ── IS THE CACHED ENUMERATION STILL THE SAME ANSWER ── the memoisation rests on treeAt/oakAt being pure
+    // functions of the cell for a loaded world. This walks the same disc buildCardCand walks and compares the
+    // cached answer against a FRESH call, field by field. A mismatch means that claim is wrong and the flock
+    // is being placed off trees that are not there. __vb.perchCacheAudit().
+    cardCacheAudit = () => {
+      const R = Math.ceil(CARD_KEEP / TCELL), c0x = Math.floor(P.x / TCELL), c0z = Math.floor(P.z / TCELL);
+      const RO = Math.ceil(CARD_KEEP / OKCELL), o0x = Math.floor(P.x / OKCELL), o0z = Math.floor(P.z / OKCELL);
+      let cells = 0, trees = 0, bad = 0, ex = null;
+      const same = (a, b) => (!a && !b) || (!!a && !!b && a.tx === b.tx && a.tz === b.tz && a.wx === b.wx
+        && a.wz === b.wz && a.k === b.k && a.rot === b.rot && a.sink === b.sink);
+      for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) { const cx = c0x + dx, cz = c0z + dz;
+        cells++; const A = treeAtC(cx, cz), B = treeAt(cx, cz); if (A) trees++;
+        if (!same(A, B)) { bad++; if (!ex) ex = { grid: 'pine', cx, cz }; } }
+      for (let dz = -RO; dz <= RO; dz++) for (let dx = -RO; dx <= RO; dx++) { const cx = o0x + dx, cz = o0z + dz;
+        cells++; const A = oakAtC(cx, cz), B = oakAt(cx, cz); if (A) trees++;
+        if (!same(A, B)) { bad++; if (!ex) ex = { grid: 'oak', cx, cz }; } }
+      return { cells, treesFound: trees, mismatched: bad, example: ex };
+    };
     const buildCardCand = () => {
       cardCand.length = 0;
       const owned = new Set();                         // (tree, index) pairs a slot already holds
@@ -537,7 +586,7 @@
       const R = Math.ceil(CARD_KEEP / TCELL);
       const c0x = Math.floor(P.x / TCELL), c0z = Math.floor(P.z / TCELL);
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
-        const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
+        const tr = treeAtC(c0x + dx, c0z + dz); if (!tr) continue;
         if (tr.tx <= rect.xlo + 10 || tr.tx >= rect.xhi - 10 || tr.tz <= rect.zlo + 10 || tr.tz >= rect.zhi - 10) continue;
         const ddx = tr.tx - P.x, ddz = tr.tz - P.z, d2 = ddx * ddx + ddz * ddz;
         if (d2 > CARD_KEEP * CARD_KEEP || d2 < CARD_IN * CARD_IN) continue;   // …and CARD_IN is the floor that keeps a bird from perching where you can watch it arrive
@@ -554,7 +603,7 @@
       const RO = Math.ceil(CARD_KEEP / OKCELL);
       const o0x = Math.floor(P.x / OKCELL), o0z = Math.floor(P.z / OKCELL);
       for (let dz = -RO; dz <= RO; dz++) for (let dx = -RO; dx <= RO; dx++) {
-        const tr = oakAt(o0x + dx, o0z + dz); if (!tr) continue;
+        const tr = oakAtC(o0x + dx, o0z + dz); if (!tr) continue;
         const n = birdsOnOak(tr.wx, tr.wz, tr.k); if (!n) continue;   // asked FIRST: the bush tier scores 0 and is then never geometry-tested at all
         const g = oakPerchGeo(tr.k); if (!g) continue;
         const mg = g.rad + 2;                          // …and the rect margin is the CROWN's, not the pine's flat 10: the walk samples out to rad, and past the generated rect that reads stale toroidal window data and could perch a bird on a crown that is not there
@@ -579,6 +628,19 @@
         if (d2 > CARD_KEEP * CARD_KEEP || d2 < CARD_IN * CARD_IN) continue;   // …and CARD_IN is the floor that keeps a bird from perching where you can watch it arrive
         for (let i = 0; i < n; i++) if (!owned.has(twx + ',' + twz + ',' + i)) cardCand.push({ tx: twx, tz: twz, k: tk, bk: 1, bi: i, n, d2 , ord: ihash(twx * 397 + 7, twz * 389 + 23) });
       }
+      // ── SORTED ONCE, NOT SEARCHED TWELVE TIMES ── findPineCrown wants the candidates in ord order (the
+      // hash-order scatter that stops the whole pool being spent on the nearest trees). It got there by
+      // scanning the WHOLE list for the minimum on every one of its 12 tries, and the list is the entire
+      // perch supply in a CARD_KEEP disc — measured at 1,670 in the birch wood. That is ~20,000 comparisons
+      // per bird placed, and while the player is MOVING several birds are re-placed every frame, which is
+      // where it lands on the frame time: measured running at 60 vox/s, the songbird band took the 1% low
+      // from 128 fps to 79 and tick max from 10.6 ms to 30.8.
+      // One sort per build gives the identical sequence — ord is a stable per-tree hash — and turns each try
+      // into a cursor step. The cursor resets HERE, with the list, so consumption stays per frame exactly as
+      // the old pop did: a cursor that outlived the frame let every slot exhaust the list and re-walk the
+      // grids on its own, which is 421 grid walks in one frame (measured: 1,569 ms, zero birds placed).
+      cardCand.sort((a, b) => a.ord - b.ord);
+      cardCandI = 0;
     };
     // == PERCHES THE PLAYER HAS CLEARED == the clash test below only sees ACTIVE slots, and a slain bird has init=false, so the perch it just
     // vacated became the NEAREST free candidate again and the next spare slot took it — kill a bird and another lands in the same spot (user 2026-08-06).
@@ -586,16 +648,13 @@
     // Capped so a long session cannot grow it without bound; the cap is far past what anyone shoots in one sitting.
     const findPineCrown = (selfWk) => {                // the NEAREST procedural bird that no slot holds yet — PINE **or** OAK now; the name is what tick-creatures.js calls
       if (cardCandF !== frame) { cardCandF = frame; buildCardCand(); }
-      for (let t = 0; t < 12 && cardCand.length; t++) {
+      for (let t = 0; t < 12 && cardCandI < cardCand.length; t++) {
         // HASH-ORDER SCATTER, not nearest-first (user 2026-08-18). The old comment here said the pool was
         // "always spent on the forest around you" — which is exactly the complaint: 421 perch slots, ~64% of
         // the whole creature pool, all spent on the nearest trees. The perch supply is deliberately larger than
         // CARD_N (see sim/life/slots.js), so whichever end of it goes unspent is the end that looks empty, and
         // nearest-first guarantees that end is the far one. One key per TREE so a tree's perches stay together.
-        let k = 0;
-        for (let q = 1; q < cardCand.length; q++) if (cardCand[q].ord < cardCand[k].ord) k = q;
-        const c = cardCand[k];
-        cardCand[k] = cardCand[cardCand.length - 1]; cardCand.pop();
+        const c = cardCand[cardCandI++];             // ord-sorted at build time, so the cursor IS the repeated min-scan it replaces
         if (cardSlainPerch.has(cardPerchKey(c.tx, c.tz, c.bi))) continue;   // a bird was killed on this branch — leave it empty
         const cr = c.k < 0 ? pineEdgePerch(c.tx, c.tz, c.bi, c.n)
           : c.bk ? birchEdgePerch(c.tx, c.tz, c.k, c.bi, c.n)

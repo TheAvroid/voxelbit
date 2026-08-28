@@ -1,11 +1,13 @@
   // ── input ──────────────────────────────────────────────────────────────────
-  let cmpOn = true; try { cmpOn = localStorage.getItem('vb_cmp') !== '0'; } catch (e) {}   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
+  let cmpOn = false; try { cmpOn = localStorage.getItem('vb_cmp') === '1'; } catch (e) {}   // ── DEFAULT OFF (user 2026-08-26: "make the compass off by default") ── the === '1' form is what makes OFF the default, the same shape showCoords/showTime use   // compass on/off, persisted, default ON — declared up here with vigOn for the same TDZ reason
   let lightMode = false;                               // L: cursor released for the light panel only — no esc menu, no camera drift
   let locked = false;
   // lockEl (the esc menu) stays hidden at boot — after loading, the overlay is removed to reveal the live game and a
   // click on the canvas takes control; the esc menu only appears on the first pointer-unlock (pressing Esc mid-game).
   const CDPTEST = location.search.includes('cdp');   // headless test harness: pointer lock in headless Chrome still ClipCursor-pins the REAL Windows cursor to the hidden window — never request it under test
   const LIFE_TRACE = !location.search.includes('oldlife');   // ── DYNAMIC LIFE ── trace-injected creature rendering (full SVGF path); ?oldlife falls back to the analytic composite path for A/B
+  const CMD_KEY = false;                              // T opens the command line — off (user 2026-08-27); the console and __vb.cmd() are untouched
+  let CARD_FORCE = -1;                                // __vb.cardN(n): pin the perched-songbird count for an A/B; -1 follows the biome
   let lifeDbg = 0;                                     // life debug view (u.lifeCfg.x) — __vb.lifedbg(mode): 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO
   // ── COMPASS ── a scrolling heading ribbon at top centre. yaw 0 faces +Z, so N=+Z, E=+X, S=-Z, W=-X and
   // turning right walks the ribbon left. Three full turns are laid out so the wrap seam is never on screen.
@@ -262,7 +264,10 @@
     // Closing with Y again takes the cursor back, so the key is the whole round trip.
     if (ED.on && e.code === 'KeyY') { setLightMode(!!edSzToggle()); return; }
     if (!locked) return;
-    if (e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }
+    // ── T NO LONGER OPENS THE COMMAND LINE (user 2026-08-27) ── the console itself is untouched: ui/console.js
+    // still builds it, cmdShow/cmdRun/cmdMsg are all still exported, and __vb.cmd(line) still runs any command,
+    // which is how the test harness drives it. Only the key is gone. Set CMD_KEY true to put it back.
+    if (CMD_KEY && e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }
     // ── THE STONE AGE BENCH OWNS THE KEYBOARD WHILE IT IS OPEN (user 2026-08-19) ── placed above every other
     // binding and returning, for the reason the command line above does the same: while a chooser is up, the
     // arrow keys must cycle IT and not do whatever else they are bound to. Enter commits, Escape backs out.
@@ -303,9 +308,20 @@
     // ── AND DROPPING OUT OF FLY COSTS NOTHING ── switching fly OFF in mid-air starts a real fall, and the
     // fall-damage tracker would bill the player for the whole descent. Pressing F is a mode change, not a
     // mistake, so it grants ONE free landing, cleared the moment the feet touch down.
-    if (e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; vitReset(); if (!P.fly) { P.noFall = 1; P.fallPk = undefined; } }   // toggle fly (user re-added the F keybind 2026-07-22)
+    if (binds.fly && e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; vitReset(); if (!P.fly) { P.noFall = 1; P.fallPk = undefined; } }   // toggle fly (user re-added the F keybind 2026-07-22, removed it 2026-08-27 and brought it back the same day)
     // R-key recording is BACK ON with the #veBtn button (user 2026-08-02, reversing the 2026-07-23 disable).
     if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
+    // ── Y CLEARS THE PERCHED SONGBIRDS (user 2026-08-27) ── the count is already a pinnable number:
+    // CARD_FORCE is what __vb.cardN() drives and main/tick-life.js reads it ahead of the biome term, so this
+    // is the same lever the A/B used, on a key. -1 hands the band back to the biome (421 in most woods, twice
+    // that in the birch); 0 asks for none.
+    // It does NOT unstamp anything itself, and it must not: the birds go through the ordinary surplus path in
+    // main/tick-creatures.js, which shrinks each one over 0.7 s and clears its grid stamp on the way out. So
+    // the wood empties over about a second instead of a whole flock vanishing between two frames, and every
+    // invariant that path maintains — the stamp index, the support queue, the perch bookkeeping — is kept.
+    // Guarded on !ED.on because the asset editor already owns Y (the size/light toggle two hundred lines up,
+    // which returns before this and so is unaffected); this is the same shape as the H and P bindings below.
+    if (binds.birds && e.code === binds.birds && !ED.on) { CARD_FORCE = CARD_FORCE < 0 ? 0 : -1; }   // Y IS UNBOUND (user 2026-08-27) — binds.birds is gone, so this never fires; __vb.cardN(0) / (-1) is the toggle now. Restore the DEFBINDS entry to put the key back
     if (e.code === 'KeyE' && e.shiftKey && !ED.on && DUAL_ON) { dualOn = !dualOn; }   // …and DUAL_ON gates the whole binding (user 2026-08-20: dual wield removed from play, code kept) — see ui/achievements.js   // SHIFT+E — SPLIT THE STACK INTO BOTH HANDS (user 2026-08-20: "ONLY enable dual wield if the user presses shift + e"; it was plain E earlier the same day). The modifier is what frees plain E to close the crafting bench above — one key, two meanings, told apart by shift rather than by mode. Guarded on !ED.on because the asset editor already owns E for its move-gizmo (see the ED.on block below), and a key cannot mean two things at once in the same mode.
     if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
     if (e.code === 'KeyP') { snowOn = !snowOn;               // P — toggle the snow storm (user); mirrors the settings snow button EXACTLY so the two stay in sync

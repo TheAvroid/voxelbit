@@ -384,7 +384,8 @@
     SPWX = Math.round((Math.random() - 0.5) * 400000);
     SPWZ = Math.round((Math.random() - 0.5) * 400000);
     let g = 0;
-    while ((H(SPWX, SPWZ) <= WL + 6 || nearCave(SPWX, SPWZ)) && g++ < 6000) SPWX += 16;   // valid land, off water/gorges/SAND (H and nearCave are both deterministic → work anywhere). WL + 6 is the quicksand guard — see the note in world/build.js
+    while ((H(SPWX, SPWZ) <= WL + 6 || nearCave(SPWX, SPWZ)) && g++ < 6000) SPWX += 16;
+    cardCacheClear();                                   // the perch enumeration caches treeAt/oakAt per cell, and BOTH carve a clearing + a sight-line corridor around the spawn — so moving the spawn moves the trees those answers were computed for   // valid land, off water/gorges/SAND (H and nearCave are both deterministic → work anywhere). WL + 6 is the quicksand guard — see the note in world/build.js
     respawn();                                          // teleport + maybeRecenter regenerates the world at the new spawn
     spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
     console.log('[vb] SPAWN RESET [H] → paste this over line ~156 to BAKE it:   ' + spawnBake);

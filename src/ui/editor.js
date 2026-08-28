@@ -843,7 +843,11 @@
   // restored VERBATIM from 4089eb6, the last commit that carried it: the same weighted mix and the same three
   // exhibits at the same coordinates. The birch_forest one-liner that replaced it on 2026-08-23 is gone.
   const ED_STAGE = { path: 'assets/life/frog.vox', name: 'frog',
-    mix: [{ seq: 'hop', bake: FROG_HOP_BAKE, w: 50 },
+    // 50 -> 40 (user 2026-08-27) so the stage and the field draw from the same distribution. The world adds a
+    // fourth cycle, the turning hop, at 10; it is not staged here because a turn is a change of HEADING and the
+    // stage has none to change — it would be the hop again under another name. Over the three cycles the editor
+    // can actually show, these weights and the world's FROG_MIX normalise to the same 44.4 / 44.4 / 11.1.
+    mix: [{ seq: 'hop', bake: FROG_HOP_BAKE, w: 40 },
           { seq: 'ribbet', bake: FROG_RIBBET_BAKE, w: 40 },
           { seq: 'tongue', bake: FROG_TONGUE_BAKE, w: 10 }],
     // ── AND THE STAGE IS THE FROG ALONE (user 2026-08-26: "remove the flies, koi and ladybug from the asset

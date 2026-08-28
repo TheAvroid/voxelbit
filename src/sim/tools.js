@@ -634,7 +634,19 @@
     if (voxRay(P.x, smoothEye, P.z, vx, vy, vz, CHOP_REACH, (x2, y2, z2) => {
       if (y2 < 1 || y2 >= WY) return false;
       if (aimBody && phBodyIdAt(x2, y2, z2) && bodyTool(phBodyIdAt(x2, y2, z2)) && phChopBody(x2, y2, z2, C_RAD, C_LAST, C_BITE, okBody)) return true;   // the crosshair must be ON a body and the sampled voxel INSIDE one — the same exactness the main march gets from its bAt gate. Ungated, this took a 15-voxel bite out of any felled log within radius 10 of ANY voxel on a 107-long ray.   // …and a reduced bite off a fallen trunk still counts   // still the aimed material only: the whole point of the safety net is a notched TRUNK, and letting it fall back to needles is the bug it would be papering over
-      if (aimWood && S && physChopAt(x2, y2, z2, C_RAD, S, C_LAST, C_BITE, isWood).hit) return true;   // …still wood only, for the same reason the main march is
+      // ── AND THIS PATH RE-RESOLVES TOO (user 2026-08-27: "when the player knocks down one birch tree, another
+      // one falls?") ── it was handing physChopAt the LATCHED S, and physChopAt both carves in that shape's
+      // frame and settles it (sim/chop-tree.js). S is taken at the first column the march finds a tree in,
+      // which is deliberately open air short of the bole, and in a birch stand the crown the ray enters first
+      // is routinely a different tree from the trunk it ends on — BKCELL 44 against footprints to 61, and 119
+      // overlapping pairs measured in one stand. So the axe could carve and topple the NEIGHBOUR while the
+      // tree under the crosshair was never touched. The decor branch (~535) and the stump branch (~620) were
+      // both given this re-resolve when that bug was first found; this one, the last-resort bite, was missed.
+      // Gated on the marched voxel actually BEING wood so the extra treeShapeAt runs where a carve is really
+      // about to happen and not once per voxel down the whole ray — the same condition the branch below uses.
+      if (aimWood && woodTab[W[gwrap(x2, WX) + y2 * WX + gwrap(z2, WZ) * WX * WY]]) {
+        const Sl = treeShapeAt(x2, z2) || S;           // the column the bite comes out of; the latched shape only as a fallback, so reach is unchanged
+        if (Sl && physChopAt(x2, y2, z2, C_RAD, Sl, C_LAST, C_BITE, isWood).hit) return true; }   // …still wood only, for the same reason the main march is
       if (cut && aimWood && woodTab[W[gwrap(x2, WX) + y2 * WX + gwrap(z2, WZ) * WX * WY]] && phChopDecor(x2, y2, z2, C_RAD, C_LAST, (v) => !!woodTab[v], PH.chopCourse)) {
         const Sf = treeShapeAt(x2, z2); if (Sf) phTreeSettle(Sf);   // …the same settle the stump path above now runs, and for the same reason
         CHOP_AIM.path = 'last'; CHOP_AIM.woodHit = axe; return true; }   // …and wood-only here too   // …and the last splinters of a stump   // same rule as the main pass: the crosshair has to be on wood

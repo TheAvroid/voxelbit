@@ -79,8 +79,18 @@
                     // preference: a saved vb_vol is written by the slider and re-read there, so a player who turns it down
                     // still gets their setting for that session — this only decides where a fresh load begins.
   // ── MOUSE LOOK SENSITIVITY ── slider 0..100% maps linearly onto the yaw/pitch multiplier; 50% == the tuned default (0.0022 rad/px), 100% == 2x (persisted vb_sens)
-  let lookSens = 0.3; try { const v = parseFloat(localStorage.getItem('vb_sens')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
-  const lookMul = () => 0.0044 * lookSens;             // 0.5 → 0.0022; keeps the historical feel dead-centre on the slider
+  // KEY BUMPED with the re-centring: a saved vb_sens is a number on the OLD scale, where 0.3 meant the
+  // shipped feel. Reinterpreting it against the new constant would silently make everyone slower, so the old
+  // key is abandoned and the new default (0.5, the identical feel) applies once. Anything set from here on
+  // persists to vb_sens2 exactly as before.
+  let lookSens = 0.5; try { const v = parseFloat(localStorage.getItem('vb_sens2')); if (v >= 0 && v <= 1) lookSens = v; } catch (e) {}   // BASE sensitivity 30% (user); a saved vb_sens still overrides
+  // ── THE SLIDER WAS RE-CENTRED, THE FEEL WAS NOT (user 2026-08-26: "make the current 30% sensitivity at
+  // 50%. its still the current 30 but we're moving the 30 to the 50 marker") ── the shipped feel was slider
+  // 30 against a 0.0044 constant, i.e. 0.00132 rad/px. Putting that same number on the 50 marker is one
+  // division: 0.00132 / 0.5 = 0.00264. So the default moves 0.3 -> 0.5 and the constant 0.0044 -> 0.00264,
+  // and lookMul() returns exactly what it returned before. NOTE this rescales the whole slider, so the top
+  // end is 0.00264 rather than 0.0044 — that is the arithmetic of moving the centre, not a separate choice.
+  const lookMul = () => 0.00264 * lookSens;            // 0.5 → 0.00132, which IS the old 30% — see above
   const sndReg = [];
   const SND_GAIN = 1.25;                               // master loudness trim — every registered sound, +25% overall (user 2026-07-17); clamp keeps HTMLAudio's 0..1 legal
   // ── ONE LEVEL FUNCTION ── three places used to spell the same product out by hand (register, re-apply,

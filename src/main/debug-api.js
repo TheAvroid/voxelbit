@@ -245,7 +245,7 @@
         ms: Math.round(performance.now() - t0) };
     },   // the loaded window in WORLD coords. Sampling voxels outside it reads a ring-buffer slot holding a different world location entirely — which reads as forest terrain appearing in the desert
     desBand() { const o = []; for (let j = MAM_END; j < DES_END; j++) { const B = wbf[j];
-      o.push({ j, sp: ((j - MAM_END) / DES_PER) | 0, idx: (j - MAM_END) % DES_PER, init: !!(B && B.init), kind: B ? (B.kind | 0) : -1 }); }
+      o.push({ j, sp: ((j - MAM_END) / DES_PER) | 0, idx: (j - MAM_END) % DES_PER, init: !!(B && B.init), kind: B ? (B.kind | 0) : -1, drawn: !!(B && B.init && lifeIsDrawn(j)) }); }   // drawn = it won one of the trace's drop slots THIS frame. A slot that goes on and off is a creature that goes on and off, which is the only way a trace-injected animal can flicker
       return { species: DESERTS.map((d) => d.name + '@' + d.item0 + 'x' + d.n), nDesert: (typeof nDesert === 'undefined' ? 'UNDEFINED' : nDesert), perSpecies: (typeof nDesertOf === 'undefined' ? 'OUT-OF-SCOPE (tick-local)' : DESERTS.map((d, i) => d.name + ':' + nDesertOf(i))),
         home: DESERTS.map((d) => d.name + ':' + (DES_OAKONLY[d.name] ? 'oak x' + DES_OAKONLY[d.name] : 'sand')),   // the band is two biomes now — an oak-only species must read 0 in perSpecies and its whole count here, and a sand species must read the reverse
         DES_N, DES_PER, MAM_END, DES_END, pool: DES_END, slots: o }; },   // why a desert-band slot is or is not live
@@ -288,6 +288,7 @@
       }
       return { birches: trees, bolesInsideRock: inside, examples: out };
     },
+    drawnOf(j) { const B = wbf[j | 0]; return B && B.init ? !!lifeIsDrawn(j | 0) : null; },   // did THIS slot win one of the trace's drop slots this frame — the one question that separates "the creature is not there" from "it is there and not being drawn"
     birchModel(k) { const m = BIRCHV[k]; return m ? { sx: m.sx, sy: m.sy, sz: m.sz, n: m.vox.length, tcx: m.tcx, tcy: m.tcy, tbz: m.tbz } : null; },   // tcx/tcy = the TRUNK centroid, which is what stampBirch seats on (assets/bow.js birchTrunkC)
     birchAudit(cx, cz) {                            // stamp the model in memory and diff it against the world: what did the world LOSE?
       const t = birchAt(cx, cz); if (!t) return null;
@@ -350,6 +351,14 @@
     bm(x, z) { return +birchM(x, z).toFixed(3); },   // …and the BIRCH band, between the pine forest and the sand. Same shape as dm/om so a band sweep can read all three
     dm(x, z) { return +desertM(x, z).toFixed(3); },   // biome weight at a world point: 0 = pine forest, 1 = open desert. The gates all key on this, so a test that wants to say "in the desert" has to be able to ask
     om(x, z) { return +oakM(x, z).toFixed(3); },
+    // ── ALL FOUR BAND WEIGHTS AT A POINT ── `om` above answers only the oak, and the fuller three-band tap
+    // that used to live up at the desBand group is DEAD CODE: it is an earlier `om` key on this same object
+    // literal, so this one silently overrides it. Rather than change what `om` returns and break whatever
+    // reads it, this is the honest four-value answer, and it is what a biome question actually needs — 'not
+    // the pine forest' is a statement about oak AND birch AND desert together, not about any one of them.
+    bioAt(x, z) { return { oak: +oakM(x, z).toFixed(3), birch: +birchM(x, z).toFixed(3),
+      desert: +desertM(x, z).toFixed(3), cherry: +cherryM(x, z).toFixed(3),
+      pine: (oakM(x, z) < 0.5 && birchM(x, z) < 0.5 && desertM(x, z) < 0.5) ? 1 : 0 }; },   // the same 'absence of every named band' the pine arm of gotoBiome uses
     cm(x, z) { return +cherryM(x, z).toFixed(3); },
     // Read-only twin of the twig branch of tryPickup: what WOULD come away at this voxel, without removing it.
     // Exists because the pickup itself is driven by the view ray and a twig is an 8x5x3 object on a forest floor —
@@ -712,9 +721,38 @@
     // is never in the DOM, so there is no querySelector route to it — this is the only way to see it.
     stepDbg() { return { ...STEP_DBG, dur: +(stepGrass.duration || 0).toFixed(3), loop: !!stepGrass.loop,
       t: +(stepGrass.currentTime || 0).toFixed(2), vol: +(stepGrass.volume || 0).toFixed(4) }; },
+    histStat() { return { ...HIST_DBG, pct: HIST_DBG.frames ? +(100 * HIST_DBG.resets / HIST_DBG.frames).toFixed(1) : 0 }; },
+    // ── WHY IS THIS FELLED TRUNK STILL IN ONE PIECE ── the report "I knocked over a birch and it did not
+    // break into chunks" has now survived two audits (~90 fells across both carve paths, dense clusters,
+    // rapid back-to-back, a saturated pool) without reproducing, so this exists to be called AT the moment
+    // it happens instead of hunted for. It lists every body still carrying fellWhole and, for each, the
+    // state of the three triggers in sim/solver.js that could break it — so the answer is read off rather
+    // than inferred. `blocked` names the ONE thing standing in the way, in the order the solver tests them.
+    fellNow() {
+      const t = performance.now();
+      return PH.bodies.filter((b) => b.fellWhole).map((b) => {
+        const up = b.ay ? b.ay[1] : 0, age = t - b.born;
+        const armedUpright = (b.tipArm || b.tipping) && up > PH.fellTiltUp;
+        const stuckCover = armedUpright && (b.tipArmT === undefined || t - b.tipArmT < PH.fellStuckMs);
+        const touched = t - (b.cT === undefined ? 0 : b.cT) < PH.fellHitHoldMs;
+        const down = b.vel[1] < 0 ? -b.vel[1] : 0;
+        const reallyFell = (b.fellPkVy || 0) > PH.fellHitVy;
+        return { vox: b.n, ageMs: Math.round(age), up: +up.toFixed(3),
+          tipArm: b.tipArm | 0, tipping: b.tipping | 0, contacts: b.contacts | 0, sleeping: !!b.sleeping,
+          peakFallVy: +(b.fellPkVy || 0).toFixed(1), downVy: +down.toFixed(1), touchedRecently: touched,
+          hitArmed: b.hitT !== undefined, calmForMs: b.calmT === undefined ? null : Math.round(t - b.calmT),
+          shatterTries: b.shatTry | 0,
+          blocked: stuckCover ? 'still seated on its own cut face (tipArm/tipping + upright, inside fellStuckMs)'
+            : !reallyFell ? 'never fell fast enough to arm the impact test (peak < fellHitVy)'
+            : !touched ? 'no contact within fellHitHoldMs — still airborne'
+            : (b.shatTry | 0) > 0 ? 'IMPACT SEEN, but phShatterTree cannot find room for the pieces'
+            : 'impact conditions met — should break within fellHitMs' };
+      });
+    },
     phStat() { const s = PH.stats; let big = 0; for (const b of PH.bodies) if (b.n > 1000) big++;
       return { buildMs: s.buildMs || 0, buildN: s.buildN | 0, buildVox: s.buildVox | 0,
         shatterMs: s.shatterMs || 0, shatterN: s.shatterN | 0, shatterVox: s.shatterVox | 0, shatterRefused: s.shatterRefused | 0, shatterCoarse: s.shatterCoarse | 0,
+        fellNoSlot: s.fellNoSlot | 0, fellNoSlotBig: s.fellNoSlotBig | 0, evicted: s.evicted | 0,   // the three silent arms: a severed component that got no slot, and a live body deleted to make one
         fellBaked: s.fellBaked | 0, stepK: s.stepK | 0, stepKMax: s.stepKMax | 0, accMs: s.accMs || 0,
         catchUpFrames: s.catchUpFrames | 0, stepFrames: s.stepFrames | 0, stepMs: s.stepMs,
         breakWhy: s.breakWhy || null, breakAge: s.breakAge | 0, breakN: s.breakN | 0,
@@ -1082,6 +1120,12 @@
     itemName(id) { return ITEM_NAMES[(id | 0)] || null; },   // what a hotbar slot is actually holding, by name
     itemVox(id) { const it = itemsRef && itemsRef[(id | 0) - 1]; if (!it) return -1;   // how many cells are actually filled — a slide that pushed voxels off the grid would show up here
       let n = 0; for (const c of it.cells) if (c) n++; return n; },
+    itemSlices(id) { const it = itemsRef && itemsRef[(id | 0) - 1]; if (!it || !it.cells) return null;   // filled voxels per DEPTH slice. A scene-graph .vox crops every frame to its own content, so itemEdges is always [0, d-1] and cannot say WHERE inside the frame the body sits — which is the whole question when a frame grows a tongue in front of it and the trace centres the box. A thin slice is tongue, a fat one is body.
+      const o = [];
+      for (let y = 0; y < it.d; y++) { let n = 0;
+        for (let z = 0; z < it.h; z++) for (let x = 0; x < it.w; x++) if (it.cells[x + y * it.w + z * it.w * it.d]) n++;
+        o.push(n); }
+      return o; },
     itemDims(id) { const it = itemsRef && itemsRef[(id | 0) - 1]; return it ? [it.w, it.d, it.h] : null; },   // an item's grid — the numbers the shader was compiled with, so a test can prove a turn left them alone
     arrowRot(r, p) { if (r) ARROW_ROT = r.map((n) => (n | 0) & 3);                    // the arrow's own orientation + PER-FRAME offsets on the bow — the top-right panel, from a test
       if (p) ARROW_POS = (typeof p[0] === 'number' ? ARROW_POS_DEF().map(() => arrowPosClamp(p)) : ARROW_POS_DEF().map((q, i) => arrowPosClamp(p[i] || [0, 0, 0])));
@@ -1692,13 +1736,50 @@
     stampIds(a, b) { const s = new Set(); for (let j = a; j < b; j++) { const B = wbf[j];   // ids a grid-stamped creature band currently has in the world
       if (B && B.sN) for (let i = 0; i < B.sN; i++) s.add(W[B.sCells[i]]); } return [...s].sort((p, q) => p - q); },
     rd() { return { renderDist, half: HALF, windowX: WX }; },   // fixed view-distance tap
+    // ── IS THE STAMP INDEX TELLING THE TRUTH ── stampedIdx is consulted by nav, the support resolver, the
+    // snow settle and the floater audits, and none of them can tell a stale entry from a real one. This
+    // walks the live grid-stamped creatures and checks both directions: every cell they occupy is IN the
+    // index (a miss makes a bird look like terrain to the severed-voxel sweep), and the index holds nothing
+    // beyond them (size must equal the total). It is the acceptance test for the open-addressed rewrite.
+    // ── DOES THE BRICK BITMASK MATCH THE WORLD ── the occupancy bit is what lets the tracer skip empty
+    // space, so a stale one is either invisible geometry or a phantom wall, and nothing else in the game
+    // would report it. Recomputes every brick in a box around the player straight from W32 and diffs it
+    // against `bricks`. The acceptance test for gpuPatch's rescan skip (world/patch.js).
+    brickAudit(r) {
+      const R = Math.min(64, r === undefined ? 24 : r | 0);
+      const b0x = (gwrap(Math.round(P.x), WX) >> 3), b0y = (Math.round(P.y) >> 3), b0z = (gwrap(Math.round(P.z), WZ) >> 3);
+      let checked = 0, wrongOcc = 0, wrongEmpty = 0, ex = null;
+      for (let dz = -R; dz <= R; dz++) for (let dy = -6; dy <= 6; dy++) for (let dx = -R; dx <= R; dx++) {
+        const bx = ((b0x + dx) % BX + BX) % BX, by = b0y + dy, bz = ((b0z + dz) % BZ + BZ) % BZ;
+        if (by < 0 || by >= BY) continue;
+        const b = bx + by * BX + bz * BX * BY;
+        let occ = 0;
+        scan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {
+          const rw = (y * WX + z * WX * WY + bx * 8) >> 2;
+          if (W32[rw] | W32[rw + 1]) { occ = 1; break scan; }
+        }
+        const bit = (bricks[b >> 5] >>> (b & 31)) & 1;
+        checked++;
+        if (occ && !bit) { wrongEmpty++; if (!ex) ex = { brick: [bx, by, bz], says: 'empty', truly: 'occupied' }; }
+        else if (!occ && bit) { wrongOcc++; if (!ex) ex = { brick: [bx, by, bz], says: 'occupied', truly: 'empty' }; }
+      }
+      return { checked, missingGeometry: wrongEmpty, phantom: wrongOcc, example: ex };
+    },
+    stampIdxAudit() { let cells = 0, missing = 0, birds = 0, ex = null;
+      for (let j = DUCK_0; j < DES_END; j++) { const B = wbf[j]; if (!(B && B.sN)) continue; birds++;
+        for (let i = 0; i < B.sN; i++) { cells++; const ii = B.sCells[i];
+          if (!stampedIdx.has(ii)) { missing++; if (!ex) ex = { slot: j, cell: ii }; } } }
+      return { creatures: birds, cells, missing, size: stampedIdx.size, extra: stampedIdx.size - cells, example: ex }; },
+    dims() { return { WX, WY, WZ, BX, BY, BZ, WXZ }; },   // the window's own extents — a test that recomputes a flat cell index needs them
+    perchCacheAudit() { return cardCacheAudit(); },   // defined in main/tick-nav.js, where treeAtC/oakAtC are in scope
+    cardN(n) { if (n !== undefined) CARD_FORCE = n | 0; return { forced: CARD_FORCE, pool: CARD_N, base: CARD_BASE, birchK: CARD_BIRCH_K }; },   // pin the perched count (-1 = follow the biome) — the A/B lever for what the band COSTS
     lifedbg(m) { lifeDbg = m === undefined ? 0 : m | 0; return { mode: lifeDbg, traceInjected: LIFE_TRACE }; },   // debug views: 0 off / 1 slot ids / 2 history confidence / 3 motion / 4 denoised AO / 5 RAW sun visibility / 6 DENOISED sun visibility
     birdCensus(r, wx, wz) {                          // tally the songbird colours around any centre, straight from the placement rule
       // ── BOTH TREE GRIDS (2026-08-17) ── this walked the PINE grid only, so standing in the oak forest it
       // reported pines: 0, birds: 0 and the colour split read as broken, when in fact the oaks around you are
       // full of birds placed by the same rule on a different grid. Two enumerations, one tally, because the
       // question "what does the placement rule put near me" has two placement rules now.
-      const R = r || 6000, t = [0, 0, 0, 0]; let pines = 0, oaks = 0, birds = 0;   // FOUR slots: birdColour returns 3 in the cherry forest, and `t[3]++` on a three-slot array is NaN, which then read as pink: 0 while 37% of the birds were pink
+      const R = r || 6000, t = [0, 0, 0, 0]; let pines = 0, oaks = 0, birches = 0, birds = 0;   // FOUR slots: birdColour returns 3 in the cherry forest, and `t[3]++` on a three-slot array is NaN, which then read as pink: 0 while 37% of the birds were pink
       const cx0 = wx === undefined ? P.x : wx, cz0 = wz === undefined ? P.z : wz;
       const c0x = Math.floor(cx0 / TCELL), c0z = Math.floor(cz0 / TCELL), n = Math.ceil(R / TCELL);
       for (let dz = -n; dz <= n; dz++) for (let dx = -n; dx <= n; dx++) {
@@ -1714,7 +1795,18 @@
         const k = birdsOnOak(tr.wx, tr.wz, tr.k);
         for (let i = 0; i < k; i++) { t[birdColour(tr.wx, tr.wz, i)]++; birds++; }
       }
-      return { radius: R, pines, oaks, trees: pines + oaks, birds, cardinal: t[0], blue: t[1], robin: t[2], pink: t[3] | 0,
+      // ── AND THE BIRCHES, THE THIRD GRID ── buildCardCand grew a birch arm on 2026-08-24 and this census
+      // never did, so in the birch forest it reported trees: 0, birds: 0 — the identical failure the oak note
+      // above records, one biome later. Walked off BKCELL like birchAt, not off the BK.trees scan buffer,
+      // because the scan is a moving window sized to CARD_KEEP and a census takes its own radius.
+      const BK0x = Math.floor(cx0 / BKCELL), BK0z = Math.floor(cz0 / BKCELL), bn = Math.ceil(R / BKCELL);
+      for (let dz = -bn; dz <= bn; dz++) for (let dx = -bn; dx <= bn; dx++) {
+        const tr = birchAt(BK0x + dx, BK0z + dz); if (!tr) continue;
+        birches++;
+        const k = birdsOnBirch(tr.wx, tr.wz, tr.k);
+        for (let i = 0; i < k; i++) { t[birdColour(tr.wx, tr.wz, i)]++; birds++; }
+      }
+      return { radius: R, pines, oaks, birches, trees: pines + oaks + birches, birds, cardinal: t[0], blue: t[1], robin: t[2], pink: t[3] | 0,
         pct: t.map((x) => +((x | 0) * 100 / Math.max(1, birds)).toFixed(1)) };   // …and the PINK one, or the census reported three species summing to 61% and left the rest unnamed
     },
     // ── THE RAIN SKY, BOTH FACTORS SEPARATELY ── k is the storm CLOCK (ramps 0->1 over 10 s, back over
@@ -1837,6 +1929,7 @@
         if (run >= ln) runs.push(['x', gx, 0, run]); }
       return { rect: { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi }, winOX, winOZ, px: P.x, pz: P.z, nRuns: runs.length, runs: runs.slice(0, 40) }; },
     hAt(x, z) { return { hmap: hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], analytic: H(Math.floor(x), Math.floor(z)) }; },   /*TEMP-DEBUG*/
+    sparkSlotArr() { return Array.from(sparkSlot); },   // spark index -> drop slot THIS frame (-1 = alive but not drawn). The churn/starvation probe.
     sparkDbg() { return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : (s.foam ? 'foam' : 'spark')) : null); },   /*TEMP-DEBUG: death-burst / clash-spark / SPLASH slot state*/
     foamId() { return FOAM_IT; },                      // the splash droplet's item id
     splashAt(x, z, k) { spawnSplash(x, z, k); return __vb.sparkDbg().slice(0, 4); },   // fire a splash on demand (test tap)

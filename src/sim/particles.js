@@ -278,6 +278,29 @@
     return [bx + rx + 0.1 + Math.random() * 0.8, gy + az - 1,
             bz + rz + 0.1 + Math.random() * 0.8];   // az - 1: the empty cell the anchor test guaranteed, so the needle is visible from its first frame with the crown it left directly overhead
   }
+  // ── …AND THE SAME POINT IN A BIRCH (user 2026-08-27: "have leaves fall in the birch forest like the other
+  // trees") ── pinePoint's body with the birch's own frame: BIRCH_ANCH holds canopy voxels with clear cells
+  // beneath (assets/bow.js), the rotation is stampBirch's four cases the way pinePoint uses MROT's, and the
+  // seat is birchShapeAt's own `gy` expression — groundMin under the TRUNK, less the sink and the model's
+  // buried courses. Getting that last term wrong is the whole difference between a leaf that leaves the crown
+  // and one that appears out of the dirt, which is why it is copied from the shape rather than re-derived.
+  function birchPoint(t) {                             // → [wx, wy, wz] under one canopy voxel of this birch, or null
+    const m = BIRCHV[t.k]; if (!m) return null;
+    const A = BIRCH_ANCH[t.k]; if (!A || !A.length) return null;
+    const a = A[(Math.random() * A.length) | 0];        // uniform over the angle-sorted list, so the drift rings the crown
+    const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 511;
+    let rx, rz;                                         // stampBirch's rotation (birchColAt in sim/physics.js inverts this one)
+    if (t.rot === 0) { rx = ax; rz = ay; }
+    else if (t.rot === 1) { rx = m.sy - 1 - ay; rz = ax; }
+    else if (t.rot === 2) { rx = m.sx - 1 - ax; rz = m.sy - 1 - ay; }
+    else { rx = ay; rz = m.sx - 1 - ax; }
+    const fw = (t.rot & 1) ? m.sy : m.sx, fd = (t.rot & 1) ? m.sx : m.sy;
+    const bx = t.wx - (fw >> 1), bz = t.wz - (fd >> 1);
+    const tw = birchTrunkW(t, m);
+    const gy = groundMin(tw.wx, tw.wz, 4) - t.sink - (m.tbz || 0);
+    return [bx + rx + 0.1 + Math.random() * 0.8, gy + az - 1,
+            bz + rz + 0.1 + Math.random() * 0.8];       // az - 1: the first of the clear cells the anchor test guaranteed
+  }
   // ── A FELLED TREE STOPS SHEDDING (user 2026-08-19: "have the leafs stop falling from the tree after the tree
   // has been felled by the player") ── oakAt/treeAt are PROCEDURAL: they answer "is there a tree in this cell"
   // from the world seed and have no idea the player has since cut it down, so a stump kept dropping leaves out
@@ -334,8 +357,30 @@
       if (!t) {                                      // ── NO OAK IN THIS CELL: TRY A PINE (user 2026-08-19) ── the same draw, the same attempt budget, the same band. Oaks are asked FIRST only because the oak grid is the one this loop was already walking; in the pine forest every oak draw misses and the pine gets the attempt, and in the oak forest the reverse. Neither can starve the other of the band, because a band slot is taken by whichever tree the cell actually holds
         if (!PETALN_IT) continue;
         const cp = Math.floor(P.x / TCELL), czp = Math.floor(P.z / TCELL);   // the PINE grid is TCELL, not OKCELL — the two forests are on different cell sizes and reusing the oak's would sample the wrong lattice
-        const tp = treeAt(cp + ((Math.random() * 5) | 0) - 2, czp + ((Math.random() * 5) | 0) - 2);
-        if (tp) offer(1, tp, MSX * MSY);               // the pine is ONE model, so every pine carries one weight — the same footprint measure the oaks are weighed on, so a pine and an oak of equal shade shed equally
+        // ── …AND THE DRAW HAS TO COVER THE SAME GROUND, NOT THE SAME CELL COUNT (user 2026-08-27: "the leaves
+        // of a few pine forests are coming down rapidly. this should not happen") ── the oak draw is +/-2 cells
+        // of OKCELL 79, a 395-voxel span; +/-2 cells of TCELL 45 is 225, so the pine was pouring the SAME global
+        // rate into 3.1x less ground. MEASURED against the oak forest: the nearest decile of leaves fell at 52
+        // voxels instead of 128, the median at 122 instead of 188, and 17% of the fall came off just three
+        // trees against the oak's 11% — the same weather, emptied over the handful of pines in your face.
+        // +/-4 cells is 405 voxels, which is the oak's span to within 2%. It is a DISTRIBUTION fix and not a
+        // rate cut, exactly like the crown-size reservoir above: one attempt still chooses exactly one tree,
+        // so the leaves-per-second in the world is unchanged to the frame and only where they fall moves.
+        const tp = treeAt(cp + ((Math.random() * 9) | 0) - 4, czp + ((Math.random() * 9) | 0) - 4);
+        if (tp) { offer(1, tp, MSX * MSY); continue; }  // the pine is ONE model, so every pine carries one weight — the same footprint measure the oaks are weighed on, so a pine and an oak of equal shade shed equally
+        // ── …AND THEN THE BIRCH (user 2026-08-27) ── the third forest, asked only where the first two miss,
+        // so in the birch band every draw reaches it and in the oak or pine wood it costs nothing. Its own
+        // grid again (BKCELL 44, neither OKCELL nor TCELL), and the same +/-4 cells the pine now uses: 9 x 44
+        // is 396 voxels, the oak's span to within 1%, so all three forests spread their fall over the same
+        // ground. Weighted by this model's own footprint like the oaks, since the birch ships five crowns of
+        // different sizes and equal counts across unequal shade is exactly the imbalance the reservoir exists
+        // to remove.
+        if (typeof birchAt === 'function' && BIRCHV.length) {
+          const cb = Math.floor(P.x / BKCELL), czb = Math.floor(P.z / BKCELL);
+          const tb = birchAt(cb + ((Math.random() * 9) | 0) - 4, czb + ((Math.random() * 9) | 0) - 4);
+          const mb = tb ? BIRCHV[tb.k] : null;
+          if (mb) offer(2, tb, mb.sx * mb.sy);
+        }
         continue;
       }                                // ── EVERY OAK SHEDS NOW, NOT ONLY THE BLOSSOM (user 2026-08-19) ── the `!t.blos` reject that stood here is gone; the flag survives as the thing that picks WHICH leaf falls. Four varieties, and each reads its own off the SAME descriptor the stamp used, so a leaf can never disagree with the crown it came from — the cherry's pink/white split (`wht`) and the oak's dark/light split (`lite`, user 2026-08-19) are the same arrangement, one flag choosing between two remapped ramps
       const om = OAKV[t.k];
@@ -343,6 +388,9 @@
     }
     if (!pk) return;
     if (pk.kind === 1) { const qp = pinePoint(pk.t); if (!qp || !stillLeafy(qp)) return; spawnPetal(qp[0], qp[1], qp[2], PETALN_IT); return; }
+    // the birch sheds the PLAIN OAK's green leaf rather than minting a sixth: the palette is full (0 free
+    // entries), a birch canopy is the same broadleaf green, and the alternative costs an id to say nothing.
+    if (pk.kind === 2) { const qb = birchPoint(pk.t); if (!qb || !stillLeafy(qb)) return; spawnPetal(qb[0], qb[1], qb[2], PETALG_IT); return; }
     const q = petalPoint(pk.t); if (!q || !stillLeafy(q)) return;
     spawnPetal(q[0], q[1], q[2], pk.t.blos ? (pk.t.wht ? PETALW_IT : PETAL_IT) : (pk.t.lite && PETALGL_IT ? PETALGL_IT : PETALG_IT));
   }

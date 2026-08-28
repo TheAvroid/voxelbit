@@ -1,11 +1,12 @@
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
-  let renderScale = 0.7;                               // default resolution scale (user 2026-08-10: 70%, was 80%, was 90%); the settings slider AND the [ ] keys both step 40..100% in 10s (persisted vb_scale). The 0.375 floor below is what an older build could persist and what __vb.res() still accepts — neither control offers it.
+  let renderScale = 0.6;                               // default resolution scale (user 2026-08-27: 60%, was 70%, was 80%, was 90%); the settings slider AND the [ ] keys both step 40..100% in 10s (persisted vb_scale). The 0.375 floor below is what an older build could persist and what __vb.res() still accepts — neither control offers it.
   try { const v = parseFloat(localStorage.getItem('vb_scale')); if (v >= 0.375 && v <= 1.0) renderScale = v; } catch (e) {}
   let RW = 0, RH = 0, CW = 0, CH = 0;
   let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, bgGod, visBuf = null;
   let godW = 0, godH = 0;                                // the god-ray target is HALF the canvas on each axis — a quarter of the marches
   let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline
   let resetHist = 1;
+  const HIST_DBG = { resets: 0, frames: 0, lastAt: -1 };   // how often the temporal history is thrown away — see tick-passes
   let liveTargets = null;                              // textures the CURRENT bind groups reference — destroyed only after the GPU is done with them
   // ── RECORD AT THE TRACE RESOLUTION ── with capNative set, the canvas backing store IS the trace target and
   // renderScale becomes 1: the shader stops upscaling and the BROWSER upscales the canvas for display instead.

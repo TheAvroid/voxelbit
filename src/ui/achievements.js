@@ -62,7 +62,11 @@
   // what made this look like a creature bug for eight rounds.
   // sparkSlot maps each spark to a slot ONLY while it is alive, so the world's life gets everything the
   // particles are not using. Indices into sparks3d stay stable; only the slot each one writes to moves.
-  const sparkSlot = new Int16Array(128);             // spark index → drop slot this frame, or -1 when not alive
+  const sparkSlot = new Int16Array(128);             // spark index → the drop slot it OWNS: -1 not alive / not yet allocated, -2 refused at birth (see main/tick-life.js)
+  const sparkBorn = new Float64Array(128);           // …whose particle, so a recycled index is not mistaken for the same one still holding its slot
+  let cardCacheClear = () => {}, cardCacheAudit = () => ({ err: 'nav not built' });                      // set by main/tick-nav.js — drops the cached tree-grid enumeration when the spawn moves under it
+  const partLive = new Uint8Array(128);             // is sparks3d[i] ALIVE this frame — a particle is not nulled until tick-emit, so non-null is not the same question
+  const partUsed = new Uint8Array(64);               // which draw slots in the particle band are owned this frame
   let lifeSlotBase = 9;                              // first NON-particle slot: where the flock + creatures start
   const sparks3d = [null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null,

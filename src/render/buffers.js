@@ -68,6 +68,11 @@
   // so they mostly report upload traffic rather than garbage. This is tidiness, not a measured win.
   // Verified non-reentrant first: supPush, nvTouch and phWakeNear never call back into gpuPatch.
   const pgBset = new Set(), pgC2set = new Set();
+  // ── DID THIS BATCH LEAVE ANYTHING IN THE BRICK? ── one byte per brick, set while gpuPatch walks the cells
+  // and CLEARED as that brick is processed, so it never needs a sweep. It exists to skip the occupancy
+  // rescan: see the note at that loop in world/patch.js. BX*BY*BZ bytes = ~3 MB at the 2048x384 window,
+  // against worldMB's 1536 — the same ratio as the brick bitmask it stands beside.
+  const pgBocc = new Uint8Array(BX * BY * BZ);
   // Which palette ids belong to a GRID-STAMPED creature (mammals + perched songbirds). Rides in the unused
   // 4th float of each palette entry, so the tracer can ask "is this voxel part of an animal?" for free. The
   // hit flash needs it: its box is an AABB, and an AABB around an animal also contains the grass between its

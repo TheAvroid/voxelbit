@@ -9,8 +9,19 @@
      toggles and the click handler): nothing has to be guarded against a missing element, so hiding and showing
      the icon is one line either way, and the editor is never touched — it has opened with __vb.ed(true)
      throughout. If it is ever to go again, delete the rule's replacement, not the button. ══ */
+  /* GONE AGAIN, third time (user 2026-08-27: "remove the asset editor icon from the esc menu"), by this one
+     rule and nothing else. To bring it back a fourth time, delete it — the <button> is still in
+     html/10-body.html and ui/editor.js still holds its four references, so there is nothing else to undo. */
   #dcBtn { text-decoration: none; box-sizing: border-box; }   /* an <a> is not border-box like the <button>s, so its 1px border sat OUTSIDE the 46px and made it 48 */
   #kbBtn, #pkBtn, #edBtn, #dcBtn, #veBtn, #edCopy { position: relative; top: 0; width: 46px; height: 46px; background: rgba(18,23,31,0.85); border: 1px solid #38445a; border-radius: 50%; color: #cfd6e0; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,0.35); transition: border-color 0.15s, color 0.15s, top 0.15s ease-out, box-shadow 0.15s; will-change: transform; }   /* subtle resting drop shadow (user) — deepens on hover below. Explicit top:0 so the hover-lift TRANSITIONS (top:auto→-4px can't interpolate → would jump). */
+  #edBtn { display: none; }   /* AFTER the shared rule above on purpose: that one sets display:flex on #edBtn too, same specificity, so source order is the only thing deciding this */
+  /* THE VIDEO-EDITOR / RECORDER ICON goes the same way (user 2026-08-27: "remove the recorder icon from the
+     esc menu"), by this one rule and nothing else. The <button> stays in html/10-body.html and ui/video-
+     editor.js keeps all three of its veBtnEl references (the .recording pulse, the click handler, the lookup),
+     so nothing needs guarding against a missing element. RECORDING IS UNAFFECTED: R still starts and stops a
+     capture, and veStopRec still pops the editor open by itself, so the panel is reached without the icon.
+     To bring it back, delete this rule. */
+  #veBtn { display: none; }
   #kbBtn svg, #pkBtn svg, #edBtn svg, #dcBtn svg, #veBtn svg, #edCopy svg { width: 22px; height: 22px; }
   #kbBtn:hover, #pkBtn:hover, #edBtn:hover, #dcBtn:hover, #veBtn:hover, #edCopy:hover { border-color: #d2a453; color: #ffd76a; top: -4px; box-shadow: 0 7px 16px rgba(0,0,0,0.5); }   /* hover LIFT via `top` — leaves `transform` free for the wave, which the compositor runs smoothly even while the game renders */
   /* subtle up/down WAVE across the esc-menu icons (user) — driven by TRANSFORM so it runs on the GPU compositor (no main-thread jank while the game's WebGPU frame is busy); hover-lift uses `top` so the two never fight. Staggered delays make the wave travel along the row. */

@@ -755,6 +755,70 @@
         tot9 = (r.item0 - base9) + r.n;
       }
       FROG_ITEM0 = base9; FROG_NFRAMES = tot9;
+      // ── A FOURTH CYCLE: THE TURNING HOP (user 2026-08-27: "create a new hop animation sequence called
+      // rotate ... it should be able to rotate 90 degrees to the left or right at a 50 percent chance ...
+      // dont edit the existing hop") ── the hop above is untouched; this is its own entry, with its own name,
+      // its own weight in FROG_MIX and its own branch in the tick, and `turn` is the whole of what makes it
+      // different. It POINTS AT the hop's frames rather than loading a second copy of them, and that is a
+      // decision worth stating: the trace already rotates a creature's model by its heading, so a strip with
+      // the 90 degrees baked into the voxels of frames 8-16 would render pixel-for-pixel the same as turning
+      // the heading at frame 8 — 17 duplicate frames of item table for no visible difference. The turn is put
+      // where it is actually free, and the sequence is new everywhere the game can tell.
+      const hop9 = FROG_CYC[0];
+      if (hop9) FROG_CYC.push({ name: 'rotate', off: hop9.off, n: hop9.n, move: 1, turn: 1 });
+      // ── AND THE EYES BLINK, THE WAY THE EDITOR'S DO (user 2026-08-27: "make sure the eyes blink just like it
+      // does in the asset editor") ── the frog was never in BLINK_HAS at all, so it has never blinked in the
+      // world. Two things stop the shared eyeBlink() from doing this job. It is declared ~380 lines BELOW here
+      // and these variants must be pushed CONTIGUOUSLY at +FROG_NFRAMES (that is the whole of what the emit's
+      // `+ nfr` means), so it cannot be called from this point without a TDZ throw and cannot be deferred
+      // without something else taking those item slots. And it keys on `isEye` = exactly black, which is the
+      // very trap ui/editor.js records for this model: the frog's eye is the RED voxel standing proud of its
+      // head, with a black one tucked directly behind it that is walled in by green on all five other sides.
+      // Blacks-only finds that hidden pupil, recolours a voxel nobody can see, and the frog never appears to
+      // blink. Same colour and same exclusion as the editor, so the two agree by construction.
+      const FROG_EYE_RGB = [221, 59, 39];
+      const frogBlink = (loaded) => {
+        const isE = (c) => c && c[0] === FROG_EYE_RGB[0] && c[1] === FROG_EYE_RGB[1] && c[2] === FROG_EYE_RGB[2];
+        const hidden = (c) => c && c[0] < 30 && c[1] < 30 && c[2] < 30;   // the pupil behind the eye: invisible, and never a lid colour
+        const out = []; let eyes = 0;
+        for (const src of loaded) {
+          const w = src.w, d = src.d, n = w * d, lid = src.cells.slice();
+          for (let i = 0; i < src.cells.length; i++) {
+            if (!isE(src.cells[i])) continue;
+            eyes++;
+            const ex = i % w, ey = ((i / w) | 0) % d, ez = (i / n) | 0;
+            let bd = 1e9; const tied = [];
+            for (let dz = -3; dz <= 3; dz++) for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+              const qx = ex + dx, qy = ey + dy, qz = ez + dz;
+              if (qx < 0 || qy < 0 || qz < 0 || qx >= w || qy >= d || qz >= src.h) continue;
+              const q = src.cells[qx + qy * w + qz * n];
+              if (!q || isE(q) || hidden(q)) continue;
+              const dd = dx * dx + dy * dy + dz * dz;
+              if (dd < bd - 1e-6) { bd = dd; tied.length = 0; tied.push(q); } else if (dd <= bd + 1e-6) tied.push(q);
+            }
+            // ── A TIE GOES TO THE TYPICAL COLOUR, NOT TO SCAN ORDER ── the same rule, and for the same measured
+            // reason, as ui/editor.js: this frog's eye has FOUR candidates all exactly 1.41 away — three shades
+            // of head green and one CREAM from the chin below it — so first-found shuts the eye to a pale dot
+            // where a lid should be. Confirmed here by screenshot before this line existed: open eyes red, shut
+            // eyes cream. Take the MEDOID of the tied set instead, the colour with the least total distance to
+            // the others, and three greens outvote one cream. A unique nearest is a tied set of one and is
+            // untouched, which is every other creature.
+            let best = tied[0];
+            if (tied.length > 1) { let bs = 1e18;
+              for (const a of tied) { let sum = 0;
+                for (const b2 of tied) sum += (a[0] - b2[0]) * (a[0] - b2[0]) + (a[1] - b2[1]) * (a[1] - b2[1]) + (a[2] - b2[2]) * (a[2] - b2[2]);
+                if (sum < bs) { bs = sum; best = a; } } }
+            if (best) lid[i] = best;
+          }
+          out.push({ w: src.w, d: src.d, h: src.h, cells: lid });
+        }
+        out.eyes = eyes;
+        return out;
+      };
+      { const src9 = items.slice(FROG_ITEM0 - 1, FROG_ITEM0 - 1 + FROG_NFRAMES);
+        const bl9 = frogBlink(src9);
+        if (bl9.length === FROG_NFRAMES && bl9.eyes > 0) { for (const it of bl9) items.push(it); BLINK_HAS.add(FROG_ITEM0); }
+        console.log('[vb] frog blink variants', bl9.length, 'eye voxels', bl9.eyes, bl9.eyes > 0 ? '-> BLINK_HAS' : '-> NOT registered'); }
       console.log('[vb] frog cycles', FROG_CYC.map((c) => c.name + '@' + c.off + 'x' + c.n).join(' '), '-> item0', FROG_ITEM0, 'of', FROG_NFRAMES);
     } catch (e) { console.warn('[vb] frog frames missing - skipped', e); FROG_NFRAMES = 0; FROG_CYC = []; }
     // ── THE KOI IS A WORLD FISH TOO (user 2026-08-22: "implement the koi in the pine and oak forest") ── it is
@@ -945,11 +1009,16 @@
       const fitL = mamFitOf(items, LBUG_ITEM0); if (fitL) MAMFIT.ladybug = fitL;
     }
     // …and the FROG, on the same terms and for the same reasons (appended AFTER the DES_LOAD loop, see above).
-    // ── THE FROG IS NOT IN THE WORLD (user 2026-08-22: "remove the frog from the field") ── the FRAMES stay
-    // loaded above, so the asset editor can still stage frog.vox and everything that reads FROG_CYC/FROG_OFF
-    // keeps working; only the DESERTS registration is withheld, which is the single thing that puts a species
-    // on the map. Putting it back is this block uncommented plus DES_N going back to 11.
-    if (false && FROG_NFRAMES > 0) {
+    // ── AND THE FROG IS BACK IN THE WORLD (user 2026-08-27: "spawn the frog into the actual world from the
+    // asset editor. use the exact frog from the editor into the world and spawn the frog around water") ── it
+    // was withdrawn on 2026-08-22 ("remove the frog from the field") by withholding exactly this registration,
+    // which is the single thing that puts a species on the map; the frames, FROG_CYC, FROG_OFF and the whole
+    // leap state machine stayed loaded for the asset editor and never stopped working. So the restoration is
+    // this gate plus DES_N going back to 11, exactly as the withdrawal note predicted.
+    // ── AND IT IS LITERALLY THE EDITOR'S FROG ── same assets/life/frog.vox, same three named cycles loaded in
+    // the same order right above (hop/ribbet/tongue), and the sim picks between them on FROG_MIX, which is the
+    // editor's own ED_STAGE weights. There is no second model and no second alignment table to drift.
+    if (FROG_NFRAMES > 0) {
       DESERTS.push({ name: 'frog', item0: FROG_ITEM0, n: FROG_NFRAMES });
       const fitF = mamFitOf(items, FROG_ITEM0); if (fitF) MAMFIT.frog = fitF;
     }

@@ -23,7 +23,41 @@
   // PLAYER, which is right for "what am I standing on" and useless for a carve happening 50 voxels away.
   // The severed-voxel sweep needs the truth anywhere, or it treats a perched bird as detached terrain and
   // lifts the animal out of the tree as debris (user 2026-08-05: "chunks seem to break off of them").
-  const stampedIdx = new Set();
+  // ── OPEN-ADDRESSED, NOT A JS Set ── this is the hottest small structure in the game and it is hit from
+  // both directions: nav asks has() about ~1M cells per field rebuild, and the perched songbirds CHURN it,
+  // ~2,900 deletes + 2,900 adds every frame as they re-stamp (a re-stamp is an un-stamp then a stamp, and
+  // each touches every cell of the bird). MEASURED in one session at 842 birds by no-op'ing just these two
+  // calls: stampApply 1106 -> 209 ms over 10 s, i.e. the Set was 81% of it, 0.69 ms a frame, more than
+  // every other thing the band costs put together.
+  // Linear probing over one Int32Array. Slots hold key+1 so 0 can mean EMPTY (cell index 0 is a real cell),
+  // and -1 is a TOMBSTONE. Same has/add/delete/size/clear surface the Set had, and nothing iterates it.
+  // 1<<17 slots = 512 KB, against ~24k live entries: load stays near 0.18, so has() is one probe in the
+  // common case. Tombstones are swept by a rehash when live+dead passes 60%, which at this churn is about
+  // every 19 frames and costs one pass over the table.
+  const stampedIdx = (() => {
+    let cap = 1 << 17, mask = cap - 1, keys = new Int32Array(cap), n = 0, tomb = 0;
+    const slotOf = (k) => {                            // >=0 : the slot holding k. <0 : ~slot to insert it into
+      let i = (Math.imul(k, 0x9E3779B1) >>> 15) & mask, t = -1;
+      for (;;) {
+        const v = keys[i];
+        if (v === 0) return t >= 0 ? ~t : ~i;          // hit EMPTY — the probe chain ends, so k is absent
+        if (v === -1) { if (t < 0) t = i; }            // remember the first tombstone, but keep scanning for k
+        else if (v === k + 1) return i;
+        i = (i + 1) & mask;
+      }
+    };
+    const rehash = (nc) => { const old = keys; cap = nc; mask = cap - 1; keys = new Int32Array(cap); tomb = 0;
+      for (let i = 0; i < old.length; i++) { const v = old[i]; if (v > 0) keys[~slotOf(v - 1)] = v; } };
+    return {
+      has: (k) => slotOf(k) >= 0,
+      add(k) { const s = slotOf(k); if (s >= 0) return; const i = ~s;
+        if (keys[i] === -1) tomb--; keys[i] = k + 1; n++;
+        if ((n + tomb) * 5 > cap * 3) rehash(n * 5 > cap * 2 ? cap * 2 : cap); },   // grow only if the LIVE set is what filled it; otherwise just sweep the tombstones
+      delete(k) { const s = slotOf(k); if (s < 0) return false; keys[s] = -1; n--; tomb++; return true; },
+      clear() { keys.fill(0); n = 0; tomb = 0; },
+      get size() { return n; },
+    };
+  })();
   const unstampWorm = (B) => { if (!B.sN) return; const nc = B.sCells, pv = B.sPrev;   // (used ONLY by the perched songbirds — the sole grid-stamped life)
     for (let i = 0; i < B.sN; i++) { const ii = nc[i]; stampedIdx.delete(ii);
       if (W[ii] !== 0) { W[ii] = pv[i]; wormPatchPush(ii); }   // restore the overwritten foliage, not 0 — else the bird leaves a hole in the canopy
@@ -58,8 +92,16 @@
     stampAlloc(B, pose.length);
     const nc = B.sCells, pv = B.sPrev; let k = 0;
     let sb0 = 1e9, sb1 = 1e9, sb2 = 1e9, sb3 = -1e9, sb4 = -1e9, sb5 = -1e9;
+    // ── THE TOROIDAL WRAP IS PER-STAMP, NOT PER-CELL ── gwrap is ((v % n) + n) % n, i.e. TWO modulos, and
+    // this ran it twice for every voxel of every re-stamp: ~97 birds a frame x 28 cells x 4 modulos. The
+    // creature's anchor is a WORLD coordinate (±200k, so the wrap is real work), but the pose offsets are
+    // tiny — a songbird's whole stamp is a 6x6x3 box — so wrapping the ANCHOR once and then nudging by the
+    // offset with a compare is exactly equivalent for any |offset| < WX. Same index, same cells.
+    const bx9 = gwrap(gx, WX), bz9 = gwrap(gz, WZ), WXY9 = WX * WY;
     for (let q = 0; q < pose.length; q++) { const p = pose[q]; const wy = gy + p[1]; if (wy < 1 || wy >= WY - 1) continue;
-      const ii = gwrap(gx + p[0], WX) + wy * WX + gwrap(gz + p[2], WZ) * WX * WY;
+      let ax9 = bx9 + p[0]; if (ax9 < 0) ax9 += WX; else if (ax9 >= WX) ax9 -= WX;
+      let az9 = bz9 + p[2]; if (az9 < 0) az9 += WZ; else if (az9 >= WZ) az9 -= WZ;
+      const ii = ax9 + wy * WX + az9 * WXY9;
       const cur = W[ii];
       if (cur !== 0 && !foliaTab[cur]) continue;   // trunks, rocks and other stamps still block; a voxel lost inside the branch is hidden by it anyway
       const wx = gx + p[0], wz = gz + p[2];             // WORLD bounds of what actually landed — the knife's hit flash boxes exactly this and nothing around it
@@ -265,12 +307,50 @@
   // yesterday, so making them static decor regresses nothing that ships. NOT taken without the user's say-so:
   // it is a visual change, and this is the exact complaint they have already made once.
   const CARD_ANIM_R = CARD_KEEP;
+  const CARD_REST_MS = 25;                                 // the rest held on EVERY perched-bird frame, on top of the authored 24 fps (see stampCardinal)
   const stampCardinal = (B, now, wk9) => {                   // stamp the current rotate frame at the perch — 24 fps + 600 ms hold, EXACTLY the editor's timing (user chose grid @ 24 fps to match the editor; the brief grid-stamp AO shimmer during each ~0.46 s rotation burst is the accepted trade-off)
     const cp = ensureBirdPoses(B.bird | 0); if (!cp) return;   // perched birds come in THREE colours (B.bird: 0 red cardinal, 1 blue bird, 2 robin)
-    const n = cp.length, frameMs = 1000 / 24, pauseMs = 600, cyc = n * frameMs + pauseMs;
+    // ── AND NOTHING HOLDS ON THE LAST FRAME ANY MORE (user 2026-08-27: "the perched song birds are not
+    // playing correctly") ── the header above still says this is "EXACTLY the editor's timing", and it was
+    // when it was written. The stage changed underneath it on 2026-08-22 ("when I drag in a animation
+    // sequence, have it play the frames continously. right now its plays till the end pauses, then plays the
+    // frames again") and its pauseMs went to 0; this copy of the number never followed. So the bird ran its
+    // cycle and then froze on its last frame for 600 ms, over and over — six tenths of every second and a bit
+    // spent as a statue, which is what a bird that is not playing correctly looks like.
+    // Same divergence the frog's rest turned out to be, and the same fix: take the stage's number.
+    // ── A SMALL REST BETWEEN FRAMES (user 2026-08-27: "add a small rest in between frames of the song bird")
+    // ── the eleven frames ARE a quarter turn, so back to back at 24 fps the bird came round every 1.83 s: a
+    // continuous spin with no beat in it. The rest CANNOT go at the cycle boundary — that is pauseMs, and a
+    // hold there froze the bird on frame 10 before each hand-off, which is the "not playing correctly" report
+    // the note above records. So it goes on EVERY frame equally: each pose is held frameMs + CARD_REST_MS, the
+    // hand-off frame is held no longer than any other, and the rotation still runs on without a stutter — it
+    // just steps rather than sweeps. The frames themselves are still the authored 24 fps; the rest is dead
+    // time appended to each, which is what "a rest between frames" is. 25 ms makes a pose 1/15 s and a full
+    // revolution 2.93 s.
+    const n = cp.length, frameMs = 1000 / 24, stepMs = frameMs + CARD_REST_MS, cyc = n * stepMs;
     const near = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z) < CARD_ANIM_R * CARD_ANIM_R;   // EVERY active bird animates (user: 'it doesn't look like all the birds are animated'). This was 90 while the population was double; halving it bought back the re-stamp budget.
     const t = (now + B.phase) % cyc;
-    const fiC = (near && !window.__CARDPIN) ? (t < n * frameMs ? Math.floor(t / frameMs) : n - 1) : 0;   // hold the last frame through the pause
+    const fiC = (near && !window.__CARDPIN) ? Math.min(n - 1, Math.floor(t / stepMs)) : 0;   // every frame gets the same hold — see CARD_REST_MS
+    // ── THE 4-WAY TURN IS A FACING, NOT A PIROUETTE (user 2026-08-27: "Im seeing perched cardinals flicker
+    // ... its dissapearing and reapearing quickly") ── this was a function of TIME, so it advanced one quarter
+    // turn at every cycle boundary: MEASURED on a perched bird, 19 spins in 20 seconds, one a second, for ever.
+    // A 28-voxel bird that flips its whole silhouette inside a single frame, once a second, is exactly what
+    // reads as vanishing and coming back — and it is the only large instantaneous change in its rendering.
+    // Everything else about the bird measured clean: no respawns, no re-perching, never unstamped, never
+    // gutted, stamp voxels steady at 25-31 across 2,400 frames, and the GPU patch flushes every frame.
+    // The spin came from the editor's turntable, where showing a model from four sides is the whole point of
+    // a preview. On a perch it is not behaviour, so it becomes what it should have been out here: a fixed
+    // FACING, taken from the perch itself so the flock still faces four different ways and each bird keeps
+    // one direction for as long as it sits there. A bird that re-perches elsewhere gets a new facing.
+    // ── THE TURN IS THE ANIMATION, AND q IS WHAT MAKES IT ENDLESS (user 2026-08-27: "the birds are supposed
+    // to play frames 0-10. then where the last frame ended, the 00 frame plants itself in the same position.
+    // thus creating an endless rotation") ── so this was never a spin bolted onto a perched bird: the eleven
+    // frames ARE a quarter turn, and advancing q by one at each cycle boundary re-seats frame 00 at the
+    // orientation frame 10 finished in. Played back to back that is one continuous rotation, which is the
+    // whole effect. I took it for a once-a-second snap and replaced it first with a fixed facing and then with
+    // an occasional glance; both broke the thing it was doing. Restored to the original expression.
+    // It matters that pauseMs is 0 above: with the old 600 ms hold the bird froze on frame 10 before each
+    // hand-off, so the rotation stuttered once a cycle instead of running on.
     const q = (near && !window.__CARDPIN) ? ((-(Math.floor((now + B.phase) / cyc) % 4)) & 3) : 0;        // GRID-ALIGNED 4-way spin = the editor's edRotVox(−spin)
     const gx = Math.round(B.x), gz = Math.round(B.z), gy = Math.round(B.perchFeet) - CARD_FOOTZ;   // feet (model z = CARD_FOOTZ) land on the crown needle
     // ── IS THE PERCH STILL THERE? ── the crown it was assigned can be chopped or felled between the

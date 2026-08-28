@@ -5,10 +5,19 @@
   // duplicate list is a list that drifts — the volume default moved earlier today and would have had to move
   // in two places. This runs at the TOP of the fragment because the wiring below overwrites each control with
   // whatever localStorage held, and after that the markup value is gone.
-  const SET_SLIDERS = ['volSlider', 'sfxSlider', 'musSlider', 'ambSlider', 'todSlider', 'resSlider', 'dofStrSlider', 'sensSlider'];
-  const SET_TOGGLES = ['snowBtn', 'vigBtn', 'crdBtn', 'fpsBtn', 'timeBtn', 'resHudBtn'];   // the on/off text buttons; the compass is icon-only and is handled by its own flag
-  const SET_KEYS = ['vb_vol', 'vb_sfx', 'vb_mus', 'vb_amb', 'vb_sens', 'vb_scale', 'vb_lgt', 'vb_vig', 'vb_wrefl',
+  // ── TWO ROWS ARE GONE FROM THE MENU, THE CODE BEHIND THEM IS NOT (user 2026-08-27: "remove the time
+  // slider … keep the code", then "same thing for the snow") ── flip a const back to true and the row, its
+  // wiring, its reset entry and its saved default all come back exactly as they were. Nothing else changes:
+  // the day still runs its 20-minute cycle, storms still arrive on their own schedule, P still toggles one
+  // and __vb.snow() / __vb.tod() still work. These are PANEL gates, not feature switches.
+  const TOD_UI = false, SNOW_UI = false;
+  { const r = $('todWrap'); if (r && !TOD_UI) r.style.display = 'none'; }     // hidden rather than cut out of html/10-body.html: main/tick-passes.js writes todLabel/todSlider every quarter-second while the menu is open, and a missing element there is a ReferenceError inside the tick — i.e. a frozen sim behind a perfectly rendered frame
+  { const r = $('snowWrap'); if (r && !SNOW_UI) r.style.display = 'none'; }
+  const SET_SLIDERS = ['volSlider', 'sfxSlider', 'musSlider', 'ambSlider', 'todSlider', 'resSlider', 'dofStrSlider', 'sensSlider'].filter((id) => TOD_UI || id !== 'todSlider');
+  const SET_TOGGLES = ['snowBtn', 'vigBtn', 'crdBtn', 'fpsBtn', 'timeBtn', 'resHudBtn'].filter((id) => SNOW_UI || id !== 'snowBtn');   // the on/off text buttons; the compass is icon-only and is handled by its own flag
+  const SET_KEYS = ['vb_vol', 'vb_sfx', 'vb_mus', 'vb_amb', 'vb_sens', 'vb_sens2', 'vb_scale', 'vb_lgt', 'vb_vig', 'vb_wrefl',
                     'vb_binds', 'vb_coords', 'vb_fps', 'vb_time', 'vb_res', 'vb_cmp', 'vb_dofstr2'];
+  const CMP_DEF = false;                               // the compass is the one toggle with no on/off text to snapshot (it is an icon), so its default is written here and must match ui/input.js's cmpOn
   const SET_DEF = {};
   for (const id of SET_SLIDERS.concat(SET_TOGGLES)) { const el = $(id); if (el) SET_DEF[id] = el.tagName === 'INPUT' ? el.value : el.textContent.trim(); }
   // ── DEPTH OF FIELD ── persisted (vb_dof), default ON, and declared HERE for the same reason vigOn is: the
@@ -328,7 +337,7 @@
             el.value = SET_DEF[id]; el.dispatchEvent(new Event('input')); }
           for (const id of SET_TOGGLES) { const el = $(id); if (!el || SET_DEF[id] === undefined) continue;
             if (el.textContent.trim() !== SET_DEF[id]) el.click(); }
-          if (!cmpOn) { const cb = $('cmpBtn'); if (cb) cb.click(); }
+          if (cmpOn !== CMP_DEF) { const cb = $('cmpBtn'); if (cb) cb.click(); }   // …to the DEFAULT, whichever way that is — not unconditionally on
           for (const a in DEFBINDS) binds[a] = DEFBINDS[a];
           try { localStorage.removeItem('vb_binds'); } catch (err) {}
           kbRefresh();
@@ -347,6 +356,7 @@
       vigShow(); };
     vigBtn.addEventListener('click', (e) => { e.stopPropagation(); vigToggle(); });
     vigShow();
+    if (SNOW_UI) {                                       // ROW REMOVED (user 2026-08-27) — with the wiring skipped snowBtnSync stays the no-op stub declared above, so tick-body's auto-storms and __vb.snow() still call it and still find nothing to repaint
     const snowShow = () => { snowBtn.textContent = snowOn ? 'on' : 'off'; snowBtn.classList.toggle('on', snowOn); };
     snowBtnSync = snowShow;
     snowShow();
@@ -354,6 +364,7 @@
     snowBtn.addEventListener('click', (e) => { e.stopPropagation(); snowOn = !snowOn;
       if (snowOn) { snowEndT = performance.now() + 60000; } else { snowRearm(); }
       snowShow(); });
+    }
     // ── FULLSCREEN toggle (user) ── requestFullscreen needs a user gesture; the click qualifies. The label + .on state
     // follow the real fullscreen status (F11 or the OS chrome can change it out from under us), so fullscreenchange drives the sync.
     const fsBtn = $('fsBtn');
@@ -416,7 +427,7 @@
   sensSlider.addEventListener('pointerdown', (e) => e.stopPropagation());
   sensSlider.addEventListener('click', (e) => e.stopPropagation());
   sensSlider.addEventListener('input', (e) => { e.stopPropagation(); lookSens = parseFloat(sensSlider.value) / 100; sensShow(); sliderFill(sensSlider);
-    try { localStorage.setItem('vb_sens', String(lookSens)); } catch (err) {} });
+    try { localStorage.setItem('vb_sens2', String(lookSens)); } catch (err) {} });
   const resSlider = $('resSlider'), resLabel = $('resLabel');   // RESOLUTION — render scale (persisted vb_scale); the [ ] keys nudge it too and resSync() keeps this in step
   const resShow = () => { resLabel.textContent = 'resolution ' + Math.round(renderScale * 100) + '%'; };
   const resSync = () => { resSlider.value = Math.round(renderScale * 100); sliderFill(resSlider); resShow(); };
@@ -448,11 +459,13 @@
     try { localStorage.setItem('vb_dofstr2', String(dofStr)); } catch (err) {} });
   let todDrag = false;
   const todSlider = $('todSlider'), todLabel = $('todLabel');
+  if (TOD_UI) {                                        // ROW REMOVED (user 2026-08-27) — todSlider/todLabel/todDrag stay DECLARED at this level on purpose: main/tick-passes.js reads all three, so only the listeners are gated
   sliderFill(todSlider);
   todSlider.addEventListener('pointerdown', (e) => { todDrag = true; e.stopPropagation(); });
   addEventListener('pointerup', () => { todDrag = false; });
   todSlider.addEventListener('click', (e) => e.stopPropagation());
   todSlider.addEventListener('input', (e) => { e.stopPropagation(); tday = todSlider.value / 1440; sliderFill(todSlider); });
+  }
   $('kbClose').addEventListener('click', (e) => { e.stopPropagation(); kbPanel.classList.add('hidden'); listenAction = null; });
   kbPanel.addEventListener('click', (e) => { e.stopPropagation();   // stopPropagation so a click in here never reaches the document handler that enters the game
     if (!e.target.closest('#kbCard2, #kbCard3, #kbCard4')) { kbPanel.classList.add('hidden'); listenAction = null; } });   // ONE selector list, not a chain of closest() calls: a card added to the panel and forgotten here would close the whole thing the moment you touched it. Clicked ANYWHERE outside the boxes — the backdrop OR the kbWrap gap/under a shorter box — closes settings and falls back to the esc menu (user)

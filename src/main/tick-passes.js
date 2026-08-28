@@ -68,6 +68,10 @@
     // ── save prev cam (world coords) ──
     prevCam.pos = cam; prevCam.right = right; prevCam.up = up; prevCam.fwd = fwd;
     prevCam.tanH = tanH; prevCam.aspect = aspect; prevCam.jit = j;
+    // Counted: a frame that consumed a SET flag threw away the temporal history. Standing still it should be
+    // zero — anything else and nothing on screen can converge. __vb.histStat().
+    if (resetHist) { HIST_DBG.resets = (HIST_DBG.resets | 0) + 1; HIST_DBG.lastAt = frame; }
+    HIST_DBG.frames = (HIST_DBG.frames | 0) + 1;
     if (!veQuiet) resetHist = 0;                       // the TRACE is what consumes the flag, so a quiet frame must NOT clear it — a teleport during an export would otherwise lose its history flush and come back ghosting
     // ── ONE SLICE OF THE BIRCH PERCH SWEEP ── beside frame++ because that is the one call site this file
     // documents as NEVER SKIPPED, and the sweep needs exactly that. It cannot live in main/tick-nav.js's

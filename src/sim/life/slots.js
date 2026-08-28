@@ -146,7 +146,7 @@
   // untouched. The desert is untouched too — bioFracLifeAt zeroes the target in the sand and the biome gate
   // refuses a BIO_ANY spawn there, so the extra four go to pine, oak and the blossom, which is every biome
   // that has butterflies at all.
-  const FLY_N = 20, DUCK_N = 4, BABY_N = 12, WORM_N = 32, FISH_N = 32, MAM_PER = 24, DES_N = 10, DES_PER = 8;   // DES_N 9 -> 10 for the LADYBUG; the FROG's 11th slot was withdrawn when it was removed from the field (user 2026-08-22)
+  const FLY_N = 20, DUCK_N = 4, BABY_N = 12, WORM_N = 32, FISH_N = 32, MAM_PER = 24, DES_N = 11, DES_PER = 8;   // DES_N 9 -> 10 for the LADYBUG, and 10 -> 11 for the FROG, which is back in the field (user 2026-08-27). This is the ONLY number that moves for a new band member: DES_END, wbf's length and every `< DES_END` loop derive from it
   // ── PERCHED SONGBIRDS: THE ONE WIDTH THAT TRACKS THE REACH ── 180 was the pool at CARD_KEEP_V0 and it was
   // SATURATED there: the oak wood's measured 1.24e-4 birds/vox² offers 180 perches inside a 680 disc and the
   // census reached 179 of them. At 1040 the same wood offers 421, so the pool grows with the area and the
@@ -155,9 +155,27 @@
   // thinned by the radius change (the nearest 180 perches are the same 180 perches), so this is not a rescue —
   // it is REACH. A walking player was thinned, because a bird left behind holds its slot out to CARD_KEEP now
   // instead of 680, and the pool spent on that tail is pool not spent on the forest ahead.
-  const CARD_N = Math.round(180 * LIFE_DENS_K);        // 421 — and it must stay UNDER the perch supply in the disc, or every unfilled slot re-runs buildCardCand at full cost each frame
+  const CARD_BASE = Math.round(180 * LIFE_DENS_K);     // 421 — and it must stay UNDER the perch supply in the disc, or every unfilled slot re-runs buildCardCand at full cost each frame
+  // ── AND THE BIRCH WOOD CARRIES TWICE THAT (user 2026-08-27: "double the perched song birds in the birch
+  // forest. make sure they are evenly spread out") ── the birch stand MEASURED as the sparsest of the three:
+  // nearest-neighbour spacing median 38 voxels against the oak's 25 and the pine's 29, over the same 421-bird
+  // pool. It is not a placement fault and it is not a supply fault — birdCensus over a CARD_KEEP disc offers
+  // 1,670 perches in birch against the oak's 1,232 and the pine's 1,249, the LARGEST of the three. It is that
+  // birch spreads its perches THINLY: 1,677 trees carrying 0.99 birds each, where the oak wood packs the same
+  // birds onto 393 oaks at up to CARD_OAK_CAP apiece. Fewer birds per tree over more trees, spread across the
+  // same disc, is exactly a lower density that is already evenly spread — so the thing to raise is the COUNT,
+  // and the even spread comes free from the placement rule that is already producing it (hash-order scatter
+  // over the candidate list, floored at CARD_SEP).
+  // The pool is what actually binds — 421 birds against 1,670 candidates everywhere — so doubling the birch
+  // count means the BAND has to be wide enough to hold it. CARD_N is therefore sized for the densest wood and
+  // main/tick-life.js spends only what the biome under the player asks for, the same way treeFrac already
+  // stops the desert from asking for 421 perches that cannot exist. 842 is still half the birch supply, so
+  // the "must stay UNDER the perch supply" rule above holds with room to spare.
+  const CARD_BIRCH_K = 2;                              // …the multiplier the user asked for, applied by how much of the ring is birch
+  const CARD_N = CARD_BASE * CARD_BIRCH_K;             // 842 — the POOL, sized for the birch wood; every other biome asks for CARD_BASE
   const FLY_0 = 0, FLY_END = FLY_0 + FLY_N;            //   0-15    butterflies / fireflies / dragonflies
   const DUCK_0 = FLY_END, DUCK_END = DUCK_0 + DUCK_N;  //  16-19    MOTHER ducks
+  const DUCK_PER_LAKE = 2, DUCK_LAKE_R = 150, DUCK_LAKE_LINK = 520;          // ── AT MOST TWO FAMILIES ON ONE LAKE (user 2026-08-27) ── main/tick-creatures.js counts the moms already inside DUCK_LAKE_R of a lake spot and will not add a third, whatever the want asks for. The want (main/tick-life.js, lakes+1) only ever ASKED for a second family on one lake; what let a third and fourth land was the fallback pool, which handed every homeless mom the whole lake list once each lake held one. R is the radius that already decided whether a mom 'holds' a lake, kept as-is so the two tests agree; the census merges a lake into one spot at 260, and LINK (2x that) is how far apart two spots can be and still be treated as ONE body of water for the cap - see the placement for why that matters.
   const BABY_0 = DUCK_END, BABY_END = BABY_0 + BABY_N; //  20-31    ducklings, 3 per mother
   const WORM_0 = BABY_END, WORM_END = WORM_0 + WORM_N; //  32-63    worms
   const CARD_0 = WORM_END, CARD_END = CARD_0 + CARD_N; //  64-484   perched songbirds — GRID-STAMPED, so they take no drop slot and are free to exceed the drop budget
@@ -200,7 +218,16 @@
   // from the first row on every call and the sweep never completes — measured as 4,288 calls with the cursor
   // pinned at row -21 and zero perched songbirds in the biome.
   const BK = { rows: 4, trees: [], scan: [], dz: 0, scx: 0, scz: 0, scanning: false, cx: 1 << 30, cz: 1 << 30 };
-  const DES_OAKONLY = { bee: 8, grass_snake: 5, ladybug: 6 };   // (frog withdrawn — see assets/held-items.js)
+  const DES_OAKONLY = { bee: 8, grass_snake: 5, ladybug: 6, frog: 2 };   // frog 3 -> 2 (user 2026-08-27: "halve the rate of the frogs"). Three does not halve cleanly; two keeps a pond from reading as empty where one would often be out of sight entirely — say the word for 1
+  // ── AND THE FROG TAKES THREE (user 2026-08-27: "make the frog twice as rare") ── it is in here for the
+  // counting half of the table only: like the ladybug it is not oak-only in fact, and DES_ANYFOREST below
+  // widens it to both forests. This number IS the species' whole population, because nDesertOf gives an
+  // oak-only species zero of the desert head-count, so halving it is the entire change — 6 -> 3, measured live.
+  // It is the right lever rather than DES_WATER's radius or the spacing floor: those decide WHERE a frog goes
+  // once the head-count has asked for one, so widening either would have scattered the same six.
+  // The band keeps its DES_PER of 8 and the surplus slots simply stay uninit, exactly as they already do for
+  // the grass snake's 5 and the ladybug's 6 — a head-count under the band width costs nothing and moves no
+  // other species, since DES_END and every `< DES_END` loop derive from DES_N and DES_PER, not from this.
   // ── AND ONE OF THEM IS NOT OAK-ONLY AT ALL (user 2026-08-22: "implement the ladybug into the oak and pine
   // forests") ── DES_OAKONLY is really two facts wearing one name: "takes no desert slots, and its whole
   // head-count is this number", plus "and it lives in the oak". The ladybug wants the first and not the
@@ -212,7 +239,12 @@
   // BIO_OAKF, so it lives in the birch band and nowhere else — the ant was asked for in the birch forest, and
   // BIO_OAKF means BOTH broadleaf bands now (sim/nav.js), which would have put a column in the oak wood too.
   const DES_BIRCHF = { ant: 1 };
-  const DES_ANYFOREST = { ladybug: 1 };       // the frog lives in BOTH forests too, and near water within them (see DES_WATER)
+  // ── AND THE FROG IS NOT IN HERE (user 2026-08-27: "Dont spawn a frog in the pine forest") ── it was, which
+  // is precisely what put it on pine-forest ponds: DES_ANYFOREST tags a species BIO_ANY, and BIO_ANY means
+  // anywhere that is not sand and not the blossom — pine included. Dropping it back to the default BIO_OAKF
+  // is the whole change, and BIO_OAKF is not the oak band alone: sim/nav.js reads it as EITHER broadleaf
+  // band, so the frog keeps the birch forest's water and loses only the pine's.
+  const DES_ANYFOREST = { ladybug: 1 };       // (the frog was here and is not any more — see above)
   // ── AND WHOSE MODEL FACES THE WRONG WAY ── the render basis in main/tick-creatures.js takes model −y as the
   // head end. A species baked by tools/bake_desert_life.py always does; one adopted from the asset editor's
   // scene-graph loader need not, and the ladybug's head is at +y. A named table rather than a magic term at
@@ -248,11 +280,66 @@
     tongue: [[0, 0], [0, 0], [0, 0], [0, 0], [0, -1], [0, -2], [0, -2], [0, -3],
       [0, -3], [0, -3], [0, -3], [0, -3], [0, -3], [0, -3], [0, -3], [0, -3],
       [0, -2], [0, -2], [0, -1], [0, -1], [0, 0], [0, 0], [0, 0], [0, 0]] };
+  // ── …AND THE TURNING HOP GETS THE SAME TABLE (user 2026-08-27: "create a new hop animation sequence called
+  // rotate") ── it IS the hop, frame for frame, so its travel is the hop's travel; the only thing that makes
+  // it a different cycle is the 90 degrees it puts in at FROG_TURN_FRAME. Sharing the numbers rather than
+  // copying them is deliberate: two tables that must stay identical are two tables that will not.
+  // ── AND IT HOPS ON THE SPOT (user 2026-08-27: "when the frog rotates, dont have the frog move forward, it
+  // should hop in place, exactly how the magicavoxel file does it ... the hopping forward was a custom
+  // placement done in the asset editor") ── exactly so: frog.vox's hop frames all sit with their lowest voxel
+  // at model-z 0 and carry no travel at all; the metre forward is FROG_HOP_BAKE, hand-authored on the editor
+  // stage, and the [up, forward] pairs here are that bake. The turn takes the same table with the FORWARD
+  // column dropped, so it keeps the leap's rise and lands back on its own square. Derived from the hop rather
+  // than typed out again: the two arcs must stay identical, and two hand-copied tables would not.
+  FROG_OFF.rotate = FROG_OFF.hop.map((e) => [e[0], 0]);
   // The editor's own weights (ui/editor.js ED_STAGE mix, user 2026-08-22: "jump = 50%, ribbet = 40%,
-  // tongue = 10%"). Indexed to match FROG_CYC's load order: hop, ribbet, tongue.
-  const FROG_MIX = [50, 40, 10];
+  // tongue = 10%"). Indexed to match FROG_CYC's load order: hop, ribbet, tongue, rotate.
+  // ── THE FOURTH SHARE COMES OUT OF THE HOP, NOT OFF THE OTHERS (user 2026-08-27) ── the turning hop is a
+  // HOP, so ribbet 40 and tongue 10 stay exactly the numbers the user set and the 50 splits 35/15. That makes
+  // roughly three hops in ten a turn, which is often enough that a frog visibly changes direction while you
+  // watch it and rare enough that it still mostly travels in a line. It is the one number here nobody has
+  // asked for yet, so it is the one to move if the turning reads as too busy or too rare.
+  const FROG_MIX = [40, 40, 10, 10];   // user 2026-08-27: "40% frog jumping forward. 10% rotate. 10% tongue. 40% ribbet" — indexed to FROG_CYC's load order (hop, ribbet, tongue, rotate), and the editor's ED_STAGE mix carries the same three shared weights so the two agree
+  const FROG_MIX_SUM = FROG_MIX.reduce((a, b) => a + b, 0);   // the draw below MUST be over the whole table: it was three literal entries added by hand, so a fourth cycle could be listed, weighted, and still never come up — measured, zero rotate cycles in 90 seconds
+  // ── THE FROG LIVES ON THE GRID, LIKE THE BUNNY (user 2026-08-27: "the frog should be aligned to the grid
+  // and not allowed to rotate off the grid much like the bunny") ── the bunny keeps a heading INDEX (B.bh,
+  // 0-3) and an integer base cell (B.bpx/B.bpz), and every hop is a whole number of voxels along a cardinal:
+  // "Cardinal grid, editor-identical". The frog already turned in exact 90 degree steps but it started from
+  // whatever angle the spawner left in B.th, so its lattice was 90 degrees off an arbitrary bearing and its
+  // anchor was fractional. Snapping the start to a cardinal is the whole difference.
+  // The direction comes out of THIS TABLE and never out of sin/cos of the angle. That is not tidiness:
+  // Math.cos(Math.PI / 2) is 6.1e-17, not 0, so a frog stepping along a table of integer offsets would drift
+  // sideways by a hair on every hop and its voxels would leave the world lattice within a few dozen leaps.
+  // [sin th, cos th] for th = 0, 90, 180, 270 — the same order the heading index counts in.
+  const FROG_DIR = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+  const FROG_TURN = Math.PI / 2;                       // 90 degrees, left or right at even odds — the user's number
+  const FROG_TURN_FRAME = 8;                           // …put in on frame 8 of the hop, the top of the leap: the frog is airborne there, so the pivot has nothing to scrape against and reads as the animal turning in the air rather than swivelling on the spot
   const FROG_ZERO = [0, 0];                            // shared no-offset entry, so the per-frame lookup never allocates
-  const FROG_HOP_FPS = 24, FROG_REST_MIN = 1.2, FROG_REST_MAX = 3.5;   // 24 fps is the house rule; the rest between leaps is what stops it crossing the map
+  // ── AND NO REST BETWEEN CYCLES, WHICH IS THE EDITOR'S OWN CLOCK (user 2026-08-27: "the real world frog
+  // cycles through frames much slower, make it match the editor") ── the FRAME RATE was never the difference:
+  // MEASURED in the field against 24 fps, hop 718 ms / 708 expected, ribbet 592 / 583, tongue 1010 / 1000,
+  // rotate 711 / 708 — exact to within one frame of slop. What differed was the SILENCE between cycles. The
+  // stage plays with pauseMs = 0 (main/tick-support.js: "nothing holds on its last frame any more"), while the
+  // field sat 1.2-3.5 s between every cycle and was idle 80% of the time. A frog that holds frame 0 for four
+  // fifths of its life reads as one animating slowly, which is exactly the report.
+  // What the rest used to buy was containment — "what stops it crossing the map" — and that job now belongs to
+  // FROG_LEASH, which refuses any straight hop that would end further from its bank. The rest is not needed
+  // for it, and only 40 of the 100 mix points move the frog at all now (the ribbet and tongue play in place).
+  // The 0.6 s retry after a REFUSED cycle stays where it is: that one is not a rest, it is what stops a boxed
+  // -in frog re-running the landing test every frame.
+  // ── AND A SHORT, RANDOM REST IS BACK (user 2026-08-27: "implement the rest into the frog. not too much
+  // rest. can you make the rest randomized?") ── it always was randomized, uniformly between these two; what
+  // was wrong was the SIZE. The original 1.2-3.5 s left the frog idle 80% of the time, which is what read as
+  // the animation running slow. Zero matched the stage exactly and never stopped moving. 0.15-0.7 s is a beat
+  // between cycles rather than a pause: mean 0.42 s against a ~0.7 s cycle, so the frog is still animating
+  // roughly three fifths of the time and no two frogs fall into step.
+  const FROG_HOP_FPS = 24, FROG_REST_MIN = 0.15, FROG_REST_MAX = 0.7;   // 24 fps is the house rule, and it is the stage's rate too
+  // ── HOW FAR A FROG MAY GET FROM THE BANK IT WAS BORN ON ── the rest above slows the march down and does
+  // not stop it: the leap reuses the frog's own heading, so it goes the SAME way every time and drifts at a
+  // measured ~0.7 vox/s. DES_WATER decides where a frog is BORN and this is the half that keeps it there.
+  // 40 against DES_WATER's 14 means a frog is never more than ~54 voxels from water and usually far less,
+  // which is a pond's worth of roaming rather than a tether — see the leap in main/tick-creatures.js.
+  const FROG_LEASH = 40;
   // ── …AND WHO KEEPS ITS OLD HOME AND GAINS THE OAK FOREST ── the value is how many of the species' OWN
   // DES_PER slots go to the oak population, CLAMPED in main/tick-creatures.js to whatever its desert head-count
   // leaves spare. That clamp is the contract: raise DES_RARITY and the slots go BACK to the desert, the oak
@@ -338,6 +425,22 @@
   const BETTA_JOIN = 120, BETTA_HUDDLE = 16, BETTA_SCHOOL = 6, BETTA_APART = 70;
   const DES_APART = 160;        // between two of the SAME species — the one the eye reads as "geckos in a litter"
   const DES_APART_ANY = 64;     // between any two desert creatures — stops a mixed pile-up in one patch of sand
+  // ── …AND NEITHER OF THEM CAN APPLY TO A WATERSIDE SPECIES ── DES_WATER puts every frog in a ring of radius
+  // 14 around a water spot, so both floors above are larger than the whole area the species is allowed to
+  // occupy: the second frog on a pond is rejected on all twelve tries and the world holds one frog per lake.
+  // That is EXACTLY the bee-at-a-hive failure recorded at the floor itself in main/tick-creatures.js, and it
+  // has the same answer — a placement that is deliberately a cluster gets its own floor rather than the one
+  // written for scattered desert walkers. Not an exemption to zero, which is what let a pair end up touching:
+  // Read for BOTH floors, because the frogs are inside MAM_END..DES_END themselves and the cross-species one
+  // would otherwise reject them just as surely as the same-species one.
+  // ── 10 -> 20, AND IT DOES NOT RELAX (user 2026-08-27: "you seem to spawn 2 frogs together? dont do that") ──
+  // 10 is a frog's own body length, so two of them at the floor were touching, which is the pairing. 20 is over
+  // two lengths and is still satisfiable on one pond: three frogs on the 14-ring need 92 degrees of arc apart
+  // and 3 x 92 < 360. The no-relax half matters as much as the number — every other floor in this band decays
+  // cubically with `tries` so a cramped spot still fills, and on a ring this small that decay gives away
+  // exactly the thing being asked for (at the last try a 20 floor would have re-admitted a pair at 10).
+  // What it costs is honest: where a shore genuinely cannot hold three frogs apart, it holds fewer.
+  const DES_WATER_APART = 20;
   // ── THE BEE'S TWO ERRANDS (user 2026-08-17: bees 'going to flowers and sitting on them briefly', and
   // 'swarm around' a beehive) ── the bee flies the FLY's code path in every other respect; this is the whole
   // of what makes it a bee rather than a fly with stripes. Both errands are expressed as a GOAL BEARING fed
@@ -764,7 +867,7 @@
   // The two 2026-08-17 species split on exactly that line and neither is a guess about a new rule, only about
   // which side of the existing one they fall: the BEE is an insect like the fly and is absent, the GRASS
   // SNAKE is a 17-voxel snake beside the cobra's 19 and bleeds like it. Verify with __vb.meatSpecies().
-  const DES_MEAT = { desert_mouse: 1, cobra: 1, scorpion: 1, gecko: 1, grass_snake: 1 };
+  const DES_MEAT = { desert_mouse: 1, cobra: 1, scorpion: 1, gecko: 1, grass_snake: 1, frog: 1 };   // …and the FROG (user 2026-08-27: "when the player kills the frog, have it drop the raw steak like everything else"). It goes on the side of the line the mouse and the grass snake are on rather than the bugs' — the split this table draws is game you would eat against ant, fly, spider and bee, and a frog is plainly the former
   // WORLD creature pool. The LAYOUT is the ladder above — read the boundaries there, never off this line.
   //   FLY_0    flyers: butterflies by day, FIREFLIES after dark, dragonflies at the top of the band
   //   DUCK_0   mother ducks / BABY_0 ducklings, 3 per mother / WORM_0 worms (32 — DOUBLED AGAIN 2026-07-18)
@@ -802,7 +905,14 @@
   // kind-level share alone: bass 4.3 drawn, salmon 2.0; at a river bass 4.5, salmon 1.0. One guaranteed slot per
   // species costs 5 of the 28 and makes every species reliably present, which is the whole point of the floor.
   const LIFE_K_FLYER = 0, LIFE_K_DFLY = 1, LIFE_K_DUCK = 2, LIFE_K_BABY = 3, LIFE_K_WORM = 4, LIFE_K_OTHER = 5;
-  const LIFE_K_FISH = 6, LIFE_FISH_MAX = 8, LIFE_K_BIRD = LIFE_K_FISH + LIFE_FISH_MAX, LIFE_KINDS = LIFE_K_BIRD + 1;   // LIFE_K_BIRD = the ?uni perched songbirds. Their own bucket, not LIFE_K_OTHER: pooled with the land mammals a forest full of birds would spend the whole share and the mammals would never be the ones drawn - the same reason ducklings are counted apart from their mothers.   // 6..13 = one bucket per loaded fish species
+  // ── AND THE BEES GET THEIR OWN (user 2026-08-27: "I saw bees dissapear") ── they were in LIFE_K_OTHER,
+  // which is not a kind so much as everything left over: 421 perched songbirds, every land mammal and the
+  // whole desert band, all sharing ONE floor of 3. A bee is 3 voxels and flies at 56 vox/s, so it crosses the
+  // distance ranking constantly and loses its slot to whatever drifted nearer — MEASURED beside a hive, three
+  // bees at 119-132 voxels went on and off 44 times in thirty seconds while never once being recycled. The
+  // sim was never the problem, which is why it reads as blinking rather than as an animal leaving.
+  // Appended after LIFE_K_BIRD so no existing kind renumbers and the fish block is untouched.
+  const LIFE_K_FISH = 6, LIFE_FISH_MAX = 8, LIFE_K_BIRD = LIFE_K_FISH + LIFE_FISH_MAX, LIFE_K_BEE = LIFE_K_BIRD + 1, LIFE_KINDS = LIFE_K_BEE + 1;   // LIFE_K_BIRD = the ?uni perched songbirds. Their own bucket, not LIFE_K_OTHER: pooled with the land mammals a forest full of birds would spend the whole share and the mammals would never be the ones drawn - the same reason ducklings are counted apart from their mothers.   // 6..13 = one bucket per loaded fish species
   const LIFE_FLOOR = 3, LIFE_FLOOR_FISH = 2;           // the general floor, and TWO slots per fish species — one was enough to prove a species was present but not enough to keep it there while it swam (user: "the salmon is still dissapearing")
   // ── A DUCK FAMILY IS ONE THING (user 2026-08-05: "the ducks are still disappearing") ── MEASURED over 50 s
   // beside a lake, the mothers never despawned at all: 4 active every frame, ZERO despawn events. What the
@@ -810,9 +920,17 @@
   // a mother plus three babies, so three duckling slots across four families means a mother paddling alone or
   // with one chick behind her, which reads exactly like ducks vanishing. There are only ever 4 mothers and 12
   // ducklings, so guaranteeing a whole family is cheap and bounded: every mother, and two complete broods.
-  const LIFE_FLOOR_DUCK = 4, LIFE_FLOOR_BABY = 6;
+  const LIFE_FLOOR_DUCK = 4, LIFE_FLOOR_BABY = 6, LIFE_FLOOR_BEE = BEE_HIVE_N;   // …and the bees get a WHOLE HIVE's worth, tied to BEE_HIVE_N rather than written as a number
+  // ── AND THE FLOOR HAS TO BE THE SWARM, NOT A SHARE OF IT ── four was the duck's number and it did not work,
+  // for a reason the ducks never have: a hive's bees are all at the SAME distance. MEASURED with a floor of 4,
+  // five bees sat at 327, 329, 331, 331 and 331 voxels and still blinked 43 times in thirty seconds — the cut
+  // fell through the middle of the cluster, and because their ranking is decided by centimetres the identity
+  // of the one left outside changed every frame. A floor that ends inside a group of equals is not a floor.
+  // BEE_HIVE_N is exactly how many go to a hive, so it is exactly how many have to be guaranteed together;
+  // the remaining foragers are spread out and compete on distance like anything else, which is fine because
+  // spread out is the one arrangement where losing a slot does not read as a group flickering.
   const lifeFloorOf = (k) => k === LIFE_K_BIRD ? LIFE_FLOOR : (k >= LIFE_K_FISH ? LIFE_FLOOR_FISH
-    : (k === LIFE_K_DUCK ? LIFE_FLOOR_DUCK : (k === LIFE_K_BABY ? LIFE_FLOOR_BABY : LIFE_FLOOR)));   // the songbirds take the GENERAL floor - no special pleading for the kind that happens to be most numerous
+    : (k === LIFE_K_DUCK ? LIFE_FLOOR_DUCK : (k === LIFE_K_BABY ? LIFE_FLOOR_BABY : (k === LIFE_K_BEE ? LIFE_FLOOR_BEE : LIFE_FLOOR))));   // the songbirds take the GENERAL floor - no special pleading for the kind that happens to be most numerous
   // ── AND THE FLOOR ONLY APPLIES WHERE YOU COULD ACTUALLY SEE IT ── a reserved slot spent on a speck is worse
   // than no reservation at all. Without this gate the fair share did exactly that: MEASURED, a mother duck at
   // 626 voxels and a fish at 928 held reserved slots while nearer creatures went undrawn. So the guarantee is

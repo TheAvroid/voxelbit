@@ -95,8 +95,23 @@
         if (emitTake[j]) continue;
         emitTake[j] = 1; nT++;
       }
-      for (let i = 0; i < emitN; i++) {                // …emitted in distance order regardless of which pass claimed them
-        const j = idx[i]; if (!emitTake[j]) continue;
+      // ── AND THE SLOTS GO OUT IN A STABLE ORDER (user 2026-08-27: "audit the entire game for this flicker
+      // effect. seems to happen on unstatic objects") ── the three passes above decide WHO is drawn; this loop
+      // only decides WHICH SLOT each one lands in, and it was walking the distance order. A drop slot is not a
+      // neutral container: lifeUid/lifeUidPrev are compared per slot and a changed occupant sets the history-
+      // rejection bit a few lines below (`fl9 |= 4`, "compaction churn"), so every time two creatures swapped
+      // distance rank they swapped slots and BOTH had their temporal history thrown away — while being drawn
+      // perfectly, every frame. MEASURED beside an oak wood: 1,629 slot changes in 1,200 frames, 1.36 a frame,
+      // and all 53 drawn creatures moved at least once — roughly nine history resets a second, each. That is a
+      // shimmer on everything that moves, which is exactly the shape of the report.
+      // Sorting the chosen set by emitWho — the creature's own pool slot, an identity that never changes —
+      // means a creature keeps its drop slot for as long as it stays in the drawn SET, and the only churn left
+      // is the real one: something entering or leaving that set. Order is free to change because nothing reads
+      // it: the trace takes the NEAREST hit (`tHit < bestT`), not the first, and the slots stay contiguous, so
+      // UF[1103] still bounds the shader's loop exactly as before.
+      idx.sort((a, b) => (emitTake[b] - emitTake[a]) || (emitWho[a] - emitWho[b]));   // taken first, then by identity — in place, no allocation
+      for (let i = 0; i < emitN; i++) {
+        const j = idx[i]; if (!emitTake[j]) break;
         const src = j * 16, slot = dropCursor, o4 = dropOff(slot); dropCursor++;
         for (let k = 0; k < 16; k++) UF[o4 + k] = emitBuf[src + k];
         lifeSlotSet(slot, 2000 + emitWho[j], emitAnc[j * 3], emitAnc[j * 3 + 1], emitAnc[j * 3 + 2], Math.round(emitBuf[src + 7]), emitAna[j] === 1); }
@@ -266,6 +281,23 @@
         const qx9 = Math.max(0, Math.min(1023, ((b.pos[0] - winOX) >> 2))), qy9 = Math.max(0, Math.min(1023, (b.pos[1] >> 2)));
         const qz9 = Math.max(0, Math.min(1023, ((b.pos[2] - winOZ) >> 2)));
         ord9.push([mor9(qx9) | (mor9(qy9) << 1) | (mor9(qz9) << 2), b]);
+      }
+      // ── AND WHICH BODIES GET THE SLOTS IS DECIDED BY DISTANCE, NOT BY THE MORTON KEY ── the publish below
+      // stops at PHYS_MAX, so when there are more bodies than slots the sort order decides who is drawn. Morton
+      // is exactly the right key for GROUPING (see above) and exactly the wrong one for CHOOSING: it is a
+      // spatial hash, so the cut falls wherever the interleave happens to put it, and a chunk in front of the
+      // player is dropped as readily as one behind the hill. Worse, a tumbling chunk's Morton code changes as
+      // it moves, so the set on the wrong side of the cut churns frame to frame — which is a pile of debris
+      // blinking, the same shape of bug as a creature losing its draw slot to a ranking that will not sit still.
+      // So: pick the nearest PHYS_MAX first, then Morton-sort THOSE for publication, which keeps the group
+      // spheres as tight as they were. When the cap is not binding — the ordinary case — this does nothing at
+      // all beyond one length test, and the published set is identical.
+      if (ord9.length > PHYS_MAX) {
+        for (const e9 of ord9) { const b9 = e9[1];
+          const dx9 = b9.pos[0] - P.x, dy9 = b9.pos[1] - P.y, dz9 = b9.pos[2] - P.z;
+          e9[2] = dx9 * dx9 + dy9 * dy9 + dz9 * dz9; }
+        ord9.sort((p9, q9) => p9[2] - q9[2]);
+        ord9.length = PHYS_MAX;
       }
       ord9.sort((p9, q9) => p9[0] - q9[0]);
       for (const pr9 of ord9) {

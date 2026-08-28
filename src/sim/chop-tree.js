@@ -682,6 +682,27 @@
     // genuinely detached island) is left alone rather than stitched across air to something it does not
     // touch. Smallest host, so the fold evens the sizes out instead of feeding whichever piece it met first.
     const MINP = Math.max(2, cap9 >> 2);
+    // ── AND THE MERGE RESPECTS THE EXTENT BOUND TOO ── both grow passes above refuse a cell that would make a
+    // piece a rod, and this pass used to undo that: it folds a scrap into a neighbouring host with no check at
+    // all, so two capped 22-long segments of a bole became one 44-long one, and three became 72. MEASURED
+    // across a 16-tree scene: median longest axis 20 (the cap working) against a worst of 8 x 72 x 6, and 220
+    // of 220 bodies came from this function. That worst piece IS the "long trunk left intact" report — a
+    // single tree in isolation never showed it, because it takes several scraps in a row to chain.
+    // A host that cannot take the scrap without becoming a rod is simply not a candidate; if none qualifies
+    // the scrap stays its own piece, which is the branch below that already exists for a real island.
+    const nB = buckets.length;
+    const mnx = new Int32Array(nB).fill(1e9), mxx = new Int32Array(nB).fill(-1e9);
+    const mny = new Int32Array(nB).fill(1e9), mxy = new Int32Array(nB).fill(-1e9);
+    const mnz = new Int32Array(nB).fill(1e9), mxz = new Int32Array(nB).fill(-1e9);
+    for (let q = 0; q < nB; q++) { const bk = buckets[q];
+      for (let i2 = 0; i2 < bk.length; i2++) { const c = bk[i2];
+        const cx9 = c % sx, cz9 = ((c / sx) | 0) % sz, cy9 = (c / sxz) | 0;
+        if (cx9 < mnx[q]) mnx[q] = cx9; if (cx9 > mxx[q]) mxx[q] = cx9;
+        if (cy9 < mny[q]) mny[q] = cy9; if (cy9 > mxy[q]) mxy[q] = cy9;
+        if (cz9 < mnz[q]) mnz[q] = cz9; if (cz9 > mxz[q]) mxz[q] = cz9; } }
+    const fitsIn = (hq, sq) => Math.max(mxx[hq], mxx[sq]) - Math.min(mnx[hq], mnx[sq]) < PH.fellChunkSpan
+                            && Math.max(mxy[hq], mxy[sq]) - Math.min(mny[hq], mny[sq]) < PH.fellChunkSpan
+                            && Math.max(mxz[hq], mxz[sq]) - Math.min(mnz[hq], mnz[sq]) < PH.fellChunkSpan;
     for (let q = 0; q < buckets.length; q++) {
       const bk = buckets[q];
       if (!bk.length || bk.length >= MINP) continue;
@@ -691,10 +712,13 @@
         for (let t = 0; t < m; t++) { const ow = own[nb9[t]] - 1;
           if (ow < 0 || ow === q || !present[nb9[t]]) continue;
           const n2 = buckets[ow].length;
-          if (n2 && n2 < hostN) { hostN = n2; host = ow; } }
+          if (n2 && n2 < hostN && fitsIn(ow, q)) { hostN = n2; host = ow; } }
       }
       if (host < 0) continue;                        // nothing touches it — a real island, and it stays its own piece
       for (let i2 = 0; i2 < bk.length; i2++) { own[bk[i2]] = host + 1; buckets[host].push(bk[i2]); }
+      if (mnx[q] < mnx[host]) mnx[host] = mnx[q]; if (mxx[q] > mxx[host]) mxx[host] = mxx[q];
+      if (mny[q] < mny[host]) mny[host] = mny[q]; if (mxy[q] > mxy[host]) mxy[host] = mxy[q];
+      if (mnz[q] < mnz[host]) mnz[host] = mnz[q]; if (mxz[q] > mxz[host]) mxz[host] = mxz[q];
       bk.length = 0;
     }
     PH.bodies.splice(i, 1);                            // out of the list BEFORE rebuilding, exactly as the body-chop path above does

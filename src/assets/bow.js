@@ -647,7 +647,7 @@
   // the file, and world/gen-pool.js ships it to the workers, which rebuild BIRCHV through birchDec and would
   // otherwise disagree with the main thread about which voxels are trunk.
   let BIRCHNB = 3;
-  let BIRCHV = [], BIRCHENC = [], BIRCHBARK = [], BIRCHIDS = [], BIRCHPICK = [], BIRCH_BANCH = [];
+  let BIRCHV = [], BIRCHENC = [], BIRCHBARK = [], BIRCHIDS = [], BIRCHPICK = [], BIRCH_BANCH = [], BIRCH_ANCH = [];
   // -- WHERE A BEEHIVE HANGS IN A BIRCH (user 2026-08-24: "attach beehives to some of the birch trees") --
   // Registered as a FUNCTION and re-run per gen worker off that worker's own BIRCHV, exactly as birchPick is
   // (world/gen-pool.js) and for the same reason: shipping the table would mean snapshotting it at whatever
@@ -657,6 +657,52 @@
   // cannot disagree.
   // Declared here, above the async birch load that calls it, because anything below that load is unreachable
   // from inside it - the same temporal dead zone that already caught HIVEV and voxShellAir.
+  // ── WHERE A LEAF LETS GO OF A BIRCH (user 2026-08-27: "have leaves fall in the birch forest like the other
+  // trees") ── PINE_ANCH's rule and OAK_ANCH's, third time: a CANOPY voxel with clear cells directly beneath
+  // it, so the leaf is visible from the frame it is born and does not appear out of the middle of the crown.
+  // The three differences from birchBanch above are all the same difference — a leaf is not a beehive:
+  //   * it wants LEAF voxels, so the bark test is inverted (index >= BIRCHBARK.length, the same index into
+  //     BIRCHIDS that block uses, and for its reason: foliaTab is still empty this early in the load);
+  //   * four clear cells below, not the hive's whole 5x5x5 box — one leaf needs somewhere to fall, not a
+  //     place to sit, so the strict clearance would throw away most of the crown for nothing;
+  //   * and a much higher cap, because this list is sampled once per shed rather than once per tree: 96 is
+  //     PINE_ANCH's own number and it is what makes the fall ring the crown instead of pouring off one side.
+  // Angle-sorted with the packed coordinate breaking ties, exactly as birchBanch is, so the list is a pure
+  // function of the SET of voxels and a gen worker rebuilding BIRCHV from the varint cannot disagree with the
+  // main thread about it.
+  const birchLanch = (BV) => {
+    // ── EDGE 1 -> 3, DROP 4 -> 7 (user 2026-08-27: "I see falling leaves off the birch tree flicker or
+    // dissapear") ── a leaf born inside a canopy voxel is invisible until it falls clear of it, which is the
+    // blink. Some of that is unavoidable in any wood, because crowns overlap and a cell this model calls
+    // empty can hold a NEIGHBOUR's foliage: MEASURED at 18% of births in the oak and 17% in the pine. The
+    // birch was 32%, nearly double, and the two reasons are both here. EDGE 1 took anchors hard against the
+    // model boundary, which is exactly where a neighbouring crown is most likely to be standing; the oak's
+    // own anchor list uses 3 and birchBanch beside this uses 2. And four clear cells is the shallowest drop
+    // that can be called clear at all, so any overlap at all put a leaf straight back into foliage.
+    const OUT = [], LMAX = 96, EDGE = 3, DROP = 7, NBK = BIRCHBARK.length;
+    for (let k = 0; k < BV.length; k++) {
+      const m = BV[k], sx = m.sx, sy = m.sy, sz = m.sz;
+      const occ = new Uint8Array(sx * sy * sz);
+      for (const q of m.vox) occ[(q & 255) + ((q >> 8) & 255) * sx + ((q >> 16) & 511) * sx * sy] = 1;
+      const L = [];
+      for (const q of m.vox) {
+        const x = q & 255, y = (q >> 8) & 255, z = (q >> 16) & 511;
+        if ((q >>> 25) < NBK) continue;                // bark — a leaf falls off a leaf
+        if (x < EDGE || x >= sx - EDGE || y < EDGE || y >= sy - EDGE) continue;
+        if (z < DROP + 1) continue;                    // nothing to fall through
+        let clear = true;
+        for (let d = 1; d <= DROP && clear; d++) if (occ[x + y * sx + (z - d) * sx * sy]) clear = false;
+        if (clear) L.push(x | (y << 8) | (z << 16));
+      }
+      const ang = (u) => Math.atan2(((u >> 8) & 255) - sy * 0.5, (u & 255) - sx * 0.5);
+      L.sort((u, v) => (ang(u) - ang(v)) || (u - v));
+      const out = [];
+      if (L.length <= LMAX) { for (const u of L) out.push(u); }
+      else for (let i = 0; i < LMAX; i++) out.push(L[Math.floor(i * L.length / LMAX)]);   // EVEN sample of the angle order, so the cap costs coverage evenly instead of one arc
+      OUT.push(out);
+    }
+    return OUT;
+  };
   const birchBanch = (BV) => {
     const OUT = [];
     // -- WHERE A BEEHIVE HANGS IN A BIRCH (user 2026-08-24: "attach beehives to some of the birch trees") --
@@ -1019,6 +1065,8 @@
     BIRCHENC = BIRCHV.map((m) => ({ sx: m.sx, sy: m.sy, sz: m.sz, n: m.vox.length, vox: birchEnc(m.vox) }));
     BIRCHPICK = birchPick(BIRCHV);                     // the density-weighted draw — see birchPick
     BIRCH_BANCH = birchBanch(BIRCHV);
+    BIRCH_ANCH = birchLanch(BIRCHV);
+    console.log('[vb] birch leaf anchors:', BIRCH_ANCH.map((a) => a.length).join('/'));
     console.log('[vb] birch hive anchors:', BIRCH_BANCH.map((a) => a.length).join('/'));
     console.log('[vb] birches:', BIRCHV.length, 'trees from .vox,', BIRCHV.reduce((a2, m) => a2 + m.vox.length, 0),
       'voxels,', BIRCHBARK.length, 'bark ids (MINTED) +', BIRCHIDS.length - NB, 'leaf ids (shared with the oak), tallest',

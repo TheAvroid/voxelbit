@@ -250,7 +250,7 @@
     if (creatureRagdoll(B)) B.rag = true;
     HURT.slot = best; HURT.hold = false; hurtBox(B); HURT.t0 = performance.now();
     B.hopT0 = B.rag ? undefined : performance.now();    // BOUNCE (user) — every hit, wounding or killing. A ragdoll does its own falling; the scripted hop would fight it.
-    pendDeath.push({ slot: best, at: performance.now() + (blink ? HURT_MS : 0) });   // …and with no flash to wait out, it dies immediately
+    pendDeath.push({ slot: best, at: performance.now() + (blink ? HURT_MS : 0), born: B.born });   // …and with no flash to wait out, it dies immediately   // `born` is the slot's IDENTITY, so the reap can tell an emptied slot from a refilled one
   };
   const dropMeat = (B) => {                             // RAW MEAT where a land mammal fell (user): lands as an ordinary drop, so it hovers, spins and can be picked up like anything else
     const lx = Math.round(B.x), lz = Math.round(B.z);
@@ -274,17 +274,28 @@
     if (!gone) { if (B.sN) unstampWorm(B); spawnDeathBurst(B.x, B.perchFeet || B.y, B.z); }   // no body to be had (physics off, no slot) — at least poof where it sat
     else B.rag = true;
     B.dieT = 0; B.slain = true;
-    if (gone) pendDeath.push({ slot: wbf.indexOf(B), at: performance.now() + HURT_MS });   // …the poof follows the fall, exactly as a struck animal's does
+    if (gone) pendDeath.push({ slot: wbf.indexOf(B), at: performance.now() + HURT_MS, born: B.born });   // …the poof follows the fall, exactly as a struck animal's does
     else B.init = false;
   };
   const pendDeath = [];                                 // creatures mid-blink: {slot, at} — they die for real when the flash finishes
   const reapDeaths = (nowMs) => {                        // …and this is where that happens, one blink later
     for (let i = pendDeath.length - 1; i >= 0; i--) {
       if (nowMs < pendDeath[i].at) continue;
-      const slotD = pendDeath[i].slot;
+      const entD = pendDeath[i], slotD = entD.slot;
       const B = wbf[slotD];
       pendDeath.splice(i, 1);
-      if (!B || !B.init) continue;
+      if (!B) continue;
+      // ── A SLOT RETIRED DURING THE FLASH IS STILL A KILL (user 2026-08-27: "when I killed a frog, a new one
+      // spawned in its place") ── `!B.init` used to skip this whole teardown, and the one piece of it that
+      // must happen regardless is B.slain: without it the slot is merely EMPTY, so the population controller
+      // fills it again with the same species, in the same place, and the animal the player just killed looks
+      // like it came back. Half a second is long enough for one of the walker escapes in tick-creatures to
+      // retire a body that cannot move, which is how a dying creature ends up here already deactivated.
+      // Identity is B.born, the idiom the stuck-drop tracker already uses (main/tick-support.js:74): a slot
+      // that has since been REFILLED holds a different animal and must be left alone, but an emptied one is
+      // still the one that died. Nothing else runs for it — no poof, no meat — it is already off the field.
+      if (entD.born !== undefined && B.born !== entD.born) continue;
+      if (!B.init) { B.slain = true; B.dieT = 0; B.dying = false; continue; }
       if (MEAT_IT && pendDeath.length >= 0 && (B.mammal || B.kind === 6)) dropMeat(B);   // LAND MAMMALS leave RAW MEAT behind (user) — and FISH do too (user 2026-08-19), floated to the waterline by dropMeat rather than left on the seabed — armed at the hit, since B.x/B.y are about to stop being maintained
       // …the poof goes where the animal ACTUALLY IS. A ragdoll has been falling for the whole flash, so B.x/B.y
       // is where it was standing half a second ago; its body knows where it landed (user: it dies with the sparks).

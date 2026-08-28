@@ -258,7 +258,22 @@
       for (let i = 0; i < 24; i++) { const a = i * 0.2617994;
         if (desertM(P.x + Math.cos(a) * CARD_KEEP * 0.7, P.z + Math.sin(a) * CARD_KEEP * 0.7) <= 0.15) ok++; }
       return ok / 24; })();
-    const nCard = CARD_NFRAMES ? Math.round(CARD_N * treeFrac) : 0;   // the FULL pool in forest, and nothing in open sand
+    // ── AND THE BIRCH WOOD ASKS FOR TWICE AS MANY (user 2026-08-27) ── treeFrac only answers "is this ring
+    // forest AT ALL", which is what the desert term needed and is deliberately blind to WHICH forest. The
+    // birch multiplier rides on the same 24-point ring so the two agree by construction, and it RAMPS: at the
+    // band edge, where half the ring is birch and half is pine, the count lands halfway rather than stepping.
+    // CARD_BASE, never CARD_N, is the non-birch number — CARD_N is now just the pool's width (see slots.js),
+    // and asking for the whole pool outside the birch is the 4,200-wasted-placements-a-frame mistake the note
+    // above records, one biome over.
+    const birchFrac = (() => { let ok = 0;
+      for (let i = 0; i < 24; i++) { const a = i * 0.2617994;
+        if (birchM(P.x + Math.cos(a) * CARD_KEEP * 0.7, P.z + Math.sin(a) * CARD_KEEP * 0.7) > 0.5) ok++; }
+      return ok / 24; })();
+    // __vb.cardN(n) forces this count, so the perched band can be A/B'd at a fixed spot without a rebuild —
+    // which is the only honest way to price it, because every boot re-randomises the biome layout under a
+    // fixed coordinate (see the vbharness note in docs). -1 = follow the biome, the shipping behaviour.
+    const nCard = CARD_NFRAMES ? (CARD_FORCE >= 0 ? Math.min(CARD_N, CARD_FORCE)
+                  : Math.round(CARD_BASE * treeFrac * (1 + (CARD_BIRCH_K - 1) * birchFrac))) : 0;   // the FULL pool in birch, CARD_BASE in any other wood, and nothing in open sand
 
     LIFE_WANT.perched = nCard; LIFE_WANT.fish = nFish; LIFE_WANT.worm = nWorm; LIFE_WANT.flyer = nAct; LIFE_WANT.duck = nDuck;
     // flamingo is published too, or lifeBands().want has no key for it and the band cannot be checked
@@ -296,10 +311,49 @@
     // drawn this frame — imperceptible on a fleck, decisive for an animal. Creatures are guaranteed
     // 128 - 9 - PART_CAP - BIRD_SLOTS = 83 slots no matter what the weather is doing.
     const PART_CAP = 28;
-    { let sN = 0;                                    // ── COMPACT THE PARTICLE BAND ── see sparkSlot in ui/achievements.js
+    // ── A PARTICLE KEEPS THE SLOT IT WAS BORN INTO (user 2026-08-27: "I saw a birch tree falling leaf
+    // flicker", "and sometimes it just dissapears") ── this used to RE-PACK the band every frame, walking
+    // sparks3d in index order and handing out 9, 10, 11… to whatever was alive. Its own note in
+    // ui/achievements.js says what that costs: "only the slot each one writes to moves". Two bugs fall out
+    // of it, and the falling leaves get both because they are by far the longest-lived particle here
+    // (PETAL_MAXLIFE 14 s against a splash droplet's 0.9 and a tear's 0.7):
+    //   · FLICKER. Every birth or death at a LOWER index shifts every live particle above it down a slot.
+    //     A drop slot IS the denoiser's identity for that pixel (lifeUid / lifeUidPrev), so a shift rejects
+    //     the leaf's whole history and it re-converges from nothing. MEASURED in the birch wood: 1,388 slot
+    //     changes over 95,571 live-leaf frames.
+    //   · DISAPPEARING. The cap cuts at `sN < PART_CAP`, i.e. in INDEX ORDER, and the petal band is 24..56 —
+    //     the highest indices there are. So the leaves are always the ones cut, and the petal band is 32
+    //     slots against a PART_CAP of 28, so it overflows on its own with no other particle in the world.
+    //     MEASURED: the cap was hit on 2,994 of 2,994 frames and 12.3% of live-leaf frames were never drawn.
+    // Ownership is persistent instead: a live particle that already holds a slot keeps it, the dead release
+    // theirs, and only genuinely NEW particles allocate — lowest free first, so the band still packs down.
+    // A particle that finds the budget full at birth is marked -2 and stays undrawn for its whole life. That
+    // is deliberate and it is the same rule the splash already follows ("skip this tear rather than cut a
+    // live one short"): a leaf that never appears cannot be seen to be missing, while one that pops into
+    // existence halfway down can. sparkBorn is what separates "still the same particle" from "the index was
+    // reused", which is the only thing this needs to remember between frames.
+    // LIVENESS IS COMPUTED ONCE, INTO partLive, AND EVERY PASS BELOW READS IT. A particle is not reaped on
+    // the frame it expires — main/tick-emit.js nulls sparks3d[i] later in the same tick — so "sparks3d[i] is
+    // not null" is NOT the same question as "is it alive", and an allocator that asked the first one handed
+    // slots to the dead. That inflated the band the COMPOSITE walks per pixel (the trace skips it in one
+    // jump; composite cannot, the particles are analytic) and cost 2.7 -> 5.3 ms on the gate.
+    { let sN = 0;
       for (let i = 0; i < sparks3d.length; i++) { const sp = sparks3d[i];
-        const live = sp && (now - sp.born) / 1000 <= sp.life;
-        sparkSlot[i] = (live && sN < PART_CAP) ? (9 + sN++) : -1; }
+        const live = !!sp && (now - sp.born) / 1000 <= sp.life;
+        partLive[i] = live ? 1 : 0;
+        if (!live) { sparkSlot[i] = -1; sparkBorn[i] = 0; continue; }
+        if (sp.born !== sparkBorn[i]) { sparkBorn[i] = sp.born; sparkSlot[i] = -1; }   // the index was recycled — this is a NEW particle, so it must allocate rather than inherit
+      }
+      partUsed.fill(0);
+      for (let i = 0; i < sparks3d.length; i++) { const s9 = sparkSlot[i]; if (partLive[i] && s9 >= 9) partUsed[s9 - 9] = 1; }
+      for (let i = 0; i < sparks3d.length; i++) {
+        if (!partLive[i] || sparkSlot[i] !== -1) continue;   // -2 = refused at birth and never reconsidered, so it cannot pop in mid-fall
+        let got = -1;
+        for (let q9 = 0; q9 < PART_CAP; q9++) if (!partUsed[q9]) { got = q9; break; }
+        if (got < 0) { sparkSlot[i] = -2; continue; }
+        partUsed[got] = 1; sparkSlot[i] = 9 + got;
+      }
+      for (let q9 = 0; q9 < PART_CAP; q9++) if (partUsed[q9]) sN = q9 + 1;   // HIGH-WATER, not a count: ownership can leave a hole until the next spawn fills it (lowest-free), and the creatures start above the last slot in use
       // ── THE EDITOR'S LIFE STARTS ABOVE THE ANALYTIC BAND ── render/wgsl/trace.js walks the drop slots and
       // steps straight over 5..24: "the 20 death-burst slots are analytic-only". That band is a CONSTANT in the
       // shader while this base is computed here, and the two only agree because the world always has particles:
@@ -319,6 +373,10 @@
       // then draws. That is the loose green voxels: stale leaf/petal poses from before the editor opened,
       // pinned in place because nothing updates them any more (user 2026-08-22).
       // Item id 0 is the empty-slot marker every other drop writer uses, so one store per orphaned slot clears it.
+      // …and the HOLES the persistent ownership leaves inside the band get the same treatment, for the same
+      // reason: the shader walks every slot below the base whether or not anything wrote it, so an unowned
+      // slot would keep drawing whatever particle used to live there.
+      for (let q9 = 0; q9 < sN; q9++) if (!partUsed[q9]) UF[dropOff(9 + q9) + 7] = 0;
       for (let s9 = 9 + sN; s9 < lifeSlotBase; s9++) UF[dropOff(s9) + 7] = 0; }
     let dropCursor = lifeSlotBase;             // COMPACTION: live creatures emit to consecutive slots ABOVE the particle band (5 + pool size, so 29 now that pollen took four); the count goes to the shader in pick2Y.w so its per-pixel loop covers only what exists. (5-24 = the 20 fixed death-burst slots: 4 sparks + 16 individual smoke voxels, user)
     // ── THE FLOCK NO LONGER TAKES THE WHOLE BUDGET (user 2026-08-05: ducklings, salmon and ducks all missing) ──

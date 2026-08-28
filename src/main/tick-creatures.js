@@ -1,6 +1,21 @@
     for (let wk = 0; wk < DES_END; wk++) {
       const B = wbf[wk];
       if (B.slain) continue;
+      // ── A BODY WITH NO REAL POSITION IS NOT A BODY (user 2026-08-27: "only the mother duck is showing. I
+      // dont see the babies") ── NaN loses every comparison it takes part in, so a slot that has picked one up
+      // reads as NEAR to the surplus grace, INSIDE the recycle radius and CLOSE ENOUGH to its mother to the
+      // rejoin test: not one of them can retire it, because each is a `>` or a `<` and NaN fails them all.
+      // Meanwhile it still emits, at NaN, which draws nothing at all — so the slot is spent on an invisible
+      // creature for ever. MEASURED on the ducklings at a lake: NINE of twelve held init and a drop slot for
+      // 600 straight frames with x = NaN, mothers long retired, which is a brood you cannot see beside a
+      // mother you can. Caught HERE, at the top, before any test downstream can be fooled by it.
+      // X AND Z ONLY. B.y is NOT part of the test and must not be: a PERCHED songbird keeps its height in
+      // perchFeet and its B.y is deliberately stale (see the poof at reapDeaths, which reads perchFeet for
+      // exactly this reason), so including y here retired all 421 of them every frame and set the whole perch
+      // search running again — MEASURED at 35-46 ms of life tick across every biome, a 28 fps world, for a
+      // guard that was meant to cost nothing. The plane position is the thing every body genuinely has and
+      // the thing every distance test is built on, which is all this needs to protect.
+      if (B.init && !(isFinite(B.x) && isFinite(B.z))) { if (B.sCells) unstampWorm(B); B.init = false; B.dieT = 0; continue; }
       // ── EVERY CREATURE BLINKS (user 2026-08-19: "implement a universal blinking feature") ── one clock for
       // all of them, on the state the duck already used, so no creature can end up with two blink timers
       // disagreeing. Read only by the creatures whose strip actually carries lid variants (BLINK_HAS, at the
@@ -106,7 +121,7 @@
         : (fishSlot ? (wk - FISH_0 < nFish)
         : (lilySlot ? (wk - CARD_0 < nCard)
         : (wormSlot ? (wk - WORM_0 < nWorm || (B.init && B.rel))
-        : (isBaby ? (!!DUCKB_ITEM0 && (orphan ? B.init : (mom5.init && sib < (mom5.nBab || 0))))   // a duckling exists only while its mother does, up to her brood size — unless she was KILLED, in which case it carries on alone until it is killed too
+        : (isBaby ? (!!DUCKB_ITEM0 && (orphan ? B.init : (mom5.init && isFinite(mom5.x) && isFinite(mom5.z) && sib < (mom5.nBab || 0))))   // …and she must have a REAL position: a duckling is placed by arithmetic on hers, so a mother who is init without one hands the whole brood NaN — and a NaN body cannot be retired by any distance test, because every one of them is a comparison and NaN loses them all. Asked HERE, in `active`, rather than only at the placement: refusing there instead sends the brood down the generic 12-try water search every single frame, which it can never satisfy inland — MEASURED at 56 ms of life tick, a 25 fps world   // a duckling exists only while its mother does, up to her brood size — unless she was KILLED, in which case it carries on alone until it is killed too
         : (duckSlot ? (wk - DUCK_0 < nDuck) : (wk < nAct)))))))))));   // B.rel = a worm the player RELEASED with Q — lives beyond the population cap until it recycles  [three extra ) close the porcSlot + skunkSlot + armSlot branches]
       // ── A CREATURE THE PLAYER IS FIGHTING IS NOT SURPLUS (user 2026-08-20: "I was hitting an armadillo and it
       // dissapeared") ── `active` is the population controller's verdict, and it is a COUNT: when the target
@@ -164,6 +179,21 @@
       // census tick, so a waterSpots count wobbling across a >>2 boundary cannot churn the band.
       if (wantK === 0 && B.init && !B.dieT) { if (!!B.dfly === isDfly) B.dfMis = 0; else if (!B.dfMis) B.dfMis = now; else if (now - B.dfMis > 3000) { B.dfMis = 0; B.dieT = now; } }
       if (B.dieT && now - B.dieT > 700) { B.dieT = 0; if (B.sN) unstampWorm(B); B.init = false; }   // …and the STAMP goes with it: deactivating a grid-stamped creature without unstamping leaves its voxels in W and its cells in stampedIdx, permanently exempt from every support test
+      // ── AN EMPTY SLOT NOBODY WANTS IS NOT TICKED AT ALL (2026-08-27) ── everything below this line steers,
+      // seats, stamps or recycles A CREATURE, and a slot that is both uninitialised and surplus holds none.
+      // It still ran the whole body, and the expensive part is not the arithmetic: an empty slot has no kind,
+      // so the kind chain falls through to the FLYER arm and calls navSteerAir — a 16-candidate fan, each
+      // candidate a navReachAir DDA — on a creature that does not exist.
+      // MEASURED, oak forest, same 421 live birds either way: the arbiter ran 136 fan ticks per frame with no
+      // idle card slots and 597 with 421 of them, i.e. ~1.05 wasted fans per idle slot per frame, and
+      // navSteerAir + navFitsAir were 55% of the whole profile. Frame 6.9 -> 14.5 ms, 146 -> 65 fps.
+      // Confirmed against a third point rather than assumed: the birch wood, where most of the pool IS wanted,
+      // sat in between at 210 idle slots and 374 ticks. The count of idle slots predicts it, not the biome.
+      // This is PRE-EXISTING — it is what an empty desert already did to all 421 card slots, and what the
+      // treeFrac note above is really describing — but the birch multiplier makes a standing surplus the
+      // normal state of every non-birch wood, so it stops being a corner and starts being the common path.
+      // `!B.dieT` keeps a creature that is mid-shrink: the 0.7 s fade above still has to finish and clear init.
+      if (surp9 && !B.init && !B.dieT) continue;
       // Perched birds recycle at CARD_KEEP, and the CARD_N pool is sized in slots.js so that it runs out at about that same radius.
       // Because the frontier sits far beyond anything you can pick out, a bird activating there is invisible — which
       // is why this no longer needs the "only spawn behind the player" rule the random placement depended on.
@@ -225,18 +255,37 @@
           B.wdT = tb3; B.wdX = B.x; B.wdZ = B.z;
         }
       }
-      if (!B.init || far || beeOut || beeStray || (B.trap > 12 && (B.kind < 3 || B.kind === 6 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; a duck/lily wedged ON real water NEVER teleports (the unstick frees it), but a FISH sealed in a rock pocket the escape can't solve does (respawns in open water)
+      // ── A SLOT THE POPULATION CONTROLLER DOES NOT WANT IS NEVER RE-FILLED (2026-08-27) ── this block asks
+      // only "does this slot need a spot", never "is this slot supposed to exist", so a SURPLUS slot went
+      // round in a permanent loop: surp9 starts the 0.7 s shrink, the timer clears B.init, `!B.init` sends it
+      // straight back in here, findPineCrown hands it a fresh perch, and surp9 marks it surplus again. It
+      // could not drain and it could not stop. MEASURED after walking a birch wood into a pine one: 318
+      // surplus songbirds still alive 90 s later, each carrying a dieT only ~400 ms old — not one population
+      // decaying but 318 slots re-placing themselves twice a second, findPineCrown and all.
+      // It was invisible before because no band ever held a large STANDING surplus in ordinary country: every
+      // wood asked for the whole songbird pool, so `wk - CARD_0 < nCard` was true for the entire band, and the
+      // desert case (nCard 0) is the one place it could bite. The birch multiplier makes a surplus the normal
+      // state of every non-birch wood, which is what surfaced it.
+      // surp9, not !active, so the two reprieves above still hold: a creature being HIT and one standing near
+      // enough to see are both re-placed exactly as before. An orphan duckling is handled by the same test —
+      // its `active` IS B.init, meaning an existing orphan lives and a new one is never made, which is what
+      // skipping the placement gives it.
+      if (!surp9 && (!B.init || far || beeOut || beeStray || (B.trap > 12 && (B.kind < 3 || B.kind === 6 || !bfWater(B.x, B.z))) ||   // trap > 12 s = escape truly failed — mercy recycle; a duck/lily wedged ON real water NEVER teleports (the unstick frees it), but a FISH sealed in a rock pocket the escape can't solve does (respawns in open water)
           B.x <= rect.xlo + 4 || B.x >= rect.xhi - 4 || B.z <= rect.zlo + 4 || B.z >= rect.zhi - 4 ||   // the window recentred/shrank under it — this ground is stale garbage, leave it
           (isBaby && !orphan && (B.x - mom5.x) * (B.x - mom5.x) + (B.z - mom5.z) * (B.z - mom5.z) > 40 * 40) ||   // a duckling stranded from its (recycled) mother rejoins her — an ORPHAN has nowhere to rejoin, and must not be teleported to where its mother died
           ((B.kind === 3 || B.kind === 4 || B.kind === 6) && !isBaby && ((frame + wk) & 63) === 0 && !bfWater(B.x, B.z)) ||   // recycle ONLY a DUCK/LILY/FISH genuinely OFF real water (dry ravine/land after a recenter) — NOT a perched cardinal (kind 5, never on water) and NOT one merely near a shore
-          (B.trap > 4 && (dp2 > 0.7 * 0.7 * rdK * rdK || (B.kind < 3 && bfObst(B.x, B.y, B.z))))) {   // stuck 4 s: recycle if far in the fog OR body-in-solid (kinds <3 only — a duck's body dips into the WATER voxel in wave troughs, which is not 'stuck')
+          (B.trap > 4 && (dp2 > 0.7 * 0.7 * rdK * rdK || (B.kind < 3 && bfObst(B.x, B.y, B.z)))))) {   // stuck 4 s: recycle if far in the fog OR body-in-solid (kinds <3 only — a duck's body dips into the WATER voxel in wave troughs, which is not 'stuck')
         if (B.rel) B.rel = false;                      // a released worm that leaves/loses its spot rejoins the normal population rules
         let placed = false;
         if (wantK === 5) {                             // PERCHED CARDINAL: find a nearby pine crown to sit on (its own search — not the generic open-spot one)
           const pc = findPineCrown(wk);
           if (pc) { B.tx = pc.tx; B.tz = pc.tz; B.bi = pc.bi; B.x = pc.x; B.z = pc.z; B.perchFeet = pc.y + 1; placed = true; }   // feet rest ON TOP of the crown needle
         }
-        if (isBaby && !orphan) {                       // ducklings hatch right behind their mother, in line order (an orphan has none — it takes the generic open-water spot below, like a lone adult)
+        // …and she must HAVE a position to hatch behind: every line below is arithmetic on mom5.x/th, so a
+        // mother who has not been placed (or has just been retired) hands the whole brood NaN and the guard at
+        // the top of the loop is then the only thing that can clear them. Falling through leaves the duckling
+        // to the generic open-water spot, which is exactly what an orphan already does.
+        if (isBaby && !orphan && isFinite(mom5.x) && isFinite(mom5.z) && isFinite(mom5.th)) {                       // ducklings hatch right behind their mother, in line order (an orphan has none — it takes the generic open-water spot below, like a lone adult)
           let hx6 = mom5.x - Math.sin(mom5.th) * (4 + sib * 3.5) + (Math.random() - 0.5) * 2;
           let hz6 = mom5.z - Math.cos(mom5.th) * (4 + sib * 3.5) + (Math.random() - 0.5) * 2;
           if (!bfWater(hx6, hz6) || !bfSky(hx6, WL + 2, hz6)) { hx6 = mom5.x; hz6 = mom5.z; }   // the trail spot is ashore/dry-ravine/inside the bank (mom hugging the shore) — hatch AT mom instead; she's on valid water by construction
@@ -260,11 +309,39 @@
         for (let tries = 0; tries < 12 && !placed && wantK !== 5; tries++) {
           mateJoin = false;                              // per TRY, not per slot: a rejected mate placement must not exempt the next try's ordinary one
           let sx, sz, beeAtHive = false;               // …set by the hive placement below and read by the desert band's spacing floors: a SWARM is the one thing in that band that is meant to be a cluster
-          if (wantK === 3 && lakeSpots.length) {       // MOTHER DUCKS TARGET LAKES: prefer a lake NO other mom (16-19) already holds — one family per visible lake
-            const free = lakeSpots.filter((L) => {
-              for (let m = DUCK_0; m < DUCK_END; m++) { const O = wbf[m]; if (O !== B && O.init && (O.x - L.x) * (O.x - L.x) + (O.z - L.z) * (O.z - L.z) < 150 * 150) return false; }
-              return true; });
-            const pool7 = free.length ? free : lakeSpots;
+          if (wantK === 3 && lakeSpots.length) {       // MOTHER DUCKS TARGET LAKES: an EMPTY lake first, then one still under the cap — never a lake already holding DUCK_PER_LAKE families (user 2026-08-27: "no more then 2 duck families can spawn in a lake at a time")
+            // The old rule was one family per lake with a FALLBACK to the whole spot list, and the fallback is
+            // what put a third and a fourth family on one lake: once every lake held a mom, `free` emptied and
+            // each remaining mom was handed lakeSpots with nothing counting how many were already there.
+            // Counting instead of filtering gives both halves at once — the preference for an empty lake AND a
+            // real ceiling — so a crowded lake now leaves a mom unplaced rather than taking her.
+            // ── AND THE COUNT IS PER LAKE, NOT PER SPOT ── main/tick-life.js clusters its water samples around
+            // a DRIFTING centroid at 260, so a lake wider than that comes back as two or three spots. That is
+            // the same split that put four families on one lake when the merge was 110, and a per-spot cap
+            // would let it straight back in on a big reservoir. So the spots are unioned into water BODIES
+            // first (anything within DUCK_LAKE_LINK chains, transitively) and the cap is charged to the body.
+            // Consequence worth knowing before it reads as a bug: on a lake that spans two spots the want
+            // (lakes + 1) asks for three families and this grants two, so lifeWhy shows duckMom 3/4 there. The
+            // surplus mom is deliberate — it is what puts a SECOND family on a single-lake scene — and the
+            // break below makes her cheap: one pass over a handful of spots, not twelve retries.
+            const par7 = [];                             // union-find over the census spots; tiny (a handful) and only ever walked while a duck slot is actually looking for a home
+            for (let i7 = 0; i7 < lakeSpots.length; i7++) par7.push(i7);
+            const find7 = (a7) => { while (par7[a7] !== a7) { par7[a7] = par7[par7[a7]]; a7 = par7[a7]; } return a7; };
+            for (let i7 = 0; i7 < lakeSpots.length; i7++) for (let k7 = i7 + 1; k7 < lakeSpots.length; k7++) {
+              const A7 = lakeSpots[i7], C7 = lakeSpots[k7];
+              if ((A7.x - C7.x) * (A7.x - C7.x) + (A7.z - C7.z) * (A7.z - C7.z) < DUCK_LAKE_LINK * DUCK_LAKE_LINK) {
+                const ra7 = find7(i7), rb7 = find7(k7); if (ra7 !== rb7) par7[rb7] = ra7; } }
+            const occ7 = new Int32Array(lakeSpots.length);   // families per body, indexed by its ROOT spot
+            for (let m = DUCK_0; m < DUCK_END; m++) { const O = wbf[m]; if (!(O && O !== B && O.init)) continue;
+              let best7 = -1, bd7 = DUCK_LAKE_LINK * DUCK_LAKE_LINK;   // she belongs to the NEAREST spot, not to every spot in range: two small lakes side by side must not both count her
+              for (let i7 = 0; i7 < lakeSpots.length; i7++) { const L = lakeSpots[i7];
+                const d7 = (O.x - L.x) * (O.x - L.x) + (O.z - L.z) * (O.z - L.z); if (d7 < bd7) { bd7 = d7; best7 = i7; } }
+              if (best7 >= 0) occ7[find7(best7)]++; }
+            const free = [], room = [];
+            for (let i7 = 0; i7 < lakeSpots.length; i7++) { const n7 = occ7[find7(i7)];
+              if (n7 === 0) free.push(lakeSpots[i7]); else if (n7 < DUCK_PER_LAKE) room.push(lakeSpots[i7]); }
+            const pool7 = free.length ? free : room;
+            if (!pool7.length) break;                    // every lake in view is at the cap — BREAK, not continue: all 12 retries would ask the same question of the same spots and get the same answer, and the fish branch below already treats "nowhere to put it" this way
             const L7 = pool7[tries % pool7.length];
             sx = L7.ax + (Math.random() - 0.5) * 18; sz = L7.az + (Math.random() - 0.5) * 18;
           } else if (desSlot && DESERTS[desSp] && DES_WATER[DESERTS[desSp].name]) {
@@ -536,8 +613,18 @@
             // satisfy, so half of it is never a starvation risk — measured, the population still fills.
             const spread = 1 - 0.5 * Math.pow(tries / 11, 3);
             const sp0 = MAM_END + desSp * DES_PER;
-            if (tooClose(sp0, sp0 + DES_PER, DES_APART * spread)) continue;
-            if (tooClose(MAM_END, DES_END, DES_APART_ANY * spread)) continue;
+            // ── A WATERSIDE SPECIES IS A CLUSTER ON PURPOSE, LIKE THE HIVE BEE ── DES_WATER confines the frog
+            // to a 14-vox ring round a pond, which is smaller than either floor above, so the pair of them
+            // would reject every frog after the first exactly as they once left every hive holding one bee.
+            // Both floors have to yield, not just the same-species one: the frogs sit inside MAM_END..DES_END,
+            // so DES_APART_ANY counts them against each other too. DES_WATER_APART (sim/life/slots.js) is a
+            // real floor rather than the bee's outright exemption, so two frogs still never share a bank.
+            // `spread` deliberately does NOT apply to the waterside floor: see DES_WATER_APART in
+            // sim/life/slots.js — the ring is small enough that the last try's half-gap re-admits the very pair
+            // the floor exists to prevent. A shore that cannot hold them apart holds fewer of them instead.
+            const wApart = DESERTS[desSp] && DES_WATER[DESERTS[desSp].name] ? DES_WATER_APART : 0;
+            if (tooClose(sp0, sp0 + DES_PER, wApart || DES_APART * spread)) continue;
+            if (tooClose(MAM_END, DES_END, wApart || DES_APART_ANY * spread)) continue;
           }
           if (desSlot && wantK === 2 && !navSand(sx, sz)) continue;   // ── NO DESERT WALKER STARTS ON A ROCK OR A CACTUS (user 2026-08-16) ── the same rule its every step is judged by, asked once at placement. Without it a body placed on stone spends its whole life in the egress path, which is the one branch that moves without asking. The forest's own version of this test (isRockSurf over the MAMFIT footprint, below) is deliberately left where it is: it answers a different question, about worldgen strata, for a band this change does not touch.
           // CROSS-SPECIES floor: never spawn a land mammal within MAM_FLOOR of ANY live mammal (bunny/
@@ -591,6 +678,24 @@
           }
           if (wantK === 0 && isDfly && !bfWater(sx, sz)) continue;    // the jitter may have thrown it ashore — a dragonfly only ever starts over real water
           if (desSlot && DESERTS[desSp] && DES_WATER[DESERTS[desSp].name] && bfWater(sx, sz)) continue;   // …and the mirror of it: a frog starts ON THE BANK, never in the lake
+          // ── …AND ON FLAT GROUND (user 2026-08-27: "try to spawn frogs on flat terrain ... flat terrain
+          // around water") ── the shore ring alone will happily put a frog on the side of a bank, and a frog
+          // placed on a slope spends its life leaping up or down one: that is where the landing snap and the
+          // clipping below are worst, so the cheapest half of both fixes is to not start it there. Four
+          // samples a stride out, and the spread between them is the slope. RELAXED BY TRY, the same shape as
+          // the spacing floors above and for the same reason — a demand that cannot be met must not empty the
+          // pond. Try 0 wants a voxel of level ground, the last try takes whatever the shore offers.
+          if (desSlot && DESERTS[desSp] && DES_WATER[DESERTS[desSp].name]) {
+            const g0 = navWalkStand(sx, sz);
+            if (g0 === undefined) continue;
+            let lo0 = g0, hi0 = g0, okF = true;
+            for (const [ox, oz] of [[4, 0], [-4, 0], [0, 4], [0, -4]]) {
+              const gq = navWalkStand(sx + ox, sz + oz);
+              if (gq === undefined) { okF = false; break; }
+              if (gq < lo0) lo0 = gq; if (gq > hi0) hi0 = gq; }
+            if (!okF) continue;
+            if (hi0 - lo0 > 1 + (tries >> 2)) continue;   // ONE voxel of slope for the first four tries, then a voxel more every four. Opening it a voxel per TRY was no constraint at all by the end of twelve — measured, a frog still landed on a 3-voxel slope — and the point of relaxing is to fill a cramped shore, not to give the rule up
+          }
           if (wantK === 0 && !isDfly && bfWater(sx, sz)) continue;    // …and a BUTTERFLY never starts over water (user: limit butterflies over lakes); it may still drift out over one
           if ((wantK === 3 || wantK === 4) && (!bfSky(sx, WL + 2, sz) || !bfOpenW(sx, sz))) continue;   // ducks + lilies spawn on OPEN-SKY, WIDE REAL-WATER only (bfOpenW now tests actual water voxels) — cave pools AND dry gorge/ravine floors are out
           // ── BETTAS SCHOOL (user 2026-08-18: "make the betta fish swim in schools") ── the 14-voxel floor is an
@@ -718,7 +823,7 @@
           else B.bn = { x: B.x, y: B.y, z: B.z, ox: B.x, oz: B.z, th: Math.random() * 6.2831853, om: 0, omT: 0, tRe: 0, st: -1 };
           B.bnPh = Math.random() * 6.2831853;          // its own place on the ring, so the bunch is a bunch and not one fly with copies
         } else B.bn = undefined;
-        B.om = 0; B.omT = 0; B.turnAcc = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0; B.trail = undefined; B.beeM = undefined;   // …and B.beeM undefined re-seeds the BEE's errand machine from scratch: a recycled slot that kept beeM 2 would go on pinning itself to the previous occupant's flower hundreds of voxels away, every frame, exactly the way a stale B.bh snapped a re-placed bunny back to its old cell (see the note below). It is in THIS list and not beside the bee code for the same reason every other field here is: one place to look for what a fresh occupant must not inherit.   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash, panic, wound-up yaw or (ant leader) RECORDED PATH: a stale trail is a line of followers snapped back to where the previous occupant walked (turnAcc: a recycled duck inheriting most of a circle reads its very first bank as an over-wound spin and unwinds the long way round for nothing)
+        B.om = 0; B.omT = 0; B.turnAcc = 0; B.tRe = 0; B.trap = 0; B.born = now; B.init = true; B.hurt = 0; B.hits = 0; B.dying = false; B.blinked = false; B.hopT0 = undefined; B.lastSwing = undefined; B.spookT = 0; B.trail = undefined; B.beeM = undefined; B.fgP = undefined;   // …and B.fgP undefined re-anchors the FROG, for exactly the reason given for the bunny below: its position is ASSIGNED from B.fgX/B.fgZ every frame, so a recycled slot that kept the last occupant's anchor OVERWRITES wherever the spawner just placed it. MEASURED with a sentinel anchor 900 voxels out: the re-placed frog arrived at the sentinel, not at the bank it was given, on the first frame and stayed there   // …and B.beeM undefined re-seeds the BEE's errand machine from scratch: a recycled slot that kept beeM 2 would go on pinning itself to the previous occupant's flower hundreds of voxels away, every frame, exactly the way a stale B.bh snapped a re-placed bunny back to its old cell (see the note below). It is in THIS list and not beside the bee code for the same reason every other field here is: one place to look for what a fresh occupant must not inherit.   // fresh occupant — never inherits the last one's knife wound, pending death, spent flash, panic, wound-up yaw or (ant leader) RECORDED PATH: a stale trail is a line of followers snapped back to where the previous occupant walked (turnAcc: a recycled duck inheriting most of a circle reads its very first bank as an over-wound spin and unwinds the long way round for nothing)
         // bh/ah undefined → a (re)spawned bunny/armadillo reinits its cardinal state machine from the fresh heading.
         // THIS LINE WAS DEAD: it used to sit after a `//` on the line above, so the trailing comment ate it. The
         // bunny is the one creature whose position is ASSIGNED rather than integrated (B.x = B.bpx + bake offset),
@@ -1972,32 +2077,166 @@
       // plus the baked per-frame offset rather than integrated, and the ground comes from navWalkStand — the
       // walkable standing height. bfSurf is the top of the COLUMN, which under a crown is the canopy, and
       // using it is what had the frog clipping through terrain.
-      if (desFrog && FROG_CYC.length) {
+      // `!B.dying && !B.slain` is the same guard the ant and the bee blocks carry, and the frog needs it for a
+      // sharper reason than tidiness: this block ASSIGNS B.x/B.y/B.z from the anchor every frame, so a frog on
+      // its killing blow was being snapped back on top of its own ragdoll and could never move again. A body
+      // that cannot move is one the kind-2 walker escapes below eventually call wedged or islanded — and a
+      // frog sits on a BANK, with water taking half of everything within reach, which is the shape that test
+      // reads as islanded. That path retires the slot (B.init = false) with no death, and if it lands inside
+      // the 500 ms death flash then reapDeaths finds the slot already empty, skips the teardown and never sets
+      // B.slain — leaving the slot free for the population to refill. Hence "I killed a frog and a new one
+      // spawned in its place" (user 2026-08-27). The reap is hardened too (sim/life/reactions.js); this is the
+      // half that stops a dying frog wandering into that code at all.
+      if (desFrog && FROG_CYC.length && !B.dying && !B.slain) {
         const fitF = DESERTS[desSp] ? MAMFIT[DESERTS[desSp].name] : null;
-        const seatF = fitF ? fitF.seat : 2;
-        if (B.fgP === undefined) { B.fgP = -1; B.fgC = -1; B.fgF = 0; B.fgX = B.x; B.fgZ = B.z; B.fgG = navWalkStand(B.x, B.z); B.fgRest = tb3 + FROG_REST_MIN + Math.random() * (FROG_REST_MAX - FROG_REST_MIN); }
+        // ── THE SEAT HAS TO BE PER-FRAME, BECAUSE THE BOX IS (user 2026-08-27: "the space positions are not
+        // correct with the animations … it should match the asset editor frog but its not") ── the trace centres
+        // a creature's model box on its anchor using THAT FRAME's own dimensions (the `+ vec3(ew2, ed2, eh2)` in
+        // render/wgsl/trace.js), while mamFitOf measures exactly ONE frame — item0, the frog at rest, 5 tall.
+        // Every other animal in the band is a constant box frame to frame (measured: all ten), so a single seat
+        // has always been right for them and this has never bitten. The frog's frames run 5 to 10 tall, so the
+        // constant sat the box centre still while the box grew around it and the feet went (h - 5) / 2 UNDER the
+        // ground: 2.5 voxels at the top of the leap, half a voxel through the ribbet and the tongue's peak.
+        // The asset editor never shows this because it anchors the other way — it stamps the model's z = 0 plane
+        // on a FIXED floor (`ED.y + 1 + oy + model_z`, ui/editor.js) and lets the box grow upward from there. The
+        // seat that reproduces that is exactly h / 2, and mamFitOf's -z0 term drops out on purpose: a frame
+        // authored to leave the floor should leave it, because that lift IS the animation.
+        // Frame 0 is arithmetically unchanged (h 5, z0 0 -> 2.5, the number the constant already carried), so the
+        // resting pose does not move a voxel and only the frames that actually grow are corrected.
+        // Horizontal needs no equivalent: the editor centres its lane the same way the trace does
+        // (`bx = ED.x0 + ((ED.pw - rv.sx) >> 1)`), so the box centre there is independent of the frame size too.
+        const frogIt = (fr9) => (itemsRef && itemsRef[FROG_ITEM0 + (fr9 | 0) - 1]) || null;
+        const frogSeat = (fr9) => { const it9 = frogIt(fr9); return it9 ? it9.h * 0.5 : (fitF ? fitF.seat : 2); };
+        // ── AND THE HALF VOXEL THE EDITOR ROUNDS AWAY (user 2026-08-27: "when the frog ribbets, it goes
+        // backwards when it should be staying in place. same thing with the tongue") ── the stage centres a
+        // frame in its lane with `(ED.pd - rv.sy) >> 1`, an INTEGER floor, while the trace centres the box on
+        // an exact half. So a frame whose DEPTH is odd draws half a voxel further back here than it does on the
+        // stage, and the frog's depth changes parity mid-cycle: the ribbet puffs 7 -> 8 and the tongue runs
+        // 7, 8, 10, 11, 12, 13. Worked through, the editor's rear sits at a flat 2.0 for every frame of both
+        // cycles and the world's alternates 2.5 / 2.0 — the editor is perfectly still and the world flickers.
+        // That is also exactly why the leap was fine and these two were not: half a voxel is nothing against
+        // ten voxels of travel, and it is the ONLY motion in a cycle that is supposed to hold position.
+        // Returned as a RENDER offset rather than folded into B.x: the anchor is re-latched from B.x at every
+        // cycle end, so baking half a voxel into the position would accumulate a real drift, one per cycle.
+        // ── AND IT IS PER-FRAME, WHICH IS THE THING THAT HOLDS THE MODEL STILL ── I made this a constant once,
+        // reasoning that a toggling correction must be the judder. That was backwards, and the numbers say so
+        // plainly. The half voxel does not CAUSE the toggle, it CANCELS one: the trace centres the box at
+        // anchor - d/2, so a frame whose depth is odd already sits half a voxel off its neighbours, both in
+        // where the body lands and in where the model's voxel boundaries fall. Adding 0.5 on exactly those
+        // frames makes anchor - d/2 keep a constant fractional part, so the body holds position AND the voxel
+        // grid keeps one phase. Holding the 0.5 constant instead leaves the depth parity exposed on both.
+        // MEASURED, body offset through the 24-frame tongue: the stage holds a flat -1.9 the whole way; with
+        // this per-frame it is -1.9 flat too; with it held constant it oscillates -1.9 / -2.4 six times, which
+        // is the "wrong positions again" report (user 2026-08-27) and is a judder rather than a placement.
+        const frogPar = (fr9) => { const it9 = frogIt(fr9); return (it9 && (it9.d & 1)) ? 0.5 : 0; };
+        // ── A BODY IS NOT A COLUMN (user 2026-08-27: "the frogs feet are clipping into the ground") ── the
+        // frog seated on navWalkStand at its CENTRE, one point, while it is nine voxels across and seven deep.
+        // Wherever the ground under an edge of that footprint stands higher than the middle, that edge is
+        // buried — which is the feet, because the feet are the outermost thing it has. Every land mammal in
+        // the game already answers this the other way: mamSeatG takes the MAX ground under the whole
+        // footprint, oriented by the heading, and its own note records the identical report ("it appears to
+        // clip through the terrain"). Using the mammals' function rather than a frog-shaped copy of it means
+        // there is still one answer in the game to "how high does this body stand".
+        // frogGAt is the same reduction at an arbitrary point, for testing where a leap will LAND: seating on
+        // the footprint but choosing the landing on a point probe would put the frog down and then lift it.
+        // ── …BUT THE MAX ALONE IS THE OTHER DITCH ── mamSeatG is written for a body big enough that standing
+        // on the highest thing under it reads as standing on the ground. A frog is nine voxels by seven, and
+        // on ordinary forest floor the max across that span runs 2-3 above the middle: MEASURED with the bare
+        // mammal rule, the feet had solid directly beneath them in only 22% of resting frames and the frog
+        // hovered a voxel or two over every dip it stood in. So the seat is the CENTRE's ground, lifted only
+        // as far as an edge really demands and never more than a voxel: max(centre, edgeMax - 1). That bounds
+        // the float at one voxel and the bury at one voxel, which for a body this size is the closest either
+        // can get to right — where the ground under it varies by more than that, no single height is correct.
+        const frogGAt = (px, pz) => {
+          const hx = Math.sin(B.fgTh || 0), hz = Math.cos(B.fgTh || 0);
+          const hd9 = fitF ? fitF.hd : 3, hw9 = fitF ? fitF.hw : 2;
+          const c9g = navWalkStand(px, pz);
+          let g = -1e9;
+          for (let u = -1; u <= 1; u++) for (let v = -1; v <= 1; v++) {
+            const q = navWalkStand(px + hx * hd9 * u + hz * hw9 * v, pz + hz * hd9 * u - hx * hw9 * v);
+            if (q !== undefined && q > g) g = q; }
+          if (g < -1e8) return c9g;
+          return c9g === undefined ? g : Math.max(c9g, g - 1); };
+        const seatF = frogSeat(0);                     // the RESTING seat — frame 0, which is what the sit, the settle and the landing-clearance probe below all ask about
+        // ── ON THE GRID FROM THE FIRST FRAME (user 2026-08-27: "aligned to the grid and not allowed to rotate
+        // off the grid much like the bunny ... only rotates at 90 degree angles") ── the bunny's own two lines:
+        // a heading INDEX rather than an angle (its B.bh) and an INTEGER base cell (its B.bpx/B.bpz). The frog
+        // already turned in exact quarter turns, but it inherited whatever bearing the spawner left in B.th,
+        // so its lattice was square to nothing and its anchor sat between voxels. Snapping both here is the
+        // whole of it: every hop after this is a whole number of voxels along a cardinal, for ever.
+        if (B.fgP === undefined) { B.fgP = -1; B.fgC = -1; B.fgF = 0;
+          B.fgH = ((Math.round((B.th || 0) / FROG_TURN) % 4) + 4) % 4;   // nearest cardinal, the bunny's own expression
+          B.fgTh = B.fgH * FROG_TURN;
+          B.fgX = Math.round(B.x); B.fgZ = Math.round(B.z); B.x = B.fgX; B.z = B.fgZ;
+          B.fgHX = B.fgX; B.fgHZ = B.fgZ; B.fgTurn = 0; B.fgG = frogGAt(B.fgX, B.fgZ);
+          B.fgRest = tb3 + FROG_REST_MIN + Math.random() * (FROG_REST_MAX - FROG_REST_MIN); }
+        const fdir = FROG_DIR[B.fgH | 0] || FROG_DIR[0];   // [sin, cos] of this heading, EXACTLY — never trig of the angle
+        // ── THE FROG KEEPS ITS OWN HEADING (user 2026-08-27: "dont rotate the frog yourself. keep it
+        // straight") ── B.th is rewritten every frame by the shared walker steering ~600 lines above, which is
+        // what was quietly swinging the frog about between and during its cycles. B.fgTh is the frog's own
+        // heading and the ONLY thing allowed to move it is the turning hop below, in 90 degree steps. Pinned
+        // here at the top of the block so every branch under it — the sit, the leap, the emit's half-voxel —
+        // reads one settled direction rather than whatever the steering happened to leave behind.
+        B.th = B.fgTh;   // fgHX/fgHZ is the BANK it was spawned on, and the only thing that keeps it there — see the leash in the leap below
         if (B.fgP < 0) {                               // ── SITTING ── pinned on its anchor, holding frame 0
           B.x = B.fgX; B.z = B.fgZ; B.y = B.fgG + seatF; B.fgF = 0;
+          B.fgPar = frogPar(0);                        // the RESTING frame — the sit holds frame 0
           B.om = 0; B.omT = 0; B.trap = 0;
           if (tb3 > B.fgRest && !(tb3 < (B.fleeT || 0))) {
-            let w9 = Math.random() * (FROG_MIX[0] + FROG_MIX[1] + FROG_MIX[2]), c9 = 0;
+            let w9 = Math.random() * FROG_MIX_SUM, c9 = 0;   // the WHOLE table (sim/life/slots.js) — adding the entries by hand here is what kept the fourth cycle from ever being drawn
             while (c9 < FROG_MIX.length - 1 && w9 > FROG_MIX[c9]) { w9 -= FROG_MIX[c9]; c9++; }
             if (c9 >= FROG_CYC.length) c9 = 0;
             if (FROG_CYC[c9].move) {                   // a LEAP has to have somewhere to land: no water, no cliff, nothing in the way
-              const H8 = FROG_OFF.hop, far = -H8[H8.length - 1][1];
-              let ok9 = false;
-              for (let t9 = 0; t9 < 6 && !ok9; t9++) {
-                const th9 = t9 === 0 ? B.th + (Math.random() - 0.5) * 1.2 : Math.random() * 6.2831853;
-                const nx9 = B.x + Math.sin(th9) * far, nz9 = B.z + Math.cos(th9) * far;
-                if (bfWater(nx9, nz9)) continue;
-                const g9 = navWalkStand(nx9, nz9);
-                if (g9 === undefined || Math.abs(g9 - B.fgG) > 6) continue;
-                if (bfObst(nx9, g9 + seatF + 1, nz9)) continue;
-                B.th = th9; ok9 = true;
-              }
-              if (!ok9) { B.fgRest = tb3 + 0.6; c9 = -1; }   // boxed in — sit, and try a different cycle shortly
+              // ── THE LEAP GOES STRAIGHT AHEAD, OR NOT AT ALL (user 2026-08-27: "dont rotate the frog
+              // yourself. keep it straight") ── this used to try six headings, five of them fully random, and
+              // take the first it could land on. That IS the rotating the user asked to stop: it re-aimed the
+              // animal on most leaps, and the turn happened between two frames with no animation behind it.
+              // A hop now tests exactly ONE direction, the one the frog already faces; a turning hop tests
+              // where its own 90 degrees will actually put it. Refusing is the honest outcome when the way
+              // ahead is blocked — the frog sits, and the next draw is a fresh roll of the mix. That is what
+              // the rotate cycle is FOR, and it is why it needs no random search to fall back on.
+              // the CYCLE'S OWN table, not the hop's: a turn now carries no forward column at all, so far and
+              // fw8 are both 0 and the test below asks about the square the frog is already standing on —
+              // which is exactly right, and is what makes a turn the one move that is always available.
+              // where a cycle of kind `cc` would put the frog down, for a given turn. A turning hop leaves on
+              // the OLD heading and finishes on the new one, so its landing is the two legs end to end; the
+              // straight hop is one leg. The LEASH lives in here too, and only ever on a straight hop — see
+              // the note at FROG_LEASH: refusing a turn is what strands a frog rather than what holds it.
+              const landOK = (cc, tn) => {
+                const TT = FROG_OFF[FROG_CYC[cc].name] || FROG_OFF.hop;
+                const far = -TT[TT.length - 1][1], fw8 = -TT[FROG_TURN_FRAME][1];
+                const d2 = FROG_DIR[(((B.fgH | 0) + (tn > 0 ? 1 : 3)) % 4)];   // where the quarter turn would point
+                const ax = B.x + fdir[0] * (tn ? fw8 : far) + (tn ? d2[0] * (far - fw8) : 0);
+                const az = B.z + fdir[1] * (tn ? fw8 : far) + (tn ? d2[1] * (far - fw8) : 0);
+                const gg = frogGAt(ax, az);         // the footprint's ground, the same reduction the seat uses
+                if (bfWater(ax, az) || gg === undefined || Math.abs(gg - B.fgG) > 6 || bfObst(ax, gg + seatF + 1, az)) return null;
+                B.fgG1try = gg;                         // the ground the leap is aimed AT — see the arc below
+                if (!tn && B.fgHX !== undefined) {
+                  const d0 = Math.hypot(B.x - B.fgHX, B.z - B.fgHZ), d1 = Math.hypot(ax - B.fgHX, az - B.fgHZ);
+                  if (d0 > FROG_LEASH && d1 > d0) return null;
+                }
+                return [ax, az]; };
+              const tryCycle = (cc) => {                // → the turn it settles on, or null if there is nowhere to put it
+                const tn = FROG_CYC[cc].turn ? (Math.random() < 0.5 ? -FROG_TURN : FROG_TURN) : 0;
+                if (landOK(cc, tn)) return tn;
+                if (tn && landOK(cc, -tn)) return -tn;   // the coin picks first; the other way is the fallback, so 50/50 holds wherever both are clear
+                return null; };
+              let turn9 = tryCycle(c9), ok9 = turn9 !== null;
+              // ── A HOP WITH NOWHERE TO GO BECOMES A TURN ── refusing outright costs 0.6 s of sitting, and with
+              // the heading pinned a frog facing the water refuses EVERY forward hop, so those pauses stack and
+              // the only way out is the one draw in ten that happens to be a turn. MEASURED with the rest
+              // removed: one hop landed in 33 cycles, still 43% idle, and the mix collapsed onto the two cycles
+              // that cannot refuse. Turning is the honest answer to "not that way" and is what the turn cycle
+              // is for, so a blocked forward hop is re-offered as one before the frog gives up on the beat.
+              if (!ok9 && !FROG_CYC[c9].turn) {
+                for (let r9 = 0; r9 < FROG_CYC.length; r9++) if (FROG_CYC[r9].turn) {
+                  const tn = tryCycle(r9);
+                  if (tn !== null) { c9 = r9; turn9 = tn; ok9 = true; }
+                  break; } }
+              if (ok9) B.fgTurn = turn9;
+              else { B.fgRest = tb3 + 0.6; c9 = -1; }   // boxed in every way — sit, and try again shortly
             }
-            if (c9 >= 0) { B.fgC = c9; B.fgP = 0; B.fgX = B.x; B.fgZ = B.z; }
+            if (c9 >= 0) { B.fgC = c9; B.fgP = 0; B.fgX = Math.round(B.x); B.fgZ = Math.round(B.z); B.fgH0 = B.fgH | 0; B.fgTh0 = B.fgTh; B.fgG1 = B.fgG1try !== undefined ? B.fgG1try : B.fgG; }   // the anchor is re-latched as an INTEGER cell, the bunny's B.bpx   // fgG1 = the ground under the LANDING, which is what the arc is flown between (see below)   // fgTh0 = the heading this cycle STARTED on; the pivot is written off it every frame rather than added once, so it cannot drift
           }
         } else {                                       // ── PLAYING A CYCLE ── frame and position both read off it
           const C9 = FROG_CYC[B.fgC] || FROG_CYC[0];
@@ -2008,13 +2247,59 @@
           // and drawing them without their offsets is what put the frog's alignment out. One expression for all
           // three — the hop is simply the one whose table does not return to zero.
           const T9 = FROG_OFF[C9.name], o9 = (T9 && T9[Math.min(T9.length - 1, i9)]) || FROG_ZERO;
-          const fwd9 = -o9[1];
-          B.x = B.fgX + Math.sin(B.th) * fwd9; B.z = B.fgZ + Math.cos(B.th) * fwd9;
-          B.y = B.fgG + seatF + o9[0];                 // the arc rides the ANCHOR's ground, so a leap is a clean parabola rather than a terrain-follow
+          const fwd9 = -o9[1], far9 = -T9[T9.length - 1][1];   // far9 = the whole cycle's travel, so fwd9/far9 is how far along the leap this frame is
+          // ── THE 90 DEGREES GOES IN AT THE TOP OF THE LEAP ── written FROM fgTh0 each frame rather than
+          // added once, so it is idempotent: a frame that runs twice, or a cycle re-entered mid-flight, ends
+          // on the same heading instead of turning again. Before the pivot frame the frog is still on its old
+          // heading and after it the new one, and the travel is the two legs added end to end. Without that
+          // split the whole displacement would swing onto the new heading in a single frame and the frog would
+          // jump sideways by however far it had already leapt.
+          if (C9.turn && B.fgTh0 !== undefined) {
+            const past9 = i9 >= FROG_TURN_FRAME, step9 = (B.fgTurn || 0) > 0 ? 1 : 3;
+            B.fgH = past9 ? (((B.fgH0 | 0) + step9) % 4) : (B.fgH0 | 0);   // a quarter turn is ONE STEP of the index — it can never land between cardinals
+            B.fgTh = B.fgH * FROG_TURN; B.th = B.fgTh;
+            const dA = FROG_DIR[B.fgH0 | 0], dB = FROG_DIR[((B.fgH0 | 0) + step9) % 4];
+            const fw8 = -(FROG_OFF[C9.name] || FROG_OFF.hop)[FROG_TURN_FRAME][1];   // this cycle's own table — 0 for the in-place turn, so both legs collapse and the frog pivots on its anchor
+            const legA = Math.min(fwd9, fw8), legB = Math.max(0, fwd9 - fw8);
+            B.x = B.fgX + dA[0] * legA + dB[0] * legB;
+            B.z = B.fgZ + dA[1] * legA + dB[1] * legB;
+          } else {
+            B.x = B.fgX + fdir[0] * fwd9; B.z = B.fgZ + fdir[1] * fwd9; }   // integer anchor + integer offset along a cardinal = the frog never leaves the lattice
+          // ── THE ARC IS FLOWN BETWEEN THE TWO GROUNDS, NOT OVER THE TAKE-OFF ONE (user 2026-08-27: "when the
+          // frog lands, it glitches out on the landing" / "sometimes when the frog jumps it completely clips
+          // through the land ... look into the bunny") ── the bunny is the right model and the difference is
+          // one line of its jump: it advances its base cell and re-derives B.bg at the DESTINATION the moment
+          // the hop starts, so its arc rides where it is going. The frog held the take-off ground for the whole
+          // leap and only re-derived at the end, which is both symptoms at once — hopping downhill it landed
+          // high and snapped down a voxel or three on the last frame, and hopping uphill it flew straight
+          // through the rising bank. Interpolating between the two by how far the leap has carried it keeps
+          // the clean parabola (the baseline just tilts) and there is nothing left to snap: the last frame
+          // already IS the landing ground.
+          // …and a floor under it, because a tilt cannot answer a HUMP. navWalkStand under the frog's own
+          // feet is the same plane every one of its tests uses, so a leap can graze a rise rather than pass
+          // through it. One extra probe per frame per frog, and there are two of them.
+          const gA9 = B.fgG, gB9 = (B.fgG1 === undefined ? B.fgG : B.fgG1);
+          const fr9 = far9 > 0 ? Math.min(1, Math.max(0, fwd9 / far9)) : 0;
+          const gN9 = frogGAt(B.x, B.z);            // the footprint again, not the centre column — see frogGAt above
+          let base9 = gA9 + (gB9 - gA9) * fr9;
+          // ── …AND ONLY WHILE IT IS ACTUALLY TRAVELLING (user 2026-08-27: "when the frog sticks out the tongue
+          // or ribbets, it raises the frog up by 1 voxel? doesnt happen everytime just sometimes") ── the floor
+          // is there to stop a LEAP passing through a rise, and it re-asks the ground wherever the frog has got
+          // to. A ribbet and a tongue do not go anywhere: every one of their frames carries up = 0 and they only
+          // LEAN, the body tipping forward over feet that never leave their own square. Re-sampling under the
+          // leaned body reads the ground one voxel ahead, and where that happens to be a voxel higher the floor
+          // lifts the whole animal — which is the report, and it is intermittent because it depends entirely on
+          // what is in front of it. MEASURED: 1 ribbet in 20 rose, by exactly 1 voxel, on a cycle whose own
+          // table says its base must not move at all. `far9 > 0` is the honest test for "this cycle travels":
+          // it is the cycle's own total displacement, 10 for a hop and 0 for everything that holds position.
+          if (far9 > 0 && gN9 !== undefined && gN9 > base9 + o9[0]) base9 = gN9 - o9[0];   // never below the ground under it
+          B.y = base9 + frogSeat(B.fgF) + o9[0];       // …and THIS one is the frame being drawn, so the seat tracks the box it is seating (see frogSeat above)
+          B.fgPar = frogPar(B.fgF);                    // the frame actually being drawn — see frogPar above for why this must not be a constant
           B.om = 0; B.omT = 0; B.trap = 0;
           if (B.fgP >= C9.n) {                         // finished — commit where it ended up and settle
-            B.fgP = -1; B.fgX = B.x; B.fgZ = B.z; B.fgF = 0;
-            const gN = navWalkStand(B.x, B.z); if (gN !== undefined) B.fgG = gN;   // re-derive at the NEW anchor, exactly as the bunny does after a baked jump
+            B.fgP = -1; B.fgX = Math.round(B.x); B.fgZ = Math.round(B.z); B.x = B.fgX; B.z = B.fgZ; B.fgF = 0;
+            const gN = frogGAt(B.x, B.z); if (gN !== undefined && gN > -1e8) B.fgG = gN;   // re-derive at the NEW anchor, exactly as the bunny does after a baked jump — and on the footprint, so the settle agrees with the seat
+            B.fgG1 = B.fgG;                             // the arc has already landed ON this ground, so there is nothing left for the settle to move
             B.y = B.fgG + seatF;
             B.fgRest = tb3 + FROG_REST_MIN + Math.random() * (FROG_REST_MAX - FROG_REST_MIN);
           }
@@ -2089,11 +2374,20 @@
         if (!NAVARB) B.omT = (B.om >= 0 ? 5.0 : -5.0);   // …but NOT while the arbiter is live: an unconditional omT write here is exactly the "fifth uncoordinated controller" the arbiter exists to remove, and roofedness is already one of its scored terms (navRoofAir, asked of the same predicate)
         B.trap = (B.trap || 0) + dt;
       }
-      if (B.kind < 3 && bfObst(B.x, B.y, B.z)) continue;   // body-in-solid hide (skip emission) — LAND/AIR creatures only: a duck/lily bobbing into the water voxel layer is normal
+      // ── …BUT NOT THE FROG (user 2026-08-27: "the frog seems to be flickering?") ── this hide exists for a
+      // creature that has been SHOVED into geometry, and it drops it for exactly as long as that is true, which
+      // for anything moving is a frame or two: a one-frame disappearance, i.e. a flicker. The frog is the one
+      // body here whose position is prescribed rather than integrated — B.y rides its ANCHOR's ground (fgG) while
+      // a lean carries x/z forward, so over rising ground the body POINT dips into the hillside while the model
+      // itself is still sitting on the surface in plain view. MEASURED on a bank: ~1% of frames for one of three
+      // frogs, and in an earlier test it took the frog off screen entirely mid-tongue. Its anchor and its landing
+      // spot are both validated before it ever moves, so there is nothing here for this to rescue — and being
+      // drawn a voxel into a slope is a far smaller artefact than winking out of existence.
+      if (B.kind < 3 && !desFrog && bfObst(B.x, B.y, B.z)) continue;   // body-in-solid hide (skip emission) — LAND/AIR creatures only: a duck/lily bobbing into the water voxel layer is normal
       const bobA = (iceLock || B.lbPh === 'land') ? 0 : (B.kind === 2 || B.kind === 6 ? 0 : (B.kind === 4 ? 0.12 : (B.kind === 3 ? (isBaby ? 0.18 : 0.25) : (B.kind === 1 ? 1.1 : 2.2))));   // …and a LANDED LADYBUG is dead still for the same reason a frozen duck is: the flight bob is a RENDER term (below), not a change to B.y, so pinning the body in the tick left it visibly hovering on the spot (user 2026-08-22: "when the lady bug lands, it hovers. it should stay still")   // frozen duck → dead still (no bob); else worms/fish don't bob, water floats keep the cosmetic bob SMALL — the wave riding is the real motion, a deep bob dip re-sank the bottom rows
       const bobF = B.kind === 4 ? 1.1 : (B.kind === 3 ? (isBaby ? 2.3 : 1.6) : (B.kind === 1 ? 2.6 : 6.8));
       const hop3 = hurtHop(B);   // BOUNCE (user): a short arc up and back down over the flash window
-      const px3 = B.x + (armSlot ? (B.aRoX || 0) : 0), pz3 = B.z + (armSlot ? (B.aRoZ || 0) : 0), py3 = hop3 + B.y + (bunnySlot ? (B.bOy || 0) : (armSlot ? (B.aRoY || 0) : Math.sin(tb3 * bobF + wk * 1.9) * bobA));   // ARMADILLO: shift by its per-heading/per-frame alignment offset so it centres like the editor (user). BUNNY: the lift is the BAKED oy. Worm bob stays 0.
+      const px3 = B.x + (armSlot ? (B.aRoX || 0) : (desFrog ? Math.sin(B.th) * (B.fgPar || 0) : 0)), pz3 = B.z + (armSlot ? (B.aRoZ || 0) : (desFrog ? Math.cos(B.th) * (B.fgPar || 0) : 0)), py3 = hop3 + B.y + (bunnySlot ? (B.bOy || 0) : (armSlot ? (B.aRoY || 0) : Math.sin(tb3 * bobF + wk * 1.9) * bobA));   // ARMADILLO: shift by its per-heading/per-frame alignment offset so it centres like the editor (user). BUNNY: the lift is the BAKED oy. Worm bob stays 0.
       if (B.kind >= 2 && B.kind !== 6 && freezeK < 0.4) {   // GROUND/WATER creatures cast a sun shadow (lily/duck/worm) — flyers (0/1) skip, FISH skip (submerged: the surface owns the light there); frozen lakes are flat & shadow-free like the water
         const hxz = B.kind === 4 ? 5.0 : (B.kind === 3 ? (isBaby ? 1.8 : 3.0) : 3.0);
         const hy = B.kind === 4 ? 1.3 : (B.kind === 3 ? (isBaby ? 1.5 : 2.5) : 1.2);   // lily box a touch taller so the pad's shadow projects clear of the pad (not tucked underneath)
@@ -2185,9 +2479,20 @@
       // own strip and into whatever was loaded next in the item table. The flamingo is parsed immediately before
       // the skunk, so "next" was the skunk, frame for frame. An item-table overrun reads as one creature briefly
       // becoming another, and it is only ever a frame-count mismatch.
+      // ── THE FROG'S OWN FRAME, AND IT HAS TO COME BEFORE THE KIND-2 ARM (user 2026-08-27: "the animations are
+      // fine, its just the movement while the animations are playing are completely wrong … when the hop
+      // animation plays, the frog stays in the same position") ── the arm below it said exactly this and could
+      // never run: a frog is kind 2, so `(B.kind === 2 || B.kind === 6)` matched first and B.fgF never reached
+      // the renderer. What was drawn was animClk, free-running the WHOLE 55-frame strip — hop, ribbet and
+      // tongue back to back on a loop at 24 fps — while the sim moved the body on whatever cycle IT had picked.
+      // The two were decoupled, which is the whole bug: MEASURED, animClk was showing hop frames 5, 9, 13 while
+      // fgP was -1 (parked), so the frog visibly leapt and did not move an inch, and it flicked its tongue
+      // mid-ribbet. Ordering is the fix; the arm's own reasoning was right all along.
+      // It also has to sit ahead of the arm for a second reason: frogSeat above seats the frame the sim thinks
+      // it is on, so with the two decoupled the seat was being computed for a frame that was never drawn.
       const fi3 = (B.kind === 2 && (skunkSlot || porcSlot || flamSlot)) ? (Math.floor(B.aframe || 0) % nfr)
+        : (desFrog && B.fgF !== undefined) ? B.fgF    // the FROG's frame is driven by its leap (above), not by the shared clock — the arc and the animation are the same seventeen frames
         : (B.kind === 2 || B.kind === 6) ? (Math.floor((B.animClk || 0) * desRate) % nfr)   // …and the desert rate applies HERE, which is the branch a kind-2 creature actually takes — putting it only on the line below meant the scorpion silently stayed at 24   // WORM/FISH: the frame runs off the creature's OWN clock — the worm's freezes with its pauses, the fish's scales with its swim speed
-        : B.fgF !== undefined ? B.fgF                 // the FROG's frame is driven by its leap (above), not by the shared clock — the arc and the animation are the same seventeen frames
         : B.lbPh === 'land' ? 0                          // LANDED LADYBUG: frame 00 is the wings-SHUT pose, and holding it is what makes a landing read as a landing rather than a hover at ground level (the editor exhibit does the same in main/tick-emit.js)
         : Math.floor((tb3 + wk * 0.37) * desRate) % nfr;   // per-species rate for the desert set; everything else keeps the 24 fps house rule                  // 24 fps cycle, desynced per creature (duck/lily are single static models)
       let glow = 0;
@@ -2243,8 +2548,8 @@
       // which KIND is contending for a slot — the fair-share allocator's only input besides distance. Ducklings
       // are counted apart from their mothers on purpose: a brood is a dozen bodies against her one, so pooled
       // they would spend the whole duck allowance on babies and the mother would never be the one drawn.
-      emitKnd[emitN] = fishSlot ? (LIFE_K_FISH + Math.min(LIFE_FISH_MAX - 1, B.fsp | 0)) : (wormSlot ? LIFE_K_WORM : (isBaby ? LIFE_K_BABY : (duckSlot ? LIFE_K_DUCK
-        : (wk < FLY_END ? (B.dfly ? LIFE_K_DFLY : LIFE_K_FLYER) : LIFE_K_OTHER))));   // wk < FLY_END is the flyer band: butterflies by day, fireflies by night, dragonflies at the top of it
+      emitKnd[emitN] = desBee ? LIFE_K_BEE : (fishSlot ? (LIFE_K_FISH + Math.min(LIFE_FISH_MAX - 1, B.fsp | 0)) : (wormSlot ? LIFE_K_WORM : (isBaby ? LIFE_K_BABY : (duckSlot ? LIFE_K_DUCK
+        : (wk < FLY_END ? (B.dfly ? LIFE_K_DFLY : LIFE_K_FLYER) : LIFE_K_OTHER)))));   // wk < FLY_END is the flyer band: butterflies by day, fireflies by night, dragonflies at the top of it
       emitMust[emitN] = (bunnySlot || armSlot || skunkSlot || porcSlot) ? 1 : 0;   // a mammal only reaches the emit by SKIPPING its grid stamp (the branches above `continue` when they stamp), so reaching here means slot-or-nothing — see emitMust in sim/life/slots.js
       emitAnc[emitN * 3] = px3; emitAnc[emitN * 3 + 1] = py3; emitAnc[emitN * 3 + 2] = pz3;
       { const cx8 = emitBuf[o4], cy8 = emitBuf[o4 + 1], cz8 = emitBuf[o4 + 2];   // the camera-space anchor written above
