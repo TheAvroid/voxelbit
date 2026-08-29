@@ -1264,6 +1264,17 @@
           B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : (B.om >= 0 ? 2.6 : -2.6));
         }
       } else if (B.kind === 3) {                       // DUCK: paddles its lake — veer away from the shore, gentle drifting turns
+        // ── AND IT LEAVES A WAKE ── the same rings the player and every splash push (ripAdd, world/window.js),
+        // emitted per RIP_STEP voxels TRAVELLED. Keyed on the distance moved since the last one rather than on
+        // the paddle speed, so it does not care where in this branch the move actually happens, and a duck
+        // sitting still leaves nothing. Ducks only: they are the one creature that swims ON the surface —
+        // a fish is under it, and a ring on the water from something two metres down would be wrong.
+        if (B.init) {
+          if (B.wkx === undefined) { B.wkx = B.x; B.wkz = B.z; }
+          const dkx = B.x - B.wkx, dkz = B.z - B.wkz;
+          const dkS = RIP_STEP * 2.2;              // …a LONGER stride than the player's: a duck is a fraction of the size and leaves a correspondingly shorter tail, and with a whole brood on one lake the shared ring list is what pays for a stride that is too short
+          if (dkx * dkx + dkz * dkz >= dkS * dkS) { B.wkx = B.x; B.wkz = B.z; ripAdd(B.x, B.z, isBaby ? 0.22 : 0.38); }
+        }
         if (isBaby && !orphan) {                       // DUCKLING: steer for a spot just behind its leader — mom for the first, the sibling ahead for the rest (a follow line)
           const lead = (sib === 0 || !wbf[wk - 1].init) ? mom5 : wbf[wk - 1];
           const tx = lead.x - Math.sin(lead.th) * 4.5, tz = lead.z - Math.cos(lead.th) * 4.5;

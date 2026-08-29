@@ -274,7 +274,60 @@
   // writes this buffer at fixed float indices, so a lane inserted anywhere above would silently feed each
   // field below it its neighbour's numbers. x = cloud time in seconds; y/z/w spare.
   const UF_CLOUDT = UF_PHYSG + PHYS_NG * 4;
-  const UF = new Float32Array(UF_CLOUDT + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
+  // ── DECLARED HERE, NOT IN world/window.js, AND THAT IS NOT A PREFERENCE ── tools/lint-vb.py resolves the
+  // WGSL struct's array lengths by evaluating the top-level integer constants of THIS FILE and no other
+  // (uf_consts), so `array<vec4<f32>, ${RIP_N}>` in PRE is only checkable if RIP_N lives in buffers.js.
+  // Everything that pushes a ring — the splash, the player, the ducks — is later in the manifest than
+  // this file, so nothing had to move with it.
+  // ══ SURFACE DISTURBANCES ── ONE ring buffer, TWO features (LG2 bit 2, the [Y] key) ══ a splash and a wake
+  // are the same thing to the water: something pushed the surface at a point, and a ring left that point and
+  // spread. So there is one list and two writers. spawnSplash pushes ONE ring; a body moving through water
+  // pushes one every RIP_STEP voxels it travels, and the overlapping trail those leave IS the wake — no
+  // separate V-shaped Kelvin machinery, the envelope falls out of a line of expanding circles on its own.
+  // Compacted and OLDEST-FIRST-OUT: the shader walks it until the first empty slot and stops, so the cost is
+  // the number of rings actually alive rather than the size of the array (see ripHF in render/wgsl/pre.js —
+  // it is called inside the wave march, which is the one place in this renderer where a loop is expensive).
+  const RIP_N = 20;                                    // ring slots. A swimmer alone holds ~7 alive; the rest is headroom for the ducks and splashes now that RIP_FAR reaches across a lake. The SHADER cost follows the number ALIVE, not this number — ripHF breaks at the first empty slot and tick-camera keeps the list compacted — so the ceiling is cheap to raise and the floor is what actually gets paid
+  const RIP_LIFE = 1.8;                                // seconds a ring lives — also how long a wake trails behind you
+  const RIP_SPD = 7.0;                                 // voxels/s the ring expands
+  const RIP_AMP = 1.35;                                // crest height in voxels. The wave column quantizes with floor(h + 0.5), so anything under ~0.5 would round away and never show as geometry at all; this lands a ONE-voxel step, which is the shape this engine draws waves with
+  const RIP_W = 1.7;                                   // half-width of the ring, in voxels
+  const RIP_STEP = 2.0;                                // how far a swimmer travels between rings. Distance-based, not time-based, so a wake looks the same whatever the frame rate and stops the moment you stop
+  const RIP = new Float32Array(RIP_N * 4);             // x, z, birth (seconds, u.time's clock), strength
+  let ripN = 0;                                        // how many slots are live — the shader reads exactly this many
+  // ── HOW FAR OUT A RING IS STILL WORTH A SLOT ── it was 110, and that was too clever by half: it fixed the
+  // duck saturation below but it also meant a duck 150 voxels away, in plain view, left NO wake at all
+  // (user 2026-08-29: "I can't see the splash rings and wakes at a distance"). 420 is roughly where a
+  // two-voxel ring stops being resolvable at this field of view; past it there is genuinely nothing to draw.
+  const RIP_FAR = 420;
+  function ripAdd(wx, wz, k) {                         // …push one ring. Called by spawnSplash and by anything swimming
+    const dxr = wx - P.x, dzr = wz - P.z, d2 = dxr * dxr + dzr * dzr;
+    if (d2 > RIP_FAR * RIP_FAR) { return; }            // …see RIP_FAR. P is declared later in the manifest than this file, which is fine: nothing calls ripAdd until long after sim/player.js has run
+    var o;
+    if (ripN < RIP_N) { o = ripN * 4; ripN++; }
+    else {
+      // ── FULL: THE LIST HOLDS THE NEAREST RINGS, NOT THE NEWEST ── this used to shift slot 0 out and append,
+      // i.e. oldest-first-out, which is the wrong question once the radius is wide. Eight ducks spread across
+      // a lake would keep evicting the ring breaking at your feet in favour of one at the far shore. Now a new
+      // ring only takes a slot if something FURTHER AWAY is holding one, so what you are looking at wins and
+      // the far side of the lake fills in whatever is left. The scan is RIP_N long and runs a few times a
+      // second, against a shader loop that runs per column of every water pixel — this is the cheap side.
+      let worst = -1, worstD = d2;
+      for (let i = 0; i < RIP_N; i++) { const q = i * 4;
+        const ex = RIP[q] - P.x, ez = RIP[q + 1] - P.z, ed = ex * ex + ez * ez;
+        if (ed > worstD) { worstD = ed; worst = i; } }
+      if (worst < 0) { return; }                       // every ring held is nearer than this one — it has not earned a slot
+      o = worst * 4;
+    }
+    // performance.now()/1000 is the SAME clock u.time carries (tick-camera writes now/1000), so the shader's
+    // age arithmetic needs no offset. The comment sits ABOVE the line and not inside it: a `//` partway
+    // into a dense one-liner eats the rest of it, and when this said `... / 1000;   // …note RIP[o+3] = k`
+    // the STRENGTH was never assigned — every ring uploaded with w = 0, the shader broke out of its loop
+    // on the first slot, and the whole feature drew nothing while every JS-side tap looked correct.
+    RIP[o] = wx; RIP[o + 1] = wz; RIP[o + 2] = performance.now() / 1000; RIP[o + 3] = k === undefined ? 1 : k;
+  }
+  const UF_RIP = UF_CLOUDT + 4;                       // ── SURFACE DISTURBANCES ── RIP_N x vec4 (x, z, birth, strength); see ripAdd in world/window.js. Appended after cloudT for the reason everything back here is appended: every write past 'drops' is a hardcoded float index
+  const UF = new Float32Array(UF_RIP + RIP_N * 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532

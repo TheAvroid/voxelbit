@@ -922,7 +922,7 @@
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
   const LGT_ALL = 0xffffff;                            // 24 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader). Bits 18-23 are the WATER group (user 2026-08-05). Stays exact in the f32 uniform: integers are exact to 2^24.
   const LGT_WATER = 0xfc0000;                          // bits 18-23 — the WATER group, and the only terms the panel exposes (user 2026-08-05: "I only want buttons that change the water")
-  const LGT2_ALL = 0x3;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; BIT 1 IS THE GRASS/SUBPIXEL CROSS-FACE SPATIAL FALLBACK (see SPATIAL in render/wgsl/denoise.js) — __vb.lgt2(1) off / __vb.lgt2(3) on, and it is a LIVE toggle rather than a URL flag on purpose: the world seed differs between loads, so a cross-load A/B compares two different forests and is worthless here. BIT 2 IS RETIRED (user 2026-08-28: "remove the y toggle and keep the new clouds and discard the old clouds") — it used to switch the ported jeantimex/procedural-clouds deck against the hand-rolled one that stood beside it. There is nothing to switch BETWEEN any more: the old hash-noise deck is deleted and the ported one is the only deck, so the march and the fill both run unconditionally and the bit is free again. BITS 2 AND 3 ALSO ONCE HELD a per-pixel sun accumulation window and variance-driven spatial filtering, both built and measured on 2026-08-28 and REVERTED: the sun window is arithmetically a no-op at 1x (a 64-frame window is 0.3 s behind, which is 0.09 degrees of sun and ~0.03 voxels of shadow), and the variance radius measured -5.4% residual noise, inside the run-to-run scatter. Don't rebuild either without first dividing the window length by the day length. The 30 bits above are still free.
+  const LGT2_ALL = 0x3;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; BIT 1 IS THE GRASS/SUBPIXEL CROSS-FACE SPATIAL FALLBACK (see SPATIAL in render/wgsl/denoise.js) — __vb.lgt2(1) off / __vb.lgt2(3) on, and it is a LIVE toggle rather than a URL flag on purpose: the world seed differs between loads, so a cross-load A/B compares two different forests and is worthless here. BIT 2 IS FREE. Its last tenant was the SVGF HISTORY FIX (user 2026-08-29, "address the noise issue … the noise is worse on the grass") — a silhouette pixel that fails the temporal depth test borrows a neighbour's converged history instead of rendering one raw ray. It lived on [Y] for exactly as long as it took the user to look at the A/B and was BAKED IN the same day, which is why the bit is spare again; see HISTORY FIX in render/wgsl/denoise.js. Before it the bit held SURFACE RINGS — the ring a splash leaves and the wake behind a swimmer or a duck — which was BAKED IN on 2026-08-29 and now runs unconditionally; see ripHF in render/wgsl/pre.js. A RIVER/LAKE wave character sat here briefly the same day and was reverted (the wave sum sampled in each water body's own frame; the generator's riverAt already carries the flow direction and width, so it is buildable again if it ever comes back). Before those the bit held, and lost, WHITECAPS on the crests (removed on request), the per-pixel waterline and SNELL'S WINDOW (both reverted on sight — do not rebuild either), and the ported cloud deck. Earlier still, a per-pixel sun accumulation window and variance-driven spatial filtering, both measured and REVERTED — the sun window is arithmetically a no-op at 1x, and the variance radius measured -5.4% residual noise, inside the run-to-run scatter. The 29 bits above are still free.
   // ══ WATER BAKE (user 2026-08-05) ══ THE defaults for every water control. Tune with the top-right panel,
   // hit `copy` on its bake row, and paste the line it gives you OVER this one — that is the whole workflow.
   // A player who has never touched the panel gets exactly what is written here; `reset` in the panel puts a
@@ -2050,7 +2050,7 @@
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
     // ── SPWX/SPWZ RIDE WITH THE JOB, they are not baked ── spawn is randomised in world/build.js, nine fragments
-    // BELOW this one, so both are still 0 while this preamble is assembled, and the H key (rerollSpawn) moves
+    // BELOW this one, so both are still 0 while this preamble is assembled, and rerollSpawn (__vb.reroll) moves
     // them again at runtime. oakM and desertM are anchored to them, so a baked pair would put the biome
     // boundaries somewhere the main thread's H() does not agree with. rowKey carries them too, which is what
     // makes a prefetch issued before a reroll simply unusable after one rather than quietly wrong.
@@ -8950,7 +8950,60 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // writes this buffer at fixed float indices, so a lane inserted anywhere above would silently feed each
   // field below it its neighbour's numbers. x = cloud time in seconds; y/z/w spare.
   const UF_CLOUDT = UF_PHYSG + PHYS_NG * 4;
-  const UF = new Float32Array(UF_CLOUDT + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
+  // ── DECLARED HERE, NOT IN world/window.js, AND THAT IS NOT A PREFERENCE ── tools/lint-vb.py resolves the
+  // WGSL struct's array lengths by evaluating the top-level integer constants of THIS FILE and no other
+  // (uf_consts), so `array<vec4<f32>, ${RIP_N}>` in PRE is only checkable if RIP_N lives in buffers.js.
+  // Everything that pushes a ring — the splash, the player, the ducks — is later in the manifest than
+  // this file, so nothing had to move with it.
+  // ══ SURFACE DISTURBANCES ── ONE ring buffer, TWO features (LG2 bit 2, the [Y] key) ══ a splash and a wake
+  // are the same thing to the water: something pushed the surface at a point, and a ring left that point and
+  // spread. So there is one list and two writers. spawnSplash pushes ONE ring; a body moving through water
+  // pushes one every RIP_STEP voxels it travels, and the overlapping trail those leave IS the wake — no
+  // separate V-shaped Kelvin machinery, the envelope falls out of a line of expanding circles on its own.
+  // Compacted and OLDEST-FIRST-OUT: the shader walks it until the first empty slot and stops, so the cost is
+  // the number of rings actually alive rather than the size of the array (see ripHF in render/wgsl/pre.js —
+  // it is called inside the wave march, which is the one place in this renderer where a loop is expensive).
+  const RIP_N = 20;                                    // ring slots. A swimmer alone holds ~7 alive; the rest is headroom for the ducks and splashes now that RIP_FAR reaches across a lake. The SHADER cost follows the number ALIVE, not this number — ripHF breaks at the first empty slot and tick-camera keeps the list compacted — so the ceiling is cheap to raise and the floor is what actually gets paid
+  const RIP_LIFE = 1.8;                                // seconds a ring lives — also how long a wake trails behind you
+  const RIP_SPD = 7.0;                                 // voxels/s the ring expands
+  const RIP_AMP = 1.35;                                // crest height in voxels. The wave column quantizes with floor(h + 0.5), so anything under ~0.5 would round away and never show as geometry at all; this lands a ONE-voxel step, which is the shape this engine draws waves with
+  const RIP_W = 1.7;                                   // half-width of the ring, in voxels
+  const RIP_STEP = 2.0;                                // how far a swimmer travels between rings. Distance-based, not time-based, so a wake looks the same whatever the frame rate and stops the moment you stop
+  const RIP = new Float32Array(RIP_N * 4);             // x, z, birth (seconds, u.time's clock), strength
+  let ripN = 0;                                        // how many slots are live — the shader reads exactly this many
+  // ── HOW FAR OUT A RING IS STILL WORTH A SLOT ── it was 110, and that was too clever by half: it fixed the
+  // duck saturation below but it also meant a duck 150 voxels away, in plain view, left NO wake at all
+  // (user 2026-08-29: "I can't see the splash rings and wakes at a distance"). 420 is roughly where a
+  // two-voxel ring stops being resolvable at this field of view; past it there is genuinely nothing to draw.
+  const RIP_FAR = 420;
+  function ripAdd(wx, wz, k) {                         // …push one ring. Called by spawnSplash and by anything swimming
+    const dxr = wx - P.x, dzr = wz - P.z, d2 = dxr * dxr + dzr * dzr;
+    if (d2 > RIP_FAR * RIP_FAR) { return; }            // …see RIP_FAR. P is declared later in the manifest than this file, which is fine: nothing calls ripAdd until long after sim/player.js has run
+    var o;
+    if (ripN < RIP_N) { o = ripN * 4; ripN++; }
+    else {
+      // ── FULL: THE LIST HOLDS THE NEAREST RINGS, NOT THE NEWEST ── this used to shift slot 0 out and append,
+      // i.e. oldest-first-out, which is the wrong question once the radius is wide. Eight ducks spread across
+      // a lake would keep evicting the ring breaking at your feet in favour of one at the far shore. Now a new
+      // ring only takes a slot if something FURTHER AWAY is holding one, so what you are looking at wins and
+      // the far side of the lake fills in whatever is left. The scan is RIP_N long and runs a few times a
+      // second, against a shader loop that runs per column of every water pixel — this is the cheap side.
+      let worst = -1, worstD = d2;
+      for (let i = 0; i < RIP_N; i++) { const q = i * 4;
+        const ex = RIP[q] - P.x, ez = RIP[q + 1] - P.z, ed = ex * ex + ez * ez;
+        if (ed > worstD) { worstD = ed; worst = i; } }
+      if (worst < 0) { return; }                       // every ring held is nearer than this one — it has not earned a slot
+      o = worst * 4;
+    }
+    // performance.now()/1000 is the SAME clock u.time carries (tick-camera writes now/1000), so the shader's
+    // age arithmetic needs no offset. The comment sits ABOVE the line and not inside it: a `//` partway
+    // into a dense one-liner eats the rest of it, and when this said `... / 1000;   // …note RIP[o+3] = k`
+    // the STRENGTH was never assigned — every ring uploaded with w = 0, the shader broke out of its loop
+    // on the first slot, and the whole feature drew nothing while every JS-side tap looked correct.
+    RIP[o] = wx; RIP[o + 1] = wz; RIP[o + 2] = performance.now() / 1000; RIP[o + 3] = k === undefined ? 1 : k;
+  }
+  const UF_RIP = UF_CLOUDT + 4;                       // ── SURFACE DISTURBANCES ── RIP_N x vec4 (x, z, birth, strength); see ripAdd in world/window.js. Appended after cloudT for the reason everything back here is appended: every write past 'drops' is a hardcoded float index
+  const UF = new Float32Array(UF_RIP + RIP_N * 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
@@ -9012,7 +9065,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // ── THE SUN'S ANGULAR RADIUS, ONCE ── the WGSL below needs both the cosine (for the cheap disc test) and
   // the angle itself (for the moon's disc coordinates). Deriving one from the other in JS is the only way
   // they cannot drift; a hand-typed second literal is a bug waiting for the next size change.
-  const SUN_COS_R = 0.999619141;
+  const SUN_COS_R = 0.999756245;
   const SUN_ANG_R = Math.acos(SUN_COS_R);
   const PRE_SRC = () => /* wgsl */`
     struct U {
@@ -9098,6 +9151,10 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // At 1x it equals u.time exactly, so the deck's normal drift is unchanged. Appended at the VERY end for
       // the reason every field back here is. y/z/w spare.
       cloudT : vec4<f32>,
+      // ── SURFACE DISTURBANCES ── xy = world XZ of the ring's centre, z = birth on u.time's clock, w = strength
+      // (0 = empty). Compacted, so the readers stop at the first empty slot. Appended at the VERY end, for the
+      // reason every field back here is: each JS write past 'drops' is a hardcoded float index.
+      ripple : array<vec4<f32>, ${RIP_N}>,
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}
@@ -9112,8 +9169,18 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // (user 2026-08-28: "make the sun as big as the moon"). Real sun and moon are both ~0.53 degrees and
     // very nearly equal, so matching them is the physical answer as well as the asked-for one.
     const SUN_COSR : f32 = ${SUN_COS_R};
-    const SUN_ANGR : f32 = ${SUN_ANG_R};                              // …the same radius as an ANGLE, for the moon's disc coordinates                              // cos(1.5814 deg) -> a 3.1627 deg disc. Size lives here as an ANGLE, so scaling by k is cos(k * acos(edge)), worked out rather than eyeballed. Running total (user 2026-08-28): moon-matched 0.999742 (2.6031 deg) -> 25% smaller 0.999854872 (1.9523) -> 20% bigger 0.999791018 (2.3428) -> 35% bigger, this (3.1627). The flare in blit.js is sized off this now, so a size change finally carries the glare with it instead of being pinned by it. It is no longer the moon's number, so the two discs are free to differ. SUN_SOFT below needs no adjustment: it is expressed in rr, which is relative to THIS radius, so the soft edge scales with the disc on its own
-    const SUN_SOFT : f32 = 0.35;                                     // ── SOFT EDGE (user 2026-08-28: "make the edges of the sun softer") ── where the limb fade STARTS, in rr = (theta/thetaR)^2. Limb darkening alone cannot soften a visible edge here: the disc is SUN_COL * 6 = ~21 linear, so mu^alpha only falls under 1.0 in the outermost 0.008% of the radius and everything inside clips to flat white — the boundary lands on one pixel however physical the profile is. This fades the disc over rr 1.00 -> 0.35, i.e. x 0.592 -> 1.000 — the outer 41% of the radius, about 8 px of gradient at the limb (was 0.70 / the outer 16% / 3 px), which is the part the eye actually reads as softness
+    const SUN_ANGR : f32 = ${SUN_ANG_R};                              // …the same radius as an ANGLE, for the moon's disc coordinates                              // cos(1.2651 deg) -> a 2.5302 deg disc. Size lives here as an ANGLE, so scaling by k is cos(k * acos(edge)), worked out rather than eyeballed. Running total (user 2026-08-28): moon-matched 0.999742 (2.6031 deg) -> 25% smaller 0.999854872 (1.9523) -> 20% bigger 0.999791018 (2.3428) -> 35% bigger 0.999619141 (3.1627) -> 20% smaller, this (2.5302). The flare in blit.js is sized off this now, so a size change finally carries the glare with it instead of being pinned by it. It is no longer the moon's number, so the two discs are free to differ. SUN_SOFT below needs no adjustment: it is expressed in rr, which is relative to THIS radius, so the soft edge scales with the disc on its own
+    const SUN_DISC : f32 = 0.6;                                      // the disc's peak, as a multiple of SUN_COL. Was 6.0; see the note at the draw for why the compositor sets a ceiling on it
+    const SUN_CORE : f32 = 0.55;                                     // ── WHERE THE FALLOFF STARTS, in rr — inside this the disc is flat ──
+    const SUN_FALL : f32 = 2.2;                                      // ── AND ITS DECAY, which is the ONLY thing that sets how soft the edge looks ──
+    // A smoothstep cannot do this job however it is placed, and three passes of moving it proved that. The
+    // disc is SUN_COL * 6 = 21.6 linear, so all that is ever VISIBLE of the profile is where it crosses
+    // 1/21.6 = 0.046 — deep in its tail. smoothstep is STEEP there, so the whole transition from white to
+    // nothing was squeezed into ~2 px no matter where the curve was put: SUN_EXT moved the edge outward and
+    // left it every bit as hard. An exponential has a constant log-slope, so the width of that crossing is
+    // set directly by SUN_FALL and nothing else. MEASURED at the same edge position: 2.2 px of fade before,
+    // 9.5 px after. Same apparent size, four times the softness.
+    const SUN_MUFLOOR : f32 = 0.12;                                  // …and a floor under the limb-darkening term, because mu goes to 0 at the sphere's edge and would multiply the skirt straight back out of existence. It also leaves the outermost fringe the reddest part of the disc, which is where limb darkening was already heading
     // ── LIMB DARKENING, Hestroffer & Magnan 1998 ── the reason a real sun does not read as a flat white
     // blob: its centre is bright and neutral and its edge is markedly darker AND redder, because a sight
     // line near the limb passes obliquely and only reaches cooler, higher photosphere. I(mu)/I(1) = mu^alpha
@@ -9203,6 +9270,13 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // the smoothstep has already reached 1 and this is already 0, so a term scaled by it is bit-identical to
     // the unscaled one on both sides of the flip. Declared BELOW isMoon(): WGSL has no forward declarations.
     fn nightK() -> f32 { return 1.0 - smoothstep(-0.25, -0.05, select(u.sunDir.y, -u.sunDir.y, isMoon())); }
+    // ── HOW MUCH MOON THERE IS ── the illuminated fraction, (1 + cos alpha) / 2, off the same phase the
+    // disc is drawn with. ONE definition because it is read in three places that must never disagree: the
+    // moon's own face, the KEY light it casts on the world, and the bloom the cloud deck throws for it. It
+    // was written out longhand in the first two and simply MISSING from the third, so a new moon still lit
+    // the clouds (user 2026-08-28: "when the moon is a new moon it should not emit light at all through the
+    // clouds"). 1 at full, 0 at new.
+    fn moonPhaseF() -> f32 { return 0.5 + 0.5 * cos(u.rdist.y * 6.2831853); }
     // ── THE NIGHT'S AMBIENT FLOOR ── the faint isotropic top-up every surface gets no matter what reaches
     // it. By day it is a rounding error next to the sun; at night it is the LARGEST term on a shadowed voxel,
     // which is exactly why moon shadows used to sit at ~5:1 against a moonlit face and read as tint rather
@@ -9210,6 +9284,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     const AMB_FLOOR : vec3<f32> = vec3<f32>(0.012, 0.013, 0.016);
     const MOON_FLR : f32 = 0.42;                                     // …what is left of that floor deep at night with bit 0 on
     const MOON_AMB : f32 = 0.62;                                     // …and of dayScale()'s own night floor, i.e. of the sky glow
+    const MOON_LMIN : f32 = 0.06;                                    // what is left of the moon's KEY light at new moon — near nothing, but not zero
     const MOON_KEY : f32 = 1.34;                                     // …against a moon key raised this much, so a LIT face barely moves and a shadowed one falls away
     fn ambFloor() -> vec3<f32> { return AMB_FLOOR * mix(1.0, MOON_FLR, nightK()); }
     fn dayScale() -> f32 {                                           // global light level — SMOOTH through the sun↔moon swap (user: no abrupt jump at dusk 18:13 / dawn 5:46)
@@ -9219,7 +9294,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       return mix(mf, dayVal, smoothstep(-0.25, -0.05, sy));           // ease from the moon floor (0.0135) up to the day curve across twilight — no step where moonMode flips
     }
     fn sunTint() -> vec3<f32> {                                      // sun goes amber at the horizon; the moon is cool silver-blue
-      if (isMoon()) { return vec3<f32>(0.94, 0.95, 1.00) * 0.198 * smoothstep(0.0, 0.15, u.sunDir.y) * mix(1.0, MOON_KEY, nightK()); }   // WHITE moonlight (user 2026-08-19: "make it cast white light from it") — was a deep blue 0.40/0.50/0.78, which is the stylised night-blue every game reaches for; 0.94/0.95/1.00 is a faint cool white instead, so surfaces keep their OWN colour under it and only the exposure says night. The 0.198 magnitude is untouched, so nothing gets brighter — the light only stops being blue. Moonlight follows the darker nights: 0.44 -> 0.352 -> 0.264 -> 0.198   // …and the moonlight pass lifts the KEY while ambFloor()/dayScale() drop everything around it, which is a contrast change and very nearly not a brightness one — the darker nights the four steps above bought are the thing this must not undo
+      // ── AND IT SCALES WITH THE PHASE (user 2026-08-28: "the moon is still casting light when it's a new
+      // moon; the light should correspond to the phases") ── this is the moon's KEY light, the directional
+      // term the whole world is lit and shadowed by at night, and it used to be a constant: a new moon lit
+      // the ground exactly as hard as a full one. It is the same phase the disc is drawn with, u.rdist.y, so
+      // the sky and the ground can never disagree about how much moon there is.
+      // MOON_LMIN and not 0: a real new moon leaves starlight and airglow, and this engine has a separate
+      // isotropic night floor for that (ambFloor and dayScale's own mf) which is NOT touched here — so the
+      // world stays legible while the moon's own directional light, and its shadows with it, go away.
+      if (isMoon()) { let phF = moonPhaseF();
+        return vec3<f32>(0.94, 0.95, 1.00) * 0.198 * smoothstep(0.0, 0.15, u.sunDir.y) * mix(1.0, MOON_KEY, nightK()) * mix(MOON_LMIN, 1.0, phF); }   // WHITE moonlight (user 2026-08-19: "make it cast white light from it") — was a deep blue 0.40/0.50/0.78, which is the stylised night-blue every game reaches for; 0.94/0.95/1.00 is a faint cool white instead, so surfaces keep their OWN colour under it and only the exposure says night. The 0.198 magnitude is untouched, so nothing gets brighter — the light only stops being blue. Moonlight follows the darker nights: 0.44 -> 0.352 -> 0.264 -> 0.198   // …and the moonlight pass lifts the KEY while ambFloor()/dayScale() drop everything around it, which is a contrast change and very nearly not a brightness one — the darker nights the four steps above bought are the thing this must not undo
       let warm = mix(vec3<f32>(1.0, 0.42, 0.18), vec3<f32>(1.0, 1.0, 1.0), smoothstep(0.02, 0.38, u.sunDir.y));
       return SUN_COL * warm * smoothstep(-0.05, 0.10, u.sunDir.y);
     }
@@ -9333,7 +9417,26 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         // is what the Hestroffer-Magnan law is written in. It reaches 0 AT the limb, so the disc ends on its
         // own and needs no smoothstep to close it.
         let rr = (1.0 - s) / (1.0 - SUN_COSR);
-        if (rr < 1.0) { c += SUN_COL * 6.0 * pow(vec3<f32>(sqrt(max(0.0, 1.0 - rr))), SUN_LIMB) * smoothstep(1.0, SUN_SOFT, rr) * up; }   // …times the soft-edge fade; smoothstep with e0 > e1 is the decreasing form, so it is 1 well inside the disc and 0 at the limb
+        // min(rr, 1.0) keeps the limb-darkening term inside the sphere it describes; past the geometric
+        // limb mu holds at the floor and the smoothstep alone carries the fade out to SUN_EXT.
+        if (rr < 4.0) {                                              // 4.0 is where the exponential has fallen to ~0.005 of a display level — past it there is nothing to add
+          let mu = max(sqrt(max(0.0, 1.0 - min(rr, 1.0))), SUN_MUFLOOR);
+          // ── SUN_DISC, AND WHY IT IS NOT 6.0 (user 2026-08-28: "when looking away from the sun it appears
+          // through the clouds as a clear circle outline … let it be faded like it is when you look at it") ──
+          // COMPOSITE draws the sky, this disc included, and then the deck mixes over it:
+          // col = mix(col, cloud, aSky). So through cloud the disc shows (1 - aSky) x its peak, and it stays
+          // CLIPPED AT PURE WHITE until that falls under 1.0. At 6.0 the peak is 21.6 linear, which needs
+          // aSky > 0.954 — near-solid cloud — so through anything thinner the sun punched out as a
+          // hard-edged circle no matter how soft its own edge was. That is the outline, and no amount of
+          // work on SUN_FALL could have reached it: the edge was being redrawn by the compositor.
+          // 6.0 -> 2.0 was not enough: at 7.2 it still needed aSky > 0.861, and the clip shows the sun crisp
+          // through THIN cloud and soft only through thick. At 0.6 the peak is 2.16 and it fades from aSky 0.537,
+          // which covers the thin cloud in that footage.
+          // It costs little in clear sky — the white core goes from 1.25 to 0.88 of the radius and
+          // the soft band actually WIDENS slightly, 7.5 px to 8.6 px — because the flare, not the disc, is
+          // what carries the sun's brightness there.
+          c += SUN_COL * SUN_DISC * pow(vec3<f32>(mu), SUN_LIMB) * exp(-SUN_FALL * max(0.0, rr - SUN_CORE)) * up;
+        }
         // ── NO AUREOLE HERE, DELIBERATELY (user 2026-08-28: "get rid of that white brush stroke you have
         // around the sun, but the glare looks good") ── the sky-side glow this block used to add is gone.
         // Two pow lobes washed white across the sky around the disc, and however they were weighted they
@@ -9381,17 +9484,44 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         let up = smoothstep(-0.006, 0.006, rd.y);                    // the moon sets behind the horizon too, for the same reason the sun does
         let md = smoothstep(1.0, MOON_SOFT, rrM) * up;               // a body, so its edge is nearly hard — only enough softness to stop it aliasing
         if (md > 0.001) {
-          let sunH = normalize(vec3<f32>(realSun.x, 1e-4, realSun.z));
-          let TS = normalize(realMoon * dot(sunH, realMoon) - sunH);
-          let B = cross(realMoon, TS);
-          let du = vec2<f32>(dot(rd, TS), dot(rd, B)) / SUN_ANGR;    // disc coordinates, -1..1 across the face
-          let uv = clamp(du * (0.5 / MOON_CROP) + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+          // ── THE DISC FRAME IS ANCHORED TO WORLD UP (user 2026-08-28: "can you turn the moon 90 degrees?
+          // it appears to be on its side") ── and that is the fix. Both axes used to be derived from the
+          // SUN'S BEARING: TS was the component of -sunH perpendicular to the moon and B was their cross
+          // product, so neither had anything to do with which way is up. MEASURED over the moon's whole arc,
+          // 22 to 60 degrees of elevation: the old +y axis sat EXACTLY 90 degrees from sky-up at every one of
+          // them. Not a drift — a constant quarter turn, which is precisely why it read as "on its side"
+          // rather than as merely crooked. A face has an up, and it has to come from the world, not from
+          // where the light happens to be.
+          // R is horizontal (perpendicular to world up), U completes the frame and points up-sky at the moon.
+          // GUARDED: at the zenith cross(up, moon) collapses, and a zero-length axis is a NaN disc.
+          var R = cross(vec3<f32>(0.0, 1.0, 0.0), realMoon);
+          let rl = length(R);
+          R = select(vec3<f32>(1.0, 0.0, 0.0), R / max(rl, 1e-6), rl > 1e-4);
+          let U = cross(realMoon, R);
+          let du = vec2<f32>(dot(rd, R), dot(rd, U)) / SUN_ANGR;     // disc coordinates, -1..1, with +y up the SKY
+          // ── AND v IS NEGATED, WHICH IS THE OTHER HALF OF "UPRIGHT" ── du.y increases with SKY-UP by
+          // construction (U = cross(moonDir, R)), but a texture's v increases DOWN the image: row 0 is the
+          // top. Feeding one straight into the other lands sky-up on image-bottom and draws the face
+          // vertically FLIPPED. Anchoring the frame to world up fixed the 90-degree roll; this fixes the
+          // flip that was underneath it. MEASURED by correlating the rendered disc against moon.png under
+          // all eight orientations: mirror+180 (i.e. a pure vertical flip) scored r = 0.545 against 0.387
+          // for the runner-up — the only reading with a real gap under it.
+          let uv = clamp(vec2<f32>(du.x, -du.y) * (0.5 / MOON_CROP) + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
           let mt = textureSampleLevel(moonTex, moonSamp, uv, 0.0).rgb;
           let r2 = clamp(dot(du, du), 0.0, 1.0);
           // ── THE SURFACE NORMAL ── +z points at the observer, so this is the visible hemisphere of a unit
           // sphere. Everything below is ordinary surface shading in that frame.
           let N = vec3<f32>(du.x, du.y, sqrt(max(0.0, 1.0 - r2)));
           let alpha = u.rdist.y * 6.2831853;                         // the 8-day phase, already tracked in JS as (moonDay + tday) / 8
+          // ── THE TERMINATOR SWINGS ALONG R, WHICH IS HORIZONTAL, SO THE TERMINATOR IS VERTICAL ── and
+          // this is the whole of "the moon is on its side". Projecting the sun's bearing onto the disc looks
+          // like the physical answer and is a trap here: the game hangs the moon at the ANTI-SOLAR point, so
+          // the sun's bearing lies exactly in the moon's own vertical plane. R is perpendicular to that plane
+          // by construction, so dot(sunH, R) is identically ZERO and the projection collapses onto U — the
+          // light swung up-and-down and the terminator came out HORIZONTAL, a moon lit from below.
+          // There is no honest "toward the sun" direction on an anti-solar disc; the phase here is synthetic
+          // and its orientation has to be chosen. R is the choice: horizontal, so the lit limb is a left or
+          // right crescent and the terminator is vertical, which is what a moon actually looks like.
           let Ld = vec3<f32>(sin(alpha), 0.0, cos(alpha));
           let mu0 = dot(N, Ld);                                      // cos incidence
           let mu = N.z;                                              // cos emission — the observer is straight down +z
@@ -9406,7 +9536,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           // top of it. A real moon is disproportionately bright at full — the opposition surge, regolith
           // backscattering straight at the observer — so a half moon is nowhere near half as bright as a
           // full one. phaseF is the illuminated fraction, (1 + cos alpha) / 2.
-          let phaseF = 0.5 + 0.5 * cos(alpha);
+          let phaseF = moonPhaseF();                                 // …the same fraction the key light and the deck's bloom use
           let phaseB = mix(MOON_PHMIN, 1.0, phaseF);
           // ── EARTHSHINE RUNS THE OTHER WAY, and that is not a mistake ── it is sunlight bounced off the
           // EARTH, and from the moon the Earth shows the opposite phase: it is full when the moon is new.
@@ -9580,6 +9710,32 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       var nx_ = 0.0; var nz_ = 0.0; var ny_ = 1.0;
       ${GERSTN_WGSL}
       return normalize(vec3<f32>(nx_, max(ny_, 0.30), nz_));
+    }
+    // ══ RIPPLE RINGS ══ what a splash and a wake both look like to the surface: a
+    // crest that leaves a point and spreads. Returns BOTH answers in one pass because the caller needs both
+    // and this runs inside the wave march — x is the height added to the Gerstner sum (so the ring is real
+    // stepped geometry, not a decal), y is how much foam the crest carries.
+    // The loop BREAKS at the first empty slot rather than skipping it: world/window.js keeps the list
+    // compacted, so this costs the number of rings actually alive, which is usually zero. That matters here
+    // and nowhere else — every other water term is evaluated once per pixel, and this one is evaluated once
+    // per column the surface march steps through.
+    const RIP_SPD : f32 = ${RIP_SPD};
+    const RIP_LIFE : f32 = ${RIP_LIFE};
+    const RIP_AMP : f32 = ${RIP_AMP};
+    const RIP_W : f32 = ${RIP_W};
+    fn ripHF(wx : f32, wz : f32) -> vec2<f32> {
+      var h = 0.0; var fo = 0.0;
+      for (var i = 0; i < ${RIP_N}; i++) {
+        let r = u.ripple[i];
+        if (r.w <= 0.0) { break; }                                   // compacted: nothing live past here
+        let age = u.time - r.z;
+        if (age < 0.0 || age > RIP_LIFE) { continue; }               // a straggler the CPU has not retired yet
+        let e = (length(vec2<f32>(wx, wz) - r.xy) - age * RIP_SPD) / RIP_W;
+        let g = exp(-e * e) * (1.0 - age / RIP_LIFE);                // …fading as it spreads, so a wake thins out behind you instead of ending on a line
+        h += r.w * RIP_AMP * g;
+        fo = max(fo, r.w * g);                                       // foam takes the STRONGEST ring, not the sum: two rings crossing make one white crest, not a doubly white one
+      }
+      return vec2<f32>(h, fo);
     }
     fn caust(p : vec2<f32>) -> f32 {                                 // CAUSTICS — two drifting noise fields; their coincidence lines are the bright webs
       let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.275, u.time * 0.17));    // caustic drift halved with the waves
@@ -10505,10 +10661,11 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           let adx = max(abs(rd.x), 1e-5); let adz = max(abs(rd.z), 1e-5);
           var tmx = ((f32(cw.x) + max(sx2, 0.0)) - pW.x) / (sx2 * adx) + tq;
           var tmz = ((f32(cw.y) + max(sz2, 0.0)) - pW.z) / (sz2 * adz) + tq;
-          var wSide = false; var wCrest = -9.0; var whF = baseTop;
+          var wSide = false; var wCrest = -9.0; var whF = baseTop; var wRipF = 0.0;   // …wRipF = the ring foam at whichever column the march actually stops on
           for (var wi = 0; wi < 22; wi++) {
             let wxw = f32(cw.x) + u.winO.x; let wzw = f32(cw.y) + u.winO.y;
-            let wv = gerstH(wxw, wzw);                                                                   // GERSTNER height field (see PRE) — same sum the JS floater mirror rides
+            let rip = ripHF(wxw, wzw);                                                                   // …plus any SPLASH or WAKE ring crossing this column (see ripHF in PRE; zero, and one compare, when nothing is rippling)
+            let wv = gerstH(wxw, wzw) + rip.x;                                                           // GERSTNER height field (see PRE) — same sum the JS floater mirror rides
             // ── THE FOAM RING STANDS A VOXEL PROUD (user 2026-08-05) ── done HERE, in the surface march, not
             // after it. Lifting t once the hit was already found only moved that pixel's DEPTH: the foam
             // kept the silhouette of the flat water because the pixels it should have grown into were never
@@ -10526,8 +10683,8 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
               } }
             let wh = baseTop + floor(wv + 0.5) + lift;
             let tNext = min(tmx, tmz);
-            if (ro.y + rd.y * tq <= wh) { t = tq; wSide = true; wCrest = wv; whF = wh; break; }          // SIDE face of a wave step
-            if (ro.y + rd.y * tNext <= wh) { t = (wh - ro.y) / rd.y; wCrest = wv; whF = wh; break; }     // TOP face within this column
+            if (ro.y + rd.y * tq <= wh) { t = tq; wSide = true; wCrest = wv; whF = wh; wRipF = rip.y; break; }          // SIDE face of a wave step
+            if (ro.y + rd.y * tNext <= wh) { t = (wh - ro.y) / rd.y; wCrest = wv; whF = wh; wRipF = rip.y; break; }     // TOP face within this column
             if (tmx < tmz) { tq = tmx; tmx += 1.0 / adx; cw.x += i32(sx2); }
             else { tq = tmz; tmz += 1.0 / adz; cw.y += i32(sz2); }
             if (tq > t + 38.0) { break; }
@@ -10550,8 +10707,28 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
               }
             }
             if (foam > 0.5) { let tFo = (whF + 2.0 - ro.y) / rd.y; if (tFo > 0.0) { t = min(t, tFo); } }   // …and the shaded surface rides on top of that raised column (the +1 now comes from the lift in the march above). GUARDED: this block only runs for rd.y < -0.01, so an eye BELOW that plane (whF is baseTop + floor(wv+0.5) + lift, i.e. up to ~6 voxels above the water — where the swim spring parks you) makes the quotient NEGATIVE and min() took it. A t behind the camera made TEMPORAL drop the pixel, COMPOSITE shade it as unlit water and the reflection ray start behind the eye: dark blotches trailing the shoreline foam ring while swimming. Below the plane there is nothing to clamp to — the ray is already under it.
+            foam = max(foam, wRipF);                                                      // …and the crest of a SPLASH or WAKE ring is white for the same reason a whitecap is: it is water that has just been broken
             foamK = clamp(foam, 0.0, 1.0) * 0.8;
             albedo = mix(albedo, FOAM_C, foamK);
+          } else {
+            // ── AND IF THE MARCH RAN OUT, THE RING STILL HAS TO DRAW (user 2026-08-29: "I can't see the
+            // splash rings and wakes at a distance") ── the loop above is capped at 22 column steps and it
+            // starts up to 34 voxels SHORT of the hit, so on a grazing ray — which is every ray that reaches
+            // far water — it gives up before it ever reaches this pixel's own column. wCrest stays at its
+            // sentinel, the whole block above is skipped, and NOTHING on that surface is foamed: not a ring,
+            // not a wake, not the shoreline surf. That is why the far half of a lake looked untouched while
+            // a ring 40 voxels away was obvious.
+            // Raising the cap would cost every water pixel in the frame a longer loop. Instead: when the
+            // march fails, ask the ring field directly at the flat-plane hit. One evaluation, only on the
+            // pixels that got nothing, and it is the same ripHF the march would have called.
+            // Deliberately the RING only, not the shoreline probes — those are eight voxAt() fetches, and
+            // foaming every distant shoreline is a change to the water's look that was not asked for.
+            let hpF = ro + rd * t;
+            let rfF = ripHF(hpF.x + u.winO.x, hpF.z + u.winO.y).y;
+            if (rfF > 0.0) {
+              foamK = clamp(rfF, 0.0, 1.0) * 0.8;
+              albedo = mix(albedo, FOAM_C, foamK);
+            }
           }
         }
         // (the old 50%-translucent bed mix moved to the COMPOSITE: it now arrives via a REAL refracted ray with
@@ -10772,6 +10949,15 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // number it is worth is the user's to pick off a measured sweep.
   const AO_HIST = (() => { const m = /[?&]aohist=([0-9.]+)/.exec(location.search); return m ? Math.max(1, Math.min(256, Math.round(parseFloat(m[1])))) : 64; })();
 
+  // ── HISTORY FIX CEILING ── how much accumulation a pixel may INHERIT from a neighbour when its own
+  // reprojected tap fails the depth test (see HISTORY FIX in TEMPORAL). Deliberately NOT a real history:
+  // the borrowed value is a converged sample of the RIGHT SURFACE but the WRONG POINT on it, so the pixel
+  // has to keep walking toward its own rays. At 8 it blends its own sample in at 1/9 a frame — enough to
+  // kill the raw single-ray variance, quick enough that a genuine contact shadow re-forms in about a tenth
+  // of a second. Sweep with ?hfix=N, and ?hfix=0 removes the borrow entirely — which is the A/B the whole
+  // thing is judged with now that it is baked in and off the [Y] key it shipped on.
+  const HFIX = (() => { const m = /[?&]hfix=([0-9.]+)/.exec(location.search); return m ? Math.max(0, Math.min(64, Math.round(parseFloat(m[1])))) : 8; })();
+
   const TEMPORAL_SRC = () => /* wgsl */`
     @group(0) @binding(1) var gIrr : texture_2d<f32>;
     @group(0) @binding(2) var histPrev : texture_2d<f32>;
@@ -10798,11 +10984,54 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       var hist = 1.0;
       var acc = cur.rg;
       if (!lifeReject && u.reset < 0.5 && uv.x > 0.001 && uv.y > 0.001 && uv.x < 0.999 && uv.y < 0.999) {
-        let ps = textureLoad(slotPrev, vec2<i32>(uv * u.res), 0).r & 255u;
-        if (ps == sl) {                                              // same identity (terrain↔terrain or same creature) — a vacated/covered pixel is a disocclusion, rejected here
-          let prev = textureSampleLevel(histPrev, samp, uv, 0.0);
           let expT = length(wpp - u.pPos);
-          if (prev.b > 0.0 && abs(prev.b - expT) < 0.02 * expT + 1.5) {   // rotation (not in the rigid delta) and newly revealed surfaces fail this distance check naturally
+          let tol = 0.02 * expT + 1.5;                               // rotation (not in the rigid delta) and newly revealed surfaces fail this distance check naturally
+          let bp = vec2<i32>(uv * u.res);
+          var prev = textureSampleLevel(histPrev, samp, uv, 0.0);
+          // same identity (terrain↔terrain or same creature) — a vacated/covered pixel is a disocclusion, rejected here
+          var ok = (textureLoad(slotPrev, bp, 0).r & 255u) == sl && prev.b > 0.0 && abs(prev.b - expT) < tol;
+          var cap = 1e9;
+          // ── HISTORY FIX ── the depth test above rejects EVERY SILHOUETTE PIXEL, and it does so with the
+          // camera standing perfectly still. The jitter moves the primary ray up to half a pixel a frame, so a
+          // pixel sitting on the edge of a grass blade hits the blade on one frame and the ground behind it on
+          // the next; those two depths differ by more than tol, history is thrown away, and the pixel renders a
+          // RAW one-ray AO plus a one-sample binary sun ray. That is the noise. It is worst on grass because a
+          // blade is almost entirely silhouette, and worse at low renderScale because more of the frame goes
+          // subpixel — which is exactly the shape of what the user reports. The history debug view
+          // (__vb.lifedbg(2)) draws it: solid red along every voxel outline on a MOTIONLESS camera.
+          // Neither surface is actually new, though. Both were on screen last frame, one texel over — so
+          // instead of starting from nothing, take the history of the NEAREST NEIGHBOUR that was looking at
+          // this frame's surface. That is a converged sample of the right surface at the wrong point, which is
+          // a far better prior than a single ray, and the cap below makes the pixel walk off it onto its own
+          // samples within a few frames. Only pixels that already failed pay for the search.
+          // ── AND FOUR OTHER LEVERS, ALL BUILT AND ALL MEASURED NULL THE SAME DAY ── the instrument matters
+          // more than the list: a whole-frame temporal std cannot see any of this, because the pixels that
+          // shimmer are only ~5% of a grass frame and their noise is averaged away by the other 95%. What
+          // works is to build the SILHOUETTE MASK from a ?hfix=0 capture of __vb.lifedbg(2) (red channel over
+          // green) and take the temporal std of ten screenshots inside that mask alone. On that metric the
+          // borrow below measures 2.04 -> 1.11, 3.25 -> 2.17, 3.99 -> 2.65 and 3.73 -> 2.88 (four worlds), and:
+          //   TAA blend rate 0.12 -> 0.06 -> 0.03: flat. It is the VARIANCE CLIP, not the blend, that sets an
+          //     edge pixel's response — alpha 1.0 does measure worse (3.28), so TAA is working, it is just
+          //     already past the knee. Do not lower it and pay the ghosting for nothing.
+          //   TAA clip width 1.25 -> 2.0 -> 3.0 sigma: flat to slightly worse.
+          //   AO accumulation window 64 -> 128 -> 256: flat, and 256 measured WORSE — the f16 quantisation
+          //     note above is real, not theoretical.
+          //   SPATIAL's cross-face threshold 4 -> 9.5 -> 20 (the borrow raises hA past 4, so the fallback
+          //     stops firing on the pixels it was written for): inside the run-to-run scatter either way.
+          if (!ok && ${HFIX} > 0) {                                 // ?hfix=0 folds the whole search away and hands the old single-ray fallback back
+            var bd = tol;
+            for (var k = 0; k < 9; k++) {
+              if (k == 4) { continue; }                              // the centre is the tap that just failed
+              let q = bp + vec2<i32>(k % 3 - 1, k / 3 - 1);
+              if (q.x < 0 || q.y < 0 || q.x >= i32(u.res.x) || q.y >= i32(u.res.y)) { continue; }
+              if ((textureLoad(slotPrev, q, 0).r & 255u) != sl) { continue; }
+              let s = textureLoad(histPrev, q, 0);
+              let dd = abs(s.b - expT);
+              if (s.b > 0.0 && dd < bd) { bd = dd; prev = s; ok = true; }
+            }
+            if (ok) { cap = ${HFIX}.0; }                             // borrowed, not earned — see HISTORY FIX CEILING
+          }
+          if (ok) {
             // ── TWO CEILINGS, ONE COUNTER ── the stored .a is now the RAW frame count since the last
             // reject, and each channel divides by its OWN ceiling at use time. That works because the two
             // terms are only ever invalidated TOGETHER — the slot test, the flag bits and the depth test
@@ -10818,13 +11047,12 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
             let rk = clamp(cur.a, 0.0, 1.0);
             let capS = mix(sBase, min(sBase, 10.0), rk);             // reactive pixel: converge in ~4 frames so a moving shadow TRACKS its body instead of trailing it
             let capA = mix(aBase, min(aBase, 10.0), rk);
-            hist = min(abs(prev.a) + 1.0, max(capS, capA));          // the counter runs to the LONGER of the two; each channel clamps it down to its own below
+            hist = min(min(abs(prev.a), cap) + 1.0, max(capS, capA));   // the counter runs to the LONGER of the two; each channel clamps it down to its own below   // …and cap is 1e9 (no-op) for a pixel that reprojected onto ITSELF, HFIX for one that borrowed a neighbour's
             acc = vec2<f32>(mix(prev.r, cur.r, 1.0 / min(hist, capS)),
                             mix(prev.g, cur.g, 1.0 / min(hist, capA)));
             // EQUIVALENCE: at ?aohist=64 (the default) capS == capA, so hist == min(prev.a + 1, capS) and
             // both blends are 1/hist — exactly the single-counter line this replaced. Bit-identical.
           }
-        }
       }
       textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(acc, cur.b, select(hist, -hist, cur.a > 0.5)));   // SIGN carries the reactive flag to SPATIAL (magnitude unchanged) — see the note there
     }
@@ -10959,6 +11187,8 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     const CG_BLOOM_TIGHT : f32 = 800.0;                              // the halo's exponent with no cloud in the way. It USED to be pinned to the sun's own corona in skyColor so the two were continuous; that corona is gone (see the note in PRE — the sky-side glow was the white smear the user asked to remove, and the glare that reads correctly is the LENS FLARE in blit.js instead). So this is now free-standing: it is the DECK's bloom width and nothing else has to agree with it. 2.38 degrees at half-power, which is what it was when it did have to.
     const CG_BLOOM_WIDE : f32 = 90.0;                                // …and through full cloud, about a 6-degree glow. Width goes as 1/sqrt(n).
     const MOON_GLOW : vec3<f32> = vec3<f32>(0.94, 0.95, 1.00);       // the same faint cool white sunTint() gives the moon
+    const CG_NKEY : f32 = 0.40;                                      // what the deck's MOON key is scaled by at full night, in place of dayScale(). Not 1.0: sunTint's moon is already a lit-surface intensity and the deck would read as daylight
+    const CG_NAMB : vec3<f32> = vec3<f32>(0.038, 0.049, 0.074);      // …and its night AMBIENT floor. Blue on purpose: a moonlit cloud is lit by the night sky, not by the moon alone
     const CG_SKY_OCC : f32 = 1.85;                                   // how much faster the SKY hides behind the deck than the deck's own density says. Only the sky, never the cloud's own lighting — see the note at the call site.
     const CG_U2W : f32 = 213.3333;                                   // world units per source unit = (CLOUD_HI - CLOUD_LO) / 1.5
     const CG_RAY_STEPS : i32 = 28;                                   // source default 48. A fetch is cheap but it is not free, and 28 across a 320-deep deck is ~11 world units a step — already finer than the cache texel, so the extra 20 would resolve nothing the volume holds.
@@ -11579,8 +11809,23 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
             let stepU = stepW / CG_U2W;                            // the same step, in the units the density was authored in
             let cosT = dot(rd, u.sunDir);
             let phase = mix(1.0, cgPhase(cosT, CG_G), CG_PHASE_MIX);
-            let sunC = sunTint() * dayScale();
-            let ambC = mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale();
+            // ── THE DECK HAS A NIGHT OF ITS OWN (user 2026-08-28: "make the clouds lighter during the
+            // night, they are pitch black") ── and they were, measurably: the ambient below is
+            // mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale(), and dayScale bottoms out at 0.0084, so the whole
+            // term came to (0.3, 0.5, 0.9) out of 255. Below one display level. Black.
+            // TWO SEPARATE FAULTS, and only fixing both gets a moonlit deck:
+            //  1. the KEY was double-dimmed. sunTint() ALREADY carries the moon's own 0.198 scale at night,
+            //     and multiplying it by dayScale() applied the night floor to it a second time — 0.265 became
+            //     0.0017. mix(dayScale(), CG_NKEY, nightK()) leaves the day untouched (nightK is 0 there) and
+            //     hands the night a real, if modest, moon key.
+            //  2. the AMBIENT had no night floor at all. Every other surface in this renderer gets one
+            //     (ambFloor for the world, dayScale's own mf for the sky); the deck was the one thing lit
+            //     purely multiplicatively, so it alone went to nothing. CG_NAMB is that floor, cool and blue
+            //     because a moonlit cloud is lit by a blue-grey sky and reads that way in any night photograph.
+            // Both fade in on nightK(), which is the standing rule here — keyed on the TRUE sun elevation, so
+            // neither jumps at the dusk/dawn moon swap.
+            let sunC = sunTint() * mix(dayScale(), CG_NKEY, nightK());
+            let ambC = mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale() + CG_NAMB * nightK();
             var tg = ta + stepW * cgIGN(vec2<f32>(gid.xy), u32(u.frame));   // …and this is that dither, restored to the source's own choice — see cgIGN
             var Tg = 1.0;
             var accG = vec3<f32>(0.0);
@@ -11639,7 +11884,10 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
             let widthG = mix(CG_BLOOM_TIGHT, CG_BLOOM_WIDE, aG);
             let rk2 = 1.0 - RAIN_CLOUD_DARK * rainK();
             col += SUN_COL * (CG_BLOOM * aG * rk2 * smoothstep(-0.03, 0.06, rsC.y)) * pow(max(dot(rd, rsC), 0.0), widthG);
-            col += MOON_GLOW * (CG_MBLOOM * aG * rk2 * smoothstep(-0.03, 0.06, rmC.y)) * pow(max(dot(rd, rmC), 0.0), widthG);
+            // ── AND THE MOON'S BLOOM SCALES WITH ITS PHASE ── it did not, which is why a new moon still lit
+            // the deck: the disc went dark and the KEY light went with it, but this term carried on throwing
+            // a full moon's halo through the cloud. moonPhaseF() is the same fraction both of those use.
+            col += MOON_GLOW * (CG_MBLOOM * aG * rk2 * moonPhaseF() * smoothstep(-0.03, 0.06, rmC.y)) * pow(max(dot(rd, rmC), 0.0), widthG);
           }
         }
       } else if (face == 8u) {                                       // LAVA: emissive — burns through the fog
@@ -11653,7 +11901,11 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         let tWat = irr.b;
         let pw2 = u.camPos + rd * tWat;
         let wx2 = pw2.x + u.winO.x; let wz2 = pw2.z + u.winO.y;
-        let nW = select(vec3<f32>(0.0, 1.0, 0.0), gerstN(wx2, wz2), LG(23u));   // bit 23: WATER WAVES — off = a flat mirror plane, so wave shape can be told apart from wave lighting                                   // the GERSTNER normal — same field that raises the voxel crests, crest-pinched by the Q term
+        // ── AN IF, NOT A select() ── select evaluates BOTH operands, so this paid for gerstN — four sin and
+        // four cos over the whole GW table — on every water pixel in the frame even though WATER_BAKE ships
+        // waves: 0 and the result was thrown away every time. Pure waste at the shipping default.
+        var nW = vec3<f32>(0.0, 1.0, 0.0);
+        if (LG(23u)) { nW = gerstN(wx2, wz2); }   // bit 23: WATER WAVES — off = a flat mirror plane, so wave shape can be told apart from wave lighting                                   // the GERSTNER normal — same field that raises the voxel crests, crest-pinched by the Q term
         let foamW = smoothstep(0.16, 0.50, alb.g) * (1.0 - u.pickZ.w);   // foam carries a bright albedo → shade it as SURFACE, not window (ice path handles frozen)
         let cosI = clamp(-dot(rd, nW), 0.02, 1.0);
         let fres = 0.02 + 0.98 * pow(1.0 - cosI, 5.0);               // true Schlick, F0 = 0.02 (air→water)
@@ -12490,7 +12742,20 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         // so it is tan of the angular radius over tanH, half the vertical resolution. The coefficients are
         // fitted to reproduce today's radii at today's sun (1.741/2.381/3.447/4.619 x the disc), so this is a
         // no-op at the current size and scales from here on.
-        let sunPx = tan(acos(SUN_COSR)) / u.tanH * 0.5 * u.canvasRes.y;
+        // ── AND IT GROWS OFF-AXIS, BECAUSE THE DISC DOES (user 2026-08-28: "if the player looks away from
+        // the sun while it's behind a cloud it returns to a harder outline") ── this was the gaze dependence,
+        // and it is pure projection. A tangent projection magnifies away from the centre: a small circle at
+        // angle theta images RADIALLY by 1/sf^2 and tangentially by 1/sf, where sf = dot(sunDir, fwd). The
+        // sky shader draws the disc by ANGLE so it grows with that automatically; this flare is drawn in
+        // SCREEN space and was pinned to the centre-of-screen size, so the two came apart the moment the sun
+        // left the middle of the frame. MEASURED at the current disc: 16.4 px at centre against a 17.3 px
+        // innermost halo — a halo, just — but 24.5 px radial at 35 degrees off-axis and 50.0 px at 55, with
+        // the halo still 17.3. Past about 15 degrees the disc OUTGROWS its own glare and what is left is the
+        // bare circle, which is exactly the hard outline reported, and why it looked fine dead ahead.
+        // 1.5 is the exponent between the two magnifications, and it tracks the disc's mean to within a few
+        // percent from 0 to 55 degrees. The max() is a guard: sf reaches 0.05 at the edge of this block's own
+        // gate and an unclamped 1/sf^1.5 would blow the flare up to the size of the screen.
+        let sunPx = tan(acos(SUN_COSR)) / u.tanH * 0.5 * u.canvasRes.y / pow(max(sf, 0.2), 1.5);
         let ctr = u.canvasRes * 0.5;
         let axis = ctr - sunPix;
         var K = array<f32, 4>(0.35, 0.65, 1.15, 1.7);
@@ -12540,7 +12805,17 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           var sv = 0.0;
           for (var fy = -1; fy <= 1; fy++) { for (var fxx = -1; fxx <= 1; fxx++) {
             let s5 = textureSampleLevel(src, samp, (sunPix + vec2<f32>(f32(fxx), f32(fy)) * 6.0) / u.canvasRes, 0.0);
-            sv += s5.a * smoothstep(0.72, 0.94, max(s5.r, max(s5.g, s5.b)));
+            // ── SKY-OR-GEOMETRY ONLY, NOT BRIGHTNESS (user 2026-08-28: "it should have a consistent look
+            // behind the clouds period") ── s5.a is the sky mask, so this asks the one question an occlusion
+            // test should: is something SOLID in front of the sun? It used to be multiplied by
+            // smoothstep(0.72, 0.94, brightness), which asks a second and quite different question — is the
+            // sun still BRIGHT there — and that is what let the deck withhold the glare. Cloud is sky, so the
+            // sun now keeps behind a cloud the same halo it has in the open, which is the requirement. A tree
+            // or a hill still hides it, because those clear the sky mask.
+            // NOTE this is justified by the REQUIREMENT, not by a measurement: the sv instrumentation I tried
+            // was invalid (it painted sv from inside the gAny gate, which never runs on the patch pixels), so
+            // treat any numbers about sv in this file's history as unfounded.
+            sv += s5.a;
           } }
           sv /= 9.0;
           if (sv > 0.02) {
@@ -13470,7 +13745,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     smoothEye = P.y + EYE;
   }
   let spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
-  function rerollSpawn() {                              // H — jump to a fresh random patch of the (infinite, DETERMINISTIC) world, then bake the good one into the code
+  function rerollSpawn() {                              // __vb.reroll() (was the H key until 2026-08-29) — jump to a fresh random patch of the (infinite, DETERMINISTIC) world, then bake the good one into the code
     SPWX = Math.round((Math.random() - 0.5) * 400000);
     SPWZ = Math.round((Math.random() - 0.5) * 400000);
     let g = 0;
@@ -13478,7 +13753,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     cardCacheClear();                                   // the perch enumeration caches treeAt/oakAt per cell, and BOTH carve a clearing + a sight-line corridor around the spawn — so moving the spawn moves the trees those answers were computed for   // valid land, off water/gorges/SAND (H and nearCave are both deterministic → work anywhere). WL + 6 is the quicksand guard — see the note in world/build.js
     respawn();                                          // teleport + maybeRecenter regenerates the world at the new spawn
     spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
-    console.log('[vb] SPAWN RESET [H] → paste this over line ~156 to BAKE it:   ' + spawnBake);
+    console.log('[vb] SPAWN RESET → paste this over line ~156 to BAKE it:   ' + spawnBake);
   }
 
   // ── right-click pickup: pebbles + twigs ─────────────────────────────────────
@@ -13498,7 +13773,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const SLOT_MAX = 5;                                // hard ceiling on hotbar slots (user)
   const slots = [];                                  // …and it starts EMPTY
   let selSlot = 0;
-  const STACK_MAX = 8;                                 // how deep a stackable item goes (user)
+  const STACK_MAX = 10;                                // how deep a stackable item goes (user; was 8 until 2026-08-29)   // ── PAST 9 THE BADGE NEEDS TWO DIGITS ── BLIT already draws them (digB / nB/10 / nB%10 in render/wgsl/blit.js), but the placement clamp in main/tick-camera.js reserves the RUN WIDTH and had one digit baked in. Both ends now derive it from this constant, so the next change to it cannot drift them apart.
   const stackable = (it) => !(it === 1 || it === KNIFE_IT || it === PICK_IT || it === SHOVEL_IT || it === BOW_IT || it === HOE_IT || it === SPEAR_IT);   // TOOLS AND WEAPONS DO NOT STACK (user) — each takes its own slot; everything else (raw meat, rocks, twigs, cones) stacks to STACK_MAX
   // ── AND canAdd MEANS SOMETHING AGAIN ── it was `() => true` while the hotbar was unlimited. Three ways to
   // say yes, in the order addItem below actually uses them: it stacks onto a slot that already holds this
@@ -13928,14 +14203,17 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // Each finder returns a WORLD COLUMN to stand at, or null. `cell` is the generator's own grid size, and
   // the ring walk visits cells nearest-first so the answer really is the closest one.
   const CMD_LOCATE = (() => {
-    const nearestCell = (cell, rings, hit) => {          // spiral out over the generator's cell grid
-      const c0x = Math.floor(P.x / cell), c0z = Math.floor(P.z / cell);
+    // `ox`/`oz` default to the player, and exist for bandTree below: a walk that has to be re-run from a
+    // column the player has NOT been teleported to yet needs an origin that is not P.
+    const nearestCell = (cell, rings, hit, ox, oz) => {   // spiral out over the generator's cell grid
+      const px = ox === undefined ? P.x : ox, pz = oz === undefined ? P.z : oz;
+      const c0x = Math.floor(px / cell), c0z = Math.floor(pz / cell);
       for (let r = 0; r <= rings; r++) {
         let best = null, bd = Infinity;
         for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;   // ring surface only — the interior was covered by smaller r
           const got = hit(c0x + dx, c0z + dz); if (!got) continue;
-          const d = (got.x - P.x) * (got.x - P.x) + (got.z - P.z) * (got.z - P.z);
+          const d = (got.x - px) * (got.x - px) + (got.z - pz) * (got.z - pz);
           if (d < bd) { bd = d; best = got; }
         }
         if (best) return best;                           // nearest hit in the first ring that has one
@@ -13948,6 +14226,33 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       return H(Math.round(x), Math.round(z)) < WL || (r > 0 && (H(Math.round(x + q), Math.round(z)) < WL
         || H(Math.round(x - q), Math.round(z)) < WL || H(Math.round(x), Math.round(z + q)) < WL
         || H(Math.round(x), Math.round(z - q)) < WL)); };
+    // ── THE BIOME TESTS, NAMED ── hoisted out of the biome finders below so that bandTree can reuse the exact
+    // same predicate. Two copies of "is this deep birch" is precisely how the pine_forest conjunction went
+    // wrong three times (see the notes on pine_forest), so there is one of each and both callers share it.
+    const IS_DESERT = (x, z) => desertM(x, z) >= 0.995;
+    const IS_BIRCH = (x, z) => birchM(x, z) >= 0.995;
+    const IS_CHERRY = (x, z) => cherryM(x, z) >= 0.995;
+    const IS_OAK = (x, z) => oakM(x, z) >= 0.995 && cherryM(x, z) <= 0.005;
+    const IS_PINE = (x, z) => desertM(x, z) <= 0.005 && oakM(x, z) <= 0.005 && birchM(x, z) <= 0.005;
+    // ── A BAND'S TREE HAS TO BE REACHABLE FROM OUTSIDE THE BAND ── (user 2026-08-29: "the /locate birch
+    // command doesnt work, it should teleport the player to a birch forest"). Each tree finder is a ring walk
+    // over its own cell grid capped at 40 rings, and that cap is SHORTER THAN THE GAP BETWEEN THE BANDS: the
+    // birch reaches 40 * BKCELL = 1760 voxels and the pine 1800, while the oak forest measured 3584 voxels
+    // from the birch at the spawn's own z. So /locate birch from under an oak walked its whole budget through
+    // ground where birchAt returns null by construction (it refuses any cell with birchM < 0.5) and answered
+    // "no birch found within range" — a tree that plainly exists, reported as missing, and nobody moved.
+    // The band is the missing half of the query: find the forest first, THEN the nearest tree in it, so the
+    // player arrives beside a real birch rather than at the band's edge. One teleport either way — the walk
+    // from the band column happens before cmdGoTo, which is why nearestCell takes an origin.
+    const bandTree = (cell, off, what, hit, pred, label) => {
+      let g = nearestCell(cell, 40, hit);
+      if (!g) {
+        const b = biomeSeek(pred, label); if (!b) return null;
+        g = nearestCell(cell, 40, hit, b.x, b.z);
+        if (!g) return b;                              // in the forest with no tree in reach of its centre: say so honestly rather than announcing a tree that is not there
+      }
+      return { x: g.x + off, z: g.z, what };
+    };
     return {
       // ── AND IT HAS TO STILL BE THERE ── riverAt is the watershed LAYOUT and knows nothing about biomes, but
       // the desert pass runs last and lifts every column with desertM > 0.5 to WL + 2, so a lake or a channel
@@ -13964,16 +14269,13 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
             if (wetSpot(mx, mz, 0)) return { x: mx, z: mz }; }
           return null; });
         return g ? { ...cmdShore(g.x, g.z), what: 'river' } : null; },
-      tree: () => { const g = nearestCell(TCELL, 40, (cx, cz) => { const t = treeAt(cx, cz); return t ? { x: t.tx, z: t.tz } : null; });
-        return g ? { x: g.x + 12, z: g.z, what: 'pine' } : null; },
+      tree: () => bandTree(TCELL, 12, 'pine', (cx, cz) => { const t = treeAt(cx, cz); return t ? { x: t.tx, z: t.tz } : null; }, IS_PINE, 'the pine forest'),
       // …and the OTHER forest's tree. Stood off 24 rather than the pine's 12: an oak crown is up to 118 voxels
       // across, so landing at the pine's distance puts the player under the canopy instead of in front of it.
-      oak: () => { const g = nearestCell(OKCELL, 40, (cx, cz) => { const t = oakAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; });
-        return g ? { x: g.x + 24, z: g.z, what: 'oak' } : null; },
+      oak: () => bandTree(OKCELL, 24, 'oak', (cx, cz) => { const t = oakAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; }, IS_OAK, 'the oak forest'),
       // …and the THIRD forest's tree. Stood off 16: a birch crown is narrower than an oak's 118 but
       // wider than a pine, so it sits between their two numbers.
-      birch: () => { const g = nearestCell(BKCELL, 40, (cx, cz) => { const t = birchAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; });
-        return g ? { x: g.x + 16, z: g.z, what: 'birch' } : null; },
+      birch: () => bandTree(BKCELL, 16, 'birch', (cx, cz) => { const t = birchAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; }, IS_BIRCH, 'the birch forest'),
       rock: () => { const g = nearestCell(BCELL, 60, (cx, cz) => { const b = boulderAt(cx, cz); return b ? { x: b.bx, z: b.bz } : null; });
         return g ? { x: g.x + 8, z: g.z, what: 'rock' } : null; },
       log: () => { const g = nearestCell(LGCELL, 40, (cx, cz) => { const l = logAt(cx, cz); return l ? { x: l.wx, z: l.wz } : null; });
@@ -14025,7 +14327,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // Step 16 at a time and stop DEEP inside, not at the first column that qualifies: landing on the border
       // itself puts you in the dithered blend where the sand is half forest floor, which is not "the desert".
       // Same landing test the spawn nudge uses (build.js) — dry ground, clear of a gorge.
-      desert: () => biomeSeek((x, z) => desertM(x, z) >= 0.995, 'the desert'),
+      desert: () => biomeSeek(IS_DESERT, 'the desert'),
       // ── AND PINE FOREST IS NOW A CONJUNCTION, NOT THE ABSENCE OF SAND ── it used to be `desertM <= 0.005`,
       // which was exact while there were two biomes and is WRONG the moment there are three: the oak forest
       // satisfies it perfectly, so /locate pine_forest from the oak side answered "you are already there".
@@ -14036,30 +14338,63 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // you into a birch wood and announced the pines. Third time this exact shape has bitten;
       // adding the term rather than rewriting the pattern, because the pattern is right and it is
       // the MISSING CONJUNCT that is wrong each time.
-      pine_forest: () => biomeSeek((x, z) => desertM(x, z) <= 0.005 && oakM(x, z) <= 0.005 && birchM(x, z) <= 0.005, 'the pine forest'),
-      birch_forest: () => biomeSeek((x, z) => birchM(x, z) >= 0.995, 'the birch forest'),
+      pine_forest: () => biomeSeek(IS_PINE, 'the pine forest'),
+      birch_forest: () => biomeSeek(IS_BIRCH, 'the birch forest'),
       // ── AND OAK IS A CONJUNCTION NOW TOO (2026-08-18) ── the note above this predicted exactly this: a fourth
       // biome breaks any "biome" test written as the absence of the others. The cherry forest sits INSIDE oakM
       // (cherryM is a sub-region of it — see world/window.js), so `oakM >= 0.995` is satisfied perfectly from
       // deep inside the blossom and /locate oak_forest answered "you are already there" while standing under a
       // pink crown. pine_forest above needs no cherry term for the mirror reason: cherry ground has oakM 1, so
       // its `oakM <= 0.005` already excludes it.
-      oak_forest: () => biomeSeek((x, z) => oakM(x, z) >= 0.995 && cherryM(x, z) <= 0.005, 'the oak forest'),
-      cherry_forest: () => biomeSeek((x, z) => cherryM(x, z) >= 0.995, 'the cherry forest'),
+      oak_forest: () => biomeSeek(IS_OAK, 'the oak forest'),
+      cherry_forest: () => biomeSeek(IS_CHERRY, 'the cherry forest'),
     };
   })();
-  // Walk x outward from the player (the biome split is a line in x), both ways, and take the first column that
-  // is deep inside the wanted biome AND is somewhere you can stand. 24000 voxels is far past the widest the
-  // blend band can ever be, so failing to find one means something is wrong rather than "keep looking".
+  // Walk x outward from the player (the biome split is a line in x), both ways, find the band, and put the
+  // player down ON ITS MIDLINE (user 2026-08-29: "when I type /locate (biome) have me spawn in the middle of
+  // it, not the edge"). It used to return the FIRST column that qualified, which is by definition the near
+  // RIM of the band — you arrived looking back at the biome you came from, with the far side 2000 voxels
+  // away, and /locate desert from the pine forest landed you where the sand had barely started.
+  //
+  // The middle is DERIVED, not tabulated: seed anywhere inside the band, then walk each way until `want`
+  // stops holding and take the midpoint of that run. Nothing here knows BIRCHC or DESC or how wide a strip
+  // is, so a band that moves or a biome that has not been written yet needs no edit — which is the whole
+  // reason it is not the obvious "read the band centre out of world/window.js". The wobble means the band
+  // is a line in x per z, so the middle only means anything in x; z stays the player's own.
+  //
+  // 24000 voxels is far past the widest the blend band can ever be, so failing to seed means something is
+  // wrong rather than "keep looking". The EDGE walk is capped at BIOP/2 instead, and that cap is load-
+  // bearing: the world repeats every BIOP = 12960 (six 2160 strips), so a longer walk would step into the
+  // NEXT period's copy of the same biome, find it still qualifying, and hand back a midpoint out in a
+  // different band entirely. Half a period cannot reach a second copy and is still ~3x the widest strip.
   const biomeSeek = (want, label) => {
-    for (let r = 0; r <= 24000; r += 16) {
+    const zi = Math.round(P.z);
+    let seed = null;
+    for (let r = 0; r <= 24000 && seed === null; r += 16)
       for (const x of (r === 0 ? [P.x] : [P.x + r, P.x - r])) {
-        const xi = Math.round(x), zi = Math.round(P.z);
-        if (!want(xi, zi)) continue;              // `want` takes the COLUMN, not one mask's value: with three biomes a test can need two masks at once (see pine_forest)
-        if (H(xi, zi) <= WL + 1 || nearCave(xi, zi)) continue;
-        return { x: xi, z: zi, what: label };
+        const xi = Math.round(x);
+        if (want(xi, zi)) { seed = xi; break; }   // `want` takes the COLUMN, not one mask's value: with three biomes a test can need two masks at once (see pine_forest)
       }
-    }
+    if (seed === null) return null;
+    const edge = (dir) => { let x = seed;         // the last column that still qualifies, walking one way
+      for (let s = 16; s <= BIOP * 0.5; s += 16) { const xi = seed + dir * s; if (!want(xi, zi)) break; x = xi; }
+      return x; };
+    const mid = Math.round((edge(-1) + edge(1)) * 0.5);
+    // Standable ground AT the middle, and still inside the biome — the midline can land in a lake or over a
+    // gorge exactly as the old first-column test could, so the same two rejections apply, spiralled outward
+    // from the midpoint rather than from the player. 2048 either way is a whole strip's half-width.
+    for (let r = 0; r <= 2048; r += 8)
+      for (const [dx, dz] of (r === 0 ? [[0, 0]] : [[r, 0], [-r, 0], [0, r], [0, -r]])) {
+        const xi = mid + dx, zj = zi + dz;
+        if (want(xi, zj) && H(xi, zj) > WL + 1 && !nearCave(xi, zj)) return { x: xi, z: zj, what: label };
+      }
+    // Nothing standable anywhere near the middle: fall back to what this function did before the midline,
+    // so a biome that is somehow all water or all gorge still answers instead of the command going dead.
+    for (let r = 0; r <= 24000; r += 16)
+      for (const x of (r === 0 ? [P.x] : [P.x + r, P.x - r])) {
+        const xi = Math.round(x);
+        if (want(xi, zi) && H(xi, zi) > WL + 1 && !nearCave(xi, zi)) return { x: xi, z: zi, what: label };
+      }
     return null;
   };
   const CMD_LOC_ALIAS = { water: 'lake', pond: 'lake', stream: 'river', forest: 'tree', boulder: 'rock',
@@ -14459,7 +14794,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const { CMD, cmdMsg, cmdRun, cmdShow } = __m_ui_console;
   const __m_sim_projectiles = (() => {
   // @module — arrows and spears: launch, arc, impact, and the pick-up flood
-  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, launchThrown, shootArrow, throwSpear, twigLeafCells
+  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, lastShotInfo, launchThrown, shootArrow, throwSpear, twigLeafCells
   // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
   // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
   const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
@@ -14559,6 +14894,8 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     }
     return true;
   };
+  let shotRec = null;                               // the last arc's outcome, for __vb.lastShot()
+  const lastShotInfo = () => shotRec;
   const ARROWS_ON_FIELD = 3;                         // how many loosed arrows may lie about at once — one drop slot is always kept free for the next shot
   // LEAVES CATCH ARROWS (user). solid() is the WALKING test and pine needles are deliberately walk-through,
   // so a shaft flew clean through a canopy. A flying shaft is not a walking player: foliage stops it.
@@ -14579,9 +14916,28 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     const LAUNCH_D = 6;
     const ho = heldOff || [0, 0, 1];
     const k = LAUNCH_D / Math.max(0.2, ho[2]);
-    const sx = pr.pos[0] + pr.right[0] * ho[0] * k + pr.up[0] * ho[1] * k + pr.fwd[0] * LAUNCH_D,
-          sy2 = pr.pos[1] + pr.right[1] * ho[0] * k + pr.up[1] * ho[1] * k + pr.fwd[1] * LAUNCH_D,
-          sz = pr.pos[2] + pr.right[2] * ho[0] * k + pr.up[2] * ho[1] * k + pr.fwd[2] * LAUNCH_D;
+    let sx = pr.pos[0] + pr.right[0] * ho[0] * k + pr.up[0] * ho[1] * k + pr.fwd[0] * LAUNCH_D,
+        sy2 = pr.pos[1] + pr.right[1] * ho[0] * k + pr.up[1] * ho[1] * k + pr.fwd[1] * LAUNCH_D,
+        sz = pr.pos[2] + pr.right[2] * ho[0] * k + pr.up[2] * ho[1] * k + pr.fwd[2] * LAUNCH_D;
+    // ── AND IT MUST NOT BE SPAWNED INSIDE THE WORLD (user 2026-08-29: "arrows seem to go through the
+    // ground") ── that offset is carried along the VIEW, so aiming down walks the launch point downward with
+    // it: at a steep angle it lands ~6 voxels under the eye, which is under the terrain the player is standing
+    // on. The march below then starts buried, and the muzzle guard it runs into (impacts are ignored until the
+    // arc has reached open air, so a shaft leaving a trunk does not stick at arm's length) never lifts, because
+    // an arrow already inside the ground and heading further into it never sees open air. Every world impact
+    // was therefore suppressed for the whole flight and the shaft fell out of the bottom of the world.
+    // The guard is not the problem — the launch point is. The EYE is always in open space (the player is
+    // standing there), so walk back along the segment eye -> spawn and launch from the last free point. A
+    // normal shot is untouched: its spawn is already clear and the loop exits on the first test. A point-blank
+    // shot into a trunk now spawns just outside the bark and sticks in it, which is what it should always have
+    // done. Only the buried case changes, and it changes from "no collision at all" to "collides".
+    if (arrowBlocked(Math.round(sx), Math.round(sy2), Math.round(sz))) {
+      const ex = pr.pos[0], ey = pr.pos[1], ez = pr.pos[2];
+      for (let b9 = 1; b9 <= 12; b9++) {               // 12 steps back over 6 voxels = half-voxel resolution, finer than the grid it is testing
+        const g9 = 1 - b9 / 12, qx9 = ex + (sx - ex) * g9, qy9 = ey + (sy2 - ey) * g9, qz9 = ez + (sz - ez) * g9;
+        if (!arrowBlocked(Math.round(qx9), Math.round(qy9), Math.round(qz9))) { sx = qx9; sy2 = qy9; sz = qz9; break; }
+      }
+    }
     // …and it must still go WHERE YOU AIMED. Leaving the bow means leaving from a point ~6 voxels to the
     // side of the eye, so firing straight down the view direction sends the arrow along a parallel line
     // that never crosses the crosshair. Aim at a distant point ON the view ray instead: the flight
@@ -14660,6 +15016,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // arc reached open air since — and the first two metres come back with the guard intact.
     let muzzleFree = !arrowBlocked(Math.round(sx), Math.round(sy2), Math.round(sz));   // false = launched from inside something: no impact until the arc is out in the open
     let px = sx, py = sy2, pz = sz, vy = vy0, T = 0, landed = false;
+    let fx = sx, fy = sy2, fz = sz;                    // the last sample that was NOT inside anything — where a shaft that struck the WORLD comes to rest (see the impact below)
     for (let i = 0; i < STEPS; i++) {
       const nvy = vy + TOSS_G * 0.005;
       const dx = vx * 0.005, dy = (vy + nvy) * 0.5 * 0.005, dz = vz * 0.005;
@@ -14683,7 +15040,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           if (ax * ax + ay * ay + az * az <= t.r2) { hitBird = t.bi; break; }
         }
         const blk = arrowBlocked(Math.round(qx), Math.round(qy), Math.round(qz));
-        if (!blk) muzzleFree = true;                   // out in the open — everything solid from here on is a real impact, however close it is
+        if (!blk) { muzzleFree = true; fx = qx; fy = qy; fz = qz; }   // out in the open — everything solid from here on is a real impact, however close it is
         if (hitSlot >= 0 || hitBird >= 0 || (muzzleFree && blk)) {
           px = qx; py = qy; pz = qz; T += 0.005 * f; struck = true; break;
         }
@@ -14694,8 +15051,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // …and if even THAT ran out (it cannot on any real shot), set it down on the ground under wherever it
     // got to rather than leaving it hanging: a stuck arrow with nothing under it is the bug just fixed.
     if (!landed) { const ix9 = Math.round(px), iz9 = Math.round(pz);
-      for (let y9 = Math.min(WY - 1, Math.round(py)); y9 >= 0; y9--) if (arrowBlocked(ix9, y9, iz9)) { py = y9 + 1; break; }
+      // Start the search from the TOP of the world if the arc ended below it. The scan walks downward, so a
+      // negative start ran zero iterations and left the shaft at whatever sub-world y it had reached — the
+      // arrow was not merely unstuck, it was gone. That could only happen while the launch bug above was
+      // suppressing collisions, but the recovery path should not depend on nothing else being broken.
+      let y0 = Math.round(py);
+      y0 = y0 < 0 ? WY - 1 : Math.min(WY - 1, y0);
+      for (let y9 = y0; y9 >= 0; y9--) if (arrowBlocked(ix9, y9, iz9)) { py = y9 + 1; break; }
     }
+    shotRec = { kind, sx: +sx.toFixed(2), sy: +sy2.toFixed(2), sz: +sz.toFixed(2), buried: !muzzleFree,
+                 x: +px.toFixed(2), y: +py.toFixed(2), z: +pz.toFixed(2), T: +T.toFixed(3), landed };   // __vb.lastShot() — where the arc actually ended, and whether it ended by HITTING something or by running out of march. `landed:false` on an ordinary shot means the world collision is broken again.
     // ── NEVER CARVE AN ANIMAL ── a mammal is STAMPED into the world grid, so its voxels read as ordinary
     // terrain: a shaft that came down on a porcupine's quills (outside the body sphere tested above, but
     // still its voxels) knocked a CHUNK out of it. Anything landing inside a live creature's stamp is a
@@ -14708,7 +15073,18 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         if (ix >= q[0] - 1 && ix <= q[3] + 1 && iy >= q[1] - 1 && iy <= q[4] + 1 && iz >= q[2] - 1 && iz <= q[5] + 1) { hitSlot = wk; break; }
       }
     }
-    const lx = Math.round(px), lz = Math.round(pz);
+    // ── IT STOPS ON THE TERRAIN, NOT IN IT (user 2026-08-29: "arrows seem to go through the ground") ──
+    // the impact test stores the sample that was BLOCKED, and that sample is by definition a cell inside
+    // whatever was struck. So every shaft came to rest one cell deep in the ground, and with the model drawn
+    // along its flight the whole arrow disappeared under the surface. Measured on a clean shot: the column
+    // read solid 212-216 with air from 218, and the arrow sat at 216 — two voxels inside the rock.
+    // The blocked cell is still exactly what the CARVE wants (chopAt below chips the thing that was hit), so
+    // the two are separated here rather than one being bent to serve the other: rx/ry/rz is where the shaft
+    // RESTS, px/py/pz stays where it STRUCK. A creature hit is deliberately left alone — an arrow in an
+    // animal belongs inside the animal, and backing it off would leave it hanging in front of the wound.
+    const worldHit = hitSlot < 0 && hitBird < 0;
+    const rx = worldHit ? fx : px, ry = worldHit ? fy : py, rz2 = worldHit ? fz : pz;
+    const lx = Math.round(rx), lz = Math.round(rz2);
     const Xh = [Math.sin(P.yaw), 0, Math.cos(P.yaw)];  // it lands pointing the way it flew
     // ── ROOM FOR THE NEXT SHOT ── the composite renders only the FIRST FOUR drops, so arrows piling up in
     // the list silently swallowed every shot after the third: the new one existed but was never drawn, and
@@ -14718,11 +15094,11 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       if (i < 0) break;
       drops.splice(i, 1);
     }
-    drops.push({ x: lx, y: Math.round(py), z: lz, it, ph: Math.random() * 6.28, born: performance.now(),
+    drops.push({ x: lx, y: Math.round(ry), z: lz, it, ph: Math.random() * 6.28, born: performance.now(),
       T, sx, sy: sy2, sz, vx, vy: vy0, vz, aim: true, stick: true, hitSlot, kind,   // aim: it flies POINT-FIRST, nose following the arc; stick: and STAYS where it struck; hitSlot: what it is about to wound (user)
       hitBird,                                         // …or the songbird it is about to bring down
       chopAt: hitSlot < 0 && hitBird < 0 && py >= 1 ? [Math.round(px), Math.round(py), Math.round(pz)] : null,   // …or the voxel it is about to knock a chunk out of
-      ex: px, ey: py, ez: pz,                          // the real impact point, not the analytic parabola's guess
+      ex: rx, ey: ry, ez: rz2,                         // the real RESTING point, not the analytic parabola's guess (and not the blocked cell — see above)
       q0: m2q(Xh, [Xh[2], 0, -Xh[0]], [0, 1, 0]) });
     if (drops.length > 8) drops.shift();   // ── 8 ITEM DROPS, NOT 4 (user 2026-08-20: "have the max number of floating hand held items on the field 8 instead of 4") ── drops.shift() DELETES the oldest, so a fifth drop did not just stop being drawn, it stopped existing. The render band moved with it: see the band map at dropCursor in main/tick-life.js
     unlockProjectile();                                // it is away and flying — the discovery is earned (user)
@@ -14994,9 +15370,9 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     for (const ii of found) W[ii] = 0;
     return found;
   }
-    return { ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, launchThrown, shootArrow, throwSpear, twigLeafCells };
+    return { ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, lastShotInfo, launchThrown, shootArrow, throwSpear, twigLeafCells };
   })();
-  const { ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, launchThrown, shootArrow, throwSpear, twigLeafCells } = __m_sim_projectiles;
+  const { ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, lastShotInfo, launchThrown, shootArrow, throwSpear, twigLeafCells } = __m_sim_projectiles;
   // ── THE CHOKE POINT ── every runtime mutation of W already passes through here, so this is where the
   // support resolver is fed: the set of cells that ACTUALLY CHANGED, not a box centred on where the tool
   // landed. `track` exists because `full` is not a valid discriminator — the pickup paths patch full=true
@@ -22226,6 +22602,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     const now = performance.now();
     splashLast = now;                                  // …no same-frame guard: with the radius now matching the draw distance, two fish really can break the surface in one frame, and the band already refuses to steal a live droplet, so the second one must get its own burst rather than be swallowed
     const s = k === undefined ? 1 : k;
+    ripAdd(wx, wz, Math.max(0.4, Math.min(1.3, s)));   // ── AND THE SURFACE ITSELF MOVES ── the droplets below are thrown INTO THE AIR and were the whole of a splash; nothing was left on the water, so a fish breaking the surface sprayed and the lake underneath it never noticed. See ripAdd in world/window.js
     let placed = 0;
     for (let i = 0; i < 4; i++) {
       const slot = bandSlot(SPLASH_LO, SPLASH_HI); if (slot < 0) break;   // band full — place fewer droplets rather than delete one that is still in the air
@@ -22278,8 +22655,10 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // ── AND THE ONES ALREADY IN THE AIR WHEN THE CROWN GOES (user 2026-08-22: "falling leaves still happen even
   // when the tree is felled") ── the SPAWN side was already right: both the oak and the pine paths ask
   // stillLeafy first, so nothing new is shed from a crown that has left W. What kept falling is the backlog —
-  // PETAL_MAXLIFE is 14 s and one is shed every PETAL_GAP (65 ms), so at the instant a tree comes down as many
-  // as 32 leaves are mid-descent under it and go on drifting out of empty air for another quarter minute.
+  // PETAL_MAXLIFE is a minute now and one is shed every PETAL_GAP (65 ms), so at the instant a tree comes down
+  // as many as 32 leaves are mid-descent under it and would go on drifting out of empty air until each of them
+  // reaches the ground — which is exactly the interval the 2026-08-29 ceiling change lengthened, so this clear
+  // matters MORE than it did, not less.
   // Cleared by the fell's OWN box (sim/chop.js, the same bounds coneWake gets), so a neighbouring tree's shed
   // is untouched — petalClear() below drops every leaf in the world and is far too blunt for this.
   // s.x/s.z are the petal's BIRTH point (the emit adds drift on top), which is what makes a box test valid.
@@ -22287,7 +22666,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     for (let i = PETAL_LO; i < PETAL_HI; i++) { const s = sparks3d[i]; if (!s) continue;
       if (s.x >= x0 && s.x <= x1 && s.z >= z0 && s.z <= z1) { sparks3d[i] = null; n++; } }
     return n; };
-  const petalClear = () => { for (let i = PETAL_LO; i < PETAL_HI; i++) sparks3d[i] = null; };   // drop every leaf CURRENTLY in the air — the gate in petalTick stops new ones, but a petal lives up to PETAL_MAXLIFE, so without this a handful keep drifting past the stage for ten seconds after the editor opens. A free slot is `!s` (see bandSlot), so null is retirement.
+  const petalClear = () => { for (let i = PETAL_LO; i < PETAL_HI; i++) sparks3d[i] = null; };   // drop every leaf CURRENTLY in the air — the gate in petalTick stops new ones, but a petal lives until it lands, so without this a handful keep drifting past the stage for the rest of their fall after the editor opens. A free slot is `!s` (see bandSlot), so null is retirement.
   const TEAR_LIFE = 0.7;                               // FIXED, like the splash — a tear that lasted a random 0.75-1.0 read as flickering
   function spawnTear(wx, wy, wz) {
     const slot = bandSlot(TEAR_LO, TEAR_HI); if (slot < 0) return;   // same rule as the splash: skip this tear rather than cut a live one short
@@ -22375,14 +22754,34 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   };
   const PETAL_SWAY = 1.75;                             // voxels either side of the fall line, before the per-petal ±25% (was 1.2)
   const PETAL_ROCK = 2.0;                              // rad/s, the MEAN rock rate — a 3.1 s swing where it was 5.7 s
-  const PETAL_MAXLIFE = 14;                            // a petal from a giant's crown would otherwise hold a slot for 20 s
+  // ── THE CEILING WAS CUTTING THE FALL SHORT IN MID-AIR (user 2026-08-29: "the falling leaves from trees are
+  // still disappearing", and then the requirement in one line: "once the leaves enter the terrain, they can
+  // disappear") ── 14 s at PETAL_FALL 3.5 is 49 VOXELS. That was the whole fall when this number was chosen,
+  // on a cherry stand whose median drop measured 35 voxels. It is not the whole fall any more: the pine model
+  // is 116 courses tall, the biggest oak 114, and the five birches 144-166 — so the crown a leaf leaves is
+  // routinely 60-120 voxels over the ground beneath it, and the leaf ran out of clock less than half way down.
+  // MEASURED, 199 births across the oak, pine and birch bands: the median spawn stands 88, 50 and 53 voxels
+  // above its own ground and the worst 154, so 94% / 51% / 54% of leaves could not reach it. Of 28 deaths
+  // sampled in the oak wood 25 were mid-air, every one of them at exactly t = life = 14.00, between 27 and 115
+  // voxels up. That IS the report, and it is the ONLY cause left — the other three were landings.
+  // So the ceiling is set from the geometry rather than from a slot budget: the tallest model in the game is a
+  // 166-course birch, which is 47.4 s of descent, and the wind can still carry a leaf off its own hill onto
+  // ground lower than the one it was measured against. 60 s covers both with room to spare, which is the point
+  // — this is a RUNAWAY GUARD now, not a lifetime. The real clock is the re-timing in main/tick-emit.js, which
+  // re-reads the ground under the leaf every frame and holds `life` at exactly the fall it has left, so a leaf
+  // ends when it touches the terrain and the number below is never reached in ordinary play.
+  // IT DOES NOT COST A SLOT. The band IS the population (see PETAL_LO): a longer fall is slower turnover, not
+  // more leaves in the air — 32 either way. What changes is that those 32 are now spread down the whole column
+  // instead of piling into its top 49 voxels and vanishing.
+  const PETAL_MAXLIFE = 60;                            // seconds. See above: a guard against a leaf that can never land, not the length of a fall
   function spawnPetal(wx, wy, wz, pit) {               // pit = which leaf voxel this tree sheds (pink / cream / green) — an ITEM ID rather than the old `white` boolean, because there are three varieties now and a second boolean would have made the emit read a 2-bit code spread over two flags
     const slot = bandSlot(PETAL_LO, PETAL_HI); if (slot < 0) return;   // band full → skip, never cut a live petal short (the splash's rule)
-    const g = H(Math.round(wx), Math.round(wz));
+    const g = Math.max(H(Math.round(wx), Math.round(wz)), WL + 1);   // the SAME floor main/tick-emit.js re-times against, water included — see the note there. One source for both, or a leaf is judged to have already landed on the frame it is born
     const a = Math.random() * 6.283;
     sparks3d[slot] = { x: wx, y: wy, z: wz, vx: 0, vy: 0, vz: 0,
-      // Dies as it reaches the ground rather than at a fixed age, so it is not cut off in mid-air — except
-      // where PETAL_MAXLIFE bites, and moving the spawn into the crown is most of what stopped it biting.
+      // Dies as it reaches the ground rather than at a fixed age, so it is not cut off in mid-air. PETAL_MAXLIFE
+      // no longer bites in ordinary play (2026-08-29): it is a runaway guard set from the tallest model, not a
+      // lifetime, and the figures below were measured while it still was one.
       // MEASURED over 3,000 draws of each resolver on one blossom stand: the old apex spawn dropped a median
       // 63 voxels, 70.6% of petals hit the 14 s ceiling and the median one blinked out 14 voxels (1.4 m) above
       // the grass. Off the canopy anchors the median drop is 35 voxels, 25.2% reach the ceiling, and the median
@@ -24978,10 +25377,10 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // wiring, its reset entry and its saved default all come back exactly as they were. Nothing else changes:
   // the day still runs its 20-minute cycle, storms still arrive on their own schedule, P still toggles one
   // and __vb.snow() / __vb.tod() still work. These are PANEL gates, not feature switches.
-  const TOD_UI = false, SNOW_UI = false, DOF_UI = false;   // …and the DEPTH OF FIELD row (user 2026-08-28), on the same terms: the effect is untouched, only its row leaves the panel
+  const TOD_UI = false, SNOW_UI = false, DOF_UI = true;    // …and the DEPTH OF FIELD row is BACK (user 2026-08-29), which is what these gates are for: the row was hidden on 2026-08-28 and nothing else was touched, so restoring it is one word. It comes back OFF — dofStr defaults to 0 below, so the panel opens at 0% and the effect costs nothing until the slider is moved.
   { const r = $('todWrap'); if (r && !TOD_UI) r.style.display = 'none'; }     // hidden rather than cut out of html/10-body.html: main/tick-passes.js writes todLabel/todSlider every quarter-second while the menu is open, and a missing element there is a ReferenceError inside the tick — i.e. a frozen sim behind a perfectly rendered frame
   { const r = $('snowWrap'); if (r && !SNOW_UI) r.style.display = 'none'; }
-  { const r = $('dofStrWrap'); if (r && !DOF_UI) r.style.display = 'none'; }   // hidden, not cut: the wiring below still reads dofStrSlider/dofStrLabel, and the effect still runs at whatever strength was last saved
+  { const r = $('dofStrWrap'); if (r && !DOF_UI) r.style.display = 'none'; }   // shown again; this line stays because the gate is the point — the row is hidden rather than cut, so the wiring below always has dofStrSlider/dofStrLabel to read whichever way the flag goes
   const SET_SLIDERS = ['volSlider', 'sfxSlider', 'musSlider', 'ambSlider', 'todSlider', 'resSlider', 'dofStrSlider', 'sensSlider'].filter((id) => (TOD_UI || id !== 'todSlider') && (DOF_UI || id !== 'dofStrSlider'));
   const SET_TOGGLES = ['snowBtn', 'vigBtn', 'crdBtn', 'fpsBtn', 'timeBtn', 'resHudBtn'].filter((id) => SNOW_UI || id !== 'snowBtn');   // the on/off text buttons; the compass is icon-only and is handled by its own flag
   const SET_KEYS = ['vb_vol', 'vb_sfx', 'vb_mus', 'vb_amb', 'vb_sens', 'vb_sens2', 'vb_scale', 'vb_lgt', 'vb_vig', 'vb_wrefl',
@@ -25659,9 +26058,25 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   VIT.onDeath = die;                                   // the vitals own mortality now; die() is just the game-over screen
   $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); if (ED.on) edExit();   // NEVER respawn in the asset editor (user) — force-exit it, and lock straight back into the GAME rather than the menu, so a respawn-click can't land on the editor button
     respawn(); tryLock(); });
+  // ── [X] IS A HELD MODIFIER FOR THE WHEEL (user 2026-08-28: "make the time speed x + scroll wheel") ──
+  // it has to be TRACKED rather than read off the event, because WheelEvent only carries ctrl/alt/shift/meta;
+  // an ordinary letter is not a modifier as far as the DOM is concerned. Cleared on blur as well as keyup:
+  // alt-tabbing away mid-hold swallows the keyup, and a stuck flag would silently turn every later scroll
+  // into a time-speed change.
+  let xHeld = false;
+  addEventListener('blur', () => { xHeld = false; });
+  addEventListener('keyup', (e) => { if (e.code === 'KeyX') xHeld = false; });
   let cloudT = 0;                                     // ── CLOUD TIME ── seconds, but advanced by dt * cycleSpeed so the deck's wind keeps step with the sun. At 1x it tracks wall time exactly, which is what keeps the normal drift unchanged. Frozen with the sun under __TFREEZE, or an A/B would compare two different cloud fields
   let tday = 7 / 24, cycleSpeed = 1, sunFx = true;     // day/night cycle: 20-min day at 1x; STARTS AT 7:00 am on load (user). sunFx = u.fx bit 0: it used to gate the god rays AND the lens flare; the rays were removed 2026-08-28, so the flare is all it now switches
-  let moonDay = 4;                                     // moon PHASE day counter — starts at 4/8 = full moon; each in-game day advances the phase
+  // ── THE MOON'S PHASE DAY ── the counter the 8-day cycle runs on. The value itself no longer means
+  // anything on its own: tick-camera subtracts MOON_DAY0 before handing the phase to the shader, so the
+  // cycle is anchored to the FIRST NIGHT rather than to whatever number this happens to hold. The old
+  // comment here said "4/8 = full moon", which was true of the previous convention and became a trap under
+  // the current one — the shader now reads the phase as an ANGLE where 0 is full and pi is NEW, so 4/8 is
+  // exactly a new moon. That is what shipped as "the first night is full": the offset was worked out for a
+  // counter starting at 0 and this one starts at 4, so the first night landed 0.00-0.01 illuminated.
+  const MOON_DAY0 = 4;
+  let moonDay = MOON_DAY0;                             // …each in-game day advances it one step
   // ── THE SCROLL-UP HINT (user 2026-08-07) ── shown once, ten seconds into a session, and retired the first
   // time the player scrolls up. `shArmT` is set when they actually take control rather than at page load, so
   // the ten seconds is PLAYTIME and the clock does not run out behind the loading video or the esc menu. There
@@ -25691,9 +26106,14 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     shEl.classList.remove('show');
     setTimeout(() => shEl.classList.add('hidden'), 700);   // after the 0.6 s opacity transition, stop painting it
   };
-  addEventListener('wheel', (e) => {                   // scroll = cycle hand slots; ALT + scroll = cycle speed (sensitive: x1.6 per notch)
+  // ── NOT PASSIVE, AND IT HAS TO SAY SO ── Chrome treats a wheel listener on window as PASSIVE by default,
+  // which makes preventDefault() a no-op with a console warning. The hotbar path below has always needed it;
+  // it briefly mattered a great deal more, when the cycle-speed modifier was CTRL and every notch would also
+  // have fired the browser's page zoom. That modifier is X now, but the declaration stays: the handler still
+  // calls preventDefault and a passive listener would still ignore it.
+  addEventListener('wheel', (e) => {                   // scroll = cycle hand slots; X + scroll = cycle speed (sensitive: x1.6 per notch)
     if (e.deltaY) shDismiss();                         // …and ANY scroll retires it (user 2026-08-07): a player who scrolls at all has found the control, so scrolling DOWN must fade it out too rather than leaving it up as a nag. Sits here — before the lock/dead guards below, which must not keep it on screen. Not gated on shShown: a player who already scrolls up inside the first ten seconds has demonstrated they know, so the hint must never appear at all (user 2026-08-07)
-    if (e.altKey) {
+    if (xHeld) {                                       // X + scroll = cycle speed (user 2026-08-28; was ALT, then CTRL). Moving off CTRL also takes it off the browser's page-zoom gesture, so preventDefault here is back to doing only its own job
       e.preventDefault();
       cycleSpeed = Math.max(0.25, Math.min(512, cycleSpeed * (e.deltaY < 0 ? 1.6 : 1 / 1.6)));
       return;
@@ -25724,6 +26144,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // mechanism the light and paint panels use, and the reason it is not a bare exitPointerLock: losing the
     // lock on its own surfaces the pause menu, which would sit on top of the very panel being opened.
     // Closing with Y again takes the cursor back, so the key is the whole round trip.
+    if (e.code === 'KeyX') { xHeld = true; }           // …the wheel reads this; NOT returning, so anything else bound to X still gets it
     if (ED.on && e.code === 'KeyY') { setLightMode(!!edSzToggle()); return; }
     if (!locked) return;
     // ── T OPENS THE COMMAND LINE ── switched OFF 2026-08-27 and back ON 2026-08-28 (user: "give me back the
@@ -25789,7 +26210,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // which returns before this and so is unaffected); this is the same shape as the H and P bindings below.
     if (binds.birds && e.code === binds.birds && !ED.on) { CARD_FORCE = CARD_FORCE < 0 ? 0 : -1; }   // Y IS UNBOUND (user 2026-08-27) — binds.birds is gone, so this never fires; __vb.cardN(0) / (-1) is the toggle now. Restore the DEFBINDS entry to put the key back
     if (e.code === 'KeyE' && e.shiftKey && !ED.on && DUAL_ON) { dualOn = !dualOn; }   // …and DUAL_ON gates the whole binding (user 2026-08-20: dual wield removed from play, code kept) — see ui/achievements.js   // SHIFT+E — SPLIT THE STACK INTO BOTH HANDS (user 2026-08-20: "ONLY enable dual wield if the user presses shift + e"; it was plain E earlier the same day). The modifier is what frees plain E to close the crafting bench above — one key, two meanings, told apart by shift rather than by mode. Guarded on !ED.on because the asset editor already owns E for its move-gizmo (see the ED.on block below), and a key cannot mean two things at once in the same mode.
-    if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
+    // H IS UNBOUND (user 2026-08-29) — the spawn reroll used to sit here, one keypress from regenerating the world you were standing in. It is a bake-time tool, not a play control, so it moved off the keyboard entirely; rerollSpawn() itself is untouched and __vb.reroll() is the lever now (it returns the same paste-ready SPWX/SPWZ line). Same shape as the Y/birds note above: the key goes, the capability stays.
     if (e.code === 'KeyP') { snowOn = !snowOn;               // P — toggle the snow storm (user); mirrors the settings snow button EXACTLY so the two stay in sync
       if (snowOn) { snowEndT = performance.now() + 60000; } else { snowRearm(); }
       snowBtnSync(); }
@@ -25809,7 +26230,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // (KeyH per-heading alignment REMOVED — alignment is authored ONCE in SOUTH; armOffset auto-derives every heading with the rigid rotation + parity correction, so there is nothing to cycle through or export per heading.)
     }
     if (e.code === binds.jump || e.code === binds.crouch) e.preventDefault();   // Space (scroll) and whatever crouch is bound to — Alt used to be stolen by the browser for the menu bar. NOTE preventDefault cannot stop CAPS LOCK toggling the OS state; it only keeps the key out of the browser's own handling.
-  });
+  }, { passive: false });
   document.addEventListener('keyup', (e) => keys.delete(e.code));
 
   // ── frame loop ─────────────────────────────────────────────────────────────
@@ -28584,6 +29005,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       return { aimId: aim, aimWood: !!woodTab[aim], carved: !!r, path: CHOP_AIM.path,
                blocked: !r && !!aim, woodHit: !!CHOP_AIM.woodHit, foliaHit: !!CHOP_AIM.foliaHit }; },   // the tap drives exactly what a click does, sound included
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
+    lastShot() { return lastShotInfo(); },           // where the last arrow/spear arc ended — landed:false means it ran the whole 20 s march without hitting anything, buried:true means it launched from inside solid
     arrowChopAt(x, y, z) { return arrowChop(x | 0, y | 0, z | 0); },   // the ARROW's carve, at a chosen voxel. Driving it through a real shot is unmeasurable: the shaft picks its own impact, and a creature in the way cancels the chop outright.
     // Stake an arrow into a chosen creature exactly as a landed shot does, so the "it goes when the animal
     // goes" sweep can be tested without having to hit a butterfly with a real shaft — which is not a test so
@@ -29449,6 +29871,11 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     supCap(v) { if (v !== undefined) SUP.cap = Math.max(16, v | 0); return { cap: SUP.cap, drapeCap: SUP.drapeCap, capHits: SUP.stats.capHits, structFloods: SUP.stats.structFloods, dropped: SUP.stats.dropped }; },   // squeeze the STRUCTURE flood ceiling so a test can force the cap-hit path on a small rock
     wrefl(v) { if (v !== undefined) { wReflK = Math.max(0, Math.min(2, +v)); resetHist = 1; try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e) {} lgtPaint(); } return wReflK; },   // WATER REFLECTION STRENGTH — the panel's slider, from the console
     lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: { rockSheen: 1, grassXFace: 2 } }; },   // the SECOND mask (u.lgt.z) — bit 0 is the SUN SHEEN ON STONE (user 2026-08-16). __vb.lgt2(0) / __vb.lgt2(1) is the A/B: it sets resetHist, so the denoiser does not hand the previous variant's history to the next shot
+    ripN() { return ripN; },
+    ripDbg() { const t = performance.now() / 1000; const o = [];   // every LIVE ring with its age — the tap that separates "nothing is emitting" from "nothing is retiring", which ripN alone cannot
+      for (let i = 0; i < ripN; i++) o.push({ x: RIP[i * 4] | 0, z: RIP[i * 4 + 1] | 0, age: +(t - RIP[i * 4 + 2]).toFixed(2), k: +RIP[i * 4 + 3].toFixed(2) });
+      return o; },                           // how many surface rings are live right now — the tap that says whether a wake/splash is actually being pushed, as opposed to being pushed and not drawn
+    ripAt(x, z, k) { ripAdd(x, z, k === undefined ? 1 : k); return ripN; },   // fire one ring on demand (test tap)
     lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, water: LGT_WATER, mask2: lgtMask2, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536, volumetric: 131072,
       waterReflect: 262144, waterRefract: 524288, waterFoam: 1048576, waterIce: 2097152, waterGlisten: 4194304, waterWaves: 8388608 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
@@ -29618,7 +30045,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = WORM_0; j < WORM_END; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = DUCK_0; j < BABY_END; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } } for (let j = WORM_0; j < WORM_END; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
     perched() { const o = []; for (let j = CARD_0; j < CARD_END; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: B.sN | 0, want: B.sWant | 0, ids: B.sN ? [...new Set(Array.from(B.sCells.subarray(0, B.sN), (ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
-    reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
+    reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // spawn reset + the bake string (this is the ONLY entry point since the H key was unbound 2026-08-29)
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     profMin(reset) { const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, profMin[i] > 1e8 ? -1 : +profMin[i].toFixed(3)]));   // uncontended per-pass cost — the A/B statistic (see profMin above)
       o.n = profSamp; if (reset) { for (let i = 0; i < 7; i++) profMin[i] = 1e9; profSamp = 0; } return o; },
@@ -30829,6 +31256,15 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       if (P.wasWet === undefined) P.wasWet = inWater;
       if (inWater !== P.wasWet) { P.wasWet = inWater;
         if (!dead) spawnSplash(P.x, P.z, Math.max(0.55, Math.min(1.6, Math.abs(P.vy) / 60 + 0.55))); }
+      // ── THE WAKE ── a ring every RIP_STEP voxels TRAVELLED, not every N milliseconds: distance-based means
+      // the trail is the same at any frame rate, it stretches when you swim faster because you cover the step
+      // sooner, and it simply stops when you stop rather than piling rings on one spot. The overlapping
+      // circles are the wake — there is no separate V to build. See ripAdd in world/window.js.
+      if (inWater && !dead) {
+        if (P.wkx === undefined) { P.wkx = P.x; P.wkz = P.z; }
+        const dwx = P.x - P.wkx, dwz = P.z - P.wkz;
+        if (dwx * dwx + dwz * dwz >= RIP_STEP * RIP_STEP) { P.wkx = P.x; P.wkz = P.z; ripAdd(P.x, P.z, 0.5); }
+      } else { P.wkx = undefined; }
       const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
@@ -31458,6 +31894,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         if (bricks2[b0] | bricks2[b0 + 1]) { ceilB2 = y2 + 1; break; } }
     }
     set3(24, prevCam.up, cycleSpeed > 4 ? 10 : 64); set3(28, prevCam.fwd, (sunFx ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0) + (ceilB2 << 8));
+    // ── RETIRE AND UPLOAD THE RIPPLE RINGS ── done HERE, once, rather than in the two places that push them:
+    // ripAdd is called from a splash and from anything swimming, and neither knows when a ring has finished.
+    // Compacting on the way out is what lets ripHF in the shader stop at the first empty slot instead of
+    // walking all RIP_N of them inside the wave march, so this loop is paying for that one.
+    { const tR = performance.now() / 1000; let w = 0;
+      for (let i = 0; i < ripN; i++) { const o = i * 4;
+        if (tR - RIP[o + 2] <= RIP_LIFE) { if (w !== i) RIP.copyWithin(w * 4, o, o + 4); w++; } }
+      ripN = w;
+      UF.set(RIP.subarray(0, ripN * 4), UF_RIP);
+      UF.fill(0, UF_RIP + ripN * 4, UF_RIP + RIP_N * 4); }   // …and blank the tail, or a retired ring keeps drawing
     // ── HELD-ITEM SUN VISIBILITY ── march the world from the eye toward the sun; one ray a frame.
     {
       let vis = 1;
@@ -31800,14 +32246,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           // top-right corner is genuinely off the canvas for the fruit — measured at 2212 px on a 2240 px
           // canvas, which would have run three glyphs into the bezel. A badge that has to be readable cannot
           // follow the corner past the edge, so it stops at it. The run's own width is what it is clamped by.
-          // ── THE RUN IS ONE DIGIT, ALWAYS ── this used to be measured from the live count via a `nB9 >= 10`
-          // test, which was dead arithmetic dressed up as a safeguard: STACK_MAX is 8 (sim/hands.js), so the
-          // count BLIT is handed never reaches two digits and its own `digB` is permanently 1. Spelling the
-          // width as a constant says that out loud and, because it cannot change, hands the clamp the
-          // stability the old expression only looked like it had — the count no longer moves the right edge,
-          // so a placement tuned with the panel open (which forces the count to 2) still holds when it closes.
-          // Raise this the day the cap goes past 9, together with GLYPH5's bounds in blit.js.
-          const runW = (1 + 1) * 6 * gp;
+          // ── THE RUN IS A FIXED WIDTH, NOT A MEASURED ONE ── this used to be measured from the LIVE count
+          // via a `nB9 >= 10` test, which made the right edge move as you picked things up: a placement tuned
+          // with the panel open (which forces the count to 2) shifted the moment it closed. The width is now
+          // taken from STACK_MAX instead — the widest the run can ever be — so it is stable for the whole
+          // session while still being correct past nine. It was briefly hardcoded to one digit on the
+          // reasoning that a cap of 8 could never need two; the cap is 10 now, which is why it is derived.
+          // One glyph for the x, plus a digit per digit of STACK_MAX, at 6 px of pitch each. BLIT's own glyph
+          // loop was ALREADY two-digit capable (digB / nB/10 / nB%10) and needed nothing — it is only this
+          // clamp, which has to know the width BEFORE the badge is drawn, that ever had the cap baked into it.
+          const runW = (String(STACK_MAX).length + 1) * 6 * gp;
           // ── THE CORNER IS CLAMPED FIRST, THEN THE TRIM IS ADDED (user 2026-08-18: the sliders "barely move") ──
           // this was one expression, `min(hi, max(lo, corner + trim))`, and the min was the OUTER operation, so
           // the right-edge clamp had the last word over the slider. For any item whose corner sits past that
@@ -31972,7 +32420,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
               const rx3 = ((ex3 / az2) / (tH2 * asp2)) * 0.5 * CW2, ry3 = ((ey3 / az2) / tH2) * 0.5 * CH2;
               const sb2 = sbFor(lid);
               const gp2 = Math.max(2, Math.floor(CH2 / 320 * Math.max(0.2, sb2.size)));
-              const run2 = (1 + 1) * 6 * gp2;
+              const run2 = (String(STACK_MAX).length + 1) * 6 * gp2;   // same derivation as the right hand's runW above
               const lo2X = 2, hi2X = CW2 - run2 - 2, lo2Y = 2, hi2Y = CH2 - 5 * gp2 - 2;
               const c2X = Math.min(hi2X, Math.max(lo2X, cx3 + rx3)), c2Y = Math.min(hi2Y, Math.max(lo2Y, cy3 - ry3));
               const gpN2 = Math.max(2, CH2 / 320 * Math.max(0.2, sb2.size));
@@ -32109,7 +32557,19 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[UF_CLOUDT] = cloudT;
-    UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
+    // ── THE FIRST NIGHT IS A FULL MOON (user 2026-08-28) ── the shader takes this as a phase ANGLE, and
+    // angle 0 is full, so this is just a matter of where the cycle's zero sits. The game opens at tday 7/24
+    // (7 am), so the first night runs tday 0.75 -> 1.0 and then 0 -> 0.25 with moonDay rolling over at the
+    // wrap: its midnight is (moonDay - MOON_DAY0) + tday = 1.0 exactly. Subtracting that puts the zero
+    // there. MOON_DAY0 and not a literal: the counter does not start at 0, and hardcoding the offset for a
+    // counter that does is exactly how this shipped as a NEW moon the first time.
+    // MEASURED across the whole of that first night, dusk to pre-dawn: 0.99, 1.00, 1.00, 0.99 illuminated —
+    // full from end to end rather than only at one instant. The 8-day cycle is otherwise untouched: the
+    // second night is 0.90 and the fifth is 0.00, a new moon, exactly as before.
+    // The double modulo is not decoration. JS % keeps the sign of the left operand, so at start-up
+    // (moonDay 0, tday 0.2917) the inner term is -0.708 and a single % would hand the shader a NEGATIVE
+    // phase; +8 then %8 folds it back into [0, 8).
+    UF[65] = ((((moonDay - MOON_DAY0 + tday - 1.0) % 8) + 8) % 8) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
     UF[1269] = snowLeadY; UF[1270] = snowTrailY;   // u.misc.y/z — the storm edges computed in the weather block above
     // u.misc.w — is the EYE buried in solid rock? Inside a voxel every primary ray hits at t~0 with no light reaching
     // it, so the screen went pitch black and only the off-grid creatures (which skip the world trace) stayed visible.
@@ -33643,7 +34103,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // sparks3d in index order and handing out 9, 10, 11… to whatever was alive. Its own note in
     // ui/achievements.js says what that costs: "only the slot each one writes to moves". Two bugs fall out
     // of it, and the falling leaves get both because they are by far the longest-lived particle here
-    // (PETAL_MAXLIFE 14 s against a splash droplet's 0.9 and a tear's 0.7):
+    // (a fall of 15-45 s against a splash droplet's 0.9 and a tear's 0.7):
     //   · FLICKER. Every birth or death at a LOWER index shifts every live particle above it down a slot.
     //     A drop slot IS the denoiser's identity for that pixel (lifeUid / lifeUidPrev), so a shift rejects
     //     the leaf's whole history and it re-converges from nothing. MEASURED in the birch wood: 1,388 slot
@@ -35005,6 +35465,17 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           B.omT = pF && !nF ? 2.6 : (nF && !pF ? -2.6 : (B.om >= 0 ? 2.6 : -2.6));
         }
       } else if (B.kind === 3) {                       // DUCK: paddles its lake — veer away from the shore, gentle drifting turns
+        // ── AND IT LEAVES A WAKE ── the same rings the player and every splash push (ripAdd, world/window.js),
+        // emitted per RIP_STEP voxels TRAVELLED. Keyed on the distance moved since the last one rather than on
+        // the paddle speed, so it does not care where in this branch the move actually happens, and a duck
+        // sitting still leaves nothing. Ducks only: they are the one creature that swims ON the surface —
+        // a fish is under it, and a ring on the water from something two metres down would be wrong.
+        if (B.init) {
+          if (B.wkx === undefined) { B.wkx = B.x; B.wkz = B.z; }
+          const dkx = B.x - B.wkx, dkz = B.z - B.wkz;
+          const dkS = RIP_STEP * 2.2;              // …a LONGER stride than the player's: a duck is a fraction of the size and leaves a correspondingly shorter tail, and with a whole brood on one lake the shared ring list is what pays for a stride that is too short
+          if (dkx * dkx + dkz * dkz >= dkS * dkS) { B.wkx = B.x; B.wkz = B.z; ripAdd(B.x, B.z, isBaby ? 0.22 : 0.38); }
+        }
         if (isBaby && !orphan) {                       // DUCKLING: steer for a spot just behind its leader — mom for the first, the sibling ahead for the rest (a follow line)
           const lead = (sib === 0 || !wbf[wk - 1].init) ? mom5 : wbf[wk - 1];
           const tx = lead.x - Math.sin(lead.th) * 4.5, tz = lead.z - Math.cos(lead.th) * 4.5;
@@ -36513,7 +36984,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         // disagree the petal is judged to have ALREADY LANDED on the frame it is born, `life` is re-timed to
         // its current age, and it expires immediately — a leaf that appears in the crown and is gone before it
         // has fallen a voxel. One source for both, so "where is the ground here" cannot have two answers.
-        { const gp = H(Math.round(px4), Math.round(pz4));
+        // ── …AND A LAKE IS A FLOOR, NOT A HOLE (2026-08-29, falling out of the ceiling change above) ── H is
+        // the TERRAIN height and water is simply terrain below WL (world/window.js), so over a lake or a river
+        // H answers with the BED — twenty-odd voxels under the surface. While the 14 s ceiling was cutting
+        // every long fall short that was mostly unreachable; now that a leaf really does travel the whole way
+        // down, a leaf the wind carries out over water would sink through the surface and go on descending
+        // underwater to the mud. WL + 1 is the first air cell above the surface voxel (terrain.js writes
+        // WATER_T at exactly y == WL), which is the same thing H means on land: the cell a landed leaf rests
+        // in. On dry land this is the IDENTITY and provably so — terrain.js lifts any non-lake column with
+        // h <= WL to WL + 1, so H is never below WL + 1 anywhere a leaf can land on ground.
+        { const gp = Math.max(H(Math.round(px4), Math.round(pz4)), WL + 1);
           if (py4 <= gp) py4 = gp;                     // landed: rest ON the hillside, never inside it
           sp4.life = Math.min(PETAL_MAXLIFE, tS + Math.max(0, (py4 - gp) / PETAL_FALL)); }   // …and it lives exactly as long as the fall it still has left
       } else if (smoke) {                                     // ONE individual voxel, off the grid like a snowflake: a per-voxel wandering DRIFT (sin/cos, like the flakes' wind sway) as it floats up, then CENTRE it on its position so it spins about its own middle (not a corner)

@@ -47,6 +47,7 @@
     const now = performance.now();
     splashLast = now;                                  // …no same-frame guard: with the radius now matching the draw distance, two fish really can break the surface in one frame, and the band already refuses to steal a live droplet, so the second one must get its own burst rather than be swallowed
     const s = k === undefined ? 1 : k;
+    ripAdd(wx, wz, Math.max(0.4, Math.min(1.3, s)));   // ── AND THE SURFACE ITSELF MOVES ── the droplets below are thrown INTO THE AIR and were the whole of a splash; nothing was left on the water, so a fish breaking the surface sprayed and the lake underneath it never noticed. See ripAdd in world/window.js
     let placed = 0;
     for (let i = 0; i < 4; i++) {
       const slot = bandSlot(SPLASH_LO, SPLASH_HI); if (slot < 0) break;   // band full — place fewer droplets rather than delete one that is still in the air
@@ -99,8 +100,10 @@
   // ── AND THE ONES ALREADY IN THE AIR WHEN THE CROWN GOES (user 2026-08-22: "falling leaves still happen even
   // when the tree is felled") ── the SPAWN side was already right: both the oak and the pine paths ask
   // stillLeafy first, so nothing new is shed from a crown that has left W. What kept falling is the backlog —
-  // PETAL_MAXLIFE is 14 s and one is shed every PETAL_GAP (65 ms), so at the instant a tree comes down as many
-  // as 32 leaves are mid-descent under it and go on drifting out of empty air for another quarter minute.
+  // PETAL_MAXLIFE is a minute now and one is shed every PETAL_GAP (65 ms), so at the instant a tree comes down
+  // as many as 32 leaves are mid-descent under it and would go on drifting out of empty air until each of them
+  // reaches the ground — which is exactly the interval the 2026-08-29 ceiling change lengthened, so this clear
+  // matters MORE than it did, not less.
   // Cleared by the fell's OWN box (sim/chop.js, the same bounds coneWake gets), so a neighbouring tree's shed
   // is untouched — petalClear() below drops every leaf in the world and is far too blunt for this.
   // s.x/s.z are the petal's BIRTH point (the emit adds drift on top), which is what makes a box test valid.
@@ -108,7 +111,7 @@
     for (let i = PETAL_LO; i < PETAL_HI; i++) { const s = sparks3d[i]; if (!s) continue;
       if (s.x >= x0 && s.x <= x1 && s.z >= z0 && s.z <= z1) { sparks3d[i] = null; n++; } }
     return n; };
-  const petalClear = () => { for (let i = PETAL_LO; i < PETAL_HI; i++) sparks3d[i] = null; };   // drop every leaf CURRENTLY in the air — the gate in petalTick stops new ones, but a petal lives up to PETAL_MAXLIFE, so without this a handful keep drifting past the stage for ten seconds after the editor opens. A free slot is `!s` (see bandSlot), so null is retirement.
+  const petalClear = () => { for (let i = PETAL_LO; i < PETAL_HI; i++) sparks3d[i] = null; };   // drop every leaf CURRENTLY in the air — the gate in petalTick stops new ones, but a petal lives until it lands, so without this a handful keep drifting past the stage for the rest of their fall after the editor opens. A free slot is `!s` (see bandSlot), so null is retirement.
   const TEAR_LIFE = 0.7;                               // FIXED, like the splash — a tear that lasted a random 0.75-1.0 read as flickering
   function spawnTear(wx, wy, wz) {
     const slot = bandSlot(TEAR_LO, TEAR_HI); if (slot < 0) return;   // same rule as the splash: skip this tear rather than cut a live one short
@@ -196,14 +199,34 @@
   };
   const PETAL_SWAY = 1.75;                             // voxels either side of the fall line, before the per-petal ±25% (was 1.2)
   const PETAL_ROCK = 2.0;                              // rad/s, the MEAN rock rate — a 3.1 s swing where it was 5.7 s
-  const PETAL_MAXLIFE = 14;                            // a petal from a giant's crown would otherwise hold a slot for 20 s
+  // ── THE CEILING WAS CUTTING THE FALL SHORT IN MID-AIR (user 2026-08-29: "the falling leaves from trees are
+  // still disappearing", and then the requirement in one line: "once the leaves enter the terrain, they can
+  // disappear") ── 14 s at PETAL_FALL 3.5 is 49 VOXELS. That was the whole fall when this number was chosen,
+  // on a cherry stand whose median drop measured 35 voxels. It is not the whole fall any more: the pine model
+  // is 116 courses tall, the biggest oak 114, and the five birches 144-166 — so the crown a leaf leaves is
+  // routinely 60-120 voxels over the ground beneath it, and the leaf ran out of clock less than half way down.
+  // MEASURED, 199 births across the oak, pine and birch bands: the median spawn stands 88, 50 and 53 voxels
+  // above its own ground and the worst 154, so 94% / 51% / 54% of leaves could not reach it. Of 28 deaths
+  // sampled in the oak wood 25 were mid-air, every one of them at exactly t = life = 14.00, between 27 and 115
+  // voxels up. That IS the report, and it is the ONLY cause left — the other three were landings.
+  // So the ceiling is set from the geometry rather than from a slot budget: the tallest model in the game is a
+  // 166-course birch, which is 47.4 s of descent, and the wind can still carry a leaf off its own hill onto
+  // ground lower than the one it was measured against. 60 s covers both with room to spare, which is the point
+  // — this is a RUNAWAY GUARD now, not a lifetime. The real clock is the re-timing in main/tick-emit.js, which
+  // re-reads the ground under the leaf every frame and holds `life` at exactly the fall it has left, so a leaf
+  // ends when it touches the terrain and the number below is never reached in ordinary play.
+  // IT DOES NOT COST A SLOT. The band IS the population (see PETAL_LO): a longer fall is slower turnover, not
+  // more leaves in the air — 32 either way. What changes is that those 32 are now spread down the whole column
+  // instead of piling into its top 49 voxels and vanishing.
+  const PETAL_MAXLIFE = 60;                            // seconds. See above: a guard against a leaf that can never land, not the length of a fall
   function spawnPetal(wx, wy, wz, pit) {               // pit = which leaf voxel this tree sheds (pink / cream / green) — an ITEM ID rather than the old `white` boolean, because there are three varieties now and a second boolean would have made the emit read a 2-bit code spread over two flags
     const slot = bandSlot(PETAL_LO, PETAL_HI); if (slot < 0) return;   // band full → skip, never cut a live petal short (the splash's rule)
-    const g = H(Math.round(wx), Math.round(wz));
+    const g = Math.max(H(Math.round(wx), Math.round(wz)), WL + 1);   // the SAME floor main/tick-emit.js re-times against, water included — see the note there. One source for both, or a leaf is judged to have already landed on the frame it is born
     const a = Math.random() * 6.283;
     sparks3d[slot] = { x: wx, y: wy, z: wz, vx: 0, vy: 0, vz: 0,
-      // Dies as it reaches the ground rather than at a fixed age, so it is not cut off in mid-air — except
-      // where PETAL_MAXLIFE bites, and moving the spawn into the crown is most of what stopped it biting.
+      // Dies as it reaches the ground rather than at a fixed age, so it is not cut off in mid-air. PETAL_MAXLIFE
+      // no longer bites in ordinary play (2026-08-29): it is a runaway guard set from the tallest model, not a
+      // lifetime, and the figures below were measured while it still was one.
       // MEASURED over 3,000 draws of each resolver on one blossom stand: the old apex spawn dropped a median
       // 63 voxels, 70.6% of petals hit the 14 s ceiling and the median one blinked out 14 voxels (1.4 m) above
       // the grass. Off the canopy anchors the median drop is 35 voxels, 25.2% reach the ceiling, and the median

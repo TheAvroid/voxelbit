@@ -10,10 +10,10 @@
   // wiring, its reset entry and its saved default all come back exactly as they were. Nothing else changes:
   // the day still runs its 20-minute cycle, storms still arrive on their own schedule, P still toggles one
   // and __vb.snow() / __vb.tod() still work. These are PANEL gates, not feature switches.
-  const TOD_UI = false, SNOW_UI = false, DOF_UI = false;   // …and the DEPTH OF FIELD row (user 2026-08-28), on the same terms: the effect is untouched, only its row leaves the panel
+  const TOD_UI = false, SNOW_UI = false, DOF_UI = true;    // …and the DEPTH OF FIELD row is BACK (user 2026-08-29), which is what these gates are for: the row was hidden on 2026-08-28 and nothing else was touched, so restoring it is one word. It comes back OFF — dofStr defaults to 0 below, so the panel opens at 0% and the effect costs nothing until the slider is moved.
   { const r = $('todWrap'); if (r && !TOD_UI) r.style.display = 'none'; }     // hidden rather than cut out of html/10-body.html: main/tick-passes.js writes todLabel/todSlider every quarter-second while the menu is open, and a missing element there is a ReferenceError inside the tick — i.e. a frozen sim behind a perfectly rendered frame
   { const r = $('snowWrap'); if (r && !SNOW_UI) r.style.display = 'none'; }
-  { const r = $('dofStrWrap'); if (r && !DOF_UI) r.style.display = 'none'; }   // hidden, not cut: the wiring below still reads dofStrSlider/dofStrLabel, and the effect still runs at whatever strength was last saved
+  { const r = $('dofStrWrap'); if (r && !DOF_UI) r.style.display = 'none'; }   // shown again; this line stays because the gate is the point — the row is hidden rather than cut, so the wiring below always has dofStrSlider/dofStrLabel to read whichever way the flag goes
   const SET_SLIDERS = ['volSlider', 'sfxSlider', 'musSlider', 'ambSlider', 'todSlider', 'resSlider', 'dofStrSlider', 'sensSlider'].filter((id) => (TOD_UI || id !== 'todSlider') && (DOF_UI || id !== 'dofStrSlider'));
   const SET_TOGGLES = ['snowBtn', 'vigBtn', 'crdBtn', 'fpsBtn', 'timeBtn', 'resHudBtn'].filter((id) => SNOW_UI || id !== 'snowBtn');   // the on/off text buttons; the compass is icon-only and is handled by its own flag
   const SET_KEYS = ['vb_vol', 'vb_sfx', 'vb_mus', 'vb_amb', 'vb_sens', 'vb_sens2', 'vb_scale', 'vb_lgt', 'vb_vig', 'vb_wrefl',

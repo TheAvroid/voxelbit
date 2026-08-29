@@ -1,5 +1,5 @@
   // @module — arrows and spears: launch, arc, impact, and the pick-up flood
-  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, launchThrown, shootArrow, throwSpear, twigLeafCells
+  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, lastShotInfo, launchThrown, shootArrow, throwSpear, twigLeafCells
   // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
   // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
   const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
@@ -99,6 +99,8 @@
     }
     return true;
   };
+  let shotRec = null;                               // the last arc's outcome, for __vb.lastShot()
+  const lastShotInfo = () => shotRec;
   const ARROWS_ON_FIELD = 3;                         // how many loosed arrows may lie about at once — one drop slot is always kept free for the next shot
   // LEAVES CATCH ARROWS (user). solid() is the WALKING test and pine needles are deliberately walk-through,
   // so a shaft flew clean through a canopy. A flying shaft is not a walking player: foliage stops it.
@@ -119,9 +121,28 @@
     const LAUNCH_D = 6;
     const ho = heldOff || [0, 0, 1];
     const k = LAUNCH_D / Math.max(0.2, ho[2]);
-    const sx = pr.pos[0] + pr.right[0] * ho[0] * k + pr.up[0] * ho[1] * k + pr.fwd[0] * LAUNCH_D,
-          sy2 = pr.pos[1] + pr.right[1] * ho[0] * k + pr.up[1] * ho[1] * k + pr.fwd[1] * LAUNCH_D,
-          sz = pr.pos[2] + pr.right[2] * ho[0] * k + pr.up[2] * ho[1] * k + pr.fwd[2] * LAUNCH_D;
+    let sx = pr.pos[0] + pr.right[0] * ho[0] * k + pr.up[0] * ho[1] * k + pr.fwd[0] * LAUNCH_D,
+        sy2 = pr.pos[1] + pr.right[1] * ho[0] * k + pr.up[1] * ho[1] * k + pr.fwd[1] * LAUNCH_D,
+        sz = pr.pos[2] + pr.right[2] * ho[0] * k + pr.up[2] * ho[1] * k + pr.fwd[2] * LAUNCH_D;
+    // ── AND IT MUST NOT BE SPAWNED INSIDE THE WORLD (user 2026-08-29: "arrows seem to go through the
+    // ground") ── that offset is carried along the VIEW, so aiming down walks the launch point downward with
+    // it: at a steep angle it lands ~6 voxels under the eye, which is under the terrain the player is standing
+    // on. The march below then starts buried, and the muzzle guard it runs into (impacts are ignored until the
+    // arc has reached open air, so a shaft leaving a trunk does not stick at arm's length) never lifts, because
+    // an arrow already inside the ground and heading further into it never sees open air. Every world impact
+    // was therefore suppressed for the whole flight and the shaft fell out of the bottom of the world.
+    // The guard is not the problem — the launch point is. The EYE is always in open space (the player is
+    // standing there), so walk back along the segment eye -> spawn and launch from the last free point. A
+    // normal shot is untouched: its spawn is already clear and the loop exits on the first test. A point-blank
+    // shot into a trunk now spawns just outside the bark and sticks in it, which is what it should always have
+    // done. Only the buried case changes, and it changes from "no collision at all" to "collides".
+    if (arrowBlocked(Math.round(sx), Math.round(sy2), Math.round(sz))) {
+      const ex = pr.pos[0], ey = pr.pos[1], ez = pr.pos[2];
+      for (let b9 = 1; b9 <= 12; b9++) {               // 12 steps back over 6 voxels = half-voxel resolution, finer than the grid it is testing
+        const g9 = 1 - b9 / 12, qx9 = ex + (sx - ex) * g9, qy9 = ey + (sy2 - ey) * g9, qz9 = ez + (sz - ez) * g9;
+        if (!arrowBlocked(Math.round(qx9), Math.round(qy9), Math.round(qz9))) { sx = qx9; sy2 = qy9; sz = qz9; break; }
+      }
+    }
     // …and it must still go WHERE YOU AIMED. Leaving the bow means leaving from a point ~6 voxels to the
     // side of the eye, so firing straight down the view direction sends the arrow along a parallel line
     // that never crosses the crosshair. Aim at a distant point ON the view ray instead: the flight
@@ -200,6 +221,7 @@
     // arc reached open air since — and the first two metres come back with the guard intact.
     let muzzleFree = !arrowBlocked(Math.round(sx), Math.round(sy2), Math.round(sz));   // false = launched from inside something: no impact until the arc is out in the open
     let px = sx, py = sy2, pz = sz, vy = vy0, T = 0, landed = false;
+    let fx = sx, fy = sy2, fz = sz;                    // the last sample that was NOT inside anything — where a shaft that struck the WORLD comes to rest (see the impact below)
     for (let i = 0; i < STEPS; i++) {
       const nvy = vy + TOSS_G * 0.005;
       const dx = vx * 0.005, dy = (vy + nvy) * 0.5 * 0.005, dz = vz * 0.005;
@@ -223,7 +245,7 @@
           if (ax * ax + ay * ay + az * az <= t.r2) { hitBird = t.bi; break; }
         }
         const blk = arrowBlocked(Math.round(qx), Math.round(qy), Math.round(qz));
-        if (!blk) muzzleFree = true;                   // out in the open — everything solid from here on is a real impact, however close it is
+        if (!blk) { muzzleFree = true; fx = qx; fy = qy; fz = qz; }   // out in the open — everything solid from here on is a real impact, however close it is
         if (hitSlot >= 0 || hitBird >= 0 || (muzzleFree && blk)) {
           px = qx; py = qy; pz = qz; T += 0.005 * f; struck = true; break;
         }
@@ -234,8 +256,16 @@
     // …and if even THAT ran out (it cannot on any real shot), set it down on the ground under wherever it
     // got to rather than leaving it hanging: a stuck arrow with nothing under it is the bug just fixed.
     if (!landed) { const ix9 = Math.round(px), iz9 = Math.round(pz);
-      for (let y9 = Math.min(WY - 1, Math.round(py)); y9 >= 0; y9--) if (arrowBlocked(ix9, y9, iz9)) { py = y9 + 1; break; }
+      // Start the search from the TOP of the world if the arc ended below it. The scan walks downward, so a
+      // negative start ran zero iterations and left the shaft at whatever sub-world y it had reached — the
+      // arrow was not merely unstuck, it was gone. That could only happen while the launch bug above was
+      // suppressing collisions, but the recovery path should not depend on nothing else being broken.
+      let y0 = Math.round(py);
+      y0 = y0 < 0 ? WY - 1 : Math.min(WY - 1, y0);
+      for (let y9 = y0; y9 >= 0; y9--) if (arrowBlocked(ix9, y9, iz9)) { py = y9 + 1; break; }
     }
+    shotRec = { kind, sx: +sx.toFixed(2), sy: +sy2.toFixed(2), sz: +sz.toFixed(2), buried: !muzzleFree,
+                 x: +px.toFixed(2), y: +py.toFixed(2), z: +pz.toFixed(2), T: +T.toFixed(3), landed };   // __vb.lastShot() — where the arc actually ended, and whether it ended by HITTING something or by running out of march. `landed:false` on an ordinary shot means the world collision is broken again.
     // ── NEVER CARVE AN ANIMAL ── a mammal is STAMPED into the world grid, so its voxels read as ordinary
     // terrain: a shaft that came down on a porcupine's quills (outside the body sphere tested above, but
     // still its voxels) knocked a CHUNK out of it. Anything landing inside a live creature's stamp is a
@@ -248,7 +278,18 @@
         if (ix >= q[0] - 1 && ix <= q[3] + 1 && iy >= q[1] - 1 && iy <= q[4] + 1 && iz >= q[2] - 1 && iz <= q[5] + 1) { hitSlot = wk; break; }
       }
     }
-    const lx = Math.round(px), lz = Math.round(pz);
+    // ── IT STOPS ON THE TERRAIN, NOT IN IT (user 2026-08-29: "arrows seem to go through the ground") ──
+    // the impact test stores the sample that was BLOCKED, and that sample is by definition a cell inside
+    // whatever was struck. So every shaft came to rest one cell deep in the ground, and with the model drawn
+    // along its flight the whole arrow disappeared under the surface. Measured on a clean shot: the column
+    // read solid 212-216 with air from 218, and the arrow sat at 216 — two voxels inside the rock.
+    // The blocked cell is still exactly what the CARVE wants (chopAt below chips the thing that was hit), so
+    // the two are separated here rather than one being bent to serve the other: rx/ry/rz is where the shaft
+    // RESTS, px/py/pz stays where it STRUCK. A creature hit is deliberately left alone — an arrow in an
+    // animal belongs inside the animal, and backing it off would leave it hanging in front of the wound.
+    const worldHit = hitSlot < 0 && hitBird < 0;
+    const rx = worldHit ? fx : px, ry = worldHit ? fy : py, rz2 = worldHit ? fz : pz;
+    const lx = Math.round(rx), lz = Math.round(rz2);
     const Xh = [Math.sin(P.yaw), 0, Math.cos(P.yaw)];  // it lands pointing the way it flew
     // ── ROOM FOR THE NEXT SHOT ── the composite renders only the FIRST FOUR drops, so arrows piling up in
     // the list silently swallowed every shot after the third: the new one existed but was never drawn, and
@@ -258,11 +299,11 @@
       if (i < 0) break;
       drops.splice(i, 1);
     }
-    drops.push({ x: lx, y: Math.round(py), z: lz, it, ph: Math.random() * 6.28, born: performance.now(),
+    drops.push({ x: lx, y: Math.round(ry), z: lz, it, ph: Math.random() * 6.28, born: performance.now(),
       T, sx, sy: sy2, sz, vx, vy: vy0, vz, aim: true, stick: true, hitSlot, kind,   // aim: it flies POINT-FIRST, nose following the arc; stick: and STAYS where it struck; hitSlot: what it is about to wound (user)
       hitBird,                                         // …or the songbird it is about to bring down
       chopAt: hitSlot < 0 && hitBird < 0 && py >= 1 ? [Math.round(px), Math.round(py), Math.round(pz)] : null,   // …or the voxel it is about to knock a chunk out of
-      ex: px, ey: py, ez: pz,                          // the real impact point, not the analytic parabola's guess
+      ex: rx, ey: ry, ez: rz2,                         // the real RESTING point, not the analytic parabola's guess (and not the blocked cell — see above)
       q0: m2q(Xh, [Xh[2], 0, -Xh[0]], [0, 1, 0]) });
     if (drops.length > 8) drops.shift();   // ── 8 ITEM DROPS, NOT 4 (user 2026-08-20: "have the max number of floating hand held items on the field 8 instead of 4") ── drops.shift() DELETES the oldest, so a fifth drop did not just stop being drawn, it stopped existing. The render band moved with it: see the band map at dropCursor in main/tick-life.js
     unlockProjectile();                                // it is away and flying — the discovery is earned (user)

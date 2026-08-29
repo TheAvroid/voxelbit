@@ -823,6 +823,7 @@
       return { aimId: aim, aimWood: !!woodTab[aim], carved: !!r, path: CHOP_AIM.path,
                blocked: !r && !!aim, woodHit: !!CHOP_AIM.woodHit, foliaHit: !!CHOP_AIM.foliaHit }; },   // the tap drives exactly what a click does, sound included
     physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
+    lastShot() { return lastShotInfo(); },           // where the last arrow/spear arc ended — landed:false means it ran the whole 20 s march without hitting anything, buried:true means it launched from inside solid
     arrowChopAt(x, y, z) { return arrowChop(x | 0, y | 0, z | 0); },   // the ARROW's carve, at a chosen voxel. Driving it through a real shot is unmeasurable: the shaft picks its own impact, and a creature in the way cancels the chop outright.
     // Stake an arrow into a chosen creature exactly as a landed shot does, so the "it goes when the animal
     // goes" sweep can be tested without having to hit a butterfly with a real shaft — which is not a test so
@@ -1688,6 +1689,11 @@
     supCap(v) { if (v !== undefined) SUP.cap = Math.max(16, v | 0); return { cap: SUP.cap, drapeCap: SUP.drapeCap, capHits: SUP.stats.capHits, structFloods: SUP.stats.structFloods, dropped: SUP.stats.dropped }; },   // squeeze the STRUCTURE flood ceiling so a test can force the cap-hit path on a small rock
     wrefl(v) { if (v !== undefined) { wReflK = Math.max(0, Math.min(2, +v)); resetHist = 1; try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e) {} lgtPaint(); } return wReflK; },   // WATER REFLECTION STRENGTH — the panel's slider, from the console
     lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: { rockSheen: 1, grassXFace: 2 } }; },   // the SECOND mask (u.lgt.z) — bit 0 is the SUN SHEEN ON STONE (user 2026-08-16). __vb.lgt2(0) / __vb.lgt2(1) is the A/B: it sets resetHist, so the denoiser does not hand the previous variant's history to the next shot
+    ripN() { return ripN; },
+    ripDbg() { const t = performance.now() / 1000; const o = [];   // every LIVE ring with its age — the tap that separates "nothing is emitting" from "nothing is retiring", which ripN alone cannot
+      for (let i = 0; i < ripN; i++) o.push({ x: RIP[i * 4] | 0, z: RIP[i * 4 + 1] | 0, age: +(t - RIP[i * 4 + 2]).toFixed(2), k: +RIP[i * 4 + 3].toFixed(2) });
+      return o; },                           // how many surface rings are live right now — the tap that says whether a wake/splash is actually being pushed, as opposed to being pushed and not drawn
+    ripAt(x, z, k) { ripAdd(x, z, k === undefined ? 1 : k); return ripN; },   // fire one ring on demand (test tap)
     lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, water: LGT_WATER, mask2: lgtMask2, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536, volumetric: 131072,
       waterReflect: 262144, waterRefract: 524288, waterFoam: 1048576, waterIce: 2097152, waterGlisten: 4194304, waterWaves: 8388608 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
@@ -1857,7 +1863,7 @@
     birdBox() { return { ...birdBox }; }, wormStamps() { let n = 0, live = 0, off = 0; for (let j = WORM_0; j < WORM_END; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } if (B && B.init && (B.kind | 0) === 2) off++; } return { voxels: n, worms: live, live: off }; },   // Task 2/3 taps — `live` = active off-grid worms (worms render off-grid now)
     duckStamps() { let n = 0, live = 0, paused = 0; for (let j = DUCK_0; j < BABY_END; j++) { const B = wbf[j]; if (B && B.sN) { n += B.sN; live++; } } for (let j = WORM_0; j < WORM_END; j++) { const B = wbf[j]; if (B && B.wpause) paused++; } return { duckVoxels: n, ducks: live, wormsPaused: paused }; },   // Task 6 + worm-pause taps
     perched() { const o = []; for (let j = CARD_0; j < CARD_END; j++) { const B = wbf[j]; if (B && B.init && (B.kind | 0) === 5) { const fx = Math.floor(B.x), fz = Math.floor(B.z), fy = Math.round(B.perchFeet || 0); o.push({ j, x: fx, z: fz, feetY: fy, bird: B.bird | 0, below: this.vox(fx, fy - 1, fz), cells: B.sN | 0, want: B.sWant | 0, ids: B.sN ? [...new Set(Array.from(B.sCells.subarray(0, B.sN), (ii) => W[ii]))].sort((p2, q2) => p2 - q2) : [] }); } } return o; },   // perched-cardinal test tap
-    reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // H-key spawn reset + the bake string
+    reroll() { rerollSpawn(); return spawnBake; }, spawnBake() { return spawnBake; },   // spawn reset + the bake string (this is the ONLY entry point since the H key was unbound 2026-08-29)
     prof(on) { if (on !== undefined) profArm(on); const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, +profEma[i].toFixed(3)])); o.fps = +fpsEma.toFixed(0); return o; },
     profMin(reset) { const o = Object.fromEntries(PROF_NAMES.map((n, i) => [n, profMin[i] > 1e8 ? -1 : +profMin[i].toFixed(3)]));   // uncontended per-pass cost — the A/B statistic (see profMin above)
       o.n = profSamp; if (reset) { for (let i = 0; i < 7; i++) profMin[i] = 1e9; profSamp = 0; } return o; },

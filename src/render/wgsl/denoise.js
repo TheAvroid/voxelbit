@@ -13,6 +13,15 @@
   // number it is worth is the user's to pick off a measured sweep.
   const AO_HIST = (() => { const m = /[?&]aohist=([0-9.]+)/.exec(location.search); return m ? Math.max(1, Math.min(256, Math.round(parseFloat(m[1])))) : 64; })();
 
+  // ── HISTORY FIX CEILING ── how much accumulation a pixel may INHERIT from a neighbour when its own
+  // reprojected tap fails the depth test (see HISTORY FIX in TEMPORAL). Deliberately NOT a real history:
+  // the borrowed value is a converged sample of the RIGHT SURFACE but the WRONG POINT on it, so the pixel
+  // has to keep walking toward its own rays. At 8 it blends its own sample in at 1/9 a frame — enough to
+  // kill the raw single-ray variance, quick enough that a genuine contact shadow re-forms in about a tenth
+  // of a second. Sweep with ?hfix=N, and ?hfix=0 removes the borrow entirely — which is the A/B the whole
+  // thing is judged with now that it is baked in and off the [Y] key it shipped on.
+  const HFIX = (() => { const m = /[?&]hfix=([0-9.]+)/.exec(location.search); return m ? Math.max(0, Math.min(64, Math.round(parseFloat(m[1])))) : 8; })();
+
   const TEMPORAL_SRC = () => /* wgsl */`
     @group(0) @binding(1) var gIrr : texture_2d<f32>;
     @group(0) @binding(2) var histPrev : texture_2d<f32>;
@@ -39,11 +48,54 @@
       var hist = 1.0;
       var acc = cur.rg;
       if (!lifeReject && u.reset < 0.5 && uv.x > 0.001 && uv.y > 0.001 && uv.x < 0.999 && uv.y < 0.999) {
-        let ps = textureLoad(slotPrev, vec2<i32>(uv * u.res), 0).r & 255u;
-        if (ps == sl) {                                              // same identity (terrain↔terrain or same creature) — a vacated/covered pixel is a disocclusion, rejected here
-          let prev = textureSampleLevel(histPrev, samp, uv, 0.0);
           let expT = length(wpp - u.pPos);
-          if (prev.b > 0.0 && abs(prev.b - expT) < 0.02 * expT + 1.5) {   // rotation (not in the rigid delta) and newly revealed surfaces fail this distance check naturally
+          let tol = 0.02 * expT + 1.5;                               // rotation (not in the rigid delta) and newly revealed surfaces fail this distance check naturally
+          let bp = vec2<i32>(uv * u.res);
+          var prev = textureSampleLevel(histPrev, samp, uv, 0.0);
+          // same identity (terrain↔terrain or same creature) — a vacated/covered pixel is a disocclusion, rejected here
+          var ok = (textureLoad(slotPrev, bp, 0).r & 255u) == sl && prev.b > 0.0 && abs(prev.b - expT) < tol;
+          var cap = 1e9;
+          // ── HISTORY FIX ── the depth test above rejects EVERY SILHOUETTE PIXEL, and it does so with the
+          // camera standing perfectly still. The jitter moves the primary ray up to half a pixel a frame, so a
+          // pixel sitting on the edge of a grass blade hits the blade on one frame and the ground behind it on
+          // the next; those two depths differ by more than tol, history is thrown away, and the pixel renders a
+          // RAW one-ray AO plus a one-sample binary sun ray. That is the noise. It is worst on grass because a
+          // blade is almost entirely silhouette, and worse at low renderScale because more of the frame goes
+          // subpixel — which is exactly the shape of what the user reports. The history debug view
+          // (__vb.lifedbg(2)) draws it: solid red along every voxel outline on a MOTIONLESS camera.
+          // Neither surface is actually new, though. Both were on screen last frame, one texel over — so
+          // instead of starting from nothing, take the history of the NEAREST NEIGHBOUR that was looking at
+          // this frame's surface. That is a converged sample of the right surface at the wrong point, which is
+          // a far better prior than a single ray, and the cap below makes the pixel walk off it onto its own
+          // samples within a few frames. Only pixels that already failed pay for the search.
+          // ── AND FOUR OTHER LEVERS, ALL BUILT AND ALL MEASURED NULL THE SAME DAY ── the instrument matters
+          // more than the list: a whole-frame temporal std cannot see any of this, because the pixels that
+          // shimmer are only ~5% of a grass frame and their noise is averaged away by the other 95%. What
+          // works is to build the SILHOUETTE MASK from a ?hfix=0 capture of __vb.lifedbg(2) (red channel over
+          // green) and take the temporal std of ten screenshots inside that mask alone. On that metric the
+          // borrow below measures 2.04 -> 1.11, 3.25 -> 2.17, 3.99 -> 2.65 and 3.73 -> 2.88 (four worlds), and:
+          //   TAA blend rate 0.12 -> 0.06 -> 0.03: flat. It is the VARIANCE CLIP, not the blend, that sets an
+          //     edge pixel's response — alpha 1.0 does measure worse (3.28), so TAA is working, it is just
+          //     already past the knee. Do not lower it and pay the ghosting for nothing.
+          //   TAA clip width 1.25 -> 2.0 -> 3.0 sigma: flat to slightly worse.
+          //   AO accumulation window 64 -> 128 -> 256: flat, and 256 measured WORSE — the f16 quantisation
+          //     note above is real, not theoretical.
+          //   SPATIAL's cross-face threshold 4 -> 9.5 -> 20 (the borrow raises hA past 4, so the fallback
+          //     stops firing on the pixels it was written for): inside the run-to-run scatter either way.
+          if (!ok && ${HFIX} > 0) {                                 // ?hfix=0 folds the whole search away and hands the old single-ray fallback back
+            var bd = tol;
+            for (var k = 0; k < 9; k++) {
+              if (k == 4) { continue; }                              // the centre is the tap that just failed
+              let q = bp + vec2<i32>(k % 3 - 1, k / 3 - 1);
+              if (q.x < 0 || q.y < 0 || q.x >= i32(u.res.x) || q.y >= i32(u.res.y)) { continue; }
+              if ((textureLoad(slotPrev, q, 0).r & 255u) != sl) { continue; }
+              let s = textureLoad(histPrev, q, 0);
+              let dd = abs(s.b - expT);
+              if (s.b > 0.0 && dd < bd) { bd = dd; prev = s; ok = true; }
+            }
+            if (ok) { cap = ${HFIX}.0; }                             // borrowed, not earned — see HISTORY FIX CEILING
+          }
+          if (ok) {
             // ── TWO CEILINGS, ONE COUNTER ── the stored .a is now the RAW frame count since the last
             // reject, and each channel divides by its OWN ceiling at use time. That works because the two
             // terms are only ever invalidated TOGETHER — the slot test, the flag bits and the depth test
@@ -59,13 +111,12 @@
             let rk = clamp(cur.a, 0.0, 1.0);
             let capS = mix(sBase, min(sBase, 10.0), rk);             // reactive pixel: converge in ~4 frames so a moving shadow TRACKS its body instead of trailing it
             let capA = mix(aBase, min(aBase, 10.0), rk);
-            hist = min(abs(prev.a) + 1.0, max(capS, capA));          // the counter runs to the LONGER of the two; each channel clamps it down to its own below
+            hist = min(min(abs(prev.a), cap) + 1.0, max(capS, capA));   // the counter runs to the LONGER of the two; each channel clamps it down to its own below   // …and cap is 1e9 (no-op) for a pixel that reprojected onto ITSELF, HFIX for one that borrowed a neighbour's
             acc = vec2<f32>(mix(prev.r, cur.r, 1.0 / min(hist, capS)),
                             mix(prev.g, cur.g, 1.0 / min(hist, capA)));
             // EQUIVALENCE: at ?aohist=64 (the default) capS == capA, so hist == min(prev.a + 1, capS) and
             // both blends are 1/hist — exactly the single-counter line this replaced. Bit-identical.
           }
-        }
       }
       textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(acc, cur.b, select(hist, -hist, cur.a > 0.5)));   // SIGN carries the reactive flag to SPATIAL (magnitude unchanged) — see the note there
     }

@@ -212,7 +212,16 @@
         // disagree the petal is judged to have ALREADY LANDED on the frame it is born, `life` is re-timed to
         // its current age, and it expires immediately — a leaf that appears in the crown and is gone before it
         // has fallen a voxel. One source for both, so "where is the ground here" cannot have two answers.
-        { const gp = H(Math.round(px4), Math.round(pz4));
+        // ── …AND A LAKE IS A FLOOR, NOT A HOLE (2026-08-29, falling out of the ceiling change above) ── H is
+        // the TERRAIN height and water is simply terrain below WL (world/window.js), so over a lake or a river
+        // H answers with the BED — twenty-odd voxels under the surface. While the 14 s ceiling was cutting
+        // every long fall short that was mostly unreachable; now that a leaf really does travel the whole way
+        // down, a leaf the wind carries out over water would sink through the surface and go on descending
+        // underwater to the mud. WL + 1 is the first air cell above the surface voxel (terrain.js writes
+        // WATER_T at exactly y == WL), which is the same thing H means on land: the cell a landed leaf rests
+        // in. On dry land this is the IDENTITY and provably so — terrain.js lifts any non-lake column with
+        // h <= WL to WL + 1, so H is never below WL + 1 anywhere a leaf can land on ground.
+        { const gp = Math.max(H(Math.round(px4), Math.round(pz4)), WL + 1);
           if (py4 <= gp) py4 = gp;                     // landed: rest ON the hillside, never inside it
           sp4.life = Math.min(PETAL_MAXLIFE, tS + Math.max(0, (py4 - gp) / PETAL_FALL)); }   // …and it lives exactly as long as the fall it still has left
       } else if (smoke) {                                     // ONE individual voxel, off the grid like a snowflake: a per-voxel wandering DRIFT (sin/cos, like the flakes' wind sway) as it floats up, then CENTRE it on its position so it spins about its own middle (not a corner)

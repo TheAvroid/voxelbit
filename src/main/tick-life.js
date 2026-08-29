@@ -316,7 +316,7 @@
     // sparks3d in index order and handing out 9, 10, 11… to whatever was alive. Its own note in
     // ui/achievements.js says what that costs: "only the slot each one writes to moves". Two bugs fall out
     // of it, and the falling leaves get both because they are by far the longest-lived particle here
-    // (PETAL_MAXLIFE 14 s against a splash droplet's 0.9 and a tear's 0.7):
+    // (a fall of 15-45 s against a splash droplet's 0.9 and a tear's 0.7):
     //   · FLICKER. Every birth or death at a LOWER index shifts every live particle above it down a slot.
     //     A drop slot IS the denoiser's identity for that pixel (lifeUid / lifeUidPrev), so a shift rejects
     //     the leaf's whole history and it re-converges from nothing. MEASURED in the birch wood: 1,388 slot

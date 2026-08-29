@@ -619,10 +619,11 @@
           let adx = max(abs(rd.x), 1e-5); let adz = max(abs(rd.z), 1e-5);
           var tmx = ((f32(cw.x) + max(sx2, 0.0)) - pW.x) / (sx2 * adx) + tq;
           var tmz = ((f32(cw.y) + max(sz2, 0.0)) - pW.z) / (sz2 * adz) + tq;
-          var wSide = false; var wCrest = -9.0; var whF = baseTop;
+          var wSide = false; var wCrest = -9.0; var whF = baseTop; var wRipF = 0.0;   // …wRipF = the ring foam at whichever column the march actually stops on
           for (var wi = 0; wi < 22; wi++) {
             let wxw = f32(cw.x) + u.winO.x; let wzw = f32(cw.y) + u.winO.y;
-            let wv = gerstH(wxw, wzw);                                                                   // GERSTNER height field (see PRE) — same sum the JS floater mirror rides
+            let rip = ripHF(wxw, wzw);                                                                   // …plus any SPLASH or WAKE ring crossing this column (see ripHF in PRE; zero, and one compare, when nothing is rippling)
+            let wv = gerstH(wxw, wzw) + rip.x;                                                           // GERSTNER height field (see PRE) — same sum the JS floater mirror rides
             // ── THE FOAM RING STANDS A VOXEL PROUD (user 2026-08-05) ── done HERE, in the surface march, not
             // after it. Lifting t once the hit was already found only moved that pixel's DEPTH: the foam
             // kept the silhouette of the flat water because the pixels it should have grown into were never
@@ -640,8 +641,8 @@
               } }
             let wh = baseTop + floor(wv + 0.5) + lift;
             let tNext = min(tmx, tmz);
-            if (ro.y + rd.y * tq <= wh) { t = tq; wSide = true; wCrest = wv; whF = wh; break; }          // SIDE face of a wave step
-            if (ro.y + rd.y * tNext <= wh) { t = (wh - ro.y) / rd.y; wCrest = wv; whF = wh; break; }     // TOP face within this column
+            if (ro.y + rd.y * tq <= wh) { t = tq; wSide = true; wCrest = wv; whF = wh; wRipF = rip.y; break; }          // SIDE face of a wave step
+            if (ro.y + rd.y * tNext <= wh) { t = (wh - ro.y) / rd.y; wCrest = wv; whF = wh; wRipF = rip.y; break; }     // TOP face within this column
             if (tmx < tmz) { tq = tmx; tmx += 1.0 / adx; cw.x += i32(sx2); }
             else { tq = tmz; tmz += 1.0 / adz; cw.y += i32(sz2); }
             if (tq > t + 38.0) { break; }
@@ -664,8 +665,28 @@
               }
             }
             if (foam > 0.5) { let tFo = (whF + 2.0 - ro.y) / rd.y; if (tFo > 0.0) { t = min(t, tFo); } }   // …and the shaded surface rides on top of that raised column (the +1 now comes from the lift in the march above). GUARDED: this block only runs for rd.y < -0.01, so an eye BELOW that plane (whF is baseTop + floor(wv+0.5) + lift, i.e. up to ~6 voxels above the water — where the swim spring parks you) makes the quotient NEGATIVE and min() took it. A t behind the camera made TEMPORAL drop the pixel, COMPOSITE shade it as unlit water and the reflection ray start behind the eye: dark blotches trailing the shoreline foam ring while swimming. Below the plane there is nothing to clamp to — the ray is already under it.
+            foam = max(foam, wRipF);                                                      // …and the crest of a SPLASH or WAKE ring is white for the same reason a whitecap is: it is water that has just been broken
             foamK = clamp(foam, 0.0, 1.0) * 0.8;
             albedo = mix(albedo, FOAM_C, foamK);
+          } else {
+            // ── AND IF THE MARCH RAN OUT, THE RING STILL HAS TO DRAW (user 2026-08-29: "I can't see the
+            // splash rings and wakes at a distance") ── the loop above is capped at 22 column steps and it
+            // starts up to 34 voxels SHORT of the hit, so on a grazing ray — which is every ray that reaches
+            // far water — it gives up before it ever reaches this pixel's own column. wCrest stays at its
+            // sentinel, the whole block above is skipped, and NOTHING on that surface is foamed: not a ring,
+            // not a wake, not the shoreline surf. That is why the far half of a lake looked untouched while
+            // a ring 40 voxels away was obvious.
+            // Raising the cap would cost every water pixel in the frame a longer loop. Instead: when the
+            // march fails, ask the ring field directly at the flat-plane hit. One evaluation, only on the
+            // pixels that got nothing, and it is the same ripHF the march would have called.
+            // Deliberately the RING only, not the shoreline probes — those are eight voxAt() fetches, and
+            // foaming every distant shoreline is a change to the water's look that was not asked for.
+            let hpF = ro + rd * t;
+            let rfF = ripHF(hpF.x + u.winO.x, hpF.z + u.winO.y).y;
+            if (rfF > 0.0) {
+              foamK = clamp(rfF, 0.0, 1.0) * 0.8;
+              albedo = mix(albedo, FOAM_C, foamK);
+            }
           }
         }
         // (the old 50%-translucent bed mix moved to the COMPOSITE: it now arrives via a REAL refracted ray with

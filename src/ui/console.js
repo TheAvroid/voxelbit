@@ -319,14 +319,17 @@
   // Each finder returns a WORLD COLUMN to stand at, or null. `cell` is the generator's own grid size, and
   // the ring walk visits cells nearest-first so the answer really is the closest one.
   const CMD_LOCATE = (() => {
-    const nearestCell = (cell, rings, hit) => {          // spiral out over the generator's cell grid
-      const c0x = Math.floor(P.x / cell), c0z = Math.floor(P.z / cell);
+    // `ox`/`oz` default to the player, and exist for bandTree below: a walk that has to be re-run from a
+    // column the player has NOT been teleported to yet needs an origin that is not P.
+    const nearestCell = (cell, rings, hit, ox, oz) => {   // spiral out over the generator's cell grid
+      const px = ox === undefined ? P.x : ox, pz = oz === undefined ? P.z : oz;
+      const c0x = Math.floor(px / cell), c0z = Math.floor(pz / cell);
       for (let r = 0; r <= rings; r++) {
         let best = null, bd = Infinity;
         for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;   // ring surface only — the interior was covered by smaller r
           const got = hit(c0x + dx, c0z + dz); if (!got) continue;
-          const d = (got.x - P.x) * (got.x - P.x) + (got.z - P.z) * (got.z - P.z);
+          const d = (got.x - px) * (got.x - px) + (got.z - pz) * (got.z - pz);
           if (d < bd) { bd = d; best = got; }
         }
         if (best) return best;                           // nearest hit in the first ring that has one
@@ -339,6 +342,33 @@
       return H(Math.round(x), Math.round(z)) < WL || (r > 0 && (H(Math.round(x + q), Math.round(z)) < WL
         || H(Math.round(x - q), Math.round(z)) < WL || H(Math.round(x), Math.round(z + q)) < WL
         || H(Math.round(x), Math.round(z - q)) < WL)); };
+    // ── THE BIOME TESTS, NAMED ── hoisted out of the biome finders below so that bandTree can reuse the exact
+    // same predicate. Two copies of "is this deep birch" is precisely how the pine_forest conjunction went
+    // wrong three times (see the notes on pine_forest), so there is one of each and both callers share it.
+    const IS_DESERT = (x, z) => desertM(x, z) >= 0.995;
+    const IS_BIRCH = (x, z) => birchM(x, z) >= 0.995;
+    const IS_CHERRY = (x, z) => cherryM(x, z) >= 0.995;
+    const IS_OAK = (x, z) => oakM(x, z) >= 0.995 && cherryM(x, z) <= 0.005;
+    const IS_PINE = (x, z) => desertM(x, z) <= 0.005 && oakM(x, z) <= 0.005 && birchM(x, z) <= 0.005;
+    // ── A BAND'S TREE HAS TO BE REACHABLE FROM OUTSIDE THE BAND ── (user 2026-08-29: "the /locate birch
+    // command doesnt work, it should teleport the player to a birch forest"). Each tree finder is a ring walk
+    // over its own cell grid capped at 40 rings, and that cap is SHORTER THAN THE GAP BETWEEN THE BANDS: the
+    // birch reaches 40 * BKCELL = 1760 voxels and the pine 1800, while the oak forest measured 3584 voxels
+    // from the birch at the spawn's own z. So /locate birch from under an oak walked its whole budget through
+    // ground where birchAt returns null by construction (it refuses any cell with birchM < 0.5) and answered
+    // "no birch found within range" — a tree that plainly exists, reported as missing, and nobody moved.
+    // The band is the missing half of the query: find the forest first, THEN the nearest tree in it, so the
+    // player arrives beside a real birch rather than at the band's edge. One teleport either way — the walk
+    // from the band column happens before cmdGoTo, which is why nearestCell takes an origin.
+    const bandTree = (cell, off, what, hit, pred, label) => {
+      let g = nearestCell(cell, 40, hit);
+      if (!g) {
+        const b = biomeSeek(pred, label); if (!b) return null;
+        g = nearestCell(cell, 40, hit, b.x, b.z);
+        if (!g) return b;                              // in the forest with no tree in reach of its centre: say so honestly rather than announcing a tree that is not there
+      }
+      return { x: g.x + off, z: g.z, what };
+    };
     return {
       // ── AND IT HAS TO STILL BE THERE ── riverAt is the watershed LAYOUT and knows nothing about biomes, but
       // the desert pass runs last and lifts every column with desertM > 0.5 to WL + 2, so a lake or a channel
@@ -355,16 +385,13 @@
             if (wetSpot(mx, mz, 0)) return { x: mx, z: mz }; }
           return null; });
         return g ? { ...cmdShore(g.x, g.z), what: 'river' } : null; },
-      tree: () => { const g = nearestCell(TCELL, 40, (cx, cz) => { const t = treeAt(cx, cz); return t ? { x: t.tx, z: t.tz } : null; });
-        return g ? { x: g.x + 12, z: g.z, what: 'pine' } : null; },
+      tree: () => bandTree(TCELL, 12, 'pine', (cx, cz) => { const t = treeAt(cx, cz); return t ? { x: t.tx, z: t.tz } : null; }, IS_PINE, 'the pine forest'),
       // …and the OTHER forest's tree. Stood off 24 rather than the pine's 12: an oak crown is up to 118 voxels
       // across, so landing at the pine's distance puts the player under the canopy instead of in front of it.
-      oak: () => { const g = nearestCell(OKCELL, 40, (cx, cz) => { const t = oakAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; });
-        return g ? { x: g.x + 24, z: g.z, what: 'oak' } : null; },
+      oak: () => bandTree(OKCELL, 24, 'oak', (cx, cz) => { const t = oakAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; }, IS_OAK, 'the oak forest'),
       // …and the THIRD forest's tree. Stood off 16: a birch crown is narrower than an oak's 118 but
       // wider than a pine, so it sits between their two numbers.
-      birch: () => { const g = nearestCell(BKCELL, 40, (cx, cz) => { const t = birchAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; });
-        return g ? { x: g.x + 16, z: g.z, what: 'birch' } : null; },
+      birch: () => bandTree(BKCELL, 16, 'birch', (cx, cz) => { const t = birchAt(cx, cz); return t ? { x: t.wx, z: t.wz } : null; }, IS_BIRCH, 'the birch forest'),
       rock: () => { const g = nearestCell(BCELL, 60, (cx, cz) => { const b = boulderAt(cx, cz); return b ? { x: b.bx, z: b.bz } : null; });
         return g ? { x: g.x + 8, z: g.z, what: 'rock' } : null; },
       log: () => { const g = nearestCell(LGCELL, 40, (cx, cz) => { const l = logAt(cx, cz); return l ? { x: l.wx, z: l.wz } : null; });
@@ -416,7 +443,7 @@
       // Step 16 at a time and stop DEEP inside, not at the first column that qualifies: landing on the border
       // itself puts you in the dithered blend where the sand is half forest floor, which is not "the desert".
       // Same landing test the spawn nudge uses (build.js) — dry ground, clear of a gorge.
-      desert: () => biomeSeek((x, z) => desertM(x, z) >= 0.995, 'the desert'),
+      desert: () => biomeSeek(IS_DESERT, 'the desert'),
       // ── AND PINE FOREST IS NOW A CONJUNCTION, NOT THE ABSENCE OF SAND ── it used to be `desertM <= 0.005`,
       // which was exact while there were two biomes and is WRONG the moment there are three: the oak forest
       // satisfies it perfectly, so /locate pine_forest from the oak side answered "you are already there".
@@ -427,30 +454,63 @@
       // you into a birch wood and announced the pines. Third time this exact shape has bitten;
       // adding the term rather than rewriting the pattern, because the pattern is right and it is
       // the MISSING CONJUNCT that is wrong each time.
-      pine_forest: () => biomeSeek((x, z) => desertM(x, z) <= 0.005 && oakM(x, z) <= 0.005 && birchM(x, z) <= 0.005, 'the pine forest'),
-      birch_forest: () => biomeSeek((x, z) => birchM(x, z) >= 0.995, 'the birch forest'),
+      pine_forest: () => biomeSeek(IS_PINE, 'the pine forest'),
+      birch_forest: () => biomeSeek(IS_BIRCH, 'the birch forest'),
       // ── AND OAK IS A CONJUNCTION NOW TOO (2026-08-18) ── the note above this predicted exactly this: a fourth
       // biome breaks any "biome" test written as the absence of the others. The cherry forest sits INSIDE oakM
       // (cherryM is a sub-region of it — see world/window.js), so `oakM >= 0.995` is satisfied perfectly from
       // deep inside the blossom and /locate oak_forest answered "you are already there" while standing under a
       // pink crown. pine_forest above needs no cherry term for the mirror reason: cherry ground has oakM 1, so
       // its `oakM <= 0.005` already excludes it.
-      oak_forest: () => biomeSeek((x, z) => oakM(x, z) >= 0.995 && cherryM(x, z) <= 0.005, 'the oak forest'),
-      cherry_forest: () => biomeSeek((x, z) => cherryM(x, z) >= 0.995, 'the cherry forest'),
+      oak_forest: () => biomeSeek(IS_OAK, 'the oak forest'),
+      cherry_forest: () => biomeSeek(IS_CHERRY, 'the cherry forest'),
     };
   })();
-  // Walk x outward from the player (the biome split is a line in x), both ways, and take the first column that
-  // is deep inside the wanted biome AND is somewhere you can stand. 24000 voxels is far past the widest the
-  // blend band can ever be, so failing to find one means something is wrong rather than "keep looking".
+  // Walk x outward from the player (the biome split is a line in x), both ways, find the band, and put the
+  // player down ON ITS MIDLINE (user 2026-08-29: "when I type /locate (biome) have me spawn in the middle of
+  // it, not the edge"). It used to return the FIRST column that qualified, which is by definition the near
+  // RIM of the band — you arrived looking back at the biome you came from, with the far side 2000 voxels
+  // away, and /locate desert from the pine forest landed you where the sand had barely started.
+  //
+  // The middle is DERIVED, not tabulated: seed anywhere inside the band, then walk each way until `want`
+  // stops holding and take the midpoint of that run. Nothing here knows BIRCHC or DESC or how wide a strip
+  // is, so a band that moves or a biome that has not been written yet needs no edit — which is the whole
+  // reason it is not the obvious "read the band centre out of world/window.js". The wobble means the band
+  // is a line in x per z, so the middle only means anything in x; z stays the player's own.
+  //
+  // 24000 voxels is far past the widest the blend band can ever be, so failing to seed means something is
+  // wrong rather than "keep looking". The EDGE walk is capped at BIOP/2 instead, and that cap is load-
+  // bearing: the world repeats every BIOP = 12960 (six 2160 strips), so a longer walk would step into the
+  // NEXT period's copy of the same biome, find it still qualifying, and hand back a midpoint out in a
+  // different band entirely. Half a period cannot reach a second copy and is still ~3x the widest strip.
   const biomeSeek = (want, label) => {
-    for (let r = 0; r <= 24000; r += 16) {
+    const zi = Math.round(P.z);
+    let seed = null;
+    for (let r = 0; r <= 24000 && seed === null; r += 16)
       for (const x of (r === 0 ? [P.x] : [P.x + r, P.x - r])) {
-        const xi = Math.round(x), zi = Math.round(P.z);
-        if (!want(xi, zi)) continue;              // `want` takes the COLUMN, not one mask's value: with three biomes a test can need two masks at once (see pine_forest)
-        if (H(xi, zi) <= WL + 1 || nearCave(xi, zi)) continue;
-        return { x: xi, z: zi, what: label };
+        const xi = Math.round(x);
+        if (want(xi, zi)) { seed = xi; break; }   // `want` takes the COLUMN, not one mask's value: with three biomes a test can need two masks at once (see pine_forest)
       }
-    }
+    if (seed === null) return null;
+    const edge = (dir) => { let x = seed;         // the last column that still qualifies, walking one way
+      for (let s = 16; s <= BIOP * 0.5; s += 16) { const xi = seed + dir * s; if (!want(xi, zi)) break; x = xi; }
+      return x; };
+    const mid = Math.round((edge(-1) + edge(1)) * 0.5);
+    // Standable ground AT the middle, and still inside the biome — the midline can land in a lake or over a
+    // gorge exactly as the old first-column test could, so the same two rejections apply, spiralled outward
+    // from the midpoint rather than from the player. 2048 either way is a whole strip's half-width.
+    for (let r = 0; r <= 2048; r += 8)
+      for (const [dx, dz] of (r === 0 ? [[0, 0]] : [[r, 0], [-r, 0], [0, r], [0, -r]])) {
+        const xi = mid + dx, zj = zi + dz;
+        if (want(xi, zj) && H(xi, zj) > WL + 1 && !nearCave(xi, zj)) return { x: xi, z: zj, what: label };
+      }
+    // Nothing standable anywhere near the middle: fall back to what this function did before the midline,
+    // so a biome that is somehow all water or all gorge still answers instead of the command going dead.
+    for (let r = 0; r <= 24000; r += 16)
+      for (const x of (r === 0 ? [P.x] : [P.x + r, P.x - r])) {
+        const xi = Math.round(x);
+        if (want(xi, zi) && H(xi, zi) > WL + 1 && !nearCave(xi, zi)) return { x: xi, z: zi, what: label };
+      }
     return null;
   };
   const CMD_LOC_ALIAS = { water: 'lake', pond: 'lake', stream: 'river', forest: 'tree', boulder: 'rock',

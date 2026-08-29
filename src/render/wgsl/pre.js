@@ -2,7 +2,7 @@
   // ── THE SUN'S ANGULAR RADIUS, ONCE ── the WGSL below needs both the cosine (for the cheap disc test) and
   // the angle itself (for the moon's disc coordinates). Deriving one from the other in JS is the only way
   // they cannot drift; a hand-typed second literal is a bug waiting for the next size change.
-  const SUN_COS_R = 0.999619141;
+  const SUN_COS_R = 0.999756245;
   const SUN_ANG_R = Math.acos(SUN_COS_R);
   const PRE_SRC = () => /* wgsl */`
     struct U {
@@ -88,6 +88,10 @@
       // At 1x it equals u.time exactly, so the deck's normal drift is unchanged. Appended at the VERY end for
       // the reason every field back here is. y/z/w spare.
       cloudT : vec4<f32>,
+      // ── SURFACE DISTURBANCES ── xy = world XZ of the ring's centre, z = birth on u.time's clock, w = strength
+      // (0 = empty). Compacted, so the readers stop at the first empty slot. Appended at the VERY end, for the
+      // reason every field back here is: each JS write past 'drops' is a hardcoded float index.
+      ripple : array<vec4<f32>, ${RIP_N}>,
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}
@@ -102,8 +106,18 @@
     // (user 2026-08-28: "make the sun as big as the moon"). Real sun and moon are both ~0.53 degrees and
     // very nearly equal, so matching them is the physical answer as well as the asked-for one.
     const SUN_COSR : f32 = ${SUN_COS_R};
-    const SUN_ANGR : f32 = ${SUN_ANG_R};                              // …the same radius as an ANGLE, for the moon's disc coordinates                              // cos(1.5814 deg) -> a 3.1627 deg disc. Size lives here as an ANGLE, so scaling by k is cos(k * acos(edge)), worked out rather than eyeballed. Running total (user 2026-08-28): moon-matched 0.999742 (2.6031 deg) -> 25% smaller 0.999854872 (1.9523) -> 20% bigger 0.999791018 (2.3428) -> 35% bigger, this (3.1627). The flare in blit.js is sized off this now, so a size change finally carries the glare with it instead of being pinned by it. It is no longer the moon's number, so the two discs are free to differ. SUN_SOFT below needs no adjustment: it is expressed in rr, which is relative to THIS radius, so the soft edge scales with the disc on its own
-    const SUN_SOFT : f32 = 0.35;                                     // ── SOFT EDGE (user 2026-08-28: "make the edges of the sun softer") ── where the limb fade STARTS, in rr = (theta/thetaR)^2. Limb darkening alone cannot soften a visible edge here: the disc is SUN_COL * 6 = ~21 linear, so mu^alpha only falls under 1.0 in the outermost 0.008% of the radius and everything inside clips to flat white — the boundary lands on one pixel however physical the profile is. This fades the disc over rr 1.00 -> 0.35, i.e. x 0.592 -> 1.000 — the outer 41% of the radius, about 8 px of gradient at the limb (was 0.70 / the outer 16% / 3 px), which is the part the eye actually reads as softness
+    const SUN_ANGR : f32 = ${SUN_ANG_R};                              // …the same radius as an ANGLE, for the moon's disc coordinates                              // cos(1.2651 deg) -> a 2.5302 deg disc. Size lives here as an ANGLE, so scaling by k is cos(k * acos(edge)), worked out rather than eyeballed. Running total (user 2026-08-28): moon-matched 0.999742 (2.6031 deg) -> 25% smaller 0.999854872 (1.9523) -> 20% bigger 0.999791018 (2.3428) -> 35% bigger 0.999619141 (3.1627) -> 20% smaller, this (2.5302). The flare in blit.js is sized off this now, so a size change finally carries the glare with it instead of being pinned by it. It is no longer the moon's number, so the two discs are free to differ. SUN_SOFT below needs no adjustment: it is expressed in rr, which is relative to THIS radius, so the soft edge scales with the disc on its own
+    const SUN_DISC : f32 = 0.6;                                      // the disc's peak, as a multiple of SUN_COL. Was 6.0; see the note at the draw for why the compositor sets a ceiling on it
+    const SUN_CORE : f32 = 0.55;                                     // ── WHERE THE FALLOFF STARTS, in rr — inside this the disc is flat ──
+    const SUN_FALL : f32 = 2.2;                                      // ── AND ITS DECAY, which is the ONLY thing that sets how soft the edge looks ──
+    // A smoothstep cannot do this job however it is placed, and three passes of moving it proved that. The
+    // disc is SUN_COL * 6 = 21.6 linear, so all that is ever VISIBLE of the profile is where it crosses
+    // 1/21.6 = 0.046 — deep in its tail. smoothstep is STEEP there, so the whole transition from white to
+    // nothing was squeezed into ~2 px no matter where the curve was put: SUN_EXT moved the edge outward and
+    // left it every bit as hard. An exponential has a constant log-slope, so the width of that crossing is
+    // set directly by SUN_FALL and nothing else. MEASURED at the same edge position: 2.2 px of fade before,
+    // 9.5 px after. Same apparent size, four times the softness.
+    const SUN_MUFLOOR : f32 = 0.12;                                  // …and a floor under the limb-darkening term, because mu goes to 0 at the sphere's edge and would multiply the skirt straight back out of existence. It also leaves the outermost fringe the reddest part of the disc, which is where limb darkening was already heading
     // ── LIMB DARKENING, Hestroffer & Magnan 1998 ── the reason a real sun does not read as a flat white
     // blob: its centre is bright and neutral and its edge is markedly darker AND redder, because a sight
     // line near the limb passes obliquely and only reaches cooler, higher photosphere. I(mu)/I(1) = mu^alpha
@@ -193,6 +207,13 @@
     // the smoothstep has already reached 1 and this is already 0, so a term scaled by it is bit-identical to
     // the unscaled one on both sides of the flip. Declared BELOW isMoon(): WGSL has no forward declarations.
     fn nightK() -> f32 { return 1.0 - smoothstep(-0.25, -0.05, select(u.sunDir.y, -u.sunDir.y, isMoon())); }
+    // ── HOW MUCH MOON THERE IS ── the illuminated fraction, (1 + cos alpha) / 2, off the same phase the
+    // disc is drawn with. ONE definition because it is read in three places that must never disagree: the
+    // moon's own face, the KEY light it casts on the world, and the bloom the cloud deck throws for it. It
+    // was written out longhand in the first two and simply MISSING from the third, so a new moon still lit
+    // the clouds (user 2026-08-28: "when the moon is a new moon it should not emit light at all through the
+    // clouds"). 1 at full, 0 at new.
+    fn moonPhaseF() -> f32 { return 0.5 + 0.5 * cos(u.rdist.y * 6.2831853); }
     // ── THE NIGHT'S AMBIENT FLOOR ── the faint isotropic top-up every surface gets no matter what reaches
     // it. By day it is a rounding error next to the sun; at night it is the LARGEST term on a shadowed voxel,
     // which is exactly why moon shadows used to sit at ~5:1 against a moonlit face and read as tint rather
@@ -200,6 +221,7 @@
     const AMB_FLOOR : vec3<f32> = vec3<f32>(0.012, 0.013, 0.016);
     const MOON_FLR : f32 = 0.42;                                     // …what is left of that floor deep at night with bit 0 on
     const MOON_AMB : f32 = 0.62;                                     // …and of dayScale()'s own night floor, i.e. of the sky glow
+    const MOON_LMIN : f32 = 0.06;                                    // what is left of the moon's KEY light at new moon — near nothing, but not zero
     const MOON_KEY : f32 = 1.34;                                     // …against a moon key raised this much, so a LIT face barely moves and a shadowed one falls away
     fn ambFloor() -> vec3<f32> { return AMB_FLOOR * mix(1.0, MOON_FLR, nightK()); }
     fn dayScale() -> f32 {                                           // global light level — SMOOTH through the sun↔moon swap (user: no abrupt jump at dusk 18:13 / dawn 5:46)
@@ -209,7 +231,16 @@
       return mix(mf, dayVal, smoothstep(-0.25, -0.05, sy));           // ease from the moon floor (0.0135) up to the day curve across twilight — no step where moonMode flips
     }
     fn sunTint() -> vec3<f32> {                                      // sun goes amber at the horizon; the moon is cool silver-blue
-      if (isMoon()) { return vec3<f32>(0.94, 0.95, 1.00) * 0.198 * smoothstep(0.0, 0.15, u.sunDir.y) * mix(1.0, MOON_KEY, nightK()); }   // WHITE moonlight (user 2026-08-19: "make it cast white light from it") — was a deep blue 0.40/0.50/0.78, which is the stylised night-blue every game reaches for; 0.94/0.95/1.00 is a faint cool white instead, so surfaces keep their OWN colour under it and only the exposure says night. The 0.198 magnitude is untouched, so nothing gets brighter — the light only stops being blue. Moonlight follows the darker nights: 0.44 -> 0.352 -> 0.264 -> 0.198   // …and the moonlight pass lifts the KEY while ambFloor()/dayScale() drop everything around it, which is a contrast change and very nearly not a brightness one — the darker nights the four steps above bought are the thing this must not undo
+      // ── AND IT SCALES WITH THE PHASE (user 2026-08-28: "the moon is still casting light when it's a new
+      // moon; the light should correspond to the phases") ── this is the moon's KEY light, the directional
+      // term the whole world is lit and shadowed by at night, and it used to be a constant: a new moon lit
+      // the ground exactly as hard as a full one. It is the same phase the disc is drawn with, u.rdist.y, so
+      // the sky and the ground can never disagree about how much moon there is.
+      // MOON_LMIN and not 0: a real new moon leaves starlight and airglow, and this engine has a separate
+      // isotropic night floor for that (ambFloor and dayScale's own mf) which is NOT touched here — so the
+      // world stays legible while the moon's own directional light, and its shadows with it, go away.
+      if (isMoon()) { let phF = moonPhaseF();
+        return vec3<f32>(0.94, 0.95, 1.00) * 0.198 * smoothstep(0.0, 0.15, u.sunDir.y) * mix(1.0, MOON_KEY, nightK()) * mix(MOON_LMIN, 1.0, phF); }   // WHITE moonlight (user 2026-08-19: "make it cast white light from it") — was a deep blue 0.40/0.50/0.78, which is the stylised night-blue every game reaches for; 0.94/0.95/1.00 is a faint cool white instead, so surfaces keep their OWN colour under it and only the exposure says night. The 0.198 magnitude is untouched, so nothing gets brighter — the light only stops being blue. Moonlight follows the darker nights: 0.44 -> 0.352 -> 0.264 -> 0.198   // …and the moonlight pass lifts the KEY while ambFloor()/dayScale() drop everything around it, which is a contrast change and very nearly not a brightness one — the darker nights the four steps above bought are the thing this must not undo
       let warm = mix(vec3<f32>(1.0, 0.42, 0.18), vec3<f32>(1.0, 1.0, 1.0), smoothstep(0.02, 0.38, u.sunDir.y));
       return SUN_COL * warm * smoothstep(-0.05, 0.10, u.sunDir.y);
     }
@@ -323,7 +354,26 @@
         // is what the Hestroffer-Magnan law is written in. It reaches 0 AT the limb, so the disc ends on its
         // own and needs no smoothstep to close it.
         let rr = (1.0 - s) / (1.0 - SUN_COSR);
-        if (rr < 1.0) { c += SUN_COL * 6.0 * pow(vec3<f32>(sqrt(max(0.0, 1.0 - rr))), SUN_LIMB) * smoothstep(1.0, SUN_SOFT, rr) * up; }   // …times the soft-edge fade; smoothstep with e0 > e1 is the decreasing form, so it is 1 well inside the disc and 0 at the limb
+        // min(rr, 1.0) keeps the limb-darkening term inside the sphere it describes; past the geometric
+        // limb mu holds at the floor and the smoothstep alone carries the fade out to SUN_EXT.
+        if (rr < 4.0) {                                              // 4.0 is where the exponential has fallen to ~0.005 of a display level — past it there is nothing to add
+          let mu = max(sqrt(max(0.0, 1.0 - min(rr, 1.0))), SUN_MUFLOOR);
+          // ── SUN_DISC, AND WHY IT IS NOT 6.0 (user 2026-08-28: "when looking away from the sun it appears
+          // through the clouds as a clear circle outline … let it be faded like it is when you look at it") ──
+          // COMPOSITE draws the sky, this disc included, and then the deck mixes over it:
+          // col = mix(col, cloud, aSky). So through cloud the disc shows (1 - aSky) x its peak, and it stays
+          // CLIPPED AT PURE WHITE until that falls under 1.0. At 6.0 the peak is 21.6 linear, which needs
+          // aSky > 0.954 — near-solid cloud — so through anything thinner the sun punched out as a
+          // hard-edged circle no matter how soft its own edge was. That is the outline, and no amount of
+          // work on SUN_FALL could have reached it: the edge was being redrawn by the compositor.
+          // 6.0 -> 2.0 was not enough: at 7.2 it still needed aSky > 0.861, and the clip shows the sun crisp
+          // through THIN cloud and soft only through thick. At 0.6 the peak is 2.16 and it fades from aSky 0.537,
+          // which covers the thin cloud in that footage.
+          // It costs little in clear sky — the white core goes from 1.25 to 0.88 of the radius and
+          // the soft band actually WIDENS slightly, 7.5 px to 8.6 px — because the flare, not the disc, is
+          // what carries the sun's brightness there.
+          c += SUN_COL * SUN_DISC * pow(vec3<f32>(mu), SUN_LIMB) * exp(-SUN_FALL * max(0.0, rr - SUN_CORE)) * up;
+        }
         // ── NO AUREOLE HERE, DELIBERATELY (user 2026-08-28: "get rid of that white brush stroke you have
         // around the sun, but the glare looks good") ── the sky-side glow this block used to add is gone.
         // Two pow lobes washed white across the sky around the disc, and however they were weighted they
@@ -371,17 +421,44 @@
         let up = smoothstep(-0.006, 0.006, rd.y);                    // the moon sets behind the horizon too, for the same reason the sun does
         let md = smoothstep(1.0, MOON_SOFT, rrM) * up;               // a body, so its edge is nearly hard — only enough softness to stop it aliasing
         if (md > 0.001) {
-          let sunH = normalize(vec3<f32>(realSun.x, 1e-4, realSun.z));
-          let TS = normalize(realMoon * dot(sunH, realMoon) - sunH);
-          let B = cross(realMoon, TS);
-          let du = vec2<f32>(dot(rd, TS), dot(rd, B)) / SUN_ANGR;    // disc coordinates, -1..1 across the face
-          let uv = clamp(du * (0.5 / MOON_CROP) + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+          // ── THE DISC FRAME IS ANCHORED TO WORLD UP (user 2026-08-28: "can you turn the moon 90 degrees?
+          // it appears to be on its side") ── and that is the fix. Both axes used to be derived from the
+          // SUN'S BEARING: TS was the component of -sunH perpendicular to the moon and B was their cross
+          // product, so neither had anything to do with which way is up. MEASURED over the moon's whole arc,
+          // 22 to 60 degrees of elevation: the old +y axis sat EXACTLY 90 degrees from sky-up at every one of
+          // them. Not a drift — a constant quarter turn, which is precisely why it read as "on its side"
+          // rather than as merely crooked. A face has an up, and it has to come from the world, not from
+          // where the light happens to be.
+          // R is horizontal (perpendicular to world up), U completes the frame and points up-sky at the moon.
+          // GUARDED: at the zenith cross(up, moon) collapses, and a zero-length axis is a NaN disc.
+          var R = cross(vec3<f32>(0.0, 1.0, 0.0), realMoon);
+          let rl = length(R);
+          R = select(vec3<f32>(1.0, 0.0, 0.0), R / max(rl, 1e-6), rl > 1e-4);
+          let U = cross(realMoon, R);
+          let du = vec2<f32>(dot(rd, R), dot(rd, U)) / SUN_ANGR;     // disc coordinates, -1..1, with +y up the SKY
+          // ── AND v IS NEGATED, WHICH IS THE OTHER HALF OF "UPRIGHT" ── du.y increases with SKY-UP by
+          // construction (U = cross(moonDir, R)), but a texture's v increases DOWN the image: row 0 is the
+          // top. Feeding one straight into the other lands sky-up on image-bottom and draws the face
+          // vertically FLIPPED. Anchoring the frame to world up fixed the 90-degree roll; this fixes the
+          // flip that was underneath it. MEASURED by correlating the rendered disc against moon.png under
+          // all eight orientations: mirror+180 (i.e. a pure vertical flip) scored r = 0.545 against 0.387
+          // for the runner-up — the only reading with a real gap under it.
+          let uv = clamp(vec2<f32>(du.x, -du.y) * (0.5 / MOON_CROP) + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
           let mt = textureSampleLevel(moonTex, moonSamp, uv, 0.0).rgb;
           let r2 = clamp(dot(du, du), 0.0, 1.0);
           // ── THE SURFACE NORMAL ── +z points at the observer, so this is the visible hemisphere of a unit
           // sphere. Everything below is ordinary surface shading in that frame.
           let N = vec3<f32>(du.x, du.y, sqrt(max(0.0, 1.0 - r2)));
           let alpha = u.rdist.y * 6.2831853;                         // the 8-day phase, already tracked in JS as (moonDay + tday) / 8
+          // ── THE TERMINATOR SWINGS ALONG R, WHICH IS HORIZONTAL, SO THE TERMINATOR IS VERTICAL ── and
+          // this is the whole of "the moon is on its side". Projecting the sun's bearing onto the disc looks
+          // like the physical answer and is a trap here: the game hangs the moon at the ANTI-SOLAR point, so
+          // the sun's bearing lies exactly in the moon's own vertical plane. R is perpendicular to that plane
+          // by construction, so dot(sunH, R) is identically ZERO and the projection collapses onto U — the
+          // light swung up-and-down and the terminator came out HORIZONTAL, a moon lit from below.
+          // There is no honest "toward the sun" direction on an anti-solar disc; the phase here is synthetic
+          // and its orientation has to be chosen. R is the choice: horizontal, so the lit limb is a left or
+          // right crescent and the terminator is vertical, which is what a moon actually looks like.
           let Ld = vec3<f32>(sin(alpha), 0.0, cos(alpha));
           let mu0 = dot(N, Ld);                                      // cos incidence
           let mu = N.z;                                              // cos emission — the observer is straight down +z
@@ -396,7 +473,7 @@
           // top of it. A real moon is disproportionately bright at full — the opposition surge, regolith
           // backscattering straight at the observer — so a half moon is nowhere near half as bright as a
           // full one. phaseF is the illuminated fraction, (1 + cos alpha) / 2.
-          let phaseF = 0.5 + 0.5 * cos(alpha);
+          let phaseF = moonPhaseF();                                 // …the same fraction the key light and the deck's bloom use
           let phaseB = mix(MOON_PHMIN, 1.0, phaseF);
           // ── EARTHSHINE RUNS THE OTHER WAY, and that is not a mistake ── it is sunlight bounced off the
           // EARTH, and from the moon the Earth shows the opposite phase: it is full when the moon is new.
@@ -570,6 +647,32 @@
       var nx_ = 0.0; var nz_ = 0.0; var ny_ = 1.0;
       ${GERSTN_WGSL}
       return normalize(vec3<f32>(nx_, max(ny_, 0.30), nz_));
+    }
+    // ══ RIPPLE RINGS ══ what a splash and a wake both look like to the surface: a
+    // crest that leaves a point and spreads. Returns BOTH answers in one pass because the caller needs both
+    // and this runs inside the wave march — x is the height added to the Gerstner sum (so the ring is real
+    // stepped geometry, not a decal), y is how much foam the crest carries.
+    // The loop BREAKS at the first empty slot rather than skipping it: world/window.js keeps the list
+    // compacted, so this costs the number of rings actually alive, which is usually zero. That matters here
+    // and nowhere else — every other water term is evaluated once per pixel, and this one is evaluated once
+    // per column the surface march steps through.
+    const RIP_SPD : f32 = ${RIP_SPD};
+    const RIP_LIFE : f32 = ${RIP_LIFE};
+    const RIP_AMP : f32 = ${RIP_AMP};
+    const RIP_W : f32 = ${RIP_W};
+    fn ripHF(wx : f32, wz : f32) -> vec2<f32> {
+      var h = 0.0; var fo = 0.0;
+      for (var i = 0; i < ${RIP_N}; i++) {
+        let r = u.ripple[i];
+        if (r.w <= 0.0) { break; }                                   // compacted: nothing live past here
+        let age = u.time - r.z;
+        if (age < 0.0 || age > RIP_LIFE) { continue; }               // a straggler the CPU has not retired yet
+        let e = (length(vec2<f32>(wx, wz) - r.xy) - age * RIP_SPD) / RIP_W;
+        let g = exp(-e * e) * (1.0 - age / RIP_LIFE);                // …fading as it spreads, so a wake thins out behind you instead of ending on a line
+        h += r.w * RIP_AMP * g;
+        fo = max(fo, r.w * g);                                       // foam takes the STRONGEST ring, not the sum: two rings crossing make one white crest, not a doubly white one
+      }
+      return vec2<f32>(h, fo);
     }
     fn caust(p : vec2<f32>) -> f32 {                                 // CAUSTICS — two drifting noise fields; their coincidence lines are the bright webs
       let n1 = vn2(p * 0.09 + vec2<f32>(u.time * 0.275, u.time * 0.17));    // caustic drift halved with the waves

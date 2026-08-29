@@ -198,9 +198,25 @@
   VIT.onDeath = die;                                   // the vitals own mortality now; die() is just the game-over screen
   $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); if (ED.on) edExit();   // NEVER respawn in the asset editor (user) — force-exit it, and lock straight back into the GAME rather than the menu, so a respawn-click can't land on the editor button
     respawn(); tryLock(); });
+  // ── [X] IS A HELD MODIFIER FOR THE WHEEL (user 2026-08-28: "make the time speed x + scroll wheel") ──
+  // it has to be TRACKED rather than read off the event, because WheelEvent only carries ctrl/alt/shift/meta;
+  // an ordinary letter is not a modifier as far as the DOM is concerned. Cleared on blur as well as keyup:
+  // alt-tabbing away mid-hold swallows the keyup, and a stuck flag would silently turn every later scroll
+  // into a time-speed change.
+  let xHeld = false;
+  addEventListener('blur', () => { xHeld = false; });
+  addEventListener('keyup', (e) => { if (e.code === 'KeyX') xHeld = false; });
   let cloudT = 0;                                     // ── CLOUD TIME ── seconds, but advanced by dt * cycleSpeed so the deck's wind keeps step with the sun. At 1x it tracks wall time exactly, which is what keeps the normal drift unchanged. Frozen with the sun under __TFREEZE, or an A/B would compare two different cloud fields
   let tday = 7 / 24, cycleSpeed = 1, sunFx = true;     // day/night cycle: 20-min day at 1x; STARTS AT 7:00 am on load (user). sunFx = u.fx bit 0: it used to gate the god rays AND the lens flare; the rays were removed 2026-08-28, so the flare is all it now switches
-  let moonDay = 4;                                     // moon PHASE day counter — starts at 4/8 = full moon; each in-game day advances the phase
+  // ── THE MOON'S PHASE DAY ── the counter the 8-day cycle runs on. The value itself no longer means
+  // anything on its own: tick-camera subtracts MOON_DAY0 before handing the phase to the shader, so the
+  // cycle is anchored to the FIRST NIGHT rather than to whatever number this happens to hold. The old
+  // comment here said "4/8 = full moon", which was true of the previous convention and became a trap under
+  // the current one — the shader now reads the phase as an ANGLE where 0 is full and pi is NEW, so 4/8 is
+  // exactly a new moon. That is what shipped as "the first night is full": the offset was worked out for a
+  // counter starting at 0 and this one starts at 4, so the first night landed 0.00-0.01 illuminated.
+  const MOON_DAY0 = 4;
+  let moonDay = MOON_DAY0;                             // …each in-game day advances it one step
   // ── THE SCROLL-UP HINT (user 2026-08-07) ── shown once, ten seconds into a session, and retired the first
   // time the player scrolls up. `shArmT` is set when they actually take control rather than at page load, so
   // the ten seconds is PLAYTIME and the clock does not run out behind the loading video or the esc menu. There
@@ -230,9 +246,14 @@
     shEl.classList.remove('show');
     setTimeout(() => shEl.classList.add('hidden'), 700);   // after the 0.6 s opacity transition, stop painting it
   };
-  addEventListener('wheel', (e) => {                   // scroll = cycle hand slots; ALT + scroll = cycle speed (sensitive: x1.6 per notch)
+  // ── NOT PASSIVE, AND IT HAS TO SAY SO ── Chrome treats a wheel listener on window as PASSIVE by default,
+  // which makes preventDefault() a no-op with a console warning. The hotbar path below has always needed it;
+  // it briefly mattered a great deal more, when the cycle-speed modifier was CTRL and every notch would also
+  // have fired the browser's page zoom. That modifier is X now, but the declaration stays: the handler still
+  // calls preventDefault and a passive listener would still ignore it.
+  addEventListener('wheel', (e) => {                   // scroll = cycle hand slots; X + scroll = cycle speed (sensitive: x1.6 per notch)
     if (e.deltaY) shDismiss();                         // …and ANY scroll retires it (user 2026-08-07): a player who scrolls at all has found the control, so scrolling DOWN must fade it out too rather than leaving it up as a nag. Sits here — before the lock/dead guards below, which must not keep it on screen. Not gated on shShown: a player who already scrolls up inside the first ten seconds has demonstrated they know, so the hint must never appear at all (user 2026-08-07)
-    if (e.altKey) {
+    if (xHeld) {                                       // X + scroll = cycle speed (user 2026-08-28; was ALT, then CTRL). Moving off CTRL also takes it off the browser's page-zoom gesture, so preventDefault here is back to doing only its own job
       e.preventDefault();
       cycleSpeed = Math.max(0.25, Math.min(512, cycleSpeed * (e.deltaY < 0 ? 1.6 : 1 / 1.6)));
       return;
@@ -263,6 +284,7 @@
     // mechanism the light and paint panels use, and the reason it is not a bare exitPointerLock: losing the
     // lock on its own surfaces the pause menu, which would sit on top of the very panel being opened.
     // Closing with Y again takes the cursor back, so the key is the whole round trip.
+    if (e.code === 'KeyX') { xHeld = true; }           // …the wheel reads this; NOT returning, so anything else bound to X still gets it
     if (ED.on && e.code === 'KeyY') { setLightMode(!!edSzToggle()); return; }
     if (!locked) return;
     // ── T OPENS THE COMMAND LINE ── switched OFF 2026-08-27 and back ON 2026-08-28 (user: "give me back the
@@ -328,7 +350,7 @@
     // which returns before this and so is unaffected); this is the same shape as the H and P bindings below.
     if (binds.birds && e.code === binds.birds && !ED.on) { CARD_FORCE = CARD_FORCE < 0 ? 0 : -1; }   // Y IS UNBOUND (user 2026-08-27) — binds.birds is gone, so this never fires; __vb.cardN(0) / (-1) is the toggle now. Restore the DEFBINDS entry to put the key back
     if (e.code === 'KeyE' && e.shiftKey && !ED.on && DUAL_ON) { dualOn = !dualOn; }   // …and DUAL_ON gates the whole binding (user 2026-08-20: dual wield removed from play, code kept) — see ui/achievements.js   // SHIFT+E — SPLIT THE STACK INTO BOTH HANDS (user 2026-08-20: "ONLY enable dual wield if the user presses shift + e"; it was plain E earlier the same day). The modifier is what frees plain E to close the crafting bench above — one key, two meanings, told apart by shift rather than by mode. Guarded on !ED.on because the asset editor already owns E for its move-gizmo (see the ED.on block below), and a key cannot mean two things at once in the same mode.
-    if (e.code === 'KeyH' && !ED.on) { rerollSpawn(); }      // H — RESET the spawn to a fresh random patch of the world (console logs the coords to bake into the code)
+    // H IS UNBOUND (user 2026-08-29) — the spawn reroll used to sit here, one keypress from regenerating the world you were standing in. It is a bake-time tool, not a play control, so it moved off the keyboard entirely; rerollSpawn() itself is untouched and __vb.reroll() is the lever now (it returns the same paste-ready SPWX/SPWZ line). Same shape as the Y/birds note above: the key goes, the capability stays.
     if (e.code === 'KeyP') { snowOn = !snowOn;               // P — toggle the snow storm (user); mirrors the settings snow button EXACTLY so the two stay in sync
       if (snowOn) { snowEndT = performance.now() + 60000; } else { snowRearm(); }
       snowBtnSync(); }
@@ -348,6 +370,6 @@
       // (KeyH per-heading alignment REMOVED — alignment is authored ONCE in SOUTH; armOffset auto-derives every heading with the rigid rotation + parity correction, so there is nothing to cycle through or export per heading.)
     }
     if (e.code === binds.jump || e.code === binds.crouch) e.preventDefault();   // Space (scroll) and whatever crouch is bound to — Alt used to be stolen by the browser for the menu bar. NOTE preventDefault cannot stop CAPS LOCK toggling the OS state; it only keeps the key out of the browser's own handling.
-  });
+  }, { passive: false });
   document.addEventListener('keyup', (e) => keys.delete(e.code));
 

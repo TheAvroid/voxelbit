@@ -15,7 +15,7 @@
   const SLOT_MAX = 5;                                // hard ceiling on hotbar slots (user)
   const slots = [];                                  // …and it starts EMPTY
   let selSlot = 0;
-  const STACK_MAX = 8;                                 // how deep a stackable item goes (user)
+  const STACK_MAX = 10;                                // how deep a stackable item goes (user; was 8 until 2026-08-29)   // ── PAST 9 THE BADGE NEEDS TWO DIGITS ── BLIT already draws them (digB / nB/10 / nB%10 in render/wgsl/blit.js), but the placement clamp in main/tick-camera.js reserves the RUN WIDTH and had one digit baked in. Both ends now derive it from this constant, so the next change to it cannot drift them apart.
   const stackable = (it) => !(it === 1 || it === KNIFE_IT || it === PICK_IT || it === SHOVEL_IT || it === BOW_IT || it === HOE_IT || it === SPEAR_IT);   // TOOLS AND WEAPONS DO NOT STACK (user) — each takes its own slot; everything else (raw meat, rocks, twigs, cones) stacks to STACK_MAX
   // ── AND canAdd MEANS SOMETHING AGAIN ── it was `() => true` while the hotbar was unlimited. Three ways to
   // say yes, in the order addItem below actually uses them: it stacks onto a slot that already holds this

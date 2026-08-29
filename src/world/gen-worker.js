@@ -41,7 +41,7 @@
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
     // ── SPWX/SPWZ RIDE WITH THE JOB, they are not baked ── spawn is randomised in world/build.js, nine fragments
-    // BELOW this one, so both are still 0 while this preamble is assembled, and the H key (rerollSpawn) moves
+    // BELOW this one, so both are still 0 while this preamble is assembled, and rerollSpawn (__vb.reroll) moves
     // them again at runtime. oakM and desertM are anchored to them, so a baked pair would put the biome
     // boundaries somewhere the main thread's H() does not agree with. rowKey carries them too, which is what
     // makes a prefetch issued before a reroll simply unusable after one rather than quietly wrong.

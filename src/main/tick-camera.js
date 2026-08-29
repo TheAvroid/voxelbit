@@ -113,6 +113,16 @@
         if (bricks2[b0] | bricks2[b0 + 1]) { ceilB2 = y2 + 1; break; } }
     }
     set3(24, prevCam.up, cycleSpeed > 4 ? 10 : 64); set3(28, prevCam.fwd, (sunFx ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0) + (ceilB2 << 8));
+    // ── RETIRE AND UPLOAD THE RIPPLE RINGS ── done HERE, once, rather than in the two places that push them:
+    // ripAdd is called from a splash and from anything swimming, and neither knows when a ring has finished.
+    // Compacting on the way out is what lets ripHF in the shader stop at the first empty slot instead of
+    // walking all RIP_N of them inside the wave march, so this loop is paying for that one.
+    { const tR = performance.now() / 1000; let w = 0;
+      for (let i = 0; i < ripN; i++) { const o = i * 4;
+        if (tR - RIP[o + 2] <= RIP_LIFE) { if (w !== i) RIP.copyWithin(w * 4, o, o + 4); w++; } }
+      ripN = w;
+      UF.set(RIP.subarray(0, ripN * 4), UF_RIP);
+      UF.fill(0, UF_RIP + ripN * 4, UF_RIP + RIP_N * 4); }   // …and blank the tail, or a retired ring keeps drawing
     // ── HELD-ITEM SUN VISIBILITY ── march the world from the eye toward the sun; one ray a frame.
     {
       let vis = 1;
@@ -455,14 +465,16 @@
           // top-right corner is genuinely off the canvas for the fruit — measured at 2212 px on a 2240 px
           // canvas, which would have run three glyphs into the bezel. A badge that has to be readable cannot
           // follow the corner past the edge, so it stops at it. The run's own width is what it is clamped by.
-          // ── THE RUN IS ONE DIGIT, ALWAYS ── this used to be measured from the live count via a `nB9 >= 10`
-          // test, which was dead arithmetic dressed up as a safeguard: STACK_MAX is 8 (sim/hands.js), so the
-          // count BLIT is handed never reaches two digits and its own `digB` is permanently 1. Spelling the
-          // width as a constant says that out loud and, because it cannot change, hands the clamp the
-          // stability the old expression only looked like it had — the count no longer moves the right edge,
-          // so a placement tuned with the panel open (which forces the count to 2) still holds when it closes.
-          // Raise this the day the cap goes past 9, together with GLYPH5's bounds in blit.js.
-          const runW = (1 + 1) * 6 * gp;
+          // ── THE RUN IS A FIXED WIDTH, NOT A MEASURED ONE ── this used to be measured from the LIVE count
+          // via a `nB9 >= 10` test, which made the right edge move as you picked things up: a placement tuned
+          // with the panel open (which forces the count to 2) shifted the moment it closed. The width is now
+          // taken from STACK_MAX instead — the widest the run can ever be — so it is stable for the whole
+          // session while still being correct past nine. It was briefly hardcoded to one digit on the
+          // reasoning that a cap of 8 could never need two; the cap is 10 now, which is why it is derived.
+          // One glyph for the x, plus a digit per digit of STACK_MAX, at 6 px of pitch each. BLIT's own glyph
+          // loop was ALREADY two-digit capable (digB / nB/10 / nB%10) and needed nothing — it is only this
+          // clamp, which has to know the width BEFORE the badge is drawn, that ever had the cap baked into it.
+          const runW = (String(STACK_MAX).length + 1) * 6 * gp;
           // ── THE CORNER IS CLAMPED FIRST, THEN THE TRIM IS ADDED (user 2026-08-18: the sliders "barely move") ──
           // this was one expression, `min(hi, max(lo, corner + trim))`, and the min was the OUTER operation, so
           // the right-edge clamp had the last word over the slider. For any item whose corner sits past that
@@ -627,7 +639,7 @@
               const rx3 = ((ex3 / az2) / (tH2 * asp2)) * 0.5 * CW2, ry3 = ((ey3 / az2) / tH2) * 0.5 * CH2;
               const sb2 = sbFor(lid);
               const gp2 = Math.max(2, Math.floor(CH2 / 320 * Math.max(0.2, sb2.size)));
-              const run2 = (1 + 1) * 6 * gp2;
+              const run2 = (String(STACK_MAX).length + 1) * 6 * gp2;   // same derivation as the right hand's runW above
               const lo2X = 2, hi2X = CW2 - run2 - 2, lo2Y = 2, hi2Y = CH2 - 5 * gp2 - 2;
               const c2X = Math.min(hi2X, Math.max(lo2X, cx3 + rx3)), c2Y = Math.min(hi2Y, Math.max(lo2Y, cy3 - ry3));
               const gpN2 = Math.max(2, CH2 / 320 * Math.max(0.2, sb2.size));
@@ -764,7 +776,19 @@
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[UF_CLOUDT] = cloudT;
-    UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
+    // ── THE FIRST NIGHT IS A FULL MOON (user 2026-08-28) ── the shader takes this as a phase ANGLE, and
+    // angle 0 is full, so this is just a matter of where the cycle's zero sits. The game opens at tday 7/24
+    // (7 am), so the first night runs tday 0.75 -> 1.0 and then 0 -> 0.25 with moonDay rolling over at the
+    // wrap: its midnight is (moonDay - MOON_DAY0) + tday = 1.0 exactly. Subtracting that puts the zero
+    // there. MOON_DAY0 and not a literal: the counter does not start at 0, and hardcoding the offset for a
+    // counter that does is exactly how this shipped as a NEW moon the first time.
+    // MEASURED across the whole of that first night, dusk to pre-dawn: 0.99, 1.00, 1.00, 0.99 illuminated —
+    // full from end to end rather than only at one instant. The 8-day cycle is otherwise untouched: the
+    // second night is 0.90 and the fifth is 0.00, a new moon, exactly as before.
+    // The double modulo is not decoration. JS % keeps the sign of the left operand, so at start-up
+    // (moonDay 0, tday 0.2917) the inner term is -0.708 and a single % would hand the shader a NEGATIVE
+    // phase; +8 then %8 folds it back into [0, 8).
+    UF[65] = ((((moonDay - MOON_DAY0 + tday - 1.0) % 8) + 8) % 8) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
     UF[1269] = snowLeadY; UF[1270] = snowTrailY;   // u.misc.y/z — the storm edges computed in the weather block above
     // u.misc.w — is the EYE buried in solid rock? Inside a voxel every primary ray hits at t~0 with no light reaching
     // it, so the screen went pitch black and only the off-grid creatures (which skip the world trace) stayed visible.

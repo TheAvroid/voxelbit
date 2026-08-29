@@ -81,6 +81,15 @@
       if (P.wasWet === undefined) P.wasWet = inWater;
       if (inWater !== P.wasWet) { P.wasWet = inWater;
         if (!dead) spawnSplash(P.x, P.z, Math.max(0.55, Math.min(1.6, Math.abs(P.vy) / 60 + 0.55))); }
+      // ── THE WAKE ── a ring every RIP_STEP voxels TRAVELLED, not every N milliseconds: distance-based means
+      // the trail is the same at any frame rate, it stretches when you swim faster because you cover the step
+      // sooner, and it simply stops when you stop rather than piling rings on one spot. The overlapping
+      // circles are the wake — there is no separate V to build. See ripAdd in world/window.js.
+      if (inWater && !dead) {
+        if (P.wkx === undefined) { P.wkx = P.x; P.wkz = P.z; }
+        const dwx = P.x - P.wkx, dwz = P.z - P.wkz;
+        if (dwx * dwx + dwz * dwz >= RIP_STEP * RIP_STEP) { P.wkx = P.x; P.wkz = P.z; ripAdd(P.x, P.z, 0.5); }
+      } else { P.wkx = undefined; }
       const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;

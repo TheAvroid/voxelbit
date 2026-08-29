@@ -95,7 +95,20 @@
         // so it is tan of the angular radius over tanH, half the vertical resolution. The coefficients are
         // fitted to reproduce today's radii at today's sun (1.741/2.381/3.447/4.619 x the disc), so this is a
         // no-op at the current size and scales from here on.
-        let sunPx = tan(acos(SUN_COSR)) / u.tanH * 0.5 * u.canvasRes.y;
+        // ── AND IT GROWS OFF-AXIS, BECAUSE THE DISC DOES (user 2026-08-28: "if the player looks away from
+        // the sun while it's behind a cloud it returns to a harder outline") ── this was the gaze dependence,
+        // and it is pure projection. A tangent projection magnifies away from the centre: a small circle at
+        // angle theta images RADIALLY by 1/sf^2 and tangentially by 1/sf, where sf = dot(sunDir, fwd). The
+        // sky shader draws the disc by ANGLE so it grows with that automatically; this flare is drawn in
+        // SCREEN space and was pinned to the centre-of-screen size, so the two came apart the moment the sun
+        // left the middle of the frame. MEASURED at the current disc: 16.4 px at centre against a 17.3 px
+        // innermost halo — a halo, just — but 24.5 px radial at 35 degrees off-axis and 50.0 px at 55, with
+        // the halo still 17.3. Past about 15 degrees the disc OUTGROWS its own glare and what is left is the
+        // bare circle, which is exactly the hard outline reported, and why it looked fine dead ahead.
+        // 1.5 is the exponent between the two magnifications, and it tracks the disc's mean to within a few
+        // percent from 0 to 55 degrees. The max() is a guard: sf reaches 0.05 at the edge of this block's own
+        // gate and an unclamped 1/sf^1.5 would blow the flare up to the size of the screen.
+        let sunPx = tan(acos(SUN_COSR)) / u.tanH * 0.5 * u.canvasRes.y / pow(max(sf, 0.2), 1.5);
         let ctr = u.canvasRes * 0.5;
         let axis = ctr - sunPix;
         var K = array<f32, 4>(0.35, 0.65, 1.15, 1.7);
@@ -145,7 +158,17 @@
           var sv = 0.0;
           for (var fy = -1; fy <= 1; fy++) { for (var fxx = -1; fxx <= 1; fxx++) {
             let s5 = textureSampleLevel(src, samp, (sunPix + vec2<f32>(f32(fxx), f32(fy)) * 6.0) / u.canvasRes, 0.0);
-            sv += s5.a * smoothstep(0.72, 0.94, max(s5.r, max(s5.g, s5.b)));
+            // ── SKY-OR-GEOMETRY ONLY, NOT BRIGHTNESS (user 2026-08-28: "it should have a consistent look
+            // behind the clouds period") ── s5.a is the sky mask, so this asks the one question an occlusion
+            // test should: is something SOLID in front of the sun? It used to be multiplied by
+            // smoothstep(0.72, 0.94, brightness), which asks a second and quite different question — is the
+            // sun still BRIGHT there — and that is what let the deck withhold the glare. Cloud is sky, so the
+            // sun now keeps behind a cloud the same halo it has in the open, which is the requirement. A tree
+            // or a hill still hides it, because those clear the sky mask.
+            // NOTE this is justified by the REQUIREMENT, not by a measurement: the sv instrumentation I tried
+            // was invalid (it painted sv from inside the gAny gate, which never runs on the patch pixels), so
+            // treat any numbers about sv in this file's history as unfounded.
+            sv += s5.a;
           } }
           sv /= 9.0;
           if (sv > 0.02) {

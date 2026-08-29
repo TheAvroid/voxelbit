@@ -374,8 +374,23 @@
             let stepU = stepW / CG_U2W;                            // the same step, in the units the density was authored in
             let cosT = dot(rd, u.sunDir);
             let phase = mix(1.0, cgPhase(cosT, CG_G), CG_PHASE_MIX);
-            let sunC = sunTint() * dayScale();
-            let ambC = mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale();
+            // ── THE DECK HAS A NIGHT OF ITS OWN (user 2026-08-28: "make the clouds lighter during the
+            // night, they are pitch black") ── and they were, measurably: the ambient below is
+            // mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale(), and dayScale bottoms out at 0.0084, so the whole
+            // term came to (0.3, 0.5, 0.9) out of 255. Below one display level. Black.
+            // TWO SEPARATE FAULTS, and only fixing both gets a moonlit deck:
+            //  1. the KEY was double-dimmed. sunTint() ALREADY carries the moon's own 0.198 scale at night,
+            //     and multiplying it by dayScale() applied the night floor to it a second time — 0.265 became
+            //     0.0017. mix(dayScale(), CG_NKEY, nightK()) leaves the day untouched (nightK is 0 there) and
+            //     hands the night a real, if modest, moon key.
+            //  2. the AMBIENT had no night floor at all. Every other surface in this renderer gets one
+            //     (ambFloor for the world, dayScale's own mf for the sky); the deck was the one thing lit
+            //     purely multiplicatively, so it alone went to nothing. CG_NAMB is that floor, cool and blue
+            //     because a moonlit cloud is lit by a blue-grey sky and reads that way in any night photograph.
+            // Both fade in on nightK(), which is the standing rule here — keyed on the TRUE sun elevation, so
+            // neither jumps at the dusk/dawn moon swap.
+            let sunC = sunTint() * mix(dayScale(), CG_NKEY, nightK());
+            let ambC = mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale() + CG_NAMB * nightK();
             var tg = ta + stepW * cgIGN(vec2<f32>(gid.xy), u32(u.frame));   // …and this is that dither, restored to the source's own choice — see cgIGN
             var Tg = 1.0;
             var accG = vec3<f32>(0.0);
@@ -434,7 +449,10 @@
             let widthG = mix(CG_BLOOM_TIGHT, CG_BLOOM_WIDE, aG);
             let rk2 = 1.0 - RAIN_CLOUD_DARK * rainK();
             col += SUN_COL * (CG_BLOOM * aG * rk2 * smoothstep(-0.03, 0.06, rsC.y)) * pow(max(dot(rd, rsC), 0.0), widthG);
-            col += MOON_GLOW * (CG_MBLOOM * aG * rk2 * smoothstep(-0.03, 0.06, rmC.y)) * pow(max(dot(rd, rmC), 0.0), widthG);
+            // ── AND THE MOON'S BLOOM SCALES WITH ITS PHASE ── it did not, which is why a new moon still lit
+            // the deck: the disc went dark and the KEY light went with it, but this term carried on throwing
+            // a full moon's halo through the cloud. moonPhaseF() is the same fraction both of those use.
+            col += MOON_GLOW * (CG_MBLOOM * aG * rk2 * moonPhaseF() * smoothstep(-0.03, 0.06, rmC.y)) * pow(max(dot(rd, rmC), 0.0), widthG);
           }
         }
       } else if (face == 8u) {                                       // LAVA: emissive — burns through the fog
@@ -448,7 +466,11 @@
         let tWat = irr.b;
         let pw2 = u.camPos + rd * tWat;
         let wx2 = pw2.x + u.winO.x; let wz2 = pw2.z + u.winO.y;
-        let nW = select(vec3<f32>(0.0, 1.0, 0.0), gerstN(wx2, wz2), LG(23u));   // bit 23: WATER WAVES — off = a flat mirror plane, so wave shape can be told apart from wave lighting                                   // the GERSTNER normal — same field that raises the voxel crests, crest-pinched by the Q term
+        // ── AN IF, NOT A select() ── select evaluates BOTH operands, so this paid for gerstN — four sin and
+        // four cos over the whole GW table — on every water pixel in the frame even though WATER_BAKE ships
+        // waves: 0 and the result was thrown away every time. Pure waste at the shipping default.
+        var nW = vec3<f32>(0.0, 1.0, 0.0);
+        if (LG(23u)) { nW = gerstN(wx2, wz2); }   // bit 23: WATER WAVES — off = a flat mirror plane, so wave shape can be told apart from wave lighting                                   // the GERSTNER normal — same field that raises the voxel crests, crest-pinched by the Q term
         let foamW = smoothstep(0.16, 0.50, alb.g) * (1.0 - u.pickZ.w);   // foam carries a bright albedo → shade it as SURFACE, not window (ice path handles frozen)
         let cosI = clamp(-dot(rd, nW), 0.02, 1.0);
         let fres = 0.02 + 0.98 * pow(1.0 - cosI, 5.0);               // true Schlick, F0 = 0.02 (air→water)

@@ -1,0 +1,103 @@
+voxelbit
+Copyright (c) 2026 voxelbit. All rights reserved.
+
+PROPRIETARY LICENSE — SOURCE-AVAILABLE, NOT OPEN SOURCE
+
+This repository is published publicly so that the work can be read. That is the
+only reason. Publishing it grants no licence to use it.
+
+1. RESERVATION OF RIGHTS
+
+   All rights in this software, its source code, its assets (including voxel
+   models, textures, audio and video) and its documentation are reserved by the
+   copyright holder, EXCEPT for the third-party components listed in section 6,
+   which are not owned by the copyright holder and remain under their own terms.
+   No licence, express or implied, is granted except as stated in section 2.
+
+2. WHAT YOU MAY DO
+
+   a. View and read the source code.
+   b. Fork the repository and clone it, to the extent GitHub's Terms of Service
+      permit for a public repository, for the sole purpose of reading it or of
+      preparing a contribution offered back under section 4.
+
+3. WHAT YOU MAY NOT DO
+
+   Without prior written permission from the copyright holder, you may not:
+
+   a. use this software or any part of it, in whole or in part, in any product,
+      service, game, model, or other work, whether commercial or not;
+   b. copy, publish, host, distribute, sell, sublicense or otherwise make
+      available this software or any derivative of it;
+   c. modify or create derivative works from it, except as needed to prepare a
+      contribution under section 4;
+   d. use its assets — including but not limited to the voxel models, palette,
+      audio and video — separately from the software;
+   e. remove, obscure or alter any copyright, trademark or attribution notice,
+      including the in-game copyright watermark;
+   f. use it, or any part of it, as training data for machine learning models.
+
+4. CONTRIBUTIONS
+
+   By submitting a pull request or any other contribution, you assign to the
+   copyright holder all right, title and interest in that contribution, and you
+   confirm that it is your own original work and that you have the right to
+   assign it. Contributions become subject to this licence.
+
+5. NO WARRANTY
+
+   THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THIS SOFTWARE OR ITS USE.
+
+6. THIRD-PARTY COMPONENTS
+
+   Portions of this software are derived from third-party work under its own
+   licence. That work remains under its own terms, which this licence does not
+   and cannot override; where the two differ, the third-party licence governs
+   that portion.
+
+   ── procedural-clouds ──────────────────────────────────────────────────────
+   src/render/wgsl/cloudgen.js contains a WGSL port of the cloud density
+   function from jeantimex/procedural-clouds
+   (https://github.com/jeantimex/procedural-clouds), used under the MIT licence:
+
+     MIT License
+
+     Copyright (c) 2026 Su
+
+     Permission is hereby granted, free of charge, to any person obtaining a
+     copy of this software and associated documentation files (the "Software"),
+     to deal in the Software without restriction, including without limitation
+     the rights to use, copy, modify, merge, publish, distribute, sublicense,
+     and/or sell copies of the Software, and to permit persons to whom the
+     Software is furnished to do so, subject to the following conditions:
+
+     The above copyright notice and this permission notice shall be included in
+     all copies or substantial portions of the Software.
+
+     THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+     IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+     FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+     AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+     DEALINGS IN THE SOFTWARE.
+
+   ── Micro_Chat (the pixel font) ─────────────────────────────────────
+   game/3x3-pixel.otf is the font "Micro_Chat" by VEXED, used under the Creative
+   Commons Attribution 4.0 International licence (CC BY 4.0):
+
+     https://creativecommons.org/licenses/by/4.0/
+
+   The file has been renamed; the font itself is unmodified. CC BY 4.0 permits
+   commercial use and redistribution provided the creator is credited, and this
+   notice is that credit.
+
+7. CONTACT
+
+   For permission to use this software in any way not granted above, contact the
+   copyright holder through https://github.com/TheAvroid/voxelbit.

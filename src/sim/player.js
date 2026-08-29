@@ -380,7 +380,7 @@
     smoothEye = P.y + EYE;
   }
   let spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
-  function rerollSpawn() {                              // H — jump to a fresh random patch of the (infinite, DETERMINISTIC) world, then bake the good one into the code
+  function rerollSpawn() {                              // __vb.reroll() (was the H key until 2026-08-29) — jump to a fresh random patch of the (infinite, DETERMINISTIC) world, then bake the good one into the code
     SPWX = Math.round((Math.random() - 0.5) * 400000);
     SPWZ = Math.round((Math.random() - 0.5) * 400000);
     let g = 0;
@@ -388,6 +388,6 @@
     cardCacheClear();                                   // the perch enumeration caches treeAt/oakAt per cell, and BOTH carve a clearing + a sight-line corridor around the spawn — so moving the spawn moves the trees those answers were computed for   // valid land, off water/gorges/SAND (H and nearCave are both deterministic → work anywhere). WL + 6 is the quicksand guard — see the note in world/build.js
     respawn();                                          // teleport + maybeRecenter regenerates the world at the new spawn
     spawnBake = 'let SPWX = ' + SPWX + ', SPWZ = ' + SPWZ + ';';
-    console.log('[vb] SPAWN RESET [H] → paste this over line ~156 to BAKE it:   ' + spawnBake);
+    console.log('[vb] SPAWN RESET → paste this over line ~156 to BAKE it:   ' + spawnBake);
   }
 
