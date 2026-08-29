@@ -155,7 +155,7 @@ def daemon(slot, win, ttl, url_only, hold_snow=True):
     except Exception:
         pass
     time.sleep(1.0)
-    url = 'http://127.0.0.1:%d/?cdp' % srv_port
+    url = 'http://127.0.0.1:%d/?cdp%s' % (srv_port, os.environ.get('VB_Q') or '')   # VB_Q appends extra query flags (?nosab, ?nopool, …) for A/B runs
 
     t0 = time.time()
     proc, ws, errors = cdp.boot(url, ready_expr=READY)

@@ -30,6 +30,7 @@ render/wgsl/dda.js
 render/wgsl/trace.js
 render/wgsl/scatter-patch.js
 render/wgsl/denoise.js
+render/wgsl/cloudgen.js
 render/wgsl/composite.js
 render/wgsl/taa.js
 render/wgsl/blit.js

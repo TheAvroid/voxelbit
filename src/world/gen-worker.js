@@ -36,8 +36,8 @@
     // come out of. Anything from world/terrain.js (23) or world/gen-pool.js (25) is still in its temporal dead
     // zone on this line, and reading it would throw INSIDE this try — which swallows it and falls back, the same
     // invisible failure the missing names caused. Check 9 enforces the ordering as well as the completeness.
-    const consts = { WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
-    const fns = { ihash, sstep, pwrap, vnoise, fbm, riverAt, rivEval, gatherRivers, riverS, bankEval, bankDist, desWob, desertM, birchM, oakWob, oakM, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
+    const consts = { WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
+    const fns = { ihash, sstep, pwrap, vnoise, fbm, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, oakWob, oakM, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
     // ── SPWX/SPWZ RIDE WITH THE JOB, they are not baked ── spawn is randomised in world/build.js, nine fragments
@@ -45,7 +45,7 @@
     // them again at runtime. oakM and desertM are anchored to them, so a baked pair would put the biome
     // boundaries somewhere the main thread's H() does not agree with. rowKey carries them too, which is what
     // makes a prefetch issued before a reroll simply unusable after one rather than quietly wrong.
-    wsrc += 'let SPWX = 0, SPWZ = 0, rivScope = null;\nconst rivCache = new Map();\n';
+    wsrc += 'let SPWX = 0, SPWZ = 0, rivScope = null;\nconst rivCache = new Map();\nconst rivNear = new Map();\n';   // riversNear's own store — the worker must declare every top-level the registered fns close over
     for (const k in fns) wsrc += 'const ' + k + ' = ' + fns[k].toString() + ';\n';
     wsrc += 'onmessage = (e) => {\n' +
       '  const { key, x0, x1, z0, z1, tr } = e.data;\n' +

@@ -15,7 +15,7 @@
   // Fields on a bag, NOT two exported `let`s: a module exports a const snapshot taken at
   // module-init, so `CMD.open` read from outside would have been frozen `false` for ever and
   // ui/input.js would have kept feeding the game keystrokes while the command line was open.
-  const CMD = { open: false, escAt: -1e9 };                                 // when Escape last dismissed the line — see the esc-menu suppression below
+  const CMD = { open: false, escAt: -1e9, relock: 0 };                      // when Escape last dismissed the line, and whether an attempt to take the pointer back is still coming — see cmdBackIn below and the two handlers in ui/input.js that key off it
   let cmdRelock = 0;                                   // the retry that takes the pointer back once the browser will allow it
   const cmdBar = $('cmdBar'), cmdTxt = $('cmdTxt'), cmdMsg = $('cmdMsg');
   let cmdBuf = '';                                     // the line's own text: with the pointer still locked there is nothing to focus, so it keeps its own buffer
@@ -800,6 +800,23 @@
     escBack = 0;
     if (!locked && !dead && !CMD.open) tryLock();
   });
+  // ── ESCAPE LEAVES THE PROMPT AND PUTS YOU BACK IN THE GAME (user 2026-08-28: "when pressing t for prompt,
+  // have esc get out of the prompt") ── closing the line was never the missing half; it already did that. What
+  // it ALSO did was hand the pointer back to the OS, because Chrome's own Escape handling exits pointer lock on
+  // the same keydown and no preventDefault can stop it — so the player who asked to leave the prompt was given
+  // the pause screen instead of the game. Taking the lock back needs TWO attempts, because Chrome refuses
+  // requestPointerLock for ~1.25 s after an Escape exit (the same cooldown the esc-menu branch below is written
+  // around): one on the KEYUP of this very press, which is a real user gesture and lands whenever the cooldown
+  // does not bite, and one just past the cooldown. CMD.relock holds the title card down for exactly as long as
+  // an attempt is still coming — ui/input.js keys off it now instead of the 1600 ms guess it used to — and once
+  // both are spent a refusal surfaces the esc menu, which is the honest fallback rather than a dead screen.
+  const cmdBackIn = () => {
+    CMD.relock = 1;
+    escBack = 1;                                       // the keyup handler above takes the first attempt
+    setTimeout(() => { CMD.relock = 0;                 // cleared BEFORE the request, so a refusal of this last attempt is free to put the menu up
+      if (!locked && !dead && !CMD.open) tryLock();
+    }, 1400);
+  };
   document.addEventListener('keydown', (e) => {
     if (!CMD.open) {
       // …and once it is closed, Escape behaves as it always did. If the re-lock was refused we are still
@@ -823,7 +840,7 @@
       return;
     }
     e.stopPropagation();                               // every keystroke belongs to the line, never to the game's binds
-    if (e.code === 'Escape') { e.preventDefault(); CMD.escAt = performance.now(); cmdShow(false); }
+    if (e.code === 'Escape') { e.preventDefault(); CMD.escAt = performance.now(); cmdShow(false); cmdBackIn(); }   // …and back into the GAME, not into the menu — see cmdBackIn above
     else if (e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); const v = cmdBuf; cmdShow(false); cmdRun(v); }
     else if (e.code === 'Backspace') { e.preventDefault(); cmdBuf = cmdBuf.slice(0, -1); cmdDraw(); }
     else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); cmdBuf += e.key; cmdDraw(); }

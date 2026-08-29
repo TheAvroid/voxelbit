@@ -7,7 +7,21 @@
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
   const RD_FIXED = Math.min(1000, HALF - 24);           // ── VIEW DISTANCE ── pinned at 100 m (1000 vox), no slider (user). Clamped to the window: if the adapter caps the window at 768 this falls back to what fits rather than reaching past it.
-  const W = new Uint8Array(WX * WY * WZ);             // CPU copy — collision + build (toroidal)
+  // ── THE WORLD GRID IS SHARED WITH THE GENERATION POOL WHEN THE PAGE IS CROSS-ORIGIN ISOLATED ──
+  // world/gen-pool.js already runs the ENTIRE generator on workers; what it could not do is put the result
+  // where it belongs. A worker's slab had to be TRANSFERRED back and the main thread memcpy'd it into this
+  // array, and that memcpy is the single biggest main-thread cost while the player moves: MEASURED over 20 s
+  // of sprinting, 1,900 ms in blitSlab against 6 ms actually spent waiting on the pool. The pool was never
+  // the bottleneck — the hand-off was.
+  // A SharedArrayBuffer lets the workers write here directly, so that copy happens on their core instead of
+  // this one. It needs cross-origin isolation (game/.htaccess + tools/serve-nocache.py send the two headers),
+  // and it is a graceful upgrade, not a requirement: without isolation SharedArrayBuffer is undefined, this
+  // falls back to a plain Uint8Array, and gen-pool keeps the transfer path. Both produce a bit-identical
+  // world — deepHash is the acceptance test, not frame time.
+  // 1,536 MB allocates in ~1 ms here; the size is the same either way, so this costs no memory.
+  const W_SHARED = typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated === true
+    && !location.search.includes('nosab');   // ?nosab forces the transfer path, so the NON-isolated fallback stays testable on an isolated host
+  const W = new Uint8Array(W_SHARED ? new SharedArrayBuffer(WX * WY * WZ) : WX * WY * WZ);   // CPU copy — collision + build (toroidal)
   const W32 = new Uint32Array(W.buffer);
   const hmap = new Int16Array(WX * WZ);               // terrain top per column (toroidal)
   const stopY = new Int16Array(WX * WZ);              // ── scanTop COLUMN CACHE ── the snowfall sweep asks for the topmost LANDING surface of every column in a
@@ -25,7 +39,7 @@
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
   const LGT_ALL = 0xffffff;                            // 24 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader). Bits 18-23 are the WATER group (user 2026-08-05). Stays exact in the f32 uniform: integers are exact to 2^24.
   const LGT_WATER = 0xfc0000;                          // bits 18-23 — the WATER group, and the only terms the panel exposes (user 2026-08-05: "I only want buttons that change the water")
-  const LGT2_ALL = 0x1;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; the 31 bits above it are still free.
+  const LGT2_ALL = 0x3;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; BIT 1 IS THE GRASS/SUBPIXEL CROSS-FACE SPATIAL FALLBACK (see SPATIAL in render/wgsl/denoise.js) — __vb.lgt2(1) off / __vb.lgt2(3) on, and it is a LIVE toggle rather than a URL flag on purpose: the world seed differs between loads, so a cross-load A/B compares two different forests and is worthless here. BIT 2 IS RETIRED (user 2026-08-28: "remove the y toggle and keep the new clouds and discard the old clouds") — it used to switch the ported jeantimex/procedural-clouds deck against the hand-rolled one that stood beside it. There is nothing to switch BETWEEN any more: the old hash-noise deck is deleted and the ported one is the only deck, so the march and the fill both run unconditionally and the bit is free again. BITS 2 AND 3 ALSO ONCE HELD a per-pixel sun accumulation window and variance-driven spatial filtering, both built and measured on 2026-08-28 and REVERTED: the sun window is arithmetically a no-op at 1x (a 64-frame window is 0.3 s behind, which is 0.09 degrees of sun and ~0.03 voxels of shadow), and the variance radius measured -5.4% residual noise, inside the run-to-run scatter. Don't rebuild either without first dividing the window length by the day length. The 30 bits above are still free.
   // ══ WATER BAKE (user 2026-08-05) ══ THE defaults for every water control. Tune with the top-right panel,
   // hit `copy` on its bake row, and paste the line it gives you OVER this one — that is the whole workflow.
   // A player who has never touched the panel gets exactly what is written here; `reset` in the panel puts a
@@ -72,6 +86,12 @@
   // rows gone there would be no way left to switch them back. Only the water bits are restored from storage.
   let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt');
     return v === null ? wBakeMask() : (((parseInt(v, 10) & LGT_WATER) | (LGT_ALL & ~LGT_WATER)) & LGT_ALL); } catch (e) { return wBakeMask(); } })();
+  // ── AO RAY REACH ── how far the ambient-occlusion ray marches, in voxels. Lives out here in the shared scope
+  // rather than beside its writer in tick-emit, which bundle.py wraps in its own module IIFE. Rides in the spare
+  // physC.z uniform lane so it can be swept LIVE with __vb.aoReach(n): rebooting between A/B configs re-rolls the
+  // creature population, and since every trace ray walks every rigid body, that moved the trace pass by more than
+  // the effect being measured (two identical runs read 2.22 and 1.51 ms).
+  let AO_REACH = 24;
   let lgtMask2 = LGT2_ALL;                             // …and this starts at the bake. Deliberately NOT restored from localStorage the way lgtMask is: every bit in here is a whole-scene look term, and a player who bisected one off in an old session must not be stuck with it (the same argument that forces every non-water bit of lgtMask on at load).
   // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
   // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
@@ -86,6 +106,11 @@
   // STREAMING WINDOW has to be centred on the player rather than on the anchor: HALF is at most 1024 and SPOX
   // is 2160, so a window built around the anchor does not contain the player at all — which is the world
   // loading in around you after you have already spawned (user 2026-08-22).
+  // AND EVERY SPAWN CLEARING KEYS OFF THE SUM, NOT THE ANCHOR (world/terrain.js): the trees, rocks, shrubs
+  // and cacti that refuse to stamp near the player all measure from SPWX + SPOX. Measuring from SPWX put
+  // the clearing 2160 voxels away — beyond the streaming window, so it protected nothing and the player
+  // spawned in the crowns. SPOX is registered in gen-pool.js's consts for the same reason SPWX is: the
+  // gen workers evaluate those refusals themselves, and a const missing from that list is silently 0.
   let SPOX = 0;
   let SPWX = 0, SPWZ = 0;                              // world spawn — placeholder; RANDOMISED on every refresh at boot (user 2026-07-20), see the spawn block below
   let SPYAW = 1.5708; const SPPITCH = -0.044;   // ── FACING EAST, AT THE BLOSSOM, WITH THE PINE TREELINE AT YOUR BACK (user 2026-08-21: "spin the player
@@ -893,17 +918,39 @@
       }
     return { x0, x1, z0, z1, list };
   }
+  // ── AND GAMEPLAY QUERIES GET A SCOPE TOO, WITHOUT HAVING TO DECLARE ONE ── rivScope is the bulk-gen fast
+  // path: gather the watersheds for a region once, then every column in it walks that short list. Everything
+  // OUTSIDE a bulk sweep — H() for a creature's ground, a perch, the player's own feet — fell through to the
+  // scan below, and that scan is RIVINF/RIVCELL cells each way: 6200/768 rounds to 17, so 17 x 17 = 289
+  // riverAt calls PER COLUMN. Only 3.5% of cells carry a watershed, so ~279 of those return null and are
+  // pure overhead. MEASURED while running: riverAt 12.3% of main-thread self time, with riverS 2.8%,
+  // vnoise 2.6% and bankDist 2.1% behind it — nearly a fifth of the frame's CPU between them.
+  // So the scope builds itself, keyed on the RIVCELL cell the query lands in. The list gathered is the UNION
+  // over the whole cell (gatherRivers' own range arithmetic), which is a strict SUPERSET of what any single
+  // point in that cell would have scanned — floor is monotonic, so every point's range sits inside it.
+  // Evaluating a superset is safe for exactly the reason rivScope is already safe, and it is the same
+  // invariant rather than a new one: riverS takes a MAX of rivEval and a watershed beyond its influence
+  // radius contributes 0, bankDist takes a MIN of bankEval and a further watershed can only be further away.
+  // The bulk path is untouched — when rivScope is set it still wins, because it is broader still.
+  const rivNear = new Map(), RIVNEAR_CAP = 4096;       // ~9 cells cover a loaded window; the cap is only a bound on a session that wanders the whole planet
+  function riversNear(x, z) {
+    const cx = Math.floor(x / RIVCELL), cz = Math.floor(z / RIVCELL), key = cx * 100003 + cz;
+    let L = rivNear.get(key);
+    if (L === undefined) {
+      if (rivNear.size >= RIVNEAR_CAP) rivNear.clear();   // wholesale, not LRU: the working set is a handful of cells, so a clear costs one rebuild of those
+      L = gatherRivers(cx * RIVCELL, (cx + 1) * RIVCELL - 1, cz * RIVCELL, (cz + 1) * RIVCELL - 1).list;
+      rivNear.set(key, L);
+    }
+    return L;
+  }
   function riverS(x, z) {                              // channel strength 0..1 at this column
     let best = 0;
     if (rivScope && x >= rivScope.x0 && x < rivScope.x1 && z >= rivScope.z0 && z < rivScope.z1) {
       for (const R of rivScope.list) { const v = rivEval(R, x, z); if (v > best) best = v; }
       return best;
     }
-    for (let jz = Math.floor((z - RIVINF) / RIVCELL); jz <= Math.floor((z + RIVINF) / RIVCELL); jz++)
-      for (let jx = Math.floor((x - RIVINF) / RIVCELL); jx <= Math.floor((x + RIVINF) / RIVCELL); jx++) {
-        const R = riverAt(jx, jz); if (!R) continue;
-        const v = rivEval(R, x, z); if (v > best) best = v;
-      }
+    const LS = riversNear(x, z);                       // the self-managing scope — 289 riverAt calls become one Map.get
+    for (let i = 0; i < LS.length; i++) { const v = rivEval(LS[i], x, z); if (v > best) best = v; }
     return best;
   }
   // ── THE SAME GEOMETRY, READ AS A DISTANCE ── rivEval's strength is zero the moment a column is further from
@@ -942,11 +989,8 @@
       for (const R of rivScope.list) best = bankEval(R, x, z, best);
       return best;
     }
-    for (let jz = Math.floor((z - RIVINF) / RIVCELL); jz <= Math.floor((z + RIVINF) / RIVCELL); jz++)
-      for (let jx = Math.floor((x - RIVINF) / RIVCELL); jx <= Math.floor((x + RIVINF) / RIVCELL); jx++) {
-        const R = riverAt(jx, jz); if (!R) continue;
-        best = bankEval(R, x, z, best);
-      }
+    const LB = riversNear(x, z);                       // …and the same scope serves the bank walk
+    for (let i = 0; i < LB.length; i++) best = bankEval(LB[i], x, z, best);
     return best;
   }
   // ── WHERE A BOULDER SITS ── stampBoulder probed groundMin at a radius CAPPED AT 10 while a rocks26 model is

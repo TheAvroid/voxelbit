@@ -134,6 +134,13 @@ class NoCache(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
         self.send_header('Pragma', 'no-cache')
         self.send_header('Expires', '0')
+        # ── CROSS-ORIGIN ISOLATION, SO LOCAL MATCHES PRODUCTION ── voxelbit.net serves these two from
+        # game/.htaccess, and without them here `crossOriginIsolated` is false locally and SharedArrayBuffer
+        # is undefined — so any SAB work would appear broken in the harness and fine on the site, or worse,
+        # the reverse. Nothing in the game is cross-origin (no external scripts or stylesheets, every runtime
+        # fetch is same-origin under assets/), so require-corp costs nothing here.
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
         super().end_headers()
 
 

@@ -731,14 +731,35 @@
           // actually buys back the lost speed is stratification: an R2 low-discrepancy sequence over frames, IGN-offset
           // per pixel, covers the hemisphere evenly where rand() clumped, so 1 stratified ray converges about as fast as
           // the 2 white-noise rays it replaces. Same mean, ~half the trace cost.
+          // ── AND BOTH LIGHTING TERMS STAY AT ONE RAY (user 2026-08-28: "theres still noise, especially when
+          // looking at the ground") ── two attempts to buy that back with samples, both built, measured and
+          // REVERTED the same day. The reasoning was sound and the arithmetic was right — at renderScale s only
+          // s^2 of the pixels are traced, so 1/s^2 samples each costs what one per pixel costs at full res —
+          // but neither survived measurement:
+          //   AO rays scaled 1..4: cost 116 -> 88 fps at 0.6 and the user still saw the noise.
+          //   SUN penumbra samples scaled the same way (the larger term — isolating it cut noise 59% against
+          //     AO's 50%): 120 -> 78 fps and the noise metric got WORSE, 1.075 -> 1.265.
+          // The honest comparison is the one that killed both: put them on the same noise-vs-fps curve as
+          // simply raising the resolution slider, at a pinned time of day, and neither sits below it.
+          // Whatever the player perceives as noise at low resolution, per-term sampling does not buy it more
+          // cheaply than pixels do — so if this is revisited, START by finding a metric that actually tracks
+          // the perception, because temporal frame-difference does not (it barely moves across 0.6/0.75/0.9).
           let fN = f32(u32(u.frame) & 1023u);
           let r1 = fract(ign(vec2<f32>(gid.xy)) + fN * 0.7548777);   // R2 sequence (plastic constants) — azimuth
           let r2 = fract(ign(vec2<f32>(gid.xy) + vec2<f32>(47.0, 17.0)) + fN * 0.5698403);   // decorrelated elevation lane
           let d = cosHemi(h.n, r1, r2);
-          if (LG(1u)) { let ah = traceAll(sp, d, 24.0, skipW);      // bodies included → real contact AO and self-shadowing, no bake needed
-                        var aT = select(24.0, ah.t, ah.t >= 0.0);
+          // ── AO RAY REACH ── physC.z, live-tunable via __vb.aoReach(n), default 24. It is BOTH the distance the
+          // ray marches AND the value a miss returns, so the 0..1 range is preserved and only the span over
+          // which occlusion is gathered changes. MEASURED at 24: AO is 2.17 ms — 45% of the trace and 27% of
+          // the whole frame, the most expensive term in the renderer. Shorter = fewer DDA steps and a more
+          // LOCAL occlusion: contact shadows survive, broad darkening under a canopy does not.
+          // The select() fallback matters: a 0 here would make every surface fully lit, so any frame the lane
+          // is not written still renders the default rather than a blown-out image.
+          if (LG(1u)) { let aoR = select(24.0, u.physC.z, u.physC.z > 0.0);
+                        let ah = traceAll(sp, d, aoR, skipW);      // bodies included → real contact AO and self-shadowing, no bake needed
+                        var aT = select(aoR, ah.t, ah.t >= 0.0);
                         ${!(LIFE_UNI && (UNI_SEC & 2)) ? '' : '{ let cs2 = creaSec(sp, d, aT, sg0, sg1, sg2, sg3, secN); if (cs2.x >= 0.0) { aT = cs2.x; creReact = max(creReact, cs2.y); } }'}
-                        skyV = clamp(aT / 24.0, 0.0, 1.0); }
+                        skyV = clamp(aT / aoR, 0.0, 1.0); }
           else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
         if (flakeHit) {
@@ -810,7 +831,7 @@
         // …and the AO ray, which the sun-cylinder test above misses entirely. AO reaches 24 voxels in
         // EVERY direction, so the contact darkening a moving trunk casts on the ground beside it was
         // still converging at maxHist and trailed the trunk by a good half second.
-        let aoR = u.physBound.w + 24.0;
+        let aoR = u.physBound.w + select(24.0, u.physC.z, u.physC.z > 0.0);   // tracks __vb.aoReach — a fixed 24 here would over- or under-cover the ray it exists to shadow
         if (dot(dc2, dc2) < aoR * aoR) { reactive = max(reactive, u.physC.y); }
       }
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, reactive));

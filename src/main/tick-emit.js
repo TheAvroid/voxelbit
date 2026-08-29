@@ -157,10 +157,21 @@
     // spawn off the crown's own underside and so are always right there — read as drifting through solid wood.
     // One voxel read a frame, and it zeroes the whole petal band rather than refusing to spawn: a leaf already
     // in the air has to go too, and it comes back the moment you step out of the tree.
-    const eyeFol = (() => { const ey = Math.floor(smoothEye);
+    // ── …AND THE ANSWER IS LATCHED (user 2026-08-28: "the falling leaves still flicker sometimes") ── the read
+    // below is one voxel and it is exact, but a crown is see-through geometry the camera brushes constantly on
+    // any walk through a wood, and this gate is GLOBAL: a graze of three frames blanks every falling leaf in the
+    // world and then restores them. MEASURED, 2,664 frames of walking: all 286 all-dark frames were
+    // eye-in-foliage frames — 1:1, so the gate is the only cause — in six runs of 3/4/4/4/131/140. The 131 and
+    // 140 are the feature; the four short ones are the flicker. PETAL_HIDE_LAG (sim/particles.js) makes a new
+    // answer wait until it has held, so a graze can never move the latch. See the note there for why it is
+    // symmetric and why it is in milliseconds rather than frames.
+    const eyeFolRaw = (() => { const ey = Math.floor(smoothEye);
       if (ey < 1 || ey >= WY) return false;
       const v = W[gwrap(Math.floor(P.x), WX) + ey * WX + gwrap(Math.floor(P.z), WZ) * WX * WY];
       return !!(v && foliaTab[v]); })();
+    if (eyeFolRaw !== PETAL_HIDE.raw) { PETAL_HIDE.raw = eyeFolRaw; PETAL_HIDE.since = now; }   // the raw answer changed — start its clock over
+    if (PETAL_HIDE.on !== PETAL_HIDE.raw && now - PETAL_HIDE.since >= PETAL_HIDE.lag) PETAL_HIDE.on = PETAL_HIDE.raw;   // …and it only lands once it has held
+    const eyeFol = PETAL_HIDE.on;
     for (let si2 = 0; si2 < sparks3d.length; si2++) {   // ── clash/death sparks + death SMOKE + tears + POLLEN → drop slots 5-28 ── read off the array rather than a literal 20, so growing the pool needs one edit and not three ── real voxels on short arcs, fading out (sp4.smoke picks the look)
       const sl3 = sparkSlot[si2];
       if (sl3 < 0) { const spX = sparks3d[si2]; if (spX && (now - spX.born) / 1000 > spX.life) sparks3d[si2] = null; continue; }   // no slot = not alive; still reap the expired one
@@ -344,6 +355,9 @@
       UF[UF_PHYSBOUND] = bcx; UF[UF_PHYSBOUND + 1] = bcy; UF[UF_PHYSBOUND + 2] = bcz; UF[UF_PHYSBOUND + 3] = brad;
       UF[UF_PHYSC] = nb; UF[UF_PHYSC + 1] = Math.max(0, 1 - (now - reactT0) / REACT_FADE); UF[UF_PHYSC + 2] = 0; UF[UF_PHYSC + 3] = 0;   // y = REACTIVE STRENGTH, eased — the mask keys off this, not off nb
     }
+    // AO_REACH rides in physC.z. Written HERE, outside the body block above, because that block only runs when
+    // there are rigid bodies — leaving the lane stale (and the AO reach wrong) in an empty scene.
+    UF[UF_PHYSC + 2] = AO_REACH;
     device.queue.writeBuffer(uniBuf, 0, UF);
     if (CPROF) cpMark(6);
 

@@ -568,6 +568,10 @@ WORKER_DECLS = {          # names the pool writes into its worker preamble by ha
     # shipped table would be whatever snapshot the pool happened to take. birchBanch IS registered.
     'BIRCHV', 'BIRCHPICK', 'BIRCH_BANCH',
     'gwrap', 'rivCache', 'caveCache', 'takeRows', 'ORPH_SCRATCH', 'ORPHAN_OK',
+    # rivNear is riversNear's per-worker memo of gathered watersheds — same case as rivCache: MUTABLE
+    # per-worker state, so it is declared in each preamble rather than baked as a const. Its CAP is a
+    # plain number and IS registered.
+    'rivNear',
     'WY', 'onmessage', 'postMessage', 'self',
     # OAKBLOSV is DERIVED in the preamble, not registered: it is OAKV with the leaf ids run through BLOSMAP,
     # and OAKV is 218,367 voxels, so registering the derived copy as a table would ship those voxels into every
@@ -581,7 +585,7 @@ ROW_DECLS = {             # ...and the ones the ROW worker writes into its own b
     # in a registry. SPWX/SPWZ are per-JOB: spawn is randomised in world/build.js, nine
     # fragments below gen-worker.js, so both are still 0 when that preamble is assembled -
     # they ride along with every postMessage instead of being baked.
-    'rivCache', 'rivScope', 'SPWX', 'SPWZ', 'onmessage', 'postMessage', 'self',
+    'rivCache', 'rivNear', 'rivScope', 'SPWX', 'SPWZ', 'onmessage', 'postMessage', 'self',
 }
 
 # (fragment, registry names in that fragment, hand-written preamble names, label)
@@ -737,7 +741,8 @@ UF_DERIVED = {'UF_PHYSB': 'physB', 'UF_PHYSC': 'physC', 'UF_PHYSBOUND': 'physBou
               'UF_HELDCFG': 'heldCfg', 'UF_LGT': 'lgt', 'UF_HURTB': 'hurtB',
               'UF_HURTH': 'hurtH', 'UF_DROPSB': 'dropsB', 'UF_LIFEMOTB': 'lifeMotB',
               'UF_DOF': 'dof', 'UF_HEART': 'heart', 'UF_HURTV': 'hurtV',
-              'UF_BADGE': 'badge', 'UF_VITG': 'vitG', 'UF_PICK3': 'pick3A', 'UF_BADGE2': 'badge2'}
+              'UF_BADGE': 'badge', 'UF_VITG': 'vitG', 'UF_PICK3': 'pick3A', 'UF_BADGE2': 'badge2',
+              'UF_CLOUDT': 'cloudT'}
 
 
 def js_ints(js):

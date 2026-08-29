@@ -774,6 +774,7 @@
           sleeping: b.sleeping, sleepT: b.sleepT, contacts: b.contacts | 0, deepest: +(b.deepest || 0).toFixed(2),
           ageMs: Math.round(performance.now() - b.born) })) };
     },
+    aoReach(n) { if (n !== undefined) AO_REACH = Math.max(1, Math.min(64, +n)); return AO_REACH; },   // AO ray march distance in voxels (default 24) — live A/B lever for the most expensive term in the trace
     physChop(x, y, z, r) { return physChopAt(x, y, z, r); },
     // ── THE AXE'S WOOD SWING, BY COORDINATE ── the same two calls sim/tools.js makes for a wood voxel now that
     // wood goes through the PICK's carve: phChopDecor confined to woodTab, then phTreeSettle on whatever tree
@@ -833,7 +834,10 @@
     dropPush(o) { drops.push(o); return drops.length; },   // push a raw drop so a test can drive the REAL arrival branch (hitSlot -> stick) instead of a stand-in
     dropRaw(i) { const d = drops[(i | 0) < 0 ? drops.length + (i | 0) : (i | 0)]; if (!d) return null;
       return { stuckSlot: d.stuckSlot, stTh: d.stTh, stOx: d.stOx, stOy: d.stOy, stOz: d.stOz,
-        ex: d.ex, ey: d.ey, ez: d.ez, x: d.x, y: d.y, z: d.z, hitDone: !!d.hitDone }; },
+        ex: d.ex, ey: d.ey, ez: d.ez, x: d.x, y: d.y, z: d.z, hitDone: !!d.hitDone,
+        rideB: d.rideB ? PH.bodies.indexOf(d.rideB) : -1, rideMiss: d.rideMiss | 0, gone: !!d.gone,
+        rOff: d.rideB ? [+d.rOx.toFixed(2), +d.rOy.toFixed(2), +d.rOz.toFixed(2)] : null,
+        rideM: d.rideM ? Array.from(d.rideM).map((q) => +q.toFixed(3)) : null }; },   // …plus the RIGID-BODY ride (sim/physics.js phRideBody): which live body index it is on (-1 = none), the impact offset in that body's frame, and the delta rotation the shaft is drawn with
     stickArrowIn(slot) { const s = slot | 0, B = wbf[s];
       if (!ARROW_IT || !B || !B.init) return null;
       // …including the impact bookkeeping a real landing records, or this stands in for a shot that cannot
@@ -1683,7 +1687,7 @@
     idAt(x, y, z) { return W[gwrap(Math.floor(x), WX) + (y | 0) * WX + gwrap(Math.floor(z), WZ) * WX * WY]; },   // raw voxel id — colTop/colTopId are solidTab-gated and go blind to water the moment it thaws
     supCap(v) { if (v !== undefined) SUP.cap = Math.max(16, v | 0); return { cap: SUP.cap, drapeCap: SUP.drapeCap, capHits: SUP.stats.capHits, structFloods: SUP.stats.structFloods, dropped: SUP.stats.dropped }; },   // squeeze the STRUCTURE flood ceiling so a test can force the cap-hit path on a small rock
     wrefl(v) { if (v !== undefined) { wReflK = Math.max(0, Math.min(2, +v)); resetHist = 1; try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e) {} lgtPaint(); } return wReflK; },   // WATER REFLECTION STRENGTH — the panel's slider, from the console
-    lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: { rockSheen: 1 } }; },   // the SECOND mask (u.lgt.z) — bit 0 is the SUN SHEEN ON STONE (user 2026-08-16). __vb.lgt2(0) / __vb.lgt2(1) is the A/B: it sets resetHist, so the denoiser does not hand the previous variant's history to the next shot
+    lgt2(m) { if (m !== undefined) { lgtMask2 = m | 0; resetHist = 1; lgtPaint(); } return { mask2: lgtMask2, all2: LGT2_ALL, terms2: { rockSheen: 1, grassXFace: 2 } }; },   // the SECOND mask (u.lgt.z) — bit 0 is the SUN SHEEN ON STONE (user 2026-08-16). __vb.lgt2(0) / __vb.lgt2(1) is the A/B: it sets resetHist, so the denoiser does not hand the previous variant's history to the next shot
     lgt(m) { if (m !== undefined) { lgtMask = m | 0; resetHist = 1; lgtPaint(); } return { mask: lgtMask, all: LGT_ALL, water: LGT_WATER, mask2: lgtMask2, terms: { sun: 1, ao: 2, creatureShadow: 4, glow: 8, reactive: 16, fog: 32, irrHistory: 64, spatial: 128, taa: 256, bodyGrain: 512, terrainGrain: 1024, creatureGrain: 2048, penumbra: 4096, caustics: 8192, bounce: 16384, skyAmbient: 32768, heldItem: 65536, volumetric: 131072,
       waterReflect: 262144, waterRefract: 524288, waterFoam: 1048576, waterIce: 2097152, waterGlisten: 4194304, waterWaves: 8388608 } }; },   // the light-debug bitmask, from the console
     physFreeze(v) { const f = v === undefined ? true : !!v;   // pin/unpin every body — lets a test aim at a KNOWN pose instead of chasing a falling one
@@ -1770,6 +1774,11 @@
         for (let i = 0; i < B.sN; i++) { cells++; const ii = B.sCells[i];
           if (!stampedIdx.has(ii)) { missing++; if (!ex) ex = { slot: j, cell: ii }; } } }
       return { creatures: birds, cells, missing, size: stampedIdx.size, extra: stampedIdx.size - cells, example: ex }; },
+    // ── IS THE POOL WRITING THE WORLD ITSELF ── the shared-W path is a silent upgrade: if the workers cannot
+    // take it, everything still works and only the profile tells you. This says which path is live, so a test
+    // can assert on it instead of inferring it from frame time.
+    genShared() { return { isolated: self.crossOriginIsolated === true, wIsShared: W.buffer instanceof SharedArrayBuffer,
+      poolOk: !!poolOk, slabs: ORPH.slabs | 0, blittedInWorker: ORPH.wblit | 0 }; },
     dims() { return { WX, WY, WZ, BX, BY, BZ, WXZ }; },   // the window's own extents — a test that recomputes a flat cell index needs them
     perchCacheAudit() { return cardCacheAudit(); },   // defined in main/tick-nav.js, where treeAtC/oakAtC are in scope
     cardN(n) { if (n !== undefined) CARD_FORCE = n | 0; return { forced: CARD_FORCE, pool: CARD_N, base: CARD_BASE, birchK: CARD_BIRCH_K }; },   // pin the perched count (-1 = follow the biome) — the A/B lever for what the band COSTS
@@ -1929,6 +1938,7 @@
         if (run >= ln) runs.push(['x', gx, 0, run]); }
       return { rect: { xlo: rect.xlo, xhi: rect.xhi, zlo: rect.zlo, zhi: rect.zhi }, winOX, winOZ, px: P.x, pz: P.z, nRuns: runs.length, runs: runs.slice(0, 40) }; },
     hAt(x, z) { return { hmap: hmap[gwrap(Math.floor(x), WX) + gwrap(Math.floor(z), WZ) * WX], analytic: H(Math.floor(x), Math.floor(z)) }; },   /*TEMP-DEBUG*/
+    petalHideDbg() { return { raw: !!PETAL_HIDE.raw, on: !!PETAL_HIDE.on, lag: PETAL_HIDE.lag, heldMs: Math.round(performance.now() - PETAL_HIDE.since) }; },   // the eye-in-crown latch (sim/particles.js): `raw` is this frame's answer, `on` is the one the emit acts on, `heldMs` how long raw has held. A test CANNOT infer these from its own voxel read — it samples in its own rAF, and tickBody moves the player between that and the emit (see [[voxelbit-soft-decor-carve]]-style ordering traps)
     sparkSlotArr() { return Array.from(sparkSlot); },   // spark index -> drop slot THIS frame (-1 = alive but not drawn). The churn/starvation probe.
     sparkDbg() { return sparks3d.map((s) => s ? (s.smoke ? 'smoke' : (s.foam ? 'foam' : 'spark')) : null); },   /*TEMP-DEBUG: death-burst / clash-spark / SPLASH slot state*/
     foamId() { return FOAM_IT; },                      // the splash droplet's item id

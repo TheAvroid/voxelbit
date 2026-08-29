@@ -1,8 +1,21 @@
     ambBiomeTick();                                    // fade the FOREST ambience bed out over the desert — see ui/audio.js
     // ── day/night cycle ── 20-minute full cycle at 1x; tday 0 = midnight, 0.5 = noon; ALT+scroll scales speed, L pauses
-    { const ntd = window.__TFREEZE ? tday : (tday + dt * cycleSpeed / 1200) % 1;   // __TFREEZE pins the sun for perf A/Bs (the cycle moved measured trace cost 45% over one 7-minute run). Not __vb.tod(): that also sets resetHist, so pinning with it would measure a permanently-cold denoiser.
+    // ── AND THE SUN IS NOT QUANTISED (user 2026-08-28: "will quantise the sun help noise?") ── built and
+    // measured and it does not. The premise looked sound: the sun shadow and the AO are ONE traced ray each,
+    // cleaned by an accumulator that caps history at 64 frames, and while the sun creeps every frame that
+    // accumulator chases a target it never reaches. Freezing the sun outright IS worth 3.5x, reproducibly
+    // (moving 3.24 / 3.35 against frozen 0.94 / 0.91, with the time of day PINNED — sampling at different sun
+    // elevations is what made three runs of one config read 1.94, 2.53 and 4.02 and sent two investigations
+    // the wrong way). But holding it still in STEPS recovers almost none of that, because the accumulator
+    // converges asymptotically and needs several times its 64-frame window, not one:
+    //     continuous 3.38 · 0.5 s steps 3.65 · 2 s steps 3.30 · 8 s steps 5.73
+    // Everything up to 2 s is inside the scatter, and by 8 s the step itself is the noise (p99 25 -> 43.5).
+    // A step small enough to be invisible does nothing; a step large enough to matter is a visible skip, and
+    // worst at dawn and dusk where the shadows are longest and the lever arm is greatest. Do not re-propose.
+    { const ntd = window.__TFREEZE ? tday : (tday + dt * cycleSpeed / 1200) % 1;   // __TFREEZE pins the sun for perf A/Bs (the cycle moved measured trace cost 45% over one 7-minute run). No
       if (ntd < tday) moonDay++;                       // a day rolled over → the moon advances one phase step (8-day cycle)
       tday = ntd; }
+    if (!window.__TFREEZE) { cloudT += dt * cycleSpeed; }   // …and the deck's wind on the same clock and the same freeze, so it drifts in step with the sun at any cycle speed
     // ── RAIN SKY ── the one scalar the whole overcast hangs off, computed here beside the day/night cycle
     // because it is the same kind of thing: an environment state the frame is shaded under, not an event.
     // TWO FACTORS, kept apart deliberately (see rainSkyK in ui/settings.js for why):
@@ -99,7 +112,7 @@
       for (let z2 = 0; z2 < B2Z; z2++) { const b0 = w0 + ((z2 * B2X * B2Y) >> 5);
         if (bricks2[b0] | bricks2[b0 + 1]) { ceilB2 = y2 + 1; break; } }
     }
-    set3(24, prevCam.up, cycleSpeed > 4 ? 10 : 64); set3(28, prevCam.fwd, (godRays ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0) + (ceilB2 << 8));
+    set3(24, prevCam.up, cycleSpeed > 4 ? 10 : 64); set3(28, prevCam.fwd, (sunFx ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0) + (ceilB2 << 8));
     // ── HELD-ITEM SUN VISIBILITY ── march the world from the eye toward the sun; one ray a frame.
     {
       let vis = 1;
@@ -750,6 +763,7 @@
     UF[64] = ED.on ? Math.max(64, renderDist)            // editor world: nothing stale exists (occupancy is empty beyond the stage) — no rect clamp
       : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
       P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
+    UF[UF_CLOUDT] = cloudT;
     UF[65] = ((moonDay % 8) + tday) / 8; UF[66] = windAX; UF[67] = windAZ;   // moon phase in u.rdist.y; integrated WIND displacement in u.rdist.z/.w
     UF[1269] = snowLeadY; UF[1270] = snowTrailY;   // u.misc.y/z — the storm edges computed in the weather block above
     // u.misc.w — is the EYE buried in solid rock? Inside a voxel every primary ray hits at t~0 with no light reaching

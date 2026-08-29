@@ -41,10 +41,10 @@
         while (strip.children.length > 1) strip.removeChild(strip.firstElementChild);   // the arrived digit becomes the resting row
         delete strip.dataset.busy; }, 95); });   // the roll must finish well inside the 150 ms tick: at 140 ms it occasionally straddled one and the gate dropped that number (measured — the drum skipped 0.6)
   };   // the version tag counts v0.0 → v1.0 on its OWN steady clock (user: "irrelevant of the loading bar"). Tying it to the bar made it tick unevenly, because the bar is a 9 s ease-out whose rate is deliberately front-loaded. Only the LOADING one animates — the esc menu's is static.
-  const VER_TO = 1.3;                                  // ── WHAT THE DRUM COUNTS UP TO ── the shipped version, and the ONE place it is written for the animation
+  const VER_TO = 1.4;                                  // ── WHAT THE DRUM COUNTS UP TO ── the shipped version, and the ONE place it is written for the animation
   // (the static tag on the lock screen is in 10-body.html — keep the two in step). Scaling the ramp by it
   // rather than hardcoding 1 keeps the tick even: the counter is linear in TIME over LOAD_VER_MS, so 1.2 is
-  // simply thirteen steps at the same cadence (fourteen at 1.3), and toFixed(1) still yields the two digits verSet rolls.
+  // simply thirteen steps at the same cadence (fifteen at 1.4), and toFixed(1) still yields the two digits verSet rolls.
   let loadDone = false, loadFinishing = false;   // loadFinishing guards the crawl below: finishLoad's OWN transitionend must not restart it and drag the bar back off 100%                                 // set by finishLoad → the readout is pinned to 100% so it can't under-read the compositor mid finish-sweep (user: "the loading bar never reaches 100%")
   const readScale = () => { const t = getComputedStyle(loadFillEl).transform; return t && t !== 'none' ? (new DOMMatrixReadOnly(t)).a : 0; };
   const loadNumStep = () => {                            // the % text + sheen mirror whatever the compositor has the bar at right now

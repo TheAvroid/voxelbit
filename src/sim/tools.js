@@ -1,5 +1,5 @@
   // @module — the voxel-accurate melee ray, the stone tools’ reach/bite constants, and the hoe’s tilled earth
-  // @exports AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_AIM, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, voxRay
+  // @exports AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_AIM, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, toolCanBreak, voxRay
   // ── AXE SWING -> TRUNK ── melee reach along the view ray, trunk voxels only. Returns true when the
   // swing bit wood so the caller can spend the swing on the tree rather than also registering a kill.
   const AIM_FORGIVE = 1.6;                            // voxels of slack around a creature's own radius in the kill test. Small and ABSOLUTE, so it forgives a shaky hand without ever growing into the fixed 35-degree cone this replaced.
@@ -188,6 +188,16 @@
       return 0;                                        // water, grass strands, twigs and needles are not obstructions — walk on to what is underneath
     }) || 0;
   };
+  // ── CAN THE HELD TOOL TAKE THIS MATERIAL AT ALL ── hoisted to module scope (user 2026-08-28: block.mp4
+  // when a tool cannot break something) so the AUDIO can ask the same question the SWING does. It has to be
+  // the one rule and not a copy: a sound that disagrees with the swing is worse than no sound, because it
+  // teaches the player the wrong thing about their tool. chopSwing's own toolTakes now delegates here.
+  const toolTakesFor = (it, v) => {
+    const knife = KNIFE_IT > 0 && it === KNIFE_IT, cut = it === 1 || knife;
+    const pick = PICK_IT > 0 && it === PICK_IT, dig = SHOVEL_IT > 0 && it === SHOVEL_IT;
+    return digOnlyTab[v] ? (dig || knife) : (pickOnlyTab[v] ? (pick || knife) : (axeOnlyTab[v] ? cut : true));
+  };
+  const toolCanBreak = (v) => v !== undefined && !!toolTakesFor(heldIt(), v);   // …and this is the audio's entry point: what is in my hand right now, against this id
   const chopSwing = () => {
     if (!PH.on || ED.on || dead) return false;
     if (HOE_IT && heldIt() === HOE_IT) return hoeTill();   // the HOE does not chop — it tills (user)
@@ -244,7 +254,7 @@
     // ── WHAT THE HELD TOOL CAN ACTUALLY TAKE ── one rule, used by the AIM march below and by the rigid-body
     // gate further down, which used to carry its own copy. Hoisted because the aim needs it: see the
     // see-through note at the leaf/wood test.
-    const toolTakes = (v) => digOnlyTab[v] ? (dig || knife) : (pickOnlyTab[v] ? (pick || knife) : (axeOnlyTab[v] ? cut : true));
+    const toolTakes = (v) => toolTakesFor(it, v);   // ONE rule, hoisted above this function so the bounce SOUND asks exactly what the swing asks — see toolTakesFor
     const H_BITE = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * base * 0.5)) : Math.max(2, Math.round(PH.chopBite * base * 0.5));   // no DIG_BITE term, unlike mBite below: a hive is axeOnlyTab, so the continuation is gated on `cut` and the shovel can never reach this   // axe 15, stone knife 4 — the two numbers the BEE_BREAK_F note is written against
     const okHive = (v) => !!HIVE_TAB[v];               // …and it takes HIVE and nothing else: the branch it hangs from is bark, one voxel above its top course and well inside the sphere
     const cp = Math.cos(P.pitch), vx = Math.sin(P.yaw) * cp, vy = Math.sin(P.pitch), vz = Math.cos(P.yaw) * cp;
@@ -377,7 +387,7 @@
       : (foliaTab[aimId] ? ((v) => !!foliaTab[v])
       : (aimId ? (digOnlyTab[aimId] ? ((v) => !!digOnlyTab[v])
                 : (pickOnlyTab[aimId] ? ((v) => !!pickOnlyTab[v])
-                : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]))) : null));
+                : ((v) => !digOnlyTab[v] && !pickOnlyTab[v] && !axeOnlyTab[v]))) : null));   // …and WOOD is owned too (user 2026-08-28: "the pick seems to break wood? it shouldnt be able to break wood") — see the okMat twin below, same leak, same fix
     // ── WHICH TOOL MAY CUT THIS BODY (user 2026-08-08: "when a rock topples over from cutting it in half, now
     // I cant keep taking chunks out of the rigid body… the same with the rigid mushroom… the tree still works
     // fine") ── the whole rigid-body branch was gated on `cut`, i.e. on holding a cutting edge. That is right
@@ -456,7 +466,16 @@
       // pickOnlyTab, so the axe confines its sphere to woodTab. Without it a wood id fell through to the
       // permissive third arm, which admits every other decorTab id in range — and the thing always within ten
       // voxels of a trunk is its own canopy, so the bite would have been spent on leaves.
-      const okMat = HIVE_TAB[id] ? okHive : (woodTab[id] ? isWood : (digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]))));
+      const okMat = HIVE_TAB[id] ? okHive : (woodTab[id] ? isWood : (digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v] && !axeOnlyTab[v]))));
+      // ── …AND WOOD IS OWNED TOO (user 2026-08-28: "the pick seems to break wood? it shouldnt be able to break wood") ── the arm above names the
+      // two materials a swing may not spill into and forgot the third. That is not an oversight about hive ids: `id` here is a SOFT decoration
+      // (grass, a fern, a flower, a mushroom — anything carrying decorTab and no tool tab), the swing gate has already let every tool through
+      // because soft decor yields to whatever is in hand, and the sphere it then hands phChopDecor was confined to "not soil, not stone" — which
+      // admits BARK. Grass grows at the foot of every trunk, so a pick aimed at the grass took the tree: MEASURED, one swing, path 'decor',
+      // hand = pick, one wood voxel gone. The shovel and the bare hand had the identical hole. Wood is axeOnlyTab (assets/material-tabs.js), the
+      // same table the swing gate reads two lines above, so naming it here is the same rule the comment already states — the carve is confined to
+      // the material the crosshair is on — applied to the third owned material rather than only the first two.
+      // IT ALSO SHARPENS THE SOFT SWING ITSELF: a bite that could spend itself on a neighbouring trunk is a bite the mushroom did not lose.
       const mS = soi(id);                            // this material's BITE factor (own = full, anything else = half) — unchanged by the SOI doubling
       const mR = soiR(id);                           // …and its REACH, the doubled one on the tool's own material
       // the BITE follows the sphere it came out of — scaled from PH.chopBite, not from C_BITE, which
@@ -472,6 +491,21 @@
       // ceil(voxels / bite), not voxels / bite, so it only moves when the bite crosses a boundary. A QUARTER of
       // the original bite is what actually yields four (user 2026-08-22: "the red mushroom still breaks in 2
       // instead of 4"). Read the live number off __vb.chopAim().bite rather than re-deriving it.
+      // ── AND A SOFT DECORATION IS CARVED WHERE THE CROSSHAIR IS, NOT BEHIND IT (user 2026-08-28: "improve the
+      // voxel accuracy when hitting the mushroom in the pine forest? its really bad") ── the carve below is centred
+      // D_DEEP along the ray, and that push is a WOOD AND STONE rule: it exists so a chunk out of a bole or a boulder
+      // has depth instead of coming off as a flat surface cap (see the note at the call). It was applied to every
+      // material because the three tools share this branch, and on soft decor it is the wrong shape of wrong:
+      //   · the sphere is the OFF-MATERIAL one, radius CHOP_RAD * 0.5 = 2.5, so a 1.5 push moves the centre 60% of
+      //     the way to its own rim — where on wood or stone the tool's own sphere is 10 and the same push is 15%.
+      //   · the bite is small (a mushroom's is a QUARTER, 4 voxels), so the swing takes barely more than the centre
+      //     cell and its nearest neighbours — which are all on the far side of the voxel the player pointed at.
+      // MEASURED on one mushroom, five swings from a fixed crosshair: the carve centre landed one voxel behind and
+      // one below the aimed voxel every time, the aimed voxel itself SURVIVED the first four swings, and what the
+      // player got instead was a scatter of pits around the spot they hit. That is the whole report.
+      // The chunk-depth argument does not apply here and neither does the fallback: with no push the two tries below
+      // are the same sphere, so the second is skipped rather than gathering it twice.
+      const mD = (woodTab[id] || pickOnlyTab[id] || digOnlyTab[id]) ? D_DEEP : 0;   // the push, for the materials it was written for
       const mushQ = mushTab[id] ? 0.25 : 1;
       const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS * mushQ)) : Math.max(2, Math.round(PH.chopBite * mS * mushQ * (dig ? DIG_BITE : 1)));
       // ── AND A BEEHIVE IS THE ONE PIECE OF DECOR THAT ANSWERS BACK (user 2026-08-17: "if the player breaks
@@ -521,8 +555,8 @@
       // own scale (CHOP_DEEP * base), so nothing here singles the axe out.
       // window.__CDEEP overrides it live for A/B, the same pattern as __LST / __TFREEZE.
       if (id && decorTab[id] && (digOnlyTab[id] ? (dig || knife) : (pickOnlyTab[id] ? (pick || knife) : (axeOnlyTab[id] ? cut : true)))
-          && (phChopDecor(x + vx * D_DEEP, y + vy * D_DEEP, z + vz * D_DEEP, CHOP_RAD * mR, mBite, okMat, woodTab[id] ? PH.chopCourse : 0)
-              || phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat, woodTab[id] ? PH.chopCourse : 0))) {
+          && (phChopDecor(x + vx * mD, y + vy * mD, z + vz * mD, CHOP_RAD * mR, mBite, okMat, woodTab[id] ? PH.chopCourse : 0)
+              || (mD && phChopDecor(x, y, z, CHOP_RAD * mR, mBite, okMat, woodTab[id] ? PH.chopCourse : 0)))) {
         if (HIVE_TAB[id]) hiveChopped(x, y, z);
         // ── THE SETTLE BELONGS TO THE TREE THE BITE CAME OUT OF ── and that is not necessarily the one `S`
         // latched. S is taken at the FIRST column the march finds a tree in, which is deliberately open air
@@ -533,7 +567,8 @@
         // Re-resolving at the CARVE column costs the same one treeShapeAt a swing (this branch returns), and it
         // is the column the axe actually took material from, which is the only column the question is about.
         if (woodTab[id]) { const Sw = treeShapeAt(x, z); if (Sw) S = Sw; if (S) phTreeSettle(S); }   // …and only wood asks: nothing else can be holding a tree up
-        CHOP_AIM.path = 'decor'; CHOP_AIM.hitId = id; CHOP_AIM.rockHit = pick && !!pickOnlyTab[id]; CHOP_AIM.woodHit = axe && !!woodTab[id]; CHOP_AIM.foliaHit = !!leafSndTab[id];   // canopy, flowers and ferns all sound like foliage - one table, filled in assets/material-tabs.js woodTab and foliaTab are disjoint (bark vs needle), so these cannot both be true   // pickOnlyTab is set beside decorTab on every rock and ore id (assets/material-tabs.js), so this is exactly 'the pick's own material', not a colour test CHOP_AIM.hitT = +t.toFixed(2); CHOP_AIM.rad = CHOP_RAD * mR; CHOP_AIM.bite = mBite;   // the SPHERE and the BITE this swing actually used — 'chopping at a distance does not have the same soi' is a claim about these two numbers, so a test must be able to read them rather than infer them from a voxel diff
+        CHOP_AIM.path = 'decor'; CHOP_AIM.hitId = id; CHOP_AIM.rockHit = pick && !!pickOnlyTab[id]; CHOP_AIM.woodHit = axe && !!woodTab[id]; CHOP_AIM.foliaHit = !!leafSndTab[id];   // canopy, flowers and ferns all sound like foliage - one table, filled in assets/material-tabs.js woodTab and foliaTab are disjoint (bark vs needle), so these cannot both be true   // pickOnlyTab is set beside decorTab on every rock and ore id (assets/material-tabs.js), so this is exactly 'the pick's own material', not a colour test
+        CHOP_AIM.hitT = +t.toFixed(2); CHOP_AIM.rad = +(CHOP_RAD * mR).toFixed(2); CHOP_AIM.bite = mBite; CHOP_AIM.hit = [x, y, z]; CHOP_AIM.ctr = [+(x + vx * mD).toFixed(1), +(y + vy * mD).toFixed(1), +(z + vz * mD).toFixed(1)];   // ── THESE THREE WERE DEAD (2026-08-28) ── they sat at the tail of the `//` comment on the line above, so nothing ever assigned them and __vb.chopAim() never carried the numbers this note says a test must read. Restored, plus the impact voxel and the pushed sphere centre, which is what an ACCURACY claim ('the swing lands in the wrong place') is actually about   // the SPHERE and the BITE this swing actually used — 'chopping at a distance does not have the same soi' is a claim about these two numbers, so a test must be able to read them rather than infer them from a voxel diff
         return 1; }   // free gate, the id is already in hand
       // ── AND A HIVE THE CROSSHAIR HAS ALREADY PUNCHED THROUGH IS STILL A HIVE (user 2026-08-19: "fix the hive
       // stall") ── the branch above fires only when the MARCHED VOXEL is itself a hive voxel, and beehive.vox

@@ -241,7 +241,6 @@
   // with nothing useful in the console. Anything the WGSL reads has to be declared at or above line 35; this
   // file is line 26. RAIN_SUN_DIM is read by BOTH sides (the shader's sunTintR and tick-camera's heldCfg.x), so
   // one declaration is also what stops the hand and the world disagreeing about how bright the sun is.
-  const RAIN_CLOUD_THR = 0.165;    // how far cloudDen's density cut DROPS at full rain: 0.565 → 0.400. That noise is three value-noise octaves, mean ≈ 0.50 and σ ≈ 0.15, so 0.565 is the +0.44σ cut behind the existing "~35% coverage" note and 0.400 is −0.68σ, i.e. ~75%. Overcast WITH BREAKS IN IT, deliberately not a lid: past ~90% the deck loses all structure and reads as fog rather than as weather.
   const RAIN_CLOUD_DARK = 0.45;    // …and the deck falls to 55% of its fair-weather brightness. Applied to the march's ACCUMULATOR rather than inside the loop — acc is a linear sum in the per-step colour, so a uniform scale on that colour is exactly a uniform scale on acc, and doing it once after the loop costs one multiply per sky pixel instead of one per step.
   const RAIN_SKY_DESAT = 0.35;     // the blue BETWEEN the clouds goes 35% of the way to its own luminance…
   const RAIN_SKY_DIM = 0.20;       // …and 20% down with it. This pair is also the only handle this change has on the sun DISC and its glare, which are drawn inside skyColor() in pre.js — a file it does not own — so it is the literal reading of "the sun should dim a bit". At night it is what puts the stars and the moon behind the overcast.
@@ -271,7 +270,11 @@
   // Appended at the VERY end, after badge2, for the reason every field back here is: the JS writes this buffer at
   // fixed float indices, so a lane inserted above would silently feed each field below it its neighbour's numbers.
   const UF_PHYSG = UF_BADGE2 + 4;
-  const UF = new Float32Array(UF_PHYSG + PHYS_NG * 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
+  // ── THE CLOUD CLOCK ── appended after physG, which is the rule every field back here follows: the JS
+  // writes this buffer at fixed float indices, so a lane inserted anywhere above would silently feed each
+  // field below it its neighbour's numbers. x = cloud time in seconds; y/z/w spare.
+  const UF_CLOUDT = UF_PHYSG + PHYS_NG * 4;
+  const UF = new Float32Array(UF_CLOUDT + 4);   // …+ dof 3316..3319, heart 3320..3323, heartC 3324..3327, hurtV 3328..3331 (3331 = UF_RAINK, the rain-sky scalar — the last float of the buffer, see the note above)   // AT PHYS_MAX = 24: …+ heldCfg 2020..2023 (x = held-item sun visibility, y = its SKY visibility) + lgt 2024..2027 (light-debug bitmask) + hurtB 2028..2031 + hurtH 2032..2035 (the knife's red hit-flash box) + dropsB 2036..3059 + lifeMotB 3060..3315
   const dropOff = (s) => (s < DROP_HALF ? 68 + s * 16 : UF_DROPSB + (s - DROP_HALF) * 16);      // float index of drop slot s — the ONE place the two halves are stitched on the JS side
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532

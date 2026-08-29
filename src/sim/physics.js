@@ -727,9 +727,57 @@
   // Timed: the shatter calls this once PER CHUNK (~27 for a big oak) inside one frame, so it is the
   // term that decides whether a tree breaking up is a hitch. __vb.phys().stats.build* is the tap;
   // zero the counters, fell a tree, read ms/kvox.
+  // ── AN ARROW GOES WITH THE TREE IT IS IN (user 2026-08-28: "when the player shoots an arrow at a tree and
+  // the tree falls down, the arrow is still stuck in the air. make the arrow go with the tree") ── a stuck
+  // shaft is a `drops` entry pinned to the WORLD point it struck (sim/projectiles.js), which is exactly right
+  // for as long as what it struck IS world geometry. Felling ends that: phSeparate lifts the tree out of W into
+  // a rigid body and the trunk swings away, and the shaft — still pinned to a point in W — hangs in clear air.
+  // This is the same problem the animal path already solved ("make the arrow stick to the life as it moves",
+  // user 2026-08-07) and it gets the same shape of answer: remember the impact in the thing's OWN frame and
+  // replay it every frame. The one real difference is that a rigid body ROTATES ON ALL THREE AXES where a
+  // creature only turns about world up, so the offset AND the attitude ride a full basis rather than one
+  // heading — which is the whole reason a toppling trunk needs its own path and could not just set stDth.
+  // HOOKED AT BUILD, and that is a deliberate choice twice over:
+  //   · phBuildBody is the ONE funnel every body comes through — the fell, the shatter when it lands, the
+  //     stump, a support collapse — so no other caller has to be taught that arrows exist.
+  //   · a body is born with its voxels exactly where they stood in W, so "is this shaft inside this body" is
+  //     only an honest question on this one frame. Asked every frame it would also catch a log ROLLING PAST an
+  //     arrow stuck in the ground and snatch it off the floor.
+  // A shaft riding a body that then breaks up re-attaches for free: every splitter splices the parent out
+  // BEFORE building its children (see the note in sim/chop-tree.js), so the old ride already reads as dead by
+  // the time the children ask, and the child holding the shaft claims it.
+  // The probe is a small box rather than one cell because the shaft's own arrival CARVED where it landed
+  // (arrowChop, ARROW_CHOP_RAD 3), so the voxel under the impact point is routinely the one it knocked out.
+  const phRideBody = (b) => {
+    if (!b || !b.gpu || !b.cpuGrid || !drops.length) return;
+    const g = b.cpuGrid, bw = b.gpu.bw, bh = b.gpu.bh, bd = b.gpu.bd, cL = b.gpu.comL, R = 2;
+    for (const dr of drops) {
+      if (!dr || !dr.stick || !dr.hitDone || dr.gone) continue;   // only a shaft that has actually landed
+      if (dr.stuckSlot !== undefined) continue;        // riding an animal — sim/particles.js's path owns it and must not be overridden
+      if (dr.rideB && PH.bodies.indexOf(dr.rideB) >= 0) continue;   // already riding a body that is still alive
+      const dx = dr.ex - b.pos[0], dy = dr.ey - b.pos[1], dz = dr.ez - b.pos[2];
+      const ox = dx * b.ax[0] + dy * b.ax[1] + dz * b.ax[2];   // the impact point in the body's own frame — ax/ay/az are its local axes in WORLD space, so this is one projection each (the same transform phBodyIdAt uses)
+      const oy = dx * b.ay[0] + dy * b.ay[1] + dz * b.ay[2];
+      const oz = dx * b.az[0] + dy * b.az[1] + dz * b.az[2];
+      const cx = ox + cL[0], cy = oy + cL[1], cz = oz + cL[2];   // …and into its voxel grid
+      if (cx < -R || cy < -R || cz < -R || cx > bw + R || cy > bh + R || cz > bd + R) continue;
+      let found = false;
+      for (let qy = -R; qy <= R && !found; qy++) for (let qz = -R; qz <= R && !found; qz++) for (let qx = -R; qx <= R && !found; qx++) {
+        const lx = Math.floor(cx) + qx, ly = Math.floor(cy) + qy, lz = Math.floor(cz) + qz;
+        if (lx < 0 || ly < 0 || lz < 0 || lx >= bw || ly >= bh || lz >= bd) continue;
+        if (g[lx + ly * bw + lz * bw * bh]) found = true;
+      }
+      if (!found) continue;
+      dr.rideB = b; dr.rOx = ox; dr.rOy = oy; dr.rOz = oz; dr.rideMiss = 0;
+      dr.rAx = [b.ax[0], b.ax[1], b.ax[2]];            // the body's attitude AT ATTACH — main/tick-support.js composes it with the current one into the delta the shaft turns by
+      dr.rAy = [b.ay[0], b.ay[1], b.ay[2]];
+      dr.rAz = [b.az[0], b.az[1], b.az[2]];
+    }
+  };
   const phBuildBody = (S, cells, f, idMap) => {
     const t0 = performance.now();
     const b = phBuildBody0(S, cells, f, idMap);
+    phRideBody(b);                                     // …and any arrow standing in the voxels this body was just made of now rides it (see the note above)
     PH.stats.buildMs = (PH.stats.buildMs || 0) + (performance.now() - t0);
     PH.stats.buildN = (PH.stats.buildN | 0) + 1;
     PH.stats.buildVox = (PH.stats.buildVox | 0) + cells.length;

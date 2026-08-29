@@ -643,7 +643,7 @@
     if (desertM(wx, wz) < 0.85) return null;
     if (H(wx, wz) <= WL + 4) return null;              // never in water, never on a beach
     if (nearCave(wx, wz)) return null;
-    const dxs = wx - SPWX, dzs = wz - SPWZ;
+    const dxs = wx - (SPWX + SPOX), dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // the spawn clearing, same radius the pines respect
     return { wx, wz, mi: (ihash(cx * 3 + 7, cz * 5 + 2) * CACTI.length) | 0, rot: (ihash(cx + 61, cz + 37) * 3.99) | 0 };
   }
@@ -669,7 +669,7 @@
     if (desertM(wx, wz) < 0.85) return null;           // ADMIT test, not a reject: a rock in the blend band is a rock in the treeline
     if (H(wx, wz) <= WL + 4) return null;
     if (nearCave(wx, wz)) return null;
-    const dxs = wx - SPWX, dzs = wz - SPWZ;
+    const dxs = wx - (SPWX + SPOX), dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // the spawn clearing the pines respect
     // Same three tiers rocks26 ships, weighted so the desert reads as scattered stone with the odd landmark
     // rather than a boulder field: big 4%, mid 20%, the small/runic pool the rest.
@@ -724,7 +724,7 @@
     if (desertM(wx, wz) < 0.85) return null;
     if (H(wx, wz) <= WL + 4) return null;              // never in the water, and not on the beach ring either
     if (nearCave(wx, wz)) return null;
-    const dxs = wx - SPWX, dzs = wz - SPWZ;
+    const dxs = wx - (SPWX + SPOX), dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // the spawn clearing, same radius the pines respect
     const mi = (ihash(cx * 3 + 11, cz * 5 + 43) * SHRUBV.length) | 0;
     const m = SHRUBV[mi], half = Math.max(m.sx, m.sy) >> 1;   // this plant's OWN half-footprint — the set runs 5 to 16 wide, so one fixed radius would either float the big ones or over-space the small ones. Read off the MODEL, so a re-authored set changes the spacing and the seating with it and nothing here needs touching
@@ -1045,7 +1045,7 @@
     // starts INSIDE this biome rather than beside it, so this is the clearing they actually stand in, and an
     // oak trunk 2.6 m away puts bark across a third of the screen. Derived from SPYAW rather than assuming
     // +X, so re-baking the spawn heading moves the corridor with it.
-    const dxs = wx - SPWX, dzs = wz - SPWZ;
+    const dxs = wx - (SPWX + SPOX), dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 40 * 40) return null;
     const fwdX = Math.sin(SPYAW), fwdZ = Math.cos(SPYAW);
     const along = dxs * fwdX + dzs * fwdZ;
@@ -1292,7 +1292,15 @@
     const wx = Math.round(cx * BKCELL + 12 + ihash(cx * 7 + 5, cz * 9 + 13) * (BKCELL - 24));
     const wz = Math.round(cz * BKCELL + 12 + ihash(cx * 13 + 7, cz * 11 + 3) * (BKCELL - 24));
     if (birchM(wx, wz) < 0.5) return null;             // BIRCH BAND ONLY - the mirror of the pines' test at the same halfway point
-    const dxs = wx - SPWX, dzs = wz - SPWZ;            // the spawn clearing and the sight-line corridor, at the oak's broadleaf radii: the player now spawns IN this biome
+    // ── SPWX + SPOX, NOT SPWX (user 2026-08-28: "prevent the player from spawning in a tree") ── every
+    // clearing in this file used to measure from SPWX alone, and SPWX is the BAND ANCHOR, not the player.
+    // The player stands at SPWX + SPOX and SPOX is -2160 (world/build.js), so all seven clearings were being
+    // carved 2160 voxels east of anybody — outside the 2048-wide streaming window entirely, i.e. a hole in
+    // terrain that is never generated, protecting nobody. Measured before the fix, over 8 fresh worlds: the
+    // nearest birch trunk came in at 4.1 voxels twice, against the 40 this line asks for.
+    // Every other clearing in this file carries the same correction for the same reason; the split between
+    // the two numbers is explained at SPOX in world/window.js.
+    const dxs = wx - (SPWX + SPOX), dzs = wz - SPWZ;   // the spawn clearing and the sight-line corridor, at the oak's broadleaf radii: the player now spawns IN this biome
     if (dxs * dxs + dzs * dzs < 40 * 40) return null;
     const fwdX = Math.sin(SPYAW), fwdZ = Math.cos(SPYAW);
     const along = dxs * fwdX + dzs * fwdZ;
@@ -1329,7 +1337,7 @@
     // is not known until the model is picked, and the cheap box test above still rejects most cells first.
     { const m8 = BIRCHV[k];
       if (m8) { const tw8 = birchTrunkW(t, m8);
-        const sdx = tw8.wx - SPWX, sdz = tw8.wz - SPWZ;
+        const sdx = tw8.wx - (SPWX + SPOX), sdz = tw8.wz - SPWZ;
         if (sdx * sdx + sdz * sdz < BK_SPAWN * BK_SPAWN) return null; } }   // sink 1-3, and it means what it means for an oak: the stamp writes in mode 1, so courses below local ground are refused rather than punched into the hill
     // -- AND A BEEHIVE ON ONE BIRCH IN A HUNDRED (user 2026-08-24: "attach beehives to some of the birch trees.
     // make it somewhat rare. say 10%?", walked down to 5% and then 2% the same day, and to 1% on 2026-08-26)
@@ -1424,7 +1432,7 @@
     // excluded itself from the two biomes that existed when it was written, and a band that is neither
     // desert nor oak reads to it as ordinary pine country.
     if (birchM(wx, wz) > 0.5) return null;
-    const dxs = wx - SPWX, dzs = wz - SPWZ;
+    const dxs = wx - (SPWX + SPOX), dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // spawn clearing
     // ── AND A CLEAR LINE OF SIGHT DOWN THE SPAWN HEADING (user 2026-08-16: "try not to have the player spawn
     // looking in front of a pine tree") ── the 26-voxel clearing above only guarantees elbow room; a pine just

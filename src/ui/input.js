@@ -6,7 +6,7 @@
   // click on the canvas takes control; the esc menu only appears on the first pointer-unlock (pressing Esc mid-game).
   const CDPTEST = location.search.includes('cdp');   // headless test harness: pointer lock in headless Chrome still ClipCursor-pins the REAL Windows cursor to the hidden window — never request it under test
   const LIFE_TRACE = !location.search.includes('oldlife');   // ── DYNAMIC LIFE ── trace-injected creature rendering (full SVGF path); ?oldlife falls back to the analytic composite path for A/B
-  const CMD_KEY = false;                              // T opens the command line — off (user 2026-08-27); the console and __vb.cmd() are untouched
+  const CMD_KEY = true;                               // T opens the command line — back ON (user 2026-08-28, "give me back the command prompt"); it was switched off 2026-08-27 and nothing else about the console ever moved
   let CARD_FORCE = -1;                                // __vb.cardN(n): pin the perched-songbird count for an A/B; -1 follows the biome
   let lifeDbg = 0;                                     // life debug view (u.lifeCfg.x) — __vb.lifedbg(mode): 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO
   // ── COMPASS ── a scrolling heading ribbon at top centre. yaw 0 faces +Z, so N=+Z, E=+X, S=-Z, W=-X and
@@ -98,7 +98,7 @@
     if (e.code === 'Escape') lockEl.classList.remove('hidden');   // Esc can't request pointer lock → count it as a button press and just open the esc menu
     else tryLock();
   });
-  document.addEventListener('pointerlockerror', () => { if (!locked && performance.now() - CMD.escAt > 1600) lockEl.classList.remove('hidden'); });   // …but never right after the command line was dismissed with Escape: the refusal IS the browser's exit cooldown (user)   // if a lock request is refused, fall back to the esc menu so the player is never stuck
+  document.addEventListener('pointerlockerror', () => { if (!locked && !CMD.relock) lockEl.classList.remove('hidden'); });   // …but never while a re-lock attempt after an Escape-dismissed command line is still coming: THAT refusal is the browser's own exit cooldown, not a real failure (see cmdBackIn in ui/console.js — it clears CMD.relock before its last attempt, so a genuine refusal still lands here)   // if a lock request is refused, fall back to the esc menu so the player is never stuck
   // ── CUSTOM FREE-MOUSE CURSOR ── shown whenever the pointer is NOT locked (menus, the video editor, the death screen).
   // Follows the mouse as a crosshair and morphs to a square over anything clickable; the native cursor is hidden so the
   // two never double up. While locked the game's own centre crosshair takes over and this is hidden.
@@ -131,7 +131,7 @@
     lockPend = false;                                  // …the request this covers has been answered, either way (see tryLock)
     locked = document.pointerLockElement === canvas;
     if (locked && !wasLocked) freshLock = true;
-    lockEl.classList.toggle('hidden', locked || dead || lightMode || CMD.open || performance.now() - CMD.escAt < 1600 || !vePanel.classList.contains('hidden'));   // …or while the COMMAND LINE is up, or across the re-lock retry after Escape dismissed it (user)   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
+    lockEl.classList.toggle('hidden', locked || dead || lightMode || CMD.open || !!CMD.relock || !vePanel.classList.contains('hidden'));   // …or while the COMMAND LINE is up, or across the re-lock retry after Escape dismissed it (user) — CMD.relock is that retry saying it is still coming, which is what the 1600 ms window here used to guess at   // never surface the esc menu on top of the open video editor — or over LIGHT MODE, which released the cursor on purpose
     if (locked) $('playHint').classList.add('hidden');   // taken control → drop the click-to-enter prompt (the esc menu handles re-entry from here)
     crossEl.classList.toggle('hidden', !locked);
     cmpVis();                                    // the compass follows the crosshair, gated by the settings toggle
@@ -198,7 +198,8 @@
   VIT.onDeath = die;                                   // the vitals own mortality now; die() is just the game-over screen
   $('over').addEventListener('click', () => { dead = false; $('over').classList.add('hidden'); if (ED.on) edExit();   // NEVER respawn in the asset editor (user) — force-exit it, and lock straight back into the GAME rather than the menu, so a respawn-click can't land on the editor button
     respawn(); tryLock(); });
-  let tday = 7 / 24, cycleSpeed = 1, godRays = true;   // day/night cycle: 20-min day at 1x; STARTS AT 7:00 am on load (user)
+  let cloudT = 0;                                     // ── CLOUD TIME ── seconds, but advanced by dt * cycleSpeed so the deck's wind keeps step with the sun. At 1x it tracks wall time exactly, which is what keeps the normal drift unchanged. Frozen with the sun under __TFREEZE, or an A/B would compare two different cloud fields
+  let tday = 7 / 24, cycleSpeed = 1, sunFx = true;     // day/night cycle: 20-min day at 1x; STARTS AT 7:00 am on load (user). sunFx = u.fx bit 0: it used to gate the god rays AND the lens flare; the rays were removed 2026-08-28, so the flare is all it now switches
   let moonDay = 4;                                     // moon PHASE day counter — starts at 4/8 = full moon; each in-game day advances the phase
   // ── THE SCROLL-UP HINT (user 2026-08-07) ── shown once, ten seconds into a session, and retired the first
   // time the player scrolls up. `shArmT` is set when they actually take control rather than at page load, so
@@ -264,9 +265,13 @@
     // Closing with Y again takes the cursor back, so the key is the whole round trip.
     if (ED.on && e.code === 'KeyY') { setLightMode(!!edSzToggle()); return; }
     if (!locked) return;
-    // ── T NO LONGER OPENS THE COMMAND LINE (user 2026-08-27) ── the console itself is untouched: ui/console.js
-    // still builds it, cmdShow/cmdRun/cmdMsg are all still exported, and __vb.cmd(line) still runs any command,
-    // which is how the test harness drives it. Only the key is gone. Set CMD_KEY true to put it back.
+    // ── T OPENS THE COMMAND LINE ── switched OFF 2026-08-27 and back ON 2026-08-28 (user: "give me back the
+    // command prompt"), both times by the CMD_KEY flag at the top of this fragment and nothing else. The console
+    // was never touched either way: ui/console.js still builds it, cmdShow/cmdRun/cmdMsg are still exported, and
+    // __vb.cmd(line) still runs any command, which is how the test harness drives it — so the flag is the ONE
+    // place to change if it is ever wanted off again. Placed above every other binding and returning, so the
+    // console owns the keyboard while it is open; behind `!locked` so it cannot fire from the pause menu, and
+    // behind `!ED.on` so T stays the asset editor's own key.
     if (CMD_KEY && e.code === 'KeyT' && !ED.on) { e.preventDefault(); cmdShow(true); return; }
     // ── THE STONE AGE BENCH OWNS THE KEYBOARD WHILE IT IS OPEN (user 2026-08-19) ── placed above every other
     // binding and returning, for the reason the command line above does the same: while a chooser is up, the
@@ -308,7 +313,7 @@
     // ── AND DROPPING OUT OF FLY COSTS NOTHING ── switching fly OFF in mid-air starts a real fall, and the
     // fall-damage tracker would bill the player for the whole descent. Pressing F is a mode change, not a
     // mistake, so it grants ONE free landing, cleared the moment the feet touch down.
-    if (binds.fly && e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; vitReset(); if (!P.fly) { P.noFall = 1; P.fallPk = undefined; } }   // toggle fly (user re-added the F keybind 2026-07-22, removed it 2026-08-27 and brought it back the same day)
+    if (binds.fly && e.code === binds.fly) { P.fly = !P.fly; P.vy = 0; vitReset(); if (!P.fly) { P.noFall = 1; P.fallPk = undefined; } }   // toggle fly. THE HANDLER NEVER LEFT — it is guarded on binds.fly, so unbinding F is a one-line edit to DEFBINDS in ui/keybinds.js and nothing here has to change. Added 2026-07-22, unbound 2026-08-27, restored 2026-08-28 (user: "give the f keybind back"); each round trip touched only that table and its BINDNAMES label, which is the point of the guard
     // R-key recording is BACK ON with the #veBtn button (user 2026-08-02, reversing the 2026-07-23 disable).
     if (e.code === binds.record && (!ED.on || !ED.paused)) { veToggleRec(); }   // R records / stops the screen; in the editor it STILL records unless the bunny is already selected (then 'r' rotates the frame — see below)
     // ── Y CLEARS THE PERCHED SONGBIRDS (user 2026-08-27) ── the count is already a pinnable number:

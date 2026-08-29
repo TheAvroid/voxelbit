@@ -1,4 +1,9 @@
   // ── WGSL ────────────────────────────────────────────────────────────────────
+  // ── THE SUN'S ANGULAR RADIUS, ONCE ── the WGSL below needs both the cosine (for the cheap disc test) and
+  // the angle itself (for the moon's disc coordinates). Deriving one from the other in JS is the only way
+  // they cannot drift; a hand-typed second literal is a bug waiting for the next size change.
+  const SUN_COS_R = 0.999619141;
+  const SUN_ANG_R = Math.acos(SUN_COS_R);
   const PRE_SRC = () => /* wgsl */`
     struct U {
       camPos : vec3<f32>, tanH : f32,
@@ -77,6 +82,12 @@
       // ── RIGID-BODY GROUP SPHERES ── xyz = centre (window coords), w = radius, over PHYS_GRP consecutive bodies;
       // w <= 0 means the group is empty. Appended at the VERY end, same rule as every field above it.
       physG : array<vec4<f32>, ${PHYS_NG}>,
+      // ── THE CLOUD CLOCK ── x = seconds of CLOUD time, which is not wall time: it advances with the
+      // day/night cycle speed so the deck drifts in step with the sun (user 2026-08-28: "make the clouds move
+      // with the time of the sun … when I speed up the day night cycle, also speed up the cloud movement").
+      // At 1x it equals u.time exactly, so the deck's normal drift is unchanged. Appended at the VERY end for
+      // the reason every field back here is. y/z/w spare.
+      cloudT : vec4<f32>,
     }
     @group(0) @binding(0) var<uniform> u : U;
     ${UNI_CONST}
@@ -87,6 +98,21 @@
     const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
     const BX : i32 = ${BX}; const BY : i32 = ${BY}; const BZ : i32 = ${BZ};
     const SUN_COL : vec3<f32> = vec3<f32>(3.60, 3.24, 2.74);
+    // ── THE SUN'S ANGULAR RADIUS ── the MOON's own outer threshold, so the two discs are the same size
+    // (user 2026-08-28: "make the sun as big as the moon"). Real sun and moon are both ~0.53 degrees and
+    // very nearly equal, so matching them is the physical answer as well as the asked-for one.
+    const SUN_COSR : f32 = ${SUN_COS_R};
+    const SUN_ANGR : f32 = ${SUN_ANG_R};                              // …the same radius as an ANGLE, for the moon's disc coordinates                              // cos(1.5814 deg) -> a 3.1627 deg disc. Size lives here as an ANGLE, so scaling by k is cos(k * acos(edge)), worked out rather than eyeballed. Running total (user 2026-08-28): moon-matched 0.999742 (2.6031 deg) -> 25% smaller 0.999854872 (1.9523) -> 20% bigger 0.999791018 (2.3428) -> 35% bigger, this (3.1627). The flare in blit.js is sized off this now, so a size change finally carries the glare with it instead of being pinned by it. It is no longer the moon's number, so the two discs are free to differ. SUN_SOFT below needs no adjustment: it is expressed in rr, which is relative to THIS radius, so the soft edge scales with the disc on its own
+    const SUN_SOFT : f32 = 0.35;                                     // ── SOFT EDGE (user 2026-08-28: "make the edges of the sun softer") ── where the limb fade STARTS, in rr = (theta/thetaR)^2. Limb darkening alone cannot soften a visible edge here: the disc is SUN_COL * 6 = ~21 linear, so mu^alpha only falls under 1.0 in the outermost 0.008% of the radius and everything inside clips to flat white — the boundary lands on one pixel however physical the profile is. This fades the disc over rr 1.00 -> 0.35, i.e. x 0.592 -> 1.000 — the outer 41% of the radius, about 8 px of gradient at the limb (was 0.70 / the outer 16% / 3 px), which is the part the eye actually reads as softness
+    // ── LIMB DARKENING, Hestroffer & Magnan 1998 ── the reason a real sun does not read as a flat white
+    // blob: its centre is bright and neutral and its edge is markedly darker AND redder, because a sight
+    // line near the limb passes obliquely and only reaches cooler, higher photosphere. I(mu)/I(1) = mu^alpha
+    // with alpha(lambda) = -0.023 + 0.292/lambda (lambda in micron), which at the 695/555/433 nm primaries
+    // this kind of renderer uses gives the constant below — the same one Hillaire/Frostbite-derived sky
+    // implementations and Unreal's SkyAtmosphere carry. At 0.99 of the radius the limb is at 0.46 of centre
+    // in red and 0.28 in blue: that gradient, and the definite edge under it, is what makes it a SPHERE
+    // rather than a brush stroke.
+    const SUN_LIMB : vec3<f32> = vec3<f32>(0.397, 0.503, 0.652);
     const ZENITH  : vec3<f32> = vec3<f32>(0.118, 0.302, 0.663);   // deep clear blue
     const HORIZON : vec3<f32> = vec3<f32>(0.402, 0.567, 0.769);   // blue haze, not grey
     const BOUNCE  : vec3<f32> = vec3<f32>(0.238, 0.207, 0.156);
@@ -235,6 +261,16 @@
     // night of the 20-minute cycle. MET_Q is the BLOCK — 0.004 rad is about 0.23 deg, i.e. ~6 px across at 1080p
     // and a 70 deg field, which is a chunky pixel rather than a dot. Raise MET_Q and the streak gets blockier.
     const MET_PER : f32 = 32.0;  // HALVED A THIRD TIME (user 2026-08-26: "make the shooting stars 50% less common") - 16.0 -> 32.0. Same lever, same reason as both halvings below: each slot's offset is mi * MET_PER / 8, so doubling the window stretches the spacing with it and the meteors stay evenly spread instead of bunching - they simply arrive half as often. THE RATE IS READABLE OFF THE LOOP: 8 slots, one window each per MET_PER, and 80% of windows fire (the ih3 < 0.20 skip), so arrivals = 8 * 0.8 / MET_PER - one every 2.5 s somewhere in the sky at 16, one every 5.0 s at 32, and the expected number ALIVE at any instant (x MET_LIFE 1.4 s) goes 0.56 -> 0.28. Only a fraction of the sphere is ever in the 70 deg view, which is why that still reads as an event. NOTE the absolute figures in the older notes below ('every 42 seconds', 'every 2.8 minutes') do not survive that arithmetic and are wrong; the halvings they describe are right.   // HALVED AGAIN (user 2026-08-20: "cut the shooting star rate in half in the night sky") — 8.0 -> 16.0, the same lever as the 2026-08-19 halving and for the same reason: doubling each slot's window with the slot COUNT unchanged at 8 keeps them evenly spaced and simply arrives half as often. About one meteor every 2.8 minutes of night somewhere in the sky   // HALVED RATE (user 2026-08-19: "decrease the rate of shooting stars by 50%") — 4.0 -> 8.0 doubles each slot's window, so with the slot COUNT unchanged at 8 the meteors stay evenly spaced and simply arrive half as often     // window per slot. With 8 slots, a 1.4 s life and 80% of windows taken, roughly 2.2 meteors are alive somewhere in the sky at any moment — about one in five frames has one IN VIEW, because a 72-degree view is a small part of a sphere. That last factor is the whole reason the first attempt (2 slots, 46 s) was invisible: it put one meteor every 42 s ANYWHERE, i.e. perhaps one in view a minute.
+    const FLARE_SUN : f32 = 0.24;                                    // the sun's own glare, per disc, four of them. 0.16 -> 0.30 to make the on-axis level constant, then -> 0.24 when that read too large. Tightening the radii does most of the shrinking; this stops the smaller discs simply concentrating the same light
+    const FLARE_GHOST : f32 = 0.16;                                  // …and the axis ghosts, which SHOULD depend on where you look — that is what a lens flare is
+    const MOON_FLARE : f32 = 0.12;                                   // how much of the sun's lens flare the MOON gets. It is a reflector, not a source, and at parity it read as a second sun sitting on a crescent
+    const MOON_SOFT : f32 = 0.88;                                    // the moon's edge fade, in rr. Far crisper than the sun's SUN_SOFT: this is a solid body with a real edge, not a light source, and softening it would read as an out-of-focus sticker
+    const MOON_CROP : f32 = 1.09;                                    // ── AND THIS IS WHY THERE WAS A BLACK RING (user 2026-08-28: "there's a black outline on the moon") ── the disc samples the photo at texture radius 1/MOON_CROP, so at 0.955 the geometric limb was reading at 1.047 of the file's half-width. MEASURED on game/assets/moon.png (384x384): the moon in it fills 0.938 of the half-width, min 0.927 — so everything past 0.938 was the photograph's own black surround, sampled as albedo and clamped to the file's black edge pixels. A black rim on the limb, all the way round. At 1.09 the limb reads at 0.917, safely inside the disc. It cost the outermost 8% of the photo and nothing else. It was always wrong; cutting the moon's bloom is what stopped hiding it
+    const MOON_LL : f32 = 0.85;                                      // Lunar-Lambert blend: how much Lommel-Seeliger against Lambert. High, because the flat full moon is the thing to get right
+    const MOON_GAIN : f32 = 1.74;                                    // …and the normaliser that puts the FULL moon's disc centre back at 1.0 (at alpha 0 the blend gives 0.575)
+    const MOON_PHMIN : f32 = 0.42;                                   // the crescent's surface brightness against the full moon's. Not 0: the opposition surge is a brightening AT full, not a darkening everywhere else
+    const MOON_EARTH : f32 = 0.055;                                  // earthshine strength on the unlit side
+    const MOON_ESHINE : vec3<f32> = vec3<f32>(0.62, 0.72, 1.00);     // …and its colour: sunlight that has bounced off an ocean planet comes back blue
     const MOON_PIV : f32 = 0.52;   // the photo's own mid-tone: contrast is expanded ABOUT this, not about black
     const MOON_CON : f32 = 1.75;   // …and by this much
     const MOON_MID : f32 = 0.50;   // …landing on THIS output level. Separating the input pivot from the output mid-point is what keeps the gain from simply pushing the face into the ceiling: at PIV 0.46 / CON 2.30 with no offset, 34% of the disc clipped at 255 and the highlands went featureless — brighter, but no more legible than before. See the note at moonRGB
@@ -247,23 +283,62 @@
       var c = skyBase(rd);
       let realSun = select(u.sunDir, -u.sunDir, isMoon());            // the ACTUAL sun (u.sunDir carries the up-body; −it is the down-body). Both are continuous across the dusk/dawn swap.
       let realMoon = -realSun;                                         // the moon is the opposite point — so as the sun sets in the west, the moon RISES in the east, both drawn from their OWN elevation
-      { let s = dot(rd, realSun); let up = smoothstep(-0.03, 0.06, realSun.y);   // ── SUN disc: only while the sun is above the horizon; it sinks below the map at dusk and rises at dawn (no pop) ──
-        // ── 25% SMALLER (user 2026-08-21: "make the sun 25% smaller") ── s is cos(angle from the sun), so the
-        // size lives in these thresholds as an ANGLE and not as a radius: 25% off is cos(0.75 * acos(edge)) for
-        // each of the two, worked out rather than eyeballed. The disc was 1.2657 degrees across and is 0.9493
-        // now (for scale, the real sun is ~0.53, so it is still generous — this brings it nearer, not past).
-        //   outer 0.999939 -> 0.99996569   (0.6329 deg -> 0.4747)
-        //   inner 0.999962 -> 0.99997862   (0.4995 deg -> 0.3746)
-        // BOTH thresholds move, so the soft edge between them scales with the disc instead of staying the width
-        // it was — the sun reads as the same object, smaller, rather than as a smaller core with the old fringe.
-        // AND THE GLARE GOES WITH IT, which is the half that makes the change visible at all. The corona is
-        // pow(s, n) and its angular width goes as 1/sqrt(n), so shrinking it 25% is n / 0.75^2 = 2600 -> 4622.
-        // Left alone it would have kept the old radius and the sun would still have read the same size, just
-        // with a smaller hard core inside an unchanged halo.
-        // BRIGHTNESS IS UNTOUCHED (6.0 and 0.5), and so is every LIGHTING term: the sun that lights the world is
-        // u.sunDir and its irradiance, computed nowhere near here. This is the sun you can SEE, only.
-        c += SUN_COL * 6.0 * smoothstep(0.99996569, 0.99997862, s) * up;  // hard-edged disc, halved
-        c += SUN_COL * 0.5 * pow(max(s, 0.0), 4622.0) * up; }         // GLARE — a tight corona hugging the disc
+      // ── IT SETS BEHIND THE HORIZON, IT DOES NOT FADE (user 2026-08-28) ── the gate used to be
+      // smoothstep(-0.03, 0.06, realSun.y): a fade keyed on the SUN'S OWN ALTITUDE, so the whole disc dimmed
+      // uniformly as it came down and had gone before it ever reached the skyline. A setting sun does not do
+      // that; it is OCCLUDED. Keying on the RAY's elevation instead cuts the disc along the horizon line, so
+      // the sun sinks into it and is progressively eaten from below — half a sun at the skyline, then a
+      // sliver, then nothing, at full brightness throughout. It needs no separate cutoff: once the body is
+      // more than its own radius down, no ray inside the disc is above the horizon and it draws nothing.
+      // Terrain in front of it was always handled — the sky only draws where no geometry did.
+      { let s = dot(rd, realSun); let up = smoothstep(-0.006, 0.006, rd.y);   // ── SUN disc: only while the sun is above the horizon; it sinks below the map at dusk and rises at dawn (no pop) ──
+        // ── THE SUN IS THE MOON'S SIZE (user 2026-08-28: "make the sun as big as the moon") ── and it is
+        // literally the moon's own two thresholds, copied, not a size worked out to land near it: the moon
+        // disc below is smoothstep(0.999742, 0.999787, s) and so is this. Writing the same numbers is the
+        // only version of "as big as" that cannot drift when one of them is next retuned.
+        //   2.6031 degrees across, from 1.4239 — the earlier size, itself 50% up from the 2026-08-21 shrink.
+        // For scale the real sun and moon are both ~0.53 degrees across and very nearly equal, which is why
+        // matching them is the physically sensible answer as well as the asked-for one.
+        // ── AND THE GLARE IS A LENS FLARE (user 2026-08-28: "its like a lens flare glare", with a reference
+        // frame of the sun blooming through thin cloud) ── that reference is the CG_BLOOM path in COMPOSITE,
+        // which only fires where the deck has alpha, so in clear sky the sun had nothing around it but a
+        // 1.49-degree corona: a hot edge, not a glare. These two lobes put the same falloff in open sky.
+        // TWO LOBES, and the split is the whole trick: for pow(cos, n) the half-power angle is
+        // sqrt(2*ln2/n), so ONE exponent cannot be both a blown-out core and a wide haze. Measured profile,
+        // against a sky of ~0.55 (saturation is anything reaching 1.0):
+        //   n = 700  (2.55 deg)      0 deg 2.25 · 2 deg 1.60 · 5 deg 0.46   <- carries the blown-out core
+        //   n =  80  (7.54 deg)      7 deg 0.26 · 12 deg 0.08 · 20 deg 0.00 <- carries the haze around it
+        // Blown out to ~5 degrees, visible haze to ~12, gone by 20. The old separate corona is GONE rather
+        // than kept alongside: at n = 2054 its half-power was 1.49 degrees, inside the moon-sized disc now
+        // drawn over it, so it could only have added cost. cloudgen.js CG_BLOOM_TIGHT tracks the TIGHTEST
+        // lobe here by design, so it moved 2054 -> 700 with it and the deck's bloom still grows out of this
+        // glare rather than appearing as a ring beside it.
+        // WARM AT THE HORIZON on the TRUE sun's elevation, so it reddens with the sunset band in skyBase
+        // instead of staying white against an orange sky, and it rides the same up-gate as the disc.
+        // BRIGHTNESS OF THE DISC IS UNTOUCHED (6.0), and so is every LIGHTING term: the sun that lights the
+        // world is u.sunDir and its irradiance, computed nowhere near here. This is the sun you can SEE.
+        // ── THE DISC ── a limb-darkened sphere, not a filled circle. rr is (theta/thetaR)^2 taken through
+        // the small-angle identity theta^2 ~ 2(1-cos theta), so the 1-s and 1-SUN_COSR halves cancel it
+        // exactly and no acos is needed; mu is then the cosine of the angle from the surface normal, which
+        // is what the Hestroffer-Magnan law is written in. It reaches 0 AT the limb, so the disc ends on its
+        // own and needs no smoothstep to close it.
+        let rr = (1.0 - s) / (1.0 - SUN_COSR);
+        if (rr < 1.0) { c += SUN_COL * 6.0 * pow(vec3<f32>(sqrt(max(0.0, 1.0 - rr))), SUN_LIMB) * smoothstep(1.0, SUN_SOFT, rr) * up; }   // …times the soft-edge fade; smoothstep with e0 > e1 is the decreasing form, so it is 1 well inside the disc and 0 at the limb
+        // ── NO AUREOLE HERE, DELIBERATELY (user 2026-08-28: "get rid of that white brush stroke you have
+        // around the sun, but the glare looks good") ── the sky-side glow this block used to add is gone.
+        // Two pow lobes washed white across the sky around the disc, and however they were weighted they
+        // read as a painted smear rather than as light: too strong and they saturated over the disc's own
+        // edge and erased it, too weak and they were a grey haze with no shape. Either way the sun stopped
+        // looking like an object.
+        // THE GLARE IS NOT MISSING — IT MOVED, or rather it was always somewhere else. The layered, tinted
+        // bloom that reads correctly is the LENS FLARE in blit.js: four tinted discs which, drawn centred on
+        // the sun, are what the eye reads as glare. That is a LENS effect and belongs at the lens, applied to
+        // the finished frame, not summed into the sky radiance here where it also becomes the colour the
+        // distance haze fades toward. Adding a second glow in this file only competed with it.
+        // So the sky's job is now just the disc: a limb-darkened sphere with a definite edge, and the flare
+        // over the top of it. Anything tempted to add a glow back here should go to blit.js instead.
+        // (cloudgen.js CG_BLOOM_TIGHT no longer has a corona in this file to match — see the note there.)
+      }
       // ── THE MOON IS AN OBJECT, NOT A GLOW (user 2026-08-19: "the moon seems to be transparent, make the moon
       // completely solid") ── it used to be an ADDITIVE c += mt * ..., so whatever the sky already held
       // showed straight through it. Worse, the whole star / milky way / nebula / meteor block below runs AFTER
@@ -272,38 +347,78 @@
       // with mix() rather than +. Inside the disc the sky is replaced, which is what opaque means.
       var moonRGB = vec3<f32>(0.0);
       var moonCov = 0.0;
-      { let s = dot(rd, realMoon); let up = smoothstep(-0.03, 0.06, realMoon.y);   // only while the moon is above the horizon — rises as the sun sets
-        let md = smoothstep(0.999742, 0.999787, s);
+      // ── THE MOON, REWORKED (user 2026-08-28: "rework the moon … give it the moon phases … make the moon
+      // the same size as the sun") ──
+      // SIZE: SUN_COSR, the sun's own constant, so the two are identical and cannot drift. That is also the
+      // physical answer — the real sun and moon are both ~0.53 degrees, which is why eclipses work at all.
+      // WHY THE PHOTO IS STILL SAMPLED FLAT: moon.webp is a photograph, i.e. already the orthographic
+      // projection of a sphere seen from far away, and the Moon is tidally locked so it is always the same
+      // hemisphere. A flat billboard of an orthographic photo IS the correct mapping; re-projecting it onto a
+      // sphere would apply the foreshortening twice and smear the limb.
+      // PHASES: the game hangs the moon at the anti-solar point, so geometrically it would be full every
+      // night — which is exactly why this used to be drawn full and why a phase cannot come from the moon's
+      // POSITION here. It comes from the lighting instead: a virtual sun direction in the moon's own frame,
+      // swung by the phase angle. alpha 0 puts it behind the observer (full), pi/2 to the side (quarter), pi
+      // behind the moon (new), and the terminator sweeps across on its own. The frame's x axis is the sun's
+      // bearing, so the lit limb points at where the sun actually is, which is the thing people notice.
+      // REFLECTANCE — LUNAR-LAMBERT, not Lambert: lunar regolith is a fine dust that scatters from below the
+      // surface, and its single-scattering term is Lommel-Seeliger, mu0/(mu0+mu). At full phase mu0 = mu
+      // everywhere on the disc, so that term is 1/2 EVERYWHERE and the moon reads as a flat disc rather than
+      // a shaded ball — which is what a real full moon looks like, and what plain Lambert gets wrong. The
+      // accepted model is a weighted blend of the two, so that is what this is.
+      { let s = dot(rd, realMoon);
+        let rrM = (1.0 - s) / (1.0 - SUN_COSR);
+        let up = smoothstep(-0.006, 0.006, rd.y);                    // the moon sets behind the horizon too, for the same reason the sun does
+        let md = smoothstep(1.0, MOON_SOFT, rrM) * up;               // a body, so its edge is nearly hard — only enough softness to stop it aliasing
         if (md > 0.001) {
-          // ── THE PHOTO IS ALREADY A FULL MOON, SO IT IS SAMPLED STRAIGHT ── moon.webp (user 2026-08-19)
-          // replaced moon.jpg, which was a waning crescent with its terminator and earthshine baked in and
-          // needed a blur-and-high-pass in here to pass for full. Measured on the new file: 68.8% of it sits
-          // above 40/255 and its four quadrants are within 92-113 of one another, i.e. evenly lit across the
-          // face. All of that reconstruction is therefore gone — four texture taps and an unsharp mask with it.
-          // No synthetic terminator either: the disc is drawn as the photograph shows it, at every hour of
-          // every night, which is what "make the moon a full moon" asks for.
-          let TS = normalize(realMoon * dot(normalize(vec3<f32>(realSun.x, 1e-4, realSun.z)), realMoon) - normalize(vec3<f32>(realSun.x, 1e-4, realSun.z)));
+          let sunH = normalize(vec3<f32>(realSun.x, 1e-4, realSun.z));
+          let TS = normalize(realMoon * dot(sunH, realMoon) - sunH);
           let B = cross(realMoon, TS);
-          let uv = clamp(vec2<f32>(dot(rd, TS), dot(rd, B)) * (0.5 / 0.0217) + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+          let du = vec2<f32>(dot(rd, TS), dot(rd, B)) / SUN_ANGR;    // disc coordinates, -1..1 across the face
+          let uv = clamp(du * (0.5 / MOON_CROP) + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
           let mt = textureSampleLevel(moonTex, moonSamp, uv, 0.0).rgb;
-          // A gentle limb roll only, so the edge does not read as a cut-out sticker. No lambert term: a real
-          // full moon is nearly flat across the face (Lommel-Seeliger backscatter straight at the observer),
-          // which is exactly why it reads as a disc and not as a ball.
-          let du = uv * 2.0 - vec2<f32>(1.0);
-          let r2 = clamp(du.x * du.x + du.y * du.y, 0.0, 1.0);
-          let limb = 0.86 + 0.14 * sqrt(1.0 - r2);
-          // ── CONTRAST, OR THE CRATERS ARE NOT THERE (user 2026-08-19: "theres not enough contrast in the
-          // moon. I cant see the craters") ── the photograph is a faithful full moon and that is exactly the
-          // problem: a real full moon is lit straight down the line of sight, so there are no shadows in it and
-          // the maria differ from the highlands by very little. Measured off the rendered disc before this: a
-          // median of 229/255 with the 25th percentile at 207, i.e. three quarters of the face inside 22 levels.
-          // So expand about the disc's own mid-tone. MOON_PIV is that mid-tone in linear terms and MOON_CON the
-          // gain; the pivot matters more than the gain, because expanding about 0 would just brighten and clip.
+          let r2 = clamp(dot(du, du), 0.0, 1.0);
+          // ── THE SURFACE NORMAL ── +z points at the observer, so this is the visible hemisphere of a unit
+          // sphere. Everything below is ordinary surface shading in that frame.
+          let N = vec3<f32>(du.x, du.y, sqrt(max(0.0, 1.0 - r2)));
+          let alpha = u.rdist.y * 6.2831853;                         // the 8-day phase, already tracked in JS as (moonDay + tday) / 8
+          let Ld = vec3<f32>(sin(alpha), 0.0, cos(alpha));
+          let mu0 = dot(N, Ld);                                      // cos incidence
+          let mu = N.z;                                              // cos emission — the observer is straight down +z
+          let lsT = max(mu0, 0.0) / max(mu0 + mu, 1e-3);             // Lommel-Seeliger
+          let lit = clamp((MOON_LL * lsT + (1.0 - MOON_LL) * max(mu0, 0.0)) * MOON_GAIN, 0.0, 1.0);
+          // ── EARTHSHINE ── the dark side is not black: it is lit by a full Earth, about 1/10000 of direct
+          // sunlight but easily visible next to a thin crescent, and it is BLUE because it is sunlight that
+          // has already bounced off an ocean-and-cloud planet. It is what makes "the old moon in the new
+          // moon's arms" the familiar sight it is, and without it a crescent reads as a broken disc.
+          // ── PHASE BRIGHTNESS (user 2026-08-28: "make the brightness of the moon match what phase the
+          // moon is in") ── the lit AREA already shrinks with the phase; this is the surface brightness on
+          // top of it. A real moon is disproportionately bright at full — the opposition surge, regolith
+          // backscattering straight at the observer — so a half moon is nowhere near half as bright as a
+          // full one. phaseF is the illuminated fraction, (1 + cos alpha) / 2.
+          let phaseF = 0.5 + 0.5 * cos(alpha);
+          let phaseB = mix(MOON_PHMIN, 1.0, phaseF);
+          // ── EARTHSHINE RUNS THE OTHER WAY, and that is not a mistake ── it is sunlight bounced off the
+          // EARTH, and from the moon the Earth shows the opposite phase: it is full when the moon is new.
+          // So the ashen glow is at its strongest on the thinnest crescent, which is exactly when anyone
+          // ever notices it.
+          let earth = MOON_EARTH * (1.0 - lit) * mix(0.35, 1.0, 1.0 - phaseF);
+          // ── CONTRAST, OR THE CRATERS ARE NOT THERE (user 2026-08-19) ── the photograph is a faithful full
+          // moon and that is the problem: lit straight down the line of sight there are no shadows in it and
+          // the maria differ from the highlands by very little. Expand about the disc's own mid-tone; the
+          // pivot matters more than the gain, since expanding about 0 would only brighten and clip.
           let mlum = max(max(mt.r, mt.g), mt.b);
           let mcon = clamp((mlum - MOON_PIV) * MOON_CON + MOON_MID, 0.02, 1.0);
-          let mtint = mt / max(mlum, 0.001);                          // keep the photo's own (near-neutral) hue, drive only the level
-          moonRGB = clamp(mtint * mcon * limb, vec3<f32>(0.0), vec3<f32>(1.0));
-          moonCov = md * up;
+          let mtint = mt / max(mlum, 0.001);                          // keep the photo's own near-neutral hue, drive only the level
+          let limb = 0.86 + 0.14 * sqrt(1.0 - r2);                    // a gentle roll so the edge does not read as a cut-out sticker
+          // ── THE DARK SIDE CARRIES THE TEXTURE TOO (user 2026-08-28: "the part of the moon that's dark is
+          // completely blank, put the moon texture on the blank side as well") ── the earthshine term used to
+          // be a flat colour, so the unlit part was a featureless blue disc. It is the same surface: the same
+          // maria and highlands are there, just lit by a different and far fainter source, so it takes the
+          // same albedo. Multiplying by the photo is both what looks right and what is physically true.
+          let face = mtint * mcon;                                     // the moon's own albedo, contrast-expanded once and used by BOTH lighting terms
+          moonRGB = clamp(face * limb * lit * phaseB + MOON_ESHINE * face * earth, vec3<f32>(0.0), vec3<f32>(1.0));
+          moonCov = md;                                               // OPAQUE across the whole disc, lit or not — the dark limb still hides the stars behind it
         }
       }
       let night = 1.0 - smoothstep(-0.16, 0.02, realSun.y);          // stars fade in on the real sun elevation — continuous across the swap (no pop)
@@ -369,7 +484,13 @@
           // mean-66 star is about +/-36, roughly 3x the floor, and 0.35-1.0 Hz stays far slower than TAA's
           // 8-frame (~0.13 s) window, so it resolves as a shimmer rather than half-averaging into a flicker.
           let tp = ih3(cc.x + 17, cc.y + 5, cc.z - 23);
-          let tw = 0.45 + 0.55 * sin(u.time * (0.75 + tp * 1.35) + tp * 62.83);   // BAKED IN (user 2026-08-19: "bake in the star twinkle and remove it from the panel") — it was night bit 3, and the select() with it   // SLOWER (user 2026-08-19: "make the star twinkle slower") — 2.2-6.2 rad/s was a 1.0-2.9 s period and read as busy; 0.75-2.10 is 3.0-8.4 s. The AMPLITUDE is what clears TAA's jitter floor, not the rate, so slowing it costs no visibility
+          // ── max(0), AND THAT IS THE BLACK FLICKER (user 2026-08-28: "the stars that are flickering are
+          // flickering black; make them disappear, not flicker black") ── 0.45 + 0.55 * sin spans -0.10 to
+          // 1.00, and the line below ADDS tw to the sky. For the tenth of its swing that sat below zero the
+          // star was subtracting, punching a hole DARKER than the sky behind it — a black star, which is why
+          // it read as a flicker to black rather than a fade out. Clamping the trough at zero leaves the
+          // curve alone and lets the star simply go out.
+          let tw = max(0.0, 0.45 + 0.55 * sin(u.time * (0.75 + tp * 1.35) + tp * 62.83));   // BAKED IN (user 2026-08-19: "bake in the star twinkle and remove it from the panel") — it was night bit 3, and the select() with it   // SLOWER (user 2026-08-19: "make the star twinkle slower") — 2.2-6.2 rad/s was a 1.0-2.9 s period and read as busy; 0.75-2.10 is 3.0-8.4 s. The AMPLITUDE is what clears TAA's jitter floor, not the rate, so slowing it costs no visibility
           c += vec3<f32>(0.9, 0.93, 1.0) * (hh - thr) * 1000.0 * night * tw * hz;   // 2x (user 2026-08-19: 'double the brightness'). It is the TERM that doubles, not the pixel: aces() and the 1/2.2 encode downstream absorb it, so the brightest star moves up without ever reaching 255 - a star that saturates loses its colour and its size cue, which is the failure mode the moon disc hit
         }
         // ── SHOOTING STARS (night bit 5, user 2026-08-19: "throw in some pixelated shooting stars") ──

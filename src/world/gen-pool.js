@@ -5,7 +5,7 @@
   // padded when sx === sz so gwrap's axis test stays unambiguous). Boot fans all bands across every core;
   // streaming bands are chunked along their long axis and prefetched one band ahead. If workers are unavailable
   // or die, every call site falls back to the identical inline path. `?nopool` forces inline for A/B testing.
-  const ORPH = { slabs: 0, swept: 0, skipped: 0, cut: 0, seeded: 0, tiles: 0, tileCut: 0 };   // generation orphan sweep telemetry
+  const ORPH = { slabs: 0, swept: 0, skipped: 0, cut: 0, seeded: 0, tiles: 0, tileCut: 0, wblit: 0 };   // wblit: slabs the WORKER wrote into the shared world itself   // generation orphan sweep telemetry
   // ── THE MAIN-THREAD REGEN PATH ── a long teleport rebuilds the whole rect here rather than through the
   // slab pool, so the worker's sweep never sees it. The rect is up to 448x448x384, far too big to flood in
   // one go, so it is queued as tiles and drained on a budget like every other deferred queue in here.
@@ -46,15 +46,17 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const tables = { NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
-    const fns = { ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riverS, bankEval, bankDist, desWob, desertM, birchM, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
+    const fns = { ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
-    wsrc2 += 'let WX = 0, WZ = 0, OX = 0, OZ = 0, BX = 0, W = null, hmap = null, touched = null, MROT = null, remap = null, rivScope = null;\n' +
+    wsrc2 += 'let GW = null, GW64 = null, GWX = 0, GWZ = 0;\n' +
+      'let WX = 0, WZ = 0, OX = 0, OZ = 0, BX = 0, W = null, hmap = null, touched = null, MROT = null, remap = null, rivScope = null;\n' +
       'const gwrap = (v, n) => v - (n === WX ? OX : OZ);\n' +
       'const rivCache = new Map(), caveCache = new Map();\n' +
+      'const rivNear = new Map();\n' +   // riversNear's store — every top-level the registered fns close over must be declared here too
       'const takeRows = () => null;\n';
     // (ROCK26D — the Colorado-sandstone twin of ROCK26 — is no longer derived here: the desert rocks went
     //  back to stock grey, so nothing in the worker references it. bow.js still builds it and R26DMAP is
@@ -83,7 +85,9 @@
     wsrc2 += 'const OAKLITEV = OAKLITER.length ? OAKV.map((m) => blosRemap(m, OAKLITER, BLOSRANK, 0)) : [];' + String.fromCharCode(10);   // …and the LIGHT GREEN crowns, third of three, same recipe and the same rank table. The 0 is blosRemap's fruit argument: the cherry scatter is blossom-only, so a green oak must not grow cherries out of its own leaves
     wsrc2 += 'onmessage = (e) => {\n' +
       '  const d = e.data;\n' +
-      '  if (d.init) { MROT = d.MROT; remap = d.remap; return; }\n' +
+      '  if (d.init) { MROT = d.MROT; remap = d.remap;\n' +
+      '    if (d.gW) { GW = new Uint8Array(d.gW); GW64 = new Float64Array(d.gW); GWX = d.GWX; GWZ = d.GWZ; }\n' +
+      '    return; }\n' +
       '  const sx = d.x1 - d.x0, sz = d.z1 - d.z0;\n' +
       '  WX = sx === sz ? sx + 8 : sx; WZ = sz; OX = d.x0; OZ = d.z0; BX = WX >> 3;\n' +
       '  W = new Uint8Array(WX * WY * WZ); hmap = new Int16Array(WX * WZ);\n' +
@@ -116,7 +120,31 @@
       '      }\n' +
       '    }\n' +
       '  }\n' +
-      '  postMessage({ id: d.id, stride: WX, W, hmap, bb, wb, nbx, nby, nbz, orph }, [W.buffer, hmap.buffer, bb.buffer, wb.buffer]);\n' +
+      // ── AND THE SLAB GOES STRAIGHT INTO THE WORLD, ON THIS CORE ── the identical copy blitSlab does on the
+      // main thread, run here instead: same bytes, same order, same toroidal mapping, different thread. That
+      // copy is what the whole change is for — 1,900 ms of main-thread time per 20 s of sprinting, against
+      // 6 ms actually spent waiting on the pool. No lock is needed because the region is PRIVATE until the
+      // message below: world/stream.js reads or uploads a band only once every job reports done, and the rect
+      // only expands past it after that. Both of blitSlab's paths are mirrored, narrow-run f64 stores included
+      // — a band on an x side is only 8-32 wide, so the narrow path is the common one.
+      '  var blitted = 0;\n' +
+      '  if (GW) {\n' +
+      '    const gw2 = (v, n) => ((v % n) + n) % n;\n' +
+      '    const segs = []; const S64 = new Float64Array(W.buffer);\n' +
+      '    for (let a = d.x0; a < d.x1;) { const g = gw2(a, GWX), ln = Math.min(d.x1 - a, GWX - g); segs.push([a - d.x0, g, ln]); a += ln; }\n' +
+      '    for (let z = d.z0; z < d.z1; z++) { const gz = gw2(z, GWZ);\n' +
+      '      const zs = (z - d.z0) * WX * WY, zd = gz * GWX * WY;\n' +
+      '      for (let si = 0; si < segs.length; si++) { const o = segs[si][0], g = segs[si][1], ln = segs[si][2];\n' +
+      '        if (ln >= 128) { for (let y = 0; y < WY; y++) { const s0 = zs + y * WX + o; GW.set(W.subarray(s0, s0 + ln), zd + y * GWX + g); } }\n' +
+      '        else { const n8 = ln >> 3;\n' +
+      '          for (let y = 0; y < WY; y++) { const s8 = (zs + y * WX + o) >> 3, d8 = (zd + y * GWX + g) >> 3;\n' +
+      '            for (let k = 0; k < n8; k++) GW64[d8 + k] = S64[s8 + k]; } }\n' +
+      '      }\n' +
+      '    }\n' +
+      '    blitted = 1;\n' +
+      '  }\n' +
+      '  if (blitted) postMessage({ id: d.id, stride: WX, blitted: 1, hmap, bb, wb, nbx, nby, nbz, orph }, [hmap.buffer, bb.buffer, wb.buffer]);\n' +
+      '  else postMessage({ id: d.id, stride: WX, W, hmap, bb, wb, nbx, nby, nbz, orph }, [W.buffer, hmap.buffer, bb.buffer, wb.buffer]);\n' +
       '  W = hmap = touched = null;\n' +
       '};';
     if (location.search.includes('wsrc')) window.__vbWSRC = wsrc2;   // ?wsrc — hand the assembled worker source out so a syntax error in it can be located instead of guessed at
@@ -126,9 +154,9 @@
     for (let i = 0; i < NPOOL; i++) {
       const w = new Worker(purl);
       w.busyId = 0;
-      w.onmessage = (e) => { w.busyId = 0; if (e.data.orph !== undefined) { ORPH.slabs++; if (!e.data.orph) ORPH.skipped++; else { ORPH.swept++; ORPH.cut += e.data.orph.cut; } } const j = jobById.get(e.data.id); if (j) { j.msg = e.data; j.done = true; } poolPump(); poolNotify(); };
+      w.onmessage = (e) => { w.busyId = 0; if (e.data.blitted) ORPH.wblit++; if (e.data.orph !== undefined) { ORPH.slabs++; if (!e.data.orph) ORPH.skipped++; else { ORPH.swept++; ORPH.cut += e.data.orph.cut; } } const j = jobById.get(e.data.id); if (j) { j.msg = e.data; j.done = true; } poolPump(); poolNotify(); };
       w.onerror = (e) => { console.warn('[vb] gen pool error — inline generation', e.message || e); poolOk = false; };
-      w.postMessage({ init: 1, MROT, remap });
+      w.postMessage(W_SHARED ? { init: 1, MROT, remap, gW: W.buffer, GWX: WX, GWZ: WZ } : { init: 1, MROT, remap });   // a SharedArrayBuffer is POSTED, never transferred — both sides address the same memory
       genPool.push(w);
     }
     URL.revokeObjectURL(purl);                         // every worker is constructed by now — drop the blob (see genWorker above)
@@ -171,19 +199,29 @@
     return R;
   }
   const W64 = new Float64Array(W.buffer);
-  function blitSlab(j) {                               // memcpy one finished slab into the toroidal window: W + hmap + touched
-    const m = j.msg, S = m.W, HM = m.hmap, st = m.stride, S64 = new Float64Array(S.buffer);
+  function blitSlab(j) {                               // merge one finished slab into the toroidal window: W + hmap + touched
+    // ── THE W COPY MAY ALREADY BE DONE ── when the world grid is shared (world/window.js), the worker blits
+    // its own slab straight into it and sends `blitted`, so there is no m.W here to copy and this pass has
+    // only the small per-COLUMN work left: hmap, the touched tiles and the brick bits. Those are one entry per
+    // column against W's WY (384) rows, which is why sharing W alone takes nearly all of the cost.
+    const m = j.msg, HM = m.hmap, st = m.stride;
     const segs = [];                                   // x runs contiguous in BOTH slab and window (all x extents are 8-aligned)
     for (let a = j.x0; a < j.x1;) { const g = gwrap(a, WX), len = Math.min(j.x1 - a, WX - g); segs.push([a - j.x0, g, len]); a += len; }
-    for (let z = j.z0; z < j.z1; z++) {
+    for (let z = j.z0; z < j.z1; z++) {                // hmap ALWAYS: it is one row per column and is still transferred, shared or not
       const gz = gwrap(z, WZ), hs = (z - j.z0) * st, hd = gz * WX;
       for (const [o, g, len] of segs) hmap.set(HM.subarray(hs + o, hs + o + len), hd + g);
-      const zs = (z - j.z0) * st * WY, zd = gz * WX * WY;
-      for (const [o, g, len] of segs) {
-        if (len >= 128) { for (let y = 0; y < WY; y++) { const s0 = zs + y * st + o; W.set(S.subarray(s0, s0 + len), zd + y * WX + g); } }
-        else { const n = len >> 3;                     // narrow runs (8-wide x-bands): whole-f64 stores skip ~790k subarray allocs per band
-          for (let y = 0; y < WY; y++) { const s8 = (zs + y * st + o) >> 3, d8 = (zd + y * WX + g) >> 3;
-            for (let k = 0; k < n; k++) W64[d8 + k] = S64[s8 + k]; } }
+    }
+    if (!m.blitted) {                                  // …and W only when the worker could NOT write it itself
+      const S = m.W, S64 = new Float64Array(S.buffer);
+      for (let z = j.z0; z < j.z1; z++) {
+        const gz = gwrap(z, WZ);
+        const zs = (z - j.z0) * st * WY, zd = gz * WX * WY;
+        for (const [o, g, len] of segs) {
+          if (len >= 128) { for (let y = 0; y < WY; y++) { const s0 = zs + y * st + o; W.set(S.subarray(s0, s0 + len), zd + y * WX + g); } }
+          else { const n = len >> 3;                   // narrow runs (8-wide x-bands): whole-f64 stores skip ~790k subarray allocs per band
+            for (let y = 0; y < WY; y++) { const s8 = (zs + y * st + o) >> 3, d8 = (zd + y * WX + g) >> 3;
+              for (let k = 0; k < n; k++) W64[d8 + k] = S64[s8 + k]; } }
+        }
       }
     }
     for (let z = j.z0 & ~7; z < j.z1; z += 8) { const tr = (gwrap(z, WZ) >> 3) * BX;   // blitted memory is no longer virgin

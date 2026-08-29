@@ -8,6 +8,7 @@
 <div id="compass" class="hidden"><div id="cmpTrack"></div></div>
 <div id="clashHint" class="hidden">shift + left click</div>
 <div id="scrollHint" class="hidden"><svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8 21h8v-2H8zm0-4h8v-2H8z"/><path d="M8 17h2v-4H8zm-5-4h5v-2H3zm0-2h2V9H3zm2-2h2V7H5zm2-2h2V5H7zm2-2h2V3H9zm2-2h2V1h-2zm2 2h2V3h-2zm2 2h2V5h-2zm2 2h2V7h-2zm2 4h2V9h-2zm-3 0h3v-2h-3zm-2 4h2v-4h-2z"/></svg><span>scroll up</span></div>
+<div id="lgToast"></div>
 <div id="achv"><div class="a1">discovery</div><div class="a2" id="achName">sharp edge</div></div>   <!-- .a2 is written per discovery; the markup keeps the first one as its resting text -->
 <div id="hud"></div>
 <!-- the voxelised red hit flash used to be a <canvas id="hurtFx"> here. It is drawn by BLIT now, INSIDE the image, because a DOM element over the game canvas is not part of what canvas.captureStream records and so never appeared in a recording (user 2026-08-16) -->
@@ -28,7 +29,7 @@
   <div class="arwRow arwSld"><span>scale</span><input type="range" id="edSzR" min="30" max="200" step="5" value="100"><span class="arwVal" id="edSzV">100%</span></div>
   <div class="arwRow"><button id="edSzReset">reset</button><span class="arwHint" id="edSzHint"></span></div></div>
 <div id="lock" class="hidden">
-  <h1><span class="tv" data-t="voxel">voxel</span><span class="tb" data-t="bit">bit</span><sup class="tver">v1.3</sup></h1>
+  <h1><span class="tv" data-t="voxel">voxel</span><span class="tb" data-t="bit">bit</span><sup class="tver">v1.4</sup></h1>
   <div id="btnRow">
     <button id="kbBtn" aria-label="settings" data-lbl="settings"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M10 22H6v-2h4v2Zm-4-2H4v-2H2v-2h2v-2h2v6Zm6-4h10v2H12v2h-2v-6h2v2Zm-2-2H6v-2h4v2Zm8-2h-4v-2h4v2Zm-6-4H2V6h10V4h2v6h-2V8Zm8-2h2v2h-2v2h-2V4h2v2Zm-2-2h-4V2h4v2Z"/></svg></button>
     <button id="edBtn" aria-label="asset editor" data-lbl="asset editor"><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24"><path d="M14 4h4v2h-4zm-4-2h4v2h-4zM6 8h4v2H6zm0 10h4v2H6zm4-8h4v2h-4zm0 10h4v2h-4zm4-12h4v2h-4zm0 10h4v2h-4zM6 4h4v2H6zM2 6h4v2H2zm0 10h4v2H2zM18 6h4v2h-4zm0 10h4v2h-4z"/><path d="M2 6h2v12H2zm18 0h2v12h-2zm-8 6h2v8h-2z"/></svg></button>
@@ -53,8 +54,8 @@
   <h2>visuals</h2>
   <div class="optRows">
   <div id="todWrap"><span id="todLabel">07:00</span><input type="range" id="todSlider" min="0" max="1430" step="10" value="420"></div>
-  <div id="resWrap"><span id="resLabel">resolution 60%</span><input type="range" id="resSlider" min="40" max="100" step="10" value="60"></div>
-  <div id="dofStrWrap"><span id="dofStrLabel">depth of field 30%</span><input type="range" id="dofStrSlider" min="0" max="100" step="10" value="30"></div>
+  <div id="resWrap"><span id="resLabel">resolution 70%</span><input type="range" id="resSlider" min="40" max="100" step="10" value="70"></div>
+  <div id="dofStrWrap"><span id="dofStrLabel">depth of field 0%</span><input type="range" id="dofStrSlider" min="0" max="100" step="10" value="0"></div>
   <div id="snowWrap"><span>snow</span><button id="snowBtn">off</button></div>
   <div id="fsWrap"><span>fullscreen</span><button id="fsBtn">off</button></div>
   <div id="vigWrap"><span>vignette</span><button id="vigBtn">on</button></div>

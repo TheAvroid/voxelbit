@@ -4,7 +4,7 @@
     @group(0) @binding(3) var colorPrev : texture_2d<f32>;
     @group(0) @binding(4) var samp : sampler;
     @group(0) @binding(5) var colorHistOut : texture_storage_2d<rgba8unorm, write>;
-    @group(0) @binding(7) var dofOut : texture_storage_2d<rgba8unorm, write>;   // ── DEPTH OF FIELD ── {resolved colour, circle of confusion}: a SECOND target so colHist.a keeps carrying the sky mask the god rays read, and so the blit's gather costs one fetch per tap instead of two
+    @group(0) @binding(7) var dofOut : texture_storage_2d<rgba8unorm, write>;   // ── DEPTH OF FIELD ── {resolved colour, circle of confusion}: a SECOND target so colHist.a keeps carrying the sky mask (the blit's depth-of-field and lens flare read it; the god rays that first needed it were removed 2026-08-28), and so the blit's gather costs one fetch per tap instead of two
     @group(0) @binding(6) var slotT : texture_2d<u32>;               // dynamic-life ids — creature pixels reproject through their slot's rigid motion (kills color-history ghost trails)
     // ── YCoCg ── a rotation, not a tone curve: exactly invertible, one dot product each way. Variance in this
     // space separates "this pixel got brighter" from "this pixel changed hue", which is the distinction an RGB
@@ -99,7 +99,7 @@
         outc = mix(prev, cur, select(1.0, 0.12, LG(8u)));           // bit 8 off → no colour history (raw, jittery, but instant)
       }
       textureStore(dofOut, vec2<i32>(gid.xy), vec4<f32>(outc, cur4.a));   // the CoC is deliberately NOT temporally blended: it is a depth-derived field, and mixing this frame's against a reprojected one would drag a stale blur radius across every silhouette
-      textureStore(colorHistOut, vec2<i32>(gid.xy), vec4<f32>(outc, select(0.0, 1.0, t < 0.0)));   // alpha = SKY mask → only the sky/sun feed the god-ray scatter in the blit
+      textureStore(colorHistOut, vec2<i32>(gid.xy), vec4<f32>(outc, select(0.0, 1.0, t < 0.0)));   // alpha = SKY mask → the blit tells sky from geometry (depth of field, lens flare)
     }
   `;
 

@@ -10,17 +10,19 @@
   // wiring, its reset entry and its saved default all come back exactly as they were. Nothing else changes:
   // the day still runs its 20-minute cycle, storms still arrive on their own schedule, P still toggles one
   // and __vb.snow() / __vb.tod() still work. These are PANEL gates, not feature switches.
-  const TOD_UI = false, SNOW_UI = false;
+  const TOD_UI = false, SNOW_UI = false, DOF_UI = false;   // …and the DEPTH OF FIELD row (user 2026-08-28), on the same terms: the effect is untouched, only its row leaves the panel
   { const r = $('todWrap'); if (r && !TOD_UI) r.style.display = 'none'; }     // hidden rather than cut out of html/10-body.html: main/tick-passes.js writes todLabel/todSlider every quarter-second while the menu is open, and a missing element there is a ReferenceError inside the tick — i.e. a frozen sim behind a perfectly rendered frame
   { const r = $('snowWrap'); if (r && !SNOW_UI) r.style.display = 'none'; }
-  const SET_SLIDERS = ['volSlider', 'sfxSlider', 'musSlider', 'ambSlider', 'todSlider', 'resSlider', 'dofStrSlider', 'sensSlider'].filter((id) => TOD_UI || id !== 'todSlider');
+  { const r = $('dofStrWrap'); if (r && !DOF_UI) r.style.display = 'none'; }   // hidden, not cut: the wiring below still reads dofStrSlider/dofStrLabel, and the effect still runs at whatever strength was last saved
+  const SET_SLIDERS = ['volSlider', 'sfxSlider', 'musSlider', 'ambSlider', 'todSlider', 'resSlider', 'dofStrSlider', 'sensSlider'].filter((id) => (TOD_UI || id !== 'todSlider') && (DOF_UI || id !== 'dofStrSlider'));
   const SET_TOGGLES = ['snowBtn', 'vigBtn', 'crdBtn', 'fpsBtn', 'timeBtn', 'resHudBtn'].filter((id) => SNOW_UI || id !== 'snowBtn');   // the on/off text buttons; the compass is icon-only and is handled by its own flag
   const SET_KEYS = ['vb_vol', 'vb_sfx', 'vb_mus', 'vb_amb', 'vb_sens', 'vb_sens2', 'vb_scale', 'vb_lgt', 'vb_vig', 'vb_wrefl',
                     'vb_binds', 'vb_coords', 'vb_fps', 'vb_time', 'vb_res', 'vb_cmp', 'vb_dofstr2'];
   const CMP_DEF = false;                               // the compass is the one toggle with no on/off text to snapshot (it is an icon), so its default is written here and must match ui/input.js's cmpOn
   const SET_DEF = {};
   for (const id of SET_SLIDERS.concat(SET_TOGGLES)) { const el = $(id); if (el) SET_DEF[id] = el.tagName === 'INPUT' ? el.value : el.textContent.trim(); }
-  // ── DEPTH OF FIELD ── persisted (vb_dof), default ON, and declared HERE for the same reason vigOn is: the
+  // ── DEPTH OF FIELD ── persisted (vb_dofstr2), DEFAULT OFF (user 2026-08-28: "turn it off by default"), and
+  // declared HERE for the same reason vigOn is: the
   // settings-panel wiring further down reads it, so a declaration below that point is a TDZ error at boot.
   const DOF_COC = 0.0105;                              // max circle of confusion as a fraction of the canvas HEIGHT (~11 px at 1080p) — a fraction, not a pixel count, so the look is identical at every resolution and render scale
   const DOF_RACK = 0.13;                               // autofocus time constant, seconds. A lens racks, it does not cut: focus that snapped the instant the view moved read as the picture breathing
@@ -29,7 +31,12 @@
   // radius, so 100% is always the tuned default whatever the number behind it becomes, and the slider stays
   // meaningful if DOF_COC is ever re-tuned. 0% is the same picture as the toggle being off; 200% is roughly a
   // 22 px circle at 1080p, which is as shallow as this scene takes before the far field stops reading as depth.
-  let dofStr = 0.3; try { const v9 = parseFloat(localStorage.getItem('vb_dofstr2')); if (v9 >= 0 && v9 <= 2) dofStr = Math.min(v9, 1); } catch (e) {}   // …CLAMPED TO 1 (user 2026-08-09: the slider stops at 100%): the range used to run to 200%, so a saved 1.5 would otherwise leave the knob parked at the end of a bar that no longer means what the value does   // 30% of DOF_COC (user 2026-08-08) — ~3 px at 1080p: enough that distance reads as distance, well short of the shallow look the top of the slider gives
+  // 0 IS FREE, NOT JUST INVISIBLE: dofCocK falls to 0, so u.dof.y is 0, so R is 0 and the `if (R > 0.8)`
+  // gather in BLIT never runs — the pixel pays one texture fetch for its own CoC and nothing else.
+  // A SAVED VALUE STILL WINS, which is the whole meaning of "by default": anyone who has moved the slider
+  // keeps what they set. Only a fresh profile, or one that has taken the settings reset (vb_dofstr2 is in
+  // its key list at the top of this file), lands on the new default.
+  let dofStr = 0; try { const v9 = parseFloat(localStorage.getItem('vb_dofstr2')); if (v9 >= 0 && v9 <= 2) dofStr = Math.min(v9, 1); } catch (e) {}   // …CLAMPED TO 1 (user 2026-08-09: the slider stops at 100%): the range used to run to 200%, so a saved 1.5 would otherwise leave the knob parked at the end of a bar that no longer means what the value does   // 30% of DOF_COC (user 2026-08-08) — ~3 px at 1080p: enough that distance reads as distance, well short of the shallow look the top of the slider gives
   const DOF_TAPS = 1.6;                                // gather taps per PIXEL of blur radius — see the loop in BLIT. 1.6 x the 21 px widest circle = the 32 taps the effect was tuned at, so the top of the strength slider is unchanged and everything below it costs what its own area is worth.
   let dofTapK = DOF_TAPS;                              // …pinnable with __vb.dof({taps: k}) to A/B the sampling against the old flat 32 (k = 40 forces 32 everywhere)
   let dofLock = 0, dofCocK = DOF_COC * dofStr;         // __vb.dof() overrides: pin the focal plane / the aperture to A/B the effect at a fixed strength (0 = autofocus)

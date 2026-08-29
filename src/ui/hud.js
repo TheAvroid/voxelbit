@@ -39,22 +39,22 @@
   try { const nv = parseInt(localStorage.getItem('vb_night'), 10); if (nv >= 0 && nv < 128) nightMask = nv; } catch (e) {}
   let frame = 0, prevT = performance.now(), fpsEma = 60, hudT = 0;
   let profQS = null, profRes = null, profStg = null, profBusy = false, profNew = false;   // per-pass GPU timing — armed via __vb.prof(true)
-  const profEma = [0, 0, 0, 0, 0, 0, 0, 0], PROF_NAMES = ['trace', 'temporal', 'spatial', 'composite', 'taa', 'vis', 'blit', 'god'];
+  const profEma = [0, 0, 0, 0, 0, 0, 0], PROF_NAMES = ['trace', 'temporal', 'spatial', 'composite', 'taa', 'vis', 'blit'];   // the 8th, 'god', went with the god-ray pass (removed 2026-08-28) — a name, its query pair, the count, both buffer sizes, the resolve length and the readback bound all move together or the totals lie
   // ── RAW PER-FRAME MINIMUM ── the EMA is unusable as an A/B statistic while ANOTHER process is using the
   // GPU: a timestamp query measures wall time on the GPU timeline, so a preempted pass reports inflated
   // duration, and a LONG pass (trace) absorbs far more of that than a short one (blit). Measured on this
   // box against a byte-identical build under two names: trace swung 0.77 → 3.55 ms while blit held
   // 0.123-0.125. The MINIMUM over a few hundred readbacks is the pass's uncontended cost — the camera is
   // static and the only per-frame variation is the AO/sun jitter, so the cheapest frame is the honest one.
-  const profMin = [1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9]; let profSamp = 0;
+  const profMin = [1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9]; let profSamp = 0;
   function profArm(on) {
     if (on && PROF && !profQS) {
-      profQS = device.createQuerySet({ type: 'timestamp', count: 16 });   // 5 run() passes + the VIS prepass (10/11) + the blit render pass (12/13) + the half-res god rays (14/15).
-      // A pass with no query pair is INVISIBLE here while still costing frame time: when the god march moved out of BLIT it took 1.3 ms of
+      profQS = device.createQuerySet({ type: 'timestamp', count: 14 });   // 5 run() passes + the VIS prepass (10/11) + the blit render pass (12/13).
+      // A pass with no query pair is INVISIBLE here while still costing frame time: when the god march once moved out of BLIT into a pass of its own it took 1.3 ms of
       // measured cost with it and reappeared nowhere, so __vb.prof()'s total silently understated the frame. Index i reads q[2i], q[2i+1] —
       // adding a pass means a name, a query pair, the count, both buffer sizes, the resolve length and the readback bound, or the totals lie.
-      profRes = device.createBuffer({ size: 128, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
-      profStg = device.createBuffer({ size: 128, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      profRes = device.createBuffer({ size: 112, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+      profStg = device.createBuffer({ size: 112, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     } else if (!on && profQS) { profQS.destroy(); profRes.destroy(); profStg.destroy(); profQS = profRes = profStg = null; }
   }
   let waitEma = 4, paceWaited = true, paceTs = 0;      // measured pipeline-wait (CPU idle) — sizes the worldgen budget precisely

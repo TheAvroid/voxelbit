@@ -1,5 +1,5 @@
   // @module - splash, spark and debris particle pools and their per-frame step
-  // @exports petalClearBox, ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
+  // @exports petalClearBox, PETAL_HIDE, ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
   // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
   // something breaks the surface — a fish launching, the same fish coming back down, and the player going
   // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is
@@ -143,6 +143,24 @@
   // yaw. So each petal picks a fixed axis (ax, az) at birth and slides along it on a sine; the emit's rotation
   // is pinned to identity for these, which is the whole of "dont make them spin".
   const PETAL_GAP = 65;   // ── DOUBLED 2026-08-20 (user: "double the rate at which petals fall from all the trees … not the speed but the frequency") ── 130 -> 65 ms between attempts. NOTE the band (PETAL_LO..PETAL_HI, 32 slots) is the real ceiling: a petal lives up to PETAL_MAXLIFE, so once the band is full a shorter gap buys nothing and the extra attempts are simply skipped. Halving the gap raises the rate wherever the band has room — under a lone tree, at the edge of a wood — and is a no-op in a dense canopy that was already saturating it. Raising the CEILING means growing sparks3d, which comes straight out of the creature draw budget (see voxelbit-drop-slot-bands), so it is deliberately not done here.                               // ms between attempts — HALVED with the band above (user 2026-08-19); one of the two is useless without the other — with 16 slots and a ~10 s fall this keeps the band saturated, so the air stays evenly dressed rather than pulsing
+  // ── THE EYE-IN-CROWN GATE IS LATCHED, NOT INSTANTANEOUS (user 2026-08-28: "the falling leaves still
+  // flicker sometimes") ── main/tick-emit.js hides the WHOLE petal band on any frame the one voxel at the eye
+  // is foliage, so that leaves do not drift through the darkness of a crown you have clipped into. The rule is
+  // right; asking it per frame is not. A crown is see-through geometry the camera brushes constantly while
+  // walking a forest, and a graze of a few frames blanks EVERY falling leaf in the world and then brings them
+  // all back — which is the flicker, and it is global rather than local, which is why it reads so badly.
+  // MEASURED over a 2,664-frame walk through the oak wood: every one of the 286 all-dark frames was an
+  // eye-in-foliage frame (1:1, no other cause), in SIX runs — 3, 4, 4, 4, 131 and 140 frames. The two long
+  // ones are the feature working: that is walking through a crown. The four short ones are 25-41 ms of
+  // blackout apiece and are the entire bug.
+  // So the answer has to HOLD before it is acted on, in TIME and not in frames (a graze is the same 30-odd
+  // milliseconds whatever the frame rate). Symmetric on purpose: a porous crown alternates in AND out as the
+  // eye passes leaf voxels, so lagging only the hide would flicker on the way back the other way. Anything
+  // that cannot hold the new answer for PETAL_HIDE_LAG simply never changes the latch.
+  // ONE OBJECT, not three exported `let`s: main/tick-emit.js writes these every frame, and a fragment is a real
+  // ES module while it is being served loose — an exported `let` is a CONST SNAPSHOT there, so the writes would
+  // land in the bundle and vanish in dev. Fields on an exported const are the same in both (tools/lint-vb.py).
+  const PETAL_HIDE = { lag: 150, raw: false, since: 0, on: false };   // lag: ms the answer must hold — 4x the longest graze measured, well under the ~1.1 s of a real walk through a crown. raw: this frame's answer; since: when raw last CHANGED; on: the latched one the emit reads
   const PETAL_FALL = 3.5;                              // vox/s. A leaf does not drop, it descends: 0.35 m/s reads as weightless where the snow's own fall reads as weather
   // ── THE CRADLE HAD TO GET WIDER *AND* QUICKER (user 2026-08-19: "make the leafs have more of a left to right
   // sway motion vs just falling down straight") ── amplitude on its own is not the lever, and the arithmetic

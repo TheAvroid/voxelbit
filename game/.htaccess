@@ -1,0 +1,17 @@
+# ── CROSS-ORIGIN ISOLATION ── these two headers are what make SharedArrayBuffer available, which is the
+# prerequisite for the generation workers writing terrain straight into the world grid instead of handing
+# slabs back for the main thread to memcpy (measured: 1,900 ms per 20 s of sprinting, all on one thread).
+#
+# VERIFY, don't assume: load the game, open the console and type   crossOriginIsolated
+#   true   → it worked; SharedArrayBuffer is now available
+#   false  → Apache ignored this file (nginx, or mod_headers off) — set it at Cloudflare instead
+#
+# IF THE SITE BREAKS (missing images, fonts, embeds from other domains), require-corp is the cause: it
+# blocks every cross-origin subresource that has not opted in. Swap it for `credentialless`, which gives
+# the same isolation without that requirement. The game itself is self-contained — no external scripts or
+# stylesheets, and every runtime fetch is same-origin under assets/ — so it is anything ELSE on the site
+# that would object.
+<IfModule mod_headers.c>
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+  Header always set Cross-Origin-Embedder-Policy "require-corp"
+</IfModule>

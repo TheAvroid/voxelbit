@@ -81,6 +81,29 @@
       dr.stDth = thR - dr.stTh;                          // how far the body has turned since — the shaft turns with it (see the STUCK render branch)
       dr.x = Math.round(dr.ex); dr.y = Math.round(dr.ey); dr.z = Math.round(dr.ez);   // the collection radius and every distance read work off these
     }
+    for (const dr of drops) {                          // ── AND A SHAFT IN A FELLED TREE RIDES IT DOWN (user 2026-08-28) ── sim/physics.js's phRideBody attached it at the moment the body was built; this is the replay, and it is the rigid-body twin of the creature sweep above
+      if (!dr || !dr.rideB) continue;
+      const RB = dr.rideB;
+      if (PH.bodies.indexOf(RB) < 0) {                 // the body is gone — absorbed, expired, or broken into chunks
+        // ── ONE FRAME OF GRACE ── a body that SHATTERS is spliced out and its children built inside the same
+        // tick, but not necessarily before this sweep runs, and reaping on the first miss would delete a shaft
+        // that is about to be re-attached to the chunk it is actually in. Two consecutive misses means nothing
+        // claimed it, and then it goes the way an arrow in a dead animal goes (user 2026-08-05).
+        if (++dr.rideMiss < 2) continue;
+        dr.rideB = null; dr.rideM = null; dr.gone = true; continue; }
+      dr.rideMiss = 0;
+      dr.ex = RB.pos[0] + dr.rOx * RB.ax[0] + dr.rOy * RB.ay[0] + dr.rOz * RB.az[0];   // back out of the body's frame at its CURRENT attitude
+      dr.ey = RB.pos[1] + dr.rOx * RB.ax[1] + dr.rOy * RB.ay[1] + dr.rOz * RB.az[1];
+      dr.ez = RB.pos[2] + dr.rOx * RB.ax[2] + dr.rOy * RB.ay[2] + dr.rOz * RB.az[2];
+      // …and the ATTITUDE turns with it. D = R_now^T · R_attach maps a vector that was fixed in the world when
+      // the shaft attached to where that vector points now, which is exactly what the shaft's three axes want.
+      // A full 3x3 and not stDth's yaw: a trunk topples about a HORIZONTAL axis, so a yaw-only carry would keep
+      // the arrow pointing level while the tree it is buried in lies on its side.
+      const M = dr.rideM || (dr.rideM = new Float32Array(9));
+      for (let r9 = 0; r9 < 3; r9++) for (let c9 = 0; c9 < 3; c9++)
+        M[r9 * 3 + c9] = RB.ax[r9] * dr.rAx[c9] + RB.ay[r9] * dr.rAy[c9] + RB.az[r9] * dr.rAz[c9];
+      dr.x = Math.round(dr.ex); dr.y = Math.round(dr.ey); dr.z = Math.round(dr.ez);   // the collection radius and every distance read work off these, exactly as the creature sweep leaves them
+    }
     for (let i = drops.length - 1; i >= 0; i--) if (drops[i] && drops[i].gone) drops.splice(i, 1);   // …swept up here
     for (let i = drops.length - 1; i >= 0; i--) {      // a TOSSED WORM converts to a LIVE crawler the moment its arc lands — it 'snaps back to the grid' and walks off like the others
       const dr = drops[i];
@@ -163,7 +186,13 @@
       if (dr.stick && dr.T && tE >= dr.T) {            // ── STUCK ── it is buried in whatever it hit: no hover, no bob, no spin, and it keeps the attitude it struck at (user)
         px3 = dr.ex; py3 = dr.ey; pz3 = dr.ez;
         const A = aimAxes(dr.T);
-        if (dr.stDth) {                                  // planted in something that has turned since — carry the shaft round with it about world up
+        if (dr.rideM) {                                  // planted in a RIGID BODY that has moved since — the full delta rotation, so the shaft tumbles with a falling trunk instead of staying level in it
+          const M9 = dr.rideM;
+          for (const v9 of A) { const a0 = v9[0], a1 = v9[1], a2 = v9[2];
+            v9[0] = M9[0] * a0 + M9[1] * a1 + M9[2] * a2;
+            v9[1] = M9[3] * a0 + M9[4] * a1 + M9[5] * a2;
+            v9[2] = M9[6] * a0 + M9[7] * a1 + M9[8] * a2; }
+        } else if (dr.stDth) {                           // planted in a CREATURE that has turned since — carry the shaft round with it about world up
           const cD = Math.cos(dr.stDth), sD = Math.sin(dr.stDth);
           for (const v9 of A) { const ax = v9[0], az = v9[2]; v9[0] = ax * cD - az * sD; v9[2] = ax * sD + az * cD; }
         }

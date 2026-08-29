@@ -43,7 +43,7 @@
       if (ix >= q[0] - 1 && ix <= q[3] + 1 && iy >= q[1] - 1 && iy <= q[4] + 1 && iz >= q[2] - 1 && iz <= q[5] + 1) return false;
     }
     // …confined to the material it struck, exactly as a swing is: the sphere cannot spill into the next one
-    const okMat = digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v]));
+    const okMat = digOnlyTab[id] ? ((v) => !!digOnlyTab[v]) : (pickOnlyTab[id] ? ((v) => !!pickOnlyTab[v]) : ((v) => !digOnlyTab[v] && !pickOnlyTab[v] && !axeOnlyTab[v]));   // …WOOD included, the same third owned material chopSwing's okMat was missing (user 2026-08-28) — the caller hands `arrowWood` when the shaft actually struck a trunk, so this arm only ever sees SOFT decor, and a shot into the grass at a bole should not chip the bole
     const tArr = performance.now();                   // …not PH.bodies.length: see the tagging loop at the end
     // ── A STANDING TREE IS NOT DECOR ── and this ordering is the whole of the bug. phChopDecor ran FIRST and
     // trunk ids are in decorTab, so every shot into a pine was handled as though it were a mushroom: it took

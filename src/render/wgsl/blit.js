@@ -1,68 +1,8 @@
-  // ── GOD RAYS AT HALF RESOLUTION ── The 24-tap radial march used to run in BLIT, per CANVAS pixel: 7.3M
-  // pixels x 24 fetches = 175M samples a frame, which measured as 85% of the whole blit pass and 20 fps at
-  // 3834x1904. The effect itself is a broad radial smear of the sun's halo — there is no detail in it finer
-  // than a few pixels — so computing it at half resolution (a quarter of the work) and letting the bilinear
-  // sampler put it back is where the cost goes without the look changing.
-  //
-  // Halving the TAP COUNT instead was tried and measured: 12 taps with the stride, decay and scale re-derived
-  // to the same integral came back 1.735 ms against a 1.627 ms baseline — no gain, because doubling the stride
-  // costs as much cache locality as the halved count saves. The pixels are the cost, not the iterations.
-  //
-  // Only the march lives here. The tint, the daylight factor and the lens flare stay in BLIT: the flare is
-  // already gated to the ~1.3% of pixels its ghosts actually cover, and it needs full-resolution positions.
-  const GOD_SRC = () => /* wgsl */`
-    @group(0) @binding(1) var src : texture_2d<f32>;
-    @group(0) @binding(2) var samp : sampler;
-    @group(0) @binding(3) var godOut : texture_storage_2d<rgba16float, write>;
-    @compute @workgroup_size(8, 8)
-    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-      let gw = u32(ceil(u.canvasRes.x * 0.5)); let gh = u32(ceil(u.canvasRes.y * 0.5));
-      if (gid.x >= gw || gid.y >= gh) { return; }
-      let fc = (vec2<f32>(f32(gid.x), f32(gid.y)) + vec2<f32>(0.5)) * 2.0;   // centre of the 2x2 canvas block this texel stands for
-      let sf = dot(u.sunDir, u.fwd);
-      let dayK = clamp(u.sunDir.y * 3.0, 0.0, 1.0);
-      var glow = vec3<f32>(0.0);
-      // ── THE MOON'S RAYS COME FROM ITS HALO, NOT FROM A LOWER THRESHOLD (user 2026-08-20: "the god rays
-      // from the moon look terrible: try again") ── the first attempt dropped this threshold to 0.55 at night
-      // so the moon's bare disc would register. It did, and it looked exactly as bad as the report says: the
-      // disc is ~20 px, so only the handful of the 24 jittered taps that happened to land ON it contributed,
-      // and the half-res buffer turned that into a visible dot LATTICE with hard radial spikes coming off it.
-      // The threshold was never the real problem — the SOURCE was. The sun scatters beautifully here because
-      // it has a broad, smooth halo in the sky for the march to walk through; the moon had none. So the moon
-      // now gets one (see the halo beside the disc in PRE's skyColor) and this stays exactly as it was, tuned
-      // for a bright smooth source, which is what it is now given.
-      let bLo = 0.86;
-      let bHi = 1.00;
-      if (sf > 0.05 && dayK > 0.0 && (u32(u.fx) & 1u) != 0u) {
-        let sunNDC = vec2<f32>(dot(u.sunDir, u.right) / (sf * u.tanH * u.aspect), dot(u.sunDir, u.up) / (sf * u.tanH));
-        let sunPix = vec2<f32>((sunNDC.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - sunNDC.y * 0.5) * u.canvasRes.y);
-        var sp = fc;
-        let delta = (sunPix - sp) * (0.7 / 24.0);                  // rays reach ~70% of the way to the sun
-        sp += delta * fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y));   // the same IGN start jitter — at half res it still breaks the 24 discrete steps into a smooth shaft
-        var decay = 1.0;
-        for (var i = 0; i < 24; i++) {
-          sp += delta;
-          let suv = sp / u.canvasRes;
-          if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) {
-            let s4 = textureSampleLevel(src, samp, suv, 0.0);
-            let b = max(s4.r, max(s4.g, s4.b));
-            let white = min(s4.r, min(s4.g, s4.b)) / max(b, 0.001);   // 1 = white (the sun disc/halo), low = saturated sky
-            glow += s4.rgb * (smoothstep(bLo, bHi, b) * smoothstep(0.45, 0.8, white) * s4.a * decay);
-          }
-          else { break; }                                          // exact early-out, unchanged: a straight ray leaving the screen never comes back
-          decay *= 0.96;
-        }
-      }
-      textureStore(godOut, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(glow, 1.0));
-    }
-  `;
-
   const BLIT_SRC = () => /* wgsl */`
     const HURTV_GRID : vec2<f32> = vec2<f32>(64.0, 36.0);   // the hurt flash's block grid — the resolution the old DOM canvas was painted at, kept so the blocks are the same size they always were
     @group(0) @binding(1) var src : texture_2d<f32>;
     @group(0) @binding(2) var samp : sampler;
     @group(0) @binding(3) var dofT : texture_2d<f32>;
-    @group(0) @binding(4) var godT : texture_2d<f32>;                // half-res god-ray glow (see GOD_SRC above) — bilinear on the way back up                // ── DEPTH OF FIELD ── {resolved colour, signed CoC} from the TAA pass
     @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4<f32> {
       var P = array<vec2<f32>, 3>(vec2<f32>(-1.0, -3.0), vec2<f32>(3.0, 1.0), vec2<f32>(-1.0, 1.0));
       return vec4<f32>(P[vi], 0.0, 1.0);
@@ -77,7 +17,7 @@
       // sharp silhouette standing in front of it, because a tap on a focused surface has a circle of nothing and
       // cannot spread anywhere. Pixels under ~0.8 px of blur skip the loop outright, which on an ordinary frame
       // is almost all of them: the effect costs a single compare wherever the picture is in focus.
-      // It runs FIRST so the god rays, the flare ghosts and the vignette below all land on the finished image —
+      // It runs FIRST so the flare ghosts and the vignette below land on the finished image —
       // a flare is made at the lens, not at the subject, and blurring one along with the scene reads as a smudge.
       if (u.dof.x > 0.0) {
         let cocA = textureSampleLevel(dofT, samp, uv, 0.0).a;       // this pixel's own SIGNED circle of confusion, encoded to 0..1
@@ -102,7 +42,7 @@
           // for an A/B. R is spatially smooth, so neighbouring pixels agree on N and the loop barely diverges.
           let N = i32(clamp(ceil(R * u.dof.z), 8.0, 32.0));
           let fN = f32(N);
-          let rot = fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y)) * 6.2831853;   // per-pixel spiral rotation (IGN — the same hash the god rays jitter their march with): without it the fixed taps read as concentric RINGS across a bokeh highlight
+          let rot = fract(52.9829189 * fract(0.06711056 * fc.x + 0.00583715 * fc.y)) * 6.2831853;   // per-pixel spiral rotation (IGN): without it the fixed taps read as concentric RINGS across a bokeh highlight
           var acc = col; var wsum = 1.0;                            // the sharp centre seeds the sum, so wsum can never reach zero however isolated the pixel is
           for (var i = 0; i < N; i++) {
             let fi = f32(i) + 0.5;
@@ -116,24 +56,27 @@
           col = acc / wsum;
         }
       }
-      // ── GOD RAYS: screen-space radial scatter toward the sun (ported from the old engine's blit).
-      // Bright near-white SKY pixels scatter (alpha = sky mask from the TAA pass); voxels block → shafts.
+      // ── LENS FLARE ── all that is left of the sun block: the god-ray scatter that used to open it was
+      // REMOVED on the user's word (2026-08-28), along with its half-resolution march, its uniform lanes and
+      // the [U] key that A/B'd it. The flare is a separate effect that merely shared this conditional, so it
+      // keeps the same gate it always had — sun in front of the camera, above the horizon, effects enabled.
       let sf = dot(u.sunDir, u.fwd);
-      let dayK = clamp(u.sunDir.y * 3.0, 0.0, 1.0);
+      // ── AND IT HAS TO SURVIVE A LOW SUN (user 2026-08-28: "polish how the sun looks through the clouds
+      // when it rises and sets; it looks fine when it's mid day") ── that is this line, and the old form was
+      // the whole of the problem. clamp(sunDir.y * 3) does not reach full strength until the sun is 19.5
+      // degrees up, so it was scaling the flare DOWN through the entire sunrise and sunset: 26% at 5 degrees,
+      // 10% at 2, near zero at the horizon. The glare was being faded out exactly when a real sun has the
+      // most of it, which is why only midday ever looked right. This holds full strength while the sun is up
+      // and only lets go as it crosses the horizon, where the disc itself is going anyway.
+      // ── AND IT IS THE SUN'S FLARE, NOT THE MOON'S ── u.sunDir carries whichever body is UP, so at night
+      // this whole block was aiming at the moon and giving it the sun's glare at full strength. A moon does
+      // have a small halo, but it is a body reflecting ~0.12 of the light, not a source; at parity it read as
+      // a second sun and it sat on top of a crescent that is supposed to be mostly dark. Scaled by isMoon(),
+      // which is the flag that says which body u.sunDir is describing.
+      let dayK = smoothstep(-0.03, 0.05, u.sunDir.y) * select(1.0, MOON_FLARE, isMoon());
       if (sf > 0.05 && dayK > 0.0 && (u32(u.fx) & 1u) != 0u) {
         let sunNDC = vec2<f32>(dot(u.sunDir, u.right) / (sf * u.tanH * u.aspect), dot(u.sunDir, u.up) / (sf * u.tanH));
         let sunPix = vec2<f32>((sunNDC.x * 0.5 + 0.5) * u.canvasRes.x, (0.5 - sunNDC.y * 0.5) * u.canvasRes.y);
-        let glow = textureSampleLevel(godT, samp, uv, 0.0).rgb;   // ── the march now happens once per 2x2 block in GOD_SRC ── bilinear back up; the effect has no detail this loses
-        // ── THE SHAFTS DIM WITH THE SUN THAT CASTS THEM (2026-08-17) ── the storm sky drops the direct beam
-        // to 65% and thickens the deck to ~75% cover, and god rays kept firing at full strength through it:
-        // bright shafts under a heavy overcast, which reads as a bug rather than as weather. u.hurtV.w is
-        // the rain scalar (0 outside the oak forest and outside a storm), so fair weather is unchanged.
-        // ── AND THE GAIN RISES A LITTLE WITH THE NIGHT ── the moon's halo is a fainter, smaller source than
-        // the sun's, so the same 0.055 under-reads. 1.8x at full night rather than the 4x the first attempt
-        // used: with a smooth halo to scatter from, the march no longer needs to be shouted at, and 4x was
-        // most of what made the spikes read as spikes. Eased on nightK so it cannot step at the dusk and dawn
-        // moon swaps, which is the standing rule for anything keyed to night in this engine.
-        col += glow * (mix(0.055, 0.10, nightK()) * dayK) * (1.0 - 0.35 * u.hurtV.w) * select(vec3<f32>(1.0, 0.93, 0.78), vec3<f32>(0.55, 0.65, 1.0) * 1.1, isMoon());   // strong warm sun shafts / cool MOON RAYS — the rays, not the fog
         // ── LENS FLARE: ghosts along the sun→centre axis + streak + bloom, gated by on-screen sun visibility
         // ── GHOST FOOTPRINT FIRST ── sv is a FRAME CONSTANT (a fixed 3×3 tap around the sun pixel), yet it was
         // computed on EVERY pixel of the canvas: nine texture fetches per pixel to decide a value that is the same
@@ -142,17 +85,61 @@
         // holds. So weigh the discs first and fetch only when one of them actually covers this pixel. Bit-identical
         // (x * 0 = 0 for every finite x, and sv is a bounded sum of clamped smoothsteps — never NaN), and it takes
         // the nine fetches off 98%+ of the frame.
+        // ── THE FLARE IS SIZED OFF THE SUN NOW (user 2026-08-28: "tie the flare's radii to the disc
+        // instead of to the canvas") ── and the old form is why changing the sun's size did not read. The
+        // ghost radii were canvasRes.y * (0.014 + 0.030 * K), which has no reference to the sun at all, so the
+        // brightest thing around the disc stayed exactly the same size however the disc was scaled and pinned
+        // the apparent size of the whole blob. Measured: a 20% larger disc moved the saturated core 17.9 -> 17.6
+        // px, i.e. not at all, because the flare set where the image clipped.
+        // sunPx is the disc's on-screen radius. The projection is a TANGENT mapping — ndc = tan(theta)/tanH —
+        // so it is tan of the angular radius over tanH, half the vertical resolution. The coefficients are
+        // fitted to reproduce today's radii at today's sun (1.741/2.381/3.447/4.619 x the disc), so this is a
+        // no-op at the current size and scales from here on.
+        let sunPx = tan(acos(SUN_COSR)) / u.tanH * 0.5 * u.canvasRes.y;
         let ctr = u.canvasRes * 0.5;
         let axis = ctr - sunPix;
         var K = array<f32, 4>(0.35, 0.65, 1.15, 1.7);
         var TINT = array<vec3<f32>, 4>(vec3<f32>(1.0, 0.85, 0.6), vec3<f32>(0.6, 1.0, 0.75), vec3<f32>(0.65, 0.75, 1.0), vec3<f32>(1.0, 0.7, 0.85));
         var GHW = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
         var gAny = 0.0;
+        // ── THE SUN'S OWN GLARE (user 2026-08-28: "this effect is achieved when the cursor hovers over it,
+        // just make it like that always") ── and that observation is exactly right about the mechanism. The
+        // ghosts sit at sunPix + axis * (1 + K) where axis = screen centre - sunPix, so when the sun IS at
+        // the centre — crosshair on it — axis goes to zero and all four discs collapse onto the sun and pile
+        // up there. That pile IS the glare; it was never a separate effect, just the ghost train degenerating
+        // at one camera angle. So the same four discs, the same radii, the same tints and the same weight are
+        // now ALSO drawn centred on the sun at every angle, which makes "always" literally the hover look
+        // rather than an imitation of it.
+        // Deliberately IN ADDITION to the ghosts, not instead: the axis train is a real lens artefact and is
+        // worth keeping when the sun is off to the side. Looking straight at the sun therefore lands both at
+        // once and is brighter still, which is the right way round.
+        var SGW = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+        let dSun = length(fc.xy - sunPix);
         for (var gi = 0; gi < 4; gi++) {
           let gp = sunPix + axis * (1.0 + K[gi]);
-          let rr = u.canvasRes.y * (0.014 + 0.030 * K[gi]);
+          // ── TIGHTENED (user 2026-08-28: "now you made the sun much bigger") ── and it was the glare, not
+          // the disc: SUN_COSR never moved. Making the off-axis glare match the on-axis one took the
+          // sun-centred stack from 4 x 0.16 to 4 x 0.30, ~1.9x brighter in every direction but dead centre,
+          // and with the outermost disc sitting at 4.62x the disc radius that extra brightness pushed
+          // visible light a long way out — a bigger BLOB from an unchanged sun. The span comes in from
+          // 1.74..4.62x to 1.08..2.61x, which is also much closer to the reference proportions: a white core
+          // with a halo about 2.5x its radius, rather than one reaching nearly five.
+          let rr = sunPx * (0.65 + 1.15 * K[gi]);                     // …still sized off the DISC, so it keeps scaling with it
           GHW[gi] = smoothstep(rr, rr * 0.22, length(fc.xy - gp));   // 0 outside rr — smoothstep with e0 > e1 is the decreasing form
+          // ── A GHOST FADES OUT AS IT LANDS ON THE SUN (user 2026-08-28: "the sun glare goes away when the
+          // player looks away from the sun; make it consistent no matter where the player is looking") ── and
+          // the glare was not going away off-axis, it was DOUBLING on-axis. The ghosts sit at
+          // sunPix + axis * (1 + K) with axis = centre - sunPix, so when the sun is centred axis collapses to
+          // zero and all four of them pile onto the sun ON TOP of the four sun-centred discs: eight discs
+          // looking straight at it, four looking anywhere else. Exactly 2x, which reads as the glare dying as
+          // you turn away. Fading each ghost by its separation from the sun leaves the sun's own glare
+          // constant in every direction and keeps the ghost train, which is the part that should depend on
+          // where you look.
+          let sep = length(gp - sunPix) / max(rr, 1.0);              // separation in this ghost's own radii
+          GHW[gi] *= smoothstep(0.6, 1.6, sep);
           gAny += GHW[gi];
+          SGW[gi] = smoothstep(rr, rr * 0.22, dSun);                 // …and the same disc about the sun itself
+          gAny += SGW[gi];
         }
         if (gAny > 0.0) {
           var sv = 0.0;
@@ -162,11 +149,12 @@
           } }
           sv /= 9.0;
           if (sv > 0.02) {
-            for (var gi = 0; gi < 4; gi++) { col += TINT[gi] * GHW[gi] * 0.10 * sv * dayK; }   // doubled — bold flare ghosts
+            // TWO WEIGHTS, not one: with the doubling gone the sun-centred stack has to carry on its own what eight discs used to, so it takes the larger share. The ghost train keeps the weight it had.
+            for (var gi = 0; gi < 4; gi++) { col += TINT[gi] * (GHW[gi] * FLARE_GHOST + SGW[gi] * FLARE_SUN) * sv * dayK; }   // 0.10 -> 0.16 (user 2026-08-28: "make the sun have more glare") — eight discs land on the sun at once, so the peak there goes ~0.80 -> ~1.28 x sv, well past white, and the halo reaches further out before it falls under the sky
           }
         }
       }
-      // ── CINEMATIC VIGNETTE ── last thing in the frame, so it darkens the finished image (god rays and flare
+      // ── CINEMATIC VIGNETTE ── last thing in the frame, so it darkens the finished image (the flare
       // ghosts included) rather than being scattered back out by them. Aspect-corrected: measuring the falloff on
       // raw UV would make it an ellipse stretched to the window, which reads as a letterbox rather than a vignette.
       if (u.misc.x > 0.001) {

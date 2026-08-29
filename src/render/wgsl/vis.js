@@ -1,5 +1,5 @@
   // @module — the tile visibility-cull WGSL, and the one place every shader factory is built into a pipeline
-  // @exports DDAW, FLAKEBLK, bgScatter, linSamp, pBlit, pComposite, pGod, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush
+  // @exports CG_BAND, CG_DIM, CG_STRIDE, CG_SWEEPS, DDAW, FLAKEBLK, bgCloudGen, bgScatter, cgBuf, cgData, cgSamp, cgState, cgView, linSamp, pCloudGen, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush
   const VIS_SRC = () => /* wgsl */`
     ${pickWGSL}
     @group(0) @binding(1) var<storage, read_write> visb : array<u32>;   // 4×u32 bitmask per 8×8 screen tile: bit di = drop slot di's bounding sphere may touch this tile (128 slots = four words)
@@ -57,14 +57,12 @@
   const PRE = PRE_SRC(), FLAKEBLK = FLAKEBLK_SRC(), DDAW = DDAW_SRC(), VIS = VIS_SRC();
   const TRACE = TRACE_SRC({ DDAW, FLAKEBLK, pickWGSL });
   const COMPOSITE = COMPOSITE_SRC({ DDAW, pickWGSL });
-  const GOD = GOD_SRC();
   const SCATTER = SCATTER_SRC(), PATCHW = PATCHW_SRC(), TEMPORAL = TEMPORAL_SRC(),
         SPATIAL = SPATIAL_SRC(), TAA = TAA_SRC(), BLIT = BLIT_SRC();
 
   const mkCompute = (code, fol) => device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: (PRE + code).replaceAll('§FOL§', fol ? 'true' : 'false') }), entryPoint: 'main' } });
   const pTraceV = [mkCompute(TRACE, 0), mkCompute(TRACE, 1)];          // FOLIAGE SPECIALIZATION: variant 0 = normal play (see-through check compiled OUT of the hot DDA loop), variant 1 = eye near foliage
   const pVis = mkCompute(VIS), pTemporal = mkCompute(TEMPORAL), pSpatial = mkCompute(SPATIAL), pComposite = mkCompute(COMPOSITE), pTaa = mkCompute(TAA);
-  const pGod = mkCompute(GOD);                         // half-res god rays — a quarter of the pixels the blit used to march
   const pScatter = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: SCATTER }), entryPoint: 'main' } });
   const bgScatter = device.createBindGroup({ layout: pScatter.getBindGroupLayout(0), entries: [
     { binding: 0, resource: { buffer: scatBuf } }, { binding: 1, resource: { buffer: stagBuf } }, { binding: 2, resource: { buffer: worldBuf } }] });
@@ -96,4 +94,35 @@
   const blitModule = device.createShaderModule({ code: PRE + BLIT });
   const pBlit = device.createRenderPipeline({ layout: 'auto', vertex: { module: blitModule, entryPoint: 'vs' }, fragment: { module: blitModule, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } });
   const linSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+  // ══ CLOUD DENSITY CACHE (jeantimex/procedural-clouds, MIT) ══ created ONCE, deliberately outside makeTargets:
+  // it is a world-space volume and has nothing to do with the screen, so a resize or a render-scale change must
+  // not throw it away and pay the refill again.
+  // rgba8unorm because it has to be BOTH storage-capable (the compute pass writes it) and FILTERABLE (the march
+  // samples it linearly). r32float is storage-capable and unfilterable, which WebGPU rejects at bind-group creation
+  // with nothing but a console line and a black frame; r8unorm is filterable and not storage-capable. This is the
+  // only core format that is both, and at 4 bytes it costs exactly what r32float would have.
+  const CG_DIM = [160, 24, 160];                       // 2.46 MB. Anisotropic on purpose: the deck is wide and thin, so y carries a sixth of the resolution and every texel still lands finer than a march step
+  const cgTex3 = device.createTexture({ size: CG_DIM, dimension: '3d', format: 'rgba8unorm',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+  const cgView = cgTex3.createView();
+  const cgSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear',   // REPEAT in x/z: the volume is a tile of an endless deck, and clamp-to-edge would put a one-texel seam on every tile boundary. y clamps, because the deck has a real top and bottom
+    addressModeU: 'repeat', addressModeV: 'clamp-to-edge', addressModeW: 'repeat' });
+  const cgBuf = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const pCloudGen = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: CLOUDGEN_SRC() }), entryPoint: 'main' } });
+  const bgCloudGen = device.createBindGroup({ layout: pCloudGen.getBindGroupLayout(0), entries: [
+    { binding: 0, resource: { buffer: cgBuf } }, { binding: 1, resource: cgView }] });
+  const cgData = new Float32Array(8);
+  const CG_BAND = 1;                                   // y slices per fill…
+  const CG_STRIDE = 4;                                 // …and a fill only every 4th frame, so a full sweep of the volume takes 96 frames — about 1.6 s.
+  const CG_SWEEPS = 2;                                 // …and then it STOPS. With the evolution clock pinned the fill is idempotent, so once the volume has been
+  // written through twice there is nothing left for it to compute: the deck's motion is a lookup offset and the
+  // shape does not change. Steady-state cost of the whole cache is therefore ZERO, not "amortised". Re-armed by
+  // There is nothing left to re-arm it for: the deck used to be switchable on [Y] and a toggle had to rebuild
+  // the volume, but it is the only deck now and the fill runs unconditionally from boot (user 2026-08-28).
+  // THAT IS NOT A COMPROMISE, IT IS THE POINT. The deck's visible MOTION is wind, and the march applies wind as
+  // a lookup offset, so it costs the cache exactly nothing. The only thing a refill carries is the slow
+  // evolution of cloud SHAPE, which in the sky takes minutes. At 4 slices every frame this pass was ~17M hash
+  // evaluations a frame and cost more than the march it was supposed to be saving; at one slice every fourth
+  // frame it is ~1M, and nothing about the image can tell the difference.
+  const cgState = { slice: 0, fills: 0 };                        // …and which band is next. An OBJECT, not an exported `let`: a module exports a const snapshot taken at init, so a later write from tick-passes would be invisible here (lint-vb.py catches exactly this)
 

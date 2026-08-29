@@ -1,9 +1,8 @@
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
-  let renderScale = 0.6;                               // default resolution scale (user 2026-08-27: 60%, was 70%, was 80%, was 90%); the settings slider AND the [ ] keys both step 40..100% in 10s (persisted vb_scale). The 0.375 floor below is what an older build could persist and what __vb.res() still accepts — neither control offers it.
+  let renderScale = 0.7;                               // default resolution scale (user 2026-08-28: back to 70%, briefly 60%, was 80%, was 90%); the settings slider AND the [ ] keys both step 40..100% in 10s (persisted vb_scale). The 0.375 floor below is what an older build could persist and what __vb.res() still accepts — neither control offers it.
   try { const v = parseFloat(localStorage.getItem('vb_scale')); if (v >= 0.375 && v <= 1.0) renderScale = v; } catch (e) {}
   let RW = 0, RH = 0, CW = 0, CH = 0;
-  let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, bgGod, visBuf = null;
-  let godW = 0, godH = 0;                                // the god-ray target is HALF the canvas on each axis — a quarter of the marches
+  let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, visBuf = null;
   let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline
   let resetHist = 1;
   const HIST_DBG = { resets: 0, frames: 0, lastAt: -1 };   // how often the temporal history is thrown away — see tick-passes
@@ -41,16 +40,13 @@
     const histA = tex('rgba16float'), histB = tex('rgba16float'), irrF = tex('rgba16float');
     const colorCur = tex('rgba8unorm'), colHistA = tex('rgba8unorm'), colHistB = tex('rgba8unorm');
     const dofTex = tex('rgba8unorm');                    // ── DEPTH OF FIELD ── TAA's resolved colour + the composite's circle of confusion. NOT ping-ponged: it is written and read inside the same frame and carries no history.
-    godW = Math.max(2, Math.ceil(CW / 2)); godH = Math.max(2, Math.ceil(CH / 2));
-    const godTex = device.createTexture({ size: [godW, godH], format: 'rgba16float',   // NOT tex(): that sizes to RW/RH, and the god march works in CANVAS space
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
     const slotA = tex('r32uint'), slotB = tex('r32uint');   // ── DYNAMIC LIFE ── per-pixel creature id + hit-axis bits, ping-ponged (temporal needs LAST frame's ids for identity checks). cur for frame parity par = par ? slotB : slotA — mirrors the hist ping-pong.
     const v = (t) => t.createView();
     // ── LIFETIME ── the superseded set is released only after every submitted frame that still references it
     // has completed; destroying at swap time would pull textures out from under in-flight GPU work. Before this,
     // nothing was ever destroyed and each resize/scale change leaked a full screen-texture set until GC noticed.
     const oldT = liveTargets, oldVis = visBuf;
-    liveTargets = [gAlbedo, gIrr, histA, histB, irrF, colorCur, colHistA, colHistB, slotA, slotB, dofTex, godTex];
+    liveTargets = [gAlbedo, gIrr, histA, histB, irrF, colorCur, colHistA, colHistB, slotA, slotB, dofTex];
     if (oldT || oldVis) device.queue.onSubmittedWorkDone().then(() => {
       if (oldT) for (const t of oldT) { try { t.destroy(); } catch (e) {} }
       if (oldVis) { try { oldVis.destroy(); } catch (e) {} }
@@ -82,18 +78,16 @@
       { binding: 18, resource: { buffer: brick2Buf } }, { binding: 19, resource: { buffer: palBuf } },
       { binding: 20, resource: { buffer: wbrickBuf } },
       { binding: 21, resource: v(par ? slotB : slotA) }, { binding: 22, resource: { buffer: visBuf } },
-      { binding: 23, resource: { buffer: bodyBuf } }] }));
+      { binding: 23, resource: { buffer: bodyBuf } },
+      { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp }] }));   // the cloud density volume and its repeat sampler — world-space, so they are created once in vis.js and merely re-bound here when the screen targets rebuild
     bgTaa = [0, 1].map(par => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(colorCur) },
       { binding: 2, resource: v(gIrr) }, { binding: 3, resource: v(par ? colHistA : colHistB) },
       { binding: 4, resource: linSamp }, { binding: 5, resource: v(par ? colHistB : colHistA) },
       { binding: 6, resource: v(par ? slotB : slotA) }, { binding: 7, resource: v(dofTex) }] }));
-    bgGod = [0, 1].map(par => device.createBindGroup({ layout: pGod.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? colHistB : colHistA) },
-      { binding: 2, resource: linSamp }, { binding: 3, resource: v(godTex) }] }));   // reads the SAME TAA colour blit samples, one frame's parity
     bgBlit = [0, 1].map(par => device.createBindGroup({ layout: pBlit.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? colHistB : colHistA) },
-      { binding: 2, resource: linSamp }, { binding: 3, resource: v(dofTex) }, { binding: 4, resource: v(godTex) }] }));
+      { binding: 2, resource: linSamp }, { binding: 3, resource: v(dofTex) }] }));
     resetHist = 1;
   }
   makeTargets(true);

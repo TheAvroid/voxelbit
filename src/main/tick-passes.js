@@ -19,6 +19,36 @@
     // ⚠ ORDERING: the voxel patch goes AFTER the strip scatter. The scatter carries a PRE-band snapshot of a
     // whole x-strip; applying creature/snow/edit words first would let it stomp them with stale wrapped terrain.
     patchEncode(enc);
+    // ══ CLOUD DENSITY CACHE FILL (jeantimex/procedural-clouds, MIT) ══ a BAND of y slices per frame, not the
+    // whole volume. The full fill is ~614k texels of fractal Voronoi and would be a visible hitch if it landed
+    // in one frame; spread four slices at a time it is 102k texels and finishes a full sweep every six frames.
+    // The source solves the same problem with a ping-pong pair and a cross-fade. This does not need one: the
+    // only thing that changes between sweeps is the slow evolution clock, so a half-refreshed volume differs
+    // from itself by less than a texel of shape and there is no seam to hide — which also saves the second
+    // volume's memory AND the second texture fetch on every march step and every light step.
+    // AHEAD of the render below, so the frame that samples the cache sees this frame's slices.
+    // ── THE FIRST FILL DOES THE WHOLE VOLUME (user 2026-08-28: "when I refresh the game and spawn in for
+    // the first time, the sky is empty at first, and then fills in with clouds") ── and that was not a bug in
+    // the deck, it was this loop's own schedule showing through. One slice every fourth frame over 24 slices
+    // is 96 frames for a single sweep, ~1.6 s, and the march can only draw what has been written — so the
+    // player watched the sky populate. Amortising is right for the STEADY state and wrong for the first
+    // frame, where there is nothing on screen to protect: prime the whole volume in one dispatch, then let
+    // the existing schedule carry the (idempotent) second sweep.
+    // It is ~614k texels in one go, which is the hitch the amortisation exists to avoid — but it lands on the
+    // first rendered frame, behind the loading overlay, where a hitch costs nothing and a visibly empty sky
+    // costs everything.
+    const cgBand = cgState.fills === 0 ? CG_DIM[1] : CG_BAND;        // …the whole deck first, one slice thereafter
+    if (!veQuiet && (cgState.fills === 0 || (frame % CG_STRIDE) === 0) && cgState.fills < CG_DIM[1] * CG_SWEEPS) {                // UNGATED (user 2026-08-28: keep the new deck, drop the Y switch) — the march in COMPOSITE is unconditional now, so a gate here would starve it of the volume it samples and the sky would simply have no clouds in it. The fill still stops on its own after CG_SWEEPS, so steady-state cost is zero either way
+      cgData[0] = 0; cgData[1] = 0; cgData[2] = 0;
+      cgData[3] = 0.0;                        // the evolution clock, in days x 240 — slow on purpose: the deck's MOTION is wind, which the march applies as a lookup offset and which therefore costs the cache nothing
+      cgData[4] = cgState.slice; cgData[5] = cgBand;
+      device.queue.writeBuffer(cgBuf, 0, cgData.buffer, 0, 32);
+      const cp = enc.beginComputePass();
+      cp.setPipeline(pCloudGen); cp.setBindGroup(0, bgCloudGen);
+      cp.dispatchWorkgroups(Math.ceil(CG_DIM[0] / 8), Math.ceil(cgBand / 4), Math.ceil(CG_DIM[2] / 8));
+      cp.end();
+      cgState.slice = (cgState.slice + cgBand) % CG_DIM[1]; cgState.fills += cgBand;   // fills counts SLICES, not dispatches, so the priming dispatch accounts for all 24 of them and the CG_SWEEPS bound still means what it says
+    }
     if (!veQuiet) {                                    // ── the render, and only the render ── everything above and below this brace is frame bookkeeping the export must not skip
       const gw = Math.ceil(RW / 8), gh = Math.ceil(RH / 8);
       let qi = 0;
@@ -33,14 +63,9 @@
       run(pSpatial, bgSpatial[par]);
       run(pComposite, bgComposite[par]);
       run(pTaa, bgTaa[par]);
-      // ── GOD RAYS ── AFTER TAA, because the march reads TAA's resolved colour + sky mask, and BEFORE the blit
-      // that samples the result. Half the canvas on each axis, so a quarter of the marches the blit used to do.
-      { const gp = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 14, endOfPassWriteIndex: 15 } } : {});
-        gp.setPipeline(pGod); gp.setBindGroup(0, bgGod[par]);
-        gp.dispatchWorkgroups(Math.ceil(godW / 8), Math.ceil(godH / 8)); gp.end(); }
       if (profQS) {                                    // resolve + read back pass timings (only while __vb.prof polling has it armed)
-        enc.resolveQuerySet(profQS, 0, 16, profRes, 0);
-        if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 128); profNew = true; }
+        enc.resolveQuerySet(profQS, 0, 14, profRes, 0);
+        if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 112); profNew = true; }
       }
       const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
       rp.setPipeline(pBlit); rp.setBindGroup(0, bgBlit[par]); rp.draw(3); rp.end();
@@ -50,7 +75,7 @@
       profNew = false; profBusy = true;
       profStg.mapAsync(GPUMapMode.READ).then(() => {
         const q = new BigInt64Array(profStg.getMappedRange());
-        for (let i = 0; i < 8; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) { profEma[i] = profEma[i] * 0.92 + ms * 0.08; if (ms < profMin[i]) profMin[i] = ms; } }
+        for (let i = 0; i < 7; i++) { const ms = Number(q[i * 2 + 1] - q[i * 2]) / 1e6; if (ms >= 0 && ms < 100) { profEma[i] = profEma[i] * 0.92 + ms * 0.08; if (ms < profMin[i]) profMin[i] = ms; } }
         profSamp++;
         profStg.unmap(); profBusy = false;
       }).catch(() => { profBusy = false; });

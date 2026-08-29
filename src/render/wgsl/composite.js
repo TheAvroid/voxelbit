@@ -156,7 +156,6 @@
     // either flattens the deck or makes the raymarch miss it entirely.
     const CLOUD_LO : f32 = 760.0;
     const CLOUD_HI : f32 = 1080.0;
-    const CLOUD_THR : f32 = 0.565;                                   // the FAIR-WEATHER density cut, now named because rain moves it (see RAIN_CLOUD_THR). It appears twice inside cloudDen and the second use is an EXACT short-circuit bound derived from the first, so the two can never be edited apart again.
     // ── RAIN SKY ── (user 2026-08-17: cloudier + darker clouds while it rains, a slightly dimmer sun, and a
     // clean return to normal afterwards). ONE uniform scalar, 0..1: how hard it is raining AT THE CAMERA.
     // tick-camera writes it as the storm ramp times oakM(P.x, P.z), so it is 0 in the pine forest and the desert
@@ -165,11 +164,10 @@
     // render/buffers.js for why that lane was the one available and why taking it is safe.
     //
     // THE RULE EVERY TERM BELOW OBEYS: at rainK 0 the expression must reduce to the fair-weather one EXACTLY,
-    // not approximately. thr becomes CLOUD_THR - x*0.0, the deck is scaled by 1.0 - x*0.0, sunTintR multiplies
+    // not approximately. The deck is scaled by 1.0 - x*0.0, sunTintR multiplies
     // sunTint by 1.0, and skyRain returns its argument untouched behind a compare. That is what makes "then when
     // the rain is gone, the clouds return to normal" a property of the code rather than a tuning claim.
     fn rainK() -> f32 { return u.hurtV.w; }
-    const RAIN_CLOUD_THR : f32 = ${RAIN_CLOUD_THR.toFixed(4)};
     const RAIN_CLOUD_DARK : f32 = ${RAIN_CLOUD_DARK.toFixed(4)};
     const RAIN_SKY_DESAT : f32 = ${RAIN_SKY_DESAT.toFixed(4)};
     const RAIN_SKY_DIM : f32 = ${RAIN_SKY_DIM.toFixed(4)};
@@ -214,14 +212,54 @@
       fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, dist * length(vec2<f32>(rd.x, rd.z))));
       return mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
     }
-    fn cloudDen(p : vec3<f32>, thr : f32) -> f32 {                   // cumulus deck between CLOUD_LO and CLOUD_HI, wind-drifted. thr is a PARAMETER rather than a global because rain lowers it and WGSL has no mutable module scope; the caller computes it once instead of ~36 times a sky pixel.
-      let hf = clamp((p.y - CLOUD_LO) / (CLOUD_HI - CLOUD_LO), 0.0, 1.0);
-      let q = vec3<f32>(p.x + u.time * 9.0, p.y, p.z + u.time * 3.5) * 0.0021;
-      let o1 = vn3(q * vec3<f32>(1.0, 2.4, 1.0));
-      if (o1 * 0.60 + 0.40 < thr) { return 0.0; }                    // EXACT short-circuit: octaves 2+3 sum to at most 0.28+0.12, so below this bound the
-      var n = o1 * 0.60 + vn3(q * 2.6 + vec3<f32>(7.7)) * 0.28 + vn3(q * 6.1 + vec3<f32>(19.3)) * 0.12;   // clamp gate at thr CANNOT open — same result, two of three noise octaves skipped. Still exact now thr moves: it is the same thr on both lines.
-      n = n * smoothstep(0.0, 0.16, hf) * smoothstep(1.0, 0.70, hf);
-      return clamp((n - thr) * 3.4, 0.0, 1.0);                       // ~35% coverage at the fair-weather CLOUD_THR — scattered cumulus, plenty of blue. RAIN drops thr, which widens coverage AND thickens what is already there, because n - thr grows everywhere at once
+    // ══ PROCEDURAL-CLOUDS CACHE (jeantimex/procedural-clouds, MIT) ══ the 3D density volume the CLOUDGEN
+    // compute pass fills, and a sampler of its own. NOT linSamp: that one is clamp-to-edge, and this volume is
+    // a TILE, so clamping would put a one-texel seam along every tile boundary in the sky. Both are read below
+    // — a binding that is declared and never read is pruned by layout:'auto' and takes the canvas black.
+    @group(0) @binding(24) var cgTex : texture_3d<f32>;
+    @group(0) @binding(25) var cgSamp : sampler;
+    ${CG_CONSTS}
+    // ── ONE FETCH ── the entire cost of a density sample, against ~24 hash lookups for the procedural deck.
+    // xz wrap through the sampler (the volume is a TILE, see cloudgen.js), y clamps across the deck. The wind
+    // is applied here as a lookup offset instead of being baked into the cache, so the deck drifts forever
+    // without the cache ever being refilled for it.
+    fn cgSample(p : vec3<f32>) -> f32 {
+      let yn = (p.y - CLOUD_LO) / (CLOUD_HI - CLOUD_LO);
+      if (yn < 0.0 || yn > 1.0) { return 0.0; }
+      let uvw = vec3<f32>(fract((p.x + u.cloudT.x * 9.0) / CG_TILE), clamp(yn, 0.0, 1.0), fract((p.z + u.cloudT.x * 3.5) / CG_TILE));   // u.cloudT, NOT u.time: the wind rides the day/night cycle's own clock, so speeding the cycle speeds the drift with it. Identical to u.time at 1x
+      return textureSampleLevel(cgTex, cgSamp, uvw, 0.0).r * CG_STORE;
+    }
+    // ── INTERLEAVED GRADIENT NOISE (Jorge Jimenez) ── the dither the march starts on, and the source's own
+    // choice. It replaced a per-pixel-per-frame WHITE-NOISE hash, which is the worst input TAA can be given:
+    // white noise clumps, so neighbouring pixels get wildly different march offsets and the resolve has
+    // nothing coherent to average. The symptom was heavy grain through the whole deck, worst around a low
+    // sun where the bloom multiplies the march's alpha by a large number and amplifies its noise with it
+    // (user 2026-08-28: "when the sun settles in the west there is a lot of noise in the clouds").
+    // PROVEN, not assumed: replacing the offset with a constant 0.5 removed the grain entirely and left the
+    // concentric step banding the dither exists to hide — so the dither was the source, and the fix is a
+    // better-distributed one rather than fewer steps or more of them.
+    // IGN is near-optimal over a 2x2..8x8 neighbourhood, so adjacent pixels get well-spread offsets and the
+    // resolve averages them in ONE frame instead of waiting for temporal luck. The golden-ratio term rotates
+    // the pattern per frame so it also decorrelates over time, which is what stops it printing a fixed
+    // texture into the sky when the camera holds still.
+    fn cgIGN(p : vec2<f32>, f : u32) -> f32 {
+      let q = p + 5.588238 * f32(f % 64u);                          // golden-ratio conjugate walk — 64 frames before it repeats, far longer than the resolve's memory
+      return fract(52.9829189 * fract(dot(q, vec2<f32>(0.06711056, 0.00583715))));
+    }
+    // ── HENYEY-GREENSTEIN ── the source's own phase, mixed 60% against isotropic exactly as it does
+    fn cgPhase(cosT : f32, g : f32) -> f32 {
+      let g2 = g * g;
+      return (1.0 - g2) / (12.5663706 * pow(max(1.0 + g2 - 2.0 * g * cosT, 1e-4), 1.5));
+    }
+    // ── LIGHT MARCH ── the source's lightMarch: accumulate density along the sun ray and take exp(-shadow*k).
+    // This is what a single 60-unit shadow tap could never give — a real gradient through the cloud — and the
+    // cache is what makes four fetches here affordable where four noise evaluations were not.
+    fn cgLight(p : vec3<f32>) -> f32 {
+      var sh = 0.0;
+      for (var i = 1; i <= CG_LIGHT_STEPS; i++) {
+        sh += cgSample(p + u.sunDir * (f32(i) * CG_LIGHT_STEP)) * CG_LIGHT_STEP_U;   // world units to STEP, source units to ACCUMULATE — see CG_U2W
+      }
+      return exp(-sh * CG_SHADOW);
     }
     @group(0) @binding(22) var<storage, read> visb : array<u32>;     // per-8×8-tile drop-slot visibility bitmask (4×u32/tile) — computed ONCE per frame by the VIS prepass and shared with TRACE (this pass used to recompute it per workgroup behind a barrier)
     // ── VOLUMETRIC LIGHT ── march the camera ray, gathering in-scatter from the emissive point lights
@@ -306,8 +344,8 @@
         return;
       }
       if (face == 7u) {
-        col = skyRain(skyColor(rd));                                 // ── RAIN ── dulled BEFORE the march, so the sky showing THROUGH the deck (col * T below) is the rain sky and not the fair-weather one
-        if (rd.y > 0.02) {                                           // VOLUMETRIC CLOUDS — raymarched slab, beer-lambert with a sun tap
+        col = skyRain(skyColor(rd));                                 // ── RAIN ── dulled BEFORE the march, so the sky showing THROUGH the deck (the aSky composite below) is the rain sky and not the fair-weather one
+        if (rd.y > 0.02) {                                           // VOLUMETRIC CLOUDS — the ported march below, over the cached density volume
           let camY = u.camPos.y;
           let t0c = (CLOUD_LO - camY) / rd.y;
           let t1c = (CLOUD_HI - camY) / rd.y;
@@ -315,36 +353,88 @@
           let tb = min(max(t0c, t1c), 12000.0);
           if (tb > ta) {
             let roW = vec3<f32>(u.camPos.x + u.winO.x, camY, u.camPos.z + u.winO.y);
-            // ── HOW CLOUDY, AND HOW DARK ── the two halves of "make the sky more cloudy and darken the clouds",
-            // hoisted OUT of the march because both are uniform over the whole frame. thrC is the density cut:
-            // dropping it from 0.565 to 0.400 takes coverage from ~35% to ~75% and thickens every cloud already
-            // there, since n - thr grows everywhere at once — one number buys both, and no extra noise taps.
-            // (It does cost: a lower cut means cloudDen's exact one-octave short-circuit rejects fewer samples,
-            // so the march evaluates all three octaves more often. It is paid only while raining and partly
-            // handed back by the T < 0.05 early-out, which a denser deck reaches sooner.)
-            let rkC = rainK();
-            let thrC = CLOUD_THR - RAIN_CLOUD_THR * rkC;
-            let darkC = 1.0 - RAIN_CLOUD_DARK * rkC;                 // …and the deck's brightness. Applied to acc AFTER the loop, not to cc inside it: acc is the sum of T*a*cc with T and a independent of cc, so scaling every cc by a constant is exactly scaling acc by it — identical pixels, one multiply a pixel instead of one a step.
-            let dtc = (tb - ta) / 18.0;
-            var T = 1.0;
-            var acc = vec3<f32>(0.0);
-            var seedC = ((gid.x * 1447u) ^ (gid.y * 8191u) ^ (u32(u.frame) * 2657u)) | 1u;
-            var tcc = ta + dtc * rand(&seedC);                       // jittered start — kills the slab step-banding
-            for (var ci = 0; ci < 18; ci++) {
-              let p = roW + rd * tcc;
-              let d = cloudDen(p, thrC);
-              if (d > 0.002) {
-                let li = 0.25 + 0.75 * exp(-cloudDen(p + u.sunDir * 60.0, thrC) * 2.4);   // one-tap self-shadow toward the sun
-                let cc = sunTint() * li * 0.55 + mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale();   // PLAIN sunTint, not sunTintR: this is the TOP of the deck, lit from above by the sun the deck is busy blocking from everything underneath it. Darkening happens once, to acc, after the loop
-                let a = 1.0 - exp(-d * dtc * 0.02);
-                acc += T * a * cc;
-                T = T * (1.0 - a);
-                if (T < 0.05) { break; }
-              }
-              tcc += dtc;
+            // ══ THE PORTED MARCH ══ (jeantimex/procedural-clouds, MIT) — box-limited raymarch of a cached
+            // density volume, dithered start, Beer transmittance, a real light march per lit sample and an HG
+            // phase mixed against isotropic. The structure is the source's; what is NOT the source's is the
+            // illuminant: SUN_COLOR/AMBIENT/BG_COLOR and its Reinhard tonemap are replaced by sunTint(),
+            // dayScale() and this renderer's sky, so the deck sits inside voxelbit's day/night and rain rather
+            // than carrying its own lighting model into the middle of the frame.
+            // ── SLICE PROBE (LG2 bit 3, __vb.lgt2(15)) ── paint one horizontal slice of the density volume
+            // straight onto the screen, one texel per pixel-ish, bypassing the march entirely. This exists
+            // because estimating the field from the MARCH is how the first calibration went wrong twice: a ray
+            // reports the MAX of ~14 samples, which sits far above the per-texel distribution the graph actually
+            // produces, so a threshold set from it barely moves the coverage. A slice is the distribution.
+            if (LG2(3u)) {
+              let sl = vec2<f32>(gid.xy) / vec2<f32>(u.res.x, u.res.y);
+              let dS = select(cgSample(vec3<f32>(sl.x * CG_TILE, CLOUD_LO + 0.35 * (CLOUD_HI - CLOUD_LO), sl.y * CG_TILE)) * 0.1, sl.x, sl.y < 0.06);   // top 6% is a known 0..1 ramp. IT PROVED THE PROBE CANNOT READ ABSOLUTE VALUES: the measured transfer is neither linear nor gamma (0.7 -> 147, 0.9 -> 172), because the god-ray and TAA passes run after this store and both add to it. The slice view is still good for SHAPE; every density number read off it was wrong, which is what sent the calibration in circles.
+              textureStore(colorOut, vec2<i32>(gid.xy), vec4<f32>(vec3<f32>(dS), 0.5));
+              return;
             }
-            let fade = exp(-ta * 0.00035);                           // distant decks melt into the horizon haze
-            col = mix(col, acc * darkC + col * T, fade);             // darkC is 1.0 in fair weather, so this is bit-identical to the old line when it is not raining
+            let stepW = (tb - ta) / f32(CG_RAY_STEPS);
+            let stepU = stepW / CG_U2W;                            // the same step, in the units the density was authored in
+            let cosT = dot(rd, u.sunDir);
+            let phase = mix(1.0, cgPhase(cosT, CG_G), CG_PHASE_MIX);
+            let sunC = sunTint() * dayScale();
+            let ambC = mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale();
+            var tg = ta + stepW * cgIGN(vec2<f32>(gid.xy), u32(u.frame));   // …and this is that dither, restored to the source's own choice — see cgIGN
+            var Tg = 1.0;
+            var accG = vec3<f32>(0.0);
+            for (var ci = 0; ci < CG_RAY_STEPS; ci++) {
+              let d = cgSample(roW + rd * tg);
+              if (d > CG_MIN_D) {
+                let stTr = exp(-d * stepU);
+                let wt = Tg * (1.0 - stTr);                       // ── THE SAMPLE'S ACTUAL CONTRIBUTION ── computed BEFORE the light march, because it is what decides whether that march is worth running. A wisp seen through cloud that has already absorbed most of the ray cannot change the pixel, and the four extra volume fetches it would cost are the most expensive thing in this shader
+                if (wt > CG_MIN_W) {
+                  let scat = cgLight(roW + rd * tg) * phase * (1.0 - exp(-d));
+                  accG += wt * (sunC * scat * CG_SUN + ambC);
+                } else {
+                  accG += wt * ambC;                              // …still deposit the ambient, so skipping the light march dims the sample rather than deleting it
+                }
+                Tg = Tg * stTr;
+                if (Tg < CG_T_CUT) { break; }
+              }
+              tg += stepW;
+            }
+            // ── COMPOSITE THE DECK AS A SURFACE WITH ALPHA, NOT AS A BLEND AGAINST THE RAW SKY ──
+            // The old line was mix(sky, cloud + sky*T, fade), which adds (1 - fade) of the UNATTENUATED sky
+            // back on top of the cloud. skyColor() draws the sun DISC, so at fade 0.83 a fifth of a very
+            // bright disc came through even where the cloud was fully opaque, and it read as a crisp circle
+            // behind the cloud. Distance is the wrong thing to make a cloud transparent with anyway: a far
+            // cloud is still opaque, it just takes the colour of the air in front of it. So the fade now
+            // moves the cloud's COLOUR toward the horizon haze and leaves its ALPHA alone, and the deck is
+            // composited over the sky by that alpha — an opaque cloud hides the disc completely.
+            // The brightness still comes through: it arrives as the deck's own scattering, which is what the
+            // phase function and the light march are for, so a cloud in front of the sun glows rather than
+            // showing a hole with the sun in it.
+            let fadeG = exp(-ta * 0.00035);
+            let aG = 1.0 - Tg;                                     // the deck's coverage of this pixel
+            let hazeG = skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z)));
+            let cloudG = accG * (1.0 - RAIN_CLOUD_DARK * rainK()) / max(aG, 1e-3);   // accG is premultiplied by alpha; undo that to get the cloud's own colour
+            // THE SKY TERM OCCLUDES FASTER THAN THE DECK IS DENSE, and that is a deliberate look control.
+            // The sun's disc is ~21.6 radiance against a glare of 0.5, so under ACES the disc survives thin
+            // cloud while its halo does not — which is precisely the "little dot behind the clouds": a hard
+            // core with nothing around it. Killing the sky faster kills the DISC first, and the bloom below
+            // puts the light back as a halo. It applies to the moon on the same line, without this pass
+            // needing to know anything about how either body is drawn.
+            let aSky = min(1.0, aG * CG_SKY_OCC);
+            col = mix(col, mix(hazeG, cloudG, fadeG), aSky);
+            // ── THE BODY BEHIND THE DECK ── the composite above multiplies the whole sky by transmittance,
+            // and skyColor draws the sun and moon INTO that sky, so both the disc and its glare were being
+            // extinguished together. That is right for the crisp disc — a circle showing through cloud was
+            // the original complaint — and wrong for everything else about them: a sun behind cloud does not
+            // go dull, it turns into a broad bright bloom, because the light is scattered rather than
+            // absorbed. So the disc stays extinguished and the ENERGY comes back as a halo whose width grows
+            // with the deck's opacity: at aG 0 this term vanishes entirely and clear sky is untouched, at
+            // aG 1 it is a wide diffuse glow with no outline in it.
+            // The moon gets the same treatment on the same lines. rsC is the up-body (u.sunDir holds
+            // whichever of the two is up), so the two 'up' gates below mean only the body actually in the sky
+            // ever contributes, and the swap at dusk needs no special case.
+            let rsC = select(u.sunDir, -u.sunDir, isMoon());
+            let rmC = -rsC;
+            let widthG = mix(CG_BLOOM_TIGHT, CG_BLOOM_WIDE, aG);
+            let rk2 = 1.0 - RAIN_CLOUD_DARK * rainK();
+            col += SUN_COL * (CG_BLOOM * aG * rk2 * smoothstep(-0.03, 0.06, rsC.y)) * pow(max(dot(rd, rsC), 0.0), widthG);
+            col += MOON_GLOW * (CG_MBLOOM * aG * rk2 * smoothstep(-0.03, 0.06, rmC.y)) * pow(max(dot(rd, rmC), 0.0), widthG);
           }
         }
       } else if (face == 8u) {                                       // LAVA: emissive — burns through the fog
@@ -931,7 +1021,7 @@
         let irrD = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         if (dbgm == 1 && slD != 0u) { col = mix(col, vec3<f32>(fract(f32(slD) * 0.61803), fract(f32(slD) * 0.3247 + 0.33), fract(f32(slD) * 0.7548 + 0.66)), 0.72); }
         else if (dbgm == 2) {                                          // history confidence — RED fresh, GREEN converged, and BLUE for a pixel with NO g-buffer depth at all
-          if (irrD.b > 0.0) { let hc = clamp(irrD.a / u.maxHist, 0.0, 1.0); col = mix(vec3<f32>(0.9, 0.05, 0.05), vec3<f32>(0.05, 0.85, 0.15), hc); }
+          if (irrD.b > 0.0) { let hc = clamp(irrD.a / max(u.maxHist, ${AO_HIST}.0), 0.0, 1.0); col = mix(vec3<f32>(0.9, 0.05, 0.05), vec3<f32>(0.05, 0.85, 0.15), hc); }   // …divided by the LONGER of the two ceilings (see AO_HIST in denoise.js): the stored counter now runs to the AO window, so dividing by the sun's alone would paint every settled pixel full green and the view would stop discriminating
           else { col = vec3<f32>(0.05, 0.25, 1.0); }                     // t <= 0: TEMPORAL skips it, so it gets no irradiance (renders black) AND the creature occlusion bound goes infinite (they draw through). If the bad shadow lights up BLUE, that is the bug.
         }
         else if (dbgm == 3 && slD != 0u) { let mv = lifeMotV(i32(slD) - 1).xyz; col = clamp(abs(mv) * 2.5, vec3<f32>(0.06), vec3<f32>(1.0)); }

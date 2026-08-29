@@ -416,7 +416,7 @@
   let lSwapT0 = -1e9, prevLeftIt = -1;                 // …and the OFF hand's own pair (user 2026-08-19: the left hand should share the right's mechanics). Its own clock, because the two hands change item independently — a craft pair forming swaps the LEFT hand while the right keeps what it was holding
   let swingStart = -1e9, mouse0 = false, mouse2 = false;   // mouse2: RIGHT button HELD — the wind-up for a rock throw (right-hold, then left-click)               // left-click SWING — Minecraft-style forward chop; HOLDING the button keeps swinging
   let pendKillT = 0;                                   // pending creature-hit: armed at swing start, FIRES ~250 ms in — when the axe visually LANDS on screen (user: only register the hit when the axe hits), not at the click
-  const swishSnd = regSnd(new Audio('sound/bow/swish.mp4'), 0.36);   // swing whoosh — cut 40% (user), then a further 40% (0.6 → 0.36)
+  const swishSnd = regSnd(new Audio('sound/bow/swish.mp4'), 0.2042);   // swing whoosh — cut 40% (user), then a further 40% (0.6 → 0.36), now LEVELLED (0.36 → 0.1274)   // LEVELLED (user 2026-08-28: "just make all sfx the same level") — MEASURED with ffmpeg volumedetect, not guessed: base = 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective level. See the SFX LEVELLING note above impact for the whole table and why -40.
   const playSwish = () => { try { swishSnd.currentTime = 0; const pr = swishSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
   // ── GAME OVER (user 2026-08-17) ── one voice, SFX bus, fired from die() in input.js so every death routes
   // through it exactly as the game-over screen does. The file shipped as game_over.wav and nothing referenced
@@ -425,7 +425,7 @@
   // BASE: game_over is -14.7 LUFS against swish's -20.2, so matching swish's 0.36 by loudness gives
   // 0.36 * 10^(-5.5/20) = 0.191 - and the user asked for half of it. Carried as the base rather than baked
   // into the file so the number stays visible and adjustable, the way every other level here is.
-  const gameOverSnd = regSnd(new Audio('sound/game_over.mp4'), 0.0955);
+  const gameOverSnd = regSnd(new Audio('sound/game_over.mp4'), 0.1084);   // LEVELLED (user 2026-08-28: "just make all sfx the same level") — MEASURED with ffmpeg volumedetect, not guessed: base = 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective level. See the SFX LEVELLING note above impact for the whole table and why -40.
   const playGameOver = () => { try { gameOverSnd.currentTime = 0; const pr = gameOverSnd.play(); if (pr) pr.catch(() => {}); } catch (err) {} };
   // ── THE BOW'S OWN VOICES (user 2026-08-07) ── all four files have shipped in sound/bow/ since the bow did;
   // only swish was ever wired, and then as the GENERIC swing whoosh for every tool, so the bow itself was
@@ -529,12 +529,55 @@
   // NOTE this also flattens the take-to-take variation each set came with (wood spread 2.5 dB, rock 2.6).
   // That is what "consistent" asks for; if the hits want their natural unevenness back, normalise per SET
   // to this mean instead of per FILE and the bases stay exactly as they are.
-  const IMPACT_BASE = 0.464;
+  // ── SFX LEVELLING (user 2026-08-28: "just make all sfx the same level") ──────────────────────────────
+  // Every effect carries a base that puts it at the same MEASURED loudness, so nothing jumps out of the mix.
+  // The bases are derived, not tuned: base = 10^((-34 - LUFS)/20).
+  //
+  // MEASURE WITH LUFS, NOT RMS. The first cut of this used `volumedetect` mean RMS and it was wrong, because
+  // RMS is not frequency weighted and the ear is: the correction (LUFS - RMS) runs from -1.8 dB on bow/impact
+  // to +6.7 dB on bow/stretch, an 8.5 dB spread of pure error. bow/impact sat at the wrong end of it and came
+  // out 8 dB too quiet — "the bow impact is way to low" (user, same day). LUFS is K-weighted and gets it right.
+  //   ffmpeg -i f.mp4 -af aformat=sample_fmts=fltp,volume=NdB,ebur128 -f null -
+  // Two traps in that command line, both of which produced confident nonsense before they were spotted:
+  //   · aformat FIRST. Without it a positive `volume` is applied in s16 and every loud file hard-clips to the
+  //     same number — six of them read an identical -20.0 LUFS that way.
+  //   · read the SUMMARY block. ebur128 prints a running `I:` per frame that starts at -70, so a plain
+  //     first-match regex reports -70 for absolutely everything.
+  // A clip under ~0.4 s has less than one full gating block and reports -70 no matter what: wood/00 and
+  // wood/02 do exactly that, so the wood set is measured off wood/04. All five share one base anyway, and the
+  // rock takes vary only 1.6 dB across the set, so within-set spread is not the thing that matters here.
+  //
+  //   file            LUFS    original   shipped(RMS)   now
+  //   pick_up        -10.0      0.0439      0.0596     0.0631
+  //   block          -13.1      0.1305      0.0550     0.0902
+  //   life_hit       -14.0      0.1032      0.0759     0.1000
+  //   eat / game_over-14.7      0.105       0.0881     0.1084
+  //   bow/impact     -16.9      0.600       0.0569     0.1396   <- the outlier, 13 dB hot originally
+  //   bow/swish      -20.2      0.360       0.1274     0.2042
+  //   leaf           -23.1      0.261       0.2692     0.2851
+  //   bow/stretch    -27.7      0.550       0.5248     0.4842
+  //   rock           -27.8      0.464       0.2723     0.4898
+  //   wood           -29.4      0.464       0.2723     0.5888
+  // TARGET -34 is the CENTRE of the original mix, chosen so overall game loudness barely moves and only the
+  // outliers are pulled in. bow/impact was 13 dB above everything else and is the one big correction.
+  //
+  // THE GRASS FOOTSTEP IS THE ONE EXCEPTION — see STEP_BASE. Levelling it would make it ~6 dB LOUDER, the
+  // opposite of what was asked, and the measure misleads there anyway: it is a CONTINUOUS loop against
+  // one-shots, so its perceived presence is far above any windowed number.
+  // ROCK AND WOOD NOW HAVE SEPARATE BASES: they shared IMPACT_BASE while both were assumed equally loud, but
+  // wood measures 1.6 dB quieter, which is exactly the kind of difference this whole exercise exists to remove.
+  const ROCK_BASE = 0.3674;   // -25% (user 2026-08-28: "lower the hitting the rock sound by 25%") — 0.4898 x 0.75,
+                              // read as AMPLITUDE like every other percentage in this file, so -2.5 dB. This is a
+                              // DELIBERATE deviation from the levelled target, not a re-measurement: rock now sits
+                              // at -36.5 LUFS against everything else's -34. Kept as an explicit multiply off the
+                              // levelled value rather than folded into one number, so a future re-level moves it
+                              // with the pack and this trim survives. Same shape as the STEP_BASE exception.
+  const WOOD_BASE = 0.5888;   // LEVELLED to -34 LUFS — see the SFX LEVELLING note above IMPACT.   // LEVELLED (user 2026-08-28: "just make all sfx the same level") — MEASURED with ffmpeg volumedetect, not guessed: base = 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective level. See the SFX LEVELLING note above impact for the whole table and why -40.
   const ROCKHIT_N = 5;
   const rockHitSnds = [];
   for (let i = 0; i < ROCKHIT_N; i++) {
     const src = 'sound/impact_sounds/rock/0' + i + '.mp4';
-    rockHitSnds.push([regSnd(new Audio(src), IMPACT_BASE), regSnd(new Audio(src), IMPACT_BASE)]);
+    rockHitSnds.push([regSnd(new Audio(src), ROCK_BASE), regSnd(new Audio(src), ROCK_BASE)]);
   }
   let rockHitV = 0;
   const rockHitPick = sndBag(ROCKHIT_N);
@@ -553,7 +596,7 @@
   const woodHitSnds = [];
   for (let i = 0; i < WOODHIT_N; i++) {
     const src = 'sound/impact_sounds/wood/0' + i + '.mp4';
-    woodHitSnds.push([regSnd(new Audio(src), IMPACT_BASE), regSnd(new Audio(src), IMPACT_BASE)]);
+    woodHitSnds.push([regSnd(new Audio(src), WOOD_BASE), regSnd(new Audio(src), WOOD_BASE)]);
   }
   let woodHitV = 0;
   const woodHitPick = sndBag(WOODHIT_N);
@@ -574,7 +617,7 @@
   // Taking 50% off in one step would have been a different (and quieter) number - 0.232 - and the second
   // request was "another 25%", i.e. a quarter off what it is NOW.
   // Foliage giving way to a blade should not weigh anything like stone breaking.
-  const LEAF_BASE = IMPACT_BASE * 0.75 * 0.75;
+  const LEAF_BASE = 0.2851;   // LEVELLED to -34 LUFS — see the SFX LEVELLING note above ROCK_BASE. Measured on its own rather than derived from the impact base by two 0.75s: leaf is -23.1 LUFS against rock's -27.8, nearly 5 dB apart, so the old chain had it well under the pack.
   const LEAFHIT_N = 1;
   const leafHitSnds = [];
   for (let i = 0; i < LEAFHIT_N; i++) {
@@ -633,7 +676,7 @@
   // while faded out so the loop's phase carries on — start walking again and you rejoin the stride you left.
   const STEP_DBG = { walk: false, grass: false, spd: 0, at: 0, playing: false };   // what the tick decided and what the element is doing — __vb.stepDbg()
   const STEP_FADE = 0.09;
-  const STEP_BASE = 0.496;                             // -20% (user 2026-08-26: "lower the footsteps volume by 20%") — 0.62 x 0.8, read as AMPLITUDE like every other percentage in this file
+  const STEP_BASE = 0.372;                             // -25% (user 2026-08-28: "lower the grass footsteps by 25%") — 0.496 x 0.75, on top of the -20% of 2026-08-26 (0.62 -> 0.496), read as AMPLITUDE like every other percentage in this file. DELIBERATELY NOT levelled with the rest: see the exception note in the SFX LEVELLING block above impact
   const stepGrass = regSnd(new Audio('sound/footsteps/grass.mp4'), STEP_BASE);
   stepGrass.loop = true;
   let stepWant = 0, stepAt = 0, stepStarted = false;
@@ -667,7 +710,7 @@
     if (!stepStarted) { stepStarted = true; try { const p = stepGrass.play(); if (p) p.catch(() => { stepStarted = false; }); } catch (e) { stepStarted = false; } }
     STEP_DBG.at = stepAt; STEP_DBG.playing = stepStarted && !stepGrass.paused;
   };
-  const blockSnds = [regSnd(new Audio('sound/block.mp4'), 0.1305), regSnd(new Audio('sound/block.mp4'), 0.1305)];
+  const blockSnds = [regSnd(new Audio('sound/block.mp4'), 0.0902), regSnd(new Audio('sound/block.mp4'), 0.0902)];
   let blockV = 0;
   // ── AND THE BOUNCE KNOWS WHAT IT BOUNCED OFF (user 2026-08-26: "sometimes the lego sound still plays when
   // the player hits the birch tree") ── block.mp4 is a hard plastic knock, and it was the ONE impact left in
@@ -678,10 +721,25 @@
   // different from a chop or the two become indistinguishable and the swing stops reading as wasted. So it
   // plays the tool's own MATERIAL take at the bounce's quieter level — a dull wood knock on wood, a stone
   // knock on stone — and keeps block.mp4 for everything else, which is what it was recorded for.
-  // BLOCK_DUCK carries the takes down to the bounce: they are levelled to IMPACT_BASE for a bite, and the
+  // BLOCK_DUCK carries the takes down to the bounce: they are levelled to ROCK_BASE/WOOD_BASE for a bite, and the
   // whole point of the block level is that a bounce sits under a bite (see the note above).
   const BLOCK_DUCK = 0.64;
+  const knockBlock = () => { const a = blockSnds[blockV++ & 1];
+    try { a.currentTime = 0; const p = a.play(); if (p) p.catch(() => {}); } catch (e) {} };
+  // ── WRONG TOOL IS NOT THE SAME FAILURE AS A BOUNCE (user 2026-08-28: "play block.mp4 when a tool cant
+  // break something ... when the pick trys to break wood ... apply this to all the tools") ── two different
+  // things used to sound identical here, and they mean opposite things to the player:
+  //   · the RIGHT tool that failed to bite (out of reach, or the sphere caught nothing) — a bounce. Keeps
+  //     the material-aware take added on 2026-08-26 for "the lego sound still plays when the player hits the
+  //     birch tree": a dull wood knock on wood, a stone knock on stone.
+  //   · the WRONG tool entirely — a pick on a trunk, an axe on stone, a shovel on either. Nothing the player
+  //     does with that tool on that material will EVER work, and that deserves its own sound rather than a
+  //     convincing-sounding thud that implies progress. This is what block.mp4 was recorded for.
+  // toolCanBreak is the SWING's own rule (sim/tools.js), not a copy of it, so the sound can never tell the
+  // player something the swing disagrees with. An unknown id answers false and falls here too, which is
+  // exactly where it used to land anyway.
   const playBlocked = (id) => {
+    if (!toolCanBreak(id)) { knockBlock(); return; }
     const wood = id !== undefined && !!woodTab[id], rock = !wood && id !== undefined && !!pickOnlyTab[id];
     // …and SOFT counts too: a cactus that refuses the bite was answering with the generic knock, which is
     // the one sound "anything green in the desert gets the leaf sound" is meant to replace. leafSndTab is the
@@ -697,8 +755,7 @@
       } catch (e) { try { a.volume = wasVol; } catch (e2) {} }
       return;
     }
-    const a = blockSnds[blockV++ & 1];
-    try { a.currentTime = 0; const p = a.play(); if (p) p.catch(() => {}); } catch (e) {} };
+    knockBlock(); };
   // ── EATING (user 2026-08-07) ── the sound existed and nothing could trigger it, because nothing could be
   // eaten: raw meat could be picked up, held and dropped, and that was all. So this is the smallest consume
   // action that gives the sound a cause — RIGHT-CLICK with food in hand takes one bite off the stack. It is
@@ -759,7 +816,7 @@
   // DERIVED from the vitals' food table rather than listed here: what is edible and what it restores are the
   // same fact, and keeping two lists in step by hand is how a food ends up chewable but nourishing nothing.
   const EDIBLE = () => new Set(Object.keys(vitFoods()).map(Number).filter(Boolean));
-  const eatSnd = regSnd(new Audio('sound/eat.mp4'), 0.105);   // 0.7 −40% (user 2026-08-07), then −50% and another −50% (user 2026-08-11)
+  const eatSnd = regSnd(new Audio('sound/eat.mp4'), 0.1084);   // 0.7 −40% (user 2026-08-07), then −50% and another −50% (user 2026-08-11), now LEVELLED (0.105 → 0.0881)   // LEVELLED (user 2026-08-28: "just make all sfx the same level") — MEASURED with ffmpeg volumedetect, not guessed: base = 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective level. See the SFX LEVELLING note above impact for the whole table and why -40.
   // ── SNATCHED OUT OF THE AIR (user 2026-08-08) ── sound/pick_up.mp4 is the file that shipped as sound/hit.mp4
   // until the four-take tool_hit pool replaced it as the swing sound; it has been unused since and is now the
   // pickup. It plays for a LEVITATING drop only — raw steak off a kill, a Q-tossed item, a loosed arrow, while
@@ -768,7 +825,7 @@
   // (user 2026-08-08) — read as amplitude like every other percentage in this file, so -6 dB and then -2.5 dB,
   // 0.1171875 -> 0.05859375 -> 0.043945312. One voice is enough — only one grab flight is ever in the air.
   // It fires the instant the item is SNATCHED (see startGrab), not when the flight lands in the hand.
-  const pickUpSnd = regSnd(new Audio('sound/pick_up.mp4'), 0.043945312);
+  const pickUpSnd = regSnd(new Audio('sound/pick_up.mp4'), 0.0631);   // LEVELLED (user 2026-08-28: "just make all sfx the same level") — MEASURED with ffmpeg volumedetect, not guessed: base = 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective level. See the SFX LEVELLING note above impact for the whole table and why -40.
   let pickUpPlays = 0;                                 // fired count — currentTime rewinds on every play, so a test has nothing else to count
   const playPickUp = () => { pickUpPlays++;
     try { pickUpSnd.currentTime = 0; const p7 = pickUpSnd.play(); if (p7) p7.catch(() => {}); } catch (err) {} };
@@ -793,7 +850,7 @@
     if (--sel.n <= 0) { slots[selSlot] = null; slotTidy(); }
     return true;
   };
-  const bowStretchSnd = regSnd(new Audio('sound/bow/stretch.mp4'), 0.55);   // the DRAW — creaks under the pull and is cut the moment the string is released, so a half-draw never rings on
+  const bowStretchSnd = regSnd(new Audio('sound/bow/stretch.mp4'), 0.4842);   // LEVELLED (user 2026-08-28: "just make all sfx the same level") — MEASURED with ffmpeg volumedetect, not guessed: base = 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective level. See the SFX LEVELLING note above impact for the whole table and why -40.   // the DRAW — creaks under the pull and is cut the moment the string is released, so a half-draw never rings on
   // ── the string settling back to rest with a fresh arrow on it. sound/bow/reload.mp4 was removed from the
   // tree on 2026-08-07 while the rest of the bow's audio was being wired, so this walks the usual format
   // fallbacks the ambience loader uses: drop reload.mp4 (or .mp3/.wav) back in and the nock speaks again with
@@ -803,7 +860,7 @@
     let ci = 0;
     bowReloadSnd.addEventListener('error', () => { if (ci < cands.length) bowReloadSnd.src = cands[ci++]; });
     bowReloadSnd.src = cands[ci++]; }
-  const playBowImpact = sndPool('sound/bow/impact.mp4', 0.6, 4);
+  const playBowImpact = sndPool('sound/bow/impact.mp4', 0.1396, 4);   // LEVELLED (user 2026-08-28: "just make all sfx the same level") — MEASURED with ffmpeg volumedetect, not guessed: base = 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective level. See the SFX LEVELLING note above impact for the whole table and why -40. This was the WORST offender: 13 dB above the next loudest sound in the game.
   const playBowStretch = () => { try { bowStretchSnd.currentTime = 0; const p = bowStretchSnd.play(); if (p) p.catch(() => {}); } catch (e) {} };
   const stopBowStretch = () => { try { bowStretchSnd.pause(); bowStretchSnd.currentTime = 0; } catch (e) {} };
   const playBowReload = () => { try { bowReloadSnd.currentTime = 0; const p = bowReloadSnd.play(); if (p) p.catch(() => {}); } catch (e) {} };
@@ -827,7 +884,7 @@
   // chop repeats every 570 ms, so one element would keep cutting its own transient short.
   // Distance-faded on the SAME curve as the arrow's impact, so a shaft that finds a bird a hundred voxels out
   // is heard as a distant tick rather than at point-blank.
-  const lifeHitPool = sndPool('sound/life_hit.mp4', 0.1032, 3);
+  const lifeHitPool = sndPool('sound/life_hit.mp4', 0.1000, 3);   // LEVELLED (user 2026-08-28: "just make all sfx the same level") — MEASURED with ffmpeg volumedetect, not guessed: base = 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective level. See the SFX LEVELLING note above impact for the whole table and why -40.
   const playLifeHit = (wx, wy, wz) => {
     const d9 = Math.hypot(wx - P.x, wy - smoothEye, wz - P.z);
     lifeHitPool(Math.max(0.14, Math.min(1, 1 - (d9 - 12) / 190))); };
