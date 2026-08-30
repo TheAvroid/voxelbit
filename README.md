@@ -4,7 +4,7 @@ A voxel world rendered by a raytracer, in a browser tab. No rasteriser, no meshe
 every frame walks rays through a voxel grid on the GPU, with real sun shadows, ambient
 occlusion, traced water reflection and refraction, and a denoiser holding it together.
 
-Play it at **[voxelbit.net](https://voxelbit.net/)**, and come talk about it on
+Play it at **[voxelbit.net](https://voxelbit.net/)**, come talk about it on
 **[Discord](https://discord.gg/AtW5fWZtSG)**.
 
 Trees fall where you cut them and break apart on the ground. Water freezes and thaws.
