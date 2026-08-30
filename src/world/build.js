@@ -99,16 +99,26 @@
   // player in the same biome. SPOX is the other half of that pair - a step taken INSIDE the fixed
   // arrangement, so it is the one number that can change which strip the player stands in without moving a
   // single boundary. -2160 is the birch band's own centre in anchor coordinates:
-  // BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH) = -(1080 + 1080), pure strip -3240 .. -1080. It was +2160,
-  // the middle of the oak strip.
-  SPOX = -2160;
+  // BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH), the centre of the birch strip. It was +2160, the middle of
+  // the oak strip.
+  // ── AND IT IS DERIVED, NOT WRITTEN OUT (2026-08-29) ── this was the literal -2160, which was BIRCHC at the
+  // time. Inserting the ARCTIC band moved the birch one strip west to -4320 and left the literal pointing at
+  // the arctic's centre instead, so the player spawned on a glacier. The whole point of the note above is that
+  // SPOX means "the middle of the band I want to stand in", and only BIRCHC can say where that is.
+  // ── SPAWN IN THE ARCTIC (user 2026-08-29) ── SPBAND is the ONE place the spawn biome is chosen, and it is a
+  // band CENTRE rather than a number for the reason the note above gives: a literal goes stale the moment a
+  // band is inserted, which is exactly how the player ended up on a glacier by accident an hour before being
+  // put on one deliberately. Point it at BIRCHC to go back to the birch forest, OAKC for the oak, and the two
+  // guards below follow automatically because they test SPBANDM rather than naming a mask.
+  const SPBAND = ARCTC, SPBANDM = arcticM;
+  SPOX = SPBAND;
   { let g = 0; while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX += 16; }
-  // The guard above walks EAST in 16s, and from the band centre it has 1080 of birch to cross before it would
-  // leave the strip. So it is given a birch test as well: if the walk carried the player out of the band, walk
-  // back WEST from the centre instead. Without it a spawn over a lake on the east half could deposit the
-  // player in the pine strip, which is the exact bug the "walking SPWX cannot work" note is about.
-  if (birchM(SPWX + SPOX, SPWZ) <= 0) {
-    SPOX = -2160;
+  // The guard above walks EAST in 16s, and from the band centre it has a half-strip to cross before it would
+  // leave it. So it is given a band test as well: if the walk carried the player out, walk back WEST from the
+  // centre instead. Without it a spawn over a lake on the east half could deposit the player in the pine
+  // strip, which is the exact bug the "walking SPWX cannot work" note is about.
+  if (SPBANDM(SPWX + SPOX, SPWZ) <= 0) {
+    SPOX = SPBAND;
     let g = 0;
     while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX -= 16;
   }

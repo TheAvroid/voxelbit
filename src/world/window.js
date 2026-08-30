@@ -248,9 +248,9 @@
   // period is the same column as 6940 EAST, i.e. exactly the fourth strip. The pine that remains on both
   // sides of the sand stays on purpose — it is what keeps the desert from ever bordering the oak, which
   // sim/nav.js's BIO_SANDLINE reasoning depends on.
-  const BIOP = 12960;   // SIX strips now, not five: the BIRCH band is a new 2160 strip between the spawn pine and the desert, so the period grows by exactly one strip (6 * W by construction, never a sum of measured pieces)                                  // one full cycle: SIX strips of 2160 — oak, cherry, oak, pine, desert, pine. 6 * W by construction, never a sum of measured pieces
+  const BIOP = 15120;   // SEVEN strips now (7 * W): the ARCTIC is a new 2160 strip between the spawn pine and the birch (user 2026-08-29), so the period grows by exactly one strip again and BIRCHOFF/DESOFF each slide one strip west to open the gap. SPAWN DOES NOT MOVE - it sits in the pine strip at -1080..+1080 and the arctic takes the slot birch used to hold, which is what keeps every spawn guarantee in this file true. Was SIX strips: the BIRCH band is a new 2160 strip between the spawn pine and the desert, so the period grows by exactly one strip (6 * W by construction, never a sum of measured pieces)                                  // one full cycle: SIX strips of 2160 — oak, cherry, oak, pine, desert, pine. 6 * W by construction, never a sum of measured pieces
   const pwrap = (d) => d - Math.floor(d / BIOP + 0.5) * BIOP;   // signed distance into [-BIOP/2, BIOP/2). floor(x + 0.5) rather than Math.round because the WGSL port must agree with this bit for bit, and WGSL's round() breaks ties to EVEN where Math.round breaks them upward
-  const DESOFF = 3240, DESB = 450, DESW = 1000;   // 1080 -> 3240: one strip further west, because the BIRCH band now occupies the strip the sand used to (see BIOP)        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
+  const DESOFF = 5400, DESB = 450, DESW = 1000;   // 1080 -> 3240 -> 5400: one strip further west each time a band is inserted inboard of it - first the BIRCH, then the ARCTIC (see BIOP)        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
   // History, because the number has moved three times and each move had a different reason: 500 -> 300 (user
   // 2026-08-15) because 50 m of dense pine hid the thing the spawn camera was aimed at; then 300 -> 80; then
   // 80 -> 1500 below, which abandons "the sand is visible from spawn" outright rather than tuning it, because
@@ -646,6 +646,52 @@
     const b = fbm(x * 0.0057 + 47.3, z * 0.0057 + 8.9);
     return OAKY + OAKHILL * sstep(sstep(a * 0.82 + b * 0.18));   // OAKY .. OAKY + OAKHILL, never negative
   };
+  // ══ THE ARCTIC'S OWN GROUND ══ and it is the BIRCH FOREST'S, exactly (user 2026-08-30: "make the terrain
+  // generation match the birch forest"). The birch band wears oakH — see the note under BIRCHOFF — so the
+  // arctic calls oakH too, and the three bands roll on one shared height field. There is no arctic landform
+  // code, which is the point: nothing can drift between them because there is only one field.
+  //
+  // THIS REPLACES A MUCH LARGER FIRST BUILD, and what it dropped is worth recording so it is not rebuilt by
+  // reflex. That version stacked three fields — oakH's hills, a RIDGED mountain field (1 - |2f - 1|, gated and
+  // cubed so ranges occurred in places), and a glacier surface the ground was lifted UP to with a max(), so
+  // valleys flooded with ice and left the peaks proud as nunataks. It worked, and it is gone because the ask
+  // changed to "match the birch forest", which no amount of mountain is.
+  //
+  // ── AND THE CONTOUR RINGS ARE FIXED IN COLOUR, NOT IN GEOMETRY ── worth the whole of this note, because
+  // three height-based attempts failed before the answer turned out to be somewhere else entirely.
+  // A smooth height field quantised to whole voxels steps along its own iso-heights, and every step is a
+  // 1-voxel lip running the length of one. Under the birch that is invisible; on bare snow birch's own rounded
+  // hills came out as a topographic map in white, concentric rings following every dome. Three tries at
+  // deforming the terrain to hide it, all measured on screen:
+  //   * ±1.28 voxels, half of it WHITE noise → a field of loose blocks. Past half a voxel a dither stops
+  //     nudging columns already on a rounding boundary and starts moving arbitrary ones, so neighbours
+  //     disagree by a whole voxel at random.
+  //   * ±0.45, the textbook sub-voxel dither → the rings survived, plus single-voxel speckle from the white
+  //     half. It cannot work here for a geometric reason: these hills are long-wavelength and shallow, so one
+  //     step spans a wide band of ground, and moving the edge of a line tens of voxels wide by half a voxel
+  //     is not a visible change.
+  //   * ±1.5 coherent drifts at a ~25-voxel wavelength → regular parallel corrugations, a ploughed field.
+  //     Coherent noise at one wavelength IS a wave, and a wave over rolling ground reads as ridges.
+  // THE STEP WAS NEVER THE PROBLEM — every biome has it. What the forests have and bare snow did not is
+  // GROUND COLOUR VARIATION: the pine floor picks per column from a 4-entry ramp spanning ~13% in luminance
+  // (NEEDLE), and that competing variation is what stops the eye joining the step edges into a line. Snow had
+  // a 2-entry ramp spanning 6%, so there was nothing to compete. Widening the ramp (assets/palette.js) fixes
+  // it where it actually lives and leaves the terrain alone — which is also what was asked for: the arctic's
+  // ground is the birch forest's ground, to the voxel, with no arctic height code at all.
+  // ── ARCTIC SNOWFALL, PARKED ── the arctic needs NO new snow code: tick-snow refuses the blanket by biome and
+  // the arctic is not in that refusal, so it would settle here on exactly the pine forest's mechanics. Which
+  // means switching it OFF is what takes a line. Flip this to true and the biome storms like the pine and the
+  // cherry do, with the same sweep, blanket and thaw.
+  // ── WHERE THE ICE STOPS BEING HOSPITABLE ── one number, and everything the arctic refuses to grow reads it:
+  // trees, boulders, twigs, flowers, mushrooms, ferns, shrubs, cones, logs and lily pads. LOW on purpose
+  // (user 2026-08-29: "now your putting pine trees in the arctic, dont do that"). A dithered gate was tried
+  // first, to soften the border, and it does soften it — but softening a gate means SOME of it survives at
+  // every mask value, so pines stood on open snow deep into the band. The border is smooth because the SNOW
+  // fades in over 900 voxels while the planting stops at 0.15: the treeline and the snowline are in DIFFERENT
+  // places. That is what a real treeline looks like, and one line doing both jobs is what read as drawn.
+  const ARCT_BARE = 0.15;
+  const ARCTIC_SNOW = false;
+  const arctH = (x, z) => oakH(x, z);                 // the birch forest's ground, to the voxel — see above
   // ── ONE HELPER, CALLED FROM ALL THREE COPIES OF H ── H(), makeHRow and makeHCol each carry the same height
   // expression and have to agree BIT FOR BIT or the bulk fill and the placement queries disagree about where
   // the ground is (__vb.gtest is what measures it). So this is a scalar function that takes the height the
@@ -677,7 +723,32 @@
   // 192 clears the tallest model with 24 to spare, and it is a COST: those rows are scanned per tile.
   // RAISE IT BEFORE BAKING ANYTHING TALLER.
   const CANOPY = 192;
-  const BIRCHOFF = 1080, BIRCHB = 450, BIRCHH = 1080;   // inner edge east of spawn; blend width; half-width to the mask midpoint
+  // ══ THE ARCTIC (user 2026-08-29) ══ a seventh strip, BETWEEN the spawn pine and the birch forest.
+  // Placed on the WEST side of the spawn pine rather than the east for one reason: spawn sits in that pine
+  // strip, and every spawn guarantee in this file (the view down the strip, the distance to the treeline,
+  // SPYAW facing the oak) is written against it. Inserting inboard of spawn would have moved the player onto
+  // an ice sheet on the first frame. So the arctic takes the slot the birch held and the birch, the desert and
+  // the wrap all slide one strip west - which is exactly what the birch itself did to the desert in 2026-08-24.
+  // It borders PINE on its east and BIRCH on its west, which is where the user asked for it.
+  // The meander is desWob, SHARED with the birch it touches: two adjacent bands on a shared wobble keep a
+  // parallel seam, and the long note under OAKOFF is about what happens when two independent meanders are
+  // free to converge on each other.
+  // ARCTB is DOUBLE the 450 every other band uses (user 2026-08-29: "make the transition … smoother. it
+  // currently looks like a straight snow line going across"). The note under DESB argues a blend is a TREELINE
+  // and should not be widened — and that is right for two forests, which meet as canopy against canopy. Snow
+  // against forest is a GROUND change, and a ground change reads as a drawn line at any width the eye can take
+  // in at once. 900 voxels is 90 m of thinning, which is about the distance the fog starts softening anyway.
+  const ARCTOFF = 1080, ARCTB = 900, ARCTH = 1080;     // inner edge from spawn; blend width; half-width to the mask midpoint
+  const ARCTC = BAND_MIRROR * (ARCTOFF + ARCTH);       // -2160: the band centre, mirrored like DESC/BIRCHC/OAKC/CHOFF
+  const arcticM = (x, z) => {                          // 1 = deep arctic, 0 = the pine and the birch either side
+    const c = SPWX + ARCTC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
+    const t = 0.5 + (ARCTH - Math.abs(pwrap(x - c))) / ARCTB;
+    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
+  };
+  const ARCTWMAX = DESW * 0.675;                       // the band's absolute reach, for the same cheap-out shape birch uses
+  const ARCTFAR = ARCTC + ARCTH + 2 * ARCTWMAX + ARCTB * 0.5;    // no column east of this can be arctic at all
+  const ARCTWFAR = ARCTC - ARCTH - 2 * ARCTWMAX - ARCTB * 0.5;   // …nor west of this
+  const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = 1080;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
   const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
   const birchM = (x, z) => {                            // 1 = deep birch forest, 0 = the pine and the sand either side
     const c = SPWX + BIRCHC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
@@ -699,6 +770,15 @@
     if (dx < BIRCHFAR && dx > BIRCHWFAR) {
       const bm = birchM(x, z);
       if (bm > 0) return bm >= 1 ? oakH(x, z) : h * (1 - bm) + oakH(x, z) * bm;
+    }
+    // ── AND THE ARCTIC, on the same terms ── its own field rather than oak's, but routed through the same
+    // helper for the same reason: this is the one place all three copies of H agree, so a band added here
+    // needs no three-copy edit. Its cheap-out is checked before oak's for the same reason birch's is - the
+    // bands cannot overlap, a whole pine strip sits between arctic and oak, and the pine and the sand pay two
+    // compares for the whole biome existing.
+    if (dx < ARCTFAR && dx > ARCTWFAR) {
+      const am = arcticM(x, z);
+      if (am > 0) return am >= 1 ? arctH(x, z) : h * (1 - am) + arctH(x, z) * am;
     }
     if (dx >= OAKFAR || dx <= OAKWFAR) return h;       // pine forest and desert — the identical double back out, so their terrain is unchanged to the last bit
     if (dx <= OAKNEAR && dx >= OAKWNEAR) return oakH(x, z);   // deep oak — mask is exactly 1, and h * 0 + oakH * 1 is oakH
@@ -767,7 +847,13 @@
     // THE BIRCH FOREST GETS THE SHALLOW BANKS TOO, because it got the rounded hills that make them necessary:
     // the whole reason this helper exists is that oakH lifts land near water ~42 voxels over WL and the river
     // lerp then reads as a cliff. A band with oak terrain and pine banks would have exactly that cliff.
-    const bm = (dx < BIRCHFAR && dx > BIRCHWFAR) ? birchM(x, z) : 0;
+    // ── AND THE ARCTIC, for exactly the reason stated above (user 2026-08-29: "the terrain raising
+    // unnaturally") ── arctH is built on oakH's field, so arctic land near water stands the same ~42 voxels
+    // over WL, and the river lerp turns that into the same cliff — a grey stone wall along the bank, which is
+    // what the screenshot shows. It had oak terrain and pine banks, the exact combination this note warns
+    // about. Adding it here is one term, and it is the same term the birch needed for the same reason.
+    const bm = (dx < BIRCHFAR && dx > BIRCHWFAR) ? birchM(x, z)
+             : (dx < ARCTFAR && dx > ARCTWFAR) ? arcticM(x, z) : 0;
     if (bm <= 0 && (dx >= OAKFAR || dx <= OAKWFAR)) return h;   // pine forest and desert - one subtraction and a compare, before the river scan
     if (h <= OAKBEACHY) return h;                      // …and any ground already at or under the BEACH, in either forest
     const d = bankDist(x, z);

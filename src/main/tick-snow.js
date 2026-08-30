@@ -85,7 +85,8 @@
         // into the sand on the same hash and the same salt the surface material uses. The FALLING half of the
         // rule is the matching gate in render/wgsl/trace.js, and both had to move or it snows over ground that
         // refuses to keep it.
-        const dmS = wSharp((RAIN_ON || !OAK_SNOW) ? Math.max(desertM(wx0, wz0), oakWeather(wx0, wz0)) : desertM(wx0, wz0));   // wSharp: the blanket stops nearer the border than the terrain blend does (world/window.js)   // oakWeather cuts the blossom band back out of the oak term, so the blanket SETTLES there (user 2026-08-18)
+        const aRef = ARCTIC_SNOW ? 0 : arcticM(wx0, wz0);   // ── THE ARCTIC IS HELD OUT OF THE WEATHER FOR NOW ── see ARCTIC_SNOW in world/window.js. It rides in the SAME refusal term the desert uses, so when the flag flips it is one branch that changes and not a second snow path
+        const dmS = wSharp(Math.max(aRef, (RAIN_ON || !OAK_SNOW) ? Math.max(desertM(wx0, wz0), oakWeather(wx0, wz0)) : desertM(wx0, wz0)));   // wSharp: the blanket stops nearer the border than the terrain blend does (world/window.js)   // oakWeather cuts the blossom band back out of the oak term, so the blanket SETTLES there (user 2026-08-18)
         if (dmS > 0 && ihash(wx0 * 5 + 17, wz0 * 7 + 29) < dmS) return;
         if ((snowQN - snowHead) + (snowWN - snowWHead) >= SNOW_MAX) return;   // at the live cap: stop ACCUMULATING — never melt existing blanket to make room
         // ORDER (user): the FLAKES arrive first, the blanket second. The leading edge sweeps down from the sky, so

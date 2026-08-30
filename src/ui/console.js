@@ -349,7 +349,12 @@
     const IS_BIRCH = (x, z) => birchM(x, z) >= 0.995;
     const IS_CHERRY = (x, z) => cherryM(x, z) >= 0.995;
     const IS_OAK = (x, z) => oakM(x, z) >= 0.995 && cherryM(x, z) <= 0.005;
-    const IS_PINE = (x, z) => desertM(x, z) <= 0.005 && oakM(x, z) <= 0.005 && birchM(x, z) <= 0.005;
+    const IS_ARCTIC = (x, z) => arcticM(x, z) >= 0.995;
+    // …and the ARCTIC has to be excluded from the pine test too. IS_PINE is defined by SUBTRACTION - pine is
+    // wherever no other band is - so every band added to the world has to be named here or the seeker will
+    // happily report the new biome as pine forest. That is not hypothetical: without this line /locate
+    // pine_forest could land the player on a glacier.
+    const IS_PINE = (x, z) => desertM(x, z) <= 0.005 && oakM(x, z) <= 0.005 && birchM(x, z) <= 0.005 && arcticM(x, z) <= 0.005;
     // ── A BAND'S TREE HAS TO BE REACHABLE FROM OUTSIDE THE BAND ── (user 2026-08-29: "the /locate birch
     // command doesnt work, it should teleport the player to a birch forest"). Each tree finder is a ring walk
     // over its own cell grid capped at 40 rings, and that cap is SHORTER THAN THE GAP BETWEEN THE BANDS: the
@@ -456,6 +461,7 @@
       // the MISSING CONJUNCT that is wrong each time.
       pine_forest: () => biomeSeek(IS_PINE, 'the pine forest'),
       birch_forest: () => biomeSeek(IS_BIRCH, 'the birch forest'),
+      arctic: () => biomeSeek(IS_ARCTIC, 'the arctic'),
       // ── AND OAK IS A CONJUNCTION NOW TOO (2026-08-18) ── the note above this predicted exactly this: a fourth
       // biome breaks any "biome" test written as the absence of the others. The cherry forest sits INSIDE oakM
       // (cherryM is a sub-region of it — see world/window.js), so `oakM >= 0.995` is satisfied perfectly from

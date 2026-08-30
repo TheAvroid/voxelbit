@@ -200,7 +200,16 @@
       const rdK = wantK === 5 ? CARD_KEEP : ((bunnySlot || armSlot || skunkSlot || porcSlot || flamSlot) ? MAM_KEEP : LIFE_KEEP);   // land mammals persist to the bird keep radius (user: "spawn as far as the perched birds"); worms/ducks/fish keep LIFE_KEEP
       const dp2 = (B.x - P.x) * (B.x - P.x) + (B.z - P.z) * (B.z - P.z);
       const hd2 = ((B.kind | 0) === 0 || (B.kind | 0) === 2 || (B.kind | 0) === 6) && B.hcx !== undefined ? (B.hx - P.x) * (B.hx - P.x) + (B.hz - P.z) * (B.hz - P.z) : dp2;
-      const far = hd2 > rdK * rdK;                     // butterflies (and fish) judge by their HOME, everything else by where it is
+      // ── AND ANYTHING THAT WANDERS ONTO THE ICE IS RECYCLED (user 2026-08-29, third time of asking) ── the
+      // population damping in tick-life zeroes every band's WANT while the player is in the arctic, and that
+      // is genuinely working: censused 0 wanted, 0 in every band, 0 birds, 0 drops. What it cannot do is stop
+      // a creature that spawned in the pine forest from WALKING IN, because want governs placement near the
+      // player, not migration afterwards. That is what was still being seen: a handful of transient stamped
+      // voxels, gone by the next scan because the animal had moved on.
+      // Recycled on the SAME 0.5 midline the bee's own containment uses above, and for the same stated reason
+      // — not the 0.15 planting line, because clipping an animal off where the trees stop would read as an
+      // invisible wall well before the snow starts.
+      const far = hd2 > rdK * rdK || arcticM(B.x, B.z) > 0.5;   // butterflies (and fish) judge by their HOME, everything else by where it is
       // ── AND AN OAK-FOREST FLYER IS RECYCLED ONCE IT IS PROPERLY OUT OF THE OAK (user 2026-08-17) ── every
       // other biome containment in this loop is `(B.kind|0) === 2`: the step rule, the turn-away and the
       // planner's reach clip are all a WALKER's. A flyer has none of them, and the bee is the first creature

@@ -105,7 +105,11 @@
         // against the sky is a couple of pixels. Distance-gating the DESERT arm only — the blossom containment is
         // a different report with a different shape and is left exactly as it was.
         const dpv2 = (b.x - P.x) * (b.x - P.x) + (b.z - P.z) * (b.z - P.z);
-        if (b.init && ((desertM(b.x, b.z) > BIRD_OUT && dpv2 > BIRD_POP2) || (pinkMe ? !chOut(b.x, b.z) : chOut(b.x, b.z)))) b.init = false;
+        // ── AND THE ARCTIC (user 2026-08-29) ── the third sky the flock stays out of, on the desert's own pair of
+        // thresholds: BIRD_OUT recycles one that has drifted deep over the ice, BIRD_IN refuses the spawn.
+        // These are SONGBIRDS — cardinals, blue birds and robins over a glacier is the same category of wrong as
+        // them over open sand, and the flock is not part of LIFE_WANT so the population damping never saw it.
+        if (b.init && ((Math.max(desertM(b.x, b.z), arcticM(b.x, b.z)) > BIRD_OUT && dpv2 > BIRD_POP2) || (pinkMe ? !chOut(b.x, b.z) : chOut(b.x, b.z)))) b.init = false;
         if (!b.init) {                                // placed out past the fog, never in plain view, and staggered so they never read as a formation
           // ── AND IF THERE IS NOWHERE LEGAL, DO NOT PLACE IT AT ALL ── stand deep in the desert and every
           // candidate on the ring is sand, so the flock has to be able to answer "none". Eight tries around
@@ -146,7 +150,7 @@
             const rq = bIn + Math.random() * Math.max(1, bOut - bIn);
             const bx9 = P.x + Math.cos(aq) * rq, bz9 = P.z + Math.sin(aq) * rq;
             const inCh = chOut(bx9, bz9);
-            if (bi < flockUp && desertM(bx9, bz9) <= BIRD_IN && (!inCh || BIRD_PINK >= 0)) { ringA.push(aq); ringR.push(rq); ringC.push(inCh); }
+            if (bi < flockUp && Math.max(desertM(bx9, bz9), arcticM(bx9, bz9)) <= BIRD_IN && (!inCh || BIRD_PINK >= 0)) { ringA.push(aq); ringR.push(rq); ringC.push(inCh); }
           }
           if (ringA.length) { const p9 = (Math.random() * ringA.length) | 0;
             a0 = ringA[p9]; r0 = ringR[p9]; pinkHere = ringC[p9]; ok = true; }

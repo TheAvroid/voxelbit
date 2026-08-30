@@ -356,9 +356,9 @@
     // literal, so this one silently overrides it. Rather than change what `om` returns and break whatever
     // reads it, this is the honest four-value answer, and it is what a biome question actually needs — 'not
     // the pine forest' is a statement about oak AND birch AND desert together, not about any one of them.
-    bioAt(x, z) { return { oak: +oakM(x, z).toFixed(3), birch: +birchM(x, z).toFixed(3),
+    bioAt(x, z) { return { oak: +oakM(x, z).toFixed(3), birch: +birchM(x, z).toFixed(3), arctic: +arcticM(x, z).toFixed(3),
       desert: +desertM(x, z).toFixed(3), cherry: +cherryM(x, z).toFixed(3),
-      pine: (oakM(x, z) < 0.5 && birchM(x, z) < 0.5 && desertM(x, z) < 0.5) ? 1 : 0 }; },   // the same 'absence of every named band' the pine arm of gotoBiome uses
+      pine: (oakM(x, z) < 0.5 && birchM(x, z) < 0.5 && desertM(x, z) < 0.5 && arcticM(x, z) < 0.5) ? 1 : 0 }; },   // the same 'absence of every named band' the pine arm of gotoBiome uses — and EVERY new band has to be named here, because pine is defined by SUBTRACTION and an unlisted band reads as pine forest (the arctic did, and so did /locate pine_forest until IS_PINE was widened to match)
     cm(x, z) { return +cherryM(x, z).toFixed(3); },
     // Read-only twin of the twig branch of tryPickup: what WOULD come away at this voxel, without removing it.
     // Exists because the pickup itself is driven by the view ray and a twig is an 8x5x3 object on a forest floor —
@@ -2083,8 +2083,11 @@
       // named bands, and once the birch forest landed "neither oak nor desert" included it, so every
       // gotoBiome('pine') since has been teleporting into the birch forest and reporting success (caught
       // 2026-08-24 while profiling snow, which made the whole measurement the wrong biome's).
-      const f = which === 'desert' ? desertM : which === 'birch' ? birchM
-        : which === 'pine' ? ((x, z) => (oakM(x, z) < 0.5 && desertM(x, z) < 0.5 && birchM(x, z) < 0.5) ? 1 : 0) : oakM;
+      // …and it happened AGAIN with the arctic (2026-08-29), which is why the list is now written as a set of
+      // named bands rather than a hand-kept conjunction: add a band to NAMED and both arms follow.
+      const NAMED = { desert: desertM, birch: birchM, arctic: arcticM, oak: oakM };
+      const f = NAMED[which] || (which === 'pine'
+        ? ((x, z) => Object.keys(NAMED).every((k) => NAMED[k](x, z) < 0.5) ? 1 : 0) : oakM);
       const lim = maxD || 400000;
       for (let d = 0; d <= lim; d += 512) {
         for (const sgn of (d === 0 ? [1] : [1, -1])) {
@@ -2092,7 +2095,7 @@
           if (f(x, z) > 0.5) {
             P.x = x; P.z = z; P.y = H(x, z) + 3; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1;   // the same three lines __vb.tp ends with — the streamer catches up on its own
             return { found: which, at: [Math.round(x), Math.round(z)], dist: d,
-              oak: +oakM(x, z).toFixed(2), desert: +desertM(x, z).toFixed(2), birch: +birchM(x, z).toFixed(2) }; }
+              oak: +oakM(x, z).toFixed(2), desert: +desertM(x, z).toFixed(2), birch: +birchM(x, z).toFixed(2), arctic: +arcticM(x, z).toFixed(2) }; }
         }
       }
       return { found: null, searched: lim, oakHere: +oakM(P.x, P.z).toFixed(2), desertHere: +desertM(P.x, P.z).toFixed(2) };

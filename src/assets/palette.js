@@ -44,7 +44,27 @@
     return id < 0 ? palNearest(r, g, b) : id; };
   const palMintLog = [];                               // ?palmint only — [id, r, g, b, caller stack]
   let palOver = 0;                                     // how many colours the ceiling turned away — __vb.palAudit() reports it
+  // ══ TWO IDS BOUGHT BACK (user 2026-08-29: "free up the 2 voxels") ══ the table has been full at 256/256
+  // since the desert, and the arctic needs a SOLID white — the existing SNOW ids are walk-through 1-voxel
+  // decor, and the birch bark whites carry wood + axe, so ground built from either is snow you fall through
+  // or snow you need an axe to dig.
+  // These two pairs are what __vb.palAudit() reports as reclaimable at tolerance 2, and its bucketing is the
+  // argument for why they are safe: it only ever groups ids that ALREADY AGREE on every material flag and
+  // every pickup set, and it skips palOwn outright, so neither merge can collapse a model's identifying id
+  // set (the pinecone-as-stick bug) or cross a material boundary. The colours differ by 2 of 255.
+  // ORDER-INDEPENDENT ON PURPOSE: whichever member of a pair is minted first becomes the id and the second
+  // resolves to it, so this does not depend on which loader happens to run first — which is exactly the kind
+  // of load-order assumption ?palmint exists to chase down.
+  const PAL_MERGE = [[[102, 73, 47], [100, 72, 46]], [[61, 59, 56], [62, 61, 57]]];
+  const palMergeId = (r, g, b) => {
+    if (!palIdx) return -1;
+    for (const pair of PAL_MERGE) {
+      if (!pair.some((c) => c[0] === r && c[1] === g && c[2] === b)) continue;
+      for (const c of pair) { const id = palIdx.get((c[0] << 16) | (c[1] << 8) | c[2]); if (id !== undefined) return id; }
+    }
+    return -1; };
   const addCol = (r, g, b) => {
+    { const m = palMergeId(r, g, b); if (m >= 0) return m; }   // see PAL_MERGE
     if (palette.length >= 256) { const id = palNearest(r, g, b); palOver++;
       if (palOver === 1) console.error('[vb] PALETTE FULL (256/256) — colour', r, g, b, 'snapped to id', id,
         '- every colour added from here on is a SUBSTITUTE. Run __vb.palAudit() to see what is left to reclaim.');
@@ -407,6 +427,19 @@
   const FRUIT_STEM = addCol(143, 95, 74);
   palOwn.add(FRUIT_STEM);
   const SNOW = [addCol(234, 238, 246), addCol(221, 227, 239)];                                           // fallen snow — strictly 1-voxel (10 cm) layers, walk-through decor
+  // ── THE ARCTIC'S GROUND, AND WHY IT CANNOT BE ANY OF THE WHITES ALREADY HERE ── SNOW above is decor: it is
+  // walk-through by design, a 10 cm layer that lands and melts, so a biome floored with it is a biome you fall
+  // through. The BIRCH BARK whites (the other white in the table, and the obvious candidate — user asked) carry
+  // wood + axe: ground built from them would read as TRUNK to the felling and chop systems and pick up as
+  // birch. So the arctic gets two ids of its own, paid for by PAL_MERGE above.
+  // Deliberately COOLER than both: the birch white is 244,243,238, which is a warm paper white, and snow under
+  // an open sky takes its colour from that sky. Far enough from SNOW's own 234,238,246 that a tolerance share
+  // can never collapse the two — a solid id and a walk-through id must not become one voxel.
+  // FOUR steps, not two, and spanning ~12% in luminance rather than 6% — the pine floor's NEEDLE ramp is the
+  // model (4 entries, ~13%). This is what breaks the contour rings on bare arctic ground: see the long note
+  // in world/window.js for the three height-based attempts that did not.
+  const ASNOW = [addCol(246, 250, 255), addCol(232, 238, 249), addCol(240, 245, 252), addCol(226, 233, 244)];   // packed snow — SOLID ground, shovel
+
   // ── RAIN, AND WHY IT IS EXACTLY ONE ID ── the oak forest gets rain where the pine forest gets snow, and a
   // falling raindrop is a traced voxel in the same lattice the flakes use (see the RAIN block in TRACE), so it
   // needs a palette entry the way a flake needs SNOW[0]. THE TABLE HAS THREE SLOTS LEFT — measured, and that

@@ -283,6 +283,20 @@
     // actually failing to place, which is the opposite diagnosis.
     LIFE_WANT.flamingo = nFlamingo; LIFE_WANT.bunny = nBunny;
     LIFE_WANT.armadillo = nArmadillo; LIFE_WANT.skunk = nSkunk; LIFE_WANT.porcupine = nPorcupine;
+    // ── NOTHING LIVES ON THE ICE (user 2026-08-29: "remove all the life from the arctic") ── applied to the
+    // WHOLE table in one place rather than as a term in each of the dozen counts above. Two reasons, and the
+    // second is the one that decided it: every band would otherwise need its own arctic clause, and the ones
+    // added later would silently not get one — which is exactly how treeAt ended up excluding itself from only
+    // the two biomes that existed when it was written. A band added to LIFE_WANT after today inherits this for
+    // free, because it multiplies whatever is in the table rather than naming its members.
+    // A FRACTION, not a flag: the same 24-point ring the birch and pine tests above sample on, so the
+    // population thins across the blend band instead of every animal vanishing on the iso-line. Standing deep
+    // in the arctic it is 1 and the whole table goes to zero.
+    const arcticFrac = (() => { let ok = 0;
+      for (let i = 0; i < 24; i++) { const a = i * 0.2617994;
+        if (arcticM(P.x + Math.cos(a) * CARD_KEEP * 0.7, P.z + Math.sin(a) * CARD_KEEP * 0.7) > 0.5) ok++; }
+      return ok / 24; })();
+    if (arcticFrac > 0) { const k9 = 1 - arcticFrac; for (const k in LIFE_WANT) LIFE_WANT[k] = Math.round(LIFE_WANT[k] * k9); }
     const ffLights = [];                               // glowing fireflies + live clash/death SPARKS this frame → the u.fflies point-light slots (window coords + intensity)
     const cshadList = [];                              // ground/water creatures this frame → the u.cshad sun-shadow boxes (window coords + half-extents) so moving lilies/ducks/worms cast shadows
     if ((DUCK_ITEM0 || DFLY_NFRAMES || FISHES.length) && !ED.on && now > lakeScanT) {   // ── LAKE + WATER CENSUS (every 2.5 s) ── grid-sample the view for wide-open-water spots, cluster them into lakes; fish home on the same census;

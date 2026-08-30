@@ -8,12 +8,22 @@
     let h = h0;
     const lake = h <= WL - 1 ||                        // ≥ 2 voxels deep, OR a 1-deep rim column joined to real water — no isolated dither puddles
       (h === WL && (hxm < WL || hxp < WL || hzm < WL || hzp < WL));
-    if (!lake && h <= WL) h = WL + 1;                  // dry land NEVER sits below the water plane — beach tops meet the surface FLUSH
+    // ── …BUT ON SNOW A FLUSH SHELF IS AN ARTIFACT (user 2026-08-29) ── this clamp pins every column that fell
+    // at or under the waterline to ONE altitude, and a dead-level plateau is invisible in a forest (grass,
+    // litter and moss break it up) and glaring on bare snow: a perfectly smooth white shelf with a hard drawn
+    // edge, which is the shape in the screenshot. Measured: 596 perfectly flat samples in one arctic view, all
+    // at exactly WL + 1.
+    // The arctic gets the same coherent relief its own ground carries, applied UPWARD only — max(0, ...) is
+    // what keeps the guarantee this line exists for, which is that dry land never sits below the water plane.
+    // Only columns the clamp actually fires on pay for the mask lookup, which is a thin rim around water.
+    if (!lake && h <= WL) h = WL + 1 + (arcticM(wx, wz) > ARCT_BARE
+      ? Math.max(0, Math.round((fbm(wx * 0.09 + 3.1, wz * 0.09 + 8.7) - 0.42) * 5)) : 0);   // dry land NEVER sits below the water plane — beach tops meet the surface FLUSH
     hmap[gx + gz * WX] = h;                            // hmap = the GROUND (lakebeds included — you walk on them, underwater)
     const mossy = !lake && mossV > 0.52;               // 0.56 → 0.52 ≈ +30% moss coverage
     const dm = desertM(wx, wz);                        // biome weight for this column: 0 = pine forest, 1 = open desert
     const om = oakM(wx, wz);                           // …and the other way: 1 = oak forest (west of the pines), 0 = pine forest. The two masks can never both be non-zero — see the gap arithmetic at OAKOFF
     const bm = birchM(wx, wz);                         // …and the BIRCH band, which sits between the pine and the sand and wears the OAK's terrain (world/window.js)
+    const am = arcticM(wx, wz);                        // …and the ARCTIC, which unlike the others replaces the ground COMPLETELY: no soil shows through snow
     const cm = (om > 0 && chNear(wx)) ? cherryM(wx, wz) : 0;   // chNear FIRST: this line runs once per COLUMN, and cherryM is ~7 vnoise — see the bound's note in world/window.js. The om test alone was not a cheap-out at all, because om > 0 is the whole infinite oak forest           // …and the blossom, which is a SUB-REGION of the oak mask (world/window.js), so `om > 0` is an exact cheap-out rather than an approximation: outside the oak forest cherryM is 0 by construction and the pine forest and the desert pay nothing at all for this biome existing
     const base = gx + gz * WX * WY;
     let surfMoss = false;                              // grass only grows where a MOSS surface voxel actually landed
@@ -25,12 +35,30 @@
     // ── SOIL ── 15 voxels deep under EVERY column (user), cut out of the rock core rockRowSpan already
     // wrote. This used to be 2 voxels everywhere plus a deep layer on grass only, which is exactly the
     // uneven depth the user saw: deep under the meadows, shallow on the beach and the forest floor.
-    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
+    // ── THE ARCTIC HAS NO SOIL (user 2026-08-29: "I can see dirt exposed when the terrain drops off to
+    // water. make all the terrain in the arctic snow") ── this layer is what a cliff face, a river bank or a
+    // dug hole EXPOSES, and it was brown dirt under every white surface: the top voxel was snow and the
+    // fifteen under it were soil, so the moment the ground dropped away you saw the seam. Snow all the way
+    // down through the soil band instead. Not dithered against the mask — an exposed face has to be one
+    // material or the seam simply becomes a speckled seam.
+    const aSoil = am > ARCT_BARE;
+    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
       const shore = h <= WL + 6;                       // any waterline — lakes AND rivers
       let c;
-      if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
+      // ── THE ARCTIC SURFACE ── FIRST, because it is the one biome whose ground is not soil: snow covers the
+      // shore, the flats and the hills alike, so it has to win over the beach and sand-blend arms below rather
+      // than be overridden by them.
+      // ── THE ARCTIC IS SNOW, AND ONLY SNOW ── one material for the whole biome (user 2026-08-30: "remove
+      // everything except the terrain and water", and 2026-08-29: "I can see dirt exposed when the terrain
+      // drops off to water. make all the terrain in the arctic snow"). The first build had two more arms here
+      // — glacier ICE where the ice field beat the land, and bare ROCK on slopes of 4 voxels or steeper, so
+      // cliffs read as stone. Both are gone with the fields that drove them; a slope in this biome is a snow
+      // slope. Dithered against the mask, exactly as the desert and oak arms below are, so the white thins out
+      // across the whole rim instead of stopping on the iso-line.
+      if (am > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < am) c = ASNOW[(sh * 4) | 0];
+      else if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
       else if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
       else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(sh * 3) | 0];     // dithered sand-to-forest blend
       // ── NO FOREST FLOOR ON THE DESERT SIDE, BUT ONLY NEAR WATER ── the DESERT branch above is dithered
@@ -54,6 +82,7 @@
       // ── THE BIRCH FLOOR IS THE LIGHTER GREEN ── ahead of the oak arm because the two masks are disjoint and
       // this one is cheaper to reject. Dithered against its own mask exactly as the oak and desert arms are, so
       // the green thins into the pine litter across the whole rim instead of ending on a line.
+      else if (am > 0.5) { c = ASNOW[(sh * 4) | 0]; }   // ── a dithered MISS inside the arctic is still arctic ── the branch above only fires on `ihash < am`, so the remainder used to fall through to the pine floor and grow GRASS on a glacier. Snow without setting surfMoss: white ground, no strands.
       else if (bm > 0 && ihash(wx * 11 + 23, wz * 13 + 41) < bm) { c = BIRCHMOSS[(sh * 4) | 0]; surfMoss = true; surfBirch = true; }
       else if (om > 0 && ihash(wx * 11 + 23, wz * 13 + 41) < om) { c = MOSS[(sh * 4) | 0]; surfMoss = true; }
       else { c = (mossy ? MOSS : NEEDLE)[(sh * 4) | 0]; surfMoss = mossy; }
@@ -61,6 +90,24 @@
     }
     if (lake) for (let y = h; y <= Math.min(WL, yTop - 1); y++) W[base + y * WX] = y === WL ? WATER_T : WATER_B;
     if (!fresh) { let ia = base + (lake ? WL + 1 : h) * WX; for (let y = lake ? WL + 1 : h; y < WY; y++) { W[ia] = 0; ia += WX; } }
+    // ── SASTRUGI ── the arctic's answer to the grass strands below, and it exists for exactly the reason they
+    // do. Birch's height field quantised to whole voxels steps along its iso-heights, and on BARE ground those
+    // steps join up into concentric contour rings — a topographic map in white. Under the birch you never see
+    // it, and the strands here are why: sparse vertical clutter at the same 6% breaks the eye's read of the
+    // step edges before they can join into a line. Strip the clutter, as this biome does, and the rings appear.
+    // THREE HEIGHT-BASED FIXES WERE TRIED AND ALL FAILED (the full account is in world/window.js): a ±1.28
+    // dither, a ±0.45 sub-voxel one, and ±1.5 coherent drifts. They failed because the terrain is not what is
+    // wrong — a 1-voxel step is normal, every biome has it, and deforming birch's hills to hide one both
+    // breaks "match the birch forest" and looks worse. This adds nothing to the height field at all.
+    // 3%, HALF the strands' 6%, and ONE voxel rather than their 1-4. Tuned on screen and the direction is not
+    // obvious: 8% was tried first, on the reasoning that drifts are denser than grass, and it read as gravel.
+    // A grass strand is thin, green and soft-edged against a dark floor; a snow nub is a full white cube that
+    // throws a hard blue shadow onto white, so it carries several times the visual weight per unit density.
+    // Same guard as the strands — never overwrite an occupied cell.
+    if (am > 0.5 && h + 2 < WY && ihash(wx * 3 + 41, wz * 3 + 87) < 0.03) {
+      const ii = base + h * WX;
+      if (!W[ii]) W[ii] = ASNOW[(ihash(wx * 17 + 5, wz * 19 + 3) * 4) | 0];
+    }
     if (surfMoss && h + 4 < WY) {                      // GRASS STRANDS: moss patches ONLY, 1–4 voxels tall, moss-matched colors
       if (ihash(wx * 3 + 41, wz * 3 + 87) < 0.06) {
         const gh = 1 + ((ihash(wx * 5 + 3, wz * 7 + 9) * 4) | 0);
@@ -157,6 +204,12 @@
     if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.5) return null;   // the much larger rocks are much rarer
     const bx = Math.round(cx * BCELL + 4 + ihash(cx * 3 + 40, cz * 7 + 90) * (BCELL - 8));
     const bz = Math.round(cz * BCELL + 4 + ihash(cx * 13 + 6, cz * 5 + 44) * (BCELL - 8));
+    // ── AND NONE OF THE FOUR TIERS IN THE ARCTIC (user 2026-08-29: "remove the rocks and twigs") ── unlike the
+    // desert, which keeps tier 0 because the hand stone reads as scattered field stone on sand, ALL of them go
+    // here: these models carry MOSS on their crowns, so every boulder on the snow was a green cap on a white
+    // field. The bare rock the arctic does want is the nunatak, and that comes from the SURFACE arm in
+    // fillColumn where a steep face exposes stone — terrain, not a scattered model.
+    if (arcticM(bx, bz) > ARCT_BARE) return null;   // dithered, not cut — see treeAt
     // ── THE HAND STONE IS ALLOWED IN THE DESERT, THE BOULDERS ARE NOT (user 2026-08-16: "scatter the rock.vox
     // around the desert") ── this used to reject all four tiers on one line. It now reads the tier FIRST and
     // lets only tier 0 through, which is rock.vox itself: the small pickable field stone. The three boulder
@@ -601,10 +654,23 @@
   }
   const F2CELL = 30;                                   // FERNS: the single ~1.1 m fern plant from fern.glb (the ferns_grass clumps were removed)
   function fern2At(cx, cz) {
+    // ── NOTHING GROWS ON THE ICE ── the arctic is the one biome with no ground cover at all: the reference
+    // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
+    // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
+    // litter thins out across the blend band instead of stopping on the iso-line.
     if (!FERN2V.length) return null;
     if (ihash(cx * 79 + 7, cz * 83 + 31) > 0.07) return null;   // halved 2026-07-16 (was 0.14)
     const wx = Math.round(cx * F2CELL + 3 + ihash(cx * 5 + 27, cz * 3 + 41) * (F2CELL - 6));
     const wz = Math.round(cz * F2CELL + 3 + ihash(cx * 11 + 33, cz * 7 + 15) * (F2CELL - 6));
+    // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
+    // arctic. investigate this deeply") ── this gate used to read arcticM at `cx * CELL`, the cell's own
+    // CORNER, while the thing it is gating is placed at a jittered point somewhere INSIDE that cell. The
+    // cells here run tens to hundreds of voxels, so a corner outside the band admits an object that lands
+    // well inside it — which is exactly how a mushroom, and rock and soil from the log models, ended up on
+    // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
+    // own position; these nine were written from the cell index and inherited it. Measured before the fix:
+    // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── ferns are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (oakM(wx, wz) > 0.5) return null;      // ── NOR IN THE OAK FOREST (user 2026-08-17: "remove the ferns from the oak forest") ── the same halfway gate on the other border, so the fern field thins out across the rim instead of ending on the iso-line. DELIBERATE AND USER-DIRECTED, exactly like the mushroom gate a few passes down: it looks identical to the accidental biome exclusion that gate replaced, so do not "fix" it back.
     if (birchM(wx, wz) > 0.5) return null;    // ── NOR IN THE BIRCH FOREST (user 2026-08-24: "remove the ferns from the birch forest") ── the third border, on the same halfway test as the two above, so the fern field thins out across the rim instead of ending on the iso-line. USER-DIRECTED, like the oak gate above it: it reads exactly like an accidental biome exclusion and is not one.
@@ -713,6 +779,10 @@
   const SHCELL = 48;
   const SHRUB_ON = true;                               // desert shrubs: ON. They were switched off 2026-08-16 ("remove the brown shrubs from the desert") and back on the same day once they were re-baked GREEN on the cactus ramp — the colour was the objection, not the plants. One named switch, both ways. Note this flag was ALREADY true while no shrub existed anywhere in the world: the loader was asking for the old shrub_N.vox names, SHRUBV came back empty, and shrubAt returns null on its first line — so an empty desert is a LOADER symptom first and a flag symptom second.
   function shrubAt(cx, cz) {
+    // ── NOTHING GROWS ON THE ICE ── the arctic is the one biome with no ground cover at all: the reference
+    // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
+    // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
+    // litter thins out across the blend band instead of stopping on the iso-line.
     if (!SHRUBV.length) return null;
     // 0.21, down from 0.28 (user 2026-08-16: "decrease the amount of shrubs by 25%"). ihash is uniform on
     // 0..1, so the threshold IS the acceptance rate and 0.28 * 0.75 = 0.21 is exactly a quarter fewer
@@ -721,6 +791,15 @@
     if (ihash(cx * 67 + 23, cz * 71 + 11) > 0.158) return null;   // -25% again (user 2026-08-16): 0.21 -> 0.158, from 0.28 originally
     const wx = Math.round(cx * SHCELL + 4 + ihash(cx * 7 + 19, cz * 5 + 37) * (SHCELL - 8));
     const wz = Math.round(cz * SHCELL + 4 + ihash(cx * 13 + 31, cz * 11 + 3) * (SHCELL - 8));
+    // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
+    // arctic. investigate this deeply") ── this gate used to read arcticM at `cx * CELL`, the cell's own
+    // CORNER, while the thing it is gating is placed at a jittered point somewhere INSIDE that cell. The
+    // cells here run tens to hundreds of voxels, so a corner outside the band admits an object that lands
+    // well inside it — which is exactly how a mushroom, and rock and soil from the log models, ended up on
+    // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
+    // own position; these nine were written from the cell index and inherited it. Measured before the fix:
+    // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) < 0.85) return null;
     if (H(wx, wz) <= WL + 4) return null;              // never in the water, and not on the beach ring either
     if (nearCave(wx, wz)) return null;
@@ -769,10 +848,23 @@
   // do, so what the eye gets is a drift of one colour into another rather than a tile.
   const FLWPATCH = 12;
   function flowerAt(cx, cz) {
+    // ── NOTHING GROWS ON THE ICE ── the arctic is the one biome with no ground cover at all: the reference
+    // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
+    // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
+    // litter thins out across the blend band instead of stopping on the iso-line.
     if (!FLOWERV || !FLOWERV.length) return null;
     if (ihash(cx * 37 + 11, cz * 41 + 29) > 0.08) return null;   // see the rate note above — 0.08 of cells, a QUARTER of the old per-column density
     const wx = Math.round(cx * FLWCELL + 1 + ihash(cx * 7 + 13, cz * 5 + 3) * (FLWCELL - 2));
     const wz = Math.round(cz * FLWCELL + 1 + ihash(cx * 3 + 19, cz * 11 + 23) * (FLWCELL - 2));
+    // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
+    // arctic. investigate this deeply") ── this gate used to read arcticM at `cx * CELL`, the cell's own
+    // CORNER, while the thing it is gating is placed at a jittered point somewhere INSIDE that cell. The
+    // cells here run tens to hundreds of voxels, so a corner outside the band admits an object that lands
+    // well inside it — which is exactly how a mushroom, and rock and soil from the log models, ended up on
+    // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
+    // own position; these nine were written from the cell index and inherited it. Measured before the fix:
+    // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;            // the old gate: dm < 0.5
     // ── THE BLOSSOM BAND GETS ITS OWN FLOWER RATHER THAN NONE (user 2026-08-18: "have them follow the same
     // flower mechanics as the oak forest flowers ... this is all taking place in the cherry forest") ── it used
@@ -844,10 +936,23 @@
   }
   const MUCELL = 52;                                   // MUSHROOMS: a rare cluster, ONLY in the pine forest (a pine must be within crown reach), one candidate per 5.2 m cell
   function mushAt(cx, cz) {
+    // ── NOTHING GROWS ON THE ICE ── the arctic is the one biome with no ground cover at all: the reference
+    // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
+    // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
+    // litter thins out across the blend band instead of stopping on the iso-line.
     if (!MUSHV) return null;
     if (ihash(cx * 89 + 17, cz * 97 + 5) > 0.053) return null;   // rare — ~5.3% of candidate cells before the pine-forest + rock-clearance gates below (cut by a third from 0.08, user)
     const wx = Math.round(cx * MUCELL + 5 + ihash(cx * 5 + 23, cz * 3 + 9) * (MUCELL - 10));
     const wz = Math.round(cz * MUCELL + 5 + ihash(cx * 11 + 7, cz * 7 + 19) * (MUCELL - 10));
+    // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
+    // arctic. investigate this deeply") ── this gate used to read arcticM at `cx * CELL`, the cell's own
+    // CORNER, while the thing it is gating is placed at a jittered point somewhere INSIDE that cell. The
+    // cells here run tens to hundreds of voxels, so a corner outside the band admits an object that lands
+    // well inside it — which is exactly how a mushroom, and rock and soil from the log models, ended up on
+    // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
+    // own position; these nine were written from the cell index and inherited it. Measured before the fix:
+    // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── mushrooms are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     // ── NOR IN THE OAK FOREST, AND THIS IS DELIBERATE — DO NOT "FIX" IT (user 2026-08-17: "remove the red
     // mushroom for the oak forest") ── mushrooms were taught about oaks EARLIER THE SAME DAY, by adding an
@@ -902,10 +1007,23 @@
   }
   const PCCELL = 26;                                   // GROUND PINECONES: fallen cones (pinecone.vox on its side), pickable, scattered on the forest floor
   function pconeAt(cx, cz) {
+    // ── NOTHING GROWS ON THE ICE ── the arctic is the one biome with no ground cover at all: the reference
+    // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
+    // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
+    // litter thins out across the blend band instead of stopping on the iso-line.
     if (!CONEVL) return null;
     if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.22) return null;
     const wx = Math.round(cx * PCCELL + 3 + ihash(cx * 7 + 9, cz * 5 + 3) * (PCCELL - 6));
     const wz = Math.round(cz * PCCELL + 3 + ihash(cx * 3 + 17, cz * 11 + 8) * (PCCELL - 6));
+    // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
+    // arctic. investigate this deeply") ── this gate used to read arcticM at `cx * CELL`, the cell's own
+    // CORNER, while the thing it is gating is placed at a jittered point somewhere INSIDE that cell. The
+    // cells here run tens to hundreds of voxels, so a corner outside the band admits an object that lands
+    // well inside it — which is exactly how a mushroom, and rock and soil from the log models, ended up on
+    // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
+    // own position; these nine were written from the cell index and inherited it. Measured before the fix:
+    // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (oakM(wx, wz) > 0.5) return null;      // ── NOR IN THE OAK FOREST ── a cone on the ground is a PINE cone: it is the one piece of forest litter that names the tree it fell from, and there are no pines here to have dropped it. (The cones hung IN a crown need no gate — stampTree hangs those, and stampTree no longer runs in this biome.)
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pinecones are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (birchM(wx, wz) > 0.5) return null;    // ── NOR IN THE BIRCH FOREST (user 2026-08-24: "there seems to be pine cones in the birch. remove them as well") ── the same reason as the oak gate above: a cone on the ground is a PINE cone and no pine dropped it here. birchAt stamps the birches, not stampTree, so nothing hangs cones in these crowns either.
@@ -918,10 +1036,23 @@
   }
   const SCELL = 14;                                    // STICKS: stick_1 / stick_2 .vox models, pickable, scattered on the forest floor
   function stickAt(cx, cz) {
+    // ── NOTHING GROWS ON THE ICE ── the arctic is the one biome with no ground cover at all: the reference
+    // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
+    // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
+    // litter thins out across the blend band instead of stopping on the iso-line.
     if (!STICKV.length) return null;
     if (ihash(cx * 61 + 7, cz * 67 + 19) > 0.42) return null;
     const wx = Math.round(cx * SCELL + 2 + ihash(cx * 3 + 8, cz * 5 + 4) * (SCELL - 4));
     const wz = Math.round(cz * SCELL + 2 + ihash(cx * 7 + 2, cz * 9 + 6) * (SCELL - 4));
+    // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
+    // arctic. investigate this deeply") ── this gate used to read arcticM at `cx * CELL`, the cell's own
+    // CORNER, while the thing it is gating is placed at a jittered point somewhere INSIDE that cell. The
+    // cells here run tens to hundreds of voxels, so a corner outside the band admits an object that lands
+    // well inside it — which is exactly how a mushroom, and rock and soil from the log models, ended up on
+    // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
+    // own position; these nine were written from the cell index and inherited it. Measured before the fix:
+    // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── twigs are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     // ── IN THE OAK FOREST, ONLY UNDER A TREE (user 2026-08-17: "only have stick near oak trees", and
     // explicitly "keep the pine forest the same") ── a twig is something a tree DROPPED, and the oak wood has
@@ -955,10 +1086,23 @@
   }
   const LGCELL = 96;                                   // FALLEN LOG (log.vox): one candidate per 9.6 m cell, 14% kept — rare, solid, walkable
   function logAt(cx, cz) {
+    // ── NOTHING GROWS ON THE ICE ── the arctic is the one biome with no ground cover at all: the reference
+    // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
+    // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
+    // litter thins out across the blend band instead of stopping on the iso-line.
     if (!LOGV) return null;
     if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.14) return null;
     const wx = Math.round(cx * LGCELL + 6 + ihash(cx * 3 + 9, cz * 7 + 1) * (LGCELL - 12));
     const wz = Math.round(cz * LGCELL + 6 + ihash(cx * 11 + 4, cz * 13 + 2) * (LGCELL - 12));
+    // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
+    // arctic. investigate this deeply") ── this gate used to read arcticM at `cx * CELL`, the cell's own
+    // CORNER, while the thing it is gating is placed at a jittered point somewhere INSIDE that cell. The
+    // cells here run tens to hundreds of voxels, so a corner outside the band admits an object that lands
+    // well inside it — which is exactly how a mushroom, and rock and soil from the log models, ended up on
+    // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
+    // own position; these nine were written from the cell index and inherited it. Measured before the fix:
+    // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── fallen logs are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (birchM(wx, wz) > 0.5) return null;   // ── NOR IN THE BIRCH FOREST (user: "remove the logs in the birch forest") ── the same > 0.5 halfway test the desert line above uses, and the same one treeAt takes
     if (H(wx, wz) <= WL + 4) return null;
@@ -974,6 +1118,15 @@
     if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.057) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
     const wz = Math.round(cz * LILYCELL + 3 + ihash(cx * 5 + 12, cz * 11 + 7) * (LILYCELL - 6));
+    // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
+    // arctic. investigate this deeply") ── this gate used to read arcticM at `cx * CELL`, the cell's own
+    // CORNER, while the thing it is gating is placed at a jittered point somewhere INSIDE that cell. The
+    // cells here run tens to hundreds of voxels, so a corner outside the band admits an object that lands
+    // well inside it — which is exactly how a mushroom, and rock and soil from the log models, ended up on
+    // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
+    // own position; these nine were written from the cell index and inherited it. Measured before the fix:
+    // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (H(wx, wz) > WL - 1) return null;               // ≥ 2 voxels of water under the pad — real lakes/rivers, never the beach film
     const sr = ihash(cx * 19 + 8, cz * 23 + 4);
     return { wx, wz, size: Math.min(LILYV.length - 1, sr < 0.55 ? 0 : (sr < 0.88 ? 1 : 2)), rot: (ihash(cx + 31, cz + 42) * 3.99) | 0 };
@@ -983,10 +1136,22 @@
   }
   const LGIGCELL = 128;                                // GIGANTIC LILYPADS: 1-2 per lake — one candidate per 12.8 m cell, only on WIDE open lake water
   function lilyGigAt(cx, cz) {
+    // ── NO LILY PADS ON A FROZEN LAKE (user 2026-08-29) ── the arctic has water like anywhere else, and
+    // the pads were floating on it. Dithered like every other arctic gate so the pads thin out toward the
+    // border rather than ending on a line.
     if (!LILYPAD_GIGV) return null;
     if (ihash(cx * 53 + 11, cz * 59 + 7) > 0.1375) return null;   // HALVED AGAIN (user 2026-07-18): 0.55 -> 0.275 -> 0.1375
     const wx = Math.round(cx * LGIGCELL + 22 + ihash(cx * 3 + 5, cz * 7 + 9) * (LGIGCELL - 44));
     const wz = Math.round(cz * LGIGCELL + 22 + ihash(cx * 11 + 3, cz * 5 + 13) * (LGIGCELL - 44));
+    // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
+    // arctic. investigate this deeply") ── this gate used to read arcticM at `cx * CELL`, the cell's own
+    // CORNER, while the thing it is gating is placed at a jittered point somewhere INSIDE that cell. The
+    // cells here run tens to hundreds of voxels, so a corner outside the band admits an object that lands
+    // well inside it — which is exactly how a mushroom, and rock and soil from the log models, ended up on
+    // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
+    // own position; these nine were written from the cell index and inherited it. Measured before the fix:
+    // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (H(wx, wz) > WL - 2) return null;               // ≥ 3 voxels of water under the centre
     for (let k = 0; k < 8; k++) { const a = k * 0.7854, dx = Math.round(Math.cos(a) * 24), dz = Math.round(Math.sin(a) * 24);
       if (H(wx + dx, wz + dz) > WL - 1) return null; } // a 24-vox-radius ring must ALL be water → a real LAKE (not a river/puddle) → naturally ~1-2 pads per lake
@@ -1432,6 +1597,17 @@
     // excluded itself from the two biomes that existed when it was written, and a band that is neither
     // desert nor oak reads to it as ordinary pine country.
     if (birchM(wx, wz) > 0.5) return null;
+    // ── NOR IN THE ARCTIC (user 2026-08-29) ── the FOURTH border, and the fourth time this list has had to
+    // grow with the world. The pattern is worth naming: treeAt places pine wherever it is not told otherwise,
+    // so pine is the DEFAULT and every new biome has to exclude itself here or it opens as a pine forest
+    // wearing someone else's ground. Same > 0.5 halfway test as the other three, so the pines thin out across
+    // the blend band rather than stopping on the iso-line.
+    // DITHERED against the mask rather than cut at 0.5 (user 2026-08-29: "make the transition … smoother. it
+    // currently looks like a straight snow line"). A halfway test stops the trees dead on an iso-line while the
+    // snow underneath fades in across the whole rim, and the eye reads the tree edge, not the ground: hence a
+    // straight line. Rejecting with PROBABILITY equal to the mask thins the wood out across the blend instead,
+    // which is the same trick the desert sand and the oak floor already use on their own rims.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     const dxs = wx - (SPWX + SPOX), dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // spawn clearing
     // ── AND A CLEAR LINE OF SIGHT DOWN THE SPAWN HEADING (user 2026-08-16: "try not to have the player spawn
