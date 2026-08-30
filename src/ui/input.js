@@ -91,6 +91,10 @@
     // A DOM read, not the hud.js const: this fragment is bundled ABOVE ui/hud.js and reaching pkPanel directly here
     // would be the const-before-declaration black screen this codebase keeps re-learning.
     const pk = $('pkPanel'); if (pk && !pk.classList.contains('hidden')) return;
+    // …and the same for the WATER PANEL on [Y] (user 2026-08-30). It is a small box in one corner and every
+    // pixel around it is this full-screen canvas, so without this a miss by a few pixels re-locks the pointer
+    // and the buttons you were half way through toggling become unclickable. Y is what closes it.
+    const lp = $('lgtPanel'); if (lp && !lp.classList.contains('hidden')) return;
     lightMode = false; tryLock(); });
   document.addEventListener('keydown', (e) => {        // "press any button" — ANY key leaves the start prompt (a click still works via the canvas handler above)
     if (locked || $('playHint').classList.contains('hidden')) return;
@@ -111,10 +115,12 @@
                            // eight shows x7, and that stack is still full.
   const cursSync = () => { document.body.classList.toggle('freecur', !locked); if (locked) cursEl.classList.remove('sq');
     $('arwPanel').classList.toggle('hidden', locked || !$('over').classList.contains('hidden'));   // the arrow buttons are only REACHABLE with a free cursor, so that is exactly when they show — but never over the death screen. (Read from the DOM, not `dead`: cursSync runs once during init, BEFORE that binding exists.)
-    // ── THE WATER PANEL SHOWS ON THE SAME RULE ── free cursor, never over the death screen, plus the video
-    // editor, which owns the screen outright. Moot while the CSS keeps it off screen, but the class stays
-    // honest so deleting that one rule is all it takes to bring it back.
-    $('lgtPanel').classList.toggle('hidden', (locked && !lightMode) || !$('over').classList.contains('hidden') || !vePanel.classList.contains('hidden'));
+    // ── THE WATER PANEL IS NOT ON THE CURSOR'S RULE ANY MORE (user 2026-08-30) ── it opens and closes on [Y]
+    // (see the handler in ui/hud.js), so this must not force it back on every time the cursor comes free —
+    // that is what would make it appear over the esc menu the moment you paused. Two things are still this
+    // function's business: force it CLOSED over the death screen and the video editor, which own the screen
+    // outright, and paint the `lit` border. Never `remove('hidden')` here — the key owns that direction.
+    if (!$('over').classList.contains('hidden') || !vePanel.classList.contains('hidden')) $('lgtPanel').classList.add('hidden');
     $('lgtPanel').classList.toggle('lit', lightMode); };   // the panel highlights while it has the cursor, so the mode is never ambiguous
   const CURS_HIT = 'button, .veTool, .veCtl, a, input:not([type="range"]), select, [role="button"]';   // ONLY genuinely clickable controls square the cursor. RANGE sliders are excluded (user): the cursor stays a cross over them and the KNOB grows on hover instead (see the slider CSS). `#lock` (the whole esc-menu backdrop) used to be in here too, so the cursor was a square across the ENTIRE menu; the buttons/anchors inside already match on their own.
   cursSync();                                        // the game boots UNLOCKED (click-to-enter), so the custom cursor is live from the first frame
@@ -207,6 +213,27 @@
   addEventListener('blur', () => { xHeld = false; });
   addEventListener('keyup', (e) => { if (e.code === 'KeyX') xHeld = false; });
   let cloudT = 0;                                     // ── CLOUD TIME ── seconds, but advanced by dt * cycleSpeed so the deck's wind keeps step with the sun. At 1x it tracks wall time exactly, which is what keeps the normal drift unchanged. Frozen with the sun under __TFREEZE, or an A/B would compare two different cloud fields
+  // ── AND SCROLLING DOWN PAST THE SLOWEST NOTCH REWINDS (user 2026-08-30: "when they go backwards on the
+  // scroll wheel, it rewinds time") ── cycleSpeed is SIGNED: ONE ladder of x1.6 notches running -512 … -0.25,
+  // 0.25 … 512, and DOWN walks it from either end. Below the slowest forward notch it crosses over to the
+  // slowest REWIND rather than sticking at 0.25 as it used to, and up walks the same rungs back, so there is
+  // no separate reverse MODE to get into or out of and 1x is always the same count of notches away it was.
+  // Zero is deliberately not a rung: a stopped clock is what the settings slider and __TFREEZE are for, and a
+  // rung the wheel cannot leave in a single notch reads as a jammed control. The magnitude keeps the old
+  // floor exactly — stepping DOWN clamps at 0.25 the way Math.max did, and only a notch taken FROM 0.25
+  // crosses — so every speed the wheel could reach before is still on the ladder in the same place.
+  const CS_MIN = 0.25, CS_MAX = 512;
+  const csNudge = (v, up) => {                         // one notch along that ladder; `up` = scrolled up = LATER in time
+    const a = Math.abs(v), s = v < 0 ? -1 : 1;
+    if (up === (s > 0)) return s * Math.min(CS_MAX, a * 1.6);   // away from zero: faster in the direction it already runs
+    if (a <= CS_MIN * 1.0001) return -s * CS_MIN;               // at the slowest notch already — hand over to the slowest notch of the other direction
+    // …and that comparison needs the fudge factor, measured: 0.25 is not a power of 1.6, so the rung is only
+    // exact while a clamp keeps putting it there. Rewind deep and walk back and the magnitude returns as
+    // 0.2500000000000001, which failed a bare `<= CS_MIN`, took the floor branch instead and silently ate a
+    // notch — the wheel needed one extra flick to cross back, once in each direction. 1.0001 is far wider
+    // than the ~1e-15 the round trip actually drifts and far narrower than the 1.6 gap to the next rung.
+    return s * Math.max(CS_MIN, a / 1.6);                       // toward zero, floored at the slowest notch
+  };
   let tday = 7 / 24, cycleSpeed = 1, sunFx = true;     // day/night cycle: 20-min day at 1x; STARTS AT 7:00 am on load (user). sunFx = u.fx bit 0: it used to gate the god rays AND the lens flare; the rays were removed 2026-08-28, so the flare is all it now switches
   // ── THE MOON'S PHASE DAY ── the counter the 8-day cycle runs on. The value itself no longer means
   // anything on its own: tick-camera subtracts MOON_DAY0 before handing the phase to the shader, so the
@@ -255,7 +282,7 @@
     if (e.deltaY) shDismiss();                         // …and ANY scroll retires it (user 2026-08-07): a player who scrolls at all has found the control, so scrolling DOWN must fade it out too rather than leaving it up as a nag. Sits here — before the lock/dead guards below, which must not keep it on screen. Not gated on shShown: a player who already scrolls up inside the first ten seconds has demonstrated they know, so the hint must never appear at all (user 2026-08-07)
     if (xHeld) {                                       // X + scroll = cycle speed (user 2026-08-28; was ALT, then CTRL). Moving off CTRL also takes it off the browser's page-zoom gesture, so preventDefault here is back to doing only its own job
       e.preventDefault();
-      cycleSpeed = Math.max(0.25, Math.min(512, cycleSpeed * (e.deltaY < 0 ? 1.6 : 1 / 1.6)));
+      cycleSpeed = csNudge(cycleSpeed, e.deltaY < 0);   // …and scrolling DOWN runs off the bottom of the forward ladder into REWIND (user 2026-08-30) — see csNudge above for why it is one signed ladder and not a mode
       return;
     }
     if (!locked || dead || !e.deltaY) return;

@@ -30,8 +30,8 @@
       const xd = wx * 0.04 + 7.3;
       let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * (d1(xd) * 0.55 + d2(xd * 2.13 + 11.7) * 0.27 + d3(xd * 4.41 + 41.2) * 0.18) * (0.2 + 0.8 * shoreK), wx, wz))));   // ── ROUNDED OAK HILLS ── the row-specialized forest expression is untouched and still bit-identical to baseH's; oakRoll is the SAME scalar helper baseH and makeHCol call, so the oak field cannot drift between the three copies any more than desertM/duneH can
       const b0 = bsr(wx * 0.0016 + 313.7);
-      const bm = b0 >= 0.065 ? 0 : sstep(Math.min(1, (0.065 - b0) / 0.06));
-      const m = bm * Math.max(0, Math.min(1, (66 + LIFT - h) / 20));
+      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
+      const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
       if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
       const rs = riverS(wx, wz);
       const xnB = wx * 0.05 + 13.7;
@@ -84,8 +84,8 @@
       const zd = wz * 0.04 + 2.1;
       let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * (d1(zd) * 0.55 + d2(zd * 2.13 + 5.3) * 0.27 + d3(zd * 4.41 + 23.8) * 0.18) * (0.2 + 0.8 * shoreK), wx, wz))));   // ── ROUNDED OAK HILLS ── identical to H() and makeHRow: the forest expression untouched, wrapped in the one shared oakRoll. See the note in makeHRow.
       const b0 = bsc(wz * 0.0016 + 157.3);
-      const bm = b0 >= 0.065 ? 0 : sstep(Math.min(1, (0.065 - b0) / 0.06));
-      const m = bm * Math.max(0, Math.min(1, (66 + LIFT - h) / 20));
+      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
+      const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
       if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
       const rs = riverS(wx, wz);
       const znB2 = wz * 0.05 + 4.2;

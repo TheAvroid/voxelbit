@@ -605,8 +605,8 @@
           // point light the wound already puts in the fflies lane, which falls off smoothly. Painting a
           // second region by hand is what produced the hard-edged red square around it.
         }
-        if (skipW && pos.y < WLF + 1.0) {                            // swimming: caustic webs dance on everything below the surface
-          albedo = albedo * (1.0 + select(0.0, 1.3, LG(13u)) * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
+        if (skipW && pos.y < WLF + 1.0 && LG(13u) && LG2(2u)) {      // swimming: caustic webs dance on everything below the surface. TWO gates: the old whole-scene caustics bit, and lgt.z bit 2, which is the water panel's caustics row — the panel has to be able to speak for all four caustic sites or the button is a lie. Moved out of a select(), which evaluated caust() either way.
+          albedo = albedo * (1.0 + 1.3 * caust(floor(vec2<f32>(pos.x + u.winO.x, pos.z + u.winO.y)) + vec2<f32>(0.5)) * smoothstep(-0.02, 0.12, u.sunDir.y));
         }
         var foamK = 0.0;
         if (faceId == 6u && h.face == 2u && rd.y < -0.01 && u.pickZ.w < 0.4) {   // VOXEL OCEAN WAVES — still while the surface is more than half frozen
@@ -622,7 +622,8 @@
           var wSide = false; var wCrest = -9.0; var whF = baseTop; var wRipF = 0.0;   // …wRipF = the ring foam at whichever column the march actually stops on
           for (var wi = 0; wi < 22; wi++) {
             let wxw = f32(cw.x) + u.winO.x; let wzw = f32(cw.y) + u.winO.y;
-            let rip = ripHF(wxw, wzw);                                                                   // …plus any SPLASH or WAKE ring crossing this column (see ripHF in PRE; zero, and one compare, when nothing is rippling)
+            var rip = vec2<f32>(0.0);
+            if (LG2(4u)) { rip = ripHF(wxw, wzw); }                                                      // …plus any SPLASH or WAKE ring crossing this column (see ripHF in PRE; zero, and one compare, when nothing is rippling). lgt.z bit 4 is the panel's ripples row — off, the surface keeps its Gerstner swell and loses only the disturbances.
             let wv = gerstH(wxw, wzw) + rip.x;                                                           // GERSTNER height field (see PRE) — same sum the JS floater mirror rides
             // ── THE FOAM RING STANDS A VOXEL PROUD (user 2026-08-05) ── done HERE, in the surface march, not
             // after it. Lifting t once the hit was already found only moved that pixel's DEPTH: the foam
@@ -632,7 +633,7 @@
             // 4 probes, not the shading pass's 8: this only decides WHICH columns are lifted, and the ±3 ring
             // is the same shoreline the foam itself is drawn on.
             var lift = 0.0;
-            { let ciL = vec3<i32>(cw.x, i32(baseTop - 0.5), cw.y);
+            if (LG2(5u)) { let ciL = vec3<i32>(cw.x, i32(baseTop - 0.5), cw.y);   // lgt.z bit 5 — the panel's shore surf row. The LIFT goes with the foam it carries: leaving it on with the foam off would raise a proud band of ordinary water at every shoreline, which is a worse look than either state.
               for (var s3 = 0; s3 < 4; s3++) {
                 var nb3 = ciL;
                 if (s3 == 0) { nb3.x += 3; } else if (s3 == 1) { nb3.x -= 3; } else if (s3 == 2) { nb3.z += 3; } else { nb3.z -= 3; }
@@ -654,6 +655,7 @@
             if (wSide) { albedo *= 0.74; }                                                // darker step sides give the swell its silhouette
             var foam = 0.0;                                                                       // no mid-water whitecaps — foam only rings the shoreline
             let ci = vec3<i32>(i32(floor(hp.x)), i32(baseTop - 0.5), i32(floor(hp.z)));
+            if (LG2(5u)) {                                                                // shore surf again — eight voxAt() fetches per water pixel, so the gate is a real saving as well as a switch
             for (var s2 = 0; s2 < 8; s2++) {                                              // probes at ±2 AND ±4 → a surf band twice as thick
               var nb = ci;
               let pr = select(2, 4, s2 >= 4);
@@ -663,6 +665,7 @@
               if (nv != 0u && nv != WTv && nv != WBv) {                                   // churned SURF ring wherever water meets land
                 foam = max(foam, step(0.35, ivhash(ci + vec3<i32>(s2 * 13, 11, 5)) * (0.55 + 0.45 * sin(u.time * 1.6 + f32(ci.x * 7 + ci.z * 5) * 0.7))));
               }
+            }
             }
             if (foam > 0.5) { let tFo = (whF + 2.0 - ro.y) / rd.y; if (tFo > 0.0) { t = min(t, tFo); } }   // …and the shaded surface rides on top of that raised column (the +1 now comes from the lift in the march above). GUARDED: this block only runs for rd.y < -0.01, so an eye BELOW that plane (whF is baseTop + floor(wv+0.5) + lift, i.e. up to ~6 voxels above the water — where the swim spring parks you) makes the quotient NEGATIVE and min() took it. A t behind the camera made TEMPORAL drop the pixel, COMPOSITE shade it as unlit water and the reflection ray start behind the eye: dark blotches trailing the shoreline foam ring while swimming. Below the plane there is nothing to clamp to — the ray is already under it.
             foam = max(foam, wRipF);                                                      // …and the crest of a SPLASH or WAKE ring is white for the same reason a whitecap is: it is water that has just been broken
@@ -682,7 +685,8 @@
             // Deliberately the RING only, not the shoreline probes — those are eight voxAt() fetches, and
             // foaming every distant shoreline is a change to the water's look that was not asked for.
             let hpF = ro + rd * t;
-            let rfF = ripHF(hpF.x + u.winO.x, hpF.z + u.winO.y).y;
+            var rfF = 0.0;
+            if (LG2(4u)) { rfF = ripHF(hpF.x + u.winO.x, hpF.z + u.winO.y).y; }   // the same ripples bit — this is the SAME field the march would have sampled, so gating one and not the other would leave rings on far water only
             if (rfF > 0.0) {
               foamK = clamp(rfF, 0.0, 1.0) * 0.8;
               albedo = mix(albedo, FOAM_C, foamK);

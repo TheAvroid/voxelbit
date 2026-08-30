@@ -184,8 +184,13 @@
     // [label, bit, mask] — mask 1 = u.lgt.x (LG), mask 2 = u.lgt.z (LG2). The GLISTEN is two separate
     // effects sharing one light column (user 2026-08-05): a smooth added SHEEN and discrete flashing
     // VOXELS. One button could not tell you which of them you were looking at, so they are two.
+    // ── AND THE FOUR THAT OVERFLOWED INTO THE SECOND MASK (user 2026-08-30: "every single water setting")
+    // ── caustics, the underwater look, the splash/wake rings and the shoreline surf were all baked in with
+    // no switch at all. lgt.x is full at 24 bits, so they sit in lgt.z bits 2-5 (LG2) — see WBIT2/LGT2_WATER
+    // in world/window.js. The row machinery already handled `mask 2`; these are its first users.
     const LGT = [['reflect', 18, 1], ['refract', 19, 1], ['foam', 20, 1], ['ice', 21, 1],
-                 ['pixel glisten', 22, 1], ['waves', 23, 1]];
+                 ['pixel glisten', 22, 1], ['waves', 23, 1],
+                 ['caustics', 2, 2], ['underwater', 3, 2], ['ripples', 4, 2], ['shore surf', 5, 2]];
     const lgtGet = (b, m) => ((m === 2 ? lgtMask2 : lgtMask) & (1 << b)) !== 0;
     {
       const panel = $('lgtPanel');
@@ -200,7 +205,7 @@
         const btn = row.lastChild;
         btn.addEventListener('pointerdown', (e) => e.stopPropagation());
         btn.addEventListener('click', (e) => { e.stopPropagation(); resetHist = 1;   // the filters hold seconds of history; drop it so the change is visible immediately
-          if (m === 2) { lgtMask2 ^= (1 << b); }             // no row uses the second mask today; kept so adding one needs no wiring
+          if (m === 2) { lgtMask2 ^= (1 << b); try { localStorage.setItem('vb_lgt2', String(lgtMask2)); } catch (e2) {} }   // persisted the same way lgtMask is, and read back through LGT2_WATER so only the water bits survive a reload
           else { lgtMask ^= (1 << b); try { localStorage.setItem('vb_lgt', String(lgtMask)); } catch (e2) {} }
           lgtPaint(); });
       } };
@@ -238,15 +243,17 @@
         'foam: ' + (lgtGet(20, 1) ? 1 : 0), 'ice: ' + (lgtGet(21, 1) ? 1 : 0),
         'pixelGlisten: ' + (lgtGet(22, 1) ? 1 : 0),
         'waves: ' + (lgtGet(23, 1) ? 1 : 0), 'reflection: ' + (+wReflK).toFixed(2),
+        'caustics: ' + (lgtGet(2, 2) ? 1 : 0), 'underwater: ' + (lgtGet(3, 2) ? 1 : 0),
+        'ripples: ' + (lgtGet(4, 2) ? 1 : 0), 'shoreSurf: ' + (lgtGet(5, 2) ? 1 : 0),
       ].join(', ') + ' };');
       { const base = lgtPaint; lgtPaint = () => { base(); reflPaint(); bakePaint(); }; }   // one repaint covers buttons, slider AND the bake line, so __vb.wrefl()/__vb.lgt() from the console can never disagree with what is drawn
       const hint = document.createElement('div'); hint.className = 'lgtHint';
-      hint.textContent = 'L — cursor on/off';   // the panel says how to reach it; nothing else in the HUD would
+      hint.textContent = 'Y — close';   // the panel says how to reach it; nothing else in the HUD would
       panel.appendChild(hint);
       $('lgtAll').addEventListener('pointerdown', (e) => e.stopPropagation());
       $('lgtAll').addEventListener('click', (e) => { e.stopPropagation();   // reset = back to whatever is BAKED in the source, not to all-on
         lgtMask = wBakeMask(); lgtMask2 = wBakeMask2(); wReflK = wBakeRefl(); resetHist = 1;
-        try { localStorage.setItem('vb_lgt', String(lgtMask)); localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} lgtPaint(); });
+        try { localStorage.setItem('vb_lgt', String(lgtMask)); localStorage.setItem('vb_lgt2', String(lgtMask2)); localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} lgtPaint(); });
       lgtPaint();
     }
     {   // ── THE ADJUST BOX ── quarter turns and voxel nudges for WHATEVER IS IN HAND (user). Holding the

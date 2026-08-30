@@ -53,7 +53,7 @@
   // that hangs on "uploading world" with nothing in the console. It did.
   let kitGiven = false;
   function giveStartKit() {
-    if (kitGiven || !PICK_IT) return;                // …and not before the tools have loaded: a kit handed out early would be four empty hands
+    if (kitGiven || !SPEAR_IT || !SHOVEL_IT) return;  // …and not before the tools have loaded: a kit handed out early would be two empty hands. Gated on the TWO ITEMS THE KIT ACTUALLY HANDS OUT, not on PICK_IT — the pick left the kit on 2026-08-30 and a sentinel that is no longer in the list is a trap waiting for the day that item stops loading. stone_shovel.vox is registered before stone_spear.vox in the loader below, so SPEAR_IT alone would do; both are named because the pairing is the point.
     kitGiven = true;
     // ORDER IS THE HOTBAR ORDER, left to right, and the axe goes in first so slot 1 is what the player holds
     // when the world appears. One of each: a tool is not consumed.
@@ -66,15 +66,19 @@
     // in the kit", which is the axe either way, and slotTidy's standing trailing empty still guarantees a free
     // slot for the first pickup. Item id 1 IS the stone axe — it predates the *_IT constants, which is why it
     // is the one entry here written as a literal.
-    // ── AND THE PICK AND THE BOW ARE BACK (user: "put the axe, pick, and bow/arrow in the rotation like it
-    // was ... in the inventory") ── exactly the "one entry back in this array" the note above promises, and
-    // nothing else moves: `selSlot = 0` still means "hold the first thing in the kit", which is still the axe,
-    // and slotTidy's standing trailing empty still guarantees a free slot for the first pickup.
-    // NO ARROWS, deliberately: ARROW_COST is 0 (sim/projectiles.js), so the bow already shoots unlimited and a
-    // starting quiver would be slots of clutter with nothing to spend it on - which is why they came off.
-    const kit = [[1, 1], [PICK_IT, 1], [BOW_IT, 1]];
+    // ── AND NOW IT IS THE SPEAR AND THE SHOVEL, AND NOTHING ELSE (user 2026-08-30: "remove everything in the
+    // hand of the player. I want you to put the stone spear in the players hand now. nothing else. also a stone
+    // shovel. shovel and spear should be in inventory. spear first") ── the axe, the pick and the bow come off
+    // the array; SPEAR_IT goes in FIRST, which is both the hotbar order (left to right) and what puts it in the
+    // hand, because `selSlot = 0` below means "hold the first thing in the kit".
+    // Exactly the "one entry back in this array" the older notes here keep promising: the axe (literal item id
+    // 1), PICK_IT and BOW_IT are removed from the list and nothing else moves. slotTidy's standing trailing
+    // empty still guarantees a free slot for the first pickup, and with only two entries there are now three.
+    // NO ARROWS, still: ARROW_COST is 0 (sim/projectiles.js), so the bow shoots unlimited anyway — and the bow
+    // is not in the kit at all now, so a quiver would be clutter for a weapon the player does not have.
+    const kit = [[SPEAR_IT, 1], [SHOVEL_IT, 1]];
     for (const [it, n] of kit) { if (!it) continue; for (let q = 0; q < n; q++) if (addItem(it) < 0) break; }
-    selSlot = 0;                                     // …and the axe is in hand, not the last thing added
+    selSlot = 0;                                     // …and the SPEAR is in hand, not the last thing added
     console.log('[vb] starting kit', kit.filter((k) => k[0]).map((k) => (ITEM_NAMES[k[0]] || k[0]) + (k[1] > 1 ? ' x' + k[1] : '')).join(', '));
   }
   {

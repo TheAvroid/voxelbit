@@ -41,7 +41,8 @@
     // fifteen under it were soil, so the moment the ground dropped away you saw the seam. Snow all the way
     // down through the soil band instead. Not dithered against the mask — an exposed face has to be one
     // material or the seam simply becomes a speckled seam.
-    const aSoil = am > ARCT_BARE;
+    const asn = arctSnow(wx, wz);                      // the SNOW mask, not the biome mask — it reaches out to the treeline and its edge is 2-D noise (world/window.js)
+    const aSoil = asn > 0.5;
     for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
@@ -57,7 +58,7 @@
       // cliffs read as stone. Both are gone with the fields that drove them; a slope in this biome is a snow
       // slope. Dithered against the mask, exactly as the desert and oak arms below are, so the white thins out
       // across the whole rim instead of stopping on the iso-line.
-      if (am > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < am) c = ASNOW[(sh * 4) | 0];
+      if (asn > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < asn) c = ASNOW[(sh * 4) | 0];
       else if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
       else if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
       else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(sh * 3) | 0];     // dithered sand-to-forest blend
@@ -82,32 +83,57 @@
       // ── THE BIRCH FLOOR IS THE LIGHTER GREEN ── ahead of the oak arm because the two masks are disjoint and
       // this one is cheaper to reject. Dithered against its own mask exactly as the oak and desert arms are, so
       // the green thins into the pine litter across the whole rim instead of ending on a line.
-      else if (am > 0.5) { c = ASNOW[(sh * 4) | 0]; }   // ── a dithered MISS inside the arctic is still arctic ── the branch above only fires on `ihash < am`, so the remainder used to fall through to the pine floor and grow GRASS on a glacier. Snow without setting surfMoss: white ground, no strands.
+      else if (asn > 0.5) { c = ASNOW[(sh * 4) | 0]; }   // ── a dithered MISS inside the arctic is still arctic ── the branch above only fires on `ihash < am`, so the remainder used to fall through to the pine floor and grow GRASS on a glacier. Snow without setting surfMoss: white ground, no strands.
       else if (bm > 0 && ihash(wx * 11 + 23, wz * 13 + 41) < bm) { c = BIRCHMOSS[(sh * 4) | 0]; surfMoss = true; surfBirch = true; }
       else if (om > 0 && ihash(wx * 11 + 23, wz * 13 + 41) < om) { c = MOSS[(sh * 4) | 0]; surfMoss = true; }
       else { c = (mossy ? MOSS : NEEDLE)[(sh * 4) | 0]; surfMoss = mossy; }
       W[base + (h - 1) * WX] = c;
     }
     if (lake) for (let y = h; y <= Math.min(WL, yTop - 1); y++) W[base + y * WX] = y === WL ? WATER_T : WATER_B;
+    // ── SNOW CAPS ON ARCTIC WATER ── the surface voxel becomes packed snow instead of water, so a cap sits
+    // FLUSH with the lake rather than as a lip on top of it, and the water body underneath is untouched (the
+    // WATER_B column below still fills, so depth, refraction and the fish all still see a lake). Coherent
+    // noise, so these read as floes rather than as speckle, and gated on the SNOW mask so the caps stop where
+    // the snow does instead of at the band's edge. Rivers get them on the same line — a river column is a lake
+    // column by the time it reaches here.
     if (!fresh) { let ia = base + (lake ? WL + 1 : h) * WX; for (let y = lake ? WL + 1 : h; y < WY; y++) { W[ia] = 0; ia += WX; } }
-    // ── SASTRUGI ── the arctic's answer to the grass strands below, and it exists for exactly the reason they
-    // do. Birch's height field quantised to whole voxels steps along its iso-heights, and on BARE ground those
-    // steps join up into concentric contour rings — a topographic map in white. Under the birch you never see
-    // it, and the strands here are why: sparse vertical clutter at the same 6% breaks the eye's read of the
-    // step edges before they can join into a line. Strip the clutter, as this biome does, and the rings appear.
-    // THREE HEIGHT-BASED FIXES WERE TRIED AND ALL FAILED (the full account is in world/window.js): a ±1.28
-    // dither, a ±0.45 sub-voxel one, and ±1.5 coherent drifts. They failed because the terrain is not what is
-    // wrong — a 1-voxel step is normal, every biome has it, and deforming birch's hills to hide one both
-    // breaks "match the birch forest" and looks worse. This adds nothing to the height field at all.
-    // 3%, HALF the strands' 6%, and ONE voxel rather than their 1-4. Tuned on screen and the direction is not
-    // obvious: 8% was tried first, on the reasoning that drifts are denser than grass, and it read as gravel.
-    // A grass strand is thin, green and soft-edged against a dark floor; a snow nub is a full white cube that
-    // throws a hard blue shadow onto white, so it carries several times the visual weight per unit density.
-    // Same guard as the strands — never overwrite an occupied cell.
-    if (am > 0.5 && h + 2 < WY && ihash(wx * 3 + 41, wz * 3 + 87) < 0.03) {
-      const ii = base + h * WX;
-      if (!W[ii]) W[ii] = ASNOW[(ihash(wx * 17 + 5, wz * 19 + 3) * 4) | 0];
+    // ── SNOW CAPS ON ARCTIC WATER ── floes of packed snow on lakes and rivers. The surface water voxel becomes
+    // snow and the cap is then built UPWARD from it, so a floe has thickness rather than being a painted-on
+    // sheet (user 2026-08-30: "give the snow caps more depth. they look just flat. make them have height").
+    // The water body underneath is untouched — the WATER_B column still fills, so depth, refraction and the
+    // fish all still see a lake.
+    // ── IT MUST RUN AFTER THE !fresh CLEAR ABOVE, AND THAT IS THE WHOLE BUG THE FIRST VERSION HAD ── that loop
+    // wipes a lake column from WL + 1 to the world ceiling. A one-voxel cap written at WL survived it by
+    // sitting exactly one below the floor, which is why the flat version worked; every voxel of height added
+    // above it would have been erased on any column that was not freshly generated. Written here instead, the
+    // cap is placed after the clear and nothing takes it away.
+    // ── THICKNESS COMES FROM THE FLOE FIELD ITSELF ── height rises with how far the noise clears the
+    // threshold, so a floe is thickest at its middle and tapers to one voxel at its rim. That is a dome rather
+    // than a slab, and it means the same field decides both where a floe is and how deep it is, so the two can
+    // never disagree about its edge.
+    if (lake && asn > 0.5 && WL <= yTop - 1) {
+      const fl = fbm(wx * ARCT_FLOEF + 71.3, wz * ARCT_FLOEF + 12.9);
+      const flT = ARCT_FLOE - (riverS(wx, wz) > 0.02 ? ARCT_FLOE_RIV : 0);   // a RIVER column ices over more readily than a lake — see ARCT_FLOE_RIV. 0.02 is the same rs the H carve treats as "a river is here"
+      if (fl > flT) {
+        // ── A TRUE HEMISPHERE, NOT JUST A CONCAVE RAMP ── t is how far in from the floe's rim this column
+        // is (0 at the edge, 1 at the middle), so the radius from the centre is (1 - t) and a round cap is
+        // sqrt(1 - (1-t)^2) — the circle. The previous sqrt(t) was concave and read as domed, but it is not
+        // actually a sphere's profile and it rose too fast right at the rim, which is the part that reads as
+        // a wall rather than a curve. Same field, same edge, no extra sampling.
+        const ft = Math.min(1, (fl - flT) / ARCT_FLOESPAN);
+        const capH = 1 + Math.round(ARCT_FLOEH * Math.sqrt(Math.max(0, ft * (2 - ft))));   // measured from THIS column's own threshold, so river ice is as deep as lake ice rather than uniformly thicker
+        for (let y = WL; y < Math.min(WY - 1, WL + capH); y++) W[base + y * WX] = ASNOW[(ihash(wx * 7 + 3 + y, wz * 11 + 5) * 4) | 0];
+      }
     }
+    // ── THE ARCTIC GROWS NOTHING AT ALL, NOT EVEN SNOW (user 2026-08-30: "you seemed to have placed singular
+    // voxels on top of the terrain? can you remove it to make the terrain more smooth") ── a SASTRUGI pass sat
+    // here: one snow voxel on 3% of arctic columns, borrowed from the grass strands below, whose job was to
+    // break up the contour rings that bare quantised ground shows (the long note is in world/window.js). It
+    // worked on the rings and it lost on its own terms — a snow nub is a full white cube throwing a hard blue
+    // shadow onto white, so scattered single voxels read as debris on ground that is supposed to be smooth.
+    // THE RINGS COME BACK WITH IT, and that is the accepted trade, not an oversight. If they are ever worth
+    // attacking again, do it somewhere other than the height field and other than here: window.js records four
+    // attempts (±1.28 dither, ±0.45 sub-voxel, ±1.5 drifts, and the ground ramp alone) and why each failed.
     if (surfMoss && h + 4 < WY) {                      // GRASS STRANDS: moss patches ONLY, 1–4 voxels tall, moss-matched colors
       if (ihash(wx * 3 + 41, wz * 3 + 87) < 0.06) {
         const gh = 1 + ((ihash(wx * 5 + 3, wz * 7 + 9) * 4) | 0);
@@ -1457,6 +1483,13 @@
     const wx = Math.round(cx * BKCELL + 12 + ihash(cx * 7 + 5, cz * 9 + 13) * (BKCELL - 24));
     const wz = Math.round(cz * BKCELL + 12 + ihash(cx * 13 + 7, cz * 11 + 3) * (BKCELL - 24));
     if (birchM(wx, wz) < 0.5) return null;             // BIRCH BAND ONLY - the mirror of the pines' test at the same halfway point
+    // ── AND NOT INTO THE ARCTIC (user 2026-08-30: "the birch trees are too far into the arctic. push them
+    // back") ── this was the ONE tree pass that never got the arctic gate every other placer here carries,
+    // and the band arithmetic is why it mattered: birch and arctic share a boundary, birch plants at
+    // birchM >= 0.5, and the arctic's blend is 900 wide against birch's 450 — so at the shared line the
+    // arctic mask is already 0.5 and climbing while birch is still planting. Birches stood a third of the
+    // way into the snow. ARCT_BARE, the same line every other tree stops at.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     // ── SPWX + SPOX, NOT SPWX (user 2026-08-28: "prevent the player from spawning in a tree") ── every
     // clearing in this file used to measure from SPWX alone, and SPWX is the BAND ANCHOR, not the player.
     // The player stands at SPWX + SPOX and SPOX is -2160 (world/build.js), so all seven clearings were being

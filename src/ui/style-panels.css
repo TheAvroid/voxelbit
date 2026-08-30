@@ -19,11 +19,12 @@
   #lgtPanel .lgtBake button:hover { border-color: #7fd05a; color: #b8ff6e; }
   #lgtPanel .lgtHint { color: #6d7f96; padding-top: 4px; margin-top: 2px; border-top: 1px solid #223046; }
   #lgtPanel.hidden { display: none; }
-  /* ── WATER SETTINGS: OFF SCREEN ── the panel, its buttons, the reflection slider and the bake row stay wired
-     exactly as they are, so WATER_BAKE still drives the look and __vb.lgt()/__vb.wrefl() still reach it from the
-     console; this one rule keeps it out of sight. It has been brought back twice to carry a group of graphics
-     toggles and retired again both times when that group was removed. Delete to restore. */
-  #lgtPanel { display: none !important; }
+  /* ── WATER SETTINGS: BACK ON SCREEN, ON [Y] ── (user 2026-08-30: "when pressing y, give me every single water
+     setting to toggle off and on. put in the top right"). The `display: none !important` rule that used to sit
+     here is what kept it hidden; the panel itself never stopped being wired, so bringing it back was deleting
+     that one line and giving it a key. Its visibility is owned by the Y handler in ui/hud.js — NOT by cursSync,
+     which only force-hides it over the death screen and the video editor. Top-right is free: #arwPanel and
+     #edSzPanel share this corner but the first is display:none and the second is asset-editor only. */
   /* ── ARROW ORIENTATION ── top right, shown whenever the cursor is free; each button turns the arrow on the bow a quarter turn */
   /* ── TREE SIZE (asset editor, [y]) ── same furniture as #arwPanel, parked BELOW it: both are top-right
      and the arrow panel is up whenever the cursor is free, which is exactly when this one is usable too. */

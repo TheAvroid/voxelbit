@@ -129,7 +129,7 @@
       if (showRes) hudParts.push(`${CW}×${CH}  (${RW}×${RH})`);   // RESOLUTION readout (user: toggled in settings): display/canvas res, then the path-traced render target (CW×CH × renderScale) in parens
       if (showFps) hudParts.push(`${fpsEma.toFixed(0)} fps`);
       if (showCoords) hudParts.push(`x ${(P.x / 10).toFixed(1)}\ny ${(P.y / 10).toFixed(1)}\nz ${(P.z / 10).toFixed(1)}`);   // coords in metres, one axis per line
-      if (showTime) hudParts.push(`${clock}${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}${cycleSpeed !== 1 ? '  x' + cycleSpeed.toFixed(1) : ''}`);
+      if (showTime) hudParts.push(`${clock}${P.fly ? '  FLY' : ''}${P.crouch ? '  crouch' : ''}${cycleSpeed !== 1 ? (cycleSpeed < 0 ? '  <<x' + (-cycleSpeed).toFixed(1) : '  x' + cycleSpeed.toFixed(1)) : ''}`);
       hudEl.textContent = hudParts.join('\n\n');
     }
     // ── HAND THE FRAME TO THE RECORDER, AFTER IT IS DRAWN ── this used to sit at the TOP of tickBody, capturing

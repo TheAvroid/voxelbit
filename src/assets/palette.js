@@ -439,6 +439,18 @@
   // model (4 entries, ~13%). This is what breaks the contour rings on bare arctic ground: see the long note
   // in world/window.js for the three height-based attempts that did not.
   const ASNOW = [addCol(246, 250, 255), addCol(232, 238, 249), addCol(240, 245, 252), addCol(226, 233, 244)];   // packed snow — SOLID ground, shovel
+  // ── AND THE ARCTIC OWNS ITS FOUR WHITES (user 2026-08-30: "the spear … goes through the terrain") ──
+  // it turned out half the arctic floor was not solid at all, and the spear was only the thing that found
+  // it: ids 101 and 104 read solid:false while 102 and 103 read solid:true. The ramp is minted here, and
+  // assets/material-tabs.js marks all four SOLID — but the FLOWER models load later, their white petal
+  // voxels came within PAL_TOL of two of these, palShare handed them the same ids, and material-tabs then
+  // runs `for (const i of FLOWERIDS) solidTab[i] = 0` AFTER the snow line. A flower has to be walk-through,
+  // so it cleared the ground the player and every projectile were standing on.
+  // palOwn is the mechanism this file already documents for exactly this — palShare never hands out a
+  // reserved id, and palNearest skips them too — so the petals now resolve to one of the other whites
+  // (SNOW's own walk-through pair, or the editor stage's) and leave the ground alone. Widening this ramp
+  // from two entries to four is what exposed it: the original pair happen to be the two that survived.
+  for (const i of ASNOW) palOwn.add(i);
 
   // ── RAIN, AND WHY IT IS EXACTLY ONE ID ── the oak forest gets rain where the pine forest gets snow, and a
   // falling raindrop is a traced voxel in the same lattice the flakes use (see the RAIN block in TRACE), so it

@@ -747,6 +747,18 @@
           if (wantK === 3 && tooClose(DUCK_0, DUCK_END, 200)) continue;         // mother ducks spawn ≥200 vox apart → at most ~2 families fit on a typical lake (user: 'only 1-2 per lake')
           if (wantK === 4 && tooClose(CARD_0, CARD_END, 12)) continue;   // lilies scatter — and the band is CARD_0..CARD_END (lilySlot), not the 40-55 this read: the three literals on these lines were the last hard-coded band edges left after the ladder refactor, and this one had been WRONG since the lily slots were repurposed for the perched songbirds. Inert either way — nLily is 0, so no creature has had wantK 4 since — which is exactly why it survived: a stale band literal does not throw, it silently addresses the wrong animals.
           const sy = wantK === 6 ? (bfBed(sx, sz) + WL) * 0.5 : (wantK === 2 ? gS + ((desSlot && DESERTS[desSp] && MAMFIT[DESERTS[desSp].name]) ? MAMFIT[DESERTS[desSp].name].seat : 2) : (wantK === 3 ? WL + 4 : (wantK === 4 ? WL + 1.4 : (desFly ? DES_FLY_UP : 0) + bfGlide(sx, sz) + (wantK ? 9 : 14))));   // fish hang at MID-DEPTH; ducks/lilies float; duck FEET sit inside the water voxel layer
+          // ── AND NOTHING IS EVER PLACED IN THE ARCTIC (user 2026-08-30: ducks glitching on the water, tiny
+          // dragonflies raising wakes on it) ── the biome's no-life rule had gates in three places and a hole
+          // under all of them: population damping (which governs how MANY are wanted near the player), the
+          // `far` recycle above (which retires one that WANDERED in), and the lake census (which stops water
+          // life homing on arctic lakes). None of them is placement. So a creature whose slot was still
+          // wanted could be recycled by `far` and RE-PLACED on the same arctic lake, be retired again, and
+          // churn there indefinitely — which is what a duck flickering on the water actually was.
+          // ARCT_BARE, not the 0.5 the recycle uses, and the two differ on purpose: refusing to place is
+          // invisible, so it can be strict and follow the line where the biome stops growing anything.
+          // Clipping an animal that has already walked in would read as an invisible wall, which is why
+          // that one stays on the midline — see the note above `far`.
+          if (arcticM(sx, sz) > ARCT_BARE) continue;
           if (wantK === 6 || ((wantK === 2 || !bfRoofed(sx, sy, sz)) && !bfObst(sx, sy, sz))) {   // a fish spot was already fully validated (real deep water) — bfObst would see the WATER voxels as solid and reject every one; worms live happily UNDER the canopy — the roof test starved dense-forest placement ('worms only near spawn')
             B.x = sx; B.z = sz; B.y = sy; placed = true;
             const cx = Math.floor(sx / 64), cz = Math.floor(sz / 64);   // color = spatial hash of the 64-vox cell → world-anchored variety, all 3 colors present

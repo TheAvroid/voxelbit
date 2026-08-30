@@ -39,7 +39,8 @@
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
   const LGT_ALL = 0xffffff;                            // 24 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader). Bits 18-23 are the WATER group (user 2026-08-05). Stays exact in the f32 uniform: integers are exact to 2^24.
   const LGT_WATER = 0xfc0000;                          // bits 18-23 — the WATER group, and the only terms the panel exposes (user 2026-08-05: "I only want buttons that change the water")
-  const LGT2_ALL = 0x3;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; BIT 1 IS THE GRASS/SUBPIXEL CROSS-FACE SPATIAL FALLBACK (see SPATIAL in render/wgsl/denoise.js) — __vb.lgt2(1) off / __vb.lgt2(3) on, and it is a LIVE toggle rather than a URL flag on purpose: the world seed differs between loads, so a cross-load A/B compares two different forests and is worthless here. BIT 2 IS FREE. Its last tenant was the SVGF HISTORY FIX (user 2026-08-29, "address the noise issue … the noise is worse on the grass") — a silhouette pixel that fails the temporal depth test borrows a neighbour's converged history instead of rendering one raw ray. It lived on [Y] for exactly as long as it took the user to look at the A/B and was BAKED IN the same day, which is why the bit is spare again; see HISTORY FIX in render/wgsl/denoise.js. Before it the bit held SURFACE RINGS — the ring a splash leaves and the wake behind a swimmer or a duck — which was BAKED IN on 2026-08-29 and now runs unconditionally; see ripHF in render/wgsl/pre.js. A RIVER/LAKE wave character sat here briefly the same day and was reverted (the wave sum sampled in each water body's own frame; the generator's riverAt already carries the flow direction and width, so it is buildable again if it ever comes back). Before those the bit held, and lost, WHITECAPS on the crests (removed on request), the per-pixel waterline and SNELL'S WINDOW (both reverted on sight — do not rebuild either), and the ported cloud deck. Earlier still, a per-pixel sun accumulation window and variance-driven spatial filtering, both measured and REVERTED — the sun window is arithmetically a no-op at 1x, and the variance radius measured -5.4% residual noise, inside the run-to-run scatter. The 29 bits above are still free.
+  const LGT2_ALL = 0x3f;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; BIT 1 IS THE GRASS/SUBPIXEL CROSS-FACE SPATIAL FALLBACK (see SPATIAL in render/wgsl/denoise.js) — __vb.lgt2(1) off / __vb.lgt2(3) on, and it is a LIVE toggle rather than a URL flag on purpose: the world seed differs between loads, so a cross-load A/B compares two different forests and is worthless here. BITS 2-5 ARE THE REST OF THE WATER GROUP (user 2026-08-30: "every single water setting") — 2 caustics, 3 the underwater look, 4 splash/wake ripples, 5 shoreline surf; see WBIT2/LGT2_WATER below and the [Y] panel. Bit 2's last tenant before them was the SVGF HISTORY FIX (user 2026-08-29, "address the noise issue … the noise is worse on the grass") — a silhouette pixel that fails the temporal depth test borrows a neighbour's converged history instead of rendering one raw ray. It lived on [Y] for exactly as long as it took the user to look at the A/B and was BAKED IN the same day, which is why the bit was spare for the water rows to take; see HISTORY FIX in render/wgsl/denoise.js. Before it the bit held SURFACE RINGS — the ring a splash leaves and the wake behind a swimmer or a duck — which was BAKED IN on 2026-08-29 and now runs unconditionally; see ripHF in render/wgsl/pre.js. A RIVER/LAKE wave character sat here briefly the same day and was reverted (the wave sum sampled in each water body's own frame; the generator's riverAt already carries the flow direction and width, so it is buildable again if it ever comes back). Before those the bit held, and lost, WHITECAPS on the crests (removed on request), the per-pixel waterline and SNELL'S WINDOW (both reverted on sight — do not rebuild either), and the ported cloud deck. Earlier still, a per-pixel sun accumulation window and variance-driven spatial filtering, both measured and REVERTED — the sun window is arithmetically a no-op at 1x, and the variance radius measured -5.4% residual noise, inside the run-to-run scatter. The 25 bits above bit 5 are still free.
+  const LGT2_WATER = 0x3c;                             // bits 2-5 of the SECOND mask — the four water terms that overflowed lgt.x (caustics, underwater, ripples, shore surf). The only bits of lgt.z the panel exposes and the only ones restored from storage, exactly as LGT_WATER is for lgt.x.
   // ══ WATER BAKE (user 2026-08-05) ══ THE defaults for every water control. Tune with the top-right panel,
   // hit `copy` on its bake row, and paste the line it gives you OVER this one — that is the whole workflow.
   // A player who has never touched the panel gets exactly what is written here; `reset` in the panel puts a
@@ -76,10 +77,24 @@
   // cannot reach it), the ACCUMULATION gate in tick-snow, and the FREEZE gate in tick-body - because a lake
   // skinning over with ice in a biome where no snow is falling is the same wrongness as rain freezing one.
   const OAK_SNOW = false;
-  const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, pixelGlisten: 1, waves: 0, reflection: 0.45 };
+  // ── EVERY WATER TERM ON ITS OWN SWITCH (user 2026-08-30: "give me every single water setting to toggle
+  // off and on") ── the first six live in u.lgt.x bits 18-23 and are the group the panel has always carried;
+  // the last four are NEW and live in u.lgt.z (LG2), because lgt.x is FULL at 24 bits (an f32 is exact only
+  // to 2^24, so a 25th bit there would round). They were all previously baked in with no way to switch them:
+  //   caustics   — the webs on the refracted bed, on a submerged creature, on anything you swim past, and the
+  //                god-ray shafts in the underwater march. Four call sites, one button, so it is all or none.
+  //   underwater — the whole submerged look: Beer-Lambert absorption over the in-water path plus the marched
+  //                single scatter. Off, swimming looks like standing in air.
+  //   ripples    — the splash rings and the wakes behind a swimmer or a duck (ripHF; both the in-march sample
+  //                and the far-water fallback).
+  //   shoreSurf  — the churned foam band where water meets land, AND the voxel lift that stands it proud.
+  // The bake below is what a fresh player gets; the panel's `reset` returns to exactly this.
+  const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, pixelGlisten: 1, waves: 0, reflection: 0.45,
+                       caustics: 1, underwater: 1, ripples: 1, shoreSurf: 1 };
   const WBIT = { reflect: 18, refract: 19, foam: 20, ice: 21, pixelGlisten: 22, waves: 23 };   // …their bits in u.lgt.x
+  const WBIT2 = { caustics: 2, underwater: 3, ripples: 4, shoreSurf: 5 };                      // …and these four in u.lgt.z (LG2)
   const wBakeMask = () => { let m = LGT_ALL & ~LGT_WATER; for (const k in WBIT) if (WATER_BAKE[k]) m |= (1 << WBIT[k]); return m; };
-  const wBakeMask2 = () => LGT2_ALL;                   // the second mask has no per-term panel rows, so its bake IS its default — `reset` puts the rock sheen back on (see LGT2_ALL)
+  const wBakeMask2 = () => { let m = LGT2_ALL & ~LGT2_WATER; for (const k in WBIT2) if (WATER_BAKE[k]) m |= (1 << WBIT2[k]); return m; };   // …and the non-water bits of the second mask are forced on, so `reset` also puts the rock sheen and the cross-face fallback back
   const wBakeRefl = () => { const v = +WATER_BAKE.reflection; return (isFinite(v) && v >= 0 && v <= 2) ? v : 1; };
   // Everything OUTSIDE the water group is FORCED ON at load. The panel used to carry all 24 terms, so a
   // saved mask can have sun shadow / AO / fog / TAA switched off from an earlier bisection — and with those
@@ -92,7 +107,10 @@
   // creature population, and since every trace ray walks every rigid body, that moved the trace pass by more than
   // the effect being measured (two identical runs read 2.22 and 1.51 ms).
   let AO_REACH = 24;
-  let lgtMask2 = LGT2_ALL;                             // …and this starts at the bake. Deliberately NOT restored from localStorage the way lgtMask is: every bit in here is a whole-scene look term, and a player who bisected one off in an old session must not be stuck with it (the same argument that forces every non-water bit of lgtMask on at load).
+  // ── THE SECOND MASK IS PERSISTED THE SAME WAY, AND ONLY ITS WATER BITS ARE ── identical rule to lgtMask
+  // above: bits 2-5 (the four new water terms) come back from storage, everything else is forced on at load.
+  let lgtMask2 = (() => { try { const v = localStorage.getItem('vb_lgt2');
+    return v === null ? wBakeMask2() : (((parseInt(v, 10) & LGT2_WATER) | (LGT2_ALL & ~LGT2_WATER)) & LGT2_ALL); } catch (e) { return wBakeMask2(); } })();   // …and it starts at the bake when there is nothing stored. It used to be deliberately NOT restored, because every bit in here was a whole-scene look term and a player who bisected one off in an old session must not be stuck with it. Bits 2-5 are WATER now, so they follow lgtMask's rule instead: the water group survives a reload, the whole-scene bits (0 rock sheen, 1 cross-face fallback) are still forced on at load.
   // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
   // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
   let wReflK = (() => { try { const v = parseFloat(localStorage.getItem('vb_wrefl')); return (isFinite(v) && v >= 0 && v <= 2) ? v : wBakeRefl(); } catch (e) { return wBakeRefl(); } })();
@@ -159,10 +177,36 @@
     const shoreK = Math.min(1, Math.abs(b - WL) / 12);   // fine detail fades out near the waterline — smooth, beach-like entries into water
     return Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * fbm(x * 0.04 + 7.3, z * 0.04 + 2.1) * (0.2 + 0.8 * shoreK), x, z))));   // ── ROUNDED OAK HILLS ── the forest expression is untouched; oakRoll (below, with oakM) either hands it straight back or replaces it with the oak forest's own rounded field. makeHRow and makeHCol wrap their own copies of this same expression in the same call
   };
-  const basinM = (x, z) => {                           // huge, rare low-frequency basins pull the land under the waterline (threshold halved — lakes are rarer)
+  // ── THE LAKE THRESHOLD, AND WHY IT IS A CONSTANT NOW ── this number is INLINED IN THREE PLACES: here, and
+  // again in makeHRow and makeHCol (world/gen-noise.js), which carry their own copy of the height expression
+  // and decompose the same noise into row/column form. All three must agree bit for bit or the bulk fill and
+  // the placement queries disagree about where the ground is — __vb.gtest() is what measures it. Naming it
+  // does not remove the duplication (the row/col forms cannot call this), but it does mean a change here is
+  // visibly a change to a shared constant rather than to a magic number.
+  const BASIN_T = 0.065;                               // base: how much of the low-frequency basin field drops under the waterline
+  // ── AND THE ARCTIC GETS TWICE THE WATER (user 2026-08-30: "double the rate of water in the arctic") ──
+  // added on top of the base rather than replacing it, and scaled by the biome mask so the extra lakes fade in
+  // with the snow instead of appearing along the band's edge. TUNED BY MEASUREMENT, not by arithmetic: the
+  // covered area is the noise field's cumulative distribution below the threshold, and that is not linear in
+  // the threshold, so "double the number" would not have doubled the water.
+  const BASIN_ARCT = 0.330;                            // 0.038 -> 0.048 -> 0.105 -> 0.193 -> 0.330: doubled on request four times, each step MEASURED rather than scaled — the wet fraction is the basin noise's CDF below the threshold and is nowhere near linear in it (user 2026-08-30: "double the water surface area in the arctic")
+  const basinT = (x, z) => BASIN_T + BASIN_ARCT * arcticM(x, z);
+  // ── AND HOW HIGH A BASIN MAY FORM, WHICH IS WHAT MAKES A POCKET BIG ── the carve is gated on low ground, so
+  // with a fixed ceiling a basin is clipped wherever the land rises through it and a lake comes out as a
+  // scatter of small pockets in the valley floors (user 2026-08-30: "the water in the arctic they are small
+  // pockets. make the pockets much much bigger"). Raising the ceiling in the arctic lets one basin flood a
+  // whole bowl instead of only its lowest corner, so the pockets JOIN UP rather than merely multiply — which
+  // is a different lever from the threshold above, and the one that actually changes their size.
+  // Like the threshold, this line is INLINED IN THREE PLACES (H, makeHRow, makeHCol) and is a shared helper
+  // for that reason: the arithmetic exists once so the three copies cannot drift.
+  const BASIN_LOW = 66;                                // ceiling, over LIFT, under which a basin may carve at all
+  const BASIN_ARCTLIFT = 34;                           // …and how much higher the arctic's may reach
+  const basinLow = (h, x, z) => Math.max(0, Math.min(1, (BASIN_LOW + LIFT + BASIN_ARCTLIFT * arcticM(x, z) - h) / 20));
+  const basinM = (x, z) => {                           // huge, rare low-frequency basins pull the land under the waterline
     const b = vnoise(x * 0.0016 + 313.7, z * 0.0016 + 157.3);
-    if (b >= 0.065) return 0;
-    return sstep(Math.min(1, (0.065 - b) / 0.06));
+    const t = basinT(x, z);
+    if (b >= t) return 0;
+    return sstep(Math.min(1, (t - b) / 0.06));
   };
   // ── THE DESERT ── the EASTERNMOST of the world's three bands (oak forest | pine forest | desert; see
   // oakM below for the other border). Anchored to SPWX/SPWZ rather than fixed coordinates because spawn is
@@ -745,6 +789,68 @@
     const t = 0.5 + (ARCTH - Math.abs(pwrap(x - c))) / ARCTB;
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
+  // ══ WHERE THE SNOW LIES, WHICH IS NOT WHERE THE BIOME IS ══════════════════════════════════════════════
+  // (user 2026-08-30: "make the edge of the arctic meet up much closer to the pine forest. but then also make
+  // the transition much smoother instead of a straight line. dont do anything to the tree placements.")
+  // Those three asks pull against each other on ONE mask, and that is why there are now two.
+  // arcticM keeps its job: the terrain blend and, through ARCT_BARE, which columns refuse to plant. It is
+  // untouched, so every tree in the world stands exactly where it stood — which is the third ask, and it is
+  // the reason none of this widens the band or moves its centre.
+  // The SNOW moves instead. It used to be dithered straight against arcticM, so at the treeline (am 0.15)
+  // only about 15% of columns were white: trees stopped, and then there was a long stretch of bare pine-forest
+  // floor before the snow properly began. That gap is what read as the arctic not meeting the pine forest.
+  // This ramp is full by am 0.16 — just past where planting stops — so the white now runs right up to the last
+  // trees, and it falls to nothing by am 0. Same band, same trees, snow much further out.
+  // ── AND THE EDGE IS NOISE, NOT A LINE ── the meander arcticM inherits (desWob) is a function of z ALONE, so
+  // the boundary is one smooth curve running north-south: at walking scale that is a straight line, which is
+  // exactly what was reported. The two octaves below are functions of x AND z, and they are added to the mask
+  // BEFORE the ramp rather than to the position, so the iso-line wanders in both axes at once — snow reaches
+  // into the forest in fingers and the odd bare patch survives inside the white. ±0.135 against a 0.16 ramp is
+  // deliberately most of its width: anything less and the ramp still reads as a band with a wiggle on it.
+  const ARCT_SNOWR = 0.16;                             // mask width of the snow ramp — ends just past ARCT_BARE, so snow reaches the last tree
+  const ARCT_SNOWN = 0.18;                             // peak-to-peak noise added to the mask, in mask units
+  const arctSnow = (x, z) => {
+    const am = arcticM(x, z);
+    if (am >= 1) return 1;
+    if (am <= 0) return 0;
+    const n = (fbm(x * 0.0052 + 61.3, z * 0.0052 + 17.9) - 0.5) * ARCT_SNOWN
+            + (fbm(x * 0.017 + 5.1, z * 0.017 + 44.6) - 0.5) * ARCT_SNOWN * 0.5;
+    const t = (am + n) / ARCT_SNOWR;
+    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
+  };
+  // ── SNOW CAPS ON THE WATER (user 2026-08-30: "inside the lakes and rivers can you create snow caps") ──
+  // written AT the waterline in place of the surface water voxel, not above it, so a cap is flush with the
+  // lake rather than a lip standing proud of it. Coherent, so they come in floes rather than as speckle; the
+  // threshold is what sets coverage.
+  const ARCT_FLOE = 0.55;                              // …and the noise threshold a column must clear to carry one
+  // ── A RIVER CARRIES TWICE THE ICE OF A LAKE (user 2026-08-30: "make the rivers half as sparse with snow
+  // caps") ── the same floe field, read at a lower threshold on any column the river carve touched, so a
+  // channel ices over while the lakes keep the coverage they have. Half as SPARSE, not twice as covered:
+  // it is the gaps that halve, which is what the phrase asks for and what stops a river simply becoming a
+  // solid white strip.
+  const ARCT_FLOE_RIV = 0.13;                          // how much lower that threshold sits on a river column
+  const ARCT_FLOEH = 28;                                // extra voxels of thickness at a floe's thickest, over the 1 it always has. 3 -> 8 -> 14 -> 28 (user 2026-08-30, three times: "give even more depth to the polar ice caps. they are still flat", then "make them taller and round") — at 4 the caps still read as a sheet from standing height, because 40 cm of ice is under a knee. 9 voxels is most of a metre and throws a shadow you can see across the lake.
+  // ── AND A STEP, NOT A SPAN ── the first cut spread the thickness over the WHOLE remaining range of the
+  // noise (fl - ARCT_FLOE) / (1 - ARCT_FLOE), which is the obvious normalisation and gave 70% of floes a
+  // single voxel: fbm clusters hard just above any threshold, so almost nothing reached the upper part of
+  // that range and the caps still read as flat. Measured off the thickness histogram instead — 0.035 puts
+  // its steps near the quartiles of fl among the columns that actually carry a floe, so all four
+  // thicknesses get used.
+  // ── AND THE PROFILE IS A DOME, NOT A ZIGGURAT (user 2026-08-30: "make them taller and round") ── height was
+  // a LINEAR step: one more voxel per fixed increment of noise, which stacks a floe as concentric plateaus and
+  // reads as a terraced cake. Taking the SQUARE ROOT of the normalised noise instead makes the cap climb fast
+  // at its rim and flatten across its top, which is the profile of a dome and is what rounds it. Same field,
+  // same edge, no extra sampling — only the mapping from noise to height changed.
+  // A SPAN, not a step, because sqrt needs the whole range normalised to 0..1 before it means anything.
+  // ── AND THE SPAN WIDENS WITH THE HEIGHT, OR THE DOME GROWS A FLAT TOP ── a quarter of cap columns were
+  // SATURATING at full height, and a saturated column is by definition part of a plateau: the profile stops
+  // being a curve exactly where the eye looks hardest, at the middle. Widening the span keeps most of the
+  // field below the ceiling so the crown stays curved (user 2026-08-30: "make sure they are even rounder").
+  const ARCT_FLOESPAN = 0.30;                          // noise above the threshold at which a cap reaches full height
+  // ── FLOE SIZE ── the wavelength of the field that decides where a cap is, so it sets how BIG one is. Halved
+  // (0.021 -> 0.0105) to double each floe's footprint on request; coverage is set by the threshold above and is
+  // very nearly unchanged by this, which is what makes size and coverage separable levers.
+  const ARCT_FLOEF = 0.0105;
   const ARCTWMAX = DESW * 0.675;                       // the band's absolute reach, for the same cheap-out shape birch uses
   const ARCTFAR = ARCTC + ARCTH + 2 * ARCTWMAX + ARCTB * 0.5;    // no column east of this can be arctic at all
   const ARCTWFAR = ARCTC - ARCTH - 2 * ARCTWMAX - ARCTB * 0.5;   // …nor west of this
@@ -896,7 +1002,7 @@
   const H = (x, z) => {
     let h = baseH(x, z);
     const bm = basinM(x, z);
-    const m = bm * Math.max(0, Math.min(1, (66 + LIFT - h) / 20));   // basins only form in low country
+    const m = bm * basinLow(h, x, z);                   // basins only form in low country — and the arctic's ceiling is higher, see basinLow
     if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
     const rs = riverS(x, z);
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
@@ -975,12 +1081,17 @@
   const rivEval = (R, x, z) => {                       // watershed strength at this column: max over channel segments + lakes
     if (x < R.x0 || x > R.x1 || z < R.z0 || z > R.z1) return 0;   // bbox fast reject
     let best = 0;
+    // ── ARCTIC RIVERS ARE TWICE AS WIDE (user 2026-08-30) ── applied to the channel half-width, so the banks
+    // move apart and the whole cross-section scales; the H carve downstream reads rs and deepens with it, so a
+    // wider arctic river is a bigger river rather than a shallow smear. Hoisted OUT of the segment loop: this
+    // costs one arcticM (two vnoise) per column instead of one per segment, and rivEval is height-path code.
+    const aw = 1 + arcticM(x, z);
     for (const sg of R.segs) {
       const tRaw = (x - sg.sx) * sg.dxr + (z - sg.sz) * sg.dzr;
       const t = Math.max(0, Math.min(sg.len, tRaw));
       const off = Math.sin(t * 0.015 + sg.seed) * 30 + Math.sin(t * 0.04 + sg.seed * 1.7) * 10;   // broad meanders
       const pd = (x - (sg.sx + sg.dxr * t)) * (-sg.dzr) + (z - (sg.sz + sg.dzr * t)) * sg.dxr;
-      const w = sg.wb * 1.4 * (sg.t0 + (sg.t1 - sg.t0) * (t / sg.len));   // width taper: stems widen downstream, tributaries narrow to their heads
+      const w = sg.wb * 1.4 * aw * (sg.t0 + (sg.t1 - sg.t0) * (t / sg.len));   // width taper: stems widen downstream, tributaries narrow to their heads; aw doubles it across the arctic
       const over = tRaw < 0 ? -tRaw : (tRaw > sg.len ? tRaw - sg.len : 0);   // rounded end caps - no strip past the endpoints (the old straight-cutoff bug)
       const d = Math.hypot(Math.abs(pd - off), over);
       if (d < w) { const v = sstep(1 - d / w); if (v > best) best = v; }

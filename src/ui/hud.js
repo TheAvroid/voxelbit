@@ -388,7 +388,15 @@
     // a bare exitPointerLock() here would have put the pause menu on top of the panel — and syncs the custom
     // free-mouse cursor. Its own listener was retired in 2026-08-05 and the light panel it was named for is
     // display:none, so nothing else is riding it. Closing hands the pointer straight back.
-    const pkShow = (on) => { pkPanel.classList.toggle('hidden', !on); setLightMode(on); if (on) { pkRefresh(); sbRefresh(); } };
+    // ── ONE OWNER FOR THE FREE CURSOR ── there are now TWO independent free-cursor panels on two different
+    // keys: these held-item / stack cards on [L] (top-left) and the WATER panel on [Y] (top-right). Each used
+    // to call setLightMode(on) directly, which is fine while one key drives both — and wrong the moment they
+    // are separate: closing L while Y is still up handed the pointer straight back under a panel still on
+    // screen, which is exactly the failure the 2026-08-20 note above describes. So neither panel decides the
+    // cursor any more; they toggle their own `hidden` and this asks whether ANY of them is still open.
+    const wLgtEl = $('lgtPanel');
+    const freeCurSync = () => setLightMode(!pkPanel.classList.contains('hidden') || !wLgtEl.classList.contains('hidden'));
+    const pkShow = (on) => { pkPanel.classList.toggle('hidden', !on); freeCurSync(); if (on) { pkRefresh(); sbRefresh(); } };
     document.addEventListener('keydown', (e) => {
       // ── L, NOT K (user 2026-08-19: "bring back the editor for the stack numbers on the l keybind. also bring
       // back the object in hand editor as well. everything on the l toggle") ── both editors already live in
@@ -405,6 +413,33 @@
       const want = pkPanel.classList.contains('hidden');
       pkShow(want);                                    // rebinds the sliders to whatever is in the hand right now   // …and NOT ntShow any more: the graphics panel has no rows left (see NIGHT_ROWS), and a panel with nothing in it is worse than no panel — the same call this line briefly carried is what the 2026-08-19 note took out for the same reason
     });
+    // ────────── WATER PANEL ─ Y ────────── (user 2026-08-30: "when pressing y, give me every single water
+    // setting to toggle off and on. put in the top right"). The panel is #lgtPanel: it has existed all along,
+    // top-right at 10/12px, with its ten term buttons, its reflection slider and its bake row built in
+    // ui/settings.js — a `display: none !important` in ui/style-panels.css was the only thing keeping it off
+    // screen, and that rule is gone. So this is a KEY, not a panel.
+    // It lives here rather than in ui/settings.js for the same reason the L handler does: setLightMode is a
+    // const in ui/input.js, which the manifest places BELOW settings.js, and reaching it from up there is the
+    // const-before-declaration black screen this codebase keeps re-learning ([[voxelbit-blackscreen-const-order]]).
+    // Guarded exactly like L: not while the command line owns the keyboard, not while a panel control has the
+    // keyboard (arrow-key nudging a slider is the precise way to use these, and Y is nowhere near, but the
+    // bake row is a text input you can click into), and NOT IN THE ASSET EDITOR — ED already owns KeyY there
+    // for the tree-size panel (ui/input.js), and two handlers on one key is the bug that ate the L key in
+    // 2026-08-20.
+    document.addEventListener('keydown', (e) => {
+      if (e.code !== 'KeyY' || CMD.open || ED.on || e.repeat) return;
+      // …and not from behind the ESC MENU / settings, which own the screen — nor while the rebind panel is
+      // waiting on a key, where 'y' is an ANSWER rather than a command (keybinds.js's listener would take it
+      // and this one would open a panel underneath at the same time).
+      if (!$('lock').classList.contains('hidden') || listenAction || !$('over').classList.contains('hidden') || !$('vePanel').classList.contains('hidden')) return;
+      const ae = document.activeElement; if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+      e.preventDefault();
+      const want = wLgtEl.classList.contains('hidden');
+      wLgtEl.classList.toggle('hidden', !want);
+      freeCurSync();                                   // opening frees the cursor; closing hands it back — unless the L cards are still up
+      if (want) lgtPaint();                            // repaint on open, so a mask changed from the console (__vb.lgt / __vb.lgt2 / __vb.wrefl) can never disagree with the buttons
+    });
+    wLgtEl.addEventListener('click', (e) => e.stopPropagation());   // clicks inside the panel are the panel's, never the world's
     $('pkReset').addEventListener('click', (e) => { e.stopPropagation();   // …and reset takes the whole strip back too, for the same reason a drag moves it
       for (const id in pickCfgs) if (ITEM_NAMES[id] === ITEM_NAMES[pkIt]) Object.assign(pickCfgs[id], PICK_DEFS[id]);
       pickSave(); pkRefresh(); });

@@ -359,12 +359,24 @@
             // illuminant: SUN_COLOR/AMBIENT/BG_COLOR and its Reinhard tonemap are replaced by sunTint(),
             // dayScale() and this renderer's sky, so the deck sits inside voxelbit's day/night and rain rather
             // than carrying its own lighting model into the middle of the frame.
-            // ── SLICE PROBE (LG2 bit 3, __vb.lgt2(15)) ── paint one horizontal slice of the density volume
+            // ── SLICE PROBE (LG2 bit 6, __vb.lgt2(67)) ── paint one horizontal slice of the density volume
             // straight onto the screen, one texel per pixel-ish, bypassing the march entirely. This exists
             // because estimating the field from the MARCH is how the first calibration went wrong twice: a ray
             // reports the MAX of ~14 samples, which sits far above the per-texel distribution the graph actually
             // produces, so a threshold set from it barely moves the coverage. A slice is the distribution.
-            if (LG2(3u)) {
+            // ── AND IT LIVES ON BIT 6, NOT BIT 3, BECAUSE BIT 3 STOPPED BEING FREE ──────────────────────
+            // This probe returns EARLY and paints the whole sky, so whichever bit carries it is a switch that
+            // blanks the sky. That was safe while LGT2_ALL was 0x3 and bit 3 could only ever be set by typing
+            // __vb.lgt2(15) on purpose. The water panel then took bits 2-5 for its rows and raised LGT2_ALL to
+            // 0x3f, so bit 3 became ON BY DEFAULT and this fired every frame: black sky with grey blobs, which
+            // is the density field, over correctly-lit terrain (user 2026-08-30: "half the screen is black").
+            // Bisected to the bit: with only bit 3 added the sky measured (5,5,5), and (145,167,184),
+            // (144,167,183), (144,166,183) for bits 2, 4 and 5 — so it was this branch, not the water work.
+            // Moved rather than deleted: it is the instrument that got the cloud coverage right, and its own
+            // note explains why estimating the field from the march went wrong twice. Bit 6 is the first bit
+            // above the panel's range, so it is outside LGT2_ALL and cannot be reached by the panel, the bake
+            // or the stored mask — only by asking for it, which is what a probe should need.
+            if (LG2(6u)) {
               let sl = vec2<f32>(gid.xy) / vec2<f32>(u.res.x, u.res.y);
               let dS = select(cgSample(vec3<f32>(sl.x * CG_TILE, CLOUD_LO + 0.35 * (CLOUD_HI - CLOUD_LO), sl.y * CG_TILE)) * 0.1, sl.x, sl.y < 0.06);   // top 6% is a known 0..1 ramp. IT PROVED THE PROBE CANNOT READ ABSOLUTE VALUES: the measured transfer is neither linear nor gamma (0.7 -> 147, 0.9 -> 172), because the god-ray and TAA passes run after this store and both add to it. The slice view is still good for SHAPE; every density number read off it was wrong, which is what sent the calibration in circles.
               textureStore(colorOut, vec2<i32>(gid.xy), vec4<f32>(vec3<f32>(dS), 0.5));
@@ -508,7 +520,11 @@
           if (bh.t >= 0.0) {
             let bpos = pw2 + rd * 0.02 + refr * bh.t;
             let bvc = vec3<i32>(floor(bpos - bh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
-            let ca = caust(floor(vec2<f32>(bpos.x + u.winO.x, bpos.z + u.winO.y)) + vec2<f32>(0.5));   // caustic webs dance on the refracted bed
+            // ── WATER CAUSTICS, lgt.z bit 2 (the panel's caustics row) ── an if, never a select(): select
+            // is a FUNCTION in WGSL, so both operands are evaluated and the off state would still pay for two
+            // drifting noise fields on every refracted water pixel in the frame. Same trap the waves hit above.
+            var ca = 0.0;
+            if (LG2(2u)) { ca = caust(floor(vec2<f32>(bpos.x + u.winO.x, bpos.z + u.winO.y)) + vec2<f32>(0.5)); }   // caustic webs dance on the refracted bed
             let balb = pal[bh.vox].rgb * (0.88 + 0.24 * ivhash(bvc)) * (1.0 + 1.6 * ca * sunW);
             let blit = (0.45 + 0.55 * irr.g) * dayScale() * (0.55 + 0.45 * irr.r);
             let trB = exp(-sigT * bh.t);                             // Beer–Lambert over the in-water path
@@ -793,7 +809,7 @@
                   // either, for exactly this reason. If this is revisited, the missing piece is a scattered
                   // in-water light term to fade toward, not a bigger exponent.
                   var alb3 = alb2;
-                  if (waterT > 0.0 && bestT > waterT) {
+                  if (waterT > 0.0 && bestT > waterT && LG2(2u)) {                 // …and lgt.z bit 2 switches it off with the rest of the caustics: this whole block IS the webs on a submerged creature, so the gate belongs on the condition rather than inside
                     let wpC = u.camPos + rd * bestT;
                     let caC = caust(floor(vec2<f32>(wpC.x + u.winO.x, wpC.z + u.winO.y)) + vec2<f32>(0.5));
                     alb3 = alb2 * (1.0 + 1.6 * caC * smoothstep(-0.02, 0.12, u.sunDir.y) * sunC * (1.0 - waterIceK));   // …and the webs stop as the lid closes: caustics need a moving surface to focus the sun through
@@ -1050,7 +1066,7 @@
         else if (dbgm == 4 && irrD.b > 0.0) { col = vec3<f32>(irrD.g); }
         else if (dbgm == 5 && irrD.b > 0.0) { col = vec3<f32>(irrD.r); }   // DENOISED sun visibility alone — no AO, no albedo. If the blobby dark regions are ABSENT here, they are the AO term, not a shadow; if they are present and still blobby, the filter is smearing a hard shadow.
       }
-      if ((u32(u.fx) & 2u) != 0u) {                                  // ── UNDERWATER ── (camera submerged) Beer–Lambert absorption over the in-water path + a RAY-MARCHED single-scatter with caustic-modulated sun shafts (replaces the old flat blue tint)
+      if ((u32(u.fx) & 2u) != 0u && LG2(3u)) {                        // ── UNDERWATER ── lgt.z bit 3 (the panel's underwater row) takes the whole submerged look off in one gate — absorption AND the marched scatter — because half of it is not a look anyone would want: Beer-Lambert with no in-scatter is a black lake, and in-scatter with no absorption is fog over a perfectly clear one. Off, swimming looks like standing in air. (camera submerged) Beer–Lambert absorption over the in-water path + a RAY-MARCHED single-scatter with caustic-modulated sun shafts (replaces the old flat blue tint)
         let irrU = textureLoad(irrF, vec2<i32>(gid.xy), 0);
         var wD = select(1e4, irrU.b, irrU.b > 0.0);                  // in-water path toward the hit (sky pixels: the whole march range)
         if (fgT > 0.0) { wD = fgT; }                                 // …but if a CREATURE / drop / held item is what this pixel actually shows, the water only reaches THAT far. Using the scene depth here absorbed a fish 14 vox away as if it were the 160-vox background (exp(-0.062*160) ≈ 5e-5) — fish, drops and the held tool all vanished the moment you swam under. This is what "I can't see the fish underwater" was.
@@ -1068,7 +1084,8 @@
           let p = u.camPos + rd * tw2;
           let dBelow = max(WLF + 1.0 - p.y, 0.0);
           let lightT = exp(-sigU * dBelow * sunInv);                 // the sun's own path through the water down to this point
-          let caW = 0.45 + 1.75 * caust(floor(vec2<f32>(p.x + u.winO.x + dBelow * u.sunDir.x * sunInv, p.z + u.winO.y + dBelow * u.sunDir.z * sunInv)) + vec2<f32>(0.5));   // project along the sun to the surface → dancing god-ray shafts
+          var caW = 1.0;                                              // …and with caustics off the shafts flatten to an even column rather than vanishing: 1.0 is what 0.45 + 1.75*caust averages to, so the water keeps its brightness and only loses the dancing
+          if (LG2(2u)) { caW = 0.45 + 1.75 * caust(floor(vec2<f32>(p.x + u.winO.x + dBelow * u.sunDir.x * sunInv, p.z + u.winO.y + dBelow * u.sunDir.z * sunInv)) + vec2<f32>(0.5)); }   // project along the sun to the surface → dancing god-ray shafts
           accW += vec3<f32>(0.020, 0.078, 0.098) * (0.22 + 0.78 * sunUp * caW) * lightT * dayScale() * exp(-sigU * tw2) * (sigU * dtW * 2.6);
           tw2 += dtW;
         }

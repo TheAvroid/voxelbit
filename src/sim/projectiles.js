@@ -1,5 +1,5 @@
   // @module — arrows and spears: launch, arc, impact, and the pick-up flood
-  // @exports ARROW_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, lastShotInfo, launchThrown, shootArrow, throwSpear, twigLeafCells
+  // @exports ARROW_ROLL, SPEAR_ROLL, ARROW_UP, ARROW_V, FLOWER_CAP, FRUIT_CAP, FRUIT_IDS, FRUIT_MIN, PASSTHRU, PICK_APPLE, PICK_BOULDER, PICK_CONE, PICK_FLOWER, PICK_ORANGE, PICK_ROCK, PICK_STICK, PICK_TWIG, SPEAR_WIND_MS, TWIG_CAP, TWIG_MAX, WORM_PASS, arrowChop, floodRemove, floodScan, fruitAt, lastShotInfo, launchThrown, shootArrow, throwSpear, twigLeafCells
   // ── LOOSE THE ARROW ── the same arc integration the thrown rock uses, at the hurl profile. The BOW is
   // not consumed: an arrow is ammunition, and it lands as an ordinary drop that can be picked up again.
   const ARROW_V = HURL_V * 2, ARROW_UP = HURL_UP * 2;  // TWICE the hurl profile (user) — a bow beats an arm, and the flatter arc is the point of it
@@ -19,6 +19,13 @@
   // added to prevent, and `take` is min(bite, whatever is there), so a thin top yields a smaller chunk rather
   // than nothing.
   const ARROW_ROLL = 9.0;                              // rad/s the arrow rolls about its own shaft in flight — ~1.4 turns a second: fast enough to read as a spin, slow enough not to smear into a blur at 24 fps.
+  // ── AND THE SPEAR SPINS TOO (user 2026-08-30: "when the user throws the spear, have it spin through the
+  // air, much like the arrow") ── its own rate rather than ARROW_ROLL, because the two do not fly alike:
+  // a spear leaves the hand at SPEAR_V, which is 0.62 of an arrow's, so at the arrow's 9.0 it would turn
+  // noticeably more times per METRE travelled than the arrow does and read as a tumbling stick rather
+  // than a thrown spear. 6.0 rad/s is ~0.95 turns a second, and against the slower flight it lands close
+  // to the arrow's turns-per-distance, which is what "much like the arrow" looks like in the air.
+  const SPEAR_ROLL = 6.0;
   const ARROW_CHOP_RAD = 3, ARROW_CHOP_BITE = 10, ARROW_CHOP_MIN = 4, ARROW_ABSORB_R = 16;
   // ── AN ARROW TAKES A CHUNK, IT DOES NOT DEMOLISH THE TREE (user 2026-08-05) ── one shaft used to strip a
   // pine. MEASURED at a seeded tree, per shot: at the TRUNK 48 wood voxels gone for a bite of 10, at a BRANCH
@@ -265,7 +272,8 @@
       for (let y9 = y0; y9 >= 0; y9--) if (arrowBlocked(ix9, y9, iz9)) { py = y9 + 1; break; }
     }
     shotRec = { kind, sx: +sx.toFixed(2), sy: +sy2.toFixed(2), sz: +sz.toFixed(2), buried: !muzzleFree,
-                 x: +px.toFixed(2), y: +py.toFixed(2), z: +pz.toFixed(2), T: +T.toFixed(3), landed };   // __vb.lastShot() — where the arc actually ended, and whether it ended by HITTING something or by running out of march. `landed:false` on an ordinary shot means the world collision is broken again.
+                 x: +px.toFixed(2), y: +py.toFixed(2), z: +pz.toFixed(2), T: +T.toFixed(3), landed,
+                 fx: +fx.toFixed(2), fy: +fy.toFixed(2), fz: +fz.toFixed(2), hitSlot, hitBird };   // …and the LAST FREE sample, which is where a world hit comes to rest: when a shaft ends up buried, this is the number that says whether the march or the resting rule is at fault   // __vb.lastShot() — where the arc actually ended, and whether it ended by HITTING something or by running out of march. `landed:false` on an ordinary shot means the world collision is broken again.
     // ── NEVER CARVE AN ANIMAL ── a mammal is STAMPED into the world grid, so its voxels read as ordinary
     // terrain: a shaft that came down on a porcupine's quills (outside the body sphere tested above, but
     // still its voxels) knocked a CHUNK out of it. Anything landing inside a live creature's stamp is a

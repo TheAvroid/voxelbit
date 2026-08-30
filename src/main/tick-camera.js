@@ -12,8 +12,16 @@
     // Everything up to 2 s is inside the scatter, and by 8 s the step itself is the noise (p99 25 -> 43.5).
     // A step small enough to be invisible does nothing; a step large enough to matter is a visible skip, and
     // worst at dawn and dusk where the shadows are longest and the lever arm is greatest. Do not re-propose.
-    { const ntd = window.__TFREEZE ? tday : (tday + dt * cycleSpeed / 1200) % 1;   // __TFREEZE pins the sun for perf A/Bs (the cycle moved measured trace cost 45% over one 7-minute run). No
-      if (ntd < tday) moonDay++;                       // a day rolled over → the moon advances one phase step (8-day cycle)
+    // ── AND IT RUNS BACKWARDS AT A NEGATIVE cycleSpeed (user 2026-08-30) ── the wrap is `raw - floor(raw)`
+    // and not `% 1`, because JS's % keeps the sign of its LEFT operand: rewinding past midnight would hand
+    // every consumer of tday a negative clock — the sun angle, NIGHT_SUNEL in tick-life, the settings slider,
+    // the HUD's am/pm — rather than wrapping it round to the evening before. floor() names the rollover for
+    // free as well, +1 forward and -1 backward, so the moon unwinds its phase on the way back through
+    // midnight instead of only ever counting up (the shader already reads that counter modulo 8 with the
+    // +8 fold, so a moonDay that has gone negative is safe there and always was).
+    { const raw = tday + dt * cycleSpeed / 1200, wrap = Math.floor(raw);
+      const ntd = window.__TFREEZE ? tday : raw - wrap;   // __TFREEZE pins the sun for perf A/Bs (the cycle moved measured trace cost 45% over one 7-minute run). No
+      if (!window.__TFREEZE && wrap) moonDay += wrap;   // a day rolled over → the moon takes one step of its 8-day cycle, the way the clock is running
       tday = ntd; }
     if (!window.__TFREEZE) { cloudT += dt * cycleSpeed; }   // …and the deck's wind on the same clock and the same freeze, so it drifts in step with the sun at any cycle speed
     // ── RAIN SKY ── the one scalar the whole overcast hangs off, computed here beside the day/night cycle
@@ -112,7 +120,7 @@
       for (let z2 = 0; z2 < B2Z; z2++) { const b0 = w0 + ((z2 * B2X * B2Y) >> 5);
         if (bricks2[b0] | bricks2[b0 + 1]) { ceilB2 = y2 + 1; break; } }
     }
-    set3(24, prevCam.up, cycleSpeed > 4 ? 10 : 64); set3(28, prevCam.fwd, (sunFx ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0) + (ceilB2 << 8));
+    set3(24, prevCam.up, Math.abs(cycleSpeed) > 4 ? 10 : 64); set3(28, prevCam.fwd, (sunFx ? 1 : 0) + (uw ? 2 : 0) + (moonMode ? 8 : 0) + (snowVis && !ED.on ? 16 : 0) + (ceilB2 << 8));   // abs on the speed: a REWIND sweeps the sun exactly as fast as a fast-forward does, so it needs the same shortened accumulator history
     // ── RETIRE AND UPLOAD THE RIPPLE RINGS ── done HERE, once, rather than in the two places that push them:
     // ripAdd is called from a splash and from anything swimming, and neither knows when a ring has finished.
     // Compacting on the way out is what lets ripHF in the shader stop at the first empty slot instead of

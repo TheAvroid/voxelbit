@@ -467,6 +467,21 @@
     const ds = desertM(x, z) > BIO_SANDLINE;
     if (home === BIO_SAND) return ds;
     if (ds) return false;
+    // ── AND THE ARCTIC IS NOT HOME TO ANYTHING (user 2026-08-30: "keep the life contained to the pine/birch
+    // forest ... the life also seems to disappear when venturing too far in the arctic") ── one line, and it is
+    // the containment half of the biome's no-life rule finally living in the same place as every other one.
+    // THE POINT IS THAT IT TURNS THEM ROUND RATHER THAN DELETING THEM. Retiring a creature at the ice edge is
+    // what "disappear" was: the `far` recycle in main/tick-creatures.js fires on arcticM > 0.5 and it was the
+    // ONLY thing the arctic had, so an animal that wandered in was removed mid-stride in plain view. The
+    // walker turn-away already steers on THIS function (it looks BIO_LOOK ahead and banks away from anywhere
+    // that is not home), so putting the arctic here means an animal now turns back at the treeline and the
+    // recycle becomes a backstop it should never reach — half a band further in, and only for something that
+    // got past the steering.
+    // Gated at ARCT_BARE, which is where the biome stops growing anything AND where main/tick-creatures.js
+    // refuses to place. Admit and containment therefore name the same line, which is the one invariant this
+    // function's own notes insist on — when the bee's two halves disagreed, every bee in the band was
+    // re-placed every frame.
+    if (arcticM(x, z) > ARCT_BARE) return false;
     if (home === BIO_CHERRY) return chNear(x) && cherryM(x, z) > BIO_CHLINE;   // the pink bird, and nothing else, lives INSIDE the band
     // ── AND EVERY OTHER HOME IS NOW EXCLUDED FROM IT (user 2026-08-18: "remove all the life except for the
     // worm") ── this line is the whole of that requirement and it is the easiest thing in the biome to miss.

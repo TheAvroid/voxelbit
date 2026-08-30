@@ -307,6 +307,13 @@
         if (gx7 * gx7 + gz7 * gz7 > R7 * R7) continue;
         const sx8 = P.x + gx7, sz8 = P.z + gz7;
         if (sx8 <= rect.xlo + 4 || sx8 >= rect.xhi - 4 || sz8 <= rect.zlo + 4 || sz8 >= rect.zhi - 4) continue;
+        // ── AND NO ARCTIC WATER IS EVER CENSUSED (user 2026-08-30: ducks glitching on the water, tiny
+        // dragonflies raising wakes on it) ── the arctic is a no-life biome and this was the hole in that:
+        // ducks, dragonflies and fish all home on THIS census, and it had no biome test at all, so every
+        // arctic lake was a valid target. It went unnoticed while arctic lakes were rare and became
+        // obvious the moment their number was doubled. Gated at ARCT_BARE, the same line everything else
+        // in the biome refuses at, so water life stops exactly where the planting does.
+        if (arcticM(sx8, sz8) > ARCT_BARE) continue;
         if (!bfWater(sx8, sz8) || !bfSky(sx8, WL + 2, sz8)) continue;   // REAL open-sky water of any width — this is the dragonfly's pool (rivers included)
         { const cw = waterSpots.find((c) => (c.x - sx8) * (c.x - sx8) + (c.z - sz8) * (c.z - sz8) < 90 * 90);   // loose 90-vox merge: a river stays several spots along its length rather than collapsing to one
           if (cw) cw.n++; else waterSpots.push({ x: sx8, z: sz8, n: 1 }); }

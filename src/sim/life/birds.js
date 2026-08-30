@@ -58,6 +58,10 @@
         // turn-away in the flight section below. BIRD_GRAD is how far apart the mask is sampled to find which way
         // out is; BIRD_POP is how far a bird must be before the backstop recycle is allowed to fire at all.
         const BIRD_OUT = 0.85, BIRD_IN = 0.35, BIRD_TURN = 0.45, BIRD_GRAD = 64, BIRD_POP2 = 420 * 420;
+        // ── THE ONE KEEP-OUT MASK THE FLOCK READS ── sand and ice are the same question to a songbird ("is
+        // this sky mine"), so the wall, the recycle and the spawn ring all ask it through here and cannot
+        // drift apart. The three were already computing max(desertM, arcticM) inline in two of the three.
+        const birdKeep = (x, z) => Math.max(desertM(x, z), arcticM(x, z));
         // ── AND THE BLOSSOM IS THE OTHER PLACE THE FLOCK DOES NOT GO (user 2026-08-18: "dont spawn any
         // songbirds") ── this file gated on desertM ALONE, so the sky over every forest was the same sky; a
         // cherry forest is "not desert" and the cardinals, blue birds and robins would have kept crossing it.
@@ -109,7 +113,7 @@
         // thresholds: BIRD_OUT recycles one that has drifted deep over the ice, BIRD_IN refuses the spawn.
         // These are SONGBIRDS — cardinals, blue birds and robins over a glacier is the same category of wrong as
         // them over open sand, and the flock is not part of LIFE_WANT so the population damping never saw it.
-        if (b.init && ((Math.max(desertM(b.x, b.z), arcticM(b.x, b.z)) > BIRD_OUT && dpv2 > BIRD_POP2) || (pinkMe ? !chOut(b.x, b.z) : chOut(b.x, b.z)))) b.init = false;
+        if (b.init && ((birdKeep(b.x, b.z) > BIRD_OUT && dpv2 > BIRD_POP2) || (pinkMe ? !chOut(b.x, b.z) : chOut(b.x, b.z)))) b.init = false;
         if (!b.init) {                                // placed out past the fog, never in plain view, and staggered so they never read as a formation
           // ── AND IF THERE IS NOWHERE LEGAL, DO NOT PLACE IT AT ALL ── stand deep in the desert and every
           // candidate on the ring is sand, so the flock has to be able to answer "none". Eight tries around
@@ -150,7 +154,7 @@
             const rq = bIn + Math.random() * Math.max(1, bOut - bIn);
             const bx9 = P.x + Math.cos(aq) * rq, bz9 = P.z + Math.sin(aq) * rq;
             const inCh = chOut(bx9, bz9);
-            if (bi < flockUp && Math.max(desertM(bx9, bz9), arcticM(bx9, bz9)) <= BIRD_IN && (!inCh || BIRD_PINK >= 0)) { ringA.push(aq); ringR.push(rq); ringC.push(inCh); }
+            if (bi < flockUp && birdKeep(bx9, bz9) <= BIRD_IN && (!inCh || BIRD_PINK >= 0)) { ringA.push(aq); ringR.push(rq); ringC.push(inCh); }
           }
           if (ringA.length) { const p9 = (Math.random() * ringA.length) | 0;
             a0 = ringA[p9]; r0 = ringR[p9]; pinkHere = ringC[p9]; ok = true; }
@@ -225,9 +229,16 @@
         // no notion of which side the bird is on. Deep enough in and the mask saturates flat, which reads as a zero
         // gradient; that case just turns round. Four mask samples, and only for a bird actually in the band.
         // The world edge above still wins: flying out of the generated rect is the worse failure of the two.
-        } else if (desertM(b.x, b.z) > BIRD_TURN) {
-          const gx = desertM(b.x + BIRD_GRAD, b.z) - desertM(b.x - BIRD_GRAD, b.z);
-          const gz = desertM(b.x, b.z + BIRD_GRAD) - desertM(b.x, b.z - BIRD_GRAD);
+        // ── AND THE ICE IS THE SAME WALL (user 2026-08-30: "dont let flying birds enter the arctic. have them
+        // turn around back into their respective enviornment") ── the arctic joins the sand in THIS block rather
+        // than getting one of its own: birdKeep is max(sand, ice), so one threshold, one gradient and one steer
+        // serve both, and a bird between the two banks away from whichever is nearer. The recycle above keeps the
+        // same pair and stays one threshold further out — the backstop for a bird that crosses anyway, not the
+        // mechanism. Before this the arctic had ONLY that recycle, which is exactly why songbirds vanished over
+        // the ice instead of turning back from it.
+        } else if (birdKeep(b.x, b.z) > BIRD_TURN) {
+          const gx = birdKeep(b.x + BIRD_GRAD, b.z) - birdKeep(b.x - BIRD_GRAD, b.z);
+          const gz = birdKeep(b.x, b.z + BIRD_GRAD) - birdKeep(b.x, b.z - BIRD_GRAD);
           const want = (gx || gz) ? Math.atan2(-gx, -gz) + b.turnBias : b.th + Math.PI;
           let dth = want - b.th;
           while (dth > Math.PI) dth -= 2 * Math.PI; while (dth < -Math.PI) dth += 2 * Math.PI;

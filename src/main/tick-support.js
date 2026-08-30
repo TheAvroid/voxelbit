@@ -173,11 +173,21 @@
         // THE TWO SHAFTS ARE MODELLED ALONG DIFFERENT AXES: the arrow runs tip→fletching along its y, so -y
         // leads; the spear runs butt→stone-head along its z, so +z leads. Flying one by the other's rule is
         // what had the spear leave the hand nose-down (user).
-        if (dr.kind === 'spear') { const Z = F, X = cross(U, Z); return [X, cross(Z, X), Z]; }
+        // ── THE SPEAR SPINS ABOUT ITS OWN SHAFT, EXACTLY AS THE ARROW DOES BELOW ── and about Z, not Y,
+        // because that is the axis its art runs along. Z stays pinned to F, the velocity vector, so the
+        // stone head still leads and flight, aim and the stick-on-impact test are all untouched — only the
+        // two axes across the shaft turn. The STUCK branch calls this with dr.T, so a planted spear freezes
+        // at the roll it struck with rather than snapping flat, which is the arrow's behaviour too.
+        if (dr.kind === 'spear') {
+          const Z = F, X0 = cross(U, Z), Y0 = cross(Z, X0);
+          const rs = t * SPEAR_ROLL, cs = Math.cos(rs), ss = Math.sin(rs);
+          return [[X0[0] * cs + Y0[0] * ss, X0[1] * cs + Y0[1] * ss, X0[2] * cs + Y0[2] * ss],
+                  [Y0[0] * cs - X0[0] * ss, Y0[1] * cs - X0[1] * ss, Y0[2] * cs - X0[2] * ss], Z];
+        }
         const Y = [-F[0], -F[1], -F[2]], X0 = cross(U, Y), Z0 = cross(X0, Y);   // Z = X×Y keeps the frame right-handed (Y = Z×X)
         // ── ARROW ROLL (user 2026-08-06: “tumble through the air… spin like a plane”) ── a fletched arrow spins about its OWN shaft, which is Y here.
         // Rolling X and Z together about Y leaves the nose exactly on the velocity vector, so flight, aim and the stick-on-impact test are all unchanged;
-        // only the roll about the shaft moves. The SPEAR is excluded above and keeps its thrown attitude. The STUCK branch calls this with dr.T, so a
+        // only the roll about the shaft moves. The SPEAR does the same thing above, about ITS axis. The STUCK branch calls this with dr.T, so a
         // buried arrow freezes at the roll it struck with rather than snapping upright.
         const rl = t * ARROW_ROLL, cr9 = Math.cos(rl), sr9 = Math.sin(rl);
         return [[X0[0] * cr9 + Z0[0] * sr9, X0[1] * cr9 + Z0[1] * sr9, X0[2] * cr9 + Z0[2] * sr9], Y,

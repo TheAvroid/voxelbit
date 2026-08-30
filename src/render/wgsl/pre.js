@@ -185,6 +185,9 @@
     // 9 body grain (felled chunks), 10 terrain grain, 11 creature grain, 12 sun penumbra,
     // 13 caustics, 14 bounce light, 15 sky/ambient, 16 held-item shading, 17 volumetric light,
     // 18 water reflect, 19 water refract, 20 water foam, 21 water ice, 22 water glisten, 23 water waves.
+    // …and lgt.x is FULL at 24 bits, so the rest of the water group lives in lgt.z, read with LG2():
+    // 0 rock sheen, 1 grass cross-face fallback, 2 water caustics, 3 underwater look, 4 splash/wake ripples,
+    // 5 shoreline surf. Every one of bits 2-5 is a row in the [Y] water panel (see WBIT2 in world/window.js).
     fn rand(s : ptr<function, u32>) -> f32 {
       *s = *s * 747796405u + 2891336453u;
       let w = ((*s >> ((*s >> 28u) + 4u)) ^ *s) * 277803737u;
