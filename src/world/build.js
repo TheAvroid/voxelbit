@@ -112,15 +112,74 @@
   // guards below follow automatically because they test SPBANDM rather than naming a mask.
   const SPBAND = ARCTC, SPBANDM = arcticM;
   SPOX = SPBAND;
-  { let g = 0; while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX += 16; }
-  // The guard above walks EAST in 16s, and from the band centre it has a half-strip to cross before it would
-  // leave it. So it is given a band test as well: if the walk carried the player out, walk back WEST from the
-  // centre instead. Without it a spawn over a lake on the east half could deposit the player in the pine
-  // strip, which is the exact bug the "walking SPWX cannot work" note is about.
-  if (SPBANDM(SPWX + SPOX, SPWZ) <= 0) {
-    SPOX = SPBAND;
-    let g = 0;
-    while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX -= 16;
+  // ── AND ON TOP OF A GLACIER, IN THE MIDDLE OF THE ICE (user 2026-08-30: "spawn the player in the middle
+  // of the arctic. ontop of a mountain") ── the eastward walk this replaces could deliver NEITHER, and one fact
+  // explains both failures: in the arctic H is the SEABED. The band is open sea (ARCT_SEA, world/window.js)
+  // and the glaciers are stamped above the waterline by world/terrain.js without ever raising hmap, so
+  // `H > WL + 6` is false for every column of the deep arctic. The walk ran its full 400 steps east without
+  // once finding "dry ground", the band test then sent it back west from the centre, and it stopped at the
+  // first thing that IS above the water ─ the snowy rim, most of a kilometre outside the ice. The player was
+  // spawning at the arctic's EDGE, at sea level, every boot.
+  // So the search asks the function that knows where the surface of an arctic column actually is. arctIceTop
+  // is what the penguins are sited with: it re-derives the cap/sheet stamp from the same three fields instead
+  // of reading W, so it can be asked about a column before the world is built, and it returns the y a body
+  // STANDS at (or -1 for open water).
+  // ── IT MOVES SPWZ, AND THAT IS NOT A NEW OFFSET IN DISGUISE ── a summit search that scans x alone is one
+  // line drawn across ice whose floes are ~380 voxels wide (ARCT_FLOEF): it crosses six of them and can miss
+  // every crest. Scanning latitude as well is safe here for one specific reason ─ every band centre is
+  // written `+ desWob(z) - desWob(SPWZ)`, so the wobble cancels at z == SPWZ and the arctic's centre is
+  // SPWX + ARCTC at ANY latitude. Each ROW is therefore scored with SPWZ already set to that row's own z; the
+  // field is only self-consistent that way, and a grid swept under one fixed SPWZ would be ranking columns
+  // against a mask they will not be generated with. Nothing is generated at this point in the boot ─
+  // gen-pool.js captures the anchor later and it rides with every job ─ so SPWZ is still free to move.
+  // ── AND IT NEEDS NO BIOME GATE ── point SPBAND at BIRCHC or OAKC and arctIceTop answers -1 for every column
+  // it is asked about (its first line is the arctic snow mask), the sweep finds nothing, SPWZ is put back and
+  // the walk below runs exactly as it always did. The summit search is self-limiting for the same reason the
+  // two guards are: it tests the FIELD rather than naming the band.
+  const ARCT_SPR = 1152;                               // how far either side of the band centre a summit may be found. arcticM is a flat 1 out to ARCTH - ARCTB/2 = 1260, so every candidate is honestly the MIDDLE of the ice and not its rim
+  const ARCT_SPSTEP = 96;                              // coarse grid pitch, both axes…
+  const ARCT_SPFINE = 8;                               // …and the pitch of the second pass, which re-searches one coarse cell around the winner: a 96-voxel grid lands NEAR a crest rather than on it
+  const ARCT_SPMIN = 24;                               // voxels above the waterline before a column counts as a glacier at all ─ clear of ARCT_CAPMAX and the flat sheets, the same line PENG_MINTOP draws for the penguins
+  const ARCT_SPBENCH = 3, ARCT_SPTOL = 2;              // …and it has to be a BENCH: all EIGHT neighbours this far out — the player's own footprint, since HW is 2.6 — standing within this many voxels of it. Without the test the tallest column on a crevassed glacier is a serac and the player starts balanced on its point; with it loose (±4 at a tolerance of 6) the solver still had a 6-voxel wall under one edge of the box to resolve, which showed up as the spawn being lifted 1-3 voxels off the y the search chose, and once as a boot that ended on the seabed two hundred voxels below. Flat means flat: a neighbour is not allowed to stand ABOVE the summit either
+  {
+    const zc = SPWZ, xc = SPWX + SPBAND;
+    // ── AND IT IS CLAMPED THE WAY THE STAMP IS ── the cap loop in world/terrain.js writes up to
+    // `Math.min(WY - 1, WL + capH)` and arctIceTop does not, so on the 192- and 256-tall world tiers (core/gpu.js
+    // picks WY from the GPU's storage limit, and LIFT is 0 below 384) a tall berg's predicted crown is above a
+    // ceiling the ice never actually reaches. Un-clamped, the search would stand the player in the air over it.
+    const spTop = (x, z) => Math.min(WY - 1, arctIceTop(x, z));
+    const bench = (x, z, ty) => {
+      for (let bz = -ARCT_SPBENCH; bz <= ARCT_SPBENCH; bz += ARCT_SPBENCH) for (let bx = -ARCT_SPBENCH; bx <= ARCT_SPBENCH; bx += ARCT_SPBENCH)
+        if (bx || bz) { const t = spTop(x + bx, z + bz); if (t < 0 || Math.abs(t - ty) > ARCT_SPTOL) return false; }   // t < 0 is open water: an edge column, and the player's box would hang over it
+      return true;
+    };
+    const sweep = (cx, cz, r, step) => {
+      let best = null, bs = -Infinity;
+      for (let dz = -r; dz <= r; dz += step) {
+        SPWZ = cz + dz;                                // the row's own latitude IS the anchor while the row is scored ─ see the note above
+        for (let dx = -r; dx <= r; dx += step) {
+          const x = cx + dx, ty = spTop(x, SPWZ);
+          if (ty < WL + ARCT_SPMIN || nearCave(x, SPWZ)) continue;
+          const s = ty - (Math.abs(x - xc) + Math.abs(SPWZ - zc)) * 0.01;   // a mild pull back toward the middle, so a peak one voxel taller a kilometre away cannot win on a rounding error
+          if (s > bs && bench(x, SPWZ, ty)) { bs = s; best = { x, z: SPWZ, y: ty }; }
+        }
+      }
+      return best;
+    };
+    const coarse = sweep(xc, zc, ARCT_SPR, ARCT_SPSTEP);
+    const site = coarse && (sweep(coarse.x, coarse.z, ARCT_SPSTEP >> 1, ARCT_SPFINE) || coarse);
+    if (site) {
+      SPOX = site.x - SPWX; SPWZ = site.z; SPY = site.y;   // …and TELL sim/player.js the y, rather than leave it to work out: hmap is the seabed under the ice, and the obvious alternative — scan W down for the first solid voxel — lands on the PENGUIN worldgen stamped on the summit. See SPY in world/window.js
+      console.log('[vb] spawn ARCTIC summit', site.x - xc, site.z - zc, 'from the band centre ─ standing at y', site.y, '(' + (site.y - WL) + ' over the water)');
+    } else {                                           // no ice anywhere in the search stood high enough. Spawning is NEVER allowed to fail, so fall back to the walk this replaced and take dry land wherever it is
+      SPWZ = zc;
+      let g = 0; while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX += 16;
+      // That walk goes EAST in 16s and has a half-strip to cross before it would leave the band, so it gets a
+      // band test too: if it carried the player out, walk back WEST from the centre instead. Without it a spawn
+      // over water on the east half could deposit the player in the pine strip, which is the exact bug the
+      // "walking SPWX cannot work" note above is about.
+      if (SPBANDM(SPWX + SPOX, SPWZ) <= 0) { SPOX = SPBAND; g = 0; while ((H(SPWX + SPOX, SPWZ) <= WL + 6 || nearCave(SPWX + SPOX, SPWZ)) && g++ < 400) SPOX -= 16; }
+    }
   }
   winOX = Math.round((SPWX + SPOX) / 32) * 32 - HALF; winOZ = Math.round(SPWZ / 32) * 32 - HALF;   // 32-ALIGNED origin — the L2 occupancy wrap needs off % 32 == 0
 

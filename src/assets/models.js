@@ -221,7 +221,13 @@
   // ONE colMap ACROSS ALL THE MODELS, for the reason parseVoxModel's colMap note gives: the variants overlap
   // heavily — the same stem green, the same white — and parsing them independently would mint that green once
   // per model. Shared, the whole set costs what one model's palette costs plus what the others add.
-  const parseVoxVariants = (pv, share, noTol) => {
+  // maxN: mint colours for only the FIRST N models. A hand-authored .vox often carries an animation rig
+  // alongside the model you want - penguin.vox is two penguins and twelve keyframed body parts - and every
+  // model this walks MINTS PALETTE IDS. On a table at 256/256 that is not a waste, it is a corruption: addCol
+  // stops growing and starts SNAPPING to the nearest existing colour, so a part's shade quietly becomes some
+  // other decoration's id and the two share material flags from then on. Measured on penguin.vox: 16 colours
+  // substituted with all fourteen models parsed, 0 with the leading few.
+  const parseVoxVariants = (pv, share, noTol, maxN) => {
     const pdv = new DataView(pv.buffer, pv.byteOffset, pv.byteLength);
     const sizes = [], raws = []; const ppal = new Uint8Array(1024);
     const walk = (off, end) => { while (off < end) {
@@ -236,7 +242,8 @@
     walk(8, pv.length);
     if (!raws.length) throw new Error('no XYZI chunk');
     const colMap = new Map(), out = [];
-    for (let m = 0; m < raws.length; m++) {
+    const nM = maxN ? Math.min(maxN, raws.length) : raws.length;
+    for (let m = 0; m < nM; m++) {
       const raw = raws[m], sz = sizes[m] || sizes[0], cmap = new Map(), mvox = [];
       for (let i = 0; i < raw.length; i += 4) {
         const ci = raw[i + 3];

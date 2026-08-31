@@ -9,8 +9,6 @@
     let cx0 = 1e9, cx1 = -1e9, cy0 = 1e9, cy1 = -1e9, cz0 = 1e9, cz1 = -1e9;   // bbox of the cells this batch EMPTIED — see phWakeNear
     for (let q = 0; q < n; q++) {
       const ii = cells[q];
-      if (patchN >= PATCHMAX) patchFlush();            // stage full mid-frame → dispatch what we have and keep going (bounded memory, unchanged result)
-      patchIdx[patchN++] = ii >> 2;                    // duplicates are fine: patchEncode reads the FINAL word value from W32
       const gx = ii % WX, gy = ((ii / WX) | 0) % WY, gz = (ii / (WX * WY)) | 0;
       const b9 = (gx >> 3) + (gy >> 3) * BX + (gz >> 3) * BX * BY;
       bset.add(b9);
@@ -57,6 +55,7 @@
         if (W32[rw] | W32[rw + 1]) { occ = 1; break scan; }
       }
       if (occ) bricks[b >> 5] |= 1 << (b & 31); else bricks[b >> 5] &= ~(1 << (b & 31));
+      if (poolTouchHook) poolTouchHook(b);              // the paged pool is a derived cache of W — this brick's 512 bytes changed
       wbricks[b >> 5] &= ~(1 << (b & 31));             // any runtime edit (snow landing, worm stamp, editor…) CLEARS the water-only bit — conservative and lossless: the brick just falls back to fine-stepping
       if (!full) dirtyBW.add(b >> 5);
     }

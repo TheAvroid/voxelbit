@@ -2,8 +2,8 @@
     @group(0) @binding(1) var gAlbedo : texture_2d<f32>;
     @group(0) @binding(2) var irrF : texture_2d<f32>;
     @group(0) @binding(3) var colorOut : texture_storage_2d<rgba8unorm, write>;
-    @group(0) @binding(16) var<storage, read> world : array<u32>;   // world + occupancy for the shared DDA — creature pixels trace a REAL sun ray
-    @group(0) @binding(17) var<storage, read> bricks : array<u32>;  // so moving things sit in tree shade exactly like the static terrain
+    @group(0) @binding(16) var<storage, read> pool : array<u32>;    // ── PAGED BRICK POOL ── the same two buffers TRACE reads, under the same names, because DDAW is shared source: creature pixels trace a REAL sun ray
+    @group(0) @binding(17) var<storage, read> bdesc : array<u32>;   // per-brick: 0 = all air, else slot+1. A nonzero descriptor IS the occupancy bit, so this replaces the bitmask here exactly as it does in TRACE
     @group(0) @binding(18) var<storage, read> bricks2 : array<u32>;
     @group(0) @binding(19) var<storage, read> pal : array<vec4<f32>>;   // palette — the traced water reflection/refraction shades its hits here
     @group(0) @binding(20) var<storage, read> wbricks : array<u32>;     // water-only brick bits — skipW rays stride these
@@ -209,7 +209,20 @@
     fn worldFog(col : vec3<f32>, rd : vec3<f32>, dist : f32) -> vec3<f32> {
       if (!LG(5u)) { return col; }                                 // LIGHT DEBUG bit 5: distance fog
       var fogA = 1.0 - exp(-dist * 0.0006);
-      fogA = max(fogA, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, dist * length(vec2<f32>(rd.x, rd.z))));
+      // ── THE VIEW-DISTANCE FADE IS A FRACTION OF THE VIEW, NOT A FIXED 66 VOXELS ── it used to run
+      // rdist-72 .. rdist-6, and that is the "large slice in the terrain" (user 2026-08-31, debug clip 52):
+      // a straight edge at the far plane with fully-lit terrain on one side and flat sky colour on the other.
+      // The distance fog above is exp(-d * 0.0006), which is only 68% opaque at a 1900-voxel view and 48% at
+      // 1083 - so at the moment the geometry stops, between a third and a HALF of the terrain's contrast is
+      // still showing, and this smoothstep then removed all of it inside 66 voxels. At that range 66 voxels is
+      // a couple of pixels, which is why it reads as a cut rather than a haze.
+      // It is worst exactly where it was filmed: rdist is not fixed at 2000, it tracks the ring's real fill
+      // (see UF[64] in main/tick-camera.js), so right after a teleport or when the streamer is behind it drops
+      // to ~1080 - and the SHORTER the view, the LESS the exponential has saturated and the bigger the step
+      // this has to hide. A fixed band cannot win that; a fraction of rdist can, because it widens precisely
+      // when it has more to hide. At 0.62 the fade spans ~400 voxels at a 1083 view and ~700 at 1900, and the
+      // nearest 62% of the view keeps exactly the fog it had.
+      fogA = max(fogA, smoothstep(u.rdist.x * 0.62, u.rdist.x - 6.0, dist * length(vec2<f32>(rd.x, rd.z))));
       return mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogA);
     }
     // ══ PROCEDURAL-CLOUDS CACHE (jeantimex/procedural-clouds, MIT) ══ the 3D density volume the CLOUDGEN
@@ -516,7 +529,7 @@
         if (fres < 0.80 && LG(19u)) {                                // bit 19: WATER REFRACTION — off leaves refrC at the pure in-scatter colour, no bed, no Beer-Lambert
           var refr = refract(rd, nW, 0.752);
           if (dot(refr, refr) < 1e-5) { refr = rd; }                 // grazing/TIR fallback: continue straight
-          let bh = traceAll(pw2 + rd * 0.02, refr, 34.0, true);
+          let bh = traceAll(pw2 + rd * 0.02, refr, 48.0, true);   // 34 -> 48 when the arctic bed went to WL-42 (see ARCT_SEA): the old cap was argued from the RED channel, and blue still returns 17% at 42, so a shorter ray was throwing away floor that is plainly visible
           if (bh.t >= 0.0) {
             let bpos = pw2 + rd * 0.02 + refr * bh.t;
             let bvc = vec3<i32>(floor(bpos - bh.n * 0.01)) + vec3<i32>(i32(u.winO.x), 0, i32(u.winO.y));
@@ -822,7 +835,7 @@
                   }
                   if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} && dYv.w > 0.0 && cell.r > 0.6 && cell.g > 0.4 && cell.b < 0.1) { col = cell.rgb * (0.4 + dYv.w); }   // FIREFLY abdomen — yellow voxel EMISSIVE (FFLY-range-gated so a blinking duckling's yellow doesn't glow)
                   var fogB = 1.0 - exp(-bestT * 0.0006);
-                  fogB = max(fogB, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
+                  fogB = max(fogB, smoothstep(u.rdist.x * 0.62, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
                   if (!LG(5u)) { fogB = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
                   col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogB);
                   if (${FFLY_ITEM0 > 0 ? 1 : 0} == 1 && dit >= ${FFLY_ITEM0 || 9999} && dit < ${(FFLY_ITEM0 || 9999) + (FFLY_NFRAMES || 1)} &&
@@ -905,7 +918,7 @@
                 // (user 2026-08-07). Same curve, same horizon roll-off, measured against the creature's OWN
                 // distance. The held tool is centimetres away, so its fog term is zero and it is unaffected.
                 var fogC = 1.0 - exp(-bestT * 0.0006);
-                fogC = max(fogC, smoothstep(u.rdist.x - 72.0, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
+                fogC = max(fogC, smoothstep(u.rdist.x * 0.62, u.rdist.x - 6.0, bestT * length(vec2<f32>(rd.x, rd.z))));
                 if (!LG(5u)) { fogC = 0.0; }                               // LIGHT DEBUG bit 5: distance fog
                 col = mix(col, skyBaseR(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), fogC);
                 // (No submerged tint here: the UNDERWATER block at the end of main now absorbs this pixel over fgT — the

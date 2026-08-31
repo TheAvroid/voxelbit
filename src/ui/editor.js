@@ -1167,6 +1167,7 @@
     ED.y = Math.min(WY - 24, Math.max((bestG + 8) & ~7, (WL + 8) & ~7));
     unstampAllWorms();                                 // clear live worms out of W before the editor freezes the world (else edExit's rebuildBricks would resurrect them)
     bricks.fill(0); bricks2.fill(0); wbricks.fill(0);  // SEPARATE LEVEL: empty occupancy = the whole world vanishes from the tracer (W is untouched — exit rebuilds)
+    poolBuild();                                       // …and the tracer reads the PAGED POOL, not this bitmask, so the world only actually vanishes once the descriptors agree. Without this the editor opened on top of the forest it thought it had cleared.
     const cells = [];
     for (let z = ED.z0; z < ED.z0 + ED.pd; z++) for (let x = ED.x0; x < ED.x0 + ED.pw; x++) edSet(x, ED.y, z, edPlaneId(x, z), cells);
     // ── CARVE THE STAGE VOLUME ── every solid voxel from the plane to the world ceiling, gone for as long as
@@ -1276,7 +1277,7 @@
     for (const [ii, pv] of ED.prev) if (W[ii] !== pv) { W[ii] = pv; cells.push(ii); }
     ED.prev.clear(); ED.frames = []; ED.frames2 = []; ED.sel = -1; ED.sel2 = 0; ED.seq1 = ''; ED.seq2 = ''; ED.mix = []; ED.mixT0 = 0; ED.fcells = []; ED.fcells2 = []; ED.ring = []; ED.box = null; ED.box2 = null; ED.bun = null; ED.arm = null; bfly.init = false;   // both lanes + creature AI cleared → no stale editor hitbox lingers after exit
     gpuPatch(cells, true, cells.length, false);        // track=false: this RESTORES the world the editor borrowed — it is a rollback, not an edit
-    rebuildBricks(0, WX, 0, WZ); uploadBricks();       // bring the whole world back from the void (occupancy was zeroed on enter)
+    rebuildBricks(0, WX, 0, WZ); uploadBricks(); poolBuild();   // bring the whole world back from the void (occupancy was zeroed on enter)   // …and the PAGED POOL with it: it is a derived cache of W, and a whole-window occupancy swing is exactly the case its per-frame dirty budget cannot chase (it would resolve over ~500 frames)
     const r = ED.ret; if (r) { P.x = r.x; P.y = r.y; P.z = r.z; P.yaw = r.yaw; P.pitch = r.pitch; P.fly = !!r.fly; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }
     edBtnEl.classList.remove('on'); edRowEl.classList.add('hidden'); edHudEl.classList.add('hidden');
     // ── AND THE [Y] SIZE PANEL, WHICH IS NOT PART OF THE EDITOR HUD ────────────────────────

@@ -46,9 +46,17 @@
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
-    const fns = { ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctSnow, arctH, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
+    // ── THE OPACITY TABLE THE FAR RING SEALS AGAINST ── the same one render/buffers.js derives, serialised so
+    // the airless scan can run on the worker instead of the main thread (see the ab bitmask below). Reading
+    // foliaTab HERE is safe and not by luck: every write to it lives in assets/palette.js and
+    // assets/material-tabs.js, manifest lines 17 and 20, and this file is line 26. If a decoration is ever
+    // given foliage flags LATER than this point, this copy goes stale and far bricks holding that foliage seal
+    // into solid stone — so a new markFolia() belongs in material-tabs.js with the rest, not wherever it is
+    // convenient.
+    const OPAQTAB = []; for (let i = 0; i < 256; i++) OPAQTAB.push(i && i !== WATER_T && i !== WATER_B && !foliaTab[i] ? 1 : 0);
+    const consts = { CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_DOMEC, ARCT_DOMEK, ARCT_GBLEND, ARCT_STAND, ARCT_KEELK, ARCT_STEP, ARCT_JAG, ARCT_JAGF, ARCT_JAG2, ARCT_JAGF2, ARCT_CREVF1, ARCT_CREVF2, ARCT_CREVT, ARCT_CREVW, ARCT_CREVD, ARCT_CREVK, ARCT_ICEF, ARCT_ICE, ARCT_CAPMIN, ARCT_CAPMAX, ARCT_CAPHF, ARCT_CAPIRR, ARCT_CAPIRRF, ARCT_CAPIRR2, ARCT_CAPIRRF2, PENGCELL, PENG_RATE, PENG_INNER, PENG_MIN, PENG_MAX, PENG_SPACE, PENG_JIT, PENG_MINTOP, PENG_CHICK, PENG_CHICKR, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHWHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M, PINEY, PINEHILL, PINE_LAKE, PINEBEACH, PINERISE, BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };
+    const tables = { ASNOW, PENGUINV, PENGBABYV, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER, OPAQTAB };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
+    const fns = { ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSnow, arctGB, arctSeaH, arctH, arctDome, arctRidge, arctCliff, arctIceTop, arctBare, oakWob, oakM, pineH, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, penguinAt, stampPenguin, stampPenguinOne, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
@@ -57,6 +65,7 @@
       'const gwrap = (v, n) => v - (n === WX ? OX : OZ);\n' +
       'const rivCache = new Map(), caveCache = new Map();\n' +
       'const rivNear = new Map();\n' +   // riversNear's store — every top-level the registered fns close over must be declared here too
+      'let bpZ = null, bpD = 0, bpO = 0, bpC = 0, bwZ = null, bwD = 0, bwO = 0, bwC = 0, bwM = 0, bwW = 0;\n' +   // …and the border rivers' two 1-entry memos (see BIOME BORDER RIVERS in world/window.js), for the same reason
       'const takeRows = () => null;\n';
     // (ROCK26D — the Colorado-sandstone twin of ROCK26 — is no longer derived here: the desert rocks went
     //  back to stock grey, so nothing in the worker references it. bow.js still builds it and R26DMAP is
@@ -93,10 +102,34 @@
       '  W = new Uint8Array(WX * WY * WZ); hmap = new Int16Array(WX * WZ);\n' +
       '  touched = new Uint8Array(((WX >> 3) + 1) * ((WZ >> 3) + 2));\n' +
       '  genRegion(d.x0, d.x1, d.z0, d.z1, true);\n' +
-      '  const orph = sweepOrphans(d.x0, d.x1, d.z0, d.z1);\n' +
+      // ══ THE SWEEP RUNS FOR THE RING TOO, BECAUSE IT MUTATES THE SLAB ══ it was skipped here on the
+      // argument that nothing in the far field is supported, walked on or edited, so the sweep is pure cost out
+      // there. That reads the function as if it only REPORTED orphans. It does not: it writes `W[...] = 0`,
+      // deleting the floating stone a gorge carve leaves behind. Skipping it made the far ring a THIRD
+      // generation path that disagrees with the other two about what the world contains — the same coordinates
+      // come out WITH floating rock when the ring pages them and WITHOUT it when the near window does, so the
+      // rubble pops out of existence as you walk up to a gorge. Nothing catches it either: __vb.gtest diffs the
+      // pool against the INLINE sweep over the near window, and neither of those is the ring.
+      // The cost argument survives intact, because the expense was never the sweep — it was its GATE passing
+      // ~90% of slabs (see the boot-time note). The gate is exact now and only a slab with a gorge in it pays.
+      // What the ring genuinely does not need is the RESULT: `orph` carries seeds for the support system, and
+      // that stays near-window only.
+      '  const orph0 = sweepOrphans(d.x0, d.x1, d.z0, d.z1);\n' +
+      '  const orph = d.ring ? null : orph0;\n' +
       '  const nbx = sx >> 3, nbz = sz >> 3, nby = WY >> 3;\n' +               // ── SLAB BRICK BITS ── the 8³ occupancy scan runs HERE, in parallel, instead of on the main thread after the blit
       '  const bb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +
       '  const wb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +       // parallel WATER-ONLY bits (skipW brick striding)
+      // ── AND THE AIRLESS BITS ── "is every voxel in this brick opaque" is what decides whether a brick gets
+      // its own 512-byte page or joins the shared sealed one, and it was being answered on the main thread
+      // after the slab arrived: 3.85 ms per far tile, measured, against 0.38 ms for the upload it was lumped in
+      // with — and for the NEAR window, once per streamed band for every brick in it, inside the phase whose
+      // worst frame was 22.65 ms. It is a pure function of the slab, the slab is right here, and this thread is
+      // one of twelve.
+      // The near window still OWNS its airFree — an edit invalidates a brick and the main thread re-decides it
+      // (see poolTouch). This only seeds it at the one moment the answer is known for free and is otherwise
+      // recomputed for thousands of bricks at once.
+      '  const ab = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +
+      '  const ub = new Uint8Array(nbx * nby * nbz);\n' +
       '  const W32b = new Uint32Array(W.buffer);\n' +
       '  for (let bz = 0; bz < nbz; bz++) for (let bx = 0; bx < nbx; bx++) {\n' +
       '    let maxH = 0, cav = 0;\n' +
@@ -110,6 +143,23 @@
       '        if (W32b[rw] | W32b[rw + 1]) { occ = 1; break scan; }\n' +
       '      }\n' +
       '      if (occ) { const b = bx + by * nbx + bz * nbx * nby; bb[b >> 5] |= 1 << (b & 31);\n' +
+      '        { let ok = 1;\n' +                                            // …airless AND fully opaque — the packed zero-byte test rejects any row containing air in two loads, exactly as isAirFree does
+      '          ascan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {\n' +
+      '            const r0 = y * WX + z * WX * WY + bx * 8, rw = r0 >> 2;\n' +
+      '            const a2 = W32b[rw], c2 = W32b[rw + 1];\n' +
+      '            if (((a2 - 0x01010101) & ~a2 & 0x80808080) || ((c2 - 0x01010101) & ~c2 & 0x80808080)) { ok = 0; break ascan; }\n' +
+      '            for (let q = 0; q < 8; q++) if (!OPAQTAB[W[r0 + q]]) { ok = 0; break ascan; }\n' +
+      '          }\n' +
+      '          if (ok) ab[b >> 5] |= 1 << (b & 31);\n' +
+      '        }\n' +
+      '        { let uni = 1; const w0 = W32b[((by * 8) * WX + (bz * 8) * WX * WY + bx * 8) >> 2] | 0;\n' +
+      '          if ((((w0 & 255) * 0x01010101) | 0) !== w0 || !(w0 & 255)) uni = 0;\n' +
+      '          else uscan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {\n' +
+      '            const rw = (y * WX + z * WX * WY + bx * 8) >> 2;\n' +
+      '            if ((W32b[rw] | 0) !== w0 || (W32b[rw + 1] | 0) !== w0) { uni = 0; break uscan; }\n' +
+      '          }\n' +
+      '          if (uni) ub[b] = w0 & 255;\n' +
+      '        }\n' +
       '        if (by * 8 <= WL) { let wonly = 1;\n' +
       '          wscan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {\n' +
       '            const r0 = y * WX + z * WX * WY + bx * 8;\n' +
@@ -127,8 +177,13 @@
       // message below: world/stream.js reads or uploads a band only once every job reports done, and the rect
       // only expands past it after that. Both of blitSlab's paths are mirrored, narrow-run f64 stores included
       // — a band on an x side is only 8-32 wide, so the narrow path is the common one.
+      // ── …UNLESS THE CALLER ASKED FOR THE SLAB ITSELF (d.ring) ── the FAR RING has no dense CPU array to
+      // blit into: it is outside the toroidal window entirely, and blitting it would overwrite near terrain
+      // at the wrapped address. So a ring job takes the transfer path instead and hands its private slab back
+      // for render/buffers.js to page straight into the brick pool. One flag, and the generator itself is
+      // untouched — the ring is the SAME world, generated the same way, going somewhere else.
       '  var blitted = 0;\n' +
-      '  if (GW) {\n' +
+      '  if (GW && !d.ring) {\n' +
       '    const gw2 = (v, n) => ((v % n) + n) % n;\n' +
       '    const segs = []; const S64 = new Float64Array(W.buffer);\n' +
       '    for (let a = d.x0; a < d.x1;) { const g = gw2(a, GWX), ln = Math.min(d.x1 - a, GWX - g); segs.push([a - d.x0, g, ln]); a += ln; }\n' +
@@ -143,8 +198,8 @@
       '    }\n' +
       '    blitted = 1;\n' +
       '  }\n' +
-      '  if (blitted) postMessage({ id: d.id, stride: WX, blitted: 1, hmap, bb, wb, nbx, nby, nbz, orph }, [hmap.buffer, bb.buffer, wb.buffer]);\n' +
-      '  else postMessage({ id: d.id, stride: WX, W, hmap, bb, wb, nbx, nby, nbz, orph }, [W.buffer, hmap.buffer, bb.buffer, wb.buffer]);\n' +
+      '  if (blitted) postMessage({ id: d.id, stride: WX, blitted: 1, hmap, bb, wb, ab, ub, nbx, nby, nbz, orph }, [hmap.buffer, bb.buffer, wb.buffer, ab.buffer, ub.buffer]);\n' +
+      '  else postMessage({ id: d.id, stride: WX, W, hmap, bb, wb, ab, ub, nbx, nby, nbz, orph }, [W.buffer, hmap.buffer, bb.buffer, wb.buffer, ab.buffer, ub.buffer]);\n' +
       '  W = hmap = touched = null;\n' +
       '};';
     if (location.search.includes('wsrc')) window.__vbWSRC = wsrc2;   // ?wsrc — hand the assembled worker source out so a syntax error in it can be located instead of guessed at
@@ -169,7 +224,7 @@
       if (w.busyId) continue;
       const j = poolQueue.shift(); if (!j) return;
       w.busyId = j.id;
-      w.postMessage({ id: j.id, x0: j.x0, x1: j.x1, z0: j.z0, z1: j.z1 });
+      w.postMessage({ id: j.id, x0: j.x0, x1: j.x1, z0: j.z0, z1: j.z1, ring: j.ring ? 1 : 0 });
     }
   }
   function poolChunks(x0, x1, z0, z1) {                // fan one region across the pool — 8-aligned splits along the LONGER axis. Splitting the long axis keeps chunks
@@ -183,6 +238,17 @@
     poolPump();
     return jobs;
   }
+  // ── ONE RING TILE, ONE JOB ── deliberately NOT poolRegion/poolChunks: those exist to fan a streaming band
+  // across every worker and to cache the dispatch so a prefetch can be re-asked for. A ring tile is a square
+  // that one worker generates whole, it is asked for exactly once, and splitting it would only multiply the
+  // slab count. Returns the job so the caller can poll j.done and take j.msg.
+  function poolRingJob(x0, x1, z0, z1) {
+    if (!poolOk) return null;
+    const j = { id: ++poolSeq, x0, x1, z0, z1, ring: 1, done: false, msg: null };
+    jobById.set(j.id, j); poolQueue.push(j); poolPump();
+    return j;
+  }
+  function poolRingDrop(j) { if (!j) return; jobById.delete(j.id); const qi = poolQueue.indexOf(j); if (qi >= 0) poolQueue.splice(qi, 1); j.msg = null; }
   function poolFree(key) {
     const R = regionJobs.get(key); if (!R) return;
     regionJobs.delete(key);
@@ -228,12 +294,13 @@
       for (let x = j.x0; x < j.x1; x += 8) touched[(gwrap(x, WX) >> 3) + tr] = 1;
     }
     if (m.bb) {                                        // ── WORKER BRICK MERGE ── the slab's 8³ occupancy was scanned IN the worker; copy its bits into the global tables (chunks are 8-aligned, so every brick belongs wholly to this slab)
-      const nbx = m.nbx, nby = m.nby, nbz = m.nbz, bb = m.bb, wb = m.wb;
+      const nbx = m.nbx, nby = m.nby, nbz = m.nbz, bb = m.bb, wb = m.wb, ab = m.ab;
       for (let bz = 0; bz < nbz; bz++) { const gbz = gwrap(j.z0 + bz * 8, WZ) >> 3;
         for (let bx = 0; bx < nbx; bx++) { const gbx = gwrap(j.x0 + bx * 8, WX) >> 3;
           for (let by = 0; by < nby; by++) {
             const s = bx + by * nbx + bz * nbx * nby, g = gbx + by * BX + gbz * BX * BY;
             if ((bb[s >> 5] >>> (s & 31)) & 1) bricks[g >> 5] |= 1 << (g & 31); else bricks[g >> 5] &= ~(1 << (g & 31));
+            if (poolTouchHook) poolTouchHook(g, ab ? ((ab[s >> 5] >>> (s & 31)) & 1) : -1);   // …with the worker's airless verdict, so the pool does not re-derive it for every brick of every band
             if (wb && ((wb[s >> 5] >>> (s & 31)) & 1)) wbricks[g >> 5] |= 1 << (g & 31); else wbricks[g >> 5] &= ~(1 << (g & 31));
           } } }
     }

@@ -378,6 +378,62 @@
     CACTI = cbytes.map((b, i) => b ? parseVoxModel(b, true, true) : null).filter(Boolean);
     if (CACTI.length !== CACN) console.warn('[vb] cacti: only ' + CACTI.length + ' of ' + CACN + ' .vox loaded');
   } catch (e) { console.warn('[vb] cactus .vox missing — cacti skipped', e); CACTI = []; }
+  // ── THE PENGUIN (user 2026-08-30: "look into the life folder and search for penguin.vox. theres a file in
+  // there called base. just use that file and scatter the penguins across the arctic") ──
+  // assets/life/penguin.vox is a MULTI-MODEL file: thirteen models, one 7x10x11 body and twelve small parts,
+  // wired to a scene graph that keyframes the parts for an animation. The node named 'base' points at model
+  // 0, the whole bird - so "just use that file" and parseVoxModel agree exactly, because parseVoxModel reads
+  // only the FIRST SIZE/XYZI pair by design (the `!sx` / `!pvox` guards). Nothing has to be extracted and no
+  // splitter has to run: the twelve part models are simply never read.
+  // A DECORATION, NOT A CREATURE. It is stamped into the world at generation time like a cactus or a boulder
+  // rather than driven through a creature slot, which is what the single static pose supports and what keeps
+  // ~a thousand birds across the biome free at runtime. Every ray already walks every rigid body, so a
+  // trace-injected population this size would be the most expensive thing in the arctic.
+  // noTol, like the cacti and for the same reason: markSolid runs over these ids, and a TOLERANCE share could
+  // hand the penguin an id some other decoration owns and make that decoration solid too. A penguin is black
+  // and white and the arctic is full of near-white, so this file is exactly where a tolerance share would bite.
+  // ── AND THE CHICK COMES OUT OF THE SAME FILE (user 2026-08-30: "load the baby penguin named baby within the
+  // penguin file. load the babies alongside the parent penguin") ── penguin.vox now holds a 'baby' (5x7x8) as
+  // well as the 'base' adult (7x10x11), plus the twelve small body parts its animation keyframes.
+  // WHICH IS WHY THIS NO LONGER USES parseVoxModel. That reads the FIRST SIZE/XYZI pair, and adding the baby
+  // moved it to index 0 — so the one-line loader that was correct yesterday would today have silently made
+  // every adult a chick, with nothing to show for it but slightly smaller penguins. Nothing would have failed.
+  // AND THE TWO ARE PICKED BY SHAPE, NOT BY INDEX, for the same reason: the file is hand-authored and gets
+  // re-exported, and a re-export is free to reorder its models. The two penguins are far and away the biggest
+  // things in it (the parts are 18 voxels or fewer), so taking the two largest by voxel count finds them
+  // whatever order they are in, and the TALLER of those two is the adult. That cannot be got wrong by an
+  // export, only by authoring a chick taller than its parent.
+  // ONE colMap across all the variants, which is what parseVoxVariants does: the two birds are the same bird
+  // at two sizes, so sharing their palette ids is both correct and free.
+  // PENG_OWN0 is the palette length BEFORE the penguin is parsed, and every id at or above it is one the
+  // penguin MINTED. Below it, the id belongs to something else and the penguin is only borrowing.
+  // THIS MATTERS BECAUSE THE TABLE IS FULL. addCol stops growing at 256 and starts SNAPPING to the nearest
+  // existing colour, so ~16 of the penguin's shades resolve to ids that a boulder, a flower or a tree trunk
+  // already owns. The bird still LOOKS right — a nearest-colour match on near-black is near-black — but
+  // markSolid over those ids would hand every one of those decorations the penguin's material flags, which is
+  // exactly the failure that made half the arctic floor walk-through when the flowers took the snow's ids.
+  // So the flags are applied only to ids the penguin actually owns. The cost is that a few of its voxels are
+  // not solid, which nothing can see; the alternative is silently re-typing other people's materials.
+  let PENG_OWN0 = 1e9;
+  let PENGUINV = null, PENGBABYV = null;
+  try {
+    if (location.search.includes('nopeng')) throw new Error('?nopeng');   // A/B switch: a null model disables the scatter, the solid marking and the stamp in one go
+    const pb = await fetchBytes('assets/life/penguin.vox');
+    PENG_OWN0 = palette.length;
+    if (pb) {
+      // FOUR, not all fourteen: the file's other ten models are the animation rig's body parts, and minting
+      // their colours on a full palette substitutes them into other decorations' ids. Four leaves room for a
+      // re-export to shuffle the leading models without losing either bird, and the two are still picked by
+      // SHAPE below rather than by index.
+      const pv = parseVoxVariants(pb, true, true, 4);
+      const two = pv.map((m) => m).sort((a, b) => b.vox.length - a.vox.length).slice(0, 2);
+      if (two.length === 2) { const adult = two[0].sz >= two[1].sz ? 0 : 1;
+        PENGUINV = two[adult]; PENGBABYV = two[1 - adult]; }
+      else if (two.length === 1) PENGUINV = two[0];
+    }
+    if (PENGUINV) console.log('[vb] penguin.vox adult', PENGUINV.sx, PENGUINV.sy, PENGUINV.sz, PENGUINV.vox.length, 'vox; baby',
+      PENGBABYV ? PENGBABYV.sx + 'x' + PENGBABYV.sy + 'x' + PENGBABYV.sz + ' ' + PENGBABYV.vox.length : 'none');
+  } catch (e) { console.warn('[vb] penguin.vox missing — penguins skipped', e); PENGUINV = null; PENGBABYV = null; }
   // ── DESERT SHRUBS ── six HAND-AUTHORED scrub plants, 0.6-1.3 m, at the CACTI'S OWN 10 cm voxel, which is
   // what makes a 1.3 m bush sit believably beside a 4.4 m saguaro. THE .vox FILES ARE THE ASSET — fetched
   // here directly, exactly the way the cacti above are. Named 1.vox…6.vox (user 2026-08-16: "I made
@@ -1273,9 +1329,43 @@
     FERN2V = f2.ferns.map((r) => ({ sx: r.sx, sy: r.sy, sz: r.sz, vox: r.vox.map((p) => (p & 0xffffff) | (f2ids[p >>> 24] << 24)) }));
   } catch (e) { console.warn('[vb] fern2.json missing — fern decor skipped', e); }
   let MUSHV = null;                                                                          // RARE pine-forest mushroom cluster (mushroom.json from mushrooms.glb, palette-reduced to ≤24 shades — the editor's full-colour mushrooms.vox would blow the shared 256 palette)
+  // MUSH_OWN0 is the palette length BEFORE the mushroom is parsed: every id at or above it is one the mushroom
+  // MINTED, and every id below it belongs to somebody else. Same watermark, and the same reason, as PENG_OWN0
+  // above — but the mushroom is where it actually bit. This loader runs LAST and the table is full when it does,
+  // so 16 of its 24 shades were resolved by addCol's ceiling into palNearest, which matches on colour alone and
+  // knows nothing about materials. MEASURED: shade 11 (204,204,156) landed on id 36, which is SAND[2], and
+  // shade 13 (180,180,108) on id 40, which is DSAND[3] — and material-tabs.js then flagged every id the model
+  // touched as BOUNCY. That is the bug the user reported as "the sand by the rivers has a bounce effect": the
+  // trampoline is keyed by palette id, so handing the mushroom's id to sand hands sand the mushroom's behaviour.
+  // Rock (184/185) and two flower reds (157/174) went the same way.
+  //
+  // TWO CHANGES, AND THE FIRST IS WHAT MAKES THE SECOND FREE.
+  //   MINT IN VOXEL-COUNT ORDER. The shades used to be minted in file order, which spent all 8 available slots
+  //   on 7 reds and one cream while the model is 37% cream by voxel. Minting the most-used shades first spends
+  //   the same 8 slots on the shades that actually cover the mushroom.
+  //   THEN SNAP THE REST TO THE MUSHROOM'S OWN. A shade the ceiling turns away resolves to the nearest of the
+  //   ids this model minted, never to a global near-match, so no mushroom voxel can carry another material's
+  //   id. It costs nothing in fidelity — it GAINS: voxel-weighted mean colour error over the 24 shades measured
+  //   20.2/255 through palNearest and 11.5 through this, because a near-match confined to the model's own ramp
+  //   beats a closer one drawn from a table full of unrelated browns and greys.
+  // SELF-HEALING: give the palette headroom back and more shades mint, the snap set shrinks, and at 24 free
+  // slots this whole block is an identity map. Nothing here has to be undone to benefit from a freed id.
+  let MUSH_OWN0 = 1e9;
   try {
     const mj = await (await fetch('assets/decoration/mushroom.json')).json();
-    const mids = mj.pal.map((c) => addCol(c[0], c[1], c[2]));                                // its own quantized shades → global ids
+    MUSH_OWN0 = palette.length;
+    const use = new Array(mj.pal.length).fill(0);                                            // how much of the model each shade actually covers — the mint order, and the whole reason the error goes DOWN
+    for (const p of mj.vox) use[p >>> 24]++;
+    const raw = new Array(mj.pal.length);
+    for (const k of mj.pal.map((c, i) => i).sort((a, b) => use[b] - use[a])) { const c = mj.pal[k]; raw[k] = addCol(c[0], c[1], c[2]); }
+    const own = raw.filter((i) => i >= MUSH_OWN0);
+    const mids = mj.pal.map((c, k) => {                                                      // its own quantized shades → global ids, and every one of them is the model's own
+      if (raw[k] >= MUSH_OWN0 || !own.length) return raw[k];                                 // …unless it minted NOTHING at all: there is then no own ramp to snap to and the id stays borrowed, which is exactly the case the flag guards in assets/material-tabs.js exist to make safe
+      let bd = 1e9, best = raw[k];
+      for (const i of own) { const q = palette[i], e = (q[0] - c[0]) * (q[0] - c[0]) + (q[1] - c[1]) * (q[1] - c[1]) + (q[2] - c[2]) * (q[2] - c[2]); if (e < bd) { bd = e; best = i; } }
+      return best; });
+    if (own.length < mj.pal.length) console.warn('[vb] mushroom: palette full —', mj.pal.length - own.length, 'of', mj.pal.length,
+      'shades resolved onto the', own.length, 'this model owns (nothing is borrowed, so no other material inherits the trampoline)');
     MUSHV = { sx: mj.sx, sy: mj.sy, sz: mj.sz, vox: mj.vox.map((p) => (p & 0xffffff) | (mids[p >>> 24] << 24)) };
     // ── FILL THE SHELL ── see the block comment convention above: hollow until the axe cut into it (user).
     {
@@ -1409,5 +1499,5 @@
     LILYPAD_GIGV = { sx: gj.sx, sy: gj.sy, sz: gj.sz, vox: gj.vox.map((p) => (p & 0xffffff) | (gids[p >>> 24] << 24)) };
   } catch (e) { if (LGIG_ON) console.warn('[vb] lillypad_gigantic.json missing — giant pads skipped', e); }   // silent when the feature is simply OFF: the throw above is the switch, not a failure, and a warn every boot saying a present file is missing is worse than no warn at all
   const FERNIDS = [...new Set(FERN2V.flatMap((m) => m.vox.map((p) => p >>> 24)))];          // soft-decor id list for the pick-passthru + snow-bury sets
-  if (MUSHV) for (const q of MUSHV.vox) decorTab[q >>> 24] = 1;                             // ── CHOPPABLE DECOR ── mushrooms…
+  if (MUSHV) for (const q of MUSHV.vox) { const id = q >>> 24; if (id >= MUSH_OWN0) decorTab[id] = 1; }   // ── CHOPPABLE DECOR ── mushrooms…   // …and ONLY on ids the mushroom minted, for the reason MUSH_OWN0 is declared: a borrowed id would make sand or a boulder choppable decor. The loader now snaps every shade into the model's own ramp, so this rejects nothing today — it is the guard that keeps it that way if the palette tightens again.
   for (const i of FERNIDS) decorTab[i] = 1;                                                 // …and ferns (user): any tool takes chunks out of both

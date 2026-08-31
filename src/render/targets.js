@@ -55,10 +55,10 @@
     bgVis = device.createBindGroup({ layout: pVis.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: visBuf } }] });
     bgTrace = pTraceV.map(pv => [0, 1].map(par => device.createBindGroup({ layout: pv.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: worldBuf } },
-      { binding: 2, resource: { buffer: brickBuf } }, { binding: 3, resource: { buffer: palBuf } },
-      { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: brick2Buf } },
-      { binding: 7, resource: { buffer: wbrickBuf } }, { binding: 9, resource: { buffer: visBuf } },
+      { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: poolBuf } },
+      { binding: 2, resource: { buffer: bdescBuf } }, { binding: 3, resource: { buffer: palBuf } },
+      { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: gb2Buf } },
+      { binding: 7, resource: { buffer: gwbBuf } }, { binding: 9, resource: { buffer: visBuf } },
       { binding: 8, resource: v(par ? slotB : slotA) }, { binding: 13, resource: { buffer: itemMapBuf } },
       { binding: 23, resource: { buffer: bodyBuf } }] })));
     bgTemporal = [0, 1].map(par => device.createBindGroup({ layout: pTemporal.getBindGroupLayout(0), entries: [
@@ -74,9 +74,9 @@
       { binding: 2, resource: v(irrF) }, { binding: 3, resource: v(colorCur) },
       { binding: 13, resource: { buffer: itemMapBuf } },
       { binding: 14, resource: moonTex.createView() }, { binding: 15, resource: linSamp },
-      { binding: 16, resource: { buffer: worldBuf } }, { binding: 17, resource: { buffer: brickBuf } },
-      { binding: 18, resource: { buffer: brick2Buf } }, { binding: 19, resource: { buffer: palBuf } },
-      { binding: 20, resource: { buffer: wbrickBuf } },
+      { binding: 16, resource: { buffer: poolBuf } }, { binding: 17, resource: { buffer: bdescBuf } },
+      { binding: 18, resource: { buffer: gb2Buf } }, { binding: 19, resource: { buffer: palBuf } },
+      { binding: 20, resource: { buffer: gwbBuf } },
       { binding: 21, resource: v(par ? slotB : slotA) }, { binding: 22, resource: { buffer: visBuf } },
       { binding: 23, resource: { buffer: bodyBuf } },
       { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp }] }));   // the cloud density volume and its repeat sampler — world-space, so they are created once in vis.js and merely re-bound here when the screen targets rebuild

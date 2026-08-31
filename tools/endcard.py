@@ -16,7 +16,13 @@ onto that clock -- see the __tick block. (Chrome's own virtual-time policy is th
 was tried first: Page.captureScreenshot deadlocks against it after ~50 frames.)
 
   python tools/endcard.py            # writes docs/end.mp4
+  python tools/endcard.py --alpha    # same card on a TRANSPARENT background -> docs/end-alpha.{webm,mov}
   python tools/endcard.py --keep     # leave game/_endcard.html behind to look at
+  python tools/endcard.py --alpha --fade 0.75 --matte    # fade-in, plus the blur matte
+
+--alpha is not an .mp4 and cannot be one: H.264 has no alpha channel to write into, so the transparent
+card ships as VP9-in-WebM (web/browser) and ProRes 4444 (NLEs). Everything else about it -- the zoom,
+the drum, the geometry solve -- is the same code path, so the two cards stay the same object.
 """
 import base64, io, os, re, shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -24,6 +30,20 @@ import cdp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 W, H, FPS, FRAMES, PORT = 3840, 2160, 24, 192, 8123
+ALPHA = '--alpha' in sys.argv    # transparent background; only the wordmark and its drop shadow are ink
+
+
+def argval(flag, default):
+    """--flag VALUE, or `default` when the flag is bare or absent."""
+    if flag not in sys.argv: return default
+    i = sys.argv.index(flag)
+    if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith('--'): return float(sys.argv[i + 1])
+    return default
+
+
+FADE  = argval('--fade', 0.75) if '--fade' in sys.argv else 0.0   # seconds the title takes to fade up
+MATTE = '--matte' in sys.argv    # also write the track matte that drives a real background blur
+MATTE_W, MATTE_H = 480, 270      # the matte is soft by definition -- see build_matte()
 
 # -- MEASURED off the shipped v1.2 card (docs/end.mp4 @ c5ba170) so the new one is the same object --
 ZOOM_TO   = 1.3004      # wordmark ink 899 -> 1169 px, LINEAR in t
@@ -34,7 +54,7 @@ TARGET_CY = 1081.0
 PAGE = r"""<!doctype html><meta charset=utf-8><title>end</title>
 <style>
 @font-face { font-family: 'px3'; src: url('3x3-pixel.otf') format('opentype'); font-display: block; }
-html, body { margin: 0; padding: 0; background: #000; width: 100%; height: 100%; overflow: hidden; }
+html, body { margin: 0; padding: 0; background: __BG__; width: 100%; height: 100%; overflow: hidden; }
 body { display: flex; align-items: center; justify-content: center; }
 #lock { display: flex; align-items: center; justify-content: center; }
 </style>
@@ -129,7 +149,8 @@ def build_page():
     page = (PAGE.replace('__RULES__', rules).replace('__VERROLL__', ver_roll)
                 .replace('__VERSET__', ver_set).replace('__VER_TO__', ver_to)
                 .replace('__LOAD_MS__', load_ms).replace('__ZOOM_TO__', str(ZOOM_TO))
-                .replace('__DUR__', '%.4f' % ((FRAMES - 1) * 1000.0 / FPS)))
+                .replace('__DUR__', '%.4f' % ((FRAMES - 1) * 1000.0 / FPS))
+                .replace('__BG__', 'transparent' if ALPHA else '#000'))
     io.open(os.path.join(ROOT, 'game/_endcard.html'), 'w', encoding='utf-8').write(page)
     return ver_to
 
@@ -156,7 +177,11 @@ def ink(png):
     0.87x too small. The wordmark is crimson, lime and gold; the badge is grey. That never blurs.
     """
     from PIL import Image
-    im = Image.open(io.BytesIO(png)).convert('RGB'); px = im.load()
+    im = Image.open(io.BytesIO(png))
+    # --alpha frames arrive RGBA. Flatten onto black BEFORE measuring, so the scale and centre this
+    # solves are bit-identical to the opaque card's -- that sameness is the whole point of one tool.
+    im = Image.alpha_composite(Image.new('RGBA', im.size, (0, 0, 0, 255)), im.convert('RGBA'))
+    im = im.convert('RGB'); px = im.load()
     def sat(x, y):
         r, g, b = px[x, y]; mx = max(r, g, b)
         return mx > 60 and (mx - min(r, g, b)) / mx > 0.30
@@ -164,6 +189,36 @@ def ink(png):
     ys = [y for y in range(im.height) if any(sat(x, y) for x in range(0, im.width, 2))]
     if not xs or not ys: return None
     return (min(xs), max(xs), min(ys), max(ys))
+
+
+def build_matte(out):
+    """A soft blob hugging the wordmark -- the region a background blur should cover.
+
+    This file is the ONLY way to get a real blur out of this card. An alpha clip can add pixels but
+    can never blur what is underneath it: the blur is a function of the footage, which does not exist
+    inside the file. So the blur has to happen in the NLE, and this drives it -- drop it on a track
+    above a blur adjustment layer and set the layer to a luma matte.
+
+    Built at 480x270 and scaled up. The matte is soft by definition, so full res would cost 64x the
+    work for detail the softening pass throws away anyway. Derived from the card's own alpha, so it
+    grows with the zoom for free and can never drift out of sync with the wordmark.
+    """
+    from PIL import Image, ImageFilter
+    md = os.path.join(out, 'matte'); os.makedirs(md, exist_ok=True)
+    for i in range(FRAMES):
+        a = Image.open(os.path.join(out, 'f%04d.png' % i)).split()[3]
+        a = a.resize((MATTE_W, MATTE_H), Image.LANCZOS)
+        a = a.filter(ImageFilter.GaussianBlur(26))        # spread out from the glyphs
+        a = a.point(lambda v: min(255, int(v * 5.0)))     # gain: push the region outward, core to solid white
+        a = a.filter(ImageFilter.GaussianBlur(18))        # soften the edge so the blur has no visible border
+        a.save(os.path.join(md, 'm%04d.png' % i))
+    vf = 'scale=%d:%d:flags=bicubic' % (W, H)
+    if FADE: vf += ',fade=t=in:st=0:d=%.4f' % FADE   # black = no blur, so the blur ramps in WITH the title
+    dst = os.path.join(ROOT, 'docs/end-alpha-matte.mp4')
+    subprocess.run(['ffmpeg', '-y', '-v', 'error', '-framerate', str(FPS),
+                    '-i', os.path.join(md, 'm%04d.png'), '-vf', vf, '-c:v', 'libx264', '-preset', 'slow',
+                    '-crf', '14', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', dst], check=True)
+    print('wrote %s  %.1f MB  (luma matte -> blur region)' % (dst, os.path.getsize(dst) / 1e6))
 
 
 def main():
@@ -181,6 +236,13 @@ def main():
         ws.call('Page.enable'); ws.call('Runtime.enable')
         ws.call('Emulation.setDeviceMetricsOverride',
                 {'width': W, 'height': H, 'deviceScaleFactor': 1, 'mobile': False})
+        if ALPHA:
+            # The ONLY thing that makes captureScreenshot return a real alpha channel; a transparent
+            # page background alone still composites onto the window's opaque surface. It has to stay
+            # paired with fromSurface=True in shot() -- measured: fromSurface=False ignores the metrics
+            # override (returned 700x700 for a 400x400 request) and hands back opaque RGB.
+            ws.call('Emulation.setDefaultBackgroundColorOverride',
+                    {'color': {'r': 0, 'g': 0, 'b': 0, 'a': 0}})
         if cdp.ev(ws, 'window.__ready()') != 1:
             raise SystemExit('page never became ready')
 
@@ -209,11 +271,29 @@ def main():
             try: k.kill()
             except Exception: pass
 
-    dst = os.path.join(ROOT, 'docs/end.mp4')
-    subprocess.run(['ffmpeg', '-y', '-v', 'error', '-framerate', str(FPS),
-                    '-i', os.path.join(out, 'f%04d.png'), '-c:v', 'libx264', '-preset', 'slow',
-                    '-crf', '16', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', dst], check=True)
-    print('wrote %s  %d bytes  (counts up to v%s)' % (dst, os.path.getsize(dst), ver_to))
+    base = ['ffmpeg', '-y', '-v', 'error', '-framerate', str(FPS), '-i', os.path.join(out, 'f%04d.png')]
+    if FADE:
+        # alpha=1 fades the ALPHA channel, not to black -- on a transparent card fading to black would
+        # ramp up a black rectangle over the footage instead of bringing the title in.
+        base += ['-vf', 'fade=t=in:st=0:d=%.4f%s' % (FADE, ':alpha=1' if ALPHA else '')]
+    if ALPHA:
+        # -auto-alt-ref 0 is REQUIRED: libvpx-vp9 carries alpha as a second stream and alt-ref frames
+        # desync it, which shows up as the background flashing opaque on scattered frames.
+        jobs = [('docs/end-alpha.webm', ['-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-crf', '18',
+                                         '-b:v', '0', '-row-mt', '1', '-deadline', 'good',
+                                         '-cpu-used', '2', '-auto-alt-ref', '0']),
+                ('docs/end-alpha.mov', ['-c:v', 'prores_ks', '-profile:v', '4444',
+                                        '-pix_fmt', 'yuva444p10le', '-alpha_bits', '16',
+                                        '-vendor', 'apl0'])]
+    else:
+        jobs = [('docs/end.mp4', ['-c:v', 'libx264', '-preset', 'slow', '-crf', '16',
+                                  '-pix_fmt', 'yuv420p', '-movflags', '+faststart'])]
+    for rel, args in jobs:
+        dst = os.path.join(ROOT, rel)
+        subprocess.run(base + args + [dst], check=True)
+        print('wrote %s  %.1f MB  (counts up to v%s)'
+              % (dst, os.path.getsize(dst) / 1e6, ver_to))
+    if MATTE: build_matte(out)
     shutil.rmtree(out, ignore_errors=True)
     if '--keep' not in sys.argv:
         try: os.remove(os.path.join(ROOT, 'game/_endcard.html'))

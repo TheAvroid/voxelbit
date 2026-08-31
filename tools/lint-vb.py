@@ -572,6 +572,10 @@ WORKER_DECLS = {          # names the pool writes into its worker preamble by ha
     # per-worker state, so it is declared in each preamble rather than baked as a const. Its CAP is a
     # plain number and IS registered.
     'rivNear',
+    # The BIOME BORDER RIVERS' two 1-entry memos (bioPin's bp*, bioWobZ's bw* - see world/window.js).
+    # Same case as rivCache/rivNear: MUTABLE per-worker state, so they are declared in each preamble
+    # rather than baked as consts. Every value they hold is derived from registered fns.
+    'bpZ', 'bpD', 'bpO', 'bpC', 'bwZ', 'bwD', 'bwO', 'bwC', 'bwM', 'bwW',
     'WY', 'onmessage', 'postMessage', 'self',
     # OAKBLOSV is DERIVED in the preamble, not registered: it is OAKV with the leaf ids run through BLOSMAP,
     # and OAKV is 218,367 voxels, so registering the derived copy as a table would ship those voxels into every
@@ -586,6 +590,10 @@ ROW_DECLS = {             # ...and the ones the ROW worker writes into its own b
     # fragments below gen-worker.js, so both are still 0 when that preamble is assembled -
     # they ride along with every postMessage instead of being baked.
     'rivCache', 'rivNear', 'rivScope', 'SPWX', 'SPWZ', 'onmessage', 'postMessage', 'self',
+    # The BIOME BORDER RIVERS' two 1-entry memos (bioPin's bp*, bioWobZ's bw* - see world/window.js).
+    # Same case as rivCache/rivNear: MUTABLE per-worker state, so they are declared in each preamble
+    # rather than baked as consts. Every value they hold is derived from registered fns.
+    'bpZ', 'bpD', 'bpO', 'bpC', 'bwZ', 'bwD', 'bwO', 'bwC', 'bwM', 'bwW',
 }
 
 # (fragment, registry names in that fragment, hand-written preamble names, label)

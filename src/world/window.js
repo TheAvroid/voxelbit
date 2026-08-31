@@ -6,7 +6,28 @@
   const LIFT = WY >= 384 ? 128 : 0;                    // terrain floats this far above bedrock
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
-  const RD_FIXED = Math.min(1000, HALF - 24);           // ── VIEW DISTANCE ── pinned at 100 m (1000 vox), no slider (user). Clamped to the window: if the adapter caps the window at 768 this falls back to what fits rather than reaching past it.
+  // ══ TWO WINDOWS ══ the CPU's W is what physics, nav, support, chopping and every edit read, and it is
+  // DENSE: at 2048 it is already 1.5 GB of RAM, so it cannot grow — 4096 would be 6.4 GB and nothing binds
+  // that. The GPU's world is the PAGED BRICK POOL in render/buffers.js, which costs ~13% of dense for the
+  // same volume, so IT can. GMUL is how much wider the GPU window is; the CPU window sits concentrically
+  // inside it, so the near field is W-backed exactly as before and the ring beyond it is render-only — no
+  // collision, no life, no editing out there, and none of those want it.
+  // View distance is bounded by the GPU window (GHALF) rather than by HALF, which is the whole point.
+  // GMUL RIDES THE ADAPTER, IT IS NOT A CONSTANT. The pool is what makes a wider window affordable, but
+  // affordable is not free: the far ring is ~3x the near window's area, so GMUL 2 asks for roughly 700 MB of
+  // GPU storage against 190 MB at GMUL 1. This game ships to players' own machines (see the v1 plan), so a
+  // machine that cannot bind that gets GMUL 1 and the view it can afford, exactly the way WXZ already walks
+  // the 2048/1536/1280/1024/768 ladder. GPOOL_CAP is the budget the ladder is measured against.
+  const GMUL = GMUL_PICK;
+  const GWX = WX * GMUL, GWY = WY, GWZ = WZ * GMUL;
+  const GBX = GWX >> 3, GBY = GWY >> 3, GBZ = GWZ >> 3;
+  const GHALF = GWX >> 1;
+  const GPAD = (GWX - WX) >> 1;                        // voxels of far ring on each side; 32-aligned because WX is
+  const gwOX = () => winOX - GPAD;                     // the GPU window origin, derived so the two can never drift apart
+  const gwOZ = () => winOZ - GPAD;
+  let poolTouchHook = null;                            // set by render/buffers.js once the pool exists; terrain.js and gen-pool.js run before it and must call through this
+  let RD_DBG = 0;                                      // dev: __vb.setRD() view-distance override, 0 = off. Lives HERE, not in the video-editor module: a module exports a const SNAPSHOT, so a write inside one is invisible to every other fragment (lint check catches it).
+  const RD_FIXED = Math.min(1000 * GMUL, GHALF - 24);   // ── VIEW DISTANCE ── 100 m per GMUL step, no slider (user). Clamped to the GPU window: an adapter that caps the window small falls back to what fits rather than reaching past it.
   // ── THE WORLD GRID IS SHARED WITH THE GENERATION POOL WHEN THE PAGE IS CROSS-ORIGIN ISOLATED ──
   // world/gen-pool.js already runs the ENTIRE generator on workers; what it could not do is put the result
   // where it belongs. A worker's slab had to be TRANSFERRED back and the main thread memcpy'd it into this
@@ -130,6 +151,14 @@
   // spawned in the crowns. SPOX is registered in gen-pool.js's consts for the same reason SPWX is: the
   // gen workers evaluate those refusals themselves, and a const missing from that list is silently 0.
   let SPOX = 0;
+  // ── AND THE Y THE SPAWN SEARCH CHOSE, WHEN IT CHOSE ONE (2026-08-30) ── -1 means "nothing to say, use hmap",
+  // which is every biome but the arctic. There it is the standing y of the glacier summit the search settled
+  // on, and sim/player.js needs it told rather than derived: hmap is the seabed under the ice, and scanning W
+  // downward for the first solid voxel instead finds whatever is standing on the summit — worldgen stamps the
+  // penguin colonies before the player is placed, so that scan spawned the player on a penguin's head, nine
+  // voxels up, and dropped them the moment the bird walked out from under them. arctIceTop is exact here (it
+  // is what the colony siting itself is built on) and was verified against the stamped column on four boots.
+  let SPY = -1;
   let SPWX = 0, SPWZ = 0;                              // world spawn — placeholder; RANDOMISED on every refresh at boot (user 2026-07-20), see the spawn block below
   let SPYAW = 1.5708; const SPPITCH = -0.044;   // ── FACING EAST, AT THE BLOSSOM, WITH THE PINE TREELINE AT YOUR BACK (user 2026-08-21: "spin the player
   // around facing the cherry forest") ── heading is (sin(yaw), cos(yaw)), so +pi/2 looks down +x, and +x is where the pink is: the blossom's centre is
@@ -170,7 +199,26 @@
     const c01 = h3(ix, iy, iz + 1) * (1 - fx) + h3(ix + 1, iy, iz + 1) * fx, c11 = h3(ix, iy + 1, iz + 1) * (1 - fx) + h3(ix + 1, iy + 1, iz + 1) * fx;
     return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
   };
-  const HMAX = Math.min(105 + LIFT, WY - 122);         // terrain ceiling
+  const HMAX = Math.min(130 + LIFT, WY - 151);         // terrain ceiling — and the 151 is the PINE RESERVE, see below
+  // ── AND THE SECOND TERM IS THE TREE, WHICH IS WHAT MAKES THIS A BUDGET AND NOT A DIAL ── 122 was never an
+  // arbitrary reserve: it is pine5.vox's own 116 voxels plus a little, because a trunk planted at HMAX has to
+  // fit under WY or its crown is cut off by the window's ceiling. That coupling was invisible until the pine
+  // was rescaled and 15.3% of the biome started refusing trees to avoid flat-topped ones (measured with
+  // __vb.treeDensity: 377 trees in 2485 cells above 190, against a healthy 0.67 per cell).
+  // So terrain height and tree height spend ONE budget, WY, and the user asked for mountains WITH pine trees
+  // on them - which settles it, because a treeline is mountains WITHOUT them. At 1.25x the pine is 145 and
+  // the reserve is 151, so the ceiling lands at 233 and every column in the biome can carry a whole tree.
+  // 1.5x would have forced this to 204 and cost more relief than the taller tree bought.
+  // ── RAISED 105 -> 130 FOR THE PINE MOUNTAINS (user 2026-08-31: "make the terrain height elevation vary
+  // greatly. I want to almost see mountains with pine trees on it") ── and it cost nothing, because the
+  // OTHER term in this min was never binding: WY - 122 is 262 and the ceiling was pinned at 233 by the
+  // literal, so 29 voxels of vertical the window already paid for were simply unreachable. 130 takes 25 of
+  // them and leaves 4 spare. Nothing else moves: oak crests at 226 and arctH is built on oak's field, so
+  // every existing biome is under the OLD ceiling and cannot notice a higher one. Only pineH reaches up.
+  // Worth stating what this does NOT buy. The world is on a 10 cm grid, so 258 - WL is 106 voxels = 10.6 m
+  // of relief above water, and a pine tree is 11.6 m before the 1.5x. These are big HILLS. Real mountains
+  // need WY itself to grow, and WY is the brick grid's height: GBY 48 -> more, which multiplies the page
+  // pool and lands on the RAM budget this ships under. That is a deliberate call, not an oversight.
   const WL = 24 + LIFT;                                // GLOBAL water level — water is simply terrain below this line
   const baseH = (x, z) => {
     const b = 8 + LIFT + 88 * fbm(x * 0.008, z * 0.008);
@@ -292,9 +340,9 @@
   // period is the same column as 6940 EAST, i.e. exactly the fourth strip. The pine that remains on both
   // sides of the sand stays on purpose — it is what keeps the desert from ever bordering the oak, which
   // sim/nav.js's BIO_SANDLINE reasoning depends on.
-  const BIOP = 15120;   // SEVEN strips now (7 * W): the ARCTIC is a new 2160 strip between the spawn pine and the birch (user 2026-08-29), so the period grows by exactly one strip again and BIRCHOFF/DESOFF each slide one strip west to open the gap. SPAWN DOES NOT MOVE - it sits in the pine strip at -1080..+1080 and the arctic takes the slot birch used to hold, which is what keeps every spawn guarantee in this file true. Was SIX strips: the BIRCH band is a new 2160 strip between the spawn pine and the desert, so the period grows by exactly one strip (6 * W by construction, never a sum of measured pieces)                                  // one full cycle: SIX strips of 2160 — oak, cherry, oak, pine, desert, pine. 6 * W by construction, never a sum of measured pieces
+  const BIOP = 30240;   // DOUBLED 2026-08-30 (user: "double the bands of all the biomes") - one uniform scale of the whole layout, so every offset below doubles with it and the strip sequence is unchanged.   // SEVEN strips now (7 * W): the ARCTIC is a new 2160 strip between the spawn pine and the birch (user 2026-08-29), so the period grows by exactly one strip again and BIRCHOFF/DESOFF each slide one strip west to open the gap. SPAWN DOES NOT MOVE - it sits in the pine strip at -1080..+1080 and the arctic takes the slot birch used to hold, which is what keeps every spawn guarantee in this file true. Was SIX strips: the BIRCH band is a new 2160 strip between the spawn pine and the desert, so the period grows by exactly one strip (6 * W by construction, never a sum of measured pieces)                                  // one full cycle: SIX strips of 2160 — oak, cherry, oak, pine, desert, pine. 6 * W by construction, never a sum of measured pieces
   const pwrap = (d) => d - Math.floor(d / BIOP + 0.5) * BIOP;   // signed distance into [-BIOP/2, BIOP/2). floor(x + 0.5) rather than Math.round because the WGSL port must agree with this bit for bit, and WGSL's round() breaks ties to EVEN where Math.round breaks them upward
-  const DESOFF = 5400, DESB = 450, DESW = 1000;   // 1080 -> 3240 -> 5400: one strip further west each time a band is inserted inboard of it - first the BIRCH, then the ARCTIC (see BIOP)        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
+  const DESOFF = 10800, DESB = 900, DESW = 2000;   // 1080 -> 3240 -> 5400: one strip further west each time a band is inserted inboard of it - first the BIRCH, then the ARCTIC (see BIOP)        // how far the pine/desert line sits EAST of spawn; blend width; boundary meander (voxels, 10 cm each). 2300 -> 4460 = OAKOFF + W, so the pine strip between the oak line and the sand is one full 2160-wide strip like every other strip in the period. DESB is deliberately NOT doubled with it — a blend is a TREELINE, not a biome, and widening it would drag life's 0.15/0.85 admit ends (main/tick-creatures.js) and the weather contrast curve along with it
   // History, because the number has moved three times and each move had a different reason: 500 -> 300 (user
   // 2026-08-15) because 50 m of dense pine hid the thing the spawn camera was aimed at; then 300 -> 80; then
   // 80 -> 1500 below, which abandons "the sand is visible from spawn" outright rather than tuning it, because
@@ -437,7 +485,7 @@
   // SPYAW is UNCHANGED at +pi/2 (east): the player now looks down 1080 of pine to the oak line rather than
   // standing on it, so the note above SPYAW that says "at the blossom with the pine treeline at your back"
   // describes the arrangement this slide replaced.
-  const OAKOFF = -1080, OAKB = 450, OAKW = 540;         // where the oak/pine line sits (the line is at -OAKOFF, so a NEGATIVE value puts it EAST of spawn — 1080 east, since the 2026-08-21 pine slide above); blend width; the INDEPENDENT half of the meander. 1220 -> 2300 = the blossom's east midpoint (spawn+140) plus one full strip W, so the PURE oak between the pink and the pines is 2160 like everything else. Spawn is still 2300 WEST of this line, so oakM(SPWX,SPWZ) is still exactly 1 and "spawn is in the oak forest by construction" still holds — the cherry band simply sits inside it
+  const OAKOFF = -2160, OAKB = 900, OAKW = 1080;         // where the oak/pine line sits (the line is at -OAKOFF, so a NEGATIVE value puts it EAST of spawn — 1080 east, since the 2026-08-21 pine slide above); blend width; the INDEPENDENT half of the meander. 1220 -> 2300 = the blossom's east midpoint (spawn+140) plus one full strip W, so the PURE oak between the pink and the pines is 2160 like everything else. Spawn is still 2300 WEST of this line, so oakM(SPWX,SPWZ) is still exactly 1 and "spawn is in the oak forest by construction" still holds — the cherry band simply sits inside it
   const oakWob = (z) => desWob(z) * 0.6 + (vnoise(z * WOB_OAK + 143.7, 61.3) - 0.5) * OAKW;
   // ── THE WEST EDGE, AND WHY IT SITS WHERE IT DOES ── it is the OTHER oak strip, and as of 2026-08-19 it is
   // set the same way the east one is: the blossom's west midpoint (spawn - 2020) less one full strip W, i.e.
@@ -469,7 +517,7 @@
   // (Those three numbers are pre-2026-08-21: the 340 slide above makes them centre +1880, blossom 1880..4040, and
   // spawn 280 from the pine line. The RELATION each states — outer strip, equal halves — is what the slide preserves,
   // and it preserves it exactly, because all four offsets moved together.)
-  const OAKWOFF = -5400;                               // the WEST boundary, as a signed distance from spawn: the blossom's west midpoint less one strip W, carried 1360 east with everything else by the pine slide (was -4040). OAKC/OAKH are derived from this and OAKOFF, and OAKFAR/OAKNEAR/OAKWFAR/OAKWNEAR from those, so the whole oak geometry follows these two numbers and nothing else has to move
+  const OAKWOFF = -10800;                               // the WEST boundary, as a signed distance from spawn: the blossom's west midpoint less one strip W, carried 1360 east with everything else by the pine slide (was -4040). OAKC/OAKH are derived from this and OAKOFF, and OAKFAR/OAKNEAR/OAKWFAR/OAKWNEAR from those, so the whole oak geometry follows these two numbers and nothing else has to move
   // ── THE BANDS ARE MIRRORED ABOUT SPAWN (user 2026-08-20: "can you flip the map? I want to be running into
   // the sun while running in the direction of the cherry forest. I want the sun to stay east though") ──
   // the SUN is untouched: tick-camera derives it from tday alone, and at dawn (tday 0.25) its vector is
@@ -543,10 +591,26 @@
   // so every strip keeps its 2160: the blossom's east midpoint goes from spawn+140 to spawn-940, and spawn
   // therefore sits 940 east of the pink and 1220 west of the pines, i.e. inside the oak strip with room on
   // both sides. BIOP is unchanged, the six strips are unchanged, and only the PHASE of the pattern moved.
-  const CHOFF = BAND_MIRROR * 4320, CHHALF = 980, CHB = 200, CHW = 260;   // ── UNCHANGED BY THE EQUAL-STRIP PASS (user 2026-08-19: "make all of the biomes the exact same size... double the size of the bands") ── this band was doubled on 2026-08-18 (1080 -> 2160 measured between mask midpoints, 2 * (CHHALF + CHB/2)) and 2160 is precisely the width every OTHER strip has now grown to, so nothing here moves: spawn still sits 140 inside the EAST edge with the whole 2020 of blossom ahead in the facing direction, bit for bit   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander   // CHOFF is MIRRORED (see BAND_MIRROR): the blossom's centre is SPWX - CHOFF, so a negative CHOFF puts it EAST of spawn, in the sunrise. Magnitude unchanged.
+  const CHOFF = BAND_MIRROR * 8640, CHHALF = 1710, CHB = 900, CHW = 520;
+  // ── CHHALF/CHB RESHAPED SO THE BLOSSOM'S OUTER EDGE *IS* THE OAK BAND'S (user 2026-08-31: "I see a thin
+  // slice of oak forest between the pine forest and the cherry forest. dont let this happen") ── measured
+  // before the change, walking east off the pink: cherry fell to 0 at one x and oak kept going for a further
+  // 0-450 voxels (median 140, over 30 latitudes), and every one of those columns plants an OAK. That strip
+  // is the slice, and it had two causes, both of them the two bands being specified independently:
+  //   * the BLEND widths differed. Both masks cross 0.5 on the same nominal line (oak's east edge and the
+  //     blossom's are both SPWX + 10800), but oak faded out over OAKB = 900 and cherry over CHB = 400, so
+  //     oak's tail simply outlived cherry's by 250 voxels. CHB is OAKB now, and CHHALF drops by the same
+  //     450 the wider ramp adds, so the 0.5 line does NOT move: 1710 + 900/2 = 2160 = the old 1960 + 400/2.
+  //   * the MEANDERS differed, which is the half that actually mattered. cherryM rode chWob and oak rides
+  //     oakWob, and chWob is 0.6*oakWob + its own octave, so the two edges wander apart by up to +-800
+  //     voxels. No amount of blend tuning fixes that: matching the widths alone would just make the strip
+  //     as often CHERRY spilling onto pine as oak. So cherryM below now rides oakWob outright.
+  // Together those make the invariant the file has always claimed - "cherryM is a SUB-REGION of oakM" -
+  // true by CONSTRUCTION on the outer edge rather than by two independent fields happening to agree.
+  const CHWHALF = 1960;                                // …and the WEATHER band keeps the OLD half-width. cherryW's ramp was tuned against it (see the CHBW note below: 600 put the snow line 45 m short of the treeline and it was halved to 300), so folding the mask reshape into the weather would move a snow line that has already been placed by hand twice.   // ── UNCHANGED BY THE EQUAL-STRIP PASS (user 2026-08-19: "make all of the biomes the exact same size... double the size of the bands") ── this band was doubled on 2026-08-18 (1080 -> 2160 measured between mask midpoints, 2 * (CHHALF + CHB/2)) and 2160 is precisely the width every OTHER strip has now grown to, so nothing here moves: spawn still sits 140 inside the EAST edge with the whole 2020 of blossom ahead in the facing direction, bit for bit   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander   // CHOFF is MIRRORED (see BAND_MIRROR): the blossom's centre is SPWX - CHOFF, so a negative CHOFF puts it EAST of spawn, in the sunrise. Magnitude unchanged.
   const chWob = (z) => oakWob(z) * 0.6 + (vnoise(z * WOB_CH + 211.3, 97.7) - 0.5) * CHW;   // carries 0.6 of the OAK meander for the reason oakWob carries 0.6 of the desert's: two free meanders converge and let bands touch. Its own half is small because this band has the least room of the three
   const cherryM = (x, z) => {                          // 1 = inside the blossom band, 0 = the oak forest either side of it
-    const b = SPWX - CHOFF + chWob(z) - chWob(SPWZ);   // pinned at the spawn's own z, so the wobble cancels there and spawn's position in the band is not a per-session lottery
+    const b = SPWX - CHOFF + oakWob(z) - oakWob(SPWZ);   // oakWob, NOT chWob — see the CHHALF note: this is what ties the blossom's outer edge to the oak band's so no oak can outlive it. Still pinned at the spawn's own z, so spawn's position in the band is not a per-session lottery
     const t = (CHHALF + CHB - Math.abs(pwrap(x - b))) / CHB;  // …and it is a DISTANCE from the centre line, not a side of it — that one change is what makes it a band. pwrap is what makes it RECUR: without it the band exists once and the world either side of it does not repeat
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
@@ -578,11 +642,11 @@
   // pine treeline, and widening THAT to move the snow would move the forest.
   const CHBW = 300;
   const cherryW = (x, z) => {                        // the blossom band as the WEATHER sees it — cherryM's twin with a longer ramp; the trees keep cherryM
-    const b = SPWX - CHOFF + chWob(z) - chWob(SPWZ);
-    const t = (CHHALF + CHBW - Math.abs(pwrap(x - b))) / CHBW;
+    const b = SPWX - CHOFF + oakWob(z) - oakWob(SPWZ);   // the same meander cherryM rides, or the blanket and the trees would disagree about where the band is
+    const t = (CHWHALF + CHBW - Math.abs(pwrap(x - b))) / CHBW;   // CHWHALF: the weather keeps the half-width it was tuned against
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
-  const CHREACH = CHHALF + CHB + 2 * (DESW * 0.675 * 0.36 + OAKW * 0.5 * 0.6 + CHW * 0.5);
+  const CHREACH = Math.max(CHHALF + CHB, CHWHALF + CHBW) + 2 * (DESW * 0.675 * 0.6 + OAKW * 0.5);   // …on OAKWOB's swing now, not chWob's, because both cherry masks ride oakWob — and over the WIDER of the two ramps, since chNear gates cherryW as well as cherryM. A cheap bound may under-cover by nothing.
   // ── AND THE CHEAP BOUND THAT MUST BE ASKED FIRST (user 2026-08-18: the game froze on boot) ── cherryM costs
   // ~7 vnoise, and fillColumn called it for EVERY COLUMN with om > 0, which is the whole infinite oak forest.
   // A 768x768 window is 590,000 columns, so a boot paid millions of extra noise evaluations in the hottest loop
@@ -690,6 +754,56 @@
     const b = fbm(x * 0.0057 + 47.3, z * 0.0057 + 8.9);
     return OAKY + OAKHILL * sstep(sstep(a * 0.82 + b * 0.18));   // OAKY .. OAKY + OAKHILL, never negative
   };
+  // ══ THE PINE FOREST'S OWN FIELD (user 2026-08-31: "give the pine forest the same terrain generation as the
+  // oak forest but leave the styling unique to the pine forest ... make the terrain round and hilly like the
+  // oak forest. however ... make the terrain height elevation vary greatly") ══
+  // Same SHAPE as oakH — long wavelength, double-smoothstepped, positive-only — because "round and hilly like
+  // the oak forest" is a statement about the field, and this is that field. Three things differ, and all three
+  // are about RELIEF rather than style:
+  //   * the range is 118 voxels against oak's 78, and it starts 8 under the waterline rather than 4 over it, so
+  //     pine valleys flood into inlets and pine crests stand ~106 over the water instead of ~74;
+  //   * the outer curve is SQUARED. oakH's double-sstep spreads its range evenly, which gives a landscape that
+  //     is high nearly everywhere - a plateau, not mountains. Squaring biases the mass to the low end, so most
+  //     of the biome stays low rolling ground and only a minority climbs. A peak reads as a peak because the
+  //     land around it does not;
+  //   * a third, short octave rides on top, faded in by the same curve, so the high ground gets ridges and
+  //     broken faces while the valley floors stay as smooth as oak's.
+  // STYLING IS NOT TOUCHED HERE and cannot be: what a column is MADE of (grass, dirt, needles, the pine's own
+  // litter and moss) is decided in world/terrain.js off the biome masks, not off the height. This changes only
+  // where the ground is.
+  const PINE_LAKE = 34;                                // how far under PINEY the lowest ground is pulled — see the note under pineH
+  const PINEY = LIFT + 20, PINEHILL = 85;              // valley floor = OAKY exactly, crest 85 above it — 233, exactly HMAX, so no summit is flattened by the clamp
+  // ── PINEY WAS LIFT + 16 AND THAT DROWNED THE SHORELINE (user 2026-08-31: "the pine forest has patches of
+  // missing trees", and "get rid of the sinking effect of the sand") ── both reports are the same voxel.
+  // H lifts near-water ground onto a beach with `h <= WL && h >= WL - 5`, a window of [147, 152]. A valley
+  // floor at 144 falls UNDER that window, so it was never lifted: the sand sat 8 voxels below the water,
+  // which is the sinking - and treeAt's `H <= WL + 4` test then refused every one of those columns, which
+  // is the patches. Measured with __vb.treeDensity: 0 trees in 825 cells below 150, against a healthy 0.67
+  // per cell from 160 up. LIFT + 20 is OAKY to the voxel, so the pine valley floor now lands INSIDE the
+  // beach window exactly as the oak forest's always has, and gets lifted to WL + 1..3 like everything else.
+  // Water in the pine forest now comes from where it comes from everywhere else - rivers and basins carved
+  // through this field - rather than from the field itself starting under the sea.
+  // PINEHILL drops 118 -> 108 to keep the crest at 256: the floor went up 4, so the range gives back 10 and
+  // the top of the biome does not move into HMAX's clamp, which would flatten the summits.
+  const pineH = (x, z) => {
+    const a = fbm(x * 0.0021 + 61.3, z * 0.0021 + 77.9);   // the massifs — longer than oak's 0.0024, so the high ground comes in fewer, bigger pieces
+    const b = fbm(x * 0.0049 + 25.1, z * 0.0049 + 13.7);   // and the shoulders on them
+    const m = sstep(sstep(a * 0.78 + b * 0.22));
+    const k = m * m;                                   // …squared: broad low country, and the top of the range reached rarely
+    return PINEY + PINEHILL * k - PINE_LAKE * (1 - m) * (1 - m)
+         + 9 * (fbm(x * 0.028 + 3.7, z * 0.028 + 9.1) - 0.5) * k;   // ridge detail, faded in with the height so the valleys stay smooth
+  };
+  // ── AND THE LOW END IS PULLED UNDER THE WATER (user 2026-08-31: "increase the surface area of the water in
+  // the pine forest") ── the mirror of the squaring above: k = m*m lifts the top of the range rarely, and
+  // this drops the BOTTOM of it by the same shape reversed, so the lowest ground in the biome goes to
+  // 148 - 34 = 114, which is 38 under the waterline. That depth is the point. The first attempt at pine
+  // water was a flat field floor 8 under WL, and it produced the "sinking sand" report rather than lakes:
+  // too shallow to read as water and too low for H's beach rule, which only lifts ground in [WL-5, WL].
+  // A basin that goes properly deep has a RIM, and the rim passes through that window on its way out, so
+  // these come with beaches on them the way the oak forest's lakes do.
+  // Done here rather than by raising BASIN_T because pineH is already the pine forest's own field and is
+  // evaluated nowhere else: the oak forest, the birch and the arctic keep exactly the water they had, and
+  // it costs no new noise call - m is already computed two lines up.
   // ══ THE ARCTIC'S OWN GROUND ══ and it is the BIRCH FOREST'S, exactly (user 2026-08-30: "make the terrain
   // generation match the birch forest"). The birch band wears oakH — see the note under BIRCHOFF — so the
   // arctic calls oakH too, and the three bands roll on one shared height field. There is no arctic landform
@@ -733,9 +847,106 @@
   // every mask value, so pines stood on open snow deep into the band. The border is smooth because the SNOW
   // fades in over 900 voxels while the planting stops at 0.15: the treeline and the snowline are in DIFFERENT
   // places. That is what a real treeline looks like, and one line doing both jobs is what read as drawn.
-  const ARCT_BARE = 0.15;
+  // ══ AND IT IS 0.72 NOW, DITHERED, BECAUSE THE ARCTIC IS WATER (user 2026-08-30: "improve the transitions
+  // from the arctic to the neighboring biomes") ══ 0.15 was written when the arctic was LAND, and it had to be
+  // low: the ask it came from was "now your putting pine trees in the arctic, dont do that", and on an ice
+  // sheet any surviving tree is a tree standing on a glacier. The note below records that a dithered gate was
+  // tried FIRST and rejected for exactly that — softening a gate means some of it survives at every mask
+  // value, so pines stood on open snow deep into the band.
+  // NEITHER OBJECTION SURVIVES THE ARCTIC BECOMING SEA. There is no ice sheet to stand on any more; past the
+  // waterline there is only water, and every planter in terrain.js already refuses a wet column on its own
+  // (`H(wx, wz) <= WL + 4` in treeAt, and the equivalent in each of the others). So "deep in the band" is not
+  // somewhere a tree can reach whatever this number says.
+  // WHAT 0.15 LEFT BEHIND WAS THE REAL PROBLEM, and it is what the transition ask is about: planting stopped
+  // at am 0.15 while the shoreline sits at roughly am 0.75 (the rim lerps ~47 voxels from forest ground down
+  // to the bed, and crosses WL about three quarters of the way), so between the last tree and the water lay
+  // 500-plus voxels of bare white ground with nothing on it at all — a blank plain, wearing the contour rings
+  // that bare quantised snow always shows. The eye read arctic sea, then emptiness, then a wall of forest.
+  // 0.72 puts the last stragglers just short of the water, and the DITHER is what makes it a treeline rather
+  // than a second line further out: refusal probability rises linearly from 0 at the forest to 1 at
+  // ARCT_BARE, so the wood thins over the whole rim and ends where the sea begins. The ceiling is explicit
+  // (`am >= ARCT_BARE`) rather than left to the dither, which is the piece the 2026-08-29 attempt lacked.
+  // GROUND COVER IS DELIBERATELY NOT ON THIS PATH — twigs, cones, toadstools, ferns, flowers, boulders and
+  // logs keep the hard 0.15 cut through `arcticM(...) > ARCT_GROUND`. A thinning wood over clean snow is a
+  // treeline; a thinning wood over snow with mushrooms in it is the "reads as a bug" case the ground-cover
+  // note already argues, and it is still right.
+  const ARCT_BARE = 0.72;                              // where the LAST tree stands — dithered in through arctBare()
+  const ARCT_GROUND = 0.15;                            // …and where ground cover stops dead, which is what ARCT_BARE used to be for everything
+  const arctBare = (x, z, salt) => {                   // true = refuse to plant here. salt keeps species from thinning in the same places
+    const am = arcticM(x, z);
+    if (am <= 0) return false;
+    return am >= ARCT_BARE || ihash(x * 3 + salt, z * 5 + salt * 7) < am / ARCT_BARE;
+  };
   const ARCTIC_SNOW = false;
-  const arctH = (x, z) => oakH(x, z);                 // the birch forest's ground, to the voxel — see above
+  // ══ THE ARCTIC IS OPEN SEA (user 2026-08-30: "remove all of the regular terrain of the arctic and just have
+  // water and snow caps. so it is essentially making the water 100% of the surface area with snow caps in it") ══
+  // arctH used to be `oakH(x, z)` — the birch forest's ground, to the voxel. It is now a SEABED that never
+  // reaches the water plane, so every column in the band comes out as lake and the only thing standing above
+  // the surface anywhere in the biome is a snow cap.
+  //
+  // ── AND THE BED SITS JUST UNDER THE SURFACE, WHICH IS THE OTHER HALF OF THE SAME REQUEST (user 2026-08-30:
+  // "put the terrain just below the water in the arctic. This way I can see how refraction would look across
+  // all of the surface area") ── refraction in COMPOSITE traces a bent ray to the bed and absorbs what comes
+  // back per channel over the path (Beer-Lambert, WATER_SIG). Over a deep lake almost nothing returns and the
+  // surface reads as flat colour; the effect is only VISIBLE where there is a bed within reach. At 8 voxels
+  // roughly 15% of the red and 60% of the blue survive the round trip, at 16 it is 2% and 35% — so this range
+  // spans "sandy shallow" to "deep blue" and the whole band shows the effect instead of a fringe near the shore.
+  // DELIBERATELY NEVER SHALLOWER THAN WL - 8: the beach-flat line in all three copies of H fires on
+  // `h <= WL && h >= WL - 5` and would LIFT a bed inside that window straight back out of the water, one column
+  // at a time, as a field of white islands. WL - 6 and below is out of its reach; this leaves two more voxels
+  // of headroom on the rounding.
+  // == DEEPER, AND THE DEPTH IS NOW THE FEATURE (user 2026-08-30: "its very shallow. can you increase the
+  // depth of the water but keep the look of the refraction of the terrain? I also like how different areas
+  // have different colors of refraction because of the shallowness of the floor") ==
+  //
+  // THOSE TWO ASKS PULL AGAINST EACH OTHER ON A MEAN AND AGREE ON A RANGE. Refraction is Beer-Lambert: what
+  // comes back off the bed is exp(-sigT * path) per channel, sigT = (0.24, 0.092, 0.042). Push the whole bed
+  // down and the return dies everywhere and the sea goes flat blue - the very effect the shallow bed was put
+  // there to show. So the MEAN goes down (12 -> 19, a 58% deeper sea) and the RELIEF goes up much harder
+  // (4 -> 11), which widens the band from 8-16 voxels to 8-30. That is the point: at 8 voxels 71% of the blue
+  // and 15% of the red survive and the bed reads as bright sand; at 30 it is 28% blue and 0.07% red and the
+  // same bed reads as deep ocean. The colour of a patch of sea IS its depth, and there is now nearly three
+  // times as much of that range to look at.
+  // 30 IS INSIDE THE REFRACTION REACH, DELIBERATELY. COMPOSITE caps the refracted ray at 34 voxels, so a bed
+  // below that returns nothing at all and the water would go opaque rather than deep - the range stops just
+  // inside it.
+  // TWO OCTAVES, NOT ONE. One long wavelength gives smooth basins and one colour per bay; the second, at
+  // nearly four times the frequency and a quarter of the amplitude, puts shelves and channels INSIDE a bay so
+  // the colour breaks up at swimming scale as well as at map scale. The pair is what "different areas have
+  // different colors" asks for.
+  // AND THE SHALLOWEST IT MAY EVER BE IS STILL WL - 8: the beach-flat line in all three copies of H fires on
+  // h <= WL && h >= WL - 5 and would lift a bed inside that window back out of the water as white islands.
+  // DEEPER AGAIN (user 2026-08-30: "make the floor terrain deeper under the arctic water"), 19 -> 27 mean and
+  // 11 -> 15 of relief, so the bed now runs WL-12 (bright shallow) to WL-42 (deep ocean).
+  // THE REFRACTION RAY HAD TO GROW WITH IT OR THIS WOULD HAVE UNDONE ITSELF. COMPOSITE capped the refracted
+  // ray at 34 voxels, on the argument that Beer-Lambert leaves under 3% past that - true of the RED channel
+  // and wrong about blue, which still returns 24% at 34 and 17% at 42. With a bed at 42 and a ray that stops
+  // at 34, the deep half of the sea would have gone flat in-scatter blue with no floor in it at all, which is
+  // exactly the "no terrain under the water" state this whole thread has been undoing. The cap is 48 now.
+  // That is not free but it is close to it: the ray is gated on fres < 0.80 and only runs at all where a
+  // refracted path exists, and the water pass has repeatedly measured inside the noise floor.
+  const ARCT_SEA = WL - 27;                            // mean seabed, twenty-seven voxels (2.7 m) under the surface
+  const ARCT_SEAREL = 15;                              // relief either side of it: WL-42 (deep blue) to WL-12 (bright shallow)
+  const ARCT_SEAF = 0.003;                             // the BASIN octave - ~330 voxels, so a whole bay shares a colour
+  const ARCT_SEAF2 = 0.011;                            // ...and the SHELF octave at ~90 voxels, which breaks that bay up from close in
+  const ARCT_SEAMIX = 0.72;                            // how much of the relief the basin octave owns; the shelf gets the rest
+  // ── AND THE SUM IS SHAPED, BECAUSE fbm WILL NOT USE THE RANGE IT IS GIVEN ── the first cut simply scaled
+  // two octaves by ARCT_SEAREL and measured 14-24 voxels against a design of 8-30: fbm clusters hard around
+  // its own middle, so a nominal +-1 term spends almost all its time inside +-0.25 and the sea came out one
+  // colour after all. Raising ARCT_SEAREL to compensate does not fix it, it just moves the same narrow band
+  // deeper and makes the rare extremes absurd.
+  // ARCT_SEAPOW is a tail-fattener: sign(u) * |u|^0.35 leaves 0 at 0 and 1 at 1 - so the deepest and
+  // shallowest water are exactly where they were designed to be - and lifts everything in between. |u| = 0.23,
+  // which is where the measured p90 sat, becomes 0.60. The 8-30 range is now actually inhabited rather than
+  // merely permitted, and 8-30 is the whole point: it spans bright sand to deep ocean in Beer-Lambert terms.
+  const ARCT_SEAPOW = 0.35;                            // <1 pushes the distribution out toward both ends; 1 would be the raw fbm this replaces
+  const arctSeaH = (x, z) => {
+    const u = (fbm(x * ARCT_SEAF + 91.7, z * ARCT_SEAF + 33.1) - 0.5) * 2 * ARCT_SEAMIX
+            + (fbm(x * ARCT_SEAF2 + 11.3, z * ARCT_SEAF2 + 57.9) - 0.5) * 2 * (1 - ARCT_SEAMIX);
+    const w = (u < 0 ? -1 : 1) * Math.pow(Math.min(1, Math.abs(u)), ARCT_SEAPOW);
+    return ARCT_SEA + Math.round(w * ARCT_SEAREL);
+  };
+  const arctH = (x, z) => arctSeaH(x, z);              // …and the band's "ground" IS that bed — see above
   // ── ONE HELPER, CALLED FROM ALL THREE COPIES OF H ── H(), makeHRow and makeHCol each carry the same height
   // expression and have to agree BIT FOR BIT or the bulk fill and the placement queries disagree about where
   // the ground is (__vb.gtest is what measures it). So this is a scalar function that takes the height the
@@ -766,7 +977,7 @@
   // they must stay identical), and the editor's stage carve.
   // 192 clears the tallest model with 24 to spare, and it is a COST: those rows are scanned per tile.
   // RAISE IT BEFORE BAKING ANYTHING TALLER.
-  const CANOPY = 192;
+  const CANOPY = 240;   // 192 -> 240 when the arctic glaciers went to 176 voxels over a seabed 42 below the waterline (see ARCT_FLOEH): 218 of reach above hmap, and this is the ceiling that decides whether a voxel is drawn at all.
   // ══ THE ARCTIC (user 2026-08-29) ══ a seventh strip, BETWEEN the spawn pine and the birch forest.
   // Placed on the WEST side of the spawn pine rather than the east for one reason: spawn sits in that pine
   // strip, and every spawn guarantee in this file (the view down the strip, the distance to the treeline,
@@ -782,7 +993,7 @@
   // and should not be widened — and that is right for two forests, which meet as canopy against canopy. Snow
   // against forest is a GROUND change, and a ground change reads as a drawn line at any width the eye can take
   // in at once. 900 voxels is 90 m of thinning, which is about the distance the fog starts softening anyway.
-  const ARCTOFF = 1080, ARCTB = 900, ARCTH = 1080;     // inner edge from spawn; blend width; half-width to the mask midpoint
+  const ARCTOFF = 2160, ARCTB = 1800, ARCTH = 2160;     // inner edge from spawn; blend width; half-width to the mask midpoint
   const ARCTC = BAND_MIRROR * (ARCTOFF + ARCTH);       // -2160: the band centre, mirrored like DESC/BIRCHC/OAKC/CHOFF
   const arcticM = (x, z) => {                          // 1 = deep arctic, 0 = the pine and the birch either side
     const c = SPWX + ARCTC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
@@ -809,6 +1020,23 @@
   // deliberately most of its width: anything less and the ramp still reads as a band with a wiggle on it.
   const ARCT_SNOWR = 0.16;                             // mask width of the snow ramp — ends just past ARCT_BARE, so snow reaches the last tree
   const ARCT_SNOWN = 0.18;                             // peak-to-peak noise added to the mask, in mask units
+  // ══ AND THE GLACIERS FADE OUT WITH IT, RATHER THAN STOPPING ON ITS GATE ══ the ice block in fillColumn is
+  // entered on `asn > 0.5`, a hard test, so a mountain 176 voxels tall stood at FULL height right up to the
+  // column where the snow mask crossed a half and then simply was not there. The biome's ground fades across
+  // the whole rim while its largest feature ended on a line, which is the "cut off looking" edge (user
+  // 2026-08-30: "smooth out the transitions between the biomes … blend the glaciers in nicely").
+  // Same answer as the dome roughness in arctCliff: multiply, do not cut. The envelope is scaled by how far
+  // PAST the gate the mask has got, so bergs come in low and thicken inland instead of appearing full-size.
+  // Smoothstepped so the ramp has no visible start or end of its own.
+  // It scales the KEEL too, in the cap block — the underside is the same solid seen through the water, and a
+  // full-depth keel under a tenth-height crown is the same discontinuity moved below the surface.
+  // ── HOW HIGH LAND MAY STAND IN THE ARCTIC ── the ceiling in oakBank is WL + (1 - am) * this, so ordinary
+  // ground keeps its full relief at the band's edge and nothing can stand proud of the water at its core.
+  // 60 is the neighbouring biomes' own scale (oakH lifts land ~42 voxels over the water near a shore), so at
+  // am 0 the rule is inert by construction and only starts biting once the arctic mask is genuinely present.
+  const ARCT_STAND = 60;
+  const ARCT_GBLEND = 0.42;                            // …how much of the mask above the gate a berg takes to reach full height. 0.42 puts the ramp across most of the rim, which is where the eye reads the edge
+  const arctGB = (asn) => { const t = (asn - 0.5) / ARCT_GBLEND; return t <= 0 ? 0 : t >= 1 ? 1 : sstep(t); };
   const arctSnow = (x, z) => {
     const am = arcticM(x, z);
     if (am >= 1) return 1;
@@ -829,7 +1057,16 @@
   // it is the gaps that halve, which is what the phrase asks for and what stops a river simply becoming a
   // solid white strip.
   const ARCT_FLOE_RIV = 0.13;                          // how much lower that threshold sits on a river column
-  const ARCT_FLOEH = 28;                                // extra voxels of thickness at a floe's thickest, over the 1 it always has. 3 -> 8 -> 14 -> 28 (user 2026-08-30, three times: "give even more depth to the polar ice caps. they are still flat", then "make them taller and round") — at 4 the caps still read as a sheet from standing height, because 40 cm of ice is under a knee. 9 voxels is most of a metre and throws a shadow you can see across the lake.
+  // DOUBLED AGAIN 2026-08-30 (user: "double the size of the big snow glaciers ... this should make them look
+  // more like mountains"). 17.6 m of ice standing out of the sea, on a footprint doubled with it - the
+  // crevasse and fracture wavelengths below are halved in the same pass, or a mountain would wear a hill's
+  // texture and read as a scale model of one.
+  // THIS IS WHAT FORCED CANOPY UP. rebuildBricks force-clears every brick row above hmap + CANOPY, and a
+  // voxel above that line gets no brick bit, so the DDA reads it as air and it is INVISIBLE WHILE STILL
+  // SOLID - the "tops of the trees are cut off but I can walk on the canopy" failure the CANOPY note records.
+  // The arctic seabed sits as deep as WL - 42, so a 176-voxel glacier reaches 218 above its own hmap and 192
+  // was no longer enough.
+  const ARCT_FLOEH = 176;                                // extra voxels of thickness at a floe's thickest, over the 1 it always has. 3 -> 8 -> 14 -> 28 (user 2026-08-30, three times: "give even more depth to the polar ice caps. they are still flat", then "make them taller and round") — at 4 the caps still read as a sheet from standing height, because 40 cm of ice is under a knee. 9 voxels is most of a metre and throws a shadow you can see across the lake.
   // ── AND A STEP, NOT A SPAN ── the first cut spread the thickness over the WHOLE remaining range of the
   // noise (fl - ARCT_FLOE) / (1 - ARCT_FLOE), which is the obvious normalisation and gave 70% of floes a
   // single voxel: fbm clusters hard just above any threshold, so almost nothing reached the upper part of
@@ -847,14 +1084,237 @@
   // being a curve exactly where the eye looks hardest, at the middle. Widening the span keeps most of the
   // field below the ceiling so the crown stays curved (user 2026-08-30: "make sure they are even rounder").
   const ARCT_FLOESPAN = 0.30;                          // noise above the threshold at which a cap reaches full height
+  // ══ THE GLACIER PROFILE (user 2026-08-30: "round out the bottoms of the glaciers", "also round out the tops
+  // as well") ══ one curve, used for the crown above the water and for the KEEL below it, so a berg is one
+  // round solid rather than a dome sitting on a flat disc.
+  //
+  // WHAT WAS WRONG WITH THE OLD ONE. It was `sqrt(t * (2 - t))`, the exact profile of a HEMISPHERE — a sphere
+  // cut at its equator. That is geometrically round and it fails at both ends the user is pointing at, for the
+  // same reason: at the rim (t = 0) a hemisphere's surface is VERTICAL, so the ice came out of the water as a
+  // wall; and it is already at 0.87 of full height by t = 0.5 and 0.99 by t = 0.85, so most of a cap's area sat
+  // within half a voxel of its own ceiling and quantised into one flat disc. A vertical bottom and a flat top.
+  //
+  // WHAT THIS IS. A spherical cap of a sphere whose CENTRE IS BELOW THE WATER — the water plane cuts it above
+  // the equator, not through it. Radius 1, centre ARCT_DOMEC under the surface, so the footprint radius is
+  // sqrt(1 - c^2) and the peak stands (1 - c) proud. The surface then meets the water at a finite angle
+  // (rounded bottom) and climbs most of its height in the inner half of the cap (rounded top): 0.28 at t = 0.2
+  // and 0.88 at t = 0.8, against the hemisphere's 0.60 and 0.98. Same field, same edge, no extra sampling —
+  // only the mapping from noise to height changed, which is the third time that has been the answer here.
+  const ARCT_DOMEC = 0.6;                              // how far under the water the sphere's centre sits, in radii. 0 would be the old hemisphere; higher is rounder and lower
+  const ARCT_DOMEK = 1 - ARCT_DOMEC * ARCT_DOMEC;      // = the footprint radius squared, precomputed — the profile needs it every column
+  const arctDome = (t) => { const r = 1 - t; return (Math.sqrt(Math.max(0, 1 - ARCT_DOMEK * r * r)) - ARCT_DOMEC) / (1 - ARCT_DOMEC); };
+  // == AND THEY ARE GLACIERS NOW, NOT DOMES (user 2026-08-30: "double the size of the ice caps. instead of
+  // roundness. make them jagged glaciers. cliffs.") == arctDome above still supplies the ENVELOPE - how much
+  // ice this column is entitled to, from nothing at the rim to full height at the middle - because the field
+  // that decides where a floe IS has to keep deciding where it ends. Everything between the envelope and the
+  // voxel changes:
+  //   * FRACTURE. A coherent short-wavelength term is added to the height BEFORE the terracing. On its own
+  //     that would only be a bumpy dome; what it actually does is move where each terrace edge falls, so the
+  //     cliff lines wander instead of following the envelope's iso-contours as concentric rings.
+  //   * TERRACES. The result is snapped to whole ARCT_STEP blocks. A quantised height field IS a cliff: every
+  //     step is a vertical face ARCT_STEP voxels tall with a flat bench on top, which is what a calving
+  //     glacier front looks like and is the exact opposite of the smooth spherical cap it replaces.
+  // The two together are what separates this from the terracing the arctic GROUND was criticised for: there
+  // the steps were one voxel and unavoidable, here they are nine and deliberate.
+  // DOUBLE SIZE is both axes: ARCT_FLOEH 44 -> 88 for the height, and ARCT_FLOEF halved (0.0105 -> 0.00525)
+  // for the footprint. Coverage is set by the threshold, not the frequency, so it barely moves.
+  // ══ SERACS, NOT STAIRS (user 2026-08-30: "you made the glaciers have steps instead of jagged edges. try
+  // again. look to the internet on the appearance of jagged glaciers") ══
+  //
+  // I LOOKED IT UP, AND I HAD THE MECHANISM BACKWARDS. A serac - the ice pinnacle that makes a glacier look
+  // jagged - is not a step in a slope. It is what is LEFT OVER where two crevasses cross: the block of ice
+  // between the intersecting cracks is partly cut free of the mass and stands as a tower or a pillar, "an
+  // impenetrable system of pillars and pinnacles", several metres to over thirty tall. The jaggedness of an
+  // icefall is CARVED IN by vertical cracks, it is not built up as horizontal benches.
+  // So the previous version could not have worked however it was tuned. Quantising a smooth dome to 9-voxel
+  // benches produces exactly one thing - terraces - and terraces are the shape of a quarry or a rice paddy,
+  // where every edge is horizontal and every face is the same height. Real serac fields have almost no
+  // horizontal lines in them at all.
+  //
+  // WHAT THIS DOES INSTEAD. The envelope (arctDome + the two fracture octaves) still says how much ice a
+  // column is entitled to. Then CREVASSES are subtracted from it:
+  //   * RIDGED NOISE puts a crack where a noise field crosses its own midline. arctRidge(v) peaks at 1 exactly
+  //     on the v = 0.5 contour and falls away either side, so thresholding it high gives a NARROW, winding,
+  //     continuous line - which is what a crevasse is, and what no amount of ordinary fbm will give you.
+  //   * TWO FAMILIES at different scales, so they cross. That is the whole point and it is straight out of the
+  //     geology: where two crevasses intersect, the ice between them is isolated, and THAT is the tower.
+  //     One family alone would only groove the glacier into parallel ribs.
+  //   * THE CUT IS DEEP AND MOSTLY PROPORTIONAL, so a crevasse through tall ice is a canyon and one through
+  //     thin ice cuts clean through to the water - which leaves open leads between the towers, exactly as a
+  //     real icefall calves into a fjord. arctCliff returning 0 is allowed and means "no ice in this column".
+  // And the terracing is GONE. ARCT_STEP is 1: the only quantisation left is the voxel grid itself, and on a
+  // near-vertical serac wall its contours are one voxel apart, which reads as texture rather than as stairs.
+  const ARCT_STEP = 1;                                 // no terracing - the voxel grid is the only quantisation, and the crevasses do the shaping
+  const ARCT_JAG = 30;                                 // peak-to-peak FINE fracture, in voxels - roughens the ice surface between cracks
+  const ARCT_JAGF = 0.0275;                             // its wavelength, ~18 voxels
+  const ARCT_JAG2 = 68;                                // peak-to-peak BLOCK fracture, so whole sectors of one glacier stand at different heights
+  const ARCT_JAGF2 = 0.007;                            // its wavelength, ~70 voxels
+  const ARCT_CREVF1 = 0.0095;                           // crevasse family ONE - lines about 53 voxels apart
+  const ARCT_CREVF2 = 0.0135;                           // ...and family TWO at a different scale, so the two cross instead of running parallel
+  const ARCT_CREVT = 0.90;                             // how close to the midline counts as crack: higher = narrower slots and bigger towers
+  const ARCT_CREVW = 0.10;                             // the ramp from rim to full depth - keeps a crevasse wall steep without making it a single hard column
+  const ARCT_CREVD = 28;                               // fixed part of the cut, in voxels - what carves thin ice clean through to the water
+  const ARCT_CREVK = 0.78;                             // ...and the part proportional to the local height, which is what makes a canyon out of tall ice
+  const arctRidge = (v) => 1 - Math.abs(v + v - 1);    // 1 exactly on the field's midline, 0 at its extremes - a CRACK, not a blob
+  const arctCliff = (t, x, z, g) => {                  // the glacier's height above the water at this column. g = the biome blend (arctGB), 0 at the snow mask's own gate and 1 well inside
+    // ══ THE ROUGHNESS IS SCALED BY THE DOME IT ROUGHENS ══ the two jag octaves used to be ADDED to the
+    // envelope independently of it, and a term that does not vanish where the envelope does is not roughness —
+    // it is geometry of its own. At the floe's rim arctDome goes to 0 while the jag is still worth up to +49,
+    // so ice stood in open water with nothing beneath it: isolated white pillars, a few voxels thick and dozens
+    // tall, out on the sea and along the treeline. Measured before the fix, flying the arctic: 60 columns
+    // standing 18-78 voxels above everything five voxels away, the tallest reaching y=329 — against a design
+    // ceiling of WL + ARCT_FLOEH. They read as rendering errors, which is exactly what they were reported as.
+    // Multiplying instead of adding ties the crest's variation to the thickness of the ice under it: full
+    // roughness where the berg is thick, none at all where it has run out, and no column can outlive its dome.
+    const d0 = arctDome(t) * (g === undefined ? 1 : g);
+    const env = d0 * (ARCT_FLOEH
+      + (fbm(x * ARCT_JAGF + 313.7, z * ARCT_JAGF + 77.1) - 0.5) * ARCT_JAG
+      + (fbm(x * ARCT_JAGF2 + 51.9, z * ARCT_JAGF2 + 143.3) - 0.5) * ARCT_JAG2);
+    if (env <= 0) return 0;
+    const cr = Math.max(arctRidge(fbm(x * ARCT_CREVF1 + 19.3, z * ARCT_CREVF1 + 202.7)),
+                        arctRidge(fbm(x * ARCT_CREVF2 + 401.1, z * ARCT_CREVF2 + 8.9)));
+    let h = env;
+    if (cr > ARCT_CREVT) h -= (ARCT_CREVD + ARCT_CREVK * env) * Math.min(1, (cr - ARCT_CREVT) / ARCT_CREVW);
+    return Math.max(0, Math.round(h / ARCT_STEP) * ARCT_STEP);
+  };
+  // ── AND THE BOTTOM IS A REAL KEEL, NOT A CUT ── a cap used to start at the waterline and stack upward, so
+  // its underside was a flat disc floating at WL with open water beneath it. Now that the arctic is all sea
+  // (see arctH) that underside is the part you look straight through the surface AT, so it gets the same dome
+  // mirrored downward. 0.40 rather than an iceberg's real 7/8: the bed is only ~12 voxels down, and a keel any
+  // deeper than this simply grounds into it on every cap big enough to matter, which hides the very curve the
+  // request is about. Big bergs still ground, and that reads correctly as shelf ice sitting on the shallows.
+  // 0.40 -> 0.22 WHEN THE GLACIERS DOUBLED. The keel is a fraction of the CROWN, so doubling ARCT_FLOEH to 88
+  // took it to 35 voxels — deeper than most of the sea — and every glacier grounded on the bed, which buries
+  // the one part of them the deeper water was supposed to make visible. 0.22 is ~19 voxels: the big ones still
+  // ground in the shallows, and in the 19-30 range they float clear and you can see the mass under them.
+  const ARCT_KEELK = 0.22;                             // keel depth as a fraction of the crown's height
+  // == FLAT ICE PATCHES (user 2026-08-30: "add ice patches into the water. not caps, but flat ice patches.
+  // make it 25% of the total surface area of the water") == ONE voxel, written at WL in place of the surface
+  // water, on its OWN noise field - so an ice patch is a sheet flush with the sea and a snow cap is a glacier
+  // standing out of it, and neither can be mistaken for the other at any distance.
+  // ITS OWN FIELD, not a second threshold on the floe field: keyed to the floes, the ice would only ever
+  // appear as a fringe around the glaciers, which is a rim rather than a scatter across the water. The
+  // frequency sits between the floes' and the bed's, so a sheet is bigger than a wave and smaller than a bay.
+  // THE THRESHOLD IS MEASURED, NOT DERIVED. fbm is not uniform - it clusters hard around 0.5 - so the value
+  // that yields 25% coverage cannot be read off the number 0.75. This one was tuned against a census of the
+  // actual arctic water surface, which is also the only way to state the coverage honestly.
+  // ── PENGUIN SCATTER ── how often a cell rolls one, and how deep into the band they start. PENG_INNER is
+  // well past ARCT_BARE (0.72, the last tree): the rim is snowy forest and a penguin under a pine reads as a
+  // bug. Past 0.8 the surface is sea, ice sheet or glacier, which is the only place one belongs.
+  // ── AND THEY STAND IN COLONIES, NOT ALONE (user 2026-08-30: "make penguins huddle together vs just
+  // scattered everywhere. have different groups of penguins") ── one roll per cell used to mean one bird per
+  // cell, evenly spread, which is the one thing penguins never do. The cell is much bigger now and a hit
+  // places a whole HUDDLE: the cell decides where a colony is, the colony decides how many birds and how
+  // tightly they stand, and the ice test then thins it wherever the floe runs out from under it.
+  // THE SPREAD OF SIZES IS THE POINT of "different groups" - a colony rolls anywhere from a handful to a
+  // couple of dozen, so the biome has pairs, family groups and proper rookeries in it rather than one
+  // repeated clump.
+  const PENG_RATE = 0.7;                               // fraction of PENGCELL cells that hold a colony
+  const PENG_INNER = 0.8;                              // arctic mask a column must clear before a penguin will stand there
+  // ── AND THEY STAND ON THE GLACIERS (user 2026-08-30: "put the penguins ontop of the glaciers, not the
+  // ice") ── PENG_MINTOP is what separates a glacier bench from a snow cap: the caps are at most ARCT_CAPH + 1
+  // voxels proud, so anything standing higher than that is ice the crevasse carve left behind.
+  // THE HUDDLE HAD TO TIGHTEN TO FIT ONE. A bench between two crevasses is 20-30 voxels across, which is
+  // narrower than the colonies were laid out for on open sheets — spread wider, most of a colony fell into a
+  // cleft and was thinned away one bird at a time, which is the same failure that moved them off the glaciers
+  // in the first place. Smaller colonies, packed tighter, is what makes them fit.
+  const PENG_MINTOP = 18;                              // voxels above the waterline a column must stand for a colony to site on it — clear of ARCT_CAPMAX, so a disc is never mistaken for a glacier bench
+  const PENG_MIN = 3, PENG_MAX = 16;                   // birds per colony, before the ice test thins it
+  const PENG_SPACE = 2.9;                              // huddle tightness: the disc radius grows as PENG_SPACE * sqrt(n), so density is constant and only the SIZE varies. Tight enough that a colony fits on one floe rather than being thinned in half by the water around it
+  const PENG_JIT = 2.2;                                // voxels of scatter on each bird, so a huddle is not a visible lattice
+  // ── AND SOME OF THEM HAVE A CHICK (user 2026-08-30) ── rolled PER ADULT rather than as a share of the
+  // colony, so a chick always has a parent standing next to it, which is the whole picture the ask is about.
+  // Not every adult: a rookery where every single bird has a chick reads as a pattern rather than a colony.
+  // ══ WHAT THE SURFACE OF AN ARCTIC COLUMN IS, WITHOUT LOOKING AT IT ══ the y a bird stands at here, or -1
+  // for open water. It re-derives exactly what the cap/ice block in terrain.js writes, from the same three
+  // fields, and that is the point: the first version READ W instead, and reading W from a decoration stamp is
+  // a determinism bug even when it looks like it works.
+  // WHY. stampCellsGen visits a cell from every band whose margin reaches it, so a colony straddling a band
+  // boundary is stamped from both. A member's column is fully generated in the band that CONTAINS it and is
+  // whatever the toroidal window last held in the other — so the same bird was placed by one band and refused
+  // by the other, depending on which order the world happened to stream in. It also cost most of the
+  // population: measured 25 penguin probes across 1800x1800 where the roll rate asks for roughly a hundred
+  // and fifty birds. Every scatter in this file that needs to know about the ground asks H(); this asks the
+  // three fields that decide the ice, for the same reason and with the same guarantee.
+  const arctIceTop = (x, z) => {
+    const asn = arctSnow(x, z);
+    if (asn <= 0.5) return -1;                         // the snow mask gates the caps and the sheets alike (see the cap block in terrain.js)
+    if (H(x, z) > WL - 1) return -1;                   // not a lake column at all - the rim, where a penguin has no business
+    const fl = fbm(x * ARCT_FLOEF + 71.3, z * ARCT_FLOEF + 12.9);
+    const flT = ARCT_FLOE - (riverS(x, z) > 0.02 ? ARCT_FLOE_RIV : 0);
+    if (fl > flT) {                                    // a glacier stands here IF the crevasses left any of it
+      const c = arctCliff(Math.min(1, (fl - flT) / ARCT_FLOESPAN), x, z, arctGB(asn));   // the SAME blend the stamp uses — this function exists to agree with it exactly
+      if (c > 0) return WL + c;                        // the cap fills up to WL + capH - 1, so its top face is at WL + c - 1 and a bird stands one above that
+    }
+    // ── AND THE SMALL SNOW CAPS, WHOSE HEIGHT HAS TO BE MIRRORED EXACTLY ── this is the same arithmetic the
+    // cap stamp in terrain.js runs, for the reason the whole function exists: a bird standing on one has to
+    // stand on its CROWN, and the crown is not at a fixed height any more.
+    const ic = fbm(x * ARCT_ICEF + 137.1, z * ARCT_ICEF + 211.7)
+             + (fbm(x * ARCT_CAPIRRF + 71.9, z * ARCT_CAPIRRF + 133.7) - 0.5) * ARCT_CAPIRR
+             + (fbm(x * ARCT_CAPIRRF2 + 24.3, z * ARCT_CAPIRRF2 + 96.1) - 0.5) * ARCT_CAPIRR2;
+    if (ic > ARCT_ICE) return WL + ARCT_CAPMIN + Math.round((ARCT_CAPMAX - ARCT_CAPMIN) * fbm(x * ARCT_CAPHF + 401.3, z * ARCT_CAPHF + 55.1));
+    return -1;                                         // open water
+  };
+  const PENG_CHICK = 0.45;                             // chance an adult has a chick beside it
+  const PENG_CHICKR = 4;                               // how far to its side the chick stands, in voxels - just clear of the parent's own footprint
+  // == SMALL SNOW CAPS, SPRINKLED (user 2026-08-30: "remove the ice from the water in the arctic. create
+  // small snow caps sprinkled in the water. make it take up 25% of the surface area of the water") ==
+  // This replaces the FLAT ICE SHEETS that were here, and with them goes the whole AICE palette ramp and the
+  // ICEF face-id path in the shaders: a sheet needed its own colour and its own ice shading to be seen at all
+  // against white glaciers, and a MOUND does not - it has a silhouette. Three palette ids came back, which on
+  // a table that was sitting at exactly 256/256 is worth having.
+  // SMALL, and that is the whole difference from a glacier: ~22-voxel wavelength against the floe field's
+  // ~190, and a handful of voxels of height against 88. They read as bergy bits between the bergs.
+  // SAME FIELD AS THE SHEETS USED, at three times the frequency: it is independent of the floe field on
+  // purpose, because keyed to it the caps would only ever ring the glaciers rather than scatter across open
+  // water. The threshold is MEASURED against a census of the actual water surface, not derived - fbm clusters
+  // hard around its middle, so the value giving 25% cannot be read off the number 0.75.
+  // DOUBLED IN SIZE, HALVED IN COVERAGE (user 2026-08-30: "double the size of the small snow caps but reduce
+  // the surface area by 50%"). Both axes double — a ~44-voxel disc 8-14 thick keeps the same 1:4 proportion
+  // that made it read as a disc at 22 and 4-7, so it is the same object at twice the scale rather than a
+  // different, chunkier one. The two supporting fields double their wavelength with it (ARCT_CAPHF for the
+  // per-cap thickness, ARCT_CAPIRRF for the frayed rim), or a bigger disc would wear a smaller disc's edge.
+  // LARGE CAPS ONLY (user 2026-08-30: "remove all the tiny ones and keep the larger ones ... I want large
+  // snow caps"). The wavelength halves AGAIN, to ~90 voxels, so what the field produces is a handful of broad
+  // floes rather than a scatter of lumps; the threshold then keeps only the cores of those, which is what
+  // "remove the tiny ones" asks for — a higher cut on fbm removes small blobs entirely before it shrinks big
+  // ones, because a small blob is one that barely cleared the old cut anywhere.
+  // ── DOUBLED AGAIN, AND THE SMALL ONES CULLED (user 2026-08-30: "remove the smaller snow caps. double the
+  // size of the caps") ── size is the FIELD'S WAVELENGTH, so doubling a cap means halving the frequency: the
+  // blobs come out twice as wide for four times the area. On its own that would keep the same coverage and
+  // simply scale everything, including the marginal fragments around each blob's rim, so the threshold goes up
+  // with it — a blob whose peak no longer clears it disappears entirely, which is what culls the small ones
+  // rather than shrinking them.
+  const ARCT_ICEF = 0.00775;                           // the snow-cap field's wavelength, ~180 voxels — twice the previous 90
+  // ── HALF AS MANY, AND FLAT (user 2026-08-30: "decrease the snowcaps by 50%. also make them more flat by
+  // design. make them 4-7 voxels tall. like snow discs, but make it irregular, we dont want a perfect disc") ──
+  // 0.612 measured 27.7% of the water surface; this is the threshold for half of that.
+  // FLAT MEANS A CONSTANT HEIGHT ACROSS ONE CAP, not a dome flattened. The height comes from a LOW-frequency
+  // field, so it barely changes across a single ~22-voxel cap but differs between caps: every disc is level,
+  // and no two are the same thickness. A per-column roll would have given a lumpy crust instead.
+  // AND THE EDGE IS RAGGED because a threshold on smooth fbm is a smooth curve — which at this size reads as
+  // a stamped circle. A short-wavelength term added to the FIELD (not to the height) moves the iso-line in and
+  // out by a few voxels, so the rim breaks up while the top stays flat.
+  const ARCT_ICE = 0.745;                              // …raised with the wavelength: it is what removes a blob outright instead of making every blob smaller
+  const ARCT_CAPMIN = 3, ARCT_CAPMAX = 4;              // a disc's thickness in voxels, inclusive — thin sheets now, so a big one still reads as floating ice rather than as a plateau
+  const ARCT_CAPHF = 0.00275;                          // the height field's wavelength, ~360 voxels — doubled with the caps, so it is still several of them wide and one cap is still level
+  // ── AND THE EDGE IS PROPERLY TORN, NOT WAVY (user: "the current edges are straight, make edges jagged") ──
+  // one gentle octave only bent the outline; a big cap needs the outline broken at more than one scale or it
+  // still reads as a stamped shape with a wobble. The COARSE term (~40 voxels) cuts bays and headlands into
+  // the floe, the FINE one (~7 voxels) chews the resulting edge into single-voxel teeth. Both are added to
+  // the FIELD rather than to the height, which is what moves the iso-line instead of lumping the top.
+  const ARCT_CAPIRR = 0.16;                            // coarse displacement of the threshold — bays and headlands
+  const ARCT_CAPIRRF = 0.013;                          // …at ~80 voxels, doubled with the caps: bays and headlands in proportion to the disc, not a smaller disc's edge on a bigger one
+  const ARCT_CAPIRR2 = 0.075;                          // …and a fine one for the teeth
+  const ARCT_CAPIRRF2 = 0.145;                         // …at ~7 voxels                              // ...and the threshold a column must clear. TUNED AGAINST A CENSUS, not derived: 0.545 measured 39.3% of the water surface, because fbm clusters hard around its middle and the value giving 25% is nowhere near the 0.75 the fraction suggests
   // ── FLOE SIZE ── the wavelength of the field that decides where a cap is, so it sets how BIG one is. Halved
   // (0.021 -> 0.0105) to double each floe's footprint on request; coverage is set by the threshold above and is
   // very nearly unchanged by this, which is what makes size and coverage separable levers.
-  const ARCT_FLOEF = 0.0105;
+  const ARCT_FLOEF = 0.002625;
   const ARCTWMAX = DESW * 0.675;                       // the band's absolute reach, for the same cheap-out shape birch uses
   const ARCTFAR = ARCTC + ARCTH + 2 * ARCTWMAX + ARCTB * 0.5;    // no column east of this can be arctic at all
   const ARCTWFAR = ARCTC - ARCTH - 2 * ARCTWMAX - ARCTB * 0.5;   // …nor west of this
-  const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = 1080;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
+  const BIRCHOFF = 6480, BIRCHB = 900, BIRCHH = 2160;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
   const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
   const birchM = (x, z) => {                            // 1 = deep birch forest, 0 = the pine and the sand either side
     const c = SPWX + BIRCHC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
@@ -875,7 +1335,8 @@
     // between them. Its own cheap-out keeps the pine forest and the sand paying only two compares for it.
     if (dx < BIRCHFAR && dx > BIRCHWFAR) {
       const bm = birchM(x, z);
-      if (bm > 0) return bm >= 1 ? oakH(x, z) : h * (1 - bm) + oakH(x, z) * bm;
+      if (bm >= 1) return oakH(x, z);
+      if (bm > 0) return pineH(x, z) * (1 - bm) + oakH(x, z) * bm;   // …lerped from the PINE field now, not from baseH: pine is no longer the default height, so every band rim has to start from what actually borders it
     }
     // ── AND THE ARCTIC, on the same terms ── its own field rather than oak's, but routed through the same
     // helper for the same reason: this is the one place all three copies of H agree, so a band added here
@@ -884,12 +1345,13 @@
     // compares for the whole biome existing.
     if (dx < ARCTFAR && dx > ARCTWFAR) {
       const am = arcticM(x, z);
-      if (am > 0) return am >= 1 ? arctH(x, z) : h * (1 - am) + arctH(x, z) * am;
+      if (am >= 1) return arctH(x, z);
+      if (am > 0) return pineH(x, z) * (1 - am) + arctH(x, z) * am;
     }
-    if (dx >= OAKFAR || dx <= OAKWFAR) return h;       // pine forest and desert — the identical double back out, so their terrain is unchanged to the last bit
+    if (dx >= OAKFAR || dx <= OAKWFAR) return pineH(x, z);   // ── THE PINE FOREST, AND THE DESERT'S BASE ── this used to hand `h` (baseH) straight back, which is what made pine the default terrain. It is a field of its own now. The desert comes through here too and that is deliberate: its own flat runs LAST in H and lerps over this, so deep sand is untouched to the bit and only the rim changes — mountains grading down into dune, which is what a desert edge should look like.
     if (dx <= OAKNEAR && dx >= OAKWNEAR) return oakH(x, z);   // deep oak — mask is exactly 1, and h * 0 + oakH * 1 is oakH
     const om = oakM(x, z);
-    return om <= 0 ? h : h * (1 - om) + oakH(x, z) * om;   // the rim: the same lerp shape the desert flat uses, over the same 450 voxels, so the two forests meet on a slope rather than on a step
+    return om <= 0 ? pineH(x, z) : pineH(x, z) * (1 - om) + oakH(x, z) * om;   // the rim: the same lerp shape the desert flat uses, over the same 450 voxels, so the two forests meet on a slope rather than on a step
   };
   // ── SHALLOW BANKS (user 2026-08-17: "make the rivers in the oak forest flatter against the terrain instead
   // of how the terrain just drops off steeply to the water") ── OAK FOREST ONLY, and a direct consequence of the
@@ -948,8 +1410,52 @@
   // The cone is unaffected, and if anything gentler: it now runs from 24 to OAKBANKR instead of from 60,
   // so the same 82-voxel rise is spread over 256 voxels rather than 220.
   const OAKBEACH = 24, OAKBEACHY = WL + 4;             // flat shore width in voxels (2.4 m), and its height
+  // ── AND THE PINE FOREST'S OWN, WIDER AND SHALLOWER (user 2026-08-31: "make the transition from the dirt to
+  // sand flatter in the pine forest") ── same cone, two numbers changed: twice the flat sand before it starts
+  // to climb, and a top at WL + 46 instead of oak's WL + 86. Those give a mean gradient of 42/232 = 0.18
+  // against oak's 82/256 = 0.32, so the apron is a little over half as steep and reaches the same distance.
+  // The oak forest keeps its own profile untouched: this was asked for in the pine, and the oak's shore is
+  // the one the whole helper was tuned against in the first place.
+  const PINEBEACH = 48, PINERISE = 24;                 // flat shore width, and the cone's rise over OAKBANKY
   const oakBank = (h, x, z) => {                       // ONE shared scalar helper again, for the reason oakRoll is one: three copies of H and no room for drift
     const dx = pwrap(x - SPWX);                        // wrapped, for the reason oakRoll's is
+    // ── THE ARCTIC SEABED IS RE-ASSERTED HERE, AFTER THE BASINS ── arctH already put the bed under the water
+    // back in baseH, but H's pass order runs the BASIN carve between baseH and this helper, and basinLow reads
+    // the arctic explicitly (BASIN_ARCTLIFT) so basins very much do form here. A basin drags a column down
+    // toward LIFT - 40, which is sixty voxels under the surface: Beer-Lambert kills the return from that depth
+    // completely, and the result would be exactly the flat unlit water the "put the terrain just below the
+    // water" request is asking to get rid of, in patches, across the biome.
+    // Re-stating the bed is the one place it can be done once and be true in all three copies of H, and it is
+    // the same trick oakRoll uses for the band terrain. Everything that runs AFTER this can only LOWER the
+    // column (the river carve is a Math.min) or is out of reach (the beach flat needs h >= WL - 5), so the bed
+    // this line writes is the bed the world gets.
+    // …and it is a FLOOR, not a second lerp. Re-lerping on the same mask that oakRoll already lerped on
+    // squares it — the effective weight becomes 1 - (1 - am)^2, which reaches 1 far too early and drags the
+    // whole shoreline out into the forest, steepening the one transition this band is judged on. Firing only
+    // where the column is BELOW the bed leaves the shore slope exactly as oakRoll drew it and still catches
+    // every basin, which is the only thing that can have put a column down there.
+    if (dx < ARCTFAR && dx > ARCTWFAR) {
+      const am = arcticM(x, z);
+      // ══ THE FLOOR STAYS A FLOOR — a second lerp here is a KNOWN, DOCUMENTED FAILURE (the paragraph above
+      // names it, and it was re-introduced and reverted on 2026-08-30). oakRoll has ALREADY lerped this column
+      // toward the arctic on `am`; lerping again on the same mask squares it to 1 - (1 - am)^2, which reaches 1
+      // far too early and marches the shoreline out into the forest. Do not "make the bed authoritative" here.
+      // ══ WHAT THE FLOOR CANNOT DO is stop a hill that is ABOVE the bed from standing in open sea, and that is
+      // a real defect: rock 66 voxels proud of the water at am 0.84, snow-capped, reading as an iceberg made of
+      // ROCK[0] grey. So the second rule is a CEILING ON HEIGHT ABOVE THE WATERLINE, and it is a different thing
+      // from a lerp toward the bed in the one way that matters: it only touches ground that is HIGH. The shore
+      // slope lives within a few voxels of WL, stays under the cap everywhere, and is left exactly as oakRoll
+      // drew it — so the mask is not effectively squared where the transition is actually judged.
+      // The excess above the cap is COMPRESSED rather than clipped, or every affected hill would come out with
+      // a flat top at exactly the cap — a plateau, which is the artefact this is trying to remove.
+      if (am >= 1) return arctSeaH(x, z);              // the core of the band IS the bed
+      if (am > 0) {
+        const sb = arctSeaH(x, z);
+        if (h < sb) return h * (1 - am) + sb * am;     // …the floor, unchanged: basins and anything under the bed
+        const cap = WL + (1 - am) * ARCT_STAND;
+        if (h > cap) return Math.max(sb, cap + (h - cap) * (1 - am));
+      }
+    }
     // THE BIRCH FOREST GETS THE SHALLOW BANKS TOO, because it got the rounded hills that make them necessary:
     // the whole reason this helper exists is that oakH lifts land near water ~42 voxels over WL and the river
     // lerp then reads as a cliff. A band with oak terrain and pine banks would have exactly that cliff.
@@ -958,9 +1464,19 @@
     // over WL, and the river lerp turns that into the same cliff — a grey stone wall along the bank, which is
     // what the screenshot shows. It had oak terrain and pine banks, the exact combination this note warns
     // about. Adding it here is one term, and it is the same term the birch needed for the same reason.
-    const bm = (dx < BIRCHFAR && dx > BIRCHWFAR) ? birchM(x, z)
-             : (dx < ARCTFAR && dx > ARCTWFAR) ? arcticM(x, z) : 0;
-    if (bm <= 0 && (dx >= OAKFAR || dx <= OAKWFAR)) return h;   // pine forest and desert - one subtraction and a compare, before the river scan
+    // …and the ARCTIC arm that used to be the second half of this expression is GONE, because the early return
+    // above answers for every arctic column — which is true now that it returns unconditionally, and was NOT
+    // true while it was guarded by `h < sb`: a column with land above the bed fell straight through to here. The bank cone exists to stop land standing 42 voxels over
+    // the water and dropping to it as a cliff; the arctic has no land left to do that with.
+    // ── AND THE PINE FOREST GETS THEM TOO (user 2026-08-31: "can you flatten the sand that leads to the
+    // water in the pine forest. similar to how the oak forest does it") ── it used to back out here with the
+    // desert, and that was right while pine WAS baseH: baseH's own shoreK term already fades its fine detail
+    // out near the waterline, so pine met water gently and needed no skirt. pineH does not have that term and
+    // is 118 voxels tall, so pine now meets water exactly the way oak did before this helper existed - as a
+    // cliff. The two asks are the same ask: the biome that got oak's hills needs oak's banks, which is the
+    // note the birch and the arctic arms below are both already written against.
+    const bm = (dx < BIRCHFAR && dx > BIRCHWFAR) ? birchM(x, z) : 0;
+    const pine = bm <= 0 && (dx >= OAKFAR || dx <= OAKWFAR);   // …no named band owns this column: the pine forest, and the desert's base under its flat
     if (h <= OAKBEACHY) return h;                      // …and any ground already at or under the BEACH, in either forest
     const d = bankDist(x, z);
     if (d >= OAKBANKR) return h;                       // no water within the skirt
@@ -968,11 +1484,12 @@
     // the same top (OAKBANKY + OAKBRISE, which is deliberately above HMAX - WL so the cap always releases
     // into the hillside with no crease). Two separate pieces would step 18 voxels where they met, which is
     // exactly the cliff this whole helper exists to remove.
-    const c = OAKBEACHY + (OAKBANKY + OAKBRISE - OAKBEACHY)
-              * sstep(Math.max(0, d - OAKBEACH) / (OAKBANKR - OAKBEACH));
+    const bF = pine ? PINEBEACH : OAKBEACH, bR = pine ? PINERISE : OAKBRISE;
+    const c = OAKBEACHY + (OAKBANKY + bR - OAKBEACHY)
+              * sstep(Math.max(0, d - bF) / (OAKBANKR - bF));
     if (c >= h) return h;
     if (bm > 0) return bm >= 1 ? c : h * (1 - bm) + c * bm;   // the birch band, faded on its own mask for the same reason the oak rim is
-    if (dx >= OAKFAR || dx <= OAKWFAR) return h;       // outside the oak band entirely — only reachable when the birch cheap-out above let us through
+    if (pine) return c;                                // the pine forest: the cone at full strength, exactly as deep oak gets it
     if (dx > OAKNEAR || dx < OAKWNEAR) { const om = oakM(x, z); return om <= 0 ? h : h * (1 - om) + c * om; }   // the rim: faded in on the same mask oakRoll uses, so a river crossing the biome border changes width gradually instead of stepping
     return c;
   };
@@ -986,7 +1503,7 @@
   // is the exact adjacency the meander notes under OAKOFF exist to prevent. That trap is the reason DESH is
   // derived from the strip width (DESH = W/2) and never from BIOP: the leftover between the sand's east
   // midpoint and the next period's oak is not slack to be absorbed, it is the SECOND PINE STRIP.
-  const DESH = 1080, DESC = BAND_MIRROR * (DESOFF + DESH);             // half-width to the mask MIDPOINT, and the band centre: DESC ± DESH = 4460 and 6620
+  const DESH = 2160, DESC = BAND_MIRROR * (DESOFF + DESH);             // half-width to the mask MIDPOINT, and the band centre: DESC ± DESH = 4460 and 6620
   const desertM = (x, z) => {                          // 0 = pine forest, 1 = open desert — a BAND now (see BIOP), with pine on BOTH sides of the sand
     // The wobble is subtracted AT THE SPAWN'S OWN z. Without that it swings +-216 voxels either way, so how
     // far the player starts from the sand was a lottery: measured 380 voxels one session where the constant
@@ -999,6 +1516,99 @@
     const t = 0.5 + (DESH - Math.abs(pwrap(x - c))) / DESB;   // a band, not a half-plane: one band centred at DESC covers the sand at the east end of a period AND the sand at the west end of the next, because the distance wraps
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
+  // ══ THE BIOME BORDER RIVERS (user 2026-08-31: "separate the different biomes with rivers and water") ══
+  // Every band mask in this file is the SAME shape — a centre line c(z) that wobbles with z, and a mask that
+  // reads exactly 0.5 where |pwrap(x - c)| equals the band's half-width. So "the border between two biomes" is
+  // not something that has to be searched for: it IS that iso-line, in closed form, for all five bands at
+  // once. bioEdge below is bankEval's trick applied to the band geometry instead of the channel geometry — a
+  // second, different READ of numbers that already exist — so where the rivers run can never drift away from
+  // where the biomes actually change. Move a band and its river moves with it, for free.
+  //
+  // AND IT GOES INTO riverS, NOT INTO H. There are THREE copies of H (this one, and makeHRow/makeHCol in
+  // world/gen-noise.js, which __vb.htest() asserts are identical), and adding a term to all three by hand is
+  // the one edit in this file that cannot be made safely by inspection. All three already carve on `rs`, so a
+  // term folded into riverS reaches every one of them by construction and htest/gtest stay clean without being
+  // tested — the same reason the cherry forest was carved out of oakM rather than given a height field of its
+  // own. It also means the border rivers inherit the ENTIRE water stack for nothing: the bed carve, the beach
+  // dither, the water fill, shore surf, fish, lily pads and the river ambience bed all key on rs, and not one
+  // of them had to learn a new shape.
+  const BIORW = 122;                                    // channel half-width in voxels, before the per-z variation below.
+  // TRIPLED from 26 (user 2026-08-31: "triple the width of the rivers that separate the biomes"). The number
+  // that actually had to triple is the WET width, which is not this one: the H carve only floods above
+  // rs ~0.65, and with BIORSAT at 1.10 that lands at d = 0.468 * bwW, so the water is 0.94 * bwW across.
+  // 26 measured 30-44 voxels in-game, and 122 gives ~114 - three times the water, which is what a player
+  // actually sees. It is 122 rather than 78 because BIORSAT came down in the same pass (see below): a
+  // gentler ramp reaches the flood line sooner, so the channel has to be wider to end up equally wide.
+  const BIORSAT = 1.10;                                // …and the saturation over the middle of the channel.
+  // ── THIS IS WHAT MADE THE BANKS DROP OFF (user 2026-08-31: "the edges of the river just seem to drop
+  // off. make the banks of the river smoother as it goes into the water to the ocean floor") ── it was
+  // 2.2, borrowed from the trick rivEval's LAKES use to stay wet bank to bank. On a lake that is right;
+  // on a river cross-section it is not, because saturating rs at 1 across the inner 55% makes the bed a
+  // flat PLATEAU, and every voxel of the ~61 the bank has to climb then has to happen in the thin taper
+  // that is left. Measured in-game at BIORW 26: 124 at the centre and 150 only 14 voxels out - and 150 is
+  // still UNDER the waterline at 152, so the drop-off the user saw was the submerged half of it, a wall
+  // going straight down to the bed with no shelf at all.
+  // At 1.10 the ramp is very nearly linear: full depth is held only over the inner ~9% (an 11-voxel
+  // thalweg, so the deepest part is still a channel and not a single column) and rs then falls smoothly
+  // all the way out. Depth now ramps 124 -> 131 -> 141 -> 151 over 0/30/45/57 voxels, so the bed shelves
+  // up to the shore at about 1:2 instead of dropping off it, and the valley term below carries the same
+  // curve on above the waterline. The whole section is one continuous slope now, wet part included.
+  let bpZ = null, bpD = 0, bpO = 0, bpC = 0;
+  const bioPin = () => {                               // the wobbles are PINNED at the spawn's own z, exactly as desertM/oakM/cherryM pin theirs, so the borders meander identically. Lazy and keyed on SPWZ, NOT precomputed: SPWX/SPWZ are `let`s baked by sim/player.js, which loads AFTER this file, so evaluating them at load time is a TDZ throw — and they are re-randomised per world, so the key has to be checked rather than assumed.
+    if (bpZ === SPWZ) return;
+    bpZ = SPWZ; bpD = desWob(SPWZ); bpO = oakWob(SPWZ); bpC = bpO;   // the cherry band rides oakWob now (see CHHALF), so the border river on its edge has to ride it too or the water and the blossom part company
+  };
+  let bwZ = null, bwD = 0, bwO = 0, bwC = 0, bwM = 0, bwW = 0;
+  const bioWobZ = (z) => {                             // ── 1-ENTRY MEMO, KEYED ON z ── every term here is a function of z ALONE, and the row path (makeHRow) walks a whole 2048-wide row at one z, so this is ~9 vnoise per ROW rather than per column. The column path (makeHCol) misses every time and pays them, which is what it already does for the masks themselves.
+    if (z === bwZ) return;
+    bwZ = z; bwD = desWob(z); bwO = oakWob(z); bwC = bwO;
+    bwM = (vnoise(z * 0.0029 + 61.3, 137.9) - 0.5) * 96 + (vnoise(z * 0.0104 + 19.7, 173.1) - 0.5) * 30;   // the CHANNEL'S own meander, on top of the band's: the border already wobbles, but a river that follows it exactly reads as a drawn line. This lets the water cross and re-cross the line it marks, which is what a real border river does.
+    bwW = BIORW * (0.72 + 0.56 * vnoise(z * 0.0017 + 88.1, 41.3));   // …and it narrows and widens along its length rather than running at one gauge
+  };
+  // Distance in voxels to the nearest band EDGE, over all five bands. Each line is that band's own mask
+  // arithmetic read backwards: |pwrap(x - c)| is the distance from the centre line, so subtracting the
+  // half-width and taking |.| is the distance to the edge. cherryM is the one that states its half-width
+  // differently — its t crosses 0.5 at CHHALF + CHB/2, not at a bare constant — so that is written out here.
+  const bioEdge = (x, z) => {
+    bioPin(); bioWobZ(z);
+    const xm = x - bwM;                                // the meander shifts the RIVER, never the band: the masks are not touched, so no biome moves and no tree, spawn or life band shifts with it
+    const dw = bwD - bpD, ow = bwO - bpO, cw = bwC - bpC;
+    let b = 1e9, d;
+    d = Math.abs(Math.abs(pwrap(xm - (SPWX + DESC   + dw))) - DESH);              if (d < b) b = d;
+    d = Math.abs(Math.abs(pwrap(xm - (SPWX + ARCTC  + dw))) - ARCTH);             if (d < b) b = d;
+    d = Math.abs(Math.abs(pwrap(xm - (SPWX + BIRCHC + dw))) - BIRCHH);            if (d < b) b = d;
+    d = Math.abs(Math.abs(pwrap(xm - (SPWX + OAKC   + ow))) - OAKH);              if (d < b) b = d;
+    d = Math.abs(Math.abs(pwrap(xm - (SPWX - CHOFF  + cw))) - (CHHALF + CHB * 0.5));  if (d < b) b = d;
+    return b;
+  };
+  const BIORIV_ON = location.search.includes('noriv') ? 0 : 1;   // ?noriv — the whole feature on one switch, and a URL flag rather than a live toggle for two reasons: the height field is BAKED into W, so only a world rebuild could apply a flip anyway, and a plain const is carried into both gen workers by the ordinary consts registry. A `let` would have to be hand-declared in each preamble AND kept in step across three threads to mean anything.
+  // ── AND THE CHANNEL SITS IN A VALLEY, OR IT IS A CANAL ── the first version was the core term alone, and
+  // in-game it read as a trench with vertical walls: BIORSAT saturates the inner ~54% of the channel at full
+  // strength, so the whole climb out happened in the ~12 voxels of taper that were left. Measured across the
+  // first build, at the waterline WL=152: 124 at the centre and back up to 190 only 60 voxels away, most of it
+  // in the last twelve. A river cuts a VALLEY and then runs along the bottom of it, so there are two terms
+  // here, not one: the core is the wet channel and is unchanged, and the valley is a much wider, much gentler
+  // cone the core sits inside. rs is already a soft carve at low strength — the H lerp pulls h only part of
+  // the way to the bed — so a valley is just the same expression evaluated further out.
+  const BIORVALL = 2.0;                                // the valley reaches this many channel-widths from the line
+  // ── AND IT CAME DOWN WHEN BIORW TRIPLED, WHICH IS NOT A HEDGE AGAINST THE ASK ── this is expressed in
+  // CHANNEL widths, so leaving it at 4.5 would have tripled the valley too: a 900-voxel-wide depression
+  // either side of every border, with banks three times flatter than the ones that were just tuned to look
+  // right. The bank has the same job it always had - climb the ~60 voxels from the bed back to open land -
+  // and that vertical did not change when the river got wider, so the bank should keep its slope and only
+  // start further out. It ran 99 voxels before (wet edge 19 -> valley 117 at BIORW 26); 2.0 puts the valley
+  // at 156 against a wet edge of 57, which is the same 99. The river widens; the shoreline does not flatten.
+  const BIORVK = 0.72;                                 // …and this is its strength at the centre, well under the core's, so the core still owns the middle and this only shapes the shoulders
+  const bioRivS = (x, z) => {                          // …and the same 0..1 channel strength rivEval returns, so riverS can simply take the max and every consumer downstream is none the wiser
+    if (!BIORIV_ON) return 0;
+    const d = bioEdge(x, z);
+    const wv = bwW * BIORVALL;
+    if (d >= wv) return 0;
+    const core = (1 - d / bwW) * BIORSAT;              // the wet channel
+    const vall = (1 - d / wv) * BIORVK;                // …and the valley it runs in
+    const t = core > vall ? core : vall;
+    return t <= 0 ? 0 : sstep(t >= 1 ? 1 : t);
+  };
   const H = (x, z) => {
     let h = baseH(x, z);
     const bm = basinM(x, z);
@@ -1007,7 +1617,7 @@
     const rs = riverS(x, z);
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
     h = Math.round(oakBank(h, x, z));                  // ── SHALLOW OAK BANKS ── BEFORE the carve, so the lerp below starts from the shelf instead of from a hilltop. h is already an integer here, so Math.round is the identity outside the oak forest and the pine/desert heights stay bit-exact; see oakBank
-    if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
+    if (rs > 0.02) h = Math.min(h, Math.round(Math.min(h, WL + RIVLAND) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
     if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
     // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
     // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
@@ -1016,9 +1626,20 @@
     // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
     // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
     // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-    const dm = desertM(x, z); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.
+    const dm = desertM(x, z); if (dm > 0) { const dmr = dm * (1 - rs); h = Math.round(h * (1 - dmr) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dmr); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.   // ── AND THE SAND YIELDS TO THE WATER (see BIOME BORDER RIVERS in world/window.js) ── this lerp runs AFTER the river carve, so at the desert's own border, where dm is exactly 0.5, it used to average the carved bed 50/50 with a dune and hand back a channel too shallow to flood — the border river erased by the biome it was there to separate. That is the same failure the `rs <= 0.04` guard on the WL+2 lift below already answers for; the lerp simply never got the same treatment. Scaling dm by (1 - rs) lets a full-strength channel pass through the sand intact and leaves the shoulders sandy. BIT-EXACT where there is no water: rs is 0 across the open desert, and dm * (1 - 0) is dm in IEEE754, so every dune in the world is untouched. A biome decides what the shore is MADE OF, never where the water ENDS.
     return h;
   };
+  // ── A RIVER'S WIDTH MUST NOT DEPEND ON HOW HIGH THE LAND BESIDE IT IS (user 2026-08-31: "the river between
+  // the pine and oak has areas where the river is very thin. prevent thin rivers from forming") ── the carve
+  // is a lerp toward the bed weighted by rs, so the land term h * (1 - rs) puts the SURROUNDING HEIGHT into
+  // the channel's depth. On low ground rs 0.65 is enough to flood; beside a 233-voxel hill the same rs comes
+  // out above the waterline and only the very middle of the channel goes under. Same river, same rs field,
+  // half the width - and the pine mountains are exactly what turned that from a latent bug into a visible
+  // one. Capping the land term at WL + 44 decouples them: a channel floods to the same width whether it
+  // crosses a valley floor or a shoulder. BIT-EXACT below the cap, which is all ground under 196 - so every
+  // river in the world outside the high country is untouched - and it can only ever LOWER a column, because
+  // the whole expression is already inside a Math.min against h.
+  const RIVLAND = 44;                                  // …how far over the waterline the land may push a channel's bed
   const RIVCELL = 768, RIVINF = 6200;                  // WATERSHEDS — one candidate per ~77 m cell, rare roll; each hit is a whole dendritic system (influence radius must cover the longest possible chain)
   const rivCache = new Map();
   function riverAt(cx, cz) {                           // builds a WATERSHED: 1-3 tributaries join a main stem at confluences, the stem widens downstream
@@ -1141,7 +1762,7 @@
     return L;
   }
   function riverS(x, z) {                              // channel strength 0..1 at this column
-    let best = 0;
+    let best = bioRivS(x, z);                          // ── THE BIOME BORDER RIVER ── seeded here rather than added anywhere downstream, so it is folded into the SAME max the watersheds are and every one of rs's consumers gets it without knowing it exists. A watershed crossing a border simply wins where it is the deeper of the two.
     if (rivScope && x >= rivScope.x0 && x < rivScope.x1 && z >= rivScope.z0 && z < rivScope.z1) {
       for (const R of rivScope.list) { const v = rivEval(R, x, z); if (v > best) best = v; }
       return best;

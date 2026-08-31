@@ -57,7 +57,7 @@
   for (const i of [...ROCK, ...ROCKX, ...ORECOAL, ...OREIRON]) { decorTab[i] = 1; pickOnlyTab[i] = 1; }   // …and COAL + IRON (user): ore belongs to the pick like the stone it sits in   // …the STONE STRATA under the soil (user) belong to the PICK, not the shovel: dig down with the shovel, then swap and keep going
   const woodTab = new Uint8Array(256);                 // ── WOOD ── the axe takes chunks out of anything made of wood voxels (user), including a stump the
   for (const i of woodIds) { woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }   // felled tree left behind, which belongs to no tree shape any more
-  for (const i of [...ASNOW]) { solidTab[i] = 1; decorTab[i] = 1; digOnlyTab[i] = 1; }   // ── PACKED SNOW ── the arctic floor: SOLID (you walk on it, unlike the fallen-snow decor it is coloured after) and the SHOVEL's, like every other kind of ground
+  for (const i of [...ASNOW]) { solidTab[i] = 1; decorTab[i] = 1; digOnlyTab[i] = 1; }   // ── PACKED SNOW ── the arctic floor, its glaciers and the small caps floating in the sea: SOLID (you walk on it), shovel-only   // ── PACKED SNOW ── the arctic floor: SOLID (you walk on it, unlike the fallen-snow decor it is coloured after) and the SHOVEL's, like every other kind of ground
   for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND, ...DSAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the SOIL (user): dirt, the mossy grass on top of it, the brown pine litter that covers most of the forest floor, and beach sand. NOT the stone strata underneath — the shovel stops at rock (user).   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
   // ── SURFACE SCATTER ── grass strands, flowers, twigs and pinecones: all of it needs something underneath,
   // which is what floatTab marks. floatTab is NOT a statement about whether a tool can break the thing — the
@@ -100,13 +100,28 @@
   if (CONEV) for (const q of CONEV.vox) { const ci = q >>> 24; floatTab[ci] = 1; coneTab[ci] = 1; }   // …and the pinecones lying beside them
   { const markSolid = (m) => { if (m) for (const p of m.vox) solidTab[p >>> 24] = 1; };     // logs + rocks + mushrooms are REAL obstacles; everything else stays walk-through decor
     markSolid(LOGV);
-    markSolid(MUSHV);                                                                        // mushroom clusters collide (its ids are its own — addCol never dedupes)
-    if (MUSHV) for (const p of MUSHV.vox) mushTab[p >>> 24] = 1;                             // …and they're BOUNCY: landing on one trampolines the player (progressively higher)
+    // ── MUSHROOMS COLLIDE, AND THEY ARE BOUNCY — BUT ONLY ON THE IDS THEY OWN ── this used to read "its ids
+    // are its own (addCol never dedupes)", which stopped being true the day the table filled: addCol's ceiling
+    // snaps to palNearest, and palNearest matches on COLOUR with no idea what a material is. Two of the
+    // mushroom's cream shades landed on SAND[2] and DSAND[3], and this line then handed every beach and every
+    // dune the trampoline — reported as "the sand by the rivers has a bounce effect". Rock and two flower reds
+    // went the same way. Same failure, same fix and same watermark as the penguin block below: see MUSH_OWN0 in
+    // assets/bow.js, where the loader now also snaps every borrowed shade back into the model's own ramp, so
+    // this guard rejects nothing today and is here to keep it that way.
+    if (MUSHV) for (const p of MUSHV.vox) { const id = p >>> 24; if (id >= MUSH_OWN0) { solidTab[id] = 1; mushTab[id] = 1; } }
     markSolid(LILYPAD_GIGV);                                                                 // GIANT lilypads are solid — the player can stand on them (user: 'give it a hitbox')
     for (const r of ROCK26) markSolid(r);
 
     for (const r of DROCK) { markSolid(r); for (const p of r.vox) { decorTab[p >>> 24] = 1; pickOnlyTab[p >>> 24] = 1; rockShTab[p >>> 24] = 1; } }   // desert rocks are STONE: solid, and choppable only with the pick — the same pairing ROCK26 gets below, so an axe bounces off them
     for (const c of CACTI) markSolid(c);
+    // ── PENGUINS ARE SOLID DECOR ── you cannot walk through one, which is the whole difference between a bird
+    // standing on the ice and a decal of a bird on the ice. decorTab admits it to the swing gate without any
+    // *OnlyTab restriction, so any tool knocks it down, exactly as the cacti above are set up.
+    // ── ONLY THE IDS THE PENGUIN OWNS ── see PENG_OWN0 in assets/bow.js: on a full palette its colours snap to
+    // ids other decorations already hold, and flagging those would re-type a boulder or a flower as solid
+    // penguin. Below PENG_OWN0 the id is borrowed and is left exactly as its owner set it.
+    for (const m of [PENGUINV, PENGBABYV]) if (m) for (const p of m.vox) { const id = p >>> 24;
+      if (id >= PENG_OWN0) { solidTab[id] = 1; decorTab[id] = 1; } }
     // ── AND CHOPPABLE BY ANYTHING, ARROWS INCLUDED (user 2026-08-15) ── decorTab is the admission ticket; the
     // three *OnlyTab tables are RESTRICTIONS on top of it. Listing the cacti here and in NOTHING else is exactly
     // what makes the swing gate's `(axeOnlyTab[id] ? cut : true)` branch answer true for every tool, the same

@@ -99,8 +99,8 @@
     const PHYS_GRP : i32 = ${PHYS_GRP};                                        // bodies per group sphere in u.physG — bodyTrace culls a whole slab of the debris on one compare (see render/buffers.js)
     fn dropV(i : i32) -> vec4<f32> { if (i < ${DROP_HALF * 4}) { return u.drops[i]; } return u.dropsB[i - ${DROP_HALF * 4}]; }        // one logical drops[] over the two halves. The index is the loop counter, workgroup-uniform, so this is a scalar branch — and after the bit-scan it only runs for slots that actually touch the tile.
     fn lifeMotV(i : i32) -> vec4<f32> { if (i < ${DROP_HALF}) { return u.lifeMot[i]; } return u.lifeMotB[i - ${DROP_HALF}]; }   // …and one logical lifeMot[]
-    const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
-    const BX : i32 = ${BX}; const BY : i32 = ${BY}; const BZ : i32 = ${BZ};
+    const WX : i32 = ${GWX}; const WY : i32 = ${GWY}; const WZ : i32 = ${GWZ};   // ── THE SHADER'S WORLD IS THE *GPU* WINDOW ── wider than the CPU's W (see TWO WINDOWS in world/window.js). Every extent, wrap and brick index in WGSL is on this grid; nothing in a shader ever sees the CPU one.
+    const BX : i32 = ${GBX}; const BY : i32 = ${GBY}; const BZ : i32 = ${GBZ};
     const SUN_COL : vec3<f32> = vec3<f32>(3.60, 3.24, 2.74);
     // ── THE SUN'S ANGULAR RADIUS ── the MOON's own outer threshold, so the two discs are the same size
     // (user 2026-08-28: "make the sun as big as the moon"). Real sun and moon are both ~0.53 degrees and
@@ -694,7 +694,7 @@
     // (composite maps it straight back to 2u for faceN, and gbFace does the same for the denoiser's edge test),
     // so nothing downstream can tell the difference except the code that asks.
     const SANDF : u32 = 9u;
-    fn isSandV(v : u32) -> bool { return ${[...SAND, ...DSAND].map((i) => 'v == ' + i + 'u').join(' || ')}; }   // beach/lakebed SAND + desert DSAND -- ids listed one by one rather than as a range, so a future palette reorder cannot silently widen it
+    fn isSandV(v : u32) -> bool { return ${[...SAND, ...DSAND].map((i) => 'v == ' + i + 'u').join(' || ')}; }
     // ── WHICH IDS ARE A CACTUS ── built the way isSandV is, from the ids the loaded models actually
     // reference rather than a hand-written list, so a re-bake or a palette shift cannot leave it stale. The
     // trailing 'or false' keeps the expression valid WGSL if the cacti failed to load and the set is empty.
@@ -708,6 +708,6 @@
     // somehow empty (a failed rocks26 fetch leaves only the terrain strata, which is already 12 ids, but the
     // guard costs nothing and an empty return would be a compile error, i.e. a black screen).
     fn isRockV(v : u32) -> bool { return ${[...rockShTab].map((f, i) => (f ? i : -1)).filter((i) => i >= 0).map((i) => 'v == ' + i + 'u').join(' || ') || 'false'}; }
-    fn gbFace(a : f32) -> u32 { let r = u32(a * 255.0 + 0.5) & 15u; return select(r, 2u, r == SANDF); }   // ...the plain face, sand folded back into TOP: the denoiser rejects a neighbour whose face differs, and without this a sand/grass boundary would stop sharing irradiance samples
+    fn gbFace(a : f32) -> u32 { let r = u32(a * 255.0 + 0.5) & 15u; return select(r, 2u, r == SANDF); }   // …the plain face, sand folded back into TOP: the denoiser rejects a neighbour whose face differs, and a sand top is an ordinary top to it   // ...the plain face, sand folded back into TOP: the denoiser rejects a neighbour whose face differs, and without this a sand/grass boundary would stop sharing irradiance samples
   `;
 

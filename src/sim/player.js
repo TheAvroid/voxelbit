@@ -34,7 +34,18 @@
   // The walk is the same guard build.js uses on the anchor: never start in water or a gorge.
   // SPOX itself is computed in world/build.js, before the streaming window is sized around it.
   const P = { x: SPWX + SPOX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: SPYAW, pitch: SPPITCH, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0, sink: 0 };
-  P.y = hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];
+  // ── AND ON THE ICE, hmap IS NOT THE SURFACE (2026-08-30) ── hmap is the GROUND, written once from H
+  // (world/terrain.js), and an arctic glacier is stamped ABOVE the waterline without ever raising it. So on
+  // the summit the map still reports the SEABED twenty-odd voxels under the water, and reading it put the
+  // player's feet there — inside a hundred and seventy voxels of solid berg. SPY is what the spawn search
+  // decided, and it is -1 everywhere it did not decide anything, which is every biome but the arctic.
+  // WHY IT IS TOLD AND NOT DERIVED: the obvious alternative is to scan W downward for the first solid voxel,
+  // and that scan lands on whatever is STANDING on the summit. Worldgen stamps the penguin colonies before
+  // the player is placed, so it spawned the player on a penguin's head — measured 9 voxels up on one boot of
+  // five, and the drop came the moment the bird walked out from under them. boxFree, which respawn() below
+  // uses for the same job, is not available up here: it and solid() are `const`s declared further down this
+  // fragment, and solid() reads ED, whose fragment is thirty later still.
+  P.y = SPY >= 0 ? SPY : hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
   const keys = new Set();
   // Is this world point inside a rigid body? A fallen tree is NOT in W — that is the whole point of the
@@ -373,7 +384,7 @@
   function respawn() {
     P.x = SPWX + SPOX + 0.5; P.z = SPWZ + 0.5; P.yaw = SPYAW;   // …and a RESPAWN lands in the oak too P.pitch = SPPITCH; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0;   // respawning always lifts you back out of the sand + faces the baked spawn direction
     maybeRecenter();
-    P.y = hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];
+    P.y = SPY >= 0 ? SPY : hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];   // the same summit y the first spawn stands on — see SPY at the top of this fragment; the lift below then still covers anything that has since been built or dropped there
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
     P.fallT = 0; P.fallPk = undefined; P.noFall = 1; uwT = 0;   // fresh lungs on respawn — and a clean fall ledger, for the reason cmdGoTo clears the same pair: P.fallPk is a world y left over from wherever you died, and the lift loop above can leave you over the ground
     vitReset();                                         // …and a full bar of hearts and hunger

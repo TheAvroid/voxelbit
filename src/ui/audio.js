@@ -166,6 +166,37 @@
     const DES_AMB_SRCS = ['sound/desert_ambience.mp4', 'sound/desert_ambience.mp3', 'sound/desert_ambience.wav'];
     const DES_AMB_NEAR = 0.02;                         // start FETCHING at the first hint of sand — desertM > 0 covers the whole 450-voxel blend band, so the decode and the rebuild finish long before the bed is loud enough to notice arriving
     const DES_AMB_CHUNK = 1 << 20;                     // frames of palindrome copied per rendered frame. The whole 12.6 M-sample copy in one go is a 30-50 ms stall (a dropped frame); a slice this size is ~2 ms
+    // == THE ARCTIC BED IS THE DESERT'S WIND WITH THE FLY TAKEN OUT (user 2026-08-30: "dont play the bird
+    // ambience in the arctic. play the wind from the desert but remove the fly sound from it") ==
+    //
+    // IT IS THE SAME DECODED BUFFER, NOT A SECOND DOWNLOAD. dAmbPal is already ~50 MB of float built lazily
+    // from a 2 MB take; shipping a filtered twin would double both for a sound the player hears in one strip.
+    // A second BufferSourceNode reads the same palindrome through its own filter chain into its own gain, so
+    // the desert bed is bit-for-bit what it always was and the arctic is a processed view of it.
+    //
+    // WHAT THE FILTER REMOVES, MEASURED OFF THE SPECTROGRAM RATHER THAN GUESSED. The take is broadband wind
+    // (its body is under ~150 Hz, its air runs to 19 kHz) with ONE tonal element in it: a HARMONIC COMB with a
+    // ~265 Hz fundamental and partials at 530/800/1070/1330/1600/1870, arriving in bursts about half a second
+    // apart. A harmonic series on a ~265 Hz fundamental in repeated short passes is an insect wingbeat, and it
+    // is the only thing in the file that is not noise - so it is the fly.
+    // Two peaking cuts, not a low-pass: a low-pass steep enough to catch the comb takes the wind's whole top
+    // end with it and leaves a dull rumble. ARC_FLY_F1 kills the fundamental narrowly; ARC_FLY_F2 is a wide
+    // low-Q bell centred in the middle of the comb, which covers ~250 Hz to ~2 kHz - every partial - while the
+    // rumble below it and the air above it are untouched. Verified on the spectrogram: the comb drops into the
+    // noise floor and the sub-150 Hz body is unchanged. It also happens to be the right EQ for the biome, since
+    // wind over ice has less mid-band grit in it than wind over sand.
+    const ARC_FLY_F1 = 270, ARC_FLY_Q1 = 2.2, ARC_FLY_G1 = -16;   // the wingbeat fundamental - narrow
+    const ARC_FLY_F2 = 760, ARC_FLY_Q2 = 0.55, ARC_FLY_G2 = -20;  // ...and one wide bell over the whole partial stack
+    // MEASURED, like DES_AMB_BASE was: the filter costs 1.9 LU (-27.6 -> -29.5 LUFS integrated), so the base is
+    // lifted by exactly that much to land the arctic bed at the same perceived level as the desert one.
+    // A crossfade between beds of different loudness reads as a volume ramp, which is what the desert bed's own
+    // note calls the one thing a handover must not do - and the arctic borders the PINE strip, so this bed
+    // hands over to the forest bed, not to the sand.
+    const ARC_AMB_BASE = +(0.1425 * Math.pow(10, 1.9 / 20)).toFixed(4);   // 0.1773
+    let aAmbLvl = 0, aAmbG = null, aAmbSrc = null;
+    const aAmbEl = { _sfxOut: null,
+      get volume() { return aAmbLvl; },
+      set volume(v) { aAmbLvl = v; if (aAmbG) aAmbG.gain.value = v; } };
     let dAmbLvl = 0;                                   // what applyVol / the tick last asked for — the shim's own `volume`
     let dAmbG = null, dAmbSrc = null, dAmbFwd = null, dAmbPal = null;
     let dAmbCh = 0, dAmbI = 0, dAmbSide = 0, dAmbBuild = false;
@@ -176,6 +207,7 @@
     const dAmbEl = { _sfxOut: null,
       get volume() { return dAmbLvl; },
       set volume(v) { dAmbLvl = v; if (dAmbG) dAmbG.gain.value = v; } };
+    regSnd(aAmbEl, ARC_AMB_BASE, false);               // BUS_AMB like the desert and forest beds: a bed is not an effect, so only the master and the ambience slider move it
     regSnd(dAmbEl, DES_AMB_BASE, false);               // BUS_AMB like the forest bed: a bed is not an effect, so only the master slider moves it
     // Fetch → decode → hand the buffer to the staged rebuild. Every step is async and every failure walks to the
     // next candidate file, so a missing or undecodable take costs silence rather than an exception on the frame
@@ -222,6 +254,18 @@
         dAmbEl._sfxOut = dAmbG;                        // from here the recorder's tap has something to grab
         dAmbSrc = ac.createBufferSource(); dAmbSrc.buffer = dAmbPal; dAmbSrc.loop = true; dAmbSrc.connect(dAmbG);
         dAmbHalf = (dAmbFwd.length - 1) / dAmbFwd.sampleRate;   // one PASS, in seconds: half the palindrome. Read BEFORE the source buffer is let go
+        // -- AND THE ARCTIC'S OWN VOICE OFF THE SAME BUFFER -- a second source through the two anti-fly cuts
+        // into its own gain. Started from the same ac.currentTime as the desert one, which costs nothing and
+        // means the two read the same point of the palindrome: they are never both audible (the bands are
+        // separate strips with pine between them), but if a future band ever put them together they would
+        // phase-align rather than beat against each other.
+        aAmbG = ac.createGain(); aAmbG.gain.value = aAmbLvl; aAmbG.connect(ac.destination);
+        aAmbEl._sfxOut = aAmbG;                        // the recorder's tap finds this the way it finds the desert's
+        const fq1 = ac.createBiquadFilter(); fq1.type = 'peaking'; fq1.frequency.value = ARC_FLY_F1; fq1.Q.value = ARC_FLY_Q1; fq1.gain.value = ARC_FLY_G1;
+        const fq2 = ac.createBiquadFilter(); fq2.type = 'peaking'; fq2.frequency.value = ARC_FLY_F2; fq2.Q.value = ARC_FLY_Q2; fq2.gain.value = ARC_FLY_G2;
+        aAmbSrc = ac.createBufferSource(); aAmbSrc.buffer = dAmbPal; aAmbSrc.loop = true;
+        aAmbSrc.connect(fq1); fq1.connect(fq2); fq2.connect(aAmbG);
+        aAmbSrc.start();
         dAmbT0 = ac.currentTime; dAmbSrc.start();      // started at gain 0 unless the player is already on sand — it runs for the rest of the session and only the gain ever moves, exactly as the forest loop does
         dAmbFwd = null;                                // the decoded take now lives inside the palindrome; holding it as well would be 25 MB for nothing
         dAmbPhase = 'play';
@@ -260,6 +304,7 @@
       const p = dAmbPass(), ac = sfxAC;
       return { phase: dAmbPhase, url: dAmbUrl, dm: +Math.max(0, Math.min(1, desertM(P.x, P.z))).toFixed(3),
                gain: +dAmbLvl.toFixed(5), forest: +amb.volume.toFixed(5), playing: dAmbPhase === 'play', audible: dAmbLvl > 0,
+               am: +Math.max(0, Math.min(1, arcticM(P.x, P.z))).toFixed(3), arctic: +aAmbLvl.toFixed(5), arcticOn: aAmbLvl > 0,
                pass: p ? p.pass : null, dir: p ? p.dir : null, passT: p ? +p.t.toFixed(3) : null,
                half: +dAmbHalf.toFixed(3), elapsed: p ? +p.el.toFixed(3) : null,
                frames: dAmbPal ? dAmbPal.length : 0, ch: dAmbPal ? dAmbPal.numberOfChannels : 0,
@@ -277,12 +322,21 @@
     // would otherwise restore full forest volume in the middle of the desert.
     ambBiomeTick = () => {
       const dm = Math.max(0, Math.min(1, desertM(P.x, P.z)));
-      const v = sndLevel(0.625, BUS_AMB) * (1 - dm);
+      // -- AND NO FOREST BIRDSONG OVER THE ICE EITHER (user 2026-08-30: "dont play the bird ambience in the
+      // arctic") -- exactly the argument the note above makes, applied to the second bed that is not a pine
+      // forest. THREE weights now, and they still sum to one: the two biome masks cannot both be non-zero (the
+      // arctic and the desert are separate strips with a whole pine strip between them - see the gap arithmetic
+      // under OAKOFF in world/window.js), so 1 - dm - am is the forest's share. Clamped anyway: a negative
+      // volume throws, and one arithmetic slip here would be an exception every frame rather than a wrong mix.
+      const am = Math.max(0, Math.min(1, arcticM(P.x, P.z)));
+      const v = sndLevel(0.625, BUS_AMB) * Math.max(0, 1 - dm - am);
       if (amb.volume !== v) amb.volume = v;            // compared against the ELEMENT and not a remembered value: applyVol() writes it behind our back, and a remembered one would then agree with itself while the forest played at full volume in the middle of the desert
-      if (dm > DES_AMB_NEAR) dAmbLoad();               // …the sand is in sight: start the fetch, once, ever
+      if (dm > DES_AMB_NEAR || am > DES_AMB_NEAR) dAmbLoad();   // ...the sand OR the ice is in sight. ONE take feeds both beds, so one loader does for both               // …the sand is in sight: start the fetch, once, ever
       if (dAmbBuild && dAmbStep()) dAmbGo();           // …and rebuild the palindrome a slice at a time until it is whole
       const dv = sndLevel(DES_AMB_BASE, BUS_AMB) * dm;   // the other side of the same weight: the two gains sum to one, so a step into the sand is a handover and never a gap or a doubling
       if (dAmbLvl !== dv) dAmbEl.volume = dv;
+      const av = sndLevel(ARC_AMB_BASE, BUS_AMB) * am;   // ...and the ice, on its own filtered voice off the same buffer
+      if (aAmbLvl !== av) aAmbEl.volume = av;
     };
     const kick = () => { if (amb.paused) ambPlay(); if (dAmbPhase !== 'idle') audioCtx(); };   // …and un-suspend the context the desert bed plays through, which the browser also holds until a gesture
     document.addEventListener('pointerdown', kick);

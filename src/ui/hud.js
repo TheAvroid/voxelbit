@@ -69,11 +69,50 @@
   const heldBob = [0, 0];                              // …and the VIEW-MODEL BOB alone (walk sway + idle breathing, x/y in the same camera units), split out of that anchor so the health row can ride the same rig without inheriting the tool's pose, swing or swap. Written once per frame in tick-camera, read by the heart block below it — one expression, so the row and the hand can never sway differently.
   const FOV = 72 * Math.PI / 180;
 
-  finishLoad();                                        // world ready → sweep the meter to full SMOOTHLY (the trickle owns 0→90; this is the last 90→100)
+  // ══ THE OVERLAY USED TO LIFT ON A TIMER, NOT ON THE WORLD (user 2026-08-31: "the terrain is still
+  // generating" when the player loads in) ══ finishLoad() ran here unconditionally and revealGame() 1150 ms
+  // later, so the screen came down 1.15 s after boot no matter what the streamer was doing.
+  // MEASURED from the moment __vb exists, on this machine:
+  //     near rect covering its target   0.01 s     <- already done
+  //     paging queue drained            0.01 s     <- already done
+  //     far ring filled  1200 / 1400 / 1600 / 1920 at 6.16 / 7.48 / 8.27 / 8.79 s
+  // The near world is there instantly; it is the FAR RING that is still arriving, for another seven and a
+  // half seconds after the player has the controls. That is the terrain they watch generate.
+  // So wait for it. Three conditions, all of which already existed and none of which was being consulted:
+  // the streamed rect covers its target, the paging queue is empty, and the ring has filled as far as its
+  // own reach allows. NOTE ringFilled() tops out at GHALF - RING_TILE (1920), NOT at renderDist (2000) —
+  // gating on renderDist would wait for a number that can never arrive.
+  // THE WAIT IS CAPPED AND THE TEST CANNOT THROW. A boot-path gate that hangs is a game nobody can play, so
+  // worldReady() returns true on any exception and LOAD_WAIT_MAX ends the wait regardless. The failure mode
+  // is the OLD behaviour (revealing early), never a lock-out.
+  const LOAD_WAIT_MAX = 25000;                         // ms; a slow machine gets in late, never not at all
+  const loadWaitT0 = performance.now();
+  const worldReady = () => {
+    try {
+      const t = rectTarget();
+      if (rect.xlo > t.xlo || rect.xhi < t.xhi || rect.zlo > t.zlo || rect.zhi < t.zhi) return false;
+      if (poolDirty.size || poolRetry.length) return false;
+      return ringFilled() >= ringReach() - 1;
+    } catch (e) { return true; }                       // never trap the player behind a broken predicate
+  };
   const revealGame = () => loadEl.classList.add('hidden');   // drop the whole overlay, revealing the LIVE game; a canvas click locks the mouse and takes control (user)
-  if (CDPTEST) revealGame(); else setTimeout(revealGame, 1150);   // let the 0.85 s finish GLIDE complete, then hold the full 100% bar a beat so it's actually seen, before the overlay drops (tests reveal instantly)
+  const startReveal = () => {
+    finishLoad();                                      // world ready → sweep the meter to full SMOOTHLY (the trickle owns 0→90; this is the last 90→100)
+    if (CDPTEST) revealGame(); else setTimeout(revealGame, 1150);   // let the 0.85 s finish GLIDE complete, then hold the full 100% bar a beat so it's actually seen, before the overlay drops (tests reveal instantly)
+    if (!CDPTEST) setTimeout(() => { if (!locked) $('playHint').classList.remove('hidden'); }, 1150);   // reveal the prompt with the game, after the overlay lifts
+  };
+  // …and the BAR keeps moving while we wait, driven by how far the ring has actually filled. Parking a
+  // finished-looking bar on screen for seven seconds is the "stuck at 90%" complaint all over again.
+  const loadWaitStep = () => {
+    if (worldReady() || performance.now() - loadWaitT0 > LOAD_WAIT_MAX) { startReveal(); return; }
+    try { const r = ringReach(), f = ringFilled(), near = HALF;
+      const prog = Math.max(0, Math.min(1, (f - near) / Math.max(1, r - near)));
+      loadTo(0.88 + 0.11 * prog, 0.3); } catch (e) {}   // the ring owns 0.88-0.99; setLoad's build phase stops at 0.88 so this is always the FORWARD direction (loadTo is monotonic and would drop a lower value)
+    requestAnimationFrame(loadWaitStep);
+  };
+  if (CDPTEST) { startReveal(); } else loadWaitStep();   // tests reveal instantly, as before
   $('playHint').textContent = isMobile ? 'find a good computer' : 'press any button';   // MOBILE (user): tell a handheld to go find a real computer instead of "press any button"
-  if (!CDPTEST) setTimeout(() => { if (!locked) $('playHint').classList.remove('hidden'); }, 1150);   // reveal the prompt with the game, after the overlay lifts
+  // (the prompt's own reveal now rides startReveal above, so it cannot appear before the overlay lifts)
   const PICK_DEFS = {                                  // PER-ITEM held poses — tuning one item never moves the others (panel copy-pose exports)
     1: { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 },   // stone axe (user bake 2026-07-15)
     2: { x: 0.75, y: -0.24, z: 0.96, yaw: -0.41, pitch: -2.28, roll: 1.52, scale: 0.08 },   // small rock (user bake 2026-07-16)
