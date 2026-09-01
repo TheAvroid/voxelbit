@@ -53,7 +53,7 @@
   // that hangs on "uploading world" with nothing in the console. It did.
   let kitGiven = false;
   function giveStartKit() {
-    if (kitGiven || !SPEAR_IT || !SHOVEL_IT) return;  // …and not before the tools have loaded: a kit handed out early would be two empty hands. Gated on the TWO ITEMS THE KIT ACTUALLY HANDS OUT, not on PICK_IT — the pick left the kit on 2026-08-30 and a sentinel that is no longer in the list is a trap waiting for the day that item stops loading. stone_shovel.vox is registered before stone_spear.vox in the loader below, so SPEAR_IT alone would do; both are named because the pairing is the point.
+    if (kitGiven || !PICK_IT) return;              // …gated on the PICK alone: the axe is item id 1, which exists before any .vox lands  // …and not before the tools have loaded: a kit handed out early would be two empty hands. Gated on the TWO ITEMS THE KIT ACTUALLY HANDS OUT, not on PICK_IT — the pick left the kit on 2026-08-30 and a sentinel that is no longer in the list is a trap waiting for the day that item stops loading. stone_shovel.vox is registered before stone_spear.vox in the loader below, so SPEAR_IT alone would do; both are named because the pairing is the point.
     kitGiven = true;
     // ORDER IS THE HOTBAR ORDER, left to right, and the axe goes in first so slot 1 is what the player holds
     // when the world appears. One of each: a tool is not consumed.
@@ -76,7 +76,12 @@
     // empty still guarantees a free slot for the first pickup, and with only two entries there are now three.
     // NO ARROWS, still: ARROW_COST is 0 (sim/projectiles.js), so the bow shoots unlimited anyway — and the bow
     // is not in the kit at all now, so a quiver would be clutter for a weapon the player does not have.
-    const kit = [[SPEAR_IT, 1], [SHOVEL_IT, 1]];
+    // ── AND NOW THE AXE AND THE PICK (user 2026-08-31: "spawn me with an axe and a pick. remove the
+    // spear and shovel from the inventory") ── the same one-line change every note above promises: the
+    // axe (literal item id 1, it predates the *_IT constants) goes in FIRST, so `selSlot = 0` below puts
+    // it in the hand, and the pick second. The spear and the shovel come off the array and nothing else
+    // moves; slotTidy's standing trailing empty still leaves a free slot for the first pickup.
+    const kit = [[1, 1], [PICK_IT, 1]];
     for (const [it, n] of kit) { if (!it) continue; for (let q = 0; q < n; q++) if (addItem(it) < 0) break; }
     selSlot = 0;                                     // …and the SPEAR is in hand, not the last thing added
     console.log('[vb] starting kit', kit.filter((k) => k[0]).map((k) => (ITEM_NAMES[k[0]] || k[0]) + (k[1] > 1 ? ' x' + k[1] : '')).join(', '));

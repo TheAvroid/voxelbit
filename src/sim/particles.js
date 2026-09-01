@@ -313,7 +313,7 @@
     else if (t.rot === 1) { rx = MSY - 1 - ay; rz = ax; }
     else if (t.rot === 2) { rx = MSX - 1 - ax; rz = MSY - 1 - ay; }
     else { rx = ay; rz = MSX - 1 - ax; }
-    const R = MROT[t.rot];
+    const R = MROT9[t.ti | 0][t.rot];
     const bx = t.tx - (R.sx >> 1), bz = t.tz - (R.sz >> 1);
     const gy = groundMin(t.tx, t.tz, 2) - t.sink;
     return [bx + rx + 0.1 + Math.random() * 0.8, gy + az - 1,

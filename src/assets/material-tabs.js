@@ -391,13 +391,27 @@
     }
     if (OAKV.length) console.log('[vb] oak anchors: fruit', OAK_ANCH.map((a) => a.length).join('/'),
       '| hive', OAK_BANCH.map((a) => a.length).join('/'), '(caps', AMAX, '/', BMAX + ')'); }
-  const PINE_ANCH = [];                                // pinecone anchors: canopy foliage voxels with open air below, ≥2 in from the model edge (base rotation)
+  // ── ONE ANCHOR LIST PER TREE (user 2026-08-31: "pine cones seem to be floating") ── this used to be a
+  // single list built from M/MSX/MSY, which was correct while the forest was ONE model. With nine, the
+  // stamp was hanging tree 0's anchors under whichever tree it had just placed: the coordinates are model
+  // space, so on the other eight they land wherever that tree happens to have nothing, and a cone hung
+  // from an empty cell is a cone hanging in the air. Anchors are a property of the MODEL, so there is one
+  // list per model now and the stamp reads its own.
+  const PINE_ANCH9 = [];
   { const fol = new Uint8Array(256); for (const f of foliageIds) fol[f] = 1;
-    for (let z = 30; z < MSZ; z++) for (let y = 2; y < MSY - 2; y++) for (let x = 2; x < MSX - 2; x++) {
-      const i = x + y * MSX + z * MSX * MSY;
-      if (M[i] && fol[remap[M[i]]] && !M[i - MSX * MSY]) PINE_ANCH.push(x | (y << 8) | (z << 16));
+    for (const m of PINE9) {
+      const A = [];
+      for (let z = (m.sz * 0.2) | 0; z < m.sz; z++) for (let y = 2; y < m.sy - 2; y++) for (let x = 2; x < m.sx - 2; x++) {
+        const i = x + y * m.sx + z * m.sx * m.sy;
+        if (m.M[i] && fol[remap[m.M[i]]] && !m.M[i - m.sx * m.sy]) A.push(x | (y << 8) | (z << 16));
+      }
+      A.sort((a, b) => Math.atan2(((a >> 8) & 255) - m.sy * 0.5, (a & 255) - m.sx * 0.5)
+                     - Math.atan2(((b >> 8) & 255) - m.sy * 0.5, (b & 255) - m.sx * 0.5));
+      PINE_ANCH9.push(A);
     }
-    PINE_ANCH.sort((a, b) => Math.atan2(((a >> 8) & 255) - MSY * 0.5, (a & 255) - MSX * 0.5) - Math.atan2(((b >> 8) & 255) - MSY * 0.5, (b & 255) - MSX * 0.5)); }   // angle-sorted around the trunk — stampTree slices it into sectors so cones ring the crown evenly
+    console.log('[vb] pine anchors per tree:', PINE_ANCH9.map((a) => a.length).join('/'));
+  }
+  const PINE_ANCH = PINE_ANCH9[0];                     // the legacy single-model name
   // ── CONSOLE TAP: WHAT A FLOWER ID REALLY CARRIES ── the same service lilyIds() does for the pads, and it
   // exists for the same reason they needed one: flowers.vox is parsed in SHARE mode (PAL_TOL 6 — see
   // parseVoxVariants2 in assets/bow.js), so a flower colour may RESOLVE onto an id something else already owns,

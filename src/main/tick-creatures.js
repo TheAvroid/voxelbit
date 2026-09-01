@@ -1,6 +1,11 @@
     for (let wk = 0; wk < DES_END; wk++) {
       const B = wbf[wk];
       if (B.slain) continue;
+      // ── NO LIFE YET (user 2026-08-31: "dont add any life yet") ── ONE gate, at the top of the per-slot
+      // loop, because that is the single point every creature in the world passes through: it retires
+      // anything already standing and no slot can reach the spawn below it. The life code is all still here
+      // and none of it is deleted - flip LIFE_OFF in world/window.js to bring the forest back to life.
+      if (LIFE_OFF) { if (B.init) { if (B.sCells) unstampWorm(B); B.init = false; B.dieT = 0; } continue; }
       // ── A BODY WITH NO REAL POSITION IS NOT A BODY (user 2026-08-27: "only the mother duck is showing. I
       // dont see the babies") ── NaN loses every comparison it takes part in, so a slot that has picked one up
       // reads as NEAR to the surplus grace, INSIDE the recycle radius and CLOSE ENOUGH to its mother to the

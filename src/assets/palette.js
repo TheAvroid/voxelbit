@@ -80,6 +80,16 @@
   const ROCK   = [addCol(124, 122, 116), addCol(106, 104, 100), addCol(90, 89, 86)];
   const ROCKX  = [addCol(138, 136, 130), addCol(99, 98, 94), addCol(74, 73, 70)];                        // partner shades — each formation layer is a blended two-tone swatch
   const BROCK  = [addCol(124, 122, 116), addCol(106, 104, 100), addCol(90, 89, 86)];                     // MEDIUM boulder — ROCK's exact colors on DEDICATED ids so right-click pickup can flood them without eating terrain
+  // ── ONE DEAD ID FOR EVERY RETIRED RAMP ── the world is a single pine forest now, so the desert,
+  // cherry, oak, birch and arctic ramps below mint nothing and point here instead. It is MAGENTA on
+  // purpose: nothing should ever draw it, so if it appears on screen the ramp it came from is not as
+  // dead as this file claims.
+  // AND IT IS NOT AN ALIAS ONTO A LIVING RAMP, which is what the first cut did. assets/material-tabs.js
+  // gives several of these ramps MATERIAL meaning - BLOSLEAF and OAKLITE get solidTab 0 + foliaTab 1,
+  // FRUITC the same plus hangTab - so pointing them at MOSS and DIRT turned the forest floor and the
+  // soil under it into walk-through foliage. Every retired ramp shares this ONE id instead, which costs
+  // a single palette entry and cannot collide with anything that still renders.
+  const DEADC = addCol(255, 0, 255);
   // ── DESERT SHRUBS ── the shrubs' OWN palette: a 4-step GREEN ramp and 6 FLOWER shades.
   // THE SIX .vox FILES ARE HAND-AUTHORED (user 2026-08-16: "I made modifications and renamed the files").
   // They are no longer a bake, so tools/voxelize_desert_shrubs.py's old "PALN pinned to len(SHRUBC)" contract
@@ -101,8 +111,8 @@
   // Same colour, own ids — the arrangement BROCK already uses to repeat ROCK's exact greys.
   // The first two green ids are the RECLAIMED dead LOGC pair; the other eight are the first real palette spend
   // the shrubs have ever made. __vb.shrubIds() prints all ten and what every material table says about each.
-  const SHRUBC = [addCol(83, 107, 36), addCol(90, 112, 39), addCol(99, 118, 43), addCol(106, 123, 46)];   // dark→light. ORDER is documentation only now — bow.js resolves by nearest colour, not by rank, so a re-authored file cannot silently shift every shade one step along the ramp
-  const SHRUBF = [addCol(227, 61, 89), addCol(232, 81, 107), addCol(234, 91, 116), addCol(238, 110, 135), addCol(243, 130, 153), addCol(255, 203, 127)];   // the flower ramp, EXACT: five pinks dark→light and the cream highlight at the centre of the bloom
+  const SHRUBC = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // dark→light. ORDER is documentation only now — bow.js resolves by nearest colour, not by rank, so a re-authored file cannot silently shift every shade one step along the ramp
+  const SHRUBF = [DEADC, DEADC, DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // the flower ramp, EXACT: five pinks dark→light and the cream highlight at the centre of the bloom
   // ── AND RESERVED, WHICH IS WHAT KEEPS THE CACTI OFF THEM ── quoting a colour the cacti also use is only
   // safe in ONE direction. These ids are minted here, long before assets/bow.js parses cactus_*.vox in SHARE
   // mode, so palShare's exact-match lookup would hand the cactus id 21 for its darkest green — and then
@@ -121,12 +131,12 @@
   // brown on screen is not a constant that exists anywhere to quote. Three steps, not four: the table had
   // four ids free, and a ramp that empties it is one that makes the NEXT colour anywhere in the game
   // silently nearest-match.
-  const SHRUBB = [addCol(141, 110, 74), addCol(158, 126, 88), addCol(174, 142, 103)];   // dark -> light
+  const SHRUBB = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // dark -> light
   for (const i of SHRUBC) palOwn.add(i);
   for (const i of SHRUBF) palOwn.add(i);
   for (const i of SHRUBB) palOwn.add(i);
   const SAND   = [addCol(203, 183, 145), addCol(191, 171, 133), addCol(213, 193, 155)];                  // lake beaches + lakebed
-  const DSAND  = [addCol(214, 188, 132), addCol(205, 178, 122), addCol(222, 197, 143), addCol(196, 169, 115)];   // ── DESERT SAND ── warmer and more saturated than the lake SAND above, and on DEDICATED ids for a reason that is not aesthetic: sandTab slows the player (beach sand pits), and sharing ids would make an entire biome wade. These are deliberately NOT in sandTab.
+  const DSAND = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // ── DESERT SAND ── warmer and more saturated than the lake SAND above, and on DEDICATED ids for a reason that is not aesthetic: sandTab slows the player (beach sand pits), and sharing ids would make an entire biome wade. These are deliberately NOT in sandTab.
   // ── COLORADO SANDSTONE: FOUR IDS FOR A THING THAT IS NOT IN THE GAME (reclaimed 2026-08-17, the BEEHIVE) ──
   // this ramp has exactly one consumer in the whole build: the ROCK26D block in assets/bow.js, which recolours
   // the 26 boulders into sandstone twins for the desert. Nothing stamps ROCK26D. The user reverted the desert
@@ -153,82 +163,83 @@
   const OREGOLD = [addCol(216, 174, 58), addCol(196, 156, 50)];
   const ORECRYS = [addCol(88, 196, 202), addCol(70, 176, 184)];
 
-  // ── pine5.vox ── MagicaVoxel, Z-up (model z → world y)
-  setLoad(12); await stage('loading pine5.vox…');
-  let vox;
-  try { vox = new Uint8Array(await (await fetch('assets/foilage/pine5.vox')).arrayBuffer()); } catch (e) { fail('failed to fetch assets/foilage/pine5.vox — serve over http (start.bat)'); }
-  const dv = new DataView(vox.buffer);
-  let MSX = 0, MSY = 0, MSZ = 0, voxels = null; const vpal = new Uint8Array(1024);
-  { const walk = (off, end) => { while (off < end) {
-      const id = String.fromCharCode(vox[off], vox[off + 1], vox[off + 2], vox[off + 3]);
-      const sz = dv.getUint32(off + 4, true), csz = dv.getUint32(off + 8, true);
-      if (id === 'SIZE' && !MSX) { MSX = dv.getUint32(off + 12, true); MSY = dv.getUint32(off + 16, true); MSZ = dv.getUint32(off + 20, true); }
-      else if (id === 'XYZI' && !voxels) { const n = dv.getUint32(off + 12, true); voxels = vox.subarray(off + 16, off + 16 + n * 4); }
-      else if (id === 'RGBA') { vpal.set(vox.subarray(off + 12, off + 12 + 1024)); }
-      else if (id === 'MAIN') { walk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
-      off += 12 + sz + csz;
+  // ══ THE NINE PINES ══════════════════════════════════════════════════════════════════════════
+  // game/assets/foilage/pine9/pine_1..9.vox, baked by tools/voxelize_pine9.py out of the nine trees
+  // in EuropeanPine.obj at the engine's 10 cm voxel, each 152 voxels - 50 feet - tall. MagicaVoxel
+  // is Z-up and that is already the game's convention for a model (model z -> world y), so there is
+  // no axis work here.
+  // ONE SHARED BAKE PALETTE, WHICH IS WHY THERE IS STILL ONE remap: the voxelizer clusters all nine
+  // trees together into five bark shades and five needle shades, at .vox indices 1..5 and 6..10. So
+  // the ids are a property of the STAND, not of a tree, and a felled trunk beside a standing one is
+  // the same wood. It also means the nine trees cost ten palette ids between them rather than ninety.
+  const PINE_N = 9;
+  const PINE9 = [];                                    // [{ sx, sy, sz, M }] - the nine dense models
+  setLoad(12); await stage('loading the pines…');
+  const vpal = new Uint8Array(1024);
+  const parseVox = (buf) => {
+    const dv2 = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    let sx = 0, sy = 0, sz = 0, voxels = null;
+    const walk = (off, end) => { while (off < end) {
+      const id = String.fromCharCode(buf[off], buf[off + 1], buf[off + 2], buf[off + 3]);
+      const n = dv2.getUint32(off + 4, true), csz = dv2.getUint32(off + 8, true);
+      if (id === 'SIZE' && !sx) { sx = dv2.getUint32(off + 12, true); sy = dv2.getUint32(off + 16, true); sz = dv2.getUint32(off + 20, true); }
+      else if (id === 'XYZI' && !voxels) { const c = dv2.getUint32(off + 12, true); voxels = buf.subarray(off + 16, off + 16 + c * 4); }
+      else if (id === 'RGBA') { vpal.set(buf.subarray(off + 12, off + 12 + 1024)); }
+      else if (id === 'MAIN') { walk(off + 12 + n, off + 12 + n + csz); off += 12 + n + csz; continue; }
+      off += 12 + n + csz;
     } };
-    walk(8, vox.length);
+    walk(8, buf.length);
+    if (!voxels) return null;
+    const A = new Uint8Array(sx * sy * sz);
+    for (let q = 0; q < voxels.length; q += 4) A[voxels[q] + voxels[q + 1] * sx + voxels[q + 2] * sx * sy] = voxels[q + 3];
+    return { sx, sy, sz, M: A };
+  };
+  for (let t = 1; t <= PINE_N; t++) {
+    let raw;
+    try { raw = new Uint8Array(await (await fetch('assets/foilage/pine9/pine_' + t + '.vox')).arrayBuffer()); }
+    catch (e) { fail('failed to fetch assets/foilage/pine9/pine_' + t + '.vox — serve over http'); }
+    const m = parseVox(raw);
+    if (!m) fail('pine_' + t + '.vox: no model found');
+    PINE9.push(m);
   }
-  if (!voxels) fail('pine5.vox: no model found');
-  const M = new Uint8Array(MSX * MSY * MSZ);
-  for (let i = 0; i < voxels.length; i += 4) M[voxels[i] + voxels[i + 1] * MSX + voxels[i + 2] * MSX * MSY] = voxels[i + 3];
+  // ── THE LEGACY SINGLE-PINE HANDLES ── PINE_ANCH (material-tabs), the needle particles, the chop
+  // width heuristic and the nav perches were all written when the forest was ONE model and still
+  // read MSX/MSY/MSZ/M. They keep working by pointing at the first tree, which is a real pine of the
+  // right species and size; only the terrain stamp picks among all nine.
+  const MSX = PINE9[0].sx, MSY = PINE9[0].sy, MSZ = PINE9[0].sz, M = PINE9[0].M;
   const remap = new Uint8Array(256);
-  const foliageIds = [];                               // green tree voxels get NO hitbox — you can walk through the canopy
-  const woodIds = [];                                  // …and the BARK/branch ids: everything in the pine that is not foliage. The axe cuts any of it (user), tree or stump.
-  // ── BARK SMOOTHING (user) ── the authored trunk shades sit far apart, so neighbouring voxels read as
-  // hard-edged blotches rather than one piece of wood. Pull every BARK shade toward the trunk's own
-  // weighted mean, which compresses the contrast while keeping each shade's relative order and hue —
-  // the grain is still there, just quieter. The asset is untouched; this is one number to tune, and
-  // ?bark=N (0 = as authored, 1 = flat) overrides it live for A/B without an edit.
-  const TRUNK_SMOOTH = (() => { const m = /[?&]bark=([0-9.]+)/.exec(location.search);
-    return m ? Math.max(0, Math.min(1, parseFloat(m[1]))) : 0.55; })();
-  { const used = new Set(), cnt = new Map();
-    for (let i = 0; i < M.length; i++) if (M[i]) { used.add(M[i]); cnt.set(M[i], (cnt.get(M[i]) || 0) + 1); }
-    const isFol = (r, g, b) => g > r && g >= b;
-    // weighted mean of the bark, so the shade the trunk is mostly made of anchors the result
-    let sr = 0, sg = 0, sb = 0, sw = 0;
-    for (const ci of used) { const r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
-      if (isFol(r, g, b)) continue; const w = cnt.get(ci); sr += r * w; sg += g * w; sb += b * w; sw += w; }
-    const mr = sw ? sr / sw : 0, mg = sw ? sg / sw : 0, mb = sw ? sb / sw : 0;
-    const k = TRUNK_SMOOTH, WOOD_DEDUP = 4, lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;   // WOOD_DEDUP: max channel delta at which two SMOOTHED bark shades are the same colour — see the loop below
-    let lo = 255, hi = 0, lo2 = 255, hi2 = 0;
-    for (const ci of used) { const r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
-      if (isFol(r, g, b)) { remap[ci] = addCol(r, g, b); foliageIds.push(remap[ci]); continue; }
-      const l0 = lum(r, g, b); if (l0 < lo) lo = l0; if (l0 > hi) hi = l0;
-      const nr = Math.round(r + (mr - r) * k), ng = Math.round(g + (mg - g) * k), nb = Math.round(b + (mb - b) * k);
-      const l1 = lum(nr, ng, nb); if (l1 < lo2) lo2 = l1; if (l1 > hi2) hi2 = l1;
-      // ── THE SMOOTHING COLLAPSES SHADES, SO MINT THE COLLAPSED ONES ONCE (2026-08-18) ── pulling every bark
-      // colour k of the way to the trunk's weighted mean is a CONTRACTION: shades that are distinct in
-      // pine5.vox come out within a unit or two of each other, and minting one id per SOURCE colour then spent
-      // several of a 256-entry table on colours nothing can tell apart. Measured before this line existed: of
-      // eight wood ids, three sat within 3/255 of another one. remap[] is exactly the mechanism for two source
-      // colours to share one game id, so reuse instead of minting.
-      // WHY NOT palNearShare/PAL_TOL: that is a judgement about how close is close enough for UNRELATED art,
-      // and it is floored at DECOR_MIN, which the bark sits below. This is a much narrower claim — the
-      // smoothing has already made these the same colour — so the bound is 3, not PAL_TOL's 8, and it only
-      // ever matches against this tree's own wood.
-      let wid = -1;
-      for (const q of woodIds) { const c = palette[q];
-        if (Math.max(Math.abs(c[0] - nr), Math.abs(c[1] - ng), Math.abs(c[2] - nb)) <= WOOD_DEDUP) { wid = q; break; } }
-      if (wid >= 0) { remap[ci] = wid; continue; }      // …and a source colour that lands on an existing shade just points at it
-      remap[ci] = addCol(nr, ng, nb); woodIds.push(remap[ci]); }
-    console.log('[vb] bark smoothing', k, '- luminance spread', (hi - lo).toFixed(1), '->', (hi2 - lo2).toFixed(1)); }
-  const MROT = [];                                     // the 4 exact 90° rotations, precomputed — variation without resampling artifacts
-  for (let k = 0; k < 4; k++) {
-    const sx = (k & 1) ? MSY : MSX, sz = (k & 1) ? MSX : MSY;
-    const A = new Uint8Array(sx * sz * MSZ);
-    for (let z = 0; z < MSZ; z++) for (let y = 0; y < MSY; y++) for (let x = 0; x < MSX; x++) {
-      const v = M[x + y * MSX + z * MSX * MSY]; if (!v) continue;
-      let rx, rz;
-      if (k === 0) { rx = x; rz = y; }
-      else if (k === 1) { rx = MSY - 1 - y; rz = x; }
-      else if (k === 2) { rx = MSX - 1 - x; rz = MSY - 1 - y; }
-      else { rx = y; rz = MSX - 1 - x; }
-      A[rx + rz * sx + z * sx * sz] = v;
-    }
-    MROT.push({ A, sx, sz });
+  const foliageIds = [];                               // needles get NO hitbox — you walk through a canopy
+  const woodIds = [];                                  // …and the bark: the axe cuts any of it, tree or stump
+  // The bake's own split, by INDEX rather than by colour: 1..5 is the bark ramp and 6..10 the needle
+  // ramp, straight out of voxelize_pine9.py. A colour test is what the single-pine loader used and it
+  // is guesswork - one olive bark shade reads as foliage and a whole trunk loses its hitbox.
+  for (let ci = 1; ci <= 10; ci++) {
+    const r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
+    remap[ci] = addCol(r, g, b);
+    (ci <= 5 ? woodIds : foliageIds).push(remap[ci]);
   }
+  // ── FOUR ROTATIONS PER TREE ── the same precomputed 90° turns the single pine had, now one set per
+  // model. MROT stays bound to the first tree so everything that still reaches for it is unchanged.
+  const MROT9 = [];
+  for (const m of PINE9) {
+    const rots = [];
+    for (let k = 0; k < 4; k++) {
+      const sx = (k & 1) ? m.sy : m.sx, sz = (k & 1) ? m.sx : m.sy;
+      const A = new Uint8Array(sx * sz * m.sz);
+      for (let z = 0; z < m.sz; z++) for (let y = 0; y < m.sy; y++) for (let x = 0; x < m.sx; x++) {
+        const v = m.M[x + y * m.sx + z * m.sx * m.sy]; if (!v) continue;
+        let rx, rz;
+        if (k === 0) { rx = x; rz = y; }
+        else if (k === 1) { rx = m.sy - 1 - y; rz = x; }
+        else if (k === 2) { rx = m.sx - 1 - x; rz = m.sy - 1 - y; }
+        else { rx = y; rz = m.sx - 1 - x; }
+        A[rx + rz * sx + z * sx * sz] = v;
+      }
+      rots.push({ A, sx, sz, sy: m.sz });
+    }
+    MROT9.push(rots);
+  }
+  const MROT = MROT9[0];
   // walk-through DECOR (grass, ferns) lives at the TOP of the palette — solid() ignores ids >= DECOR_MIN, rays still hit them
   const DECOR_MIN = palette.length;
   const GRASS = [addCol(83, 108, 54), addCol(74, 99, 49), addCol(92, 117, 61), addCol(65, 88, 45)];      // = the MOSS palette, only ~12% brighter — strands blend into their patch
@@ -281,8 +292,7 @@
   // THE LIGHT END STILL STOPS SHORT OF WHITE. The new top is (248,168,195), against the (246,182,205) that was
   // removed earlier today for reading as blown out — 14 more saturation on the weakest channel, which is the
   // difference between "light pink" and "white with a tint". Do not push this further without checking that.
-  const BLOSLEAF = [addCol(208, 110, 143), addCol(214, 118, 151), addCol(220, 126, 159), addCol(226, 134, 167),
-                    addCol(232, 142, 175), addCol(238, 150, 183), addCol(243, 159, 189), addCol(248, 168, 195)];
+  const BLOSLEAF = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   // ── AND THE WHITE VARIANT (user 2026-08-18: "make half the cherry trees have white petals instead of pink") ──
   // Same structure as BLOSLEAF and read the same way: a leaf green's RANK picks a band of this ramp and the
   // voxel's own position picks within it (assets/bow.js blosRemap), so the length here is independent of how
@@ -303,8 +313,7 @@
   // PAL_TOL is now 12, so the old value sat exactly on that tolerance. These are palOwn and minted through
   // addCol, so no sharing could actually have taken them — but a white canopy that matches its own snow cap to
   // within a rounding error loses the cap, and it snows in this biome. 15/255 is enough to keep them apart.
-  const BLOSWHITE = [addCol(186, 160, 170), addCol(200, 176, 184), addCol(214, 193, 201),
-                     addCol(230, 212, 218), addCol(239, 225, 230), addCol(247, 235, 238)];
+  const BLOSWHITE = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   for (const i of BLOSLEAF) palOwn.add(i);
   for (const i of BLOSWHITE) palOwn.add(i);
   // ── AND THE PALE VARIETY'S FALLEN PETALS (user 2026-08-19: "can you make the petals (single voxels) under the
@@ -318,7 +327,7 @@
   // FOUR SHADES, not the full six: the two darkest BLOSWHITE steps are the crown's shadow side and read as
   // grey on open ground, where a fallen petal is lit from above.
   // Paid for by the six ids the delta-1 share in assets/models.js reclaimed — the table was at 256/256.
-  const TWIGWHITE = [addCol(214, 193, 201), addCol(230, 212, 218), addCol(239, 225, 230), addCol(247, 235, 238)];
+  const TWIGWHITE = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   for (const i of TWIGWHITE) palOwn.add(i);   // reserved: the scatter keys on these, and a tolerance reuse would sprinkle somebody else's model through the blossom
   // ── AND THE FRUIT (user 2026-08-18: "scatter this shade: 840c0c on the cherry trees ... single voxels that
   // will act like cherries on the tree") ── the authored colour exactly, (132,12,12).
@@ -355,7 +364,7 @@
   // colour changes. Duplicate colours on separate ids, deliberately, exactly as BROCK repeats ROCK's greys.
   // THREE, NOT FOUR. The darkest oak leaf (82,115,47) is already within 7/255 of a GRASS shade, so it would buy
   // nothing; the three that matter are the ones a canopy actually reads as. The table has 5 free.
-  const OAKMOSS = [addCol(105, 143, 51), addCol(107, 141, 77), addCol(134, 167, 89)];
+  const OAKMOSS = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   // ── THE BIRCH FOREST FLOOR (user: "make the terrain a light green ... as well as the moss on top of the
   // rocks") ── a four-step GROUND ramp in the oak canopy's greens, and it costs ZERO ids because every one of
   // them already exists. It CLIMBS OFF the ramp beside it, the same trick the light oak variety uses: the
@@ -402,7 +411,7 @@
   // tell these ids they are CANOPY — walk-through, DRAPE support, snow-catching, see-through when the eye is
   // inside them, and a bird perch — and a later tolerance share would hand all of that to whatever model next
   // asked for a bright green.
-  const OAKLITE = [addCol(160, 192, 100), addCol(186, 216, 124)];   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
+  const OAKLITE = [DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
   for (const i of OAKLITE) palOwn.add(i);
   const BLOSCHERRY = addCol(132, 12, 12);
   palOwn.add(BLOSCHERRY);   // reserved: the scatter is keyed on this id, so a tolerance reuse handing it to a model would sprinkle that model through every crown   // reserved HERE and not up with SHRUBF's: this const is declared 100 lines below that one, and reading it there is the const-before-declaration black screen (a bare `for` in a module body is not hoisted past a TDZ)
@@ -438,7 +447,7 @@
   // FOUR steps, not two, and spanning ~12% in luminance rather than 6% — the pine floor's NEEDLE ramp is the
   // model (4 entries, ~13%). This is what breaks the contour rings on bare arctic ground: see the long note
   // in world/window.js for the three height-based attempts that did not.
-  const ASNOW = [addCol(246, 250, 255), addCol(232, 238, 249), addCol(240, 245, 252), addCol(226, 233, 244)];   // packed snow — SOLID ground, shovel
+  const ASNOW = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // packed snow — SOLID ground, shovel
   // ── AND THE ARCTIC OWNS ITS FOUR WHITES (user 2026-08-30: "the spear … goes through the terrain") ──
   // it turned out half the arctic floor was not solid at all, and the spear was only the thing that found
   // it: ids 101 and 104 read solid:false while 102 and 103 read solid:true. The ramp is minted here, and
@@ -513,7 +522,7 @@
   // These sit above DECOR_MIN, so the blanket `i < DECOR_MIN` solidity sweep below cannot reach them and a
   // berry never gets a hitbox; material-tabs.js then says what they positively ARE. __vbOak.ids() (world/gen-pool.js)
   // prints all three with every material table's verdict, and __vb.palAudit() over/snaps must both still read 0.
-  const FRUITC = [addCol(209, 75, 70), addCol(86, 110, 192), addCol(244, 152, 61)];                      // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh (0 and 2 are tools/voxelize_fruit.py's own means — keep them in step with fruit.json's `pal`)
+  const FRUITC = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.                      // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh (0 and 2 are tools/voxelize_fruit.py's own means — keep them in step with fruit.json's `pal`)
   // ── THE BEEHIVE, IN TWO SHADES OF ONE HONEY YELLOW (user 2026-08-17: "implement the beehive.vox on some of
   // the oak trees") ── beehive.vox paints 54 voxels in an EIGHT-step ramp that never leaves one hue: red is 255
   // on every step and the whole ramp moves 12/255 in green and 52 in blue. Two ids is not a sacrifice of that,
@@ -526,7 +535,7 @@
   // OWN IDS, not BLOOM's yellow or OREGOLD's: a hive is SOLID and axe-choppable (see material-tabs.js), and
   // hanging either of those flags on a flower head or on gold ore is exactly the leak DSAND and BROCK exist to
   // avoid. Above DECOR_MIN like everything else here, so material-tabs.js grants the solidity explicitly.
-  const HIVEC = [addCol(255, 231, 97), addCol(255, 238, 127)];                                           // 0 = the two banding courses (the model's own darkest, exact), 1 = the panel gradient's weighted mean
+  const HIVEC = [DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.                                           // 0 = the two banding courses (the model's own darkest, exact), 1 = the panel gradient's weighted mean
   // ── AND ALL FIVE ARE RESERVED, WHICH IS THE HALF THAT IS EASY TO FORGET ── these are minted HERE, in
   // palette.js, and assets/creatures.js and assets/held-items.js parse in SHARE mode several fragments LATER at
   // PAL_TOL 8. Without palOwn, the first creature whose red lands within 8/255 of the apple's (209,75,70) — a
@@ -568,5 +577,5 @@
   const pickOnlyTab = new Uint8Array(256);             // …and which need the PICK. Stone does: an axe bounces off a boulder, and the pick is no use against a tree (see the swing gate).
   const digOnlyTab = new Uint8Array(256);              // …and which need the SHOVEL. Ground does — the dirt and mossy grass the terrain is made of, and nothing else.
   const sandTab = new Uint8Array(256); for (const s of SAND) sandTab[s] = 1;   // per-id SAND flag — walking on beach/lakebed sand slows the player (sand pits)
-  console.log('[vb] pine5.vox', MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
+  console.log('[vb] pine9 x' + PINE_N, MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
 

@@ -49,3 +49,14 @@ node_modules/
 # floatshots/ is the float-audit screenshot dump (__vb.floatAudit runs). 46 MB of
 # regenerable test stills — same reasoning as tools/frames/ and _snapshots/ above.
 floatshots/
+
+# 2026-08-31: the NINE PINES. What ships is game/assets/foilage/pine9/*.vox (about 1 MB, fetched by
+# assets/palette.js at boot) and tools/voxelize_pine9.py that bakes them - both TRACKED, so a fresh
+# clone still grows a forest. What is excluded is the authoring input it bakes FROM:
+#   game/assets/foilage/pine_trees/  the EuropeanPine .obj/.fbx and Textures.zip - 149 MB, and the zip
+#                                    alone is 133 MB, past GitHub's 100 MB per-file hard limit, so this
+#                                    is not a preference: a commit containing it cannot be pushed.
+#   source/pine9/                    the textures unpacked from that zip, plus the 2 MB bake JSON.
+# It sits under game/ only because that is where it was dropped; nothing at runtime reads it.
+game/assets/foilage/pine_trees/
+source/pine9/

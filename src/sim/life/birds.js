@@ -21,7 +21,12 @@
   let birdKills = 0;                                   // songbirds brought down by a shaft — the flock refills itself, so a headcount alone proves nothing
   const birds = Array.from({ length: BIRD_N }, () => ({ th: 0, turnBias: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0, mode: 0, swoopT0: 0, swoopA: 0, swO: 0, edge: false, fi: 0, sp: 0 }));   // the rest ride the compacted creature slots. mode: 0 wander / 1 thermal soar / 2 swoop
   const bird = birds[0];                               // the original singleton name, kept for the editor path + the primary hitbox
-  const birdStep = (b, bi, tb, dt) => {                // one bird's flight for this frame → its world pose. Identical maths for every bird; only the seed state differs.
+  const birdStep = (b, bi, tb, dt) => {
+    // ── NO LIFE YET (user 2026-08-31) ── the sky flyers are NOT in the creature pool tick-creatures.js
+    // gates: they are their own system writing straight into the drop slots, so the one gate there
+    // retired every animal on the ground and left nine birds over the canopy. null is what this already
+    // returns for "no bird here", so nothing downstream needs to know.
+    if (LIFE_OFF) { b.init = false; b.off = true; return null; }                // one bird's flight for this frame → its world pose. Identical maths for every bird; only the seed state differs.
         // ── PROCEDURAL POPULATION ── the flyers follow the SAME ring rule as every other creature: a bird that falls
         // more than LIFE_KEEP behind is recycled into the LIFE_IN..LIFE_OUT band around wherever the player is now.
         // Without this the six spawned once at world start and the sky went empty the moment you walked away.

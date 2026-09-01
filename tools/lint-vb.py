@@ -559,7 +559,9 @@ def check_modules(masked, offsets, mods, where):
 # the root set this walks from), so that costs nothing today - but a NEW call added inside
 # that string to something unregistered is the one shape this cannot see.
 WORKER_DECLS = {          # names the pool writes into its worker preamble by hand
-    'WX', 'WZ', 'OX', 'OZ', 'BX', 'W', 'hmap', 'touched', 'MROT', 'remap', 'rivScope',
+    'WX', 'WZ', 'OX', 'OZ', 'BX', 'W', 'hmap', 'touched', 'MROT', 'MROT9', 'remap', 'rivScope',
+    # MROT9 is the NINE pines' rotation sets, posted beside MROT on init (world/gen-pool.js). MROT is
+    # MROT9[0] and stays for everything written when the forest was one model; the terrain stamp picks.
     # BIRCHV / BIRCHPICK are DERIVED in the preamble, not registered: BIRCHV is ~205k voxels and shipping it
     # as a table would put megabytes of JavaScript into every worker. BIRCHENC (the delta-varint) and
     # birchDec/birchPick ARE registered, which is what keeps this honest.

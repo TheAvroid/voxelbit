@@ -57,7 +57,7 @@
       // a small share of the map, pays for the whole disc.
       // H rather than hmap, because hmap is not reliably written this far out while a region is still filling.
       let shore = false;
-      if (h <= WL + 5) for (let r = 0; r < 4 && !shore; r++) {
+      if (h <= WL + 8) for (let r = 0; r < 4 && !shore; r++) {   // WL+8: one past the cascade, so every lifted step gets the water test
         const R2 = SANDR * (0.19 + r * 0.27);
         for (let k = 0; k < 4 && !shore; k++) {
           const a2 = k * 0.7853981634, cx2 = Math.round(Math.cos(a2) * R2), cz2 = Math.round(Math.sin(a2) * R2);
@@ -114,8 +114,15 @@
       const agb = asn > 0 ? arctGB(asn) : 0;
       if (agb > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < agb) c = ASNOW[(sh * 4) | 0];
       else if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
-      else if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
-      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 3.2) c = SAND[(sh * 3) | 0];   // …and the sand-to-forest dither ramps out over half the height it used to     // dithered sand-to-forest blend
+      // ── THE WHOLE BEACH IS SAND, AND THE DITHER STARTS ABOVE IT (user 2026-08-31: "you seemed to have
+      // added dirt elevated in the middle of them: remove that band") ── H's beach lift writes exactly
+      // three levels, WL+1..WL+3, and solid sand used to stop at WL+2. That left the TOP step of every
+      // beach on the dither below, which at h = WL+3 is 1/3.2 -> 69% sand and 31% forest floor: brown
+      // pine litter speckled along the highest line of the sand, which reads as a dirt band running the
+      // length of the shore rather than as a blend. Covering all three lifted levels puts the blend where
+      // it belongs - on the ground ABOVE the beach, where sand meeting forest is the thing being drawn.
+      else if (shore && h <= WL + 5) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
+      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 5) / 9.0) c = SAND[(sh * 3) | 0];   // …and the ramp now measures from WL+3, the top of the beach, not from WL+2 inside it   // …and the sand-to-forest dither ramps out over half the height it used to     // dithered sand-to-forest blend
       // ── NO FOREST FLOOR ON THE DESERT SIDE, BUT ONLY NEAR WATER ── the DESERT branch above is dithered
       // against the mask, so a fraction (1 - dm) of columns miss it by design; inland those misses are the
       // gradient, which is the whole point. Near a WATERLINE they were landing on moss instead, and clustered
@@ -1053,7 +1060,10 @@
     // against birch's 2.26%, and 6.99 x 0.375 = 2.62 is exactly that thinning rather than anything else going
     // wrong. Taking the max is the same move oakRoll/oakBank make for the ground itself: the band is an oak
     // forest that grows birches, so anything keyed on "is this the oak forest" has to say yes here too.
-    if (ihash(cx * 71 + 5, cz * 79 + 13) > 0.375 && Math.max(oakM(wx, wz), birchM(wx, wz)) < 0.5) return null;
+    // ── THE FLOWERS ARE BACK IN (user 2026-08-31: "also bring in the flowers") ── and the oak/birch half
+    // of the old gate is gone with the bands it named: it only ever THINNED this scatter to 37.5% outside
+    // the oak, and with every mask at zero that thinning is the whole world. Flowers now grow at the full
+    // rate across the pine forest, which is the only forest there is.
     const px = Math.floor(cx / FLWPATCH), pz = Math.floor(cz / FLWPATCH);
     const set = inCh ? FLOWERV_CH : FLOWERV;           // the blossom band draws from its own one-variant set; everywhere else from the five
     return { wx, wz, ch: inCh ? 1 : 0, k: (ihash(px * 53 + 7, pz * 59 + 17) * (set.length - 0.01)) | 0,
@@ -1230,6 +1240,14 @@
     // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
     // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
     // litter thins out across the blend band instead of stopping on the iso-line.
+    // ── NO FALLEN LOGS IN THE TERRAIN (user 2026-08-31: "remove the logs from the terrain") ── the
+    // scatter is off, not the asset: LOGV still loads, and assets/material-tabs.js still repoints its
+    // bark onto the pine's own wood ids and marks it decorTab + axeOnlyTab. That matters because the log
+    // is also a PLACEABLE item the player can carry and set down - killing the model would take the item
+    // with it. One return, exactly the way flowerAt's scatter was gated, so restoring the litter is
+    // deleting this line and nothing else.
+    return null;
+    // eslint-disable-next-line no-unreachable
     if (!LOGV) return null;
     if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.14) return null;
     const wx = Math.round(cx * LGCELL + 6 + ihash(cx * 3 + 9, cz * 7 + 1) * (LGCELL - 12));
@@ -1867,16 +1885,16 @@
     // so the ceiling now guarantees a whole tree fits on the highest column in the world and nothing here
     // has to refuse one. If the pine is ever rescaled again, that reserve is the number that moves.
     if (nearCave(wx, wz)) return null;
-    return { tx: wx, tz: wz, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
+    return { tx: wx, tz: wz, ti: (ihash(cx * 37 + 11, cz * 41 + 7) * (MROT9.length - 0.01)) | 0, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground   // ti: WHICH of the nine pines. Sized off MROT9.length and not PINE_N because this runs in the GEN WORKER, and PINE_N is declared in assets/palette.js - below the worker in the manifest, so the registry cannot see it.
   }
   function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
-    const R = MROT[tr.rot];
+    const R = MROT9[tr.ti][tr.rot];        // …this tree's own model, not the stand's first one - see PINE9 in assets/palette.js
     const gy = groundMin(tr.tx, tr.tz, 2) - tr.sink;              // random sink (1–7) varies how deep each pine sits
     const bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
     const xa = Math.max(0, x0 - bx), xb = Math.min(R.sx - 1, x1 - 1 - bx);
     const za = Math.max(0, z0 - bz), zb = Math.min(R.sz - 1, z1 - 1 - bz);
     if (xa > xb || za > zb) return;
-    for (let my = 0; my < MSZ; my++) {
+    for (let my = 0; my < R.sy; my++) {   // R.sy is the MODEL's height: the nine pines are 150-152, not one shared MSZ
       const y = gy + my; if (y < 1) continue; if (y >= WY) break;
       const yrow = y * WX, moff = my * R.sx * R.sz;
       for (let mz = za; mz <= zb; mz++) for (let mx = xa; mx <= xb; mx++) {
@@ -1884,17 +1902,18 @@
         W[gwrap(bx + mx, WX) + yrow + gwrap(bz + mz, WZ) * WX * WY] = remap[v];
       }
     }
-    if (CONEV && PINE_ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
+    const ANCH = PINE_ANCH9[tr.ti], AMX = MROT9[tr.ti][0].sx, AMY = MROT9[tr.ti][0].sz;   // this tree's own anchors and its own model dims — see PINE_ANCH9
+    if (CONEV && ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
       const n = 6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0);   // rotated with the tree so every region stamps them identically
       const used = new Set();                          // one cone per column — never stacked on top of each other
       for (let k = 0; k < n; k++) {                    // PINE_ANCH is angle-sorted: pick k-th from the k-th angular sector — cones ring the crown evenly
-        const a = PINE_ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * PINE_ANCH.length) | 0];
+        const a = ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * ANCH.length) | 0];
         const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 255;
         let rx, rz;
         if (tr.rot === 0) { rx = ax; rz = ay; }
-        else if (tr.rot === 1) { rx = MSY - 1 - ay; rz = ax; }
-        else if (tr.rot === 2) { rx = MSX - 1 - ax; rz = MSY - 1 - ay; }
-        else { rx = ay; rz = MSX - 1 - ax; }
+        else if (tr.rot === 1) { rx = AMY - 1 - ay; rz = ax; }
+        else if (tr.rot === 2) { rx = AMX - 1 - ax; rz = AMY - 1 - ay; }
+        else { rx = ay; rz = AMX - 1 - ax; }
         const ck = rx | (rz << 8); if (used.has(ck)) continue; used.add(ck);
         stampModel(CONEV, (ax + az + k) & 3, bx + rx, gy + az - CONEV.sz, bz + rz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
       }

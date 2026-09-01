@@ -71,6 +71,37 @@ JOB = k32.CreateJobObjectW(None, None)
 _l = EXTLIM(); _l.BasicLimitInformation.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
 k32.SetInformationJobObject(JOB, 9, ctypes.byref(_l), ctypes.sizeof(_l))
 
+# ── DO NOT TAKE THE USER'S CURSOR (user 2026-08-31: "when you open up a chrome instance, dont take
+# my cursor away from me") ── --window-position=-4000,-4000 puts the window off the desktop, but
+# off-screen is not the same as un-focused: Chrome still ACTIVATES its window when it creates one, so
+# the keystroke the user was in the middle of typing goes to a browser they cannot see. There is no
+# Chrome flag for this (--no-startup-window suppresses the page we need), so the foreground window is
+# captured before the launch and handed back afterwards, for as long as Chrome keeps grabbing it -
+# it steals focus more than once during startup, so one restore is not enough.
+# SetForegroundWindow is refused for a process that does not own the foreground, which is exactly our
+# case, so the thread attaches to the target window's input queue first - that is what makes the call
+# legal. Best-effort throughout: this must never be able to break a test run, so everything is
+# wrapped and a failure just means the old behaviour.
+u32 = ctypes.windll.user32
+
+def _hand_focus_back(prev, seconds=6.0):
+    if not prev:
+        return
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            cur = u32.GetForegroundWindow()
+            if cur and cur != prev and u32.IsWindow(prev):
+                tid_cur = u32.GetWindowThreadProcessId(cur, None)
+                tid_me = k32.GetCurrentThreadId()
+                u32.AttachThreadInput(tid_me, tid_cur, True)
+                u32.SetForegroundWindow(prev)
+                u32.AttachThreadInput(tid_me, tid_cur, False)
+        except Exception:
+            pass
+        time.sleep(0.12)
+
+
 def launch(url):
     os.makedirs(PROF, exist_ok=True)
     args = [CHROME, '--remote-debugging-port=%d' % PORT, '--user-data-dir=' + PROF,
@@ -79,7 +110,12 @@ def launch(url):
             '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
             '--disable-background-timer-throttling', '--disable-features=CalculateNativeWinOcclusion',
             '--enable-unsafe-webgpu', '--no-sandbox', url]
+    prev_fg = None
+    try: prev_fg = u32.GetForegroundWindow()      # whatever the user is actually working in
+    except Exception: pass
     p = subprocess.Popen(args, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    try: threading.Thread(target=_hand_focus_back, args=(prev_fg,), daemon=True).start()
+    except Exception: pass
     k32.AssignProcessToJobObject(JOB, int(ctypes.windll.kernel32.OpenProcess(0x1F0FFF, False, p.pid)))
     return p
 

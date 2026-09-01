@@ -926,7 +926,14 @@
   // 8-voxel strip that wrapped — never a full-buffer move. All generation is a pure function of WORLD
   // coordinates, so strips re-materialise seamlessly and revisited terrain is always identical.
   const WX = WXZ, WY = WYpick, WZ = WXZ;              // deep world: +128 voxels of stone below the surface for TRUE gorge depth
-  const LIFT = WY >= 384 ? 128 : 0;                    // terrain floats this far above bedrock
+  // ── LIFT PAYS FOR THE MOUNTAINS (user 2026-08-31: "double the height elevation of the pine forest") ──
+  // 128 was the float over bedrock the CAVE systems needed, and all three of those were deleted 2026-08-05,
+  // so most of it has been dead space under the water ever since. The world's vertical budget is WY and
+  // nothing else: what sits below the waterline cannot be seen, and what is spent there is not available
+  // above it. Dropping the float to 48 moves the whole world down 80 voxels - WL goes with it, because WL
+  // is defined as 24 + LIFT - and hands those 80 to the sky, where the hills are.
+  // 48 and not 0: a lake bed still has to get 52 under the waterline (PINE_BASE) without hitting bedrock.
+  const LIFT = WY >= 384 ? 48 : 0;                     // terrain floats this far above bedrock
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
   // ══ TWO WINDOWS ══ the CPU's W is what physics, nav, support, chopping and every edit read, and it is
@@ -1144,7 +1151,13 @@
   // What IS new is the mechanism, measured at a pinned spawn: a ground-cover blade sits on 99.7% of FLAT
   // columns and only 63.8% of RISER columns. Risers follow contours, so a third of every contour is bare
   // ground. That is the thing to attack, and it is in the cover scatter, not here.
-  const HMAX = Math.min(130 + LIFT, WY - 151);         // terrain ceiling — and the 151 is the PINE RESERVE, see below
+  const LIFE_OFF = 1;                                  // ── NO LIFE (user 2026-08-31: "dont add any life yet") ── the whole creature
+                                                       // system is intact and gated at one line in main/tick-creatures.js. Set to 0 to restore it.
+  // …and the ceiling is now the TREE RESERVE alone. `130 + LIFT` was the other half of this min() and it
+  // moved with LIFT, so lowering the float would have pulled the mountain tops down by exactly the 80
+  // voxels it was meant to free - the ceiling has to be measured from the TOP of the world, not from a
+  // baseline that just dropped.
+  const HMAX = WY - 158;         // terrain ceiling — and the 151 is the PINE RESERVE, see below
   // ── AND THE SECOND TERM IS THE TREE, WHICH IS WHAT MAKES THIS A BUDGET AND NOT A DIAL ── 122 was never an
   // arbitrary reserve: it is pine5.vox's own 116 voxels plus a little, because a trunk planted at HMAX has to
   // fit under WY or its crown is cut off by the window's ceiling. That coupling was invisible until the pine
@@ -1476,11 +1489,7 @@
   // strip changes size and spawn keeps its position inside the oak — only which way round the world runs.
   const BAND_MIRROR = -1;                              // +1 restores the original arrangement (blossom west, pines east)
   const OAKC = BAND_MIRROR * ((OAKWOFF + OAKOFF) / 2), OAKH = (OAKOFF - OAKWOFF) / 2;   // -940 and 3240: centre + half-width. OAKC ± OAKH reproduce OAKWOFF and OAKOFF exactly, and OAKC is now EXACTLY the blossom's own centre (SPWX - CHOFF) — that equality IS "the two oak strips are the same width"
-  const oakM = (x, z) => {                             // 1 = deep oak forest, 0 = pine forest either side of it — a BAND now, not a half-plane, so the forest ends in both directions and the cycle can close
-    const c = SPWX + OAKC + oakWob(z) - oakWob(SPWZ);   // pinned at the spawn's own z, for the reason desertM pins its own: otherwise how far the player starts from the border is a per-session lottery
-    const t = 0.5 + (OAKH - Math.abs(pwrap(x - c))) / OAKB;   // a DISTANCE from the centre line, the same shape cherryM has always had
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const oakM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ══ THE CHERRY FOREST (user 2026-08-18) ══ a fourth band, WEST of the oak forest, and deliberately carved out
   // of oak's own region rather than given a height field of its own.
   //
@@ -1554,11 +1563,7 @@
   // true by CONSTRUCTION on the outer edge rather than by two independent fields happening to agree.
   const CHWHALF = 1960;                                // …and the WEATHER band keeps the OLD half-width. cherryW's ramp was tuned against it (see the CHBW note below: 600 put the snow line 45 m short of the treeline and it was halved to 300), so folding the mask reshape into the weather would move a snow line that has already been placed by hand twice.   // ── UNCHANGED BY THE EQUAL-STRIP PASS (user 2026-08-19: "make all of the biomes the exact same size... double the size of the bands") ── this band was doubled on 2026-08-18 (1080 -> 2160 measured between mask midpoints, 2 * (CHHALF + CHB/2)) and 2160 is precisely the width every OTHER strip has now grown to, so nothing here moves: spawn still sits 140 inside the EAST edge with the whole 2020 of blossom ahead in the facing direction, bit for bit   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander   // CHOFF is MIRRORED (see BAND_MIRROR): the blossom's centre is SPWX - CHOFF, so a negative CHOFF puts it EAST of spawn, in the sunrise. Magnitude unchanged.
   const chWob = (z) => oakWob(z) * 0.6 + (vnoise(z * WOB_CH + 211.3, 97.7) - 0.5) * CHW;   // carries 0.6 of the OAK meander for the reason oakWob carries 0.6 of the desert's: two free meanders converge and let bands touch. Its own half is small because this band has the least room of the three
-  const cherryM = (x, z) => {                          // 1 = inside the blossom band, 0 = the oak forest either side of it
-    const b = SPWX - CHOFF + oakWob(z) - oakWob(SPWZ);   // oakWob, NOT chWob — see the CHHALF note: this is what ties the blossom's outer edge to the oak band's so no oak can outlive it. Still pinned at the spawn's own z, so spawn's position in the band is not a per-session lottery
-    const t = (CHHALF + CHB - Math.abs(pwrap(x - b))) / CHB;  // …and it is a DISTANCE from the centre line, not a side of it — that one change is what makes it a band. pwrap is what makes it RECUR: without it the band exists once and the world either side of it does not repeat
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const cherryM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ── AND desWob IS IN THIS SUM (audit 2026-08-18) ── chWob = oakWob*0.6 + noise*CHW, and oakWob is itself
   // desWob*0.6 + noise*OAKW, so chWob carries desWob*0.36. The first version of this counted only the OAKW and
   // CHW terms and therefore UNDER-covered by ~155 voxels each side — meaning chNear could answer "not blossom"
@@ -1586,11 +1591,7 @@
   // It stays a SEPARATE number from CHB for the reason above: CHB is 200 so the blossom does not run into the
   // pine treeline, and widening THAT to move the snow would move the forest.
   const CHBW = 300;
-  const cherryW = (x, z) => {                        // the blossom band as the WEATHER sees it — cherryM's twin with a longer ramp; the trees keep cherryM
-    const b = SPWX - CHOFF + oakWob(z) - oakWob(SPWZ);   // the same meander cherryM rides, or the blanket and the trees would disagree about where the band is
-    const t = (CHWHALF + CHBW - Math.abs(pwrap(x - b))) / CHBW;   // CHWHALF: the weather keeps the half-width it was tuned against
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const cherryW = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   const CHREACH = Math.max(CHHALF + CHB, CHWHALF + CHBW) + 2 * (DESW * 0.675 * 0.6 + OAKW * 0.5);   // …on OAKWOB's swing now, not chWob's, because both cherry masks ride oakWob — and over the WIDER of the two ramps, since chNear gates cherryW as well as cherryM. A cheap bound may under-cover by nothing.
   // ── AND THE CHEAP BOUND THAT MUST BE ASKED FIRST (user 2026-08-18: the game froze on boot) ── cherryM costs
   // ~7 vnoise, and fillColumn called it for EVERY COLUMN with om > 0, which is the whole infinite oak forest.
@@ -1635,7 +1636,7 @@
   // the snowy side and is finished by the time you are properly into the other biome, instead of straddling
   // the border evenly.
   const wSharp = (m) => (m <= 0.06 ? 0 : m >= 0.70 ? 1 : (m - 0.06) / 0.64);   // 0.20..0.80 -> 0.06..0.94 -> 0.06..0.70 AND the second smoothstep is gone (user 2026-08-19, the same complaint a second time): cherryM is already smoothstepped, so squaring the S made the middle of the ramp far steeper than either end and that steep middle IS the line the player sees. Linear here leaves exactly one S in the chain   // 0.35..0.65 -> 0.20..0.80 (user 2026-08-18: "the snowing appears instantly when transitioning biomes") — the first cut squeezed the fade into 25 voxels, which at walking pace is under a second and reads as a switch. 0.60 of the ramp is ~75 voxels: still far tighter than the 125 the raw mask gives, so the snow stays in its own biome, but you now walk INTO it
-  const oakWeather = (x, z) => { const om = oakM(x, z); return (om > 0 && chNear(x)) ? om * (1 - cherryW(x, z)) : om; };   // cherryW, NOT cherryM: the weather border feathers over CHBW while the treeline keeps CHB (see the block above)
+  const oakWeather = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;   // cherryW, NOT cherryM: the weather border feathers over CHBW while the treeline keeps CHB (see the block above)
   const PETAL_ON = !location.search.includes('nopetal');   // ?nopetal — A/B the fallen-petal scatter. A CONST, not a location read inside stampOak: that function is serialised into the gen workers, whose Blob location carries no query string, so the flag would be true in the pool and false inline and gtest would (correctly) call it a mismatch.   // CHREACH = 1503.52: no column further than this from the band centre can be cherry at all — the cheap bound a scatter gate takes before paying for 8 vnoise. It is DERIVED from CHHALF/CHB/CHW/OAKW/DESW, none of which the equal-strip pass touched, so it did not move either
   // ── ROUNDED HILLS (user 2026-08-17: "make the terrain have much more 'rounded' hills", with a photograph of
   // Tuscan downland — broad domed crests, long clean sweeps, no fine-grained bumpiness anywhere) ── OAK FOREST
@@ -2003,11 +2004,7 @@
   // in at once. 900 voxels is 90 m of thinning, which is about the distance the fog starts softening anyway.
   const ARCTOFF = 2160, ARCTB = 1800, ARCTH = 2160;     // inner edge from spawn; blend width; half-width to the mask midpoint
   const ARCTC = BAND_MIRROR * (ARCTOFF + ARCTH);       // -2160: the band centre, mirrored like DESC/BIRCHC/OAKC/CHOFF
-  const arcticM = (x, z) => {                          // 1 = deep arctic, 0 = the pine and the birch either side
-    const c = SPWX + ARCTC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
-    const t = 0.5 + (ARCTH - Math.abs(pwrap(x - c))) / ARCTB;
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const arcticM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ══ WHERE THE SNOW LIES, WHICH IS NOT WHERE THE BIOME IS ══════════════════════════════════════════════
   // (user 2026-08-30: "make the edge of the arctic meet up much closer to the pine forest. but then also make
   // the transition much smoother instead of a straight line. dont do anything to the tree placements.")
@@ -2068,18 +2065,7 @@
   // Faded on birchM rather than cut at the border, because a hard height or mask test here draws a straight
   // white line - the exact complaint the ARCT_SNOWR note further up was written to answer. Behind the same
   // wrapped-distance cheap-out oakRoll and oakBank use, so the pine forest and the desert pay two compares.
-  const arctSnow = (x, z) => {
-    const am = arcticM(x, z);
-    if (am <= 0) return 0;
-    let bk = 1;
-    { const dxb = pwrap(x - SPWX);
-      if (dxb < BIRCHFAR && dxb > BIRCHWFAR) { const bm = birchM(x, z); if (bm >= 1) return 0; if (bm > 0) bk = 1 - bm; } }
-    if (am >= 1) return bk;
-    const n = (fbm(x * 0.0052 + 61.3, z * 0.0052 + 17.9) - 0.5) * ARCT_SNOWN
-            + (fbm(x * 0.017 + 5.1, z * 0.017 + 44.6) - 0.5) * ARCT_SNOWN * 0.5;
-    const t = (am + n - ARCT_SNOW0) / ARCT_SNOWR;
-    return (t >= 1 ? 1 : t <= 0 ? 0 : sstep(t)) * bk;
-  };
+  const arctSnow = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ── SNOW CAPS ON THE WATER (user 2026-08-30: "inside the lakes and rivers can you create snow caps") ──
   // written AT the waterline in place of the surface water voxel, not above it, so a cap is flush with the
   // lake rather than a lip standing proud of it. Coherent, so they come in floes rather than as speckle; the
@@ -2350,11 +2336,7 @@
   const ARCTWFAR = ARCTC - ARCTH - 2 * ARCTWMAX - ARCTB * 0.5;   // …nor west of this
   const BIRCHOFF = 6480, BIRCHB = 900, BIRCHH = 2160;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
   const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
-  const birchM = (x, z) => {                            // 1 = deep birch forest, 0 = the pine and the sand either side
-    const c = SPWX + BIRCHC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
-    const t = 0.5 + (BIRCHH - Math.abs(pwrap(x - c))) / BIRCHB;
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const birchM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // The band's absolute reach, for the cheap-out in oakRoll/oakBank. |desWob| <= DESW * 0.675, and the rim is
   // BIRCHB/2 either side of the line. NOTE there is deliberately no "deep birch" short-circuit to match oak's
   // OAKNEAR/OAKWNEAR: 2 * BIRCHWMAX + BIRCHB/2 = 1575 is WIDER than BIRCHH = 1080, so no column is guaranteed
@@ -2449,7 +2431,7 @@
   // The cone is unaffected, and if anything gentler: it now runs from 24 to OAKBANKR instead of from 60,
   // so the same 82-voxel rise is spread over 256 voxels rather than 220.
   const SANDDEEP = 8;                                  // how far UNDER the waterline sand still reaches — see `shore` in world/terrain.js
-  const SANDR = 24;                                   // how far a beach looks for open water before it is allowed to be sand — see `shore` in world/terrain.js
+  const SANDR = 44;                                   // how far a beach looks for open water before it is allowed to be sand — see `shore` in world/terrain.js
   const OAKBEACH = 10, OAKBEACHY = WL + 2;
   // ── OAKBEACHY SITS INSIDE THE SAND, NOT ON TOP OF IT (user 2026-08-31: "I dont want to see dirt/grass in
   // the middle of the sand") ── the cone holds its flat at this height, so this is the level most of a beach
@@ -2598,18 +2580,7 @@
   // derived from the strip width (DESH = W/2) and never from BIOP: the leftover between the sand's east
   // midpoint and the next period's oak is not slack to be absorbed, it is the SECOND PINE STRIP.
   const DESH = 2160, DESC = BAND_MIRROR * (DESOFF + DESH);             // half-width to the mask MIDPOINT, and the band centre: DESC ± DESH = 4460 and 6620
-  const desertM = (x, z) => {                          // 0 = pine forest, 1 = open desert — a BAND now (see BIOP), with pine on BOTH sides of the sand
-    // The wobble is subtracted AT THE SPAWN'S OWN z. Without that it swings +-216 voxels either way, so how
-    // far the player starts from the sand was a lottery: measured 380 voxels one session where the constant
-    // of the day (80) implied 305, and a big enough swing would have spawned them PAST the boundary, in the
-    // desert. That specific hazard is gone now DESOFF is 1500, but the reason to pin it is not - oakM pins
-    // its own wobble the same way, and there the offset is OAKOFF (2300) against the same +-216.
-    // Pinning it costs nothing — the border still meanders exactly as before, it just passes DESOFF from
-    // spawn at the spawn's own latitude, so "how far to the desert" is the same every session.
-    const c = SPWX + DESC + desWob(z) - desWob(SPWZ);
-    const t = 0.5 + (DESH - Math.abs(pwrap(x - c))) / DESB;   // a band, not a half-plane: one band centred at DESC covers the sand at the east end of a period AND the sand at the west end of the next, because the distance wraps
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const desertM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ══ THE BIOME BORDER RIVERS (user 2026-08-31: "separate the different biomes with rivers and water") ══
   // Every band mask in this file is the SAME shape — a centre line c(z) that wobbles with z, and a mask that
   // reads exactly 0.5 where |pwrap(x - c)| equals the band's half-width. So "the border between two biomes" is
@@ -2693,59 +2664,74 @@
   // start further out. It ran 99 voxels before (wet edge 19 -> valley 117 at BIORW 26); 2.0 puts the valley
   // at 156 against a wet edge of 57, which is the same 99. The river widens; the shoreline does not flatten.
   const BIORVK = 0.72;                                 // …and this is its strength at the centre, well under the core's, so the core still owns the middle and this only shapes the shoulders
-  const bioRivS = (x, z) => {                          // …and the same 0..1 channel strength rivEval returns, so riverS can simply take the max and every consumer downstream is none the wiser
-    if (!BIORIV_ON) return 0;
-    const d = bioEdge(x, z);
-    const wv = bwW * BIORVALL;
-    if (d >= wv) return 0;
-    const core = (1 - d / bwW) * BIORSAT;              // the wet channel
-    const vall = (1 - d / wv) * BIORVK;                // …and the valley it runs in
-    const t = core > vall ? core : vall;
-    return t <= 0 ? 0 : sstep(t >= 1 ? 1 : t);
+  const bioRivS = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
+    // ══ THE PINE FOREST, AND IT IS THE WHOLE WORLD ═══════════════════════════════════════════════
+  // Every band, mask and blend that used to stand between here and the waterline is gone (user
+  // 2026-08-31: "completely wipe the terrain generation and restart completely ... begin by
+  // implementing the pine forest"). There is ONE field, it is the pine forest's, and it is
+  // evaluated everywhere - no biome selector runs in the height path at all any more.
+  // ROUND, and that is what the double smoothstep buys: one pass leaves the midband of the noise
+  // linear, and a linear midband is what makes a voxel hill read as a slab with a corner on it.
+  // Twice pushes the field toward its own ends, so hilltops dome over and valley floors flatten
+  // out, and it widens the height histogram at the same time - which is the "a lot of terrain
+  // height variation" half of the ask.
+  const PINE_LOW    = 6;                               // hard floor: a lake bed may not reach the world's own bottom
+  const PINE_BASE   = WL - 52;                             // the deepest ground, 52 under WL. Depth is the point - a shallow
+                                                       // field floor reads as wet sand rather than as a lake (recorded
+                                                       // against the first pine water build, which produced exactly that).
+  const PINE_WET    = 1.78;                            // ── AND THE WATER IS PUT BACK (user approved 32%) ── doubling the
+                                                       // relief moved the whole field UP relative to a waterline that did not move
+                                                       // with it, and the lakes drained: 32.3% -> 12.7%. This exponent pulls the
+                                                       // distribution back down toward its own floor WITHOUT touching either end,
+                                                       // so the peaks still reach HMAX and the valleys still flood. Measured over
+                                                       // 111k columns: 1.0 -> 12.7%, 1.3 -> 27.8%, 1.6 -> 41.4%.
+  const PINE_RELIEF = HMAX - PINE_BASE;                             // ...up to HMAX, so a ridge stands ~74 over the water carrying a whole 152-voxel tree.
+  const pineField = (x, z) => {
+    // ── RAISED, NOT STEEPENED (user 2026-08-31: "dont make the terrain steeper per say, just raise the
+    // elevation... correct?") ── yes, and the first cut got it wrong: it multiplied the AMPLITUDE and left
+    // the wavelengths alone, and a slope is amplitude over wavelength, so every gradient in the world went
+    // up with it. The visible cost was the shoreline - the ground crossed the whole beach window in a voxel
+    // or two and the grass came down to the water. Each octave's wavelength is now stretched by the SAME
+    // 1.635 the relief grew by, so the hills are twice as tall and no steeper than they were: bigger
+    // country, same walk up it.
+    const a = fbm(x * 0.00098 + 61.3, z * 0.00098 + 77.9);   // the massifs - one hill every ~1000 voxels
+    const b = fbm(x * 0.00257 + 25.1, z * 0.00257 + 13.7);   // the shoulders on them
+    // ── AND THE ROLL DOES NOT MOVE (user 2026-08-31: "I still want the terrain to be hilly like it is") ──
+    // stretching THIS octave with the other two is what would flatten the world into smooth swells: it is
+    // the one that puts a hill in front of you rather than a horizon. It keeps its original wavelength AND
+    // its original amplitude - weight 0.095 of a 206 relief is 19.6 voxels, against 0.15 of the old 126,
+    // which is 18.9 - so the ground underfoot rolls exactly as it did. Only the two BIG octaves grew, and
+    // they grew in both dimensions at once, which is what raises the country without tilting it.
+    const c = fbm(x * 0.011 + 3.7, z * 0.011 + 9.1);       // the roll that makes a hill a hill - unchanged
+    return Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET);
   };
   const H = (x, z) => {
-    let h = baseH(x, z);
-    const bm = basinM(x, z);
-    const m = bm * basinLow(h, x, z);                   // basins only form in low country — and the arctic's ceiling is higher, see basinLow
-    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
-    const rs = riverS(x, z);
-    const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
-    h = Math.round(oakBank(h, x, z));                  // ── SHALLOW OAK BANKS ── BEFORE the carve, so the lerp below starts from the shelf instead of from a hilltop. h is already an integer here, so Math.round is the identity outside the oak forest and the pine/desert heights stay bit-exact; see oakBank
-    if (rs > 0.02) h = Math.min(h, Math.round((h - Math.max(0, h - (WL + RIVLAND)) * rs) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
-    // ── THE BEACH KEEPS ITS OWN ORDER (user 2026-08-31: "make all the sand steps even with one another …
-    // you need to bring back the lowest sand step inwards") ── this used to discard the raw height and
-    // re-derive the step from an fbm, and the Math.max(0, ...) on that mapping clamped every column under
-    // fbm 0.685 to step 0. That is roughly two thirds of the beach standing on ONE level, which is the single
-    // wide flat bottom step the report is about, with WL+2 and WL+3 as slivers above it.
-    // The window is [WL-2, WL] - three raw levels - and they are already ordered by distance from the water.
-    // Lifting the whole window by a CONSTANT keeps that order: the deepest column lands on WL+1, the
-    // shallowest on WL+3, and each step is as wide as the underlying slope makes it, so the three come out
-    // even with each other instead of one swallowing the others. No noise, so no ring is drawn by this line.
-    if (h <= WL && h >= WL - 2 && bm <= 0.25 && rs <= 0.04) h = h + 3;
-    // ── AND THAT RELIEF IS ON ITS OWN LONG WAVELENGTH NOW (user 2026-08-31: "one layer that is flat and wide,
-    // then you have much smaller steps of sand that then lead to grass … make the steps wider/flatter") ── it
-    // used to ride `bn`, which is the RIVER BED noise at 0.05 - a wavelength of about 20 voxels. This line
-    // writes WL+1, WL+2 or WL+3 straight from it, so the beach flipped between three heights every ten voxels
-    // or so: not a slope at all, a speckle, and every flip reads as a one-voxel terrace two voxels wide. That
-    // is the "much smaller steps", and it is why widening the bank cone and adding the waterline shelf both
-    // measured no change - neither of them runs after this line, and this line was writing the answer.
-    // 0.018 is a wavelength of ~55 voxels. It was 0.009 for one round and that made the LOWEST terrace 64 voxels
-  // wide against 4 for every step above it (user 2026-08-31: "reduce the size of the lowest/last sand step in
-  // half") - one enormous flat and then a staircase, which is a worse read than the speckle it replaced.
-  // Halving it puts that terrace near 32 and leaves it comfortably clear of the ~20-voxel noise that made the
-  // beach look like static at 0.05.
-    // the relief reads as a low dune rather than as noise. Its own noise rather than a lower-frequency `bn`:
-    // bn is the river bed's and the banks' relief and is tuned where it is used.
-    // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
-    // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
-    // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
-    // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
-    // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
-    // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
-    // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-    const dm = desertM(x, z); if (dm > 0) { const dmr = dm * (1 - rs); h = Math.round(h * (1 - dmr) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dmr); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.   // ── AND THE SAND YIELDS TO THE WATER (see BIOME BORDER RIVERS in world/window.js) ── this lerp runs AFTER the river carve, so at the desert's own border, where dm is exactly 0.5, it used to average the carved bed 50/50 with a dune and hand back a channel too shallow to flood — the border river erased by the biome it was there to separate. That is the same failure the `rs <= 0.04` guard on the WL+2 lift below already answers for; the lerp simply never got the same treatment. Scaling dm by (1 - rs) lets a full-strength channel pass through the sand intact and leaves the shoulders sandy. BIT-EXACT where there is no water: rs is 0 across the open desert, and dm * (1 - 0) is dm in IEEE754, so every dune in the world is untouched. A biome decides what the shore is MADE OF, never where the water ENDS.
+    let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * pineField(x, z))));
+    const bm = basinM(x, z);                           // the LAKES: broad low-frequency bowls pressed into the field
+    const m = bm * basinLow(h, x, z);
+    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);
+    const rs = riverS(x, z);                           // and the RIVERS: the watershed network, widened - see RIVWIDE
+    const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief, so a bed is not billiard-flat
+    if (rs > 0.02) h = Math.min(h, Math.round((h - Math.max(0, h - (WL + RIVLAND)) * rs) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));
+    // ── AND NOW THE SHORELINE IS NOT TOUCHED AT ALL (user 2026-08-31: "remove that band and smooth it
+    // out", then "and I dont mean make the sand beds flatter either like done in the past") ──
+    // Both halves of that rule out every version this line has ever had. It has always been an ARTIFICIAL
+    // edit to the height at the waterline, and it came in exactly two shapes:
+    //   * a TRANSLATION - [WL-2,WL] up by 3, later [WL-6,WL] up by 7. Not continuous at the top of its own
+    //     window, so the lifted ground stood proud of the unlifted column beside it. THAT IS THE BAND, and
+    //     it got taller every time the window was widened to make the cascade wider.
+    //   * a COMPRESSION - sixteen raw levels squeezed onto nine. Continuous, so no band, but squeezing IS
+    //     flattening, which is the thing the second half of the report rules out.
+    // There is no third shape: any remap that pulls drowned ground into the air either steps at its edge
+    // or flattens what it moves. So the edit is gone. The shore is now whatever the field already does -
+    // and after the steepness fix that is a gentle natural grade - and the BEACH is made by the sand
+    // MATERIAL following it (see `shore` in world/terrain.js) instead of by moving ground. The steps in it
+    // are the terrain's own, which is why they neither band nor flatten.
+    // It costs water AREA, and that is the honest trade: ground in [WL-6, WL] used to be lifted into dry
+    // beach and now simply stays wet, so the lakes get bigger rather than the beaches.
+
     return h;
-  };
+  };;
   // ── A RIVER'S WIDTH MUST NOT DEPEND ON HOW HIGH THE LAND BESIDE IT IS (user 2026-08-31: "the river between
   // the pine and oak has areas where the river is very thin. prevent thin rivers from forming") ── the carve
   // is a lerp toward the bed weighted by rs, so the land term h * (1 - rs) puts the SURROUNDING HEIGHT into
@@ -2765,6 +2751,11 @@
   // `h - max(0, h - cap) * rs` is the same cap reached continuously: identity at rs 0, the full cap at
   // rs 1, and nothing to step over in between. The width it was added to buy is unaffected - what widens a
   // channel is the cap at HIGH rs, which is exactly where this still applies it in full.
+  const RIVWIDE = 3.4;                                 // ── WIDE RIVERS (user 2026-08-31: "add in lakes and wide rivers
+                                                       // throughout the terrain") ── the channel half-width multiplier. Was 1.4, which is
+                                                       // the width the seven-band world wanted when a river was a BORDER between biomes.
+                                                       // Here a river is a feature of the forest itself and is meant to be crossed by
+                                                       // swimming, not by stepping, so it carries most of the 25% water target with the lakes.
   const RIVLAND = 44;                                  // …how far over the waterline the land may push a channel's bed
   const RIVCELL = 768, RIVINF = 6200;                  // WATERSHEDS — one candidate per ~77 m cell, rare roll; each hit is a whole dendritic system (influence radius must cover the longest possible chain)
   const rivCache = new Map();
@@ -2838,7 +2829,7 @@
       const t = Math.max(0, Math.min(sg.len, tRaw));
       const off = Math.sin(t * 0.015 + sg.seed) * 30 + Math.sin(t * 0.04 + sg.seed * 1.7) * 10;   // broad meanders
       const pd = (x - (sg.sx + sg.dxr * t)) * (-sg.dzr) + (z - (sg.sz + sg.dzr * t)) * sg.dxr;
-      const w = sg.wb * 1.4 * aw * (sg.t0 + (sg.t1 - sg.t0) * (t / sg.len));   // width taper: stems widen downstream, tributaries narrow to their heads; aw doubles it across the arctic
+      const w = sg.wb * RIVWIDE * aw * (sg.t0 + (sg.t1 - sg.t0) * (t / sg.len));   // width taper: stems widen downstream, tributaries narrow to their heads; aw doubles it across the arctic
       const over = tRaw < 0 ? -tRaw : (tRaw > sg.len ? tRaw - sg.len : 0);   // rounded end caps - no strip past the endpoints (the old straight-cutoff bug)
       const d = Math.hypot(Math.abs(pd - off), over);
       if (d < w) { const v = sstep(1 - d / w); if (v > best) best = v; }
@@ -2973,39 +2964,32 @@
     };
   }
   function makeHRow(wz) {                              // H(x, wz) specialized for one row — every float op mirrors H exactly
-    const zb = wz * 0.008;
-    const s1 = rowNoise(zb), s2 = rowNoise(zb * 2.13 + 5.3), s3 = rowNoise(zb * 4.41 + 23.8);
-    const zd = wz * 0.04 + 2.1;
-    const d1 = rowNoise(zd), d2 = rowNoise(zd * 2.13 + 5.3), d3 = rowNoise(zd * 4.41 + 23.8);
+    const za = wz * 0.00098 + 77.9;                     // pineField octave A, row-specialized (mirrors fbm's constants exactly)
+    const a1 = rowNoise(za), a2 = rowNoise(za * 2.13 + 5.3), a3 = rowNoise(za * 4.41 + 23.8);
+    const zb2 = wz * 0.00257 + 13.7;                    // ...octave B
+    const b1 = rowNoise(zb2), b2 = rowNoise(zb2 * 2.13 + 5.3), b3 = rowNoise(zb2 * 4.41 + 23.8);
+    const zc = wz * 0.011 + 9.1;                       // ...and C
+    const c1 = rowNoise(zc), c2 = rowNoise(zc * 2.13 + 5.3), c3 = rowNoise(zc * 4.41 + 23.8);
     const bsr = rowNoise(wz * 0.0016 + 157.3);
-    const znB = wz * 0.05 + 4.2;                       // bed/beach relief fbm, row-specialized (mirrors fbm's octave constants exactly)
+    const znB = wz * 0.05 + 4.2;                       // bed/beach relief fbm, row-specialized
     const e1 = rowNoise(znB), e2 = rowNoise(znB * 2.13 + 5.3), e3 = rowNoise(znB * 4.41 + 23.8);
     return (wx) => {
-      const xb = wx * 0.008;
-      const b = 8 + LIFT + 88 * (s1(xb) * 0.55 + s2(xb * 2.13 + 11.7) * 0.27 + s3(xb * 4.41 + 41.2) * 0.18);
-      const shoreK = Math.min(1, Math.abs(b - WL) / 12);
-      const xd = wx * 0.04 + 7.3;
-      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * (d1(xd) * 0.55 + d2(xd * 2.13 + 11.7) * 0.27 + d3(xd * 4.41 + 41.2) * 0.18) * (0.2 + 0.8 * shoreK), wx, wz))));   // ── ROUNDED OAK HILLS ── the row-specialized forest expression is untouched and still bit-identical to baseH's; oakRoll is the SAME scalar helper baseH and makeHCol call, so the oak field cannot drift between the three copies any more than desertM/duneH can
+      const xa = wx * 0.00098 + 61.3;
+      const a = a1(xa) * 0.55 + a2(xa * 2.13 + 11.7) * 0.27 + a3(xa * 4.41 + 41.2) * 0.18;
+      const xb2 = wx * 0.00257 + 25.1;
+      const b = b1(xb2) * 0.55 + b2(xb2 * 2.13 + 11.7) * 0.27 + b3(xb2 * 4.41 + 41.2) * 0.18;
+      const xc = wx * 0.011 + 3.7;
+      const c = c1(xc) * 0.55 + c2(xc * 2.13 + 11.7) * 0.27 + c3(xc * 4.41 + 41.2) * 0.18;
+      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET))));
       const b0 = bsr(wx * 0.0016 + 313.7);
-      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
-      const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
+      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));
+      const m = bm * basinLow(h, wx, wz);
       if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
       const rs = riverS(wx, wz);
       const xnB = wx * 0.05 + 13.7;
       const bn = e1(xnB) * 0.55 + e2(xnB * 2.13 + 11.7) * 0.27 + e3(xnB * 4.41 + 41.2) * 0.18;
-      h = Math.round(oakBank(h, wx, wz));              // ── SHALLOW OAK BANKS ── the SAME shared scalar helper H() and makeHCol call, in the same place in the pass order. The arithmetic exists once, so the three copies cannot drift; see oakBank in window.js
       if (rs > 0.02) h = Math.min(h, Math.round((h - Math.max(0, h - (WL + RIVLAND)) * rs) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
-      // beach window lifted by a CONSTANT so the three raw levels stay ordered and the steps come out even -
-      // see the long note in window.js H. The fbm mapping this replaces put two thirds of the beach on WL+1.
-      if (h <= WL && h >= WL - 2 && bm <= 0.25 && rs <= 0.04) h = h + 3;
-      // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
-      // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
-      // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
-      // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
-      // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
-      // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
-      // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-      const dm = desertM(wx, wz); if (dm > 0) { const dmr = dm * (1 - rs); h = Math.round(h * (1 - dmr) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dmr); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── the SAME expression as H() in window.js, calling the SAME scalar desertM/fbm. These three copies of the height function have to agree bit-for-bit or the bulk fill and the placement queries disagree about where the ground is; sharing the function is what makes that true by construction rather than by careful copying.
+      // (no shoreline height edit - see the note in window.js H)
       return h;
     };
   }
@@ -3029,39 +3013,32 @@
     };
   }
   function makeHCol(wx) {                              // H(wx, z) specialized for one COLUMN — exact, for x-direction bands
-    const xb = wx * 0.008;
-    const s1 = colNoise(xb), s2 = colNoise(xb * 2.13 + 11.7), s3 = colNoise(xb * 4.41 + 41.2);
-    const xd = wx * 0.04 + 7.3;
-    const d1 = colNoise(xd), d2 = colNoise(xd * 2.13 + 11.7), d3 = colNoise(xd * 4.41 + 41.2);
+    const xa = wx * 0.00098 + 61.3;                     // pineField octave A, column-specialized
+    const a1 = colNoise(xa), a2 = colNoise(xa * 2.13 + 11.7), a3 = colNoise(xa * 4.41 + 41.2);
+    const xb2 = wx * 0.00257 + 25.1;                    // ...octave B
+    const b1 = colNoise(xb2), b2 = colNoise(xb2 * 2.13 + 11.7), b3 = colNoise(xb2 * 4.41 + 41.2);
+    const xc = wx * 0.011 + 3.7;                       // ...and C
+    const c1 = colNoise(xc), c2 = colNoise(xc * 2.13 + 11.7), c3 = colNoise(xc * 4.41 + 41.2);
     const bsc = colNoise(wx * 0.0016 + 313.7);
     const xnB = wx * 0.05 + 13.7;                      // bed/beach relief fbm, column-specialized
     const e1 = colNoise(xnB), e2 = colNoise(xnB * 2.13 + 11.7), e3 = colNoise(xnB * 4.41 + 41.2);
     return (wz) => {
-      const zb = wz * 0.008;
-      const b = 8 + LIFT + 88 * (s1(zb) * 0.55 + s2(zb * 2.13 + 5.3) * 0.27 + s3(zb * 4.41 + 23.8) * 0.18);
-      const shoreK = Math.min(1, Math.abs(b - WL) / 12);
-      const zd = wz * 0.04 + 2.1;
-      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * (d1(zd) * 0.55 + d2(zd * 2.13 + 5.3) * 0.27 + d3(zd * 4.41 + 23.8) * 0.18) * (0.2 + 0.8 * shoreK), wx, wz))));   // ── ROUNDED OAK HILLS ── identical to H() and makeHRow: the forest expression untouched, wrapped in the one shared oakRoll. See the note in makeHRow.
+      const za = wz * 0.00098 + 77.9;
+      const a = a1(za) * 0.55 + a2(za * 2.13 + 5.3) * 0.27 + a3(za * 4.41 + 23.8) * 0.18;
+      const zb2 = wz * 0.00257 + 13.7;
+      const b = b1(zb2) * 0.55 + b2(zb2 * 2.13 + 5.3) * 0.27 + b3(zb2 * 4.41 + 23.8) * 0.18;
+      const zc = wz * 0.011 + 9.1;
+      const c = c1(zc) * 0.55 + c2(zc * 2.13 + 5.3) * 0.27 + c3(zc * 4.41 + 23.8) * 0.18;
+      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET))));
       const b0 = bsc(wz * 0.0016 + 157.3);
-      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
-      const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
+      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));
+      const m = bm * basinLow(h, wx, wz);
       if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
       const rs = riverS(wx, wz);
       const znB2 = wz * 0.05 + 4.2;
       const bn = e1(znB2) * 0.55 + e2(znB2 * 2.13 + 5.3) * 0.27 + e3(znB2 * 4.41 + 23.8) * 0.18;
-      h = Math.round(oakBank(h, wx, wz));              // ── SHALLOW OAK BANKS ── identical to H() and makeHRow. See the note in makeHRow.
       if (rs > 0.02) h = Math.min(h, Math.round((h - Math.max(0, h - (WL + RIVLAND)) * rs) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
-      // beach window lifted by a CONSTANT so the three raw levels stay ordered and the steps come out even -
-      // see the long note in window.js H. The fbm mapping this replaces put two thirds of the beach on WL+1.
-      if (h <= WL && h >= WL - 2 && bm <= 0.25 && rs <= 0.04) h = h + 3;
-      // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
-      // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
-      // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
-      // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
-      // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
-      // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
-      // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-      const dm = desertM(wx, wz); if (dm > 0) { const dmr = dm * (1 - rs); h = Math.round(h * (1 - dmr) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dmr); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── identical to H() and makeHRow. See the note in makeHRow.
+      // (no shoreline height edit - see the note in window.js H)
       return h;
     };
   }
@@ -3110,8 +3087,8 @@
     // come out of. Anything from world/terrain.js (23) or world/gen-pool.js (25) is still in its temporal dead
     // zone on this line, and reading it would throw INSIDE this try — which swallows it and falls back, the same
     // invisible failure the missing names caused. Check 9 enforces the ordering as well as the completeness.
-    const consts = { WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, BIRCH_LAKE, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR,   SANDR, OAKBEACH, OAKBEACHY, SANDDEEP,  BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_STAND, PINEY, PINEHILL, PINE_LAKE, PINE_SHELF, PINE_SHA, PINE_SHB,  CHOFF, CHHALF, CHWHALF, CHB, CHW, BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
-    const fns = { ihash, sstep, pwrap, vnoise, fbm, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, chWob, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSeaH, arctH, oakWob, oakM, pineH, oakFieldM, birchH, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
+    const consts = { PINE_WET, PINE_LOW, PINE_BASE, PINE_RELIEF, RIVWIDE, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, BIRCH_LAKE, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR,   SANDR, OAKBEACH, OAKBEACHY, SANDDEEP,  BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_STAND, PINEY, PINEHILL, PINE_LAKE, PINE_SHELF, PINE_SHA, PINE_SHB,  CHOFF, CHHALF, CHWHALF, CHB, CHW, BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
+    const fns = { pineField, ihash, sstep, pwrap, vnoise, fbm, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, chWob, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSeaH, arctH, oakWob, oakM, pineH, oakFieldM, birchH, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
     // ── SPWX/SPWZ RIDE WITH THE JOB, they are not baked ── spawn is randomised in world/build.js, nine fragments
@@ -3191,11 +3168,11 @@
   //
   // FORMAT: one entry per FOLDER, "<dir>:<name>,<name>,..." joined with ';'. Names keep their real case
   // (the fetch URL is case-sensitive) and drop the .vox; the empty dir is game/assets itself. Grouping by
-  // folder is what makes this 6608 characters instead of the 27531 the flat paths cost. Folders are emitted
+  // folder is what makes this 6685 characters instead of the 27720 the flat paths cost. Folders are emitted
   // parent-first, siblings in order, so every subtree is a CONTIGUOUS run - ui/console.js relies on that to
   // answer "how many files are under life/tropical_life/pelican" without a second table. It is unpacked
   // lazily, on the first command that needs it, so the boot pays nothing for it.
-  const VOXDEX = [                                     // 993 files in 122 folders
+  const VOXDEX = [                                     // 1002 files in 123 folders
     ':palette,palette2',
     'decoration:beehive,birch,birch_forest,fir_spruce,flowers,lillypad_large,lillypad_medium,lillypad_small,log,lotus,mushroom,pine_puffy,pine_skinny,pinecone,pink_stick_1,pink_stick_2,rock,shell,stick_1,stick_2',
     'decoration/rocks:BIG_1_BiG_0,Big_2_BiG_0,Big_3_BiG_0,Big_4_BiG_0,Big_5_BiG_0,Mid_1_MID_0,Mid_2_MID_0,Mid_3_MID_0,Mid_4_MID_0,Mid_4_MID_0_001,Mid_5_MID_0,Runic_1_Runic_0,Runic_2_Runic_0,Runic_3_Runic_0,Runic_4_Runic_0,Runic_5_Runic_0,Runic_6_Runic_0,Runic_7_Runic_0,Small_1_SMall_0,Small_2_SMall_0,Small_3_SMall_0,Small_4_SMall_0,Small_5_SMall_0,Small_6_SMall_0,Small_7_SMall_0,Small_8_SMall_0',
@@ -3205,6 +3182,7 @@
     'foilage/cactus:cactus_1,cactus_2,cactus_3,cactus_4,cactus_5,cactus_6,cactus_7,cactus_8,cactus_9',
     'foilage/desert_shrub:1,2,3,4,5,6',
     'foilage/oak_trees:oak_1,oak_2,oak_3,oak_4,oak_5,oak_6,oak_7',
+    'foilage/pine9:pine_1,pine_2,pine_3,pine_4,pine_5,pine_6,pine_7,pine_8,pine_9',
     'food:orange',
     'food/apple:00,01,02,03,04,05,06,07,08,09,10,11,12',
     'food/meat:pork',
@@ -3401,6 +3379,16 @@
   const ROCK   = [addCol(124, 122, 116), addCol(106, 104, 100), addCol(90, 89, 86)];
   const ROCKX  = [addCol(138, 136, 130), addCol(99, 98, 94), addCol(74, 73, 70)];                        // partner shades — each formation layer is a blended two-tone swatch
   const BROCK  = [addCol(124, 122, 116), addCol(106, 104, 100), addCol(90, 89, 86)];                     // MEDIUM boulder — ROCK's exact colors on DEDICATED ids so right-click pickup can flood them without eating terrain
+  // ── ONE DEAD ID FOR EVERY RETIRED RAMP ── the world is a single pine forest now, so the desert,
+  // cherry, oak, birch and arctic ramps below mint nothing and point here instead. It is MAGENTA on
+  // purpose: nothing should ever draw it, so if it appears on screen the ramp it came from is not as
+  // dead as this file claims.
+  // AND IT IS NOT AN ALIAS ONTO A LIVING RAMP, which is what the first cut did. assets/material-tabs.js
+  // gives several of these ramps MATERIAL meaning - BLOSLEAF and OAKLITE get solidTab 0 + foliaTab 1,
+  // FRUITC the same plus hangTab - so pointing them at MOSS and DIRT turned the forest floor and the
+  // soil under it into walk-through foliage. Every retired ramp shares this ONE id instead, which costs
+  // a single palette entry and cannot collide with anything that still renders.
+  const DEADC = addCol(255, 0, 255);
   // ── DESERT SHRUBS ── the shrubs' OWN palette: a 4-step GREEN ramp and 6 FLOWER shades.
   // THE SIX .vox FILES ARE HAND-AUTHORED (user 2026-08-16: "I made modifications and renamed the files").
   // They are no longer a bake, so tools/voxelize_desert_shrubs.py's old "PALN pinned to len(SHRUBC)" contract
@@ -3422,8 +3410,8 @@
   // Same colour, own ids — the arrangement BROCK already uses to repeat ROCK's exact greys.
   // The first two green ids are the RECLAIMED dead LOGC pair; the other eight are the first real palette spend
   // the shrubs have ever made. __vb.shrubIds() prints all ten and what every material table says about each.
-  const SHRUBC = [addCol(83, 107, 36), addCol(90, 112, 39), addCol(99, 118, 43), addCol(106, 123, 46)];   // dark→light. ORDER is documentation only now — bow.js resolves by nearest colour, not by rank, so a re-authored file cannot silently shift every shade one step along the ramp
-  const SHRUBF = [addCol(227, 61, 89), addCol(232, 81, 107), addCol(234, 91, 116), addCol(238, 110, 135), addCol(243, 130, 153), addCol(255, 203, 127)];   // the flower ramp, EXACT: five pinks dark→light and the cream highlight at the centre of the bloom
+  const SHRUBC = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // dark→light. ORDER is documentation only now — bow.js resolves by nearest colour, not by rank, so a re-authored file cannot silently shift every shade one step along the ramp
+  const SHRUBF = [DEADC, DEADC, DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // the flower ramp, EXACT: five pinks dark→light and the cream highlight at the centre of the bloom
   // ── AND RESERVED, WHICH IS WHAT KEEPS THE CACTI OFF THEM ── quoting a colour the cacti also use is only
   // safe in ONE direction. These ids are minted here, long before assets/bow.js parses cactus_*.vox in SHARE
   // mode, so palShare's exact-match lookup would hand the cactus id 21 for its darkest green — and then
@@ -3442,12 +3430,12 @@
   // brown on screen is not a constant that exists anywhere to quote. Three steps, not four: the table had
   // four ids free, and a ramp that empties it is one that makes the NEXT colour anywhere in the game
   // silently nearest-match.
-  const SHRUBB = [addCol(141, 110, 74), addCol(158, 126, 88), addCol(174, 142, 103)];   // dark -> light
+  const SHRUBB = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // dark -> light
   for (const i of SHRUBC) palOwn.add(i);
   for (const i of SHRUBF) palOwn.add(i);
   for (const i of SHRUBB) palOwn.add(i);
   const SAND   = [addCol(203, 183, 145), addCol(191, 171, 133), addCol(213, 193, 155)];                  // lake beaches + lakebed
-  const DSAND  = [addCol(214, 188, 132), addCol(205, 178, 122), addCol(222, 197, 143), addCol(196, 169, 115)];   // ── DESERT SAND ── warmer and more saturated than the lake SAND above, and on DEDICATED ids for a reason that is not aesthetic: sandTab slows the player (beach sand pits), and sharing ids would make an entire biome wade. These are deliberately NOT in sandTab.
+  const DSAND = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // ── DESERT SAND ── warmer and more saturated than the lake SAND above, and on DEDICATED ids for a reason that is not aesthetic: sandTab slows the player (beach sand pits), and sharing ids would make an entire biome wade. These are deliberately NOT in sandTab.
   // ── COLORADO SANDSTONE: FOUR IDS FOR A THING THAT IS NOT IN THE GAME (reclaimed 2026-08-17, the BEEHIVE) ──
   // this ramp has exactly one consumer in the whole build: the ROCK26D block in assets/bow.js, which recolours
   // the 26 boulders into sandstone twins for the desert. Nothing stamps ROCK26D. The user reverted the desert
@@ -3474,82 +3462,83 @@
   const OREGOLD = [addCol(216, 174, 58), addCol(196, 156, 50)];
   const ORECRYS = [addCol(88, 196, 202), addCol(70, 176, 184)];
 
-  // ── pine5.vox ── MagicaVoxel, Z-up (model z → world y)
-  setLoad(12); await stage('loading pine5.vox…');
-  let vox;
-  try { vox = new Uint8Array(await (await fetch('assets/foilage/pine5.vox')).arrayBuffer()); } catch (e) { fail('failed to fetch assets/foilage/pine5.vox — serve over http (start.bat)'); }
-  const dv = new DataView(vox.buffer);
-  let MSX = 0, MSY = 0, MSZ = 0, voxels = null; const vpal = new Uint8Array(1024);
-  { const walk = (off, end) => { while (off < end) {
-      const id = String.fromCharCode(vox[off], vox[off + 1], vox[off + 2], vox[off + 3]);
-      const sz = dv.getUint32(off + 4, true), csz = dv.getUint32(off + 8, true);
-      if (id === 'SIZE' && !MSX) { MSX = dv.getUint32(off + 12, true); MSY = dv.getUint32(off + 16, true); MSZ = dv.getUint32(off + 20, true); }
-      else if (id === 'XYZI' && !voxels) { const n = dv.getUint32(off + 12, true); voxels = vox.subarray(off + 16, off + 16 + n * 4); }
-      else if (id === 'RGBA') { vpal.set(vox.subarray(off + 12, off + 12 + 1024)); }
-      else if (id === 'MAIN') { walk(off + 12 + sz, off + 12 + sz + csz); off += 12 + sz + csz; continue; }
-      off += 12 + sz + csz;
+  // ══ THE NINE PINES ══════════════════════════════════════════════════════════════════════════
+  // game/assets/foilage/pine9/pine_1..9.vox, baked by tools/voxelize_pine9.py out of the nine trees
+  // in EuropeanPine.obj at the engine's 10 cm voxel, each 152 voxels - 50 feet - tall. MagicaVoxel
+  // is Z-up and that is already the game's convention for a model (model z -> world y), so there is
+  // no axis work here.
+  // ONE SHARED BAKE PALETTE, WHICH IS WHY THERE IS STILL ONE remap: the voxelizer clusters all nine
+  // trees together into five bark shades and five needle shades, at .vox indices 1..5 and 6..10. So
+  // the ids are a property of the STAND, not of a tree, and a felled trunk beside a standing one is
+  // the same wood. It also means the nine trees cost ten palette ids between them rather than ninety.
+  const PINE_N = 9;
+  const PINE9 = [];                                    // [{ sx, sy, sz, M }] - the nine dense models
+  setLoad(12); await stage('loading the pines…');
+  const vpal = new Uint8Array(1024);
+  const parseVox = (buf) => {
+    const dv2 = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    let sx = 0, sy = 0, sz = 0, voxels = null;
+    const walk = (off, end) => { while (off < end) {
+      const id = String.fromCharCode(buf[off], buf[off + 1], buf[off + 2], buf[off + 3]);
+      const n = dv2.getUint32(off + 4, true), csz = dv2.getUint32(off + 8, true);
+      if (id === 'SIZE' && !sx) { sx = dv2.getUint32(off + 12, true); sy = dv2.getUint32(off + 16, true); sz = dv2.getUint32(off + 20, true); }
+      else if (id === 'XYZI' && !voxels) { const c = dv2.getUint32(off + 12, true); voxels = buf.subarray(off + 16, off + 16 + c * 4); }
+      else if (id === 'RGBA') { vpal.set(buf.subarray(off + 12, off + 12 + 1024)); }
+      else if (id === 'MAIN') { walk(off + 12 + n, off + 12 + n + csz); off += 12 + n + csz; continue; }
+      off += 12 + n + csz;
     } };
-    walk(8, vox.length);
+    walk(8, buf.length);
+    if (!voxels) return null;
+    const A = new Uint8Array(sx * sy * sz);
+    for (let q = 0; q < voxels.length; q += 4) A[voxels[q] + voxels[q + 1] * sx + voxels[q + 2] * sx * sy] = voxels[q + 3];
+    return { sx, sy, sz, M: A };
+  };
+  for (let t = 1; t <= PINE_N; t++) {
+    let raw;
+    try { raw = new Uint8Array(await (await fetch('assets/foilage/pine9/pine_' + t + '.vox')).arrayBuffer()); }
+    catch (e) { fail('failed to fetch assets/foilage/pine9/pine_' + t + '.vox — serve over http'); }
+    const m = parseVox(raw);
+    if (!m) fail('pine_' + t + '.vox: no model found');
+    PINE9.push(m);
   }
-  if (!voxels) fail('pine5.vox: no model found');
-  const M = new Uint8Array(MSX * MSY * MSZ);
-  for (let i = 0; i < voxels.length; i += 4) M[voxels[i] + voxels[i + 1] * MSX + voxels[i + 2] * MSX * MSY] = voxels[i + 3];
+  // ── THE LEGACY SINGLE-PINE HANDLES ── PINE_ANCH (material-tabs), the needle particles, the chop
+  // width heuristic and the nav perches were all written when the forest was ONE model and still
+  // read MSX/MSY/MSZ/M. They keep working by pointing at the first tree, which is a real pine of the
+  // right species and size; only the terrain stamp picks among all nine.
+  const MSX = PINE9[0].sx, MSY = PINE9[0].sy, MSZ = PINE9[0].sz, M = PINE9[0].M;
   const remap = new Uint8Array(256);
-  const foliageIds = [];                               // green tree voxels get NO hitbox — you can walk through the canopy
-  const woodIds = [];                                  // …and the BARK/branch ids: everything in the pine that is not foliage. The axe cuts any of it (user), tree or stump.
-  // ── BARK SMOOTHING (user) ── the authored trunk shades sit far apart, so neighbouring voxels read as
-  // hard-edged blotches rather than one piece of wood. Pull every BARK shade toward the trunk's own
-  // weighted mean, which compresses the contrast while keeping each shade's relative order and hue —
-  // the grain is still there, just quieter. The asset is untouched; this is one number to tune, and
-  // ?bark=N (0 = as authored, 1 = flat) overrides it live for A/B without an edit.
-  const TRUNK_SMOOTH = (() => { const m = /[?&]bark=([0-9.]+)/.exec(location.search);
-    return m ? Math.max(0, Math.min(1, parseFloat(m[1]))) : 0.55; })();
-  { const used = new Set(), cnt = new Map();
-    for (let i = 0; i < M.length; i++) if (M[i]) { used.add(M[i]); cnt.set(M[i], (cnt.get(M[i]) || 0) + 1); }
-    const isFol = (r, g, b) => g > r && g >= b;
-    // weighted mean of the bark, so the shade the trunk is mostly made of anchors the result
-    let sr = 0, sg = 0, sb = 0, sw = 0;
-    for (const ci of used) { const r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
-      if (isFol(r, g, b)) continue; const w = cnt.get(ci); sr += r * w; sg += g * w; sb += b * w; sw += w; }
-    const mr = sw ? sr / sw : 0, mg = sw ? sg / sw : 0, mb = sw ? sb / sw : 0;
-    const k = TRUNK_SMOOTH, WOOD_DEDUP = 4, lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;   // WOOD_DEDUP: max channel delta at which two SMOOTHED bark shades are the same colour — see the loop below
-    let lo = 255, hi = 0, lo2 = 255, hi2 = 0;
-    for (const ci of used) { const r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
-      if (isFol(r, g, b)) { remap[ci] = addCol(r, g, b); foliageIds.push(remap[ci]); continue; }
-      const l0 = lum(r, g, b); if (l0 < lo) lo = l0; if (l0 > hi) hi = l0;
-      const nr = Math.round(r + (mr - r) * k), ng = Math.round(g + (mg - g) * k), nb = Math.round(b + (mb - b) * k);
-      const l1 = lum(nr, ng, nb); if (l1 < lo2) lo2 = l1; if (l1 > hi2) hi2 = l1;
-      // ── THE SMOOTHING COLLAPSES SHADES, SO MINT THE COLLAPSED ONES ONCE (2026-08-18) ── pulling every bark
-      // colour k of the way to the trunk's weighted mean is a CONTRACTION: shades that are distinct in
-      // pine5.vox come out within a unit or two of each other, and minting one id per SOURCE colour then spent
-      // several of a 256-entry table on colours nothing can tell apart. Measured before this line existed: of
-      // eight wood ids, three sat within 3/255 of another one. remap[] is exactly the mechanism for two source
-      // colours to share one game id, so reuse instead of minting.
-      // WHY NOT palNearShare/PAL_TOL: that is a judgement about how close is close enough for UNRELATED art,
-      // and it is floored at DECOR_MIN, which the bark sits below. This is a much narrower claim — the
-      // smoothing has already made these the same colour — so the bound is 3, not PAL_TOL's 8, and it only
-      // ever matches against this tree's own wood.
-      let wid = -1;
-      for (const q of woodIds) { const c = palette[q];
-        if (Math.max(Math.abs(c[0] - nr), Math.abs(c[1] - ng), Math.abs(c[2] - nb)) <= WOOD_DEDUP) { wid = q; break; } }
-      if (wid >= 0) { remap[ci] = wid; continue; }      // …and a source colour that lands on an existing shade just points at it
-      remap[ci] = addCol(nr, ng, nb); woodIds.push(remap[ci]); }
-    console.log('[vb] bark smoothing', k, '- luminance spread', (hi - lo).toFixed(1), '->', (hi2 - lo2).toFixed(1)); }
-  const MROT = [];                                     // the 4 exact 90° rotations, precomputed — variation without resampling artifacts
-  for (let k = 0; k < 4; k++) {
-    const sx = (k & 1) ? MSY : MSX, sz = (k & 1) ? MSX : MSY;
-    const A = new Uint8Array(sx * sz * MSZ);
-    for (let z = 0; z < MSZ; z++) for (let y = 0; y < MSY; y++) for (let x = 0; x < MSX; x++) {
-      const v = M[x + y * MSX + z * MSX * MSY]; if (!v) continue;
-      let rx, rz;
-      if (k === 0) { rx = x; rz = y; }
-      else if (k === 1) { rx = MSY - 1 - y; rz = x; }
-      else if (k === 2) { rx = MSX - 1 - x; rz = MSY - 1 - y; }
-      else { rx = y; rz = MSX - 1 - x; }
-      A[rx + rz * sx + z * sx * sz] = v;
-    }
-    MROT.push({ A, sx, sz });
+  const foliageIds = [];                               // needles get NO hitbox — you walk through a canopy
+  const woodIds = [];                                  // …and the bark: the axe cuts any of it, tree or stump
+  // The bake's own split, by INDEX rather than by colour: 1..5 is the bark ramp and 6..10 the needle
+  // ramp, straight out of voxelize_pine9.py. A colour test is what the single-pine loader used and it
+  // is guesswork - one olive bark shade reads as foliage and a whole trunk loses its hitbox.
+  for (let ci = 1; ci <= 10; ci++) {
+    const r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
+    remap[ci] = addCol(r, g, b);
+    (ci <= 5 ? woodIds : foliageIds).push(remap[ci]);
   }
+  // ── FOUR ROTATIONS PER TREE ── the same precomputed 90° turns the single pine had, now one set per
+  // model. MROT stays bound to the first tree so everything that still reaches for it is unchanged.
+  const MROT9 = [];
+  for (const m of PINE9) {
+    const rots = [];
+    for (let k = 0; k < 4; k++) {
+      const sx = (k & 1) ? m.sy : m.sx, sz = (k & 1) ? m.sx : m.sy;
+      const A = new Uint8Array(sx * sz * m.sz);
+      for (let z = 0; z < m.sz; z++) for (let y = 0; y < m.sy; y++) for (let x = 0; x < m.sx; x++) {
+        const v = m.M[x + y * m.sx + z * m.sx * m.sy]; if (!v) continue;
+        let rx, rz;
+        if (k === 0) { rx = x; rz = y; }
+        else if (k === 1) { rx = m.sy - 1 - y; rz = x; }
+        else if (k === 2) { rx = m.sx - 1 - x; rz = m.sy - 1 - y; }
+        else { rx = y; rz = m.sx - 1 - x; }
+        A[rx + rz * sx + z * sx * sz] = v;
+      }
+      rots.push({ A, sx, sz, sy: m.sz });
+    }
+    MROT9.push(rots);
+  }
+  const MROT = MROT9[0];
   // walk-through DECOR (grass, ferns) lives at the TOP of the palette — solid() ignores ids >= DECOR_MIN, rays still hit them
   const DECOR_MIN = palette.length;
   const GRASS = [addCol(83, 108, 54), addCol(74, 99, 49), addCol(92, 117, 61), addCol(65, 88, 45)];      // = the MOSS palette, only ~12% brighter — strands blend into their patch
@@ -3602,8 +3591,7 @@
   // THE LIGHT END STILL STOPS SHORT OF WHITE. The new top is (248,168,195), against the (246,182,205) that was
   // removed earlier today for reading as blown out — 14 more saturation on the weakest channel, which is the
   // difference between "light pink" and "white with a tint". Do not push this further without checking that.
-  const BLOSLEAF = [addCol(208, 110, 143), addCol(214, 118, 151), addCol(220, 126, 159), addCol(226, 134, 167),
-                    addCol(232, 142, 175), addCol(238, 150, 183), addCol(243, 159, 189), addCol(248, 168, 195)];
+  const BLOSLEAF = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   // ── AND THE WHITE VARIANT (user 2026-08-18: "make half the cherry trees have white petals instead of pink") ──
   // Same structure as BLOSLEAF and read the same way: a leaf green's RANK picks a band of this ramp and the
   // voxel's own position picks within it (assets/bow.js blosRemap), so the length here is independent of how
@@ -3624,8 +3612,7 @@
   // PAL_TOL is now 12, so the old value sat exactly on that tolerance. These are palOwn and minted through
   // addCol, so no sharing could actually have taken them — but a white canopy that matches its own snow cap to
   // within a rounding error loses the cap, and it snows in this biome. 15/255 is enough to keep them apart.
-  const BLOSWHITE = [addCol(186, 160, 170), addCol(200, 176, 184), addCol(214, 193, 201),
-                     addCol(230, 212, 218), addCol(239, 225, 230), addCol(247, 235, 238)];
+  const BLOSWHITE = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   for (const i of BLOSLEAF) palOwn.add(i);
   for (const i of BLOSWHITE) palOwn.add(i);
   // ── AND THE PALE VARIETY'S FALLEN PETALS (user 2026-08-19: "can you make the petals (single voxels) under the
@@ -3639,7 +3626,7 @@
   // FOUR SHADES, not the full six: the two darkest BLOSWHITE steps are the crown's shadow side and read as
   // grey on open ground, where a fallen petal is lit from above.
   // Paid for by the six ids the delta-1 share in assets/models.js reclaimed — the table was at 256/256.
-  const TWIGWHITE = [addCol(214, 193, 201), addCol(230, 212, 218), addCol(239, 225, 230), addCol(247, 235, 238)];
+  const TWIGWHITE = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   for (const i of TWIGWHITE) palOwn.add(i);   // reserved: the scatter keys on these, and a tolerance reuse would sprinkle somebody else's model through the blossom
   // ── AND THE FRUIT (user 2026-08-18: "scatter this shade: 840c0c on the cherry trees ... single voxels that
   // will act like cherries on the tree") ── the authored colour exactly, (132,12,12).
@@ -3676,7 +3663,7 @@
   // colour changes. Duplicate colours on separate ids, deliberately, exactly as BROCK repeats ROCK's greys.
   // THREE, NOT FOUR. The darkest oak leaf (82,115,47) is already within 7/255 of a GRASS shade, so it would buy
   // nothing; the three that matter are the ones a canopy actually reads as. The table has 5 free.
-  const OAKMOSS = [addCol(105, 143, 51), addCol(107, 141, 77), addCol(134, 167, 89)];
+  const OAKMOSS = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   // ── THE BIRCH FOREST FLOOR (user: "make the terrain a light green ... as well as the moss on top of the
   // rocks") ── a four-step GROUND ramp in the oak canopy's greens, and it costs ZERO ids because every one of
   // them already exists. It CLIMBS OFF the ramp beside it, the same trick the light oak variety uses: the
@@ -3723,7 +3710,7 @@
   // tell these ids they are CANOPY — walk-through, DRAPE support, snow-catching, see-through when the eye is
   // inside them, and a bird perch — and a later tolerance share would hand all of that to whatever model next
   // asked for a bright green.
-  const OAKLITE = [addCol(160, 192, 100), addCol(186, 216, 124)];   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
+  const OAKLITE = [DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
   for (const i of OAKLITE) palOwn.add(i);
   const BLOSCHERRY = addCol(132, 12, 12);
   palOwn.add(BLOSCHERRY);   // reserved: the scatter is keyed on this id, so a tolerance reuse handing it to a model would sprinkle that model through every crown   // reserved HERE and not up with SHRUBF's: this const is declared 100 lines below that one, and reading it there is the const-before-declaration black screen (a bare `for` in a module body is not hoisted past a TDZ)
@@ -3759,7 +3746,7 @@
   // FOUR steps, not two, and spanning ~12% in luminance rather than 6% — the pine floor's NEEDLE ramp is the
   // model (4 entries, ~13%). This is what breaks the contour rings on bare arctic ground: see the long note
   // in world/window.js for the three height-based attempts that did not.
-  const ASNOW = [addCol(246, 250, 255), addCol(232, 238, 249), addCol(240, 245, 252), addCol(226, 233, 244)];   // packed snow — SOLID ground, shovel
+  const ASNOW = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // packed snow — SOLID ground, shovel
   // ── AND THE ARCTIC OWNS ITS FOUR WHITES (user 2026-08-30: "the spear … goes through the terrain") ──
   // it turned out half the arctic floor was not solid at all, and the spear was only the thing that found
   // it: ids 101 and 104 read solid:false while 102 and 103 read solid:true. The ramp is minted here, and
@@ -3834,7 +3821,7 @@
   // These sit above DECOR_MIN, so the blanket `i < DECOR_MIN` solidity sweep below cannot reach them and a
   // berry never gets a hitbox; material-tabs.js then says what they positively ARE. __vbOak.ids() (world/gen-pool.js)
   // prints all three with every material table's verdict, and __vb.palAudit() over/snaps must both still read 0.
-  const FRUITC = [addCol(209, 75, 70), addCol(86, 110, 192), addCol(244, 152, 61)];                      // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh (0 and 2 are tools/voxelize_fruit.py's own means — keep them in step with fruit.json's `pal`)
+  const FRUITC = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.                      // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh (0 and 2 are tools/voxelize_fruit.py's own means — keep them in step with fruit.json's `pal`)
   // ── THE BEEHIVE, IN TWO SHADES OF ONE HONEY YELLOW (user 2026-08-17: "implement the beehive.vox on some of
   // the oak trees") ── beehive.vox paints 54 voxels in an EIGHT-step ramp that never leaves one hue: red is 255
   // on every step and the whole ramp moves 12/255 in green and 52 in blue. Two ids is not a sacrifice of that,
@@ -3847,7 +3834,7 @@
   // OWN IDS, not BLOOM's yellow or OREGOLD's: a hive is SOLID and axe-choppable (see material-tabs.js), and
   // hanging either of those flags on a flower head or on gold ore is exactly the leak DSAND and BROCK exist to
   // avoid. Above DECOR_MIN like everything else here, so material-tabs.js grants the solidity explicitly.
-  const HIVEC = [addCol(255, 231, 97), addCol(255, 238, 127)];                                           // 0 = the two banding courses (the model's own darkest, exact), 1 = the panel gradient's weighted mean
+  const HIVEC = [DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.                                           // 0 = the two banding courses (the model's own darkest, exact), 1 = the panel gradient's weighted mean
   // ── AND ALL FIVE ARE RESERVED, WHICH IS THE HALF THAT IS EASY TO FORGET ── these are minted HERE, in
   // palette.js, and assets/creatures.js and assets/held-items.js parse in SHARE mode several fragments LATER at
   // PAL_TOL 8. Without palOwn, the first creature whose red lands within 8/255 of the apple's (209,75,70) — a
@@ -3889,7 +3876,7 @@
   const pickOnlyTab = new Uint8Array(256);             // …and which need the PICK. Stone does: an axe bounces off a boulder, and the pick is no use against a tree (see the swing gate).
   const digOnlyTab = new Uint8Array(256);              // …and which need the SHOVEL. Ground does — the dirt and mossy grass the terrain is made of, and nothing else.
   const sandTab = new Uint8Array(256); for (const s of SAND) sandTab[s] = 1;   // per-id SAND flag — walking on beach/lakebed sand slows the player (sand pits)
-  console.log('[vb] pine5.vox', MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
+  console.log('[vb] pine9 x' + PINE_N, MSX, MSY, MSZ, 'palette', palette.length, 'decor from', DECOR_MIN, 'foliage ids', foliageIds.length);
 
   // ── decoration models ── ONE sparse format everywhere: { sx (width, x), sy (depth, y), sz (height, z),
   // vox: [x | y<<8 | z<<16 | palId<<24, …] }. MagicaVoxel is z-up so model z maps straight to world y.
@@ -6077,13 +6064,27 @@
     }
     if (OAKV.length) console.log('[vb] oak anchors: fruit', OAK_ANCH.map((a) => a.length).join('/'),
       '| hive', OAK_BANCH.map((a) => a.length).join('/'), '(caps', AMAX, '/', BMAX + ')'); }
-  const PINE_ANCH = [];                                // pinecone anchors: canopy foliage voxels with open air below, ≥2 in from the model edge (base rotation)
+  // ── ONE ANCHOR LIST PER TREE (user 2026-08-31: "pine cones seem to be floating") ── this used to be a
+  // single list built from M/MSX/MSY, which was correct while the forest was ONE model. With nine, the
+  // stamp was hanging tree 0's anchors under whichever tree it had just placed: the coordinates are model
+  // space, so on the other eight they land wherever that tree happens to have nothing, and a cone hung
+  // from an empty cell is a cone hanging in the air. Anchors are a property of the MODEL, so there is one
+  // list per model now and the stamp reads its own.
+  const PINE_ANCH9 = [];
   { const fol = new Uint8Array(256); for (const f of foliageIds) fol[f] = 1;
-    for (let z = 30; z < MSZ; z++) for (let y = 2; y < MSY - 2; y++) for (let x = 2; x < MSX - 2; x++) {
-      const i = x + y * MSX + z * MSX * MSY;
-      if (M[i] && fol[remap[M[i]]] && !M[i - MSX * MSY]) PINE_ANCH.push(x | (y << 8) | (z << 16));
+    for (const m of PINE9) {
+      const A = [];
+      for (let z = (m.sz * 0.2) | 0; z < m.sz; z++) for (let y = 2; y < m.sy - 2; y++) for (let x = 2; x < m.sx - 2; x++) {
+        const i = x + y * m.sx + z * m.sx * m.sy;
+        if (m.M[i] && fol[remap[m.M[i]]] && !m.M[i - m.sx * m.sy]) A.push(x | (y << 8) | (z << 16));
+      }
+      A.sort((a, b) => Math.atan2(((a >> 8) & 255) - m.sy * 0.5, (a & 255) - m.sx * 0.5)
+                     - Math.atan2(((b >> 8) & 255) - m.sy * 0.5, (b & 255) - m.sx * 0.5));
+      PINE_ANCH9.push(A);
     }
-    PINE_ANCH.sort((a, b) => Math.atan2(((a >> 8) & 255) - MSY * 0.5, (a & 255) - MSX * 0.5) - Math.atan2(((b >> 8) & 255) - MSY * 0.5, (b & 255) - MSX * 0.5)); }   // angle-sorted around the trunk — stampTree slices it into sectors so cones ring the crown evenly
+    console.log('[vb] pine anchors per tree:', PINE_ANCH9.map((a) => a.length).join('/'));
+  }
+  const PINE_ANCH = PINE_ANCH9[0];                     // the legacy single-model name
   // ── CONSOLE TAP: WHAT A FLOWER ID REALLY CARRIES ── the same service lilyIds() does for the pads, and it
   // exists for the same reason they needed one: flowers.vox is parsed in SHARE mode (PAL_TOL 6 — see
   // parseVoxVariants2 in assets/bow.js), so a flower colour may RESOLVE onto an id something else already owns,
@@ -6558,7 +6559,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // that hangs on "uploading world" with nothing in the console. It did.
   let kitGiven = false;
   function giveStartKit() {
-    if (kitGiven || !SPEAR_IT || !SHOVEL_IT) return;  // …and not before the tools have loaded: a kit handed out early would be two empty hands. Gated on the TWO ITEMS THE KIT ACTUALLY HANDS OUT, not on PICK_IT — the pick left the kit on 2026-08-30 and a sentinel that is no longer in the list is a trap waiting for the day that item stops loading. stone_shovel.vox is registered before stone_spear.vox in the loader below, so SPEAR_IT alone would do; both are named because the pairing is the point.
+    if (kitGiven || !PICK_IT) return;              // …gated on the PICK alone: the axe is item id 1, which exists before any .vox lands  // …and not before the tools have loaded: a kit handed out early would be two empty hands. Gated on the TWO ITEMS THE KIT ACTUALLY HANDS OUT, not on PICK_IT — the pick left the kit on 2026-08-30 and a sentinel that is no longer in the list is a trap waiting for the day that item stops loading. stone_shovel.vox is registered before stone_spear.vox in the loader below, so SPEAR_IT alone would do; both are named because the pairing is the point.
     kitGiven = true;
     // ORDER IS THE HOTBAR ORDER, left to right, and the axe goes in first so slot 1 is what the player holds
     // when the world appears. One of each: a tool is not consumed.
@@ -6581,7 +6582,12 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // empty still guarantees a free slot for the first pickup, and with only two entries there are now three.
     // NO ARROWS, still: ARROW_COST is 0 (sim/projectiles.js), so the bow shoots unlimited anyway — and the bow
     // is not in the kit at all now, so a quiver would be clutter for a weapon the player does not have.
-    const kit = [[SPEAR_IT, 1], [SHOVEL_IT, 1]];
+    // ── AND NOW THE AXE AND THE PICK (user 2026-08-31: "spawn me with an axe and a pick. remove the
+    // spear and shovel from the inventory") ── the same one-line change every note above promises: the
+    // axe (literal item id 1, it predates the *_IT constants) goes in FIRST, so `selSlot = 0` below puts
+    // it in the hand, and the pick second. The spear and the shovel come off the array and nothing else
+    // moves; slotTidy's standing trailing empty still leaves a free slot for the first pickup.
+    const kit = [[1, 1], [PICK_IT, 1]];
     for (const [it, n] of kit) { if (!it) continue; for (let q = 0; q < n; q++) if (addItem(it) < 0) break; }
     selSlot = 0;                                     // …and the SPEAR is in hand, not the last thing added
     console.log('[vb] starting kit', kit.filter((k) => k[0]).map((k) => (ITEM_NAMES[k[0]] || k[0]) + (k[1] > 1 ? ' x' + k[1] : '')).join(', '));
@@ -7911,7 +7917,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // a small share of the map, pays for the whole disc.
       // H rather than hmap, because hmap is not reliably written this far out while a region is still filling.
       let shore = false;
-      if (h <= WL + 5) for (let r = 0; r < 4 && !shore; r++) {
+      if (h <= WL + 8) for (let r = 0; r < 4 && !shore; r++) {   // WL+8: one past the cascade, so every lifted step gets the water test
         const R2 = SANDR * (0.19 + r * 0.27);
         for (let k = 0; k < 4 && !shore; k++) {
           const a2 = k * 0.7853981634, cx2 = Math.round(Math.cos(a2) * R2), cz2 = Math.round(Math.sin(a2) * R2);
@@ -7968,8 +7974,15 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       const agb = asn > 0 ? arctGB(asn) : 0;
       if (agb > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < agb) c = ASNOW[(sh * 4) | 0];
       else if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
-      else if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
-      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 3.2) c = SAND[(sh * 3) | 0];   // …and the sand-to-forest dither ramps out over half the height it used to     // dithered sand-to-forest blend
+      // ── THE WHOLE BEACH IS SAND, AND THE DITHER STARTS ABOVE IT (user 2026-08-31: "you seemed to have
+      // added dirt elevated in the middle of them: remove that band") ── H's beach lift writes exactly
+      // three levels, WL+1..WL+3, and solid sand used to stop at WL+2. That left the TOP step of every
+      // beach on the dither below, which at h = WL+3 is 1/3.2 -> 69% sand and 31% forest floor: brown
+      // pine litter speckled along the highest line of the sand, which reads as a dirt band running the
+      // length of the shore rather than as a blend. Covering all three lifted levels puts the blend where
+      // it belongs - on the ground ABOVE the beach, where sand meeting forest is the thing being drawn.
+      else if (shore && h <= WL + 5) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
+      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 5) / 9.0) c = SAND[(sh * 3) | 0];   // …and the ramp now measures from WL+3, the top of the beach, not from WL+2 inside it   // …and the sand-to-forest dither ramps out over half the height it used to     // dithered sand-to-forest blend
       // ── NO FOREST FLOOR ON THE DESERT SIDE, BUT ONLY NEAR WATER ── the DESERT branch above is dithered
       // against the mask, so a fraction (1 - dm) of columns miss it by design; inland those misses are the
       // gradient, which is the whole point. Near a WATERLINE they were landing on moss instead, and clustered
@@ -8907,7 +8920,10 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // against birch's 2.26%, and 6.99 x 0.375 = 2.62 is exactly that thinning rather than anything else going
     // wrong. Taking the max is the same move oakRoll/oakBank make for the ground itself: the band is an oak
     // forest that grows birches, so anything keyed on "is this the oak forest" has to say yes here too.
-    if (ihash(cx * 71 + 5, cz * 79 + 13) > 0.375 && Math.max(oakM(wx, wz), birchM(wx, wz)) < 0.5) return null;
+    // ── THE FLOWERS ARE BACK IN (user 2026-08-31: "also bring in the flowers") ── and the oak/birch half
+    // of the old gate is gone with the bands it named: it only ever THINNED this scatter to 37.5% outside
+    // the oak, and with every mask at zero that thinning is the whole world. Flowers now grow at the full
+    // rate across the pine forest, which is the only forest there is.
     const px = Math.floor(cx / FLWPATCH), pz = Math.floor(cz / FLWPATCH);
     const set = inCh ? FLOWERV_CH : FLOWERV;           // the blossom band draws from its own one-variant set; everywhere else from the five
     return { wx, wz, ch: inCh ? 1 : 0, k: (ihash(px * 53 + 7, pz * 59 + 17) * (set.length - 0.01)) | 0,
@@ -9084,6 +9100,14 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
     // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
     // litter thins out across the blend band instead of stopping on the iso-line.
+    // ── NO FALLEN LOGS IN THE TERRAIN (user 2026-08-31: "remove the logs from the terrain") ── the
+    // scatter is off, not the asset: LOGV still loads, and assets/material-tabs.js still repoints its
+    // bark onto the pine's own wood ids and marks it decorTab + axeOnlyTab. That matters because the log
+    // is also a PLACEABLE item the player can carry and set down - killing the model would take the item
+    // with it. One return, exactly the way flowerAt's scatter was gated, so restoring the litter is
+    // deleting this line and nothing else.
+    return null;
+    // eslint-disable-next-line no-unreachable
     if (!LOGV) return null;
     if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.14) return null;
     const wx = Math.round(cx * LGCELL + 6 + ihash(cx * 3 + 9, cz * 7 + 1) * (LGCELL - 12));
@@ -9721,16 +9745,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // so the ceiling now guarantees a whole tree fits on the highest column in the world and nothing here
     // has to refuse one. If the pine is ever rescaled again, that reserve is the number that moves.
     if (nearCave(wx, wz)) return null;
-    return { tx: wx, tz: wz, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
+    return { tx: wx, tz: wz, ti: (ihash(cx * 37 + 11, cz * 41 + 7) * (MROT9.length - 0.01)) | 0, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground   // ti: WHICH of the nine pines. Sized off MROT9.length and not PINE_N because this runs in the GEN WORKER, and PINE_N is declared in assets/palette.js - below the worker in the manifest, so the registry cannot see it.
   }
   function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
-    const R = MROT[tr.rot];
+    const R = MROT9[tr.ti][tr.rot];        // …this tree's own model, not the stand's first one - see PINE9 in assets/palette.js
     const gy = groundMin(tr.tx, tr.tz, 2) - tr.sink;              // random sink (1–7) varies how deep each pine sits
     const bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
     const xa = Math.max(0, x0 - bx), xb = Math.min(R.sx - 1, x1 - 1 - bx);
     const za = Math.max(0, z0 - bz), zb = Math.min(R.sz - 1, z1 - 1 - bz);
     if (xa > xb || za > zb) return;
-    for (let my = 0; my < MSZ; my++) {
+    for (let my = 0; my < R.sy; my++) {   // R.sy is the MODEL's height: the nine pines are 150-152, not one shared MSZ
       const y = gy + my; if (y < 1) continue; if (y >= WY) break;
       const yrow = y * WX, moff = my * R.sx * R.sz;
       for (let mz = za; mz <= zb; mz++) for (let mx = xa; mx <= xb; mx++) {
@@ -9738,17 +9762,18 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         W[gwrap(bx + mx, WX) + yrow + gwrap(bz + mz, WZ) * WX * WY] = remap[v];
       }
     }
-    if (CONEV && PINE_ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
+    const ANCH = PINE_ANCH9[tr.ti], AMX = MROT9[tr.ti][0].sx, AMY = MROT9[tr.ti][0].sz;   // this tree's own anchors and its own model dims — see PINE_ANCH9
+    if (CONEV && ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
       const n = 6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0);   // rotated with the tree so every region stamps them identically
       const used = new Set();                          // one cone per column — never stacked on top of each other
       for (let k = 0; k < n; k++) {                    // PINE_ANCH is angle-sorted: pick k-th from the k-th angular sector — cones ring the crown evenly
-        const a = PINE_ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * PINE_ANCH.length) | 0];
+        const a = ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * ANCH.length) | 0];
         const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 255;
         let rx, rz;
         if (tr.rot === 0) { rx = ax; rz = ay; }
-        else if (tr.rot === 1) { rx = MSY - 1 - ay; rz = ax; }
-        else if (tr.rot === 2) { rx = MSX - 1 - ax; rz = MSY - 1 - ay; }
-        else { rx = ay; rz = MSX - 1 - ax; }
+        else if (tr.rot === 1) { rx = AMY - 1 - ay; rz = ax; }
+        else if (tr.rot === 2) { rx = AMX - 1 - ax; rz = AMY - 1 - ay; }
+        else { rx = ay; rz = AMX - 1 - ax; }
         const ck = rx | (rz << 8); if (used.has(ck)) continue; used.add(ck);
         stampModel(CONEV, (ax + az + k) & 3, bx + rx, gy + az - CONEV.sz, bz + rz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
       }
@@ -10171,14 +10196,14 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // into solid stone — so a new markFolia() belongs in material-tabs.js with the rest, not wherever it is
     // convenient.
     const OPAQTAB = []; for (let i = 0; i < 256; i++) OPAQTAB.push(i && i !== WATER_T && i !== WATER_B && !foliaTab[i] ? 1 : 0);
-    const consts = { CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, BIRCH_LAKE, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR,   SANDR, OAKBEACH, OAKBEACHY, SANDDEEP,  BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOW0, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_DOMEC, ARCT_DOMEK, ARCT_GBLEND, ARCT_STAND, ARCT_KEELK, ARCT_STEP, ARCT_JAG, ARCT_JAGF, ARCT_JAG2, ARCT_JAGF2, ARCT_CREVF1, ARCT_CREVF2, ARCT_CREVT, ARCT_CREVW, ARCT_CREVD, ARCT_CREVK, ARCT_ICEF, ARCT_ICE, ARCT_CAPMIN, ARCT_CAPMAX, ARCT_CAPHF, ARCT_CAPIRR, ARCT_CAPIRRF, ARCT_CAPIRR2, ARCT_CAPIRRF2, PENGCELL, PENG_RATE, PENG_INNER, PENG_MIN, PENG_MAX, PENG_SPACE, PENG_JIT, PENG_MINTOP, PENG_CHICK, PENG_CHICKR, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHWHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M, PINEY, PINEHILL, PINE_LAKE, PINE_SHELF, PINE_SHA, PINE_SHB,  BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };
-    const tables = { ASNOW, PENGUINV, PENGBABYV, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER, OPAQTAB };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
-    const fns = { ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSnow, arctGB, arctSeaH, arctH, arctDome, arctRidge, arctCliff, arctIceTop, arctBare, oakWob, oakM, pineH, oakFieldM, birchH, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, penguinAt, stampPenguin, stampPenguinOne, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
+    const consts = { PINE_WET, PINE_LOW, PINE_BASE, PINE_RELIEF, RIVWIDE, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, BIRCH_LAKE, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR,   SANDR, OAKBEACH, OAKBEACHY, SANDDEEP,  BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOW0, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_DOMEC, ARCT_DOMEK, ARCT_GBLEND, ARCT_STAND, ARCT_KEELK, ARCT_STEP, ARCT_JAG, ARCT_JAGF, ARCT_JAG2, ARCT_JAGF2, ARCT_CREVF1, ARCT_CREVF2, ARCT_CREVT, ARCT_CREVW, ARCT_CREVD, ARCT_CREVK, ARCT_ICEF, ARCT_ICE, ARCT_CAPMIN, ARCT_CAPMAX, ARCT_CAPHF, ARCT_CAPIRR, ARCT_CAPIRRF, ARCT_CAPIRR2, ARCT_CAPIRRF2, PENGCELL, PENG_RATE, PENG_INNER, PENG_MIN, PENG_MAX, PENG_SPACE, PENG_JIT, PENG_MINTOP, PENG_CHICK, PENG_CHICKR, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHWHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M, PINEY, PINEHILL, PINE_LAKE, PINE_SHELF, PINE_SHA, PINE_SHB,  BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };
+    const tables = { PINE_ANCH9, ASNOW, PENGUINV, PENGBABYV, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER, OPAQTAB };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
+    const fns = { pineField, ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSnow, arctGB, arctSeaH, arctH, arctDome, arctRidge, arctCliff, arctIceTop, arctBare, oakWob, oakM, pineH, oakFieldM, birchH, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, penguinAt, stampPenguin, stampPenguinOne, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
     wsrc2 += 'let GW = null, GW64 = null, GWX = 0, GWZ = 0;\n' +
-      'let WX = 0, WZ = 0, OX = 0, OZ = 0, BX = 0, W = null, hmap = null, touched = null, MROT = null, remap = null, rivScope = null;\n' +
+      'let WX = 0, WZ = 0, OX = 0, OZ = 0, BX = 0, W = null, hmap = null, touched = null, MROT = null, MROT9 = null, remap = null, rivScope = null;\n' +
       'const gwrap = (v, n) => v - (n === WX ? OX : OZ);\n' +
       'const rivCache = new Map(), caveCache = new Map();\n' +
       'const rivNear = new Map();\n' +   // riversNear's store — every top-level the registered fns close over must be declared here too
@@ -10211,7 +10236,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     wsrc2 += 'const OAKLITEV = OAKLITER.length ? OAKV.map((m) => blosRemap(m, OAKLITER, BLOSRANK, 0)) : [];' + String.fromCharCode(10);   // …and the LIGHT GREEN crowns, third of three, same recipe and the same rank table. The 0 is blosRemap's fruit argument: the cherry scatter is blossom-only, so a green oak must not grow cherries out of its own leaves
     wsrc2 += 'onmessage = (e) => {\n' +
       '  const d = e.data;\n' +
-      '  if (d.init) { MROT = d.MROT; remap = d.remap;\n' +
+      '  if (d.init) { MROT = d.MROT; MROT9 = d.MROT9; remap = d.remap;\n' +
       '    if (d.gW) { GW = new Uint8Array(d.gW); GW64 = new Float64Array(d.gW); GWX = d.GWX; GWZ = d.GWZ; }\n' +
       '    return; }\n' +
       '  const sx = d.x1 - d.x0, sz = d.z1 - d.z0;\n' +
@@ -10328,7 +10353,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       w.busyId = 0;
       w.onmessage = (e) => { w.busyId = 0; if (e.data.blitted) ORPH.wblit++; if (e.data.orph !== undefined) { ORPH.slabs++; if (!e.data.orph) ORPH.skipped++; else { ORPH.swept++; ORPH.cut += e.data.orph.cut; } } const j = jobById.get(e.data.id); if (j) { j.msg = e.data; j.done = true; } poolPump(); poolNotify(); };
       w.onerror = (e) => { console.warn('[vb] gen pool error — inline generation', e.message || e); poolOk = false; };
-      w.postMessage(W_SHARED ? { init: 1, MROT, remap, gW: W.buffer, GWX: WX, GWZ: WZ } : { init: 1, MROT, remap });   // a SharedArrayBuffer is POSTED, never transferred — both sides address the same memory
+      w.postMessage(W_SHARED ? { init: 1, MROT, MROT9, remap, gW: W.buffer, GWX: WX, GWZ: WZ } : { init: 1, MROT, MROT9, remap });   // a SharedArrayBuffer is POSTED, never transferred — both sides address the same memory
       genPool.push(w);
     }
     URL.revokeObjectURL(purl);                         // every worker is constructed by now — drop the blob (see genWorker above)
@@ -18914,7 +18939,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     const r = Math.ceil(Math.max(MSX, MSY) / TCELL) + 1;   // a crown can overhang several cells
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
       const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
-      const R = MROT[tr.rot], bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
+      const R = MROT9[tr.ti | 0][tr.rot], bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
       if (wx < bx || wx >= bx + R.sx || wz < bz || wz >= bz + R.sz) continue;
       return { tr, R, bx, bz, gy: groundMin(tr.tx, tr.tz, 2) - tr.sink, rm: remap, g: null, cells: null,
                root: tr.sink, oak: 0, hMax: MSZ };   // …the same key set in the same order as the oak's, so both kinds of shape share one hidden class at every site that reads them
@@ -22486,7 +22511,12 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   let birdKills = 0;                                   // songbirds brought down by a shaft — the flock refills itself, so a headcount alone proves nothing
   const birds = Array.from({ length: BIRD_N }, () => ({ th: 0, turnBias: 0, om: 0, omT: 0, altO: 0, altT: 0, tRe: 0, g: 0, pyPrev: 0, vyS: 0, glid: false, flapT0: -1, init: false, x: 0, y: 0, z: 0, mode: 0, swoopT0: 0, swoopA: 0, swO: 0, edge: false, fi: 0, sp: 0 }));   // the rest ride the compacted creature slots. mode: 0 wander / 1 thermal soar / 2 swoop
   const bird = birds[0];                               // the original singleton name, kept for the editor path + the primary hitbox
-  const birdStep = (b, bi, tb, dt) => {                // one bird's flight for this frame → its world pose. Identical maths for every bird; only the seed state differs.
+  const birdStep = (b, bi, tb, dt) => {
+    // ── NO LIFE YET (user 2026-08-31) ── the sky flyers are NOT in the creature pool tick-creatures.js
+    // gates: they are their own system writing straight into the drop slots, so the one gate there
+    // retired every animal on the ground and left nine birds over the canopy. null is what this already
+    // returns for "no bird here", so nothing downstream needs to know.
+    if (LIFE_OFF) { b.init = false; b.off = true; return null; }                // one bird's flight for this frame → its world pose. Identical maths for every bird; only the seed state differs.
         // ── PROCEDURAL POPULATION ── the flyers follow the SAME ring rule as every other creature: a bird that falls
         // more than LIFE_KEEP behind is recycled into the LIFE_IN..LIFE_OUT band around wherever the player is now.
         // Without this the six spawned once at world start and the sky went empty the moment you walked away.
@@ -25949,7 +25979,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     else if (t.rot === 1) { rx = MSY - 1 - ay; rz = ax; }
     else if (t.rot === 2) { rx = MSX - 1 - ax; rz = MSY - 1 - ay; }
     else { rx = ay; rz = MSX - 1 - ax; }
-    const R = MROT[t.rot];
+    const R = MROT9[t.ti | 0][t.rot];
     const bx = t.tx - (R.sx >> 1), bz = t.tz - (R.sz >> 1);
     const gy = groundMin(t.tx, t.tz, 2) - t.sink;
     return [bx + rx + 0.1 + Math.random() * 0.8, gy + az - 1,
@@ -38101,6 +38131,11 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     for (let wk = 0; wk < DES_END; wk++) {
       const B = wbf[wk];
       if (B.slain) continue;
+      // ── NO LIFE YET (user 2026-08-31: "dont add any life yet") ── ONE gate, at the top of the per-slot
+      // loop, because that is the single point every creature in the world passes through: it retires
+      // anything already standing and no slot can reach the spawn below it. The life code is all still here
+      // and none of it is deleted - flip LIFE_OFF in world/window.js to bring the forest back to life.
+      if (LIFE_OFF) { if (B.init) { if (B.sCells) unstampWorm(B); B.init = false; B.dieT = 0; } continue; }
       // ── A BODY WITH NO REAL POSITION IS NOT A BODY (user 2026-08-27: "only the mother duck is showing. I
       // dont see the babies") ── NaN loses every comparison it takes part in, so a slot that has picked one up
       // reads as NEAR to the surplus grace, INSIDE the recycle radius and CLOSE ENOUGH to its mother to the

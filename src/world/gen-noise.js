@@ -16,39 +16,32 @@
     };
   }
   function makeHRow(wz) {                              // H(x, wz) specialized for one row — every float op mirrors H exactly
-    const zb = wz * 0.008;
-    const s1 = rowNoise(zb), s2 = rowNoise(zb * 2.13 + 5.3), s3 = rowNoise(zb * 4.41 + 23.8);
-    const zd = wz * 0.04 + 2.1;
-    const d1 = rowNoise(zd), d2 = rowNoise(zd * 2.13 + 5.3), d3 = rowNoise(zd * 4.41 + 23.8);
+    const za = wz * 0.00098 + 77.9;                     // pineField octave A, row-specialized (mirrors fbm's constants exactly)
+    const a1 = rowNoise(za), a2 = rowNoise(za * 2.13 + 5.3), a3 = rowNoise(za * 4.41 + 23.8);
+    const zb2 = wz * 0.00257 + 13.7;                    // ...octave B
+    const b1 = rowNoise(zb2), b2 = rowNoise(zb2 * 2.13 + 5.3), b3 = rowNoise(zb2 * 4.41 + 23.8);
+    const zc = wz * 0.011 + 9.1;                       // ...and C
+    const c1 = rowNoise(zc), c2 = rowNoise(zc * 2.13 + 5.3), c3 = rowNoise(zc * 4.41 + 23.8);
     const bsr = rowNoise(wz * 0.0016 + 157.3);
-    const znB = wz * 0.05 + 4.2;                       // bed/beach relief fbm, row-specialized (mirrors fbm's octave constants exactly)
+    const znB = wz * 0.05 + 4.2;                       // bed/beach relief fbm, row-specialized
     const e1 = rowNoise(znB), e2 = rowNoise(znB * 2.13 + 5.3), e3 = rowNoise(znB * 4.41 + 23.8);
     return (wx) => {
-      const xb = wx * 0.008;
-      const b = 8 + LIFT + 88 * (s1(xb) * 0.55 + s2(xb * 2.13 + 11.7) * 0.27 + s3(xb * 4.41 + 41.2) * 0.18);
-      const shoreK = Math.min(1, Math.abs(b - WL) / 12);
-      const xd = wx * 0.04 + 7.3;
-      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * (d1(xd) * 0.55 + d2(xd * 2.13 + 11.7) * 0.27 + d3(xd * 4.41 + 41.2) * 0.18) * (0.2 + 0.8 * shoreK), wx, wz))));   // ── ROUNDED OAK HILLS ── the row-specialized forest expression is untouched and still bit-identical to baseH's; oakRoll is the SAME scalar helper baseH and makeHCol call, so the oak field cannot drift between the three copies any more than desertM/duneH can
+      const xa = wx * 0.00098 + 61.3;
+      const a = a1(xa) * 0.55 + a2(xa * 2.13 + 11.7) * 0.27 + a3(xa * 4.41 + 41.2) * 0.18;
+      const xb2 = wx * 0.00257 + 25.1;
+      const b = b1(xb2) * 0.55 + b2(xb2 * 2.13 + 11.7) * 0.27 + b3(xb2 * 4.41 + 41.2) * 0.18;
+      const xc = wx * 0.011 + 3.7;
+      const c = c1(xc) * 0.55 + c2(xc * 2.13 + 11.7) * 0.27 + c3(xc * 4.41 + 41.2) * 0.18;
+      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET))));
       const b0 = bsr(wx * 0.0016 + 313.7);
-      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
-      const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
+      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));
+      const m = bm * basinLow(h, wx, wz);
       if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
       const rs = riverS(wx, wz);
       const xnB = wx * 0.05 + 13.7;
       const bn = e1(xnB) * 0.55 + e2(xnB * 2.13 + 11.7) * 0.27 + e3(xnB * 4.41 + 41.2) * 0.18;
-      h = Math.round(oakBank(h, wx, wz));              // ── SHALLOW OAK BANKS ── the SAME shared scalar helper H() and makeHCol call, in the same place in the pass order. The arithmetic exists once, so the three copies cannot drift; see oakBank in window.js
       if (rs > 0.02) h = Math.min(h, Math.round((h - Math.max(0, h - (WL + RIVLAND)) * rs) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
-      // beach window lifted by a CONSTANT so the three raw levels stay ordered and the steps come out even -
-      // see the long note in window.js H. The fbm mapping this replaces put two thirds of the beach on WL+1.
-      if (h <= WL && h >= WL - 2 && bm <= 0.25 && rs <= 0.04) h = h + 3;
-      // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
-      // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
-      // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
-      // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
-      // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
-      // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
-      // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-      const dm = desertM(wx, wz); if (dm > 0) { const dmr = dm * (1 - rs); h = Math.round(h * (1 - dmr) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dmr); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── the SAME expression as H() in window.js, calling the SAME scalar desertM/fbm. These three copies of the height function have to agree bit-for-bit or the bulk fill and the placement queries disagree about where the ground is; sharing the function is what makes that true by construction rather than by careful copying.
+      // (no shoreline height edit - see the note in window.js H)
       return h;
     };
   }
@@ -72,39 +65,32 @@
     };
   }
   function makeHCol(wx) {                              // H(wx, z) specialized for one COLUMN — exact, for x-direction bands
-    const xb = wx * 0.008;
-    const s1 = colNoise(xb), s2 = colNoise(xb * 2.13 + 11.7), s3 = colNoise(xb * 4.41 + 41.2);
-    const xd = wx * 0.04 + 7.3;
-    const d1 = colNoise(xd), d2 = colNoise(xd * 2.13 + 11.7), d3 = colNoise(xd * 4.41 + 41.2);
+    const xa = wx * 0.00098 + 61.3;                     // pineField octave A, column-specialized
+    const a1 = colNoise(xa), a2 = colNoise(xa * 2.13 + 11.7), a3 = colNoise(xa * 4.41 + 41.2);
+    const xb2 = wx * 0.00257 + 25.1;                    // ...octave B
+    const b1 = colNoise(xb2), b2 = colNoise(xb2 * 2.13 + 11.7), b3 = colNoise(xb2 * 4.41 + 41.2);
+    const xc = wx * 0.011 + 3.7;                       // ...and C
+    const c1 = colNoise(xc), c2 = colNoise(xc * 2.13 + 11.7), c3 = colNoise(xc * 4.41 + 41.2);
     const bsc = colNoise(wx * 0.0016 + 313.7);
     const xnB = wx * 0.05 + 13.7;                      // bed/beach relief fbm, column-specialized
     const e1 = colNoise(xnB), e2 = colNoise(xnB * 2.13 + 11.7), e3 = colNoise(xnB * 4.41 + 41.2);
     return (wz) => {
-      const zb = wz * 0.008;
-      const b = 8 + LIFT + 88 * (s1(zb) * 0.55 + s2(zb * 2.13 + 5.3) * 0.27 + s3(zb * 4.41 + 23.8) * 0.18);
-      const shoreK = Math.min(1, Math.abs(b - WL) / 12);
-      const zd = wz * 0.04 + 2.1;
-      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(oakRoll(b + 9 * (d1(zd) * 0.55 + d2(zd * 2.13 + 5.3) * 0.27 + d3(zd * 4.41 + 23.8) * 0.18) * (0.2 + 0.8 * shoreK), wx, wz))));   // ── ROUNDED OAK HILLS ── identical to H() and makeHRow: the forest expression untouched, wrapped in the one shared oakRoll. See the note in makeHRow.
+      const za = wz * 0.00098 + 77.9;
+      const a = a1(za) * 0.55 + a2(za * 2.13 + 5.3) * 0.27 + a3(za * 4.41 + 23.8) * 0.18;
+      const zb2 = wz * 0.00257 + 13.7;
+      const b = b1(zb2) * 0.55 + b2(zb2 * 2.13 + 5.3) * 0.27 + b3(zb2 * 4.41 + 23.8) * 0.18;
+      const zc = wz * 0.011 + 9.1;
+      const c = c1(zc) * 0.55 + c2(zc * 2.13 + 5.3) * 0.27 + c3(zc * 4.41 + 23.8) * 0.18;
+      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET))));
       const b0 = bsc(wz * 0.0016 + 157.3);
-      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
-      const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
+      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));
+      const m = bm * basinLow(h, wx, wz);
       if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
       const rs = riverS(wx, wz);
       const znB2 = wz * 0.05 + 4.2;
       const bn = e1(znB2) * 0.55 + e2(znB2 * 2.13 + 5.3) * 0.27 + e3(znB2 * 4.41 + 23.8) * 0.18;
-      h = Math.round(oakBank(h, wx, wz));              // ── SHALLOW OAK BANKS ── identical to H() and makeHRow. See the note in makeHRow.
       if (rs > 0.02) h = Math.min(h, Math.round((h - Math.max(0, h - (WL + RIVLAND)) * rs) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
-      // beach window lifted by a CONSTANT so the three raw levels stay ordered and the steps come out even -
-      // see the long note in window.js H. The fbm mapping this replaces put two thirds of the beach on WL+1.
-      if (h <= WL && h >= WL - 2 && bm <= 0.25 && rs <= 0.04) h = h + 3;
-      // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
-      // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
-      // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
-      // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
-      // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
-      // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
-      // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-      const dm = desertM(wx, wz); if (dm > 0) { const dmr = dm * (1 - rs); h = Math.round(h * (1 - dmr) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dmr); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── identical to H() and makeHRow. See the note in makeHRow.
+      // (no shoreline height edit - see the note in window.js H)
       return h;
     };
   }

@@ -3,7 +3,14 @@
   // 8-voxel strip that wrapped — never a full-buffer move. All generation is a pure function of WORLD
   // coordinates, so strips re-materialise seamlessly and revisited terrain is always identical.
   const WX = WXZ, WY = WYpick, WZ = WXZ;              // deep world: +128 voxels of stone below the surface for TRUE gorge depth
-  const LIFT = WY >= 384 ? 128 : 0;                    // terrain floats this far above bedrock
+  // ── LIFT PAYS FOR THE MOUNTAINS (user 2026-08-31: "double the height elevation of the pine forest") ──
+  // 128 was the float over bedrock the CAVE systems needed, and all three of those were deleted 2026-08-05,
+  // so most of it has been dead space under the water ever since. The world's vertical budget is WY and
+  // nothing else: what sits below the waterline cannot be seen, and what is spent there is not available
+  // above it. Dropping the float to 48 moves the whole world down 80 voxels - WL goes with it, because WL
+  // is defined as 24 + LIFT - and hands those 80 to the sky, where the hills are.
+  // 48 and not 0: a lake bed still has to get 52 under the waterline (PINE_BASE) without hitting bedrock.
+  const LIFT = WY >= 384 ? 48 : 0;                     // terrain floats this far above bedrock
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
   // ══ TWO WINDOWS ══ the CPU's W is what physics, nav, support, chopping and every edit read, and it is
@@ -221,7 +228,13 @@
   // What IS new is the mechanism, measured at a pinned spawn: a ground-cover blade sits on 99.7% of FLAT
   // columns and only 63.8% of RISER columns. Risers follow contours, so a third of every contour is bare
   // ground. That is the thing to attack, and it is in the cover scatter, not here.
-  const HMAX = Math.min(130 + LIFT, WY - 151);         // terrain ceiling — and the 151 is the PINE RESERVE, see below
+  const LIFE_OFF = 1;                                  // ── NO LIFE (user 2026-08-31: "dont add any life yet") ── the whole creature
+                                                       // system is intact and gated at one line in main/tick-creatures.js. Set to 0 to restore it.
+  // …and the ceiling is now the TREE RESERVE alone. `130 + LIFT` was the other half of this min() and it
+  // moved with LIFT, so lowering the float would have pulled the mountain tops down by exactly the 80
+  // voxels it was meant to free - the ceiling has to be measured from the TOP of the world, not from a
+  // baseline that just dropped.
+  const HMAX = WY - 158;         // terrain ceiling — and the 151 is the PINE RESERVE, see below
   // ── AND THE SECOND TERM IS THE TREE, WHICH IS WHAT MAKES THIS A BUDGET AND NOT A DIAL ── 122 was never an
   // arbitrary reserve: it is pine5.vox's own 116 voxels plus a little, because a trunk planted at HMAX has to
   // fit under WY or its crown is cut off by the window's ceiling. That coupling was invisible until the pine
@@ -553,11 +566,7 @@
   // strip changes size and spawn keeps its position inside the oak — only which way round the world runs.
   const BAND_MIRROR = -1;                              // +1 restores the original arrangement (blossom west, pines east)
   const OAKC = BAND_MIRROR * ((OAKWOFF + OAKOFF) / 2), OAKH = (OAKOFF - OAKWOFF) / 2;   // -940 and 3240: centre + half-width. OAKC ± OAKH reproduce OAKWOFF and OAKOFF exactly, and OAKC is now EXACTLY the blossom's own centre (SPWX - CHOFF) — that equality IS "the two oak strips are the same width"
-  const oakM = (x, z) => {                             // 1 = deep oak forest, 0 = pine forest either side of it — a BAND now, not a half-plane, so the forest ends in both directions and the cycle can close
-    const c = SPWX + OAKC + oakWob(z) - oakWob(SPWZ);   // pinned at the spawn's own z, for the reason desertM pins its own: otherwise how far the player starts from the border is a per-session lottery
-    const t = 0.5 + (OAKH - Math.abs(pwrap(x - c))) / OAKB;   // a DISTANCE from the centre line, the same shape cherryM has always had
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const oakM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ══ THE CHERRY FOREST (user 2026-08-18) ══ a fourth band, WEST of the oak forest, and deliberately carved out
   // of oak's own region rather than given a height field of its own.
   //
@@ -631,11 +640,7 @@
   // true by CONSTRUCTION on the outer edge rather than by two independent fields happening to agree.
   const CHWHALF = 1960;                                // …and the WEATHER band keeps the OLD half-width. cherryW's ramp was tuned against it (see the CHBW note below: 600 put the snow line 45 m short of the treeline and it was halved to 300), so folding the mask reshape into the weather would move a snow line that has already been placed by hand twice.   // ── UNCHANGED BY THE EQUAL-STRIP PASS (user 2026-08-19: "make all of the biomes the exact same size... double the size of the bands") ── this band was doubled on 2026-08-18 (1080 -> 2160 measured between mask midpoints, 2 * (CHHALF + CHB/2)) and 2160 is precisely the width every OTHER strip has now grown to, so nothing here moves: spawn still sits 140 inside the EAST edge with the whole 2020 of blossom ahead in the facing direction, bit for bit   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander   // CHOFF is MIRRORED (see BAND_MIRROR): the blossom's centre is SPWX - CHOFF, so a negative CHOFF puts it EAST of spawn, in the sunrise. Magnitude unchanged.
   const chWob = (z) => oakWob(z) * 0.6 + (vnoise(z * WOB_CH + 211.3, 97.7) - 0.5) * CHW;   // carries 0.6 of the OAK meander for the reason oakWob carries 0.6 of the desert's: two free meanders converge and let bands touch. Its own half is small because this band has the least room of the three
-  const cherryM = (x, z) => {                          // 1 = inside the blossom band, 0 = the oak forest either side of it
-    const b = SPWX - CHOFF + oakWob(z) - oakWob(SPWZ);   // oakWob, NOT chWob — see the CHHALF note: this is what ties the blossom's outer edge to the oak band's so no oak can outlive it. Still pinned at the spawn's own z, so spawn's position in the band is not a per-session lottery
-    const t = (CHHALF + CHB - Math.abs(pwrap(x - b))) / CHB;  // …and it is a DISTANCE from the centre line, not a side of it — that one change is what makes it a band. pwrap is what makes it RECUR: without it the band exists once and the world either side of it does not repeat
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const cherryM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ── AND desWob IS IN THIS SUM (audit 2026-08-18) ── chWob = oakWob*0.6 + noise*CHW, and oakWob is itself
   // desWob*0.6 + noise*OAKW, so chWob carries desWob*0.36. The first version of this counted only the OAKW and
   // CHW terms and therefore UNDER-covered by ~155 voxels each side — meaning chNear could answer "not blossom"
@@ -663,11 +668,7 @@
   // It stays a SEPARATE number from CHB for the reason above: CHB is 200 so the blossom does not run into the
   // pine treeline, and widening THAT to move the snow would move the forest.
   const CHBW = 300;
-  const cherryW = (x, z) => {                        // the blossom band as the WEATHER sees it — cherryM's twin with a longer ramp; the trees keep cherryM
-    const b = SPWX - CHOFF + oakWob(z) - oakWob(SPWZ);   // the same meander cherryM rides, or the blanket and the trees would disagree about where the band is
-    const t = (CHWHALF + CHBW - Math.abs(pwrap(x - b))) / CHBW;   // CHWHALF: the weather keeps the half-width it was tuned against
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const cherryW = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   const CHREACH = Math.max(CHHALF + CHB, CHWHALF + CHBW) + 2 * (DESW * 0.675 * 0.6 + OAKW * 0.5);   // …on OAKWOB's swing now, not chWob's, because both cherry masks ride oakWob — and over the WIDER of the two ramps, since chNear gates cherryW as well as cherryM. A cheap bound may under-cover by nothing.
   // ── AND THE CHEAP BOUND THAT MUST BE ASKED FIRST (user 2026-08-18: the game froze on boot) ── cherryM costs
   // ~7 vnoise, and fillColumn called it for EVERY COLUMN with om > 0, which is the whole infinite oak forest.
@@ -712,7 +713,7 @@
   // the snowy side and is finished by the time you are properly into the other biome, instead of straddling
   // the border evenly.
   const wSharp = (m) => (m <= 0.06 ? 0 : m >= 0.70 ? 1 : (m - 0.06) / 0.64);   // 0.20..0.80 -> 0.06..0.94 -> 0.06..0.70 AND the second smoothstep is gone (user 2026-08-19, the same complaint a second time): cherryM is already smoothstepped, so squaring the S made the middle of the ramp far steeper than either end and that steep middle IS the line the player sees. Linear here leaves exactly one S in the chain   // 0.35..0.65 -> 0.20..0.80 (user 2026-08-18: "the snowing appears instantly when transitioning biomes") — the first cut squeezed the fade into 25 voxels, which at walking pace is under a second and reads as a switch. 0.60 of the ramp is ~75 voxels: still far tighter than the 125 the raw mask gives, so the snow stays in its own biome, but you now walk INTO it
-  const oakWeather = (x, z) => { const om = oakM(x, z); return (om > 0 && chNear(x)) ? om * (1 - cherryW(x, z)) : om; };   // cherryW, NOT cherryM: the weather border feathers over CHBW while the treeline keeps CHB (see the block above)
+  const oakWeather = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;   // cherryW, NOT cherryM: the weather border feathers over CHBW while the treeline keeps CHB (see the block above)
   const PETAL_ON = !location.search.includes('nopetal');   // ?nopetal — A/B the fallen-petal scatter. A CONST, not a location read inside stampOak: that function is serialised into the gen workers, whose Blob location carries no query string, so the flag would be true in the pool and false inline and gtest would (correctly) call it a mismatch.   // CHREACH = 1503.52: no column further than this from the band centre can be cherry at all — the cheap bound a scatter gate takes before paying for 8 vnoise. It is DERIVED from CHHALF/CHB/CHW/OAKW/DESW, none of which the equal-strip pass touched, so it did not move either
   // ── ROUNDED HILLS (user 2026-08-17: "make the terrain have much more 'rounded' hills", with a photograph of
   // Tuscan downland — broad domed crests, long clean sweeps, no fine-grained bumpiness anywhere) ── OAK FOREST
@@ -1080,11 +1081,7 @@
   // in at once. 900 voxels is 90 m of thinning, which is about the distance the fog starts softening anyway.
   const ARCTOFF = 2160, ARCTB = 1800, ARCTH = 2160;     // inner edge from spawn; blend width; half-width to the mask midpoint
   const ARCTC = BAND_MIRROR * (ARCTOFF + ARCTH);       // -2160: the band centre, mirrored like DESC/BIRCHC/OAKC/CHOFF
-  const arcticM = (x, z) => {                          // 1 = deep arctic, 0 = the pine and the birch either side
-    const c = SPWX + ARCTC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
-    const t = 0.5 + (ARCTH - Math.abs(pwrap(x - c))) / ARCTB;
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const arcticM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ══ WHERE THE SNOW LIES, WHICH IS NOT WHERE THE BIOME IS ══════════════════════════════════════════════
   // (user 2026-08-30: "make the edge of the arctic meet up much closer to the pine forest. but then also make
   // the transition much smoother instead of a straight line. dont do anything to the tree placements.")
@@ -1145,18 +1142,7 @@
   // Faded on birchM rather than cut at the border, because a hard height or mask test here draws a straight
   // white line - the exact complaint the ARCT_SNOWR note further up was written to answer. Behind the same
   // wrapped-distance cheap-out oakRoll and oakBank use, so the pine forest and the desert pay two compares.
-  const arctSnow = (x, z) => {
-    const am = arcticM(x, z);
-    if (am <= 0) return 0;
-    let bk = 1;
-    { const dxb = pwrap(x - SPWX);
-      if (dxb < BIRCHFAR && dxb > BIRCHWFAR) { const bm = birchM(x, z); if (bm >= 1) return 0; if (bm > 0) bk = 1 - bm; } }
-    if (am >= 1) return bk;
-    const n = (fbm(x * 0.0052 + 61.3, z * 0.0052 + 17.9) - 0.5) * ARCT_SNOWN
-            + (fbm(x * 0.017 + 5.1, z * 0.017 + 44.6) - 0.5) * ARCT_SNOWN * 0.5;
-    const t = (am + n - ARCT_SNOW0) / ARCT_SNOWR;
-    return (t >= 1 ? 1 : t <= 0 ? 0 : sstep(t)) * bk;
-  };
+  const arctSnow = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ── SNOW CAPS ON THE WATER (user 2026-08-30: "inside the lakes and rivers can you create snow caps") ──
   // written AT the waterline in place of the surface water voxel, not above it, so a cap is flush with the
   // lake rather than a lip standing proud of it. Coherent, so they come in floes rather than as speckle; the
@@ -1427,11 +1413,7 @@
   const ARCTWFAR = ARCTC - ARCTH - 2 * ARCTWMAX - ARCTB * 0.5;   // …nor west of this
   const BIRCHOFF = 6480, BIRCHB = 900, BIRCHH = 2160;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
   const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
-  const birchM = (x, z) => {                            // 1 = deep birch forest, 0 = the pine and the sand either side
-    const c = SPWX + BIRCHC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
-    const t = 0.5 + (BIRCHH - Math.abs(pwrap(x - c))) / BIRCHB;
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const birchM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // The band's absolute reach, for the cheap-out in oakRoll/oakBank. |desWob| <= DESW * 0.675, and the rim is
   // BIRCHB/2 either side of the line. NOTE there is deliberately no "deep birch" short-circuit to match oak's
   // OAKNEAR/OAKWNEAR: 2 * BIRCHWMAX + BIRCHB/2 = 1575 is WIDER than BIRCHH = 1080, so no column is guaranteed
@@ -1526,7 +1508,7 @@
   // The cone is unaffected, and if anything gentler: it now runs from 24 to OAKBANKR instead of from 60,
   // so the same 82-voxel rise is spread over 256 voxels rather than 220.
   const SANDDEEP = 8;                                  // how far UNDER the waterline sand still reaches — see `shore` in world/terrain.js
-  const SANDR = 24;                                   // how far a beach looks for open water before it is allowed to be sand — see `shore` in world/terrain.js
+  const SANDR = 44;                                   // how far a beach looks for open water before it is allowed to be sand — see `shore` in world/terrain.js
   const OAKBEACH = 10, OAKBEACHY = WL + 2;
   // ── OAKBEACHY SITS INSIDE THE SAND, NOT ON TOP OF IT (user 2026-08-31: "I dont want to see dirt/grass in
   // the middle of the sand") ── the cone holds its flat at this height, so this is the level most of a beach
@@ -1675,18 +1657,7 @@
   // derived from the strip width (DESH = W/2) and never from BIOP: the leftover between the sand's east
   // midpoint and the next period's oak is not slack to be absorbed, it is the SECOND PINE STRIP.
   const DESH = 2160, DESC = BAND_MIRROR * (DESOFF + DESH);             // half-width to the mask MIDPOINT, and the band centre: DESC ± DESH = 4460 and 6620
-  const desertM = (x, z) => {                          // 0 = pine forest, 1 = open desert — a BAND now (see BIOP), with pine on BOTH sides of the sand
-    // The wobble is subtracted AT THE SPAWN'S OWN z. Without that it swings +-216 voxels either way, so how
-    // far the player starts from the sand was a lottery: measured 380 voxels one session where the constant
-    // of the day (80) implied 305, and a big enough swing would have spawned them PAST the boundary, in the
-    // desert. That specific hazard is gone now DESOFF is 1500, but the reason to pin it is not - oakM pins
-    // its own wobble the same way, and there the offset is OAKOFF (2300) against the same +-216.
-    // Pinning it costs nothing — the border still meanders exactly as before, it just passes DESOFF from
-    // spawn at the spawn's own latitude, so "how far to the desert" is the same every session.
-    const c = SPWX + DESC + desWob(z) - desWob(SPWZ);
-    const t = 0.5 + (DESH - Math.abs(pwrap(x - c))) / DESB;   // a band, not a half-plane: one band centred at DESC covers the sand at the east end of a period AND the sand at the west end of the next, because the distance wraps
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const desertM = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
   // ══ THE BIOME BORDER RIVERS (user 2026-08-31: "separate the different biomes with rivers and water") ══
   // Every band mask in this file is the SAME shape — a centre line c(z) that wobbles with z, and a mask that
   // reads exactly 0.5 where |pwrap(x - c)| equals the band's half-width. So "the border between two biomes" is
@@ -1770,59 +1741,74 @@
   // start further out. It ran 99 voxels before (wet edge 19 -> valley 117 at BIORW 26); 2.0 puts the valley
   // at 156 against a wet edge of 57, which is the same 99. The river widens; the shoreline does not flatten.
   const BIORVK = 0.72;                                 // …and this is its strength at the centre, well under the core's, so the core still owns the middle and this only shapes the shoulders
-  const bioRivS = (x, z) => {                          // …and the same 0..1 channel strength rivEval returns, so riverS can simply take the max and every consumer downstream is none the wiser
-    if (!BIORIV_ON) return 0;
-    const d = bioEdge(x, z);
-    const wv = bwW * BIORVALL;
-    if (d >= wv) return 0;
-    const core = (1 - d / bwW) * BIORSAT;              // the wet channel
-    const vall = (1 - d / wv) * BIORVK;                // …and the valley it runs in
-    const t = core > vall ? core : vall;
-    return t <= 0 ? 0 : sstep(t >= 1 ? 1 : t);
+  const bioRivS = () => 0;   // WIPED 2026-08-31 (user: "completely wipe the terrain generation and restart"). One biome now - the pine forest - so this mask is identically zero and every branch it gated is dead. Kept as a zero rather than deleted because terrain.js, the worker registries and debug-api all still name it.;
+    // ══ THE PINE FOREST, AND IT IS THE WHOLE WORLD ═══════════════════════════════════════════════
+  // Every band, mask and blend that used to stand between here and the waterline is gone (user
+  // 2026-08-31: "completely wipe the terrain generation and restart completely ... begin by
+  // implementing the pine forest"). There is ONE field, it is the pine forest's, and it is
+  // evaluated everywhere - no biome selector runs in the height path at all any more.
+  // ROUND, and that is what the double smoothstep buys: one pass leaves the midband of the noise
+  // linear, and a linear midband is what makes a voxel hill read as a slab with a corner on it.
+  // Twice pushes the field toward its own ends, so hilltops dome over and valley floors flatten
+  // out, and it widens the height histogram at the same time - which is the "a lot of terrain
+  // height variation" half of the ask.
+  const PINE_LOW    = 6;                               // hard floor: a lake bed may not reach the world's own bottom
+  const PINE_BASE   = WL - 52;                             // the deepest ground, 52 under WL. Depth is the point - a shallow
+                                                       // field floor reads as wet sand rather than as a lake (recorded
+                                                       // against the first pine water build, which produced exactly that).
+  const PINE_WET    = 1.78;                            // ── AND THE WATER IS PUT BACK (user approved 32%) ── doubling the
+                                                       // relief moved the whole field UP relative to a waterline that did not move
+                                                       // with it, and the lakes drained: 32.3% -> 12.7%. This exponent pulls the
+                                                       // distribution back down toward its own floor WITHOUT touching either end,
+                                                       // so the peaks still reach HMAX and the valleys still flood. Measured over
+                                                       // 111k columns: 1.0 -> 12.7%, 1.3 -> 27.8%, 1.6 -> 41.4%.
+  const PINE_RELIEF = HMAX - PINE_BASE;                             // ...up to HMAX, so a ridge stands ~74 over the water carrying a whole 152-voxel tree.
+  const pineField = (x, z) => {
+    // ── RAISED, NOT STEEPENED (user 2026-08-31: "dont make the terrain steeper per say, just raise the
+    // elevation... correct?") ── yes, and the first cut got it wrong: it multiplied the AMPLITUDE and left
+    // the wavelengths alone, and a slope is amplitude over wavelength, so every gradient in the world went
+    // up with it. The visible cost was the shoreline - the ground crossed the whole beach window in a voxel
+    // or two and the grass came down to the water. Each octave's wavelength is now stretched by the SAME
+    // 1.635 the relief grew by, so the hills are twice as tall and no steeper than they were: bigger
+    // country, same walk up it.
+    const a = fbm(x * 0.00098 + 61.3, z * 0.00098 + 77.9);   // the massifs - one hill every ~1000 voxels
+    const b = fbm(x * 0.00257 + 25.1, z * 0.00257 + 13.7);   // the shoulders on them
+    // ── AND THE ROLL DOES NOT MOVE (user 2026-08-31: "I still want the terrain to be hilly like it is") ──
+    // stretching THIS octave with the other two is what would flatten the world into smooth swells: it is
+    // the one that puts a hill in front of you rather than a horizon. It keeps its original wavelength AND
+    // its original amplitude - weight 0.095 of a 206 relief is 19.6 voxels, against 0.15 of the old 126,
+    // which is 18.9 - so the ground underfoot rolls exactly as it did. Only the two BIG octaves grew, and
+    // they grew in both dimensions at once, which is what raises the country without tilting it.
+    const c = fbm(x * 0.011 + 3.7, z * 0.011 + 9.1);       // the roll that makes a hill a hill - unchanged
+    return Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET);
   };
   const H = (x, z) => {
-    let h = baseH(x, z);
-    const bm = basinM(x, z);
-    const m = bm * basinLow(h, x, z);                   // basins only form in low country — and the arctic's ceiling is higher, see basinLow
-    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
-    const rs = riverS(x, z);
-    const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
-    h = Math.round(oakBank(h, x, z));                  // ── SHALLOW OAK BANKS ── BEFORE the carve, so the lerp below starts from the shelf instead of from a hilltop. h is already an integer here, so Math.round is the identity outside the oak forest and the pine/desert heights stay bit-exact; see oakBank
-    if (rs > 0.02) h = Math.min(h, Math.round((h - Math.max(0, h - (WL + RIVLAND)) * rs) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
-    // ── THE BEACH KEEPS ITS OWN ORDER (user 2026-08-31: "make all the sand steps even with one another …
-    // you need to bring back the lowest sand step inwards") ── this used to discard the raw height and
-    // re-derive the step from an fbm, and the Math.max(0, ...) on that mapping clamped every column under
-    // fbm 0.685 to step 0. That is roughly two thirds of the beach standing on ONE level, which is the single
-    // wide flat bottom step the report is about, with WL+2 and WL+3 as slivers above it.
-    // The window is [WL-2, WL] - three raw levels - and they are already ordered by distance from the water.
-    // Lifting the whole window by a CONSTANT keeps that order: the deepest column lands on WL+1, the
-    // shallowest on WL+3, and each step is as wide as the underlying slope makes it, so the three come out
-    // even with each other instead of one swallowing the others. No noise, so no ring is drawn by this line.
-    if (h <= WL && h >= WL - 2 && bm <= 0.25 && rs <= 0.04) h = h + 3;
-    // ── AND THAT RELIEF IS ON ITS OWN LONG WAVELENGTH NOW (user 2026-08-31: "one layer that is flat and wide,
-    // then you have much smaller steps of sand that then lead to grass … make the steps wider/flatter") ── it
-    // used to ride `bn`, which is the RIVER BED noise at 0.05 - a wavelength of about 20 voxels. This line
-    // writes WL+1, WL+2 or WL+3 straight from it, so the beach flipped between three heights every ten voxels
-    // or so: not a slope at all, a speckle, and every flip reads as a one-voxel terrace two voxels wide. That
-    // is the "much smaller steps", and it is why widening the bank cone and adding the waterline shelf both
-    // measured no change - neither of them runs after this line, and this line was writing the answer.
-    // 0.018 is a wavelength of ~55 voxels. It was 0.009 for one round and that made the LOWEST terrace 64 voxels
-  // wide against 4 for every step above it (user 2026-08-31: "reduce the size of the lowest/last sand step in
-  // half") - one enormous flat and then a staircase, which is a worse read than the speckle it replaced.
-  // Halving it puts that terrace near 32 and leaves it comfortably clear of the ~20-voxel noise that made the
-  // beach look like static at 0.05.
-    // the relief reads as a low dune rather than as noise. Its own noise rather than a lower-frequency `bn`:
-    // bn is the river bed's and the banks' relief and is tuned where it is used.
-    // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
-    // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
-    // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
-    // INCLUDING the bed of a lake straddling the line. So the water ended exactly on the dm=0.5 iso-line,
-    // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
-    // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
-    // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-    const dm = desertM(x, z); if (dm > 0) { const dmr = dm * (1 - rs); h = Math.round(h * (1 - dmr) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dmr); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.   // ── AND THE SAND YIELDS TO THE WATER (see BIOME BORDER RIVERS in world/window.js) ── this lerp runs AFTER the river carve, so at the desert's own border, where dm is exactly 0.5, it used to average the carved bed 50/50 with a dune and hand back a channel too shallow to flood — the border river erased by the biome it was there to separate. That is the same failure the `rs <= 0.04` guard on the WL+2 lift below already answers for; the lerp simply never got the same treatment. Scaling dm by (1 - rs) lets a full-strength channel pass through the sand intact and leaves the shoulders sandy. BIT-EXACT where there is no water: rs is 0 across the open desert, and dm * (1 - 0) is dm in IEEE754, so every dune in the world is untouched. A biome decides what the shore is MADE OF, never where the water ENDS.
+    let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * pineField(x, z))));
+    const bm = basinM(x, z);                           // the LAKES: broad low-frequency bowls pressed into the field
+    const m = bm * basinLow(h, x, z);
+    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);
+    const rs = riverS(x, z);                           // and the RIVERS: the watershed network, widened - see RIVWIDE
+    const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief, so a bed is not billiard-flat
+    if (rs > 0.02) h = Math.min(h, Math.round((h - Math.max(0, h - (WL + RIVLAND)) * rs) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));
+    // ── AND NOW THE SHORELINE IS NOT TOUCHED AT ALL (user 2026-08-31: "remove that band and smooth it
+    // out", then "and I dont mean make the sand beds flatter either like done in the past") ──
+    // Both halves of that rule out every version this line has ever had. It has always been an ARTIFICIAL
+    // edit to the height at the waterline, and it came in exactly two shapes:
+    //   * a TRANSLATION - [WL-2,WL] up by 3, later [WL-6,WL] up by 7. Not continuous at the top of its own
+    //     window, so the lifted ground stood proud of the unlifted column beside it. THAT IS THE BAND, and
+    //     it got taller every time the window was widened to make the cascade wider.
+    //   * a COMPRESSION - sixteen raw levels squeezed onto nine. Continuous, so no band, but squeezing IS
+    //     flattening, which is the thing the second half of the report rules out.
+    // There is no third shape: any remap that pulls drowned ground into the air either steps at its edge
+    // or flattens what it moves. So the edit is gone. The shore is now whatever the field already does -
+    // and after the steepness fix that is a gentle natural grade - and the BEACH is made by the sand
+    // MATERIAL following it (see `shore` in world/terrain.js) instead of by moving ground. The steps in it
+    // are the terrain's own, which is why they neither band nor flatten.
+    // It costs water AREA, and that is the honest trade: ground in [WL-6, WL] used to be lifted into dry
+    // beach and now simply stays wet, so the lakes get bigger rather than the beaches.
+
     return h;
-  };
+  };;
   // ── A RIVER'S WIDTH MUST NOT DEPEND ON HOW HIGH THE LAND BESIDE IT IS (user 2026-08-31: "the river between
   // the pine and oak has areas where the river is very thin. prevent thin rivers from forming") ── the carve
   // is a lerp toward the bed weighted by rs, so the land term h * (1 - rs) puts the SURROUNDING HEIGHT into
@@ -1842,6 +1828,11 @@
   // `h - max(0, h - cap) * rs` is the same cap reached continuously: identity at rs 0, the full cap at
   // rs 1, and nothing to step over in between. The width it was added to buy is unaffected - what widens a
   // channel is the cap at HIGH rs, which is exactly where this still applies it in full.
+  const RIVWIDE = 3.4;                                 // ── WIDE RIVERS (user 2026-08-31: "add in lakes and wide rivers
+                                                       // throughout the terrain") ── the channel half-width multiplier. Was 1.4, which is
+                                                       // the width the seven-band world wanted when a river was a BORDER between biomes.
+                                                       // Here a river is a feature of the forest itself and is meant to be crossed by
+                                                       // swimming, not by stepping, so it carries most of the 25% water target with the lakes.
   const RIVLAND = 44;                                  // …how far over the waterline the land may push a channel's bed
   const RIVCELL = 768, RIVINF = 6200;                  // WATERSHEDS — one candidate per ~77 m cell, rare roll; each hit is a whole dendritic system (influence radius must cover the longest possible chain)
   const rivCache = new Map();
@@ -1915,7 +1906,7 @@
       const t = Math.max(0, Math.min(sg.len, tRaw));
       const off = Math.sin(t * 0.015 + sg.seed) * 30 + Math.sin(t * 0.04 + sg.seed * 1.7) * 10;   // broad meanders
       const pd = (x - (sg.sx + sg.dxr * t)) * (-sg.dzr) + (z - (sg.sz + sg.dzr * t)) * sg.dxr;
-      const w = sg.wb * 1.4 * aw * (sg.t0 + (sg.t1 - sg.t0) * (t / sg.len));   // width taper: stems widen downstream, tributaries narrow to their heads; aw doubles it across the arctic
+      const w = sg.wb * RIVWIDE * aw * (sg.t0 + (sg.t1 - sg.t0) * (t / sg.len));   // width taper: stems widen downstream, tributaries narrow to their heads; aw doubles it across the arctic
       const over = tRaw < 0 ? -tRaw : (tRaw > sg.len ? tRaw - sg.len : 0);   // rounded end caps - no strip past the endpoints (the old straight-cutoff bug)
       const d = Math.hypot(Math.abs(pd - off), over);
       if (d < w) { const v = sstep(1 - d / w); if (v > best) best = v; }
