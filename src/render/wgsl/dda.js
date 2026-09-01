@@ -33,8 +33,8 @@
     }
   `;
 
-  const DDAW_SRC = () => /* wgsl */`
-    const B2X : i32 = ${BX >> 2}; const B2Y : i32 = ${BY >> 2}; const B2Z : i32 = ${BZ >> 2};
+  const DDAW_SRC = (POOL) => /* wgsl */`
+    const B2X : i32 = ${GBX >> 2}; const B2Y : i32 = ${GBY >> 2}; const B2Z : i32 = ${GBZ >> 2};
     const WTv : u32 = ${WATER_T}u; const WBv : u32 = ${WATER_B}u;   // lake surface / body voxel ids
     // ── FOLIAGE SEE-THROUGH ── when the camera clips INTO leaves, the primary ray treats foliage within folSkipD of the
     // eye as air, so the leaves you are buried in never fill the screen. A per-invocation private var (not a trace() arg)
@@ -46,14 +46,21 @@
     fn voxAt(c : vec3<i32>) -> u32 {
       var x = c.x + i32(u.off.x); if (x >= WX) { x -= WX; }
       var z = c.z + i32(u.off.y); if (z >= WZ) { z -= WZ; }
-      let i = u32(x + c.y * WX + z * WX * WY);
-      return (world[i >> 2u] >> ((i & 3u) * 8u)) & 255u;
+${!POOL ? `      let i = u32(x + c.y * WX + z * WX * WY);
+      return (world[i >> 2u] >> ((i & 3u) * 8u)) & 255u;` : `      // ── PAGED BRICK POOL ── an all-air brick has NO payload at all: its descriptor is 0 and the
+      // 512 bytes the dense array spent on it do not exist. ~47% of the window is exactly that.
+      let b = u32((x >> 3) + (c.y >> 3) * BX + (z >> 3) * BX * BY);
+      let d = bdesc[b];
+      if (d == 0u) { return 0u; }
+      let l = u32((x & 7) + (c.y & 7) * 8 + (z & 7) * 64);
+      return (pool[(d - 1u) * 128u + (l >> 2u)] >> ((l & 3u) * 8u)) & 255u;`}
     }
     fn brickOcc(c : vec3<i32>) -> bool {
       var x = c.x + (i32(u.off.x) >> 3); if (x >= BX) { x -= BX; }
       var z = c.z + (i32(u.off.y) >> 3); if (z >= BZ) { z -= BZ; }
       let i = u32(x + c.y * BX + z * BX * BY);
-      return ((bricks[i >> 5u] >> (i & 31u)) & 1u) != 0u;
+${!POOL ? `      return ((bricks[i >> 5u] >> (i & 31u)) & 1u) != 0u;`
+        : `      return bdesc[i] != 0u;`}
     }
     fn brickOcc2(c : vec3<i32>) -> bool {
       var x = c.x + (i32(u.off.x) >> 5); if (x >= B2X) { x -= B2X; }
@@ -95,7 +102,8 @@
           var bzw = bmin2.z + (i32(u.off.y) >> 3); if (bzw >= BZ) { bzw -= BZ; }   // letting both inner loops keep a RUNNING flat index (one add per step) instead of re-wrapping per sample
           var bIdx = bxw + (bc.x - bmin2.x) + bc.y * BX + (bzw + (bc.z - bmin2.z)) * BX * BY;
           for (var bi = 0; bi < 16; bi++) {                          // L1: the 4³ bricks inside this super-cell
-            if (((bricks[u32(bIdx) >> 5u] >> (u32(bIdx) & 31u)) & 1u) != 0u &&
+            let bd = ${POOL ? `bdesc[u32(bIdx)]` : `select(0u, 1u, ((bricks[u32(bIdx) >> 5u] >> (u32(bIdx) & 31u)) & 1u) != 0u)`};
+            if (bd != 0u &&
                 !(skipW && ((wbricks[u32(bIdx) >> 5u] >> (u32(bIdx) & 31u)) & 1u) != 0u)) {   // a WATER-ONLY brick holds nothing a skipW ray can hit — stride it like empty air (underwater camera, refraction, reflection all fly through the water volume at brick speed)
               let bmin = bc * 8;
               var tv = tb2;
@@ -103,10 +111,13 @@
               var vc = clamp(vec3<i32>(floor(pv)), bmin, bmin + 7);
               var vNext = (vec3<f32>(vc + max(istep, vec3<i32>(0))) - ro) * inv;
               var vax = bax;
-              var vIdx = ((bxw + (bc.x - bmin2.x)) << 3) + (vc.x - bmin.x) + vc.y * WX + (((bzw + (bc.z - bmin2.z)) << 3) + (vc.z - bmin.z)) * WX * WY;
+${POOL ? `              let pbase = (bd - 1u) * 128u;
+              var vIdx = (vc.x - bmin.x) + (vc.y - bmin.y) * 8 + (vc.z - bmin.z) * 64;`
+        : `              var vIdx = ((bxw + (bc.x - bmin2.x)) << 3) + (vc.x - bmin.x) + vc.y * WX + (((bzw + (bc.z - bmin2.z)) << 3) + (vc.z - bmin.z)) * WX * WY;`}
               for (var j = 0; j < 32; j++) {
                 let ii = u32(vIdx);
-                var v = (world[ii >> 2u] >> ((ii & 3u) * 8u)) & 255u;
+${POOL ? `                var v = (pool[pbase + (ii >> 2u)] >> ((ii & 3u) * 8u)) & 255u;`
+        : `                var v = (world[ii >> 2u] >> ((ii & 3u) * 8u)) & 255u;`}
                 if (skipW && (v == WTv || v == WBv)) { v = 0u; }      // water: invisible to an underwater camera
                 if (FOLSKIP && folSkipD > 0.0 && tv < folSkipD && isFol(v)) { v = 0u; }   // near foliage: transparent to the clipped-in primary ray (dead-coded out of the non-FOLSKIP variant)
                 if (v != 0u) {
@@ -119,8 +130,8 @@
                 }
                 var oob = false;
                 if (vNext.x <= vNext.y && vNext.x <= vNext.z) { tv = vNext.x; vNext.x += abs(inv.x); vc.x += istep.x; vIdx += istep.x; vax = 0; oob = vc.x < bmin.x || vc.x > bmin.x + 7; }
-                else if (vNext.y <= vNext.z) { tv = vNext.y; vNext.y += abs(inv.y); vc.y += istep.y; vIdx += istep.y * WX; vax = 1; oob = vc.y < bmin.y || vc.y > bmin.y + 7; }
-                else { tv = vNext.z; vNext.z += abs(inv.z); vc.z += istep.z; vIdx += istep.z * WX * WY; vax = 2; oob = vc.z < bmin.z || vc.z > bmin.z + 7; }
+                else if (vNext.y <= vNext.z) { tv = vNext.y; vNext.y += abs(inv.y); vc.y += istep.y; vIdx += istep.y * ${POOL ? `8` : `WX`}; vax = 1; oob = vc.y < bmin.y || vc.y > bmin.y + 7; }
+                else { tv = vNext.z; vNext.z += abs(inv.z); vc.z += istep.z; vIdx += istep.z * ${POOL ? `64` : `WX * WY`}; vax = 2; oob = vc.z < bmin.z || vc.z > bmin.z + 7; }
                 if (tv > t1) { return h; }
                 if (oob) { break; }
               }

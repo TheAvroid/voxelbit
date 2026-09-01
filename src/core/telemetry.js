@@ -26,6 +26,16 @@
   // is the largest thing snow adds to the CPU, but it covers three jobs that are optimised in completely
   // different ways: placing flakes, draining the blanket, and handing the frame's edits to the GPU. Same
   // idiom and the same arming flag as cpMark, so it is one predictable branch per section when disarmed.
+  // ── AND ONE LEVEL DOWN INSIDE 'encode', WHICH IS THE PHASE THAT SPIKES ── the bucket covers three jobs with
+  // nothing in common: draining the world's dirty bricks into the pool, recording the frame's compute passes,
+  // and handing the encoder to the driver. Only the last of those can block on the GPU, so telling them apart
+  // is the difference between "we are doing too much work" and "we are waiting for the last frame to finish".
+  // `swap` is getCurrentTexture, kept separate because that is where a present-paced stall actually lands.
+  const EN_NAMES = ['world', 'passes', 'swap', 'submit'];
+  const enEma = new Float64Array(EN_NAMES.length);
+  const enMax = new Float64Array(EN_NAMES.length);
+  let enLast = 0;
+  const enMark = (i) => { const t = performance.now(), d = t - enLast; enEma[i] += (d - enEma[i]) * 0.08; if (d > enMax[i]) enMax[i] = d; enLast = t; };
   const SN_NAMES = ['land', 'melt', 'patch'];
   const snEma = new Float64Array(SN_NAMES.length);
   let snLast = 0;

@@ -28,7 +28,6 @@ render/buffers.js
 render/wgsl/pre.js
 render/wgsl/dda.js
 render/wgsl/trace.js
-render/wgsl/scatter-patch.js
 render/wgsl/denoise.js
 render/wgsl/cloudgen.js
 render/wgsl/composite.js

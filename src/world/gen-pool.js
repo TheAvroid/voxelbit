@@ -93,7 +93,7 @@
       '  W = new Uint8Array(WX * WY * WZ); hmap = new Int16Array(WX * WZ);\n' +
       '  touched = new Uint8Array(((WX >> 3) + 1) * ((WZ >> 3) + 2));\n' +
       '  genRegion(d.x0, d.x1, d.z0, d.z1, true);\n' +
-      '  const orph = sweepOrphans(d.x0, d.x1, d.z0, d.z1);\n' +
+      '  const orph = d.ring ? null : sweepOrphans(d.x0, d.x1, d.z0, d.z1);\n' +
       '  const nbx = sx >> 3, nbz = sz >> 3, nby = WY >> 3;\n' +               // ── SLAB BRICK BITS ── the 8³ occupancy scan runs HERE, in parallel, instead of on the main thread after the blit
       '  const bb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +
       '  const wb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +       // parallel WATER-ONLY bits (skipW brick striding)
@@ -128,7 +128,7 @@
       // only expands past it after that. Both of blitSlab's paths are mirrored, narrow-run f64 stores included
       // — a band on an x side is only 8-32 wide, so the narrow path is the common one.
       '  var blitted = 0;\n' +
-      '  if (GW) {\n' +
+      '  if (GW && !d.ring) {\n' +
       '    const gw2 = (v, n) => ((v % n) + n) % n;\n' +
       '    const segs = []; const S64 = new Float64Array(W.buffer);\n' +
       '    for (let a = d.x0; a < d.x1;) { const g = gw2(a, GWX), ln = Math.min(d.x1 - a, GWX - g); segs.push([a - d.x0, g, ln]); a += ln; }\n' +
@@ -169,7 +169,7 @@
       if (w.busyId) continue;
       const j = poolQueue.shift(); if (!j) return;
       w.busyId = j.id;
-      w.postMessage({ id: j.id, x0: j.x0, x1: j.x1, z0: j.z0, z1: j.z1 });
+      w.postMessage({ id: j.id, x0: j.x0, x1: j.x1, z0: j.z0, z1: j.z1, ring: j.ring ? 1 : 0 });
     }
   }
   function poolChunks(x0, x1, z0, z1) {                // fan one region across the pool — 8-aligned splits along the LONGER axis. Splitting the long axis keeps chunks
@@ -188,6 +188,16 @@
     regionJobs.delete(key);
     for (const j of R) { jobById.delete(j.id); j.msg = null; const qi = poolQueue.indexOf(j); if (qi >= 0) poolQueue.splice(qi, 1); }
   }
+  // ── THE FAR RING'S OWN JOBS ── a ring tile lies OUTSIDE the toroidal CPU window, so its slab comes BACK
+  // rather than being blitted into W. The `ring` flag tells the worker to skip the orphan sweep and the
+  // shared-W write; render/buffers.js consumes j.msg and pages it into the pool.
+  function poolRingJob(x0, x1, z0, z1) {
+    if (!poolOk) return null;
+    const j = { id: ++poolSeq, x0, x1, z0, z1, ring: 1, done: false, msg: null };
+    jobById.set(j.id, j); poolQueue.push(j); poolPump();
+    return j;
+  }
+  function poolRingDrop(j) { if (!j) return; jobById.delete(j.id); const qi = poolQueue.indexOf(j); if (qi >= 0) poolQueue.splice(qi, 1); j.msg = null; }
   function poolRegion(x0, x1, z0, z1) {                // idempotent band dispatch — genBandGen prefetches the NEXT band through this
     const key = rgnKey(x0, x1, z0, z1);
     let R = regionJobs.get(key);
@@ -234,6 +244,16 @@
           for (let by = 0; by < nby; by++) {
             const s = bx + by * nbx + bz * nbx * nby, g = gbx + by * BX + gbz * BX * BY;
             if ((bb[s >> 5] >>> (s & 31)) & 1) bricks[g >> 5] |= 1 << (g & 31); else bricks[g >> 5] &= ~(1 << (g & 31));
+            if (poolTouchHook) poolTouchHook(g, m.ab ? ((m.ab[s >> 5] >>> (s & 31)) & 1) : -1);
+            // ── AND THE POOL HAS TO BE TOLD HERE (user 2026-09-01: "dont have holes in the world") ── THIS is
+            // the path a streamed band actually takes. The pool is a derived cache of W, and there are three
+            // places that set a brick's occupancy: patch.js (runtime edits), terrain.js (inline region rebuild)
+            // and HERE — the worker slab merge, which is the one the streaming path uses and the only one that
+            // had no hook. So a band arrived, its bricks were marked occupied, and nothing ever queued them:
+            // measured as ~1.5M bricks occupied in W with descriptor 0 while the dirty queue sat EMPTY. On
+            // screen that is a flat, straight-edged, brick-aligned strip of void cutting across the terrain.
+            // The second argument is the worker's airless verdict; this worker does not compute one, so -1
+            // asks the pool to derive it. Correct, and a little more CPU per brick than caac83c's `ab` path.
             if (wb && ((wb[s >> 5] >>> (s & 31)) & 1)) wbricks[g >> 5] |= 1 << (g & 31); else wbricks[g >> 5] &= ~(1 << (g & 31));
           } } }
     }

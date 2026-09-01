@@ -132,7 +132,7 @@
         if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
         if (HURT.slot >= 0) { const HB = wbf[HURT.slot]; if (HB && HB.init) hurtBox(HB); else hk = 0; }   // it died or despawned mid-blink — nothing left to stain. SLOT -1 IS NOT THAT CASE: it is the deliberate AABB path a shot SKY BIRD takes (birds live in birds[], not the pool, so there is no wbf entry to re-read — birdShot sets the box and birdRagTick re-publishes it every frame). Zeroing hk here made hurtB.w 0, which is the shader's whole gate, so a shot bird never flashed red and the HURT.k wound light below never lit either
       }
-      UF[UF_HURTB] = HURT.cx - winOX; UF[UF_HURTB + 1] = HURT.cy; UF[UF_HURTB + 2] = HURT.cz - winOZ; UF[UF_HURTB + 3] = hk;
+      UF[UF_HURTB] = HURT.cx - gwOX(); UF[UF_HURTB + 1] = HURT.cy; UF[UF_HURTB + 2] = HURT.cz - gwOZ(); UF[UF_HURTB + 3] = hk;
       HURT.k = hk;                                    // …and the wound CASTS light too (user). It cannot write a point-light slot from HERE — the ffLights
                                                       // publish runs later in this same tick and rewrites all 8 — so it goes into that list instead.
       UF[UF_HURTH] = HURT.hx; UF[UF_HURTH + 1] = HURT.hy; UF[UF_HURTH + 2] = HURT.hz;
@@ -245,7 +245,7 @@
     }
     if (HURT.k > 0) {                                  // ── THE WOUND ── a hit creature glows red for the half second it blinks, and that glow scatters
       const dxH = HURT.cx - P.x, dzH = HURT.cz - P.z;  // through the air like an ember does — same lane, same sort, so neither can clobber the other
-      ffLights.push([HURT.cx - winOX, HURT.cy + 1, HURT.cz - winOZ, HURT.k * 2.4, dxH * dxH + dzH * dzH]);
+      ffLights.push([HURT.cx - gwOX(), HURT.cy + 1, HURT.cz - gwOZ(), HURT.k * 2.4, dxH * dxH + dzH * dzH]);
     }
     ffLights.sort((a, b) => a[4] - b[4]);              // nearest glowing lights (fireflies + live sparks) win the 8 point-light slots — sorted AFTER the spark loop so a death flash can claim a slot
     for (let li = 0; li < 8; li++) { const o5 = 1108 + li * 4, L = ffLights[li];
@@ -325,7 +325,11 @@
         if (nb >= PHYS_MAX || !b.gpu) continue;
         phQRot(b.q, PHX, PHAX); phQRot(b.q, PHY, PHAY); phQRot(b.q, PHZ, PHAZ);   // local axes → world
         const o = UF_PHYSB + nb * 20, g = b.gpu;
-        const ax = b.pos[0] - winOX, ay = b.pos[1], az = b.pos[2] - winOZ;        // window-relative, matching u.camPos
+        const ax = b.pos[0] - gwOX(), ay = b.pos[1], az = b.pos[2] - gwOZ();      // GPU-WINDOW relative, matching u.camPos
+        // ── AND IT IS THE GPU WINDOW ── main/tick-camera.js sets the camera to `cam - gwOX()`, so the ray
+        // origin lives in the GPU window. These were `- winOX`, the CPU window: identical at GMUL 1 (GPAD 0)
+        // and 1024 voxels out at GMUL 2, so every rigid body was described a kilometre from where the ray
+        // looked. bodyTrace missed all of them and a felled tree simulated, collided and drew nothing.
         UF[o] = ax; UF[o + 1] = ay; UF[o + 2] = az; UF[o + 3] = b.scale === undefined ? 1.0 : b.scale;   // absorbing chunks shrink as they arrive
         UF[o + 4] = PHAX[0]; UF[o + 5] = PHAX[1]; UF[o + 6] = PHAX[2]; UF[o + 7] = g.bw;
         UF[o + 8] = PHAY[0]; UF[o + 9] = PHAY[1]; UF[o + 10] = PHAY[2]; UF[o + 11] = g.bh;
@@ -337,7 +341,7 @@
       if (nb) { bcx /= nb; bcy /= nb; bcz /= nb;
         for (const b of PH.bodies) {                     // radius = farthest body centre + its own half-diagonal
           if (!b.gpu) continue;
-          const g = b.gpu, ax = b.pos[0] - winOX, ay = b.pos[1], az = b.pos[2] - winOZ;
+          const g = b.gpu, ax = b.pos[0] - gwOX(), ay = b.pos[1], az = b.pos[2] - gwOZ();   // …and the enclosing sphere in the SAME space, or the one-compare reject discards the ray first
           const half = bodyRad(g);                       // …from the COM, not the box centre — see bodyRad
           const d = Math.hypot(ax - bcx, ay - bcy, az - bcz) + half;
           if (d > brad) brad = d;

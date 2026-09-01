@@ -1,16 +1,487 @@
   // ── GPU buffers ─────────────────────────────────────────────────────────────
   setLoad(94); await stage('uploading world…');
-  const worldBuf = device.createBuffer({ size: W.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the GPU world back to verify it matches W
-  const uploadWorld = () => { const CH = 128 << 20;    // chunked — a single 1.5 GB writeBuffer would need a same-sized staging allocation
-    for (let o = 0; o < W.byteLength; o += CH) device.queue.writeBuffer(worldBuf, o, W.buffer, o, Math.min(CH, W.byteLength - o)); };
-  uploadWorld();
-  const brickBuf = device.createBuffer({ size: bricks.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });   // COPY_SRC: __vb.bdiff() reads occupancy back to verify the dirty-word uploads
-  new Uint32Array(brickBuf.getMappedRange()).set(bricks); brickBuf.unmap();
-  const brick2Buf = device.createBuffer({ size: bricks2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
-  new Uint32Array(brick2Buf.getMappedRange()).set(bricks2); brick2Buf.unmap();
-  const wbrickBuf = device.createBuffer({ size: wbricks.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
-  new Uint32Array(wbrickBuf.getMappedRange()).set(wbricks); wbrickBuf.unmap();
-  const uploadBricks = () => { if (CPROF) cpEvt |= 4; device.queue.writeBuffer(brickBuf, 0, bricks); device.queue.writeBuffer(brick2Buf, 0, bricks2); device.queue.writeBuffer(wbrickBuf, 0, wbricks); };
+  // ── THERE IS NO DENSE GPU WORLD ── W (CPU) is the source of truth; the GPU sees only the paged brick
+  // pool below, which is its derived cache. That is the whole 1.5 GB: at a 2048 window the same world costs
+  // ~260 MB pooled, because ~47% of it is all-air brick with no payload and another ~42% is rock sealed
+  // behind rock that no ray can reach, sharing ONE page between all of them.
+  // ── THE L1 OCCUPANCY BITMASK NO LONGER GOES TO THE GPU ── bdesc replaced it: a nonzero descriptor IS
+  // the occupancy bit, which is what kept TRACE inside the 8-storage-buffer cap. `bricks` is still built and
+  // maintained on the CPU, because poolFlush and gpuPatch both read it, but nothing on the GPU binds it, so
+  // uploading it was 393 KB of pure waste on every band and every dirty-word flush. L2 (bricks2) and the
+  // water-only bits (wbricks) are still read by the DDA and still upload.
+  // ── PAGED BRICK POOL (read path) ─────────────────────────────────────────────────────────────
+  // Measured 2026-08-16: 45-49% of the window is all-air brick and 45-46% is air-free rock sealed
+  // behind more air-free rock; only 6-9% is the surface shell anything can ever see. This is the
+  // first half of spending storage on that instead of on a flat array: an EMPTY brick keeps no
+  // payload at all, only its 4-byte descriptor. The dense buffer is still the source of truth and
+  // every write path still targets it - poolBuild() re-derives the pool from W on demand, which is
+  // enough to verify the read path is bit-identical and to measure what it costs.
+  // NOTHING here is allocated unless the probe is on. Sized for players it would be ~1 GB of JS heap and
+  // ~1 GB of GPU buffer that no frame ever reads - a far bigger regression than the feature is a win.
+  const POOL_FRAC = 0.25;                              // slots as a fraction of all bricks. With sealed rock sharing one page the real figure is ~12%; this is 2x headroom for the transient before sealing settles.
+  // ── AND THE RING IS SIZED OFF THE GPU GRID, NOT THE CPU ONE ── a storage buffer cannot grow, so the pool
+  // has to be allocated for the widest window it will ever hold. At GMUL 2 that is four times the bricks, and
+  // the fraction comes down because the measured steady state is ~13%: the 2x headroom POOL_FRAC carries is
+  // there for the sealing transient, and a ring tile is sealed correctly on its FIRST pass (it has its whole
+  // slab in hand), so it never needs that headroom.
+  // THE ALLOCATION IS WHAT DECIDES WHETHER A MACHINE CAN RUN THIS, not the fraction of it that ends up
+  // occupied: ~1.03 GB at GMUL 2 against 402 MB at GMUL 1. That is the whole reason GMUL rides the adapter.
+  const POOL_FRAC_RING = 0.17;
+  const POOL_SLOTS = GMUL > 1 ? Math.ceil(GBX * GBY * GBZ * POOL_FRAC_RING) : Math.ceil(BX * BY * BZ * POOL_FRAC);
+  // bdesc, the water bits and the L2 bits are all on the GPU GRID (see TWO WINDOWS in world/window.js):
+  // they cover the far ring as well, and the shader indexes nothing else. airFree stays on the CPU grid,
+  // because deciding it means reading W, and W only exists for the near window.
+  const bdesc = new Uint32Array(GBX * GBY * GBZ);       // 0 = all air, else slot+1
+  const gwb = new Uint32Array((GBX * GBY * GBZ) >> 5);  // water-only brick bits, GPU grid — skipW rays stride these
+  const gb2 = new Uint32Array(((GBX >> 2) * (GBY >> 2) * (GBZ >> 2)) >> 5);   // L2 32-voxel super-brick occupancy, GPU grid
+  const GB2X = GBX >> 2, GB2Y = GBY >> 2;
+  // CPU brick index -> GPU brick index. The CPU array holds worldBX mod BX and the GPU array holds
+  // worldBX mod GBX, so the world coord has to be recovered through the window origin before it can be
+  // re-wrapped. Both windows are concentric and slide together, so this never has to handle them drifting.
+  const cpu2gpu = (b) => {
+    const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
+    const ox = winOX >> 3, oz = winOZ >> 3;
+    const wbx = ox + (((bx - ox) % BX) + BX) % BX, wbz = oz + (((bz - oz) % BZ) + BZ) % BZ;
+    return ((wbx % GBX) + GBX) % GBX + by * GBX + ((((wbz % GBZ) + GBZ) % GBZ)) * GBX * GBY;
+  };
+  // A full rebuild used to gather into a POOL_SLOTS * 512 staging array - 400 MB of JS heap, alive forever,
+  // touched only by poolBuild. Slots are handed out sequentially there, so a fixed CHUNK of them can be filled
+  // and flushed instead: same number of bytes uploaded, 8 MB of heap rather than 400.
+  const POOL_CHUNK = 16384;                            // slots per staged upload (8 MB)
+  const poolCPU = new Uint8Array(POOL_CHUNK * 512);
+  const bdescBuf = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC for __vb.gpudiff()
+  const gwbBuf = device.createBuffer({ size: gwb.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const gb2Buf = device.createBuffer({ size: gb2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const poolBuf = device.createBuffer({ size: POOL_SLOTS * 512, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the pool back to verify it still matches W
+  const bdescRead = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  let poolUsed = 0, poolOverflow = 0, poolSealed = 0;
+  // ── WHAT A SEALED BRICK READS AS, AND IT MUST BE ROCK ── every sealed brick in the window shares ONE page,
+  // so whatever fills that page is what shows anywhere a ray does reach one. This was the literal 71, chosen
+  // in 2026-08-16 as "the commonest deep-strata id" off a census — and the palette has been reordered and
+  // extended several times since. Id 71 is now [220, 126, 159]: CHERRY BLOSSOM PINK. That is the flat pink
+  // slab under the far terrain, and it had been there since the pool came back.
+  // Taken from the ROCK ramp itself now, so a palette reorder can never point it at somebody else's colour
+  // again. A hard-coded id into a table that other people edit is the whole class of bug here.
+  const STONE_ID = ROCK[0];
+  // ── SLOT ALLOCATOR ── a free-list stack. A brick that goes air->occupied takes a slot, one that
+  // goes occupied->air gives it back. The pool is a DERIVED CACHE of W: every write path in the game
+  // still targets the dense array exactly as before, and the only thing they owe the pool is a call to
+  // poolTouch() for each brick they changed. That keeps the whole migration out of gpuPatch, blitSlab
+  // and the scatter shaders - they are unchanged - at the cost of re-uploading a whole 512-byte brick
+  // when one voxel in it moved. Edits are sparse, so that is cheap; a streaming strip re-uploads about
+  // what the dense z-band upload it replaces did anyway.
+  const poolFree32 = new Int32Array(POOL_SLOTS);       // free-list stack of slot ids
+  let poolFreeN = 0;
+  const poolDirty = new Set();
+  // ── A BRICK THAT FOUND NO SLOT IS NOT FINISHED WITH ── it used to be counted and then dropped out of the
+  // dirty set, which made "the pool is momentarily full" a PERMANENT hole rather than a wait.
+  // The transient is real and it is not a sizing bug. Sealing LAGS: a brick can only be sealed once its six
+  // neighbours are known to be airless, and after a recentre poolBuild() runs on the starter square while
+  // ~750k bricks are still to stream in. Each one arrives at the frontier with undecided neighbours, so it
+  // takes a real 512-byte page; only when the neighbour lands does the re-queue below revisit it and hand the
+  // page back. Peak demand during that convergence is several times the steady state (measured: 402k slots
+  // used after a full build, against a 786k allocation, but 752k OVERFLOWED while streaming in behind a
+  // teleport). Retrying is what turns that peak into a delay instead of a defect, and it converges because
+  // every sealed brick returns a slot.
+  const poolRetry = [];
+  const gb2Dirty = new Set();                          // GPU-grid L2 super-cells whose 4³ of bricks changed
+  // ── UPLOAD THE WORDS THAT CHANGED, NOT THE TABLE ── bdesc is 50 MB on the GPU grid, and re-sending all of
+  // it on any frame that touched one brick was 11 ms of CPU a frame: measured as a 3.4 -> 10.5 ms frame-time
+  // regression with the GPU passes still at 3 ms, i.e. entirely upload, not render. One u32 per brick means a
+  // dirty brick is exactly one dirty word, so the same writeWordRuns coalescing the occupancy bits have used
+  // all along applies unchanged.
+  const descDirtyW = new Set(), gwbDirtyW = new Set();
+  const gSuper = (gb) => ((gb % GBX) >> 2) + ((((gb / GBX) | 0) % GBY) >> 2) * GB2X + (((gb / (GBX * GBY)) | 0) >> 2) * GB2X * GB2Y;
+  const W64p = new Float64Array(W.buffer);             // W is 8-aligned by construction (WX is a multiple of 8)
+  // ── QUEUE A BRICK, AND SAY WHETHER ITS AIRLESSNESS IS ALREADY KNOWN ── `air` is -1 from every edit path
+  // (dig, chop, snow, creature stamps): the brick changed, afGet must re-derive it, and that is one isAirFree
+  // over 64 rows. Generated terrain arrives with the answer attached — the gen worker computes it on the
+  // thread that already has the slab (see gen-pool.js) — and a streamed band is thousands of bricks at once,
+  // so seeding is the difference between a band costing a scan per brick and costing a bit test per brick.
+  // The neighbour propagation has to happen HERE when seeding, because poolFlush's own copy of it compares
+  // afGet against airFree and a seeded brick has already made those agree — there would be nothing left to
+  // notice. Six neighbours whose SEALED-ness may have flipped, exactly as poolFlush would have queued them.
+  let AIRSEED = 1;                                     // dev switch, so the seeding can be A/B'd inside one session — the world reseeds on every reload
+  // ══ A REGENERATED BRICK KEEPS SHOWING THE LAST PLACE'S TERRAIN UNTIL THE DRAIN REACHES IT ══ OPEN BUG,
+  // and the obvious fix is a trap: measured twice, do not rebuild it.
+  // W is toroidal, so when the window slides a brick slot is REUSED for a world column 2048 voxels away. The
+  // streamer rewrites the voxels and queues the brick, but its descriptor still names the page it had before,
+  // and poolFlush drains on a budget. Until the drain arrives the tracer walks that page and draws the OLD
+  // location's voxels at the new position. gen-pool.js merges a slab with `by` INNERMOST, so bricks enter
+  // poolDirty as vertical columns, and a budget cut-off leaves a contiguous vertical run stale — which draws
+  // as a tall thin pillar, one or two bricks wide and many tall, standing in the world. That is the shape in
+  // the reported clips, and holding the drain back (__vb.poolMs 0.05) freezes it on screen: a slab of forest
+  // floor with pine trees still on it, hanging in the air over the arctic.
+  // THE FIX THAT DOES NOT WORK: clearing the descriptor here, so an undrained brick renders as air rather than
+  // as alien terrain. It is the rule the far ring already follows for a tile it cannot finish, and it is right
+  // in principle — but a blanked brick loses its SLOT, so the drain must allocate and upload a whole fresh
+  // page instead of overwriting the one it already owned, and every blank adds a descriptor upload of its own.
+  // Controlled A/B, one anchor, queue drained to empty before each leg, alternating twice:
+  //     peak backlog   OFF 134k / 117k     ON 2.41M / 2.34M      nineteen times WORSE, reproducibly
+  // and the screenshots show the near world simply never arriving — flat empty ground out to the treeline.
+  // It trades a few seconds of wrong terrain for a standing absence of terrain, which is worse.
+  // WHERE TO LOOK INSTEAD: the drain walks poolDirty in INSERTION order, which has nothing to do with where
+  // the player is looking. Spending the same budget NEAREST-FIRST would leave the stale bricks out at the
+  // frontier where the view clamp and the distance fog already hide them, and costs no extra paging at all —
+  // it changes which bricks get the budget, not how many. Untested.
+  const poolTouch = (b, air) => {
+    poolDirty.add(b);
+    if (!AIRSEED || air === undefined || air < 0) { afDone[b] = 0; return; }
+    if (airFree[b] !== air) { airFree[b] = air; for (const q of nbrOf(b)) if (q >= 0) poolDirty.add(q); }
+    afDone[b] = 1;
+  };
+  const poolRelease = (slot) => {                      // the one place a slot goes back, so the sealed-page guard cannot be forgotten
+    if (slot < 0 || slot === SEALED_SLOT || uniShared.has(slot)) return;   // shared pages (stone, and the per-id uniform ones): never freed, never reused
+    if (poolFreeN < POOL_SLOTS) poolFree32[poolFreeN++] = slot;
+  };
+  // ── SEALED ROCK ── 40-41% of every brick in the window (measured) is rock with no air in it whose six
+  // neighbours are also airless. A ray cannot reach one: to enter it, it must first cross a neighbour, and
+  // the neighbour is solid, so it stops there. Those bricks all point at ONE shared slot of stone instead
+  // of owning 512 bytes each. No shader change and no unreachable-brick special case: if a ray somehow did
+  // enter, it reads uniform stone, which is what is actually there.
+  // Regenerating one when the player digs through to it is just poolFill from W - the CPU still holds the
+  // dense world, so nothing has to be re-derived from the generator.
+  const airFree = new Uint8Array(BX * BY * BZ);         // 1 = brick is opaque to EVERY ray kind (see opaqueTab)
+  let SEALED_SLOT = -1;                                // the one shared stone page every sealed brick points at
+  // ══ AND ONE SHARED PAGE PER UNIFORM ID, FOR THE SAME REASON ══ measured with poolCensus after the pool hit
+  // a sustained 99.9% in the arctic: 19.7% of all live pages were 512 identical bytes of WATER_B — four
+  // hundred thousand copies of one page. Water can never take the sealed path (OPAQTAB excludes it on
+  // purpose: sealing points at the STONE page, which would be the wrong content inside water), but a page
+  // whose content is a single id is position-independent, so ONE copy serves every such brick bit-exactly.
+  // Unlike SEALED this is not an unreachability trick — the shared page IS the brick's real content, so rays,
+  // refraction and gpudiff's payload check all behave identically. uniSlotOf maps id -> slot, allocated on
+  // first use and NEVER freed (poolRelease guards it like SEALED_SLOT); poolBuild resets both, because a
+  // rebuild resets the allocator underneath them.
+  const uniSlotOf = new Int32Array(256).fill(-1);
+  const uniShared = new Set();
+  const uniPage = new Uint8Array(512);
+  const uniformSlot = (id) => {
+    let us = uniSlotOf[id];
+    if (us >= 0) return us;
+    if (poolFreeN > 0) us = poolFree32[--poolFreeN];
+    else if (poolUsed < POOL_SLOTS) us = poolUsed++;
+    else return -1;                                    // pool full: the caller falls through to the real-page path and its own pressure handling
+    uniPage.fill(id);
+    device.queue.writeBuffer(poolBuf, us * 512, uniPage);
+    uniSlotOf[id] = us; uniShared.add(us);
+    return us;
+  };
+  // one brick of W, answered as "a single id, or 0" — the near-window twin of the worker's ub scan. The u32
+  // packed test makes the mixed case (the overwhelming majority) exit on the first word.
+  let W32P = null;
+  const uniformIdOfW = (b) => {
+    if (!W32P) W32P = new Uint32Array(W.buffer, W.byteOffset, W.byteLength >> 2);
+    const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
+    const w0 = W32P[((by * 8) * WX + (bz * 8) * WX * WY + bx * 8) >> 2] | 0;
+    if ((((w0 & 255) * 0x01010101) | 0) !== w0 || !(w0 & 255)) return 0;
+    for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
+      const rw = ((by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY + bx * 8) >> 2;
+      if ((W32P[rw] | 0) !== w0 || (W32P[rw + 1] | 0) !== w0) return 0;
+    }
+    return w0 & 255;
+  };
+  // ── WHAT COUNTS AS OPAQUE ── "contains no air" is NOT enough, and getting that wrong put uniform stone
+  // across 17% of the screen. skipW rays (underwater eye, reflection, refraction) treat WATER as air, and
+  // the FOLSKIP variant treats near foliage as air, so a brick packed solid with water or leaves is still
+  // see-through to some rays - and anything it was "sealing" is reachable after all. A neighbour only seals
+  // if every one of its voxels stops every ray.
+  const opaqueTab = new Uint8Array(256);
+  for (let i = 1; i < 256; i++) opaqueTab[i] = (i === WATER_T || i === WATER_B || foliaTab[i]) ? 0 : 1;
+  const isAirFree = (b) => {
+    const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
+    for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
+      const r0 = bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY;
+      const a = W32[r0 >> 2], c = W32[(r0 >> 2) + 1];
+      if ((a - 0x01010101) & ~a & 0x80808080) return 0;          // fast reject: any air byte at all
+      if ((c - 0x01010101) & ~c & 0x80808080) return 0;
+      for (let x = 0; x < 8; x++) if (!opaqueTab[W[r0 + x]]) return 0;   // …then the water/foliage test
+    }
+    return 1;
+  };
+  const nbrOf = (b) => {                               // the six face neighbours, or -1 at a window edge
+    const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
+    return [bx > 0 ? b - 1 : -1, bx < BX - 1 ? b + 1 : -1,
+            by > 0 ? b - BX : -2, by < BY - 1 ? b + BX : -1,   // -2: BELOW THE WORLD, which no ray can come from — the fence may treat it as airless (measured: declining it cost 249,344 real pages of unreachable bedrock, layer by=0 at 95% occupancy with ZERO sealed)
+            bz > 0 ? b - BX * BY : -1, bz < BZ - 1 ? b + BX * BY : -1];
+  };
+  // ── AIRLESSNESS IS DECIDED ON DEMAND, NOT WHEN A BRICK HAPPENS TO BE VISITED ── this is the difference
+  // between the pool peaking at its steady size and peaking at the whole underground.
+  // isSealed needs the six neighbours' airFree. Reading them straight out of the array means reading whatever
+  // the last flush left there, and after a recentre that is 0 for everything that has not streamed in yet. So
+  // every brick arriving at the streaming frontier looked UNSEALED, took a real 512-byte page, and only gave
+  // it back much later when its neighbour finally landed and re-queued it. Measured: 752k bricks overflowed a
+  // 786k pool behind one teleport, and with a 1.4 M-entry dirty queue draining at 6144 a frame the revisits
+  // that would have freed the pages were hundreds of frames behind the allocations that exhausted it.
+  // afDone is the fix: airFree[q] is computed the first time anyone asks for it after q was last written, and
+  // poolTouch clears the flag. A brick is then sealed or not sealed correctly on its FIRST visit and a sealed
+  // one never takes a page at all. The work is the same isAirFree() poolBuild already does for every brick,
+  // just spread across the streaming budget instead of done in one pass.
+  const afDone = new Uint8Array(BX * BY * BZ);
+  const afGet = (q) => {
+    if (q < 0) return 0;
+    if (!afDone[q]) { afDone[q] = 1; airFree[q] = ((bricks[q >> 5] >>> (q & 31)) & 1) ? isAirFree(q) : 0; }
+    return airFree[q];
+  };
+  const isSealed = (b) => {                            // airless AND fenced in by airless neighbours
+    if (!afGet(b)) return false;
+    for (const q of nbrOf(b)) { if (q === -2) continue; if (q < 0 || !afGet(q)) return false; }   // -2 = the world floor: airless by construction
+    return true;
+  };
+  // ══ THE NEAR WINDOW'S PAGES GO UP IN SLOT RUNS TOO ══ poolFill used to be a gather AND a writeBuffer, one
+  // call per brick, and POOL_BUDGET lets 6144 bricks through in a frame. Measured flying the arctic: ~600
+  // separate 512-byte uploads on a spike frame, and the 'encode' phase — which is where they all land —
+  // going from 0.5 ms typical to 5.6-8.3 ms on exactly those frames.
+  // It is the same problem the far ring had and it takes the same answer: decide first, then sort the
+  // frame's assignments by SLOT and push consecutive slots as one upload. The gather is unchanged; only the
+  // call count moves. Nothing here can be deferred to a later frame the way the ring's can — a near brick is
+  // in front of the player — so the batch is flushed within the same poolFlush, before the descriptors that
+  // name it go up.
+  const PF_CAP = 4096;
+  const pfB = new Int32Array(PF_CAP), pfS = new Int32Array(PF_CAP), pfO = new Int32Array(PF_CAP);
+  let pfN = 0;
+  const poolFill = (b, slot) => {                     // queue brick b for the frame's batched upload
+    pfB[pfN] = b; pfS[pfN] = slot; pfN++;
+    if (pfN >= PF_CAP) pfUpload();
+  };
+  function pfUpload() {                               // gather each brick's 512 voxels out of W in x + y*8 + z*64 order, in slot order
+    if (!pfN) return;
+    const ord = pfO.subarray(0, pfN);
+    for (let i = 0; i < pfN; i++) ord[i] = i;
+    ord.sort((a, b2) => pfS[a] - pfS[b2]);
+    let runS = -1, runN = 0;
+    const runFlush = () => { if (runN) { device.queue.writeBuffer(poolBuf, runS * 512, ringRun, 0, runN * 512); runN = 0; runS = -1; } };
+    for (let i = 0; i < pfN; i++) {
+      const q = ord[i], slot = pfS[q], b = pfB[q];
+      if (runN && (slot !== runS + runN || runN >= RING_RUN)) runFlush();
+      if (!runN) runS = slot;
+      // Row-at-a-time f64 moves, for the reason the ring's gather gives: a brick row is 8 voxels, both ends
+      // are 8-aligned, and `set(subarray(...))` for eight bytes allocates and calls sixty-four times per brick.
+      const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0, ro8 = runN * 64;
+      for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
+        const src = bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY;
+        ringRun64[ro8 + ly + lz * 8] = W64p[src >> 3];
+      }
+      runN++;
+    }
+    runFlush();
+    pfN = 0;
+  }
+  // ══ THE DRAIN WAS LOSING TO FLIGHT BY A HAIR, AND THAT IS WHERE THE STALE TERRAIN COMES FROM ══
+  // At fly sprint (255 vox/s = 4.25 a frame) the window slides ~0.53 bricks a frame, and one brick-step of
+  // the window is 1 x BY x BZ = 12,288 bricks. So ~6,500 bricks arrive per frame against a cap of 6,144:
+  // structurally unable to keep up, and the queue grows for as long as you hold sprint. A brick sitting in
+  // that queue still has its OLD descriptor, so it draws the last world column's voxels at its new position
+  // (see the note on poolTouch above) — the backlog IS the artifact's lifetime.
+  // MEASURED, one anchor, queue drained to empty before each leg, alternating, four legs a run, twice:
+  //   6144/3ms   peak 74-97k   END 53-89k   <- never catches up: permanently behind by tens of thousands
+  //   12288/6ms  peak 27-40k   END 0-26k    <- drains to zero
+  //   24576/9ms  peak 28k      END 0        <- no further gain, which is what a relieved constraint looks like
+  // and the TAIL did not pay for it: p99 25.1/25.1 against the shipped 27.8/26.1, 1% low 39.8/39.9 against
+  // 36.0/38.4. That is the right sign and it is not luck — a queue that never catches up is saturated every
+  // frame and spikes on catch-up bursts, so keeping up REMOVES pile-ups rather than adding work.
+  // `avg` could not be resolved: two legs of the SAME config drifted 6.05 -> 8.77 ms, which is larger than
+  // the effect under test, so do not read the averages in those runs as a comparison.
+  // POOL_MS moves with it on purpose: past ~6 ms the time cap stops binding and the brick cap is the only
+  // thing stopping the drain (measured: 3ms 89/75k, 6ms 60/59k, 9ms 82/88k — non-monotonic, i.e. noise once
+  // the brick cap took over). Raising either one alone does nothing.
+  let POOL_BUDGET = 12288;                             // bricks refreshed per frame — a `let` so __vb.poolBudget(n) can sweep it in ONE session (the world reseeds on reload, so a cross-reload sweep compares two different worlds). A recentre or a teleport dirties the whole
+  // window at once (~400k bricks); doing them all in one frame is a multi-second freeze, so the queue drains
+  // over ~60 frames instead and the far terrain resolves progressively. Same shape as the terrain stream budget.
+  // ══ …AND A COUNT IS NOT A BUDGET, BECAUSE BRICKS ARE NOT THE SAME PRICE ══ a brick that is still sealed
+  // costs a descriptor compare; one whose airlessness was invalidated pays isAirFree over 64 rows, six
+  // neighbour tests, and a 512-byte gather. Measured flying the arctic, 6144 of the expensive kind is 22.65 ms
+  // in one frame — and that single number was the whole of the 'encode' spike the frame-time p99 was made of
+  // (the sub-timers put passes at 1.64 ms worst, getCurrentTexture at 0.10 and submit at 0.08, so it was never
+  // GPU pacing). So the ceiling stays as a bound on the queue, and the real budget is TIME, checked every 256
+  // bricks the way nvFlush checks its own. What does not fit rides to the next frame, which is what the queue
+  // is for.
+  let POOL_MS = 6;                                     // …and the time half of the same budget: 3 ms cut the drain off before it could use the brick cap above (see the note there)
+  let poolDrainMax = 0, poolDrainN = 0, poolPaged = 0;
+  let poolLastN = 0;                                   // bricks the LAST drain actually got through — poolDrainN is a since-boot high-water and cannot answer 'is the budget keeping up right now'
+  // ══ THE BUDGET IS PER FRAME AND THE DEMAND IS PER MOVEMENT, SO A FIXED CAP IS WRONG AT EVERY OTHER FPS ══
+  // Fly speed is 255 vox/s, so voxels-per-frame is frame rate restated: 4.25 at 60 fps, 8.5 at 30. The window
+  // slides twice as far per frame at half the rate, so twice as many bricks arrive — against a cap that did
+  // not move. MEASURED in the arctic (the densest biome: a ring tile is ~86 pages in forest and 4422 here),
+  // same route, same build:
+  //     4.25 vox/frame (60 fps)   dirty med 1,942     filled 1920        holeReal 0
+  //     8.50 vox/frame (30 fps)   dirty med 360,900   filled 1002-1627   holeReal 13,375
+  // — a 186x backlog, the view distance cut in half, and thousands of see-through bricks. overflow was +0 in
+  // BOTH, so this is not pool capacity (POOL_FRAC_RING); the drain is simply being outrun.
+  // SCALE ON DISTANCE MOVED, NOT ON dt. Time is the wrong variable: a player standing still on a 30 fps
+  // machine creates no streaming demand at all, and would get a needlessly quadrupled drain. What actually
+  // sizes the work is how far the window slid since the last drain, which is exactly what this measures.
+  // Clamped to 4x — past that the machine is in trouble for other reasons, and an unbounded drain would feed
+  // back (longer drain -> longer frame -> further moved -> bigger budget). EMA'd so one teleport or hitch
+  // cannot spike it. Below the baseline it stays at 1x: the cap is a ceiling, never a floor to spend up to.
+  let PF_ADAPT = 1;                                    // __vb.poolAdapt(0|1) A/Bs it in ONE session
+  const PF_BASE = 4.25;                                // vox/frame the shipped cap was sized for — fly sprint at 60 fps
+  let pfPX = null, pfPZ = null, pfMoveEma = PF_BASE, pfScale = 1;
+  const pfBudget = () => {
+    if (pfPX !== null) {
+      const dx = P.x - pfPX, dz = P.z - pfPZ;
+      const d = Math.min(64, Math.sqrt(dx * dx + dz * dz));   // 64 clamps a teleport out of the average
+      pfMoveEma += (d - pfMoveEma) * 0.12;
+    }
+    pfPX = P.x; pfPZ = P.z;
+    pfScale = PF_ADAPT ? Math.max(1, Math.min(4, pfMoveEma / PF_BASE)) : 1;
+    return pfScale;
+  };
+  const poolFlush = (all) => {                         // called from brickFlush, so the pool lands in the same frame the occupancy bits do
+    // ── THE EARLY-OUT MUST ASK ABOUT THE RING'S WORK TOO, AND THIS WAS THE FAR FIELD'S REAL BUG ──
+    // ringUpdate runs immediately before this and fills descDirtyW / gwbDirtyW / gb2Dirty with the tiles it
+    // just paged; the drain for all three lives at the bottom of THIS function. Guarding only on poolDirty
+    // meant that on every frame the near window happened to be quiet — which is most frames once streaming
+    // settles — the ring's PAGES went to the GPU (ringUpload writes those itself) while its DESCRIPTORS did
+    // not. The shader then read whatever bdesc held before, which for a fresh grid is the shared sealed-stone
+    // page: a flat slab of stone across the far terrain that resolved into real ground as you walked into it
+    // and the near window took over. With STONE_ID's old value that slab was bright pink.
+    if (!poolDirty.size && !descDirtyW.size && !gwbDirtyW.size && !gb2Dirty.size) return 0;
+    let n = 0, seen = 0, stopped = 0;
+    const pfK = pfBudget(), pfCap = POOL_BUDGET * pfK, pfMs = POOL_MS * pfK;
+    const t0 = performance.now();
+    for (const b of poolDirty) {
+      if (!all && (seen >= pfCap || ((seen & 255) === 255 && performance.now() - t0 > pfMs))) { stopped = 1; break; }   // rest stays queued for next frame — cap and ms both scale with the frame interval (see pfBudget)
+      seen++;
+      const gb = cpu2gpu(b);
+      const occ = (bricks[b >> 5] >>> (b & 31)) & 1;
+      const had = bdesc[gb];
+      const wob = gwb[gb >> 5];
+      if ((wbricks[b >> 5] >>> (b & 31)) & 1) gwb[gb >> 5] |= 1 << (gb & 31); else gwb[gb >> 5] &= ~(1 << (gb & 31));
+      if (gwb[gb >> 5] !== wob) gwbDirtyW.add(gb >> 5);
+      // ── THE L2 CELL ONLY CARES WHETHER THE BRICK EXISTS, SO ONLY TELL IT WHEN THAT CHANGES ── gb2 is one bit
+      // per 4x4x4 block of bricks, set if ANY descriptor in the block is non-zero, and rebuilding one cell reads
+      // all 64. This used to be queued for every dirty brick: a streamed band is thousands of bricks, most of
+      // them re-paging terrain that was already there, so the drain rescanned hundreds of thousands of
+      // descriptors to conclude nothing had changed. A brick swapping one page for another, or an ordinary page
+      // for the shared sealed one, cannot move the cell's bit — only 0 <-> non-zero can. `gb2Add` below is
+      // called on exactly those transitions.
+      // NEVER return SEALED_SLOT to the free list. It is SHARED by every sealed brick, so freeing it once
+      // hands it out as an ordinary page and every sealed brick in the window instantly aliases whatever
+      // gets written there. That is a double-free, and it shows up as corruption far from its cause.
+      if (!occ) { if (had) { poolRelease(had - 1); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); } n++; continue; }
+      const wasAF = airFree[b], af = afGet(b);        // afGet recomputes only if poolTouch invalidated it, and it is what isSealed reads below
+      // A neighbour whose turn has ALREADY passed this drain is not re-queued by add() -- a Set add of a
+      // present entry does not move it back into line -- so it would keep a verdict computed from this
+      // brick's old airlessness and be trimmed away unqueued. That looked like the source of the unqueued
+      // faults and it is NOT: instrumented over four 900-frame sprint flights, the case fired ONCE in total.
+      // Left as a note rather than a guard, because the guard cost a Set insert on every drained brick
+      // (6144 a frame) to catch one event.
+      if (af !== wasAF) { for (const q of nbrOf(b)) if (q >= 0) poolDirty.add(q); }   // my airlessness changed => my neighbours' sealed-ness may have too (theirs has not, so do NOT clear their afDone)
+      const sealed = isSealed(b);
+      if (sealed) {                                    // costs no payload at all - just point at the shared stone page
+        if (had) { poolRelease(had - 1); }
+        if (had - 1 !== SEALED_SLOT) { bdesc[gb] = SEALED_SLOT + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
+        n++; continue;
+      }
+      // …not sealed: if the whole brick is ONE id, point it at that id's shared page instead of paying for a
+      // copy. Gated on airless-or-water-only so the scan runs only where uniformity is possible at all.
+      const wonlyB = (wbricks[b >> 5] >>> (b & 31)) & 1;
+      if (af || wonlyB) {
+        const uid = uniformIdOfW(b);
+        if (uid) { const us = uniformSlot(uid);
+          if (us >= 0) {
+            if (had && had - 1 !== us) poolRelease(had - 1);
+            if (had - 1 !== us) { bdesc[gb] = us + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
+            n++; continue;
+          } }
+      }
+      let slot = had - 1;
+      if (!had || slot === SEALED_SLOT || uniShared.has(slot)) {   // air->occupied, a sealed brick just exposed, or an EDITED uniform brick: it needs a real page now — poolFill must NEVER write into a shared page, every brick in the window aliases it
+        if (poolFreeN > 0) slot = poolFree32[--poolFreeN];
+        else if (poolUsed < POOL_SLOTS) slot = poolUsed++;
+        else { poolOverflow++; poolRetry.push(b); continue; }   // pool full FOR NOW: keep it queued (see poolRetry) — dropping it is what made an overflow permanent
+        bdesc[gb] = slot + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb));
+      }
+      poolFill(b, slot); poolPaged++; n++;
+    }
+    // …and the ones that WERE done come off the queue. By `seen`, not by `n`: a brick that found no slot took
+    // its turn and went into poolRetry without incrementing n, so trimming by n left it in place to be walked
+    // again next frame, at the front, forever.
+    if (stopped) { let k = 0; for (const b of poolDirty) { poolDirty.delete(b); if (++k >= seen) break; } }
+    else poolDirty.clear();
+    // …and the ones that found no slot go straight back in. AFTER the trim/clear above, or the clear would
+    // drop them again — which is exactly the bug this fixes.
+    if (poolRetry.length) { for (const b of poolRetry) poolDirty.add(b); poolRetry.length = 0; }
+    if (gb2Dirty.size) {                               // recompute only the super-cells a touched brick sits in
+      for (const c of gb2Dirty) {
+        const cx = c % GB2X, cy = ((c / GB2X) | 0) % GB2Y, cz = (c / (GB2X * GB2Y)) | 0;
+        let occ = 0;
+        scan2: for (let bz = cz * 4; bz < cz * 4 + 4; bz++) for (let by = cy * 4; by < cy * 4 + 4; by++) for (let bx = cx * 4; bx < cx * 4 + 4; bx++) {
+          if (bdesc[bx + by * GBX + bz * GBX * GBY]) { occ = 1; break scan2; }
+        }
+        if (occ) gb2[c >> 5] |= 1 << (c & 31); else gb2[c >> 5] &= ~(1 << (c & 31));
+      }
+      gb2Dirty.clear(); device.queue.writeBuffer(gb2Buf, 0, gb2);
+    }
+    pfUpload();                                      // …the frame's pages, batched — and BEFORE the descriptors below, which are what makes them visible
+    if (descDirtyW.size) { writeWordRuns(bdescBuf, bdesc.buffer, descDirtyW); descDirtyW.clear(); }
+    if (gwbDirtyW.size) { writeWordRuns(gwbBuf, gwb.buffer, gwbDirtyW); gwbDirtyW.clear(); }
+    poolLastN = seen;
+    { const el = performance.now() - t0; if (el > poolDrainMax) { poolDrainMax = el; poolDrainN = seen; } }   // the worst drain SINCE BOOT, not since the last read
+    return n;
+  };
+  const poolBuild = () => {                            // full rebuild from W - O(window), not a streaming path
+    const t0 = performance.now();
+    // ── AND THE RING GOES WITH IT ── poolBuild resets the slot allocator and zeroes every descriptor, so any
+    // ring tile still holding (brick, slot) pairs is describing a pool that no longer exists: the very next
+    // allocation hands its slots out again and two owners write one page. Dropping the residency here makes
+    // the tiles regenerate, which is the only correct answer after the world underneath them was replaced.
+    ringTiles.clear(); ringHanded.clear();   // …and nothing may be adopted across a rebuild: poolBuild zeroed every descriptor those tiles were relying on
+    bdesc.fill(0); gwb.fill(0); gb2.fill(0); poolUsed = 0; poolOverflow = 0; poolFreeN = 0; poolDirty.clear(); gb2Dirty.clear(); descDirtyW.clear(); gwbDirtyW.clear();
+    uniSlotOf.fill(-1); uniShared.clear(); W32P = null;   // the allocator under the shared pages was just reset, and W may be a fresh buffer
+    const nB = BX * BY * BZ;
+    for (let b = 0; b < nB; b++) airFree[b] = ((bricks[b >> 5] >>> (b & 31)) & 1) ? isAirFree(b) : 0;
+    afDone.fill(1);                                    // a full build decides every brick, so afGet has nothing left to recompute until something is written again
+    // Slots are handed out in order here, so the staging chunk covers slots [chunk0, poolUsed) and is flushed
+    // whenever it fills. The shared stone page is slot 0, which is why the chunk is seeded with it.
+    let chunk0 = 0;
+    const flush = () => { if (poolUsed > chunk0) device.queue.writeBuffer(poolBuf, chunk0 * 512, poolCPU.buffer, 0, (poolUsed - chunk0) * 512); chunk0 = poolUsed; };
+    SEALED_SLOT = poolUsed++;                          // slot 0 is the shared stone page every sealed brick points at
+    poolCPU.fill(STONE_ID, 0, 512);
+    let sealedN = 0;
+    for (let bz = 0; bz < BZ; bz++) for (let by = 0; by < BY; by++) for (let bx = 0; bx < BX; bx++) {
+      const b = bx + by * BX + bz * BX * BY;
+      if (!((bricks[b >> 5] >>> (b & 31)) & 1)) continue;   // all air: no payload, descriptor stays 0
+      const gb = cpu2gpu(b);
+      if ((wbricks[b >> 5] >>> (b & 31)) & 1) gwb[gb >> 5] |= 1 << (gb & 31);
+      if (isSealed(b)) { bdesc[gb] = SEALED_SLOT + 1; sealedN++; continue; }
+      if (poolUsed >= POOL_SLOTS) { poolOverflow++; continue; }
+      if (poolUsed - chunk0 >= POOL_CHUNK) flush();
+      { const uid = uniformIdOfW(b);                   // single-id brick: share the id's page. STAGED as well as written — the bulk flush below covers [chunk0, poolUsed) from poolCPU, so a slot allocated here must have its bytes in the staging too or the flush overwrites the page with garbage
+        if (uid) { const us = uniformSlot(uid);
+          if (us >= 0) { if (us >= chunk0) poolCPU.fill(uid, (us - chunk0) * 512, (us - chunk0) * 512 + 512); bdesc[gb] = us + 1; continue; } } }
+      const slot = poolUsed++;
+      bdesc[gb] = slot + 1;
+      let o = (slot - chunk0) * 512;
+      for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {   // local order is x + y*8 + z*64, matching the shader
+        const src = bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY;
+        poolCPU.set(W.subarray(src, src + 8), o + ly * 8 + lz * 64);
+      }
+    }
+    flush();
+    poolSealed = sealedN;
+    for (let c = 0; c < gb2.length * 32; c++) {         // L2 from the finished descriptors, whole grid
+      const cx = c % GB2X, cy = ((c / GB2X) | 0) % GB2Y, cz = (c / (GB2X * GB2Y)) | 0;
+      if (cz >= (GBZ >> 2)) break;
+      let occ = 0;
+      scan2: for (let bz = cz * 4; bz < cz * 4 + 4; bz++) for (let by = cy * 4; by < cy * 4 + 4; by++) for (let bx = cx * 4; bx < cx * 4 + 4; bx++) {
+        if (bdesc[bx + by * GBX + bz * GBX * GBY]) { occ = 1; break scan2; }
+      }
+      if (occ) gb2[c >> 5] |= 1 << (c & 31);
+    }
+    device.queue.writeBuffer(bdescBuf, 0, bdesc);
+    device.queue.writeBuffer(gwbBuf, 0, gwb);
+    device.queue.writeBuffer(gb2Buf, 0, gb2);
+    return { slots: POOL_SLOTS, used: poolUsed, sealed: poolSealed, overflow: poolOverflow,
+      denseMB: +(WX * WY * WZ / 1048576).toFixed(1),
+      pooledMB: +((bdesc.byteLength + gwb.byteLength + gb2.byteLength + poolUsed * 512) / 1048576).toFixed(1),
+      saving: +((WX * WY * WZ) / (bdesc.byteLength + poolUsed * 512)).toFixed(2),
+      ms: Math.round(performance.now() - t0) };
+  };
+  // ── NOR DO THE CPU-GRID L2 AND WATER TABLES ── the shader reads gb2/gwb, which are on the GPU grid and
+  // cover the far ring too. bricks2 and wbricks are still built and read on the CPU (the ceiling probe, the
+  // snow leap), so the arrays stay; only their GPU buffers and the uploads that fed them are gone.
+  const uploadBricks = () => { if (CPROF) cpEvt |= 4; };   // the tables it used to push have no GPU reader left; the pool's own flush is what uploads now
   // ── Z-BAND OCCUPANCY UPLOAD ── a z-band's bricks are CONTIGUOUS in both tables: the flat index is
   // bx + by*BX + bz*BX*BY (and cx + cy*B2X + cz*B2X*B2Y), with the z axis outermost. So a band that only
   // grew rows [gz0,gz1) touches exactly one slice, and the whole 384 KB table no longer has to be re-sent
@@ -21,28 +492,34 @@
     if (CPROF) cpEvt |= 4;
     const b0 = (gz0 >> 3) * BX * BY, b1 = ((gz1 + 7) >> 3) * BX * BY;   // L1 bit range
     const w0 = b0 >> 5, w1 = (b1 + 31) >> 5;
-    device.queue.writeBuffer(brickBuf, w0 * 4, bricks.buffer, w0 * 4, (w1 - w0) * 4);
-    device.queue.writeBuffer(wbrickBuf, w0 * 4, wbricks.buffer, w0 * 4, (w1 - w0) * 4);
-    const c0 = (gz0 >> 5) * B2X * B2Y, c1 = ((gz1 + 31) >> 5) * B2X * B2Y;   // L2 bit range (32-voxel super-bricks)
-    const v0 = c0 >> 5, v1 = (c1 + 31) >> 5;
-    device.queue.writeBuffer(brick2Buf, v0 * 4, bricks2.buffer, v0 * 4, (v1 - v0) * 4);
   };
   // Coalesce a set of dirty u32 word indices into contiguous runs — one writeBuffer per run instead of per word.
   // Bridging a small gap re-uploads a few CLEAN words, which is always safe: the CPU array is authoritative,
   // so copying more of it can only bring the GPU closer to it, never further away.
-  const WRUN_GAP = 16;                                 // MEASURED 2026-08-22: sweeping this 16 -> 1024 moved the per-frame writeBuffer count not at all (78.7 -> 76.6, inside noise), so the ~80 calls are separate BUFFERS, not fragmentation within one. Not a lever; do not re-try it.
+  let wrunN = 0, wrunB = 0, wrunWords = 0;             // …how the word-run coalescer is actually doing: calls, bytes, and how many words it was asked for
+  // ── THE COALESCING GAP, AND IT IS STILL NOT A LEVER ── measured 2026-08-22 at ~80 calls a frame: sweeping
+  // it 16 -> 1024 moved the call count 78.7 -> 76.6, inside noise. RE-MEASURED 2026-08-30 in the regime that
+  // measurement did not cover — the far ring publishes descriptors for ~700 bricks a frame, scattered by GBX
+  // (512 words) between brick rows, so at gap 16 nothing merges and it is 405 calls a frame of 79 bytes each,
+  // landing in 'encode', the phase that spikes. Gap 512 merges a whole brick COLUMN and takes that to 22 calls
+  // a frame. Frame time did not care: avg 9.06 -> 8.99, p50 7.22 -> 7.16, p99 26.09 -> 25.95, 1% low 38.3 ->
+  // 38.5 — noise in every column, for 23x the bytes (31.7 KB -> 722.3 KB a frame). Two independent
+  // measurements, an order of magnitude apart in call count, both say the same thing: writeBuffer call
+  // overhead is not what this costs. Do not re-try it a third time.
+  let WRUN_GAP = 16;
   const wrunTmp = [];
   const writeWordRuns = (buf, src, wset) => {
     if (!wset || !wset.size) return;
+    wrunWords += wset.size;
     wrunTmp.length = 0;
     for (const w of wset) wrunTmp.push(w);
     wrunTmp.sort((p, q) => p - q);
     let s = wrunTmp[0], e = s + 1;
     for (let i = 1; i < wrunTmp.length; i++) {
       if (wrunTmp[i] <= e + WRUN_GAP) { e = wrunTmp[i] + 1; continue; }
-      device.queue.writeBuffer(buf, s * 4, src, s * 4, (e - s) * 4); s = wrunTmp[i]; e = s + 1;
+      device.queue.writeBuffer(buf, s * 4, src, s * 4, (e - s) * 4); wrunN++; wrunB += (e - s) * 4; s = wrunTmp[i]; e = s + 1;
     }
-    device.queue.writeBuffer(buf, s * 4, src, s * 4, (e - s) * 4);
+    device.queue.writeBuffer(buf, s * 4, src, s * 4, (e - s) * 4); wrunN++; wrunB += (e - s) * 4;
   };
   // ── FRAME-LEVEL BRICK UPLOAD BATCHING ── gpuPatch used to run writeWordRuns three times PER CALL, and
   // gpuPatch fires from ~20 sites a frame (snow landing, worm stamps, chop, dig, pickups, melt), so the
@@ -57,9 +534,710 @@
   // removed: it cost 7× the bandwidth (27 → 184 KB a frame) and bought nothing measurable. This is kept
   // only because one flush per frame is simpler than three per call, not because it is faster.
   const dirtyBW = new Set(), dirtyC2W = new Set();
-  const brickFlush = () => {
-    if (dirtyBW.size) { writeWordRuns(brickBuf, bricks.buffer, dirtyBW); writeWordRuns(wbrickBuf, wbricks.buffer, dirtyBW); dirtyBW.clear(); }
-    if (dirtyC2W.size) { writeWordRuns(brick2Buf, bricks2.buffer, dirtyC2W); dirtyC2W.clear(); }
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════════════
+  //  THE FAR RING  —  terrain beyond the CPU window, generated straight into pool pages
+  // ══════════════════════════════════════════════════════════════════════════════════════════════════════
+  // This is what actually buys the longer view. The pool made a WIDER GPU window affordable (see TWO WINDOWS
+  // in world/window.js); it did not put anything in it. poolBuild and poolFlush only ever walk the CPU brick
+  // grid, so every descriptor outside the CPU window stayed 0 = air, and GMUL 2 rendered exactly as far as
+  // GMUL 1 did.
+  //
+  // THE RING HAS NO DENSE BACKING AND DOES NOT WANT ONE. W is 1.5 GB at 2048 and could not be grown; but the
+  // ring is render-only — nothing out there collides, is edited, is walked on or spawns life — so the only
+  // thing that has to exist is the 512-byte pages a ray reads. A ring tile is therefore generated into a
+  // PRIVATE slab by the existing gen pool (the same generator, the same world, `ring: 1` on the job so the
+  // worker hands the slab back instead of blitting it into W), paged, and the slab is dropped.
+  //
+  // TILES, NOT BANDS. The near window streams as 8-voxel bands because it is toroidal and a shift wraps a
+  // strip. The ring is not toroidal in any useful sense — a tile is wanted or it is not — so residency is a
+  // SET of world-aligned tiles, which makes both arrival and eviction ordinary set arithmetic instead of
+  // rectangle bookkeeping. It also means a tile is generated exactly once for a given world position.
+  //
+  // EVICTION CANNOT DOUBLE-FREE, and that is the one invariant worth stating plainly, because the sealed-slot
+  // note above records what happens when it does. A tile records the (brick, slot) pairs it wrote; on evict it
+  // frees a slot ONLY where bdesc still holds exactly that slot. If the window moved and something else has
+  // taken the descriptor, the pair is skipped. Self-correcting, and it cannot hand one page to two owners.
+  const RING_TILE = 128;                               // voxels per tile side. 16x16 bricks in x/z: big enough that one worker job is worth dispatching, small enough that a tile is a fine-grained unit of arrival
+  const RING_TB = RING_TILE >> 3;                      // …in bricks
+  const RING_JOBS = 12;                                 // tiles generating at once. The pool has NPOOL workers and the near window's own streaming has first call on them   // …raising this to 32 for the boot fill was tried and bought NOTHING (14.1 s either way): `pend` pinned at 12 was job SATURATION, not the limiter. The limiter is the page budget below
+  const RING_LAND = 3;
+  let ringLandN = 3;                                   // …RING_LAND scaled by the movement EMA each frame, see ringBudget below                                 // new tiles STARTED per frame — this caps only the per-brick decide pass now; the uploads they generate are capped by RING_PAGE instead. // …and at most this many LAND per frame. One was set when a tile cost ~7 ms; the packed-word airless scan took that down far enough that the limit was starving the ring instead of protecting the frame — while flying, eviction outran refill by thirty tiles to one and the far field collapsed. Three is the balance: the fill keeps up with flight and the paging stays inside the streaming budget's own spikes
+  // ── THE BOOT FILL IS NOT BUDGET-BOUND, SO DO NOT TRY TO BUY IT WITH BUDGET ── all three of these were
+  // raised behind the loading overlay and measured, and NONE of them moved the load by a millisecond:
+  // RING_JOBS 12 -> 32, RING_PAGE 4096 -> 65536, tiles-landing 3 -> 24. Load stayed 14.0-14.1 s every time.
+  // What the trace actually shows: 12 ring jobs pending with `gen().busy` at ZERO for ~2.5 s, and then 689
+  // tiles landing in the following 5 s once the workers wake. The boot wait is a gen-pool STARTUP STALL
+  // followed by honest worldgen throughput — the budgets were never the constraint.
+  const RING_PAGE = 4096;                              // PAGES uploaded per frame, shared across tiles — the budget that actually bounds the spike, see ringUpload. ~1.2 us a page measured, so ~1.8 ms worst case
+  let ringBudget = 0;
+  const ringTiles = new Map();                         // key -> { tx, tz, job, gb: Int32Array, sl: Int32Array, n, done }
+  const tileLive = (tx, tz) => {                        // live descriptors under one ring tile — the adoption's own audit
+    const bx0 = tx * (RING_TILE >> 3), bz0 = tz * (RING_TILE >> 3), nb = RING_TILE >> 3;
+    let live = 0;
+    for (let dz = 0; dz < nb; dz++) { const wz = (((bz0 + dz) % GBZ) + GBZ) % GBZ;
+      for (let dx = 0; dx < nb; dx++) { const wx = (((bx0 + dx) % GBX) + GBX) % GBX;
+        for (let by = 0; by < GBY; by++) if (bdesc[wx + by * GBX + wz * GBX * GBY]) live++;
+      } }
+    return live;
+  };
+  let ringAbandon = 0;                                 // tiles dropped whole because they could not be paged in full — see ringPageTile
+  let ringAdoptClear = 0;                              // descriptors an evicted ADOPTED tile left behind — see ringEvict
+  const adoptLive = [];                                // live-descriptor counts of recently adopted tiles — a healthy tile is thousands (see ringStats maxN)
+  let ringEvictLRU = 0;                                // tiles evicted to make room for a NEARER one — see ringEvictFurthest
+  let ringMaxN = 0, ringRuns = 0, ringDecMs = 0, ringLive = 0, ringPaged = 0, ringEvicted = 0, ringOverflow = 0, ringMs = 0, ringHandOver = 0, ringAdopt = 0;
+  // ── TILES THE CPU WINDOW BORROWED ── and this set is what stops the far field collapsing whenever you move.
+  // A tile that enters the CPU window is handed over: its pages stay in bdesc and its record is dropped. When
+  // the window slides past and the world position becomes ring territory again, the ring used to see a MISSING
+  // tile and queue it for regeneration — a full 144-cubed worker job for terrain that is already correctly
+  // paged and has not changed, because the world is deterministic and the CPU path maintained those exact
+  // descriptors the whole time it owned them.
+  // The cost of not knowing that was the whole bug. The re-fetch queue sits just BEHIND the player, the view
+  // clamp is a RADIUS rather than a direction, so a hole 1050 voxels behind clamped the view 1050 voxels
+  // AHEAD — and every step re-opened it. Measured while flying: the filled radius fell from 1920 to ~1050 and
+  // then oscillated 1022/1058/1090/1122 step after step, which is exactly the flicker.
+  // Adopting instead costs nothing and is correct: the pages are already there and already right.
+  const ringHanded = new Set();
+  // Bounded in normal use — the scan only adds tiles the near window currently covers (~256 of them) and
+  // deletes each one as it leaves. A guard rather than a leak: if the two ever fall out of step the worst case
+  // is a pass of regeneration, not unbounded growth.
+  const RING_HANDCAP = 4096;
+  const ringKey = (tx, tz) => (tx & 0xffff) * 65536 + (tz & 0xffff);
+  const EMPTY_I32 = new Int32Array(0);                 // an adopted tile owns no slots of its own — the pages it points at were paged by whoever held the descriptor before it
+  // ── HOW FAR THE RING REACHES ── the GPU window, less a margin, and never further than the view actually
+  // needs. Squared-off rather than circular: tiles are square and a circle would only save the corners.
+  // ── AND THE REACH YIELDS TO THE POOL ── the pool is a fixed size and the arctic is the densest thing in the
+  // world; measured across three fresh worlds on one fixed flight, peak residency came out 93.0%, 99.5% and
+  // 100%, so whether a given world overflows is close to a coin flip. A ring that keeps asking for tiles it
+  // cannot page just thrashes. Giving up a tile of reach per overflow, and taking it back once residency falls
+  // well clear, turns "some worlds tear" into "dense worlds render slightly nearer" — which is the trade the
+  // view clamp is already built to express.
+  let ringSquash = 0;                                  // voxels of reach conceded to pool pressure
+  let ringSquashWant = 0;                              // …an abandoned tile ASKS for a step; ringUpdate grants at most one a frame
+  const ringReach = () => Math.max(RING_TILE * 3, Math.min((GHALF - RING_TILE) | 0, (RD_DBG || renderDist) + 96) - ringSquash);
+  // ── AND IT DOES NOT EVICT AT THE SAME RADIUS IT FETCHES AT ── that is what made the view FLICKER. Fetching
+  // and evicting on one boundary means a tile sitting on it is dropped and re-fetched as the player wobbles
+  // across a single voxel, and since a re-fetch is a worker round trip the ring loses ground every time.
+  // Measured while flying: tiles fell 689 -> 260, the filled radius collapsed from 1920 to ~1050 and then
+  // OSCILLATED (1048, 1080, 1112, 1144, 1048...) — and the view clamp follows the filled radius, so the whole
+  // far field pumped in and out every few frames. That oscillation IS the flicker.
+  // A keep radius one and a half tiles beyond the fetch radius costs a handful of tiles of memory and turns a
+  // boundary into a band. Standard streaming hysteresis; the near window's own rect has the same shape.
+  // ══ KEEP MUST EXCEED FETCH, OR THE OUTER RING THRASHES ══ the prefetch fetches to R + RING_PREFETCH
+  // tiles, and this used to keep to R + 1.5 tiles — the SAME boundary. A tile at the edge was therefore
+  // fetched and evicted and fetched again, forever, even standing still: the acceptance gate caught it as
+  // avg 3.79 -> 6.04 ms and p99 6.50 -> 20.58, with the 1% low at 48 fps. Keep now trails the fetch radius
+  // by a tile and a half so the outermost ring the scan asks for is always inside the eviction boundary.
+  const ringKeep = () => Math.min(GHALF | 0, ringReach() + RING_TILE * (RING_PREFETCH + 1.5));
+  // ── PAGE ONE TILE OUT OF ITS SLAB ── the slab is (sx, WY, sz) in the worker's own layout, x fastest, and
+  // `bb` is its 8³ occupancy scanned in the worker.
+  // THE SLAB IS ONE BRICK WIDER THAN THE TILE ON EVERY SIDE, and that margin is not a nicety. Sealing asks
+  // whether all six neighbours are airless, so a brick on the slab's edge has no answer and has to decline —
+  // and on a 16x16x48 tile the x/z edges alone are a quarter of the bricks. Measured without the margin: 23%
+  // of every ring tile took a real 512-byte page against a near-window steady state of 13%, and the pool ran
+  // to 93% full with tiles still arriving. Generating 144 wide and paging the inner 128 costs 27% more
+  // generation, which the pool has spare, and buys back nearly half the ring's memory.
+  // RING_M is that margin in bricks; the page loop skips it, and the GPU index is taken from the tile's own
+  // origin so the margin is generated, consulted, and thrown away.
+  // UPLOADS ARE BATCHED. Slots come off poolUsed++ in order while the free list is empty, which is the whole
+  // of a cold fill, so consecutive slots are contiguous in the buffer and a run of them is ONE writeBuffer
+  // instead of one per brick. A tile is ~1600 pages; unbatched that is 1600 queue submissions a frame.
+  const RING_M = 1;                                    // slab margin in bricks, so every paged brick has six real neighbours to seal against
+  const ringStage = new Uint8Array(512);
+  const RING_RUN = 512;                                // slots per batched upload (256 KB)
+  const ringRun = new Uint8Array(RING_RUN * 512);
+  const ringRun64 = new Float64Array(ringRun.buffer);   // the same staging buffer, moved a row at a time
+  function ringPageTile(T, m, x0, z0) {                 // x0/z0 are the TILE's origin; the slab starts RING_M bricks before it
+    const t0 = performance.now();
+    const SW = m.stride, sx = m.nbx * 8, sz = m.nbz * 8, SB = m.W, bb = m.bb, wb = m.wb;
+    const nbx = m.nbx, nby = m.nby, nbz = m.nbz;
+    // ── THE AIRLESS SCAN IS THE EXPENSIVE PART OF A TILE, so it gets isAirFree's own trick ── a brick is
+    // 64 rows of 8 bytes and reading them one at a time is 8 M byte reads per tile. `(a - 0x01010101) & ~a &
+    // 0x80808080` is nonzero exactly when one of four packed bytes is ZERO, so two u32 loads reject any row
+    // containing air outright, and only rows that survive that pay the per-byte water/foliage test. Rows are
+    // 8-aligned here (the slab stride is a multiple of 8 and bx*8 is too), so the u32 view is safe.
+    const SB32 = new Uint32Array(SB.buffer, SB.byteOffset, SB.length >> 2);
+    // ── AND AN f64 VIEW FOR THE GATHER ── a brick row is exactly 8 voxels and both ends are 8-aligned (the
+    // slab stride is a multiple of 8 and so is bx*8; the staging offset is ly*8 + lz*64), so one f64 store
+    // moves a whole row. The obvious `dst.set(src.subarray(o, o + 8), d)` allocates a subarray object and
+    // makes a call FOR EIGHT BYTES, sixty-four times per brick — on a tile of 4400 pages that is 280,000
+    // allocations and calls, and it was most of the ~8 ms per frame the ring was costing.
+    const SB64 = new Float64Array(SB.buffer, SB.byteOffset, SB.length >> 3);
+    const nb = nbx * nby * nbz;
+    const air = new Uint8Array(nb);                    // "no ray of any kind gets through this brick" — the slab's own airFree
+    // ── …AND THE WORKER HAS USUALLY ALREADY ANSWERED IT ── world/gen-pool.js runs the identical scan on the
+    // generating thread for ring jobs and hands back a bitmask, which unpacks in ~0.02 ms instead of the
+    // 3.85 ms a tile the scan cost here. The loop below stays as the fallback for a slab that arrives without
+    // one, so the two can never disagree about what sealed means: it IS the same code.
+    const abW = m.ab;
+    const ubW = m.ub;                                  // per-brick uniform id from the worker (0 = mixed), computed beside ab in the same slab scan
+    if (abW) { for (let b = 0; b < nb; b++) air[b] = (abW[b >> 5] >>> (b & 31)) & 1; }
+    else for (let b = 0; b < nb; b++) {
+      if (!((bb[b >> 5] >>> (b & 31)) & 1)) continue;   // all air
+      const bx = b % nbx, by = ((b / nbx) | 0) % nby, bz = (b / (nbx * nby)) | 0;
+      let ok = 1;
+      scan: for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
+        const r0 = bx * 8 + (by * 8 + ly) * SW + (bz * 8 + lz) * SW * WY, w = r0 >> 2;
+        const a = SB32[w], c = SB32[w + 1];
+        if (((a - 0x01010101) & ~a & 0x80808080) || ((c - 0x01010101) & ~c & 0x80808080)) { ok = 0; break scan; }
+        for (let q = 0; q < 8; q++) if (!opaqueTab[SB[r0 + q]]) { ok = 0; break scan; }
+      }
+      air[b] = ok;
+    }
+    const gbA = new Int32Array(nbx * nby * nbz), slA = new Int32Array(nbx * nby * nbz), bA = new Int32Array(nbx * nby * nbz);
+    const sgb = new Int32Array(nbx * nby * nbz), sval = new Int32Array(nbx * nby * nbz);   // the AIR (-1) and SEALED descriptor writes, held back until the tile is whole
+    T.bA = bA;
+    let n = 0, sn = 0, ovfN = 0;
+    for (let bz = RING_M; bz < nbz - RING_M; bz++) for (let by = 0; by < nby; by++) for (let bx = RING_M; bx < nbx - RING_M; bx++) {
+      const b = bx + by * nbx + bz * nbx * nby;
+      const wbx = ((x0 >> 3) + bx - RING_M), wbz = ((z0 >> 3) + bz - RING_M);
+      const gb = (((wbx % GBX) + GBX) % GBX) + by * GBX + ((((wbz % GBZ) + GBZ) % GBZ)) * GBX * GBY;
+      // ── THE WATER MASK IS UPDATED BEFORE THE AIR EXIT, WHICH IS WHERE poolFlush ALREADY DOES IT ── gwb is one
+      // bit per brick saying "everything in here is water", and skipW rays (the underwater eye, reflections,
+      // refraction) stride a set brick instead of walking it. The near window writes that bit for every brick
+      // it drains, occupied or not, so a brick that becomes air has its bit cleared. This path used to `continue`
+      // on the air case FIRST and never reach the line below, so a far brick that had been water and became air
+      // kept a stale bit set — and a stale "all water here" tells those rays to skip a brick that no longer
+      // holds any. Two paging paths, one buffer, and only one of them was maintaining it.
+      const wbit = wb && ((wb[b >> 5] >>> (b & 31)) & 1);
+      const wob = gwb[gb >> 5];
+      if (wbit) gwb[gb >> 5] |= 1 << (gb & 31); else gwb[gb >> 5] &= ~(1 << (gb & 31));
+      if (gwb[gb >> 5] !== wob) gwbDirtyW.add(gb >> 5);
+      if (!((bb[b >> 5] >>> (b & 31)) & 1)) { if (bdesc[gb]) { sgb[sn] = gb; sval[sn] = -1; sn++; } continue; }   // …deferred to the publish step with everything else, see below
+                                                       // …gb2 only on a 0 <-> non-zero transition, for the reason poolFlush gives
+      // sealed: airless, and fenced by airless neighbours INSIDE this slab (edges decline — except the WORLD
+      // FLOOR: by 0 has no below-neighbour because there is nothing below the world, and no ray can arrive
+      // from there. Declining it cost 249,344 real pages of unreachable bedrock, an eighth of the pool,
+      // measured by poolByHist: layer by=0 at 95% occupancy with ZERO sealed.)
+      let sealed = air[b] === 1;
+      if (sealed) {
+        if (bx === 0 || bx === nbx - 1 || by === nby - 1 || bz === 0 || bz === nbz - 1) sealed = false;
+        else sealed = !!(air[b - 1] && air[b + 1] && (by === 0 || air[b - nbx]) && air[b + nbx] && air[b - nbx * nby] && air[b + nbx * nby]);
+      }
+      // ── WHATEVER HELD THIS DESCRIPTOR BEFORE GIVES ITS PAGE BACK ── a tile handed over to the CPU window
+      // keeps its pages and drops its record (see the eviction note), and the CPU path abandons a descriptor
+      // outright when the toroidal window wraps that world position away. Either way the slot has an owner in
+      // bdesc and no owner in any list, so overwriting the entry without reclaiming it first LEAKS the page —
+      // permanently, once per CPU/ring transition, which under sustained flight is thousands of pages.
+      // Safe here because a ring tile never overlaps the CPU window: nothing else can be using this entry.
+      // ALL THREE EXITS OWE THIS, not just the paged one: a brick that has become air, or become sealed, is
+      // just as capable of holding someone's page, and those two only ever cleared the descriptor.
+      // ══ AND THE SEALED BRICKS WAIT FOR THE REST OF THE TILE ══ this used to publish immediately, right here
+      // in the decide pass, while the tile's REAL pages went up over the following frames. A tile is ~40%
+      // sealed rock, so for those frames the far field showed that 40% and nothing else: a mass of bricks all
+      // pointing at the ONE shared stone page, which is uniform ROCK[0] and therefore renders as a dead-flat,
+      // untextured, brick-crenellated slab hanging in the world until the rest of the tile caught up and buried
+      // it. That is the beige plate lying on the arctic sea in the bug clip, and the reason it comes and goes.
+      // Fixing the paged bricks alone (see ringUpload) was not enough precisely because it left this asymmetry:
+      // one class of brick still led, and it happened to be the class that all shares one uniform page.
+      if (sealed) { if (bdesc[gb] !== SEALED_SLOT + 1) { sgb[sn] = gb; sval[sn] = SEALED_SLOT; sn++; } continue; }
+      // …not sealed but SINGLE-ID (the worker's ub scan): the id's shared page is bit-exact content, so the
+      // brick costs no slot. Published through the same deferred sgb/sval step as sealed, so it cannot lead
+      // its tile. Falls through to a real page only if the pool cannot seat the id's one page.
+      const uid = ubW ? ubW[b] : 0;
+      if (uid) { const us = uniformSlot(uid);
+        if (us >= 0) { if (bdesc[gb] !== us + 1) { sgb[sn] = gb; sval[sn] = us; sn++; } continue; } }
+      let slot;
+      if (poolFreeN > 0) slot = poolFree32[--poolFreeN];
+      else if (poolUsed < POOL_SLOTS) slot = poolUsed++;
+      else if (ringEvictFurthest(T)) { slot = poolFree32[--poolFreeN]; }   // …the pool is a CACHE: make room instead of failing (see ringEvictFurthest)
+      else { ringOverflow++; ovfN++; continue; }        // …and nothing was further away than this tile, so there is genuinely no room: abandoned whole, below
+      gbA[n] = gb; slA[n] = slot; bA[n] = b; n++;      // decided and allocated; the descriptor goes live in ringUpload, once the page behind it exists
+    }
+    // ══ UPLOAD IN SLOT ORDER, AND THAT IS WORTH 350x ══ the pages are written as RUNS of consecutive slots,
+    // one writeBuffer per run. Allocating and uploading in BRICK order only produces runs while slots are
+    // coming off `poolUsed++`, which is the cold fill. As soon as anything has been evicted the slots come off
+    // the free list — a LIFO stack that a tile filled in ascending order, so it pops them back DESCENDING, and
+    // a descending sequence matches no ascending run at all.
+    // Measured: 0.0023 writeBuffer calls per page during the cold fill, 0.826 during flight — about seventy
+    // thousand separate GPU uploads over five steps, and roughly 9 ms of main thread per frame. That is the
+    // lag spike; frames hit the 50 ms telemetry clamp and the 1% low fell to 20.
+    // Sorting the tile's own assignments by slot costs one sort of a few thousand ints and restores the runs
+    // whichever direction the allocator handed them out in.
+    // ══ A TILE THAT COULD NOT GET EVERY PAGE IS ABANDONED WHOLE ══ sealed bricks share SEALED_SLOT, so they
+    // never take a pool slot and can NEVER overflow; only a tile's real pages can. Publishing what survived
+    // therefore does not degrade gracefully — it publishes the sealed 40% of the tile and nothing to bury it,
+    // which is a mass of bricks all pointing at the one uniform stone page: the dead-flat beige plate from the
+    // bug clips, except that under exhaustion it is PERMANENT rather than a frame of upload lag.
+    // A hole is the honest failure. The view clamp already understands holes — ringGap pulls the far plane in
+    // front of one — so abandoning the tile costs view distance and keeps the picture true, while publishing a
+    // partial tile costs nothing and lies. Dropping the record entirely makes the scan re-fetch it once the
+    // pool has room, which the squash below arranges.
+    if (ovfN) {
+      ringAbandon++;                                   // …counted APART from ringOverflow, which fires per refused brick at the allocation site and therefore still climbs even when this path is working perfectly. overflow says "the pool was tight"; this says "a tile was dropped whole rather than published half-empty", and the two answer different questions
+      for (let i = 0; i < n; i++) poolRelease(slA[i]);
+      // …and it is REQUESTED, not applied. A quarter tile per overflowing TILE still stacks: measured, three
+      // tiles were abandoned inside a six-frame burst and the far plane moved 59 voxels in one frame — better
+      // than the 127 a whole-tile step gave, but still nearly two increments at once, because a burst of
+      // contending tiles all concede on the same frame. Rate-limiting to one step per FRAME is what actually
+      // bounds the visible jump, and it costs nothing: the burst simply walks the radius in over three frames
+      // instead of dropping it in one.
+      ringSquashWant = 1;
+      T.up = null; T.done = false; if (T.job) { poolRingDrop(T.job); T.job = null; }
+      ringTiles.delete(ringKey(T.tx, T.tz));
+      ringDecMs += performance.now() - t0;
+      return;
+    }
+    const oa = new Int32Array(n);
+    for (let i = 0; i < n; i++) oa[i] = i;
+    oa.sort((a, b2) => slA[a] - slA[b2]);
+    T.gb = gbA.subarray(0, n); T.sl = slA.subarray(0, n); T.n = n;
+    T.up = { oa, SB64, SW, nbx, nby, i: 0, sgb: sgb.subarray(0, sn), sval: sval.subarray(0, sn) };
+    if (n > ringMaxN) ringMaxN = n;
+    ringDecMs += performance.now() - t0;
+  }
+  // ══ THE UPLOAD IS BUDGETED IN PAGES, NOT TILES ══ "one tile a frame" is only a budget if tiles cost the
+  // same, and they do not: measured, a tile averages ~86 pages across the world and reaches 4422 in the
+  // arctic, where 176-voxel glaciers stand over a third of the surface. The same code under the same budget
+  // therefore cost 0.12 ms a frame in a forest and 4.5 ms on the ice — thirty times over, for one tile either
+  // way. Everything ABOVE this line is proportional to BRICKS (the airless scan, the decide loop) and has to
+  // run in one go, because sealing needs the whole slab in hand; everything BELOW is proportional to PAGES
+  // and can stop anywhere. So it stops on a page count and resumes next frame, and how long a frame takes no
+  // longer depends on which biome the tile happened to land in.
+  // THE DESCRIPTORS GO LIVE ALL AT ONCE, ON THE FRAME THE LAST PAGE LANDS. Two things forced that. A
+  // descriptor published before its page points the tracer at whatever the slot's previous owner left there,
+  // so it can never lead. But publishing each one as its page lands — which is what this did first — is just
+  // as wrong for a different reason: the upload walks the tile in SLOT order, and slot order has nothing to do
+  // with space, so a tile spread over several frames appears as a random scatter of bricks materialising out
+  // of nothing. The atomic version got both for free and it was worth keeping: pages stream in on a budget,
+  // and the tile becomes visible in one step at the end, exactly as it used to.
+  // The old pages stay live and correct throughout, because a tile allocates NEW slots and only releases the
+  // ones it displaces at publish time.
+  const ringUpload = (T) => {
+    const t0 = performance.now();
+    const u = T.up, oa = u.oa, SB64 = u.SB64, SW = u.SW, nbx = u.nbx, nby = u.nby;
+    const gbA = T.gb, slA = T.sl, bA = T.bA, n = T.n;
+    let runS = -1, runN = 0;
+    const runFlush = () => { if (runN) { ringRuns++; device.queue.writeBuffer(poolBuf, runS * 512, ringRun, 0, runN * 512); runN = 0; runS = -1; } };
+    const i0 = u.i, end = Math.min(n, i0 + ringBudget);
+    for (let i = i0; i < end; i++) {
+      const q = oa[i], slot = slA[q], b = bA[q];
+      const bx = b % nbx, by = ((b / nbx) | 0) % nby, bz = (b / (nbx * nby)) | 0;
+      if (runN && (slot !== runS + runN || runN >= RING_RUN)) runFlush();   // a slot that does not continue the run ends it
+      if (!runN) runS = slot;
+      const ro8 = runN * 64;                           // …in f64 words: 512 bytes is 64 of them
+      for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
+        const src = bx * 8 + (by * 8 + ly) * SW + (bz * 8 + lz) * SW * WY;
+        ringRun64[ro8 + ly + lz * 8] = SB64[src >> 3];
+      }
+      runN++;
+    }
+    runFlush();
+    u.i = end; ringPaged += end - i0; ringBudget -= end - i0;
+    if (end >= n) {                                    // …every page is on the GPU: publish the whole tile in one step
+      for (let i = 0; i < n; i++) {
+        const gb = gbA[i], slot = slA[i], had0 = bdesc[gb];
+        if (had0 && had0 - 1 !== slot) poolRelease(had0 - 1);
+        bdesc[gb] = slot + 1; descDirtyW.add(gb); if (!had0) gb2Dirty.add(gSuper(gb));
+      }
+      for (let i = 0; i < u.sgb.length; i++) {         // …and the air/sealed ones in the SAME step, or they lead
+        const gb = u.sgb[i], v = u.sval[i], had0 = bdesc[gb];
+        if (had0 && had0 - 1 !== v) poolRelease(had0 - 1);
+        bdesc[gb] = v + 1; descDirtyW.add(gb);
+        if (!had0 !== !(v + 1)) gb2Dirty.add(gSuper(gb));   // only a 0 <-> non-zero transition moves the L2 bit
+      }
+      T.up = null; T.done = true; poolRingDrop(T.job); T.job = null;
+    }
+    ringMs += performance.now() - t0;
+  };
+  // ══ WHEN THE POOL IS FULL, EVICT THE FURTHEST TILE RATHER THAN REFUSE THE NEAREST ══
+  // A player's own flight recorder (F9, 12 s of ordinary play at ~157 fps, fly cruise) caught this exactly:
+  //     pool occupancy 87.6% climbing to 100.0% of 2,139,096 slots
+  //     one frame at 2,137,757 live refused 1,534 allocations and ABANDONED A TILE WHOLE
+  // A dropped tile is 128 voxels of terrain vanishing, which is the reported flashing. It fits every clue:
+  // only while moving (the pool fills as new ground streams), arrived with the doubled view distance (which
+  // is what sized the demand), and worst in the arctic, where a tile costs ~4422 pages against ~86 in forest.
+  // Short harness flights from a fresh boot peak at 71-90% and never see it, which is why this was measured
+  // as "not pool capacity" earlier and wrongly dismissed.
+  // The pool is a CACHE. Refusing a nearby tile while holding pages for one far behind the player is the
+  // wrong trade in every case, and raising POOL_FRAC_RING to buy headroom costs ~308 MB of VRAM on machines
+  // this game now ships to. So: find the furthest resident tile, and if it is genuinely further from the
+  // player than the one asking, evict it and hand over its pages. Returns true when it freed something.
+  // Only tiles FURTHER than the caller are eligible, so this cannot cycle: each eviction strictly improves
+  // the set, and when nothing is further away the old refusal path still runs.
+  function ringEvictFurthest(want) {
+    const px = Math.round(P.x), pz = Math.round(P.z);
+    const dOf = (tx, tz) => { const cx = tx * RING_TILE + (RING_TILE >> 1), cz = tz * RING_TILE + (RING_TILE >> 1);
+      return Math.max(Math.abs(cx - px), Math.abs(cz - pz)); };
+    const mine = dOf(want.tx, want.tz);
+    let far = null, fd = mine;
+    for (const [, T] of ringTiles) {
+      if (T === want || T.up || !T.done) continue;     // never take pages from a tile mid-upload or still generating
+      const d = dOf(T.tx, T.tz);
+      if (d > fd) { fd = d; far = T; }
+    }
+    if (!far) return false;
+    ringEvict(far);
+    ringTiles.delete(ringKey(far.tx, far.tz));
+    ringEvictLRU++;
+    return poolFreeN > 0;
+  }
+  function ringEvict(T) {
+    // A tile can leave the ring part-way through its upload now. Its unpublished slots are allocated but named
+    // by nothing in bdesc, so the descriptor test below would skip them and leak the pages; free them by hand.
+    // ALL of them, not just the ones past the cursor: a tile mid-upload has published NOTHING (the descriptors
+    // go live in one step at the end, see ringUpload), so every slot it holds is named by nothing in bdesc and
+    // the descriptor test below would skip the lot.
+    if (T.up) { for (let j = 0; j < T.n; j++) poolRelease(T.sl[j]); T.up = null; if (T.job) { poolRingDrop(T.job); T.job = null; } }
+    // ══ AN ADOPTED TILE OWNS DESCRIPTORS AND NO LIST, AND LEAVING THEM LIVE IS THE FLICKER ══ a tile adopted
+    // back from the near window is recorded as done with n = 0 and an EMPTY gb array, because its pages were
+    // written by poolFlush and the ring never allocated them. The loop below is therefore a no-op for it: on
+    // eviction it frees nothing and, far worse, CLEARS NOTHING. Its descriptors stay live pointing at pages
+    // nobody owns any more.
+    // gb names a world position MODULO the GPU grid (4096 voxels), so those stale descriptors keep drawing the
+    // terrain of a place the player has left, at the wrapped position — pieces of landscape that should not be
+    // there, appearing in the far field and vanishing again as the real tile for that cell finally lands on top
+    // of them. That is the reported flicker, and it only became reachable when the view distance doubled and
+    // the ring started adopting and evicting tiles in bulk.
+    // Safe to sweep the whole block: a tile only reaches ringEvict when it is OUT of the keep box (>= 2048
+    // away), so it cannot overlap the CPU window, and every gb here belongs to this tile alone.
+    // …and the safety condition is CHECKED PER TILE, because the blanket version was both wrong and silently
+    // self-disabling. `ringKeep() * 2 < GWX` looks like the right invariant and is false by exactly one voxel:
+    // ringKeep clamps to GHALF, GHALF is GWX/2, so the test is 4096 < 4096 and the sweep never ran once —
+    // adoptClear sat at 0 through 488 evictions and read as "nothing to reclaim" rather than "never executed".
+    // The real question is not how far the ring spans, it is whether ANOTHER LIVE TILE shares this gb block.
+    // gb wraps every GBX bricks, so the only tiles that can collide are the ones exactly one wrap away in x or
+    // z — TPW tiles, and no others. Ask ringTiles about those eight directly: exact, eight map lookups, and it
+    // keeps working if the view distance ever grows.
+    const TPW = GBX / (RING_TILE >> 3);
+    let aliased = false;
+    if (!T.n) { for (let ax = -1; ax <= 1 && !aliased; ax++) for (let az = -1; az <= 1; az++) {
+      if (!ax && !az) continue;
+      if (ringTiles.has(ringKey(T.tx + ax * TPW, T.tz + az * TPW))) { aliased = true; break; } } }
+    if (!T.n && !aliased) {
+      const bx0 = T.tx * (RING_TILE >> 3), bz0 = T.tz * (RING_TILE >> 3), nb = RING_TILE >> 3;
+      for (let dz = 0; dz < nb; dz++) { const wz = (((bz0 + dz) % GBZ) + GBZ) % GBZ;
+        for (let dx = 0; dx < nb; dx++) { const wx = (((bx0 + dx) % GBX) + GBX) % GBX;
+          for (let by = 0; by < GBY; by++) {
+            const gb = wx + by * GBX + wz * GBX * GBY, d = bdesc[gb];
+            if (!d) continue;
+            poolRelease(d - 1); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); ringAdoptClear++;
+          } } }
+    }
+    for (let i = 0; i < T.n; i++) {                     // ONLY where the descriptor still names this tile's own slot — see the note above
+      const gb = T.gb[i], sl = T.sl[i];
+      if (bdesc[gb] === sl + 1) { poolRelease(sl); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); }
+    }
+    ringEvicted++;
+  }
+  // ── ONE PASS A FRAME ── what the window wants, what it holds, and one step toward agreement. Deliberately
+  // cheap when GMUL is 1: the whole subsystem is one compare away in that case, because there is no ring.
+  let ringErr = null;                                  // ── A THROW IN HERE IS SILENT ── this runs inside brickFlush, inside the frame, and a ReferenceError there leaves a perfectly rendered stale frame with the ring simply never advancing (see [[voxelbit-tick-throw-silent]]). Recorded so __vb.ring() can say so.
+  function ringUpdate() { try { ringUpdate_(); } catch (e) { if (!ringErr) { ringErr = String(e && e.stack || e).slice(0, 400); console.error('[vb] ring:', e); } } }
+  function ringUpdate_() {
+    if (GMUL <= 1 || !poolOk) return;
+    // ══ FETCH A RING FURTHER OUT THAN THE VIEW IS ALLOWED TO SEE ══ the wanted set was exactly the view
+    // radius, and both are quantised to RING_TILE, so every time the player crosses a 128-voxel tile line a
+    // whole ROW of tiles entered the wanted set AT ONCE, all of them missing. ringGap is the distance to the
+    // nearest missing tile, so it collapsed to that row in a single frame and the far plane jumped with it.
+    // MEASURED, sprint flight, sampled every frame in-page: tile events land on 23 of 699 frames and never
+    // singly — 31 evictions and 17 adoptions in ONE frame — with |dFilled| hitting 97 voxels in a frame and
+    // a p99 of 77. That is a chunk-level discontinuity about twice a second, only while moving, quantised to
+    // the ring's own tile size. It is the reported "flashing", and it exists only because the ring exists,
+    // which is why it arrived with the doubled view distance.
+    // Damping the plane cannot fix it: the drop is REQUIRED, because rendering past a tile that has not been
+    // fetched shows sky. (Tried anyway — a rate limiter on the advance moved the swing 330 -> 367, noise, and
+    // cost 60 voxels of average view distance. Reverted.)
+    // So fetch a tile-and-a-half FURTHER than the view may reach. The row is then already resident when the
+    // box advances onto it, the gap never opens, and the plane never jumps. The view clamp still uses R, so
+    // this buys stability without ever showing ground the ring has not got.
+    const R = ringReach(), K = ringKeep();
+    const RF = R + Math.round(RING_TILE * RING_PREFETCH);   // FETCH radius — what the scan asks for. __vb.ringPrefetch(0|1) A/Bs it in ONE session (the world reseeds on reload, so a cross-reload comparison is two different worlds)
+    const px = Math.round(P.x), pz = Math.round(P.z);
+    const t0x = Math.floor((px - RF) / RING_TILE), t1x = Math.floor((px + RF) / RING_TILE);
+    const t0z = Math.floor((pz - RF) / RING_TILE), t1z = Math.floor((pz + RF) / RING_TILE);
+    const k0x = Math.floor((px - K) / RING_TILE), k1x = Math.floor((px + K) / RING_TILE);
+    const k0z = Math.floor((pz - K) / RING_TILE), k1z = Math.floor((pz + K) / RING_TILE);
+    // ══ TWO OWNERS OF ONE DESCRIPTOR IS THE ONE THING THAT CANNOT HAPPEN ══ and the first cut let it, which
+    // is what produced the pink-and-cyan garbage across the arctic: `near` used HALF - RING_TILE, so a tile
+    // whose centre sat between 896 and 1024 voxels from the player was NOT dropped even though the CPU window
+    // (half-width HALF = 1024) already covered it. Both paths then wrote the same bdesc entry, each freed the
+    // other's slot on its next pass, and pages ended up serving bricks from somewhere else entirely.
+    // The test is now the EXACT rectangle overlap against the window's real extent — winOX/winOZ, not the
+    // player, because the window snaps to 32 and lags the player by up to that much.
+    // AND THE TWO EVICTIONS ARE NOT THE SAME EVICTION:
+    //   * OUT OF REACH — the tile is gone from the GPU window. Free its slots and clear its descriptors.
+    //   * OVERTAKEN BY THE CPU WINDOW — the tile's pages are still exactly right (same world, same content);
+    //     only the OWNER changes. Clearing them would blank 128 voxels of world that the near path has no
+    //     reason to re-touch (streaming only regenerates the 8-voxel strip that wrapped), so the tile is
+    //     simply forgotten and bdesc keeps the pages. poolFlush then treats them like any other descriptor it
+    //     finds — releasing and reallocating on the first change — so nothing leaks either.
+    // ══ EVICTION IS RATE-LIMITED, BECAUSE A BURST OF IT IS THE VISIBLE FAULT ══
+    // Caught in a player's own flight recorder, in the two frames before they pressed the key on a "flash":
+    //     idx 714  dt 23.9 ms  28 tiles evicted  poolLive -65,004 pages in ONE frame
+    //     idx 715  dt  2.4 ms  moved 5.04        (the long frame carried the camera four times as far)
+    //     idx 716  dt 23.9 ms  17 more evicted   dirty 35,977 appears
+    // 45 tiles retired across two frames is 45 chunks of far field dropped at once, and their replacements
+    // are not back for several frames. `filled` moved by 2-4 voxels through all of it, so the view clamp was
+    // never the problem — the terrain simply left.
+    // And it FEEDS ITSELF: clearing descriptors for 45 tiles is what makes the frame 24 ms, a 24 ms frame
+    // carries the player four times the usual distance, and that pushes the next batch out of the keep box
+    // all at once. Rate-limiting breaks the loop at its cheapest point.
+    // Safe to defer: everything here is already OUTSIDE the keep box, which is beyond anything the view clamp
+    // will let a ray reach, so a tile lingering a few frames costs only the pages it is still holding — and
+    // the pool now evicts the furthest tile on demand if it actually needs them (see ringEvictFurthest).
+    const EVICT_MAX = 6;                                 // tiles retired per frame
+    let evicted = 0;
+    for (const [k, T] of ringTiles) {
+      const x0t = T.tx * RING_TILE, z0t = T.tz * RING_TILE;
+      const out = T.tx < k0x || T.tx > k1x || T.tz < k0z || T.tz > k1z;   // the KEEP box, not the fetch box — see ringKeep
+      const ovl = x0t < winOX + WX && x0t + RING_TILE > winOX && z0t < winOZ + WZ && z0t + RING_TILE > winOZ;
+      if (!out && !ovl) continue;
+      if (out && !ovl && ++evicted > EVICT_MAX) continue;   // …over budget this frame: it stays, harmlessly, until the next. A HANDOVER (ovl) is not deferred — the CPU window is about to own those descriptors and two owners is the one thing that cannot happen
+      // …AND `!done` NO LONGER MEANS `owns nothing`. It used to: a tile was either still generating or fully
+      // paged, so dropping the job was the whole reclaim. A tile part-way through its upload is neither — it
+      // holds allocated slots that bdesc does not name yet, which ringEvict knows how to give back and
+      // poolRingDrop does not. It cannot be handed to the CPU window either: half its pages are published and
+      // half are not, and "the pages are already right" is the entire premise of a handover.
+      if (T.up) ringEvict(T);
+      else if (!T.done) poolRingDrop(T.job);
+      else if (out) ringEvict(T);                      // gone from the window: reclaim
+      else ringHandOver++;                             // handed to the CPU window: keep the pages, drop the record. The scan below is what remembers it (see ringHanded)
+      ringTiles.delete(k);
+    }
+    // …and take one step toward filling what is missing, nearest first so the view grows outward
+    let jobs = 0; for (const [, T] of ringTiles) if (!T.done) jobs++;
+    // one step a frame, in either direction — the request from any number of abandoned tiles collapses to a
+    // single increment, and release is the same size, so the radius moves at one rate and only one rate.
+    if (ringSquashWant) { ringSquash = Math.min(ringSquash + (RING_TILE >> 2), ((GHALF - RING_TILE) | 0) - RING_TILE * 3); ringSquashWant = 0; }
+    else if (ringSquash > 0 && poolUsed - poolFreeN < POOL_SLOTS * 0.86) ringSquash = Math.max(0, ringSquash - (RING_TILE >> 2));   // …handed back gradually, so the radius eases out rather than snapping
+    // ══ AND THE RING'S OWN BUDGETS SCALE WITH MOVEMENT TOO ══ the near drain was fixed for this (see
+    // pfBudget) and the ring was left on fixed per-frame caps, which is the same mistake in the other half:
+    // EVICTION scales with speed and REFILL did not, so at sprint the ring loses tiles and the view plane
+    // it feeds collapses. MEASURED in the arctic, same route, tiles held / evict per second / filled:
+    //     standing still   672 tiles    0 evict/s   filled 1920 stable
+    //     fly cruise 1.5   703 tiles   44 evict/s   filled 1920 PINNED
+    //     fly sprint 4.25  543 tiles  119 evict/s   filled 1614-1788, oscillating ~174 voxels
+    // A view plane swinging 174 voxels is distant terrain culled and restored over and over — the reported
+    // "flashing terrain", which the user confirmed happens ONLY while flying and never standing still, and
+    // which arrived with the doubled render distance because that is when this ring started existing.
+    // Same scale as the drain, from the same EMA of distance moved, so the two halves cannot disagree.
+    ringBudget = Math.round(RING_PAGE * pfScale);
+    ringLandN = Math.max(RING_LAND, Math.round(RING_LAND * pfScale));
+    for (const [, T] of ringTiles) {                    // …anything already part-way through goes FIRST: it is holding a slab checked out and a hole in the view
+      if (T.up) { ringUpload(T); if (ringBudget <= 0) break; }
+    }
+    let landed = 0;
+    for (const [, T] of ringTiles) {                    // then start what the frame still has room for
+      if (ringBudget <= 0 || landed >= ringLandN) break;
+      if (T.done || T.up || !T.job || !T.job.done) continue;
+      ringPageTile(T, T.job.msg, T.tx * RING_TILE, T.tz * RING_TILE);
+      jobs--; landed++;                                // …its slab stays checked out until ringUpload has finished with it
+      ringUpload(T);
+    }
+    // ── ONE SCAN, TWO ANSWERS: what to fetch next, and where the first HOLE is ── they come from the same
+    // pass because they are the same question asked twice. A tile counts as missing whether it has never been
+    // asked for or is still generating, and the nearest missing one is what bounds the view (ringGap): a ray
+    // may not be allowed past it, or it would walk into descriptors that are still zero and render sky.
+    // Chebyshev, not Euclidean, for the gap — tiles are squares and the view clamp is a radius, so the
+    // distance that matters is to the nearest FACE of the hole, not to its centre.
+    let best = null, bestD = 1e18;
+    // ── HOLDING THE VIEW A TILE INSIDE THE FETCH RADIUS DOES NOT HELP EITHER ── the idea was that an edge
+    // row still arriving would then be beyond what a ray can reach, so the gap could never collapse onto it,
+    // and unlike RING_PREFETCH it holds no extra tiles. Measured, in-session ABBA: mean per-frame jump 4.67
+    // WITH it against 1.3 without (after the first warm-up leg), i.e. worse, and p99 barely moved. Reverted.
+    ringGap = R;
+    for (let tz = t0z; tz <= t1z; tz++) for (let tx = t0x; tx <= t1x; tx++) {
+      const cx = tx * RING_TILE + (RING_TILE >> 1), cz = tz * RING_TILE + (RING_TILE >> 1);
+      const x0t = tx * RING_TILE, z0t = tz * RING_TILE;
+      const k = ringKey(tx, tz);
+      // ── WHAT THE CPU WINDOW COVERS IS ALREADY PAGED, AND THAT IS THE WHOLE ADOPTION RULE ── every brick
+      // inside the near window has a live descriptor: the streaming path poolTouch()es whatever it writes and
+      // poolBuild covers a recentre, so nothing in there is unpaged. Mark it while it is covered; when it
+      // stops being covered, its pages are still correct, because the world is deterministic and nothing out
+      // there has changed. Adopt it instead of spending a 144-cubed worker job regenerating it.
+      // THE FIRST VERSION MARKED ONLY TILES THE RING ITSELF HANDED OVER, and that was the bug: measured while
+      // flying, `adopted` stayed 0 while the scan hit 3100 handed-and-still-covered tiles. The ring was so far
+      // behind that most tiles crossed the near window WITHOUT EVER HAVING BEEN RING-OWNED, so there was
+      // nothing to hand over and nothing to adopt — and every one of them came out the back as a fresh hole.
+      // Those holes sit just behind the player, and the view clamp is a radius, so they clamped the view AHEAD.
+      // ── AND THE PREMISE HAS BEEN TESTED, BECAUSE IT IS A CLAIM ABOUT A QUEUE ── poolFlush drains on a
+      // budget, so "covered by the near window" could in principle mean "queued but not yet paged", and
+      // adopting a tile in that state would certify a HOLE as filled: done:true with n:0, never fetched again,
+      // and nothing in the near window maps back to those descriptors. It would be a permanent see-through
+      // patch at mid distance, visible only while moving — which is exactly what a rendering complaint looks
+      // like, so it was worth ruling out rather than assuming.
+      // MEASURED (adoptLive in ringStats, the live-descriptor count under an adopted tile): 4544-7489 per
+      // tile, median ~5600-6800, and not one sample below 200 over two runs. Adopted tiles are fully paged.
+      // The alternative — only marking on a frame where poolDirty is empty — was built and A/B'd in the same
+      // session and takes adoption to ZERO (272 marks lost, 0 adopted per run), because the queue is almost
+      // never empty under sustained flight. It is every tile re-fetched through a worker for no defect. The
+      // rule below stands as written; adoptLive is left in place so the premise keeps being checked.
+      if (x0t < winOX + WX && x0t + RING_TILE > winOX && z0t < winOZ + WZ && z0t + RING_TILE > winOZ) {
+        if (ringHanded.size < RING_HANDCAP) ringHanded.add(k); continue; }
+      let T = ringTiles.get(k);
+      if (!T && ringHanded.has(k)) {                   // …it has just left the near window, on a frame where the pool was drained: already paged, so it is filled
+        ringHanded.delete(k); ringAdopt++;
+        if ((ringAdopt & 7) === 0) { if (adoptLive.length >= 64) adoptLive.shift(); adoptLive.push(tileLive(tx, tz)); }   // …every 8th, count what it actually adopted. A tile of real terrain pages thousands of bricks (ringStats maxN); an adopted tile that comes back near zero is a hole being certified as filled
+        T = { tx, tz, job: null, gb: EMPTY_I32, sl: EMPTY_I32, n: 0, done: true };
+        ringTiles.set(k, T);
+      }
+      if (T && T.done) continue;                       // filled
+      const cheb = Math.max(Math.abs(cx - px), Math.abs(cz - pz)) - (RING_TILE >> 1);
+      if (cheb < ringGap) ringGap = cheb;
+      if (T) continue;                                 // already on its way
+      const d = (cx - px) * (cx - px) + (cz - pz) * (cz - pz);
+      if (d < bestD) { bestD = d; best = [tx, tz, k]; }
+    }
+    // ── AND DO NOT RESERVE JOB SLOTS FOR THE VISIBLE RING ── tried: a prefetch tile could only start while
+    // 4 of the 12 slots stayed free for tiles inside R. It recovered view distance (1465 -> 1580 average) and
+    // made the TAIL WORSE — p99 57 -> 87, max 90 -> 121 — because a starved prefetch row is not ready when
+    // the box crosses onto it, so the gap opens anyway AND the slots were spent. Unreserved is strictly
+    // better on smoothness (p99 46-49). Reverted.
+    while (jobs < RING_JOBS && best) {                  // keep the pool fed: one scan, several dispatches
+      const M = RING_M * 8;
+      const j2 = poolRingJob(best[0] * RING_TILE - M, best[0] * RING_TILE + RING_TILE + M,
+                             best[1] * RING_TILE - M, best[1] * RING_TILE + RING_TILE + M);
+      if (!j2) break;
+      ringTiles.set(best[2], { tx: best[0], tz: best[1], job: j2, gb: null, sl: null, n: 0, done: false });
+      jobs++;
+      best = null; bestD = 1e18;                       // re-scan for the next nearest, now that this one is taken
+      for (let tz = t0z; tz <= t1z; tz++) for (let tx = t0x; tx <= t1x; tx++) {
+        const cx = tx * RING_TILE + (RING_TILE >> 1), cz = tz * RING_TILE + (RING_TILE >> 1);
+        const x2 = tx * RING_TILE, z2 = tz * RING_TILE;
+        if (x2 < winOX + WX && x2 + RING_TILE > winOX && z2 < winOZ + WZ && z2 + RING_TILE > winOZ) continue;
+        if (ringTiles.has(ringKey(tx, tz))) continue;
+        const d = (cx - px) * (cx - px) + (cz - pz) * (cz - pz);
+        if (d < bestD) { bestD = d; best = [tx, tz, ringKey(tx, tz)]; }
+      }
+    }
+  }
+  // ── HOW FAR THE RING HAS ACTUALLY FILLED ── the view clamp reads this, so outrunning the ring shortens the
+  // view smoothly exactly as outrunning the near stream already does, instead of showing a wall of air.
+  // IT IS THE NEAREST HOLE, NOT THE FURTHEST TILE, and the difference is not academic: tiles arrive
+  // nearest-first, but after a teleport a handful of far ones can still be resident while everything between
+  // is gone. Taking the maximum reported 2032 voxels of fill with 972 tiles just evicted — a view licensed to
+  // walk straight through the gap and out the other side, where every descriptor is zero and a ray finds sky.
+  // ringGap is computed by the residency scan above, which already has to visit every wanted tile.
+  let ringGap = 0;
+  // ── THE VIEW PLANE DOES NOT STROBE, SO DO NOT DAMP IT ── ringGap's RANGE over a few seconds of flight is
+  // 93-527 voxels, which looks alarming and is not a strobe: sampled EVERY FRAME in-page it moves at most
+  // ~9 voxels per frame, i.e. the horizon drifts, it does not jump. A rate limiter on the advance was built
+  // and measured anyway: swing 330 -> 367 (noise) while the average plane fell 1509 -> 1449. It costs view
+  // distance and buys nothing. Reverted; do not rebuild it without per-FRAME evidence of an actual jump.
+  function ringFilled() { return GMUL <= 1 ? HALF : Math.max(HALF - RING_TILE, ringGap); }
+  // ringFilled's floor asserts "the NEAR window covers HALF - RING_TILE anyway", which holds only while the
+  // near window is GENERATED. Under fast travel the rect trails the player, so the floor lies and the view
+  // clamp lets rays reach past any geometry. Capping it by the rect's real reach makes it true again.
+  function ringFilledFor(nearR) { return GMUL <= 1 ? HALF : Math.max(Math.min(HALF - RING_TILE, nearR), ringGap); }
+  // ══ FLIGHT RECORDER ══ the streaming faults that read as "flashing terrain" last a frame or two and only
+  // happen while MOVING, so nothing that has to be set up in advance can catch one: by the time a harness is
+  // pointed at the right place the event is over, and reproducing a player's exact conditions in a headless
+  // window has repeatedly disagreed with what the player actually sees. So the game records itself, always,
+  // into a fixed ring buffer, and a key dumps the last few seconds AFTER the fact — press it when you SEE
+  // something and the numbers for the moment before are already captured.
+  // Cost is one typed-array write per field per frame into a preallocated buffer: no allocation, no branch
+  // on a debug flag, nothing to remember to turn on. REC_N frames at 60 fps is about 12 seconds.
+  const REC_N = 720, REC_W = 14;
+  const recBuf = new Float32Array(REC_N * REC_W);
+  let recI = 0, recFilled = 0, recPX = 0, recPZ = 0, recT = 0;
+  let REC_ON = 1;                                      // __vb.recOn(0|1) — A/B the recorder's own cost in ONE session
+  const recTick = () => {
+    if (!REC_ON) return;
+    const now = performance.now();
+    const dx = P.x - recPX, dz = P.z - recPZ;
+    const moved = recT ? Math.min(999, Math.sqrt(dx * dx + dz * dz)) : 0;
+    const o = (recI % REC_N) * REC_W;
+    recBuf[o] = recI;                       recBuf[o + 1] = recT ? Math.min(999, now - recT) : 0;
+    recBuf[o + 2] = P.x;                    recBuf[o + 3] = P.y;
+    recBuf[o + 4] = P.z;                    recBuf[o + 5] = moved;
+    recBuf[o + 6] = ringFilled();           recBuf[o + 7] = ringTiles.size;
+    recBuf[o + 8] = ringEvicted;            recBuf[o + 9] = ringAdopt;
+    recBuf[o + 10] = ringOverflow;          recBuf[o + 11] = ringAbandon;
+    recBuf[o + 12] = poolDirty.size;        recBuf[o + 13] = poolUsed - poolFreeN;
+    recI++; recPX = P.x; recPZ = P.z; recT = now;
+    if (recFilled < REC_N) recFilled++;
+  };
+  // …and the read-out, oldest first, with the per-frame DELTAS already differenced so the interesting
+  // columns (how far the view plane jumped, how many tiles turned over) can be read without post-processing.
+  const recDump = () => {
+    const F = ['frame', 'dtMs', 'x', 'y', 'z', 'moved', 'filled', 'tiles', 'evicted', 'adopted', 'overflow', 'abandoned', 'dirty', 'poolLive'];
+    const rows = [], n = recFilled, start = recI - n;
+    let pf = null, pe = null, pa = null;
+    for (let k = 0; k < n; k++) {
+      const o = ((start + k) % REC_N) * REC_W, r = {};
+      for (let j = 0; j < REC_W; j++) r[F[j]] = +recBuf[o + j].toFixed(2);
+      r.dFilled = pf === null ? 0 : Math.round(r.filled - pf);
+      r.dEvicted = pe === null ? 0 : Math.round(r.evicted - pe);
+      r.dAdopted = pa === null ? 0 : Math.round(r.adopted - pa);
+      pf = r.filled; pe = r.evicted; pa = r.adopted;
+      rows.push(r);
+    }
+    return rows;
+  };
+  const recOnSet = (v) => { if (v !== undefined) REC_ON = v ? 1 : 0; return { REC_ON }; };
+  const ringStats = () => { let pend = 0, jdone = 0, ready = 0; const some = [];
+    for (const [, T] of ringTiles) { if (T.job) { pend++; if (T.job.done) jdone++; } if (T.done) ready++;
+      if (some.length < 4) some.push([T.tx, T.tz, !!T.job, T.job ? !!T.job.done : null, T.done]); }
+    return Object.assign({ pend, jdone, ready, some }, ringStats0()); };
+  // ══ DOES THE RING STILL OWN WHAT IT THINKS IT OWNS? ══ every fault that shows as scattered geometry in the
+  // far field is two owners of one descriptor, and the ring is the only party that keeps a record of what it
+  // wrote: (gb, slot) pairs per tile. Walking them against bdesc is therefore the one check that can see the
+  // far field at all — poolAudit reaches the near window through cpu2gpu and structurally cannot look out here.
+  //   stale  the ring wrote this descriptor and something else has since overwritten it. Its page is still on
+  //          the ring's books, so the ring will free it on eviction and pull the rug from whoever took it.
+  //   zero   the ring wrote it and it is now 0: that brick is a HOLE, and the tile still reports done.
+  // A handed-over tile is excluded by construction — those keep their pages and drop their record, so there is
+  // nothing to check. An ADOPTED tile has n = 0 and is invisible to this too, which is worth remembering.
+  const ringOwnAudit = () => {
+    let checked = 0, stale = 0, zero = 0, tiles = 0, badTiles = 0;
+    const ex = [];
+    for (const [, T] of ringTiles) {
+      if (!T.done || !T.n) continue;
+      tiles++; let bad = 0;
+      for (let i = 0; i < T.n; i++) {
+        const gb = T.gb[i], want = T.sl[i] + 1, got = bdesc[gb];
+        checked++;
+        if (got === want) continue;
+        bad++; if (got === 0) zero++; else stale++;
+        if (ex.length < 6) ex.push({ tx: T.tx, tz: T.tz, gb, want: want - 1, got: got - 1 });
+      }
+      if (bad) badTiles++;
+    }
+    return { tiles, badTiles, checked, stale, zero, ex };
+  };
+  // ══ DRIVE THE SQUASH DIRECTLY, BECAUSE OVERFLOW CANNOT BE ORDERED ══ the far plane pops, and the two
+  // candidate causes — the reach conceding to pool pressure, and a tile being abandoned whole — only ever
+  // happen TOGETHER, because an abandon is what asks for a concession. Four runs of correlation therefore
+  // cannot separate them: squashMax 256/96/0/0 against worstDrop 127/59/6/7 fits either story exactly.
+  // Nor can the experiment be ordered on demand — overflow is a cold-fill transient and three identical cold
+  // runs gave 2144, 4399 and 0 refusals, so "fly until it overflows" is not an instrument.
+  // This moves ringSquash with no overflow, no abandon and no eviction anywhere in the picture. If `filled`
+  // tracks it one-for-one then the reach is the pop and the rate limiter is the fix; if `filled` does not
+  // move, the reach is innocent and the abandon owns it. One tap answers the question the flights could not.
+  const ringSquashSet = (v) => { const b4 = ringFilled(); ringSquash = Math.max(0, Math.min(((GHALF - RING_TILE) | 0) - RING_TILE * 3, v | 0));
+    return { squash: ringSquash, reach: ringReach(), filledBefore: b4, gap: ringGap, abandoned: ringAbandon, overflow: ringOverflow }; };
+  const poolBudgetSet = (v) => { if (v !== undefined) POOL_BUDGET = Math.max(256, v | 0); return { POOL_BUDGET, POOL_MS }; };
+  // ══ PREFETCH IS OFF BY DEFAULT: IT FIXES THE POP AND COSTS A FIFTH OF A FRAME ══
+  // The pop it targets is real and measured: the wanted-tile box is quantised to RING_TILE, so crossing a
+  // tile line admits a whole ROW at once, all missing, and ringGap collapses to it. Sampled every frame at
+  // fly sprint: tile events land on 23 of 699 frames and never singly (31 evictions, 17 adoptions in ONE
+  // frame), with |dFilled| reaching 97 voxels in a single frame. That is a chunk-scale discontinuity about
+  // twice a second, only while moving — the reported "flashing", and it arrived with the doubled view
+  // distance because that is when this ring began to exist.
+  // Fetching beyond the view radius genuinely fixes it. In-session ABBA, two independent worlds:
+  //     mean per-frame jump 5.01 -> 3.39 and 4.65 -> 1.70   p99 66-68 -> 46-49   jumps>40 17 -> 6.8-12.8
+  // and it causes NO pool overflow at any depth (the only refusals measured happened with it OFF).
+  // BUT THE ACCEPTANCE GATE, WHICH RUNS AT REST, SAYS NO: avg 3.79 -> 6.04 ms and p99 6.50 -> 20.58 with the
+  // fetch radius at the old keep boundary, and avg 8.80 / p99 20.43 after widening keep to clear it — the
+  // wider keep holds ~44% more tiles and each one costs pages and scan work every frame, which in the arctic
+  // is ~4400 pages a tile. The flight measurements could not see any of this because they measure the ring,
+  // not the frame. EVERY ring change needs BOTH.
+  // Left switchable rather than deleted: the mechanism and the numbers are right, only the price is wrong.
+  // __vb.ringPrefetch(1.5) turns it on for anyone who wants to look at the trade.
+  let RING_PREFETCH = 0;                               // TILES fetched beyond the view radius; 0 = ship default
+  const ringPrefetchSet = (v) => { if (v !== undefined) RING_PREFETCH = Math.max(0, Math.min(6, +v || 0)); return { RING_PREFETCH }; };
+  const poolAdaptSet = (v) => { if (v !== undefined) PF_ADAPT = v ? 1 : 0; return { PF_ADAPT, movePerFrame: +pfMoveEma.toFixed(2), scale: +pfScale.toFixed(2), effCap: Math.round(POOL_BUDGET * pfScale) }; };
+  const ringStats0 = () => ({ err: ringErr, evictLRU: ringEvictLRU, squash: ringSquash, abandoned: ringAbandon, adoptClear: ringAdoptClear, own: ringOwnAudit(), adoptLive: adoptLive.slice(), drainMs: +poolDrainMax.toFixed(2), drainN: poolDrainN, nearPaged: poolPaged, dirty: poolDirty.size, wrunN, wrunB, wrunWords, decMs: ringDecMs, runs: ringRuns, maxN: ringMaxN, mul: GMUL, tiles: ringTiles.size, handOver: ringHandOver, adopted: ringAdopt, handed: ringHanded.size, paged: ringPaged, evicted: ringEvicted,
+    overflow: ringOverflow, filled: Math.round(ringFilled()), gap: Math.round(ringGap), reach: ringReach(), ms: +ringMs.toFixed(0),   // `gap` is the RAW distance to the nearest unfilled tile; `filled` is that with the HALF - RING_TILE floor applied. They differ exactly when the floor is lying, which is what the view clamp has to care about.
+    poolUsed, free: poolFreeN, poolSlots: POOL_SLOTS });   // poolUsed is a HIGH-WATER MARK — slots ever handed out, never decremented by poolRelease — so it climbs to POOL_SLOTS in any long run and says NOTHING about how full the pool is. LIVE occupancy is poolUsed - free, which is what the squash below tests and what anyone outside must use. A day was spent reading the high-water mark as residency.
+  poolTouchHook = poolTouch;                           // terrain.js and gen-pool.js run BEFORE this fragment, so they reach the pool through this hook rather than naming it
+  poolBuild();                                         // …and the world they already filled predates the hook, so the first pool comes from a full derive. This is where uploadWorld() used to push 1.5 GB.
+  const brickFlush = (all) => {
+    ringUpdate();                                      // ── THE FAR RING ── lands its tiles' descriptors in the same dirty sets poolFlush drains below, so a ring tile and a near edit upload in one pass rather than two
+    poolFlush(all);
+    if (dirtyBW.size) { dirtyBW.clear(); }             // the CPU tables these tracked no longer upload; the sets are kept because gpuPatch still fills them and clearing is what bounds them
+    if (dirtyC2W.size) { dirtyC2W.clear(); }
   };
   // Scratch sets reused by gpuPatch, which used to allocate four Sets per call. Do NOT read this as a GC
   // fix: Chrome's sampling heap profiler puts the engine's REAL JS garbage at ~0.6 MB per 20 s, and only
@@ -332,10 +1510,6 @@
   const lifeMotOff = (s) => (s < DROP_HALF ? 1272 + s * 4 : UF_LIFEMOTB + (s - DROP_HALF) * 4);   // …and of its lifeMot entry
   const UF_OLD_LEN = UF_HELDCFG;   // …+ physB PHYS_MAX bodies x 5 vec4 from 1532 + physC + physBound → here (voxel rigid bodies). At 24 bodies: physB 1532..2011, physC 2012..2015, physBound 2016..2019 → 2020                   // …+ drops: 4 items end at 132, cardinal (slot 4) → 148, 4 clash sparks (slots 5-8) → 212, 55 creature slots (9-63: flyers/ducks/worms/lilies) → 1092; pick2 (left hand) 1092..1107; 8 firefly lights 1108..1139; 16 creature-shadow boxes (2 vec4 each) 1140..1267; misc 1268..1271 (x = cinematic vignette depth); lifeMot 64 vec4s 1272..1527 (per-slot world motion delta + flags — dynamic-life temporal reprojection); lifeCfg 1528..1531 → 1532
   const uniBuf = device.createBuffer({ size: UF.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  const STRIPW = (8 * WX * WY) >> 2;                   // strip staging, u32 words (x-shifts scatter through a tiny compute pass)
-  const stag = new Uint32Array(STRIPW);
-  const stag64 = new Float64Array(stag.buffer);        // whole-f64 view for the repack loop — one store per 8 voxels (same trick blitSlab's narrow-run path uses)
-  const stagBuf = device.createBuffer({ size: stag.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const scatBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   // ── VOXEL PATCH SCATTER ── (creature stamps, snow landings, pickups, editor edits)
   // gpuPatch used to issue ONE 4-byte device.queue.writeBuffer per touched word. A busy frame touches
@@ -343,13 +1517,6 @@
   // gaps with only ~2 ms of CPU inside tickBody (the stall lands in submit/present, outside our code).
   // Now the touched word INDICES are staged and applied by one writeBuffer + one tiny compute dispatch,
   // so the GPU call count is O(1) in the number of edited voxels instead of O(n).
-  const PATCHMAX = 1 << 16;                            // word indices staged per dispatch; a bigger frame flushes early and loops
-  const patchIdx = new Uint32Array(PATCHMAX);          // staged word indices (duplicates allowed — see below)
-  const patchPairs = new Uint32Array(PATCHMAX * 2);    // (index, value) upload image, packed at FLUSH time
-  let patchN = 0;
-  const patchCntTmp = new Uint32Array(4);              // reused every frame: the count upload used to allocate a fresh Uint32Array per dispatch
-  const patchBuf = device.createBuffer({ size: patchPairs.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  const patchCnt = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   // ── RIGID BODY VOXELS ── one dense grid per live body (palette id per cell, 0 = empty), sub-allocated
   // back to back. Nothing is written into W: a detached body exists ONLY as this buffer plus its
   // transform, which is what keeps the world grid authoritative and free of moving-object stamps.
@@ -361,7 +1528,17 @@
   // room for four giants down at once; 4 << 20 would buy only two, which a player clearing a stand hits
   // immediately. The GPU cost is address space, not bandwidth: the trace only reads the cells a body
   // actually occupies.
-  const BODYCAP = 6 << 20;                             // 6M cells = 24 MB; a whole pine box is 35*36*116 = 146k, a giant OAK's is 1.455M
+  // ── SIZED FOR THE TREES THAT EXIST, NOT THE ONES THAT USED TO (user 2026-08-31: a felled tree
+  // "completely dissapears ... it should fall over") ── this is the buffer a rigid body's voxels live in,
+  // and a body that cannot get room in it is handed b.gpu = null. main/tick-emit.js then skips it outright
+  // (`if (nb >= PHYS_MAX || !b.gpu) continue`), so the body still exists, still falls and still collides -
+  // it simply is not drawn. That is exactly the report: the tree shoves the player on its way down and
+  // nothing is on the ground afterwards.
+  // The old comment below is the whole story: 6M was sized when a pine box was 35*36*116 = 146k. The nine
+  // pines are 152 voxels tall and up to 55 wide, so ONE whole-tree box is about 380k, and a fell does not
+  // make one body - it shattered into 23 here, each carrying its own bounding box. The sum ran past 6M and
+  // everything after the first few got nothing.
+  const BODYCAP = 16 << 20;                            // 16M cells = 64 MB; a whole 152-tall pine box is ~380k, a giant OAK's is 1.455M
   const bodyBuf = device.createBuffer({ size: BODYCAP * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   let bodyTop = 0;                                     // bump allocator; reset when no body references it
 

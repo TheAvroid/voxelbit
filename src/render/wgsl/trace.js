@@ -1,6 +1,8 @@
-  const TRACE_SRC = ({ DDAW, FLAKEBLK, pickWGSL }) => /* wgsl */`
-    @group(0) @binding(1) var<storage, read> world : array<u32>;
-    @group(0) @binding(2) var<storage, read> bricks : array<u32>;
+  const TRACE_SRC = ({ DDAW, FLAKEBLK, pickWGSL, POOL }) => /* wgsl */`
+${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // ── PAGED BRICK POOL ── 512-byte payloads for OCCUPIED bricks only; the ~47% of the window that is empty sky has none
+    @group(0) @binding(2) var<storage, read> bdesc : array<u32>;   // per-brick: 0 = all air, else slot+1 into pool. Replaces the occupancy bitmask - a nonzero descriptor IS the occupancy bit, which keeps TRACE at exactly 8 storage buffers (the WebGPU default cap)`
+        : `    @group(0) @binding(1) var<storage, read> world : array<u32>;
+    @group(0) @binding(2) var<storage, read> bricks : array<u32>;`}
     @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
     @group(0) @binding(4) var gAlbedo : texture_storage_2d<rgba8unorm, write>;
     @group(0) @binding(5) var gIrr : texture_storage_2d<rgba16float, write>;
@@ -102,7 +104,7 @@
       return oakWobG(z) * 0.6 + (dVnoise(z * ${WOB_CH} + 211.3, 97.7) - 0.5) * ${CHW}.0;
     }
     fn cherryMask(x : f32, z : f32) -> f32 {           // 1 = inside the blossom band, 0 = the oak forest either side of it. A DISTANCE from the centre line, not a side of it — that is what makes it a band rather than a half-plane
-      let b = f32(${SPWX - CHOFF - chWob(SPWZ)}) + chWobG(z);   // pinned at the spawn's own z exactly as the JS is, or how far spawn sits inside the band is a per-session lottery
+      let b = f32(${SPWX - CHOFF - oakWob(SPWZ)}) + oakWobG(z);   // oakWobG, NOT chWobG — the JS cherryM rides the OAK meander now (see CHHALF in world/window.js), and a stale copy here is the exact failure the desWob note at the top of this file is about: flakes culled on one border while the blanket settles on another. Still pinned at the spawn's own z exactly as the JS is
       let t = (${CHHALF + CHB}.0 - abs(pwrapG(x - b))) / ${CHB}.0;   // wrapped, or the blossom exists in the first period only and every later one falls back to plain oak weather
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
@@ -118,8 +120,8 @@
       return (m - 0.06) / 0.64;
     }
     fn cherryMaskW(x : f32, z : f32) -> f32 {          // the blossom band as the WEATHER sees it — cherryMask's twin on the wider CHBW ramp (world/window.js cherryW). Same centre and same CHHALF, so WHERE it snows is identical and only the fade length differs
-      let b = f32(${SPWX - CHOFF - chWob(SPWZ)}) + chWobG(z);
-      let t = (${CHHALF + CHBW}.0 - abs(pwrapG(x - b))) / ${CHBW}.0;
+      let b = f32(${SPWX - CHOFF - oakWob(SPWZ)}) + oakWobG(z);
+      let t = (${CHWHALF + CHBW}.0 - abs(pwrapG(x - b))) / ${CHBW}.0;   // CHWHALF, matching the JS cherryW: the weather band kept its own half-width when the tree band was reshaped
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
       return dSstep(t);
@@ -708,7 +710,21 @@
           // sunV answers the question transmission actually asks: does the sun reach the FAR face?
           // select() is false for every non-foliage surface here (the gate above only admits dot > 0 unless it
           // is a leaf), so ordinary shadows are bit-identical.
-          let sunOrg = select(sp, pos + u.sunDir * 1.25, dot(h.n, u.sunDir) <= 0.0);
+          // ══ AND THE BIAS SCALES WITH THE GRAZING ANGLE, OR A LOW SUN SPECKLES EVERY FLAT SURFACE ══ sp sits a
+          // fixed 0.02 voxels along the normal. That clears the surface only for a ray leaving it steeply. As
+          // the sun drops, dot(n, sunDir) on a flat top face goes to nothing and the jittered ray sets off
+          // almost parallel to the ground — 0.02 of clearance is then not enough to get out of the CURRENT
+          // cell, so the ray re-enters the voxel next door, reports occluded, and the pixel goes fully black.
+          // sunV is binary here (select(1, 0, occ)), so there is no partial answer to soften it: neighbouring
+          // pixels whose jitter tilts the other way come back fully lit, and the surface breaks into black
+          // speckle. It follows the terrain's contours because that is where the one-voxel steps are, and it
+          // CRAWLS, because the cone jitter is re-drawn every frame — which is the "random parts of terrain
+          // flicker" this was reported as. Snow shows it worst: a black dot on white is maximum contrast.
+          // The standard fix, and the reason it is not just a bigger constant: the clearance a ray needs is
+          // proportional to 1/cos of its angle to the surface. Capped below one voxel so the offset can never
+          // step the ray over a genuine one-voxel occluder and leak light through a thin wall.
+          let ndl = max(dot(h.n, u.sunDir), 1e-3);
+          let sunOrg = select(sp + h.n * clamp(0.03 / ndl, 0.03, 0.8), pos + u.sunDir * 1.25, dot(h.n, u.sunDir) <= 0.0);
           let ceilY = f32((u32(u.fx) >> 8u) & 31u) * 32.0;           // world ceiling (u.fx bits 8+): no solid above it → a climbing ray is clear once past it
           let sCap = select(1200.0, min(1200.0, (ceilY - sunOrg.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
           if (sCap <= 0.0) { sunV = 1.0; }                           // already above everything and going up — full sun, no ray

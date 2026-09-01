@@ -1852,6 +1852,7 @@
         }
         const b = bx + by * BX + bz * BX * BY;
         if (occ) bricks[b >> 5] |= 1 << (b & 31); else bricks[b >> 5] &= ~(1 << (b & 31));
+        if (poolTouchHook) poolTouchHook(b, -1);      // the inline (non-pooled) region rebuild — the fallback path when the gen pool is unavailable or a region is generated on the main thread. Same reason as the slab merge in gen-pool.js: generation never goes through gpuPatch, so it must queue its own bricks.
         let wonly = 0;                                 // ── WATER-ONLY bit ── every nonzero voxel is WATER_T/WATER_B → skipW rays stride the whole brick (only bricks at/below the waterline can qualify; the byte scan early-outs on the first real solid, so land bricks pay ~1 byte)
         if (occ && by * 8 <= WL) {
           wonly = 1;

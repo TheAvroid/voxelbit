@@ -212,6 +212,7 @@
   let xHeld = false;
   addEventListener('blur', () => { xHeld = false; });
   addEventListener('keyup', (e) => { if (e.code === 'KeyX') xHeld = false; });
+  let rdSmooth = -1;                                  // ── VIEW DISTANCE, SLEW-RATE LIMITED ── lives HERE beside cloudT because it must SURVIVE the frame: main/tick-camera.js is a function BODY.
   let cloudT = 0;                                     // ── CLOUD TIME ── seconds, but advanced by dt * cycleSpeed so the deck's wind keeps step with the sun. At 1x it tracks wall time exactly, which is what keeps the normal drift unchanged. Frozen with the sun under __TFREEZE, or an A/B would compare two different cloud fields
   // ── AND SCROLLING DOWN PAST THE SLOWEST NOTCH REWINDS (user 2026-08-30: "when they go backwards on the
   // scroll wheel, it rewinds time") ── cycleSpeed is SIGNED: ONE ladder of x1.6 notches running -512 … -0.25,

@@ -6,7 +6,20 @@
   const LIFT = WY >= 384 ? 128 : 0;                    // terrain floats this far above bedrock
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
-  const RD_FIXED = Math.min(1000, HALF - 24);           // ── VIEW DISTANCE ── pinned at 100 m (1000 vox), no slider (user). Clamped to the window: if the adapter caps the window at 768 this falls back to what fits rather than reaching past it.
+  let poolTouchHook = null;                            // set by render/buffers.js once the pool exists; terrain.js, patch.js and gen-pool.js all run BEFORE that fragment and reach the pool through this hook. Without the declaration the assignment there throws in strict mode and the module aborts silently — the boot parks on "uploading world".
+  const CHWHALF = 1960;                                // the cherry WEATHER band's half-width — dead in a one-biome world, but render/wgsl/trace.js bakes it into the shader SOURCE.
+  // ══ TWO WINDOWS ══ the CPU keeps a 2048 window it can hold densely; the GPU gets a wider one, affordable
+  // only because the paged pool stops paying for empty space. The CPU window sits concentrically inside it
+  // with GPAD of far ring each side, and view distance is bounded by GHALF rather than HALF.
+  const GMUL = GMUL_PICK;
+  const GWX = WX * GMUL, GWY = WY, GWZ = WZ * GMUL;
+  const GBX = GWX >> 3, GBY = GWY >> 3, GBZ = GWZ >> 3;
+  const GHALF = GWX >> 1;
+  const GPAD = (GWX - WX) >> 1;
+  const gwOX = () => winOX - GPAD;
+  const gwOZ = () => winOZ - GPAD;
+  let RD_DBG = 0;
+  const RD_FIXED = Math.min(1000 * GMUL, GHALF - 24);   // ── VIEW DISTANCE ── 100 m per GMUL step, clamped to the GPU window
   // ── THE WORLD GRID IS SHARED WITH THE GENERATION POOL WHEN THE PAGE IS CROSS-ORIGIN ISOLATED ──
   // world/gen-pool.js already runs the ENTIRE generator on workers; what it could not do is put the result
   // where it belongs. A worker's slab had to be TRANSFERRED back and the main thread memcpy'd it into this

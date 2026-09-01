@@ -56,7 +56,7 @@
       // terrain (underground stone rendered as floating grey boxes; CPU W stays correct, so only F5 cured it). Wait it out first.
       if (CPROF) cpEvt |= 2;
       for (const [ga, gb] of splitWrap(s.z0, s.z1, WZ)) {   // z-bands are contiguous grid rows; a >8-thick band may cross the toroidal seam → write per contiguous segment
-        device.queue.writeBuffer(worldBuf, ga * WX * WY, W.buffer, ga * WX * WY, (gb - ga) * WX * WY);
+        // …the VOXELS this band wrote are already queued: the slab merge in gen-pool.js poolTouch()es every brick.
         uploadBricksZ(ga, gb);                         // only THIS band's occupancy slice — the change is confined to these rows
       }
       if (s.side === 'zlo') rect.zlo = s.z0; else rect.zhi = s.z1;
@@ -66,20 +66,9 @@
       if (pooled) rebuildBricks2W(s.x0, s.x1, s.z0, s.z1); else rebuildBricksW(s.x0, s.x1, s.z0, s.z1);
       nvDirtyRect(s.x0, s.x1, s.z0, s.z1);             // ── NAVFIELD ── same for an x-side band
       yield;
-      for (let sub = 0; sub < s.th; sub += 8) {        // the scatter path is 8 columns wide — a thick band streams its strips through it sequentially
-        while (xStripPending >= 0) { yield; }          // one scatter in flight at a time (also: the shared stag buffer must be consumed before repacking)
-        const g0 = gwrap(s.x0 + sub, WX);
-        let i2 = 0;                                    // x-bands are strided — repack the full column strip into staging (stale parts are outside rect, harmless);
-        const zStride8 = (WX * WY) >> 3, yStride8 = WX >> 3, gw8 = g0 >> 3;   // whole-f64 moves (g0 is 8-aligned, WX is a multiple of 8) — one op per 8 voxels instead of two u32 ops
-        for (let q = 0; q < 8; q++) {
-          for (let z = (WZ * q) >> 3; z < (WZ * (q + 1)) >> 3; z++) { const rw8 = gw8 + z * zStride8;
-            for (let y = 0; y < WY; y++) { stag64[i2++] = W64[rw8 + y * yStride8]; } }
-          yield;
-        }
-        device.queue.writeBuffer(stagBuf, 0, stag);
-        device.queue.writeBuffer(scatBuf, 0, new Uint32Array([g0, 0, 0, 0]));
-        xStripPending = g0;
-      }
+      yield;                                         // ── THE DENSE X-STRIP SCATTER IS GONE ── it repacked a column strip into stag64/stagBuf and scattered it
+      // into the dense GPU world. There is none: the slab merge queues the band's bricks and poolFlush drains
+      // them in the same frame the occupancy lands.
       uploadBricks();
       if (s.side === 'xlo') rect.xlo = s.x0; else rect.xhi = s.x1;
       genBands += s.th >> 3;
@@ -142,7 +131,7 @@
     genRegion(rect.xlo, rect.xhi, rect.zlo, rect.zhi, true);
     orphQueueRect(rect.xlo, rect.xhi, rect.zlo, rect.zhi);   // the pool never saw this rect - sweep it here, on a budget
     rebuildBricks(0, WX, 0, WZ);
-    uploadWorld();
+    poolBuild();                                       // a recentre replaces the whole window, so the pool is re-derived rather than patched brick by brick. This is where the dense uploadWorld() used to sit.
     uploadBricks();
     loadEl.classList.add('hidden');
     resetHist = 1;
