@@ -2601,6 +2601,40 @@
         rate: +(hit / Math.max(1, pine)).toFixed(3),
         byHeight: order.map((k) => k + ':' + b[k].trees + '/' + b[k].cells) };
     },
+    // ── DOES THE BANK SKIRT EVEN SEE THIS WATER? ── bankDist walks WATERSHED geometry (rivEval's segments and
+    // lakes). Water that comes from anywhere else — a basin, the biome-border channels, the pine field's own
+    // low end — is invisible to it, and a shoreline it cannot see gets no cone and keeps the raw terrain
+    // gradient. That is the difference between "the bank profile is wrong" and "there is no bank profile here".
+    // ── THE INTERMEDIATE VALUES oakBank BRANCHES ON ── it is a chain of early returns over arctSeaH, a height
+    // cap and the skirt, and from outside only the final H is visible. When two adjacent columns come out 37
+    // voxels apart with every mask and every water field constant between them, the question is WHICH BRANCH
+    // each one took, and nothing exposed that.
+    bankWhy(x, z) {
+      const xx = x === undefined ? Math.round(P.x) : x, zz = z === undefined ? Math.round(P.z) : z;
+      const dx = pwrap(xx - SPWX), am = arcticM(xx, zz);
+      const raw = baseH(xx, zz);                       // the height oakBank is HANDED, before any of its arms
+      return { x: xx, z: zz, H: H(xx, zz), raw, am: +am.toFixed(3),
+        inArctCheap: dx < ARCTFAR && dx > ARCTWFAR, dx: Math.round(dx), ARCTFAR: Math.round(ARCTFAR), ARCTWFAR: Math.round(ARCTWFAR),
+        sb: Math.round(arctSeaH(xx, zz)), cap: Math.round(WL + (1 - am) * ARCT_STAND),
+        belowBed: raw < arctSeaH(xx, zz), overCap: raw > WL + (1 - am) * ARCT_STAND,
+        bankDist: Math.round(bankDist(xx, zz)) };
+    },
+    bankAt(x, z) {
+      const xx = x === undefined ? Math.round(P.x) : x, zz = z === undefined ? Math.round(P.z) : z;
+      let d = bankDist(xx, zz);
+      const hh0 = H(xx, zz), dxq = pwrap(xx - SPWX);
+      let est = -1;                                    // …the SAME field-gradient estimate oakBank uses, so coverage can actually be counted
+      if (d >= OAKBANKR && hh0 - WL < 92) {
+        const bmq = (dxq < BIRCHFAR && dxq > BIRCHWFAR) ? birchM(xx, zz) : 0;
+        const g = 4, fld = bmq > 0 ? birchH : (dxq >= OAKFAR || dxq <= OAKWFAR ? pineH : oakH);
+        const gx = (fld(xx + g, zz) - hh0) / g, gz = (fld(xx, zz + g) - hh0) / g;
+        const gr = Math.sqrt(gx * gx + gz * gz);
+        if (gr > 0.02) { const df = (hh0 - WL) / gr; if (df >= 0) est = df; }
+        if (est >= 0 && est < d) d = est;
+      }
+      return { x: xx, z: zz, H: H(xx, zz), WL, bankDist: Math.round(d), reach: OAKBANKR,
+        seesWater: d < OAKBANKR, est: est < 0 ? null : Math.round(est), viaEstimate: est >= 0 && est < OAKBANKR, rs: +riverS(xx, zz).toFixed(3), basin: +basinM(xx, zz).toFixed(3) };
+    },
     bandScan(z0, x0, x1, step) {
       const z = z0 === undefined ? Math.round(P.z) : z0;
       const a = x0 === undefined ? Math.round(P.x) - 16000 : x0;
@@ -2632,20 +2666,43 @@
       // 2026-08-24 while profiling snow, which made the whole measurement the wrong biome's).
       // …and it happened AGAIN with the arctic (2026-08-29), which is why the list is now written as a set of
       // named bands rather than a hand-kept conjunction: add a band to NAMED and both arms follow.
-      const NAMED = { desert: desertM, birch: birchM, arctic: arcticM, oak: oakM };
+      // ── CHERRY IS IN THIS LIST NOW, AND THAT IS THE THIRD TIME (audit 2026-08-31) ── the note above says a band
+      // left out of NAMED makes gotoBiome answer for the wrong biome, and records it happening to the birch and
+      // then to the arctic. It was still happening to the CHERRY: `NAMED[which] || ... : oakM` sent every
+      // gotoBiome('cherry') to the oak fallback, which then reported `found: "cherry"` from a column measuring
+      // oak 0.58, cherry 0. A silent wrong answer, and it had been quietly biasing measurements taken with it.
+      const NAMED = { desert: desertM, birch: birchM, arctic: arcticM, oak: oakM, cherry: cherryM };
+      // ── AND PINE IS GRADED, NOT A FLAG ── as a 0/1 indicator the "seek the core" loop below is useless for it:
+      // the first column where no band exceeds 0.5 IS a band's 0.5 iso-line, so gotoBiome('pine') parked the
+      // camera on the arctic border every time and called it the pine forest. 1 - max(mask) peaks where the
+      // column is furthest from EVERY named band, which is what "the pine forest" actually means - it is the
+      // complement, so its core is a distance, not a test.
       const f = NAMED[which] || (which === 'pine'
-        ? ((x, z) => Object.keys(NAMED).every((k) => NAMED[k](x, z) < 0.5) ? 1 : 0) : oakM);
+        ? ((x, z) => { let m = 0; for (const k in NAMED) { const v = NAMED[k](x, z); if (v > m) m = v; } return 1 - m; })
+        : null);
+      if (!f) return { found: null, error: 'unknown biome ' + which, known: Object.keys(NAMED).concat('pine') };
+      // ── AND IT SEEKS THE CORE, NOT THE FIRST COLUMN OVER 0.5 ── that test lands on the band's outer RIM by
+      // construction: 0.5 IS the edge. Every reading taken through this tap came from a border - a
+      // gotoBiome('pine') that measured arctic 0.407, a gotoBiome('birch') at desert 0.473 - so anything
+      // averaged over "the biome" was really averaged over its transition. Keep scanning while the mask is
+      // still climbing and stop on a core (0.98) or on the best seen, which puts the camera in the biome
+      // rather than on its edge.
       const lim = maxD || 400000;
+      let best = null;
       for (let d = 0; d <= lim; d += 512) {
         for (const sgn of (d === 0 ? [1] : [1, -1])) {
-          const x = P.x + sgn * d, z = P.z;
-          if (f(x, z) > 0.5) {
-            P.x = x; P.z = z; P.y = H(x, z) + 3; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1;   // the same three lines __vb.tp ends with — the streamer catches up on its own
-            return { found: which, at: [Math.round(x), Math.round(z)], dist: d,
-              oak: +oakM(x, z).toFixed(2), desert: +desertM(x, z).toFixed(2), birch: +birchM(x, z).toFixed(2), arctic: +arcticM(x, z).toFixed(2) }; }
+          const x = P.x + sgn * d, z = P.z, v = f(x, z);
+          if (v > 0.5 && (!best || v > best.v)) best = { x, z, v, d };
         }
+        if (best && best.v >= 0.98) break;                 // a core: no point walking further
+        if (best && d > best.d + 4096) break;              // …or the band has been crossed and is falling away again
       }
-      return { found: null, searched: lim, oakHere: +oakM(P.x, P.z).toFixed(2), desertHere: +desertM(P.x, P.z).toFixed(2) };
+      if (!best) return { found: null, searched: lim, oakHere: +oakM(P.x, P.z).toFixed(2), desertHere: +desertM(P.x, P.z).toFixed(2) };
+      const { x, z } = best;
+      P.x = x; P.z = z; P.y = H(x, z) + 3; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1;   // the same three lines __vb.tp ends with — the streamer catches up on its own
+      return { found: which, at: [Math.round(x), Math.round(z)], dist: best.d, mask: +best.v.toFixed(3),
+        oak: +oakM(x, z).toFixed(2), cherry: +cherryM(x, z).toFixed(2), desert: +desertM(x, z).toFixed(2),
+        birch: +birchM(x, z).toFixed(2), arctic: +arcticM(x, z).toFixed(2) };
     },
     // ── EVERY MATERIAL TABLE FOR ONE ID ── __vbFlowerMat answers this for flowers only, which is no help when
     // the question is "is this voxel a mushroom" and mushTab is module-scoped. One tap, all the tables.

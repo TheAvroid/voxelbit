@@ -42,11 +42,57 @@
     // down through the soil band instead. Not dithered against the mask — an exposed face has to be one
     // material or the seam simply becomes a speckled seam.
     const asn = arctSnow(wx, wz);                      // the SNOW mask, not the biome mask — it reaches out to the treeline and its edge is 2-D noise (world/window.js)
-    const aSoil = asn > 0.5;
+    const aSoil = arctGB(asn) > 0.5;                   // the soil band under the surface rides the same gate the surface does, or a white slope sits on brown dirt
     for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
-      const shore = h <= WL + 6;                       // any waterline — lakes AND rivers
+      // ── AND A SHORE HAS TO HAVE WATER BY IT ── this was a pure HEIGHT test, which is only the same thing as
+      // "near water" if all low ground is coastal, and it is not: measured, 61.2% of the oak forest's dry land
+      // and 57.2% of the pine's came out SAND, in a biome with 0.0% open water. A low inland meadow was being
+      // painted as beach because it happened to sit within a few voxels of the waterline's HEIGHT.
+      // A DISC, not a ring. The water that makes a beach a beach is usually a river 20-40 voxels wide lying at
+      // some angle, and 8 samples on a single ring step straight over it - measured, half of the columns with
+      // water within 50 were refused, and they came out as dirt sitting in the middle of the sand (user).
+      // Radii ascend so a real beach exits on the first or second one; only genuinely inland low ground, which is
+      // a small share of the map, pays for the whole disc.
+      // H rather than hmap, because hmap is not reliably written this far out while a region is still filling.
+      let shore = false;
+      if (h <= WL + 5) for (let r = 0; r < 4 && !shore; r++) {
+        const R2 = SANDR * (0.19 + r * 0.27);
+        for (let k = 0; k < 4 && !shore; k++) {
+          const a2 = k * 0.7853981634, cx2 = Math.round(Math.cos(a2) * R2), cz2 = Math.round(Math.sin(a2) * R2);
+          if (H(wx + cx2, wz + cz2) <= WL || H(wx - cx2, wz - cz2) <= WL) shore = true;
+        }
+      }
+      // ── PULL THE SAND BACK IN EXTENT, NEVER IN HEIGHT (user 2026-08-31: "the sand just has 1 step??? … I
+      // dont want to see dirt/grass in the middle of the sand") ── this was taken to WL+3 and then WL+1 in
+      // answer to "pull back the sand", and that was the wrong dimension. H builds a beach across SEVERAL
+      // levels: the beach-flat rule writes WL+1..WL+3 and the bank cone holds WL+4. Narrowing the material
+      // test to a single level does not make the beach smaller, it makes it MONOCHROME - one step of sand and
+      // every column one voxel higher dropping out to the forest floor, which is the dirt and grass showing
+      // through the middle of it. The beach was the same size the whole time.
+      // WL+5 covers every level the beach is built on, so the sand steps up with the ground. How MUCH beach
+      // there is belongs to the beach-flat window below and to OAKBEACH, which are horizontal.
+      // ── AND THE LOWER BOUND IS GONE AGAIN (user 2026-08-31: "the underwater terrain looks like grass and
+      // dirt. make it all sand") ── SANDDEEP was added earlier today against "remove the sinking effect from
+      // all sand", on a reading of that report that turned out to be wrong: the sinking was the QUICKSAND
+      // mechanic in main/tick-body.js swallowing the player, not sand appearing under the water. Bounding
+      // the sand did nothing for the real complaint and cost the lake beds their material - below the bound
+      // every submerged column fell through to its biome floor, which is grass in the birch and moss in the
+      // oak. Sand is the lakebed again, at any depth, which is what it was before and what was asked for.
+      // ── AND IT IS BOUNDED BELOW NOW (user 2026-08-31: "remove the sinking effect from all sand") ── this
+      // used to be `h <= WL + 6` with no floor, and the arm below says what that meant in as many words:
+      // "waterline beach + sandy lakebed". Every submerged column in the world that was not arctic or desert
+      // came out SAND, at any depth - so the beach did not END at the water, it carried on down the lake
+      // floor and out of sight. That is the sinking: not a bug in one biome's heights, but sand behaving as
+      // a lakebed material everywhere. The pine forest's version of this report was a different cause with
+      // the same look (see PINEY in world/window.js) and fixing that one did not touch this one.
+      // A BAND makes it a shore: sand from SANDDEEP under the water up to WL + 6, and below that the column
+      // falls through to whatever its biome floor is, which is what the eye reads as a lake bed rather than
+      // as a beach that kept going. The bound has to live HERE, on `shore` itself, rather than on the first
+      // arm - the second arm dithers on (h - WL - 2) / 4.5, which is NEGATIVE for anything under the
+      // waterline and therefore passes every ihash it is ever given: bounding one arm and not the other
+      // would have moved the sinking sand from the first branch to the second and looked identical.
       let c;
       // ── THE ARCTIC SURFACE ── FIRST, because it is the one biome whose ground is not soil: snow covers the
       // shore, the flats and the hills alike, so it has to win over the beach and sand-blend arms below rather
@@ -58,10 +104,18 @@
       // cliffs read as stone. Both are gone with the fields that drove them; a slope in this biome is a snow
       // slope. Dithered against the mask, exactly as the desert and oak arms below are, so the white thins out
       // across the whole rim instead of stopping on the iso-line.
-      if (asn > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < asn) c = ASNOW[(sh * 4) | 0];
+      // ── SNOW FOLLOWS THE GLACIERS, IT DOES NOT LEAD THEM (user 2026-08-31: "remove the snow terrain from
+      // the transition. there should only be tall snow glaciers and small snow caps. no flat terrain. it
+      // only happens at the transitions") ── this arm used to fire on raw `asn > 0`, while the bergs are
+      // gated on arctGB, which is zero until asn passes 0.5. Between those two thresholds the ground went
+      // white with nothing standing on it: a flat snowfield in the run-up to the arctic, which is exactly
+      // the band the report is about. Dithering against arctGB instead of asn puts the white and the ice on
+      // the SAME gate, so the transition reads forest, water, then glaciers rising out of it.
+      const agb = asn > 0 ? arctGB(asn) : 0;
+      if (agb > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < agb) c = ASNOW[(sh * 4) | 0];
       else if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
       else if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
-      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(sh * 3) | 0];     // dithered sand-to-forest blend
+      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 3.2) c = SAND[(sh * 3) | 0];   // …and the sand-to-forest dither ramps out over half the height it used to     // dithered sand-to-forest blend
       // ── NO FOREST FLOOR ON THE DESERT SIDE, BUT ONLY NEAR WATER ── the DESERT branch above is dithered
       // against the mask, so a fraction (1 - dm) of columns miss it by design; inland those misses are the
       // gradient, which is the whole point. Near a WATERLINE they were landing on moss instead, and clustered
@@ -335,6 +389,17 @@
     // size 2 and 3 are the mid and BIG rocks26 tiers (5.5% and 1.5% of candidates); its own salt again, so
     // it thins that population rather than re-drawing which tier a survivor belongs to.
     if (size >= 2 && ihash(cx * 71 + 17, cz * 73 + 41) > 0.5 && oakM(bx, bz) > 0.5) return null;
+    // ── AND A QUARTER FEWER UNDER THE WATER (user 2026-08-31: "make the rocks in the water in the pine forest
+    // 25% more rare") ── its own roll on its own salt, which is the pattern every rate cut in this function
+    // follows: chaining a factor onto an existing threshold thins the field identically in expectation but
+    // re-draws WHICH rocks survive, and the world has already been walked around in.
+    // Written as "underwater" rather than "underwater AND pine": the pine forest is where the user is looking,
+    // but a submerged boulder is a shoreline object and reads the same in any biome, and the two that wanted a
+    // different rate (the desert and the oak) already take their own cuts above. It also keeps this cheap - a
+    // biome test here is 6 vnoise where the whole function is otherwise hashes.
+    // SALT FIRST, HEIGHT SECOND, for the reason the oak cut states two lines up: only the quarter that this
+    // roll actually rejects pays for the H() call.
+    if (ihash(cx * 79 + 23, cz * 83 + 37) > 0.75 && H(bx, bz) <= WL) return null;
     const rot = (ihash(cx * 23 + 2, cz * 7 + 11) * 3.99) | 0;
     // Boulders stamp AFTER the cave carve, off the PRISTINE height, so one overhanging the mouth pit hangs in the
     // air. The old guard tested the rock's CENTRE against a flat 52, but the pit measures 42-52 across and the widest
@@ -1190,7 +1255,7 @@
   const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
   function lilyAt(cx, cz) {                             // STATIC lilies RE-ENABLED for testing (user 2026-07-18) — stamped into the world grid (full static-voxel shading) alongside the LIVE drifting pads, so their render can be compared
     if (!LILYV.length) return null;
-    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.057) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
+    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.042750) return null;   // 0.34 -> 0.17 -> 0.085 -> 0.057 -> 0.042750: another -25% (user 2026-08-31: "decrease the lillypads by 25%"). Lowering the threshold on the SAME hash keeps a strict SUBSET - the survivors are the low-hash cells either way - so unlike the boulder cuts this does not need its own salt to avoid re-drawing which pads a walked-around world already has.
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
     const wz = Math.round(cz * LILYCELL + 3 + ihash(cx * 5 + 12, cz * 11 + 7) * (LILYCELL - 6));
     // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
@@ -1215,7 +1280,7 @@
     // the pads were floating on it. Dithered like every other arctic gate so the pads thin out toward the
     // border rather than ending on a line.
     if (!LILYPAD_GIGV) return null;
-    if (ihash(cx * 53 + 11, cz * 59 + 7) > 0.1375) return null;   // HALVED AGAIN (user 2026-07-18): 0.55 -> 0.275 -> 0.1375
+    if (ihash(cx * 53 + 11, cz * 59 + 7) > 0.103125) return null;   // 0.55 -> 0.275 -> 0.1375 -> 0.103125: the GIANT pads take the same -25% (user 2026-08-31), for the same reason and by the same subset rule as the small ones above
     const wx = Math.round(cx * LGIGCELL + 22 + ihash(cx * 3 + 5, cz * 7 + 9) * (LGIGCELL - 44));
     const wz = Math.round(cz * LGIGCELL + 22 + ihash(cx * 11 + 3, cz * 5 + 13) * (LGIGCELL - 44));
     // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
@@ -1758,7 +1823,18 @@
     // lines above use. Without it the new band is a pine forest wearing oak ground: treeAt only ever
     // excluded itself from the two biomes that existed when it was written, and a band that is neither
     // desert nor oak reads to it as ordinary pine country.
-    if (birchM(wx, wz) > 0.5) return null;
+    const bmT = birchM(wx, wz);
+    if (bmT > 0.5) return null;
+    // ── AND THE BIRCH/ARCTIC SEAM, WHERE NEITHER NEIGHBOUR IS PINE (user 2026-08-31: "theres pine trees
+    // between the transition between the birch forest and the arctic. remove them") ── every rejection in
+    // this list is a HALFWAY test, on purpose: pine is the default forest, so thinning it out across a rim is
+    // what makes two biomes read as meeting. That reasoning holds where pine is genuinely on the other side.
+    // The birch and the arctic SHARE an edge, so between them there is no pine on either side - and the two
+    // halfway tests leave a band ~1350 voxels wide where birchM has fallen under 0.5, arcticM has not yet
+    // climbed far enough for arctBare's dither to refuse reliably, and pines grow in the gap between two
+    // forests that are not pine. Both masks non-zero is exactly that overlap and nothing else.
+    // arcticM is asked only where bmT is already non-zero, so this costs the rest of the world nothing.
+    if (bmT > 0 && arcticM(wx, wz) > 0) return null;
     // ── NOR IN THE ARCTIC (user 2026-08-29) ── the FOURTH border, and the fourth time this list has had to
     // grow with the world. The pattern is worth naming: treeAt places pine wherever it is not told otherwise,
     // so pine is the DEFAULT and every new biome has to exclude itself here or it opens as a pine forest

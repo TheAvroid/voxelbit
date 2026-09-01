@@ -199,6 +199,28 @@
     const c01 = h3(ix, iy, iz + 1) * (1 - fx) + h3(ix + 1, iy, iz + 1) * fx, c11 = h3(ix, iy + 1, iz + 1) * (1 - fx) + h3(ix + 1, iy + 1, iz + 1) * fx;
     return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
   };
+  // ── WHY THERE IS NO SUB-VOXEL DITHER HERE, THOUGH THE BASIN AND RIVER CARVES BOTH HAVE ONE ──
+  // Tried twice on 2026-08-31 against the contour-ring report ('the birch terrain has a weird design'), and
+  // reverted both times. It does not work on THIS field and the numbers say why. Measured over a 300x300
+  // patch, share of columns standing on a 1-voxel riser, and the longest unbroken flat run:
+  //     no dither        oak  8.3% risers, longest flat run 126     birch 49.0%, 150
+  //     ihash +-0.45     birch 65.7%
+  //     vnoise +-0.95    oak 73.2%                                   birch 72.8%
+  //     vnoise +-0.375   oak 70.0%, longest run 49                   birch 44.0%, 32
+  // The dither does what it claims - the 126-voxel terraces break into 49 - but the cost is that a column is
+  // on a riser 70% of the time instead of 8%. That trades a contour line for an all-over stipple, which is a
+  // different artefact and a worse one. The ground MATERIAL is identical on risers and flats (ids 9/10/11 at
+  // 32% each on both), so what draws a contour is the shading on the riser, and there is no amount of height
+  // noise that gives both few risers and short ones.
+  // AND THE 'TOO FLAT' READING THAT PROMPTED A RELIEF PASS WAS A SAMPLING ERROR. 8.3% risers came from ONE
+  // patch. Over 2000 scattered probes the oak field stands a column on a riser 59.7% of the time at a mean
+  // slope of 1.156 - it was never flat, and the relief that was briefly added on the strength of that number
+  // has been taken back out. terrain.js already carried the answer above the grass-strand block: the rings are
+  // a KNOWN accepted trade with four prior attempts recorded, and it says not to attack them in the height
+  // field. This is the fifth and sixth.
+  // What IS new is the mechanism, measured at a pinned spawn: a ground-cover blade sits on 99.7% of FLAT
+  // columns and only 63.8% of RISER columns. Risers follow contours, so a third of every contour is bare
+  // ground. That is the thing to attack, and it is in the cover scatter, not here.
   const HMAX = Math.min(130 + LIFT, WY - 151);         // terrain ceiling — and the 151 is the PINE RESERVE, see below
   // ── AND THE SECOND TERM IS THE TREE, WHICH IS WHAT MAKES THIS A BUDGET AND NOT A DIAL ── 122 was never an
   // arbitrary reserve: it is pine5.vox's own 116 voxels plus a little, because a trunk planted at HMAX has to
@@ -749,11 +771,39 @@
   // Same construction as the two above, mirrored about the band's other boundary.
   const OAKWFAR = OAKC - OAKH - 2 * OAKWMAX - OAKB * 0.5;  // no column west of this can be in the oak forest at all
   const OAKWNEAR = OAKC - OAKH + 2 * OAKWMAX + OAKB * 0.5; // every column east of this (and west of OAKNEAR) is DEEP oak
-  const oakH = (x, z) => {                             // the oak forest's OWN base height — long wavelength, double-smoothstepped, positive-only like duneH
+  // ── THE OAK FIELD'S SHAPE, SPLIT OUT SO THE BIRCH CAN RIDE IT WITHOUT COPYING IT ── oakH is the oak forest,
+  // the birch forest and the arctic's base all at once, so "give the birch its own lakes" cannot just be a
+  // second term on it. Naming the 0..1 curve lets birchH subtract from the SAME field instead of restating
+  // its two fbm calls, which is the copy that goes stale the first time either frequency is touched.
+  // oakH itself is unchanged to the bit: same expression, same order of operations.
+  // ── FREQUENCY IS THE RELIEF LEVER, NOT AMPLITUDE (user 2026-08-31: "restore relief") ── the contour rings
+  // are what a nearly level surface looks like once it is quantised to whole voxels: measured, the oak field
+  // stood a column on a 1-voxel riser only 8.3% of the time, and each of those risers then ran unbroken for
+  // up to 126 voxels. That is a contour line by construction, and no height dither fixes it (see the note
+  // above HMAX for the four attempts and their numbers).
+  // Amplitude cannot be the answer here: OAKY + OAKHILL is 226 against an HMAX of 233, so there are seven
+  // voxels of headroom in the whole biome. Frequency costs nothing from that budget - the same range drawn
+  // over a shorter wavelength is the same hills, closer together, with every slope proportionally steeper.
+  // 0.0024 -> 0.0031 is a 1.3x. 1.75x was tried first and overshot hard - oak came out at 66% risers and a
+  // mean slope of 1.59, i.e. mountainside, because this field runs through sstep(sstep(...)) and the double
+  // smoothstep multiplies whatever gradient it is fed by up to 2.25 before it reaches the ground.
+  const oakFieldM = (x, z) => {
     const a = fbm(x * 0.0024 + 91.7, z * 0.0024 + 33.1);
     const b = fbm(x * 0.0057 + 47.3, z * 0.0057 + 8.9);
-    return OAKY + OAKHILL * sstep(sstep(a * 0.82 + b * 0.18));   // OAKY .. OAKY + OAKHILL, never negative
+    return sstep(sstep(a * 0.82 + b * 0.18));
   };
+  const oakH = (x, z) => OAKY + OAKHILL * oakFieldM(x, z);   // OAKY .. OAKY + OAKHILL, never negative
+  // ── AND THE BIRCH FOREST GETS THE PINE'S LAKES (user 2026-08-31: "give the birch forest the same amount of
+  // water as you did the pine forest") ── the same shape pineH uses: the low end of the field pulled under the
+  // waterline by (1 - m) squared, so the drop is confined to the bottom of the range and the rim passes
+  // through H's beach window on its way out, which is what gives a lake a beach instead of a drowned edge.
+  // Scaled off OAKHILL the way PINE_LAKE is off PINEHILL, because this field's range is the smaller of the two.
+  const BIRCH_LAKE = 22;
+  // …and the same waterline shelf pineH carries, for the same reason: without it the field's own gradient at
+  // the shore terraces every four voxels, and the birch has lakes now so it has the same shore to get right.
+  const birchH = (x, z) => { const m = oakFieldM(x, z);
+    const sh = m <= PINE_SHA ? 0 : m >= PINE_SHB ? 1 : sstep((m - PINE_SHA) / (PINE_SHB - PINE_SHA));
+    return OAKY + OAKHILL * m - BIRCH_LAKE * (1 - m) * (1 - m) - PINE_SHELF * sh; };
   // ══ THE PINE FOREST'S OWN FIELD (user 2026-08-31: "give the pine forest the same terrain generation as the
   // oak forest but leave the styling unique to the pine forest ... make the terrain round and hilly like the
   // oak forest. however ... make the terrain height elevation vary greatly") ══
@@ -771,11 +821,37 @@
   // STYLING IS NOT TOUCHED HERE and cannot be: what a column is MADE of (grass, dirt, needles, the pine's own
   // litter and moss) is decided in world/terrain.js off the biome masks, not off the height. This changes only
   // where the ground is.
-  const PINE_LAKE = 34;                                // how far under PINEY the lowest ground is pulled — see the note under pineH
+  // ── AND THE FIELD'S WAVELENGTH IS WHAT SETS THE TERRACE WIDTH (user 2026-08-31: "create more surface area
+  // between the upper steps") ── a terrace is one voxel of rise, so its width is 1 / (dh/dm * dm/dx). Seven
+  // attempts went at dh/dm - the bank cone, two height remaps, the m-space shelf - and none of them moved the
+  // measured 4 voxels, for a reason the coverage numbers finally made obvious: bankDist reaches 5 of 39 pine
+  // shorelines, so on 34 of them there is no cone to tune and the terrace is the RAW field. At the waterline
+  // that field runs dh/dm ~88 against dm/dx ~0.005, which is a gradient of 0.4 - a step every two to four
+  // voxels, exactly what was measured.
+  // dm/dx is the untouched half of that product, and it is just the noise frequency. Halving both octaves
+  // doubles every wavelength: the same hills and the same lakes, drawn twice as large, with every slope in
+  // the biome half as steep. It costs nothing per column - the same two fbm calls - and unlike a remap it
+  // genuinely moves land horizontally, which is the only thing that widens a terrace.
+  const PINE_LAKE = 15;                                // how far under PINEY the lowest ground is pulled — see the note under pineH
+  const PINE_SHELF = 0, PINE_SHA = 0.35, PINE_SHB = 0.55;   // a flat shelf in the m->h curve, its amplitude and the m range it spans
+  // ── AND A SHELF AT THE WATERLINE, BUILT INTO THE FIELD (user 2026-08-31: "fix the bank steps") ── measured
+  // first: of 30 pine shorelines, oakBank's cone reached FOUR. bankDist walks WATERSHED geometry, and 26 of
+  // those shores are this field's own lakes - rs 0, basin 0 to the skirt - so they never had a bank at all
+  // and kept the raw gradient, one terrace every four voxels from WL+3 up.
+  // The cone is the right shape and the wrong place to add it: it needs a DISTANCE to the water, and this
+  // water has no geometry to measure a distance from. But `m` already IS one - it falls monotonically from
+  // the ridges into the lakes - so the shore can be shaped in the m -> h curve instead, which is the same
+  // move cherryM made when it was carved out of oakM rather than given a field of its own.
+  // Subtracting a smoothstep centred on the m where h crosses WL flattens dh/dm exactly there: the curve
+  // holds near the waterline over a wider span of m, which is a wider span of GROUND, which is wider
+  // terraces. A local remap of h could never do this (it was tried and reverted): pinning both ends of a
+  // height band forces it to expand wherever it compresses. Moving the curve in m has no such constraint.
+  // It costs the peaks PINE_SHELF voxels, which is why PINEHILL goes up by the same amount below - the
+  // shelf is a step DOWN that never comes back, so the summits have to be given it back explicitly.
   const PINEY = LIFT + 20, PINEHILL = 85;              // valley floor = OAKY exactly, crest 85 above it — 233, exactly HMAX, so no summit is flattened by the clamp
   // ── PINEY WAS LIFT + 16 AND THAT DROWNED THE SHORELINE (user 2026-08-31: "the pine forest has patches of
   // missing trees", and "get rid of the sinking effect of the sand") ── both reports are the same voxel.
-  // H lifts near-water ground onto a beach with `h <= WL && h >= WL - 5`, a window of [147, 152]. A valley
+  // H lifts near-water ground onto a beach with `h <= WL && h >= WL - 2`, a window of [147, 152]. A valley
   // floor at 144 falls UNDER that window, so it was never lifted: the sand sat 8 voxels below the water,
   // which is the sinking - and treeAt's `H <= WL + 4` test then refused every one of those columns, which
   // is the patches. Measured with __vb.treeDensity: 0 trees in 825 cells below 150, against a healthy 0.67
@@ -786,12 +862,21 @@
   // PINEHILL drops 118 -> 108 to keep the crest at 256: the floor went up 4, so the range gives back 10 and
   // the top of the biome does not move into HMAX's clamp, which would flatten the summits.
   const pineH = (x, z) => {
-    const a = fbm(x * 0.0021 + 61.3, z * 0.0021 + 77.9);   // the massifs — longer than oak's 0.0024, so the high ground comes in fewer, bigger pieces
-    const b = fbm(x * 0.0049 + 25.1, z * 0.0049 + 13.7);   // and the shoulders on them
+    const a = fbm(x * 0.00165 + 61.3, z * 0.00165 + 77.9);   // the massifs — see the WAVELENGTH note under PINEY
+    const b = fbm(x * 0.00345 + 25.1, z * 0.00345 + 13.7);   // and the shoulders on them
     const m = sstep(sstep(a * 0.78 + b * 0.22));
     const k = m * m;                                   // …squared: broad low country, and the top of the range reached rarely
-    return PINEY + PINEHILL * k - PINE_LAKE * (1 - m) * (1 - m)
-         + 9 * (fbm(x * 0.028 + 3.7, z * 0.028 + 9.1) - 0.5) * k;   // ridge detail, faded in with the height so the valleys stay smooth
+    const sh = m <= PINE_SHA ? 0 : m >= PINE_SHB ? 1 : sstep((m - PINE_SHA) / (PINE_SHB - PINE_SHA));
+    return PINEY + PINEHILL * k - PINE_LAKE * (1 - m) * (1 - m) - PINE_SHELF * sh
+         + 9 * (fbm(x * 0.028 + 3.7, z * 0.028 + 9.1) - 0.5) * k * k;   // ridge detail — faded on k SQUARED, see below
+  // ── AND THE RIDGE DETAIL IS FADED ON k*k, NOT k (user 2026-08-31, "fix the bank steps") ── this rides at
+  // wavelength ~36 voxels, so it is the one term in the field that varies fast enough to make a terrace on
+  // its own. Faded on k it still carried +-1.9 voxels at the shoreline (k = 0.21 where h crosses WL), which
+  // is a local gradient of ~0.2 - the same order as the whole rest of the field put together, and enough to
+  // step the beach every four voxels no matter how flat the underlying curve is made. That is why the bank
+  // cone, the waterline shelf and the m-space shelf all measured no change in turn: each one flattened a
+  // slope that was not the one doing the stepping.
+  // k*k puts it at +-0.4 there and leaves it untouched on the ridges it was added for.
   };
   // ── AND THE LOW END IS PULLED UNDER THE WATER (user 2026-08-31: "increase the surface area of the water in
   // the pine forest") ── the mirror of the squaring above: k = m*m lifts the top of the range rarely, and
@@ -892,7 +977,7 @@
   // roughly 15% of the red and 60% of the blue survive the round trip, at 16 it is 2% and 35% — so this range
   // spans "sandy shallow" to "deep blue" and the whole band shows the effect instead of a fringe near the shore.
   // DELIBERATELY NEVER SHALLOWER THAN WL - 8: the beach-flat line in all three copies of H fires on
-  // `h <= WL && h >= WL - 5` and would LIFT a bed inside that window straight back out of the water, one column
+  // `h <= WL && h >= WL - 2` and would LIFT a bed inside that window straight back out of the water, one column
   // at a time, as a field of white islands. WL - 6 and below is out of its reach; this leaves two more voxels
   // of headroom on the rounding.
   // == DEEPER, AND THE DEPTH IS NOW THE FEATURE (user 2026-08-30: "its very shallow. can you increase the
@@ -915,7 +1000,7 @@
   // the colour breaks up at swimming scale as well as at map scale. The pair is what "different areas have
   // different colors" asks for.
   // AND THE SHALLOWEST IT MAY EVER BE IS STILL WL - 8: the beach-flat line in all three copies of H fires on
-  // h <= WL && h >= WL - 5 and would lift a bed inside that window back out of the water as white islands.
+  // h <= WL && h >= WL - 2 and would lift a bed inside that window back out of the water as white islands.
   // DEEPER AGAIN (user 2026-08-30: "make the floor terrain deeper under the arctic water"), 19 -> 27 mean and
   // 11 -> 15 of relief, so the bed now runs WL-12 (bright shallow) to WL-42 (deep ocean).
   // THE REFRACTION RAY HAD TO GROW WITH IT OR THIS WOULD HAVE UNDONE ITSELF. COMPOSITE capped the refracted
@@ -1018,7 +1103,22 @@
   // BEFORE the ramp rather than to the position, so the iso-line wanders in both axes at once — snow reaches
   // into the forest in fingers and the odd bare patch survives inside the white. ±0.135 against a 0.16 ramp is
   // deliberately most of its width: anything less and the ramp still reads as a band with a wiggle on it.
-  const ARCT_SNOWR = 0.16;                             // mask width of the snow ramp — ends just past ARCT_BARE, so snow reaches the last tree
+  const ARCT_SNOW0 = 0.50;                             // mask level at which snow BEGINS — the band's own edge
+  const ARCT_SNOWR = 0.30;                             // …and the mask width it takes to reach full white
+  // ── THE RAMP NOW STARTS AT THE BORDER INSTEAD OF AT MASK ZERO (user 2026-08-31: "remove the snow from the
+  // pine forest. I mean the snow caused by the arctic … remove the arctic mountains that are near the
+  // transition of the pine forest. let them be further out") ── it used to be (am + n) / 0.16 with no floor,
+  // so snow began wherever arcticM was non-zero at all. arcticM fades over ARCTB = 1800 and is non-zero 900
+  // voxels OUTSIDE the band, and 0.16 saturates almost immediately, which put FULL white about 470 voxels
+  // into whichever forest was next door. The birch got its own guard earlier today; this is the general
+  // form of the same fault, and it fixes the pine side with it.
+  // arcticM is 0.5 exactly ON the nominal edge, so ARCT_SNOW0 = 0.50 makes the border the place snow starts
+  // rather than the place it has already finished. The ±0.09 of noise below still wanders that line ~160
+  // voxels in both axes, which is what keeps it from reading as a drawn curve.
+  // AND IT MOVES THE GLACIERS WITH IT, which is the second half of the request: arctGB gates the bergs on
+  // asn > 0.5, so pushing the snow ramp inward pushes every mountain that rides on it inward too. They now
+  // begin around mask 0.65 - well inside the band - instead of at its outer fringe, so what the player
+  // meets at the transition is forest, then water, then flat snow, and the ice only rises further in.
   const ARCT_SNOWN = 0.18;                             // peak-to-peak noise added to the mask, in mask units
   // ══ AND THE GLACIERS FADE OUT WITH IT, RATHER THAN STOPPING ON ITS GATE ══ the ice block in fillColumn is
   // entered on `asn > 0.5`, a hard test, so a mountain 176 voxels tall stood at FULL height right up to the
@@ -1037,14 +1137,25 @@
   const ARCT_STAND = 60;
   const ARCT_GBLEND = 0.42;                            // …how much of the mask above the gate a berg takes to reach full height. 0.42 puts the ramp across most of the rim, which is where the eye reads the edge
   const arctGB = (asn) => { const t = (asn - 0.5) / ARCT_GBLEND; return t <= 0 ? 0 : t >= 1 ? 1 : sstep(t); };
+  // ── AND IT STOPS AT THE BIRCH (user 2026-08-31: "take the snow out of the birch forest, the snow caused from
+  // trying to blend the arctic with the birch forest") ── the two bands SHARE an edge: birch runs to -6480 and
+  // the arctic starts there. But arcticM fades over ARCTB = 1800, so it is non-zero 900 voxels INTO the birch,
+  // and arctSnow saturates at am 0.16 - which puts FULL snow about 470 voxels inside a forest that should have
+  // none. The blend was doing its job; the snow ramp is simply much shorter than the terrain ramp it rides on.
+  // Faded on birchM rather than cut at the border, because a hard height or mask test here draws a straight
+  // white line - the exact complaint the ARCT_SNOWR note further up was written to answer. Behind the same
+  // wrapped-distance cheap-out oakRoll and oakBank use, so the pine forest and the desert pay two compares.
   const arctSnow = (x, z) => {
     const am = arcticM(x, z);
-    if (am >= 1) return 1;
     if (am <= 0) return 0;
+    let bk = 1;
+    { const dxb = pwrap(x - SPWX);
+      if (dxb < BIRCHFAR && dxb > BIRCHWFAR) { const bm = birchM(x, z); if (bm >= 1) return 0; if (bm > 0) bk = 1 - bm; } }
+    if (am >= 1) return bk;
     const n = (fbm(x * 0.0052 + 61.3, z * 0.0052 + 17.9) - 0.5) * ARCT_SNOWN
             + (fbm(x * 0.017 + 5.1, z * 0.017 + 44.6) - 0.5) * ARCT_SNOWN * 0.5;
-    const t = (am + n) / ARCT_SNOWR;
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
+    const t = (am + n - ARCT_SNOW0) / ARCT_SNOWR;
+    return (t >= 1 ? 1 : t <= 0 ? 0 : sstep(t)) * bk;
   };
   // ── SNOW CAPS ON THE WATER (user 2026-08-30: "inside the lakes and rivers can you create snow caps") ──
   // written AT the waterline in place of the surface water voxel, not above it, so a cap is flush with the
@@ -1330,23 +1441,28 @@
   const BIRCHWFAR = BIRCHC - BIRCHH - 2 * BIRCHWMAX - BIRCHB * 0.5;   // …nor west of this
   const oakRoll = (h, x, z) => {
     const dx = pwrap(x - SPWX);                        // WRAPPED, like the mask it is short-circuiting for: on a raw distance these two tests answer for the first period only and every later oak forest would come out as pine
-    // ── THE BIRCH FOREST SHARES THIS FIELD ── checked FIRST and returning, because the two bands cannot
-    // overlap: birch reaches at most BIRCHFAR east and oak at most OAKWFAR west, and a whole pine strip sits
-    // between them. Its own cheap-out keeps the pine forest and the sand paying only two compares for it.
-    if (dx < BIRCHFAR && dx > BIRCHWFAR) {
-      const bm = birchM(x, z);
-      if (bm >= 1) return oakH(x, z);
-      if (bm > 0) return pineH(x, z) * (1 - bm) + oakH(x, z) * bm;   // …lerped from the PINE field now, not from baseH: pine is no longer the default height, so every band rim has to start from what actually borders it
-    }
-    // ── AND THE ARCTIC, on the same terms ── its own field rather than oak's, but routed through the same
-    // helper for the same reason: this is the one place all three copies of H agree, so a band added here
-    // needs no three-copy edit. Its cheap-out is checked before oak's for the same reason birch's is - the
-    // bands cannot overlap, a whole pine strip sits between arctic and oak, and the pine and the sand pay two
-    // compares for the whole biome existing.
-    if (dx < ARCTFAR && dx > ARCTWFAR) {
-      const am = arcticM(x, z);
-      if (am >= 1) return arctH(x, z);
-      if (am > 0) return pineH(x, z) * (1 - am) + arctH(x, z) * am;
+    // ── THE BIRCH AND THE ARCTIC COMPOSE; THEY DO NOT SHORT-CIRCUIT EACH OTHER ──
+    // This used to be two arms that each evaluated a mask and RETURNED, on a stated assumption: "the two bands
+    // cannot overlap: birch reaches at most BIRCHFAR east and oak at most OAKWFAR west, and a whole pine strip
+    // sits between them." That is true of birch and OAK. It was never true of birch and the ARCTIC, which was
+    // added later and SHARES AN EDGE with the birch - and the birch arm is checked first, so wherever birchM
+    // was still above zero it answered for the column and arcticM was never consulted at all.
+    // Measured at the worst case: two columns two voxels apart, arcticM 0.843 and 0.844, baseH 222 against 132.
+    // On one side the birch arm returned pine terrain; on the other birchM had reached exactly 0, the column
+    // fell through, and the arctic lerp pulled it 90 voxels down onto the sea bed. A vertical wall along the
+    // birchM = 0 iso-line, which is the "terrain looks like it is just shifting up" report.
+    // Sequential lerps are continuous in BOTH masks: each one vanishes as its own mask goes to zero, so no
+    // column can change which rule owns it. The cheap-outs stay - they are what keeps the pine forest and the
+    // desert paying two compares - and the deep cases still skip the fields they do not need.
+    const bm = (dx < BIRCHFAR && dx > BIRCHWFAR) ? birchM(x, z) : 0;
+    const am = (dx < ARCTFAR && dx > ARCTWFAR) ? arcticM(x, z) : 0;
+    if (am >= 1) return arctH(x, z);                   // the arctic core is the bed, whatever else claims the column
+    if (bm > 0 || am > 0) {
+      let hh;
+      if (bm >= 1) hh = birchH(x, z);                  // deep birch: the oak field with its own lakes cut into it, and pineH is not needed
+      else if (bm > 0) hh = pineH(x, z) * (1 - bm) + birchH(x, z) * bm;
+      else hh = pineH(x, z);
+      return am > 0 ? hh * (1 - am) + arctH(x, z) * am : hh;
     }
     if (dx >= OAKFAR || dx <= OAKWFAR) return pineH(x, z);   // ── THE PINE FOREST, AND THE DESERT'S BASE ── this used to hand `h` (baseH) straight back, which is what made pine the default terrain. It is a field of its own now. The desert comes through here too and that is deliberate: its own flat runs LAST in H and lerps over this, so deep sand is untouched to the bit and only the rim changes — mountains grading down into dune, which is what a desert edge should look like.
     if (dx <= OAKNEAR && dx >= OAKWNEAR) return oakH(x, z);   // deep oak — mask is exactly 1, and h * 0 + oakH * 1 is oakH
@@ -1385,7 +1501,7 @@
   // hillside with no crease. OAKBANKR is then the only shape knob, and the pair is chosen so the ramp's
   // steepest point, OAKBRISE * 1.5 / OAKBANKR = 0.34, stays under the oak forest's own p90 slope - the bank is
   // never steeper than the hills it interrupts, which is what "flat against the terrain" has to mean here.
-  const OAKBANKR = 280, OAKBANKY = WL + 22, OAKBRISE = 64;   // skirt reach in voxels; the old shelf height; the cone's rise
+  const OAKBANKR = 340;                                // skirt reach in voxels. OAKBANKY/OAKBRISE are GONE: they set the cone's fixed top, and the cone lerps to the column's own height now — see the note at the cone.
   // ── AND A FLAT BEACH INSIDE THE SKIRT (user 2026-08-17: "the sand that forms the outline around the water,
   // it needs to be flatter") ── the skirt above already made the BANK shallow, but it started its cone at
   // WL + 22, which is 16 voxels above the top of the sand band. fillColumn paints sand on `h <= WL + 6`, so
@@ -1409,14 +1525,33 @@
   // beach should be.
   // The cone is unaffected, and if anything gentler: it now runs from 24 to OAKBANKR instead of from 60,
   // so the same 82-voxel rise is spread over 256 voxels rather than 220.
-  const OAKBEACH = 24, OAKBEACHY = WL + 4;             // flat shore width in voxels (2.4 m), and its height
+  const SANDDEEP = 8;                                  // how far UNDER the waterline sand still reaches — see `shore` in world/terrain.js
+  const SANDR = 24;                                   // how far a beach looks for open water before it is allowed to be sand — see `shore` in world/terrain.js
+  const OAKBEACH = 10, OAKBEACHY = WL + 2;
+  // ── OAKBEACHY SITS INSIDE THE SAND, NOT ON TOP OF IT (user 2026-08-31: "I dont want to see dirt/grass in
+  // the middle of the sand") ── the cone holds its flat at this height, so this is the level most of a beach
+  // ACTUALLY sits at. At WL+4 it was landing one voxel above the solid sand band: measured by height, WL-1
+  // through WL+3 come out 95-100% sand (ids 34/35/36) and WL+4 is 60% forest floor (9/10/11), so the cone was
+  // parking the widest part of every beach on the one level that is not sand - which is the dirt and grass in
+  // the middle of it. WL+2 is inside the band with a level of margin either side.
+             // flat shore width in voxels (9.6 m), and its height
+  // ── ONE PROFILE, FLATTER, FOR EVERY BIOME (user 2026-08-31: "smooth out the sand banks in the cherry forest
+  // as well … actually all banks should be smoothed out") ── this was briefly a pine-only pair of constants and
+  // that was the wrong shape for the problem: nothing about a shoreline wants to know which forest it is in,
+  // and the cherry report is just the same bank seen from the other side of a border. So the skirt widens for
+  // everyone instead - reach 280 -> 460, flat sand 24 -> 60 - and the whole biome branch is gone with it.
+  // Mean gradient over the cone is now 82/400 = 0.205 against the old 82/256 = 0.320, a bank a little under
+  // two thirds as steep, with two and a half times as much flat sand in front of it.
+  // OAKBRISE is UNTOUCHED at 64 and that is deliberate: the note above it explains that the top has to clear
+  // HMAX - WL = 81 or the cone stops under the hillside and creases, which is exactly what the pine-only
+  // version got wrong by lowering it to 46 in the name of flatness. Length is the knob; height is not.
   // ── AND THE PINE FOREST'S OWN, WIDER AND SHALLOWER (user 2026-08-31: "make the transition from the dirt to
   // sand flatter in the pine forest") ── same cone, two numbers changed: twice the flat sand before it starts
   // to climb, and a top at WL + 46 instead of oak's WL + 86. Those give a mean gradient of 42/232 = 0.18
   // against oak's 82/256 = 0.32, so the apron is a little over half as steep and reaches the same distance.
   // The oak forest keeps its own profile untouched: this was asked for in the pine, and the oak's shore is
   // the one the whole helper was tuned against in the first place.
-  const PINEBEACH = 48, PINERISE = 24;                 // flat shore width, and the cone's rise over OAKBANKY
+  // against oak's 0.320 - flatter than what was asked for last time, and with no step at either end.
   const oakBank = (h, x, z) => {                       // ONE shared scalar helper again, for the reason oakRoll is one: three copies of H and no room for drift
     const dx = pwrap(x - SPWX);                        // wrapped, for the reason oakRoll's is
     // ── THE ARCTIC SEABED IS RE-ASSERTED HERE, AFTER THE BASINS ── arctH already put the bed under the water
@@ -1453,7 +1588,19 @@
         const sb = arctSeaH(x, z);
         if (h < sb) return h * (1 - am) + sb * am;     // …the floor, unchanged: basins and anything under the bed
         const cap = WL + (1 - am) * ARCT_STAND;
-        if (h > cap) return Math.max(sb, cap + (h - cap) * (1 - am));
+        if (h > cap) h = Math.max(sb, cap + (h - cap) * (1 - am));   // …and FALL THROUGH, see below
+        // ── THIS USED TO `return` AND THAT IS A 54-VOXEL CLIFF (user 2026-08-31: "the terrain … looks like it
+        // is just shifting up") ── returning here skips the whole bank skirt below, so `h > cap` was not a
+        // height cap at all, it was a switch between two completely different treatments of the column.
+        // Measured at the worst case in the birch forest, two voxels apart with EVERY mask constant and no
+        // river or basin: H 159 against H 211. Below the cap the bank cone pulled a 213-voxel hill down to
+        // 159; one voxel above it, the same hill returned 213 untouched. A vertical wall along the cap's
+        // iso-line, and the reason it shows up in the BIRCH forest of all places is that am is 0.016 there -
+        // the arctic mask's far tail, 900 voxels outside its own band, where cap sits at 211 and ordinary
+        // birch hills cross it. Nothing about that column is arctic except this rule reaching it.
+        // Assigning instead of returning makes the cap COMPOSE with the skirt rather than replace it, which
+        // is what it was always described as doing: 'a CEILING ON HEIGHT ABOVE THE WATERLINE'. A ceiling is
+        // not a branch.
       }
     }
     // THE BIRCH FOREST GETS THE SHALLOW BANKS TOO, because it got the rounded hills that make them necessary:
@@ -1478,15 +1625,39 @@
     const bm = (dx < BIRCHFAR && dx > BIRCHWFAR) ? birchM(x, z) : 0;
     const pine = bm <= 0 && (dx >= OAKFAR || dx <= OAKWFAR);   // …no named band owns this column: the pine forest, and the desert's base under its flat
     if (h <= OAKBEACHY) return h;                      // …and any ground already at or under the BEACH, in either forest
-    const d = bankDist(x, z);
+    let d = bankDist(x, z);
+    // ── AND A DISTANCE TO THE WATER THE SKIRT CANNOT SEE (user 2026-08-31: "the transition needs to be much
+    // smoother") ── bankDist walks WATERSHED geometry only, so lakes cut by a biome's own height field are
+    // invisible to it. Measured: the cone ran on 5 of 33 pine shorelines. The other 28 kept the raw field
+    // gradient, which terraces every four voxels, and nothing that reshapes the HEIGHT can fix that - a remap
+    // with both ends pinned expands wherever it compresses (tried twice, reverted twice). Widening a terrace
+    // means moving land horizontally, and that needs a horizontal measure.
+    // For a smooth field, the distance to its own WL contour is (h - WL) / |grad h| to first order, and the
+    // gradient costs two extra samples because the centre value is the h we were handed. Gated hard: only where
+    // the watershed walk found nothing AND the column is low enough that the cone could reach it at all, so the
+    // whole inland world pays nothing. It is an ESTIMATE and only ever used to make the cone reach further, so
+    // being wrong makes a shore gentler than it needed to be, never a cliff.
+    if (d >= OAKBANKR && h - WL < 92) {
+      const g = 4, fld = bm > 0 ? birchH : (dx >= OAKFAR || dx <= OAKWFAR ? pineH : oakH);
+      const gx = (fld(x + g, z) - h) / g, gz = (fld(x, z + g) - h) / g;
+      const gr = Math.sqrt(gx * gx + gz * gz);
+      if (gr > 0.02) { const df = (h - WL) / gr; if (df >= 0 && df < d) d = df; }
+    }
     if (d >= OAKBANKR) return h;                       // no water within the skirt
-    // ONE continuous profile from the beach to the hilltop: flat for OAKBEACH, then the same sstep cone to
-    // the same top (OAKBANKY + OAKBRISE, which is deliberately above HMAX - WL so the cap always releases
-    // into the hillside with no crease). Two separate pieces would step 18 voxels where they met, which is
-    // exactly the cliff this whole helper exists to remove.
-    const bF = pine ? PINEBEACH : OAKBEACH, bR = pine ? PINERISE : OAKBRISE;
-    const c = OAKBEACHY + (OAKBANKY + bR - OAKBEACHY)
-              * sstep(Math.max(0, d - bF) / (OAKBANKR - bF));
+    // ── THE CONE RISES TO THE COLUMN'S OWN HEIGHT, NOT TO A FIXED TOP (user 2026-08-31: "you have one flat
+    // step of sand, then much smaller steps of sand that lead to the dirt terrain … all water banks should have
+    // a flat but also smooth transition") ── it used to climb to OAKBANKY + OAKBRISE, a constant 86 over the
+    // waterline, chosen to clear HMAX - WL = 81 so the min would always release into the hillside. That works,
+    // but it spends the SAME 82 voxels of rise beside a low lake as beside a mountain, and 82 over the reach is
+    // a gradient of ~0.2 - one terrace every five voxels. That is the stepping: a wide flat beach, then the
+    // sstep accelerates and the terraces narrow to three or four voxels on the way up to the grass.
+    // Lerping to `h` instead makes the rise exactly as tall as the land actually is. Beside ordinary lake
+    // country (h ~190) that is 34 voxels over the same reach - a gradient of 0.09, terraces two to three times
+    // wider - and it only steepens where the ground genuinely does. It also RETIRES the clear-HMAX rule rather
+    // than restating it: c reaches h precisely at the rim by construction, at any terrain height, so there is
+    // no top left to set too low. That rule cost a crease once already this session.
+    const c = OAKBEACHY + (h - OAKBEACHY)
+              * sstep(Math.max(0, d - OAKBEACH) / (OAKBANKR - OAKBEACH));
     if (c >= h) return h;
     if (bm > 0) return bm >= 1 ? c : h * (1 - bm) + c * bm;   // the birch band, faded on its own mask for the same reason the oak rim is
     if (pine) return c;                                // the pine forest: the cone at full strength, exactly as deep oak gets it
@@ -1617,8 +1788,31 @@
     const rs = riverS(x, z);
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
     h = Math.round(oakBank(h, x, z));                  // ── SHALLOW OAK BANKS ── BEFORE the carve, so the lerp below starts from the shelf instead of from a hilltop. h is already an integer here, so Math.round is the identity outside the oak forest and the pine/desert heights stay bit-exact; see oakBank
-    if (rs > 0.02) h = Math.min(h, Math.round(Math.min(h, WL + RIVLAND) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
-    if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
+    if (rs > 0.02) h = Math.min(h, Math.round((h - Math.max(0, h - (WL + RIVLAND)) * rs) * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
+    // ── THE BEACH KEEPS ITS OWN ORDER (user 2026-08-31: "make all the sand steps even with one another …
+    // you need to bring back the lowest sand step inwards") ── this used to discard the raw height and
+    // re-derive the step from an fbm, and the Math.max(0, ...) on that mapping clamped every column under
+    // fbm 0.685 to step 0. That is roughly two thirds of the beach standing on ONE level, which is the single
+    // wide flat bottom step the report is about, with WL+2 and WL+3 as slivers above it.
+    // The window is [WL-2, WL] - three raw levels - and they are already ordered by distance from the water.
+    // Lifting the whole window by a CONSTANT keeps that order: the deepest column lands on WL+1, the
+    // shallowest on WL+3, and each step is as wide as the underlying slope makes it, so the three come out
+    // even with each other instead of one swallowing the others. No noise, so no ring is drawn by this line.
+    if (h <= WL && h >= WL - 2 && bm <= 0.25 && rs <= 0.04) h = h + 3;
+    // ── AND THAT RELIEF IS ON ITS OWN LONG WAVELENGTH NOW (user 2026-08-31: "one layer that is flat and wide,
+    // then you have much smaller steps of sand that then lead to grass … make the steps wider/flatter") ── it
+    // used to ride `bn`, which is the RIVER BED noise at 0.05 - a wavelength of about 20 voxels. This line
+    // writes WL+1, WL+2 or WL+3 straight from it, so the beach flipped between three heights every ten voxels
+    // or so: not a slope at all, a speckle, and every flip reads as a one-voxel terrace two voxels wide. That
+    // is the "much smaller steps", and it is why widening the bank cone and adding the waterline shelf both
+    // measured no change - neither of them runs after this line, and this line was writing the answer.
+    // 0.018 is a wavelength of ~55 voxels. It was 0.009 for one round and that made the LOWEST terrace 64 voxels
+  // wide against 4 for every step above it (user 2026-08-31: "reduce the size of the lowest/last sand step in
+  // half") - one enormous flat and then a staircase, which is a worse read than the speckle it replaced.
+  // Halving it puts that terrace near 32 and leaves it comfortably clear of the ~20-voxel noise that made the
+  // beach look like static at 0.05.
+    // the relief reads as a low dune rather than as noise. Its own noise rather than a lower-frequency `bn`:
+    // bn is the river bed's and the banks' relief and is tuned where it is used.
     // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
     // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
     // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
@@ -1639,6 +1833,15 @@
   // crosses a valley floor or a shoulder. BIT-EXACT below the cap, which is all ground under 196 - so every
   // river in the world outside the high country is untouched - and it can only ever LOWER a column, because
   // the whole expression is already inside a Math.min against h.
+  // ── AND THE CAP FADES IN WITH rs, WHICH THE FIRST VERSION DID NOT (user 2026-08-31: "getting flat walls in
+  // the pine forest: I also saw them in the desert") ── written as a bare Math.min(h, WL + RIVLAND) the cap
+  // was at FULL strength the instant rs cleared the 0.02 carve threshold, so a 250-voxel hill with the
+  // faintest trace of river over it evaluated to 196 and the outer Math.min took it: a 55-voxel vertical
+  // face along the rs = 0.02 iso-line, in every biome tall enough to have one. That is the flat wall, and
+  // the desert had it too because a dune crest is just as high.
+  // `h - max(0, h - cap) * rs` is the same cap reached continuously: identity at rs 0, the full cap at
+  // rs 1, and nothing to step over in between. The width it was added to buy is unaffected - what widens a
+  // channel is the cap at HIGH rs, which is exactly where this still applies it in full.
   const RIVLAND = 44;                                  // …how far over the waterline the land may push a channel's bed
   const RIVCELL = 768, RIVINF = 6200;                  // WATERSHEDS — one candidate per ~77 m cell, rare roll; each hit is a whole dendritic system (influence radius must cover the longest possible chain)
   const rivCache = new Map();

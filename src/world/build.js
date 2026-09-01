@@ -79,9 +79,18 @@
       }
       return null;
     };
-    SPWX = Math.round((Math.random() - 0.5) * 400000);   // ── RANDOM SPAWN each refresh (user) ── land anywhere in a ±20 km span; the capped nudge below walks east to the first valid dry, cave-free ground. lakeSpawn() above is left defined but unused (easy re-enable).
-    SPWZ = Math.round((Math.random() - 0.5) * 400000);
-    console.log('[vb] spawn RANDOM', SPWX, SPWZ);
+    // ── ?spawn=X,Z PINS IT, AND THAT IS A TEST INSTRUMENT, NOT A FEATURE (audit 2026-08-31) ── the spawn is
+    // random per refresh, which is right for play and ruinous for measurement: every reload lands the camera on
+    // different ground, so two builds can never be compared. A whole afternoon of terrain tuning was spent
+    // chasing that - the same constant measured 17.9% and 71.6% on consecutive runs with nothing changed but
+    // the world under it, and a one-patch reading of "8.3% risers" led to a diagnosis that was simply wrong.
+    // The noise FIELDS are pure functions of world position; only the band masks depend on SPWX/SPWZ. So
+    // pinning those two numbers makes an absolute coordinate mean the same terrain across reloads, which is
+    // what an A/B needs. Absent the flag nothing changes.
+    const _sp = /[?&]spawn=(-?\d+),(-?\d+)/.exec(location.search);
+    SPWX = _sp ? +_sp[1] : Math.round((Math.random() - 0.5) * 400000);
+    SPWZ = _sp ? +_sp[2] : Math.round((Math.random() - 0.5) * 400000);
+    console.log('[vb] spawn ' + (_sp ? 'PINNED' : 'RANDOM'), SPWX, SPWZ);
   }
   // ── SPAWN IN THE OAK FOREST (user 2026-08-19: "have the player spawn in the oak forest on refresh") ── NOT
   // done here, and the reason is worth writing down: walking SPWX cannot work. chNear/cherryM/oakM in
