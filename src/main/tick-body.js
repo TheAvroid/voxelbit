@@ -90,7 +90,7 @@
         const dwx = P.x - P.wkx, dwz = P.z - P.wkz;
         if (dwx * dwx + dwz * dwz >= RIP_STEP * RIP_STEP) { P.wkx = P.x; P.wkz = P.z; ripAdd(P.x, P.z, 0.5); }
       } else { P.wkx = undefined; }
-      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
+      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? SAND_SPD : 1);   // sand slows the player — see SAND_SPD in sim/player.js
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
       moveAxis(0, P.hvx * dt, hh);
@@ -178,17 +178,11 @@
         vbLavaT += dt;
         if (vbLavaT >= 0.5) { vbLavaT = 0; vitHurt(4, 'you burned in the lava', true); }
       } else vbLavaT = 0;
-      // ── QUICKSAND ── a sand flat swallows you a little more every second you stand on it. The sink is applied to the
-      // EYE, not to P.y: the player still stands on solid ground for collision, so nothing here can shove them through
-      // the world — the camera simply slides down into the sand. Once the sand closes over the eye, that's the death.
-      if (!dead && !P.fly && P.onGround && onFlatSand()) P.sink = Math.min(eyeH + 2, P.sink + SINK_IN * dt);
-      else P.sink = Math.max(0, P.sink - SINK_OUT * dt);   // stepped off / jumped / flying → haul yourself back out
-      // …and the sand suffocates rather than swallowing you whole: once it closes over the eye it takes a
-      // point a second, so there is a window to jump clear if you notice the screen going under.
-      if (!dead && !P.fly && P.sink >= eyeH) {
-        vbSandT += dt;
-        if (vbSandT >= 1.0) { vbSandT = 0; vitHurt(1, 'you sank into the quicksand', true); }
-      } else vbSandT = 0;
+      // ── QUICKSAND IS GONE (user 2026-09-01: "remove the sand sinking mechanic from the game completely") ──
+      // a sand flat used to swallow the EYE a little more every second you stood on it and then suffocate you for a
+      // point a second. Removed whole: the sink accumulator, the suffocation tick, SINK_IN/SINK_OUT, the vbSandT
+      // timer, P.sink itself and the onFlatSand predicate that gated it (with its QS_DRY/QS_SAND shoreline guard).
+      // Sand is now just ground you walk slower on — onSand() stays, because the walk-speed term above uses it.
       // ── CACTUS SPINES (user 2026-08-15) ── leaning on one costs a point, on a cooldown so standing against
       // a saguaro drains you steadily rather than instantly. `hh` is the same live collision height moveAxis
       // is given above, so a crouched player is tested at 13 voxels and not 20 — the test asks about the body
@@ -201,15 +195,15 @@
       // change is what the clear branch rests the timer at: primed rather than zeroed, so the very first frame
       // of contact is already over the line. The cadence after that is untouched — leaning on one still costs
       // a point every CACT_CD, which is the part the 2026-08-15 note argues for.
-      // Same reason the LAVA and QUICKSAND timers below/above are deliberately NOT changed: those are hazards
-      // you stand IN and they are meant to ramp; this is a thing you brush PAST, and it has to bite once.
+      // Same reason the LAVA timer above is deliberately NOT changed: that is a hazard you stand IN and it is
+      // meant to ramp; this is a thing you brush PAST, and it has to bite once.
       if (!dead && !P.fly && cactusHurtAt(P.x, P.y, P.z, hh)) {
         vbCactT += dt;
         if (vbCactT >= CACT_CD) { vbCactT = 0; vitHurt(1, 'the cactus spines got you'); }
       } else vbCactT = CACT_CD;
       if (P.y < -60) respawn();
       // eye smoothing — step-ups AND stick-downs ease over ~80 ms instead of popping; exact tracking while airborne
-      const targetEye = P.y + eyeH - P.sink;           // …minus how far the quicksand has swallowed us
+      const targetEye = P.y + eyeH;
       smoothEye += (targetEye - smoothEye) * (1 - Math.exp(-(P.onGround ? 12 : 60) * dt));
       smoothEye = Math.max(targetEye - 3, Math.min(targetEye + 3, smoothEye));   // never lag more than 3 voxels
     }

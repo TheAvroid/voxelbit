@@ -174,7 +174,7 @@
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - dy * ls));
   });
   let dead = false;
-  let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = CACT_CD;   // …the cactus one starts PRIMED: it is a leading-edge timer now (see tick-body), and the clear branch rests it here anyway — seeding it to 0 would make the very first cactus of a session the one that waited
+  let vbLavaT = 0, vbDrownT = 0, vbCactT = CACT_CD;   // …the cactus one starts PRIMED: it is a leading-edge timer now (see tick-body), and the clear branch rests it here anyway — seeding it to 0 would make the very first cactus of a session the one that waited
   const FALL_FREE = 3;                                 // metres you may drop for nothing — Minecraft's threshold, and a believable one: a 3 m hop stings nobody
   // ── AND PAST IT THE COST ACCELERATES (user 2026-08-17: "the higher the player falls, the more fall damage
   // it causes. if its really high, the player just dies") ── it used to be one point per metre, flat, which
@@ -191,7 +191,6 @@
   const FALL_KILL = 25;   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
   let uwT = 0;                                          // ── DROWN CLOCK ── seconds the EYE has been continuously submerged; hits DROWN_T → game over. Reset on surfacing/respawn; frozen (not reset) while paused/editor.
   const DROWN_T = 10;                                  // you can hold your breath for 10 s underwater (user)
-  const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it
   const die = (why) => {                               // every death routes through here so the game-over screen always says what killed you
     if (dead) return;
     dead = true;

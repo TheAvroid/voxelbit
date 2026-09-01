@@ -20,6 +20,7 @@
   const SWIM_DEEP = 5;
   const SWIM_STEP = 12;                                // how far a SWIMMER may auto-step, against 5 on land — sized off the measurement in moveAxis: float depth 6 + the steepest bank on a measured lake 4, plus margin
   const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 4.5;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
+  const SAND_SPD = 0.75;                              // ── SAND SLOWS YOU BY 25% (user 2026-09-01: "only let the sand slow down the player by 25%") ── was 0.5, i.e. a 50% cut. The multiplier is the speed you KEEP, so a 25% slow is 0.75, not 0.25
   const WATER_SPD = 0.344;                             // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
   // ── THE PLAYER STARTS IN THE OAK FOREST (user 2026-08-22: "spawn me automatically in the oak forest") ──
@@ -33,7 +34,7 @@
   // only 0.029 by +900 — the player was starting a full kilometre inside the PINE forest, every single boot.
   // The walk is the same guard build.js uses on the anchor: never start in water or a gorge.
   // SPOX itself is computed in world/build.js, before the streaming window is sized around it.
-  const P = { x: SPWX + SPOX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: SPYAW, pitch: SPPITCH, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0, sink: 0 };
+  const P = { x: SPWX + SPOX + 0.5, y: 0, z: SPWZ + 0.5, vy: 0, yaw: SPYAW, pitch: SPPITCH, roll: 0, onGround: true, fly: false, crouch: false, sprintJump: false, hvx: 0, hvz: 0, bounceN: 0, fallT: 0 };
   P.y = hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];
   let smoothEye = P.y + EYE;
   const keys = new Set();
@@ -273,26 +274,6 @@
     for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (sandTab[W[gwrap(x, WX) + gy * WX + gwrap(z, WZ) * WX * WY]]) return true;
     return false;
   };
-  const QS_DRY = 10, QS_SAND = 6;                       // quicksand needs NO water within QS_DRY, and unbroken sand out to QS_SAND in all 8 directions
-  const onFlatSand = () => {                            // QUICKSAND only swallows you on a real SAND FLAT — sloped beaches, dune faces and the thin sand RIM that outlines every lake and river stay ordinary ground
-    if (!onSand()) return false;
-    if (waterAt(Math.floor(P.x), Math.floor(P.y), Math.floor(P.z))) return false;   // SUBMERGED sand is just lakebed, not quicksand (user): the voxel the body stands in is water → wading/standing on a bed never sinks you. A DRY beach top sits at WL with the player at WL+1, so this never fires on the sand flats that should swallow you.
-    const cx = Math.floor(P.x), cz = Math.floor(P.z);
-    const h0 = hmap[gwrap(cx, WX) + gwrap(cz, WZ) * WX];
-    for (let dz = -3; dz <= 3; dz += 3) for (let dx = -3; dx <= 3; dx += 3)
-      if (Math.abs(hmap[gwrap(cx + dx, WX) + gwrap(cz + dz, WZ) * WX] - h0) > 1) return false;   // any real step within 30 cm → it's a slope, not a sand flat
-    // ── SHORELINE GUARD (user: "you're making me sink in the sand that makes up the OUTLINE of water") ── the beach rim
-    // that traces every waterline is flat sand too, so flatness alone was swallowing people at the water's edge. A real
-    // sand PAN is broad and dry: no water anywhere within QS_DRY, and still pure sand underfoot out at QS_SAND on every
-    // heading. The shore rim fails both — water sits a few voxels away and dirt/grass takes over just inland.
-    for (let k = 0; k < 8; k++) { const a = k * 0.785398, sa = Math.sin(a), ca = Math.cos(a);
-      for (let d = 2; d <= QS_DRY; d += 2) if (waterAt(Math.round(cx + sa * d), WL, Math.round(cz + ca * d))) return false;
-      const px = Math.round(cx + sa * QS_SAND), pz = Math.round(cz + ca * QS_SAND);
-      const gpx = gwrap(px, WX), gpz = gwrap(pz, WZ), py = hmap[gpx + gpz * WX] - 1;
-      if (py < 0 || py >= WY || !sandTab[W[gpx + py * WX + gpz * WX * WY]]) return false;
-    }
-    return true;
-  };
   function moveAxis(axis, d, hh) {
     if (d === 0) return false;                         // a zero move must never snap-shove an embedded player sideways
     let hit = false;
@@ -371,7 +352,11 @@
     else resetHist = 1;
   }
   function respawn() {
-    P.x = SPWX + SPOX + 0.5; P.z = SPWZ + 0.5; P.yaw = SPYAW;   // …and a RESPAWN lands in the oak too P.pitch = SPPITCH; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0;   // respawning always lifts you back out of the sand + faces the baked spawn direction
+    P.x = SPWX + SPOX + 0.5; P.z = SPWZ + 0.5; P.yaw = SPYAW;   // …and a RESPAWN lands in the oak too, facing the baked spawn direction
+    // NOTE: this line used to carry `P.pitch = SPPITCH; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0;` AFTER a mid-line
+    // `//`, so none of it has ever run — the comment ate the rest of the line. Only the sink reset was removed here
+    // (the mechanic is gone); the other four are left dead rather than silently switched on, because reviving them
+    // changes what a respawn does to your pitch and velocity and that is a separate decision.
     maybeRecenter();
     P.y = hmap[gwrap(SPWX + SPOX, WX) + gwrap(SPWZ, WZ) * WX];
     while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT)) P.y += 1;
