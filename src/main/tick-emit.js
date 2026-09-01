@@ -130,16 +130,7 @@
       if (he >= 0 && he < 1) { const hf = Math.floor(he * 12);                 // 12 phases over the blink, stepped at 24 fps like every other animation here
         hk = 1 - hf / 12;                               // ONE flash (user): full at the instant of the hit, fading out across the half second
         if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
-        // ── A RAGDOLL IS STILL THE ANIMAL, EVEN ONCE ITS SLOT IS RETIRED (user 2026-08-31: the death is
-        // "not breaking apart in peices that are red like before") ── this asked for HB.init and killed the
-        // flash outright the moment it went false. A creature that has just died is exactly the case that
-        // fails it: sim/life/reactions.js reapDeaths says so in its own note - "half a second is long enough
-        // for one of the walker escapes in tick-creatures to retire a body that cannot move, which is how a
-        // dying creature ends up here already deactivated". So the slot goes quiet part-way through the
-        // half-second flash, hk drops to 0, and the pieces finish their tumble in their ordinary colours.
-        // The ragdoll outlives init by design and hurtBox already boxes the PIECES rather than the animal
-        // (see its ragParts branch), so B.rag is the honest test for "is there still something to redden".
-        if (HURT.slot >= 0) { const HB = wbf[HURT.slot]; if (HB && (HB.init || HB.rag)) hurtBox(HB); else hk = 0; }   // it died or despawned mid-blink — nothing left to stain. SLOT -1 IS NOT THAT CASE: it is the deliberate AABB path a shot SKY BIRD takes (birds live in birds[], not the pool, so there is no wbf entry to re-read — birdShot sets the box and birdRagTick re-publishes it every frame). Zeroing hk here made hurtB.w 0, which is the shader's whole gate, so a shot bird never flashed red and the HURT.k wound light below never lit either
+        if (HURT.slot >= 0) { const HB = wbf[HURT.slot]; if (HB && HB.init) hurtBox(HB); else hk = 0; }   // it died or despawned mid-blink — nothing left to stain. SLOT -1 IS NOT THAT CASE: it is the deliberate AABB path a shot SKY BIRD takes (birds live in birds[], not the pool, so there is no wbf entry to re-read — birdShot sets the box and birdRagTick re-publishes it every frame). Zeroing hk here made hurtB.w 0, which is the shader's whole gate, so a shot bird never flashed red and the HURT.k wound light below never lit either
       }
       UF[UF_HURTB] = HURT.cx - winOX; UF[UF_HURTB + 1] = HURT.cy; UF[UF_HURTB + 2] = HURT.cz - winOZ; UF[UF_HURTB + 3] = hk;
       HURT.k = hk;                                    // …and the wound CASTS light too (user). It cannot write a point-light slot from HERE — the ffLights

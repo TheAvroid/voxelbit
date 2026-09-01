@@ -212,7 +212,6 @@
   let xHeld = false;
   addEventListener('blur', () => { xHeld = false; });
   addEventListener('keyup', (e) => { if (e.code === 'KeyX') xHeld = false; });
-  let rdSmooth = -1;                                  // ── VIEW DISTANCE, SLEW-RATE LIMITED ── lives here, beside cloudT, because it must SURVIVE the frame: tick-camera.js is a function BODY, so a `let` at its top would reset every tick. -1 = cold, take the target as-is. See RD_SLEW in main/tick-camera.js for what it is for.
   let cloudT = 0;                                     // ── CLOUD TIME ── seconds, but advanced by dt * cycleSpeed so the deck's wind keeps step with the sun. At 1x it tracks wall time exactly, which is what keeps the normal drift unchanged. Frozen with the sun under __TFREEZE, or an A/B would compare two different cloud fields
   // ── AND SCROLLING DOWN PAST THE SLOWEST NOTCH REWINDS (user 2026-08-30: "when they go backwards on the
   // scroll wheel, it rewinds time") ── cycleSpeed is SIGNED: ONE ladder of x1.6 notches running -512 … -0.25,
@@ -312,10 +311,6 @@
     // mechanism the light and paint panels use, and the reason it is not a bare exitPointerLock: losing the
     // lock on its own surfaces the pause menu, which would sit on top of the very panel being opened.
     // Closing with Y again takes the cursor back, so the key is the whole round trip.
-    // ── F9: DUMP THE FLIGHT RECORDER ── press it the moment something looks wrong. The ring buffer in
-    // render/buffers.js already holds the ~12 s BEFORE the press, so the glitch does not have to be
-    // predicted or reproduced — it only has to be SEEN. Downloads a JSON file; no pointer-lock interaction.
-    if (e.code === 'F9') { e.preventDefault(); try { const r = __vb.recSave(); console.log('[vb] flight recorder saved:', r.saved, 'frames'); } catch (err) { console.warn('[vb] recSave failed', err); } return; }   // the browser's own download prompt is the confirmation — no toast, and nothing drawn into the canvas that a capture would then contain
     if (e.code === 'KeyX') { xHeld = true; }           // …the wheel reads this; NOT returning, so anything else bound to X still gets it
     if (ED.on && e.code === 'KeyY') { setLightMode(!!edSzToggle()); return; }
     if (!locked) return;

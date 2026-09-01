@@ -28,6 +28,7 @@ render/buffers.js
 render/wgsl/pre.js
 render/wgsl/dda.js
 render/wgsl/trace.js
+render/wgsl/scatter-patch.js
 render/wgsl/denoise.js
 render/wgsl/cloudgen.js
 render/wgsl/composite.js
@@ -46,7 +47,6 @@ sim/chop.js
 sim/chop-tree.js
 sim/support.js
 sim/tools.js
-sim/jolt.js
 sim/solver.js
 sim/life/birds.js
 sim/life/slots.js

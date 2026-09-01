@@ -10,17 +10,15 @@
     // patchFlush then submitted a patch while a scatter was still pending — inverting the very ordering below.
     const veQuiet = VE.exporting;
     const par = frame & 1;
-    if (CPROF) enLast = performance.now();
     const enc = device.createCommandEncoder();
-    // ── NOTHING WRITES VOXELS ON THE GPU ANY MORE ── the strip scatter and the voxel-patch dispatch both
-    // existed to push CPU edits into the dense GPU array without a big writeBuffer. There is no dense GPU
-    // array: the pool is a derived cache of W, and every path that mutates W already poolTouch()es the bricks
-    // it changed, so the same edits land as whole 512-byte pages inside brickFlush below. That also retires
-    // the ordering hazard those two dispatches had with each other — a pre-band strip snapshot can no longer
-    // stomp this frame's creature and snow words, because there is no snapshot.
-    worldFlush();
-    recTick();                                       // ── FLIGHT RECORDER ── one ring-buffer row a frame (render/buffers.js); F9 dumps the last ~12 s
-    if (CPROF) enMark(0);
+    if (xStripPending >= 0) {                          // strip scatter runs before this frame's trace
+      const p = enc.beginComputePass(); p.setPipeline(pScatter); p.setBindGroup(0, bgScatter);
+      p.dispatchWorkgroups(Math.ceil(STRIPW / 256)); p.end();
+      xStripPending = -1;
+    }
+    // ⚠ ORDERING: the voxel patch goes AFTER the strip scatter. The scatter carries a PRE-band snapshot of a
+    // whole x-strip; applying creature/snow/edit words first would let it stomp them with stale wrapped terrain.
+    patchEncode(enc);
     // ══ CLOUD DENSITY CACHE FILL (jeantimex/procedural-clouds, MIT) ══ a BAND of y slices per frame, not the
     // whole volume. The full fill is ~614k texels of fractal Voronoi and would be a visible hitch if it landed
     // in one frame; spread four slices at a time it is 102k texels and finishes a full sweep every six frames.
@@ -69,14 +67,10 @@
         enc.resolveQuerySet(profQS, 0, 14, profRes, 0);
         if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 112); profNew = true; }
       }
-      if (CPROF) enMark(1);
-      const swapView = ctx.getCurrentTexture().createView();   // …can block on the presentation queue, so it is timed on its own
-      if (CPROF) enMark(2);
-      const rp = enc.beginRenderPass({ colorAttachments: [{ view: swapView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
+      const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
       rp.setPipeline(pBlit); rp.setBindGroup(0, bgBlit[par]); rp.draw(3); rp.end();
     }
-    device.queue.submit([enc.finish()]);
-    if (CPROF) enMark(3);                              // a quiet frame still submits: the scatter + patch above are the encoder's whole payload, and they must land in THIS frame's order
+    device.queue.submit([enc.finish()]);               // a quiet frame still submits: the scatter + patch above are the encoder's whole payload, and they must land in THIS frame's order
     if (profNew && !profBusy) {
       profNew = false; profBusy = true;
       profStg.mapAsync(GPUMapMode.READ).then(() => {

@@ -29,22 +29,11 @@
     @group(0) @binding(4) var histOut : texture_storage_2d<rgba16float, write>;
     @group(0) @binding(5) var slotCur : texture_2d<u32>;             // ── DYNAMIC LIFE ── this frame's creature ids (TRACE)…
     @group(0) @binding(6) var slotPrev : texture_2d<u32>;            // …and last frame's — identity must match at the reprojected pixel or history is another surface's
-    // ── AND THE INDIRECT RIDES THE SAME REPROJECTION ── one cosine-hemisphere ray per pixel is far too
-    // noisy to light with raw, and everything needed to clean it up is ALREADY COMPUTED in this pass:
-    // where the surface was last frame, whether that history is valid, and how many frames it is worth.
-    // Adding a second pass would recompute all three. So indirect accumulates here, against the same
-    // counter, and inherits every rejection the irradiance history already makes — disocclusion, a
-    // creature's slot changing identity, the reactive mask on a moving body.
-    @group(0) @binding(7) var gInd : texture_2d<f32>;                // this frame's raw one-bounce radiance (TRACE)
-    @group(0) @binding(8) var indPrev : texture_2d<f32>;             // …last frame's accumulated
-    @group(0) @binding(9) var indOut : texture_storage_2d<rgba16float, write>;
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
       let cur = textureLoad(gIrr, vec2<i32>(gid.xy), 0);
-      let indCur = textureLoad(gInd, vec2<i32>(gid.xy), 0).rgb;
-      if (cur.b < 0.0) { textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(0.0, 0.0, -1.0, 0.0)); textureStore(indOut, vec2<i32>(gid.xy), vec4<f32>(indCur, 1.0)); return; }   // sky pixel: nothing to accumulate, pass it straight through so the target is never stale
-      var indAcc = indCur;
+      if (cur.b < 0.0) { textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(0.0, 0.0, -1.0, 0.0)); return; }
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let wp = u.camPos + rayDir(px) * cur.b;
       let sl = textureLoad(slotCur, vec2<i32>(gid.xy), 0).r & 255u;
@@ -125,15 +114,11 @@
             hist = min(min(abs(prev.a), cap) + 1.0, max(capS, capA));   // the counter runs to the LONGER of the two; each channel clamps it down to its own below   // …and cap is 1e9 (no-op) for a pixel that reprojected onto ITSELF, HFIX for one that borrowed a neighbour's
             acc = vec2<f32>(mix(prev.r, cur.r, 1.0 / min(hist, capS)),
                             mix(prev.g, cur.g, 1.0 / min(hist, capA)));
-            // Indirect uses the AO channel's window: it is gathered by the same hemisphere ray, so it has
-            // the same noise character and the same right to a long history on a still surface.
-            indAcc = mix(textureSampleLevel(indPrev, samp, uv, 0.0).rgb, indCur, 1.0 / min(hist, capA));   // the SAME reprojected uv the irradiance history uses, sampled the same way
             // EQUIVALENCE: at ?aohist=64 (the default) capS == capA, so hist == min(prev.a + 1, capS) and
             // both blends are 1/hist — exactly the single-counter line this replaced. Bit-identical.
           }
       }
-      textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(acc, cur.b, select(hist, -hist, cur.a > 0.5)));
-      textureStore(indOut, vec2<i32>(gid.xy), vec4<f32>(indAcc, 1.0));   // SIGN carries the reactive flag to SPATIAL (magnitude unchanged) — see the note there
+      textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(acc, cur.b, select(hist, -hist, cur.a > 0.5)));   // SIGN carries the reactive flag to SPATIAL (magnitude unchanged) — see the note there
     }
   `;
 

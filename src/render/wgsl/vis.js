@@ -1,5 +1,5 @@
   // @module — the tile visibility-cull WGSL, and the one place every shader factory is built into a pipeline
-  // @exports CG_BAND, CG_DIM, CG_STRIDE, CG_SWEEPS, DDAW, FLAKEBLK, bgCloudGen, cgBuf, cgData, cgSamp, cgState, cgView, linSamp, pCloudGen, pBlit, pComposite, pSpatial, pTaa, pTemporal, pTraceV, pVis, worldFlush
+  // @exports CG_BAND, CG_DIM, CG_STRIDE, CG_SWEEPS, DDAW, FLAKEBLK, bgCloudGen, bgScatter, cgBuf, cgData, cgSamp, cgState, cgView, linSamp, pCloudGen, pBlit, pComposite, pScatter, pSpatial, pTaa, pTemporal, pTraceV, pVis, patchEncode, patchFlush
   const VIS_SRC = () => /* wgsl */`
     ${pickWGSL}
     @group(0) @binding(1) var<storage, read_write> visb : array<u32>;   // 4×u32 bitmask per 8×8 screen tile: bit di = drop slot di's bounding sphere may touch this tile (128 slots = four words)
@@ -54,25 +54,43 @@
   // signature now states what that shader is composed from. A missing argument shows up
   // as the literal text "undefined" in the WGSL, which fails compilation loudly, instead
   // of a silent TDZ that only ever renders black.
-  // ── THE DENSE ARRAY HAS NO GPU READER LEFT ── DDAW is built ONCE, on the pool, and TRACE and COMPOSITE
-  // share it. There is no dense variant to fall back to and no POOL_ON to pick between them: the 1.5 GB
-  // world buffer is not created at all any more (see render/buffers.js). W stays on the CPU as the source
-  // of truth and the pool is its derived cache; nothing on the GPU sees the flat array.
-  const PRE = PRE_SRC(), FLAKEBLK = FLAKEBLK_SRC(), DDAW = DDAW_SRC(1), VIS = VIS_SRC();
-  const TRACE = TRACE_SRC({ DDAW, FLAKEBLK, pickWGSL, POOL: 1 });
+  const PRE = PRE_SRC(), FLAKEBLK = FLAKEBLK_SRC(), DDAW = DDAW_SRC(), VIS = VIS_SRC();
+  const TRACE = TRACE_SRC({ DDAW, FLAKEBLK, pickWGSL });
   const COMPOSITE = COMPOSITE_SRC({ DDAW, pickWGSL });
-  const TEMPORAL = TEMPORAL_SRC(),
+  const SCATTER = SCATTER_SRC(), PATCHW = PATCHW_SRC(), TEMPORAL = TEMPORAL_SRC(),
         SPATIAL = SPATIAL_SRC(), TAA = TAA_SRC(), BLIT = BLIT_SRC();
 
   const mkCompute = (code, fol) => device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: (PRE + code).replaceAll('§FOL§', fol ? 'true' : 'false') }), entryPoint: 'main' } });
   const pTraceV = [mkCompute(TRACE, 0), mkCompute(TRACE, 1)];          // FOLIAGE SPECIALIZATION: variant 0 = normal play (see-through check compiled OUT of the hot DDA loop), variant 1 = eye near foliage
   const pVis = mkCompute(VIS), pTemporal = mkCompute(TEMPORAL), pSpatial = mkCompute(SPATIAL), pComposite = mkCompute(COMPOSITE), pTaa = mkCompute(TAA);
-  // ── ONE FLUSH, NO DISPATCH ── this used to encode a (wordIndex, value) list into a compute pass that
-  // wrote the dense GPU array. The pool replaced that: brickFlush drains the dirty-brick queue as whole
-  // pages, so the only thing left to do is call it at the right moment in the frame — ahead of the trace
-  // that reads what it wrote. `all` drains the queue completely rather than stopping at the per-frame
-  // budget, which is what a readback needs before it can trust what it reads.
-  function worldFlush(all) { brickFlush(all); return 0; }
+  const pScatter = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: SCATTER }), entryPoint: 'main' } });
+  const bgScatter = device.createBindGroup({ layout: pScatter.getBindGroupLayout(0), entries: [
+    { binding: 0, resource: { buffer: scatBuf } }, { binding: 1, resource: { buffer: stagBuf } }, { binding: 2, resource: { buffer: worldBuf } }] });
+  const pPatch = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: PATCHW }), entryPoint: 'main' } });
+  const bgPatch = device.createBindGroup({ layout: pPatch.getBindGroupLayout(0), entries: [
+    { binding: 0, resource: { buffer: patchCnt } }, { binding: 1, resource: { buffer: patchBuf } }, { binding: 2, resource: { buffer: worldBuf } }] });
+  // Encode the staged patch into `enc`. Values are read from W32 HERE, so a word edited several times
+  // this frame uploads its final state exactly once. Returns the pair count (0 = nothing to do).
+  function patchEncode(enc) {
+    brickFlush();                                      // the frame's accumulated brick/L2 bits, coalesced once — queued here so they land ahead of the trace that reads them
+    if (!patchN) return 0;
+    for (let i = 0; i < patchN; i++) { const w = patchIdx[i]; patchPairs[i * 2] = w; patchPairs[i * 2 + 1] = W32[w]; }
+    device.queue.writeBuffer(patchBuf, 0, patchPairs.buffer, 0, patchN * 8);
+    patchCntTmp[0] = patchN;
+    device.queue.writeBuffer(patchCnt, 0, patchCntTmp);
+    const p = enc.beginComputePass(); p.setPipeline(pPatch); p.setBindGroup(0, bgPatch);
+    p.dispatchWorkgroups(Math.ceil(patchN / 64)); p.end();
+    const n = patchN; patchN = 0; return n;
+  }
+  // Immediate flush — used when the stage overflows mid-frame, and by __vb.gpudiff() so a readback
+  // never races staged-but-undispatched edits.
+  function patchFlush() {
+    if (!patchN) return 0;
+    const enc = device.createCommandEncoder();
+    const n = patchEncode(enc);
+    device.queue.submit([enc.finish()]);
+    return n;
+  }
   const blitModule = device.createShaderModule({ code: PRE + BLIT });
   const pBlit = device.createRenderPipeline({ layout: 'auto', vertex: { module: blitModule, entryPoint: 'vs' }, fragment: { module: blitModule, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } });
   const linSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });

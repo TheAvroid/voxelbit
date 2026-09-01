@@ -96,25 +96,13 @@
     // was pressed picked it up mid-cycle, so the image JUMPED to wherever the wave happened to be and then
     // wandered. Unlocking now changes nothing about the view: the menu opens over exactly the frame you paused.
     const tanH = Math.tan(FOV / 2), aspect = RW / RH;
-    // __JFREEZE pins the TAA sub-pixel jitter to one sample. DIAGNOSTIC ONLY — it disables the very thing
-    // that anti-aliases the image — but it is the only way to attribute per-frame change: with the camera,
-    // clock and water all frozen, ~4.5% of pixels still differ frame to frame, and the calibration showed
-    // that residue survives removing every stochastic LIGHTING term and only collapses when TAA is on. That
-    // points at the primary-ray jitter rather than at any light path, and this proves it either way.
-    const j = window.__JFREEZE ? JIT[0] : JIT[frame & 7];
+    const j = JIT[frame & 7];
 
     // ── uniforms ──
     const set3 = (o, v3, w) => { UF[o] = v3[0]; UF[o + 1] = v3[1]; UF[o + 2] = v3[2]; UF[o + 3] = w; };
-    set3(0, [cam[0] - gwOX(), cam[1], cam[2] - gwOZ()], tanH);   // camera in GPU-WINDOW local space — that is the grid every shader indexes
-    // ── u.time, AND A DEV FREEZE FOR IT ── this one clock drives the Gerstner waves, the surface ripples and
-    // the star twinkle. A test that asks "did anything change while the camera stood still" is swamped by it:
-    // the sea alone moved 1.2-4.1% of the pixels in a frozen-camera capture, which buries the terrain fault
-    // the test is actually hunting. __TFREEZE pins the SUN and is used by other A/Bs, so this is its own flag
-    // rather than a change to that one. Ships inert: one property read per frame when unset.
-    if (window.__WFREEZE) { if (!window.__WFREEZE_T) window.__WFREEZE_T = now; }
-    else window.__WFREEZE_T = 0;
-    set3(4, right, aspect); set3(8, up, frame); set3(12, fwd, (window.__WFREEZE_T || now) / 1000);
-    set3(16, [prevCam.pos[0] - gwOX(), prevCam.pos[1], prevCam.pos[2] - gwOZ()], prevCam.tanH);
+    set3(0, [cam[0] - winOX, cam[1], cam[2] - winOZ], tanH);
+    set3(4, right, aspect); set3(8, up, frame); set3(12, fwd, now / 1000);
+    set3(16, [prevCam.pos[0] - winOX, prevCam.pos[1], prevCam.pos[2] - winOZ], prevCam.tanH);
     set3(20, prevCam.right, prevCam.aspect);
     const uw = waterAt(Math.floor(cam[0]), Math.floor(cam[1]), Math.floor(cam[2]));
     if (uw && !dead && !P.fly && !ED.on && !cineMode && locked) {   // ── DROWNING ── head submerged while actively swimming → lungs run out after DROWN_T
@@ -197,7 +185,7 @@
     set3(32, sun, resetHist);
     UF[36] = RW; UF[37] = RH; UF[38] = j[0]; UF[39] = j[1];
     UF[40] = prevCam.jit[0]; UF[41] = prevCam.jit[1]; UF[42] = CW; UF[43] = CH;
-    UF[44] = gwOX(); UF[45] = gwOZ(); UF[46] = gwrap(gwOX(), GWX); UF[47] = gwrap(gwOZ(), GWZ);   // winO + the toroidal wrap, both on the GPU window
+    UF[44] = winOX; UF[45] = winOZ; UF[46] = gwrap(winOX, WX); UF[47] = gwrap(winOZ, WZ);
     { if (mouse0 && locked && !dead && !CRAFT.open && now - swingStart >= 570) { swingStart = now; pendKillT = swingStart + 250; }   // hold left click → continuous swinging (each auto-repeat re-arms the impact-timed hit)   // …but never THROUGH the stone age bench (user 2026-08-20): the mousedown guard in reactions.js stops a fresh click, and this stops a button that was already down from re-arming a swing every 570 ms while the player chooses
       if (mouse2 && eatHold && locked) tryEat();                  // ── HOLD RIGHT CLICK TO KEEP EATING (user 2026-08-11) ── the mousedown takes the first bite; from here the held button takes another every EAT_MS until the stack is gone. tryEat itself carries the rest of the rule (dead / editor / mid-pickup / nothing edible in hand / the bite floor), so holding a bow or a rock still just draws or winds up; `eatHold` is the one thing it cannot know — whether this press was a grab or a bite. Same auto-repeat the left button has had.
       reapDeaths(now);                                 // creatures whose red flash has run out now actually die (see tryKillCreature)
@@ -792,39 +780,9 @@
     UF[UF_HURTV] = hurtVig(); UF[UF_HURTV + 1] = HURTV.seed;
     UF[UF_HURTV + 2] = vitRedLevel();                 // z: the standing heart level BLIT tints from — .x is the per-hit spike on top of it, and the two are independent on purpose (one is an event, one is a state)
     UF[UF_VITG] = vitGoldLevel();                     // …and the HUNGER bar's own level, on its own lane — see UF_VITG in render/buffers.js. Written every frame like the red one, so BLIT never reads the zero a cold buffer would hand it
-    const rdNow = RD_DBG || renderDist;                 // __vb.setRD(n) overrides the fixed distance for a sweep; 0 = back to RD_FIXED. RD_DBG lives in world/window.js because a `const` exported out of a module is a SNAPSHOT — a write inside video-editor.js would be invisible here
-    // ── TWO GENERATED EXTENTS, AND THE VIEW TAKES WHICHEVER REACHES FURTHER ── the near `rect` is the CPU
-    // window's own streamed rectangle and can never exceed HALF; the FAR RING (render/buffers.js) fills
-    // beyond it in whole tiles and reports how far it has actually got. Outrunning the ring shortens the view
-    // smoothly, exactly as outrunning the near stream already does, instead of showing a wall of air.
-    // At GMUL 1 ringFilled() returns HALF and the max() is a no-op, so this costs the shipped path nothing.
-    const nearR = Math.min(P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12);
-    const rdWant = ED.on ? Math.max(64, rdNow)           // editor world: nothing stale exists (occupancy is empty beyond the stage) — no rect clamp
-      : Math.max(64, Math.min(rdNow, Math.max(nearR, ringFilled())));
-    // ── AND IT IS SLEW-RATE LIMITED, WHICH IS THE FLASHING THE USER KEPT REPORTING ──
-    // ringFilled() is `distance to the NEAREST UNFILLED TILE`, so it does not drift — it JUMPS, by up to a
-    // whole tile, every time the nearest hole changes identity (one completes, or a new one comes into range).
-    // The user's own 12 s flight recorder (F9, arctic cruise, pool a healthy 64-77% with overflow 0, abandoned
-    // 0 and squash 0 — so this is NOT pool pressure, it is pure hole geometry):
-    //     52.9% of frames moved the view distance at all
-    //     13 jumps >= 16 voxels, 11 >= 32, max 74      ~2 large snaps EVERY SECOND
-    // and composite.js fades the far edge out with smoothstep(rdist - 72, rdist - 6, dist), a band just 66
-    // voxels WIDE. A 74-voxel jump therefore moves the fade band FURTHER THAN ITS OWN WIDTH in a single
-    // frame: a strip of distant terrain goes from fully visible to fully fogged, or back, with nothing in
-    // between. That is a screen-wide brightness step in the distance, it reverts a frame or two later when the
-    // next tile lands, and it only ever happens WHILE MOVING — which is every clue the user gave, including
-    // "it doesn't happen when I'm standing still". A 118 fps capture of the old build has it in 89% of frames,
-    // screen-wide, peak +73 and BRIGHT (fog is sky-coloured, so snapping fog IN brightens).
-    // It also explains why doubling the view distance introduced it: at GMUL 1 ringFilled() returns HALF and
-    // the max() above is a no-op, so this whole term was DEAD until the ring started reporting a real radius.
-    // The cure is not to make the ring keep up — it already does — but to stop the CAMERA from teleporting.
-    // Both rates are per SECOND and both are well clear of the 255 vox/s sprint fly speed, so the view can
-    // still always keep up with the player; all they remove is the discontinuity. Shrink is the faster of the
-    // two because lagging inward is what would show unfogged air past the data edge.
-    const RD_SLEW_OUT = 360, RD_SLEW_IN = 720;           // voxels/second: reveal, and retreat
-    if (rdSmooth < 0 || Math.abs(rdWant - rdSmooth) > 512) rdSmooth = rdWant;   // cold start, teleport, world rebuild: no glide, just be right
-    else rdSmooth += Math.max(-RD_SLEW_IN * dt, Math.min(RD_SLEW_OUT * dt, rdWant - rdSmooth));
-    UF[64] = rdSmooth;
+    UF[64] = ED.on ? Math.max(64, renderDist)            // editor world: nothing stale exists (occupancy is empty beyond the stage) — no rect clamp
+      : Math.max(64, Math.min(renderDist,                // the view never reaches past the GENERATED rect — outrunning gen shrinks it smoothly
+      P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12));
     UF[UF_CLOUDT] = cloudT;
     // ── THE FIRST NIGHT IS A FULL MOON (user 2026-08-28) ── the shader takes this as a phase ANGLE, and
     // angle 0 is full, so this is just a matter of where the cycle's zero sits. The game opens at tday 7/24

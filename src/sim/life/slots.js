@@ -244,18 +244,7 @@
   // anywhere that is not sand and not the blossom — pine included. Dropping it back to the default BIO_OAKF
   // is the whole change, and BIO_OAKF is not the oak band alone: sim/nav.js reads it as EITHER broadleaf
   // band, so the frog keeps the birch forest's water and loses only the pine's.
-  // ── AND THE MOUSE (user 2026-08-31: "also add the mouse as well") ── desert_mouse takes its forest
-  // population from DES_OAK, which means the OAK band, and there is no oak band any more: oakM is
-  // identically zero, so the mouse had a population and nowhere to put it. Widening it here tags it
-  // BIO_OAKF, which sim/nav.js defines as "anywhere that is not sand" - the pine forest included - so it
-  // lives where the trees are instead of where a retired mask used to be.
-  // ── AND THE FROG IS BACK (user 2026-08-31: "is there a frog in the pine forest? if not bring it back") ──
-  // this REVERSES 2026-08-27 ("Dont spawn a frog in the pine forest"), and it has to, because the world that
-  // request was made in no longer exists. Dropping the frog to BIO_OAKF was safe then: nav.js reads that as
-  // EITHER broadleaf band, so it kept the birch forest's ponds and lost only the pine's. Both bands are
-  // retired now - oakM and birchM are identically zero - so BIO_OAKF resolves to nowhere at all and the frog
-  // has been homeless rather than merely excluded. Back in ANYFOREST, which is where the only water is.
-  const DES_ANYFOREST = { ladybug: 1, desert_mouse: 1, frog: 1 };       // (the frog was here and is not any more — see above)
+  const DES_ANYFOREST = { ladybug: 1 };       // (the frog was here and is not any more — see above)
   // ── AND WHOSE MODEL FACES THE WRONG WAY ── the render basis in main/tick-creatures.js takes model −y as the
   // head end. A species baked by tools/bake_desert_life.py always does; one adopted from the asset editor's
   // scene-graph loader need not, and the ladybug's head is at +y. A named table rather than a magic term at

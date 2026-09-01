@@ -560,8 +560,6 @@ def check_modules(masked, offsets, mods, where):
 # that string to something unregistered is the one shape this cannot see.
 WORKER_DECLS = {          # names the pool writes into its worker preamble by hand
     'WX', 'WZ', 'OX', 'OZ', 'BX', 'W', 'hmap', 'touched', 'MROT', 'MROT9', 'remap', 'rivScope',
-    # MROT9 is the NINE pines' rotation sets, posted beside MROT on init (world/gen-pool.js). MROT is
-    # MROT9[0] and stays for everything written when the forest was one model; the terrain stamp picks.
     # BIRCHV / BIRCHPICK are DERIVED in the preamble, not registered: BIRCHV is ~205k voxels and shipping it
     # as a table would put megabytes of JavaScript into every worker. BIRCHENC (the delta-varint) and
     # birchDec/birchPick ARE registered, which is what keeps this honest.
@@ -574,10 +572,6 @@ WORKER_DECLS = {          # names the pool writes into its worker preamble by ha
     # per-worker state, so it is declared in each preamble rather than baked as a const. Its CAP is a
     # plain number and IS registered.
     'rivNear',
-    # The BIOME BORDER RIVERS' two 1-entry memos (bioPin's bp*, bioWobZ's bw* - see world/window.js).
-    # Same case as rivCache/rivNear: MUTABLE per-worker state, so they are declared in each preamble
-    # rather than baked as consts. Every value they hold is derived from registered fns.
-    'bpZ', 'bpD', 'bpO', 'bpC', 'bwZ', 'bwD', 'bwO', 'bwC', 'bwM', 'bwW',
     'WY', 'onmessage', 'postMessage', 'self',
     # OAKBLOSV is DERIVED in the preamble, not registered: it is OAKV with the leaf ids run through BLOSMAP,
     # and OAKV is 218,367 voxels, so registering the derived copy as a table would ship those voxels into every
@@ -592,10 +586,6 @@ ROW_DECLS = {             # ...and the ones the ROW worker writes into its own b
     # fragments below gen-worker.js, so both are still 0 when that preamble is assembled -
     # they ride along with every postMessage instead of being baked.
     'rivCache', 'rivNear', 'rivScope', 'SPWX', 'SPWZ', 'onmessage', 'postMessage', 'self',
-    # The BIOME BORDER RIVERS' two 1-entry memos (bioPin's bp*, bioWobZ's bw* - see world/window.js).
-    # Same case as rivCache/rivNear: MUTABLE per-worker state, so they are declared in each preamble
-    # rather than baked as consts. Every value they hold is derived from registered fns.
-    'bpZ', 'bpD', 'bpO', 'bpC', 'bwZ', 'bwD', 'bwO', 'bwC', 'bwM', 'bwW',
 }
 
 # (fragment, registry names in that fragment, hand-written preamble names, label)

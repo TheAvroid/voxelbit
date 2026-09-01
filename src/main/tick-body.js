@@ -90,7 +90,7 @@
         const dwx = P.x - P.wkx, dwz = P.z - P.wkz;
         if (dwx * dwx + dwz * dwz >= RIP_STEP * RIP_STEP) { P.wkx = P.x; P.wkz = P.z; ripAdd(P.x, P.z, 0.5); }
       } else { P.wkx = undefined; }
-      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? SAND_SPD : 1);   // sand pits slow the player 50% (user)
+      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
       moveAxis(0, P.hvx * dt, hh);
@@ -178,17 +178,17 @@
         vbLavaT += dt;
         if (vbLavaT >= 0.5) { vbLavaT = 0; vitHurt(4, 'you burned in the lava', true); }
       } else vbLavaT = 0;
-      // ── QUICKSAND IS GONE (user 2026-08-31: "the sand is STILL sinking the player … completely remove the
-      // sinking mechanic") ── a sand flat used to swallow the player a little more every second they stood on
-      // it, dropping the EYE toward the ground and then costing a point a second once the sand closed over it.
-      // It is removed outright rather than tuned: it was reported three times.
-      // P.sink is pinned to 0 instead of the field being deleted, and that is deliberate - it is read by the
-      // eye-height line further down and by the editor's camera, so a stale non-zero value left by a save, a
-      // respawn or a live reload would leave the camera buried in the floor with nothing left to raise it.
-      // Holding it at zero every tick makes that unrepresentable. onFlatSand/QS_DRY/QS_SAND and SINK_IN/OUT in
-      // sim/player.js are now unreferenced and can go with the next tidy; they are harmless where they are.
-      P.sink = 0;
-      vbSandT = 0;
+      // ── QUICKSAND ── a sand flat swallows you a little more every second you stand on it. The sink is applied to the
+      // EYE, not to P.y: the player still stands on solid ground for collision, so nothing here can shove them through
+      // the world — the camera simply slides down into the sand. Once the sand closes over the eye, that's the death.
+      if (!dead && !P.fly && P.onGround && onFlatSand()) P.sink = Math.min(eyeH + 2, P.sink + SINK_IN * dt);
+      else P.sink = Math.max(0, P.sink - SINK_OUT * dt);   // stepped off / jumped / flying → haul yourself back out
+      // …and the sand suffocates rather than swallowing you whole: once it closes over the eye it takes a
+      // point a second, so there is a window to jump clear if you notice the screen going under.
+      if (!dead && !P.fly && P.sink >= eyeH) {
+        vbSandT += dt;
+        if (vbSandT >= 1.0) { vbSandT = 0; vitHurt(1, 'you sank into the quicksand', true); }
+      } else vbSandT = 0;
       // ── CACTUS SPINES (user 2026-08-15) ── leaning on one costs a point, on a cooldown so standing against
       // a saguaro drains you steadily rather than instantly. `hh` is the same live collision height moveAxis
       // is given above, so a crouched player is tested at 13 voxels and not 20 — the test asks about the body
@@ -319,12 +319,5 @@
         }
         if (nowSolid && waterAt(Math.floor(P.x), Math.floor(P.y + 2), Math.floor(P.z))) { P.y = WL + 1.5; P.vy = 0; } } }
     if (CPROF) cpMark(2);
-    // ── JOLT MOVES THE BODIES, THEN physStep DOES THE REST (user 2026-09-01: "use JoltPhysics.js") ──
-    // Both run, and that is deliberate: sim/solver.js skips only its integrate-and-collide step when
-    // JOLT.on (see the note there), and everything else it does — retirement back into W, the absorb
-    // rules, lifetime expiry, the support queue — has no equivalent in Jolt and must still happen.
-    // Order matters: Jolt writes b.pos/b.q/b.vel/b.sleeping, THEN the bookkeeping reads them, so a body
-    // that fell asleep this frame is retired on this frame rather than the next.
-    if (JOLT_ON && joltReady()) { joltTerrain(P.x, P.z); joltStep(dt); }
     physStep(dt);                                      // voxel rigid bodies — FIXED 60 Hz inside (see PH.dt)
 

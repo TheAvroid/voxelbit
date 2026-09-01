@@ -36,8 +36,8 @@
     // come out of. Anything from world/terrain.js (23) or world/gen-pool.js (25) is still in its temporal dead
     // zone on this line, and reading it would throw INSIDE this try — which swallows it and falls back, the same
     // invisible failure the missing names caused. Check 9 enforces the ordering as well as the completeness.
-    const consts = { DEEP_MIN, DEEP_K, DEEP_CAP, PINE_WET, PINE_LOW, PINE_BASE, PINE_RELIEF, RIVWIDE, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, BIRCH_LAKE, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR,   SANDR, OAKBEACH, OAKBEACHY, SANDDEEP,  BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_STAND, PINEY, PINEHILL, PINE_LAKE, PINE_SHELF, PINE_SHA, PINE_SHB,  CHOFF, CHHALF, CHWHALF, CHB, CHW, BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
-    const fns = { deepen, pineField, ihash, sstep, pwrap, vnoise, fbm, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, chWob, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSeaH, arctH, oakWob, oakM, pineH, oakFieldM, birchH, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
+    const consts = { PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
+    const fns = { ihash, sstep, pwrap, vnoise, fbm, pineBase, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctH, oakWob, oakM, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
     // ── SPWX/SPWZ RIDE WITH THE JOB, they are not baked ── spawn is randomised in world/build.js, nine fragments
@@ -46,7 +46,6 @@
     // boundaries somewhere the main thread's H() does not agree with. rowKey carries them too, which is what
     // makes a prefetch issued before a reroll simply unusable after one rather than quietly wrong.
     wsrc += 'let SPWX = 0, SPWZ = 0, rivScope = null;\nconst rivCache = new Map();\nconst rivNear = new Map();\n';   // riversNear's own store — the worker must declare every top-level the registered fns close over
-    wsrc += 'let bpZ = null, bpD = 0, bpO = 0, bpC = 0, bwZ = null, bwD = 0, bwO = 0, bwC = 0, bwM = 0, bwW = 0;\n';   // the border rivers' two 1-entry memos (see BIOME BORDER RIVERS in world/window.js) — a registered fn's top-level state has to be declared on this side too
     for (const k in fns) wsrc += 'const ' + k + ' = ' + fns[k].toString() + ';\n';
     wsrc += 'onmessage = (e) => {\n' +
       '  const { key, x0, x1, z0, z1, tr } = e.data;\n' +

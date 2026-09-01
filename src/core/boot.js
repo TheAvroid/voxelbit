@@ -70,7 +70,7 @@
   // number that already exists drive the bar. MEASURED on this machine: assets land at 0.9 s, the 512-chunk
   // world build runs 0.9 s -> 8.5 s, occupancy and upload finish about 1.4 s after that. The three ranges
   // below are those three phases, so the bar now moves for the whole of the longest one instead of parking.
-  let loadSeen = 0;
+  let loadSeen = 0, loadTailArmed = false;
   const loadTo = (t, secs) => {                          // monotonic: a later phase can never pull the bar backwards
     if (loadDone || loadFinishing || t <= loadSeen) return;
     loadSeen = t;
@@ -86,14 +86,11 @@
   // PHASE 2, the world: driven by real slab completion out of world/build.js.
   // PHASE 3, occupancy + upload: setLoad's own last call arms a slow run to 0.97, because those two stages
   // report once and then say nothing for over a second. It is the only guessed segment left, and it is short.
-  // PHASE 3 IS NO LONGER A GUESS, SO IT NO LONGER GETS A FAKE CRAWL. The build used to run to 0.94 and then
-  // a timer eased the bar to 0.97 over six seconds to cover a stage that reported nothing. The stage that
-  // actually owns that time is the FAR RING filling (ui/hud.js gates the reveal on it now, and it takes ~8 s
-  // on this machine against ~5 s for everything before it), and it reports real progress every frame. Giving
-  // the build 0.20-0.88 and the ring 0.88-0.99 is the same fix as last time: let the number that exists drive
-  // the bar. Leaving the old ceiling at 0.94 parked the bar at 97% for eight seconds — the "stuck at 90%"
-  // complaint again, one phase further along.
-  const setLoad = (p) => { loadTo(Math.max(0, Math.min(0.88, (+p || 0) / 100)), 0.45); };
+  const setLoad = (p) => {
+    const t = Math.max(0, Math.min(0.94, (+p || 0) / 100));
+    loadTo(t, 0.45);
+    if (t >= 0.85 && !loadTailArmed) { loadTailArmed = true; setTimeout(() => loadTo(0.97, 6), 60); }
+  };
   const finishLoad = () => { loadFinishing = true; loadFillEl.style.transition = 'transform 0.85s cubic-bezier(0.25, 0.9, 0.3, 1)'; loadFillEl.style.transform = 'scaleX(1)'; setTimeout(() => { loadDone = true; loadPctEl.textContent = '100%'; verSet(VER_TO.toFixed(1)); loadGlossEl.style.width = '100%'; }, 850); };   // …and the FINAL number is VER_TO, not a literal: this said '1.0' from when that WAS the version, so the drum spent the whole load counting up to VER_TO and then snapped back to 1.0 at the moment the world arrived — the one frame of it anybody actually reads (user 2026-08-21 asked for v1.3 and this is why the loading screen would still have said v1.0)   // verSet, NOT textContent: assigning text here destroyed the drum markup (the .vd cells) and left plain text behind.   // world ready → GLIDE the last stretch to full over 0.85 s so it never snaps (user: "jumps from 80% to 100%"); the % follows the compositor the whole way, then pins to a true 100% once the glide has actually arrived
   const palTrace = [];                                 // ── WHERE THE 256 WENT ── palette.length sampled at every load stage, so the ceiling can be attributed to a LOADER instead of guessed at. __vb.palTrace() reads it.
   const stage = async (msg) => { try { palTrace.push([msg, palette.length, performance.now()]); } catch (e) {} loadMsgEl.textContent = msg; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); };

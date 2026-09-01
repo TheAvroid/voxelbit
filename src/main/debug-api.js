@@ -1,9 +1,8 @@
-  let ppCur = 0;                                     // poolProbe's rotating brick cursor, kept between calls so successive probes cover new ground
   window.__vb = { P, tp(x, y, z, yaw, pitch) { P.x = x; P.y = y; P.z = z; if (yaw !== undefined) P.yaw = yaw; if (pitch !== undefined) P.pitch = pitch;
       maybeRecenter();                                 // recenter FIRST — the pop-out below must read fresh terrain, not stale wrapped data
       while (P.y < WY - 20 && !boxFree(P.x, P.y, P.z, HEIGHT) && !waterAt(Math.floor(P.x), Math.floor(P.y + 8), Math.floor(P.z))) P.y += 1;
       P.vy = 0; smoothEye = P.y + EYE; resetHist = 1; }, fly() { P.fly = true; }, tod(t) { if (t === undefined) return tday; tday = t; resetHist = 1; return tday; }, give() { addItem(2); }, giveIt(id) { const k = addItem(id | 0); if (k >= 0) selSlot = k; return { held: heldIt(), knifeId: KNIFE_IT }; },   // give/giveIt put an item in hand (giveIt also SELECTS it: addItem only fills a slot, and a knife sitting unselected in the hotbar still swings the axe). tod() is a GETTER when called bare: it used to assign `undefined` and NaN the clock, and tday feeds NIGHT_K -> every life count -> NaN, i.e. one stray `__vb.tod()` silently emptied the world
-    palLen() { return { len: palette.length, over: palette.length > 256, substituted: palOver }; },   // `substituted` is the one that matters: addCol SNAPS to the nearest colour once the table is full rather than growing it, so `len` stops at 256 and says nothing about how many colours were silently replaced
+    palLen() { return { len: palette.length, over: palette.length > 256 }; },
     palMints(lo) { return palMintLog.filter((m) => m[0] >= (lo || 0)); },
     palTrace() { const out = []; for (let i = 0; i < palTrace.length; i++) out.push({ at: Math.round(palTrace[i][2] || 0), ms: Math.round((palTrace[i][2] || 0) - (i ? (palTrace[i - 1][2] || 0) : 0)), stage: palTrace[i][0], len: palTrace[i][1], spent: (i ? palTrace[i][1] - palTrace[i - 1][1] : palTrace[i][1]) }); return out; },   // slots each load stage cost
     palAudit() {                                     // WHICH ids are exact-colour duplicates, and is each one safe to reclaim. addCol() pushes unconditionally, so a loader that calls it directly (the .json decor palettes do) mints a fresh id for a colour the table already holds — but a duplicate is only REDUNDANT if nothing tells the two ids apart, and an id carries material flags and pickup-set membership as well as a colour.
@@ -150,7 +149,7 @@
       if (B && B.init) o.push({ j, x: +B.x.toFixed(2), z: +B.z.toFixed(2), trap: +(B.trap || 0).toFixed(2) }); } return o; },   // worm stuck-test tap
     flyers() { const o = []; for (let j = FLY_0; j < FLY_END; j++) { const B = wbf[j];
       if (B && B.init) o.push({ j, kind: B.kind | 0, x: +B.x.toFixed(2), z: +B.z.toFixed(2), hx: B.hx, hz: B.hz, hcx: B.hcx, hcz: B.hcz }); } return o; },   // flyer test tap
-    modelIds(kind) { const m = { drock: DROCK, cactus: CACTI, shrub: SHRUBV, rock26: ROCK26, mush: (typeof MUSHV !== 'undefined' && MUSHV) ? [MUSHV] : [] }[kind] || []; const o = new Set(); for (const q of m) for (const p of q.vox) o.add(p >>> 24); return [...o].sort((a, b) => a - b); },   // the palette ids a model set actually uses — colour heuristics cannot tell desert rock from desert sand. 'mush' is wrapped because MUSHV is a single model, not a list, and it is here to answer the one question the sand-trampoline bug turned on: whether every mushroom voxel wears an id the mushroom OWNS (>= MUSH_OWN0), or one it borrowed off a full palette from sand, rock or a flower. NOT `ids`: this object already has an `ids` key of a different shape further down, and a duplicate silently loses (the later one wins). 276 keys in one literal makes that easy to do — check before adding a name.
+    modelIds(kind) { const m = { drock: DROCK, cactus: CACTI, shrub: SHRUBV, rock26: ROCK26 }[kind] || []; const o = new Set(); for (const q of m) for (const p of q.vox) o.add(p >>> 24); return [...o].sort((a, b) => a - b); },   // the palette ids a model set actually uses — colour heuristics cannot tell desert rock from desert sand. NOT `ids`: this object already has an `ids` key of a different shape further down, and a duplicate silently loses (the later one wins). 276 keys in one literal makes that easy to do — check before adding a name.
     win() { return { xlo: winOX, xhi: winOX + WX, zlo: winOZ, zhi: winOZ + WZ }; },
     // ── PAGED-STORAGE FEASIBILITY CENSUS (dev) ── classify every 8³ brick as empty / uniform / mixed.
     // Storage today is DENSE: WX*WY*WZ bytes, once on the CPU and once on the GPU, and a cube of empty
@@ -750,14 +749,6 @@
             : 'impact conditions met — should break within fellHitMs' };
       });
     },
-    // ── THE JOLT SIDE OF THE SAME PICTURE (user 2026-09-01) ── phStat below answers for the hand-written
-    // solver; this answers for the one that replaced its integrator. `tracked` against `bodies` is the
-    // number that matters: they must be equal every frame, because joltStep syncs its set from
-    // PH.bodies. A gap means a body is being simulated by nobody (in PH.bodies, absent from Jolt, and
-    // its integrate step skipped) — which renders as a chunk frozen in mid-air.
-    joltStat() { return { on: JOLT.on, ready: JOLT.ready, tracked: JOLT.bodies.size, bodies: PH.bodies.length,
-      terrain: JOLT.terrainId !== null, terrainAt: [JOLT.terrainOX, JOLT.terrainOZ],
-      added: JOLT.stats.added, dropped: JOLT.stats.dropped, refused: JOLT.stats.refused | 0, steps: JOLT.stats.steps, lastMs: +JOLT.stats.lastMs.toFixed(2) }; },   // refused: a body Jolt was NOT given because a coordinate was non-finite — see joltAddBody
     phStat() { const s = PH.stats; let big = 0; for (const b of PH.bodies) if (b.n > 1000) big++;
       return { buildMs: s.buildMs || 0, buildN: s.buildN | 0, buildVox: s.buildVox | 0,
         shatterMs: s.shatterMs || 0, shatterN: s.shatterN | 0, shatterVox: s.shatterVox | 0, shatterRefused: s.shatterRefused | 0, shatterCoarse: s.shatterCoarse | 0,
@@ -1754,45 +1745,7 @@
     },
     stampIds(a, b) { const s = new Set(); for (let j = a; j < b; j++) { const B = wbf[j];   // ids a grid-stamped creature band currently has in the world
       if (B && B.sN) for (let i = 0; i < B.sN; i++) s.add(W[B.sCells[i]]); } return [...s].sort((p, q) => p - q); },
-    rd() { return { renderDist, rdDbg: RD_DBG, half: HALF, windowX: WX, gmul: GMUL, gHalf: GHALF, ring: ringStats() }; },   // fixed view-distance tap, plus how far the FAR RING has actually filled
-    ring() { return ringStats(); },
-    // ── FLIGHT RECORDER READ-OUT ── __vb.rec() returns the rows; __vb.recSave() downloads them as JSON.
-    // F9 calls recSave, so the flow is: SEE the glitch, press F9, send the file. The buffer already holds
-    // the twelve seconds BEFORE the press, which is the part that matters — a fault that lasts two frames
-    // cannot be caught by arming something in advance.
-    recOn(v) { return recOnSet(v); },                 // turn the per-frame flight recorder off, to measure what it costs
-    rec() { return recDump(); },
-    recSave() {
-      const rows = recDump();
-      const blob = new Blob([JSON.stringify({
-        when: new Date().toISOString(), rows,
-        rd: (() => { try { return __vb.rd(); } catch (e) { return null; } })(),
-        note: 'voxelbit flight recorder — last ~12 s before the key was pressed'
-      }, null, 1)], { type: 'application/json' });
-      const a2 = document.createElement('a');
-      a2.href = URL.createObjectURL(blob);
-      a2.download = 'voxelbit-rec-' + Date.now() + '.json';
-      document.body.appendChild(a2); a2.click(); a2.remove();
-      setTimeout(() => URL.revokeObjectURL(a2.href), 4000);
-      return { saved: rows.length };
-    },
-    // == WHAT THE TRACER IS ACTUALLY ALLOWED TO SEE, AND WHICH OF THE TWO LIMITS IS BINDING ==
-    // UF[64] is the view distance the shader clamps every ray to, and it is recomputed EVERY FRAME from
-    // max(nearR, ringFilled()) -- the near streamed rect and the far ring. Both move while you fly: the rect
-    // lags when you outrun the streamer, and the ring's fill moves with its own traffic. If that number
-    // oscillates, terrain sitting at the limit is drawn one frame and gone the next, which is a flash at a
-    // fixed distance rather than anywhere in particular. Sampling it per frame is the only way to tell a
-    // paging fault (a hole in a PLACE) from a clamp oscillation (a hole at a DISTANCE).
-    viewR() {
-      const rdNow = RD_DBG || renderDist;
-      const nearR = Math.min(P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12);
-      return { uf: +UF[64].toFixed(1), nearR: Math.round(nearR), filled: Math.round(ringFilled()),
-        rdNow, binding: nearR >= ringFilled() ? 'near' : 'ring',
-        capped: Math.min(rdNow, Math.max(nearR, ringFilled())) >= rdNow };
-    },
-    // set the ring's reach concession by hand and read what the view clamp does about it — see ringSquashSet.
-    // Returns the state BEFORE the change plus the new reach; call ring().filled after to see where it landed.
-    squash(v) { return ringSquashSet(v); },                    // far-ring residency: tiles held, bricks paged, evictions, overflow, and the radius the view is currently allowed to reach
+    rd() { return { renderDist, half: HALF, windowX: WX }; },   // fixed view-distance tap
     // ── IS THE STAMP INDEX TELLING THE TRUTH ── stampedIdx is consulted by nav, the support resolver, the
     // snow settle and the floater audits, and none of them can tell a stale entry from a real one. This
     // walks the live grid-stamped creatures and checks both directions: every cell they occupy is IN the
@@ -1835,376 +1788,6 @@
     dims() { return { WX, WY, WZ, BX, BY, BZ, WXZ }; },   // the window's own extents — a test that recomputes a flat cell index needs them
     perchCacheAudit() { return cardCacheAudit(); },   // defined in main/tick-nav.js, where treeAtC/oakAtC are in scope
     cardN(n) { if (n !== undefined) CARD_FORCE = n | 0; return { forced: CARD_FORCE, pool: CARD_N, base: CARD_BASE, birchK: CARD_BIRCH_K }; },   // pin the perched count (-1 = follow the biome) — the A/B lever for what the band COSTS
-    farDesc() {                                      // how many descriptors sit OUTSIDE the CPU-backed near block — the far ring should be all air until it is generated
-      const p = GPAD >> 3; let near = 0, far = 0, nearBlank = 0;
-      const gx0 = ((gwOX() >> 3) % GBX + GBX) % GBX, gz0 = ((gwOZ() >> 3) % GBZ + GBZ) % GBZ;
-      for (let g = 0; g < bdesc.length; g++) {
-        const gbx = g % GBX, gbz = (g / (GBX * GBY)) | 0;
-        const lx = ((gbx - gx0) % GBX + GBX) % GBX, lz = ((gbz - gz0) % GBZ + GBZ) % GBZ;
-        const isNear = lx >= p && lx < p + BX && lz >= p && lz < p + BZ;
-        if (bdesc[g]) { if (isNear) near++; else far++; } else if (isNear) nearBlank++;
-      }
-      return { near, far, nearBlank, uf64: +UF[64].toFixed(0), GPAD, GBX, GBZ, BX, BZ };
-    },
-    poolBuild() { return poolBuild(); },
-    pooldiff(n) { return this.gpudiff(n); },           // the pool IS the GPU world now, so the two names are one check
-    // ── LAND STANDING IN THE OPEN ARCTIC SEA, STRAIGHT OUT OF THE GENERATOR ── no rendering and no W: it asks
-    // H() over a wide box and counts columns that are DEEP arctic (the band's own mask near 1, so the shore and
-    // the whole blend are excluded) yet come out at or above the waterline. The arctic seabed is built to sit
-    // ~15 voxels UNDER the surface everywhere, so any such column is ground that should not exist — which is
-    // what a flat plate lying on the sea is made of.
-    seaLand(radius, stride, minAm) {
-      const R = radius || 4000, ST = Math.max(4, stride | 0), AM = minAm === undefined ? 0.9 : minAm, t0 = performance.now();
-      const px = Math.round(__vb.P.x), pz = Math.round(__vb.P.z);
-      let deep = 0, land = 0, hiMax = -1e9; const ex = [];
-      for (let z = pz - R; z <= pz + R; z += ST) for (let x = px - R; x <= px + R; x += ST) {
-        if (arcticM(x, z) < AM) continue;
-        deep++;
-        const h = H(x, z);
-        if (h < WL) continue;
-        land++;
-        if (h > hiMax) hiMax = h;
-        if (ex.length < 10) ex.push({ x, z, H: h, WL, am: +arcticM(x, z).toFixed(2), d: Math.round(Math.hypot(x - px, z - pz)) });
-      }
-      return { ms: Math.round(performance.now() - t0), R, stride: ST, WL,
-        deepArcticCols: deep, atOrAboveWater: land, pct: +(land * 100 / Math.max(1, deep)).toFixed(3), highest: hiMax, ex };
-    },
-    // ══ SEALED PAGES THAT SHOULD NOT BE THERE — AND IT CAN SEE THE FAR FIELD ══ every other audit here reaches
-    // the world through W or through cpu2gpu, so none of them can look past the near window. This one asks the
-    // GENERATOR instead, which is a pure function of world coordinates and therefore answers anywhere: for each
-    // descriptor pointing at the shared stone page, is there actually opaque terrain at that brick?
-    // A sealed brick is one that is airless AND fenced by airless neighbours, so it must lie at or below the
-    // ground. A sealed brick whose whole 8-voxel span sits ABOVE H() is a brick of solid stone standing in open
-    // air or open water — and because every sealed brick shares ONE page of uniform STONE_ID, a run of them
-    // renders as a dead-flat, untextured slab with brick-sized crenellations. That is the artefact this was
-    // written for: a beige plate lying on the arctic sea.
-    // gb is toroidal, so a GPU brick index names infinitely many world positions; the one that matters is the
-    // representative nearest the player, which is the only one inside the window that drew it.
-    sealAudit(cap) {
-      const LIM = cap || 8, t0 = performance.now();
-      const pbx = Math.floor(__vb.P.x / 8), pbz = Math.floor(__vb.P.z / 8);
-      const near = (i, n, p) => i + n * Math.round((p - i) / n);
-      let sealed = 0, bad = 0; const ex = [];
-      const NG = GBX * GBY * GBZ;
-      for (let gb = 0; gb < NG; gb++) {
-        if (bdesc[gb] !== SEALED_SLOT + 1) continue;
-        sealed++;
-        const bx = gb % GBX, by = ((gb / GBX) | 0) % GBY, bz = (gb / (GBX * GBY)) | 0;
-        const wx = near(bx, GBX, pbx) * 8, wz = near(bz, GBZ, pbz) * 8, y0 = by * 8;
-        // …and the SURFACE is not H(). H is the ground — in the arctic that is the SEABED, with the glacier
-        // stamped on top of it, so ice legitimately fills bricks far above H and a test against H alone calls
-        // every berg interior a fault (measured: 170k false positives before this was split in two).
-        // The two tests are ORDERED because they cost wildly different amounts: H is a few noise octaves and
-        // rejects the overwhelming majority (a sealed brick is normally deep underground), while arctIceTop
-        // re-derives the whole floe/crevasse stack and is only worth paying for the few that clear H.
-        let hg = -1e9;
-        for (let dz = 0; dz <= 8; dz += 8) for (let dx = 0; dx <= 8; dx += 8) { const g = H(wx + dx, wz + dz); if (g > hg) hg = g; }
-        if (y0 <= hg) continue;                        // at or below ground: a legitimate sealed brick
-        let hi = hg;                                   // …now the expensive one, for the handful that got here
-        for (let dz = 0; dz <= 8; dz += 8) for (let dx = 0; dx <= 8; dx += 8) { const g = arctIceTop(wx + dx, wz + dz); if (g > hi) hi = g; }
-        if (y0 <= hi) continue;                        // inside a glacier: also legitimate
-        bad++;
-        if (ex.length < LIM) ex.push({ x: wx, y: y0, z: wz, groundMax: hi, above: y0 - hi,
-          d: Math.round(Math.hypot(wx - __vb.P.x, wz - __vb.P.z)) });
-      }
-      return { ms: Math.round(performance.now() - t0), sealedBricks: sealed, aboveGround: bad, ex };
-    },
-    // ── WHAT IS ACTUALLY ON THE SURFACE HERE ── a histogram of the topmost voxel id over the near window, with
-    // a world position kept for each id. It answers "what is that thing" without needing to aim at it: a
-    // material that has no business in this biome shows up as an id with a small count and a coordinate to go
-    // look at. Written for a tan slab floating in the arctic sea, where the expected set is snow, ice and water
-    // and anything else is the bug.
-    surfCensus(stride) {
-      const ST = Math.max(1, stride | 0), t0 = performance.now();
-      const n = new Int32Array(256), ex = new Array(256);
-      let cols = 0;
-      for (let z = 0; z < WZ; z += ST) for (let x = 0; x < WX; x += ST) {
-        let t = -1;
-        for (let y = WY - 1; y >= 0; y--) { const v = W[x + y * WX + z * WX * WY]; if (v) { t = y; break; } }
-        if (t < 0) continue;
-        const v = W[x + t * WX + z * WX * WY];
-        cols++; n[v]++;
-        if (!ex[v]) ex[v] = { x: x + winOX, y: t, z: z + winOZ };
-      }
-      const out = [];
-      for (let i = 1; i < 256; i++) if (n[i]) out.push({ id: i, n: n[i], pct: +(n[i] * 100 / cols).toFixed(2),
-        col: palette[i], folia: !!foliaTab[i], wood: !!woodTab[i], snow: !!snowTab[i], at: ex[i] });
-      out.sort((a, b) => b.n - a.n);
-      return { ms: Math.round(performance.now() - t0), stride: ST, cols, ids: out.length, top: out.slice(0, 48) };
-    },
-    // ══ NEEDLES: COLUMNS THAT STAND FAR ABOVE EVERY NEIGHBOUR ══ worldgen is a sum of smooth fields, so a
-    // column whose top is twenty voxels above all eight of its neighbours did not come from a field — it came
-    // from a stamp, a rounding, or a gate that fired for one column and not the next. They read as thin white
-    // pillars with flat tops, and they are the "rendering glitch" that no amount of auditing the pool will
-    // find, because the pool is drawing exactly what the generator wrote.
-    // ══ IT CANNOT ANSWER "IS THIS FLOATING", AND EVERY NEEDLE IT HAS EVER FLAGGED WAS ATTACHED ══ the test
-    // walks ONE column down, so a voxel with air directly beneath it looks stranded even when it is joined to
-    // the rest of its tree SIDEWAYS — which is what a crown edge, a drooping branch tip and a leaning trunk all
-    // look like from directly below. Checked against __vb.floatAudit at four sites on 2026-08-30, including the
-    // worst needle in the world at the time (84 voxels of rise, 43 of air under it): floaters 0, floaterVox 0
-    // every time, and the one component that came back inconclusive at radius 48 was fully grounded at 96.
-    // So: use floatAudit for "is it floating", and read THIS as "which columns stand proud", which is what it
-    // is actually good for — a solid, air-free needle is a worldgen spire and worth looking at, while a needle
-    // whose ids are mostly 0 is a canopy silhouette and worth nothing. The ids histogram is in the output
-    // precisely so the two can be told apart without a second run.
-    // `minRise` is how far above its tallest neighbour a column has to stand to count. Trees are excluded by
-    // asking what the column is MADE of: a trunk is wood and a crown is foliage, and both are expected to
-    // stand above their neighbours.
-    // `rad` is the ring the column is compared against, and it has to be WIDER THAN THE PILLAR or the test
-    // cannot see it: a three-voxel-thick pillar has its own body as its immediate neighbours, so at radius 1
-    // the rise is zero and only single-voxel needles show up. Radius 3-4 is what catches a trunk-width column.
-    spikeAudit(minRise, stride, rad) {
-      const RISE = minRise || 16, ST = Math.max(1, stride | 0), R = rad || 4, LIM = 10, t0 = performance.now();
-      const top = (x, z) => { for (let y = WY - 1; y >= 0; y--) if (W[x + y * WX + z * WX * WY]) return y; return -1; };
-      const ex = []; const byId = {};
-      let n = 0, worst = 0;
-      for (let z = R; z < WZ - R; z += ST) for (let x = R; x < WX - R; x++) {
-        const t = top(x, z); if (t < 0) continue;
-        let hi = -1;
-        for (let d = -R; d <= R; d++) {                // the square RING at radius R, not the filled block
-          let q = top(x + d, z - R); if (q > hi) hi = q;
-          q = top(x + d, z + R); if (q > hi) hi = q;
-          q = top(x - R, z + d); if (q > hi) hi = q;
-          q = top(x + R, z + d); if (q > hi) hi = q;
-        }
-        const rise = t - hi; if (rise < RISE) continue;
-        n++; if (rise > worst) worst = rise;
-        // what is the pillar made of, from its top down — the id histogram is what names the culprit
-        const ids = {};
-        for (let y = t; y > t - Math.min(rise, 48); y--) { const v = W[x + y * WX + z * WX * WY]; ids[v] = (ids[v] || 0) + 1; }
-        for (const k in ids) byId[k] = (byId[k] || 0) + ids[k];
-        if (ex.length < LIM) ex.push({ x: x + winOX, y: t, z: z + winOZ, rise, nbrTop: hi,
-          ids: Object.entries(ids).map(([i, c]) => ({ id: +i, n: c, col: palette[+i],
-            wood: !!woodTab[+i], folia: !!foliaTab[+i], snow: !!snowTab[+i] })) });
-      }
-      const rank = Object.entries(byId).sort((a, b) => b[1] - a[1]).slice(0, 8)
-        .map(([i, c]) => ({ id: +i, n: c, col: palette[+i], wood: !!woodTab[+i], folia: !!foliaTab[+i], snow: !!snowTab[+i] }));
-      return { ok: n === 0, ms: Math.round(performance.now() - t0), minRise: RISE, stride: ST, rad: R,
-        needles: n, worstRise: worst, topIds: rank, ex };
-    },
-    // ══ ANYTHING STANDING ABOVE THE SKY CAP, WHICH IS SOLID AND INVISIBLE ══ rebuildBricks force-CLEARS every
-    // brick above `maxH + CANOPY` without reading a voxel — that is what makes an empty sky free. A voxel above
-    // that line therefore gets no brick bit, the DDA reads an unset brick as air, and the geometry is there for
-    // collision, chopping and support while being completely undrawn. It is the exact failure the CANOPY note
-    // in world/window.js describes ("the tops of the trees are cut off but I can walk on the canopy"), and it
-    // is silent: no error, no diff, and gtest is happy because BOTH copies of the cap agree on the wrong answer.
-    // The cap moved 192 -> 240 when the arctic glaciers went to 176 voxels over a seabed 42 below the
-    // waterline, so this is the check that says whether the new headroom is actually enough.
-    // `over` is how far the tallest offender pokes out; anything above 0 is geometry the player cannot see.
-    capAudit(stride) {
-      const t0 = performance.now(), LIM = 8, ST = Math.max(1, stride | 0);
-      const ex = []; let cols = 0, bad = 0, worst = 0, worstAt = null;
-      for (let bz = 0; bz < BZ; bz += ST) for (let bx = 0; bx < BX; bx++) {
-        let maxH = 0, cav = 0;                         // …identical to rebuildBricks and to the pool worker's copy; if those change, so must this
-        for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) {
-          const hv = hmap[x + z * WX]; if (hv > maxH) maxH = hv; if (hv <= CAVE_FLOOR_MAX) cav = 1; }
-        if (cav && maxH < HMAX) maxH = HMAX;
-        const capY = Math.min(BY, ((maxH + CANOPY) >> 3) + 1) * 8;
-        cols++;
-        if (capY >= WY) continue;                      // the cap is above the world: nothing can be over it
-        for (let z = bz * 8; z < bz * 8 + 8; z++) for (let x = bx * 8; x < bx * 8 + 8; x++) {
-          for (let y = WY - 1; y >= capY; y--) {
-            const v = W[x + y * WX + z * WX * WY]; if (!v) continue;
-            bad++;
-            if (y - capY + 1 > worst) { worst = y - capY + 1; worstAt = { x: x + winOX, y, z: z + winOZ, id: v, capY, maxH }; }
-            if (ex.length < LIM) ex.push({ x: x + winOX, y, z: z + winOZ, id: v, capY, over: y - capY + 1 });
-            break;                                     // one report per column is enough
-          }
-        }
-      }
-      return { ok: bad === 0, ms: Math.round(performance.now() - t0), stride: ST,
-        CANOPY, columnsChecked: cols * 64, aboveCap: bad, worstOver: worst, worstAt, ex };
-    },
-    // ══ THE POOL'S INVARIANTS, ALL OF THEM, IN ONE CALL ══ gpudiff compares page CONTENT against W, which only
-    // catches a brick whose bytes are wrong. Every rendering fault this system has actually produced was a
-    // fault in the BOOKKEEPING around the pages instead, and content was fine in each one: the pink slab was a
-    // descriptor pointing at the shared sealed page, the cyan streaking was two owners of one descriptor, the
-    // flat far field was descriptors that never uploaded. Those are structural, and structure is checkable.
-    //   dupSlot  two descriptors naming ONE page — the corruption class. Each sees the other's voxels.
-    //   badSlot  a descriptor naming a slot past poolUsed: garbage memory.
-    //   freeDup  one slot on the free list twice — it will be handed out twice, which becomes dupSlot.
-    //   freeOwn  a slot BOTH on the free list and named by a live descriptor: the double-free.
-    //   leak     allocated, named by nobody, on no free list. Not visible; it is what exhausts the pool.
-    //   gb2Bad   an L2 super-cell bit that disagrees with the descriptors under it. A 0 where a 1 belongs is a
-    //            HOLE — the DDA skips the whole 32-voxel cell and the ray comes out as sky.
-    //   hole     an occupied near brick with no descriptor: solid world you can see through.
-    //   ghost    a descriptor on a near brick the occupancy bits say is empty.
-    //   airBad   airFree[] disagrees with a fresh isAirFree over W. This is the check on the gen worker's
-    //            seeded verdict (see poolTouch / gen-pool.js): if OPAQTAB there ever drifts from opaqueTab
-    //            here, this is the only thing that notices, and the symptom is foliage sealed into stone.
-    //   sealBad  a brick pointing at the shared sealed page that is NOT actually sealed: uniform stone where
-    //            real geometry belongs.
-    // Costly on purpose (it re-derives airlessness from W); `stride` samples the near window if that matters.
-    poolAudit(stride) {
-      const t0 = performance.now(), LIM = 6, ST = Math.max(1, stride | 0);
-      const NG = GBX * GBY * GBZ, NC = GB2X * GB2Y * (GBZ >> 2);
-      const own = new Int32Array(POOL_SLOTS).fill(-1), cellOcc = new Uint8Array(NC);
-      const ex = { dupSlot: [], badSlot: [], gb2Bad: [], hole: [], ghost: [], airBad: [], sealBad: [] };
-      const gbxyz = (gb) => [gb % GBX, ((gb / GBX) | 0) % GBY, (gb / (GBX * GBY)) | 0];
-      let live = 0, sealedN = 0, dupSlot = 0, badSlot = 0;
-      for (let gb = 0; gb < NG; gb++) {
-        const d = bdesc[gb]; if (!d) continue;
-        live++; const sl = d - 1;
-        if (sl === SEALED_SLOT || uniShared.has(sl)) sealedN++;   // …the per-id uniform pages are shared exactly like the stone one: many owners by design
-        else if (sl < 0 || sl >= poolUsed) { badSlot++; if (ex.badSlot.length < LIM) ex.badSlot.push({ gb: gbxyz(gb), slot: sl }); }
-        else if (own[sl] >= 0) { dupSlot++; if (ex.dupSlot.length < LIM) ex.dupSlot.push({ a: gbxyz(own[sl]), b: gbxyz(gb), slot: sl }); }
-        else own[sl] = gb;
-        cellOcc[gSuper(gb)] = 1;
-      }
-      let gb2Bad = 0;
-      for (let c = 0; c < NC; c++) {
-        const bit = (gb2[c >> 5] >>> (c & 31)) & 1;
-        if (bit !== cellOcc[c]) { gb2Bad++; if (ex.gb2Bad.length < LIM) ex.gb2Bad.push({ cell: c, gb2: bit, want: cellOcc[c] }); }
-      }
-      const onFree = new Uint8Array(POOL_SLOTS);
-      let freeDup = 0, freeOwn = 0;
-      for (let i = 0; i < poolFreeN; i++) { const sl = poolFree32[i];
-        if (sl < 0 || sl >= POOL_SLOTS) { freeDup++; continue; }
-        if (onFree[sl]) freeDup++; else onFree[sl] = 1;
-        if (own[sl] >= 0) freeOwn++;
-      }
-      let leak = 0;
-      for (let sl = 0; sl < poolUsed; sl++) if (sl !== SEALED_SLOT && !uniShared.has(sl) && own[sl] < 0 && !onFree[sl]) leak++;
-      let hole = 0, ghost = 0, airBad = 0, sealBad = 0, nearOcc = 0, holeStuck = 0, ghostStuck = 0, airStuck = 0, holeReal = 0, ghostReal = 0;
-      const NB = BX * BY * BZ;
-      for (let b = 0; b < NB; b += ST) {
-        const occ = (bricks[b >> 5] >>> (b & 31)) & 1, gb = cpu2gpu(b), d = bdesc[gb];
-        const at = () => ({ b, x: (b % BX) * 8, y: (((b / BX) | 0) % BY) * 8, z: ((b / (BX * BY)) | 0) * 8 });
-        // …and whether the fault is QUEUED or PERMANENT, which is the whole question. A brick the drain has not
-        // reached yet is a hole for a frame or two by design — the budget exists so a landing band does not
-        // freeze the frame. A hole that is in NOBODY's queue never repairs itself, and that is a bug.
-        // …and which SIDE is wrong, which decides whether any of it is visible. `bricks` and W are updated by
-        // different passes; a brick bit still set over W that has already been overwritten with air is stale
-        // bookkeeping and renders correctly, while a MISSING descriptor over W that really does hold voxels is
-        // solid world you can see through. Only the second one is a picture bug, so count them apart.
-        const wOcc = () => { const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
-          for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
-            const rw = ((by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY + bx * 8) >> 2;
-            if (W32[rw] | W32[rw + 1]) return 1; } return 0; };
-        if (!occ) { if (d) { ghost++; const gr = wOcc(); if (!gr) ghostReal++; if (!poolDirty.has(b)) ghostStuck++;
-          if (ex.ghost.length < LIM) ex.ghost.push({ ...at(), queued: poolDirty.has(b), wHasVoxels: !!gr }); } continue; }
-        nearOcc++;
-        if (!d) { hole++; const hr = wOcc(); if (hr) holeReal++; if (!poolDirty.has(b)) holeStuck++;
-          if (ex.hole.length < LIM) ex.hole.push({ ...at(), queued: poolDirty.has(b), wHasVoxels: !!hr }); continue; }
-        // THE INVARIANT IS "a verdict marked FRESH must be correct". afDone = 0 means the cache is knowingly
-        // stale and afGet will re-derive it on the next drain, so a mismatch there is not a fault. afDone = 1
-        // is a promise, and poolFlush believes it: it reads afGet, gets the cached answer without checking,
-        // and seals or un-seals the brick on that answer. A wrong promise is uniform stone over real geometry.
-        const af = isAirFree(b);
-        if (afDone[b] && af !== airFree[b]) { airBad++; if (!poolDirty.has(b)) airStuck++;
-          if (ex.airBad.length < LIM) ex.airBad.push({ ...at(), airFree: airFree[b], real: af, queued: poolDirty.has(b) }); }
-        if (d - 1 === SEALED_SLOT && !af) { sealBad++; if (ex.sealBad.length < LIM) ex.sealBad.push(at()); }
-      }
-      const bad = dupSlot + badSlot + freeDup + freeOwn + gb2Bad + holeReal + airStuck + sealBad;   // a QUEUED hole is the budget working, and a hole over empty W is only stale bookkeeping; holeReal is the one you can see
-      return { ok: bad === 0 && leak === 0, ms: Math.round(performance.now() - t0), stride: ST,
-        dupSlot, badSlot, freeDup, freeOwn, leak, gb2Bad, hole, ghost, airBad, sealBad,
-        holeStuck, ghostStuck, airStuck, holeReal, ghostReal, dirty: poolDirty.size, retry: poolRetry.length,
-        live, sealedN, nearOcc, poolUsed, poolFreeN, poolSlots: POOL_SLOTS, ex };
-    },
-    // == THE SAME INVARIANT AS poolAudit, BUT CHEAP ENOUGH TO RUN INSIDE A DRAIN ==
-    // poolAudit walks the whole brick space and costs a quarter of a second. That is fine at
-    // rest and useless for the question that matters: a paging fault lives for a handful of
-    // frames while the queue drains, and an audit that takes 250 ms to answer has given the
-    // streamer 250 ms to finish first. Every clean poolAudit this session was taken after a
-    // settle, which is the one state the bug cannot be in.
-    // So: a ROTATING SLICE, 1/32 of the bricks per call, cursor kept between calls. A burst of
-    // six frames covers a fifth of the world and costs a millisecond or two a frame.
-    // It counts the two faults you can SEE, and separates them from the two you cannot:
-    //   ghostReal - a live descriptor over a brick whose W holds no voxels. The tracer draws
-    //               whatever that page last held, so this is terrain appearing out of nothing.
-    //   holeReal  - no descriptor over a brick whose W does hold voxels: solid world you can
-    //               see straight through.
-    // A hole still sitting in poolDirty is the budget working as designed, not a fault, so
-    // `stuck` counts only the ones in nobody's queue.
-    poolProbe(frac) {
-      const NB = BX * BY * BZ, DIV = Math.max(1, frac | 0 || 32), t0 = performance.now();
-      const span = Math.ceil(NB / DIV);
-      if (ppCur >= NB) ppCur = 0;
-      const end = Math.min(NB, ppCur + span);
-      const W32 = new Uint32Array(W.buffer, W.byteOffset, W.byteLength >> 2);
-      const wOcc = (b) => { const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
-        for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
-          const rw = ((by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY + bx * 8) >> 2;
-          if (W32[rw] | W32[rw + 1]) return 1; } return 0; };
-      // == ONLY INSIDE THE BUILT RECT, OR EVERY NUMBER IS FICTION ==
-      // W is toroidal and the streamer fills it in bands, so the part of the array the rect has not
-      // reached yet still holds the PREVIOUS occupant's voxels. Out there `bricks` says occupied, W
-      // says occupied, and the descriptor is correctly gone -- which reads as a see-through hole in
-      // nobody's queue, the exact signature of the bug this probe is looking for. Measured: without
-      // this test a sprint flight reported 15,573 unqueued holes; the rect is why. gpudiff has said
-      // "INSIDE rect only, outside is stale by design" since it was written, and this owes the same.
-      const inRect = (bx, bz) => { const wx = winOX + bx * 8, wz = winOZ + bz * 8;
-        return wx >= rect.xlo && wx + 8 <= rect.xhi && wz >= rect.zlo && wz + 8 <= rect.zhi; };
-      let hole = 0, ghost = 0, holeReal = 0, ghostReal = 0, stuck = 0, seen = 0, holeStuck = 0, ghostStuck = 0, skipped = 0, ghostSealed = 0, ghostPaged = 0, ghostSealedStuck = 0;
-      // WHERE the unqueued holes sit in HEIGHT decides whether any of them can be seen at all. The world is
-      // 384 tall and the surface runs about y 150-300, so a hole at y 0-32 is bedrock nobody will ever look
-      // at, while one at the surface is a window straight through the ground. 32 voxels a bucket.
-      const syh = new Int32Array(12);
-      const ex = [];
-      for (let b = ppCur; b < end; b++) {
-        if (!inRect(b % BX, (b / (BX * BY)) | 0)) { skipped++; continue; }
-        const occ = (bricks[b >> 5] >>> (b & 31)) & 1, d = bdesc[cpu2gpu(b)];
-        seen++;
-        // THE ONLY ONE YOU CAN SEE IS holeRealStuck, and separating it is the whole point of this probe.
-        // A hole still in poolDirty is the streaming budget doing its job — it will be filled within a few
-        // frames and the fix for "too many of them" is a bigger budget, not a code change. A hole in NOBODY's
-        // queue is a missed invalidation: nothing will ever come back for it, and it stays see-through until
-        // the window happens to sweep that brick again. The two have completely different fixes, so a counter
-        // that adds them together can only mislead.
-        // WHAT the stale descriptor POINTS AT decides what you see. A ghost holding an ordinary page draws
-        // whatever that page last held -- the brick's own old voxels, since the page is only rewritten by a
-        // drain. A ghost holding SEALED_SLOT draws the shared uniform stone page: a solid grey block hanging
-        // in what is now open air, which is the most visible failure this system has.
-        if (!occ && d) { ghost++; const q = poolDirty.has(b); if (!wOcc(b)) { ghostReal++;
-          if (d - 1 === SEALED_SLOT) ghostSealed++; else ghostPaged++;
-          if (!q) { stuck++; ghostStuck++; if (d - 1 === SEALED_SLOT) ghostSealedStuck++; }
-          if (ex.length < 6) ex.push({ kind: 'ghost', b, x: (b % BX) * 8, y: (((b / BX) | 0) % BY) * 8, z: ((b / (BX * BY)) | 0) * 8, queued: q }); } }
-        else if (occ && !d) { hole++; const q = poolDirty.has(b); if (wOcc(b)) { holeReal++;
-          if (!q) { stuck++; holeStuck++; syh[Math.min(11, (((((b / BX) | 0) % BY) * 8) >> 5))]++; }
-          if (ex.length < 6) ex.push({ kind: 'hole', b, x: (b % BX) * 8, y: (((b / BX) | 0) % BY) * 8, z: ((b / (BX * BY)) | 0) * 8, queued: q }); } }
-      }
-      ppCur = end;
-      return { ms: +(performance.now() - t0).toFixed(2), seen, skipped,
-        hole, ghost, holeReal, ghostReal, stuck, holeStuck, ghostStuck, ghostSealed, ghostPaged, ghostSealedStuck, stuckYh: Array.from(syh),
-        drained: poolLastN, dirty: poolDirty.size, retry: poolRetry.length, ex };
-    },
-    // == MANUFACTURE THE FAULT AND LOOK AT IT ==
-    // poolProbe counts bricks whose descriptor disagrees with the world, and counting is not seeing: a frame
-    // carrying 698 of them photographed as a perfectly ordinary forest, because almost every brick in a voxel
-    // world is underground or behind something. Before spending a fix on a class of fault it is worth knowing
-    // whether that class can be seen AT ALL, so this creates it deliberately, at a chosen distance straight
-    // ahead of the camera, at full strength.
-    // It gives AIR bricks the shared sealed-stone descriptor -- the worst case, a solid grey block standing in
-    // open air -- and pushes only the descriptor, never the brick, so the pool's own bookkeeping is untouched
-    // and poolFlush will repair it the moment anything re-queues that brick. Returns what it actually did, and
-    // `undo` puts every one of them back.
-    forceGhost(dist, n, undo) {
-      if (undo && this._fg) { for (const [gb, old] of this._fg) { bdesc[gb] = old; descDirtyW.add(gb); }
-        const k = this._fg.length; this._fg = null; return { restored: k }; }
-      const D = dist || 120, N = Math.max(1, n | 0 || 40), cp = Math.cos(P.pitch);
-      const dx = Math.sin(P.yaw) * cp, dy = Math.sin(P.pitch), dz = Math.cos(P.yaw) * cp;
-      const done = [], made = [];
-      for (let step = 0; step < N * 40 && made.length < N; step++) {
-        const t = D + (step % 40) * 8, sp = (step / 40) | 0;
-        const wx = Math.round(P.x + dx * t) + ((sp % 5) - 2) * 8;
-        const wy = Math.round(P.y + dy * t) + ((((sp / 5) | 0) % 5) - 2) * 8;
-        const wz = Math.round(P.z + dz * t) + ((((sp / 25) | 0) % 5) - 2) * 8;
-        if (wy < 8 || wy >= WY - 8) continue;
-        const bx = (gwrap(wx, WX) >> 3), by = wy >> 3, bz = (gwrap(wz, WZ) >> 3);
-        const b = bx + by * BX + bz * BX * BY;
-        if ((bricks[b >> 5] >>> (b & 31)) & 1) continue;   // only AIR bricks: a solid one would just look normal
-        const gb = cpu2gpu(b);
-        if (bdesc[gb]) continue;
-        if (done.indexOf(gb) >= 0) continue;
-        done.push(gb); made.push({ at: [wx, wy, wz], gb });
-        bdesc[gb] = SEALED_SLOT + 1; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb));
-      }
-      this._fg = made.map((m) => [m.gb, 0]);
-      return { made: made.length, dist: D, ex: made.slice(0, 5) };
-    },
-    poolStats() { return { used: poolUsed, free: poolFreeN, slots: POOL_SLOTS, sealed: poolSealed, overflow: poolOverflow, dirty: poolDirty.size,
-      poolMB: +((bdesc.byteLength + poolUsed * 512) / 1048576).toFixed(1), denseWouldBeMB: +(WX * WY * WZ / 1048576).toFixed(1) }; },   // OVERFLOW IS THE ONE TO WATCH: a brick that cannot get a slot renders as AIR, so a nonzero count here is a hole in the world, not a statistic
-    setRD(v) { RD_DBG = Math.max(0, Math.min(v | 0, GHALF - 24)); return { RD_DBG, gHalf: GHALF, uniform: UF[64] }; },   // GHALF, not HALF: the view is bounded by the GPU window now (see TWO WINDOWS in world/window.js), and clamping a sweep to the CPU half silently capped every measurement at 1000 — which then reads as the far ring refusing to fill past 1096   // dev: sweep view distance to measure how trace cost scales with it (0 = back to RD_FIXED)
     lifedbg(m) { lifeDbg = m === undefined ? 0 : m | 0; return { mode: lifeDbg, traceInjected: LIFE_TRACE }; },   // debug views: 0 off / 1 slot ids / 2 history confidence / 3 motion / 4 denoised AO / 5 RAW sun visibility / 6 DENOISED sun visibility
     birdCensus(r, wx, wz) {                          // tally the songbird colours around any centre, straight from the placement rule
       // ── BOTH TREE GRIDS (2026-08-17) ── this walked the PINE grid only, so standing in the oak forest it
@@ -2291,14 +1874,6 @@
     // ── WHERE THE 'snowvox' MILLISECOND GOES ── land = placing flakes (the sprinkle and everything landSnowAt
     // does per column), melt = draining the blanket, patch = gpuPatch of the frame's landings and thaws plus
     // the scanTop-cache replay. Needs __vb.cprof(true) armed, like every other phase timer.
-    // ── WHERE THE 'encode' MILLISECOND GOES ── world = draining dirty bricks into the pool (poolFlush + the
-    // far ring), passes = recording the compute passes, swap = getCurrentTexture, submit = handing it over.
-    // `max` is the worst single frame since the last reset, which is the number a spike hunt actually wants.
-    // Needs __vb.cprof(true) armed, like every other phase timer.
-    enProf(reset) { const o = Object.fromEntries(EN_NAMES.map((n, i) => [n, +enEma[i].toFixed(3)]));
-      o.max = Object.fromEntries(EN_NAMES.map((n, i) => [n, +enMax[i].toFixed(2)]));
-      if (reset) enMax.fill(0);
-      o.armed = !!CPROF; return o; },
     snowProf() { const o = Object.fromEntries(SN_NAMES.map((n, i) => [n, +snEma[i].toFixed(3)]));
       o.total = +SN_NAMES.reduce((a, n, i) => a + snEma[i], 0).toFixed(3); o.armed = !!CPROF; return o; },
     ft() { const n = Math.min(ftN, FTR); if (!n) return null;   // frame-time distribution → 1% lows + worst spike
@@ -2312,126 +1887,52 @@
         tickP50: q(b, 0.5), tickP99: q(b, 0.99), tickMax: +b[n - 1].toFixed(2) }; },   // tick* = CPU inside tickBody; flat tick* against a spiking max means the stall is OUTSIDE our code (pacing / present / GC)
     spikes() { return { th: cpSpikeTh, names: CP_NAMES, evNames: CPE_NAMES, list: cpSpikes.slice() }; },
     spikeTh(v) { if (v !== undefined) cpSpikeTh = v; cpSpikes.length = 0; return cpSpikeTh; },
-    // ── THE POOL'S KNOBS ── the world reseeds on every load, so a cross-reload A/B of a millisecond compares
-    // two different worlds; these exist so a sweep can run inside ONE session.
-    poolMs(v) { if (v !== undefined) POOL_MS = +v; return { POOL_MS, POOL_BUDGET }; },
-    poolBudget(v) { return poolBudgetSet(v); },
-    poolAdapt(v) { return poolAdaptSet(v); },
-    ringPrefetch(v) { return ringPrefetchSet(v); },   // fetch ring tiles beyond the view radius so a tile-line crossing does not open a gap        // scale the drain budget with the frame interval — 0 pins it to the fixed cap for an A/B      // bricks per drain — the OTHER half of the budget, and the one that actually binds at flight speed (POOL_MS stops mattering past ~6 ms)   // per-frame drain time — see POOL_MS in render/buffers.js
-    airSeed(v) { if (v !== undefined) AIRSEED = v ? 1 : 0; return AIRSEED; },   // dev: 0 makes the pool re-derive every streamed brick's airlessness itself, the way it did before gen-pool.js started answering it
-    wrunGap(v) { if (v !== undefined) WRUN_GAP = v | 0; return WRUN_GAP; },   // dev: the descriptor coalescer's run-merge tolerance — see WRUN_GAP in render/buffers.js
     ftReset() { ftN = 0; ftI = 0; cpSpikes.length = 0; heapDrops = 0; heapAlloc = 0; return true; },
     mem() { const m = performance.memory || {};        // CPU heap + the static GPU allocation the world costs
       return { jsHeapMB: +((m.usedJSHeapSize || 0) / 1048576).toFixed(1), jsHeapTotalMB: +((m.totalJSHeapSize || 0) / 1048576).toFixed(1),
         worldMB: +(W.byteLength / 1048576).toFixed(1), bricksMB: +((bricks.byteLength + bricks2.byteLength + wbricks.byteLength) / 1048576).toFixed(2),
-        hmapMB: +(hmap.byteLength / 1048576).toFixed(2), poolMB: +((bdesc.byteLength + poolUsed * 512) / 1048576).toFixed(1), RW, RH, CW, CH, renderScale }; },   // worldMB is the CPU array; poolMB is what the GPU actually holds for the same world
+        hmapMB: +(hmap.byteLength / 1048576).toFixed(2), stagMB: +(stag.byteLength / 1048576).toFixed(2), RW, RH, CW, CH, renderScale }; },
     res(v) { if (v !== undefined) { renderScale = Math.max(0.375, Math.min(1, v)); makeTargets(true); resSync(); } return { renderScale, RW, RH }; },   // A/B the resolution scale from a test (does NOT persist — a test must not rewrite the player's vb_scale)
-    // ══ WHAT IS THE POOL ACTUALLY HOLDING? ══ the player's flight recorder shows occupancy pinned at
-    // 95.5-100.0% in the arctic, and a cache at its ceiling drops a tile for every insert — that churn is
-    // terrain flashing. Before buying headroom with VRAM, sample the PAGES: sealed rock already shares one
-    // page pool-wide, but a brick of open ocean is 512 bytes of WATER_B identical to every other one, and a
-    // glacier-edge brick that is airless-but-unfenced fails the sealed test while being uniform ice. If a
-    // large fraction of live pages are single-id, the pool is full of copies of the same page.
-    // …and WHERE the live pages sit in HEIGHT, which the census cannot see. Sealing has structural holes —
-    // slab-edge bricks decline the fence test (by 0 and nby-1 always decline), so if a whole horizontal
-    // LAYER shows up fully populated here, that layer is paying real pages for terrain nobody can reach.
-    poolByHist() {
-      const NG = GBX * GBY * GBZ, per = GBX * GBZ;
-      const live = new Int32Array(GBY), sealed = new Int32Array(GBY);
-      for (let by = 0; by < GBY; by++) {
-        let l = 0, se = 0;
-        for (let bz = 0; bz < GBZ; bz++) { const ro = by * GBX + bz * GBX * GBY;
-          for (let bx = 0; bx < GBX; bx++) { const d = bdesc[ro + bx];
-            if (!d) continue; l++; if (d - 1 === SEALED_SLOT) se++; } }
-        live[by] = l; sealed[by] = se;
+    async gpudiff() {                                  // read the GPU world back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
+      patchFlush();                                    // staged voxel edits must land before the readback, or they read as false diffs
+      const CH = 64 << 20, stg = device.createBuffer({ size: CH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const WXW = WX >> 2, mx = new Uint8Array(WXW), mz = new Uint8Array(WZ);   // per-word x-mask and per-row z-mask; boundary words count as outside (no false positives)
+      const gx0 = gwrap(rect.xlo, WX), xw = rect.xhi - rect.xlo, gz0 = gwrap(rect.zlo, WZ), zw = rect.zhi - rect.zlo;
+      for (let wq = 0; wq < WXW; wq++) { let ok = 1; for (let k = 0; k < 4; k++) if (((wq * 4 + k - gx0 + WX) % WX) >= xw) ok = 0; mx[wq] = ok; }
+      for (let z = 0; z < WZ; z++) mz[z] = ((z - gz0 + WZ) % WZ) < zw ? 1 : 0;
+      let diffs = 0; const spots = [];
+      for (let off = 0; off < W.byteLength; off += CH) {
+        const len = Math.min(CH, W.byteLength - off);
+        const enc2 = device.createCommandEncoder(); enc2.copyBufferToBuffer(worldBuf, off, stg, 0, len); device.queue.submit([enc2.finish()]);
+        await stg.mapAsync(GPUMapMode.READ, 0, len);
+        const g = new Uint32Array(stg.getMappedRange(0, len)), w0 = off >> 2;
+        for (let i = 0; i < g.length; i++) {
+          if (g[i] === W32[w0 + i]) continue;
+          const wAbs = w0 + i, gz = (wAbs / (WX * WY >> 2)) | 0, rem = wAbs % (WX * WY >> 2), gy = (rem / WXW) | 0, wq = rem % WXW;
+          if (!mz[gz] || !mx[wq]) continue;            // stale-by-design territory
+          diffs++;
+          if (spots.length < 12) spots.push([wq * 4, gy, gz, g[i] >>> 0, W32[wAbs] >>> 0]);
+        }
+        stg.unmap();
       }
-      const out = [];
-      for (let by = 0; by < GBY; by++) if (live[by]) out.push({ by, y: by * 8, live: live[by], sealed: sealed[by], real: live[by] - sealed[by], pctOfLayer: +(100 * live[by] / per).toFixed(1) });
+      stg.destroy();
+      return { diffs, spots };
+    },
+    async bdiff() {                                    // GPU-vs-CPU OCCUPANCY diff (bricks / bricks2 / wbricks). 0 = in sync.
+      patchFlush();                                    // pending voxel edits carry pending brick bits
+      const out = {};
+      for (const [name, cpu, buf] of [['bricks', bricks, brickBuf], ['bricks2', bricks2, brick2Buf], ['wbricks', wbricks, wbrickBuf]]) {
+        const stg = device.createBuffer({ size: cpu.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+        const e2 = device.createCommandEncoder(); e2.copyBufferToBuffer(buf, 0, stg, 0, cpu.byteLength); device.queue.submit([e2.finish()]);
+        await stg.mapAsync(GPUMapMode.READ);
+        const g = new Uint32Array(stg.getMappedRange());
+        let bad = 0; const spots = [];
+        for (let i = 0; i < g.length; i++) if (g[i] !== cpu[i]) { bad++; if (spots.length < 8) spots.push([i, g[i] >>> 0, cpu[i] >>> 0]); }
+        out[name] = bad ? { bad, spots } : 0;
+        stg.unmap(); stg.destroy();
+      }
       return out;
     },
-    async poolCensus(sample = 4096) {
-      const NG = GBX * GBY * GBZ;
-      const cand = [];
-      for (let t = 0; t < sample * 30 && cand.length < sample; t++) {
-        const gb = (Math.random() * NG) | 0, d = bdesc[gb];
-        if (!d || d - 1 === SEALED_SLOT || uniShared.has(d - 1)) continue;   // census counts REAL pages; the shared ones are the fix, not the problem
-        cand.push([gb, d - 1]);
-      }
-      const stg = device.createBuffer({ size: Math.max(512, cand.length * 512), usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-      const e = device.createCommandEncoder();
-      cand.forEach((c, i) => e.copyBufferToBuffer(poolBuf, c[1] * 512, stg, i * 512, 512));
-      device.queue.submit([e.finish()]);
-      await stg.mapAsync(GPUMapMode.READ);
-      const pg = new Uint8Array(stg.getMappedRange().slice(0)); stg.unmap(); stg.destroy();
-      let uniform = 0, mixed = 0; const byId = {};
-      for (let i = 0; i < cand.length; i++) {
-        const o = i * 512, v0 = pg[o];
-        let uni = true;
-        for (let j = 1; j < 512; j++) if (pg[o + j] !== v0) { uni = false; break; }
-        if (uni) { uniform++; byId[v0] = (byId[v0] || 0) + 1; } else mixed++;
-      }
-      const rank = Object.entries(byId).sort((x, y) => y[1] - x[1]).slice(0, 10)
-        .map(([id, ct]) => ({ id: +id, n: ct, pct: +(100 * ct / cand.length).toFixed(1), col: palette[+id] }));
-      return { sampled: cand.length, uniformPct: +(100 * uniform / cand.length).toFixed(1), mixed, topUniformIds: rank,
-        live: poolUsed - poolFreeN, slots: POOL_SLOTS, occPct: +(100 * (poolUsed - poolFreeN) / POOL_SLOTS).toFixed(1) };
-    },
-    async gpudiff(sample = 2048) {                    // read the POOL back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
-      // The dense GPU world is gone, so "does the GPU agree with W" is now two questions. Every brick's
-      // DESCRIPTOR has to agree with W about whether that brick holds anything at all — checked exhaustively,
-      // since bdesc is 12 MB and cheap to read back, and it is where a broken free list or a missed poolTouch
-      // shows up first. The PAYLOAD check is sampled, because reading every page is ~250 MB. A sealed brick is
-      // exempt: it shares one page of stone on purpose and its own voxels are deliberately not stored.
-      //
-      // EVERYTHING CPU-SIDE IS SNAPSHOT BEFORE THE FIRST await. The await spans real frames and the game
-      // ticks through them — the perched songbirds alone re-stamp ~390 bricks a frame — so comparing a GPU
-      // copy taken now against arrays read after the await reports every edit made in between as a failure.
-      // The first two versions of this check did exactly that and "found" 15-37 diffs a run, all of them the
-      // test racing the sim.
-      worldFlush(true);                                // drain the whole dirty queue, budget ignored, or pending edits read as false diffs
-      const nB = BX * BY * BZ, spots = [];
-      const e0 = device.createCommandEncoder(); e0.copyBufferToBuffer(bdescBuf, 0, bdescRead, 0, bdesc.byteLength); device.queue.submit([e0.finish()]);
-      const cpuDesc = bdesc.slice(), cpuOcc = bricks.slice();
-      const inRect = (bx, bz) => { const wx = winOX + bx * 8, wz = winOZ + bz * 8;
-        return wx >= rect.xlo && wx + 8 <= rect.xhi && wz >= rect.zlo && wz + 8 <= rect.zhi; };
-      // pick the payload sample and snapshot what W says each page should hold, all before any await
-      const want = [];
-      for (let k = 0; k < sample; k++) {
-        const b = (Math.random() * nB) | 0;
-        const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
-        const gb = cpu2gpu(b);
-        if (!inRect(bx, bz) || !cpuDesc[gb] || cpuDesc[gb] - 1 === SEALED_SLOT) continue;
-        const page = new Uint8Array(512);
-        for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++)
-          page.set(W.subarray(bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY, bx * 8 + 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY), ly * 8 + lz * 64);
-        want.push({ b, slot: cpuDesc[gb] - 1, page });
-        if (want.length >= 512) break;                 // one staging buffer, one submit — see below
-      }
-      // ONE encoder, submitted BEFORE the first await, for every sampled page. Copying them inside the
-      // post-await loop instead reads the GPU as it is SEVERAL FRAMES LATER, which is how the third version
-      // of this check came back with 22-74 byte diffs that were all perched birds stamping and unstamping.
-      const pageStg = device.createBuffer({ size: Math.max(512, want.length * 512), usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-      const e1 = device.createCommandEncoder();
-      want.forEach((w, i) => e1.copyBufferToBuffer(poolBuf, w.slot * 512, pageStg, i * 512, 512));
-      device.queue.submit([e1.finish()]);
-      let descBad = 0, voxBad = 0;
-      await bdescRead.mapAsync(GPUMapMode.READ);
-      const gd = new Uint32Array(bdescRead.getMappedRange().slice(0));
-      bdescRead.unmap();
-      for (let b = 0; b < nB; b++) {
-        const bx = b % BX, bz = (b / (BX * BY)) | 0;
-        if (!inRect(bx, bz)) continue;
-        const gb = cpu2gpu(b);
-        if (gd[gb] !== cpuDesc[gb]) { if (spots.length < 20) spots.push({ b, gb, gpu: gd[gb], cpu: cpuDesc[gb], kind: 'desc-upload' }); descBad++; continue; }
-        if ((cpuDesc[gb] !== 0) !== (((cpuOcc[b >> 5] >>> (b & 31)) & 1) !== 0)) { if (spots.length < 20) spots.push({ b, gb, desc: cpuDesc[gb], kind: 'desc-vs-occupancy' }); descBad++; }
-      }
-      await pageStg.mapAsync(GPUMapMode.READ);
-      const gp = new Uint8Array(pageStg.getMappedRange().slice(0));
-      pageStg.unmap(); pageStg.destroy();
-      want.forEach((w, i) => { for (let k = 0; k < 512; k++) if (gp[i * 512 + k] !== w.page[k]) {
-        voxBad++; if (spots.length < 20) spots.push({ b: w.b, slot: w.slot, k, gpu: gp[i * 512 + k], cpu: w.page[k], kind: 'page' }); } });
-      return { diffs: descBad + voxBad, descBad, voxBad, bricksChecked: want.length, spots };
-    },
-    bdiff() { return 'superseded by __vb.gpudiff() — the L1/L2/water tables the GPU reads are bdesc/gb2/gwb, and gpudiff checks bdesc exhaustively against W'; },
     scanCliffs(TH, LEN) { const th = TH || 25, ln = LEN || 24, runs = [];   /*TEMP-DEBUG: find long AXIS-ALIGNED hmap cliffs (rect-pit edges)*/
       for (let gz = 0; gz < WZ - 1; gz++) { let run = 0, sx = 0;
         for (let gx = 0; gx < WX; gx++) { const d = Math.abs(hmap[gx + gz * WX] - hmap[gx + (gz + 1) * WX]);
@@ -2576,96 +2077,6 @@
     // every desert-band census read empty and every change to that band went unverified. This walks outward
     // along +x in strides until the biome field says it has arrived, then teleports. Returns where it landed
     // and the field values there, so a caller can tell "found it" from "gave up".
-    // ── EVERY BAND MASK AT ONE COLUMN ── the bands are five smoothstepped distance fields whose edges are
-    // supposed to line up with each other in particular ways (cherry INSIDE oak, a whole pine strip between
-    // arctic and oak, and so on). Those relationships are asserted in comments all over world/window.js and
-    // there was no way to read one. This scans across x at a fixed z and reports where each mask crosses,
-    // which is what turns "there is a thin slice of oak between the pine and the cherry" into a number.
-    // ── WHY A PINE CELL PLANTED NOTHING, BUCKETED BY GROUND HEIGHT ── treeAt is a chain of ~10 rejections and
-    // the only thing it reports is null, so "the forest has patches" had no way to become a number. This walks
-    // real TCELL cells, calls the real treeAt, and buckets the hit rate by the cell's own terrain height. If
-    // the misses are flat across height the cause is the density roll; if they pile up at one end it is a
-    // height gate (the WL + 4 beach test at the bottom, or the treeline at the top).
-    treeDensity(nCells) {
-      const N = nCells || 60;
-      const px = Math.round(P.x), pz = Math.round(P.z);
-      const cx0 = Math.floor(px / TCELL), cz0 = Math.floor(pz / TCELL);
-      const b = {}, order = [];
-      let pine = 0, hit = 0;
-      for (let dz = -N; dz <= N; dz++) for (let dx = -N; dx <= N; dx++) {
-        const cx = cx0 + dx, cz = cz0 + dz;
-        const wx = Math.round(cx * TCELL + TCELL / 2), wz = Math.round(cz * TCELL + TCELL / 2);
-        if (oakM(wx, wz) > 0.5 || cherryM(wx, wz) > 0 || desertM(wx, wz) > 0.5
-            || birchM(wx, wz) > 0.5 || arcticM(wx, wz) > 0.5) continue;   // pine only
-        pine++;
-        const h = H(wx, wz);
-        const k = Math.floor(h / 10) * 10;
-        if (!b[k]) { b[k] = { cells: 0, trees: 0 }; order.push(k); }
-        b[k].cells++;
-        if (treeAt(cx, cz)) { b[k].trees++; hit++; }
-      }
-      order.sort((p, q) => p - q);
-      return { WL, treeH: MSZ, clipLine: WY - MSZ, pineCells: pine, trees: hit,
-        rate: +(hit / Math.max(1, pine)).toFixed(3),
-        byHeight: order.map((k) => k + ':' + b[k].trees + '/' + b[k].cells) };
-    },
-    // ── DOES THE BANK SKIRT EVEN SEE THIS WATER? ── bankDist walks WATERSHED geometry (rivEval's segments and
-    // lakes). Water that comes from anywhere else — a basin, the biome-border channels, the pine field's own
-    // low end — is invisible to it, and a shoreline it cannot see gets no cone and keeps the raw terrain
-    // gradient. That is the difference between "the bank profile is wrong" and "there is no bank profile here".
-    // ── THE INTERMEDIATE VALUES oakBank BRANCHES ON ── it is a chain of early returns over arctSeaH, a height
-    // cap and the skirt, and from outside only the final H is visible. When two adjacent columns come out 37
-    // voxels apart with every mask and every water field constant between them, the question is WHICH BRANCH
-    // each one took, and nothing exposed that.
-    bankWhy(x, z) {
-      const xx = x === undefined ? Math.round(P.x) : x, zz = z === undefined ? Math.round(P.z) : z;
-      const dx = pwrap(xx - SPWX), am = arcticM(xx, zz);
-      const raw = baseH(xx, zz);                       // the height oakBank is HANDED, before any of its arms
-      return { x: xx, z: zz, H: H(xx, zz), raw, am: +am.toFixed(3),
-        inArctCheap: dx < ARCTFAR && dx > ARCTWFAR, dx: Math.round(dx), ARCTFAR: Math.round(ARCTFAR), ARCTWFAR: Math.round(ARCTWFAR),
-        sb: Math.round(arctSeaH(xx, zz)), cap: Math.round(WL + (1 - am) * ARCT_STAND),
-        belowBed: raw < arctSeaH(xx, zz), overCap: raw > WL + (1 - am) * ARCT_STAND,
-        bankDist: Math.round(bankDist(xx, zz)) };
-    },
-    bankAt(x, z) {
-      const xx = x === undefined ? Math.round(P.x) : x, zz = z === undefined ? Math.round(P.z) : z;
-      let d = bankDist(xx, zz);
-      const hh0 = H(xx, zz), dxq = pwrap(xx - SPWX);
-      let est = -1;                                    // …the SAME field-gradient estimate oakBank uses, so coverage can actually be counted
-      if (d >= OAKBANKR && hh0 - WL < 92) {
-        const bmq = (dxq < BIRCHFAR && dxq > BIRCHWFAR) ? birchM(xx, zz) : 0;
-        const g = 4, fld = bmq > 0 ? birchH : (dxq >= OAKFAR || dxq <= OAKWFAR ? pineH : oakH);
-        const gx = (fld(xx + g, zz) - hh0) / g, gz = (fld(xx, zz + g) - hh0) / g;
-        const gr = Math.sqrt(gx * gx + gz * gz);
-        if (gr > 0.02) { const df = (hh0 - WL) / gr; if (df >= 0) est = df; }
-        if (est >= 0 && est < d) d = est;
-      }
-      return { x: xx, z: zz, H: H(xx, zz), WL, bankDist: Math.round(d), reach: OAKBANKR,
-        seesWater: d < OAKBANKR, est: est < 0 ? null : Math.round(est), viaEstimate: est >= 0 && est < OAKBANKR, rs: +riverS(xx, zz).toFixed(3), basin: +basinM(xx, zz).toFixed(3) };
-    },
-    bandScan(z0, x0, x1, step) {
-      const z = z0 === undefined ? Math.round(P.z) : z0;
-      const a = x0 === undefined ? Math.round(P.x) - 16000 : x0;
-      const b = x1 === undefined ? Math.round(P.x) + 16000 : x1;
-      const st = step || 4;
-      const M = { desert: desertM, birch: birchM, arctic: arcticM, oak: oakM, cherry: cherryM };
-      const runs = [];
-      let cur = null;
-      for (let x = a; x <= b; x += st) {
-        let name = 'pine';                             // the default forest: no named band owns this column
-        let best = 0.5;
-        for (const k in M) { const v = M[k](x, z); if (v > best) { best = v; name = k; } }
-        if (name === 'oak' && M.cherry(x, z) > 0) name = 'cherry';   // cherry is a SUB-REGION of oak, so it wins where both are up
-        if (!cur || cur.b !== name) { cur = { b: name, x0: x, x1: x }; runs.push(cur); } else cur.x1 = x;
-      }
-      return runs.map((r) => ({ band: r.b, from: r.x0, to: r.x1, w: r.x1 - r.x0 + st }));
-    },
-    // …and the raw masks at ONE column, for when a run boundary needs explaining
-    bandsAt(x, z) {
-      const xx = x === undefined ? Math.round(P.x) : x, zz = z === undefined ? Math.round(P.z) : z;
-      return { x: xx, z: zz, oak: +oakM(xx, zz).toFixed(3), cherry: +cherryM(xx, zz).toFixed(3),
-        desert: +desertM(xx, zz).toFixed(3), birch: +birchM(xx, zz).toFixed(3), arctic: +arcticM(xx, zz).toFixed(3) };
-    },
     gotoBiome(which, maxD) {
       // 'pine' is the DEFAULT forest — none of the NAMED bands — so it is expressed as the absence of all of
       // them rather than a field of its own. birchM has to be in that list: it was written when there were two
@@ -2674,43 +2085,20 @@
       // 2026-08-24 while profiling snow, which made the whole measurement the wrong biome's).
       // …and it happened AGAIN with the arctic (2026-08-29), which is why the list is now written as a set of
       // named bands rather than a hand-kept conjunction: add a band to NAMED and both arms follow.
-      // ── CHERRY IS IN THIS LIST NOW, AND THAT IS THE THIRD TIME (audit 2026-08-31) ── the note above says a band
-      // left out of NAMED makes gotoBiome answer for the wrong biome, and records it happening to the birch and
-      // then to the arctic. It was still happening to the CHERRY: `NAMED[which] || ... : oakM` sent every
-      // gotoBiome('cherry') to the oak fallback, which then reported `found: "cherry"` from a column measuring
-      // oak 0.58, cherry 0. A silent wrong answer, and it had been quietly biasing measurements taken with it.
-      const NAMED = { desert: desertM, birch: birchM, arctic: arcticM, oak: oakM, cherry: cherryM };
-      // ── AND PINE IS GRADED, NOT A FLAG ── as a 0/1 indicator the "seek the core" loop below is useless for it:
-      // the first column where no band exceeds 0.5 IS a band's 0.5 iso-line, so gotoBiome('pine') parked the
-      // camera on the arctic border every time and called it the pine forest. 1 - max(mask) peaks where the
-      // column is furthest from EVERY named band, which is what "the pine forest" actually means - it is the
-      // complement, so its core is a distance, not a test.
+      const NAMED = { desert: desertM, birch: birchM, arctic: arcticM, oak: oakM };
       const f = NAMED[which] || (which === 'pine'
-        ? ((x, z) => { let m = 0; for (const k in NAMED) { const v = NAMED[k](x, z); if (v > m) m = v; } return 1 - m; })
-        : null);
-      if (!f) return { found: null, error: 'unknown biome ' + which, known: Object.keys(NAMED).concat('pine') };
-      // ── AND IT SEEKS THE CORE, NOT THE FIRST COLUMN OVER 0.5 ── that test lands on the band's outer RIM by
-      // construction: 0.5 IS the edge. Every reading taken through this tap came from a border - a
-      // gotoBiome('pine') that measured arctic 0.407, a gotoBiome('birch') at desert 0.473 - so anything
-      // averaged over "the biome" was really averaged over its transition. Keep scanning while the mask is
-      // still climbing and stop on a core (0.98) or on the best seen, which puts the camera in the biome
-      // rather than on its edge.
+        ? ((x, z) => Object.keys(NAMED).every((k) => NAMED[k](x, z) < 0.5) ? 1 : 0) : oakM);
       const lim = maxD || 400000;
-      let best = null;
       for (let d = 0; d <= lim; d += 512) {
         for (const sgn of (d === 0 ? [1] : [1, -1])) {
-          const x = P.x + sgn * d, z = P.z, v = f(x, z);
-          if (v > 0.5 && (!best || v > best.v)) best = { x, z, v, d };
+          const x = P.x + sgn * d, z = P.z;
+          if (f(x, z) > 0.5) {
+            P.x = x; P.z = z; P.y = H(x, z) + 3; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1;   // the same three lines __vb.tp ends with — the streamer catches up on its own
+            return { found: which, at: [Math.round(x), Math.round(z)], dist: d,
+              oak: +oakM(x, z).toFixed(2), desert: +desertM(x, z).toFixed(2), birch: +birchM(x, z).toFixed(2), arctic: +arcticM(x, z).toFixed(2) }; }
         }
-        if (best && best.v >= 0.98) break;                 // a core: no point walking further
-        if (best && d > best.d + 4096) break;              // …or the band has been crossed and is falling away again
       }
-      if (!best) return { found: null, searched: lim, oakHere: +oakM(P.x, P.z).toFixed(2), desertHere: +desertM(P.x, P.z).toFixed(2) };
-      const { x, z } = best;
-      P.x = x; P.z = z; P.y = H(x, z) + 3; P.vy = 0; smoothEye = P.y + EYE; resetHist = 1;   // the same three lines __vb.tp ends with — the streamer catches up on its own
-      return { found: which, at: [Math.round(x), Math.round(z)], dist: best.d, mask: +best.v.toFixed(3),
-        oak: +oakM(x, z).toFixed(2), cherry: +cherryM(x, z).toFixed(2), desert: +desertM(x, z).toFixed(2),
-        birch: +birchM(x, z).toFixed(2), arctic: +arcticM(x, z).toFixed(2) };
+      return { found: null, searched: lim, oakHere: +oakM(P.x, P.z).toFixed(2), desertHere: +desertM(P.x, P.z).toFixed(2) };
     },
     // ── EVERY MATERIAL TABLE FOR ONE ID ── __vbFlowerMat answers this for flowers only, which is no help when
     // the question is "is this voxel a mushroom" and mushTab is module-scoped. One tap, all the tables.

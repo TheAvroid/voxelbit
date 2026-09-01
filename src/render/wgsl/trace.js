@@ -1,12 +1,9 @@
-  const TRACE_SRC = ({ DDAW, FLAKEBLK, pickWGSL, POOL }) => /* wgsl */`
-${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // ── PAGED BRICK POOL ── 512-byte payloads for OCCUPIED bricks only; the ~47% of the window that is empty sky has none
-    @group(0) @binding(2) var<storage, read> bdesc : array<u32>;   // per-brick: 0 = all air, else slot+1 into pool. Replaces the occupancy bitmask - a nonzero descriptor IS the occupancy bit, which keeps TRACE at exactly 8 storage buffers (the WebGPU default cap)`
-        : `    @group(0) @binding(1) var<storage, read> world : array<u32>;
-    @group(0) @binding(2) var<storage, read> bricks : array<u32>;`}
+  const TRACE_SRC = ({ DDAW, FLAKEBLK, pickWGSL }) => /* wgsl */`
+    @group(0) @binding(1) var<storage, read> world : array<u32>;
+    @group(0) @binding(2) var<storage, read> bricks : array<u32>;
     @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
     @group(0) @binding(4) var gAlbedo : texture_storage_2d<rgba8unorm, write>;
     @group(0) @binding(5) var gIrr : texture_storage_2d<rgba16float, write>;
-    @group(0) @binding(10) var gInd : texture_storage_2d<rgba16float, write>;   // ONE-BOUNCE INDIRECT RADIANCE, in colour - see the AO/GI block below
     @group(0) @binding(7) var<storage, read> wbricks : array<u32>;   // water-only brick bits — skipW rays stride these
     @group(0) @binding(8) var slotOut : texture_storage_2d<r32uint, write>;   // ── DYNAMIC LIFE ── per-pixel creature id: bits 0-7 = drop slot + 1 (0 = terrain/sky), bits 8-10 = model-space hit axis*2+signBit (composite rebuilds the TRUE rotated normal from it)
     ${pickWGSL}
@@ -105,7 +102,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       return oakWobG(z) * 0.6 + (dVnoise(z * ${WOB_CH} + 211.3, 97.7) - 0.5) * ${CHW}.0;
     }
     fn cherryMask(x : f32, z : f32) -> f32 {           // 1 = inside the blossom band, 0 = the oak forest either side of it. A DISTANCE from the centre line, not a side of it — that is what makes it a band rather than a half-plane
-      let b = f32(${SPWX - CHOFF - oakWob(SPWZ)}) + oakWobG(z);   // oakWobG, NOT chWobG — the JS cherryM rides the OAK meander now (see CHHALF in world/window.js), and a stale copy here is the exact failure the desWob note at the top of this file is about: flakes culled on one border while the blanket settles on another. Still pinned at the spawn's own z exactly as the JS is
+      let b = f32(${SPWX - CHOFF - chWob(SPWZ)}) + chWobG(z);   // pinned at the spawn's own z exactly as the JS is, or how far spawn sits inside the band is a per-session lottery
       let t = (${CHHALF + CHB}.0 - abs(pwrapG(x - b))) / ${CHB}.0;   // wrapped, or the blossom exists in the first period only and every later one falls back to plain oak weather
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
@@ -121,8 +118,8 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       return (m - 0.06) / 0.64;
     }
     fn cherryMaskW(x : f32, z : f32) -> f32 {          // the blossom band as the WEATHER sees it — cherryMask's twin on the wider CHBW ramp (world/window.js cherryW). Same centre and same CHHALF, so WHERE it snows is identical and only the fade length differs
-      let b = f32(${SPWX - CHOFF - oakWob(SPWZ)}) + oakWobG(z);
-      let t = (${CHWHALF + CHBW}.0 - abs(pwrapG(x - b))) / ${CHBW}.0;   // CHWHALF, matching the JS cherryW: the weather band kept its own half-width when the tree band was reshaped
+      let b = f32(${SPWX - CHOFF - chWob(SPWZ)}) + chWobG(z);
+      let t = (${CHHALF + CHBW}.0 - abs(pwrapG(x - b))) / ${CHBW}.0;
       if (t >= 1.0) { return 1.0; }
       if (t <= 0.0) { return 0.0; }
       return dSstep(t);
@@ -550,7 +547,6 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       var isRock = false;                                             // ── IS THIS PIXEL STONE ── rides out to slotOut bit 12 for the composite's sun sheen. Resolved inside the albedo branch below, not at the store, because that is the only place that knows WHICH id this pixel's colour came from: h.vox is authoritative for the static world only, a body hit carries its id in bVox, and a creature's h.vox is deliberately zeroed.
       var faceId = 7u; var t = -1.0;
       var hurtGlow = 0.0;                                            // >0 on a pixel inside the hit flash: it is emissive, so it must not be left to whatever light happens to reach it
-      var indirect = vec3<f32>(0.0);   // ── GI ── light that reached this pixel by bouncing off another surface, in that surface's colour
       var sunV = 0.0; var skyV = 0.0;   // (bit 15 zeroes skyV at the end of the lighting block — the ambient/sky term, as opposed to the AO ray that modulates it)
       var creReact = 0.0;                                            // set inside the creature-shadow loop below: this pixel sits in a MOVING shadow's penumbra, so the reactive mask must cap its history (declared out here — the reactive mask is written well past the shading block's scope)
       if (h.t >= 0.0) {
@@ -712,21 +708,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
           // sunV answers the question transmission actually asks: does the sun reach the FAR face?
           // select() is false for every non-foliage surface here (the gate above only admits dot > 0 unless it
           // is a leaf), so ordinary shadows are bit-identical.
-          // ══ AND THE BIAS SCALES WITH THE GRAZING ANGLE, OR A LOW SUN SPECKLES EVERY FLAT SURFACE ══ sp sits a
-          // fixed 0.02 voxels along the normal. That clears the surface only for a ray leaving it steeply. As
-          // the sun drops, dot(n, sunDir) on a flat top face goes to nothing and the jittered ray sets off
-          // almost parallel to the ground — 0.02 of clearance is then not enough to get out of the CURRENT
-          // cell, so the ray re-enters the voxel next door, reports occluded, and the pixel goes fully black.
-          // sunV is binary here (select(1, 0, occ)), so there is no partial answer to soften it: neighbouring
-          // pixels whose jitter tilts the other way come back fully lit, and the surface breaks into black
-          // speckle. It follows the terrain's contours because that is where the one-voxel steps are, and it
-          // CRAWLS, because the cone jitter is re-drawn every frame — which is the "random parts of terrain
-          // flicker" this was reported as. Snow shows it worst: a black dot on white is maximum contrast.
-          // The standard fix, and the reason it is not just a bigger constant: the clearance a ray needs is
-          // proportional to 1/cos of its angle to the surface. Capped below one voxel so the offset can never
-          // step the ray over a genuine one-voxel occluder and leak light through a thin wall.
-          let ndl = max(dot(h.n, u.sunDir), 1e-3);
-          let sunOrg = select(sp + h.n * clamp(0.03 / ndl, 0.03, 0.8), pos + u.sunDir * 1.25, dot(h.n, u.sunDir) <= 0.0);
+          let sunOrg = select(sp, pos + u.sunDir * 1.25, dot(h.n, u.sunDir) <= 0.0);
           let ceilY = f32((u32(u.fx) >> 8u) & 31u) * 32.0;           // world ceiling (u.fx bits 8+): no solid above it → a climbing ray is clear once past it
           let sCap = select(1200.0, min(1200.0, (ceilY - sunOrg.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
           if (sCap <= 0.0) { sunV = 1.0; }                           // already above everything and going up — full sun, no ray
@@ -801,54 +783,6 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
           if (LG(1u)) { let aoR = select(24.0, u.physC.z, u.physC.z > 0.0);
                         let ah = traceAll(sp, d, aoR, skipW);      // bodies included → real contact AO and self-shadowing, no bake needed
                         var aT = select(aoR, ah.t, ah.t >= 0.0);
-                        // ── THE SAME RAY, ASKED A BETTER QUESTION (user 2026-09-01: "we want realistic
-                        // lighting") ── this ray was already being cast and everything but its LENGTH was
-                        // being thrown away. ah carries what it struck (ah.vox) and the face it struck
-                        // (ah.n), so the surface's own colour is free: no second ray, no new pass, no extra
-                        // DDA - the most expensive term in the renderer (2.17 ms, 45% of the trace) now
-                        // returns radiance as well as occlusion.
-                        // What this buys is the thing a scalar AO term can never express: BOUNCE COLOUR. Sun
-                        // on a red rock throws red onto the stone beside it; a green canopy tints the litter
-                        // under it. That is one bounce of global illumination, and it is what separates
-                        // "darkened crevices" from lit-looking ground.
-                        // The bounce surface is assumed lit rather than shadow-tested: a second ray from the
-                        // bounce point would double the cost of the single most expensive thing here. The
-                        // error is over-bright indirect in shadowed crevices, which the AO term the same ray
-                        // produces is already darkening - the two errors point in opposite directions.
-                        if (ah.t >= 0.0) {
-                          let bAlb = pal[ah.vox].rgb * pal[ah.vox].rgb;   // albedo squared: pal holds sqrt-encoded colour (see gAlbedo)
-                          let bLit = max(0.0, dot(ah.n, u.sunDir.xyz));
-                          var bRad = SUN_COL * bLit;                     // what the FIRST bounce surface is lit by, before its own colour
-                          // ── AND A SECOND BOUNCE (user 2026-09-01: "implement the second bounce as well") ──
-                          // One bounce can only carry light off surfaces the sun already reaches, so a
-                          // crevice whose every neighbour is itself shadowed stays black no matter how
-                          // bright the day is. The second bounce is what fills those: light that has come
-                          // off two surfaces before it reaches the eye, which is most of the light indoors
-                          // and under a canopy.
-                          // It costs a real ray - unlike the first, which was riding an AO ray already being
-                          // cast - so it is kept cheap deliberately: GI_B2_R is a SHORTER reach than the AO
-                          // ray, because second-bounce light is diffuse and near-field, and the far half of
-                          // the hemisphere contributes almost nothing a temporal history will not average
-                          // out anyway. Its own R2 lanes, decorrelated from the first ray's, or the two
-                          // would sample the same direction every frame and the second bounce would be a
-                          // constant tint rather than a converging estimate.
-                          // NOT gated on a light-debug bit: LG(15u) was the obvious choice and it is already
-                          // the SKY/ambient toggle (see skyV at the top of this block), so the second bounce
-                          // would have switched off with a term it has nothing to do with. GI_B2 = 0 is the
-                          // off switch, and it is one constant rather than a bit someone else also owns.
-                          {
-                            let bp2 = sp + d * ah.t + ah.n * 0.02;      // step off the surface it hit, or the new ray re-hits it at t=0
-                            let r3 = fract(ign(vec2<f32>(gid.xy) + vec2<f32>(13.0, 91.0)) + fN * 0.4387627);
-                            let r4 = fract(ign(vec2<f32>(gid.xy) + vec2<f32>(71.0, 29.0)) + fN * 0.3096041);
-                            let d2 = cosHemi(ah.n, r3, r4);
-                            let ah2 = traceAll(bp2, d2, GI_B2_R, skipW);
-                            if (ah2.t >= 0.0) {
-                              let cAlb = pal[ah2.vox].rgb * pal[ah2.vox].rgb;
-                              bRad += cAlb * SUN_COL * max(0.0, dot(ah2.n, u.sunDir.xyz)) * GI_B2;
-                            }
-                          }
-                          indirect = bAlb * bRad * GI_GAIN;
-                        }
                         ${!(LIFE_UNI && (UNI_SEC & 2)) ? '' : '{ let cs2 = creaSec(sp, d, aT, sg0, sg1, sg2, sg3, secN); if (cs2.x >= 0.0) { aT = cs2.x; creReact = max(creReact, cs2.y); } }'}
                         skyV = clamp(aT / aoR, 0.0, 1.0); }
           else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
@@ -926,7 +860,6 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         if (dot(dc2, dc2) < aoR * aoR) { reactive = max(reactive, u.physC.y); }
       }
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, reactive));
-      textureStore(gInd, vec2<i32>(gid.xy), vec4<f32>(indirect, 1.0));
       textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 8u) | (select(0u, 1u, t >= 0.0 && (isFol(h.vox) || isCactusV(h.vox))) << 11u) | (select(0u, 1u, isRock) << 12u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction   // ...and bit 11 = IS THIS A LEAF. It rides here because the word had 21 unused bits and there is no spare g-buffer channel (gIrr is sun/sky/distance/history, gAlbedo is rgb + face); the composite cannot know a needle from bark otherwise. Every existing reader masks (& 255u, >> 8u & 7u), so this is invisible to them.   // …and bit 12 = IS THIS STONE, on the same argument and for the same reason (user 2026-08-16: a sun reflection on every rock). It needs all SIX faces, so a faceId could not carry it: gAlbedo.a has exactly six values left in its low nibble and spending every one of them on one material would be the last thing that channel ever did.
     }
   `;

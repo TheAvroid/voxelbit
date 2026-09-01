@@ -449,7 +449,7 @@
     const r = Math.ceil(Math.max(MSX, MSY) / TCELL) + 1;   // a crown can overhang several cells
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
       const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
-      const R = MROT9[tr.ti | 0][tr.rot], bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
+      const R = MROT9[tr.ti | 0][tr.rot], bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);   // per-model rotation set — a chop must read the SAME array the stamp wrote
       if (wx < bx || wx >= bx + R.sx || wz < bz || wz >= bz + R.sz) continue;
       return { tr, R, bx, bz, gy: groundMin(tr.tx, tr.tz, 2) - tr.sink, rm: remap, g: null, cells: null,
                root: tr.sink, oak: 0, hMax: MSZ };   // …the same key set in the same order as the oak's, so both kinds of shape share one hidden class at every site that reads them

@@ -253,21 +253,11 @@
         // 93-voxel pine has a tip 50 from the COM, and at 3 rad/s that tip moves 2.5 voxels per 60 Hz step
         // — straight through the stump it should hit. Subdivide THIS body's step so no point on it can
         // travel more than half a voxel, which is finer than the grid it is colliding against.
-        // ── JOLT OWNS THE MOTION; THIS LOOP KEEPS THE BOOKKEEPING (user 2026-09-01) ── and the split
-        // belongs HERE, at the integrator, not at physStep's caller. The first wiring skipped the whole
-        // of physStep under ?jolt, which quietly took the rest of this function with it: RETIREMENT (a
-        // slept body baking back into W), the absorb rules, the lifetime expiry and the support queue
-        // all live in this same loop. A felled tree would have fallen correctly under Jolt and then
-        // never become world again - it would sit as a rigid body for ever, holding a body slot and a
-        // GPU page. So the loop still runs for every body; only the integrate-and-collide step is
-        // skipped, because Jolt has already written b.pos, b.q, b.vel and b.sleeping this frame.
-        if (!JOLT.on) {
-          const tip = Math.hypot(b.vel[0], b.vel[1], b.vel[2]) + Math.hypot(b.omega[0], b.omega[1], b.omega[2]) * b.rMax;
-          const sub2 = Math.max(1, Math.min(PH.maxCCD, Math.ceil(tip * PH.dt / 0.5)));
-          const hh = PH.dt / sub2;
-          for (let q3 = 0; q3 < sub2; q3++) phStep(b, hh);
-          PH.stats.ccd = Math.max(PH.stats.ccd, sub2);
-        }
+        const tip = Math.hypot(b.vel[0], b.vel[1], b.vel[2]) + Math.hypot(b.omega[0], b.omega[1], b.omega[2]) * b.rMax;
+        const sub2 = Math.max(1, Math.min(PH.maxCCD, Math.ceil(tip * PH.dt / 0.5)));
+        const hh = PH.dt / sub2;
+        for (let q3 = 0; q3 < sub2; q3++) phStep(b, hh);
+        PH.stats.ccd = Math.max(PH.stats.ccd, sub2);
       }
       PH.acc -= PH.dt; k++;
     }
@@ -444,18 +434,7 @@
         // SIZE IS STILL THE ONLY OTHER GATE, deliberately: PH.absorbSize is the user's own "too big to carry,"
         // break it down first" rule and this does not touch it.
         const vJ = b.vel[0] * b.vel[0] + b.vel[1] * b.vel[1] + b.vel[2] * b.vel[2];
-        // ── A FELLED PIECE MUST ACTUALLY LAND FIRST (user 2026-08-31: "the top half of the tree is either
-        // dissapearing or floating") ── fellLoot used to sit in this OR beside nearR, which made a tree chunk
-        // "settled" on AGE ALONE at 1500 ms. A pine takes about 5.7 s to go over, so every piece was legal to
-        // absorb while it was still in the air: stand at the trunk and the upper tree is collected out of its
-        // own arc before it can reach the ground. That is the whole report - the top half never lands because
-        // it is picked up mid-fall.
-        // It now has to be still (vJ < 4) or asleep, like everything else, with a LONG age backstop so the
-        // original reason for the exemption still holds: a chunk wedged against two others can jitter forever
-        // without the solver formally sleeping it, and it must not become uncollectable. 8 s clears a fall
-        // with room to spare.
-        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || vJ < 4))
-                        && !(tNow - b.born > 8000 && b.fellLoot)) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
+        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || b.fellLoot || vJ < 4))) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
         const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
         const rA = b.nearR || PH.absorbR;               // an ARROW's chunk keeps its own, much shorter reach (user)
         if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;

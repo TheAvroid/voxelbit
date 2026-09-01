@@ -21,13 +21,13 @@
       pickA  : vec4<f32>,                                            // held pick: anchor xyz (camera space) + voxel size
       pickX  : vec4<f32>, pickY : vec4<f32>, pickZ : vec4<f32>,      // item local axes in camera space; pickX.w = show flag
       rdist  : vec4<f32>,                                            // x = render distance in voxels (menu slider)
-      drops  : array<vec4<f32>, ${DROP_HALF * 4}>,   // ── WAS A HARDCODED 256 ── every other array in this struct interpolates its JS constant precisely so the two cannot drift; these two did not, and this file's own notes say what a mismatch costs: each field below silently reads its neighbour's numbers. DROP_HALF * 4 IS the 256.                                // drop slots 0..63 (the other 64 are in dropsB at the end of this struct): 4 dropped items + cardinal (slot 4) + 20 death-burst sparks/smoke (5-24) + the drawn flock + trace-injected creatures × {anchor.xyz+voxelScale, X.xyz+itemId, Y.xyz+glow, Z.xyz} in camera space, voxel units
+      drops  : array<vec4<f32>, 256>,                                // drop slots 0..63 (the other 64 are in dropsB at the end of this struct): 4 dropped items + cardinal (slot 4) + 20 death-burst sparks/smoke (5-24) + the drawn flock + trace-injected creatures × {anchor.xyz+voxelScale, X.xyz+itemId, Y.xyz+glow, Z.xyz} in camera space, voxel units
       pick2A : vec4<f32>,                                            // LEFT hand (dual-wield rock): anchor xyz (camera space) + voxel size
       pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
       fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
       cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
       misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w = EYE-INSIDE-A-VOXEL fill: the packed sRGB of the voxel the camera is buried in, PLUS 1 so that 0 means 'not buried' (written in tick-camera, read by COMPOSITE). NOT spare — take this lane for something else and the whole screen becomes the buried-in-rock fill.
-      lifeMot : array<vec4<f32>, ${DROP_HALF}>,   // …and this was a hardcoded 64, which is DROP_HALF. Same reason.                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
+      lifeMot : array<vec4<f32>, 64>,                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
       lifeCfg : vec4<f32>,                                           // x = life debug view (0 off, 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO), y = trace-injection enabled (0 under ?oldlife → full analytic fallback), z = the standing heart level the vitals ring reads, w = the RAIN SKY scalar (storm ramp x oakM at the
                                                                    // camera; 0 in fair weather and outside the oak forest). NEITHER IS SPARE - hurtV.w is the last float of the
                                                                    // whole uniform buffer, which is why it was safe to take: nothing sits below it to shift
@@ -99,12 +99,9 @@
     const PHYS_GRP : i32 = ${PHYS_GRP};                                        // bodies per group sphere in u.physG — bodyTrace culls a whole slab of the debris on one compare (see render/buffers.js)
     fn dropV(i : i32) -> vec4<f32> { if (i < ${DROP_HALF * 4}) { return u.drops[i]; } return u.dropsB[i - ${DROP_HALF * 4}]; }        // one logical drops[] over the two halves. The index is the loop counter, workgroup-uniform, so this is a scalar branch — and after the bit-scan it only runs for slots that actually touch the tile.
     fn lifeMotV(i : i32) -> vec4<f32> { if (i < ${DROP_HALF}) { return u.lifeMot[i]; } return u.lifeMotB[i - ${DROP_HALF}]; }   // …and one logical lifeMot[]
-    const WX : i32 = ${GWX}; const WY : i32 = ${GWY}; const WZ : i32 = ${GWZ};   // ── THE SHADER'S WORLD IS THE *GPU* WINDOW ── wider than the CPU's W (see TWO WINDOWS in world/window.js). Every extent, wrap and brick index in WGSL is on this grid; nothing in a shader ever sees the CPU one.
-    const BX : i32 = ${GBX}; const BY : i32 = ${GBY}; const BZ : i32 = ${GBZ};
+    const WX : i32 = ${WX}; const WY : i32 = ${WY}; const WZ : i32 = ${WZ};
+    const BX : i32 = ${BX}; const BY : i32 = ${BY}; const BZ : i32 = ${BZ};
     const SUN_COL : vec3<f32> = vec3<f32>(3.60, 3.24, 2.74);
-    const GI_B2 : f32 = 0.70;    // how much of the SECOND bounce survives. Under 1 because each bounce loses energy to the surface it came off, and because the estimate has no shadow test of its own.
-    const GI_B2_R : f32 = 12.0;  // and how far its ray reaches — half the AO ray. Second-bounce light is diffuse and near-field; the far half of the hemisphere buys noise, not light.
-    const GI_GAIN : f32 = 0.55;   // how much of the bounce reaches the eye. Not 1: a single bounce with no shadow test over-reports, and the sky/AO term already carries part of the ambient. Tuned by eye against the previous look.
     // ── THE SUN'S ANGULAR RADIUS ── the MOON's own outer threshold, so the two discs are the same size
     // (user 2026-08-28: "make the sun as big as the moon"). Real sun and moon are both ~0.53 degrees and
     // very nearly equal, so matching them is the physical answer as well as the asked-for one.
@@ -697,7 +694,7 @@
     // (composite maps it straight back to 2u for faceN, and gbFace does the same for the denoiser's edge test),
     // so nothing downstream can tell the difference except the code that asks.
     const SANDF : u32 = 9u;
-    fn isSandV(v : u32) -> bool { return ${[...SAND, ...DSAND].map((i) => 'v == ' + i + 'u').join(' || ')}; }
+    fn isSandV(v : u32) -> bool { return ${[...SAND, ...DSAND].map((i) => 'v == ' + i + 'u').join(' || ')}; }   // beach/lakebed SAND + desert DSAND -- ids listed one by one rather than as a range, so a future palette reorder cannot silently widen it
     // ── WHICH IDS ARE A CACTUS ── built the way isSandV is, from the ids the loaded models actually
     // reference rather than a hand-written list, so a re-bake or a palette shift cannot leave it stale. The
     // trailing 'or false' keeps the expression valid WGSL if the cacti failed to load and the set is empty.
@@ -711,6 +708,6 @@
     // somehow empty (a failed rocks26 fetch leaves only the terrain strata, which is already 12 ids, but the
     // guard costs nothing and an empty return would be a compile error, i.e. a black screen).
     fn isRockV(v : u32) -> bool { return ${[...rockShTab].map((f, i) => (f ? i : -1)).filter((i) => i >= 0).map((i) => 'v == ' + i + 'u').join(' || ') || 'false'}; }
-    fn gbFace(a : f32) -> u32 { let r = u32(a * 255.0 + 0.5) & 15u; return select(r, 2u, r == SANDF); }   // …the plain face, sand folded back into TOP: the denoiser rejects a neighbour whose face differs, and a sand top is an ordinary top to it   // ...the plain face, sand folded back into TOP: the denoiser rejects a neighbour whose face differs, and without this a sand/grass boundary would stop sharing irradiance samples
+    fn gbFace(a : f32) -> u32 { let r = u32(a * 255.0 + 0.5) & 15u; return select(r, 2u, r == SANDF); }   // ...the plain face, sand folded back into TOP: the denoiser rejects a neighbour whose face differs, and without this a sand/grass boundary would stop sharing irradiance samples
   `;
 

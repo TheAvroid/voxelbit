@@ -93,48 +93,10 @@
         //     which is what stops the clamp from inventing a colour that was never in the neighbourhood.
         //     In YCoCg because luma and chroma get their own variance there — the ghost that survives an RGB
         //     box is usually a chroma one.
-        //   · and the FLICKER, which is what the clamp above costs when the feature is SMALL. A distant ice
-        //     floe is a handful of bright pixels on dark water: the 3x3 is then mostly water, sigma is small,
-        //     and the bright history gets clipped away — so the speck only survives on the frames the jitter
-        //     happens to land on it, and it strobes instead of converging. Reported as terrain "flashing" and
-        //     found by diffing two adjacent frames of a capture: the change was thin bright OUTLINES tracing
-        //     the floe silhouettes, interiors perfectly stable. It is worst in the arctic because that is the
-        //     only biome that puts small bright objects on a large dark uniform background.
-        //     Two changes, both standard, both aimed at that:
-        //       1.75 sigma instead of 1.25 — a wider box keeps more history on a high-contrast edge. Trades a
-        //       little ghosting on motion for a lot less strobe; the clip is unambiguous about which is worse.
-        //       LUMINANCE-WEIGHTED blending (Karis) — weight each sample by 1/(1+Y) so one bright frame cannot
-        //       dominate the average. It is a NO-OP on a converged pixel (prev and cur share a luma, so the
-        //       weights collapse back to the plain mix) and only bites when the two disagree in brightness,
-        //       which is exactly the flicker case. Y is the same dot() rgb2ycocg uses, so it agrees with the
-        //       clamp above rather than introducing a second definition of luma.
         let mu = m1 / 9.0;
         let sg = sqrt(max(m2 / 9.0 - mu * mu, vec3<f32>(0.0)));
-        // lgt2 BIT 7 SELECTS THE OLD RESOLVE, so the two can be compared inside ONE session. That matters more
-        // than usual here: a first cross-reload attempt read 0.88% before and 2.49% after, but repeated runs
-        // at a FIXED vantage scatter between 1.4% and 1.8% on an unchanged build, so a single before/after
-        // pair cannot resolve a difference this size. __vb.lgt2(63) = new, __vb.lgt2(63|128) = old.
-        let sgK = select(1.75, 1.25, LG2(7u));
-        let prev = clipToAABB(rgb2ycocg(max(catmullRomPrev(uv, u.res), vec3<f32>(0.0))), mu - sg * sgK, mu + sg * sgK);
-        // ── TAA REACTS TO MOVING BODIES NOW (user 2026-09-01: "when a tree falls you see a damn
-        // streak") ── this pass was binding gIrr and reading ONLY .b, the depth. The reactive mask has
-        // been sitting in .a the whole time, written by the trace for exactly this purpose and consumed
-        // by the irradiance denoiser but never here — so the COLOUR history, which is the one you can
-        // actually see, blended a falling trunk against eight frames of the empty sky it used to be in
-        // front of. That is the streak: not the shadow lagging, the colour itself.
-        // ta is the weight of THIS frame. 0.12 is an eight-frame time constant, which is right for a
-        // static world and hopeless for a body crossing the screen. On a fully reactive pixel it goes to
-        // 0.65 - about a frame and a half - so the trail collapses to nothing while a still world keeps
-        // the long history that makes it quiet. Not 1.0: that is the ?nohist path and it is visibly noisy.
-        let rk8 = clamp(textureLoad(gIrr, p, 0).a, 0.0, 1.0);
-        let ta = select(1.0, mix(0.12, 0.65, rk8), LG(8u));         // bit 8 off = no colour history (raw, jittery, but instant): ta = 1 collapses either branch to cur
-        if (LG2(7u)) {
-          outc = mix(prev, cur, ta);
-        } else {
-          let wp = (1.0 - ta) / (1.0 + max(dot(prev, vec3<f32>(0.25, 0.5, 0.25)), 0.0));
-          let wc = ta / (1.0 + max(dot(cur, vec3<f32>(0.25, 0.5, 0.25)), 0.0));
-          outc = (prev * wp + cur * wc) / max(wp + wc, 1e-5);
-        }
+        let prev = clipToAABB(rgb2ycocg(max(catmullRomPrev(uv, u.res), vec3<f32>(0.0))), mu - sg * 1.25, mu + sg * 1.25);
+        outc = mix(prev, cur, select(1.0, 0.12, LG(8u)));           // bit 8 off → no colour history (raw, jittery, but instant)
       }
       textureStore(dofOut, vec2<i32>(gid.xy), vec4<f32>(outc, cur4.a));   // the CoC is deliberately NOT temporally blended: it is a depth-derived field, and mixing this frame's against a reprojected one would drag a stale blur radius across every silhouette
       textureStore(colorHistOut, vec2<i32>(gid.xy), vec4<f32>(outc, select(0.0, 1.0, t < 0.0)));   // alpha = SKY mask → the blit tells sky from geometry (depth of field, lens flare)

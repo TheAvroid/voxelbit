@@ -1,5 +1,5 @@
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports ROCKDITH, BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, penguinAt, PENGCELL, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPenguin, stampPenguinOne, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -16,7 +16,7 @@
     // The arctic gets the same coherent relief its own ground carries, applied UPWARD only — max(0, ...) is
     // what keeps the guarantee this line exists for, which is that dry land never sits below the water plane.
     // Only columns the clamp actually fires on pay for the mask lookup, which is a thin rim around water.
-    if (!lake && h <= WL) h = WL + 1 + (arcticM(wx, wz) > ARCT_GROUND
+    if (!lake && h <= WL) h = WL + 1 + (arcticM(wx, wz) > ARCT_BARE
       ? Math.max(0, Math.round((fbm(wx * 0.09 + 3.1, wz * 0.09 + 8.7) - 0.42) * 5)) : 0);   // dry land NEVER sits below the water plane — beach tops meet the surface FLUSH
     hmap[gx + gz * WX] = h;                            // hmap = the GROUND (lakebeds included — you walk on them, underwater)
     const mossy = !lake && mossV > 0.52;               // 0.56 → 0.52 ≈ +30% moss coverage
@@ -42,57 +42,11 @@
     // down through the soil band instead. Not dithered against the mask — an exposed face has to be one
     // material or the seam simply becomes a speckled seam.
     const asn = arctSnow(wx, wz);                      // the SNOW mask, not the biome mask — it reaches out to the treeline and its edge is 2-D noise (world/window.js)
-    const aSoil = arctGB(asn) > 0.5;                   // the soil band under the surface rides the same gate the surface does, or a white slope sits on brown dirt
+    const aSoil = asn > 0.5;
     for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
-      // ── AND A SHORE HAS TO HAVE WATER BY IT ── this was a pure HEIGHT test, which is only the same thing as
-      // "near water" if all low ground is coastal, and it is not: measured, 61.2% of the oak forest's dry land
-      // and 57.2% of the pine's came out SAND, in a biome with 0.0% open water. A low inland meadow was being
-      // painted as beach because it happened to sit within a few voxels of the waterline's HEIGHT.
-      // A DISC, not a ring. The water that makes a beach a beach is usually a river 20-40 voxels wide lying at
-      // some angle, and 8 samples on a single ring step straight over it - measured, half of the columns with
-      // water within 50 were refused, and they came out as dirt sitting in the middle of the sand (user).
-      // Radii ascend so a real beach exits on the first or second one; only genuinely inland low ground, which is
-      // a small share of the map, pays for the whole disc.
-      // H rather than hmap, because hmap is not reliably written this far out while a region is still filling.
-      let shore = false;
-      if (h <= WL + 8) for (let r = 0; r < 4 && !shore; r++) {   // WL+8: one past the cascade, so every lifted step gets the water test
-        const R2 = SANDR * (0.19 + r * 0.27);
-        for (let k = 0; k < 4 && !shore; k++) {
-          const a2 = k * 0.7853981634, cx2 = Math.round(Math.cos(a2) * R2), cz2 = Math.round(Math.sin(a2) * R2);
-          if (H(wx + cx2, wz + cz2) <= WL || H(wx - cx2, wz - cz2) <= WL) shore = true;
-        }
-      }
-      // ── PULL THE SAND BACK IN EXTENT, NEVER IN HEIGHT (user 2026-08-31: "the sand just has 1 step??? … I
-      // dont want to see dirt/grass in the middle of the sand") ── this was taken to WL+3 and then WL+1 in
-      // answer to "pull back the sand", and that was the wrong dimension. H builds a beach across SEVERAL
-      // levels: the beach-flat rule writes WL+1..WL+3 and the bank cone holds WL+4. Narrowing the material
-      // test to a single level does not make the beach smaller, it makes it MONOCHROME - one step of sand and
-      // every column one voxel higher dropping out to the forest floor, which is the dirt and grass showing
-      // through the middle of it. The beach was the same size the whole time.
-      // WL+5 covers every level the beach is built on, so the sand steps up with the ground. How MUCH beach
-      // there is belongs to the beach-flat window below and to OAKBEACH, which are horizontal.
-      // ── AND THE LOWER BOUND IS GONE AGAIN (user 2026-08-31: "the underwater terrain looks like grass and
-      // dirt. make it all sand") ── SANDDEEP was added earlier today against "remove the sinking effect from
-      // all sand", on a reading of that report that turned out to be wrong: the sinking was the QUICKSAND
-      // mechanic in main/tick-body.js swallowing the player, not sand appearing under the water. Bounding
-      // the sand did nothing for the real complaint and cost the lake beds their material - below the bound
-      // every submerged column fell through to its biome floor, which is grass in the birch and moss in the
-      // oak. Sand is the lakebed again, at any depth, which is what it was before and what was asked for.
-      // ── AND IT IS BOUNDED BELOW NOW (user 2026-08-31: "remove the sinking effect from all sand") ── this
-      // used to be `h <= WL + 6` with no floor, and the arm below says what that meant in as many words:
-      // "waterline beach + sandy lakebed". Every submerged column in the world that was not arctic or desert
-      // came out SAND, at any depth - so the beach did not END at the water, it carried on down the lake
-      // floor and out of sight. That is the sinking: not a bug in one biome's heights, but sand behaving as
-      // a lakebed material everywhere. The pine forest's version of this report was a different cause with
-      // the same look (see PINEY in world/window.js) and fixing that one did not touch this one.
-      // A BAND makes it a shore: sand from SANDDEEP under the water up to WL + 6, and below that the column
-      // falls through to whatever its biome floor is, which is what the eye reads as a lake bed rather than
-      // as a beach that kept going. The bound has to live HERE, on `shore` itself, rather than on the first
-      // arm - the second arm dithers on (h - WL - 2) / 4.5, which is NEGATIVE for anything under the
-      // waterline and therefore passes every ihash it is ever given: bounding one arm and not the other
-      // would have moved the sinking sand from the first branch to the second and looked identical.
+      const shore = h <= WL + 6;                       // any waterline — lakes AND rivers
       let c;
       // ── THE ARCTIC SURFACE ── FIRST, because it is the one biome whose ground is not soil: snow covers the
       // shore, the flats and the hills alike, so it has to win over the beach and sand-blend arms below rather
@@ -104,25 +58,10 @@
       // cliffs read as stone. Both are gone with the fields that drove them; a slope in this biome is a snow
       // slope. Dithered against the mask, exactly as the desert and oak arms below are, so the white thins out
       // across the whole rim instead of stopping on the iso-line.
-      // ── SNOW FOLLOWS THE GLACIERS, IT DOES NOT LEAD THEM (user 2026-08-31: "remove the snow terrain from
-      // the transition. there should only be tall snow glaciers and small snow caps. no flat terrain. it
-      // only happens at the transitions") ── this arm used to fire on raw `asn > 0`, while the bergs are
-      // gated on arctGB, which is zero until asn passes 0.5. Between those two thresholds the ground went
-      // white with nothing standing on it: a flat snowfield in the run-up to the arctic, which is exactly
-      // the band the report is about. Dithering against arctGB instead of asn puts the white and the ice on
-      // the SAME gate, so the transition reads forest, water, then glaciers rising out of it.
-      const agb = asn > 0 ? arctGB(asn) : 0;
-      if (agb > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < agb) c = ASNOW[(sh * 4) | 0];
+      if (asn > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < asn) c = ASNOW[(sh * 4) | 0];
       else if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
-      // ── THE WHOLE BEACH IS SAND, AND THE DITHER STARTS ABOVE IT (user 2026-08-31: "you seemed to have
-      // added dirt elevated in the middle of them: remove that band") ── H's beach lift writes exactly
-      // three levels, WL+1..WL+3, and solid sand used to stop at WL+2. That left the TOP step of every
-      // beach on the dither below, which at h = WL+3 is 1/3.2 -> 69% sand and 31% forest floor: brown
-      // pine litter speckled along the highest line of the sand, which reads as a dirt band running the
-      // length of the shore rather than as a blend. Covering all three lifted levels puts the blend where
-      // it belongs - on the ground ABOVE the beach, where sand meeting forest is the thing being drawn.
-      else if (shore && h <= WL + 5) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
-      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 5) / 9.0) c = SAND[(sh * 3) | 0];   // …and the ramp now measures from WL+3, the top of the beach, not from WL+2 inside it   // …and the sand-to-forest dither ramps out over half the height it used to     // dithered sand-to-forest blend
+      else if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
+      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(sh * 3) | 0];     // dithered sand-to-forest blend
       // ── NO FOREST FLOOR ON THE DESERT SIDE, BUT ONLY NEAR WATER ── the DESERT branch above is dithered
       // against the mask, so a fraction (1 - dm) of columns miss it by design; inland those misses are the
       // gradient, which is the whole point. Near a WATERLINE they were landing on moss instead, and clustered
@@ -175,64 +114,15 @@
     if (lake && asn > 0.5 && WL <= yTop - 1) {
       const fl = fbm(wx * ARCT_FLOEF + 71.3, wz * ARCT_FLOEF + 12.9);
       const flT = ARCT_FLOE - (riverS(wx, wz) > 0.02 ? ARCT_FLOE_RIV : 0);   // a RIVER column ices over more readily than a lake — see ARCT_FLOE_RIV. 0.02 is the same rs the H carve treats as "a river is here"
-      const flOn = fl > flT;
-      const ftC = flOn ? Math.min(1, (fl - flT) / ARCT_FLOESPAN) : 0;
-      // ── A CREVASSE THAT CUTS TO NOTHING IS OPEN WATER, NOT A WHITE SHEET ── arctCliff returns 0 wherever a
-      // crack reached the waterline, and the first cut still wrote `1 + 0` voxels there: one snow voxel at WL,
-      // in every crevasse, across every glacier. That is the flat white expanse the first screenshot showed —
-      // the towers were carved correctly and then the space between them was floored over.
-      // So the cap only runs where there IS ice, and everything else — no floe at all, or a floe cut through —
-      // falls to the sheet/water branch below. That is what puts real LEADS of open water between the towers,
-      // which is the half of an icefall that makes the other half read as towers.
-      const gbl = arctGB(asn);                         // …how far past the snow mask's gate this column is: bergs fade in across the rim instead of starting at full height (see ARCT_GBLEND)
-      const cliff = flOn ? arctCliff(ftC, wx, wz, gbl) : 0;
-      if (flOn && cliff > 0) {
-        // ── ONE DOME, ABOVE THE WATER AND BELOW IT ── t is how far in from the floe's rim this column is
-        // (0 at the edge, 1 at the middle) and arctDome maps it to height. It is a spherical cap whose sphere
-        // is centred UNDER the surface rather than a hemisphere cut at its equator, which is what rounds both
-        // the waterline and the crown — the full argument is at ARCT_DOMEC in world/window.js.
-        // The KEEL is the same curve mirrored downward, so the berg is one round solid and the part you see
-        // through the surface matches the part you see above it. Clamped to the bed: where the keel is deeper
-        // than the water the cap simply grounds, and h is exactly where the snow already is.
-        // ── THE CROWN IS CREVASSED, THE KEEL IS SMOOTH ── arctCliff carves crossing crevasses into the
-        // envelope so the ice above the water breaks into seracs (see its note in world/window.js). The KEEL
-        // deliberately does NOT get the same treatment: it is seen THROUGH the surface, refracted and
-        // Beer-Lambert'd, where a crack is invisible and the only thing carving it would buy is a keel that
-        // no longer meets the crown at the waterline. It keeps the smooth dome, scaled off the same envelope,
-        // so the two halves are one solid.
-        const dome = arctDome(ftC);                    // measured from THIS column's own threshold, so river ice is as deep as lake ice rather than uniformly thicker
-        const capH = cliff;
-        const keelD = Math.round(ARCT_FLOEH * ARCT_KEELK * dome * gbl);   // …scaled by the same blend as the crown, or the underside keeps a full-depth edge the surface no longer has
-        const y0 = Math.max(h, WL - keelD);            // never below the bed: those voxels are already snow, and writing them again is pure work
-        // ── THE SHADE DITHER PUTS y IN THE OTHER ARGUMENT, AND THAT IS NOT COSMETIC ── this used to be
-        // ihash(wx * 7 + 3 + y, wz * 11 + 5): x and y summed into ONE argument while the other carried only z.
-        // Two voxels then hash identically whenever wx*7 + y matches, so (wx+1, y-7) is always the same shade —
-        // a family of parallel lines of slope 1:7 running across every ice face. Four ASNOW shades along those
-        // lines read as diagonal hatching, and at a distance the whole glacier looks woven rather than carved.
-        // Scaling y by a large prime into the SECOND argument decorrelates the three axes, which is the idiom
-        // the soil dither at the top of this function already uses.
-        for (let y = y0; y < Math.min(WY - 1, WL + capH); y++) W[base + y * WX] = ASNOW[(ihash(wx * 7 + 3, y * 131 + wz * 11 + 5) * 4) | 0];
-      } else {
-        // ── NO GLACIER STANDING HERE, SO IT MAY CARRY A SMALL SNOW CAP ── reached both by columns outside any
-        // floe and by columns a crevasse cut clean through, which is what makes a crevasse read as a lead of
-        // open water rather than as a groove in a white field.
-        // The `else` matters for the coverage figure too: a column with a glacier on it is not water surface,
-        // and the caps are quoted as a fraction of the WATER surface.
-        // A LOW DOME, not a flat voxel: it starts at WL (flush, replacing the surface water) and stands a few
-        // voxels proud at its middle, so it has a silhouette and a shadow and reads as a floating lump of snow
-        // rather than as paint on the sea. The water body underneath is untouched — the WATER_B column filled
-        // above, so depth, refraction and the fish all still see a sea.
-        // A DISC, NOT A DOME: one height for the whole cap, taken from a field whose wavelength is several
-        // caps wide, so the top is level and the next cap along is a different thickness. The rim is frayed by
-        // a short-wavelength term added to the FIELD rather than to the height — moving the iso-line is what
-        // breaks the outline up; moving the height would only have made the top lumpy again.
-        const ic = fbm(wx * ARCT_ICEF + 137.1, wz * ARCT_ICEF + 211.7)
-                 + (fbm(wx * ARCT_CAPIRRF + 71.9, wz * ARCT_CAPIRRF + 133.7) - 0.5) * ARCT_CAPIRR
-                 + (fbm(wx * ARCT_CAPIRRF2 + 24.3, wz * ARCT_CAPIRRF2 + 96.1) - 0.5) * ARCT_CAPIRR2;
-        if (ic > ARCT_ICE) {
-          const ch = ARCT_CAPMIN + Math.round((ARCT_CAPMAX - ARCT_CAPMIN) * fbm(wx * ARCT_CAPHF + 401.3, wz * ARCT_CAPHF + 55.1));
-          for (let y = WL; y < Math.min(WY - 1, WL + ch); y++) W[base + y * WX] = ASNOW[(ihash(wx * 5 + 19, y * 131 + wz * 9 + 31) * 4) | 0];   // y in the SECOND argument, for the aliasing reason the glacier body above gives
-        }
+      if (fl > flT) {
+        // ── A TRUE HEMISPHERE, NOT JUST A CONCAVE RAMP ── t is how far in from the floe's rim this column
+        // is (0 at the edge, 1 at the middle), so the radius from the centre is (1 - t) and a round cap is
+        // sqrt(1 - (1-t)^2) — the circle. The previous sqrt(t) was concave and read as domed, but it is not
+        // actually a sphere's profile and it rose too fast right at the rim, which is the part that reads as
+        // a wall rather than a curve. Same field, same edge, no extra sampling.
+        const ft = Math.min(1, (fl - flT) / ARCT_FLOESPAN);
+        const capH = 1 + Math.round(ARCT_FLOEH * Math.sqrt(Math.max(0, ft * (2 - ft))));   // measured from THIS column's own threshold, so river ice is as deep as lake ice rather than uniformly thicker
+        for (let y = WL; y < Math.min(WY - 1, WL + capH); y++) W[base + y * WX] = ASNOW[(ihash(wx * 7 + 3 + y, wz * 11 + 5) * 4) | 0];
       }
     }
     // ── THE ARCTIC GROWS NOTHING AT ALL, NOT EVEN SNOW (user 2026-08-30: "you seemed to have placed singular
@@ -345,7 +235,7 @@
     // here: these models carry MOSS on their crowns, so every boulder on the snow was a green cap on a white
     // field. The bare rock the arctic does want is the nunatak, and that comes from the SURFACE arm in
     // fillColumn where a steep face exposes stone — terrain, not a scattered model.
-    if (arcticM(bx, bz) > ARCT_GROUND) return null;   // dithered, not cut — see treeAt   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(bx, bz) > ARCT_BARE) return null;   // dithered, not cut — see treeAt
     // ── THE HAND STONE IS ALLOWED IN THE DESERT, THE BOULDERS ARE NOT (user 2026-08-16: "scatter the rock.vox
     // around the desert") ── this used to reject all four tiers on one line. It now reads the tier FIRST and
     // lets only tier 0 through, which is rock.vox itself: the small pickable field stone. The three boulder
@@ -396,17 +286,6 @@
     // size 2 and 3 are the mid and BIG rocks26 tiers (5.5% and 1.5% of candidates); its own salt again, so
     // it thins that population rather than re-drawing which tier a survivor belongs to.
     if (size >= 2 && ihash(cx * 71 + 17, cz * 73 + 41) > 0.5 && oakM(bx, bz) > 0.5) return null;
-    // ── AND A QUARTER FEWER UNDER THE WATER (user 2026-08-31: "make the rocks in the water in the pine forest
-    // 25% more rare") ── its own roll on its own salt, which is the pattern every rate cut in this function
-    // follows: chaining a factor onto an existing threshold thins the field identically in expectation but
-    // re-draws WHICH rocks survive, and the world has already been walked around in.
-    // Written as "underwater" rather than "underwater AND pine": the pine forest is where the user is looking,
-    // but a submerged boulder is a shoreline object and reads the same in any biome, and the two that wanted a
-    // different rate (the desert and the oak) already take their own cuts above. It also keeps this cheap - a
-    // biome test here is 6 vnoise where the whole function is otherwise hashes.
-    // SALT FIRST, HEIGHT SECOND, for the reason the oak cut states two lines up: only the quarter that this
-    // roll actually rejects pays for the H() call.
-    if (ihash(cx * 79 + 23, cz * 83 + 37) > 0.75 && H(bx, bz) <= WL) return null;
     const rot = (ihash(cx * 23 + 2, cz * 7 + 11) * 3.99) | 0;
     // Boulders stamp AFTER the cave carve, off the PRISTINE height, so one overhanging the mouth pit hangs in the
     // air. The old guard tested the rock's CENTRE against a flat 52, but the pit measures 42-52 across and the widest
@@ -817,7 +696,7 @@
     // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
     // own position; these nine were written from the cell index and inherited it. Measured before the fix:
     // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
-    if (arcticM(wx, wz) > ARCT_GROUND) return null;   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── ferns are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (oakM(wx, wz) > 0.5) return null;      // ── NOR IN THE OAK FOREST (user 2026-08-17: "remove the ferns from the oak forest") ── the same halfway gate on the other border, so the fern field thins out across the rim instead of ending on the iso-line. DELIBERATE AND USER-DIRECTED, exactly like the mushroom gate a few passes down: it looks identical to the accidental biome exclusion that gate replaced, so do not "fix" it back.
     if (birchM(wx, wz) > 0.5) return null;    // ── NOR IN THE BIRCH FOREST (user 2026-08-24: "remove the ferns from the birch forest") ── the third border, on the same halfway test as the two above, so the fern field thins out across the rim instead of ending on the iso-line. USER-DIRECTED, like the oak gate above it: it reads exactly like an accidental biome exclusion and is not one.
@@ -946,7 +825,7 @@
     // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
     // own position; these nine were written from the cell index and inherited it. Measured before the fix:
     // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
-    if (arcticM(wx, wz) > ARCT_GROUND) return null;   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) < 0.85) return null;
     if (H(wx, wz) <= WL + 4) return null;              // never in the water, and not on the beach ring either
     if (nearCave(wx, wz)) return null;
@@ -1011,7 +890,7 @@
     // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
     // own position; these nine were written from the cell index and inherited it. Measured before the fix:
     // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
-    if (arcticM(wx, wz) > ARCT_GROUND) return null;   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;            // the old gate: dm < 0.5
     // ── THE BLOSSOM BAND GETS ITS OWN FLOWER RATHER THAN NONE (user 2026-08-18: "have them follow the same
     // flower mechanics as the oak forest flowers ... this is all taking place in the cherry forest") ── it used
@@ -1060,10 +939,7 @@
     // against birch's 2.26%, and 6.99 x 0.375 = 2.62 is exactly that thinning rather than anything else going
     // wrong. Taking the max is the same move oakRoll/oakBank make for the ground itself: the band is an oak
     // forest that grows birches, so anything keyed on "is this the oak forest" has to say yes here too.
-    // ── THE FLOWERS ARE BACK IN (user 2026-08-31: "also bring in the flowers") ── and the oak/birch half
-    // of the old gate is gone with the bands it named: it only ever THINNED this scatter to 37.5% outside
-    // the oak, and with every mask at zero that thinning is the whole world. Flowers now grow at the full
-    // rate across the pine forest, which is the only forest there is.
+    if (ihash(cx * 71 + 5, cz * 79 + 13) > 0.375 && Math.max(oakM(wx, wz), birchM(wx, wz)) < 0.5) return null;
     const px = Math.floor(cx / FLWPATCH), pz = Math.floor(cz / FLWPATCH);
     const set = inCh ? FLOWERV_CH : FLOWERV;           // the blossom band draws from its own one-variant set; everywhere else from the five
     return { wx, wz, ch: inCh ? 1 : 0, k: (ihash(px * 53 + 7, pz * 59 + 17) * (set.length - 0.01)) | 0,
@@ -1102,7 +978,7 @@
     // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
     // own position; these nine were written from the cell index and inherited it. Measured before the fix:
     // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
-    if (arcticM(wx, wz) > ARCT_GROUND) return null;   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── mushrooms are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     // ── NOR IN THE OAK FOREST, AND THIS IS DELIBERATE — DO NOT "FIX" IT (user 2026-08-17: "remove the red
     // mushroom for the oak forest") ── mushrooms were taught about oaks EARLIER THE SAME DAY, by adding an
@@ -1173,7 +1049,7 @@
     // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
     // own position; these nine were written from the cell index and inherited it. Measured before the fix:
     // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
-    if (arcticM(wx, wz) > ARCT_GROUND) return null;   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (oakM(wx, wz) > 0.5) return null;      // ── NOR IN THE OAK FOREST ── a cone on the ground is a PINE cone: it is the one piece of forest litter that names the tree it fell from, and there are no pines here to have dropped it. (The cones hung IN a crown need no gate — stampTree hangs those, and stampTree no longer runs in this biome.)
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pinecones are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (birchM(wx, wz) > 0.5) return null;    // ── NOR IN THE BIRCH FOREST (user 2026-08-24: "there seems to be pine cones in the birch. remove them as well") ── the same reason as the oak gate above: a cone on the ground is a PINE cone and no pine dropped it here. birchAt stamps the birches, not stampTree, so nothing hangs cones in these crowns either.
@@ -1202,7 +1078,7 @@
     // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
     // own position; these nine were written from the cell index and inherited it. Measured before the fix:
     // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
-    if (arcticM(wx, wz) > ARCT_GROUND) return null;   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── twigs are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     // ── IN THE OAK FOREST, ONLY UNDER A TREE (user 2026-08-17: "only have stick near oak trees", and
     // explicitly "keep the pine forest the same") ── a twig is something a tree DROPPED, and the oak wood has
@@ -1240,14 +1116,6 @@
     // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
     // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
     // litter thins out across the blend band instead of stopping on the iso-line.
-    // ── NO FALLEN LOGS IN THE TERRAIN (user 2026-08-31: "remove the logs from the terrain") ── the
-    // scatter is off, not the asset: LOGV still loads, and assets/material-tabs.js still repoints its
-    // bark onto the pine's own wood ids and marks it decorTab + axeOnlyTab. That matters because the log
-    // is also a PLACEABLE item the player can carry and set down - killing the model would take the item
-    // with it. One return, exactly the way flowerAt's scatter was gated, so restoring the litter is
-    // deleting this line and nothing else.
-    return null;
-    // eslint-disable-next-line no-unreachable
     if (!LOGV) return null;
     if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.14) return null;
     const wx = Math.round(cx * LGCELL + 6 + ihash(cx * 3 + 9, cz * 7 + 1) * (LGCELL - 12));
@@ -1260,7 +1128,7 @@
     // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
     // own position; these nine were written from the cell index and inherited it. Measured before the fix:
     // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
-    if (arcticM(wx, wz) > ARCT_GROUND) return null;   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── fallen logs are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (birchM(wx, wz) > 0.5) return null;   // ── NOR IN THE BIRCH FOREST (user: "remove the logs in the birch forest") ── the same > 0.5 halfway test the desert line above uses, and the same one treeAt takes
     if (H(wx, wz) <= WL + 4) return null;
@@ -1273,7 +1141,7 @@
   const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
   function lilyAt(cx, cz) {                             // STATIC lilies RE-ENABLED for testing (user 2026-07-18) — stamped into the world grid (full static-voxel shading) alongside the LIVE drifting pads, so their render can be compared
     if (!LILYV.length) return null;
-    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.042750) return null;   // 0.34 -> 0.17 -> 0.085 -> 0.057 -> 0.042750: another -25% (user 2026-08-31: "decrease the lillypads by 25%"). Lowering the threshold on the SAME hash keeps a strict SUBSET - the survivors are the low-hash cells either way - so unlike the boulder cuts this does not need its own salt to avoid re-drawing which pads a walked-around world already has.
+    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.057) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
     const wz = Math.round(cz * LILYCELL + 3 + ihash(cx * 5 + 12, cz * 11 + 7) * (LILYCELL - 6));
     // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
@@ -1284,7 +1152,7 @@
     // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
     // own position; these nine were written from the cell index and inherited it. Measured before the fix:
     // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
-    if (arcticM(wx, wz) > ARCT_GROUND) return null;   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (H(wx, wz) > WL - 1) return null;               // ≥ 2 voxels of water under the pad — real lakes/rivers, never the beach film
     const sr = ihash(cx * 19 + 8, cz * 23 + 4);
     return { wx, wz, size: Math.min(LILYV.length - 1, sr < 0.55 ? 0 : (sr < 0.88 ? 1 : 2)), rot: (ihash(cx + 31, cz + 42) * 3.99) | 0 };
@@ -1298,7 +1166,7 @@
     // the pads were floating on it. Dithered like every other arctic gate so the pads thin out toward the
     // border rather than ending on a line.
     if (!LILYPAD_GIGV) return null;
-    if (ihash(cx * 53 + 11, cz * 59 + 7) > 0.103125) return null;   // 0.55 -> 0.275 -> 0.1375 -> 0.103125: the GIANT pads take the same -25% (user 2026-08-31), for the same reason and by the same subset rule as the small ones above
+    if (ihash(cx * 53 + 11, cz * 59 + 7) > 0.1375) return null;   // HALVED AGAIN (user 2026-07-18): 0.55 -> 0.275 -> 0.1375
     const wx = Math.round(cx * LGIGCELL + 22 + ihash(cx * 3 + 5, cz * 7 + 9) * (LGIGCELL - 44));
     const wz = Math.round(cz * LGIGCELL + 22 + ihash(cx * 11 + 3, cz * 5 + 13) * (LGIGCELL - 44));
     // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
@@ -1309,7 +1177,7 @@
     // open snow at mask 1.0. treeAt and boulderAt never had the bug because they always tested the trunk's
     // own position; these nine were written from the cell index and inherited it. Measured before the fix:
     // ~25 stray voxels in 40401 arctic columns, all of them past the 0.15 line.
-    if (arcticM(wx, wz) > ARCT_GROUND) return null;   // ARCT_GROUND, the old ARCT_BARE value: ground cover still stops dead well short of the water (see the note at ARCT_BARE)
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     if (H(wx, wz) > WL - 2) return null;               // ≥ 3 voxels of water under the centre
     for (let k = 0; k < 8; k++) { const a = k * 0.7854, dx = Math.round(Math.cos(a) * 24), dz = Math.round(Math.sin(a) * 24);
       if (H(wx + dx, wz + dz) > WL - 1) return null; } // a 24-vox-radius ring must ALL be water → a real LAKE (not a river/puddle) → naturally ~1-2 pads per lake
@@ -1601,86 +1469,11 @@
   // voxels. A candidate lives inside its own cell, so a cell wholly outside [w - R, w + R] cannot hold one
   // within R: those scans are exact at any cell size. None of them needed touching; they simply walk more cells.
   const TCELL = 45, TMARGIN = 34;                      // one pine candidate per 4.5 m cell
-  // ── 24 -> 34 WHEN THE PINE GREW 1.5x (user 2026-08-31) ── the note above states the rule and the model
-  // it was computed from: 35 x 36 wide, half-footprint 18, less the 6 inset = 12, plus ~4 for the cones =
-  // 16, and 24 cleared it. pine5.vox is 52 x 54 now, so that arithmetic reads 27 - 6 + 4 = 25 and 24 no
-  // longer clears it. This is exactly the failure the old note names - "a model wider than 2 x margin
-  // silently loses its outer courses at every region seam" - so the margin moves with the model. 34 leaves
-  // the same ~9 voxels of slack over the requirement that 24 had over 16.
-  // ══ PENGUINS ON THE ICE (user 2026-08-30: "scatter the penguins across the arctic") ══
-  // ONE CELL, ONE ROLL, like every other scatter in this file. The cell is small (56) because the arctic is
-  // almost all water and only a fraction of any cell can hold a bird - a 112 cell like the desert rocks would
-  // put a whole colony's worth of chances on a patch that is entirely sea.
-  //
-  // WHERE A PENGUIN MAY STAND, and this is the only interesting part: the arctic has no land. The candidate
-  // column has to be ICE - either a flat sheet at the waterline or a bench on a glacier - and the ONLY honest
-  // way to ask that is to look at what generation actually put there, because both are decided by their own
-  // noise fields downstream of H. So the test is done in the stamp, against W, not here against the height
-  // field: penguinAt picks a spot and stampPenguin refuses it if the surface it lands on is not ice or snow.
-  // That ordering also means a penguin can never end up standing on open water, which the height field alone
-  // could not promise - H says "seabed at WL-19" for a column whose surface is a flat ice sheet at WL.
-  const PENGCELL = 200;                                // ── ONE CELL, ONE COLONY ── big, because the cell no longer decides where a BIRD is, it decides where a HUDDLE is
-  function penguinAt(cx, cz) {
-    if (!PENGUINV) return null;
-    if (ihash(cx * 47 + 11, cz * 53 + 29) > PENG_RATE) return null;
-    // ── A COLONY WANTS A FLOE, NOT A SERAC ── the centre must land on a FLAT sheet (arctIceTop == WL + 1),
-    // not on a glacier. Penguins colonise level sea ice, and there is a mechanical reason as well as a
-    // zoological one: once the crevasse carve went in, the standing ice broke into towers 20-30 voxels wide
-    // with clefts between them, which is narrower than a huddle. Sited on a glacier a colony straddled two or
-    // three crevasses and arrived as one or two survivors — measured, 4 colonies and about 4 birds across
-    // 900x900 where the roll rate asks for a hundred and twenty.
-    // AND IT SEARCHES RATHER THAN ROLLING ONCE. Six deterministic candidates inside the cell, first flat one
-    // wins. A single roll had to hit ~18% of the biome by luck and threw the cell away when it missed; this
-    // finds the floe that is nearly always somewhere in a 200-voxel cell. Deterministic, so the same cell
-    // yields the same colony from any band that visits it.
-    let wx = 0, wz = 0, ok = false;
-    for (let k = 0; k < 6 && !ok; k++) {
-      wx = cx * PENGCELL + 40 + ((ihash(cx * 13 + 3 + k * 31, cz * 17 + 7 + k * 17) * (PENGCELL - 80)) | 0);
-      wz = cz * PENGCELL + 40 + ((ihash(cx * 19 + 5 + k * 23, cz * 23 + 9 + k * 29) * (PENGCELL - 80)) | 0);
-      ok = arcticM(wx, wz) >= PENG_INNER && arctIceTop(wx, wz) >= WL + PENG_MINTOP;   // deep arctic, and standing on a GLACIER BENCH
-    }
-    if (!ok) return null;
-    // SIZE IS ROLLED PER COLONY, and that is what "different groups" asks for: this world has pairs, family
-    // groups and full rookeries in it rather than one repeated clump. Cubed, so the small ones are common and
-    // a big rookery is a thing you come across rather than the norm.
-    const r = ihash(cx * 61 + 17, cz * 67 + 43);
-    const n = PENG_MIN + ((r * r * r * (PENG_MAX - PENG_MIN + 1)) | 0);
-    return { wx, wz, n, cx, cz };
-  }
-  // ── ONE CALL, THE WHOLE HUDDLE ── stampCellsGen hands a stamp function one feature, so the colony IS the
-  // feature and every bird in it is placed here. That also means the birds share one ice test each and the
-  // colony thins naturally wherever the floe runs out from under it: a huddle at the edge of a sheet comes
-  // out as a crescent rather than being refused or floating.
-  // THE LAYOUT IS A SUNFLOWER (golden-angle spiral, radius as sqrt of the index), which is the standard even
-  // disc packing: it puts every bird at the same local density however many there are, so PENG_SPACE alone
-  // sets how tightly they press and the colony's SIZE is then free to vary without changing its character.
-  // A jitter on top keeps it from reading as the lattice it is.
-  function stampPenguin(c, x0, x1, z0, z1) {
-    const R = PENG_SPACE * Math.sqrt(c.n);
-    for (let i = 0; i < c.n; i++) {
-      const a = i * 2.399963229728653;                 // the golden angle
-      const rr = R * Math.sqrt((i + 0.5) / c.n);
-      const jx = (ihash(c.cx * 101 + i * 7 + 3, c.cz * 103 + i * 11 + 5) - 0.5) * 2 * PENG_JIT;
-      const jz = (ihash(c.cx * 107 + i * 13 + 9, c.cz * 109 + i * 17 + 1) - 0.5) * 2 * PENG_JIT;
-      const bx = c.wx + Math.round(Math.cos(a) * rr + jx), bz = c.wz + Math.round(Math.sin(a) * rr + jz);
-      const rot = (ihash(c.cx * 31 + i, c.cz * 37 + i * 3) * 3.99) | 0;
-      stampPenguinOne(PENGUINV, bx, bz, rot, x0, x1, z0, z1);
-      // …and its chick, on the side the parent is facing away from, so the pair reads as a pair rather than
-      // as two birds that happen to be close. The chick gets its own ice test inside stampPenguinOne, so one
-      // standing where the floe has run out is simply not placed and the adult is unaffected.
-      if (PENGBABYV && ihash(c.cx * 71 + i * 5 + 2, c.cz * 73 + i * 9 + 6) < PENG_CHICK) {
-        const ca = (ihash(c.cx * 79 + i, c.cz * 83 + i) * 6.2831853);
-        stampPenguinOne(PENGBABYV, bx + Math.round(Math.cos(ca) * PENG_CHICKR), bz + Math.round(Math.sin(ca) * PENG_CHICKR),
-          (ihash(c.cx * 41 + i, c.cz * 43 + i) * 3.99) | 0, x0, x1, z0, z1);
-      }
-    }
-  }
-  function stampPenguinOne(model, wx, wz, rot, x0, x1, z0, z1) {
-    if (!model) return;
-    const sy = arctIceTop(wx, wz);                     // ── PURE, NOT A READ OF W ── see arctIceTop in world/window.js for why that matters here
-    if (sy < 0) return;                                // open water: no bird
-    stampModel(model, rot, wx, sy, wz, x0, x1, z0, z1, 0);   // mode 0: empty cells only, so it never eats the ice it stands on
-  }
+  // ── TMARGIN IS THE OVERHANG ALLOWANCE, AND THE NINE PINES ARE WIDER ── it bounds how far a stamp may
+  // reach outside the cell that owns it, so a region sweep knows how far to look for trees that overlap it.
+  // pine5.vox was 35 across (17 from centre) and 24 covered it; the widest of the nine is 67 (34 from
+  // centre). Left at 24 the sweep misses trees whose crowns reach into the region, and they stamp as
+  // half-trees clipped on the region boundary.
   const SPVIEW_D = 96, SPVIEW_W = 13;                  // spawn sight-line: 9.6 m ahead, 1.3 m either side of the view axis
   const BKCELL = 44, BKMARGIN = 128;
   // The bole's own half-width plus a gap, and how far a bole can sit from its model's bounding-box centre.
@@ -1701,7 +1494,7 @@
     // birchM >= 0.5, and the arctic's blend is 900 wide against birch's 450 — so at the shared line the
     // arctic mask is already 0.5 and climbing while birch is still planting. Birches stood a third of the
     // way into the snow. ARCT_BARE, the same line every other tree stops at.
-    if (arctBare(wx, wz, 11)) return null;   // DITHERED to the shore, not cut at a line - see ARCT_BARE/arctBare in world/window.js. The salt is this species' own, so the pine and the birch do not thin out in the same columns.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     // ── SPWX + SPOX, NOT SPWX (user 2026-08-28: "prevent the player from spawning in a tree") ── every
     // clearing in this file used to measure from SPWX alone, and SPWX is the BAND ANCHOR, not the player.
     // The player stands at SPWX + SPOX and SPOX is -2160 (world/build.js), so all seven clearings were being
@@ -1841,18 +1634,7 @@
     // lines above use. Without it the new band is a pine forest wearing oak ground: treeAt only ever
     // excluded itself from the two biomes that existed when it was written, and a band that is neither
     // desert nor oak reads to it as ordinary pine country.
-    const bmT = birchM(wx, wz);
-    if (bmT > 0.5) return null;
-    // ── AND THE BIRCH/ARCTIC SEAM, WHERE NEITHER NEIGHBOUR IS PINE (user 2026-08-31: "theres pine trees
-    // between the transition between the birch forest and the arctic. remove them") ── every rejection in
-    // this list is a HALFWAY test, on purpose: pine is the default forest, so thinning it out across a rim is
-    // what makes two biomes read as meeting. That reasoning holds where pine is genuinely on the other side.
-    // The birch and the arctic SHARE an edge, so between them there is no pine on either side - and the two
-    // halfway tests leave a band ~1350 voxels wide where birchM has fallen under 0.5, arcticM has not yet
-    // climbed far enough for arctBare's dither to refuse reliably, and pines grow in the gap between two
-    // forests that are not pine. Both masks non-zero is exactly that overlap and nothing else.
-    // arcticM is asked only where bmT is already non-zero, so this costs the rest of the world nothing.
-    if (bmT > 0 && arcticM(wx, wz) > 0) return null;
+    if (birchM(wx, wz) > 0.5) return null;
     // ── NOR IN THE ARCTIC (user 2026-08-29) ── the FOURTH border, and the fourth time this list has had to
     // grow with the world. The pattern is worth naming: treeAt places pine wherever it is not told otherwise,
     // so pine is the DEFAULT and every new biome has to exclude itself here or it opens as a pine forest
@@ -1863,7 +1645,7 @@
     // snow underneath fades in across the whole rim, and the eye reads the tree edge, not the ground: hence a
     // straight line. Rejecting with PROBABILITY equal to the mask thins the wood out across the blend instead,
     // which is the same trick the desert sand and the oak floor already use on their own rims.
-    if (arctBare(wx, wz, 29)) return null;   // DITHERED to the shore, not cut at a line - see ARCT_BARE/arctBare in world/window.js. The salt is this species' own, so the pine and the birch do not thin out in the same columns.
+    if (arcticM(wx, wz) > ARCT_BARE) return null;
     const dxs = wx - (SPWX + SPOX), dzs = wz - SPWZ;
     if (dxs * dxs + dzs * dzs < 26 * 26) return null;  // spawn clearing
     // ── AND A CLEAR LINE OF SIGHT DOWN THE SPAWN HEADING (user 2026-08-16: "try not to have the player spawn
@@ -1876,25 +1658,23 @@
     const fwdX = Math.sin(SPYAW), fwdZ = Math.cos(SPYAW);
     const along = dxs * fwdX + dzs * fwdZ;
     if (along > 0 && along < SPVIEW_D && Math.abs(dxs * fwdZ - dzs * fwdX) < SPVIEW_W) return null;
-    const hh = H(wx, wz);
-    if (hh <= WL + 4) return null;           // no pines in water or on beaches
-    // ── AND NO TREELINE ── there WAS one here, added when the pine went to 1.5x so that trunks on high
-    // ground would not have their crowns cut off by the window ceiling. It worked and it was the wrong
-    // trade: it emptied 2485 cells above 190 (see __vb.treeDensity) and the ask was mountains WITH pine
-    // trees on them. The budget is settled at HMAX instead - see the pine-reserve note in world/window.js -
-    // so the ceiling now guarantees a whole tree fits on the highest column in the world and nothing here
-    // has to refuse one. If the pine is ever rescaled again, that reserve is the number that moves.
+    if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
     if (nearCave(wx, wz)) return null;
-    return { tx: wx, tz: wz, ti: (ihash(cx * 37 + 11, cz * 41 + 7) * (MROT9.length - 0.01)) | 0, rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground   // ti: WHICH of the nine pines. Sized off MROT9.length and not PINE_N because this runs in the GEN WORKER, and PINE_N is declared in assets/palette.js - below the worker in the manifest, so the registry cannot see it.
+    // ── NINE PINES, NOT ONE (user 2026-09-01: "you can transfer the assets you need … like the 9 pine trees") ──
+    // `ti` indexes MROT9 (assets/palette.js), which carries one rotation set per model. It gets its OWN hash
+    // rather than reusing rot's: keyed off the same value, every tree of a given species would also share a
+    // pose, and a stand would read as one asset repeated rather than nine.
+    return { tx: wx, tz: wz, ti: (ihash(cx * 31 + 17, cz * 37 + 29) * (MROT9.length - 0.01)) | 0,
+             rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
   }
   function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
-    const R = MROT9[tr.ti][tr.rot];        // …this tree's own model, not the stand's first one - see PINE9 in assets/palette.js
+    const R = MROT9[tr.ti | 0][tr.rot];   // …the tree's OWN model. `| 0` so a shape built before ti existed still resolves to model 0 rather than undefined
     const gy = groundMin(tr.tx, tr.tz, 2) - tr.sink;              // random sink (1–7) varies how deep each pine sits
     const bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
     const xa = Math.max(0, x0 - bx), xb = Math.min(R.sx - 1, x1 - 1 - bx);
     const za = Math.max(0, z0 - bz), zb = Math.min(R.sz - 1, z1 - 1 - bz);
     if (xa > xb || za > zb) return;
-    for (let my = 0; my < R.sy; my++) {   // R.sy is the MODEL's height: the nine pines are 150-152, not one shared MSZ
+    for (let my = 0; my < MSZ; my++) {
       const y = gy + my; if (y < 1) continue; if (y >= WY) break;
       const yrow = y * WX, moff = my * R.sx * R.sz;
       for (let mz = za; mz <= zb; mz++) for (let mx = xa; mx <= xb; mx++) {
@@ -1902,18 +1682,17 @@
         W[gwrap(bx + mx, WX) + yrow + gwrap(bz + mz, WZ) * WX * WY] = remap[v];
       }
     }
-    const ANCH = PINE_ANCH9[tr.ti], AMX = MROT9[tr.ti][0].sx, AMY = MROT9[tr.ti][0].sz;   // this tree's own anchors and its own model dims — see PINE_ANCH9
-    if (CONEV && ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
+    if (CONEV && PINE_ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
       const n = 6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0);   // rotated with the tree so every region stamps them identically
       const used = new Set();                          // one cone per column — never stacked on top of each other
       for (let k = 0; k < n; k++) {                    // PINE_ANCH is angle-sorted: pick k-th from the k-th angular sector — cones ring the crown evenly
-        const a = ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * ANCH.length) | 0];
+        const a = PINE_ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * PINE_ANCH.length) | 0];
         const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 255;
         let rx, rz;
         if (tr.rot === 0) { rx = ax; rz = ay; }
-        else if (tr.rot === 1) { rx = AMY - 1 - ay; rz = ax; }
-        else if (tr.rot === 2) { rx = AMX - 1 - ax; rz = AMY - 1 - ay; }
-        else { rx = ay; rz = AMX - 1 - ax; }
+        else if (tr.rot === 1) { rx = MSY - 1 - ay; rz = ax; }
+        else if (tr.rot === 2) { rx = MSX - 1 - ax; rz = MSY - 1 - ay; }
+        else { rx = ay; rz = MSX - 1 - ax; }
         const ck = rx | (rz << 8); if (used.has(ck)) continue; used.add(ck);
         stampModel(CONEV, (ax + az + k) & 3, bx + rx, gy + az - CONEV.sz, bz + rz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
       }
@@ -1933,7 +1712,6 @@
         const c = atFn(cx, cz); if (c) { stampFn(c, x0, x1, z0, z1); yield; }
       }
   }
-  const ROCKDITH = 28;                                // how deep the 3-shade rock dither reaches — see the note in rockRowSpan
   function rockRowSpan(x0, x1, wz, tops) {             // ── ROW-MAJOR ROCK CORE ── writes one wz-row's rock for every column at once, y-major with CONTIGUOUS x-runs.
     // The old per-column loop strode WX bytes per voxel (every write its own cache line, 44% of all gen CPU); this is the
     // same voxel set with the same incremental hash — imul is linear mod 2³², so re-anchoring per (x0, y) is bit-identical.
@@ -1947,19 +1725,7 @@
       const yb = zb + y * WX;
       for (let i = 0; i < len; i++) {
         if (y < tops[i]) { const hh = Math.imul(acc ^ (acc >>> 13), 1274126177);
-          // ── THE DEEP CORE IS ONE SHADE, AND THAT IS A MEMORY DECISION (user 2026-08-31: rendering
-          // artifacts in the distance) ── a brick whose 512 voxels are all the SAME id is "sealed": the pool
-          // points every one of them at a single shared page instead of paging each. This loop dithered
-          // three ROCK shades per voxel from y=0 up, so not one interior brick in the world could ever be
-          // uniform, and every one of them spent a real slot. Measured with the terrain at twice its old
-          // height: 1,983,004 of 2,139,096 slots used - 92.7%, 989 MB - and a pool that close to full is
-          // exactly where a brick stops getting a slot, keeps the descriptor it had, and draws as the shared
-          // sealed page: a grey slab in the distance.
-          // The dither is kept for the top ROCKDITH voxels, which is everything a cliff face, a lake bed or
-          // a shovel can expose (the soil band above it is only 16 deep). Below that nothing is ever seen,
-          // so it costs nothing to look uniform and it buys back the slots.
-          W[yb + gxA[i]] = (y < tops[i] - ROCKDITH) ? ROCK[0]
-            : ROCK[((((hh ^ (hh >>> 16)) >>> 0) / 4294967296) * 3) | 0]; }
+          W[yb + gxA[i]] = ROCK[((((hh ^ (hh >>> 16)) >>> 0) / 4294967296) * 3) | 0]; }
         acc = (acc + 374761393) | 0;                   // advancing x by 1 adds K1 — identical to imul(x0+i, K1) mod 2³²
       }
     }
@@ -2046,7 +1812,6 @@
     yield* stampCellsGen(x0, x1, z0, z1, PCCELL, 8, pconeAt, stampPcone);
     yield* stampCellsGen(x0, x1, z0, z1, SCELL, 8, stickAt, stampStick);
     yield* stampCellsGen(x0, x1, z0, z1, LILYCELL, 8, lilyAt, stampLily);
-    yield* stampCellsGen(x0, x1, z0, z1, PENGCELL, 40, penguinAt, stampPenguin);   // margin 40 covers the widest colony (PENG_SPACE * sqrt(PENG_MAX) ~ 23) plus a chick's offset and the model's own half-footprint, so a huddle straddling a band boundary is stamped whole from both sides   // ── PENGUINS ── AFTER fillColumn has written the water, the flat ice and the glaciers, because stampPenguin decides where a bird may stand by reading W rather than by re-deriving it. Margin 8 covers the 7x10 model rotated, plus a voxel
     // (GIGANTIC lake pads REMOVED at user request 2026-07-20 — the lilyGigAt/stampLilyGig pair is left in place, and still
     //  crosses to the gen workers, so re-enabling is a one-line restore of this pass. The small drifting pads are untouched.)
     yield* stampCellsGen(x0, x1, z0, z1, LGCELL, 16, logAt, stampLog);
@@ -2071,7 +1836,6 @@
         }
         const b = bx + by * BX + bz * BX * BY;
         if (occ) bricks[b >> 5] |= 1 << (b & 31); else bricks[b >> 5] &= ~(1 << (b & 31));
-        if (poolTouchHook) poolTouchHook(b);
         let wonly = 0;                                 // ── WATER-ONLY bit ── every nonzero voxel is WATER_T/WATER_B → skipW rays stride the whole brick (only bricks at/below the waterline can qualify; the byte scan early-outs on the first real solid, so land bricks pay ~1 byte)
         if (occ && by * 8 <= WL) {
           wonly = 1;
