@@ -12124,13 +12124,13 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       pickA  : vec4<f32>,                                            // held pick: anchor xyz (camera space) + voxel size
       pickX  : vec4<f32>, pickY : vec4<f32>, pickZ : vec4<f32>,      // item local axes in camera space; pickX.w = show flag
       rdist  : vec4<f32>,                                            // x = render distance in voxels (menu slider)
-      drops  : array<vec4<f32>, 256>,                                // drop slots 0..63 (the other 64 are in dropsB at the end of this struct): 4 dropped items + cardinal (slot 4) + 20 death-burst sparks/smoke (5-24) + the drawn flock + trace-injected creatures × {anchor.xyz+voxelScale, X.xyz+itemId, Y.xyz+glow, Z.xyz} in camera space, voxel units
+      drops  : array<vec4<f32>, ${DROP_HALF * 4}>,   // ── WAS A HARDCODED 256 ── every other array in this struct interpolates its JS constant precisely so the two cannot drift; these two did not, and this file's own notes say what a mismatch costs: each field below silently reads its neighbour's numbers. DROP_HALF * 4 IS the 256.                                // drop slots 0..63 (the other 64 are in dropsB at the end of this struct): 4 dropped items + cardinal (slot 4) + 20 death-burst sparks/smoke (5-24) + the drawn flock + trace-injected creatures × {anchor.xyz+voxelScale, X.xyz+itemId, Y.xyz+glow, Z.xyz} in camera space, voxel units
       pick2A : vec4<f32>,                                            // LEFT hand (dual-wield rock): anchor xyz (camera space) + voxel size
       pick2X : vec4<f32>, pick2Y : vec4<f32>, pick2Z : vec4<f32>,    // left-hand item axes; pick2X.w = show id (0 = hidden)
       fflies : array<vec4<f32>, 8>,                                  // glowing FIREFLY point lights: window-coord xyz + intensity (0 = empty slot); traced in TRACE, applied via the lavaG glow field
       cshad  : array<vec4<f32>, 32>,                                 // CREATURE SHADOW boxes (16 × 2 vec4): [center.xyz(window) + active] [halfXZ, halfY, 0, 0] — the sun ray tests these so moving lilies/ducks/worms CAST shadows on the ground/water like static voxels
       misc   : vec4<f32>,                                            // x = CINEMATIC vignette depth; y/z = snow storm LEADING/TRAILING edge world-y (flakes exist only between them); w = EYE-INSIDE-A-VOXEL fill: the packed sRGB of the voxel the camera is buried in, PLUS 1 so that 0 means 'not buried' (written in tick-camera, read by COMPOSITE). NOT spare — take this lane for something else and the whole screen becomes the buried-in-rock fill.
-      lifeMot : array<vec4<f32>, 64>,                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
+      lifeMot : array<vec4<f32>, ${DROP_HALF}>,   // …and this was a hardcoded 64, which is DROP_HALF. Same reason.                                // ── DYNAMIC LIFE ── per drop-slot rigid MOTION + flags: xyz = world-space delta this frame (anchorNow − anchorPrev, window units — origins cancel), w = flags bitfield: 1 = analytic-only (fireflies/drops/sparks/empty — never trace-injected), 2 = anim frame changed (reject irradiance history), 4 = slot occupant changed / spawned / teleported (reject history)
       lifeCfg : vec4<f32>,                                           // x = life debug view (0 off, 1 slot ids, 2 history confidence, 3 motion vectors, 4 raw AO), y = trace-injection enabled (0 under ?oldlife → full analytic fallback), z = the standing heart level the vitals ring reads, w = the RAIN SKY scalar (storm ramp x oakM at the
                                                                    // camera; 0 in fair weather and outside the oak forest). NEITHER IS SPARE - hurtV.w is the last float of the
                                                                    // whole uniform buffer, which is why it was safe to take: nothing sits below it to shift
@@ -12205,6 +12205,9 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     const WX : i32 = ${GWX}; const WY : i32 = ${GWY}; const WZ : i32 = ${GWZ};   // ── THE SHADER'S WORLD IS THE *GPU* WINDOW ── wider than the CPU's W (see TWO WINDOWS in world/window.js). Every extent, wrap and brick index in WGSL is on this grid; nothing in a shader ever sees the CPU one.
     const BX : i32 = ${GBX}; const BY : i32 = ${GBY}; const BZ : i32 = ${GBZ};
     const SUN_COL : vec3<f32> = vec3<f32>(3.60, 3.24, 2.74);
+    const GI_B2 : f32 = 0.70;    // how much of the SECOND bounce survives. Under 1 because each bounce loses energy to the surface it came off, and because the estimate has no shadow test of its own.
+    const GI_B2_R : f32 = 12.0;  // and how far its ray reaches — half the AO ray. Second-bounce light is diffuse and near-field; the far half of the hemisphere buys noise, not light.
+    const GI_GAIN : f32 = 0.55;   // how much of the bounce reaches the eye. Not 1: a single bounce with no shadow test over-reports, and the sky/AO term already carries part of the ambient. Tuned by eye against the previous look.
     // ── THE SUN'S ANGULAR RADIUS ── the MOON's own outer threshold, so the two discs are the same size
     // (user 2026-08-28: "make the sun as big as the moon"). Real sun and moon are both ~0.53 degrees and
     // very nearly equal, so matching them is the physical answer as well as the asked-for one.
@@ -13102,6 +13105,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
     @group(0) @binding(4) var gAlbedo : texture_storage_2d<rgba8unorm, write>;
     @group(0) @binding(5) var gIrr : texture_storage_2d<rgba16float, write>;
+    @group(0) @binding(10) var gInd : texture_storage_2d<rgba16float, write>;   // ONE-BOUNCE INDIRECT RADIANCE, in colour - see the AO/GI block below
     @group(0) @binding(7) var<storage, read> wbricks : array<u32>;   // water-only brick bits — skipW rays stride these
     @group(0) @binding(8) var slotOut : texture_storage_2d<r32uint, write>;   // ── DYNAMIC LIFE ── per-pixel creature id: bits 0-7 = drop slot + 1 (0 = terrain/sky), bits 8-10 = model-space hit axis*2+signBit (composite rebuilds the TRUE rotated normal from it)
     ${pickWGSL}
@@ -13645,6 +13649,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       var isRock = false;                                             // ── IS THIS PIXEL STONE ── rides out to slotOut bit 12 for the composite's sun sheen. Resolved inside the albedo branch below, not at the store, because that is the only place that knows WHICH id this pixel's colour came from: h.vox is authoritative for the static world only, a body hit carries its id in bVox, and a creature's h.vox is deliberately zeroed.
       var faceId = 7u; var t = -1.0;
       var hurtGlow = 0.0;                                            // >0 on a pixel inside the hit flash: it is emissive, so it must not be left to whatever light happens to reach it
+      var indirect = vec3<f32>(0.0);   // ── GI ── light that reached this pixel by bouncing off another surface, in that surface's colour
       var sunV = 0.0; var skyV = 0.0;   // (bit 15 zeroes skyV at the end of the lighting block — the ambient/sky term, as opposed to the AO ray that modulates it)
       var creReact = 0.0;                                            // set inside the creature-shadow loop below: this pixel sits in a MOVING shadow's penumbra, so the reactive mask must cap its history (declared out here — the reactive mask is written well past the shading block's scope)
       if (h.t >= 0.0) {
@@ -13895,6 +13900,54 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
           if (LG(1u)) { let aoR = select(24.0, u.physC.z, u.physC.z > 0.0);
                         let ah = traceAll(sp, d, aoR, skipW);      // bodies included → real contact AO and self-shadowing, no bake needed
                         var aT = select(aoR, ah.t, ah.t >= 0.0);
+                        // ── THE SAME RAY, ASKED A BETTER QUESTION (user 2026-09-01: "we want realistic
+                        // lighting") ── this ray was already being cast and everything but its LENGTH was
+                        // being thrown away. ah carries what it struck (ah.vox) and the face it struck
+                        // (ah.n), so the surface's own colour is free: no second ray, no new pass, no extra
+                        // DDA - the most expensive term in the renderer (2.17 ms, 45% of the trace) now
+                        // returns radiance as well as occlusion.
+                        // What this buys is the thing a scalar AO term can never express: BOUNCE COLOUR. Sun
+                        // on a red rock throws red onto the stone beside it; a green canopy tints the litter
+                        // under it. That is one bounce of global illumination, and it is what separates
+                        // "darkened crevices" from lit-looking ground.
+                        // The bounce surface is assumed lit rather than shadow-tested: a second ray from the
+                        // bounce point would double the cost of the single most expensive thing here. The
+                        // error is over-bright indirect in shadowed crevices, which the AO term the same ray
+                        // produces is already darkening - the two errors point in opposite directions.
+                        if (ah.t >= 0.0) {
+                          let bAlb = pal[ah.vox].rgb * pal[ah.vox].rgb;   // albedo squared: pal holds sqrt-encoded colour (see gAlbedo)
+                          let bLit = max(0.0, dot(ah.n, u.sunDir.xyz));
+                          var bRad = SUN_COL * bLit;                     // what the FIRST bounce surface is lit by, before its own colour
+                          // ── AND A SECOND BOUNCE (user 2026-09-01: "implement the second bounce as well") ──
+                          // One bounce can only carry light off surfaces the sun already reaches, so a
+                          // crevice whose every neighbour is itself shadowed stays black no matter how
+                          // bright the day is. The second bounce is what fills those: light that has come
+                          // off two surfaces before it reaches the eye, which is most of the light indoors
+                          // and under a canopy.
+                          // It costs a real ray - unlike the first, which was riding an AO ray already being
+                          // cast - so it is kept cheap deliberately: GI_B2_R is a SHORTER reach than the AO
+                          // ray, because second-bounce light is diffuse and near-field, and the far half of
+                          // the hemisphere contributes almost nothing a temporal history will not average
+                          // out anyway. Its own R2 lanes, decorrelated from the first ray's, or the two
+                          // would sample the same direction every frame and the second bounce would be a
+                          // constant tint rather than a converging estimate.
+                          // NOT gated on a light-debug bit: LG(15u) was the obvious choice and it is already
+                          // the SKY/ambient toggle (see skyV at the top of this block), so the second bounce
+                          // would have switched off with a term it has nothing to do with. GI_B2 = 0 is the
+                          // off switch, and it is one constant rather than a bit someone else also owns.
+                          {
+                            let bp2 = sp + d * ah.t + ah.n * 0.02;      // step off the surface it hit, or the new ray re-hits it at t=0
+                            let r3 = fract(ign(vec2<f32>(gid.xy) + vec2<f32>(13.0, 91.0)) + fN * 0.4387627);
+                            let r4 = fract(ign(vec2<f32>(gid.xy) + vec2<f32>(71.0, 29.0)) + fN * 0.3096041);
+                            let d2 = cosHemi(ah.n, r3, r4);
+                            let ah2 = traceAll(bp2, d2, GI_B2_R, skipW);
+                            if (ah2.t >= 0.0) {
+                              let cAlb = pal[ah2.vox].rgb * pal[ah2.vox].rgb;
+                              bRad += cAlb * SUN_COL * max(0.0, dot(ah2.n, u.sunDir.xyz)) * GI_B2;
+                            }
+                          }
+                          indirect = bAlb * bRad * GI_GAIN;
+                        }
                         ${!(LIFE_UNI && (UNI_SEC & 2)) ? '' : '{ let cs2 = creaSec(sp, d, aT, sg0, sg1, sg2, sg3, secN); if (cs2.x >= 0.0) { aT = cs2.x; creReact = max(creReact, cs2.y); } }'}
                         skyV = clamp(aT / aoR, 0.0, 1.0); }
           else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
@@ -13972,6 +14025,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         if (dot(dc2, dc2) < aoR * aoR) { reactive = max(reactive, u.physC.y); }
       }
       textureStore(gIrr, vec2<i32>(gid.xy), vec4<f32>(sunV, skyV, t, reactive));
+      textureStore(gInd, vec2<i32>(gid.xy), vec4<f32>(indirect, 1.0));
       textureStore(slotOut, vec2<i32>(gid.xy), vec4<u32>(cSlot | (cAxis << 8u) | (select(0u, 1u, t >= 0.0 && (isFol(h.vox) || isCactusV(h.vox))) << 11u) | (select(0u, 1u, isRock) << 12u), 0u, 0u, 0u));   // dynamic-life id + hit-axis bits — temporal identity/motion + composite true-normal reconstruction   // ...and bit 11 = IS THIS A LEAF. It rides here because the word had 21 unused bits and there is no spare g-buffer channel (gIrr is sun/sky/distance/history, gAlbedo is rgb + face); the composite cannot know a needle from bark otherwise. Every existing reader masks (& 255u, >> 8u & 7u), so this is invisible to them.   // …and bit 12 = IS THIS STONE, on the same argument and for the same reason (user 2026-08-16: a sun reflection on every rock). It needs all SIX faces, so a faceId could not carry it: gAlbedo.a has exactly six values left in its low nibble and spending every one of them on one material would be the last thing that channel ever did.
     }
   `;
@@ -14008,11 +14062,22 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     @group(0) @binding(4) var histOut : texture_storage_2d<rgba16float, write>;
     @group(0) @binding(5) var slotCur : texture_2d<u32>;             // ── DYNAMIC LIFE ── this frame's creature ids (TRACE)…
     @group(0) @binding(6) var slotPrev : texture_2d<u32>;            // …and last frame's — identity must match at the reprojected pixel or history is another surface's
+    // ── AND THE INDIRECT RIDES THE SAME REPROJECTION ── one cosine-hemisphere ray per pixel is far too
+    // noisy to light with raw, and everything needed to clean it up is ALREADY COMPUTED in this pass:
+    // where the surface was last frame, whether that history is valid, and how many frames it is worth.
+    // Adding a second pass would recompute all three. So indirect accumulates here, against the same
+    // counter, and inherits every rejection the irradiance history already makes — disocclusion, a
+    // creature's slot changing identity, the reactive mask on a moving body.
+    @group(0) @binding(7) var gInd : texture_2d<f32>;                // this frame's raw one-bounce radiance (TRACE)
+    @group(0) @binding(8) var indPrev : texture_2d<f32>;             // …last frame's accumulated
+    @group(0) @binding(9) var indOut : texture_storage_2d<rgba16float, write>;
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       if (gid.x >= u32(u.res.x) || gid.y >= u32(u.res.y)) { return; }
       let cur = textureLoad(gIrr, vec2<i32>(gid.xy), 0);
-      if (cur.b < 0.0) { textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(0.0, 0.0, -1.0, 0.0)); return; }
+      let indCur = textureLoad(gInd, vec2<i32>(gid.xy), 0).rgb;
+      if (cur.b < 0.0) { textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(0.0, 0.0, -1.0, 0.0)); textureStore(indOut, vec2<i32>(gid.xy), vec4<f32>(indCur, 1.0)); return; }   // sky pixel: nothing to accumulate, pass it straight through so the target is never stale
+      var indAcc = indCur;
       let px = vec2<f32>(f32(gid.x) + 0.5 + u.jit.x, f32(gid.y) + 0.5 + u.jit.y);
       let wp = u.camPos + rayDir(px) * cur.b;
       let sl = textureLoad(slotCur, vec2<i32>(gid.xy), 0).r & 255u;
@@ -14093,11 +14158,15 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
             hist = min(min(abs(prev.a), cap) + 1.0, max(capS, capA));   // the counter runs to the LONGER of the two; each channel clamps it down to its own below   // …and cap is 1e9 (no-op) for a pixel that reprojected onto ITSELF, HFIX for one that borrowed a neighbour's
             acc = vec2<f32>(mix(prev.r, cur.r, 1.0 / min(hist, capS)),
                             mix(prev.g, cur.g, 1.0 / min(hist, capA)));
+            // Indirect uses the AO channel's window: it is gathered by the same hemisphere ray, so it has
+            // the same noise character and the same right to a long history on a still surface.
+            indAcc = mix(textureSampleLevel(indPrev, samp, uv, 0.0).rgb, indCur, 1.0 / min(hist, capA));   // the SAME reprojected uv the irradiance history uses, sampled the same way
             // EQUIVALENCE: at ?aohist=64 (the default) capS == capA, so hist == min(prev.a + 1, capS) and
             // both blends are 1/hist — exactly the single-counter line this replaced. Bit-identical.
           }
       }
-      textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(acc, cur.b, select(hist, -hist, cur.a > 0.5)));   // SIGN carries the reactive flag to SPATIAL (magnitude unchanged) — see the note there
+      textureStore(histOut, vec2<i32>(gid.xy), vec4<f32>(acc, cur.b, select(hist, -hist, cur.a > 0.5)));
+      textureStore(indOut, vec2<i32>(gid.xy), vec4<f32>(indAcc, 1.0));   // SIGN carries the reactive flag to SPATIAL (magnitude unchanged) — see the note there
     }
   `;
 
@@ -14480,6 +14549,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     @group(0) @binding(1) var gAlbedo : texture_2d<f32>;
     @group(0) @binding(2) var irrF : texture_2d<f32>;
     @group(0) @binding(3) var colorOut : texture_storage_2d<rgba8unorm, write>;
+    @group(0) @binding(4) var gInd : texture_2d<f32>;   // ── GI ── one-bounce indirect radiance from the trace's AO ray, in the bouncing surface's own colour
     @group(0) @binding(16) var<storage, read> pool : array<u32>;    // ── PAGED BRICK POOL ── the same two buffers TRACE reads, under the same names, because DDAW is shared source: creature pixels trace a REAL sun ray
     @group(0) @binding(17) var<storage, read> bdesc : array<u32>;   // per-brick: 0 = all air, else slot+1. A nonzero descriptor IS the occupancy bit, so this replaces the bitmask here exactly as it does in TRACE
     @group(0) @binding(18) var<storage, read> bricks2 : array<u32>;
@@ -15097,8 +15167,17 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         }
         let direct = sunTintR() * (irr.r * max(dot(n, u.sunDir), 0.0));
         let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
-        let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
-        col = alb * (direct + (skyIrr + bounce) * irr.g + ambFloor());   // faint cave ambient
+        // ── THE BOUNCE IS TRACED NOW, NOT ASSUMED (user 2026-09-01: "we want realistic lighting") ──
+        // BOUNCE was ONE CONSTANT COLOUR handed to every surface in the world, leaned toward whatever
+        // faces down and scaled by the sun's height. It cannot know what is actually next to a pixel, so
+        // stone beside a red rock and stone beside a green canopy received exactly the same bounce. gInd
+        // carries what the AO ray actually hit, in that surface's own colour, per pixel.
+        // NOT multiplied by irr.g. The sky term is ambient arriving from everywhere and needs the AO
+        // factor to carve it back out of crevices; the traced bounce is already occluded by construction,
+        // because it IS the thing the ray hit. Multiplying it by AO as well would darken it twice.
+        // LG(14u) still gates it, so the light-debug view can turn indirect off and see direct alone.
+        let bounce = select(vec3<f32>(0.0), textureLoad(gInd, vec2<i32>(gid.xy), 0).rgb, LG(14u));
+        col = alb * (direct + skyIrr * irr.g + bounce + ambFloor());   // faint cave ambient
         // ── SAND GLISTEN (the same lgt.x bit 22 the water and the ice glint wear) ── user 2026-08-15: "make the
         // sand glisten from the sun like the water". This is the WATER's column, not a new effect: the same one-glint-
         // cell-per-10-cm-voxel grid, the same phase and pick hashes, the same 0.30–0.85 duty window, the same pow(., 26)
@@ -15731,7 +15810,18 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // pair cannot resolve a difference this size. __vb.lgt2(63) = new, __vb.lgt2(63|128) = old.
         let sgK = select(1.75, 1.25, LG2(7u));
         let prev = clipToAABB(rgb2ycocg(max(catmullRomPrev(uv, u.res), vec3<f32>(0.0))), mu - sg * sgK, mu + sg * sgK);
-        let ta = select(1.0, 0.12, LG(8u));                         // bit 8 off = no colour history (raw, jittery, but instant): ta = 1 collapses either branch to cur
+        // ── TAA REACTS TO MOVING BODIES NOW (user 2026-09-01: "when a tree falls you see a damn
+        // streak") ── this pass was binding gIrr and reading ONLY .b, the depth. The reactive mask has
+        // been sitting in .a the whole time, written by the trace for exactly this purpose and consumed
+        // by the irradiance denoiser but never here — so the COLOUR history, which is the one you can
+        // actually see, blended a falling trunk against eight frames of the empty sky it used to be in
+        // front of. That is the streak: not the shadow lagging, the colour itself.
+        // ta is the weight of THIS frame. 0.12 is an eight-frame time constant, which is right for a
+        // static world and hopeless for a body crossing the screen. On a fully reactive pixel it goes to
+        // 0.65 - about a frame and a half - so the trail collapses to nothing while a still world keeps
+        // the long history that makes it quiet. Not 1.0: that is the ?nohist path and it is visibly noisy.
+        let rk8 = clamp(textureLoad(gIrr, p, 0).a, 0.0, 1.0);
+        let ta = select(1.0, mix(0.12, 0.65, rk8), LG(8u));         // bit 8 off = no colour history (raw, jittery, but instant): ta = 1 collapses either branch to cur
         if (LG2(7u)) {
           outc = mix(prev, cur, ta);
         } else {
@@ -16221,6 +16311,16 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     canvas.width = CW; canvas.height = CH;
     const tex = (fmt) => device.createTexture({ size: [RW, RH], format: fmt, usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
     const gAlbedo = tex('rgba8unorm'), gIrr = tex('rgba16float');
+    // ── ONE-BOUNCE INDIRECT RADIANCE, IN COLOUR (user 2026-09-01: "we want realistic lighting") ── gIrr
+    // carries sunV/skyV, which are SCALARS: a shadow bit and a distance-based AO term. Neither can carry
+    // the colour of the surface a bounce came off, so no amount of tuning them produces bounce light or
+    // colour bleeding - a red wall next to white stone lights it white. rgba16float because indirect
+    // radiance is HDR and can exceed 1 next to a sunlit face.
+    const gInd = tex('rgba16float');
+    // …and its own history pair. The irradiance history is vec4(acc.rg, depth, hist) - every channel
+    // spoken for - so indirect cannot ride along in it and needs somewhere of its own to accumulate.
+    // Ping-ponged like every other history here: this frame reads one and writes the other.
+    const indA = tex('rgba16float'), indB = tex('rgba16float');
     const histA = tex('rgba16float'), histB = tex('rgba16float'), irrF = tex('rgba16float');
     const colorCur = tex('rgba8unorm'), colHistA = tex('rgba8unorm'), colHistB = tex('rgba8unorm');
     const dofTex = tex('rgba8unorm');                    // ── DEPTH OF FIELD ── TAA's resolved colour + the composite's circle of confusion. NOT ping-ponged: it is written and read inside the same frame and carries no history.
@@ -16230,7 +16330,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // has completed; destroying at swap time would pull textures out from under in-flight GPU work. Before this,
     // nothing was ever destroyed and each resize/scale change leaked a full screen-texture set until GC noticed.
     const oldT = liveTargets, oldVis = visBuf;
-    liveTargets = [gAlbedo, gIrr, histA, histB, irrF, colorCur, colHistA, colHistB, slotA, slotB, dofTex];
+    liveTargets = [gAlbedo, gIrr, gInd, indA, indB, histA, histB, irrF, colorCur, colHistA, colHistB, slotA, slotB, dofTex];
     if (oldT || oldVis) device.queue.onSubmittedWorkDone().then(() => {
       if (oldT) for (const t of oldT) { try { t.destroy(); } catch (e) {} }
       if (oldVis) { try { oldVis.destroy(); } catch (e) {} }
@@ -16243,19 +16343,22 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       { binding: 2, resource: { buffer: bdescBuf } }, { binding: 3, resource: { buffer: palBuf } },
       { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: gb2Buf } },
       { binding: 7, resource: { buffer: gwbBuf } }, { binding: 9, resource: { buffer: visBuf } },
+      { binding: 10, resource: v(gInd) },
       { binding: 8, resource: v(par ? slotB : slotA) }, { binding: 13, resource: { buffer: itemMapBuf } },
       { binding: 23, resource: { buffer: bodyBuf } }] })));
     bgTemporal = [0, 1].map(par => device.createBindGroup({ layout: pTemporal.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gIrr) },
       { binding: 2, resource: v(par ? histA : histB) }, { binding: 3, resource: linSamp },
       { binding: 4, resource: v(par ? histB : histA) },
-      { binding: 5, resource: v(par ? slotB : slotA) }, { binding: 6, resource: v(par ? slotA : slotB) }] }));
+      { binding: 5, resource: v(par ? slotB : slotA) }, { binding: 6, resource: v(par ? slotA : slotB) },
+      { binding: 7, resource: v(gInd) }, { binding: 8, resource: v(par ? indA : indB) }, { binding: 9, resource: v(par ? indB : indA) }] }));
     bgSpatial = [0, 1].map(par => device.createBindGroup({ layout: pSpatial.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? histB : histA) },
       { binding: 2, resource: v(gAlbedo) }, { binding: 3, resource: v(irrF) }] }));
     bgComposite = [0, 1].map(par => device.createBindGroup({ layout: pComposite.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gAlbedo) },
       { binding: 2, resource: v(irrF) }, { binding: 3, resource: v(colorCur) },
+      { binding: 4, resource: v(par ? indB : indA) },   // the ACCUMULATED indirect, not the raw one — a single hemisphere ray per pixel is far too noisy to light with directly
       { binding: 13, resource: { buffer: itemMapBuf } },
       { binding: 14, resource: moonTex.createView() }, { binding: 15, resource: linSamp },
       { binding: 16, resource: { buffer: poolBuf } }, { binding: 17, resource: { buffer: bdescBuf } },
@@ -22080,6 +22183,213 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     return { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_AIM, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, toolCanBreak, voxRay };
   })();
   const { AIM_FORGIVE, AIM_R, AXE_SCALE, CHOP_AIM, CHOP_RAD, DIG_SCALE, KNIFE_SCALE, PICK_SCALE, REACH_3D, REACH_H, SKUNK_ANIM_MUL, aimHitId, chopSwing, tillRevert, tilled, toolCanBreak, voxRay } = __m_sim_tools;
+  const __m_sim_jolt = (() => {
+  // @module - JOLT-BACKED RIGID BODY SOLVER (user 2026-09-01: "use JoltPhysics.js for the physics")
+  // @exports joltReady, joltStep, joltTerrain, JOLT, JOLT_ON
+  //
+  // WHAT THIS REPLACES, AND WHAT IT DELIBERATELY DOES NOT.
+  // sim/solver.js integrates every rigid body by hand: gravity, the contact solve against W, sleep and
+  // the settle rules. THAT is what moves here. What does NOT move is the body RECORD or the way it
+  // reaches the GPU: main/tick-emit.js reads b.pos and b.q off each entry in PH.bodies and writes them
+  // into u.physB, and the trace walks them from there. So Jolt owns the MOTION and the existing record
+  // stays the interchange format - one solver swapped underneath a render path that already works.
+  // Replacing both at once would mean debugging two unknowns with no working reference to bisect on.
+  //
+  // THE LIBRARY IS VENDORED, NOT FETCHED. game/vendor/jolt-physics.wasm-compat.js is the variant with
+  // the WASM base64-embedded, so there is ONE file and no second request. voxelbit ships as a local
+  // browser game on the player's own machine, so a runtime unpkg import would mean no physics offline.
+  //
+  // TERRAIN IS A HEIGHTFIELD, NOT A BODY PER VOXEL. A voxel-per-body world is not representable: the
+  // near window alone is 2048 x 2048 columns. Jolt's HeightFieldShape takes exactly what hmap already
+  // is, one height per column, so the static world costs ONE body. Its limit is worth writing down: a
+  // heightfield cannot express an overhang, so nothing can land on the underside of anything. Nothing
+  // in this world has an underside yet (the caves were deleted 2026-08-05); when something does, the
+  // answer is a second static body for that object, not abandoning the field.
+  const JOLT = {
+    on: false, ready: false, J: null, iface: null, ps: null, bi: null,
+    bodies: new Map(),                                 // voxelbit body  ->  Jolt body id
+    terrainId: null, terrainOX: 1e9, terrainOZ: 1e9,   // the heightfield's current window origin
+    NL: 0, ML: 1,                                      // object layers: NON_MOVING, MOVING
+    stats: { added: 0, dropped: 0, steps: 0, lastMs: 0 },
+  };
+  const JOLT_HF = 128;                                 // heightfield samples per side
+  // ── ON BY DEFAULT, WITH AN ESCAPE HATCH (user 2026-09-01: "completely rebuild the systems") ── it
+  // shipped behind ?jolt while the two coexisted and it has now been through the whole lifecycle: a
+  // pine felled, fallen under Jolt gravity, landed, slept and retired back into W, with tracked ==
+  // bodies at every sample across 165 adds and 80 drops and no errors. ?nojolt still selects the
+  // hand-written integrator, which is what a bisect needs when something looks wrong later - the old
+  // solver is not deleted, it is the reference.
+  const JOLT_ON = !location.search.includes('nojolt');
+
+  const joltInit = async () => {
+    if (JOLT.iface || !JOLT_ON) return;
+    const mod = await import('./vendor/jolt-physics.wasm-compat.js');
+    const J = await mod.default();
+    JOLT.J = J;
+    const NUM_OL = 2, BP_N = 0, BP_M = 1, NUM_BP = 2;
+    const ol = new J.ObjectLayerPairFilterTable(NUM_OL);
+    ol.EnableCollision(JOLT.NL, JOLT.ML);
+    ol.EnableCollision(JOLT.ML, JOLT.ML);
+    const bp = new J.BroadPhaseLayerInterfaceTable(NUM_OL, NUM_BP);
+    bp.MapObjectToBroadPhaseLayer(JOLT.NL, new J.BroadPhaseLayer(BP_N));
+    bp.MapObjectToBroadPhaseLayer(JOLT.ML, new J.BroadPhaseLayer(BP_M));
+    const st = new J.JoltSettings();
+    st.mObjectLayerPairFilter = ol;
+    st.mBroadPhaseLayerInterface = bp;
+    st.mObjectVsBroadPhaseLayerFilter = new J.ObjectVsBroadPhaseLayerFilterTable(bp, NUM_BP, ol, NUM_OL);
+    JOLT.iface = new J.JoltInterface(st);
+    JOLT.ps = JOLT.iface.GetPhysicsSystem();
+    JOLT.bi = JOLT.ps.GetBodyInterface();
+    JOLT.ready = true; JOLT.on = true;
+    console.log('[vb] jolt ready');
+  };
+
+  // Rebuilt when the player leaves the field's middle third - the same rule the terrain streamer uses.
+  // Heights come from hmap, so the collision surface IS the surface the renderer draws.
+  const joltTerrain = (px, pz) => {
+    if (!JOLT.ready) return;
+    const J = JOLT.J, half = JOLT_HF >> 1;
+    const ox = Math.round(px) - half, oz = Math.round(pz) - half;
+    if (Math.abs(ox - JOLT.terrainOX) < (half >> 1) && Math.abs(oz - JOLT.terrainOZ) < (half >> 1)) return;
+    if (JOLT.terrainId !== null) { JOLT.bi.RemoveBody(JOLT.terrainId); JOLT.bi.DestroyBody(JOLT.terrainId); JOLT.terrainId = null; }
+    const n = JOLT_HF, samples = new Float32Array(n * n);
+    for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+      const h = hmap[gwrap(ox + x, WX) + gwrap(oz + z, WZ) * WX];
+      samples[x + z * n] = h > 0 ? h : WL;             // an unwritten column reads 0; the waterline is the honest stand-in
+    }
+    // ── FILLING THE SAMPLES THROUGH THE VECTOR, NOT THROUGH _malloc ── the first cut called J._malloc
+    // and J.HEAPF32.set, which is the plain-emscripten idiom and is NOT what this build exposes: the
+    // wasm-compat bundle has _webidl_malloc, getPointer and the heaps, and it throws
+    // "J._malloc is not a function" the moment the first heightfield is built. mHeightSamples is a
+    // bound std::vector, so the honest route is resize it, ask for its data pointer, and write
+    // straight into the WASM heap through a view — no allocation of our own to leak.
+    const hfs = new J.HeightFieldShapeSettings();
+    hfs.mSampleCount = n;
+    hfs.mOffset = new J.Vec3(0, 0, 0);
+    hfs.mScale = new J.Vec3(1, 1, 1);
+    hfs.mHeightSamples.resize(n * n);
+    const view = new Float32Array(J.HEAPF32.buffer, J.getPointer(hfs.mHeightSamples.data()), n * n);
+    view.set(samples);
+    const shape = hfs.Create().Get();
+    J.destroy(hfs);                                    // the settings have done their job; the shape holds its own copy of the samples. Not freeing this leaks n*n floats of WASM heap on EVERY field rebuild, and the field rebuilds as the player walks.
+    const bcs = new J.BodyCreationSettings(shape, new J.RVec3(ox, 0, oz), new J.Quat(0, 0, 0, 1), J.EMotionType_Static, JOLT.NL);
+    JOLT.terrainId = JOLT.bi.CreateAndAddBody(bcs, J.EActivation_DontActivate);
+    JOLT.terrainOX = ox; JOLT.terrainOZ = oz;
+  };
+
+  // A chopped component becomes ONE dynamic body: a BOX of its own extents, not a compound of its
+  // voxels. A felled pine is ~14,000 voxels and a compound of 14,000 boxes is not a shape, it is a
+  // stall - Teardown itself traces a voxel model inside an OBB rather than handing the solver voxels.
+  // Mass follows the voxel COUNT, so a crown that is mostly air stays light.
+  const joltAddBody = (b) => {
+    if (!JOLT.ready || JOLT.bodies.has(b)) return;
+    const J = JOLT.J;
+    // ── NOTHING NON-FINITE CROSSES INTO WASM (user 2026-09-01: "memory access out of bounds" every frame) ──
+    // Jolt is a C++ library behind an emscripten binding: hand it a NaN position and it does not throw, it
+    // corrupts, and every later Step reads off the end of the heap - which is exactly the shape of the
+    // report, one throw per frame for ever rather than one throw once. And this world HAS a NaN class:
+    // a perched songbird keeps its height in perchFeet and leaves B.y as NaN deliberately (see the note
+    // in main/tick-creatures.js), so any body built from one arrives here with a NaN in it.
+    // Refusing the body is the right failure: it stays in PH.bodies and the hand-written solver's
+    // bookkeeping still sees it, so it is not lost - it simply is not simulated by Jolt.
+    const fin = (v) => Number.isFinite(v);
+    if (!fin(b.pos[0]) || !fin(b.pos[1]) || !fin(b.pos[2]) ||
+        !fin(b.q[0]) || !fin(b.q[1]) || !fin(b.q[2]) || !fin(b.q[3]) ||
+        !fin(b.vel[0]) || !fin(b.vel[1]) || !fin(b.vel[2]) ||
+        !fin(b.omega[0]) || !fin(b.omega[1]) || !fin(b.omega[2])) {
+      JOLT.stats.refused = (JOLT.stats.refused | 0) + 1; return;
+    }
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (let i = 0; i < b.n; i++) {
+      if (b.lx[i] < x0) x0 = b.lx[i]; if (b.lx[i] > x1) x1 = b.lx[i];
+      if (b.ly[i] < y0) y0 = b.ly[i]; if (b.ly[i] > y1) y1 = b.ly[i];
+      if (b.lz[i] < z0) z0 = b.lz[i]; if (b.lz[i] > z1) z1 = b.lz[i];
+    }
+    const hx = Math.max(0.5, (x1 - x0 + 1) * 0.5), hy = Math.max(0.5, (y1 - y0 + 1) * 0.5), hz = Math.max(0.5, (z1 - z0 + 1) * 0.5);
+    const shape = new J.BoxShapeSettings(new J.Vec3(hx, hy, hz)).Create().Get();
+    const bcs = new J.BodyCreationSettings(shape, new J.RVec3(b.pos[0], b.pos[1], b.pos[2]),
+      new J.Quat(b.q[0], b.q[1], b.q[2], b.q[3]), J.EMotionType_Dynamic, JOLT.ML);
+    const id = JOLT.bi.CreateAndAddBody(bcs, J.EActivation_Activate);
+    JOLT.bi.SetLinearVelocity(id, new J.Vec3(b.vel[0], b.vel[1], b.vel[2]));
+    JOLT.bi.SetAngularVelocity(id, new J.Vec3(b.omega[0], b.omega[1], b.omega[2]));
+    JOLT.bodies.set(b, id); JOLT.stats.added++;
+  };
+
+  // ── DROPPING A BODY IS THE DANGEROUS DIRECTION (user 2026-09-01: "memory access out of bounds" every
+  // frame) ── reproduced under fell stress, and the stack ends in Destroy. Two faults, both here:
+  //   · RemoveBody was called unconditionally. Jolt does not tolerate being told to remove a body it has
+  //     already removed - it is not a no-op, it corrupts, and every Step after that reads off the heap.
+  //     That is why one bad drop turns into a throw EVERY frame for ever rather than one throw once.
+  //   · the map entry was deleted last. Anything that re-entered between the destroy and the delete -
+  //     and joltStep's writeback guard now calls this from inside its own loop over the map - could find
+  //     the entry still there and destroy the same id twice.
+  // So: delete the mapping FIRST, so no path can find this body again; ask before removing; and wrap the
+  // pair, because a WASM abort must not take the frame down with it.
+  const joltDropBody = (b) => {
+    if (!JOLT.ready) return;
+    const id = JOLT.bodies.get(b); if (id === undefined) return;
+    JOLT.bodies.delete(b);
+    try {
+      if (JOLT.bi.IsAdded(id)) { JOLT.bi.RemoveBody(id); }
+      JOLT.bi.DestroyBody(id);
+    } catch (e) { JOLT.stats.dropErr = (JOLT.stats.dropErr | 0) + 1; }
+    JOLT.stats.dropped++;
+  };
+
+  // Step, then write the transforms back. b.pos and b.q are what main/tick-emit.js publishes, so once
+  // these are Jolt's the renderer is drawing Jolt's world with no change to the upload or the shader.
+  const joltStep = (dt) => {
+    if (!JOLT.ready) return;
+    const t0 = performance.now();
+    // SYNC THE SET HERE, NOT AT EVERY CREATION SITE. Bodies are born in half a dozen places across
+    // chop.js, chop-tree.js and reactions.js, and each of those would need a joltAddBody beside it -
+    // six edits that can silently fall out of step the moment a seventh site is added. PH.bodies is
+    // already the single list of what exists, so diffing against it once a frame is both cheaper to
+    // write and impossible to forget. A retired body leaves PH.bodies, so it leaves Jolt on the same
+    // frame and cannot go on colliding invisibly.
+    for (let i = 0; i < PH.bodies.length; i++) { const b = PH.bodies[i]; if (!JOLT.bodies.has(b)) joltAddBody(b); }
+    if (JOLT.bodies.size > PH.bodies.length) {
+      const live = new Set(PH.bodies);
+      for (const b of Array.from(JOLT.bodies.keys())) if (!live.has(b)) joltDropBody(b);
+    }
+    JOLT.iface.Step(Math.min(0.05, dt), 1);
+    for (const [b, id] of JOLT.bodies) {
+      // ── ASK ONLY ABOUT BODIES JOLT STILL HAS ── this guard was dropped when the sync moved in here,
+      // and Jolt does not answer politely: GetPosition on an id it has destroyed reads off the end of
+      // the WASM heap and the whole tick dies with "RuntimeError: memory access out of bounds", which
+      // surfaces as a frozen sim behind a rendered frame. A body can leave between the sync above and
+      // this loop because physStep retires and evicts inside the same frame.
+      // Not just forget it - DESTROY it. Deleting the mapping alone left the Jolt body allocated and
+      // unreachable: a leak, and worse, an id nothing owns any more that a later drop could still name.
+      if (!JOLT.bi.IsAdded(id)) { joltDropBody(b); continue; }
+      const p = JOLT.bi.GetPosition(id), q = JOLT.bi.GetRotation(id);
+      // …and nothing non-finite comes back out either. If a body ever does go bad inside the solver, the
+      // damage stops at this line instead of being written into b.pos, where main/tick-emit.js would
+      // publish it into u.physB and hand the corruption to the shader as well.
+      if (!Number.isFinite(p.GetX()) || !Number.isFinite(p.GetY()) || !Number.isFinite(p.GetZ())) {
+        JOLT.stats.refused = (JOLT.stats.refused | 0) + 1; joltDropBody(b); continue;
+      }
+      b.pos[0] = p.GetX(); b.pos[1] = p.GetY(); b.pos[2] = p.GetZ();
+      b.q[0] = q.GetX(); b.q[1] = q.GetY(); b.q[2] = q.GetZ(); b.q[3] = q.GetW();
+      const v = JOLT.bi.GetLinearVelocity(id);
+      b.vel[0] = v.GetX(); b.vel[1] = v.GetY(); b.vel[2] = v.GetZ();
+      b.sleeping = !JOLT.bi.IsActive(id);
+    }
+    JOLT.stats.steps++; JOLT.stats.lastMs = performance.now() - t0;
+  };
+  const joltReady = () => JOLT.ready;
+
+  // ── AND IT STARTS ITSELF, FROM HERE ── the first cut called joltInit() from world/build.js, which is
+  // manifest line 25 against this file's 49: every fragment shares ONE scope, so that call ran before
+  // this const existed and boot died on a ReferenceError with a blank screen and no console — the
+  // const-before-declaration failure this codebase keeps producing. Starting it at the bottom of its
+  // own module cannot be ordered wrong, because there is nothing after it to be ordered against.
+  // Never awaited: every entry point above is guarded on JOLT.ready and main/tick-body.js keeps using
+  // the hand-written solver until it flips, so 3.8 MB of WASM never holds up the world.
+  joltInit().catch((e) => console.error('[vb] jolt init failed:', e));
+    return { joltReady, joltStep, joltTerrain, JOLT, JOLT_ON };
+  })();
+  const { joltReady, joltStep, joltTerrain, JOLT, JOLT_ON } = __m_sim_jolt;
   const __m_sim_solver = (() => {
   // @module - the positional constraint solver shared by ragdolls and dropped items
   // @exports physStep, physRetire
@@ -22336,11 +22646,21 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // 93-voxel pine has a tip 50 from the COM, and at 3 rad/s that tip moves 2.5 voxels per 60 Hz step
         // — straight through the stump it should hit. Subdivide THIS body's step so no point on it can
         // travel more than half a voxel, which is finer than the grid it is colliding against.
-        const tip = Math.hypot(b.vel[0], b.vel[1], b.vel[2]) + Math.hypot(b.omega[0], b.omega[1], b.omega[2]) * b.rMax;
-        const sub2 = Math.max(1, Math.min(PH.maxCCD, Math.ceil(tip * PH.dt / 0.5)));
-        const hh = PH.dt / sub2;
-        for (let q3 = 0; q3 < sub2; q3++) phStep(b, hh);
-        PH.stats.ccd = Math.max(PH.stats.ccd, sub2);
+        // ── JOLT OWNS THE MOTION; THIS LOOP KEEPS THE BOOKKEEPING (user 2026-09-01) ── and the split
+        // belongs HERE, at the integrator, not at physStep's caller. The first wiring skipped the whole
+        // of physStep under ?jolt, which quietly took the rest of this function with it: RETIREMENT (a
+        // slept body baking back into W), the absorb rules, the lifetime expiry and the support queue
+        // all live in this same loop. A felled tree would have fallen correctly under Jolt and then
+        // never become world again - it would sit as a rigid body for ever, holding a body slot and a
+        // GPU page. So the loop still runs for every body; only the integrate-and-collide step is
+        // skipped, because Jolt has already written b.pos, b.q, b.vel and b.sleeping this frame.
+        if (!JOLT.on) {
+          const tip = Math.hypot(b.vel[0], b.vel[1], b.vel[2]) + Math.hypot(b.omega[0], b.omega[1], b.omega[2]) * b.rMax;
+          const sub2 = Math.max(1, Math.min(PH.maxCCD, Math.ceil(tip * PH.dt / 0.5)));
+          const hh = PH.dt / sub2;
+          for (let q3 = 0; q3 < sub2; q3++) phStep(b, hh);
+          PH.stats.ccd = Math.max(PH.stats.ccd, sub2);
+        }
       }
       PH.acc -= PH.dt; k++;
     }
@@ -26741,7 +27061,20 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       if (b.ly[i] < y0) y0 = b.ly[i]; if (b.ly[i] > y1) y1 = b.ly[i];
       if (b.lz[i] < z0) z0 = b.lz[i]; if (b.lz[i] > z1) z1 = b.lz[i];
     }
-    const mx2 = (x0 + x1) * 0.5, my2 = (y0 + y1) * 0.5, mz2 = (z0 + z1) * 0.5;
+    // ── DO NOT SPLIT AN AXIS TOO THIN TO SPLIT (user 2026-08-31: the death is "not breaking apart in
+    // peices") ── the 2x2x2 quadrant cut below was written for the animal it was tested on and is
+    // unconditional, so it also applies to everything SMALL. Measured on the creatures that actually live in
+    // this forest: their models run 38-66 voxels, and eight quadrants of that is pieces of 2 to 12 voxels -
+    // specks, scattering in half a second. The break-up is genuinely happening and cannot be seen, which is
+    // exactly the report.
+    // An axis is only worth cutting if there is something on both sides of the cut. Below SPLIT_MIN voxels of
+    // extent the plane is pushed outside the model instead, so that axis contributes nothing and the body
+    // comes apart into 2 or 4 chunky pieces rather than 8 crumbs. A big animal still has extent on all three
+    // and still gets its eight, so nothing about the case this was tuned for changes.
+    const SPLIT_MIN = 5;
+    const mx2 = (x1 - x0 + 1) >= SPLIT_MIN ? (x0 + x1) * 0.5 : Infinity,
+          my2 = (y1 - y0 + 1) >= SPLIT_MIN ? (y0 + y1) * 0.5 : Infinity,
+          mz2 = (z1 - z0 + 1) >= SPLIT_MIN ? (z0 + z1) * 0.5 : Infinity;
     const idMap = new Map(), bucket = new Map();
     for (let i = 0; i < b.n; i++) {
       const kk = key(b.lx[i], b.ly[i], b.lz[i]); idMap.set(kk, b.id[i]);
@@ -32240,6 +32573,14 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
             : 'impact conditions met — should break within fellHitMs' };
       });
     },
+    // ── THE JOLT SIDE OF THE SAME PICTURE (user 2026-09-01) ── phStat below answers for the hand-written
+    // solver; this answers for the one that replaced its integrator. `tracked` against `bodies` is the
+    // number that matters: they must be equal every frame, because joltStep syncs its set from
+    // PH.bodies. A gap means a body is being simulated by nobody (in PH.bodies, absent from Jolt, and
+    // its integrate step skipped) — which renders as a chunk frozen in mid-air.
+    joltStat() { return { on: JOLT.on, ready: JOLT.ready, tracked: JOLT.bodies.size, bodies: PH.bodies.length,
+      terrain: JOLT.terrainId !== null, terrainAt: [JOLT.terrainOX, JOLT.terrainOZ],
+      added: JOLT.stats.added, dropped: JOLT.stats.dropped, refused: JOLT.stats.refused | 0, steps: JOLT.stats.steps, lastMs: +JOLT.stats.lastMs.toFixed(2) }; },   // refused: a body Jolt was NOT given because a coordinate was non-finite — see joltAddBody
     phStat() { const s = PH.stats; let big = 0; for (const b of PH.bodies) if (b.n > 1000) big++;
       return { buildMs: s.buildMs || 0, buildN: s.buildN | 0, buildVox: s.buildVox | 0,
         shatterMs: s.shatterMs || 0, shatterN: s.shatterN | 0, shatterVox: s.shatterVox | 0, shatterRefused: s.shatterRefused | 0, shatterCoarse: s.shatterCoarse | 0,
@@ -35424,6 +35765,13 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         }
         if (nowSolid && waterAt(Math.floor(P.x), Math.floor(P.y + 2), Math.floor(P.z))) { P.y = WL + 1.5; P.vy = 0; } } }
     if (CPROF) cpMark(2);
+    // ── JOLT MOVES THE BODIES, THEN physStep DOES THE REST (user 2026-09-01: "use JoltPhysics.js") ──
+    // Both run, and that is deliberate: sim/solver.js skips only its integrate-and-collide step when
+    // JOLT.on (see the note there), and everything else it does — retirement back into W, the absorb
+    // rules, lifetime expiry, the support queue — has no equivalent in Jolt and must still happen.
+    // Order matters: Jolt writes b.pos/b.q/b.vel/b.sleeping, THEN the bookkeeping reads them, so a body
+    // that fell asleep this frame is retired on this frame rather than the next.
+    if (JOLT_ON && joltReady()) { joltTerrain(P.x, P.z); joltStep(dt); }
     physStep(dt);                                      // voxel rigid bodies — FIXED 60 Hz inside (see PH.dt)
 
     // ── voxel snow ── NEAR the player, landings are the ACTUAL rendered flakes touching down: JS mirrors the shader's

@@ -116,7 +116,18 @@
         // pair cannot resolve a difference this size. __vb.lgt2(63) = new, __vb.lgt2(63|128) = old.
         let sgK = select(1.75, 1.25, LG2(7u));
         let prev = clipToAABB(rgb2ycocg(max(catmullRomPrev(uv, u.res), vec3<f32>(0.0))), mu - sg * sgK, mu + sg * sgK);
-        let ta = select(1.0, 0.12, LG(8u));                         // bit 8 off = no colour history (raw, jittery, but instant): ta = 1 collapses either branch to cur
+        // ── TAA REACTS TO MOVING BODIES NOW (user 2026-09-01: "when a tree falls you see a damn
+        // streak") ── this pass was binding gIrr and reading ONLY .b, the depth. The reactive mask has
+        // been sitting in .a the whole time, written by the trace for exactly this purpose and consumed
+        // by the irradiance denoiser but never here — so the COLOUR history, which is the one you can
+        // actually see, blended a falling trunk against eight frames of the empty sky it used to be in
+        // front of. That is the streak: not the shadow lagging, the colour itself.
+        // ta is the weight of THIS frame. 0.12 is an eight-frame time constant, which is right for a
+        // static world and hopeless for a body crossing the screen. On a fully reactive pixel it goes to
+        // 0.65 - about a frame and a half - so the trail collapses to nothing while a still world keeps
+        // the long history that makes it quiet. Not 1.0: that is the ?nohist path and it is visibly noisy.
+        let rk8 = clamp(textureLoad(gIrr, p, 0).a, 0.0, 1.0);
+        let ta = select(1.0, mix(0.12, 0.65, rk8), LG(8u));         // bit 8 off = no colour history (raw, jittery, but instant): ta = 1 collapses either branch to cur
         if (LG2(7u)) {
           outc = mix(prev, cur, ta);
         } else {

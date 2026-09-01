@@ -253,11 +253,21 @@
         // 93-voxel pine has a tip 50 from the COM, and at 3 rad/s that tip moves 2.5 voxels per 60 Hz step
         // — straight through the stump it should hit. Subdivide THIS body's step so no point on it can
         // travel more than half a voxel, which is finer than the grid it is colliding against.
-        const tip = Math.hypot(b.vel[0], b.vel[1], b.vel[2]) + Math.hypot(b.omega[0], b.omega[1], b.omega[2]) * b.rMax;
-        const sub2 = Math.max(1, Math.min(PH.maxCCD, Math.ceil(tip * PH.dt / 0.5)));
-        const hh = PH.dt / sub2;
-        for (let q3 = 0; q3 < sub2; q3++) phStep(b, hh);
-        PH.stats.ccd = Math.max(PH.stats.ccd, sub2);
+        // ── JOLT OWNS THE MOTION; THIS LOOP KEEPS THE BOOKKEEPING (user 2026-09-01) ── and the split
+        // belongs HERE, at the integrator, not at physStep's caller. The first wiring skipped the whole
+        // of physStep under ?jolt, which quietly took the rest of this function with it: RETIREMENT (a
+        // slept body baking back into W), the absorb rules, the lifetime expiry and the support queue
+        // all live in this same loop. A felled tree would have fallen correctly under Jolt and then
+        // never become world again - it would sit as a rigid body for ever, holding a body slot and a
+        // GPU page. So the loop still runs for every body; only the integrate-and-collide step is
+        // skipped, because Jolt has already written b.pos, b.q, b.vel and b.sleeping this frame.
+        if (!JOLT.on) {
+          const tip = Math.hypot(b.vel[0], b.vel[1], b.vel[2]) + Math.hypot(b.omega[0], b.omega[1], b.omega[2]) * b.rMax;
+          const sub2 = Math.max(1, Math.min(PH.maxCCD, Math.ceil(tip * PH.dt / 0.5)));
+          const hh = PH.dt / sub2;
+          for (let q3 = 0; q3 < sub2; q3++) phStep(b, hh);
+          PH.stats.ccd = Math.max(PH.stats.ccd, sub2);
+        }
       }
       PH.acc -= PH.dt; k++;
     }

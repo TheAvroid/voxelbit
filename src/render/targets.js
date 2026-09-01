@@ -37,6 +37,16 @@
     canvas.width = CW; canvas.height = CH;
     const tex = (fmt) => device.createTexture({ size: [RW, RH], format: fmt, usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
     const gAlbedo = tex('rgba8unorm'), gIrr = tex('rgba16float');
+    // ── ONE-BOUNCE INDIRECT RADIANCE, IN COLOUR (user 2026-09-01: "we want realistic lighting") ── gIrr
+    // carries sunV/skyV, which are SCALARS: a shadow bit and a distance-based AO term. Neither can carry
+    // the colour of the surface a bounce came off, so no amount of tuning them produces bounce light or
+    // colour bleeding - a red wall next to white stone lights it white. rgba16float because indirect
+    // radiance is HDR and can exceed 1 next to a sunlit face.
+    const gInd = tex('rgba16float');
+    // …and its own history pair. The irradiance history is vec4(acc.rg, depth, hist) - every channel
+    // spoken for - so indirect cannot ride along in it and needs somewhere of its own to accumulate.
+    // Ping-ponged like every other history here: this frame reads one and writes the other.
+    const indA = tex('rgba16float'), indB = tex('rgba16float');
     const histA = tex('rgba16float'), histB = tex('rgba16float'), irrF = tex('rgba16float');
     const colorCur = tex('rgba8unorm'), colHistA = tex('rgba8unorm'), colHistB = tex('rgba8unorm');
     const dofTex = tex('rgba8unorm');                    // ── DEPTH OF FIELD ── TAA's resolved colour + the composite's circle of confusion. NOT ping-ponged: it is written and read inside the same frame and carries no history.
@@ -46,7 +56,7 @@
     // has completed; destroying at swap time would pull textures out from under in-flight GPU work. Before this,
     // nothing was ever destroyed and each resize/scale change leaked a full screen-texture set until GC noticed.
     const oldT = liveTargets, oldVis = visBuf;
-    liveTargets = [gAlbedo, gIrr, histA, histB, irrF, colorCur, colHistA, colHistB, slotA, slotB, dofTex];
+    liveTargets = [gAlbedo, gIrr, gInd, indA, indB, histA, histB, irrF, colorCur, colHistA, colHistB, slotA, slotB, dofTex];
     if (oldT || oldVis) device.queue.onSubmittedWorkDone().then(() => {
       if (oldT) for (const t of oldT) { try { t.destroy(); } catch (e) {} }
       if (oldVis) { try { oldVis.destroy(); } catch (e) {} }
@@ -59,19 +69,22 @@
       { binding: 2, resource: { buffer: bdescBuf } }, { binding: 3, resource: { buffer: palBuf } },
       { binding: 4, resource: v(gAlbedo) }, { binding: 5, resource: v(gIrr) }, { binding: 6, resource: { buffer: gb2Buf } },
       { binding: 7, resource: { buffer: gwbBuf } }, { binding: 9, resource: { buffer: visBuf } },
+      { binding: 10, resource: v(gInd) },
       { binding: 8, resource: v(par ? slotB : slotA) }, { binding: 13, resource: { buffer: itemMapBuf } },
       { binding: 23, resource: { buffer: bodyBuf } }] })));
     bgTemporal = [0, 1].map(par => device.createBindGroup({ layout: pTemporal.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gIrr) },
       { binding: 2, resource: v(par ? histA : histB) }, { binding: 3, resource: linSamp },
       { binding: 4, resource: v(par ? histB : histA) },
-      { binding: 5, resource: v(par ? slotB : slotA) }, { binding: 6, resource: v(par ? slotA : slotB) }] }));
+      { binding: 5, resource: v(par ? slotB : slotA) }, { binding: 6, resource: v(par ? slotA : slotB) },
+      { binding: 7, resource: v(gInd) }, { binding: 8, resource: v(par ? indA : indB) }, { binding: 9, resource: v(par ? indB : indA) }] }));
     bgSpatial = [0, 1].map(par => device.createBindGroup({ layout: pSpatial.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(par ? histB : histA) },
       { binding: 2, resource: v(gAlbedo) }, { binding: 3, resource: v(irrF) }] }));
     bgComposite = [0, 1].map(par => device.createBindGroup({ layout: pComposite.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: v(gAlbedo) },
       { binding: 2, resource: v(irrF) }, { binding: 3, resource: v(colorCur) },
+      { binding: 4, resource: v(par ? indB : indA) },   // the ACCUMULATED indirect, not the raw one — a single hemisphere ray per pixel is far too noisy to light with directly
       { binding: 13, resource: { buffer: itemMapBuf } },
       { binding: 14, resource: moonTex.createView() }, { binding: 15, resource: linSamp },
       { binding: 16, resource: { buffer: poolBuf } }, { binding: 17, resource: { buffer: bdescBuf } },

@@ -46,6 +46,7 @@ sim/chop.js
 sim/chop-tree.js
 sim/support.js
 sim/tools.js
+sim/jolt.js
 sim/solver.js
 sim/life/birds.js
 sim/life/slots.js

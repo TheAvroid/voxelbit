@@ -750,6 +750,14 @@
             : 'impact conditions met — should break within fellHitMs' };
       });
     },
+    // ── THE JOLT SIDE OF THE SAME PICTURE (user 2026-09-01) ── phStat below answers for the hand-written
+    // solver; this answers for the one that replaced its integrator. `tracked` against `bodies` is the
+    // number that matters: they must be equal every frame, because joltStep syncs its set from
+    // PH.bodies. A gap means a body is being simulated by nobody (in PH.bodies, absent from Jolt, and
+    // its integrate step skipped) — which renders as a chunk frozen in mid-air.
+    joltStat() { return { on: JOLT.on, ready: JOLT.ready, tracked: JOLT.bodies.size, bodies: PH.bodies.length,
+      terrain: JOLT.terrainId !== null, terrainAt: [JOLT.terrainOX, JOLT.terrainOZ],
+      added: JOLT.stats.added, dropped: JOLT.stats.dropped, refused: JOLT.stats.refused | 0, steps: JOLT.stats.steps, lastMs: +JOLT.stats.lastMs.toFixed(2) }; },   // refused: a body Jolt was NOT given because a coordinate was non-finite — see joltAddBody
     phStat() { const s = PH.stats; let big = 0; for (const b of PH.bodies) if (b.n > 1000) big++;
       return { buildMs: s.buildMs || 0, buildN: s.buildN | 0, buildVox: s.buildVox | 0,
         shatterMs: s.shatterMs || 0, shatterN: s.shatterN | 0, shatterVox: s.shatterVox | 0, shatterRefused: s.shatterRefused | 0, shatterCoarse: s.shatterCoarse | 0,

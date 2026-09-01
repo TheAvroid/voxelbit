@@ -2,6 +2,7 @@
     @group(0) @binding(1) var gAlbedo : texture_2d<f32>;
     @group(0) @binding(2) var irrF : texture_2d<f32>;
     @group(0) @binding(3) var colorOut : texture_storage_2d<rgba8unorm, write>;
+    @group(0) @binding(4) var gInd : texture_2d<f32>;   // ── GI ── one-bounce indirect radiance from the trace's AO ray, in the bouncing surface's own colour
     @group(0) @binding(16) var<storage, read> pool : array<u32>;    // ── PAGED BRICK POOL ── the same two buffers TRACE reads, under the same names, because DDAW is shared source: creature pixels trace a REAL sun ray
     @group(0) @binding(17) var<storage, read> bdesc : array<u32>;   // per-brick: 0 = all air, else slot+1. A nonzero descriptor IS the occupancy bit, so this replaces the bitmask here exactly as it does in TRACE
     @group(0) @binding(18) var<storage, read> bricks2 : array<u32>;
@@ -619,8 +620,17 @@
         }
         let direct = sunTintR() * (irr.r * max(dot(n, u.sunDir), 0.0));
         let skyIrr = mix(HORIZON, ZENITH, 0.5 + 0.5 * n.y) * 0.95 * dayScale();
-        let bounce = select(vec3<f32>(0.0), BOUNCE, LG(14u)) * clamp(0.55 - 0.55 * n.y, 0.0, 1.0) * max(u.sunDir.y, 0.0) * 2.2 * select(1.0, 0.12, isMoon());
-        col = alb * (direct + (skyIrr + bounce) * irr.g + ambFloor());   // faint cave ambient
+        // ── THE BOUNCE IS TRACED NOW, NOT ASSUMED (user 2026-09-01: "we want realistic lighting") ──
+        // BOUNCE was ONE CONSTANT COLOUR handed to every surface in the world, leaned toward whatever
+        // faces down and scaled by the sun's height. It cannot know what is actually next to a pixel, so
+        // stone beside a red rock and stone beside a green canopy received exactly the same bounce. gInd
+        // carries what the AO ray actually hit, in that surface's own colour, per pixel.
+        // NOT multiplied by irr.g. The sky term is ambient arriving from everywhere and needs the AO
+        // factor to carve it back out of crevices; the traced bounce is already occluded by construction,
+        // because it IS the thing the ray hit. Multiplying it by AO as well would darken it twice.
+        // LG(14u) still gates it, so the light-debug view can turn indirect off and see direct alone.
+        let bounce = select(vec3<f32>(0.0), textureLoad(gInd, vec2<i32>(gid.xy), 0).rgb, LG(14u));
+        col = alb * (direct + skyIrr * irr.g + bounce + ambFloor());   // faint cave ambient
         // ── SAND GLISTEN (the same lgt.x bit 22 the water and the ice glint wear) ── user 2026-08-15: "make the
         // sand glisten from the sun like the water". This is the WATER's column, not a new effect: the same one-glint-
         // cell-per-10-cm-voxel grid, the same phase and pick hashes, the same 0.30–0.85 duty window, the same pow(., 26)

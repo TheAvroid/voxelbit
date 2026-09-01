@@ -319,5 +319,12 @@
         }
         if (nowSolid && waterAt(Math.floor(P.x), Math.floor(P.y + 2), Math.floor(P.z))) { P.y = WL + 1.5; P.vy = 0; } } }
     if (CPROF) cpMark(2);
+    // ── JOLT MOVES THE BODIES, THEN physStep DOES THE REST (user 2026-09-01: "use JoltPhysics.js") ──
+    // Both run, and that is deliberate: sim/solver.js skips only its integrate-and-collide step when
+    // JOLT.on (see the note there), and everything else it does — retirement back into W, the absorb
+    // rules, lifetime expiry, the support queue — has no equivalent in Jolt and must still happen.
+    // Order matters: Jolt writes b.pos/b.q/b.vel/b.sleeping, THEN the bookkeeping reads them, so a body
+    // that fell asleep this frame is retired on this frame rather than the next.
+    if (JOLT_ON && joltReady()) { joltTerrain(P.x, P.z); joltStep(dt); }
     physStep(dt);                                      // voxel rigid bodies — FIXED 60 Hz inside (see PH.dt)
 

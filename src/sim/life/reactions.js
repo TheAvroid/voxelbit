@@ -93,7 +93,20 @@
       if (b.ly[i] < y0) y0 = b.ly[i]; if (b.ly[i] > y1) y1 = b.ly[i];
       if (b.lz[i] < z0) z0 = b.lz[i]; if (b.lz[i] > z1) z1 = b.lz[i];
     }
-    const mx2 = (x0 + x1) * 0.5, my2 = (y0 + y1) * 0.5, mz2 = (z0 + z1) * 0.5;
+    // ── DO NOT SPLIT AN AXIS TOO THIN TO SPLIT (user 2026-08-31: the death is "not breaking apart in
+    // peices") ── the 2x2x2 quadrant cut below was written for the animal it was tested on and is
+    // unconditional, so it also applies to everything SMALL. Measured on the creatures that actually live in
+    // this forest: their models run 38-66 voxels, and eight quadrants of that is pieces of 2 to 12 voxels -
+    // specks, scattering in half a second. The break-up is genuinely happening and cannot be seen, which is
+    // exactly the report.
+    // An axis is only worth cutting if there is something on both sides of the cut. Below SPLIT_MIN voxels of
+    // extent the plane is pushed outside the model instead, so that axis contributes nothing and the body
+    // comes apart into 2 or 4 chunky pieces rather than 8 crumbs. A big animal still has extent on all three
+    // and still gets its eight, so nothing about the case this was tuned for changes.
+    const SPLIT_MIN = 5;
+    const mx2 = (x1 - x0 + 1) >= SPLIT_MIN ? (x0 + x1) * 0.5 : Infinity,
+          my2 = (y1 - y0 + 1) >= SPLIT_MIN ? (y0 + y1) * 0.5 : Infinity,
+          mz2 = (z1 - z0 + 1) >= SPLIT_MIN ? (z0 + z1) * 0.5 : Infinity;
     const idMap = new Map(), bucket = new Map();
     for (let i = 0; i < b.n; i++) {
       const kk = key(b.lx[i], b.ly[i], b.lz[i]); idMap.set(kk, b.id[i]);
