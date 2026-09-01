@@ -90,7 +90,7 @@
         const dwx = P.x - P.wkx, dwz = P.z - P.wkz;
         if (dwx * dwx + dwz * dwz >= RIP_STEP * RIP_STEP) { P.wkx = P.x; P.wkz = P.z; ripAdd(P.x, P.z, 0.5); }
       } else { P.wkx = undefined; }
-      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
+      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? SAND_SPD : 1);   // sand pits slow the player 50% (user)
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
       moveAxis(0, P.hvx * dt, hh);

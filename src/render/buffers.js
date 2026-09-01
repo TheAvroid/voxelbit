@@ -1524,7 +1524,17 @@
   // room for four giants down at once; 4 << 20 would buy only two, which a player clearing a stand hits
   // immediately. The GPU cost is address space, not bandwidth: the trace only reads the cells a body
   // actually occupies.
-  const BODYCAP = 6 << 20;                             // 6M cells = 24 MB; a whole pine box is 35*36*116 = 146k, a giant OAK's is 1.455M
+  // ── SIZED FOR THE TREES THAT EXIST, NOT THE ONES THAT USED TO (user 2026-08-31: a felled tree
+  // "completely dissapears ... it should fall over") ── this is the buffer a rigid body's voxels live in,
+  // and a body that cannot get room in it is handed b.gpu = null. main/tick-emit.js then skips it outright
+  // (`if (nb >= PHYS_MAX || !b.gpu) continue`), so the body still exists, still falls and still collides -
+  // it simply is not drawn. That is exactly the report: the tree shoves the player on its way down and
+  // nothing is on the ground afterwards.
+  // The old comment below is the whole story: 6M was sized when a pine box was 35*36*116 = 146k. The nine
+  // pines are 152 voxels tall and up to 55 wide, so ONE whole-tree box is about 380k, and a fell does not
+  // make one body - it shattered into 23 here, each carrying its own bounding box. The sum ran past 6M and
+  // everything after the first few got nothing.
+  const BODYCAP = 16 << 20;                            // 16M cells = 64 MB; a whole 152-tall pine box is ~380k, a giant OAK's is 1.455M
   const bodyBuf = device.createBuffer({ size: BODYCAP * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   let bodyTop = 0;                                     // bump allocator; reset when no body references it
 

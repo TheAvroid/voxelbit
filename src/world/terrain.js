@@ -1,5 +1,5 @@
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, penguinAt, PENGCELL, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPenguin, stampPenguinOne, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports ROCKDITH, BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, penguinAt, PENGCELL, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPenguin, stampPenguinOne, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -1933,6 +1933,7 @@
         const c = atFn(cx, cz); if (c) { stampFn(c, x0, x1, z0, z1); yield; }
       }
   }
+  const ROCKDITH = 28;                                // how deep the 3-shade rock dither reaches — see the note in rockRowSpan
   function rockRowSpan(x0, x1, wz, tops) {             // ── ROW-MAJOR ROCK CORE ── writes one wz-row's rock for every column at once, y-major with CONTIGUOUS x-runs.
     // The old per-column loop strode WX bytes per voxel (every write its own cache line, 44% of all gen CPU); this is the
     // same voxel set with the same incremental hash — imul is linear mod 2³², so re-anchoring per (x0, y) is bit-identical.
@@ -1946,7 +1947,19 @@
       const yb = zb + y * WX;
       for (let i = 0; i < len; i++) {
         if (y < tops[i]) { const hh = Math.imul(acc ^ (acc >>> 13), 1274126177);
-          W[yb + gxA[i]] = ROCK[((((hh ^ (hh >>> 16)) >>> 0) / 4294967296) * 3) | 0]; }
+          // ── THE DEEP CORE IS ONE SHADE, AND THAT IS A MEMORY DECISION (user 2026-08-31: rendering
+          // artifacts in the distance) ── a brick whose 512 voxels are all the SAME id is "sealed": the pool
+          // points every one of them at a single shared page instead of paging each. This loop dithered
+          // three ROCK shades per voxel from y=0 up, so not one interior brick in the world could ever be
+          // uniform, and every one of them spent a real slot. Measured with the terrain at twice its old
+          // height: 1,983,004 of 2,139,096 slots used - 92.7%, 989 MB - and a pool that close to full is
+          // exactly where a brick stops getting a slot, keeps the descriptor it had, and draws as the shared
+          // sealed page: a grey slab in the distance.
+          // The dither is kept for the top ROCKDITH voxels, which is everything a cliff face, a lake bed or
+          // a shovel can expose (the soil band above it is only 16 deep). Below that nothing is ever seen,
+          // so it costs nothing to look uniform and it buys back the slots.
+          W[yb + gxA[i]] = (y < tops[i] - ROCKDITH) ? ROCK[0]
+            : ROCK[((((hh ^ (hh >>> 16)) >>> 0) / 4294967296) * 3) | 0]; }
         acc = (acc + 374761393) | 0;                   // advancing x by 1 adds K1 — identical to imul(x0+i, K1) mod 2³²
       }
     }

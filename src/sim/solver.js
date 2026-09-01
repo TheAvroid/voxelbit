@@ -434,7 +434,18 @@
         // SIZE IS STILL THE ONLY OTHER GATE, deliberately: PH.absorbSize is the user's own "too big to carry,"
         // break it down first" rule and this does not touch it.
         const vJ = b.vel[0] * b.vel[0] + b.vel[1] * b.vel[1] + b.vel[2] * b.vel[2];
-        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || b.fellLoot || vJ < 4))) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
+        // ── A FELLED PIECE MUST ACTUALLY LAND FIRST (user 2026-08-31: "the top half of the tree is either
+        // dissapearing or floating") ── fellLoot used to sit in this OR beside nearR, which made a tree chunk
+        // "settled" on AGE ALONE at 1500 ms. A pine takes about 5.7 s to go over, so every piece was legal to
+        // absorb while it was still in the air: stand at the trunk and the upper tree is collected out of its
+        // own arc before it can reach the ground. That is the whole report - the top half never lands because
+        // it is picked up mid-fall.
+        // It now has to be still (vJ < 4) or asleep, like everything else, with a LONG age backstop so the
+        // original reason for the exemption still holds: a chunk wedged against two others can jitter forever
+        // without the solver formally sleeping it, and it must not become uncollectable. 8 s clears a fall
+        // with room to spare.
+        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || vJ < 4))
+                        && !(tNow - b.born > 8000 && b.fellLoot)) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
         const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
         const rA = b.nearR || PH.absorbR;               // an ARROW's chunk keeps its own, much shorter reach (user)
         if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;

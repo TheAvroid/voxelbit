@@ -228,7 +228,7 @@
   // What IS new is the mechanism, measured at a pinned spawn: a ground-cover blade sits on 99.7% of FLAT
   // columns and only 63.8% of RISER columns. Risers follow contours, so a third of every contour is bare
   // ground. That is the thing to attack, and it is in the cover scatter, not here.
-  const LIFE_OFF = 1;                                  // ── NO LIFE (user 2026-08-31: "dont add any life yet") ── the whole creature
+  const LIFE_OFF = 0;   // ── LIFE IS BACK (user 2026-08-31: "add the rest of the life from the original pine forest") ──                                  // ── NO LIFE (user 2026-08-31: "dont add any life yet") ── the whole creature
                                                        // system is intact and gated at one line in main/tick-creatures.js. Set to 0 to restore it.
   // …and the ceiling is now the TREE RESERVE alone. `130 + LIFT` was the other half of this min() and it
   // moved with LIFT, so lowering the float would have pulled the mountain tops down by exactly the 80
@@ -266,7 +266,7 @@
   // the placement queries disagree about where the ground is — __vb.gtest() is what measures it. Naming it
   // does not remove the duplication (the row/col forms cannot call this), but it does mean a change here is
   // visibly a change to a shared constant rather than to a magic number.
-  const BASIN_T = 0.065;                               // base: how much of the low-frequency basin field drops under the waterline
+  const BASIN_T = 0.030;                               // base: how much of the low-frequency basin field drops under the waterline
   // ── AND THE ARCTIC GETS TWICE THE WATER (user 2026-08-30: "double the rate of water in the arctic") ──
   // added on top of the base rather than replacing it, and scaled by the biome mask so the extra lakes fade in
   // with the snow instead of appearing along the band's edge. TUNED BY MEASUREMENT, not by arithmetic: the
@@ -282,7 +282,7 @@
   // is a different lever from the threshold above, and the one that actually changes their size.
   // Like the threshold, this line is INLINED IN THREE PLACES (H, makeHRow, makeHCol) and is a shared helper
   // for that reason: the arithmetic exists once so the three copies cannot drift.
-  const BASIN_LOW = 66;                                // ceiling, over LIFT, under which a basin may carve at all
+  const BASIN_LOW = 55;                                // ceiling, over LIFT, under which a basin may carve at all
   const BASIN_ARCTLIFT = 34;                           // …and how much higher the arctic's may reach
   const basinLow = (h, x, z) => Math.max(0, Math.min(1, (BASIN_LOW + LIFT + BASIN_ARCTLIFT * arcticM(x, z) - h) / 20));
   const basinM = (x, z) => {                           // huge, rare low-frequency basins pull the land under the waterline
@@ -1753,10 +1753,35 @@
   // out, and it widens the height histogram at the same time - which is the "a lot of terrain
   // height variation" half of the ask.
   const PINE_LOW    = 6;                               // hard floor: a lake bed may not reach the world's own bottom
-  const PINE_BASE   = WL - 52;                             // the deepest ground, 52 under WL. Depth is the point - a shallow
+  const PINE_BASE   = WL - 40;                             // the deepest ground, 52 under WL. Depth is the point - a shallow
                                                        // field floor reads as wet sand rather than as a lake (recorded
                                                        // against the first pine water build, which produced exactly that).
-  const PINE_WET    = 1.78;                            // ── AND THE WATER IS PUT BACK (user approved 32%) ── doubling the
+  // ── THE SHALLOWS ARE THE PROBLEM, NOT THE DEPTH (user 2026-08-31: "theres alot of areas with very
+  // shallow water. can you deepen these very shallow areas") ── the field already reaches 40 under the
+  // waterline, but almost nothing USES that: the distribution puts most wet columns a voxel or two under,
+  // so wide stretches read as a wet floor with the bed showing through rather than as water.
+  // Lowering PINE_BASE does not fix it - that moves the FLOOR, and the floor was never what these columns
+  // were sitting on. What is needed is to bend the shallow end of the depth curve down, which is what this
+  // does: depth d becomes d + DEEP_ADD * (d / DEEP_SPAN), capped at a constant +DEEP_ADD once past the span.
+  // d = 0 maps to d = 0, so the WATERLINE ITSELF DOES NOT MOVE and the shore is untouched - no step, no
+  // band, and the beach that meets it is the same beach. A 3-deep flat becomes 7, an 8-deep becomes 19.
+  // Dry land is not touched at all: the whole term is behind h < WL.
+  // ── AND A THRESHOLD, WHICH IS WHAT KILLS THE PUDDLES (user 2026-08-31: "prevent small puddles of
+  // water") ── censused over five far-apart regions, the small bodies and the shallow ones are the SAME
+  // bodies: 18 and 36 vox^2 at 0 deep, 396 and 594 at 2 deep, against real lakes at 5, 7, 12 and 14. So
+  // depth alone separates them, and depth is the one thing a per-column height function can test - H
+  // cannot look at its neighbours without recursing into itself.
+  // A plain "dry anything under N deep" would put a lip at every shore, which is the opposite of what was
+  // asked for two turns ago. Instead the ramp is moved: raw depth up to DEEP_MIN is not water at all (the
+  // existing `!lake && h <= WL` clamp in world/terrain.js lifts it to WL+1 as dry ground), and past that
+  // the depth is measured FROM DEEP_MIN and multiplied. At the boundary the new depth is 0, so the water's
+  // edge is still flush with the land - continuous, no step - and one raw level further in it is already
+  // several voxels deep, which is what makes what remains read as a lake rather than a wet patch.
+  const DEEP_MIN = 1, DEEP_K = 4.0, DEEP_CAP = 46;
+  const deepen = (h) => { if (h >= WL) return h; const d = WL - h;
+    if (d <= DEEP_MIN) return WL;                      // too shallow to be water - terrain.js dries it to WL+1
+    return Math.round(WL - Math.min(DEEP_CAP, (d - DEEP_MIN) * DEEP_K)); };
+  const PINE_WET    = 1.00;                            // ── AND THE WATER IS PUT BACK (user approved 32%) ── doubling the
                                                        // relief moved the whole field UP relative to a waterline that did not move
                                                        // with it, and the lakes drained: 32.3% -> 12.7%. This exponent pulls the
                                                        // distribution back down toward its own floor WITHOUT touching either end,
@@ -1784,6 +1809,7 @@
   };
   const H = (x, z) => {
     let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * pineField(x, z))));
+    h = deepen(h);                                     // bend the shallow end of the depth curve down — see DEEP_SPAN
     const bm = basinM(x, z);                           // the LAKES: broad low-frequency bowls pressed into the field
     const m = bm * basinLow(h, x, z);
     if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);
@@ -1828,7 +1854,7 @@
   // `h - max(0, h - cap) * rs` is the same cap reached continuously: identity at rs 0, the full cap at
   // rs 1, and nothing to step over in between. The width it was added to buy is unaffected - what widens a
   // channel is the cap at HIGH rs, which is exactly where this still applies it in full.
-  const RIVWIDE = 3.4;                                 // ── WIDE RIVERS (user 2026-08-31: "add in lakes and wide rivers
+  const RIVWIDE = 3.00;                                 // ── WIDE RIVERS (user 2026-08-31: "add in lakes and wide rivers
                                                        // throughout the terrain") ── the channel half-width multiplier. Was 1.4, which is
                                                        // the width the seven-band world wanted when a river was a BORDER between biomes.
                                                        // Here a river is a feature of the forest itself and is meant to be crossed by
@@ -1861,7 +1887,14 @@
       const lone = ihash(cx * 97 + 41, cz * 103 + 17) < 0.5;
       const segs = lone ? [] : [{ sx: hx, sz: hz, dxr, dzr, len: Lm, wb: wbM, seed, t0: 0.6, t1: 1.15 }];   // the stem WIDENS downstream like a real river
       const lakes = [{ x: mx, z: mz, r: 200 + ihash(cx * 31 + 9, cz * 37 + 5) * 100, seed }];   // the reservoir it feeds
-      const nT = lone ? 0 : 1 + ((ihash(cx * 7 + 44, cz * 3 + 18) * 2.99) | 0);   // a lone lake has no tributaries, and therefore no headwater ponds either
+      // ── ONE STEM, NO TRIBUTARIES (user 2026-08-31: "dont have the river split into thinner rivers, just
+      // keep the one big river") ── this gave every watershed 1-3 tributaries feeding the main stem, and a
+      // tributary is BY CONSTRUCTION thinner than what it feeds: those are the thin slivers in the report.
+      // Widening them was not the answer either, because a system whose branches are as wide as its trunk
+      // does not read as a river at all. So the stem keeps its full width and the branches are gone. The
+      // headwater ponds go with them - they were the tributaries' sources, and a pond feeding nothing is
+      // just a puddle. The reservoir the stem feeds is untouched.
+      const nT = 0;   // was: lone ? 0 : 1 + ((ihash(cx * 7 + 44, cz * 3 + 18) * 2.99) | 0)
       for (let i = 0; i < nT; i++) {                   // TRIBUTARIES — branch back-and-out from a confluence on the stem, narrowing toward their heads
         const f = 0.25 + ihash(cx * 13 + i * 17, cz * 11 + i * 23) * 0.55;
         const jx = hx + dxr * (Lm * f), jz = hz + dzr * (Lm * f);

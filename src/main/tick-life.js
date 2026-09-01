@@ -273,7 +273,11 @@
     // which is the only honest way to price it, because every boot re-randomises the biome layout under a
     // fixed coordinate (see the vbharness note in docs). -1 = follow the biome, the shipping behaviour.
     const nCard = CARD_NFRAMES ? (CARD_FORCE >= 0 ? Math.min(CARD_N, CARD_FORCE)
-                  : Math.round(CARD_BASE * treeFrac * (1 + (CARD_BIRCH_K - 1) * birchFrac))) : 0;   // the FULL pool in birch, CARD_BASE in any other wood, and nothing in open sand
+                  : Math.round(CARD_BASE * treeFrac * CARD_BIRCH_K)) : 0;   // ── THE BIRCH COUNT, EVERYWHERE (user 2026-08-31: "make it the
+                  // same amount as the previous birch forest") ── this scaled the doubling by birchFrac, and
+                  // birchM is identically zero now, so the term evaluated to CARD_BASE and the pines carried
+                  // half what the birch wood did. CARD_BIRCH_K applies unconditionally: 842 * treeFrac, which
+                  // is what CARD_N was already sized for, so the pool is wide enough with nothing else moved.   // the FULL pool in birch, CARD_BASE in any other wood, and nothing in open sand
 
     LIFE_WANT.perched = nCard; LIFE_WANT.fish = nFish; LIFE_WANT.worm = nWorm; LIFE_WANT.flyer = nAct; LIFE_WANT.duck = nDuck;
     // flamingo is published too, or lifeBands().want has no key for it and the band cannot be checked

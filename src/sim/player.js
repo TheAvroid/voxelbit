@@ -20,6 +20,11 @@
   const SWIM_DEEP = 5;
   const SWIM_STEP = 12;                                // how far a SWIMMER may auto-step, against 5 on land — sized off the measurement in moveAxis: float depth 6 + the steepest bank on a measured lake 4, plus margin
   const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 4.5;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
+  // ── WALKING ON SAND (user 2026-08-31: "only slow the player down by 25% when walking on sand,
+  // instead of the current 50%") ── a multiplier, so 25% slower is 0.75 and not 0.25. It was a bare
+  // 0.5 inlined in the speed product in main/tick-body.js; named here beside WATER_SPD because that
+  // is where every other movement multiplier lives and an inline literal in that chain is invisible.
+  const SAND_SPD = 0.75;
   const WATER_SPD = 0.344;                             // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
   // ── THE PLAYER STARTS IN THE OAK FOREST (user 2026-08-22: "spawn me automatically in the oak forest") ──

@@ -1151,7 +1151,7 @@
   // What IS new is the mechanism, measured at a pinned spawn: a ground-cover blade sits on 99.7% of FLAT
   // columns and only 63.8% of RISER columns. Risers follow contours, so a third of every contour is bare
   // ground. That is the thing to attack, and it is in the cover scatter, not here.
-  const LIFE_OFF = 1;                                  // ── NO LIFE (user 2026-08-31: "dont add any life yet") ── the whole creature
+  const LIFE_OFF = 0;   // ── LIFE IS BACK (user 2026-08-31: "add the rest of the life from the original pine forest") ──                                  // ── NO LIFE (user 2026-08-31: "dont add any life yet") ── the whole creature
                                                        // system is intact and gated at one line in main/tick-creatures.js. Set to 0 to restore it.
   // …and the ceiling is now the TREE RESERVE alone. `130 + LIFT` was the other half of this min() and it
   // moved with LIFT, so lowering the float would have pulled the mountain tops down by exactly the 80
@@ -1189,7 +1189,7 @@
   // the placement queries disagree about where the ground is — __vb.gtest() is what measures it. Naming it
   // does not remove the duplication (the row/col forms cannot call this), but it does mean a change here is
   // visibly a change to a shared constant rather than to a magic number.
-  const BASIN_T = 0.065;                               // base: how much of the low-frequency basin field drops under the waterline
+  const BASIN_T = 0.030;                               // base: how much of the low-frequency basin field drops under the waterline
   // ── AND THE ARCTIC GETS TWICE THE WATER (user 2026-08-30: "double the rate of water in the arctic") ──
   // added on top of the base rather than replacing it, and scaled by the biome mask so the extra lakes fade in
   // with the snow instead of appearing along the band's edge. TUNED BY MEASUREMENT, not by arithmetic: the
@@ -1205,7 +1205,7 @@
   // is a different lever from the threshold above, and the one that actually changes their size.
   // Like the threshold, this line is INLINED IN THREE PLACES (H, makeHRow, makeHCol) and is a shared helper
   // for that reason: the arithmetic exists once so the three copies cannot drift.
-  const BASIN_LOW = 66;                                // ceiling, over LIFT, under which a basin may carve at all
+  const BASIN_LOW = 55;                                // ceiling, over LIFT, under which a basin may carve at all
   const BASIN_ARCTLIFT = 34;                           // …and how much higher the arctic's may reach
   const basinLow = (h, x, z) => Math.max(0, Math.min(1, (BASIN_LOW + LIFT + BASIN_ARCTLIFT * arcticM(x, z) - h) / 20));
   const basinM = (x, z) => {                           // huge, rare low-frequency basins pull the land under the waterline
@@ -2676,10 +2676,35 @@
   // out, and it widens the height histogram at the same time - which is the "a lot of terrain
   // height variation" half of the ask.
   const PINE_LOW    = 6;                               // hard floor: a lake bed may not reach the world's own bottom
-  const PINE_BASE   = WL - 52;                             // the deepest ground, 52 under WL. Depth is the point - a shallow
+  const PINE_BASE   = WL - 40;                             // the deepest ground, 52 under WL. Depth is the point - a shallow
                                                        // field floor reads as wet sand rather than as a lake (recorded
                                                        // against the first pine water build, which produced exactly that).
-  const PINE_WET    = 1.78;                            // ── AND THE WATER IS PUT BACK (user approved 32%) ── doubling the
+  // ── THE SHALLOWS ARE THE PROBLEM, NOT THE DEPTH (user 2026-08-31: "theres alot of areas with very
+  // shallow water. can you deepen these very shallow areas") ── the field already reaches 40 under the
+  // waterline, but almost nothing USES that: the distribution puts most wet columns a voxel or two under,
+  // so wide stretches read as a wet floor with the bed showing through rather than as water.
+  // Lowering PINE_BASE does not fix it - that moves the FLOOR, and the floor was never what these columns
+  // were sitting on. What is needed is to bend the shallow end of the depth curve down, which is what this
+  // does: depth d becomes d + DEEP_ADD * (d / DEEP_SPAN), capped at a constant +DEEP_ADD once past the span.
+  // d = 0 maps to d = 0, so the WATERLINE ITSELF DOES NOT MOVE and the shore is untouched - no step, no
+  // band, and the beach that meets it is the same beach. A 3-deep flat becomes 7, an 8-deep becomes 19.
+  // Dry land is not touched at all: the whole term is behind h < WL.
+  // ── AND A THRESHOLD, WHICH IS WHAT KILLS THE PUDDLES (user 2026-08-31: "prevent small puddles of
+  // water") ── censused over five far-apart regions, the small bodies and the shallow ones are the SAME
+  // bodies: 18 and 36 vox^2 at 0 deep, 396 and 594 at 2 deep, against real lakes at 5, 7, 12 and 14. So
+  // depth alone separates them, and depth is the one thing a per-column height function can test - H
+  // cannot look at its neighbours without recursing into itself.
+  // A plain "dry anything under N deep" would put a lip at every shore, which is the opposite of what was
+  // asked for two turns ago. Instead the ramp is moved: raw depth up to DEEP_MIN is not water at all (the
+  // existing `!lake && h <= WL` clamp in world/terrain.js lifts it to WL+1 as dry ground), and past that
+  // the depth is measured FROM DEEP_MIN and multiplied. At the boundary the new depth is 0, so the water's
+  // edge is still flush with the land - continuous, no step - and one raw level further in it is already
+  // several voxels deep, which is what makes what remains read as a lake rather than a wet patch.
+  const DEEP_MIN = 1, DEEP_K = 4.0, DEEP_CAP = 46;
+  const deepen = (h) => { if (h >= WL) return h; const d = WL - h;
+    if (d <= DEEP_MIN) return WL;                      // too shallow to be water - terrain.js dries it to WL+1
+    return Math.round(WL - Math.min(DEEP_CAP, (d - DEEP_MIN) * DEEP_K)); };
+  const PINE_WET    = 1.00;                            // ── AND THE WATER IS PUT BACK (user approved 32%) ── doubling the
                                                        // relief moved the whole field UP relative to a waterline that did not move
                                                        // with it, and the lakes drained: 32.3% -> 12.7%. This exponent pulls the
                                                        // distribution back down toward its own floor WITHOUT touching either end,
@@ -2707,6 +2732,7 @@
   };
   const H = (x, z) => {
     let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * pineField(x, z))));
+    h = deepen(h);                                     // bend the shallow end of the depth curve down — see DEEP_SPAN
     const bm = basinM(x, z);                           // the LAKES: broad low-frequency bowls pressed into the field
     const m = bm * basinLow(h, x, z);
     if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);
@@ -2751,7 +2777,7 @@
   // `h - max(0, h - cap) * rs` is the same cap reached continuously: identity at rs 0, the full cap at
   // rs 1, and nothing to step over in between. The width it was added to buy is unaffected - what widens a
   // channel is the cap at HIGH rs, which is exactly where this still applies it in full.
-  const RIVWIDE = 3.4;                                 // ── WIDE RIVERS (user 2026-08-31: "add in lakes and wide rivers
+  const RIVWIDE = 3.00;                                 // ── WIDE RIVERS (user 2026-08-31: "add in lakes and wide rivers
                                                        // throughout the terrain") ── the channel half-width multiplier. Was 1.4, which is
                                                        // the width the seven-band world wanted when a river was a BORDER between biomes.
                                                        // Here a river is a feature of the forest itself and is meant to be crossed by
@@ -2784,7 +2810,14 @@
       const lone = ihash(cx * 97 + 41, cz * 103 + 17) < 0.5;
       const segs = lone ? [] : [{ sx: hx, sz: hz, dxr, dzr, len: Lm, wb: wbM, seed, t0: 0.6, t1: 1.15 }];   // the stem WIDENS downstream like a real river
       const lakes = [{ x: mx, z: mz, r: 200 + ihash(cx * 31 + 9, cz * 37 + 5) * 100, seed }];   // the reservoir it feeds
-      const nT = lone ? 0 : 1 + ((ihash(cx * 7 + 44, cz * 3 + 18) * 2.99) | 0);   // a lone lake has no tributaries, and therefore no headwater ponds either
+      // ── ONE STEM, NO TRIBUTARIES (user 2026-08-31: "dont have the river split into thinner rivers, just
+      // keep the one big river") ── this gave every watershed 1-3 tributaries feeding the main stem, and a
+      // tributary is BY CONSTRUCTION thinner than what it feeds: those are the thin slivers in the report.
+      // Widening them was not the answer either, because a system whose branches are as wide as its trunk
+      // does not read as a river at all. So the stem keeps its full width and the branches are gone. The
+      // headwater ponds go with them - they were the tributaries' sources, and a pond feeding nothing is
+      // just a puddle. The reservoir the stem feeds is untouched.
+      const nT = 0;   // was: lone ? 0 : 1 + ((ihash(cx * 7 + 44, cz * 3 + 18) * 2.99) | 0)
       for (let i = 0; i < nT; i++) {                   // TRIBUTARIES — branch back-and-out from a confluence on the stem, narrowing toward their heads
         const f = 0.25 + ihash(cx * 13 + i * 17, cz * 11 + i * 23) * 0.55;
         const jx = hx + dxr * (Lm * f), jz = hz + dzr * (Lm * f);
@@ -2980,7 +3013,7 @@
       const b = b1(xb2) * 0.55 + b2(xb2 * 2.13 + 11.7) * 0.27 + b3(xb2 * 4.41 + 41.2) * 0.18;
       const xc = wx * 0.011 + 3.7;
       const c = c1(xc) * 0.55 + c2(xc * 2.13 + 11.7) * 0.27 + c3(xc * 4.41 + 41.2) * 0.18;
-      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET))));
+      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET)))); h = deepen(h);
       const b0 = bsr(wx * 0.0016 + 313.7);
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));
       const m = bm * basinLow(h, wx, wz);
@@ -3029,7 +3062,7 @@
       const b = b1(zb2) * 0.55 + b2(zb2 * 2.13 + 5.3) * 0.27 + b3(zb2 * 4.41 + 23.8) * 0.18;
       const zc = wz * 0.011 + 9.1;
       const c = c1(zc) * 0.55 + c2(zc * 2.13 + 5.3) * 0.27 + c3(zc * 4.41 + 23.8) * 0.18;
-      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET))));
+      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET)))); h = deepen(h);
       const b0 = bsc(wz * 0.0016 + 157.3);
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));
       const m = bm * basinLow(h, wx, wz);
@@ -3087,8 +3120,8 @@
     // come out of. Anything from world/terrain.js (23) or world/gen-pool.js (25) is still in its temporal dead
     // zone on this line, and reading it would throw INSIDE this try — which swallows it and falls back, the same
     // invisible failure the missing names caused. Check 9 enforces the ordering as well as the completeness.
-    const consts = { PINE_WET, PINE_LOW, PINE_BASE, PINE_RELIEF, RIVWIDE, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, BIRCH_LAKE, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR,   SANDR, OAKBEACH, OAKBEACHY, SANDDEEP,  BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_STAND, PINEY, PINEHILL, PINE_LAKE, PINE_SHELF, PINE_SHA, PINE_SHB,  CHOFF, CHHALF, CHWHALF, CHB, CHW, BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
-    const fns = { pineField, ihash, sstep, pwrap, vnoise, fbm, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, chWob, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSeaH, arctH, oakWob, oakM, pineH, oakFieldM, birchH, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
+    const consts = { DEEP_MIN, DEEP_K, DEEP_CAP, PINE_WET, PINE_LOW, PINE_BASE, PINE_RELIEF, RIVWIDE, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, BIRCH_LAKE, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR,   SANDR, OAKBEACH, OAKBEACHY, SANDDEEP,  BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_STAND, PINEY, PINEHILL, PINE_LAKE, PINE_SHELF, PINE_SHA, PINE_SHB,  CHOFF, CHHALF, CHWHALF, CHB, CHW, BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
+    const fns = { deepen, pineField, ihash, sstep, pwrap, vnoise, fbm, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, chWob, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSeaH, arctH, oakWob, oakM, pineH, oakFieldM, birchH, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
     // ── SPWX/SPWZ RIDE WITH THE JOB, they are not baked ── spawn is randomised in world/build.js, nine fragments
@@ -7859,7 +7892,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   }
   const __m_world_terrain = (() => {
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, penguinAt, PENGCELL, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPenguin, stampPenguinOne, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports ROCKDITH, BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, penguinAt, PENGCELL, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPenguin, stampPenguinOne, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -9793,6 +9826,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         const c = atFn(cx, cz); if (c) { stampFn(c, x0, x1, z0, z1); yield; }
       }
   }
+  const ROCKDITH = 28;                                // how deep the 3-shade rock dither reaches — see the note in rockRowSpan
   function rockRowSpan(x0, x1, wz, tops) {             // ── ROW-MAJOR ROCK CORE ── writes one wz-row's rock for every column at once, y-major with CONTIGUOUS x-runs.
     // The old per-column loop strode WX bytes per voxel (every write its own cache line, 44% of all gen CPU); this is the
     // same voxel set with the same incremental hash — imul is linear mod 2³², so re-anchoring per (x0, y) is bit-identical.
@@ -9806,7 +9840,19 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       const yb = zb + y * WX;
       for (let i = 0; i < len; i++) {
         if (y < tops[i]) { const hh = Math.imul(acc ^ (acc >>> 13), 1274126177);
-          W[yb + gxA[i]] = ROCK[((((hh ^ (hh >>> 16)) >>> 0) / 4294967296) * 3) | 0]; }
+          // ── THE DEEP CORE IS ONE SHADE, AND THAT IS A MEMORY DECISION (user 2026-08-31: rendering
+          // artifacts in the distance) ── a brick whose 512 voxels are all the SAME id is "sealed": the pool
+          // points every one of them at a single shared page instead of paging each. This loop dithered
+          // three ROCK shades per voxel from y=0 up, so not one interior brick in the world could ever be
+          // uniform, and every one of them spent a real slot. Measured with the terrain at twice its old
+          // height: 1,983,004 of 2,139,096 slots used - 92.7%, 989 MB - and a pool that close to full is
+          // exactly where a brick stops getting a slot, keeps the descriptor it had, and draws as the shared
+          // sealed page: a grey slab in the distance.
+          // The dither is kept for the top ROCKDITH voxels, which is everything a cliff face, a lake bed or
+          // a shovel can expose (the soil band above it is only 16 deep). Below that nothing is ever seen,
+          // so it costs nothing to look uniform and it buys back the slots.
+          W[yb + gxA[i]] = (y < tops[i] - ROCKDITH) ? ROCK[0]
+            : ROCK[((((hh ^ (hh >>> 16)) >>> 0) / 4294967296) * 3) | 0]; }
         acc = (acc + 374761393) | 0;                   // advancing x by 1 adds K1 — identical to imul(x0+i, K1) mod 2³²
       }
     }
@@ -9943,9 +9989,9 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       if (occ) bricks2[c >> 5] |= 1 << (c & 31); else bricks2[c >> 5] &= ~(1 << (c & 31));
     }
   }
-    return { BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, penguinAt, PENGCELL, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPenguin, stampPenguinOne, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion };
+    return { ROCKDITH, BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, penguinAt, PENGCELL, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPenguin, stampPenguinOne, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion };
   })();
-  const { BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, penguinAt, PENGCELL, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPenguin, stampPenguinOne, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion } = __m_world_terrain;
+  const { ROCKDITH, BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, penguinAt, PENGCELL, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPenguin, stampPenguinOne, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion } = __m_world_terrain;
   async function buildWorld(withStages) {             // boot builds EVERYTHING the saved view distance can reach — no in-game waiting, like the classic full builds
     const bh = Math.min(HALF, Math.ceil((RD_FIXED + 96) / 8) * 8);
     const cx = winOX + HALF, cz = winOZ + HALF;
@@ -10196,9 +10242,9 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // into solid stone — so a new markFolia() belongs in material-tabs.js with the rest, not wherever it is
     // convenient.
     const OPAQTAB = []; for (let i = 0; i < 256; i++) OPAQTAB.push(i && i !== WATER_T && i !== WATER_B && !foliaTab[i] ? 1 : 0);
-    const consts = { PINE_WET, PINE_LOW, PINE_BASE, PINE_RELIEF, RIVWIDE, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, BIRCH_LAKE, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR,   SANDR, OAKBEACH, OAKBEACHY, SANDDEEP,  BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOW0, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_DOMEC, ARCT_DOMEK, ARCT_GBLEND, ARCT_STAND, ARCT_KEELK, ARCT_STEP, ARCT_JAG, ARCT_JAGF, ARCT_JAG2, ARCT_JAGF2, ARCT_CREVF1, ARCT_CREVF2, ARCT_CREVT, ARCT_CREVW, ARCT_CREVD, ARCT_CREVK, ARCT_ICEF, ARCT_ICE, ARCT_CAPMIN, ARCT_CAPMAX, ARCT_CAPHF, ARCT_CAPIRR, ARCT_CAPIRRF, ARCT_CAPIRR2, ARCT_CAPIRRF2, PENGCELL, PENG_RATE, PENG_INNER, PENG_MIN, PENG_MAX, PENG_SPACE, PENG_JIT, PENG_MINTOP, PENG_CHICK, PENG_CHICKR, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHWHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M, PINEY, PINEHILL, PINE_LAKE, PINE_SHELF, PINE_SHA, PINE_SHB,  BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };
+    const consts = { DEEP_MIN, DEEP_K, DEEP_CAP, ROCKDITH, PINE_WET, PINE_LOW, PINE_BASE, PINE_RELIEF, RIVWIDE, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVLAND, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, BIRCH_LAKE, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR,   SANDR, OAKBEACH, OAKBEACHY, SANDDEEP,  BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOW0, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCT_SEA, ARCT_SEAREL, ARCT_SEAF, ARCT_SEAF2, ARCT_SEAMIX, ARCT_SEAPOW, ARCT_DOMEC, ARCT_DOMEK, ARCT_GBLEND, ARCT_STAND, ARCT_KEELK, ARCT_STEP, ARCT_JAG, ARCT_JAGF, ARCT_JAG2, ARCT_JAGF2, ARCT_CREVF1, ARCT_CREVF2, ARCT_CREVT, ARCT_CREVW, ARCT_CREVD, ARCT_CREVK, ARCT_ICEF, ARCT_ICE, ARCT_CAPMIN, ARCT_CAPMAX, ARCT_CAPHF, ARCT_CAPIRR, ARCT_CAPIRRF, ARCT_CAPIRR2, ARCT_CAPIRRF2, PENGCELL, PENG_RATE, PENG_INNER, PENG_MIN, PENG_MAX, PENG_SPACE, PENG_JIT, PENG_MINTOP, PENG_CHICK, PENG_CHICKR, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, ARCT_GROUND, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHWHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M, PINEY, PINEHILL, PINE_LAKE, PINE_SHELF, PINE_SHA, PINE_SHB,  BIORW, BIORSAT, BIORIV_ON, BIORVALL, BIORVK };
     const tables = { PINE_ANCH9, ASNOW, PENGUINV, PENGBABYV, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER, OPAQTAB };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
-    const fns = { pineField, ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSnow, arctGB, arctSeaH, arctH, arctDome, arctRidge, arctCliff, arctIceTop, arctBare, oakWob, oakM, pineH, oakFieldM, birchH, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, penguinAt, stampPenguin, stampPenguinOne, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
+    const fns = { deepen, pineField, ihash, sstep, pwrap, vnoise, vnoise3, fbm, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, bioPin, bioWobZ, bioEdge, bioRivS, basinT, basinLow, arctSnow, arctGB, arctSeaH, arctH, arctDome, arctRidge, arctCliff, arctIceTop, arctBare, oakWob, oakM, pineH, oakFieldM, birchH, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, penguinAt, stampPenguin, stampPenguinOne, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';
@@ -12021,7 +12067,17 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // room for four giants down at once; 4 << 20 would buy only two, which a player clearing a stand hits
   // immediately. The GPU cost is address space, not bandwidth: the trace only reads the cells a body
   // actually occupies.
-  const BODYCAP = 6 << 20;                             // 6M cells = 24 MB; a whole pine box is 35*36*116 = 146k, a giant OAK's is 1.455M
+  // ── SIZED FOR THE TREES THAT EXIST, NOT THE ONES THAT USED TO (user 2026-08-31: a felled tree
+  // "completely dissapears ... it should fall over") ── this is the buffer a rigid body's voxels live in,
+  // and a body that cannot get room in it is handed b.gpu = null. main/tick-emit.js then skips it outright
+  // (`if (nb >= PHYS_MAX || !b.gpu) continue`), so the body still exists, still falls and still collides -
+  // it simply is not drawn. That is exactly the report: the tree shoves the player on its way down and
+  // nothing is on the ground afterwards.
+  // The old comment below is the whole story: 6M was sized when a pine box was 35*36*116 = 146k. The nine
+  // pines are 152 voxels tall and up to 55 wide, so ONE whole-tree box is about 380k, and a fell does not
+  // make one body - it shattered into 23 here, each carrying its own bounding box. The sum ran past 6M and
+  // everything after the first few got nothing.
+  const BODYCAP = 16 << 20;                            // 16M cells = 64 MB; a whole 152-tall pine box is ~380k, a giant OAK's is 1.455M
   const bodyBuf = device.createBuffer({ size: BODYCAP * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   let bodyTop = 0;                                     // bump allocator; reset when no body references it
 
@@ -16398,6 +16454,11 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   const SWIM_DEEP = 5;
   const SWIM_STEP = 12;                                // how far a SWIMMER may auto-step, against 5 on land — sized off the measurement in moveAxis: float depth 6 + the steepest bank on a measured lake 4, plus margin
   const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 4.5;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
+  // ── WALKING ON SAND (user 2026-08-31: "only slow the player down by 25% when walking on sand,
+  // instead of the current 50%") ── a multiplier, so 25% slower is 0.75 and not 0.25. It was a bare
+  // 0.5 inlined in the speed product in main/tick-body.js; named here beside WATER_SPD because that
+  // is where every other movement multiplier lives and an inline literal in that chain is invisible.
+  const SAND_SPD = 0.75;
   const WATER_SPD = 0.344;                             // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
   // ── THE PLAYER STARTS IN THE OAK FOREST (user 2026-08-22: "spawn me automatically in the oak forest") ──
@@ -22456,7 +22517,18 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // SIZE IS STILL THE ONLY OTHER GATE, deliberately: PH.absorbSize is the user's own "too big to carry,"
         // break it down first" rule and this does not touch it.
         const vJ = b.vel[0] * b.vel[0] + b.vel[1] * b.vel[1] + b.vel[2] * b.vel[2];
-        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || b.fellLoot || vJ < 4))) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
+        // ── A FELLED PIECE MUST ACTUALLY LAND FIRST (user 2026-08-31: "the top half of the tree is either
+        // dissapearing or floating") ── fellLoot used to sit in this OR beside nearR, which made a tree chunk
+        // "settled" on AGE ALONE at 1500 ms. A pine takes about 5.7 s to go over, so every piece was legal to
+        // absorb while it was still in the air: stand at the trunk and the upper tree is collected out of its
+        // own arc before it can reach the ground. That is the whole report - the top half never lands because
+        // it is picked up mid-fall.
+        // It now has to be still (vJ < 4) or asleep, like everything else, with a LONG age backstop so the
+        // original reason for the exemption still holds: a chunk wedged against two others can jitter forever
+        // without the solver formally sleeping it, and it must not become uncollectable. 8 s clears a fall
+        // with room to spare.
+        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || vJ < 4))
+                        && !(tNow - b.born > 8000 && b.fellLoot)) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
         const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
         const rA = b.nearR || PH.absorbR;               // an ARROW's chunk keeps its own, much shorter reach (user)
         if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;
@@ -23023,7 +23095,18 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // anywhere that is not sand and not the blossom — pine included. Dropping it back to the default BIO_OAKF
   // is the whole change, and BIO_OAKF is not the oak band alone: sim/nav.js reads it as EITHER broadleaf
   // band, so the frog keeps the birch forest's water and loses only the pine's.
-  const DES_ANYFOREST = { ladybug: 1 };       // (the frog was here and is not any more — see above)
+  // ── AND THE MOUSE (user 2026-08-31: "also add the mouse as well") ── desert_mouse takes its forest
+  // population from DES_OAK, which means the OAK band, and there is no oak band any more: oakM is
+  // identically zero, so the mouse had a population and nowhere to put it. Widening it here tags it
+  // BIO_OAKF, which sim/nav.js defines as "anywhere that is not sand" - the pine forest included - so it
+  // lives where the trees are instead of where a retired mask used to be.
+  // ── AND THE FROG IS BACK (user 2026-08-31: "is there a frog in the pine forest? if not bring it back") ──
+  // this REVERSES 2026-08-27 ("Dont spawn a frog in the pine forest"), and it has to, because the world that
+  // request was made in no longer exists. Dropping the frog to BIO_OAKF was safe then: nav.js reads that as
+  // EITHER broadleaf band, so it kept the birch forest's ponds and lost only the pine's. Both bands are
+  // retired now - oakM and birchM are identically zero - so BIO_OAKF resolves to nowhere at all and the frog
+  // has been homeless rather than merely excluded. Back in ANYFOREST, which is where the only water is.
+  const DES_ANYFOREST = { ladybug: 1, desert_mouse: 1, frog: 1 };       // (the frog was here and is not any more — see above)
   // ── AND WHOSE MODEL FACES THE WRONG WAY ── the render basis in main/tick-creatures.js takes model −y as the
   // head end. A species baked by tools/bake_desert_life.py always does; one adopted from the asset editor's
   // scene-graph loader need not, and the ladybug's head is at +y. A named table rather than a magic term at
@@ -35112,7 +35195,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         const dwx = P.x - P.wkx, dwz = P.z - P.wkz;
         if (dwx * dwx + dwz * dwz >= RIP_STEP * RIP_STEP) { P.wkx = P.x; P.wkz = P.z; ripAdd(P.x, P.z, 0.5); }
       } else { P.wkx = undefined; }
-      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? 0.5 : 1);   // sand pits slow the player 50% (user)
+      const spd = WALK * (sprint ? SPRINT : 1) * (crouching ? CROUCHM : 1) * (inWater ? WATER_SPD : 1) * (P.sprintJump ? 1.2 : 1) * (onSand() ? SAND_SPD : 1);   // sand pits slow the player 50% (user)
       const k = 1 - Math.exp(-(P.onGround ? 14 : 3.2) * dt);
       P.hvx += (mx * spd - P.hvx) * k; P.hvz += (mz * spd - P.hvz) * k;
       moveAxis(0, P.hvx * dt, hh);
@@ -37968,7 +38051,11 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // which is the only honest way to price it, because every boot re-randomises the biome layout under a
     // fixed coordinate (see the vbharness note in docs). -1 = follow the biome, the shipping behaviour.
     const nCard = CARD_NFRAMES ? (CARD_FORCE >= 0 ? Math.min(CARD_N, CARD_FORCE)
-                  : Math.round(CARD_BASE * treeFrac * (1 + (CARD_BIRCH_K - 1) * birchFrac))) : 0;   // the FULL pool in birch, CARD_BASE in any other wood, and nothing in open sand
+                  : Math.round(CARD_BASE * treeFrac * CARD_BIRCH_K)) : 0;   // ── THE BIRCH COUNT, EVERYWHERE (user 2026-08-31: "make it the
+                  // same amount as the previous birch forest") ── this scaled the doubling by birchFrac, and
+                  // birchM is identically zero now, so the term evaluated to CARD_BASE and the pines carried
+                  // half what the birch wood did. CARD_BIRCH_K applies unconditionally: 842 * treeFrac, which
+                  // is what CARD_N was already sized for, so the pool is wide enough with nothing else moved.   // the FULL pool in birch, CARD_BASE in any other wood, and nothing in open sand
 
     LIFE_WANT.perched = nCard; LIFE_WANT.fish = nFish; LIFE_WANT.worm = nWorm; LIFE_WANT.flyer = nAct; LIFE_WANT.duck = nDuck;
     // flamingo is published too, or lifeBands().want has no key for it and the band cannot be checked
@@ -38135,7 +38222,12 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       // loop, because that is the single point every creature in the world passes through: it retires
       // anything already standing and no slot can reach the spawn below it. The life code is all still here
       // and none of it is deleted - flip LIFE_OFF in world/window.js to bring the forest back to life.
-      if (LIFE_OFF) { if (B.init) { if (B.sCells) unstampWorm(B); B.init = false; B.dieT = 0; } continue; }
+      // ── …EXCEPT THE PERCHED SONGBIRDS (user 2026-08-31: "add all the perched song birds to the trees") ──
+      // the gate now spares one slot BAND rather than being lifted: CARD_0..CARD_END is the songbird pool
+      // (sim/life/slots.js), and those birds are GRID-STAMPED, so they cost no drop slot and cannot crowd
+      // out anything. Everything else in the world is still retired here. The sky FLYERS stay off - they
+      // are a separate system with its own gate in sim/life/birds.js, and they were not what was asked for.
+      if (LIFE_OFF && !(wk >= CARD_0 && wk < CARD_END)) { if (B.init) { if (B.sCells) unstampWorm(B); B.init = false; B.dieT = 0; } continue; }
       // ── A BODY WITH NO REAL POSITION IS NOT A BODY (user 2026-08-27: "only the mother duck is showing. I
       // dont see the babies") ── NaN loses every comparison it takes part in, so a slot that has picked one up
       // reads as NEAR to the surplus grace, INSIDE the recycle radius and CLOSE ENOUGH to its mother to the
@@ -40857,7 +40949,16 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       if (he >= 0 && he < 1) { const hf = Math.floor(he * 12);                 // 12 phases over the blink, stepped at 24 fps like every other animation here
         hk = 1 - hf / 12;                               // ONE flash (user): full at the instant of the hit, fading out across the half second
         if (HURT.hold) hk = 1;                          // test hold (__vb.hurtTest(slot, true)): pins it lit so the tint can be checked without racing the capture
-        if (HURT.slot >= 0) { const HB = wbf[HURT.slot]; if (HB && HB.init) hurtBox(HB); else hk = 0; }   // it died or despawned mid-blink — nothing left to stain. SLOT -1 IS NOT THAT CASE: it is the deliberate AABB path a shot SKY BIRD takes (birds live in birds[], not the pool, so there is no wbf entry to re-read — birdShot sets the box and birdRagTick re-publishes it every frame). Zeroing hk here made hurtB.w 0, which is the shader's whole gate, so a shot bird never flashed red and the HURT.k wound light below never lit either
+        // ── A RAGDOLL IS STILL THE ANIMAL, EVEN ONCE ITS SLOT IS RETIRED (user 2026-08-31: the death is
+        // "not breaking apart in peices that are red like before") ── this asked for HB.init and killed the
+        // flash outright the moment it went false. A creature that has just died is exactly the case that
+        // fails it: sim/life/reactions.js reapDeaths says so in its own note - "half a second is long enough
+        // for one of the walker escapes in tick-creatures to retire a body that cannot move, which is how a
+        // dying creature ends up here already deactivated". So the slot goes quiet part-way through the
+        // half-second flash, hk drops to 0, and the pieces finish their tumble in their ordinary colours.
+        // The ragdoll outlives init by design and hurtBox already boxes the PIECES rather than the animal
+        // (see its ragParts branch), so B.rag is the honest test for "is there still something to redden".
+        if (HURT.slot >= 0) { const HB = wbf[HURT.slot]; if (HB && (HB.init || HB.rag)) hurtBox(HB); else hk = 0; }   // it died or despawned mid-blink — nothing left to stain. SLOT -1 IS NOT THAT CASE: it is the deliberate AABB path a shot SKY BIRD takes (birds live in birds[], not the pool, so there is no wbf entry to re-read — birdShot sets the box and birdRagTick re-publishes it every frame). Zeroing hk here made hurtB.w 0, which is the shader's whole gate, so a shot bird never flashed red and the HURT.k wound light below never lit either
       }
       UF[UF_HURTB] = HURT.cx - winOX; UF[UF_HURTB + 1] = HURT.cy; UF[UF_HURTB + 2] = HURT.cz - winOZ; UF[UF_HURTB + 3] = hk;
       HURT.k = hk;                                    // …and the wound CASTS light too (user). It cannot write a point-light slot from HERE — the ffLights

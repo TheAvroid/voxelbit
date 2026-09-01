@@ -5,7 +5,12 @@
       // loop, because that is the single point every creature in the world passes through: it retires
       // anything already standing and no slot can reach the spawn below it. The life code is all still here
       // and none of it is deleted - flip LIFE_OFF in world/window.js to bring the forest back to life.
-      if (LIFE_OFF) { if (B.init) { if (B.sCells) unstampWorm(B); B.init = false; B.dieT = 0; } continue; }
+      // ── …EXCEPT THE PERCHED SONGBIRDS (user 2026-08-31: "add all the perched song birds to the trees") ──
+      // the gate now spares one slot BAND rather than being lifted: CARD_0..CARD_END is the songbird pool
+      // (sim/life/slots.js), and those birds are GRID-STAMPED, so they cost no drop slot and cannot crowd
+      // out anything. Everything else in the world is still retired here. The sky FLYERS stay off - they
+      // are a separate system with its own gate in sim/life/birds.js, and they were not what was asked for.
+      if (LIFE_OFF && !(wk >= CARD_0 && wk < CARD_END)) { if (B.init) { if (B.sCells) unstampWorm(B); B.init = false; B.dieT = 0; } continue; }
       // ── A BODY WITH NO REAL POSITION IS NOT A BODY (user 2026-08-27: "only the mother duck is showing. I
       // dont see the babies") ── NaN loses every comparison it takes part in, so a slot that has picked one up
       // reads as NEAR to the surplus grace, INSIDE the recycle radius and CLOSE ENOUGH to its mother to the

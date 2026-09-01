@@ -32,7 +32,7 @@
       const b = b1(xb2) * 0.55 + b2(xb2 * 2.13 + 11.7) * 0.27 + b3(xb2 * 4.41 + 41.2) * 0.18;
       const xc = wx * 0.011 + 3.7;
       const c = c1(xc) * 0.55 + c2(xc * 2.13 + 11.7) * 0.27 + c3(xc * 4.41 + 41.2) * 0.18;
-      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET))));
+      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET)))); h = deepen(h);
       const b0 = bsr(wx * 0.0016 + 313.7);
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));
       const m = bm * basinLow(h, wx, wz);
@@ -81,7 +81,7 @@
       const b = b1(zb2) * 0.55 + b2(zb2 * 2.13 + 5.3) * 0.27 + b3(zb2 * 4.41 + 23.8) * 0.18;
       const zc = wz * 0.011 + 9.1;
       const c = c1(zc) * 0.55 + c2(zc * 2.13 + 5.3) * 0.27 + c3(zc * 4.41 + 23.8) * 0.18;
-      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET))));
+      let h = Math.min(HMAX, Math.max(PINE_LOW, Math.round(PINE_BASE + PINE_RELIEF * Math.pow(sstep(sstep(a * 0.585 + b * 0.320 + c * 0.095)), PINE_WET)))); h = deepen(h);
       const b0 = bsc(wz * 0.0016 + 157.3);
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));
       const m = bm * basinLow(h, wx, wz);
