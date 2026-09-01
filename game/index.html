@@ -926,7 +926,17 @@
   // 8-voxel strip that wrapped — never a full-buffer move. All generation is a pure function of WORLD
   // coordinates, so strips re-materialise seamlessly and revisited terrain is always identical.
   const WX = WXZ, WY = WYpick, WZ = WXZ;              // deep world: +128 voxels of stone below the surface for TRUE gorge depth
-  const LIFT = WY >= 384 ? 128 : 0;                    // terrain floats this far above bedrock
+  const LIFT = WY >= 384 ? 48 : 0;                     // terrain floats this far above bedrock
+  // ── LIFT IS THE ELEVATION LEVER (user 2026-09-01: "triple the heightmap of the pine forest") ── every voxel
+  // the terrain floats is a voxel of SKY it cannot use, because the ceiling is the TREE RESERVE and not LIFT.
+  // At 128 the waterline sat at 152 under a 226 ceiling: 74 voxels for the whole landscape.
+  // ── AND THE SHAPE IS NOT TOUCHED ── an earlier attempt raised elevation by changing pineBase's exponent from
+  // m*m to m, reasoning that squaring puts a 0..1 field's median at only a quarter of its range. It hit every
+  // quantile and destroyed the terrain: height became LINEAR in the noise, so every slope came out the same
+  // slope and the rounding terraced its whole length — corduroy banks, not hills (user: "the terrain is not
+  // hilly anymore"). The squaring IS the roundness: it makes the low country broad so a peak reads as a peak.
+  // Quantiles cannot see this — two completely different landscapes match on median and max — so elevation is
+  // changed HERE, where it only moves the waterline, and pineBase is left exactly as it is.
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
   let poolTouchHook = null;                            // set by render/buffers.js once the pool exists; terrain.js, patch.js and gen-pool.js all run BEFORE that fragment and reach the pool through this hook. Without the declaration the assignment there throws in strict mode and the module aborts silently — the boot parks on "uploading world".
@@ -1106,7 +1116,9 @@
     const c01 = h3(ix, iy, iz + 1) * (1 - fx) + h3(ix + 1, iy, iz + 1) * fx, c11 = h3(ix, iy + 1, iz + 1) * (1 - fx) + h3(ix + 1, iy + 1, iz + 1) * fx;
     return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
   };
-  const HMAX = Math.min(105 + LIFT, WY - 158);         // terrain ceiling
+  const HMAX = WY - 158;                               // terrain ceiling — the TREE RESERVE alone
+  // `105 + LIFT` was the other half of this min() and it moved WITH LIFT, so lowering the float alone would
+  // have pulled the summits down by exactly the headroom it freed and nothing would have changed.         // terrain ceiling
   // ── TERRAIN HEIGHT AND TREE HEIGHT SPEND ONE BUDGET ── the second term is the TREE RESERVE, not an
   // arbitrary margin: a trunk standing on HMAX must still fit under WY or its crown is cut off flat. It
   // read WY - 122 for pine5.vox's own 116 voxels plus a little; the nine pines are 151-152, so the reserve
@@ -1144,17 +1156,34 @@
   // deepen() instead - which only touches columns UNDER the waterline and so costs the shore nothing.
   const PINE_RELIEF = PINE_CREST - PINE_FLOOR;
   const PINE_BOWL   = 6;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
+  // ── AMPLITUDE AND WAVELENGTH SCALE TOGETHER, OR THE HILLS TURN INTO STAIRS (user 2026-09-01: "the
+  // terrain is causing these edges again … it was supposed to be round") ── raising the relief 2.07x while
+  // leaving these frequencies alone multiplied every GRADIENT by 2.07, and a terrace's tread is 1/gradient,
+  // so every step halved in width and the banks read as a staircase. The shape was never the problem — k is
+  // still m*m and the field is still round — it was simply made twice as steep everywhere.
+  // So the horizontal frequencies are divided by the SAME 2.07: the hills come out taller AND broader, the
+  // slope at every point is what it was before the elevation change, and the treads go back to their old
+  // width. Scaling one without the other is what makes a heightmap look cliffy.
   const pineBase = (x, z) => {                         // ONE shared scalar helper: H, makeHRow and makeHCol all call THIS, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
-    const a = fbm(x * 0.0018 + 61.3, z * 0.0018 + 77.9);   // the massifs, ~550 voxels across
-    const sh = fbm(x * 0.0037 + 25.1, z * 0.0037 + 13.7);  // and the shoulders riding on them
+    const a = fbm(x * 0.00087 + 61.3, z * 0.00087 + 77.9);  // the massifs, ~1150 voxels across
+    const sh = fbm(x * 0.00179 + 25.1, z * 0.00179 + 13.7);  // and the shoulders riding on them
     const m = sstep(sstep(a * 0.75 + sh * 0.25));
     const k = m * m;
     return PINE_FLOOR + PINE_RELIEF * k - PINE_BOWL * (1 - m) * (1 - m)
-         + 9 * (fbm(x * 0.030 + 3.7, z * 0.030 + 9.1) - 0.5) * k * k;
-    // ── AND THE RIDGE DETAIL FADES ON k*k, NOT k ── this term rides at a ~33-voxel wavelength, the only thing
-    // in the field fast enough to terrace a shoreline by itself. Faded on k it still carries a couple of
-    // voxels where the land crosses WL, which steps the beach every few voxels no matter how gentle the
-    // underlying curve is; on k*k it is a fraction of a voxel there and untouched on the ridges it is for.
+         + 9 * (fbm(x * 0.0145 + 3.7, z * 0.0145 + 9.1) - 0.5) * k * k
+         + (ihash(x * 29 + 11, z * 31 + 7) - 0.5) * 0.95;
+    // ── THE STEPS ARE A ROUNDING ARTEFACT, SO DITHER THE ROUNDING (user 2026-09-01: "fix the terrains
+    // steps") ── a terrace edge is the line where frac(h) crosses 0.5. On a smooth field that line is
+    // smooth too, so a whole contour flips level at once and reads as a drawn step. Nothing about the
+    // SHAPE causes it: flattening the slope only widens the treads and steepening it only turns them into
+    // a cliff.
+    // A first attempt added +-1.1 voxels of fbm at ~18-voxel wavelength. That failed for a measurable
+    // reason: a tread here is about 5 voxels wide, so an 18-voxel wave is nearly CONSTANT across one tread
+    // — it moved whole treads up and down instead of breaking their edges.
+    // Per-COLUMN hash dither is the fix, and it is the idiom this file already uses on the basin carve
+    // ("gently dithered — no terrace banding"). +-0.475 of a voxel cannot move the surface by a whole
+    // step, so the shape, the elevation profile and gtest are all untouched; it only decides which side of
+    // the boundary a column near frac 0.5 lands on, which turns the drawn line into gravel.
   };
   const baseH = (x, z) => Math.min(HMAX, Math.max(4 + LIFT, Math.round(pineBase(x, z))));
   // ── AND THE SHALLOW END OF THE DEPTH CURVE IS BENT DOWN (user 2026-09-01: "make the water have more depth.
@@ -1177,7 +1206,7 @@
   // the placement queries disagree about where the ground is — __vb.gtest() is what measures it. Naming it
   // does not remove the duplication (the row/col forms cannot call this), but it does mean a change here is
   // visibly a change to a shared constant rather than to a magic number.
-  const BASIN_T = 0.065;                               // base: how much of the low-frequency basin field drops under the waterline
+  const BASIN_T = 0.30;   // ── AND THE LAKES KEEP THEIR AREA ── raising the land lifts most columns clear of the waterline: measured, the wet fraction fell 19% -> 10.4% on the elevation change alone. This is the CDF of a bell-shaped vnoise below a threshold, not a linear knob — 0.065 -> 0.10 bought 0.2 points, so it takes a step this size to put the water back.                               // base: how much of the low-frequency basin field drops under the waterline
   // ── AND THE ARCTIC GETS TWICE THE WATER (user 2026-08-30: "double the rate of water in the arctic") ──
   // added on top of the base rather than replacing it, and scaled by the biome mask so the extra lakes fade in
   // with the snow instead of appearing along the band's edge. TUNED BY MEASUREMENT, not by arithmetic: the
@@ -8817,17 +8846,24 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         W[gwrap(bx + mx, WX) + yrow + gwrap(bz + mz, WZ) * WX * WY] = remap[v];
       }
     }
-    if (CONEV && PINE_ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
+    const ANCH = PINE_ANCH9[tr.ti | 0], AMX = MROT9[tr.ti | 0][0].sx, AMY = MROT9[tr.ti | 0][0].sz;
+    // ── THIS TREE'S OWN ANCHORS, NOT MODEL 0's (user 2026-09-01: "the pine cones are floating in the air") ──
+    // PINE_ANCH9 holds one anchor list PER MODEL, because an anchor is a canopy voxel with open air beneath it
+    // and the nine pines have nine different crowns. This hung every tree's cones off PINE_ANCH — the legacy
+    // alias for PINE_ANCH9[0] — so on the other eight models the anchor pointed at a cell that model has no
+    // foliage in, and the cone stamped into open sky. Same for the rotation: it used the global MSX/MSY, which
+    // are model 0's dimensions, so a rotated tree placed its cones off its own footprint as well.
+    if (CONEV && ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
       const n = 6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0);   // rotated with the tree so every region stamps them identically
       const used = new Set();                          // one cone per column — never stacked on top of each other
       for (let k = 0; k < n; k++) {                    // PINE_ANCH is angle-sorted: pick k-th from the k-th angular sector — cones ring the crown evenly
-        const a = PINE_ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * PINE_ANCH.length) | 0];
+        const a = ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * ANCH.length) | 0];
         const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 255;
         let rx, rz;
         if (tr.rot === 0) { rx = ax; rz = ay; }
-        else if (tr.rot === 1) { rx = MSY - 1 - ay; rz = ax; }
-        else if (tr.rot === 2) { rx = MSX - 1 - ax; rz = MSY - 1 - ay; }
-        else { rx = ay; rz = MSX - 1 - ax; }
+        else if (tr.rot === 1) { rx = AMY - 1 - ay; rz = ax; }
+        else if (tr.rot === 2) { rx = AMX - 1 - ax; rz = AMY - 1 - ay; }
+        else { rx = ay; rz = AMX - 1 - ax; }
         const ck = rx | (rz << 8); if (used.has(ck)) continue; used.add(ck);
         stampModel(CONEV, (ax + az + k) & 3, bx + rx, gy + az - CONEV.sz, bz + rz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
       }
@@ -9174,7 +9210,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
     const consts = { DEEP_SPAN, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
+    const tables = { ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, PINE_ANCH9, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
     const fns = { deepen, ihash, sstep, pwrap, vnoise, vnoise3, fbm, pineBase, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctSnow, arctH, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
@@ -9719,7 +9755,13 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // POOL_MS moves with it on purpose: past ~6 ms the time cap stops binding and the brick cap is the only
   // thing stopping the drain (measured: 3ms 89/75k, 6ms 60/59k, 9ms 82/88k — non-monotonic, i.e. noise once
   // the brick cap took over). Raising either one alone does nothing.
-  let POOL_BUDGET = 12288;                             // bricks refreshed per frame — a `let` so __vb.poolBudget(n) can sweep it in ONE session (the world reseeds on reload, so a cross-reload sweep compares two different worlds). A recentre or a teleport dirties the whole
+  let POOL_BUDGET = GMUL > 1 ? 6144 : 12288;           // bricks refreshed per frame — HALVED AT GMUL 2 (user 2026-09-01: "I'm getting lag spikes")
+  // ── THE BUDGET IS A SPIKE, AND THE SPIKE SCALES WITH THE WINDOW ── measured cruising at ~100 vox/s: at
+  // GMUL 1 the worst frame was 20.6 ms and 1.8% of frames passed 16 ms; at GMUL 2, on the same budget, 82.3 ms
+  // and 9.4%. Four times the window is four times the bricks to page for the same distance travelled, and the
+  // budget let one frame swallow all of it. Halved, the worst frame comes back to ~38 ms with the ring still
+  // filled to 1920 — the work is not avoided, it is spread, which is the whole point of a per-frame budget.
+  // A `let` so __vb.poolBudget(n) can still sweep it in one session.
   // window at once (~400k bricks); doing them all in one frame is a multi-second freeze, so the queue drains
   // over ~60 frames instead and the far terrain resolves progressively. Same shape as the terrain stream budget.
   // ══ …AND A COUNT IS NOT A BUDGET, BECAUSE BRICKS ARE NOT THE SAME PRICE ══ a brick that is still sealed
@@ -9730,7 +9772,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // GPU pacing). So the ceiling stays as a bound on the queue, and the real budget is TIME, checked every 256
   // bricks the way nvFlush checks its own. What does not fit rides to the next frame, which is what the queue
   // is for.
-  let POOL_MS = 6;                                     // …and the time half of the same budget: 3 ms cut the drain off before it could use the brick cap above (see the note there)
+  let POOL_MS = GMUL > 1 ? 3 : 6;                      // …and the time half of the same budget, halved for the same reason
   let poolDrainMax = 0, poolDrainN = 0, poolPaged = 0;
   let poolLastN = 0;                                   // bricks the LAST drain actually got through — poolDrainN is a since-boot high-water and cannot answer 'is the budget keeping up right now'
   // ══ THE BUDGET IS PER FRAME AND THE DEMAND IS PER MOVEMENT, SO A FIXED CAP IS WRONG AT EVERY OTHER FPS ══

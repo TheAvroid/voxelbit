@@ -1698,17 +1698,24 @@
         W[gwrap(bx + mx, WX) + yrow + gwrap(bz + mz, WZ) * WX * WY] = remap[v];
       }
     }
-    if (CONEV && PINE_ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
+    const ANCH = PINE_ANCH9[tr.ti | 0], AMX = MROT9[tr.ti | 0][0].sx, AMY = MROT9[tr.ti | 0][0].sz;
+    // ── THIS TREE'S OWN ANCHORS, NOT MODEL 0's (user 2026-09-01: "the pine cones are floating in the air") ──
+    // PINE_ANCH9 holds one anchor list PER MODEL, because an anchor is a canopy voxel with open air beneath it
+    // and the nine pines have nine different crowns. This hung every tree's cones off PINE_ANCH — the legacy
+    // alias for PINE_ANCH9[0] — so on the other eight models the anchor pointed at a cell that model has no
+    // foliage in, and the cone stamped into open sky. Same for the rotation: it used the global MSX/MSY, which
+    // are model 0's dimensions, so a rotated tree placed its cones off its own footprint as well.
+    if (CONEV && ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
       const n = 6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0);   // rotated with the tree so every region stamps them identically
       const used = new Set();                          // one cone per column — never stacked on top of each other
       for (let k = 0; k < n; k++) {                    // PINE_ANCH is angle-sorted: pick k-th from the k-th angular sector — cones ring the crown evenly
-        const a = PINE_ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * PINE_ANCH.length) | 0];
+        const a = ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * ANCH.length) | 0];
         const ax = a & 255, ay = (a >> 8) & 255, az = (a >> 16) & 255;
         let rx, rz;
         if (tr.rot === 0) { rx = ax; rz = ay; }
-        else if (tr.rot === 1) { rx = MSY - 1 - ay; rz = ax; }
-        else if (tr.rot === 2) { rx = MSX - 1 - ax; rz = MSY - 1 - ay; }
-        else { rx = ay; rz = MSX - 1 - ax; }
+        else if (tr.rot === 1) { rx = AMY - 1 - ay; rz = ax; }
+        else if (tr.rot === 2) { rx = AMX - 1 - ax; rz = AMY - 1 - ay; }
+        else { rx = ay; rz = AMX - 1 - ax; }
         const ck = rx | (rz << 8); if (used.has(ck)) continue; used.add(ck);
         stampModel(CONEV, (ax + az + k) & 3, bx + rx, gy + az - CONEV.sz, bz + rz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
       }

@@ -284,7 +284,13 @@
   // POOL_MS moves with it on purpose: past ~6 ms the time cap stops binding and the brick cap is the only
   // thing stopping the drain (measured: 3ms 89/75k, 6ms 60/59k, 9ms 82/88k — non-monotonic, i.e. noise once
   // the brick cap took over). Raising either one alone does nothing.
-  let POOL_BUDGET = 12288;                             // bricks refreshed per frame — a `let` so __vb.poolBudget(n) can sweep it in ONE session (the world reseeds on reload, so a cross-reload sweep compares two different worlds). A recentre or a teleport dirties the whole
+  let POOL_BUDGET = GMUL > 1 ? 6144 : 12288;           // bricks refreshed per frame — HALVED AT GMUL 2 (user 2026-09-01: "I'm getting lag spikes")
+  // ── THE BUDGET IS A SPIKE, AND THE SPIKE SCALES WITH THE WINDOW ── measured cruising at ~100 vox/s: at
+  // GMUL 1 the worst frame was 20.6 ms and 1.8% of frames passed 16 ms; at GMUL 2, on the same budget, 82.3 ms
+  // and 9.4%. Four times the window is four times the bricks to page for the same distance travelled, and the
+  // budget let one frame swallow all of it. Halved, the worst frame comes back to ~38 ms with the ring still
+  // filled to 1920 — the work is not avoided, it is spread, which is the whole point of a per-frame budget.
+  // A `let` so __vb.poolBudget(n) can still sweep it in one session.
   // window at once (~400k bricks); doing them all in one frame is a multi-second freeze, so the queue drains
   // over ~60 frames instead and the far terrain resolves progressively. Same shape as the terrain stream budget.
   // ══ …AND A COUNT IS NOT A BUDGET, BECAUSE BRICKS ARE NOT THE SAME PRICE ══ a brick that is still sealed
@@ -295,7 +301,7 @@
   // GPU pacing). So the ceiling stays as a bound on the queue, and the real budget is TIME, checked every 256
   // bricks the way nvFlush checks its own. What does not fit rides to the next frame, which is what the queue
   // is for.
-  let POOL_MS = 6;                                     // …and the time half of the same budget: 3 ms cut the drain off before it could use the brick cap above (see the note there)
+  let POOL_MS = GMUL > 1 ? 3 : 6;                      // …and the time half of the same budget, halved for the same reason
   let poolDrainMax = 0, poolDrainN = 0, poolPaged = 0;
   let poolLastN = 0;                                   // bricks the LAST drain actually got through — poolDrainN is a since-boot high-water and cannot answer 'is the budget keeping up right now'
   // ══ THE BUDGET IS PER FRAME AND THE DEMAND IS PER MOVEMENT, SO A FIXED CAP IS WRONG AT EVERY OTHER FPS ══
