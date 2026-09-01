@@ -1079,8 +1079,19 @@
   // staying drowned. A floor UNDER the window is the "sinking sand" failure — the ground never gets lifted,
   // and treeAt then refuses those columns for being too low, which reads as bald patches in the forest.
   const PINE_CREST  = HMAX;                            // …and the top of the range IS the ceiling, so no summit is flattened by the clamp
+  // ── THE WATERLINE SHELF WAS BUILT, MEASURED AND REMOVED (user 2026-09-01: "make the sand steps have
+  // much more surface area") ── the idea was to flatten dh/dm where the land crosses WL, since a terrace's
+  // tread is 1/gradient. It does not work here and the measurement says so: A/B'd at fixed coordinates,
+  // a shelf of 6 moved the mean tread 6.50 -> 6.95 (+7%) and tripling it to 18 reached only 7.17 (+10%).
+  // The reason is that the shelf LOWERS every column above PINE_SHA, which drags the WL crossing along
+  // with it: solving h = WL puts the shore at the far end of the shelf's own span, where the smoothstep
+  // is already flat. It is self-defeating - you cannot pin a shelf to a waterline that the shelf moves.
+  // PINE_BOWL is the real lever, because it is the term that steepens the shore: its slope contribution
+  // is 2*BOWL*(1-m), about a third of the total gradient there. Cutting it 24 -> 6 took the mean tread
+  // 6.50 -> 12.38 (+90%) at the same coordinates, and the depth it used to supply now comes from
+  // deepen() instead - which only touches columns UNDER the waterline and so costs the shore nothing.
   const PINE_RELIEF = PINE_CREST - PINE_FLOOR;
-  const PINE_BOWL   = 16;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
+  const PINE_BOWL   = 6;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
   const pineBase = (x, z) => {                         // ONE shared scalar helper: H, makeHRow and makeHCol all call THIS, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
     const a = fbm(x * 0.0018 + 61.3, z * 0.0018 + 77.9);   // the massifs, ~550 voxels across
     const sh = fbm(x * 0.0037 + 25.1, z * 0.0037 + 13.7);  // and the shoulders riding on them
@@ -1094,6 +1105,20 @@
     // underlying curve is; on k*k it is a fraction of a voxel there and untouched on the ridges it is for.
   };
   const baseH = (x, z) => Math.min(HMAX, Math.max(4 + LIFT, Math.round(pineBase(x, z))));
+  // ── AND THE SHALLOW END OF THE DEPTH CURVE IS BENT DOWN (user 2026-09-01: "make the water have more depth.
+  // It is too shallow") ── measured before touching it: of the wet columns around spawn the median sat 8
+  // voxels under WL and the deepest 12, which reads as a puddle however wide it is. Deepening the FIELD
+  // instead (a bigger PINE_BOWL) does not fix that — the bowl only reaches full depth where the field
+  // bottoms out, which is rare, so it makes a few lakes deeper and leaves every ordinary shore as it was.
+  // This remaps DEPTH alone: h >= WL is returned untouched, so every dry column in the world is bit-exact
+  // and the shoreline does not move. Below WL the depth is pushed toward DEEP_SPAN on a squared curve —
+  // monotonic, so no column ever overtakes its neighbour and the beds cannot terrace, and it fixes both
+  // ends: depth 0 stays 0 (the waterline is the waterline) and DEEP_SPAN stays DEEP_SPAN (a real basin is
+  // already deep enough and is not stretched further).
+  const DEEP_SPAN = 44;
+  const deepen = (h) => { if (h >= WL) return h;
+    const t = Math.min(1, (WL - h) / DEEP_SPAN);
+    return Math.round(WL - DEEP_SPAN * (1 - (1 - t) * (1 - t) * (1 - t))); };   // CUBED, not squared: the curve's slope at t=0 is the exponent, so a squared bend leaves the SHALLOWS — which is most of the water — barely deeper than they were. Cubed lifts the shallow end where the complaint actually was, and still lands on DEEP_SPAN at the deep end rather than running away with it
   // ── THE LAKE THRESHOLD, AND WHY IT IS A CONSTANT NOW ── this number is INLINED IN THREE PLACES: here, and
   // again in makeHRow and makeHCol (world/gen-noise.js), which carry their own copy of the height expression
   // and decompose the same noise into row/column form. All three must agree bit for bit or the bulk fill and
@@ -1813,7 +1838,7 @@
   // rounded hills above.
   //
   // THE DIAGNOSIS. The river carve in H is a LERP between the land and a bed, weighted by the channel strength
-  // rs: `h * (1 - rs) + (WL - 2 - 26 * rs) * rs`. The vertical distance it has to travel is (h - bed); the
+  // rs: `h * (1 - rs) + (WL - 2 - 38 * rs) * rs`. The vertical distance it has to travel is (h - bed); the
   // horizontal distance it has to travel it in is the channel's own influence half-width w, ~50-160 voxels. So
   // the bank slope is about (h - WL) / (0.6 * w) and it scales with how high the surrounding land is. In the
   // pine forest, land near water sits ~35 voxels over WL and that reads fine. oakH REPLACED the oak base with a
@@ -1917,14 +1942,14 @@
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
   const H = (x, z) => {
-    let h = baseH(x, z);
+    let h = deepen(baseH(x, z));   // …BEFORE the basin and river carves, so those still measure from the real bed
     const bm = basinM(x, z);
     const m = bm * basinLow(h, x, z);                   // basins only form in low country — and the arctic's ceiling is higher, see basinLow
-    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
+    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 52)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
     const rs = riverS(x, z);
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
     h = Math.round(oakBank(h, x, z));                  // ── SHALLOW OAK BANKS ── BEFORE the carve, so the lerp below starts from the shelf instead of from a hilltop. h is already an integer here, so Math.round is the identity outside the oak forest and the pine/desert heights stay bit-exact; see oakBank
-    if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
+    if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 38 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
     if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
     // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
     // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
@@ -2152,16 +2177,16 @@
       // which is the SAME function H() calls, so this copy cannot drift from it by construction. That is
       // the whole reason gtest exists, and it is the trade the codebase already makes for oakRoll/oakBank:
       // a little per-column noise work in exchange for the three copies being incapable of disagreeing.
-      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(pineBase(wx, wz))));
+      let h = deepen(Math.min(HMAX, Math.max(4 + LIFT, Math.round(pineBase(wx, wz)))));   // …the SAME shared helper H() calls, in the same place in the pass order
       const b0 = bsr(wx * 0.0016 + 313.7);
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
       const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
-      if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
+      if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 52)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
       const rs = riverS(wx, wz);
       const xnB = wx * 0.05 + 13.7;
       const bn = e1(xnB) * 0.55 + e2(xnB * 2.13 + 11.7) * 0.27 + e3(xnB * 4.41 + 41.2) * 0.18;
       h = Math.round(oakBank(h, wx, wz));              // ── SHALLOW OAK BANKS ── the SAME shared scalar helper H() and makeHCol call, in the same place in the pass order. The arithmetic exists once, so the three copies cannot drift; see oakBank in window.js
-      if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
+      if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 38 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
       if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));
       // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
       // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
@@ -2203,16 +2228,16 @@
       // which is the SAME function H() calls, so this copy cannot drift from it by construction. That is
       // the whole reason gtest exists, and it is the trade the codebase already makes for oakRoll/oakBank:
       // a little per-column noise work in exchange for the three copies being incapable of disagreeing.
-      let h = Math.min(HMAX, Math.max(4 + LIFT, Math.round(pineBase(wx, wz))));
+      let h = deepen(Math.min(HMAX, Math.max(4 + LIFT, Math.round(pineBase(wx, wz)))));   // …the SAME shared helper H() calls, in the same place in the pass order
       const b0 = bsc(wz * 0.0016 + 157.3);
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
       const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
-      if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
+      if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 52)) + (ihash(wx * 13 + 7, wz * 17 + 3) - 0.5) * 0.8);
       const rs = riverS(wx, wz);
       const znB2 = wz * 0.05 + 4.2;
       const bn = e1(znB2) * 0.55 + e2(znB2 * 2.13 + 5.3) * 0.27 + e3(znB2 * 4.41 + 23.8) * 0.18;
       h = Math.round(oakBank(h, wx, wz));              // ── SHALLOW OAK BANKS ── identical to H() and makeHRow. See the note in makeHRow.
-      if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
+      if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 38 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(wx * 19 + 5, wz * 23 + 9) - 0.5) * 0.8));
       if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));
       // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
       // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
@@ -2270,8 +2295,8 @@
     // come out of. Anything from world/terrain.js (23) or world/gen-pool.js (25) is still in its temporal dead
     // zone on this line, and reading it would throw INSIDE this try — which swallows it and falls back, the same
     // invisible failure the missing names caused. Check 9 enforces the ordering as well as the completeness.
-    const consts = { PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
-    const fns = { ihash, sstep, pwrap, vnoise, fbm, pineBase, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctH, oakWob, oakM, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
+    const consts = { DEEP_SPAN, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
+    const fns = { deepen, ihash, sstep, pwrap, vnoise, fbm, pineBase, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctH, oakWob, oakM, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
     // ── SPWX/SPWZ RIDE WITH THE JOB, they are not baked ── spawn is randomised in world/build.js, nine fragments
@@ -7088,7 +7113,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
-      const shore = h <= WL + 6;                       // any waterline — lakes AND rivers
+      const shore = h <= WL + 6;                       // the band sand may occupy AT ALL — solid to WL+4, then two levels of soft edge above it
       let c;
       // ── THE ARCTIC SURFACE ── FIRST, because it is the one biome whose ground is not soil: snow covers the
       // shore, the flats and the hills alike, so it has to win over the beach and sand-blend arms below rather
@@ -7102,8 +7127,24 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // across the whole rim instead of stopping on the iso-line.
       if (asn > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < asn) c = ASNOW[(sh * 4) | 0];
       else if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
-      else if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
-      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(sh * 3) | 0];     // dithered sand-to-forest blend
+      // ── THE SAND IS SOLID SAND, AND THE BLEND SITS ABOVE IT (user 2026-09-01: "remove the dirt and grass
+      // in the sand", with a screenshot of a beach speckled black) ── the dither used to start at WL+2, so
+      // every MISS inside the beach fell through to the last arm of this chain and painted needle litter or
+      // moss. On a wide beach that is most of its area, which is the speckle. The band is unchanged in
+      // spirit — sand still fades into the forest — but the fade now happens ABOVE the sand rather than
+      // through it, so nothing inside the beach can miss.
+      // ── AND FIVE LEVELS OF IT (user: "make the sand have more steps.. 3-5") ── a step is one voxel of
+      // height, so the COUNT of steps you can see is the number of levels the sand spans: WL..WL+4 is five,
+      // and the terraces are wide enough now (see PINE_BOWL in world/window.js) that they read as separate
+      // treads rather than one slope. WL..WL+1 was two, and that is why the beach looked like a single step.
+      else if (shore && h <= WL + 4) c = SAND[(sh * 3) | 0];
+      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) < 1 - sstep(Math.max(0, Math.min(1, (h - WL - 4) / 2)))) c = SAND[(sh * 3) | 0];   // the soft edge, now WL+5..WL+6 — sand thinning into the forest floor ABOVE the beach proper
+      // ── AND THE BLEND IS SMOOTHSTEPPED, NOT LINEAR (user 2026-09-01: "make the dirt/grass terrain have
+      // smooth transition into the sand terrain") ── the old ramp was linear in depth, so sand probability
+      // fell at a constant rate and both ENDS of the blend were corners: a hard edge where the solid beach
+      // stopped and another where the dither ran out. sstep is flat at 0 and 1 and steep only in the middle,
+      // so the sand now thins out of the beach and into the forest floor with no visible line at either end —
+      // which matters more here than it did, because halving the band above left half the room to do it in.
       // ── NO FOREST FLOOR ON THE DESERT SIDE, BUT ONLY NEAR WATER ── the DESERT branch above is dithered
       // against the mask, so a fraction (1 - dm) of columns miss it by design; inland those misses are the
       // gradient, which is the whole point. Near a WATERLINE they were landing on moss instead, and clustered
@@ -7269,7 +7310,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   }
   const BCELL = 34;                                    // one rock candidate per 3.4 m cell (2× the 48-cell density, 4× the original)
   function boulderAt(cx, cz) {                         // FOUR tiers, all real voxelized models now: rock.vox stone / small / mid / BIG rocks26 —
-    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.5) return null;   // the much larger rocks are much rarer
+    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.375) return null;   // the much larger rocks are much rarer   // -25% (user 2026-09-01: "reduce the rocks by 25%") 0.5 -> 0.375: ihash is uniform on 0..1, so the threshold IS the acceptance rate and the arithmetic is its own verification
     const bx = Math.round(cx * BCELL + 4 + ihash(cx * 3 + 40, cz * 7 + 90) * (BCELL - 8));
     const bz = Math.round(cz * BCELL + 4 + ihash(cx * 13 + 6, cz * 5 + 44) * (BCELL - 8));
     // ── AND NONE OF THE FOUR TIERS IN THE ARCTIC (user 2026-08-29: "remove the rocks and twigs") ── unlike the
@@ -8183,7 +8224,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
   function lilyAt(cx, cz) {                             // STATIC lilies RE-ENABLED for testing (user 2026-07-18) — stamped into the world grid (full static-voxel shading) alongside the LIVE drifting pads, so their render can be compared
     if (!LILYV.length) return null;
-    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.057) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
+    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.0428) return null;   // -25% (user 2026-09-01: "decrease lillypads by 25%") 0.057 -> 0.0428   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
     const wz = Math.round(cz * LILYCELL + 3 + ihash(cx * 5 + 12, cz * 11 + 7) * (LILYCELL - 6));
     // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
@@ -9079,9 +9120,9 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { DEEP_SPAN, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const tables = { ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
-    const fns = { ihash, sstep, pwrap, vnoise, vnoise3, fbm, pineBase, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctSnow, arctH, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
+    const fns = { deepen, ihash, sstep, pwrap, vnoise, vnoise3, fbm, pineBase, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctSnow, arctH, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
     for (const k in tables) wsrc2 += 'const ' + k + ' = ' + JSON.stringify(tables[k]) + ';\n';

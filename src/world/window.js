@@ -195,8 +195,19 @@
   // staying drowned. A floor UNDER the window is the "sinking sand" failure — the ground never gets lifted,
   // and treeAt then refuses those columns for being too low, which reads as bald patches in the forest.
   const PINE_CREST  = HMAX;                            // …and the top of the range IS the ceiling, so no summit is flattened by the clamp
+  // ── THE WATERLINE SHELF WAS BUILT, MEASURED AND REMOVED (user 2026-09-01: "make the sand steps have
+  // much more surface area") ── the idea was to flatten dh/dm where the land crosses WL, since a terrace's
+  // tread is 1/gradient. It does not work here and the measurement says so: A/B'd at fixed coordinates,
+  // a shelf of 6 moved the mean tread 6.50 -> 6.95 (+7%) and tripling it to 18 reached only 7.17 (+10%).
+  // The reason is that the shelf LOWERS every column above PINE_SHA, which drags the WL crossing along
+  // with it: solving h = WL puts the shore at the far end of the shelf's own span, where the smoothstep
+  // is already flat. It is self-defeating - you cannot pin a shelf to a waterline that the shelf moves.
+  // PINE_BOWL is the real lever, because it is the term that steepens the shore: its slope contribution
+  // is 2*BOWL*(1-m), about a third of the total gradient there. Cutting it 24 -> 6 took the mean tread
+  // 6.50 -> 12.38 (+90%) at the same coordinates, and the depth it used to supply now comes from
+  // deepen() instead - which only touches columns UNDER the waterline and so costs the shore nothing.
   const PINE_RELIEF = PINE_CREST - PINE_FLOOR;
-  const PINE_BOWL   = 16;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
+  const PINE_BOWL   = 6;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
   const pineBase = (x, z) => {                         // ONE shared scalar helper: H, makeHRow and makeHCol all call THIS, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
     const a = fbm(x * 0.0018 + 61.3, z * 0.0018 + 77.9);   // the massifs, ~550 voxels across
     const sh = fbm(x * 0.0037 + 25.1, z * 0.0037 + 13.7);  // and the shoulders riding on them
@@ -210,6 +221,20 @@
     // underlying curve is; on k*k it is a fraction of a voxel there and untouched on the ridges it is for.
   };
   const baseH = (x, z) => Math.min(HMAX, Math.max(4 + LIFT, Math.round(pineBase(x, z))));
+  // ── AND THE SHALLOW END OF THE DEPTH CURVE IS BENT DOWN (user 2026-09-01: "make the water have more depth.
+  // It is too shallow") ── measured before touching it: of the wet columns around spawn the median sat 8
+  // voxels under WL and the deepest 12, which reads as a puddle however wide it is. Deepening the FIELD
+  // instead (a bigger PINE_BOWL) does not fix that — the bowl only reaches full depth where the field
+  // bottoms out, which is rare, so it makes a few lakes deeper and leaves every ordinary shore as it was.
+  // This remaps DEPTH alone: h >= WL is returned untouched, so every dry column in the world is bit-exact
+  // and the shoreline does not move. Below WL the depth is pushed toward DEEP_SPAN on a squared curve —
+  // monotonic, so no column ever overtakes its neighbour and the beds cannot terrace, and it fixes both
+  // ends: depth 0 stays 0 (the waterline is the waterline) and DEEP_SPAN stays DEEP_SPAN (a real basin is
+  // already deep enough and is not stretched further).
+  const DEEP_SPAN = 44;
+  const deepen = (h) => { if (h >= WL) return h;
+    const t = Math.min(1, (WL - h) / DEEP_SPAN);
+    return Math.round(WL - DEEP_SPAN * (1 - (1 - t) * (1 - t) * (1 - t))); };   // CUBED, not squared: the curve's slope at t=0 is the exponent, so a squared bend leaves the SHALLOWS — which is most of the water — barely deeper than they were. Cubed lifts the shallow end where the complaint actually was, and still lands on DEEP_SPAN at the deep end rather than running away with it
   // ── THE LAKE THRESHOLD, AND WHY IT IS A CONSTANT NOW ── this number is INLINED IN THREE PLACES: here, and
   // again in makeHRow and makeHCol (world/gen-noise.js), which carry their own copy of the height expression
   // and decompose the same noise into row/column form. All three must agree bit for bit or the bulk fill and
@@ -929,7 +954,7 @@
   // rounded hills above.
   //
   // THE DIAGNOSIS. The river carve in H is a LERP between the land and a bed, weighted by the channel strength
-  // rs: `h * (1 - rs) + (WL - 2 - 26 * rs) * rs`. The vertical distance it has to travel is (h - bed); the
+  // rs: `h * (1 - rs) + (WL - 2 - 38 * rs) * rs`. The vertical distance it has to travel is (h - bed); the
   // horizontal distance it has to travel it in is the channel's own influence half-width w, ~50-160 voxels. So
   // the bank slope is about (h - WL) / (0.6 * w) and it scales with how high the surrounding land is. In the
   // pine forest, land near water sits ~35 voxels over WL and that reads fine. oakH REPLACED the oak base with a
@@ -1033,14 +1058,14 @@
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
   const H = (x, z) => {
-    let h = baseH(x, z);
+    let h = deepen(baseH(x, z));   // …BEFORE the basin and river carves, so those still measure from the real bed
     const bm = basinM(x, z);
     const m = bm * basinLow(h, x, z);                   // basins only form in low country — and the arctic's ceiling is higher, see basinLow
-    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 40)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
+    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 52)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
     const rs = riverS(x, z);
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
     h = Math.round(oakBank(h, x, z));                  // ── SHALLOW OAK BANKS ── BEFORE the carve, so the lerp below starts from the shelf instead of from a hilltop. h is already an integer here, so Math.round is the identity outside the oak forest and the pine/desert heights stay bit-exact; see oakBank
-    if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 26 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
+    if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 38 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
     if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
     // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
     // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never

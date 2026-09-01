@@ -46,7 +46,7 @@
     for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
-      const shore = h <= WL + 6;                       // any waterline — lakes AND rivers
+      const shore = h <= WL + 6;                       // the band sand may occupy AT ALL — solid to WL+4, then two levels of soft edge above it
       let c;
       // ── THE ARCTIC SURFACE ── FIRST, because it is the one biome whose ground is not soil: snow covers the
       // shore, the flats and the hills alike, so it has to win over the beach and sand-blend arms below rather
@@ -60,8 +60,24 @@
       // across the whole rim instead of stopping on the iso-line.
       if (asn > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < asn) c = ASNOW[(sh * 4) | 0];
       else if (dm > 0 && ihash(wx * 5 + 17, wz * 7 + 29) < dm) c = DSAND[(sh * 4) | 0];                       // ── DESERT ── dithered against the mask itself, so the sand thins out into the forest floor across the whole rim instead of ending on a line. Same trick as the sand-to-forest blend below, driven by the biome weight rather than by depth.
-      else if (shore && h <= WL + 2) c = SAND[(sh * 3) | 0];                                             // waterline beach + sandy lakebed
-      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) > (h - WL - 2) / 4.5) c = SAND[(sh * 3) | 0];     // dithered sand-to-forest blend
+      // ── THE SAND IS SOLID SAND, AND THE BLEND SITS ABOVE IT (user 2026-09-01: "remove the dirt and grass
+      // in the sand", with a screenshot of a beach speckled black) ── the dither used to start at WL+2, so
+      // every MISS inside the beach fell through to the last arm of this chain and painted needle litter or
+      // moss. On a wide beach that is most of its area, which is the speckle. The band is unchanged in
+      // spirit — sand still fades into the forest — but the fade now happens ABOVE the sand rather than
+      // through it, so nothing inside the beach can miss.
+      // ── AND FIVE LEVELS OF IT (user: "make the sand have more steps.. 3-5") ── a step is one voxel of
+      // height, so the COUNT of steps you can see is the number of levels the sand spans: WL..WL+4 is five,
+      // and the terraces are wide enough now (see PINE_BOWL in world/window.js) that they read as separate
+      // treads rather than one slope. WL..WL+1 was two, and that is why the beach looked like a single step.
+      else if (shore && h <= WL + 4) c = SAND[(sh * 3) | 0];
+      else if (shore && ihash(wx * 7 + 5, wz * 11 + 3) < 1 - sstep(Math.max(0, Math.min(1, (h - WL - 4) / 2)))) c = SAND[(sh * 3) | 0];   // the soft edge, now WL+5..WL+6 — sand thinning into the forest floor ABOVE the beach proper
+      // ── AND THE BLEND IS SMOOTHSTEPPED, NOT LINEAR (user 2026-09-01: "make the dirt/grass terrain have
+      // smooth transition into the sand terrain") ── the old ramp was linear in depth, so sand probability
+      // fell at a constant rate and both ENDS of the blend were corners: a hard edge where the solid beach
+      // stopped and another where the dither ran out. sstep is flat at 0 and 1 and steep only in the middle,
+      // so the sand now thins out of the beach and into the forest floor with no visible line at either end —
+      // which matters more here than it did, because halving the band above left half the room to do it in.
       // ── NO FOREST FLOOR ON THE DESERT SIDE, BUT ONLY NEAR WATER ── the DESERT branch above is dithered
       // against the mask, so a fraction (1 - dm) of columns miss it by design; inland those misses are the
       // gradient, which is the whole point. Near a WATERLINE they were landing on moss instead, and clustered
@@ -227,7 +243,7 @@
   }
   const BCELL = 34;                                    // one rock candidate per 3.4 m cell (2× the 48-cell density, 4× the original)
   function boulderAt(cx, cz) {                         // FOUR tiers, all real voxelized models now: rock.vox stone / small / mid / BIG rocks26 —
-    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.5) return null;   // the much larger rocks are much rarer
+    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.375) return null;   // the much larger rocks are much rarer   // -25% (user 2026-09-01: "reduce the rocks by 25%") 0.5 -> 0.375: ihash is uniform on 0..1, so the threshold IS the acceptance rate and the arithmetic is its own verification
     const bx = Math.round(cx * BCELL + 4 + ihash(cx * 3 + 40, cz * 7 + 90) * (BCELL - 8));
     const bz = Math.round(cz * BCELL + 4 + ihash(cx * 13 + 6, cz * 5 + 44) * (BCELL - 8));
     // ── AND NONE OF THE FOUR TIERS IN THE ARCTIC (user 2026-08-29: "remove the rocks and twigs") ── unlike the
@@ -1141,7 +1157,7 @@
   const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
   function lilyAt(cx, cz) {                             // STATIC lilies RE-ENABLED for testing (user 2026-07-18) — stamped into the world grid (full static-voxel shading) alongside the LIVE drifting pads, so their render can be compared
     if (!LILYV.length) return null;
-    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.057) return null;   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
+    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.0428) return null;   // -25% (user 2026-09-01: "decrease lillypads by 25%") 0.057 -> 0.0428   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
     const wz = Math.round(cz * LILYCELL + 3 + ihash(cx * 5 + 12, cz * 11 + 7) * (LILYCELL - 6));
     // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
