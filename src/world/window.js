@@ -3,17 +3,7 @@
   // 8-voxel strip that wrapped — never a full-buffer move. All generation is a pure function of WORLD
   // coordinates, so strips re-materialise seamlessly and revisited terrain is always identical.
   const WX = WXZ, WY = WYpick, WZ = WXZ;              // deep world: +128 voxels of stone below the surface for TRUE gorge depth
-  const LIFT = WY >= 384 ? 48 : 0;                     // terrain floats this far above bedrock
-  // ── LIFT IS THE ELEVATION LEVER (user 2026-09-01: "triple the heightmap of the pine forest") ── every voxel
-  // the terrain floats is a voxel of SKY it cannot use, because the ceiling is the TREE RESERVE and not LIFT.
-  // At 128 the waterline sat at 152 under a 226 ceiling: 74 voxels for the whole landscape.
-  // ── AND THE SHAPE IS NOT TOUCHED ── an earlier attempt raised elevation by changing pineBase's exponent from
-  // m*m to m, reasoning that squaring puts a 0..1 field's median at only a quarter of its range. It hit every
-  // quantile and destroyed the terrain: height became LINEAR in the noise, so every slope came out the same
-  // slope and the rounding terraced its whole length — corduroy banks, not hills (user: "the terrain is not
-  // hilly anymore"). The squaring IS the roundness: it makes the low country broad so a peak reads as a peak.
-  // Quantiles cannot see this — two completely different landscapes match on median and max — so elevation is
-  // changed HERE, where it only moves the waterline, and pineBase is left exactly as it is.
+  const LIFT = WY >= 384 ? 128 : 0;                    // terrain floats this far above bedrock
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
   let poolTouchHook = null;                            // set by render/buffers.js once the pool exists; terrain.js, patch.js and gen-pool.js all run BEFORE that fragment and reach the pool through this hook. Without the declaration the assignment there throws in strict mode and the module aborts silently — the boot parks on "uploading world".
@@ -193,9 +183,7 @@
     const c01 = h3(ix, iy, iz + 1) * (1 - fx) + h3(ix + 1, iy, iz + 1) * fx, c11 = h3(ix, iy + 1, iz + 1) * (1 - fx) + h3(ix + 1, iy + 1, iz + 1) * fx;
     return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
   };
-  const HMAX = WY - 158;                               // terrain ceiling — the TREE RESERVE alone
-  // `105 + LIFT` was the other half of this min() and it moved WITH LIFT, so lowering the float alone would
-  // have pulled the summits down by exactly the headroom it freed and nothing would have changed.         // terrain ceiling
+  const HMAX = Math.min(105 + LIFT, WY - 158);         // terrain ceiling
   // ── TERRAIN HEIGHT AND TREE HEIGHT SPEND ONE BUDGET ── the second term is the TREE RESERVE, not an
   // arbitrary margin: a trunk standing on HMAX must still fit under WY or its crown is cut off flat. It
   // read WY - 122 for pine5.vox's own 116 voxels plus a little; the nine pines are 151-152, so the reserve
@@ -233,34 +221,17 @@
   // deepen() instead - which only touches columns UNDER the waterline and so costs the shore nothing.
   const PINE_RELIEF = PINE_CREST - PINE_FLOOR;
   const PINE_BOWL   = 6;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
-  // ── AMPLITUDE AND WAVELENGTH SCALE TOGETHER, OR THE HILLS TURN INTO STAIRS (user 2026-09-01: "the
-  // terrain is causing these edges again … it was supposed to be round") ── raising the relief 2.07x while
-  // leaving these frequencies alone multiplied every GRADIENT by 2.07, and a terrace's tread is 1/gradient,
-  // so every step halved in width and the banks read as a staircase. The shape was never the problem — k is
-  // still m*m and the field is still round — it was simply made twice as steep everywhere.
-  // So the horizontal frequencies are divided by the SAME 2.07: the hills come out taller AND broader, the
-  // slope at every point is what it was before the elevation change, and the treads go back to their old
-  // width. Scaling one without the other is what makes a heightmap look cliffy.
   const pineBase = (x, z) => {                         // ONE shared scalar helper: H, makeHRow and makeHCol all call THIS, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
-    const a = fbm(x * 0.00087 + 61.3, z * 0.00087 + 77.9);  // the massifs, ~1150 voxels across
-    const sh = fbm(x * 0.00179 + 25.1, z * 0.00179 + 13.7);  // and the shoulders riding on them
+    const a = fbm(x * 0.0018 + 61.3, z * 0.0018 + 77.9);   // the massifs, ~550 voxels across
+    const sh = fbm(x * 0.0037 + 25.1, z * 0.0037 + 13.7);  // and the shoulders riding on them
     const m = sstep(sstep(a * 0.75 + sh * 0.25));
     const k = m * m;
     return PINE_FLOOR + PINE_RELIEF * k - PINE_BOWL * (1 - m) * (1 - m)
-         + 9 * (fbm(x * 0.0145 + 3.7, z * 0.0145 + 9.1) - 0.5) * k * k
-         + (ihash(x * 29 + 11, z * 31 + 7) - 0.5) * 0.95;
-    // ── THE STEPS ARE A ROUNDING ARTEFACT, SO DITHER THE ROUNDING (user 2026-09-01: "fix the terrains
-    // steps") ── a terrace edge is the line where frac(h) crosses 0.5. On a smooth field that line is
-    // smooth too, so a whole contour flips level at once and reads as a drawn step. Nothing about the
-    // SHAPE causes it: flattening the slope only widens the treads and steepening it only turns them into
-    // a cliff.
-    // A first attempt added +-1.1 voxels of fbm at ~18-voxel wavelength. That failed for a measurable
-    // reason: a tread here is about 5 voxels wide, so an 18-voxel wave is nearly CONSTANT across one tread
-    // — it moved whole treads up and down instead of breaking their edges.
-    // Per-COLUMN hash dither is the fix, and it is the idiom this file already uses on the basin carve
-    // ("gently dithered — no terrace banding"). +-0.475 of a voxel cannot move the surface by a whole
-    // step, so the shape, the elevation profile and gtest are all untouched; it only decides which side of
-    // the boundary a column near frac 0.5 lands on, which turns the drawn line into gravel.
+         + 9 * (fbm(x * 0.030 + 3.7, z * 0.030 + 9.1) - 0.5) * k * k;
+    // ── AND THE RIDGE DETAIL FADES ON k*k, NOT k ── this term rides at a ~33-voxel wavelength, the only thing
+    // in the field fast enough to terrace a shoreline by itself. Faded on k it still carries a couple of
+    // voxels where the land crosses WL, which steps the beach every few voxels no matter how gentle the
+    // underlying curve is; on k*k it is a fraction of a voxel there and untouched on the ridges it is for.
   };
   const baseH = (x, z) => Math.min(HMAX, Math.max(4 + LIFT, Math.round(pineBase(x, z))));
   // ── AND THE SHALLOW END OF THE DEPTH CURVE IS BENT DOWN (user 2026-09-01: "make the water have more depth.
@@ -283,7 +254,7 @@
   // the placement queries disagree about where the ground is — __vb.gtest() is what measures it. Naming it
   // does not remove the duplication (the row/col forms cannot call this), but it does mean a change here is
   // visibly a change to a shared constant rather than to a magic number.
-  const BASIN_T = 0.30;   // ── AND THE LAKES KEEP THEIR AREA ── raising the land lifts most columns clear of the waterline: measured, the wet fraction fell 19% -> 10.4% on the elevation change alone. This is the CDF of a bell-shaped vnoise below a threshold, not a linear knob — 0.065 -> 0.10 bought 0.2 points, so it takes a step this size to put the water back.                               // base: how much of the low-frequency basin field drops under the waterline
+  const BASIN_T = 0.065;                               // base: how much of the low-frequency basin field drops under the waterline
   // ── AND THE ARCTIC GETS TWICE THE WATER (user 2026-08-30: "double the rate of water in the arctic") ──
   // added on top of the base rather than replacing it, and scaled by the biome mask so the extra lakes fade in
   // with the snow instead of appearing along the band's edge. TUNED BY MEASUREMENT, not by arithmetic: the

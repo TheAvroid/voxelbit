@@ -284,13 +284,7 @@
   // POOL_MS moves with it on purpose: past ~6 ms the time cap stops binding and the brick cap is the only
   // thing stopping the drain (measured: 3ms 89/75k, 6ms 60/59k, 9ms 82/88k — non-monotonic, i.e. noise once
   // the brick cap took over). Raising either one alone does nothing.
-  let POOL_BUDGET = GMUL > 1 ? 6144 : 12288;           // bricks refreshed per frame — HALVED AT GMUL 2 (user 2026-09-01: "I'm getting lag spikes")
-  // ── THE BUDGET IS A SPIKE, AND THE SPIKE SCALES WITH THE WINDOW ── measured cruising at ~100 vox/s: at
-  // GMUL 1 the worst frame was 20.6 ms and 1.8% of frames passed 16 ms; at GMUL 2, on the same budget, 82.3 ms
-  // and 9.4%. Four times the window is four times the bricks to page for the same distance travelled, and the
-  // budget let one frame swallow all of it. Halved, the worst frame comes back to ~38 ms with the ring still
-  // filled to 1920 — the work is not avoided, it is spread, which is the whole point of a per-frame budget.
-  // A `let` so __vb.poolBudget(n) can still sweep it in one session.
+  let POOL_BUDGET = 12288;                             // bricks refreshed per frame — a `let` so __vb.poolBudget(n) can sweep it in ONE session (the world reseeds on reload, so a cross-reload sweep compares two different worlds). A recentre or a teleport dirties the whole
   // window at once (~400k bricks); doing them all in one frame is a multi-second freeze, so the queue drains
   // over ~60 frames instead and the far terrain resolves progressively. Same shape as the terrain stream budget.
   // ══ …AND A COUNT IS NOT A BUDGET, BECAUSE BRICKS ARE NOT THE SAME PRICE ══ a brick that is still sealed
@@ -301,7 +295,7 @@
   // GPU pacing). So the ceiling stays as a bound on the queue, and the real budget is TIME, checked every 256
   // bricks the way nvFlush checks its own. What does not fit rides to the next frame, which is what the queue
   // is for.
-  let POOL_MS = GMUL > 1 ? 3 : 6;                      // …and the time half of the same budget, halved for the same reason
+  let POOL_MS = 6;                                     // …and the time half of the same budget: 3 ms cut the drain off before it could use the brick cap above (see the note there)
   let poolDrainMax = 0, poolDrainN = 0, poolPaged = 0;
   let poolLastN = 0;                                   // bricks the LAST drain actually got through — poolDrainN is a since-boot high-water and cannot answer 'is the budget keeping up right now'
   // ══ THE BUDGET IS PER FRAME AND THE DEMAND IS PER MOVEMENT, SO A FIXED CAP IS WRONG AT EVERY OTHER FPS ══
@@ -346,6 +340,9 @@
     const pfK = pfBudget(), pfCap = POOL_BUDGET * pfK, pfMs = POOL_MS * pfK;
     const t0 = performance.now();
     for (const b of poolDirty) {
+      // 255, not a finer count: checking the clock every 64 bricks instead was measured ABBA in one session
+      // and is a NULL — med 9.68 both ways, and the two 63 legs came out both the best (9.02) and the worst
+      // (10.34) of the four, i.e. the effect is smaller than the drift between legs of the same config.
       if (!all && (seen >= pfCap || ((seen & 255) === 255 && performance.now() - t0 > pfMs))) { stopped = 1; break; }   // rest stays queued for next frame — cap and ms both scale with the frame interval (see pfBudget)
       seen++;
       const gb = cpu2gpu(b);
@@ -1024,6 +1021,15 @@
       if (T.up) { ringUpload(T); if (ringBudget <= 0) break; }
     }
     let landed = 0;
+    // ── A MS CEILING ON TILE PAGING WAS TRIED HERE AND IS A REGRESSION ── ringPageTile is the unbudgeted
+    // half of the ring (ringUpload below is page-budgeted, this pages a tile whole, ~86 pages in forest
+    // against 4422 in the arctic), and it is what carries enProf.max.world past the drain's own cap. Cutting
+    // it off at 3 ms/frame, ABBA in one session over a 3370-voxel sprint, made every number WORSE:
+    //     unbounded   med 9.73  p90 18.66  p99 28.80  frames>25ms 60  world.max 25.6
+    //     3 ms cap    med 10.52 p90 20.14  p99 29.16  frames>25ms 86  world.max 30.2
+    // — the same result the drain budget gave when it was halved (see POOL_BUDGET): a queue held back is
+    // saturated every frame and spikes harder on catch-up, so the ceiling MOVES the work rather than
+    // removing it. The lever that worked was making a brick cheaper, not letting fewer of them through.
     for (const [, T] of ringTiles) {                    // then start what the frame still has room for
       if (ringBudget <= 0 || landed >= ringLandN) break;
       if (T.done || T.up || !T.job || !T.job.done) continue;

@@ -47,7 +47,8 @@
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
     const consts = { DEEP_SPAN, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
-    const tables = { ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, PINE_ANCH9, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
+    const OPAQTAB = []; for (let i = 0; i < 256; i++) OPAQTAB.push(i && i !== WATER_T && i !== WATER_B && !foliaTab[i] ? 1 : 0);   // must stay bit-identical to opaqueTab in render/buffers.js — the pool trusts this verdict and never re-derives it
+    const tables = { OPAQTAB, ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, PINE_ANCH9, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
     const fns = { deepen, ihash, sstep, pwrap, vnoise, vnoise3, fbm, pineBase, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctSnow, arctH, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';
@@ -97,6 +98,19 @@
       '  const nbx = sx >> 3, nbz = sz >> 3, nby = WY >> 3;\n' +               // ── SLAB BRICK BITS ── the 8³ occupancy scan runs HERE, in parallel, instead of on the main thread after the blit
       '  const bb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +
       '  const wb = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +       // parallel WATER-ONLY bits (skipW brick striding)
+      '  const ab = new Uint32Array(((nbx * nby * nbz) + 31) >> 5);\n' +        // ── AIRLESS+OPAQUE, DECIDED HERE ── the worker is already walking every voxel of this slab for `occ`
+        // above, so the verdict costs one more pass over rows it has in cache. On the main thread the same
+        // answer is isAirFree() per streamed brick, and poolTouch's seed argument existed for exactly this
+        // but nothing ever supplied it: the merge passed -1, so every brick re-derived. MEASURED ABBA in one
+        // session, __vb.airSeed(0|1), sprint-flying 3600 voxels a leg:
+        //     seed 0 (re-derive)  med 23.9 / 34.3   p90 35.6 / 48.3   frames>25ms 316 / 336   >50ms 2 / 39
+        //     seed 1 (this)       med  9.1 /  9.0   p90 17.4 / 17.9   frames>25ms  21 /  40   >50ms 0 /  0
+        // and the shape matters as much as the size: the re-derive legs get WORSE the longer you fly (23.9 ->
+        // 34.3) while the seeded ones do not move, because a drain that cannot keep up is saturated every
+        // frame. This is the lever that worked — make a brick cheaper. Throttling how many get through was
+        // tried twice and is a regression both times (see POOL_BUDGET and the ring note in render/buffers.js).
+        // OPAQTAB must stay bit-identical to opaqueTab there; __vb.poolAudit()'s airBad is the only check on
+        // that drift, and it reads 0 over all 6.0M live bricks at stride 1.
       '  const W32b = new Uint32Array(W.buffer);\n' +
       '  for (let bz = 0; bz < nbz; bz++) for (let bx = 0; bx < nbx; bx++) {\n' +
       '    let maxH = 0, cav = 0;\n' +
@@ -110,6 +124,15 @@
       '        if (W32b[rw] | W32b[rw + 1]) { occ = 1; break scan; }\n' +
       '      }\n' +
       '      if (occ) { const b = bx + by * nbx + bz * nbx * nby; bb[b >> 5] |= 1 << (b & 31);\n' +
+      '        { let ok = 1;\n' +
+      '          ascan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {\n' +
+      '            const r0 = y * WX + z * WX * WY + bx * 8, rw2 = r0 >> 2;\n' +
+      '            const a2 = W32b[rw2], c2 = W32b[rw2 + 1];\n' +
+      '            if (((a2 - 0x01010101) & ~a2 & 0x80808080) || ((c2 - 0x01010101) & ~c2 & 0x80808080)) { ok = 0; break ascan; }\n' +
+      '            for (let q = 0; q < 8; q++) if (!OPAQTAB[W[r0 + q]]) { ok = 0; break ascan; }\n' +
+      '          }\n' +
+      '          if (ok) ab[b >> 5] |= 1 << (b & 31);\n' +
+      '        }\n' +
       '        if (by * 8 <= WL) { let wonly = 1;\n' +
       '          wscan: for (let z = bz * 8; z < bz * 8 + 8; z++) for (let y = by * 8; y < by * 8 + 8; y++) {\n' +
       '            const r0 = y * WX + z * WX * WY + bx * 8;\n' +
@@ -143,8 +166,8 @@
       '    }\n' +
       '    blitted = 1;\n' +
       '  }\n' +
-      '  if (blitted) postMessage({ id: d.id, stride: WX, blitted: 1, hmap, bb, wb, nbx, nby, nbz, orph }, [hmap.buffer, bb.buffer, wb.buffer]);\n' +
-      '  else postMessage({ id: d.id, stride: WX, W, hmap, bb, wb, nbx, nby, nbz, orph }, [W.buffer, hmap.buffer, bb.buffer, wb.buffer]);\n' +
+      '  if (blitted) postMessage({ id: d.id, stride: WX, blitted: 1, hmap, bb, wb, ab, nbx, nby, nbz, orph }, [hmap.buffer, bb.buffer, wb.buffer, ab.buffer]);\n' +
+      '  else postMessage({ id: d.id, stride: WX, W, hmap, bb, wb, ab, nbx, nby, nbz, orph }, [W.buffer, hmap.buffer, bb.buffer, wb.buffer, ab.buffer]);\n' +
       '  W = hmap = touched = null;\n' +
       '};';
     if (location.search.includes('wsrc')) window.__vbWSRC = wsrc2;   // ?wsrc — hand the assembled worker source out so a syntax error in it can be located instead of guessed at
