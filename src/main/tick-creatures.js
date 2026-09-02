@@ -371,8 +371,25 @@
           } else if (wantK === 6) {                    // FISH: home is a water spot (lakes AND rivers), body UNDER the surface. Capacity SCALES with the pool's SIZE so a small pond isn't crammed (user)
             if (!waterSpots.length) break;             // the census can empty waterSpots THIS frame, after nFish was computed from last frame's — a `% 0` here made `L9.x` throw (this was a permanent game-freeze before the tick wrapper)
             let L9 = null;
+            // ── EVERY POOL GETS ITS SHARE OF THE POPULATION, BY AREA (user 2026-09-02: "theres also not a balance
+            // between fish being in closed spaces and large spaces … balances the ratio of fish based on the size
+            // of the body of water … scale it porpionally") ── the old rule was a fixed DENSITY slope, round(n/3),
+            // with a hard floor of 1 and a ceiling of 16, and both ends broke the proportion it was trying to
+            // keep: the floor handed a one-sample puddle the same fish a twelve-sample pond got, which is four
+            // times the density, and the ceiling starved anything bigger than 48 samples. Between them the small
+            // water was crowded and the large water was empty — exactly the imbalance reported.
+            // A SHARE, NOT A SLOPE: each pool takes nFish * (its own area / all the water's area), so the caps
+            // sum to the population by construction and the density is the same everywhere no matter how the
+            // world's water happens to be split up. wsTot is the whole census, so a pool's share moves when the
+            // world's water does — swim into a region of big lakes and the same 28 fish spread thinner, which is
+            // what proportional means.
+            // THE FLOOR IS CONDITIONAL NOW: a pool only rounds up to its first fish once it is worth one
+            // (FISH_MINPOOL samples), so a puddle is empty rather than over-stocked, and the ceiling is gone —
+            // nFish is the only cap that matters and it already bounds the band.
+            let wsTot = 0; for (let q = 0; q < waterSpots.length; q++) wsTot += waterSpots[q].n;
             for (let k = 0; k < waterSpots.length; k++) { const cand = waterSpots[(wk + tries + k) % waterSpots.length];   // walk the spots so a full pool yields to a hungrier one
-              const cap = Math.max(1, Math.min(16, Math.round(cand.n / 3)));   // UNIFORM density: ~1 fish per 3 census samples (~1200 vox² of water). The old 1-per-sample slope CRAMMED ponds (a 9-sample pond held 9 fish) while big-lake spots were clamped at 16 regardless of area — density inverted (user)
+              const share = nFish * (cand.n / Math.max(1, wsTot));   // this pool's proportional slice of the population
+              const cap = share >= 1 ? Math.round(share) : (cand.n >= FISH_MINPOOL ? 1 : 0);   // …rounded, and a pool under its own first whole fish gets one only if it is big enough to deserve one
               let near = 0; for (let f = FISH_0; f < FISH_END; f++) { const F = wbf[f]; if (F && F.init && (F.kind | 0) === 6 && F.hx !== undefined && (F.hx - cand.x) * (F.hx - cand.x) + (F.hz - cand.z) * (F.hz - cand.z) < 45 * 45) near++; }   // count by HOME, not wander position — spots are pairwise >90 apart so 45-vox home-discs are DISJOINT; the old 90-vox position count tallied one lake fish against ALL its spots and starved big lakes (user)
               if (near < cap) { L9 = cand; break; } }
             if (!L9) break;                            // every pool already holds its size-capped share → add no more fish

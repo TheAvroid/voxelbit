@@ -1084,6 +1084,22 @@
         var wD = select(1e4, irrU.b, irrU.b > 0.0);                  // in-water path toward the hit (sky pixels: the whole march range)
         if (fgT > 0.0) { wD = fgT; }                                 // …but if a CREATURE / drop / held item is what this pixel actually shows, the water only reaches THAT far. Using the scene depth here absorbed a fish 14 vox away as if it were the 160-vox background (exp(-0.062*160) ≈ 5e-5) — fish, drops and the held tool all vanished the moment you swam under. This is what "I can't see the fish underwater" was.
         if (rd.y > 0.001) { wD = min(wD, max((WLF + 1.0 - u.camPos.y) / rd.y, 0.0)); }   // the ray exits through the surface — only the submerged stretch attenuates
+        // ── AND A RAY THAT REACHES THE BED STOPS THERE TOO (user 2026-09-02) ── the line above clips an UPWARD
+        // ray at the surface it exits through, and nothing did the same for a ray heading down. A pixel that
+        // hit nothing takes wD = 1e4 clamped to 160, i.e. the full march treated as solid water, and at
+        // sigU that absorbs the background completely and leaves only in-scatter. Right at the waterline that
+        // in-scatter is UNATTENUATED — camPos.y is the surface, so dBelow ~ 0 and lightT ~ 1 — so the whole
+        // submerged half of the screen resolves to one flat bright wash. That is the transition glitch: two or
+        // three frames of pale grey with the fish still drawn in it, clearing as the camera sinks and dBelow
+        // grows. The water under the camera is only as deep as the bed, so that is the bound.
+        // ONE downward probe, and only for the pixels that actually take the 160: a ray that HIT something
+        // already has its true path length in irr.b, and an upward ray was clipped above. skipW = true so the
+        // water itself is transparent to the probe and it returns the BED, which is the number wanted.
+        else if (irrU.b <= 0.0 && rd.y < -0.001) {
+          let bedH = trace(u.camPos, vec3<f32>(0.0, -1.0, 0.0), 160.0, true);
+          let below = select(160.0, bedH.t, bedH.t >= 0.0);
+          wD = min(wD, below / max(-rd.y, 0.001));      // distance ALONG the ray to the bed's depth, not the depth itself
+        }
         wD = clamp(wD, 0.0, 160.0);
         let sigU = vec3<f32>(0.16, 0.062, 0.030);                    // gentler than the surface view — swimming has to stay playable
         let trU = exp(-sigU * wD);

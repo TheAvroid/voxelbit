@@ -99,7 +99,8 @@
     // spread over the whole footprint of the crown, and walking each one down individually is the chore that
     // produced the report. Paired with the stillness rule below being relaxed, since the chunks that got missed
     // were the ones still jostling against their neighbours when the player walked past.
-    absorbR: 26,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
+    absorbAgeMs: 0,                                  // ── HOW LONG A CHUNK MUST EXIST BEFORE IT MAY BE COLLECTED ── was a flat 1500 hard-coded in the solver's absorb gate, which is why a piece had to LAND before you could take it. 0 = the frame it is born. See the gate in sim/solver.js for why the velocity test beside it is left alone
+    absorbR: 34,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user). 26 -> 34 ("make absorbtion more sensitive"): the reach is what decides whether a chunk you are standing over counts as yours, and instant pickup is worth little if you still have to be on top of it — matches AUTO_PICK_R so items and chunks vacuum up at the same range
     absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
     // ── RAISED TO COVER EVERY CHUNK THE GAME MAKES (user 2026-08-22: "make sure all chunks can be absorbed no
     // problem") ── 200 predates the felled-tree shatter, whose pieces are exactly fellChunkVox (350) each, so

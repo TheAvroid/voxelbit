@@ -14827,6 +14827,22 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         var wD = select(1e4, irrU.b, irrU.b > 0.0);                  // in-water path toward the hit (sky pixels: the whole march range)
         if (fgT > 0.0) { wD = fgT; }                                 // …but if a CREATURE / drop / held item is what this pixel actually shows, the water only reaches THAT far. Using the scene depth here absorbed a fish 14 vox away as if it were the 160-vox background (exp(-0.062*160) ≈ 5e-5) — fish, drops and the held tool all vanished the moment you swam under. This is what "I can't see the fish underwater" was.
         if (rd.y > 0.001) { wD = min(wD, max((WLF + 1.0 - u.camPos.y) / rd.y, 0.0)); }   // the ray exits through the surface — only the submerged stretch attenuates
+        // ── AND A RAY THAT REACHES THE BED STOPS THERE TOO (user 2026-09-02) ── the line above clips an UPWARD
+        // ray at the surface it exits through, and nothing did the same for a ray heading down. A pixel that
+        // hit nothing takes wD = 1e4 clamped to 160, i.e. the full march treated as solid water, and at
+        // sigU that absorbs the background completely and leaves only in-scatter. Right at the waterline that
+        // in-scatter is UNATTENUATED — camPos.y is the surface, so dBelow ~ 0 and lightT ~ 1 — so the whole
+        // submerged half of the screen resolves to one flat bright wash. That is the transition glitch: two or
+        // three frames of pale grey with the fish still drawn in it, clearing as the camera sinks and dBelow
+        // grows. The water under the camera is only as deep as the bed, so that is the bound.
+        // ONE downward probe, and only for the pixels that actually take the 160: a ray that HIT something
+        // already has its true path length in irr.b, and an upward ray was clipped above. skipW = true so the
+        // water itself is transparent to the probe and it returns the BED, which is the number wanted.
+        else if (irrU.b <= 0.0 && rd.y < -0.001) {
+          let bedH = trace(u.camPos, vec3<f32>(0.0, -1.0, 0.0), 160.0, true);
+          let below = select(160.0, bedH.t, bedH.t >= 0.0);
+          wD = min(wD, below / max(-rd.y, 0.001));      // distance ALONG the ray to the bed's depth, not the depth itself
+        }
         wD = clamp(wD, 0.0, 160.0);
         let sigU = vec3<f32>(0.16, 0.062, 0.030);                    // gentler than the surface view — swimming has to stay playable
         let trU = exp(-sigU * wD);
@@ -17887,7 +17903,8 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // spread over the whole footprint of the crown, and walking each one down individually is the chore that
     // produced the report. Paired with the stillness rule below being relaxed, since the chunks that got missed
     // were the ones still jostling against their neighbours when the player walked past.
-    absorbR: 26,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user) — matches AUTO_PICK_R so items and chunks vacuum up at the same range
+    absorbAgeMs: 0,                                  // ── HOW LONG A CHUNK MUST EXIST BEFORE IT MAY BE COLLECTED ── was a flat 1500 hard-coded in the solver's absorb gate, which is why a piece had to LAND before you could take it. 0 = the frame it is born. See the gate in sim/solver.js for why the velocity test beside it is left alone
+    absorbR: 34,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user). 26 -> 34 ("make absorbtion more sensitive"): the reach is what decides whether a chunk you are standing over counts as yours, and instant pickup is worth little if you still have to be on top of it — matches AUTO_PICK_R so items and chunks vacuum up at the same range
     absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
     // ── RAISED TO COVER EVERY CHUNK THE GAME MAKES (user 2026-08-22: "make sure all chunks can be absorbed no
     // problem") ── 200 predates the felled-tree shatter, whose pieces are exactly fellChunkVox (350) each, so
@@ -21519,7 +21536,18 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // swing runs before it decides anything, so a swing that bites nothing cannot leave the last one's answer standing and hand the
     // sound to the wrong blow. ui/audio.js reads it (CHOP_AIM is exported and audio.js is 6 fragments below this one) to pick the
     // impact take: rock under a pick has its own recording, everything else keeps the generic break takes.
-    if ((leafHit === 3 || (leafHit === false && firstLeaf))          // the leaf wins: nothing behind it, or the ray ran out inside the crown
+    // ── A PICK AIMED AT STONE IS NEVER A LEAF SWING (user 2026-09-02: "sometimes the leaf sound plays when I
+    // hit the rock with a pick. prevent that from happening") ── this branch runs BEFORE the decor and body
+    // arms below, so whenever foliage is in front of the real target it wins the swing outright and sets
+    // foliaHit, and ui/audio.js reads that to choose the take. Rocks are exactly where this bites: the boulder
+    // models carry MOSS on their crowns and field stone sits in grass, so the ray meets foliage on the way to
+    // the stone and the swing is scored as leaves. The pick then works the rock anyway and you hear leaves.
+    // The aim pre-pass already knows what the swing is FOR — aimId is the id it resolved — so this asks it
+    // rather than re-deriving anything: a pick whose aim landed on pick-only material skips the leaf arm and
+    // falls through to the decor/body branch that sets rockHit. Every other tool and target is untouched, so
+    // an axe still shears a crown and a pick in bare foliage still cuts it.
+    if (!(pick && aimId && pickOnlyTab[aimId])
+        && (leafHit === 3 || (leafHit === false && firstLeaf))          // the leaf wins: nothing behind it, or the ray ran out inside the crown
         && (CHOP_AIM.path = 'leaves') && (CHOP_AIM.foliaHit = true)
         && phChopLeaves(firstLeaf[0], firstLeaf[1], firstLeaf[2], CHOP_RAD * base * 0.5, Math.max(2, Math.round(C_BITE * 0.5)))) return true;   // FOLIAGE is nobody's own material: half the tool's sphere (user)   // a FALLEN crown is not in W, so this misses and the march below takes it with okBody instead
     let S = null;
@@ -22232,7 +22260,16 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // SIZE IS STILL THE ONLY OTHER GATE, deliberately: PH.absorbSize is the user's own "too big to carry,"
         // break it down first" rule and this does not touch it.
         const vJ = b.vel[0] * b.vel[0] + b.vel[1] * b.vel[1] + b.vel[2] * b.vel[2];
-        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || b.fellLoot || vJ < 4))) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
+        // ── A CHUNK IS COLLECTABLE THE MOMENT IT EXISTS (user 2026-09-02: "the player can only absorb the
+        // broken tree chunks after it has landed. let the player pick up chunks instantly, the moment it turns
+        // into a chunk. make absorbtion more sensitive") ── the age term was a flat 1500 ms, so a piece you had
+        // just cut off was refused for a second and a half no matter how close you stood; in practice it landed
+        // first, which is exactly what was reported. PH.absorbAgeMs is that wait, and it is 0 now.
+        // THE VELOCITY GATE IS UNCHANGED and still earns its place: the note above it explains that a chunk
+        // thrown PAST you would otherwise swerve into your chest mid-arc. It does not bite here, because a
+        // felled-tree piece carries fellLoot and a chopped one carries nearR, and either passes the test on its
+        // own — so tree chunks are instant while a bounced-off speck still has to be nearly still.
+        if (!b.sleeping && !(tNow - b.born >= PH.absorbAgeMs && (b.nearR || b.fellLoot || vJ < 4))) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
         const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
         const rA = b.nearR || PH.absorbR;               // an ARROW's chunk keeps its own, much shorter reach (user)
         if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;
@@ -22965,6 +23002,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // cap itself is written for 1 per 1200. Same shape as the desert's: a comfortable floor that relaxes cubically
   // rather than a hard one, so a cramped pond still fills instead of burning its retries.
   const FISH_APART = 28, FISH_FLOOR = 14, FISH_RELAX = 11;
+  const FISH_MINPOOL = 4;                              // census samples (~400 vox² each) a pool needs before it is worth its first fish at all — under this it stays empty rather than being handed one and reading as crowded. See the proportional share in main/tick-creatures.js
   // The betta is the other half. It is EXEMPT from the floor by design (it shoals), joined the first betta within
   // 120 and broke unconditionally — one global anchor per pool, no size cap — so in the blossom band, where every
   // fish is picked betta, the entire population could stack into one ~18-vox disc.
@@ -38213,8 +38251,25 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
           } else if (wantK === 6) {                    // FISH: home is a water spot (lakes AND rivers), body UNDER the surface. Capacity SCALES with the pool's SIZE so a small pond isn't crammed (user)
             if (!waterSpots.length) break;             // the census can empty waterSpots THIS frame, after nFish was computed from last frame's — a `% 0` here made `L9.x` throw (this was a permanent game-freeze before the tick wrapper)
             let L9 = null;
+            // ── EVERY POOL GETS ITS SHARE OF THE POPULATION, BY AREA (user 2026-09-02: "theres also not a balance
+            // between fish being in closed spaces and large spaces … balances the ratio of fish based on the size
+            // of the body of water … scale it porpionally") ── the old rule was a fixed DENSITY slope, round(n/3),
+            // with a hard floor of 1 and a ceiling of 16, and both ends broke the proportion it was trying to
+            // keep: the floor handed a one-sample puddle the same fish a twelve-sample pond got, which is four
+            // times the density, and the ceiling starved anything bigger than 48 samples. Between them the small
+            // water was crowded and the large water was empty — exactly the imbalance reported.
+            // A SHARE, NOT A SLOPE: each pool takes nFish * (its own area / all the water's area), so the caps
+            // sum to the population by construction and the density is the same everywhere no matter how the
+            // world's water happens to be split up. wsTot is the whole census, so a pool's share moves when the
+            // world's water does — swim into a region of big lakes and the same 28 fish spread thinner, which is
+            // what proportional means.
+            // THE FLOOR IS CONDITIONAL NOW: a pool only rounds up to its first fish once it is worth one
+            // (FISH_MINPOOL samples), so a puddle is empty rather than over-stocked, and the ceiling is gone —
+            // nFish is the only cap that matters and it already bounds the band.
+            let wsTot = 0; for (let q = 0; q < waterSpots.length; q++) wsTot += waterSpots[q].n;
             for (let k = 0; k < waterSpots.length; k++) { const cand = waterSpots[(wk + tries + k) % waterSpots.length];   // walk the spots so a full pool yields to a hungrier one
-              const cap = Math.max(1, Math.min(16, Math.round(cand.n / 3)));   // UNIFORM density: ~1 fish per 3 census samples (~1200 vox² of water). The old 1-per-sample slope CRAMMED ponds (a 9-sample pond held 9 fish) while big-lake spots were clamped at 16 regardless of area — density inverted (user)
+              const share = nFish * (cand.n / Math.max(1, wsTot));   // this pool's proportional slice of the population
+              const cap = share >= 1 ? Math.round(share) : (cand.n >= FISH_MINPOOL ? 1 : 0);   // …rounded, and a pool under its own first whole fish gets one only if it is big enough to deserve one
               let near = 0; for (let f = FISH_0; f < FISH_END; f++) { const F = wbf[f]; if (F && F.init && (F.kind | 0) === 6 && F.hx !== undefined && (F.hx - cand.x) * (F.hx - cand.x) + (F.hz - cand.z) * (F.hz - cand.z) < 45 * 45) near++; }   // count by HOME, not wander position — spots are pairwise >90 apart so 45-vox home-discs are DISJOINT; the old 90-vox position count tallied one lake fish against ALL its spots and starved big lakes (user)
               if (near < cap) { L9 = cand; break; } }
             if (!L9) break;                            // every pool already holds its size-capped share → add no more fish

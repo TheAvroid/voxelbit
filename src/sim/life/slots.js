@@ -415,6 +415,7 @@
   // cap itself is written for 1 per 1200. Same shape as the desert's: a comfortable floor that relaxes cubically
   // rather than a hard one, so a cramped pond still fills instead of burning its retries.
   const FISH_APART = 28, FISH_FLOOR = 14, FISH_RELAX = 11;
+  const FISH_MINPOOL = 4;                              // census samples (~400 vox² each) a pool needs before it is worth its first fish at all — under this it stays empty rather than being handed one and reading as crowded. See the proportional share in main/tick-creatures.js
   // The betta is the other half. It is EXEMPT from the floor by design (it shoals), joined the first betta within
   // 120 and broke unconditionally — one global anchor per pool, no size cap — so in the blossom band, where every
   // fish is picked betta, the entire population could stack into one ~18-vox disc.

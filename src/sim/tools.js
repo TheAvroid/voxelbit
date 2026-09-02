@@ -422,7 +422,18 @@
     // swing runs before it decides anything, so a swing that bites nothing cannot leave the last one's answer standing and hand the
     // sound to the wrong blow. ui/audio.js reads it (CHOP_AIM is exported and audio.js is 6 fragments below this one) to pick the
     // impact take: rock under a pick has its own recording, everything else keeps the generic break takes.
-    if ((leafHit === 3 || (leafHit === false && firstLeaf))          // the leaf wins: nothing behind it, or the ray ran out inside the crown
+    // ── A PICK AIMED AT STONE IS NEVER A LEAF SWING (user 2026-09-02: "sometimes the leaf sound plays when I
+    // hit the rock with a pick. prevent that from happening") ── this branch runs BEFORE the decor and body
+    // arms below, so whenever foliage is in front of the real target it wins the swing outright and sets
+    // foliaHit, and ui/audio.js reads that to choose the take. Rocks are exactly where this bites: the boulder
+    // models carry MOSS on their crowns and field stone sits in grass, so the ray meets foliage on the way to
+    // the stone and the swing is scored as leaves. The pick then works the rock anyway and you hear leaves.
+    // The aim pre-pass already knows what the swing is FOR — aimId is the id it resolved — so this asks it
+    // rather than re-deriving anything: a pick whose aim landed on pick-only material skips the leaf arm and
+    // falls through to the decor/body branch that sets rockHit. Every other tool and target is untouched, so
+    // an axe still shears a crown and a pick in bare foliage still cuts it.
+    if (!(pick && aimId && pickOnlyTab[aimId])
+        && (leafHit === 3 || (leafHit === false && firstLeaf))          // the leaf wins: nothing behind it, or the ray ran out inside the crown
         && (CHOP_AIM.path = 'leaves') && (CHOP_AIM.foliaHit = true)
         && phChopLeaves(firstLeaf[0], firstLeaf[1], firstLeaf[2], CHOP_RAD * base * 0.5, Math.max(2, Math.round(C_BITE * 0.5)))) return true;   // FOLIAGE is nobody's own material: half the tool's sphere (user)   // a FALLEN crown is not in W, so this misses and the march below takes it with okBody instead
     let S = null;
