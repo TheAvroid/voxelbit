@@ -42,6 +42,7 @@ ui/console.js
 sim/projectiles.js
 world/patch.js
 sim/physics.js
+sim/jolt.js
 sim/chop.js
 sim/chop-tree.js
 sim/support.js

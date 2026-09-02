@@ -983,7 +983,7 @@
     // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
     // litter thins out across the blend band instead of stopping on the iso-line.
     if (!MUSHV) return null;
-    if (ihash(cx * 89 + 17, cz * 97 + 5) > 0.053) return null;   // rare — ~5.3% of candidate cells before the pine-forest + rock-clearance gates below (cut by a third from 0.08, user)
+    if (ihash(cx * 89 + 17, cz * 97 + 5) > 0.0398) return null;   // rare — ~4.0% of candidate cells before the pine-forest + rock-clearance gates below (user 2026-09-01: "decrease the spawnrate of the mushroom by 25%", 0.053 -> 0.0398; and cut by a third from 0.08 before that, user)
     const wx = Math.round(cx * MUCELL + 5 + ihash(cx * 5 + 23, cz * 3 + 9) * (MUCELL - 10));
     const wz = Math.round(cz * MUCELL + 5 + ihash(cx * 11 + 7, cz * 7 + 19) * (MUCELL - 10));
     // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the
@@ -1132,6 +1132,16 @@
     // photographs are snow, ice and bare rock, and a twig or a toadstool on a glacier reads as a bug rather
     // than as sparse planting. Gated at the cell centre, the same > 0.5 halfway test treeAt uses, so the
     // litter thins out across the blend band instead of stopping on the iso-line.
+    // ── THE FALLEN LOGS ARE GONE (user 2026-09-01: "remove the logs on the field") ── every one of them,
+    // everywhere, not one more biome carved off the front: the line below already read "remove the logs in
+    // the birch forest", and the desert and the arctic had taken their own bites before that, so what was
+    // left was the pine forest and this removes that too.
+    // Wiped as an early return rather than by deleting logAt/stampLog, which is how birchM and arcticM were
+    // wiped in world/window.js and for the same reason: stampCellsGen names both functions, so do both gen
+    // worker registries and the debug taps, and a rename sweep across four files is a different change from
+    // this one — it would bury a one-line decision in a diff nobody can read. Everything below is dead and
+    // kept only so the placement rule is still legible if these ever come back.
+    return null;
     if (!LOGV) return null;
     if (ihash(cx * 71 + 13, cz * 73 + 29) > 0.14) return null;
     const wx = Math.round(cx * LGCELL + 6 + ihash(cx * 3 + 9, cz * 7 + 1) * (LGCELL - 12));

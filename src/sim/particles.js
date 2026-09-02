@@ -1,5 +1,5 @@
   // @module - splash, spark and debris particle pools and their per-frame step
-  // @exports petalClearBox, PETAL_HIDE, ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
+  // @exports petalsSet, petalClearBox, PETAL_HIDE, ARROW_HITS_TO_KILL, KNIFE_HITS_TO_KILL, CRY_GAP, PETAL_FALL, PETAL_MAXLIFE, POL_GAP, POL_MS, HITS_TO_KILL, SPLASH_HI, SPLASH_LIFE, SPLASH_LO, TEAR_HI, TEAR_LO, aimedCreature, hitSpot, hurtHop, lifeDrawnPrev, lifeIsDrawn, petalClear, petalTick, spawnDeathBurst, spawnPollen, spawnSplash, spawnTear, startCrying, SPK_CARRY_TAU, FLAM_ARROW_HITS
   // ── SPLASH (user 2026-08-05) ── the spark burst, in FOAM: 4 droplets thrown off the WATERLINE whenever
   // something breaks the surface — a fish launching, the same fish coming back down, and the player going
   // either way. Same ballistic arc as a spark; the colour, the spread and the life differ. A splash crown is
@@ -111,6 +111,7 @@
     for (let i = PETAL_LO; i < PETAL_HI; i++) { const s = sparks3d[i]; if (!s) continue;
       if (s.x >= x0 && s.x <= x1 && s.z >= z0 && s.z <= z1) { sparks3d[i] = null; n++; } }
     return n; };
+  let petalLive = 0;
   const petalClear = () => { for (let i = PETAL_LO; i < PETAL_HI; i++) sparks3d[i] = null; };   // drop every leaf CURRENTLY in the air — the gate in petalTick stops new ones, but a petal lives until it lands, so without this a handful keep drifting past the stage for the rest of their fall after the editor opens. A free slot is `!s` (see bandSlot), so null is retirement.
   const TEAR_LIFE = 0.7;                               // FIXED, like the splash — a tear that lasted a random 0.75-1.0 read as flickering
   function spawnTear(wx, wy, wz) {
@@ -218,6 +219,7 @@
   // IT DOES NOT COST A SLOT. The band IS the population (see PETAL_LO): a longer fall is slower turnover, not
   // more leaves in the air — 32 either way. What changes is that those 32 are now spread down the whole column
   // instead of piling into its top 49 voxels and vanishing.
+  const petalsSet = (v) => { petalOff = v ? 0 : 1; return { falling: !petalOff }; };
   const PETAL_MAXLIFE = 60;                            // seconds. See above: a guard against a leaf that can never land, not the length of a fall
   function spawnPetal(wx, wy, wz, pit) {               // pit = which leaf voxel this tree sheds (pink / cream / green) — an ITEM ID rather than the old `white` boolean, because there are three varieties now and a second boolean would have made the emit read a 2-bit code spread over two flags
     const slot = bandSlot(PETAL_LO, PETAL_HI); if (slot < 0) return;   // band full → skip, never cut a live petal short (the splash's rule)
@@ -358,7 +360,19 @@
     return !!(v && foliaTab[v]);
   };
   let petalNext = 0;
+  // ── THE AMBIENT FALLING LEAVES ARE OFF (user 2026-09-01: "also remove the falling leaves") ── this is the
+  // shed that ran on its own clock and rained leaves out of every oak, pine, birch and blossom in the stand;
+  // it is not connected to chopping. Gated HERE rather than inside spawnPetal so the per-tick work goes with
+  // it — picking a cell, resolving a tree, weighting it by canopy area and resolving an anchor point all
+  // happened before a leaf was ever spawned. petalClear() drops the ones already in the air on the way past,
+  // so nothing is left hanging mid-fall the moment this lands.
+  // The BAND ITSELF IS UNTOUCHED (PETAL_LO..PETAL_HI): the drop-slot bands are shared with the composite
+  // shader and their bounds are duplicated there, so narrowing one is a two-file change that has silently
+  // broken particles before. An unused band costs nothing but its slots.
+  let petalOff = 1;                                    // __vb.petals(1) puts them back for a look
   function petalTick() {
+    if (petalOff) { if (petalLive) { petalClear(); petalLive = 0; } return; }
+    petalLive = 1;
     // ── NOT ON THE ASSET-EDITOR STAGE (user 2026-08-21: "the asset editor is getting falling leaves? fix this.
     // also there is a peice of a pine tree at the top of it") ── both reports are this one emitter. The stage
     // hides the world and retires every creature, but the shed kept running, and it reads the world

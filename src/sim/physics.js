@@ -17,6 +17,7 @@
   // deterministic reverse lookup. That is what makes an "object-local destructible shape" free here.
   const PH = {
     on: !location.search.includes('nophys'),
+    chipMax: 120,                                    // orphaned components UNDER this many voxels are erased rather than dropped — see phSeparate in sim/chop.js. A severed pine is thousands, so the fell never trips it
     dt: 1 / 60,                                      // FIXED 60 Hz, like Teardown — the sim must not vary with render fps
     iters: 8,                                        // sequential-impulse iterations per step (Teardown ships 8)
     acc: 0, bodies: [], maxBodies: PHYS_MAX,   // 24 (user 2026-08-11, was 16) — MUST come from the uniform capacity: physB has room for exactly PHYS_MAX bodies and the emit loop clips to it, so a larger sim cap would simply never be drawn

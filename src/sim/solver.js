@@ -91,6 +91,7 @@
       const wx = b.pos[0] + phTmp2[0], wy = b.pos[1] + phTmp2[1], wz = b.pos[2] + phTmp2[2];
       const gx = Math.floor(wx), gy2 = Math.floor(wy), gz = Math.floor(wz);
       if (!phSolidAt(gx, gy2, gz)) continue;
+      if (phTreeBlock(b, gx, gy2, gz)) continue;   // a felled tree tilts THROUGH the next tree instead of hanging on it — see phTreeBlock in sim/chop.js
       phNormalAt(gx, gy2, gz, phNrm);
       // sphere-vs-voxel depth along the contact normal, measured from the solid cell's open face
       const fx = wx - (gx + 0.5), fy = wy - (gy2 + 0.5), fz = wz - (gz + 0.5);
@@ -247,6 +248,11 @@
     PH.acc = Math.min(PH.acc + dtR, 0.25);
     let k = 0;
     while (PH.acc >= PH.dt && k < 8) {
+      // ── THE BACKEND SEAM ── Jolt owns integration and contacts and nothing else; the break clock, the
+      // absorb flight, retirement and the topple drive below are game rules and stay here. joltActive() is
+      // false until __vb.jolt(1) has booted the wasm, so the legacy solver is the default and the two A/B
+      // inside one session against the same world.
+      if (joltActive()) { joltStepBodies(PH.dt); PH.acc -= PH.dt; k++; continue; }
       for (const b of PH.bodies) {
         if (b.sleeping) continue;
         // ── CCD-LITE ── contacts are point samples with no swept test, so a fast body tunnels: a toppling
