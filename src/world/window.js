@@ -1117,6 +1117,21 @@
     let R = rivCache.get(key);                         // R = { segs: [{sx,sz,dxr,dzr,len,wb,seed,t0,t1}], lakes: [{x,z,r,seed}], bbox }
     if (R !== undefined) return R;
     R = null;
+    // ── THE WHOLE WATERSHED SYSTEM IS OUT (user 2026-09-01: "remove the river system from the game again
+    // along with the basin its connected to") ── not just the channels this time: the RESERVOIR goes with
+    // them. A watershed was one connected thing — a headwater stem widening downstream into a big lake, with
+    // tributaries, their headwater ponds, an outlet river and a tail lake — and the request is for the whole
+    // structure, the lake it drains into included.
+    // That leaves ONE source of water in the world: basinM, the low-frequency field in this file. It makes
+    // broad rounded water and it cannot make a channel, so nothing river-shaped can appear from it.
+    // Returning null here rather than deleting the builder below, in the same style as the logAt and birchM
+    // wipes: riverAt, riverS, rivEval, gatherRivers and riversNear are named by BOTH gen-worker registries,
+    // world/build.js, ui/console.js's `lake`/`river` locators and the debug taps. null is already the common
+    // answer (the roll below only fired on 3.5% of cells), so every one of those callers already handles it
+    // and none of them need to change. Everything under this line is dead and kept only so the shape of the
+    // system is still legible if it ever comes back.
+    rivCache.set(key, R);
+    return R;
     if (ihash(cx * 83 + 19, cz * 89 + 7) <= 0.035) {   // rarer than the old isolated segments — water stays scarce, but every occurrence is a connected system
       const hx = cx * RIVCELL + 100 + ihash(cx * 3 + 61, cz * 7 + 23) * (RIVCELL - 200);   // headwater of the main stem
       const hz = cz * RIVCELL + 100 + ihash(cx * 9 + 47, cz * 5 + 83) * (RIVCELL - 200);
