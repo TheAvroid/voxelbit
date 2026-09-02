@@ -2054,7 +2054,17 @@
   const ARCTWMAX = DESW * 0.675;                       // the band's absolute reach, for the same cheap-out shape birch uses
   const ARCTFAR = ARCTC + ARCTH + 2 * ARCTWMAX + ARCTB * 0.5;    // no column east of this can be arctic at all
   const ARCTWFAR = ARCTC - ARCTH - 2 * ARCTWMAX - ARCTB * 0.5;   // …nor west of this
-  const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = 1080;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
+  // ── THE TWO BANDS ARE THE SAME WIDTH NOW (user 2026-09-02: "the birch band looks alot thinner then the pine
+  // forest band. make the bands the same size") ── and the old split was not a choice, it was leftover
+  // arithmetic. BIOP is 15120 because the world once had SEVEN 2160-wide strips (pine, oak, cherry, birch,
+  // arctic, desert, pine); birch owned exactly one of them. When the other five were wiped their strips did
+  // not disappear — they all fell through to pine, so the period ran 12960 of pine against 2160 of birch, a
+  // 6:1 ratio. That is what reads as a thin ribbon of birch in a sea of conifer.
+  // BIRCHH = BIOP / 4 makes each band half the period: 7560 apiece, exactly equal. The PERIOD is untouched, so
+  // how often you cross a biome is unchanged — only the share of land each one takes.
+  // BIRCHOFF still means what it says. BIRCHC is BIRCHOFF + BIRCHH, so the band's INNER edge stays pinned at
+  // 3240 east of spawn however wide the band grows, and the spawn stays in pine by construction.
+  const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = BIOP / 4;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
   const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
   // ── THE BIRCH FOREST IS BACK (user 2026-09-02: "I want you to pull in the birch forest now. use the exact
   // same terrain generation as the pine forest") ── one band, and it is the ONLY other biome: oak, cherry,
