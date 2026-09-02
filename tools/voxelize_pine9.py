@@ -258,6 +258,25 @@ def main():
     Cn = np.clip(np.round(Cn), 0, 255).astype(int)
     Cw = Cw[np.argsort(Cw.sum(axis=1))]                 # dark -> light, so a ramp reads as one
     Cn = Cn[np.argsort(Cn.sum(axis=1))]
+
+    # ── THE BARK RAMP IS FORCED ONTO ONE BROWN HUE (user 2026-08-31: "theres seems to be green along
+    # with the browns. remove that green in the wood") ── k-means was doing its job here: real Scots
+    # pine bark carries lichen, and both bark sheets have olive in them, so two of the five centroids
+    # came back khaki - (92,81,40) and (111,106,43), the second with red and green equal and almost no
+    # blue, which is the definition of olive. On a trunk beside three true browns they read as green
+    # patches rather than as bark.
+    # Averaging cannot fix it and neither can dropping the olive texels: the light/dark STRUCTURE the
+    # albedo gives is the thing worth keeping, and it is carried by luminance, not by hue. So the ramp
+    # keeps its measured luminance SPAN and gets rebuilt on the hue the good centroids already had -
+    # (122,94,68), (141,107,78), (164,125,95) are all within a shade of 1.00 : 0.77 : 0.56.
+    # Evenly spaced rather than luminance-preserving, because the olive shades sit at almost the same
+    # luminance as the browns (100.3 against 99.4) and mapping each to its own brightness would collapse
+    # two steps of a five-step ramp into one colour.
+    BARK_HUE = np.array([1.00, 0.77, 0.56], dtype=np.float32)
+    LUM = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    lums = Cw.astype(np.float32) @ LUM
+    span = np.linspace(lums.min(), lums.max(), K_BARK)
+    Cw = np.clip(np.round(np.outer(span / float(BARK_HUE @ LUM), BARK_HUE)), 0, 255).astype(int)
     pal = [[0, 0, 0]] + [list(map(int, c)) for c in Cw] + [list(map(int, c)) for c in Cn]
     print('  bark ramp  ', [list(c) for c in Cw])
     print('  needle ramp', [list(c) for c in Cn])

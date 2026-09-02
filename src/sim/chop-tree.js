@@ -284,7 +284,14 @@
     wakeFrom(cellsOut, 6);            // a chop can orphan a cone or its snow cap
     spawnChopSparks(wx, wy, wz);                      // the bite landed — 4 embers at the impact (user)
     PH.stats.chops++; PH.stats.voxRemoved += removed;
-    phSpawnChunk(S, chipCells);                       // the bite the axe took + the shaken leaves fly off as real bodies
+    // ── THE BITE NO LONGER FLIES OFF (user 2026-09-01: "when the player hits the tree, debree falls down.
+    // prevent this from happening. only the pinecones falling is acceptable") ── phSpawnChunk turned the
+    // voxels the axe carved into real falling bodies, every swing. The carve itself is untouched: cellsOut
+    // went to gpuPatch two lines up, so the notch still appears and deepens exactly as before, and the
+    // sparks still land. What is gone is the shower of chips and green flecks that came with it.
+    // PINECONES ARE UNAFFECTED, and they are a different mechanism: wakeFrom() above hands the support
+    // resolver every cone and snow cap whose anchor the swing just removed, and they fall because nothing
+    // holds them up any more — not because the axe threw them.
     const { f, bodies } = phTreeSettle(S);
     return { hit: true, removed, total: f.total, reached: f.reached, orphans: f.orphans,
              detached: bodies.length, bodyVox: bodies.map((b) => b.n),

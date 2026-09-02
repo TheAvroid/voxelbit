@@ -340,6 +340,9 @@
     const pfK = pfBudget(), pfCap = POOL_BUDGET * pfK, pfMs = POOL_MS * pfK;
     const t0 = performance.now();
     for (const b of poolDirty) {
+      // 255, not a finer count: checking the clock every 64 bricks instead was measured ABBA in one session
+      // and is a NULL — med 9.68 both ways, and the two 63 legs came out both the best (9.02) and the worst
+      // (10.34) of the four, i.e. the effect is smaller than the drift between legs of the same config.
       if (!all && (seen >= pfCap || ((seen & 255) === 255 && performance.now() - t0 > pfMs))) { stopped = 1; break; }   // rest stays queued for next frame — cap and ms both scale with the frame interval (see pfBudget)
       seen++;
       const gb = cpu2gpu(b);
@@ -1018,6 +1021,15 @@
       if (T.up) { ringUpload(T); if (ringBudget <= 0) break; }
     }
     let landed = 0;
+    // ── A MS CEILING ON TILE PAGING WAS TRIED HERE AND IS A REGRESSION ── ringPageTile is the unbudgeted
+    // half of the ring (ringUpload below is page-budgeted, this pages a tile whole, ~86 pages in forest
+    // against 4422 in the arctic), and it is what carries enProf.max.world past the drain's own cap. Cutting
+    // it off at 3 ms/frame, ABBA in one session over a 3370-voxel sprint, made every number WORSE:
+    //     unbounded   med 9.73  p90 18.66  p99 28.80  frames>25ms 60  world.max 25.6
+    //     3 ms cap    med 10.52 p90 20.14  p99 29.16  frames>25ms 86  world.max 30.2
+    // — the same result the drain budget gave when it was halved (see POOL_BUDGET): a queue held back is
+    // saturated every frame and spikes harder on catch-up, so the ceiling MOVES the work rather than
+    // removing it. The lever that worked was making a brick cheaper, not letting fewer of them through.
     for (const [, T] of ringTiles) {                    // then start what the frame still has room for
       if (ringBudget <= 0 || landed >= ringLandN) break;
       if (T.done || T.up || !T.job || !T.job.done) continue;
@@ -1116,6 +1128,10 @@
   // and measured anyway: swing 330 -> 367 (noise) while the average plane fell 1509 -> 1449. It costs view
   // distance and buys nothing. Reverted; do not rebuild it without per-FRAME evidence of an actual jump.
   function ringFilled() { return GMUL <= 1 ? HALF : Math.max(HALF - RING_TILE, ringGap); }
+  // ringFilled's floor asserts "the NEAR window covers HALF - RING_TILE anyway", which holds only while the
+  // near window is GENERATED. Under fast travel the rect trails the player, so the floor lies and the view
+  // clamp lets rays reach past any geometry. Capping it by the rect's real reach makes it true again.
+  function ringFilledFor(nearR) { return GMUL <= 1 ? HALF : Math.max(Math.min(HALF - RING_TILE, nearR), ringGap); }
   // ══ FLIGHT RECORDER ══ the streaming faults that read as "flashing terrain" last a frame or two and only
   // happen while MOVING, so nothing that has to be set up in advance can catch one: by the time a harness is
   // pointed at the right place the event is over, and reproducing a player's exact conditions in a headless
@@ -1524,7 +1540,17 @@
   // room for four giants down at once; 4 << 20 would buy only two, which a player clearing a stand hits
   // immediately. The GPU cost is address space, not bandwidth: the trace only reads the cells a body
   // actually occupies.
-  const BODYCAP = 6 << 20;                             // 6M cells = 24 MB; a whole pine box is 35*36*116 = 146k, a giant OAK's is 1.455M
+  // ── SIZED FOR THE TREES THAT EXIST, NOT THE ONES THAT USED TO (user 2026-08-31: a felled tree
+  // "completely dissapears ... it should fall over") ── this is the buffer a rigid body's voxels live in,
+  // and a body that cannot get room in it is handed b.gpu = null. main/tick-emit.js then skips it outright
+  // (`if (nb >= PHYS_MAX || !b.gpu) continue`), so the body still exists, still falls and still collides -
+  // it simply is not drawn. That is exactly the report: the tree shoves the player on its way down and
+  // nothing is on the ground afterwards.
+  // The old comment below is the whole story: 6M was sized when a pine box was 35*36*116 = 146k. The nine
+  // pines are 152 voxels tall and up to 55 wide, so ONE whole-tree box is about 380k, and a fell does not
+  // make one body - it shattered into 23 here, each carrying its own bounding box. The sum ran past 6M and
+  // everything after the first few got nothing.
+  const BODYCAP = 16 << 20;                            // 16M cells = 64 MB; a whole 152-tall pine box is ~380k, a giant OAK's is 1.455M
   const bodyBuf = device.createBuffer({ size: BODYCAP * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   let bodyTop = 0;                                     // bump allocator; reset when no body references it
 

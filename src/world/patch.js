@@ -14,7 +14,8 @@
       bset.add(b9);
       if (W[ii]) pgBocc[b9] = 1;                       // this batch LEFT something in that brick — see the rescan below
       stopS[gx + gz * WX] = 0;                         // scanTop cache: this column's top may have moved
-      if (track) nvTouch(gx, gz);                      // ── NAVFIELD ── every runtime TERRAIN mutation of W funnels through here, so this is the ONE place the nav column index has to be told anything (chop/dig, till, pickup, snow settle). track=false is precisely the two cases the field must IGNORE: a perched bird's grid stamp only ever overwrites air or needles with cells stampedIdx already excludes, so its solidity contribution is nil before AND after; and the editor's stage plane is a frozen borrow of the world that gets rolled back voxel for voxel.
+      if (track) nvTouch(gx, gz);
+      if (track) joltInvalidate(gx, gy, gz);   // ── JOLT ── the static collider tiles are a CACHE of W, so an edit has to drop the ones it changed or a chunk falls through solid ground (or lands on a hole)                      // ── NAVFIELD ── every runtime TERRAIN mutation of W funnels through here, so this is the ONE place the nav column index has to be told anything (chop/dig, till, pickup, snow settle). track=false is precisely the two cases the field must IGNORE: a perched bird's grid stamp only ever overwrites air or needles with cells stampedIdx already excludes, so its solidity contribution is nil before AND after; and the editor's stage plane is a frozen borrow of the world that gets rolled back voxel for voxel.
       if (track) {
         supPush(ii);
         // ── hmap MAINTENANCE, LOWER-ONLY ── the anchor oracle is sound only while hmap is never

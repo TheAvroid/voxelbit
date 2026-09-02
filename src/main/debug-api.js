@@ -2308,6 +2308,10 @@
     // two different worlds; these exist so a sweep can run inside ONE session.
     poolMs(v) { if (v !== undefined) POOL_MS = +v; return { POOL_MS, POOL_BUDGET }; },
     poolBudget(v) { return poolBudgetSet(v); },
+    jolt(v) { return joltOn(v); },                   // 1 = Jolt drives the rigid bodies, 0 = the legacy voxel solver. Booting the wasm is lazy, so the first call returns {booting:true} and the second turns it on
+    joltStats() { return joltStats(); },
+    petals(v) { return petalsSet(v); },   // the ambient falling leaves — removed on request, this puts them back for a look
+    joltCCD(v) { return joltCCD(v); },   // swept collision for the rigid bodies: off by default, see the note in sim/jolt.js
     poolAdapt(v) { return poolAdaptSet(v); },
     ringPrefetch(v) { return ringPrefetchSet(v); },   // fetch ring tiles beyond the view radius so a tile-line crossing does not open a gap        // scale the drain budget with the frame interval — 0 pins it to the fixed cap for an A/B      // bricks per drain — the OTHER half of the budget, and the one that actually binds at flight speed (POOL_MS stops mattering past ~6 ms)   // per-frame drain time — see POOL_MS in render/buffers.js
     airSeed(v) { if (v !== undefined) AIRSEED = v ? 1 : 0; return AIRSEED; },   // dev: 0 makes the pool re-derive every streamed brick's airlessness itself, the way it did before gen-pool.js started answering it

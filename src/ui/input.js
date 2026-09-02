@@ -174,7 +174,7 @@
     P.pitch = Math.max(-1.55, Math.min(1.55, P.pitch - dy * ls));
   });
   let dead = false;
-  let vbLavaT = 0, vbSandT = 0, vbDrownT = 0, vbCactT = CACT_CD;   // …the cactus one starts PRIMED: it is a leading-edge timer now (see tick-body), and the clear branch rests it here anyway — seeding it to 0 would make the very first cactus of a session the one that waited
+  let vbLavaT = 0, vbDrownT = 0, vbCactT = CACT_CD;   // …the cactus one starts PRIMED: it is a leading-edge timer now (see tick-body), and the clear branch rests it here anyway — seeding it to 0 would make the very first cactus of a session the one that waited
   const FALL_FREE = 3;                                 // metres you may drop for nothing — Minecraft's threshold, and a believable one: a 3 m hop stings nobody
   // ── AND PAST IT THE COST ACCELERATES (user 2026-08-17: "the higher the player falls, the more fall damage
   // it causes. if its really high, the player just dies") ── it used to be one point per metre, flat, which
@@ -191,7 +191,6 @@
   const FALL_KILL = 25;   // hazard damage cooldowns — a hazard ticks damage, it no longer kills on contact
   let uwT = 0;                                          // ── DROWN CLOCK ── seconds the EYE has been continuously submerged; hits DROWN_T → game over. Reset on surfacing/respawn; frozen (not reset) while paused/editor.
   const DROWN_T = 10;                                  // you can hold your breath for 10 s underwater (user)
-  const SINK_IN = 2.2, SINK_OUT = 14;                  // quicksand: sink 22 cm/s standing on a sand flat, climb back out ~6× faster once you're off it
   const die = (why) => {                               // every death routes through here so the game-over screen always says what killed you
     if (dead) return;
     dead = true;
@@ -212,7 +211,7 @@
   let xHeld = false;
   addEventListener('blur', () => { xHeld = false; });
   addEventListener('keyup', (e) => { if (e.code === 'KeyX') xHeld = false; });
-  let rdSmooth = -1;                                  // ── VIEW DISTANCE, SLEW-RATE LIMITED ── lives here, beside cloudT, because it must SURVIVE the frame: tick-camera.js is a function BODY, so a `let` at its top would reset every tick. -1 = cold, take the target as-is. See RD_SLEW in main/tick-camera.js for what it is for.
+  let rdSmooth = -1;                                  // ── VIEW DISTANCE, SLEW-RATE LIMITED ── lives HERE beside cloudT because it must SURVIVE the frame: main/tick-camera.js is a function BODY.
   let cloudT = 0;                                     // ── CLOUD TIME ── seconds, but advanced by dt * cycleSpeed so the deck's wind keeps step with the sun. At 1x it tracks wall time exactly, which is what keeps the normal drift unchanged. Frozen with the sun under __TFREEZE, or an A/B would compare two different cloud fields
   // ── AND SCROLLING DOWN PAST THE SLOWEST NOTCH REWINDS (user 2026-08-30: "when they go backwards on the
   // scroll wheel, it rewinds time") ── cycleSpeed is SIGNED: ONE ladder of x1.6 notches running -512 … -0.25,
@@ -312,10 +311,6 @@
     // mechanism the light and paint panels use, and the reason it is not a bare exitPointerLock: losing the
     // lock on its own surfaces the pause menu, which would sit on top of the very panel being opened.
     // Closing with Y again takes the cursor back, so the key is the whole round trip.
-    // ── F9: DUMP THE FLIGHT RECORDER ── press it the moment something looks wrong. The ring buffer in
-    // render/buffers.js already holds the ~12 s BEFORE the press, so the glitch does not have to be
-    // predicted or reproduced — it only has to be SEEN. Downloads a JSON file; no pointer-lock interaction.
-    if (e.code === 'F9') { e.preventDefault(); try { const r = __vb.recSave(); console.log('[vb] flight recorder saved:', r.saved, 'frames'); } catch (err) { console.warn('[vb] recSave failed', err); } return; }   // the browser's own download prompt is the confirmation — no toast, and nothing drawn into the canvas that a capture would then contain
     if (e.code === 'KeyX') { xHeld = true; }           // …the wheel reads this; NOT returning, so anything else bound to X still gets it
     if (ED.on && e.code === 'KeyY') { setLightMode(!!edSzToggle()); return; }
     if (!locked) return;

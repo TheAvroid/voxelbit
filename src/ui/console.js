@@ -789,7 +789,7 @@
   // a wait — and the wait is short enough that arriving straight away reads better than being held.
   const cmdGoTo = (x, z, label, look) => {
     const d0 = Math.round(Math.hypot(x - P.x, z - P.z));
-    P.x = x + 0.5; P.z = z + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0; P.sink = 0; P.fly = false;
+    P.x = x + 0.5; P.z = z + 0.5; P.vy = 0; P.hvx = 0; P.hvz = 0; P.fly = false;
     // maybeRecenter only fires past its own distance threshold, and a hop SHORTER than that can still land
     // outside the built rect — where hmap and W are another column's wrapped data, so the ground reads
     // wrong and the lift-out-of-solid loop below climbs through garbage (it put the player ~100 voxels in

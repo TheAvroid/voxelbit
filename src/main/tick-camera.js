@@ -800,7 +800,7 @@
     // At GMUL 1 ringFilled() returns HALF and the max() is a no-op, so this costs the shipped path nothing.
     const nearR = Math.min(P.x - rect.xlo - 12, rect.xhi - P.x - 12, P.z - rect.zlo - 12, rect.zhi - P.z - 12);
     const rdWant = ED.on ? Math.max(64, rdNow)           // editor world: nothing stale exists (occupancy is empty beyond the stage) — no rect clamp
-      : Math.max(64, Math.min(rdNow, Math.max(nearR, ringFilled())));
+      : Math.max(64, Math.min(rdNow, Math.max(nearR, ringFilledFor(nearR))));   // ringFilledFor, not ringFilled: the floored value lies while the near window is behind the player
     // ── AND IT IS SLEW-RATE LIMITED, WHICH IS THE FLASHING THE USER KEPT REPORTING ──
     // ringFilled() is `distance to the NEAREST UNFILLED TILE`, so it does not drift — it JUMPS, by up to a
     // whole tile, every time the nearest hole changes identity (one completes, or a new one comes into range).

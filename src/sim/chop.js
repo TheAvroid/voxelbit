@@ -89,6 +89,30 @@
     const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
     return solidTab[id] === 1;                       // FOLIAGE IS NOT SOLID (user): leaves have no hitbox, so a crown swings through the next tree's needles and a chunk falls past them to the ground rather than hanging in mid-air
   };
+  // ── A FELLED TREE PASSES THROUGH OTHER TREES, BUT NOT THROUGH ITS OWN STUMP (user 2026-09-01: "when a
+  // tree gets severed at the base of the trunk, it 'hangs' onto other trees … it should tilt over
+  // naturally") ── foliage already has no hitbox (see phSolidAt), so what a falling trunk catches on is
+  // WOOD: the next tree's trunk and branches, which stop it mid-lean and hold it up at an angle.
+  // It cannot simply ignore all wood. A severed trunk DROPS ONTO ITS OWN CUT FACE first and the topple
+  // drive rolls it off from there (see the tipArm note in sim/solver.js) — take the stump away and the
+  // tree does not tilt at all, it just drops straight down, which is the opposite of the request.
+  // The two are separable without a search: a body remembers the model box it was cut out of (origin +
+  // sx/sz), so wood inside that footprint is its own tree and wood outside it belongs to someone else.
+  // ── AND "ITS OWN TREE" IS THE TRUNK, NOT THE MODEL BOX ── the first cut of this used the whole footprint
+  // (origin .. origin + sx/sz), which is 46 x 48 for a pine. TCELL is 45. So the NEXT tree's trunk sat inside
+  // the box that was supposed to mean "mine", was read as the stump, kept its contacts, and the tree went on
+  // hanging exactly as before (user 2026-09-01: "the trees are still hanging on other trees when collapsed").
+  // The stump is a trunk, a few voxels across at the centre of that box, and that is what the exemption has
+  // to be: anything further out is somebody else's wood however much of this tree's box it happens to sit in.
+  const PH_STUMP_R = 8;
+  const phOwnTree = (b, x, z) => b.origin !== undefined
+    && Math.abs(x - (b.origin[0] + b.sx * 0.5)) <= PH_STUMP_R
+    && Math.abs(z - (b.origin[2] + b.sz * 0.5)) <= PH_STUMP_R;
+  const phTreeBlock = (b, x, y, z) => {              // true = skip this contact: another tree's wood
+    if (!(b.fellWhole || b.fellPart) || phOwnTree(b, x, z)) return false;
+    if (y < 0 || y >= WY) return false;
+    return woodTab[W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]] === 1;
+  };
   // Outward normal of a solid cell: point toward whichever faces are open. Gives real normals on slopes
   // and walls instead of assuming the ground is flat.
   const phNormalAt = (x, y, z, out) => {
@@ -305,6 +329,32 @@
         W[ii0] = 0; cellsOut.push(ii0); PH.stats.dustVox++;   // a lone detached voxel is litter, needle or not — no falling leaves (user 2026-08-02)
         continue;
       }
+      // ── AND A SWING SHEDS NOTHING BUT PINECONES (user 2026-09-01: "the falling debre is still happening
+      // when the player hits a tree with an axe. prevent this from happening") ── removing the axe-bite CHUNK
+      // path was only half of it, and this is the half the player was still seeing. A bite through a limb
+      // orphans every needle clump that hung off it; phFlood finds them and this loop turned each one into a
+      // falling body — MEASURED at 63 bodies off a single swing. They are erased instead, which is exactly
+      // what the line above already does for a component of one ("litter, needle or not").
+      // CONES ARE THE EXCEPTION, AND THEY ARE TESTED BY MATERIAL RATHER THAN BY SIZE: a pinecone is a few
+      // dozen voxels and so is a needle clump, so no size rule can separate them. Anything carrying a cone
+      // voxel still falls, which is the one thing the request asks to keep.
+      // The size gate is what protects the FELL — a severed pine is thousands of voxels and never trips it —
+      // and PH.chipMax is where to move the line if a genuine limb ever comes off small enough to vanish.
+      if (comp.length < PH.chipMax) {
+        let cone = 0;
+        for (let ci = 0; ci < comp.length && !cone; ci++) {
+          const cc = comp[ci], mxb = cc % f.sx, mzb = ((cc / f.sx) | 0) % f.sz, myb = (cc / (f.sx * f.sz)) | 0;
+          if (coneTab[W[phWorldIdx(S, mxb, myb, mzb)]]) cone = 1;
+        }
+        if (!cone) {
+          for (const cc of comp) {
+            const mxb = cc % f.sx, mzb = ((cc / f.sx) | 0) % f.sz, myb = (cc / (f.sx * f.sz)) | 0;
+            const iib = phWorldIdx(S, mxb, myb, mzb);
+            phMark[cc] = 3; W[iib] = 0; cellsOut.push(iib); PH.stats.dustVox++;
+          }
+          continue;
+        }
+      }
       // ── A SEVERED TREE MUST GET A SLOT (user 2026-08-07: "a pine tree floating entirely from the base where
       // it was broken") ── this used to try ONE eviction and ONE phMakeRoom and then give up, leaving the whole
       // component in W and handing it to the support resolver. That is a dead end for anything tree-sized: the
@@ -463,5 +513,10 @@
     phQRot(nb.q, PHX, nb.ax); phQRot(nb.q, PHY, nb.ay); phQRot(nb.q, PHZ, nb.az);
     nb.vel[0] = b.vel[0]; nb.vel[1] = b.vel[1]; nb.vel[2] = b.vel[2];
     nb.omega[0] = b.omega[0]; nb.omega[1] = b.omega[1]; nb.omega[2] = b.omega[2];
+    // ── A PIECE OF A FELLED TREE IS STILL A FELLED TREE ── the shatter happens ON IMPACT, so the pieces are
+    // exactly the parts that then slide and roll among the neighbouring trunks. Without this they lose the
+    // pass-through the instant the trunk bursts and hang up individually, which looks the same to the player
+    // as the trunk hanging. origin/sx/sz come off the parent above, so the stump exemption travels with it.
+    nb.fellPart = (b.fellWhole || b.fellPart) ? 1 : 0;
     return nb;
   };

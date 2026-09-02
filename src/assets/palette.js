@@ -213,8 +213,29 @@
   // The bake's own split, by INDEX rather than by colour: 1..5 is the bark ramp and 6..10 the needle
   // ramp, straight out of voxelize_pine9.py. A colour test is what the single-pine loader used and it
   // is guesswork - one olive bark shade reads as foliage and a whole trunk loses its hitbox.
+  // ── THE BARK RAMP IS FLATTENED TOWARD ITS OWN MEAN (user 2026-09-01: "smooth out the browns on the pine
+  // trees. the contrast is too much between the darkest brown and the lightest brown") ── the bake's five
+  // bark shades run 94,73,53 to 164,126,92, which is luminance 76.0 to 131.6: a 55.6 spread, the lightest
+  // 1.73x the darkest. Pulling each shade halfway to the ramp's mean halves that to ~28 and 1.31x.
+  // TOWARD THE MEAN, NOT TOWARD THE MIDDLE SHADE, and the mean is computed rather than written down: the
+  // ramp is a property of the ASSET, so a re-bake of the nine pines moves it and a literal here would then
+  // be flattening toward the wrong colour. The hue rides along untouched because every channel is pulled by
+  // the same factor — this darkens no brown and lightens no brown, it only closes the gap between them.
+  // The NEEDLES (6..10) are deliberately not touched; the request is about the browns.
+  // ── AND IT MUST NOT COLLAPSE THE RAMP ── addCol dedups inside PAL_TOL, so squeezing a ramp can silently
+  // hand two shades the same id and cost a step. At 0.5 the per-step distance is ~12 in RGB against a
+  // tolerance of 6, so all five survive; below about 0.25 they would start to merge.
+  const BARK_FLAT = 0.5;                               // 1 = the bake's own contrast, 0 = five identical browns
+  let br = 0, bg = 0, bb = 0;
+  for (let ci = 1; ci <= 5; ci++) { br += vpal[(ci - 1) * 4]; bg += vpal[(ci - 1) * 4 + 1]; bb += vpal[(ci - 1) * 4 + 2]; }
+  br /= 5; bg /= 5; bb /= 5;
   for (let ci = 1; ci <= 10; ci++) {
-    const r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
+    let r = vpal[(ci - 1) * 4], g = vpal[(ci - 1) * 4 + 1], b = vpal[(ci - 1) * 4 + 2];
+    if (ci <= 5) {
+      r = Math.round(br + (r - br) * BARK_FLAT);
+      g = Math.round(bg + (g - bg) * BARK_FLAT);
+      b = Math.round(bb + (b - bb) * BARK_FLAT);
+    }
     remap[ci] = addCol(r, g, b);
     (ci <= 5 ? woodIds : foliageIds).push(remap[ci]);
   }
