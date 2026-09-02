@@ -223,10 +223,14 @@
   //   m   double-smoothstepped massif noise, 0..1: the shape of the country
   //   k   = m*m, and THAT is what makes the low country broad. Squaring pushes the mass of the distribution
   //       down, so a peak reads as a peak precisely because the land around it does not rise to meet it.
-  const PINE_FLOOR  = WL - 4;                          // the valley floor, and it sits INSIDE H's beach window
-  // [WL-5, WL] deliberately: H lifts ground in that window onto a beach, so flats become sand instead of
-  // staying drowned. A floor UNDER the window is the "sinking sand" failure — the ground never gets lifted,
-  // and treeAt then refuses those columns for being too low, which reads as bald patches in the forest.
+  const PINE_FLOOR  = WL - 4;                          // the valley floor, four voxels UNDER the waterline
+  // — which is now what it looks like: it used to sit inside H's beach window [WL-5, WL] so that the lift
+  // there dried the flats out into sand, and with that lift deleted (see the note in H) a floor at WL-4 is
+  // simply the shallow end of the water. It is deliberately left where it is rather than raised back over
+  // WL: raising it would restore the old dry flats and the old water area, but only by capping the bed at
+  // an 11-voxel maximum against the 15 it reaches here, and the depth was asked for by name.
+  // The "sinking sand" failure the old note warned about does not apply to this: those columns are not
+  // low ground treeAt refuses, they are lake, and treeAt refusing lake is the correct answer.
   const PINE_CREST  = HMAX;                            // …and the top of the range IS the ceiling, so no summit is flattened by the clamp
   // ── THE WATERLINE SHELF WAS BUILT, MEASURED AND REMOVED (user 2026-09-01: "make the sand steps have
   // much more surface area") ── the idea was to flatten dh/dm where the land crosses WL, since a terrace's
@@ -265,9 +269,30 @@
   // ends: depth 0 stays 0 (the waterline is the waterline) and DEEP_SPAN stays DEEP_SPAN (a real basin is
   // already deep enough and is not stretched further).
   const DEEP_SPAN = 44;
-  const deepen = (h) => { if (h >= WL) return h;
-    const t = Math.min(1, (WL - h) / DEEP_SPAN);
-    return Math.round(WL - DEEP_SPAN * (1 - (1 - t) * (1 - t) * (1 - t))); };   // CUBED, not squared: the curve's slope at t=0 is the exponent, so a squared bend leaves the SHALLOWS — which is most of the water — barely deeper than they were. Cubed lifts the shallow end where the complaint actually was, and still lands on DEEP_SPAN at the deep end rather than running away with it
+  const deepen = (hc) => { if (hc >= WL) return hc;
+    const t = Math.min(1, (WL - hc) / DEEP_SPAN);
+    return WL - DEEP_SPAN * (1 - (1 - t) * (1 - t) * (1 - t)); };              // CUBED, not squared: the curve's slope at t=0 is the exponent, so a squared bend leaves the SHALLOWS — which is most of the water — barely deeper than they were. Cubed lifts the shallow end where the complaint actually was, and still lands on DEEP_SPAN at the deep end rather than running away with it
+  // ── THE BED DROPS ONE VOXEL AT A TIME, AND THAT IS ENTIRELY A QUESTION OF WHEN IT IS ROUNDED (user
+  // 2026-09-02: "make the water drop in steps of one instead of two-3") ── deepen used to be handed an
+  // ALREADY-ROUNDED integer height and round its own answer again. Its slope at the waterline is the
+  // exponent, 3, so two columns whose raw bed differed by one voxel came out THREE apart: the map sent
+  // raw depth 1 -> 3, 2 -> 6, 3 -> 8, 4 -> 11. Depths 1, 2, 4, 5, 7, 9, 10 did not exist anywhere in the
+  // world, so a lake bed could only be a flat terrace with a 2- or 3-voxel riser at its edge. Measured
+  // over a 700x700 region before the change: 656 adjacent steps of 2, 442 of 3, 274 of 7 and not ONE
+  // step of 1 anywhere under the water.
+  // Rounding ONCE, after the remap, fixes it without touching the curve, the span or the depth: the
+  // deepened bed is now a continuous surface whose gradient is 3x the raw field's, and the raw field
+  // near a shore falls about a twelfth of a voxel per voxel (see PINE_BOWL), so the bed falls about a
+  // quarter of a voxel per voxel and rounds to a 1-voxel riser every ~4 voxels of tread. Same profile,
+  // same DEEP_SPAN, same depth at every point - only the sampling of it changed.
+  // ONE helper rather than the expression written out three times: H, makeHRow and makeHCol all call
+  // this, so the pre-round clamp and the remap cannot drift between the copies. Registered in BOTH
+  // worker fn tables (world/gen-pool.js, world/gen-worker.js) alongside deepen and pineBase.
+  // It returns a FLOAT, deliberately: the basin carve below it is a lerp toward bedrock with a multiplier
+  // of ~68, so rounding here and again after the carve reintroduces exactly the defect this fixes (measured
+  // on a basin at 74300,-152800: rounding twice put back 284 of the 2-voxel steps). ONE round, at the end
+  // of the pass, in the `Math.round(oakBank(...))` line all three copies already share.
+  const bedH = (x, z) => deepen(Math.min(HMAX, Math.max(4 + LIFT, pineBase(x, z))));
   // ── THE LAKE THRESHOLD, AND WHY IT IS A CONSTANT NOW ── this number is INLINED IN THREE PLACES: here, and
   // again in makeHRow and makeHCol (world/gen-noise.js), which carry their own copy of the height expression
   // and decompose the same noise into row/column form. All three must agree bit for bit or the bulk fill and
@@ -1091,15 +1116,30 @@
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
   const H = (x, z) => {
-    let h = deepen(baseH(x, z));   // …BEFORE the basin and river carves, so those still measure from the real bed
+    let h = bedH(x, z);            // …BEFORE the basin and river carves, so those still measure from the real bed
     const bm = basinM(x, z);
     const m = bm * basinLow(h, x, z);                   // basins only form in low country — and the arctic's ceiling is higher, see basinLow
-    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 52)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
+    if (m > 0) h = h - m * (h - Math.max(6, LIFT - 52));   // ── AND THE BASIN CARVE IS CONTINUOUS AND UNDITHERED, FOR THE SAME REASON ── it used to round here and add a +-0.4 ihash jitter to break "terrace banding". The banding was the double round, not the carve: with the bed continuous the rim already falls one voxel at a time, and a +-0.4 jitter on top of it is what turns a 1.0 drop into a 1.8 and rounds it to 2. Measured on the basin at 74300,-152800 — rounded+dithered 1032 steps of 2 or more, dither alone 423, double round alone 284, neither 0.   // gently dithered — no terrace banding
     const rs = riverS(x, z);
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
-    h = Math.round(oakBank(h, x, z));                  // ── SHALLOW OAK BANKS ── BEFORE the carve, so the lerp below starts from the shelf instead of from a hilltop. h is already an integer here, so Math.round is the identity outside the oak forest and the pine/desert heights stay bit-exact; see oakBank
+    h = Math.round(oakBank(h, x, z));                  // ── AND THIS IS THE ONE PLACE THE FIELD IS ROUNDED ── the bed and the basin carve above are both continuous now (see bedH), so this line is no longer a no-op on an integer: it is the single quantisation of the whole height field, and it is here because oakBank has to run BEFORE the river carve so the lerp starts from the shelf rather than from a hilltop. Every copy of H rounds in this line and nowhere else; see oakBank
     if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 38 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
-    if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
+    // ── AND THE BEACH-FLAT LIFT IS GONE, BECAUSE IT WAS THE OTHER HALF OF THE SAME COMPLAINT ── it shoved
+    // every column in [WL - 5, WL] up to WL + 1 with 0-2 voxels of dune relief, which is a CLIFF at the
+    // bottom edge of its own window: the shore read WL+1, WL+1, then WL-6, a seven-voxel drop straight into
+    // the water, and that was 274 of the measured steps. It cannot be smoothed away either - a monotone
+    // remap that lifts a band above WL has to fall faster than deepen already does to catch back up, so
+    // any continuous version of it puts the 2-voxel risers straight back. The choice is dry flats OR a
+    // 1-voxel shore, and the request is for the shore.
+    // WHAT IT COSTS, STATED PLAINLY: the flats it used to lift are water now. Measured over the same
+    // 700x700 region the wet fraction goes 2.9% -> 4.3%, so there is about half again as much still water
+    // in the world and the sand is the shore band (fillColumn's h <= WL + 6) rather than a lifted flat.
+    // Raising PINE_FLOOR instead keeps the old water area, but only by trading away the depth the bed was
+    // just given (+2 holds 2.9% wet at a 11-voxel maximum, against 15 here), so it is not taken.
+    // The values this used to make impossible - h in WL-5..WL - are ones terrain.js was ALREADY built for:
+    // its `lake` test reads `h <= WL - 1 || (h === WL && a neighbour is lower)` precisely so a 2-deep
+    // column is water and a 1-deep rim column is water only where it joins some, which is the isolated
+    // dither puddle this line used to prevent by brute force.   // beach flats get 0-2 voxel dune relief
     // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
     // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
     // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,
