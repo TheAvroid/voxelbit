@@ -99,9 +99,20 @@
     // spread over the whole footprint of the crown, and walking each one down individually is the chore that
     // produced the report. Paired with the stillness rule below being relaxed, since the chunks that got missed
     // were the ones still jostling against their neighbours when the player walked past.
-    absorbAgeMs: 0,                                  // ── HOW LONG A CHUNK MUST EXIST BEFORE IT MAY BE COLLECTED ── was a flat 1500 hard-coded in the solver's absorb gate, which is why a piece had to LAND before you could take it. 0 = the frame it is born. See the gate in sim/solver.js for why the velocity test beside it is left alone
-    absorbR: 34,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user). 26 -> 34 ("make absorbtion more sensitive"): the reach is what decides whether a chunk you are standing over counts as yours, and instant pickup is worth little if you still have to be on top of it — matches AUTO_PICK_R so items and chunks vacuum up at the same range
-    absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
+    absorbAgeMs: 1500,                               // ── HOW LONG A CHUNK MUST EXIST BEFORE IT MAY BE COLLECTED ── was a flat 1500 hard-coded in the solver's absorb gate, which is why a piece had to LAND before you could take it; 38128ac made it 0 ("let the player pick up chunks instantly, the moment it turns into a chunk") and this puts the wait back (user 2026-09-02). The CONSTANT stays — the gate in sim/solver.js reads it rather than a literal, so this is the whole switch and there is no second place to keep in step. See that gate for why the velocity test beside it is left alone either way
+    absorbR: 26,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user). 34 -> 26, back to what it was before 38128ac widened it: that widening was the other half of instant pickup ("instant pickup is worth little if you still have to be on top of it"), so it goes back with it rather than being left behind on its own. NB the long-standing claim here that this "matches AUTO_PICK_R" is not true and was not true at 26 either — AUTO_PICK_R is 16 (ui/audio.js), so a chunk has always been drawn in from further than a dropped item
+    // ── THE FLIGHT IS HALF THE SPEED (user 2026-09-02: "slow the speed at which the chunks gets absorbed to
+    // the player when the tool hits the rock … slow it down by 50%") ── absorbFly 420 -> 840. It is the flight's
+    // DURATION in ms, not a rate: sim/solver.js reads k = (now - absorbT0) / absorbFly and smoothsteps it, so the
+    // whole arc is parameterised on it and doubling the duration halves the speed everywhere along the curve —
+    // the gentle leave and the fast arrival keep their proportions rather than one of them absorbing the change.
+    // absorbMs is deliberately NOT touched: that is the WAIT before the chunk sets off, and slowing the flight
+    // is not the same ask as making the player stand there longer before anything happens.
+    // THEN 25% OF THE SPEED BACK (user 2026-09-02: "increase the speed of the chunk flight duration by 25%"):
+    // 840 -> 672. Speed and duration are reciprocal here, so a 25% FASTER flight is a divide by 1.25, not a
+    // subtraction of 25% — 840 * 0.75 would be 630 and a 33% speed-up. Net against the original 420: half the
+    // speed, then a quarter of it back, leaving the flight 1.6x its original length.
+    absorbMax: 2000, absorbMs: 450, absorbFly: 672,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
     // ── RAISED TO COVER EVERY CHUNK THE GAME MAKES (user 2026-08-22: "make sure all chunks can be absorbed no
     // problem") ── 200 predates the felled-tree shatter, whose pieces are exactly fellChunkVox (350) each, so
     // every one of them was over the line and only got through on the fellLoot exemption. Anything the game

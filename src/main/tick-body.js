@@ -122,7 +122,7 @@
         // almost at once, and SWIM_EASE below is already the ramp onto it. Gravity is deliberately NOT used —
         // it winds up to -345 and would drop the player through 4-5 voxels of lake like a stone through air.
         const tgt = rising
-          ? Math.max(-SWIM_SINK, Math.min(SWIM_UP, (WL + 1 + SWIM_RISE + Math.sin(now * 0.009) * SWIM_BOB - eyeY) * SWIM_K))
+          ? Math.max(-SWIM_SINK, Math.min(SWIM_UP, (WL + 1 + SWIM_RISE + Math.sin(now * SWIM_BOBW) * SWIM_BOB - eyeY) * SWIM_K))
           : -SWIM_SINK;
         P.vy += (tgt - P.vy) * (1 - Math.exp(-SWIM_EASE * dt));
       } else {                                       // ── FALLING GAINS MOMENTUM ── (user) a flat GRAVITY into a -160 terminal hit its cap in 0.8 s, so anything

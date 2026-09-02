@@ -783,6 +783,21 @@
   // (WYpick 384/256/192, WXZ 2048/1536/1280/1024/768) can actually be exercised and measured on a
   // big GPU. The game now ships to players' own machines, so those paths are shipping paths.
   { const m = /worldcap=(\d+)/.exec(location.search); if (m) lim = Math.min(lim, +m[1]); }
+  // ── SAFE MODE ── the same ladder, made PERSISTENT, and it exists because of a bug report the page could
+  // not answer: "gpu device lost (unknown) — reload the page" on a gaming laptop, with no way to reach the
+  // machine. `unknown` is the driver saying it reset the device or could not meet an allocation, and the only
+  // lever a web page has in either case is TO ASK FOR LESS. vb_safe is a level 0-3 written by the banner's own
+  // button (see core/telemetry.js), so a player who cannot hold the full window can step down to one that fits
+  // without a console, a flag or a build:
+  //   1  view distance x1 — keeps the 2048 window, pool 1.05 GB -> 402 MB. Halves the VRAM, costs 200 m -> 100 m.
+  //   2  …and a 1536 window — pool 226 MB, view 75 m.
+  //   3  …and a 1024 window + a render-scale ceiling (see render/targets.js) — the floor of the ladder.
+  // NEVER ARMED AUTOMATICALLY. A device lost once to a driver update, an Optimus/MUX switch or a laptop waking
+  // from sleep must not silently cost every later session its view distance; the player presses the button, and
+  // __vb.safeMode(0) (or the banner's reset) hands the quality straight back.
+  let SAFE = 0;
+  try { SAFE = Math.max(0, Math.min(3, +localStorage.getItem('vb_safe') | 0)); } catch (e) {}
+  if (SAFE >= 2) lim = Math.min(lim, SAFE >= 3 ? 402653184 : 905969664);   // 1024 and 1536 windows — the rungs of the WXZ ladder below, named as the byte caps it tests
   const WYpick = lim >= SIZE384 ? 384 : (lim >= SIZE256 ? 256 : 192);
   let WXZ = 768;                                       // widest window the adapter can bind: 2048 (1.5 GB) → a TRUE 100 m view radius
   if (WYpick === 384) for (const c of [2048, 1536, 1280, 1024]) if (lim >= c * c * 384) { WXZ = c; break; }
@@ -810,15 +825,51 @@
   // Measured after: the filled radius HOLDS at 1920 through sprint-speed flight (it used to fall to ~1050 and
   // oscillate), zero overflow, and the far terrain renders real ground all the way out.
   let GMUL_PICK = (WXZ === 2048 && WYpick === 384 && lim >= GPOOL2 * 1.15) ? 2 : 1;
+  if (SAFE >= 1) GMUL_PICK = 1;                        // BEFORE the ?gmul override, so an explicit flag still wins for testing on a safe-moded profile
   { const m = /[?&]gmul=(\d+)/.exec(location.search); if (m) GMUL_PICK = Math.max(1, Math.min(2, +m[1] | 0)); }
   if (GMUL_PICK > 1) console.log('[vb] view distance x' + GMUL_PICK + ' - far ring pool', (GPOOL2 / 1048576) | 0, 'MB of', (lim / 1048576) | 0, 'MB bindable');
   const WBYTES = WXZ * WXZ * WYpick;
+  // ── WHAT THIS MACHINE ACTUALLY PICKED ── on window, not just in the console, because the one machine that
+  // needs it is somebody else's. The device-lost banner prints it, and a bug report that carries it says which
+  // rung of the ladder was in play — which is the difference between "the driver reset" and "we asked for
+  // 1.05 GB it did not have".
+  window.__vbTier = { wxz: WXZ, wy: WYpick, gmul: GMUL_PICK, safe: SAFE, bindMB: (lim / 1048576) | 0,
+    adapterMB: (Math.min(adapter.limits.maxStorageBufferBindingSize, adapter.limits.maxBufferSize) / 1048576) | 0 };
+  // ── STEPPING DOWN THE LADDER BY ITSELF, AND ONLY AT BOOT ── the banner's button is for a player who saw the
+  // crash; this is for the machine that never gets that far. A device that dies WHILE LOADING is not a driver
+  // blip you can shrug off and carry on from — it is this machine saying it cannot hold what we just asked for,
+  // every time, forever, and reloading unchanged asks for exactly the same thing again. There is no session to
+  // lose and nothing to preserve, so it drops a rung and reloads itself.
+  // MID-SESSION IS THE OPPOSITE CASE and must stay manual: a driver update, an Optimus/MUX switch or a laptop
+  // waking from sleep kills a device that was running fine, and silently costing that player their view distance
+  // for the rest of time would be the wrong read of a one-off.
+  // BOUNDED BY sessionStorage, NOT localStorage: the counter has to survive the reload it is about to trigger
+  // and die with the tab, or a machine that has one bad day boots at the bottom of the ladder for ever. Three
+  // steps is the whole ladder; after that it gives up and lets the banner explain itself.
+  const safeStepDown = (why) => {
+    let n = 0;
+    try { n = +sessionStorage.getItem('vb_safeAuto') || 0; } catch (e) {}
+    if (SAFE >= 3 || n >= 3) return false;
+    try { sessionStorage.setItem('vb_safeAuto', String(n + 1)); localStorage.setItem('vb_safe', String(SAFE + 1)); } catch (e) { return false; }
+    console.warn('[vb] ' + why + ' - retrying at safe level ' + (SAFE + 1));
+    try { loadMsgEl.textContent = 'not enough graphics memory - retrying smaller'; } catch (e) {}
+    setTimeout(() => location.reload(), 1200);         // long enough to READ, short enough that it still feels like loading rather than a hang
+    return true;
+  };
   const PROF = adapter.features.has('timestamp-query');   // per-pass GPU timing (dev __vb.prof(); harmless when unread)
   // A device gets DEFAULT limits unless it asks for more, whatever the adapter can do. TRACE already
   // binds exactly 8 storage buffers and 8 is the WebGPU default cap, so a 9th (the paged-storage
   // descriptor table) fails pipeline creation SILENTLY: black frame, absurd fps, nothing on __vbErr.
+  // ── AND IT ASKS FOR WHAT IT BINDS ── this used to require WBYTES, the size of the DENSE GPU WORLD, and there
+  // has not been one since the paged brick pool replaced it (see the top of render/buffers.js). At a 2048 window
+  // that asked every player's driver for a 1.61 GB binding when the largest buffer the game creates is the pool
+  // at 1.04 GB - half a gigabyte of limit nothing was ever going to use, on the machines least able to spare it.
+  // GPOOL1 mirrors POOL_FRAC in render/buffers.js exactly as GPOOL2 above mirrors POOL_FRAC_RING, and for the
+  // same reason: the pool has to be SIZED before the fragment that sizes it runs. Both are noted there too.
+  const GPOOL1 = Math.ceil((WXZ >> 3) * (WYpick >> 3) * (WXZ >> 3) * 0.25) * 512;
+  const BIGBUF = Math.max(GMUL_PICK > 1 ? GPOOL2 : GPOOL1, 268435456);   // 256 MB floor: the default maxBufferSize, so this never asks for LESS than a device already gives
   const device = await adapter.requestDevice({
-    ...(WBYTES > (1 << 27) ? { requiredLimits: { maxStorageBufferBindingSize: WBYTES, maxBufferSize: Math.max(WBYTES, 268435456) } } : {}),
+    requiredLimits: { maxStorageBufferBindingSize: BIGBUF, maxBufferSize: BIGBUF },
     ...(PROF ? { requiredFeatures: ['timestamp-query'] } : {}) });
   if (WYpick < 384 || WXZ < 2048) console.warn('[vb] adapter caps buffers at', lim, '— window', WXZ, '×', WYpick);
   // GPU errors are also RECORDED, not just logged. A shader that fails to compile makes every command
@@ -898,14 +949,85 @@
   }
   window.addEventListener('error', (e) => vbNoteErr('uncaught', e.error || e.message));
   window.addEventListener('unhandledrejection', (e) => vbNoteErr('rejection', e.reason));
-  device.lost.then((info) => {                         // device lost = the picture freezes at the last frame with no error anywhere — now it says so
+  // ── DEVICE LOST ── the picture freezes at the last frame with no error anywhere, so this banner is the only
+  // thing that ever tells anybody what happened. It used to print the REASON alone, and for every interesting
+  // case that string is 'unknown': WebGPU has exactly two reasons, 'destroyed' (we called destroy(), expected)
+  // and 'unknown' (literally everything else), so the reason discriminates NOTHING and info.MESSAGE is where
+  // the driver says what it actually did. That was logged to a console the reporter was never going to open and
+  // dropped from the one surface they could see. A real report (2026-09-02, an Asus TUF A16) came back as those
+  // four words and nothing else, and there was no way to tell a driver timeout from an allocation the laptop
+  // could not meet, which are opposite bugs with opposite fixes.
+  // So it now carries the whole picture: the driver's own message, which adapter we got and which rung of the
+  // world ladder that bought, how long the session had been up, and any GPU errors already recorded. Selectable,
+  // with a COPY button, because the entire point is that it ends up in a bug report.
+  const gpuLostBanner = (info) => {
     vbNoteErr('gpu device lost', info.reason + ' — ' + info.message);
-    loadEl.classList.add('hidden');
+    // ── LOST BEFORE THE GAME EVER STARTED ── window.__vb is the last thing boot publishes, so its absence means
+    // the device died DURING LOAD. That is not a driver blip: it is this machine failing to hold what we asked
+    // for, and it will do it again on the next reload and the one after. Drop a rung and retry instead of
+    // showing a crash screen whose only honest advice is "try something smaller". See safeStepDown in
+    // core/gpu.js for why this is boot-only and how it is bounded against a reload loop.
+    if (info.reason !== 'destroyed' && !window.__vb && safeStepDown('device lost while loading')) return;
+    try { document.exitPointerLock(); } catch (e) {}     // the pointer is locked to a canvas that will never draw again; nothing below is clickable until it is released
+    try { loadEl.classList.add('hidden'); } catch (e) {}
+    // TDZ-SAFE READS. This callback can fire DURING boot — an allocation that fails while the pool is being
+    // built is exactly the case worth reporting — and in that case the fragments below core/ have not run yet.
+    // `typeof` does NOT help here: these are let/const in the SAME scope, so touching one inside its temporal
+    // dead zone throws rather than reporting 'undefined'. Hence a try/catch per read. Getting this wrong would
+    // have thrown inside a .then() whose .catch() swallows it — a lost device and a BLANK SCREEN.
+    const q = (f, d) => { try { const v = f(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
+    const tier = q(() => window.__vbTier, null);
+    const ad = q(() => window.__vbAdapter, null);
+    const gerr = q(() => window.__vbGpuErr, []) || [];
+    const report = [
+      'reason   ' + info.reason,
+      'message  ' + (info.message || '(none)'),
+      'adapter  ' + (ad ? ([ad.vendor, ad.architecture, ad.device, ad.description].filter(Boolean).join(' ') || '(unnamed)') : '(unknown)'),
+      'world    ' + (tier ? tier.wxz + 'x' + tier.wy + '  view x' + tier.gmul + '  bindable ' + tier.bindMB + ' MB of ' + tier.adapterMB + '  safe ' + tier.safe : '(not reached)'),
+      'screen   ' + q(() => RW + 'x' + RH + ' @ ' + Math.round(renderScale * 100) + '%', '(not reached)'),
+      'pool     ' + q(() => (((POOL_SLOTS * 512) / 1048576) | 0) + ' MB', '(not reached)'),
+      'uptime   ' + (performance.now() / 1000).toFixed(1) + ' s',
+      'gpuerr   ' + (gerr.length ? gerr.map((e) => e.msg + (e.n > 1 ? ' x' + e.n : '')).join(' | ') : 'none'),
+      'log      ' + (window.__vbErrLog.length ? window.__vbErrLog.slice(-6).map((e) => e.up + 's ' + e.tag).join(', ') : 'none'),
+      'agent    ' + navigator.userAgent,
+    ].join('\n');
     const b = document.createElement('div');
-    b.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;align-items:center;justify-content:center;background:rgba(8,10,14,0.88);color:#ff8a95;font:10px "px3",Consolas,monospace;letter-spacing:2px;text-align:center;line-height:2';
-    b.textContent = 'gpu device lost (' + info.reason + ') — reload the page';
+    b.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;box-sizing:border-box;background:rgba(8,10,14,0.94);color:#ff8a95;font:10px "px3",Consolas,monospace;letter-spacing:2px;text-align:center;line-height:2';
+    const h = document.createElement('div');
+    h.textContent = 'gpu device lost (' + info.reason + ')';
+    const sub = document.createElement('div');
+    sub.style.cssText = 'color:#c9d2dd;opacity:0.8;letter-spacing:1px';
+    sub.textContent = info.reason === 'destroyed' ? 'the page released the gpu' : 'the graphics driver reset, or ran out of memory';
+    // The driver's message, big enough to read and SELECTABLE — the banner sits over a canvas that has had
+    // user-select off all session, so it has to turn it back on for itself or the text cannot even be dragged.
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'margin:0;max-width:min(760px,92vw);max-height:38vh;overflow:auto;text-align:left;white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:12px 14px;color:#c9d2dd;font:11px/1.6 Consolas,monospace;letter-spacing:0;user-select:text;-webkit-user-select:text';
+    pre.textContent = report;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center';
+    const mk = (label, bg, fn) => { const el = document.createElement('button');
+      el.style.cssText = 'cursor:pointer;padding:10px 16px;border:1px solid rgba(255,255,255,0.22);border-radius:6px;background:' + bg + ';color:#0d1014;font:9px "px3",Consolas,monospace;letter-spacing:2px';
+      el.textContent = label; el.onclick = fn; row.appendChild(el); return el; };
+    mk('reload', '#b8ff6e', () => location.reload());
+    mk('copy report', '#c9d2dd', function () {
+      const self = this;
+      const bad = () => { self.textContent = 'select it instead'; };   // clipboard access is refused outright over plain http and on an unfocused page, and it REJECTS rather than throwing — a bare try/catch would have reported success on the one path most likely to fail
+      try { const pr = navigator.clipboard.writeText(report); self.textContent = 'copied'; if (pr && pr.catch) pr.catch(bad); } catch (e) { bad(); } });
+    // ── THE ONE THING A PLAYER CAN ACTUALLY DO ── if the driver reset under load, or could not hold what we
+    // asked for, then reloading unchanged asks it for exactly the same thing again. This steps the world down
+    // one rung (SAFE in core/gpu.js) and reloads into it. Hidden on 'destroyed', which is us shutting the page
+    // down and never a machine problem, and at the bottom of the ladder there is nothing left to give up.
+    const VIEW = ['200 m view', '100 m view', '75 m view', '55 m view, half res'];
+    const lvl = tier ? (tier.safe | 0) : 0;
+    if (info.reason !== 'destroyed' && lvl < 3) mk('reload smaller (' + VIEW[lvl] + ' -> ' + VIEW[lvl + 1] + ')', '#ffd76a', () => {
+      try { localStorage.setItem('vb_safe', String(lvl + 1)); } catch (e) {}
+      location.reload(); });
+    if (lvl > 0) mk('reset quality', '#8fb7ff', () => { try { localStorage.removeItem('vb_safe'); } catch (e) {} location.reload(); });
+    b.append(h, sub, pre, row);
     document.body.appendChild(b);
-  }).catch(() => {});
+  };
+  window.__vbGpuLost = gpuLostBanner;                   // so the crash screen can be SEEN without crashing a gpu: __vbGpuLost({reason:'unknown', message:'...'}) draws exactly what a player would get. A screen nobody can render is a screen nobody checks
+  device.lost.then(gpuLostBanner).catch(() => {});
   const canvas = $('c');
   const ctx = canvas.getContext('webgpu');
   const format = navigator.gpu.getPreferredCanvasFormat();
@@ -9831,7 +9953,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // enough to verify the read path is bit-identical and to measure what it costs.
   // NOTHING here is allocated unless the probe is on. Sized for players it would be ~1 GB of JS heap and
   // ~1 GB of GPU buffer that no frame ever reads - a far bigger regression than the feature is a win.
-  const POOL_FRAC = 0.25;                              // slots as a fraction of all bricks. With sealed rock sharing one page the real figure is ~12%; this is 2x headroom for the transient before sealing settles.
+  const POOL_FRAC = 0.25;                              // slots as a fraction of all bricks. With sealed rock sharing one page the real figure is ~12%; this is 2x headroom for the transient before sealing settles. MIRRORED as GPOOL1 in core/gpu.js, which needs the pool's size before this fragment runs to ask the device for a big enough binding - change one and change both
   // ── AND THE RING IS SIZED OFF THE GPU GRID, NOT THE CPU ONE ── a storage buffer cannot grow, so the pool
   // has to be allocated for the widest window it will ever hold. At GMUL 2 that is four times the bricks, and
   // the fraction comes down because the measured steady state is ~13%: the 2x headroom POOL_FRAC carries is
@@ -9839,7 +9961,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // slab in hand), so it never needs that headroom.
   // THE ALLOCATION IS WHAT DECIDES WHETHER A MACHINE CAN RUN THIS, not the fraction of it that ends up
   // occupied: ~1.03 GB at GMUL 2 against 402 MB at GMUL 1. That is the whole reason GMUL rides the adapter.
-  const POOL_FRAC_RING = 0.17;
+  const POOL_FRAC_RING = 0.17;                         // MIRRORED as GPOOL2 in core/gpu.js - see POOL_FRAC above
   const POOL_SLOTS = GMUL > 1 ? Math.ceil(GBX * GBY * GBZ * POOL_FRAC_RING) : Math.ceil(BX * BY * BZ * POOL_FRAC);
   // bdesc, the water bits and the L2 bits are all on the GPU GRID (see TWO WINDOWS in world/window.js):
   // they cover the far ring as well, and the shader indexes nothing else. airFree stays on the CPU grid,
@@ -9862,11 +9984,31 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // and flushed instead: same number of bytes uploaded, 8 MB of heap rather than 400.
   const POOL_CHUNK = 16384;                            // slots per staged upload (8 MB)
   const poolCPU = new Uint8Array(POOL_CHUNK * 512);
+  // ── THE ALLOCATION THAT DECIDES WHETHER THIS MACHINE CAN RUN THE GAME ── the pool is ~1.04 GB at a 2048
+  // window (see POOL_FRAC_RING above) and it is by far the largest thing the game asks any driver for. WebGPU
+  // does not throw when a buffer will not fit: createBuffer hands back an INVALID buffer and the first frame
+  // that binds it takes the device down with a lost-device 'unknown' and no other trace - which is exactly the
+  // report this was written for (2026-09-02, a gaming laptop, always at load).
+  // AND THIS SCOPE IS THE BELT, NOT THE BRACES. The spec says a buffer that will not fit generates a
+  // GPUOutOfMemoryError, and on this backend it simply does not: MEASURED 2026-09-02 on a 12 GB RTX 4070,
+  // twenty-three consecutive 2 GB storage buffers - 46 GB - were all created with an empty error scope every
+  // time. D3D12 commits lazily, so nothing fails at the call that asked. Keep the scope because it costs one
+  // await at boot and other backends (and other drivers) do report honestly, but do NOT read a clean pop as
+  // proof the memory is there. The mechanism that actually catches this machine is the device dying during
+  // load, handled in core/telemetry.js, and safeStepDown is deliberately shared by both.
+  device.pushErrorScope('out-of-memory');
   const bdescBuf = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC for __vb.gpudiff()
   const gwbBuf = device.createBuffer({ size: gwb.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const gb2Buf = device.createBuffer({ size: gb2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const poolBuf = device.createBuffer({ size: POOL_SLOTS * 512, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the pool back to verify it still matches W
-  const bdescRead = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  // ── ALLOCATED ONLY IF SOMETHING ASKS FOR IT ── the staging buffer __vb.gpudiff() reads the descriptors back
+  // through, and its ONLY caller is that one debug command. At a 2048 window it is 50 MB, and MAP_READ means
+  // 50 MB of HOST-VISIBLE memory - the scarcest kind there is on a laptop whose GPU shares system RAM, handed
+  // out at boot on every machine that will never run a diagnostic. Lazy costs one `||` on a dev path.
+  let bdescRead = null;
+  const bdescReadBuf = () => bdescRead || (bdescRead = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }));
+  { const oom = await device.popErrorScope();
+    if (oom && safeStepDown('brick pool (' + (((POOL_SLOTS * 512) / 1048576) | 0) + ' MB) would not allocate')) await new Promise(() => {}); }   // never resolves: the reload is already scheduled, and letting boot carry on would bind the invalid buffer and lose the device before it lands
   let poolUsed = 0, poolOverflow = 0, poolSealed = 0;
   // ── WHAT A SEALED BRICK READS AS, AND IT MUST BE ROCK ── every sealed brick in the window shares ONE page,
   // so whatever fills that page is what shows anywhere a ray does reach one. This was the literal 71, chosen
@@ -15499,6 +15641,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
   let renderScale = 0.7;                               // default resolution scale (user 2026-08-28: back to 70%, briefly 60%, was 80%, was 90%); the settings slider AND the [ ] keys both step 40..100% in 10s (persisted vb_scale). The 0.375 floor below is what an older build could persist and what __vb.res() still accepts — neither control offers it.
   try { const v = parseFloat(localStorage.getItem('vb_scale')); if (v >= 0.375 && v <= 1.0) renderScale = v; } catch (e) {}
+  if (SAFE >= 3) renderScale = Math.min(renderScale, 0.5);   // ── SAFE MODE, BOTTOM RUNG ── see core/gpu.js. A device that lost itself three times has already been given a smaller world; this is the other half of the ask, and it is a CEILING rather than an assignment so a player who had already chosen less keeps it
   let RW = 0, RH = 0, CW = 0, CH = 0;
   let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, visBuf = null;
   let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline
@@ -15769,9 +15912,20 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // 5 is knee-deep: it engages in an ordinary lake while still leaving a shallow wade as walking.
   const SWIM_DEEP = 5;
   const SWIM_STEP = 12;                                // how far a SWIMMER may auto-step, against 5 on land — sized off the measurement in moveAxis: float depth 6 + the steepest bank on a measured lake 4, plus margin
-  const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 4.5;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
+  // ── THE BOB IS TWICE AS BIG NOW (user 2026-09-02: "make the bob when swiming in water twice as obvious?
+  // make it bounce up and down more") ── and doubling SWIM_BOB alone would NOT have done it, which is why
+  // both numbers move. The bob perturbs the TARGET LINE, and the eye chases that line through the spring in
+  // main/tick-body.js: tgt is a velocity, (line - eyeY) * SWIM_K. A first-order lag tracks a sine at only
+  // K / sqrt(K^2 + w^2) of its amplitude, and at K = 2 against w = 9 rad/s that is 0.22 — so ±4.5 voxels of
+  // line became about ±1 voxel of actual eye travel. That is the "not obvious" being reported.
+  // 6.5 at 6 rad/s gives 2 / sqrt(4 + 36) = 0.32, so ±2.05 voxels: 2.1x the old excursion, measured off the
+  // transfer function rather than guessed. THE SLOWER RATE IS PART OF THE FIX, not a side effect — amplitude
+  // alone would have to reach ±9 to do the same job, and ±9 * SWIM_K is ±18, exactly the SWIM_UP clamp, so
+  // the peaks would flatten against the ceiling and the bob would come out trapezoidal instead of bigger.
+  // At 6.5 the velocity term peaks at ±13, still clear of it. A slower, deeper swell also reads as water.
+  const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 6.5, SWIM_BOBW = 0.006;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
   const SAND_SPD = 0.75;                              // ── SAND SLOWS YOU BY 25% (user 2026-09-01: "only let the sand slow down the player by 25%") ── was 0.5, i.e. a 50% cut. The multiplier is the speed you KEEP, so a 25% slow is 0.75, not 0.25
-  const WATER_SPD = 0.344;                             // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
+  const WATER_SPD = 0.43;                              // +25% AGAIN (user 2026-09-02: "increase the movement speed in water by 25%") 0.344 -> 0.43. It is a straight multiplier on the movement speed and nothing else reads it, so a 25% ask IS a 1.25 multiply.   // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
   // ── THE PLAYER STARTS IN THE OAK FOREST (user 2026-08-22: "spawn me automatically in the oak forest") ──
   // and this is a PLAYER offset, not a world one, which is the whole point. The biome bands are anchored to
@@ -17936,9 +18090,20 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // spread over the whole footprint of the crown, and walking each one down individually is the chore that
     // produced the report. Paired with the stillness rule below being relaxed, since the chunks that got missed
     // were the ones still jostling against their neighbours when the player walked past.
-    absorbAgeMs: 0,                                  // ── HOW LONG A CHUNK MUST EXIST BEFORE IT MAY BE COLLECTED ── was a flat 1500 hard-coded in the solver's absorb gate, which is why a piece had to LAND before you could take it. 0 = the frame it is born. See the gate in sim/solver.js for why the velocity test beside it is left alone
-    absorbR: 34,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user). 26 -> 34 ("make absorbtion more sensitive"): the reach is what decides whether a chunk you are standing over counts as yours, and instant pickup is worth little if you still have to be on top of it — matches AUTO_PICK_R so items and chunks vacuum up at the same range
-    absorbMax: 2000, absorbMs: 450, absorbFly: 420,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
+    absorbAgeMs: 1500,                               // ── HOW LONG A CHUNK MUST EXIST BEFORE IT MAY BE COLLECTED ── was a flat 1500 hard-coded in the solver's absorb gate, which is why a piece had to LAND before you could take it; 38128ac made it 0 ("let the player pick up chunks instantly, the moment it turns into a chunk") and this puts the wait back (user 2026-09-02). The CONSTANT stays — the gate in sim/solver.js reads it rather than a literal, so this is the whole switch and there is no second place to keep in step. See that gate for why the velocity test beside it is left alone either way
+    absorbR: 26,                                     // …and a body already AT REST on the ground is drawn in from this far (vox, user). 34 -> 26, back to what it was before 38128ac widened it: that widening was the other half of instant pickup ("instant pickup is worth little if you still have to be on top of it"), so it goes back with it rather than being left behind on its own. NB the long-standing claim here that this "matches AUTO_PICK_R" is not true and was not true at 26 either — AUTO_PICK_R is 16 (ui/audio.js), so a chunk has always been drawn in from further than a dropped item
+    // ── THE FLIGHT IS HALF THE SPEED (user 2026-09-02: "slow the speed at which the chunks gets absorbed to
+    // the player when the tool hits the rock … slow it down by 50%") ── absorbFly 420 -> 840. It is the flight's
+    // DURATION in ms, not a rate: sim/solver.js reads k = (now - absorbT0) / absorbFly and smoothsteps it, so the
+    // whole arc is parameterised on it and doubling the duration halves the speed everywhere along the curve —
+    // the gentle leave and the fast arrival keep their proportions rather than one of them absorbing the change.
+    // absorbMs is deliberately NOT touched: that is the WAIT before the chunk sets off, and slowing the flight
+    // is not the same ask as making the player stand there longer before anything happens.
+    // THEN 25% OF THE SPEED BACK (user 2026-09-02: "increase the speed of the chunk flight duration by 25%"):
+    // 840 -> 672. Speed and duration are reciprocal here, so a 25% FASTER flight is a divide by 1.25, not a
+    // subtraction of 25% — 840 * 0.75 would be 630 and a 33% speed-up. Net against the original 420: half the
+    // speed, then a quarter of it back, leaving the flight 1.6x its original length.
+    absorbMax: 2000, absorbMs: 450, absorbFly: 672,  // absorbMax: the ceiling on what may become a rigid BODY at all — a bigger separated component is dusted instead (see the flood-separate path). NOT an absorb limit; that is absorbSize below.    // absorbMs = the WAIT after breaking off before the chunk comes to you (halved from 900, user 2026-08-02);
     // ── RAISED TO COVER EVERY CHUNK THE GAME MAKES (user 2026-08-22: "make sure all chunks can be absorbed no
     // problem") ── 200 predates the felled-tree shatter, whose pieces are exactly fellChunkVox (350) each, so
     // every one of them was over the line and only got through on the fellLoot exemption. Anything the game
@@ -21579,7 +21744,19 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // rather than re-deriving anything: a pick whose aim landed on pick-only material skips the leaf arm and
     // falls through to the decor/body branch that sets rockHit. Every other tool and target is untouched, so
     // an axe still shears a crown and a pick in bare foliage still cuts it.
-    if (!(pick && aimId && pickOnlyTab[aimId])
+    // ── AND THE MOSS RIDES THE CHUNK, IT IS NOT CUT (user 2026-09-02: "the moss isnt traveling with the rock
+    // chunk … this is how it used to be") ── the mossy cap is the reason a pick-on-stone swing ever reached
+    // this arm: the cap is the first thing the ray meets, so `firstLeaf` is a moss voxel and the leaf arm was
+    // claiming the swing (and its sound) on what is plainly a rock. The guard is right and stays.
+    // What was wrong was the first repair: it CARVED the moss here before falling through to the stone. That
+    // answered "I cant hit the moss" and broke the thing the cap exists for. world/terrain.js (mossCap) spells
+    // it out — the cap is laid in GRASS ids rather than MOSS ids precisely because GRASS is floatTab / SUP.DRAPE,
+    // so "chop the rock and the drape lifts with it instead of hanging in the air". Cutting it here consumed
+    // the voxels the drape rule was going to hand to the chunk, so the chunk flew to the player bare.
+    // So a pick-on-stone swing does nothing at all in this arm now. It takes the rock, and the drape comes
+    // with the rock, which is both what the user remembers and what mossCap was designed around.
+    const pickStone = !!(pick && aimId && pickOnlyTab[aimId]);
+    if (!pickStone
         && (leafHit === 3 || (leafHit === false && firstLeaf))          // the leaf wins: nothing behind it, or the ray ran out inside the crown
         && (CHOP_AIM.path = 'leaves') && (CHOP_AIM.foliaHit = true)
         && phChopLeaves(firstLeaf[0], firstLeaf[1], firstLeaf[2], CHOP_RAD * base * 0.5, Math.max(2, Math.round(C_BITE * 0.5)))) return true;   // FOLIAGE is nobody's own material: half the tool's sphere (user)   // a FALLEN crown is not in W, so this misses and the march below takes it with okBody instead
@@ -21634,11 +21811,23 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       // same table the swing gate reads two lines above, so naming it here is the same rule the comment already states — the carve is confined to
       // the material the crosshair is on — applied to the third owned material rather than only the first two.
       // IT ALSO SHARPENS THE SOFT SWING ITSELF: a bite that could spend itself on a neighbouring trunk is a bite the mushroom did not lose.
-      const mS = soi(id);                            // this material's BITE factor (own = full, anything else = half) — unchanged by the SOI doubling
-      const mR = soiR(id);                           // …and its REACH, the doubled one on the tool's own material
+      // ── A MUSHROOM IS THE TOOL'S OWN MATERIAL (user 2026-09-02: "make the mushroom chunk match the same
+      // size as the other tools. using a pick on the mushroom for example is much too small. make it match the
+      // chunk of stone") ── a mushroom carries decorTab and no tool tab, so it was OFF-material for everything:
+      // soi halved the bite and soiR halved the reach, and mushQ (removed below) quartered the bite again. With a pick
+      // (base 1.0) that is bite 4 in a radius-2.5 sphere, against stone's bite 30 in a radius-10 one — an
+      // EIGHTH of the chunk, which is the "much too small" being reported.
+      // BOTH HALVES HAVE TO MOVE OR NEITHER DOES. The bite is a ceiling on voxels taken, not a promise: a
+      // half-filled sphere of radius r only offers about 2r^2 cells, so radius 2.5 can supply ~12 and a bite of
+      // 30 would simply never be reached. Raising the bite alone would have measured as no change at all.
+      const mushOwn = !!mushTab[id];                  // …so it takes the own-material bite AND the own-material sphere, which together are exactly what stone gets
+      const mS = mushOwn ? base : soi(id);            // this material's BITE factor (own = full, anything else = half) — unchanged by the SOI doubling
+      const mR = mushOwn ? base * SOI_OWN : soiR(id); // …and its REACH, the doubled one on the tool's own material
       // the BITE follows the sphere it came out of — scaled from PH.chopBite, not from C_BITE, which
       // already carries the tool's own factor and would apply it a second time.
-      // ── A MUSHROOM COMES APART IN FOUR, NOT TWO (user 2026-08-22: "cut the red mushroom in 4s instead of
+      // ── SUPERSEDED 2026-09-02 by the own-material block above, which removed mushQ entirely; kept because it
+      // records what the quarter bite was FOR and the measurement behind it ── A MUSHROOM COMES APART IN FOUR,
+      // NOT TWO (user 2026-08-22: "cut the red mushroom in 4s instead of
       // halves. when the player cuts it down") ── the number of pieces a decoration yields is just its voxel
       // count divided by the bite, so halving the bite on mushroom ids doubles the pieces and changes nothing
       // else: same sphere, same nearest-first order, same materials. Keyed on mushTab (assets/material-tabs.js),
@@ -21664,8 +21853,12 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       // The chunk-depth argument does not apply here and neither does the fallback: with no push the two tries below
       // are the same sphere, so the second is skipped rather than gathering it twice.
       const mD = (woodTab[id] || pickOnlyTab[id] || digOnlyTab[id]) ? D_DEEP : 0;   // the push, for the materials it was written for
-      const mushQ = mushTab[id] ? 0.25 : 1;
-      const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS * mushQ)) : Math.max(2, Math.round(PH.chopBite * mS * mushQ * (dig ? DIG_BITE : 1)));
+      // ── AND THE QUARTER BITE IS GONE WITH IT ── mushQ was 0.25 on mushTab ids, which is how "cut the red
+      // mushroom in 4s instead of halves" (user 2026-08-22) was delivered: piece count is ceil(voxels / bite),
+      // so quartering the bite quadrupled the pieces. THIS DELIBERATELY REVERSES THAT ASK — parity with stone
+      // and a fixed four-way split are the same number pulling opposite ways, and the newer instruction wins.
+      // A cap is small enough that a full bite takes it whole, so expect one chunk where there were four.
+      const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS)) : Math.max(2, Math.round(PH.chopBite * mS * (dig ? DIG_BITE : 1)));
       // ── AND A BEEHIVE IS THE ONE PIECE OF DECOR THAT ANSWERS BACK (user 2026-08-17: "if the player breaks
       // open the beehive, have bees fly out of it, attacking the player") ── asked AFTER the carve, because the
       // question is "is the hive open NOW". hiveChopped (sim/life/slots.js) counts what is left of the box and
@@ -33500,6 +33693,15 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // two different worlds; these exist so a sweep can run inside ONE session.
     poolMs(v) { if (v !== undefined) POOL_MS = +v; return { POOL_MS, POOL_BUDGET }; },
     poolBudget(v) { return poolBudgetSet(v); },
+    // ── SAFE MODE ── the persisted world-size ladder the device-lost banner arms (see SAFE in core/gpu.js).
+    // 0 = full quality. Reads without an argument; writing needs a RELOAD, because every size it picks is
+    // decided once at boot and baked into buffers that cannot grow. Here so the state is visible and
+    // clearable from a console rather than only from the crash screen that set it.
+    safeMode(v) {
+      if (v !== undefined) { const n = Math.max(0, Math.min(3, v | 0));
+        try { if (n) localStorage.setItem('vb_safe', String(n)); else localStorage.removeItem('vb_safe'); } catch (e) {}
+        return { was: SAFE, now: n, reload: n !== SAFE }; }
+      return { level: SAFE, tier: window.__vbTier }; },
     jolt(v) { return joltOn(v); },                   // 1 = Jolt drives the rigid bodies, 0 = the legacy voxel solver. Booting the wasm is lazy, so the first call returns {booting:true} and the second turns it on
     joltStats() { return joltStats(); },
     petals(v) { return petalsSet(v); },   // the ambient falling leaves — removed on request, this puts them back for a look
@@ -33577,7 +33779,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       // test racing the sim.
       worldFlush(true);                                // drain the whole dirty queue, budget ignored, or pending edits read as false diffs
       const nB = BX * BY * BZ, spots = [];
-      const e0 = device.createCommandEncoder(); e0.copyBufferToBuffer(bdescBuf, 0, bdescRead, 0, bdesc.byteLength); device.queue.submit([e0.finish()]);
+      const e0 = device.createCommandEncoder(); e0.copyBufferToBuffer(bdescBuf, 0, bdescReadBuf(), 0, bdesc.byteLength); device.queue.submit([e0.finish()]);   // bdescReadBuf() allocates the 50 MB staging on FIRST use - see render/buffers.js
       const cpuDesc = bdesc.slice(), cpuOcc = bricks.slice();
       const inRect = (bx, bz) => { const wx = winOX + bx * 8, wz = winOZ + bz * 8;
         return wx >= rect.xlo && wx + 8 <= rect.xhi && wz >= rect.zlo && wz + 8 <= rect.zhi; };
@@ -34933,7 +35135,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // almost at once, and SWIM_EASE below is already the ramp onto it. Gravity is deliberately NOT used —
         // it winds up to -345 and would drop the player through 4-5 voxels of lake like a stone through air.
         const tgt = rising
-          ? Math.max(-SWIM_SINK, Math.min(SWIM_UP, (WL + 1 + SWIM_RISE + Math.sin(now * 0.009) * SWIM_BOB - eyeY) * SWIM_K))
+          ? Math.max(-SWIM_SINK, Math.min(SWIM_UP, (WL + 1 + SWIM_RISE + Math.sin(now * SWIM_BOBW) * SWIM_BOB - eyeY) * SWIM_K))
           : -SWIM_SINK;
         P.vy += (tgt - P.vy) * (1 - Math.exp(-SWIM_EASE * dt));
       } else {                                       // ── FALLING GAINS MOMENTUM ── (user) a flat GRAVITY into a -160 terminal hit its cap in 0.8 s, so anything

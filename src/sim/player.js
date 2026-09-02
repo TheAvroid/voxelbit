@@ -19,9 +19,20 @@
   // 5 is knee-deep: it engages in an ordinary lake while still leaving a shallow wade as walking.
   const SWIM_DEEP = 5;
   const SWIM_STEP = 12;                                // how far a SWIMMER may auto-step, against 5 on land — sized off the measurement in moveAxis: float depth 6 + the steepest bank on a measured lake 4, plus margin
-  const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 4.5;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
+  // ── THE BOB IS TWICE AS BIG NOW (user 2026-09-02: "make the bob when swiming in water twice as obvious?
+  // make it bounce up and down more") ── and doubling SWIM_BOB alone would NOT have done it, which is why
+  // both numbers move. The bob perturbs the TARGET LINE, and the eye chases that line through the spring in
+  // main/tick-body.js: tgt is a velocity, (line - eyeY) * SWIM_K. A first-order lag tracks a sine at only
+  // K / sqrt(K^2 + w^2) of its amplitude, and at K = 2 against w = 9 rad/s that is 0.22 — so ±4.5 voxels of
+  // line became about ±1 voxel of actual eye travel. That is the "not obvious" being reported.
+  // 6.5 at 6 rad/s gives 2 / sqrt(4 + 36) = 0.32, so ±2.05 voxels: 2.1x the old excursion, measured off the
+  // transfer function rather than guessed. THE SLOWER RATE IS PART OF THE FIX, not a side effect — amplitude
+  // alone would have to reach ±9 to do the same job, and ±9 * SWIM_K is ±18, exactly the SWIM_UP clamp, so
+  // the peaks would flatten against the ceiling and the bob would come out trapezoidal instead of bigger.
+  // At 6.5 the velocity term peaks at ±13, still clear of it. A slower, deeper swell also reads as water.
+  const SWIM_K = 2.0, SWIM_RISE = 11, SWIM_BOB = 6.5, SWIM_BOBW = 0.006;                  // spring gain on the eye-vs-waterline error, and how far holding Space lifts the float line. Gain 0.8 -> 2.0 and lift 7 -> 11: the drive is what made it feel mushy, since a weak gain on a small error is a long, soft approach. SWIM_BOB is the STROKE amplitude — it rides on the Space lift only, never idle (user 2026-08-07)
   const SAND_SPD = 0.75;                              // ── SAND SLOWS YOU BY 25% (user 2026-09-01: "only let the sand slow down the player by 25%") ── was 0.5, i.e. a 50% cut. The multiplier is the speed you KEEP, so a 25% slow is 0.75, not 0.25
-  const WATER_SPD = 0.344;                             // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
+  const WATER_SPD = 0.43;                              // +25% AGAIN (user 2026-09-02: "increase the movement speed in water by 25%") 0.344 -> 0.43. It is a straight multiplier on the movement speed and nothing else reads it, so a 25% ask IS a 1.25 multiply.   // +25% (user 2026-08-07). HALVED (user 2026-08-05) — was 0.55. Wading and swimming are the same multiplier: it scales the horizontal speed the moment the body is in water, so this slows both.   // +20% base speed
   const BOUNCE_V0 = 116, BOUNCE_DV = 27, BOUNCE_MAX = 239;   // MUSHROOM TRAMPOLINE: first bounce ≈2× a normal jump, +DV each consecutive bounce, capped. 1.5× HIGHER (user): apex goes with v², so every speed here is the old one × √1.5, not × 1.5 (≈9 m → ≈13.5 m at the cap)
   // ── THE PLAYER STARTS IN THE OAK FOREST (user 2026-08-22: "spawn me automatically in the oak forest") ──
   // and this is a PLAYER offset, not a world one, which is the whole point. The biome bands are anchored to

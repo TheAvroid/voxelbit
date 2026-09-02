@@ -2308,6 +2308,15 @@
     // two different worlds; these exist so a sweep can run inside ONE session.
     poolMs(v) { if (v !== undefined) POOL_MS = +v; return { POOL_MS, POOL_BUDGET }; },
     poolBudget(v) { return poolBudgetSet(v); },
+    // ── SAFE MODE ── the persisted world-size ladder the device-lost banner arms (see SAFE in core/gpu.js).
+    // 0 = full quality. Reads without an argument; writing needs a RELOAD, because every size it picks is
+    // decided once at boot and baked into buffers that cannot grow. Here so the state is visible and
+    // clearable from a console rather than only from the crash screen that set it.
+    safeMode(v) {
+      if (v !== undefined) { const n = Math.max(0, Math.min(3, v | 0));
+        try { if (n) localStorage.setItem('vb_safe', String(n)); else localStorage.removeItem('vb_safe'); } catch (e) {}
+        return { was: SAFE, now: n, reload: n !== SAFE }; }
+      return { level: SAFE, tier: window.__vbTier }; },
     jolt(v) { return joltOn(v); },                   // 1 = Jolt drives the rigid bodies, 0 = the legacy voxel solver. Booting the wasm is lazy, so the first call returns {booting:true} and the second turns it on
     joltStats() { return joltStats(); },
     petals(v) { return petalsSet(v); },   // the ambient falling leaves — removed on request, this puts them back for a look
@@ -2385,7 +2394,7 @@
       // test racing the sim.
       worldFlush(true);                                // drain the whole dirty queue, budget ignored, or pending edits read as false diffs
       const nB = BX * BY * BZ, spots = [];
-      const e0 = device.createCommandEncoder(); e0.copyBufferToBuffer(bdescBuf, 0, bdescRead, 0, bdesc.byteLength); device.queue.submit([e0.finish()]);
+      const e0 = device.createCommandEncoder(); e0.copyBufferToBuffer(bdescBuf, 0, bdescReadBuf(), 0, bdesc.byteLength); device.queue.submit([e0.finish()]);   // bdescReadBuf() allocates the 50 MB staging on FIRST use - see render/buffers.js
       const cpuDesc = bdesc.slice(), cpuOcc = bricks.slice();
       const inRect = (bx, bz) => { const wx = winOX + bx * 8, wz = winOZ + bz * 8;
         return wx >= rect.xlo && wx + 8 <= rect.xhi && wz >= rect.zlo && wz + 8 <= rect.zhi; };

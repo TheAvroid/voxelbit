@@ -16,6 +16,21 @@
   // (WYpick 384/256/192, WXZ 2048/1536/1280/1024/768) can actually be exercised and measured on a
   // big GPU. The game now ships to players' own machines, so those paths are shipping paths.
   { const m = /worldcap=(\d+)/.exec(location.search); if (m) lim = Math.min(lim, +m[1]); }
+  // ── SAFE MODE ── the same ladder, made PERSISTENT, and it exists because of a bug report the page could
+  // not answer: "gpu device lost (unknown) — reload the page" on a gaming laptop, with no way to reach the
+  // machine. `unknown` is the driver saying it reset the device or could not meet an allocation, and the only
+  // lever a web page has in either case is TO ASK FOR LESS. vb_safe is a level 0-3 written by the banner's own
+  // button (see core/telemetry.js), so a player who cannot hold the full window can step down to one that fits
+  // without a console, a flag or a build:
+  //   1  view distance x1 — keeps the 2048 window, pool 1.05 GB -> 402 MB. Halves the VRAM, costs 200 m -> 100 m.
+  //   2  …and a 1536 window — pool 226 MB, view 75 m.
+  //   3  …and a 1024 window + a render-scale ceiling (see render/targets.js) — the floor of the ladder.
+  // NEVER ARMED AUTOMATICALLY. A device lost once to a driver update, an Optimus/MUX switch or a laptop waking
+  // from sleep must not silently cost every later session its view distance; the player presses the button, and
+  // __vb.safeMode(0) (or the banner's reset) hands the quality straight back.
+  let SAFE = 0;
+  try { SAFE = Math.max(0, Math.min(3, +localStorage.getItem('vb_safe') | 0)); } catch (e) {}
+  if (SAFE >= 2) lim = Math.min(lim, SAFE >= 3 ? 402653184 : 905969664);   // 1024 and 1536 windows — the rungs of the WXZ ladder below, named as the byte caps it tests
   const WYpick = lim >= SIZE384 ? 384 : (lim >= SIZE256 ? 256 : 192);
   let WXZ = 768;                                       // widest window the adapter can bind: 2048 (1.5 GB) → a TRUE 100 m view radius
   if (WYpick === 384) for (const c of [2048, 1536, 1280, 1024]) if (lim >= c * c * 384) { WXZ = c; break; }
@@ -43,15 +58,51 @@
   // Measured after: the filled radius HOLDS at 1920 through sprint-speed flight (it used to fall to ~1050 and
   // oscillate), zero overflow, and the far terrain renders real ground all the way out.
   let GMUL_PICK = (WXZ === 2048 && WYpick === 384 && lim >= GPOOL2 * 1.15) ? 2 : 1;
+  if (SAFE >= 1) GMUL_PICK = 1;                        // BEFORE the ?gmul override, so an explicit flag still wins for testing on a safe-moded profile
   { const m = /[?&]gmul=(\d+)/.exec(location.search); if (m) GMUL_PICK = Math.max(1, Math.min(2, +m[1] | 0)); }
   if (GMUL_PICK > 1) console.log('[vb] view distance x' + GMUL_PICK + ' - far ring pool', (GPOOL2 / 1048576) | 0, 'MB of', (lim / 1048576) | 0, 'MB bindable');
   const WBYTES = WXZ * WXZ * WYpick;
+  // ── WHAT THIS MACHINE ACTUALLY PICKED ── on window, not just in the console, because the one machine that
+  // needs it is somebody else's. The device-lost banner prints it, and a bug report that carries it says which
+  // rung of the ladder was in play — which is the difference between "the driver reset" and "we asked for
+  // 1.05 GB it did not have".
+  window.__vbTier = { wxz: WXZ, wy: WYpick, gmul: GMUL_PICK, safe: SAFE, bindMB: (lim / 1048576) | 0,
+    adapterMB: (Math.min(adapter.limits.maxStorageBufferBindingSize, adapter.limits.maxBufferSize) / 1048576) | 0 };
+  // ── STEPPING DOWN THE LADDER BY ITSELF, AND ONLY AT BOOT ── the banner's button is for a player who saw the
+  // crash; this is for the machine that never gets that far. A device that dies WHILE LOADING is not a driver
+  // blip you can shrug off and carry on from — it is this machine saying it cannot hold what we just asked for,
+  // every time, forever, and reloading unchanged asks for exactly the same thing again. There is no session to
+  // lose and nothing to preserve, so it drops a rung and reloads itself.
+  // MID-SESSION IS THE OPPOSITE CASE and must stay manual: a driver update, an Optimus/MUX switch or a laptop
+  // waking from sleep kills a device that was running fine, and silently costing that player their view distance
+  // for the rest of time would be the wrong read of a one-off.
+  // BOUNDED BY sessionStorage, NOT localStorage: the counter has to survive the reload it is about to trigger
+  // and die with the tab, or a machine that has one bad day boots at the bottom of the ladder for ever. Three
+  // steps is the whole ladder; after that it gives up and lets the banner explain itself.
+  const safeStepDown = (why) => {
+    let n = 0;
+    try { n = +sessionStorage.getItem('vb_safeAuto') || 0; } catch (e) {}
+    if (SAFE >= 3 || n >= 3) return false;
+    try { sessionStorage.setItem('vb_safeAuto', String(n + 1)); localStorage.setItem('vb_safe', String(SAFE + 1)); } catch (e) { return false; }
+    console.warn('[vb] ' + why + ' - retrying at safe level ' + (SAFE + 1));
+    try { loadMsgEl.textContent = 'not enough graphics memory - retrying smaller'; } catch (e) {}
+    setTimeout(() => location.reload(), 1200);         // long enough to READ, short enough that it still feels like loading rather than a hang
+    return true;
+  };
   const PROF = adapter.features.has('timestamp-query');   // per-pass GPU timing (dev __vb.prof(); harmless when unread)
   // A device gets DEFAULT limits unless it asks for more, whatever the adapter can do. TRACE already
   // binds exactly 8 storage buffers and 8 is the WebGPU default cap, so a 9th (the paged-storage
   // descriptor table) fails pipeline creation SILENTLY: black frame, absurd fps, nothing on __vbErr.
+  // ── AND IT ASKS FOR WHAT IT BINDS ── this used to require WBYTES, the size of the DENSE GPU WORLD, and there
+  // has not been one since the paged brick pool replaced it (see the top of render/buffers.js). At a 2048 window
+  // that asked every player's driver for a 1.61 GB binding when the largest buffer the game creates is the pool
+  // at 1.04 GB - half a gigabyte of limit nothing was ever going to use, on the machines least able to spare it.
+  // GPOOL1 mirrors POOL_FRAC in render/buffers.js exactly as GPOOL2 above mirrors POOL_FRAC_RING, and for the
+  // same reason: the pool has to be SIZED before the fragment that sizes it runs. Both are noted there too.
+  const GPOOL1 = Math.ceil((WXZ >> 3) * (WYpick >> 3) * (WXZ >> 3) * 0.25) * 512;
+  const BIGBUF = Math.max(GMUL_PICK > 1 ? GPOOL2 : GPOOL1, 268435456);   // 256 MB floor: the default maxBufferSize, so this never asks for LESS than a device already gives
   const device = await adapter.requestDevice({
-    ...(WBYTES > (1 << 27) ? { requiredLimits: { maxStorageBufferBindingSize: WBYTES, maxBufferSize: Math.max(WBYTES, 268435456) } } : {}),
+    requiredLimits: { maxStorageBufferBindingSize: BIGBUF, maxBufferSize: BIGBUF },
     ...(PROF ? { requiredFeatures: ['timestamp-query'] } : {}) });
   if (WYpick < 384 || WXZ < 2048) console.warn('[vb] adapter caps buffers at', lim, '— window', WXZ, '×', WYpick);
   // GPU errors are also RECORDED, not just logged. A shader that fails to compile makes every command

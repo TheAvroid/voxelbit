@@ -64,14 +64,85 @@
   }
   window.addEventListener('error', (e) => vbNoteErr('uncaught', e.error || e.message));
   window.addEventListener('unhandledrejection', (e) => vbNoteErr('rejection', e.reason));
-  device.lost.then((info) => {                         // device lost = the picture freezes at the last frame with no error anywhere — now it says so
+  // ── DEVICE LOST ── the picture freezes at the last frame with no error anywhere, so this banner is the only
+  // thing that ever tells anybody what happened. It used to print the REASON alone, and for every interesting
+  // case that string is 'unknown': WebGPU has exactly two reasons, 'destroyed' (we called destroy(), expected)
+  // and 'unknown' (literally everything else), so the reason discriminates NOTHING and info.MESSAGE is where
+  // the driver says what it actually did. That was logged to a console the reporter was never going to open and
+  // dropped from the one surface they could see. A real report (2026-09-02, an Asus TUF A16) came back as those
+  // four words and nothing else, and there was no way to tell a driver timeout from an allocation the laptop
+  // could not meet, which are opposite bugs with opposite fixes.
+  // So it now carries the whole picture: the driver's own message, which adapter we got and which rung of the
+  // world ladder that bought, how long the session had been up, and any GPU errors already recorded. Selectable,
+  // with a COPY button, because the entire point is that it ends up in a bug report.
+  const gpuLostBanner = (info) => {
     vbNoteErr('gpu device lost', info.reason + ' — ' + info.message);
-    loadEl.classList.add('hidden');
+    // ── LOST BEFORE THE GAME EVER STARTED ── window.__vb is the last thing boot publishes, so its absence means
+    // the device died DURING LOAD. That is not a driver blip: it is this machine failing to hold what we asked
+    // for, and it will do it again on the next reload and the one after. Drop a rung and retry instead of
+    // showing a crash screen whose only honest advice is "try something smaller". See safeStepDown in
+    // core/gpu.js for why this is boot-only and how it is bounded against a reload loop.
+    if (info.reason !== 'destroyed' && !window.__vb && safeStepDown('device lost while loading')) return;
+    try { document.exitPointerLock(); } catch (e) {}     // the pointer is locked to a canvas that will never draw again; nothing below is clickable until it is released
+    try { loadEl.classList.add('hidden'); } catch (e) {}
+    // TDZ-SAFE READS. This callback can fire DURING boot — an allocation that fails while the pool is being
+    // built is exactly the case worth reporting — and in that case the fragments below core/ have not run yet.
+    // `typeof` does NOT help here: these are let/const in the SAME scope, so touching one inside its temporal
+    // dead zone throws rather than reporting 'undefined'. Hence a try/catch per read. Getting this wrong would
+    // have thrown inside a .then() whose .catch() swallows it — a lost device and a BLANK SCREEN.
+    const q = (f, d) => { try { const v = f(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };
+    const tier = q(() => window.__vbTier, null);
+    const ad = q(() => window.__vbAdapter, null);
+    const gerr = q(() => window.__vbGpuErr, []) || [];
+    const report = [
+      'reason   ' + info.reason,
+      'message  ' + (info.message || '(none)'),
+      'adapter  ' + (ad ? ([ad.vendor, ad.architecture, ad.device, ad.description].filter(Boolean).join(' ') || '(unnamed)') : '(unknown)'),
+      'world    ' + (tier ? tier.wxz + 'x' + tier.wy + '  view x' + tier.gmul + '  bindable ' + tier.bindMB + ' MB of ' + tier.adapterMB + '  safe ' + tier.safe : '(not reached)'),
+      'screen   ' + q(() => RW + 'x' + RH + ' @ ' + Math.round(renderScale * 100) + '%', '(not reached)'),
+      'pool     ' + q(() => (((POOL_SLOTS * 512) / 1048576) | 0) + ' MB', '(not reached)'),
+      'uptime   ' + (performance.now() / 1000).toFixed(1) + ' s',
+      'gpuerr   ' + (gerr.length ? gerr.map((e) => e.msg + (e.n > 1 ? ' x' + e.n : '')).join(' | ') : 'none'),
+      'log      ' + (window.__vbErrLog.length ? window.__vbErrLog.slice(-6).map((e) => e.up + 's ' + e.tag).join(', ') : 'none'),
+      'agent    ' + navigator.userAgent,
+    ].join('\n');
     const b = document.createElement('div');
-    b.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;align-items:center;justify-content:center;background:rgba(8,10,14,0.88);color:#ff8a95;font:10px "px3",Consolas,monospace;letter-spacing:2px;text-align:center;line-height:2';
-    b.textContent = 'gpu device lost (' + info.reason + ') — reload the page';
+    b.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;box-sizing:border-box;background:rgba(8,10,14,0.94);color:#ff8a95;font:10px "px3",Consolas,monospace;letter-spacing:2px;text-align:center;line-height:2';
+    const h = document.createElement('div');
+    h.textContent = 'gpu device lost (' + info.reason + ')';
+    const sub = document.createElement('div');
+    sub.style.cssText = 'color:#c9d2dd;opacity:0.8;letter-spacing:1px';
+    sub.textContent = info.reason === 'destroyed' ? 'the page released the gpu' : 'the graphics driver reset, or ran out of memory';
+    // The driver's message, big enough to read and SELECTABLE — the banner sits over a canvas that has had
+    // user-select off all session, so it has to turn it back on for itself or the text cannot even be dragged.
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'margin:0;max-width:min(760px,92vw);max-height:38vh;overflow:auto;text-align:left;white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:12px 14px;color:#c9d2dd;font:11px/1.6 Consolas,monospace;letter-spacing:0;user-select:text;-webkit-user-select:text';
+    pre.textContent = report;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center';
+    const mk = (label, bg, fn) => { const el = document.createElement('button');
+      el.style.cssText = 'cursor:pointer;padding:10px 16px;border:1px solid rgba(255,255,255,0.22);border-radius:6px;background:' + bg + ';color:#0d1014;font:9px "px3",Consolas,monospace;letter-spacing:2px';
+      el.textContent = label; el.onclick = fn; row.appendChild(el); return el; };
+    mk('reload', '#b8ff6e', () => location.reload());
+    mk('copy report', '#c9d2dd', function () {
+      const self = this;
+      const bad = () => { self.textContent = 'select it instead'; };   // clipboard access is refused outright over plain http and on an unfocused page, and it REJECTS rather than throwing — a bare try/catch would have reported success on the one path most likely to fail
+      try { const pr = navigator.clipboard.writeText(report); self.textContent = 'copied'; if (pr && pr.catch) pr.catch(bad); } catch (e) { bad(); } });
+    // ── THE ONE THING A PLAYER CAN ACTUALLY DO ── if the driver reset under load, or could not hold what we
+    // asked for, then reloading unchanged asks it for exactly the same thing again. This steps the world down
+    // one rung (SAFE in core/gpu.js) and reloads into it. Hidden on 'destroyed', which is us shutting the page
+    // down and never a machine problem, and at the bottom of the ladder there is nothing left to give up.
+    const VIEW = ['200 m view', '100 m view', '75 m view', '55 m view, half res'];
+    const lvl = tier ? (tier.safe | 0) : 0;
+    if (info.reason !== 'destroyed' && lvl < 3) mk('reload smaller (' + VIEW[lvl] + ' -> ' + VIEW[lvl + 1] + ')', '#ffd76a', () => {
+      try { localStorage.setItem('vb_safe', String(lvl + 1)); } catch (e) {}
+      location.reload(); });
+    if (lvl > 0) mk('reset quality', '#8fb7ff', () => { try { localStorage.removeItem('vb_safe'); } catch (e) {} location.reload(); });
+    b.append(h, sub, pre, row);
     document.body.appendChild(b);
-  }).catch(() => {});
+  };
+  window.__vbGpuLost = gpuLostBanner;                   // so the crash screen can be SEEN without crashing a gpu: __vbGpuLost({reason:'unknown', message:'...'}) draws exactly what a player would get. A screen nobody can render is a screen nobody checks
+  device.lost.then(gpuLostBanner).catch(() => {});
   const canvas = $('c');
   const ctx = canvas.getContext('webgpu');
   const format = navigator.gpu.getPreferredCanvasFormat();

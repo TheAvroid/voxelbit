@@ -432,7 +432,19 @@
     // rather than re-deriving anything: a pick whose aim landed on pick-only material skips the leaf arm and
     // falls through to the decor/body branch that sets rockHit. Every other tool and target is untouched, so
     // an axe still shears a crown and a pick in bare foliage still cuts it.
-    if (!(pick && aimId && pickOnlyTab[aimId])
+    // ── AND THE MOSS RIDES THE CHUNK, IT IS NOT CUT (user 2026-09-02: "the moss isnt traveling with the rock
+    // chunk … this is how it used to be") ── the mossy cap is the reason a pick-on-stone swing ever reached
+    // this arm: the cap is the first thing the ray meets, so `firstLeaf` is a moss voxel and the leaf arm was
+    // claiming the swing (and its sound) on what is plainly a rock. The guard is right and stays.
+    // What was wrong was the first repair: it CARVED the moss here before falling through to the stone. That
+    // answered "I cant hit the moss" and broke the thing the cap exists for. world/terrain.js (mossCap) spells
+    // it out — the cap is laid in GRASS ids rather than MOSS ids precisely because GRASS is floatTab / SUP.DRAPE,
+    // so "chop the rock and the drape lifts with it instead of hanging in the air". Cutting it here consumed
+    // the voxels the drape rule was going to hand to the chunk, so the chunk flew to the player bare.
+    // So a pick-on-stone swing does nothing at all in this arm now. It takes the rock, and the drape comes
+    // with the rock, which is both what the user remembers and what mossCap was designed around.
+    const pickStone = !!(pick && aimId && pickOnlyTab[aimId]);
+    if (!pickStone
         && (leafHit === 3 || (leafHit === false && firstLeaf))          // the leaf wins: nothing behind it, or the ray ran out inside the crown
         && (CHOP_AIM.path = 'leaves') && (CHOP_AIM.foliaHit = true)
         && phChopLeaves(firstLeaf[0], firstLeaf[1], firstLeaf[2], CHOP_RAD * base * 0.5, Math.max(2, Math.round(C_BITE * 0.5)))) return true;   // FOLIAGE is nobody's own material: half the tool's sphere (user)   // a FALLEN crown is not in W, so this misses and the march below takes it with okBody instead
@@ -487,11 +499,23 @@
       // same table the swing gate reads two lines above, so naming it here is the same rule the comment already states — the carve is confined to
       // the material the crosshair is on — applied to the third owned material rather than only the first two.
       // IT ALSO SHARPENS THE SOFT SWING ITSELF: a bite that could spend itself on a neighbouring trunk is a bite the mushroom did not lose.
-      const mS = soi(id);                            // this material's BITE factor (own = full, anything else = half) — unchanged by the SOI doubling
-      const mR = soiR(id);                           // …and its REACH, the doubled one on the tool's own material
+      // ── A MUSHROOM IS THE TOOL'S OWN MATERIAL (user 2026-09-02: "make the mushroom chunk match the same
+      // size as the other tools. using a pick on the mushroom for example is much too small. make it match the
+      // chunk of stone") ── a mushroom carries decorTab and no tool tab, so it was OFF-material for everything:
+      // soi halved the bite and soiR halved the reach, and mushQ (removed below) quartered the bite again. With a pick
+      // (base 1.0) that is bite 4 in a radius-2.5 sphere, against stone's bite 30 in a radius-10 one — an
+      // EIGHTH of the chunk, which is the "much too small" being reported.
+      // BOTH HALVES HAVE TO MOVE OR NEITHER DOES. The bite is a ceiling on voxels taken, not a promise: a
+      // half-filled sphere of radius r only offers about 2r^2 cells, so radius 2.5 can supply ~12 and a bite of
+      // 30 would simply never be reached. Raising the bite alone would have measured as no change at all.
+      const mushOwn = !!mushTab[id];                  // …so it takes the own-material bite AND the own-material sphere, which together are exactly what stone gets
+      const mS = mushOwn ? base : soi(id);            // this material's BITE factor (own = full, anything else = half) — unchanged by the SOI doubling
+      const mR = mushOwn ? base * SOI_OWN : soiR(id); // …and its REACH, the doubled one on the tool's own material
       // the BITE follows the sphere it came out of — scaled from PH.chopBite, not from C_BITE, which
       // already carries the tool's own factor and would apply it a second time.
-      // ── A MUSHROOM COMES APART IN FOUR, NOT TWO (user 2026-08-22: "cut the red mushroom in 4s instead of
+      // ── SUPERSEDED 2026-09-02 by the own-material block above, which removed mushQ entirely; kept because it
+      // records what the quarter bite was FOR and the measurement behind it ── A MUSHROOM COMES APART IN FOUR,
+      // NOT TWO (user 2026-08-22: "cut the red mushroom in 4s instead of
       // halves. when the player cuts it down") ── the number of pieces a decoration yields is just its voxel
       // count divided by the bite, so halving the bite on mushroom ids doubles the pieces and changes nothing
       // else: same sphere, same nearest-first order, same materials. Keyed on mushTab (assets/material-tabs.js),
@@ -517,8 +541,12 @@
       // The chunk-depth argument does not apply here and neither does the fallback: with no push the two tries below
       // are the same sphere, so the second is skipped rather than gathering it twice.
       const mD = (woodTab[id] || pickOnlyTab[id] || digOnlyTab[id]) ? D_DEEP : 0;   // the push, for the materials it was written for
-      const mushQ = mushTab[id] ? 0.25 : 1;
-      const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS * mushQ)) : Math.max(2, Math.round(PH.chopBite * mS * mushQ * (dig ? DIG_BITE : 1)));
+      // ── AND THE QUARTER BITE IS GONE WITH IT ── mushQ was 0.25 on mushTab ids, which is how "cut the red
+      // mushroom in 4s instead of halves" (user 2026-08-22) was delivered: piece count is ceil(voxels / bite),
+      // so quartering the bite quadrupled the pieces. THIS DELIBERATELY REVERSES THAT ASK — parity with stone
+      // and a fixed four-way split are the same number pulling opposite ways, and the newer instruction wins.
+      // A cap is small enough that a full bite takes it whole, so expect one chunk where there were four.
+      const mBite = knife ? Math.max(2, Math.round(PH.chopBite * KNIFE_BITE * mS)) : Math.max(2, Math.round(PH.chopBite * mS * (dig ? DIG_BITE : 1)));
       // ── AND A BEEHIVE IS THE ONE PIECE OF DECOR THAT ANSWERS BACK (user 2026-08-17: "if the player breaks
       // open the beehive, have bees fly out of it, attacking the player") ── asked AFTER the carve, because the
       // question is "is the hive open NOW". hiveChopped (sim/life/slots.js) counts what is left of the box and
