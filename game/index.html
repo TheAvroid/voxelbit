@@ -995,7 +995,7 @@
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
   const LGT_ALL = 0xffffff;                            // 24 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader). Bits 18-23 are the WATER group (user 2026-08-05). Stays exact in the f32 uniform: integers are exact to 2^24.
   const LGT_WATER = 0xfc0000;                          // bits 18-23 — the WATER group, and the only terms the panel exposes (user 2026-08-05: "I only want buttons that change the water")
-  const LGT2_ALL = 0x3f;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; BIT 1 IS THE GRASS/SUBPIXEL CROSS-FACE SPATIAL FALLBACK (see SPATIAL in render/wgsl/denoise.js) — __vb.lgt2(1) off / __vb.lgt2(3) on, and it is a LIVE toggle rather than a URL flag on purpose: the world seed differs between loads, so a cross-load A/B compares two different forests and is worthless here. BITS 2-5 ARE THE REST OF THE WATER GROUP (user 2026-08-30: "every single water setting") — 2 caustics, 3 the underwater look, 4 splash/wake ripples, 5 shoreline surf; see WBIT2/LGT2_WATER below and the [Y] panel. Bit 2's last tenant before them was the SVGF HISTORY FIX (user 2026-08-29, "address the noise issue … the noise is worse on the grass") — a silhouette pixel that fails the temporal depth test borrows a neighbour's converged history instead of rendering one raw ray. It lived on [Y] for exactly as long as it took the user to look at the A/B and was BAKED IN the same day, which is why the bit was spare for the water rows to take; see HISTORY FIX in render/wgsl/denoise.js. Before it the bit held SURFACE RINGS — the ring a splash leaves and the wake behind a swimmer or a duck — which was BAKED IN on 2026-08-29 and now runs unconditionally; see ripHF in render/wgsl/pre.js. A RIVER/LAKE wave character sat here briefly the same day and was reverted (the wave sum sampled in each water body's own frame; the generator's riverAt already carries the flow direction and width, so it is buildable again if it ever comes back). Before those the bit held, and lost, WHITECAPS on the crests (removed on request), the per-pixel waterline and SNELL'S WINDOW (both reverted on sight — do not rebuild either), and the ported cloud deck. Earlier still, a per-pixel sun accumulation window and variance-driven spatial filtering, both measured and REVERTED — the sun window is arithmetically a no-op at 1x, and the variance radius measured -5.4% residual noise, inside the run-to-run scatter. The 25 bits above bit 5 are still free.
+  const LGT2_ALL = 0x3f;                                 // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; BIT 1 IS THE GRASS/SUBPIXEL CROSS-FACE SPATIAL FALLBACK (see SPATIAL in render/wgsl/denoise.js) — __vb.lgt2(1) off / __vb.lgt2(3) on, and it is a LIVE toggle rather than a URL flag on purpose: the world seed differs between loads, so a cross-load A/B compares two different forests and is worthless here. BITS 2-5 ARE THE REST OF THE WATER GROUP (user 2026-08-30: "every single water setting") — 2 caustics, 3 the underwater look, 4 splash/wake ripples, 5 shoreline surf; see WBIT2/LGT2_WATER below and the [Y] panel. Bit 2's last tenant before them was the SVGF HISTORY FIX (user 2026-08-29, "address the noise issue … the noise is worse on the grass") — a silhouette pixel that fails the temporal depth test borrows a neighbour's converged history instead of rendering one raw ray. It lived on [Y] for exactly as long as it took the user to look at the A/B and was BAKED IN the same day, which is why the bit was spare for the water rows to take; see HISTORY FIX in render/wgsl/denoise.js. Before it the bit held SURFACE RINGS — the ring a splash leaves and the wake behind a swimmer or a duck — which was BAKED IN on 2026-08-29 and now runs unconditionally; see ripHF in render/wgsl/pre.js. A RIVER/LAKE wave character sat here briefly the same day and was reverted (the wave sum sampled in each water body's own frame; the generator's riverAt already carries the flow direction and width, so it is buildable again if it ever comes back). Before those the bit held, and lost, WHITECAPS on the crests (removed on request), the per-pixel waterline and SNELL'S WINDOW (both reverted on sight — do not rebuild either), and the ported cloud deck. Earlier still, a per-pixel sun accumulation window and variance-driven spatial filtering, both measured and REVERTED — the sun window is arithmetically a no-op at 1x, and the variance radius measured -5.4% residual noise, inside the run-to-run scatter. BIT 6 AND BIT 7 ARE NOT FREE, whatever an older draft of this note said: 6 is the CLOUD-DENSITY PROBE in composite (it stores a density slice over the whole frame and returns, so a frame with it set has no sky at all) and 7 is the TAA sigma-K A/B in taa.js. Both were parked here BECAUSE they sat above LGT2_ALL and so could not be reached by the panel, the bake or a stored mask — which means LGT2_ALL can never be widened THROUGH them. That is exactly how it was broken on 2026-09-02: far AO was given bit 6, LGT2_ALL went 0x3f -> 0x7f to cover it, and switching far AO on switched the cloud probe on with it — a black sky over a correctly lit world, which cost an hour of bisection because the effect looked like night. Far AO was then measured, found not to fix the complaint it was built for and REMOVED (see the note in trace.js), so LGT2_ALL is back at 0x3f and the panel carries a SLIDER instead of a bit. Bits 8 and up are free; a new panel term takes one of those and ORs it into LGT2_ALL individually, never by extending the range across 6 and 7.
   const LGT2_WATER = 0x3c;                             // bits 2-5 of the SECOND mask — the four water terms that overflowed lgt.x (caustics, underwater, ripples, shore surf). The only bits of lgt.z the panel exposes and the only ones restored from storage, exactly as LGT_WATER is for lgt.x.
   // ══ WATER BAKE (user 2026-08-05) ══ THE defaults for every water control. Tune with the top-right panel,
   // hit `copy` on its bake row, and paste the line it gives you OVER this one — that is the whole workflow.
@@ -1048,15 +1048,38 @@
   const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, pixelGlisten: 1, waves: 0, reflection: 0.45,
                        caustics: 1, underwater: 1, ripples: 1, shoreSurf: 1 };
   const WBIT = { reflect: 18, refract: 19, foam: 20, ice: 21, pixelGlisten: 22, waves: 23 };   // …their bits in u.lgt.x
+  // ── THE FOG DENSITY (user 2026-09-02: "yes add a fog slider to y", then "make this default then remove it
+  // from the l toggle") ── it scales the DENSITY of the distance
+  // haze in composite's worldFog, which is the term measured to own the "distant trees look flat" complaint:
+  // the same far-treeline band with the fog off reads +73% local contrast, against -3.6% for extending the AO
+  // ray past 50 m — which is why that was built, measured and removed, and this is here instead.
+  // THE SLIDER IS GONE and this is a plain constant again: it existed to choose this number and the number is
+  // chosen. fogK is still a `let` and still read every frame into physC.w, so re-exposing it is putting the
+  // slider rows back in ui/settings.js — nothing here or in the shader has to change.
+  // 0.50 IS THE SHIPPED VALUE (user 2026-09-02, after dragging the slider): half the density worldFog's
+  // 0.0006 coefficient describes. 1.00 is what the game looked like before, 0 is no haze at all. Measured at
+  // a fixed vantage with the sun pinned, 0.50 is +23% local contrast in the far treeline band and 0 is +71%,
+  // so this keeps most of the aerial perspective and buys back most of the depth.
+  // IT SCALES THE EXPONENTIAL ONLY, deliberately. worldFog's second term is a smoothstep ramp into the
+  // render-distance wall, and that one is not a look choice — it exists to hide the hard edge where the
+  // generated world stops (user 2026-08-31, "large slice in the terrain"). A slider that could switch it off
+  // would hand that bug back at its lowest setting, so the ramp is deliberately out of its reach.
+  const LOOK_BAKE = { fog: 0.50 };
+  const lBakeFog = () => { const v = +LOOK_BAKE.fog; return (isFinite(v) && v >= 0 && v <= 2) ? v : 1; };
+  let fogK = lBakeFog();                               // …NOT restored from vb_fog, for the reason lgtMask and lgtMask2 are not: the slider that wrote that key is gone, so a stored value could only strand a player at a haze they can no longer change. A stale vb_fog is inert rather than wrong.
   const WBIT2 = { caustics: 2, underwater: 3, ripples: 4, shoreSurf: 5 };                      // …and these four in u.lgt.z (LG2)
   const wBakeMask = () => { let m = LGT_ALL & ~LGT_WATER; for (const k in WBIT) if (WATER_BAKE[k]) m |= (1 << WBIT[k]); return m; };
-  const wBakeMask2 = () => { let m = LGT2_ALL & ~LGT2_WATER; for (const k in WBIT2) if (WATER_BAKE[k]) m |= (1 << WBIT2[k]); return m; };   // …and the non-water bits of the second mask are forced on, so `reset` also puts the rock sheen and the cross-face fallback back
+  const wBakeMask2 = () => { let m = LGT2_ALL; for (const k in WBIT2) m |= (1 << WBIT2[k]); return m; };   // every bit in the second mask is forced on: the panel carries a SLIDER now, not a bit, so nothing in here has a switch left and a stored value could only ever strand a term off
   const wBakeRefl = () => { const v = +WATER_BAKE.reflection; return (isFinite(v) && v >= 0 && v <= 2) ? v : 1; };
   // Everything OUTSIDE the water group is FORCED ON at load. The panel used to carry all 24 terms, so a
   // saved mask can have sun shadow / AO / fog / TAA switched off from an earlier bisection — and with those
   // rows gone there would be no way left to switch them back. Only the water bits are restored from storage.
-  let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt');
-    return v === null ? wBakeMask() : (((parseInt(v, 10) & LGT_WATER) | (LGT_ALL & ~LGT_WATER)) & LGT_ALL); } catch (e) { return wBakeMask(); } })();
+  // ── AND THE WATER GROUP IS PINNED TO THE BAKE (user 2026-09-02: "remove the water settings of the y toggle
+  // to make room for it") ── with the rows gone there is no UI left that can reach lgt.x at all, so restoring a
+  // saved water mask could only ever strand a term OFF with no way back — the same argument the note above
+  // makes for the whole-scene bits, now true of the water ones too. WATER_BAKE is unchanged and remains the
+  // single description of the shipped water; __vb.lgt(mask) still reaches every bit from the console.
+  let lgtMask = wBakeMask();
   // ── AO RAY REACH ── how far the ambient-occlusion ray marches, in voxels. Lives out here in the shared scope
   // rather than beside its writer in tick-emit, which bundle.py wraps in its own module IIFE. Rides in the spare
   // physC.z uniform lane so it can be swept LIVE with __vb.aoReach(n): rebooting between A/B configs re-rolls the
@@ -1065,8 +1088,7 @@
   let AO_REACH = 24;
   // ── THE SECOND MASK IS PERSISTED THE SAME WAY, AND ONLY ITS WATER BITS ARE ── identical rule to lgtMask
   // above: bits 2-5 (the four new water terms) come back from storage, everything else is forced on at load.
-  let lgtMask2 = (() => { try { const v = localStorage.getItem('vb_lgt2');
-    return v === null ? wBakeMask2() : (((parseInt(v, 10) & LGT2_WATER) | (LGT2_ALL & ~LGT2_WATER)) & LGT2_ALL); } catch (e) { return wBakeMask2(); } })();   // …and it starts at the bake when there is nothing stored. It used to be deliberately NOT restored, because every bit in here was a whole-scene look term and a player who bisected one off in an old session must not be stuck with it. Bits 2-5 are WATER now, so they follow lgtMask's rule instead: the water group survives a reload, the whole-scene bits (0 rock sheen, 1 cross-face fallback) are still forced on at load.
+  let lgtMask2 = wBakeMask2();                         // …pinned to the bake for the same reason lgtMask is: with the water rows gone and the panel carrying a slider, no bit in EITHER mask has a switch left in the UI. __vb.lgt2(mask) still reaches them all from the console.
   // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
   // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
   let wReflK = (() => { try { const v = parseFloat(localStorage.getItem('vb_wrefl')); return (isFinite(v) && v >= 0 && v <= 2) ? v : wBakeRefl(); } catch (e) { return wBakeRefl(); } })();
@@ -12940,6 +12962,18 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
                         skyV = clamp(aT / aoR, 0.0, 1.0); }
           else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
+        // ── EXTENDING THIS WAS BUILT, MEASURED AND REMOVED (user 2026-09-02: "the trees in the distance look
+        // flat … anything we can do to help with the light rendering depth at a distance?", then "distance ao
+        // does nothing remove it") ── the reasoning was sound and the measurement still killed it. Past this
+        // gate every surface takes ONE ambient constant, so the only thing varying across a distant tree is
+        // the direct term — which is exactly why a sunlit one keeps its form and a shaded one does not. And
+        // the 500 is 50 m, which was HALF the view at the old 100 m render distance and is a quarter of it
+        // now that the far ring reaches 200 m, so the flat band quietly grew to the outer three quarters.
+        // All true, and none of it is the complaint: running the AO ray at every depth measured -3.6% local
+        // contrast in the far treeline band at a fixed vantage with the sun pinned. It darkens the far field
+        // slightly and the denoiser washes a 1-ray estimate into a low-frequency tint rather than contact
+        // shade. THE FLATNESS IS THE FOG — the same band with the fog off measures +73%, a ~20x bigger lever,
+        // which is why the [Y] panel now carries a fog slider and not this. Do not rebuild it.
         if (flakeHit) {
           // ── A DROP IS NOT A FLAKE ── same idea, different numbers, and the split is REASONED rather than tuned
           // (this has not been A/B'd in the browser yet — these two lines are where to start if the rain reads
@@ -13727,7 +13761,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // at the same distance and cannot get a stale version of the formula.
     fn worldFog(col : vec3<f32>, rd : vec3<f32>, dist : f32) -> vec3<f32> {
       if (!LG(5u)) { return col; }                                 // LIGHT DEBUG bit 5: distance fog
-      var fogA = 1.0 - exp(-dist * 0.0006);
+      var fogA = 1.0 - exp(-dist * 0.0006 * u.physC.w);   // …times the [Y] panel's FOG slider (physC.w, 1.0 = the shipped 0.0006 exactly). THE EXPONENTIAL ONLY: the wall ramp below is not a look choice and the slider must not be able to switch it off — see LOOK_BAKE in world/window.js
       // ── THE VIEW-DISTANCE FADE IS A FRACTION OF THE VIEW, NOT A FIXED 66 VOXELS ── it used to run
       // rdist-72 .. rdist-6, and that is the "large slice in the terrain" (user 2026-08-31, debug clip 52):
       // a straight edge at the far plane with fully-lit terrain on one side and flat sky colour on the other.
@@ -28173,9 +28207,14 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // ── caustics, the underwater look, the splash/wake rings and the shoreline surf were all baked in with
     // no switch at all. lgt.x is full at 24 bits, so they sit in lgt.z bits 2-5 (LG2) — see WBIT2/LGT2_WATER
     // in world/window.js. The row machinery already handled `mask 2`; these are its first users.
-    const LGT = [['reflect', 18, 1], ['refract', 19, 1], ['foam', 20, 1], ['ice', 21, 1],
-                 ['pixel glisten', 22, 1], ['waves', 23, 1],
-                 ['caustics', 2, 2], ['underwater', 3, 2], ['ripples', 4, 2], ['shore surf', 5, 2]];
+    // ── THE WATER ROWS ARE OFF THE PANEL (user 2026-09-02: "remove the water settings of the y toggle to make
+    // room for it") ── all ten of them, plus the reflection slider and the water bake line. The water itself is
+    // untouched and forced on at its baked values (see WATER_BAKE / lgtMask in world/window.js); what is gone is
+    // only the ability to switch it from here, which is why lgt.x is no longer restored from storage — a saved
+    // mask with a term off would have had no way back. __vb.lgt(mask) and __vb.wrefl(k) still reach it all.
+    // WHAT REPLACED THEM: the FOG slider below — no toggle rows at all, so this list is empty and the row
+    // machinery simply builds nothing. Far AO briefly sat here and was removed: see the note in trace.js.
+    const LGT = [];
     const lgtGet = (b, m) => ((m === 2 ? lgtMask2 : lgtMask) & (1 << b)) !== 0;
     {
       const panel = $('lgtPanel');
@@ -28195,50 +28234,18 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
           lgtPaint(); });
       } };
       addRows(LGT);
-      // ── REFLECTION STRENGTH (user 2026-08-05) ── how much of the Fresnel split goes to the mirror.
-      // 1.00 is physical Schlick (the look it has always had); 0 kills the mirror, 2 doubles it. Lives in
-      // u.lgt.y, so it costs nothing extra — the reflection ray is traced either way, this only weights it.
-      const sld = document.createElement('div'); sld.className = 'lgtRow lgtSld';
-      sld.innerHTML = '<span>reflection</span><input id="lgtRefl" type="range" min="0" max="2" step="0.05"><span class="lgtVal" id="lgtReflV"></span>';
-      panel.appendChild(sld);
-      const reflIn = $('lgtRefl'), reflVal = $('lgtReflV');
-      const reflPaint = () => { reflIn.value = String(wReflK); reflVal.textContent = wReflK.toFixed(2); };
-      reflIn.addEventListener('pointerdown', (e) => e.stopPropagation());
-      reflIn.addEventListener('input', (e) => { e.stopPropagation(); wReflK = +reflIn.value; resetHist = 1;
-        try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} reflPaint(); });
-      reflPaint();
-      // ── BAKE ── the whole water setup as ONE line, ready to paste over the WATER_BAKE declaration in the
-      // source (same idea as the arrow panel's bake row). What is written there is what a fresh player gets.
-      const addBake = (id, strFn) => {
-        const bake = document.createElement('div'); bake.className = 'lgtRow lgtBake';
-        bake.innerHTML = '<input type="text" id="' + id + '" readonly><button id="' + id + 'C">copy</button>';
-        panel.appendChild(bake);
-        const bakeIn = $(id), bakeBtn = $(id + 'C');
-        bakeIn.addEventListener('pointerdown', (e) => e.stopPropagation());
-        bakeIn.addEventListener('click', (e) => { e.stopPropagation(); bakeIn.select(); });
-        bakeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
-        bakeBtn.addEventListener('click', (e) => { e.stopPropagation();
-          const done = () => { bakeBtn.textContent = 'copied!'; setTimeout(() => { bakeBtn.textContent = 'copy'; }, 1200); };
-          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(bakeIn.value).then(done, () => { bakeIn.select(); document.execCommand('copy'); done(); });
-          else { bakeIn.select(); document.execCommand('copy'); done(); } });
-        return () => { bakeIn.value = strFn(); };
-      };
-      const bakePaint = addBake('lgtBake', () => 'const WATER_BAKE = { ' + [
-        'reflect: ' + (lgtGet(18, 1) ? 1 : 0), 'refract: ' + (lgtGet(19, 1) ? 1 : 0),
-        'foam: ' + (lgtGet(20, 1) ? 1 : 0), 'ice: ' + (lgtGet(21, 1) ? 1 : 0),
-        'pixelGlisten: ' + (lgtGet(22, 1) ? 1 : 0),
-        'waves: ' + (lgtGet(23, 1) ? 1 : 0), 'reflection: ' + (+wReflK).toFixed(2),
-        'caustics: ' + (lgtGet(2, 2) ? 1 : 0), 'underwater: ' + (lgtGet(3, 2) ? 1 : 0),
-        'ripples: ' + (lgtGet(4, 2) ? 1 : 0), 'shoreSurf: ' + (lgtGet(5, 2) ? 1 : 0),
-      ].join(', ') + ' };');
-      { const base = lgtPaint; lgtPaint = () => { base(); reflPaint(); bakePaint(); }; }   // one repaint covers buttons, slider AND the bake line, so __vb.wrefl()/__vb.lgt() from the console can never disagree with what is drawn
+      // ── AND THE PANEL IS EMPTY AGAIN (user 2026-09-02: "make this default then remove it from the l toggle")
+      // ── the fog slider and its bake row are gone; LOOK_BAKE.fog carries the chosen 0.50 as a plain constant.
+      // The machinery below is LEFT STANDING for the reason ui/hud.js gives for the night panel's: lgtPanel's
+      // markup, lgtPaint, addRows and the reset button are a working switchboard, and re-exposing a term means
+      // adding its row back, not rebuilding a panel. Y no longer opens it — see the KeyY handler in ui/hud.js.
       const hint = document.createElement('div'); hint.className = 'lgtHint';
       hint.textContent = 'Y — close';   // the panel says how to reach it; nothing else in the HUD would
       panel.appendChild(hint);
       $('lgtAll').addEventListener('pointerdown', (e) => e.stopPropagation());
       $('lgtAll').addEventListener('click', (e) => { e.stopPropagation();   // reset = back to whatever is BAKED in the source, not to all-on
-        lgtMask = wBakeMask(); lgtMask2 = wBakeMask2(); wReflK = wBakeRefl(); resetHist = 1;
-        try { localStorage.setItem('vb_lgt', String(lgtMask)); localStorage.setItem('vb_lgt2', String(lgtMask2)); localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} lgtPaint(); });
+        fogK = lBakeFog(); resetHist = 1;   // nothing on the panel to reset any more, but the button still puts the fog back to the baked value for anyone who moved it from the console
+        try { localStorage.setItem('vb_fog', String(fogK)); } catch (e2) {} lgtPaint(); });
       lgtPaint();
     }
     {   // ── THE ADJUST BOX ── quarter turns and voxel nudges for WHATEVER IS IN HAND (user). Holding the
@@ -29315,6 +29322,13 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // 2026-08-20.
     document.addEventListener('keydown', (e) => {
       if (e.code !== 'KeyY' || CMD.open || ED.on || e.repeat) return;
+      // ── AND Y IS RETIRED, BECAUSE THE PANEL IS EMPTY (user 2026-09-02: "make this default then remove it
+      // from the l toggle") ── the water rows came off it, far AO came and went, and the fog slider's number
+      // is baked in LOOK_BAKE now, so opening it would show a title bar, a reset button and nothing to reset.
+      // ONE LINE, and the whole switchboard is still behind it: delete this return and lgtPanel's markup,
+      // lgtPaint, addRows and the reset button all come back — exactly the trade ui/hud.js's own night panel
+      // makes a few hundred lines up, and for the same reason. The panel has emptied out twice before.
+      return;
       // …and not from behind the ESC MENU / settings, which own the screen — nor while the rebind panel is
       // waiting on a key, where 'y' is an ANSWER rather than a command (keybinds.js's listener would take it
       // and this one would open a panel underneath at the same time).
@@ -40553,6 +40567,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // AO_REACH rides in physC.z. Written HERE, outside the body block above, because that block only runs when
     // there are rigid bodies — leaving the lane stale (and the AO reach wrong) in an empty scene.
     UF[UF_PHYSC + 2] = AO_REACH;
+    UF[UF_PHYSC + 3] = fogK;                           // …and the [Y] panel's FOG DENSITY slider rides physC.w, for the same reason AO_REACH rides .z: the lane was already in the struct and written a literal 0 every frame, so it costs no reorder and nothing downstream to re-verify. Written here rather than in the body block above so an empty scene still gets the right haze.
     device.queue.writeBuffer(uniBuf, 0, UF);
     if (CPROF) cpMark(6);
 

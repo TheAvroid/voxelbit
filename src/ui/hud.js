@@ -428,6 +428,13 @@
     // 2026-08-20.
     document.addEventListener('keydown', (e) => {
       if (e.code !== 'KeyY' || CMD.open || ED.on || e.repeat) return;
+      // ── AND Y IS RETIRED, BECAUSE THE PANEL IS EMPTY (user 2026-09-02: "make this default then remove it
+      // from the l toggle") ── the water rows came off it, far AO came and went, and the fog slider's number
+      // is baked in LOOK_BAKE now, so opening it would show a title bar, a reset button and nothing to reset.
+      // ONE LINE, and the whole switchboard is still behind it: delete this return and lgtPanel's markup,
+      // lgtPaint, addRows and the reset button all come back — exactly the trade ui/hud.js's own night panel
+      // makes a few hundred lines up, and for the same reason. The panel has emptied out twice before.
+      return;
       // …and not from behind the ESC MENU / settings, which own the screen — nor while the rebind panel is
       // waiting on a key, where 'y' is an ANSWER rather than a command (keybinds.js's listener would take it
       // and this one would open a panel underneath at the same time).

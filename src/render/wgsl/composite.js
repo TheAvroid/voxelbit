@@ -208,7 +208,7 @@
     // at the same distance and cannot get a stale version of the formula.
     fn worldFog(col : vec3<f32>, rd : vec3<f32>, dist : f32) -> vec3<f32> {
       if (!LG(5u)) { return col; }                                 // LIGHT DEBUG bit 5: distance fog
-      var fogA = 1.0 - exp(-dist * 0.0006);
+      var fogA = 1.0 - exp(-dist * 0.0006 * u.physC.w);   // …times the [Y] panel's FOG slider (physC.w, 1.0 = the shipped 0.0006 exactly). THE EXPONENTIAL ONLY: the wall ramp below is not a look choice and the slider must not be able to switch it off — see LOOK_BAKE in world/window.js
       // ── THE VIEW-DISTANCE FADE IS A FRACTION OF THE VIEW, NOT A FIXED 66 VOXELS ── it used to run
       // rdist-72 .. rdist-6, and that is the "large slice in the terrain" (user 2026-08-31, debug clip 52):
       // a straight edge at the far plane with fully-lit terrain on one side and flat sky colour on the other.

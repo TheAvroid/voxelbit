@@ -803,6 +803,18 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
                         skyV = clamp(aT / aoR, 0.0, 1.0); }
           else { skyV = 1.0; }                        // AO OFF — no contact darkening anywhere
         } else { skyV = 0.85; }                                      // past 50 m AO detail is sub-pixel — flat ambient, the ray saved on every far pixel
+        // ── EXTENDING THIS WAS BUILT, MEASURED AND REMOVED (user 2026-09-02: "the trees in the distance look
+        // flat … anything we can do to help with the light rendering depth at a distance?", then "distance ao
+        // does nothing remove it") ── the reasoning was sound and the measurement still killed it. Past this
+        // gate every surface takes ONE ambient constant, so the only thing varying across a distant tree is
+        // the direct term — which is exactly why a sunlit one keeps its form and a shaded one does not. And
+        // the 500 is 50 m, which was HALF the view at the old 100 m render distance and is a quarter of it
+        // now that the far ring reaches 200 m, so the flat band quietly grew to the outer three quarters.
+        // All true, and none of it is the complaint: running the AO ray at every depth measured -3.6% local
+        // contrast in the far treeline band at a fixed vantage with the sun pinned. It darkens the far field
+        // slightly and the denoiser washes a 1-ray estimate into a low-frequency tint rather than contact
+        // shade. THE FLATNESS IS THE FOG — the same band with the fog off measures +73%, a ~20x bigger lever,
+        // which is why the [Y] panel now carries a fog slider and not this. Do not rebuild it.
         if (flakeHit) {
           // ── A DROP IS NOT A FLAKE ── same idea, different numbers, and the split is REASONED rather than tuned
           // (this has not been A/B'd in the browser yet — these two lines are where to start if the rain reads
