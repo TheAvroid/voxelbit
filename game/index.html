@@ -926,7 +926,27 @@
   // 8-voxel strip that wrapped — never a full-buffer move. All generation is a pure function of WORLD
   // coordinates, so strips re-materialise seamlessly and revisited terrain is always identical.
   const WX = WXZ, WY = WYpick, WZ = WXZ;              // deep world: +128 voxels of stone below the surface for TRUE gorge depth
-  const LIFT = WY >= 384 ? 128 : 0;                    // terrain floats this far above bedrock
+  // ── DOUBLING THE HILLS IS DONE BY LOWERING THE WATER, BECAUSE THE CEILING IS NOT NEGOTIABLE (user
+  // 2026-09-01: "double the height map of the pine forest. just double the elevation") ── the range a hill
+  // has is HMAX - WL, and HMAX is pinned at WY - 158 by the TREE RESERVE: a 152-voxel pine standing on the
+  // highest ground must still fit under WY or its crown is cut off flat. WY is 384 and adapter-gated, so
+  // 226 is the top of the world and no amount of tuning up there buys anything.
+  //   above-water range = (WY - 158) - (24 + LIFT) = 202 - LIFT
+  // which is the whole arithmetic: the ONLY free variable is LIFT, and doubling 74 to 148 needs LIFT 54.
+  // 50 is used because PINE_FLOOR sits 4 under WL and the doubling is measured from the FLOOR, not the
+  // waterline: floor = LIFT + 20, crest = 226, so relief = 206 - LIFT, and 206 - 50 = 156 = 2 x 78 exactly.
+  // WHAT IT COSTS, STATED PLAINLY: gorges. stampCave's floorY is ABSOLUTE (CAVE_FLOOR_MAX = 6, near
+  // bedrock) rather than LIFT-relative, so a gorge used to run ~156 voxels from the surface down and now
+  // runs ~78. There is no way around that — the depth below water and the height above it come out of one
+  // 384-voxel budget, and this request spends it upward. Everything ELSE keyed to LIFT (WL, PINE_FLOOR,
+  // baseH's floor, basinLow, OAKY, the basin bed) is LIFT-relative and simply moves down with it, so the
+  // shore, the beach band and the basin window are unchanged RELATIVE to the ground.
+  // Water area falls out of this: the same 46-voxel basin window now covers half as much of the relief
+  // range, so there is less of it — sanctioned ("if you have to decrease the surface area of water… go
+  // for it") rather than accidental.
+  // The SMALLER WORLD TIERS ARE UNTOUCHED: at WY 256 or 192 LIFT is already 0 and HMAX was already pinned
+  // by WY - 158, so both terms below evaluate exactly as they did.
+  const LIFT = WY >= 384 ? 50 : 0;                     // terrain floats this far above bedrock
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
   let poolTouchHook = null;                            // set by render/buffers.js once the pool exists; terrain.js, patch.js and gen-pool.js all run BEFORE that fragment and reach the pool through this hook. Without the declaration the assignment there throws in strict mode and the module aborts silently — the boot parks on "uploading world".
@@ -1106,7 +1126,7 @@
     const c01 = h3(ix, iy, iz + 1) * (1 - fx) + h3(ix + 1, iy, iz + 1) * fx, c11 = h3(ix, iy + 1, iz + 1) * (1 - fx) + h3(ix + 1, iy + 1, iz + 1) * fx;
     return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
   };
-  const HMAX = Math.min(105 + LIFT, WY - 158);         // terrain ceiling
+  const HMAX = Math.min(176 + LIFT, WY - 158);         // terrain ceiling — 105 -> 176 so the first term stops binding at the lower LIFT and the TREE RESERVE is what sets the top, which is the point of it
   // ── TERRAIN HEIGHT AND TREE HEIGHT SPEND ONE BUDGET ── the second term is the TREE RESERVE, not an
   // arbitrary margin: a trunk standing on HMAX must still fit under WY or its crown is cut off flat. It
   // read WY - 122 for pine5.vox's own 116 voxels plus a little; the nine pines are 151-152, so the reserve
