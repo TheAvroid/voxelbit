@@ -1190,13 +1190,41 @@
   // deepen() instead - which only touches columns UNDER the waterline and so costs the shore nothing.
   const PINE_RELIEF = PINE_CREST - PINE_FLOOR;
   const PINE_BOWL   = 6;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
+  // ── THE BIRCH FOREST IS THE PINE FIELD, HALVED, WITH A LAKE BETWEEN THEM (user 2026-09-02) ── three
+  // requests and all three land in THIS function, which is the point of it being one shared scalar: H,
+  // makeHRow and makeHCol all call it, so the birch band, its halved relief and the water that separates it
+  // from the pine arrive in all three copies of the height field at once and gtest cannot go non-zero.
+  //   "use the exact same terrain generation as the pine forest" — there is no birchBase. It is the same
+  //     massif/shoulder/ridge sum, the same constants, the same noise; only the OUTPUT is scaled.
+  //   "reduce the terrain elevation in half" — measured from the WATERLINE, not from bedrock: a birch column
+  //     sits at WL + (pine - WL) * BIRCH_ELEV. Scaling the raw height instead would drag the whole field
+  //     toward y=0 and drown the biome, because PINE_FLOOR is 4 UNDER WL and half of a number below the
+  //     waterline is further below it, not nearer. This way the shoreline is exactly where it would have
+  //     been and only the hills come down, which is what "elevation" means here.
+  //   "split the birch from the pine forest with water … we are merely putting terrain in water like we are
+  //     currently doing vs putting water in terrain" — so there is no channel carve and nothing river-shaped.
+  //     BIRCH_GAP simply PULLS THE GROUND DOWN in a strip centred on the band edge, and the global waterline
+  //     floods whatever ends up under it, exactly as basinM's bowls do. It runs BEFORE deepen() (see bedH),
+  //     so the strait gets the same cubic depth curve and the same 1-voxel bed stepping as every other lake.
+  const BIRCH_ELEV = 0.5;                              // half the relief above the waterline
+  const BIRCH_GAPD = 46;                               // how far the ground is pulled under, at the middle of the strait
+  const BIRCH_GAPW = 620;                              // …and the half-width it is pulled over, in voxels — ~62 m of open water at the middle
   const pineBase = (x, z) => {                         // ONE shared scalar helper: H, makeHRow and makeHCol all call THIS, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
     const a = fbm(x * 0.0018 + 61.3, z * 0.0018 + 77.9);   // the massifs, ~550 voxels across
     const sh = fbm(x * 0.0037 + 25.1, z * 0.0037 + 13.7);  // and the shoulders riding on them
     const m = sstep(sstep(a * 0.75 + sh * 0.25));
     const k = m * m;
-    return PINE_FLOOR + PINE_RELIEF * k - PINE_BOWL * (1 - m) * (1 - m)
+    let h = PINE_FLOOR + PINE_RELIEF * k - PINE_BOWL * (1 - m) * (1 - m)
          + 9 * (fbm(x * 0.030 + 3.7, z * 0.030 + 9.1) - 0.5) * k * k;
+    const bm = birchM(x, z);
+    if (bm > 0) { h = WL + (h - WL) * (1 - bm * (1 - BIRCH_ELEV)); }   // blended on the mask, so the two forests meet on a slope rather than a step — and the blend happens across the strait below, where it is under water and invisible
+    // ── THE STRAIT ── the band edge is where birchM's own argument crosses zero, so it is measured the same
+    // way the mask measures it and the two can never drift apart. A cosine bump rather than a smoothstep
+    // pair: it is flat-topped in the middle (open water, not a V) and its tails reach zero with zero slope,
+    // so neither shore gets a crease where the pull stops.
+    const sd = Math.abs(Math.abs(pwrap(x - (SPWX + BIRCHC + desWob(z) - desWob(SPWZ)))) - BIRCHH);
+    if (sd < BIRCH_GAPW) { h -= BIRCH_GAPD * 0.5 * (1 + Math.cos(Math.PI * sd / BIRCH_GAPW)); }
+    return h;
     // ── AND THE RIDGE DETAIL FADES ON k*k, NOT k ── this term rides at a ~33-voxel wavelength, the only thing
     // in the field fast enough to terrace a shoreline by itself. Faded on k it still carries a couple of
     // voxels where the land crosses WL, which steps the beach every few voxels no matter how gentle the
@@ -1917,7 +1945,11 @@
   const ARCTWFAR = ARCTC - ARCTH - 2 * ARCTWMAX - ARCTB * 0.5;   // …nor west of this
   const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = 1080;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
   const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
-  const birchM = (x, z) => { return 0;   /* WIPED 2026-09-01 (user: "the only thing that should exist is the pine forest biome") — identically zero, so every branch this gated is dead. Kept as a stub, not deleted: terrain.js, both worker registries and debug-api.js all still name it. */                            // 1 = deep birch forest, 0 = the pine and the sand either side
+  // ── THE BIRCH FOREST IS BACK (user 2026-09-02: "I want you to pull in the birch forest now. use the exact
+  // same terrain generation as the pine forest") ── one band, and it is the ONLY other biome: oak, cherry,
+  // arctic and desert stay identically zero. The mask is the one this band always had (BIRCHOFF/BIRCHH/BIRCHB
+  // on desWob's meander), unchanged — what is new is what the HEIGHT FIELD does with it, in pineBase below.
+  const birchM = (x, z) => {                            // 1 = deep birch forest, 0 = pine forest either side of it
     const c = SPWX + BIRCHC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
     const t = 0.5 + (BIRCHH - Math.abs(pwrap(x - c))) / BIRCHB;
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
@@ -2442,7 +2474,7 @@
     // come out of. Anything from world/terrain.js (23) or world/gen-pool.js (25) is still in its temporal dead
     // zone on this line, and reading it would throw INSIDE this try — which swallows it and falls back, the same
     // invisible failure the missing names caused. Check 9 enforces the ordering as well as the completeness.
-    const consts = { DEEP_SPAN, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
+    const consts = { DEEP_SPAN, BIRCH_ELEV, BIRCH_GAPD, BIRCH_GAPW, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
     const fns = { deepen, bedH, ihash, sstep, pwrap, vnoise, fbm, pineBase, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctH, oakWob, oakM, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
@@ -3053,7 +3085,8 @@
   // does not belong to the light oak's leaves, and at index 0 it is the shade the DARKEST lit ground wears, so
   // it showed up exactly where the floor is already in shadow. OAKMOSS[0] takes its place: the ramp is now
   // entirely the light greens, and it still costs zero ids.
-  const BIRCHMOSS = [OAKMOSS[0], OAKMOSS[0], OAKMOSS[1], OAKMOSS[2]];
+  // (BIRCHMOSS is declared after BIRCHGRASS at the foot of this file — it cannot be built here because the
+  //  ramp it reads is minted last, for the id-ordering reason given there.)
   for (const i of OAKMOSS) palOwn.add(i);   // reserved: mossCap keys on these, and a tolerance reuse would scatter somebody else's model over the boulders
   // ── THE SECOND OAK, AND IT COSTS TWO IDS (user 2026-08-19: "make the oak trees have 2 shades of green. a
   // lighter green and a darker green. similar to whats done with the cherry trees") ── the cherry forest ships
@@ -3164,7 +3197,36 @@
   // palOwn is the fix rather than clearing solidTab, because the editor genuinely needs its floor: an exact
   // match on a RESERVED id is not a match, so the flower mints its own and both meanings survive.
   for (const i of [ED_WHITE, ED_GREY, ED_HLITE]) palOwn.add(i);   // asset-editor stage: white plane, 1 m gridline grey, amber selection ring (all marked solid below)
-  const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);                                    // twig (pickable) / stick — pine-trunk browns
+  const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);
+  // ══ THE BIRCH FOREST'S FLOOR (user 2026-09-02: "make sure there is not dirt in the terrain but grass
+  // instead. make sure the grass is a lighter color") ══ its own 4-step ramp, ~1.45x the luminance of GRASS,
+  // so the birch wood reads as a bright open meadow against the pine's dark needle floor.
+  // MINTED HERE, AT THE VERY END OF THE TABLE, and that is not a style choice: addCol APPENDS, so ids are
+  // positional in call order and the decor .json files store resolved ids (see tools/voxelize_*.py). Minting
+  // four colours anywhere above this line would shift every id below it and repaint every decoration in the
+  // game. The audit says 243/256 with 0 overflow, so these four land at 244-247 and the table stays inside
+  // its ceiling — check __vb.palAudit().over is still 0 after any further additions.
+  // The old BIRCHMOSS pointed at OAKMOSS, which was RECLAIMED to DEADC on 2026-08-31 when its biome went, so
+  // the birch floor had no colour left at all — this ramp is what brings it back rather than reviving that one.
+  const BIRCHGRASS = [addCol(121, 153, 79), addCol(110, 141, 72), addCol(133, 166, 89), addCol(99, 128, 66)];
+  const BIRCHMOSS = [BIRCHGRASS[0], BIRCHGRASS[1], BIRCHGRASS[2], BIRCHGRASS[3]];
+  // ── AND THE STRANDS GET THE FLOOR'S OWN GREENS, ON IDS OF THEIR OWN (user 2026-09-02: "you cant use the
+  // same greens that make up the grass on the birch floor?") ── yes, and this is the trick the note by
+  // PAL_MERGE above already describes as the one BROCK and the desert rocks use: SAME COLOUR, DEDICATED IDS.
+  // WHY IT NEEDS SEPARATE IDS AT ALL, since the colours are identical: an id is not a colour, it is a
+  // MATERIAL. BIRCHGRASS is the solid floor (solidTab in assets/material-tabs.js) and a strand has to be
+  // walk-through (floatTab, never solid) — the pine forest's blades are, and a blade you collide with turns
+  // the whole meadow into a field of knee-high hitboxes. One id cannot be both, so the ramp is minted twice.
+  // AND addCol DOES NOT DEDUPE, which is what makes this free: it checks PAL_MERGE and the 256 ceiling and
+  // then pushes unconditionally. The PAL_TOL/Chebyshev collapse lives in palShare/edNearShareOK, which is the
+  // .vox MODEL loader's path, not this one. (An earlier revision of this block offset the strand greens to
+  // avoid a collapse that could not have happened — the note is here so the next person does not repeat it.)
+  // THREE IDS, NOT FOUR: the index below is (hash * 4) | 0 so the table needs four entries, but they need not
+  // be four distinct ids and the palette has single digits of headroom. The middle shade repeats.
+  const BIRCHSTRANDC = [addCol(121, 153, 79), addCol(110, 141, 72), addCol(133, 166, 89)];   // byte-identical to BIRCHGRASS[0..2] — the blades and the ground they stand in are the same green, exactly as asked
+  const BIRCHSTRAND = [BIRCHSTRANDC[0], BIRCHSTRANDC[1], BIRCHSTRANDC[2], BIRCHSTRANDC[1]];
+   // the surface strands and the soil under them are ONE material now — see the soil arm in world/terrain.js
+                                    // twig (pickable) / stick — pine-trunk browns
   // ── BLOOM IS GONE, AND ITS SIX SLOTS PAY FOR flowers.vox (user 2026-08-18: "replace all the flowers in the
   // current game with flowers.vox") ── it was six single-voxel flower HEADS, sown one per column beside a grass
   // stem in fillColumn. The authored file is five whole plants, so the six ids had no remaining reader: nothing
@@ -5105,6 +5167,16 @@
   for (const i of [...ROCK, ...ROCKX, ...ORECOAL, ...OREIRON]) { decorTab[i] = 1; pickOnlyTab[i] = 1; }   // …and COAL + IRON (user): ore belongs to the pick like the stone it sits in   // …the STONE STRATA under the soil (user) belong to the PICK, not the shovel: dig down with the shovel, then swap and keep going
   const woodTab = new Uint8Array(256);                 // ── WOOD ── the axe takes chunks out of anything made of wood voxels (user), including a stump the
   for (const i of woodIds) { woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }   // felled tree left behind, which belongs to no tree shape any more
+  // ── THE BIRCH FOREST'S FLOOR IS GROUND, AND HAS TO BE TOLD SO (user 2026-09-02: "I'm clipping through the
+  // forest as I'm running over the terrain") ── solidTab is handed out by the BLANKET `i < DECOR_MIN` sweep,
+  // and BIRCHGRASS is minted at the TAIL of the palette (it has to be — addCol appends and decor .json stores
+  // resolved ids), so it lands far above DECOR_MIN and gets NO hitbox by default. That was survivable while
+  // the birch surface was a single non-solid voxel resting on solid DIRT — you stood one voxel low and never
+  // noticed. Making the whole 16-voxel soil band BIRCHGRASS for the "no dirt" request turned that into a
+  // 17-voxel hole, and the player fell through the forest floor.
+  // ASNOW's line, exactly: the arctic floor is the other ground material minted past DECOR_MIN and it has
+  // always needed this. ANY future ground colour minted down there needs it too.
+  for (const i of [...BIRCHGRASS]) { solidTab[i] = 1; decorTab[i] = 1; digOnlyTab[i] = 1; }
   for (const i of [...ASNOW]) { solidTab[i] = 1; decorTab[i] = 1; digOnlyTab[i] = 1; }   // ── PACKED SNOW ── the arctic floor, its glaciers and the small caps floating in the sea: SOLID (you walk on it), shovel-only   // ── PACKED SNOW ── the arctic floor: SOLID (you walk on it, unlike the fallen-snow decor it is coloured after) and the SHOVEL's, like every other kind of ground
   for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND, ...DSAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the SOIL (user): dirt, the mossy grass on top of it, the brown pine litter that covers most of the forest floor, and beach sand. NOT the stone strata underneath — the shovel stops at rock (user).   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
   // ── SURFACE SCATTER ── grass strands, flowers, twigs and pinecones: all of it needs something underneath,
@@ -5137,7 +5209,7 @@
   // crown has one obvious place to register itself instead of a third condition to be forgotten from.
   const hangTab = new Uint8Array(256);
   const coneTab = new Uint8Array(256);                 // PINECONE ids — no hitbox for the PLAYER (see solid()); every other system still treats them normally
-  for (const i of [...GRASS, ...FLOWERIDS, ...OAKMOSS]) floatTab[i] = 1;   // OAKMOSS rides with GRASS: same surface-scatter class, oak-canopy colour (see assets/palette.js)   // FLOWERIDS replaces BLOOM (user 2026-08-18): the flowers are an authored MODEL now, so the ids come off its own voxels — see assets/bow.js
+  for (const i of [...GRASS, ...FLOWERIDS, ...OAKMOSS, ...BIRCHSTRAND]) floatTab[i] = 1;   // …and the BIRCH STRANDS ride with GRASS: same surface-scatter class, and deliberately NOT in the solidTab line above with BIRCHGRASS — a strand is walk-through, the floor under it is not   // OAKMOSS rides with GRASS: same surface-scatter class, oak-canopy colour (see assets/palette.js)   // FLOWERIDS replaces BLOOM (user 2026-08-18): the flowers are an authored MODEL now, so the ids come off its own voxels — see assets/bow.js
   for (const m of STICKV.concat(STICKB)) for (const q of m.vox) floatTab[q >>> 24] = 1;            // twigs (user) — and the AUTHORED pink pair, whose browns are already flagged (they are the same ids) but whose four leaf pinks are its own and would otherwise miss the whole ground-scatter class
   // ── PINECONES ARE WALK-THROUGH FOR THE PLAYER (user 2026-08-05: "should be able to clip through them") ──
   // floatTab already called them surface scatter, but solidTab is set by the BLANKET `i < DECOR_MIN` sweep
@@ -7278,7 +7350,14 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // material or the seam simply becomes a speckled seam.
     const asn = arctSnow(wx, wz);                      // the SNOW mask, not the biome mask — it reaches out to the treeline and its edge is 2-D noise (world/window.js)
     const aSoil = asn > 0.5;
-    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
+    // ── AND THE BIRCH FOREST HAS NO SOIL EITHER (user 2026-09-02: "make sure there is not dirt in the terrain
+    // but grass instead") ── the SAME fix the arctic took, for the same reason and with the same shape: this
+    // layer is what a slope down to the water, a cliff or a dug hole EXPOSES, and it was brown under a green
+    // surface, so the moment the ground fell away you saw the seam. Its own light green all the way down
+    // instead. NOT dithered against the mask — an exposed face has to be ONE material or the seam just
+    // becomes a speckled seam, which is the note the arctic arm already makes.
+    const bSoil = bm > 0.5;
+    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : bSoil ? BIRCHMOSS[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
       const shore = h <= WL + 6;                       // the band sand may occupy AT ALL — solid to WL+4, then two levels of soft edge above it
@@ -7388,7 +7467,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     if (surfMoss && h + 4 < WY) {                      // GRASS STRANDS: moss patches ONLY, 1–4 voxels tall, moss-matched colors
       if (ihash(wx * 3 + 41, wz * 3 + 87) < 0.06) {
         const gh = 1 + ((ihash(wx * 5 + 3, wz * 7 + 9) * 4) | 0);
-        const gc = (surfBirch ? BIRCHMOSS : GRASS)[(ihash(wx + 13, wz * 13) * 4) | 0];   // the birch forest's strands are its own lighter green — the whole point of the request
+        const gc = (surfBirch ? BIRCHSTRAND : GRASS)[(ihash(wx + 13, wz * 13) * 4) | 0];   // ── STRANDS ARE A SCATTER RAMP, AND THE BIRCH HAS ITS OWN ── they used to take BIRCHMOSS in the birch band, and that ramp is the solid GROUND colour now (see material-tabs.js): sharing ids would have made every blade of grass a hitbox, where the pine forest's strands are walk-through. GRASS is >= DECOR_MIN and in floatTab, which is exactly the surface-scatter class a strand wants. The floor keeps its lighter colour; only the blades on top of it stay the standard green   // the birch forest's strands are its own lighter green — the whole point of the request
         for (let k = 0; k < gh; k++) { const ii = base + (h + k) * WX; if (W[ii]) break; W[ii] = gc; }
       }
     }
@@ -7748,7 +7827,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // CHERRY IS TESTED FIRST because the blossom band is a SUB-REGION of the oak mask — asking oakM first would
     // hand every blossom rock the oak's green.
     const cap = (TWIGPINK.length && chNear(b.bx) && cherryM(b.bx, b.bz) > 0.5) ? TWIGPINK
-              : (OAKMOSS.length && birchM(b.bx, b.bz) > 0.5) ? OAKMOSS   // ── AND THE BIRCH FOREST'S ROCK MOSS IS THE SAME LIGHT GREEN ── OAKMOSS is exactly the oak's brightest leaf colours on float-material ids, so the rule the oak forest follows (moss matches the leaves over it) lands on the identical ramp here, for zero new ids
+              : (BIRCHMOSS.length && birchM(b.bx, b.bz) > 0.5) ? BIRCHMOSS   // ── AND THE BIRCH FOREST'S ROCK MOSS IS THE SAME LIGHT GREEN ── BIRCHMOSS now, not OAKMOSS: that ramp was reclaimed to DEADC when its biome went, so a rock in the birch wood was wearing a dead colour. OAKMOSS is exactly the oak's brightest leaf colours on float-material ids, so the rule the oak forest follows (moss matches the leaves over it) lands on the identical ramp here, for zero new ids
               : (OAKMOSS.length && oakM(b.bx, b.bz) > 0.5) ? OAKMOSS : GRASS;
     const fw = (b.rot & 1) ? m.sy : m.sx, fd = (b.rot & 1) ? m.sx : m.sy;
     const bx = b.bx - (fw >> 1), bz = b.bz - (fd >> 1);
@@ -9305,9 +9384,9 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { DEEP_SPAN, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { DEEP_SPAN, BIRCH_ELEV, BIRCH_GAPD, BIRCH_GAPW, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const OPAQTAB = []; for (let i = 0; i < 256; i++) OPAQTAB.push(i && i !== WATER_T && i !== WATER_B && !foliaTab[i] ? 1 : 0);   // must stay bit-identical to opaqueTab in render/buffers.js — the pool trusts this verdict and never re-derives it
-    const tables = { OPAQTAB, ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, PINE_ANCH9, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
+    const tables = { OPAQTAB, ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHSTRAND, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, PINE_ANCH9, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
     const fns = { deepen, bedH, ihash, sstep, pwrap, vnoise, vnoise3, fbm, pineBase, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctSnow, arctH, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
     let wsrc2 = '';
     for (const k in consts) wsrc2 += 'const ' + k + ' = ' + consts[k] + ';\n';

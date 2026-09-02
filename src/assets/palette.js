@@ -400,7 +400,8 @@
   // does not belong to the light oak's leaves, and at index 0 it is the shade the DARKEST lit ground wears, so
   // it showed up exactly where the floor is already in shadow. OAKMOSS[0] takes its place: the ramp is now
   // entirely the light greens, and it still costs zero ids.
-  const BIRCHMOSS = [OAKMOSS[0], OAKMOSS[0], OAKMOSS[1], OAKMOSS[2]];
+  // (BIRCHMOSS is declared after BIRCHGRASS at the foot of this file — it cannot be built here because the
+  //  ramp it reads is minted last, for the id-ordering reason given there.)
   for (const i of OAKMOSS) palOwn.add(i);   // reserved: mossCap keys on these, and a tolerance reuse would scatter somebody else's model over the boulders
   // ── THE SECOND OAK, AND IT COSTS TWO IDS (user 2026-08-19: "make the oak trees have 2 shades of green. a
   // lighter green and a darker green. similar to whats done with the cherry trees") ── the cherry forest ships
@@ -511,7 +512,36 @@
   // palOwn is the fix rather than clearing solidTab, because the editor genuinely needs its floor: an exact
   // match on a RESERVED id is not a match, so the flower mints its own and both meanings survive.
   for (const i of [ED_WHITE, ED_GREY, ED_HLITE]) palOwn.add(i);   // asset-editor stage: white plane, 1 m gridline grey, amber selection ring (all marked solid below)
-  const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);                                    // twig (pickable) / stick — pine-trunk browns
+  const STICK_S = addCol(126, 95, 59), STICK_M = addCol(111, 83, 52);
+  // ══ THE BIRCH FOREST'S FLOOR (user 2026-09-02: "make sure there is not dirt in the terrain but grass
+  // instead. make sure the grass is a lighter color") ══ its own 4-step ramp, ~1.45x the luminance of GRASS,
+  // so the birch wood reads as a bright open meadow against the pine's dark needle floor.
+  // MINTED HERE, AT THE VERY END OF THE TABLE, and that is not a style choice: addCol APPENDS, so ids are
+  // positional in call order and the decor .json files store resolved ids (see tools/voxelize_*.py). Minting
+  // four colours anywhere above this line would shift every id below it and repaint every decoration in the
+  // game. The audit says 243/256 with 0 overflow, so these four land at 244-247 and the table stays inside
+  // its ceiling — check __vb.palAudit().over is still 0 after any further additions.
+  // The old BIRCHMOSS pointed at OAKMOSS, which was RECLAIMED to DEADC on 2026-08-31 when its biome went, so
+  // the birch floor had no colour left at all — this ramp is what brings it back rather than reviving that one.
+  const BIRCHGRASS = [addCol(121, 153, 79), addCol(110, 141, 72), addCol(133, 166, 89), addCol(99, 128, 66)];
+  const BIRCHMOSS = [BIRCHGRASS[0], BIRCHGRASS[1], BIRCHGRASS[2], BIRCHGRASS[3]];
+  // ── AND THE STRANDS GET THE FLOOR'S OWN GREENS, ON IDS OF THEIR OWN (user 2026-09-02: "you cant use the
+  // same greens that make up the grass on the birch floor?") ── yes, and this is the trick the note by
+  // PAL_MERGE above already describes as the one BROCK and the desert rocks use: SAME COLOUR, DEDICATED IDS.
+  // WHY IT NEEDS SEPARATE IDS AT ALL, since the colours are identical: an id is not a colour, it is a
+  // MATERIAL. BIRCHGRASS is the solid floor (solidTab in assets/material-tabs.js) and a strand has to be
+  // walk-through (floatTab, never solid) — the pine forest's blades are, and a blade you collide with turns
+  // the whole meadow into a field of knee-high hitboxes. One id cannot be both, so the ramp is minted twice.
+  // AND addCol DOES NOT DEDUPE, which is what makes this free: it checks PAL_MERGE and the 256 ceiling and
+  // then pushes unconditionally. The PAL_TOL/Chebyshev collapse lives in palShare/edNearShareOK, which is the
+  // .vox MODEL loader's path, not this one. (An earlier revision of this block offset the strand greens to
+  // avoid a collapse that could not have happened — the note is here so the next person does not repeat it.)
+  // THREE IDS, NOT FOUR: the index below is (hash * 4) | 0 so the table needs four entries, but they need not
+  // be four distinct ids and the palette has single digits of headroom. The middle shade repeats.
+  const BIRCHSTRANDC = [addCol(121, 153, 79), addCol(110, 141, 72), addCol(133, 166, 89)];   // byte-identical to BIRCHGRASS[0..2] — the blades and the ground they stand in are the same green, exactly as asked
+  const BIRCHSTRAND = [BIRCHSTRANDC[0], BIRCHSTRANDC[1], BIRCHSTRANDC[2], BIRCHSTRANDC[1]];
+   // the surface strands and the soil under them are ONE material now — see the soil arm in world/terrain.js
+                                    // twig (pickable) / stick — pine-trunk browns
   // ── BLOOM IS GONE, AND ITS SIX SLOTS PAY FOR flowers.vox (user 2026-08-18: "replace all the flowers in the
   // current game with flowers.vox") ── it was six single-voxel flower HEADS, sown one per column beside a grass
   // stem in fillColumn. The authored file is five whole plants, so the six ids had no remaining reader: nothing

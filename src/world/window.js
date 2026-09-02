@@ -267,13 +267,41 @@
   // deepen() instead - which only touches columns UNDER the waterline and so costs the shore nothing.
   const PINE_RELIEF = PINE_CREST - PINE_FLOOR;
   const PINE_BOWL   = 6;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
+  // ── THE BIRCH FOREST IS THE PINE FIELD, HALVED, WITH A LAKE BETWEEN THEM (user 2026-09-02) ── three
+  // requests and all three land in THIS function, which is the point of it being one shared scalar: H,
+  // makeHRow and makeHCol all call it, so the birch band, its halved relief and the water that separates it
+  // from the pine arrive in all three copies of the height field at once and gtest cannot go non-zero.
+  //   "use the exact same terrain generation as the pine forest" — there is no birchBase. It is the same
+  //     massif/shoulder/ridge sum, the same constants, the same noise; only the OUTPUT is scaled.
+  //   "reduce the terrain elevation in half" — measured from the WATERLINE, not from bedrock: a birch column
+  //     sits at WL + (pine - WL) * BIRCH_ELEV. Scaling the raw height instead would drag the whole field
+  //     toward y=0 and drown the biome, because PINE_FLOOR is 4 UNDER WL and half of a number below the
+  //     waterline is further below it, not nearer. This way the shoreline is exactly where it would have
+  //     been and only the hills come down, which is what "elevation" means here.
+  //   "split the birch from the pine forest with water … we are merely putting terrain in water like we are
+  //     currently doing vs putting water in terrain" — so there is no channel carve and nothing river-shaped.
+  //     BIRCH_GAP simply PULLS THE GROUND DOWN in a strip centred on the band edge, and the global waterline
+  //     floods whatever ends up under it, exactly as basinM's bowls do. It runs BEFORE deepen() (see bedH),
+  //     so the strait gets the same cubic depth curve and the same 1-voxel bed stepping as every other lake.
+  const BIRCH_ELEV = 0.5;                              // half the relief above the waterline
+  const BIRCH_GAPD = 46;                               // how far the ground is pulled under, at the middle of the strait
+  const BIRCH_GAPW = 620;                              // …and the half-width it is pulled over, in voxels — ~62 m of open water at the middle
   const pineBase = (x, z) => {                         // ONE shared scalar helper: H, makeHRow and makeHCol all call THIS, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
     const a = fbm(x * 0.0018 + 61.3, z * 0.0018 + 77.9);   // the massifs, ~550 voxels across
     const sh = fbm(x * 0.0037 + 25.1, z * 0.0037 + 13.7);  // and the shoulders riding on them
     const m = sstep(sstep(a * 0.75 + sh * 0.25));
     const k = m * m;
-    return PINE_FLOOR + PINE_RELIEF * k - PINE_BOWL * (1 - m) * (1 - m)
+    let h = PINE_FLOOR + PINE_RELIEF * k - PINE_BOWL * (1 - m) * (1 - m)
          + 9 * (fbm(x * 0.030 + 3.7, z * 0.030 + 9.1) - 0.5) * k * k;
+    const bm = birchM(x, z);
+    if (bm > 0) { h = WL + (h - WL) * (1 - bm * (1 - BIRCH_ELEV)); }   // blended on the mask, so the two forests meet on a slope rather than a step — and the blend happens across the strait below, where it is under water and invisible
+    // ── THE STRAIT ── the band edge is where birchM's own argument crosses zero, so it is measured the same
+    // way the mask measures it and the two can never drift apart. A cosine bump rather than a smoothstep
+    // pair: it is flat-topped in the middle (open water, not a V) and its tails reach zero with zero slope,
+    // so neither shore gets a crease where the pull stops.
+    const sd = Math.abs(Math.abs(pwrap(x - (SPWX + BIRCHC + desWob(z) - desWob(SPWZ)))) - BIRCHH);
+    if (sd < BIRCH_GAPW) { h -= BIRCH_GAPD * 0.5 * (1 + Math.cos(Math.PI * sd / BIRCH_GAPW)); }
+    return h;
     // ── AND THE RIDGE DETAIL FADES ON k*k, NOT k ── this term rides at a ~33-voxel wavelength, the only thing
     // in the field fast enough to terrace a shoreline by itself. Faded on k it still carries a couple of
     // voxels where the land crosses WL, which steps the beach every few voxels no matter how gentle the
@@ -994,7 +1022,11 @@
   const ARCTWFAR = ARCTC - ARCTH - 2 * ARCTWMAX - ARCTB * 0.5;   // …nor west of this
   const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = 1080;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
   const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
-  const birchM = (x, z) => { return 0;   /* WIPED 2026-09-01 (user: "the only thing that should exist is the pine forest biome") — identically zero, so every branch this gated is dead. Kept as a stub, not deleted: terrain.js, both worker registries and debug-api.js all still name it. */                            // 1 = deep birch forest, 0 = the pine and the sand either side
+  // ── THE BIRCH FOREST IS BACK (user 2026-09-02: "I want you to pull in the birch forest now. use the exact
+  // same terrain generation as the pine forest") ── one band, and it is the ONLY other biome: oak, cherry,
+  // arctic and desert stay identically zero. The mask is the one this band always had (BIRCHOFF/BIRCHH/BIRCHB
+  // on desWob's meander), unchanged — what is new is what the HEIGHT FIELD does with it, in pineBase below.
+  const birchM = (x, z) => {                            // 1 = deep birch forest, 0 = pine forest either side of it
     const c = SPWX + BIRCHC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
     const t = 0.5 + (BIRCHH - Math.abs(pwrap(x - c))) / BIRCHB;
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
