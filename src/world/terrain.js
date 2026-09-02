@@ -250,7 +250,7 @@
   }
   const BCELL = 34;                                    // one rock candidate per 3.4 m cell (2× the 48-cell density, 4× the original)
   function boulderAt(cx, cz) {                         // FOUR tiers, all real voxelized models now: rock.vox stone / small / mid / BIG rocks26 —
-    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.375) return null;   // the much larger rocks are much rarer   // -25% (user 2026-09-01: "reduce the rocks by 25%") 0.5 -> 0.375: ihash is uniform on 0..1, so the threshold IS the acceptance rate and the arithmetic is its own verification
+    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.28125) return null;   // the much larger rocks are much rarer   // -25% AGAIN (user 2026-09-02: "decrease the rocks by 25%") 0.375 -> 0.28125. ihash is uniform on 0..1 so the threshold IS the acceptance rate and a 25% cut is exactly a 0.75 multiply — it thins all four tiers together, which is what "the rocks" means, rather than reweighting them against each other   // -25% (user 2026-09-01: "reduce the rocks by 25%") 0.5 -> 0.375: ihash is uniform on 0..1, so the threshold IS the acceptance rate and the arithmetic is its own verification
     const bx = Math.round(cx * BCELL + 4 + ihash(cx * 3 + 40, cz * 7 + 90) * (BCELL - 8));
     const bz = Math.round(cz * BCELL + 4 + ihash(cx * 13 + 6, cz * 5 + 44) * (BCELL - 8));
     // ── AND NONE OF THE FOUR TIERS IN THE ARCTIC (user 2026-08-29: "remove the rocks and twigs") ── unlike the
@@ -1174,7 +1174,7 @@
   const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
   function lilyAt(cx, cz) {                             // STATIC lilies RE-ENABLED for testing (user 2026-07-18) — stamped into the world grid (full static-voxel shading) alongside the LIVE drifting pads, so their render can be compared
     if (!LILYV.length) return null;
-    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.0428) return null;   // -25% (user 2026-09-01: "decrease lillypads by 25%") 0.057 -> 0.0428   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
+    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.0321) return null;   // -25% AGAIN (user 2026-09-02: "reduce the lilly pads by 25%") 0.0428 -> 0.0321. The roll is a straight per-cell acceptance rate, so a 25% cut IS a 0.75 multiply — no spacing or radius term muddies it   // -25% (user 2026-09-01) 0.057 -> 0.0428   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
     const wz = Math.round(cz * LILYCELL + 3 + ihash(cx * 5 + 12, cz * 11 + 7) * (LILYCELL - 6));
     // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the

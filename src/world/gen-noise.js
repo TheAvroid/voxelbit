@@ -27,9 +27,9 @@
       // a little per-column noise work in exchange for the three copies being incapable of disagreeing.
       let h = bedH(wx, wz);   // …the SAME shared helper H() calls, in the same place in the pass order. It rounds ONCE, after deepen — see the note over bedH in world/window.js: rounding before the remap is what made the bed drop in 2- and 3-voxel steps
       const b0 = bsr(wx * 0.0016 + 313.7);
-      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
+      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / BASIN_RAMP));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
       const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
-      if (m > 0) h = h - m * (h - Math.max(6, LIFT - 52));   // continuous and undithered, exactly as in H() — see the note there
+      if (m > 0) h = h - m * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there
       const rs = riverS(wx, wz);   // (the beach-flat lift that used to sit below the river carve is deleted in all three copies — see the note in H(), world/window.js)
       const xnB = wx * 0.05 + 13.7;
       const bn = e1(xnB) * 0.55 + e2(xnB * 2.13 + 11.7) * 0.27 + e3(xnB * 4.41 + 41.2) * 0.18;
@@ -77,9 +77,9 @@
       // a little per-column noise work in exchange for the three copies being incapable of disagreeing.
       let h = bedH(wx, wz);   // …the SAME shared helper H() calls, in the same place in the pass order. It rounds ONCE, after deepen — see the note over bedH in world/window.js: rounding before the remap is what made the bed drop in 2- and 3-voxel steps
       const b0 = bsc(wz * 0.0016 + 157.3);
-      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / 0.06));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
+      const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / BASIN_RAMP));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
       const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
-      if (m > 0) h = h - m * (h - Math.max(6, LIFT - 52));   // continuous and undithered, exactly as in H() — see the note there
+      if (m > 0) h = h - m * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there
       const rs = riverS(wx, wz);   // (the beach-flat lift that used to sit below the river carve is deleted in all three copies — see the note in H(), world/window.js)
       const znB2 = wz * 0.05 + 4.2;
       const bn = e1(znB2) * 0.55 + e2(znB2 * 2.13 + 5.3) * 0.27 + e3(znB2 * 4.41 + 23.8) * 0.18;

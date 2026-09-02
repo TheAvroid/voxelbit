@@ -1407,6 +1407,16 @@
             for (let k = 0; k < 8; k++) { const sa = Math.sin(k * 0.7854), ca = Math.cos(k * 0.7854);
               for (let d = 3.5; d <= 9; d += 2.75) { const qx = B.x + sa * d, qz = B.z + ca * d;
                 if (WL - bfBed(qx, qz) < 3 || solid(Math.floor(qx), ay, Math.floor(qz)) || solid(Math.floor(qx), ay + 1, Math.floor(qz))) { rx -= sa * (10 - d); rz -= ca * (10 - d); break; } } }
+            // ── AND FROM EACH OTHER ── same vector, same dt-scaled slide: a fish that has drifted onto another
+            // one is pushed off it exactly as it is pushed off a bank. O(n²) over the fish band and no further —
+            // 28 slots is 784 compares at the 14 Hz sense tick, which is nothing beside the fishReach whiskers
+            // this block already runs. See sepR/sepK in sim/life/fish.js for why it lives here and not in the fan.
+            for (let f = FISH_0; f < FISH_END; f++) { const F = wbf[f];
+              if (!F || !F.init || F === B || (F.kind | 0) !== 6) continue;
+              const dxf = B.x - F.x, dzf = B.z - F.z, d2f = dxf * dxf + dzf * dzf;
+              if (d2f >= FC.sepR * FC.sepR || d2f < 1e-4) continue;
+              const df = Math.sqrt(d2f), wf = (1 - df / FC.sepR) * FC.sepK;
+              rx += (dxf / df) * wf; rz += (dzf / df) * wf; }
             B.repX = rx; B.repZ = rz;
             const look = Math.max(FC.lookMin, B.spd * 0.62);   // ── REACTIVE WALL BACKSTOP ── last-ditch: terrain inside the immediate lookahead → hard override + slow. The probe should prevent this from ever tripping, so it is now purely a fail-safe.
             B.bkOn = !fishOK(B.th, look) || !fishOK(B.th, 5);

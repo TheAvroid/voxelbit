@@ -69,11 +69,36 @@
   const heldBob = [0, 0];                              // …and the VIEW-MODEL BOB alone (walk sway + idle breathing, x/y in the same camera units), split out of that anchor so the health row can ride the same rig without inheriting the tool's pose, swing or swap. Written once per frame in tick-camera, read by the heart block below it — one expression, so the row and the hand can never sway differently.
   const FOV = 72 * Math.PI / 180;
 
-  finishLoad();                                        // world ready → sweep the meter to full SMOOTHLY (the trickle owns 0→90; this is the last 90→100)
   const revealGame = () => loadEl.classList.add('hidden');   // drop the whole overlay, revealing the LIVE game; a canvas click locks the mouse and takes control (user)
-  if (CDPTEST) revealGame(); else setTimeout(revealGame, 1150);   // let the 0.85 s finish GLIDE complete, then hold the full 100% bar a beat so it's actually seen, before the overlay drops (tests reveal instantly)
-  $('playHint').textContent = isMobile ? 'find a good computer' : 'press any button';   // MOBILE (user): tell a handheld to go find a real computer instead of "press any button"
-  if (!CDPTEST) setTimeout(() => { if (!locked) $('playHint').classList.remove('hidden'); }, 1150);   // reveal the prompt with the game, after the overlay lifts
+  // ── THE LOADER NOW WAITS FOR THE FAR RING, NOT JUST THE NEAR WINDOW (user 2026-09-02: "when the game loads
+  // in, the terrain is still loading. can you load the terrain in first before spawning the player in? so a
+  // longer load time potentially") ── finishLoad() used to run the moment this fragment did, which is when the
+  // NEAR window has been built and uploaded. That is not when the world is ready: the far ring streams for
+  // seconds afterwards, and it is measurable — from a settled state a full refill takes ~5.7 s, so the player
+  // was being handed the controls while a third of the view was still arriving. That is the terrain "still
+  // loading" they are watching.
+  // WHAT IT WAITS ON is the ring's own two-part done signal: nothing in flight (pend 0) AND the filled radius
+  // out to its reach. Both come from ringStats(), which is the same pair the streamer's own health checks use.
+  // AT GMUL 1 THERE IS NO FAR RING AT ALL, and this costs those machines nothing: ringFilled() returns HALF
+  // and reach is the near window's, so the test is already true on the first poll.
+  // IT IS CAPPED, and that is not optional — this gate can only ever delay the game, never refuse it. A slow
+  // adapter, a stalled worker or a ring that never quite reaches its target must still hand over the
+  // controls, so LOAD_WAIT_MAX is a hard ceiling on the extra wait and the game opens on the shipped path
+  // once it passes. The trickle parks at 90% while it waits, so the bar reads as still-loading rather than
+  // stuck at full.
+  const LOAD_WAIT_MAX = 30000, loadWaitT0 = performance.now();
+  const worldStreamed = () => { try { const r = ringStats(); return r.pend === 0 && r.filled >= r.reach; } catch (e) { return true; } };
+  const openGame = () => {
+    finishLoad();                                      // world ready → sweep the meter to full SMOOTHLY (the trickle owns 0→90; this is the last 90→100)
+    if (CDPTEST) revealGame(); else setTimeout(revealGame, 1150);   // let the 0.85 s finish GLIDE complete, then hold the full 100% bar a beat so it's actually seen, before the overlay drops (tests reveal instantly)
+    $('playHint').textContent = isMobile ? 'find a good computer' : 'press any button';   // MOBILE (user): tell a handheld to go find a real computer instead of "press any button"
+    if (!CDPTEST) setTimeout(() => { if (!locked) $('playHint').classList.remove('hidden'); }, 1150);   // reveal the prompt with the game, after the overlay lifts
+  };
+  const waitForWorld = () => {
+    if (worldStreamed() || performance.now() - loadWaitT0 > LOAD_WAIT_MAX) { openGame(); return; }
+    setTimeout(waitForWorld, 120);                     // a poll, not a rAF chain: this must keep ticking even on a frame the loop stalls, which is exactly when it matters
+  };
+  if (CDPTEST) openGame(); else waitForWorld();        // the harness keeps the old instant path — its boot timing and the test gate are measured against it
   const PICK_DEFS = {                                  // PER-ITEM held poses — tuning one item never moves the others (panel copy-pose exports)
     1: { x: 0.91, y: -0.1, z: 0.96, yaw: 0.04, pitch: -1.42, roll: 1.58, scale: 0.08 },   // stone axe (user bake 2026-07-15)
     2: { x: 0.75, y: -0.24, z: 0.96, yaw: -0.41, pitch: -2.28, roll: 1.52, scale: 0.08 },   // small rock (user bake 2026-07-16)

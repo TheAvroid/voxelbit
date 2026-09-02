@@ -33,6 +33,29 @@
     //  meant to drive, B.chRe, is assigned and never consulted. The real cadence is the ~14 Hz sense tick, B.senseRe,
     //  hard-coded in the creature tick's fish branch. Anything added to this bag must have a reader, or it is a dial
     //  wired to nothing and a tuner turns it for hours with no effect.)
+    // ── SEPARATION (user 2026-09-02: "sometimes the fish cluster up in one area. fix this") ── FISH_APART in
+    // sim/life/slots.js is a SPAWN rule and only a spawn rule: it places fish 28 apart and then nothing ever
+    // looks at their spacing again. Measured on one pool — nearest-neighbour distance was min 33 / median 72
+    // at spawn, and after the same fish had been swimming a while it was min 13, with four pairs inside the
+    // very floor they were placed on. They do not converge globally (the median actually rises); a couple of
+    // them simply drift into the same water and stay there, which is the clump you see.
+    // It rides the BANK REPULSION vector in the creature tick rather than the whisker fan on purpose: the fan
+    // picks ONE heading and a neighbour push is a nudge, not a lane choice, and the repulsion path is already
+    // dt-scaled and frame-rate independent. sepK is scaled against a bank hit, which contributes (10 - d) for
+    // d in 3.5..9 — so a fish at touching distance pushes about as hard as one shore sample, and a fish at
+    // sepR pushes not at all. Schooling is OFF (see schoolSpecies), so nothing pulls the other way.
+    // ── AND THE RANGE IS THE EVENNESS KNOB (user 2026-09-02: "make sure the fish are evenly spread out in the
+    // water") ── 26 was sized to DEFEND the spawn floor, which it does: no pair inside 14 any more. But merely
+    // not-touching is not evenly spread. Measured with 28 fish, the within-pool nearest-neighbour ran p10 20 /
+    // median 43 in water wide enough to hold them much further apart, because a push that reaches 26 voxels
+    // stops caring the moment a neighbour is 27 away and the fish then wanders as if alone.
+    // Raising the RANGE and softening the PUSH is the pair that matters: a long, gentle field keeps working
+    // across the whole pool, where a short hard one only ever settles a collision. Note what is NOT changed —
+    // FISH_APART (the spawn rule) and the per-pool cap, which is proportional to a pool's own census area and
+    // is already the right rule for even DENSITY: a small pond holding one fish and a big lake holding seven
+    // is even spread, not uneven, and pushing on that would empty the ponds instead.
+    sepR: 52,               // vox: how far another fish is still felt — 26 -> 52, so the field spans a pool rather than a collision
+    sepK: 3.4,              // …and how hard, at touching distance, falling linearly to zero at sepR. SOFTENED with the longer reach (5 -> 3.4): the same push over twice the distance would out-shout the whisker fan's own lane choice and fish would stop following channels
     lookMin: 12,            // reactive wall-backstop lookahead floor (scales up with speed)
     turnCost: 2.0,          // ── HOW DEARLY THE PROBE PRICES A TURN (user 2026-08-07: "it keeps running into the banks") ── was 5 hard-coded. A fish cruises at 22 vox/s and banks at yawRate 2.2 rad/s, so a 90° turn costs it ~16 voxels of travel: in a river, the open lane is often only a few voxels longer than the blocked one, and at 5 the turn penalty ate that difference whole. The fish under-turned, closed on the bank, and the backstop then took over. At 2.0 it commits to the open lane while the bank is still far off, which is the whole point of a long-range probe.
     jump: {                 // ── LEAP ── frequency / height / distance / cooldown all here (user)
