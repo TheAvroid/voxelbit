@@ -16,7 +16,8 @@
     };
   }
   function makeHRow(wz) {                              // H(x, wz) specialized for one row — every float op mirrors H exactly
-    const bsr = rowNoise(wz * 0.0016 + 157.3);
+    const zB = wz * 0.0016 + 157.3;                    // the basin field is fbm now (see basinM in world/window.js) — three octaves, decomposed exactly as `bn` is below
+    const bsr1 = rowNoise(zB), bsr2 = rowNoise(zB * 2.13 + 5.3), bsr3 = rowNoise(zB * 4.41 + 23.8);
     const znB = wz * 0.05 + 4.2;                       // bed/beach relief fbm, row-specialized (mirrors fbm's octave constants exactly)
     const e1 = rowNoise(znB), e2 = rowNoise(znB * 2.13 + 5.3), e3 = rowNoise(znB * 4.41 + 23.8);
     return (wx) => {
@@ -26,7 +27,8 @@
       // the whole reason gtest exists, and it is the trade the codebase already makes for oakRoll/oakBank:
       // a little per-column noise work in exchange for the three copies being incapable of disagreeing.
       let h = bedH(wx, wz);   // …the SAME shared helper H() calls, in the same place in the pass order. It rounds ONCE, after deepen — see the note over bedH in world/window.js: rounding before the remap is what made the bed drop in 2- and 3-voxel steps
-      const b0 = bsr(wx * 0.0016 + 313.7);
+      const xB = wx * 0.0016 + 313.7;
+      const b0 = bsr1(xB) * 0.55 + bsr2(xB * 2.13 + 11.7) * 0.27 + bsr3(xB * 4.41 + 41.2) * 0.18;
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / BASIN_RAMP));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
       const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
       if (m > 0) h = h - m * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there
@@ -66,7 +68,8 @@
     };
   }
   function makeHCol(wx) {                              // H(wx, z) specialized for one COLUMN — exact, for x-direction bands
-    const bsc = colNoise(wx * 0.0016 + 313.7);
+    const xB = wx * 0.0016 + 313.7;                    // …and the column form of the same three octaves
+    const bsc1 = colNoise(xB), bsc2 = colNoise(xB * 2.13 + 11.7), bsc3 = colNoise(xB * 4.41 + 41.2);
     const xnB = wx * 0.05 + 13.7;                      // bed/beach relief fbm, column-specialized
     const e1 = colNoise(xnB), e2 = colNoise(xnB * 2.13 + 11.7), e3 = colNoise(xnB * 4.41 + 41.2);
     return (wz) => {
@@ -76,7 +79,8 @@
       // the whole reason gtest exists, and it is the trade the codebase already makes for oakRoll/oakBank:
       // a little per-column noise work in exchange for the three copies being incapable of disagreeing.
       let h = bedH(wx, wz);   // …the SAME shared helper H() calls, in the same place in the pass order. It rounds ONCE, after deepen — see the note over bedH in world/window.js: rounding before the remap is what made the bed drop in 2- and 3-voxel steps
-      const b0 = bsc(wz * 0.0016 + 157.3);
+      const zB = wz * 0.0016 + 157.3;
+      const b0 = bsc1(zB) * 0.55 + bsc2(zB * 2.13 + 5.3) * 0.27 + bsc3(zB * 4.41 + 23.8) * 0.18;
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / BASIN_RAMP));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
       const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
       if (m > 0) h = h - m * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there

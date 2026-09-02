@@ -946,7 +946,18 @@
   // for it") rather than accidental.
   // The SMALLER WORLD TIERS ARE UNTOUCHED: at WY 256 or 192 LIFT is already 0 and HMAX was already pinned
   // by WY - 158, so both terms below evaluate exactly as they did.
-  const LIFT = WY >= 384 ? 50 : 0;                     // terrain floats this far above bedrock
+  const LIFT = WY >= 384 ? 84 : 0;                     // terrain floats this far above bedrock
+  // ── 50 -> 84, WHICH IS WHERE DEEPER WATER HAS TO COME FROM (user 2026-09-02: "the water needs to be deeper
+  // within the biomes … if you need to take up more surface area away from the terrain so be it") ── measured
+  // first, and the measurement is the whole argument: the DEEPEST water in the world already reaches 67 of a
+  // theoretical 68 (WL 74 minus bedrock at 6). The basins carve to the floor and DEEP_SPAN was 66 against a
+  // 68 ceiling. There was no room left under the waterline at all, so no tuning of the lake terms could have
+  // made water deeper — the only way down is to move the waterline UP, and LIFT is the constant that does it.
+  // WL is 24 + LIFT, so the room below goes 68 -> 102, half again as deep.
+  // WHAT IT COSTS is the thing that was offered: above-water range is HMAX - WL, and HMAX is pinned by the
+  // TREE RESERVE at 226, so it falls 152 -> 118. The mountains lose 22% of their height to buy the lakes 50%
+  // of their depth. Everything else keyed to LIFT (WL, PINE_FLOOR, baseH's floor, basinLow, the basin window)
+  // is LIFT-relative by design and simply moves with it — see the note at the head of this file.
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
   let poolTouchHook = null;                            // set by render/buffers.js once the pool exists; terrain.js, patch.js and gen-pool.js all run BEFORE that fragment and reach the pool through this hook. Without the declaration the assignment there throws in strict mode and the module aborts silently — the boot parks on "uploading world".
@@ -1342,7 +1353,7 @@
   // the waterline is its exponent, 3, independent of the span, so the first voxels off a beach are exactly as
   // gentle as they were and the bed still steps one voxel at a time (see the round-once note above). It is
   // the middle and the bottom of a lake that get deeper, which is what the request is about.
-  const DEEP_SPAN = 66;
+  const DEEP_SPAN = 99;   // 66 -> 99, spending the room LIFT just bought. FREE FOR THE BANKS, and provably: deepen's slope at the waterline is its EXPONENT (3), independent of the span, so the first voxels off a beach are bit-identical however deep the far end goes. Only the middle and bottom of a lake move
   const deepen = (hc) => { if (hc >= WL) return hc;
     const t = Math.min(1, (WL - hc) / DEEP_SPAN);
     return WL - DEEP_SPAN * (1 - (1 - t) * (1 - t) * (1 - t)); };              // CUBED, not squared: the curve's slope at t=0 is the exponent, so a squared bend leaves the SHALLOWS — which is most of the water — barely deeper than they were. Cubed lifts the shallow end where the complaint actually was, and still lands on DEEP_SPAN at the deep end rather than running away with it
@@ -1381,7 +1392,7 @@
   // bed's drop divided by this), and it never needed a name while basins were rare enough that most of the
   // world's shoreline was the ambient field drifting across the waterline instead. Left at its original 0.06;
   // the note over PINE_FLOOR records what widening it does and why it is not free.
-  const BASIN_RAMP = 0.06;
+  const BASIN_RAMP = 0.06;   // ── AND IT MUST STAY UNDER BASIN_T, WHICH IS WHY WIDENING IT BACKFIRES ── the mask is sstep(min(1, (t - b) / BASIN_RAMP)), so m only reaches 1 where the field falls a FULL RAMP below the threshold. BASIN_T is 0.065; at a ramp of 0.09 the strongest pull any basin can manage is 0.065/0.09 = 0.72, and the lakes came out SHALLOWER for being given a gentler rim — measured, max depth 67 -> 32. The rim and the depth cannot be separated through this constant alone; raising T with it is the only way, and that moves the lake AREA hard because it is a CDF.
   const BASIN_BED = 6;
   const BASIN_T = 0.065;                               // the AREA knob: how much of the low-frequency basin field drops under the waterline. Separate from BASIN_BED (depth) and BASIN_RAMP (rim slope) — see the note over PINE_FLOOR for what happens when all three are pushed at once                               // base: how much of the low-frequency basin field drops under the waterline
   // ── AND THE ARCTIC GETS TWICE THE WATER (user 2026-08-30: "double the rate of water in the arctic") ──
@@ -1403,7 +1414,15 @@
   const BASIN_ARCTLIFT = 34;                           // …and how much higher the arctic's may reach
   const basinLow = (h, x, z) => Math.max(0, Math.min(1, (BASIN_LOW + LIFT + BASIN_ARCTLIFT * arcticM(x, z) - h) / 20));
   const basinM = (x, z) => {                           // huge, rare low-frequency basins pull the land under the waterline
-    const b = vnoise(x * 0.0016 + 313.7, z * 0.0016 + 157.3);
+    // ── fbm, NOT vnoise, AND THAT IS THE CIRCLE (user 2026-09-02: "it looks like you just generated a random
+    // circle here … dont use any other seperate water generation mechanics") ── there was no second mechanic:
+    // this IS the one lake generator, and the disc is its own shape. A SINGLE octave of value noise is a
+    // smooth bowl between lattice points, so thresholding it near the bottom of a minimum cuts a near-perfect
+    // circle — the rounder the closer the threshold sits to the floor of the bowl. Three octaves break that
+    // up: the outline now follows detail at 625, 293 and 142 voxels instead of one lattice cell, so a lake
+    // gets bays and points like every other shoreline in the world. Same field, same threshold machinery,
+    // same three copies — only the noise under it is richer.
+    const b = fbm(x * 0.0016 + 313.7, z * 0.0016 + 157.3);
     const t = basinT(x, z);
     if (b >= t) return 0;
     return sstep(Math.min(1, (t - b) / BASIN_RAMP));
@@ -2470,7 +2489,8 @@
     };
   }
   function makeHRow(wz) {                              // H(x, wz) specialized for one row — every float op mirrors H exactly
-    const bsr = rowNoise(wz * 0.0016 + 157.3);
+    const zB = wz * 0.0016 + 157.3;                    // the basin field is fbm now (see basinM in world/window.js) — three octaves, decomposed exactly as `bn` is below
+    const bsr1 = rowNoise(zB), bsr2 = rowNoise(zB * 2.13 + 5.3), bsr3 = rowNoise(zB * 4.41 + 23.8);
     const znB = wz * 0.05 + 4.2;                       // bed/beach relief fbm, row-specialized (mirrors fbm's octave constants exactly)
     const e1 = rowNoise(znB), e2 = rowNoise(znB * 2.13 + 5.3), e3 = rowNoise(znB * 4.41 + 23.8);
     return (wx) => {
@@ -2480,7 +2500,8 @@
       // the whole reason gtest exists, and it is the trade the codebase already makes for oakRoll/oakBank:
       // a little per-column noise work in exchange for the three copies being incapable of disagreeing.
       let h = bedH(wx, wz);   // …the SAME shared helper H() calls, in the same place in the pass order. It rounds ONCE, after deepen — see the note over bedH in world/window.js: rounding before the remap is what made the bed drop in 2- and 3-voxel steps
-      const b0 = bsr(wx * 0.0016 + 313.7);
+      const xB = wx * 0.0016 + 313.7;
+      const b0 = bsr1(xB) * 0.55 + bsr2(xB * 2.13 + 11.7) * 0.27 + bsr3(xB * 4.41 + 41.2) * 0.18;
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / BASIN_RAMP));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
       const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
       if (m > 0) h = h - m * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there
@@ -2520,7 +2541,8 @@
     };
   }
   function makeHCol(wx) {                              // H(wx, z) specialized for one COLUMN — exact, for x-direction bands
-    const bsc = colNoise(wx * 0.0016 + 313.7);
+    const xB = wx * 0.0016 + 313.7;                    // …and the column form of the same three octaves
+    const bsc1 = colNoise(xB), bsc2 = colNoise(xB * 2.13 + 11.7), bsc3 = colNoise(xB * 4.41 + 41.2);
     const xnB = wx * 0.05 + 13.7;                      // bed/beach relief fbm, column-specialized
     const e1 = colNoise(xnB), e2 = colNoise(xnB * 2.13 + 11.7), e3 = colNoise(xnB * 4.41 + 41.2);
     return (wz) => {
@@ -2530,7 +2552,8 @@
       // the whole reason gtest exists, and it is the trade the codebase already makes for oakRoll/oakBank:
       // a little per-column noise work in exchange for the three copies being incapable of disagreeing.
       let h = bedH(wx, wz);   // …the SAME shared helper H() calls, in the same place in the pass order. It rounds ONCE, after deepen — see the note over bedH in world/window.js: rounding before the remap is what made the bed drop in 2- and 3-voxel steps
-      const b0 = bsc(wz * 0.0016 + 157.3);
+      const zB = wz * 0.0016 + 157.3;
+      const b0 = bsc1(zB) * 0.55 + bsc2(zB * 2.13 + 5.3) * 0.27 + bsc3(zB * 4.41 + 23.8) * 0.18;
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / BASIN_RAMP));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
       const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
       if (m > 0) h = h - m * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there
