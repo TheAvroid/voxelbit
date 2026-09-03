@@ -18,7 +18,7 @@
   // enough to verify the read path is bit-identical and to measure what it costs.
   // NOTHING here is allocated unless the probe is on. Sized for players it would be ~1 GB of JS heap and
   // ~1 GB of GPU buffer that no frame ever reads - a far bigger regression than the feature is a win.
-  const POOL_FRAC = 0.25;                              // slots as a fraction of all bricks. With sealed rock sharing one page the real figure is ~12%; this is 2x headroom for the transient before sealing settles. MIRRORED as GPOOL1 in core/gpu.js, which needs the pool's size before this fragment runs to ask the device for a big enough binding - change one and change both
+  const POOL_FRAC = 0.44;                              // slots as a fraction of all bricks. With sealed rock sharing one page the real figure is ~12%; this is 2x headroom for the transient before sealing settles. MIRRORED as GPOOL1 in core/gpu.js, which needs the pool's size before this fragment runs to ask the device for a big enough binding - change one and change both
   // ── AND THE RING IS SIZED OFF THE GPU GRID, NOT THE CPU ONE ── a storage buffer cannot grow, so the pool
   // has to be allocated for the widest window it will ever hold. At GMUL 2 that is four times the bricks, and
   // the fraction comes down because the measured steady state is ~13%: the 2x headroom POOL_FRAC carries is
@@ -26,8 +26,60 @@
   // slab in hand), so it never needs that headroom.
   // THE ALLOCATION IS WHAT DECIDES WHETHER A MACHINE CAN RUN THIS, not the fraction of it that ends up
   // occupied: ~1.03 GB at GMUL 2 against 402 MB at GMUL 1. That is the whole reason GMUL rides the adapter.
-  const POOL_FRAC_RING = 0.17;                         // MIRRORED as GPOOL2 in core/gpu.js - see POOL_FRAC above
+  const POOL_FRAC_RING = 0.30;                         // MIRRORED as GPOOL2 in core/gpu.js - see POOL_FRAC above
   const POOL_SLOTS = GMUL > 1 ? Math.ceil(GBX * GBY * GBZ * POOL_FRAC_RING) : Math.ceil(BX * BY * BZ * POOL_FRAC);
+  // ══ A PAGE IS A 16-ENTRY PALETTE AND 512 FOUR-BIT INDICES, NOT 512 BYTES ══ measured with
+  // __vb.poolSparse: 70% of every REAL page sits at or above y 192, where sealing reaches nothing, and a
+  // page up there holds a mean of 60 non-air voxels out of 512 (88% AIR) drawn from a mean of 7.0 distinct
+  // ids. 99.7% of them use 16 ids or fewer. So the byte per voxel was paying for a range nothing in a brick
+  // ever spans: 272 bytes hold the same content exactly, and the pool holds 1.76x the bricks in 6% LESS
+  // memory. That is what buys the far ring its reach back — see the note over ringSquash.
+  // ONE BUFFER, AND IT HAS TO BE: trace is at exactly 8 storage buffers, the WebGPU default cap (see the
+  // note on bdesc in render/wgsl/trace.js), so a palette buffer or a dense-page buffer of its own is not
+  // available at any price. The palette lives in the page's own last 16 bytes.
+  // THE MARCH STEP STILL COSTS ONE LOAD, which is the whole reason this encoding was chosen over a sparse
+  // occupancy mask that packs better (2.8x on the canopy): the palette word is read ONLY when the nibble is
+  // non-zero, i.e. on the step that terminates the ray, never on the 88% of steps that pass through air.
+  // A mask would have wanted a popcount and a prefix load on EVERY step, inside the loop that is 63% of the
+  // frame's GPU time.
+  const PAGE_U32 = 68;                                 // 64 words of nibbles (512 * 4 bits) + 4 words of palette (16 * 8 bits)
+  const PAGE_B = PAGE_U32 * 4;                         // 272
+  const NIB_MAX = 15;                                  // palette entry 0 is AIR, so fifteen REAL ids fit; a brick wanting more takes a dense page
+  // ── AND THE 0.3% THAT WANT MORE THAN FIFTEEN GET A DENSE PAGE ── a byte per voxel, exactly the old
+  // format, in a region reserved at the END of the same buffer so it needs neither a second binding nor a
+  // pair allocator inside the nibble region. bdesc bit 31 says which kind a descriptor names.
+  // 1% -> 2.5%: measured at 28,561 dense pages against 2.04M live, i.e. 1.4%. The 0.3-0.5% the canopy
+  // sample suggested is the CANOPY's rate — ground bricks carry more ids, and poolSparse was pointed at
+  // y >= 192. Running the dense region out is not a crash but it is a hole: the brick keeps its old page.
+  const DENSE_PAGES = Math.ceil(POOL_SLOTS * 0.025);
+  const DBASE_U32 = POOL_SLOTS * PAGE_U32;             // where the dense region starts, in WORDS — mirrored into the shader
+  const DENSE_FLAG = 0x80000000;                       // bdesc bit 31: this descriptor names a dense page, not a nibble slot
+  // The encoder. One pass to collect the palette (air is free — it is entry 0 and never enters the table),
+  // one pass to pack eight voxels per word. `encSeen` is cleared by walking the ids it actually set, so it
+  // never costs a 256-entry wipe per brick.
+  const encSeen = new Int32Array(256), encPal = new Int32Array(16);
+  const encodePage = (src, so, dst, wo) => {           // src[so..so+512) -> dst[wo..wo+68). false = needs a dense page, and nothing was written
+    let np = 0, over = false;
+    for (let i = 0; i < 512; i++) { const v = src[so + i];
+      if (v !== 0 && encSeen[v] === 0) { if (np === NIB_MAX) { over = true; break; } encSeen[v] = ++np; encPal[np] = v; } }
+    if (over) { for (let k = 1; k <= np; k++) encSeen[encPal[k]] = 0; return false; }
+    for (let w = 0; w < 64; w++) { const o = so + w * 8;
+      dst[wo + w] = (encSeen[src[o]] | (encSeen[src[o + 1]] << 4) | (encSeen[src[o + 2]] << 8) | (encSeen[src[o + 3]] << 12)
+                   | (encSeen[src[o + 4]] << 16) | (encSeen[src[o + 5]] << 20) | (encSeen[src[o + 6]] << 24) | (encSeen[src[o + 7]] << 28)) >>> 0; }
+    for (let k = 0; k < 4; k++) { const q = k * 4;
+      dst[wo + 64 + k] = ((encPal[q] | 0) | ((encPal[q + 1] | 0) << 8) | ((encPal[q + 2] | 0) << 16) | ((encPal[q + 3] | 0) << 24)) >>> 0; }
+    for (let k = 1; k <= np; k++) { encSeen[encPal[k]] = 0; encPal[k] = 0; }
+    return true;
+  };
+  // A UNIFORM page — one id everywhere — written straight, without a scan: entry 1 is the id and every
+  // nibble is 1. Used by the shared per-id pages and by the sealed stone page, which are both uniform by
+  // construction and would otherwise pay a 512-voxel palette walk to discover it.
+  const uniPageInto = (u32, wo, id) => { u32.fill(0x11111111, wo, wo + 64);
+    u32[wo + 64] = (id << 8) >>> 0; u32[wo + 65] = 0; u32[wo + 66] = 0; u32[wo + 67] = 0; };
+  // …and the decode, for the audits that read a page back and have to compare it against W (__vb.gpudiff).
+  const decodePage = (u32, wo, out) => { for (let i = 0; i < 512; i++) {
+    const ni = (u32[wo + (i >> 3)] >>> ((i & 7) * 4)) & 15;
+    out[i] = ni === 0 ? 0 : (u32[wo + 64 + (ni >> 2)] >>> ((ni & 3) * 8)) & 255; } return out; };
   // bdesc, the water bits and the L2 bits are all on the GPU GRID (see TWO WINDOWS in world/window.js):
   // they cover the far ring as well, and the shader indexes nothing else. airFree stays on the CPU grid,
   // because deciding it means reading W, and W only exists for the near window.
@@ -48,7 +100,10 @@
   // touched only by poolBuild. Slots are handed out sequentially there, so a fixed CHUNK of them can be filled
   // and flushed instead: same number of bytes uploaded, 8 MB of heap rather than 400.
   const POOL_CHUNK = 16384;                            // slots per staged upload (8 MB)
-  const poolCPU = new Uint8Array(POOL_CHUNK * 512);
+  const poolCPU = new Uint8Array(POOL_CHUNK * PAGE_B);   // …a PAGE stride now, not 512: the gather still builds 512 raw voxels in `encSrc`, and only the encoded page reaches the staging
+  const poolCPU32 = new Uint32Array(poolCPU.buffer);
+  const encSrc = new Uint8Array(512);                  // one brick, gathered raw, before it is encoded — the row moves below still want a flat 512
+  const encSrc64 = new Float64Array(encSrc.buffer);
   // ── THE ALLOCATION THAT DECIDES WHETHER THIS MACHINE CAN RUN THE GAME ── the pool is ~1.04 GB at a 2048
   // window (see POOL_FRAC_RING above) and it is by far the largest thing the game asks any driver for. WebGPU
   // does not throw when a buffer will not fit: createBuffer hands back an INVALID buffer and the first frame
@@ -65,7 +120,7 @@
   const bdescBuf = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC for __vb.gpudiff()
   const gwbBuf = device.createBuffer({ size: gwb.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const gb2Buf = device.createBuffer({ size: gb2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  const poolBuf = device.createBuffer({ size: POOL_SLOTS * 512, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the pool back to verify it still matches W
+  const poolBuf = device.createBuffer({ size: POOL_SLOTS * PAGE_B + DENSE_PAGES * 512, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the pool back to verify it still matches W
   // ── ALLOCATED ONLY IF SOMETHING ASKS FOR IT ── the staging buffer __vb.gpudiff() reads the descriptors back
   // through, and its ONLY caller is that one debug command. At a 2048 window it is 50 MB, and MAP_READ means
   // 50 MB of HOST-VISIBLE memory - the scarcest kind there is on a laptop whose GPU shares system RAM, handed
@@ -73,7 +128,7 @@
   let bdescRead = null;
   const bdescReadBuf = () => bdescRead || (bdescRead = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }));
   { const oom = await device.popErrorScope();
-    if (oom && safeStepDown('brick pool (' + (((POOL_SLOTS * 512) / 1048576) | 0) + ' MB) would not allocate')) await new Promise(() => {}); }   // never resolves: the reload is already scheduled, and letting boot carry on would bind the invalid buffer and lose the device before it lands
+    if (oom && safeStepDown('brick pool (' + (((POOL_SLOTS * PAGE_B + DENSE_PAGES * 512) / 1048576) | 0) + ' MB) would not allocate')) await new Promise(() => {}); }   // never resolves: the reload is already scheduled, and letting boot carry on would bind the invalid buffer and lose the device before it lands
   let poolUsed = 0, poolOverflow = 0, poolSealed = 0;
   // ── WHAT A SEALED BRICK READS AS, AND IT MUST BE ROCK ── every sealed brick in the window shares ONE page,
   // so whatever fills that page is what shows anywhere a ray does reach one. This was the literal 71, chosen
@@ -154,6 +209,20 @@
     if (slot < 0 || slot === SEALED_SLOT || uniShared.has(slot)) return;   // shared pages (stone, and the per-id uniform ones): never freed, never reused
     if (poolFreeN < POOL_SLOTS) poolFree32[poolFreeN++] = slot;
   };
+  // ── THE DENSE REGION, AND ITS OWN TINY ALLOCATOR ── a page for the 0.3% of bricks that want more than
+  // fifteen ids. It lives past the nibble slots in the SAME buffer, so it costs no binding, and it has its
+  // own free list because its pages are 512 bytes and the nibble ones are 272 — the two can never mix.
+  let densUsed = 0; const densFree = [];
+  const denseAlloc = () => (densFree.length ? densFree.pop() : (densUsed < DENSE_PAGES ? densUsed++ : -1));
+  const denseByteOff = (dp) => DBASE_U32 * 4 + dp * 512;
+  // A DESCRIPTOR IS NOT A SLOT ANY MORE, so every release goes through this rather than doing its own
+  // `had - 1`: bit 31 decides which allocator the page goes back to, and getting that wrong hands a dense
+  // page to the nibble free list, where the next brick to take it writes 272 bytes over a 512-byte page.
+  const descOf = (i, dense) => (dense ? ((i + 1) | DENSE_FLAG) >>> 0 : i + 1);
+  const descIsDense = (d) => (d & DENSE_FLAG) !== 0;
+  const descIdx = (d) => (d & 0x7fffffff) - 1;
+  const descRelease = (d) => { if (!d) return; if (descIsDense(d)) densFree.push(descIdx(d)); else poolRelease(d - 1); };
+  const slotRelease = (sl) => { if (sl < 0) densFree.push(-sl - 1); else poolRelease(sl); };   // the ring's arrays hold SLOTS, and a dense one is stored negated (see ringUpload)
   // ── SEALED ROCK ── 40-41% of every brick in the window (measured) is rock with no air in it whose six
   // neighbours are also airless. A ray cannot reach one: to enter it, it must first cross a neighbour, and
   // the neighbour is solid, so it stops there. Those bricks all point at ONE shared slot of stone instead
@@ -174,15 +243,16 @@
   // rebuild resets the allocator underneath them.
   const uniSlotOf = new Int32Array(256).fill(-1);
   const uniShared = new Set();
-  const uniPage = new Uint8Array(512);
+  const uniPage = new Uint8Array(PAGE_B), uniPage32 = new Uint32Array(uniPage.buffer);
   const uniformSlot = (id) => {
     let us = uniSlotOf[id];
     if (us >= 0) return us;
     if (poolFreeN > 0) us = poolFree32[--poolFreeN];
     else if (poolUsed < POOL_SLOTS) us = poolUsed++;
     else return -1;                                    // pool full: the caller falls through to the real-page path and its own pressure handling
-    uniPage.fill(id);
-    device.queue.writeBuffer(poolBuf, us * 512, uniPage);
+    uniPage32.fill(0x11111111, 0, 64);                 // every voxel = palette entry 1
+    uniPage32[64] = (id << 8) >>> 0; uniPage32[65] = 0; uniPage32[66] = 0; uniPage32[67] = 0;   // entry 0 = air, entry 1 = the id
+    device.queue.writeBuffer(poolBuf, us * PAGE_B, uniPage, 0, PAGE_B);
     uniSlotOf[id] = us; uniShared.add(us);
     return us;
   };
@@ -269,19 +339,28 @@
     for (let i = 0; i < pfN; i++) ord[i] = i;
     ord.sort((a, b2) => pfS[a] - pfS[b2]);
     let runS = -1, runN = 0;
-    const runFlush = () => { if (runN) { device.queue.writeBuffer(poolBuf, runS * 512, ringRun, 0, runN * 512); runN = 0; runS = -1; } };
+    const runFlush = () => { if (runN) { device.queue.writeBuffer(poolBuf, runS * PAGE_B, ringRun, 0, runN * PAGE_B); runN = 0; runS = -1; } };
     for (let i = 0; i < pfN; i++) {
       const q = ord[i], slot = pfS[q], b = pfB[q];
       if (runN && (slot !== runS + runN || runN >= RING_RUN)) runFlush();
       if (!runN) runS = slot;
       // Row-at-a-time f64 moves, for the reason the ring's gather gives: a brick row is 8 voxels, both ends
       // are 8-aligned, and `set(subarray(...))` for eight bytes allocates and calls sixty-four times per brick.
-      const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0, ro8 = runN * 64;
+      // The gather lands in encSrc RAW and the encoder packs it into the run — the rows are still f64 moves.
+      const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
       for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
         const src = bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY;
-        ringRun64[ro8 + ly + lz * 8] = W64p[src >> 3];
+        encSrc64[ly + lz * 8] = W64p[src >> 3];
       }
-      runN++;
+      if (encodePage(encSrc, 0, ringRun32, runN * PAGE_U32)) { runN++; continue; }
+      // …more than fifteen ids: this brick wants a dense page, and the descriptor that was published for it
+      // when the slot was handed out has to be re-pointed at it. The nibble slot goes straight back.
+      runFlush();
+      const dp = denseAlloc(), gb = cpu2gpu(b);
+      if (dp < 0) { poolOverflow++; poolDirty.add(b); continue; }   // dense region full: leave it queued, exactly as a slotless brick is
+      device.queue.writeBuffer(poolBuf, denseByteOff(dp), encSrc, 0, 512);
+      poolRelease(slot);
+      bdesc[gb] = descOf(dp, true); descDirtyW.add(gb);
     }
     runFlush();
     pfN = 0;
@@ -381,7 +460,7 @@
       // NEVER return SEALED_SLOT to the free list. It is SHARED by every sealed brick, so freeing it once
       // hands it out as an ordinary page and every sealed brick in the window instantly aliases whatever
       // gets written there. That is a double-free, and it shows up as corruption far from its cause.
-      if (!occ) { if (had) { poolRelease(had - 1); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); } n++; continue; }
+      if (!occ) { if (had) { descRelease(had); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); } n++; continue; }
       const wasAF = airFree[b], af = afGet(b);        // afGet recomputes only if poolTouch invalidated it, and it is what isSealed reads below
       // A neighbour whose turn has ALREADY passed this drain is not re-queued by add() -- a Set add of a
       // present entry does not move it back into line -- so it would keep a verdict computed from this
@@ -392,8 +471,8 @@
       if (af !== wasAF) { for (const q of nbrOf(b)) if (q >= 0) poolDirty.add(q); }   // my airlessness changed => my neighbours' sealed-ness may have too (theirs has not, so do NOT clear their afDone)
       const sealed = isSealed(b);
       if (sealed) {                                    // costs no payload at all - just point at the shared stone page
-        if (had) { poolRelease(had - 1); }
-        if (had - 1 !== SEALED_SLOT) { bdesc[gb] = SEALED_SLOT + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
+        if (had) { descRelease(had); }
+        if (descIsDense(had) || had - 1 !== SEALED_SLOT) { bdesc[gb] = SEALED_SLOT + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
         n++; continue;
       }
       // …not sealed: if the whole brick is ONE id, point it at that id's shared page instead of paying for a
@@ -403,13 +482,19 @@
         const uid = uniformIdOfW(b);
         if (uid) { const us = uniformSlot(uid);
           if (us >= 0) {
-            if (had && had - 1 !== us) poolRelease(had - 1);
-            if (had - 1 !== us) { bdesc[gb] = us + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
+            if (had && (descIsDense(had) || had - 1 !== us)) descRelease(had);
+            if (descIsDense(had) || had - 1 !== us) { bdesc[gb] = us + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
             n++; continue;
           } }
       }
-      let slot = had - 1;
-      if (!had || slot === SEALED_SLOT || uniShared.has(slot)) {   // air->occupied, a sealed brick just exposed, or an EDITED uniform brick: it needs a real page now — poolFill must NEVER write into a shared page, every brick in the window aliases it
+      // ── A DENSE DESCRIPTOR IS NOT A SLOT, AND SUBTRACTING ONE FROM IT IS A CATASTROPHE ── bit 31 is set,
+      // so `had - 1` is ~2.1 billion, and pfS is an Int32Array: it wraps NEGATIVE and the batched upload
+      // asks writeBuffer for a negative offset. An edited dense brick therefore hands its page back and
+      // takes a fresh nibble slot — the re-encode decides the format again from the voxels it now holds,
+      // which is right anyway, since the edit is usually what changed the id count.
+      let slot = descIsDense(had) ? -1 : had - 1;
+      if (!had || descIsDense(had) || slot === SEALED_SLOT || uniShared.has(slot)) {   // air->occupied, a sealed brick just exposed, an edited uniform brick, or one leaving the dense region: it needs a real page now — poolFill must NEVER write into a shared page, every brick in the window aliases it
+        if (descIsDense(had)) descRelease(had);
         if (poolFreeN > 0) slot = poolFree32[--poolFreeN];
         else if (poolUsed < POOL_SLOTS) slot = poolUsed++;
         else { poolOverflow++; poolRetry.push(b); continue; }   // pool full FOR NOW: keep it queued (see poolRetry) — dropping it is what made an overflow permanent
@@ -451,16 +536,16 @@
     // the tiles regenerate, which is the only correct answer after the world underneath them was replaced.
     ringTiles.clear(); ringHanded.clear();   // …and nothing may be adopted across a rebuild: poolBuild zeroed every descriptor those tiles were relying on
     bdesc.fill(0); gwb.fill(0); gb2.fill(0); poolUsed = 0; poolOverflow = 0; poolFreeN = 0; poolDirty.clear(); gb2Dirty.clear(); descDirtyW.clear(); gwbDirtyW.clear();
-    uniSlotOf.fill(-1); uniShared.clear(); W32P = null;   // the allocator under the shared pages was just reset, and W may be a fresh buffer
+    uniSlotOf.fill(-1); uniShared.clear(); W32P = null; densUsed = 0; densFree.length = 0;   // the allocator under the shared pages was just reset, and W may be a fresh buffer
     const nB = BX * BY * BZ;
     for (let b = 0; b < nB; b++) airFree[b] = ((bricks[b >> 5] >>> (b & 31)) & 1) ? isAirFree(b) : 0;
     afDone.fill(1);                                    // a full build decides every brick, so afGet has nothing left to recompute until something is written again
     // Slots are handed out in order here, so the staging chunk covers slots [chunk0, poolUsed) and is flushed
     // whenever it fills. The shared stone page is slot 0, which is why the chunk is seeded with it.
     let chunk0 = 0;
-    const flush = () => { if (poolUsed > chunk0) device.queue.writeBuffer(poolBuf, chunk0 * 512, poolCPU.buffer, 0, (poolUsed - chunk0) * 512); chunk0 = poolUsed; };
+    const flush = () => { if (poolUsed > chunk0) device.queue.writeBuffer(poolBuf, chunk0 * PAGE_B, poolCPU.buffer, 0, (poolUsed - chunk0) * PAGE_B); chunk0 = poolUsed; };
     SEALED_SLOT = poolUsed++;                          // slot 0 is the shared stone page every sealed brick points at
-    poolCPU.fill(STONE_ID, 0, 512);
+    uniPageInto(poolCPU32, 0, STONE_ID);
     let sealedN = 0;
     for (let bz = 0; bz < BZ; bz++) for (let by = 0; by < BY; by++) for (let bx = 0; bx < BX; bx++) {
       const b = bx + by * BX + bz * BX * BY;
@@ -472,14 +557,17 @@
       if (poolUsed - chunk0 >= POOL_CHUNK) flush();
       { const uid = uniformIdOfW(b);                   // single-id brick: share the id's page. STAGED as well as written — the bulk flush below covers [chunk0, poolUsed) from poolCPU, so a slot allocated here must have its bytes in the staging too or the flush overwrites the page with garbage
         if (uid) { const us = uniformSlot(uid);
-          if (us >= 0) { if (us >= chunk0) poolCPU.fill(uid, (us - chunk0) * 512, (us - chunk0) * 512 + 512); bdesc[gb] = us + 1; continue; } } }
+          if (us >= 0) { if (us >= chunk0) uniPageInto(poolCPU32, (us - chunk0) * PAGE_U32, uid); bdesc[gb] = us + 1; continue; } } }
       const slot = poolUsed++;
-      bdesc[gb] = slot + 1;
-      let o = (slot - chunk0) * 512;
       for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {   // local order is x + y*8 + z*64, matching the shader
         const src = bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY;
-        poolCPU.set(W.subarray(src, src + 8), o + ly * 8 + lz * 64);
+        encSrc.set(W.subarray(src, src + 8), ly * 8 + lz * 64);
       }
+      if (encodePage(encSrc, 0, poolCPU32, (slot - chunk0) * PAGE_U32)) { bdesc[gb] = slot + 1; continue; }
+      const dp = denseAlloc();                         // more than fifteen ids: a dense page, and the nibble slot is handed straight back
+      if (dp < 0) { poolUsed--; poolOverflow++; continue; }
+      device.queue.writeBuffer(poolBuf, denseByteOff(dp), encSrc, 0, 512);
+      poolUsed--; bdesc[gb] = descOf(dp, true);
     }
     flush();
     poolSealed = sealedN;
@@ -497,8 +585,8 @@
     device.queue.writeBuffer(gb2Buf, 0, gb2);
     return { slots: POOL_SLOTS, used: poolUsed, sealed: poolSealed, overflow: poolOverflow,
       denseMB: +(WX * WY * WZ / 1048576).toFixed(1),
-      pooledMB: +((bdesc.byteLength + gwb.byteLength + gb2.byteLength + poolUsed * 512) / 1048576).toFixed(1),
-      saving: +((WX * WY * WZ) / (bdesc.byteLength + poolUsed * 512)).toFixed(2),
+      pooledMB: +((bdesc.byteLength + gwb.byteLength + gb2.byteLength + poolUsed * PAGE_B + densUsed * 512) / 1048576).toFixed(1),
+      saving: +((WX * WY * WZ) / (bdesc.byteLength + poolUsed * PAGE_B + densUsed * 512)).toFixed(2),
       ms: Math.round(performance.now() - t0) };
   };
   // ── NOR DO THE CPU-GRID L2 AND WATER TABLES ── the shader reads gb2/gwb, which are on the GPU grid and
@@ -668,8 +756,8 @@
   const RING_M = 1;                                    // slab margin in bricks, so every paged brick has six real neighbours to seal against
   const ringStage = new Uint8Array(512);
   const RING_RUN = 512;                                // slots per batched upload (256 KB)
-  const ringRun = new Uint8Array(RING_RUN * 512);
-  const ringRun64 = new Float64Array(ringRun.buffer);   // the same staging buffer, moved a row at a time
+  const ringRun = new Uint8Array(RING_RUN * PAGE_B);
+  const ringRun32 = new Uint32Array(ringRun.buffer);    // …the encoded pages go in as WORDS; the raw row moves land in encSrc64 first
   function ringPageTile(T, m, x0, z0) {                 // x0/z0 are the TILE's origin; the slab starts RING_M bricks before it
     const t0 = performance.now();
     const SW = m.stride, sx = m.nbx * 8, sz = m.nbz * 8, SB = m.W, bb = m.bb, wb = m.wb;
@@ -788,7 +876,7 @@
     // pool has room, which the squash below arranges.
     if (ovfN) {
       ringAbandon++;                                   // …counted APART from ringOverflow, which fires per refused brick at the allocation site and therefore still climbs even when this path is working perfectly. overflow says "the pool was tight"; this says "a tile was dropped whole rather than published half-empty", and the two answer different questions
-      for (let i = 0; i < n; i++) poolRelease(slA[i]);
+      for (let i = 0; i < n; i++) slotRelease(slA[i]);
       // …and it is REQUESTED, not applied. A quarter tile per overflowing TILE still stacks: measured, three
       // tiles were abandoned inside a six-frame burst and the far plane moved 59 voxels in one frame — better
       // than the 127 a whole-tile step gave, but still nearly two increments at once, because a burst of
@@ -831,31 +919,37 @@
     const u = T.up, oa = u.oa, SB64 = u.SB64, SW = u.SW, nbx = u.nbx, nby = u.nby;
     const gbA = T.gb, slA = T.sl, bA = T.bA, n = T.n;
     let runS = -1, runN = 0;
-    const runFlush = () => { if (runN) { ringRuns++; device.queue.writeBuffer(poolBuf, runS * 512, ringRun, 0, runN * 512); runN = 0; runS = -1; } };
+    const runFlush = () => { if (runN) { ringRuns++; device.queue.writeBuffer(poolBuf, runS * PAGE_B, ringRun, 0, runN * PAGE_B); runN = 0; runS = -1; } };
     const i0 = u.i, end = Math.min(n, i0 + ringBudget);
     for (let i = i0; i < end; i++) {
       const q = oa[i], slot = slA[q], b = bA[q];
       const bx = b % nbx, by = ((b / nbx) | 0) % nby, bz = (b / (nbx * nby)) | 0;
       if (runN && (slot !== runS + runN || runN >= RING_RUN)) runFlush();   // a slot that does not continue the run ends it
       if (!runN) runS = slot;
-      const ro8 = runN * 64;                           // …in f64 words: 512 bytes is 64 of them
-      for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
+      for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {   // …in f64 words: a 512-byte brick is 64 of them
         const src = bx * 8 + (by * 8 + ly) * SW + (bz * 8 + lz) * SW * WY;
-        ringRun64[ro8 + ly + lz * 8] = SB64[src >> 3];
+        encSrc64[ly + lz * 8] = SB64[src >> 3];
       }
-      runN++;
+      if (encodePage(encSrc, 0, ringRun32, runN * PAGE_U32)) { runN++; continue; }
+      // …a dense brick. The tile publishes its descriptors in one step at the end, so the dense page is
+      // recorded by NEGATING the slot: the publish loop reads that back rather than guessing the format.
+      runFlush();
+      const dp = denseAlloc();
+      if (dp < 0) { ringOverflow++; continue; }         // dense region full: the tile publishes this brick as it was
+      device.queue.writeBuffer(poolBuf, denseByteOff(dp), encSrc, 0, 512);
+      poolRelease(slot); slA[q] = -(dp + 1);
     }
     runFlush();
     u.i = end; ringPaged += end - i0; ringBudget -= end - i0;
     if (end >= n) {                                    // …every page is on the GPU: publish the whole tile in one step
       for (let i = 0; i < n; i++) {
-        const gb = gbA[i], slot = slA[i], had0 = bdesc[gb];
-        if (had0 && had0 - 1 !== slot) poolRelease(had0 - 1);
-        bdesc[gb] = slot + 1; descDirtyW.add(gb); if (!had0) gb2Dirty.add(gSuper(gb));
+        const gb = gbA[i], slot = slA[i], had0 = bdesc[gb], d = slot < 0 ? descOf(-slot - 1, true) : slot + 1;
+        if (had0 && had0 !== d) descRelease(had0);
+        bdesc[gb] = d; descDirtyW.add(gb); if (!had0) gb2Dirty.add(gSuper(gb));
       }
       for (let i = 0; i < u.sgb.length; i++) {         // …and the air/sealed ones in the SAME step, or they lead
         const gb = u.sgb[i], v = u.sval[i], had0 = bdesc[gb];
-        if (had0 && had0 - 1 !== v) poolRelease(had0 - 1);
+        if (had0 && (descIsDense(had0) || had0 - 1 !== v)) descRelease(had0);
         bdesc[gb] = v + 1; descDirtyW.add(gb);
         if (!had0 !== !(v + 1)) gb2Dirty.add(gSuper(gb));   // only a 0 <-> non-zero transition moves the L2 bit
       }
@@ -901,7 +995,7 @@
     // ALL of them, not just the ones past the cursor: a tile mid-upload has published NOTHING (the descriptors
     // go live in one step at the end, see ringUpload), so every slot it holds is named by nothing in bdesc and
     // the descriptor test below would skip the lot.
-    if (T.up) { for (let j = 0; j < T.n; j++) poolRelease(T.sl[j]); T.up = null; if (T.job) { poolRingDrop(T.job); T.job = null; } }
+    if (T.up) { for (let j = 0; j < T.n; j++) slotRelease(T.sl[j]); T.up = null; if (T.job) { poolRingDrop(T.job); T.job = null; } }
     // ══ AN ADOPTED TILE OWNS DESCRIPTORS AND NO LIST, AND LEAVING THEM LIVE IS THE FLICKER ══ a tile adopted
     // back from the near window is recorded as done with n = 0 and an EMPTY gb array, because its pages were
     // written by poolFlush and the ring never allocated them. The loop below is therefore a no-op for it: on
@@ -934,7 +1028,7 @@
           for (let by = 0; by < GBY; by++) {
             const gb = wx + by * GBX + wz * GBX * GBY, d = bdesc[gb];
             if (!d) continue;
-            poolRelease(d - 1); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); ringAdoptClear++;
+            descRelease(d); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); ringAdoptClear++;
           } } }
     }
     for (let i = 0; i < T.n; i++) {                     // ONLY where the descriptor still names this tile's own slot — see the note above
@@ -1218,11 +1312,14 @@
       if (!T.done || !T.n) continue;
       tiles++; let bad = 0;
       for (let i = 0; i < T.n; i++) {
-        const gb = T.gb[i], want = T.sl[i] + 1, got = bdesc[gb];
+        // T.sl holds SLOTS, and a dense page is stored negated (see ringUpload) — reconstructing the
+        // descriptor the same way the publish loop does. Comparing `sl + 1` reported every dense brick in
+        // the ring as stale: 18,271 of them on the first run of the new page format, against a gpudiff of 0.
+        const gb = T.gb[i], sl = T.sl[i], want = sl < 0 ? descOf(-sl - 1, true) : sl + 1, got = bdesc[gb];
         checked++;
         if (got === want) continue;
         bad++; if (got === 0) zero++; else stale++;
-        if (ex.length < 6) ex.push({ tx: T.tx, tz: T.tz, gb, want: want - 1, got: got - 1 });
+        if (ex.length < 6) ex.push({ tx: T.tx, tz: T.tz, gb, want, got, wantDense: sl < 0, gotDense: descIsDense(got) });
       }
       if (bad) badTiles++;
     }

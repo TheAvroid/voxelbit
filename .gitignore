@@ -60,3 +60,10 @@ floatshots/
 # It sits under game/ only because that is where it was dropped; nothing at runtime reads it.
 game/assets/foilage/pine_trees/
 source/pine9/
+
+# 2026-09-03: the end card's ALPHA master. docs/end-alpha.mov is ProRes 4444 (yuva444p12le, 4K,
+# 192 frames) - 88 MB, and it is an authoring intermediate, not a deliverable: the two exports made
+# from it, end-alpha.webm (VP9, alpha_mode=1) and end-alpha-matte.mp4 (the luma matte for NLEs that
+# will not read alpha), are 3.5 MB together and ARE tracked. Same rule as source/glb/ above; it also
+# sits close enough to GitHub's 100 MB per-file limit that a re-render could push a commit over.
+docs/end-alpha.mov

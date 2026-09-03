@@ -2195,7 +2195,7 @@
       return { made: made.length, dist: D, ex: made.slice(0, 5) };
     },
     poolStats() { return { used: poolUsed, free: poolFreeN, slots: POOL_SLOTS, sealed: poolSealed, overflow: poolOverflow, dirty: poolDirty.size,
-      poolMB: +((bdesc.byteLength + poolUsed * 512) / 1048576).toFixed(1), denseWouldBeMB: +(WX * WY * WZ / 1048576).toFixed(1) }; },   // OVERFLOW IS THE ONE TO WATCH: a brick that cannot get a slot renders as AIR, so a nonzero count here is a hole in the world, not a statistic
+      poolMB: +((bdesc.byteLength + poolUsed * PAGE_B + densUsed * 512) / 1048576).toFixed(1), densePages: densUsed, denseWouldBeMB: +(WX * WY * WZ / 1048576).toFixed(1) }; },   // OVERFLOW IS THE ONE TO WATCH: a brick that cannot get a slot renders as AIR, so a nonzero count here is a hole in the world, not a statistic
     setRD(v) { RD_DBG = Math.max(0, Math.min(v | 0, GHALF - 24)); return { RD_DBG, gHalf: GHALF, uniform: UF[64] }; },   // GHALF, not HALF: the view is bounded by the GPU window now (see TWO WINDOWS in world/window.js), and clamping a sweep to the CPU half silently capped every measurement at 1000 — which then reads as the far ring refusing to fill past 1096   // dev: sweep view distance to measure how trace cost scales with it (0 = back to RD_FIXED)
     lifedbg(m) { lifeDbg = m === undefined ? 0 : m | 0; return { mode: lifeDbg, traceInjected: LIFE_TRACE }; },   // debug views: 0 off / 1 slot ids / 2 history confidence / 3 motion / 4 denoised AO / 5 RAW sun visibility / 6 DENOISED sun visibility
     birdCensus(r, wx, wz) {                          // tally the songbird colours around any centre, straight from the placement rule
@@ -2329,7 +2329,7 @@
     mem() { const m = performance.memory || {};        // CPU heap + the static GPU allocation the world costs
       return { jsHeapMB: +((m.usedJSHeapSize || 0) / 1048576).toFixed(1), jsHeapTotalMB: +((m.totalJSHeapSize || 0) / 1048576).toFixed(1),
         worldMB: +(W.byteLength / 1048576).toFixed(1), bricksMB: +((bricks.byteLength + bricks2.byteLength + wbricks.byteLength) / 1048576).toFixed(2),
-        hmapMB: +(hmap.byteLength / 1048576).toFixed(2), poolMB: +((bdesc.byteLength + poolUsed * 512) / 1048576).toFixed(1), RW, RH, CW, CH, renderScale }; },   // worldMB is the CPU array; poolMB is what the GPU actually holds for the same world
+        hmapMB: +(hmap.byteLength / 1048576).toFixed(2), poolMB: +((bdesc.byteLength + poolUsed * PAGE_B + densUsed * 512) / 1048576).toFixed(1), RW, RH, CW, CH, renderScale }; },   // worldMB is the CPU array; poolMB is what the GPU actually holds for the same world
     res(v) { if (v !== undefined) { renderScale = Math.max(0.375, Math.min(1, v)); makeTargets(true); resSync(); } return { renderScale, RW, RH }; },   // A/B the resolution scale from a test (does NOT persist — a test must not rewrite the player's vb_scale)
     // ══ WHAT IS THE POOL ACTUALLY HOLDING? ══ the player's flight recorder shows occupancy pinned at
     // 95.5-100.0% in the arctic, and a cache at its ceiling drops a tile for every insert — that churn is
@@ -2359,15 +2359,17 @@
       const cand = [];
       for (let t = 0; t < sample * 30 && cand.length < sample; t++) {
         const gb = (Math.random() * NG) | 0, d = bdesc[gb];
-        if (!d || d - 1 === SEALED_SLOT || uniShared.has(d - 1)) continue;   // census counts REAL pages; the shared ones are the fix, not the problem
+        if (!d || descIsDense(d) || d - 1 === SEALED_SLOT || uniShared.has(d - 1)) continue;   // census counts REAL nibble pages; the shared ones are the fix, not the problem, and a dense page is by definition not uniform
         cand.push([gb, d - 1]);
       }
       const stg = device.createBuffer({ size: Math.max(512, cand.length * 512), usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       const e = device.createCommandEncoder();
-      cand.forEach((c, i) => e.copyBufferToBuffer(poolBuf, c[1] * 512, stg, i * 512, 512));
+      cand.forEach((c, i) => e.copyBufferToBuffer(poolBuf, c[1] * PAGE_B, stg, i * 512, PAGE_B));
       device.queue.submit([e.finish()]);
       await stg.mapAsync(GPUMapMode.READ);
-      const pg = new Uint8Array(stg.getMappedRange().slice(0)); stg.unmap(); stg.destroy();
+      const raw = new Uint8Array(stg.getMappedRange().slice(0)); stg.unmap(); stg.destroy();
+      const raw32 = new Uint32Array(raw.buffer), pg = new Uint8Array(cand.length * 512), dec1 = new Uint8Array(512);
+      for (let i = 0; i < cand.length; i++) pg.set(decodePage(raw32, i * 128, dec1), i * 512);
       let uniform = 0, mixed = 0; const byId = {};
       for (let i = 0; i < cand.length; i++) {
         const o = i * 512, v0 = pg[o];
@@ -2379,6 +2381,54 @@
         .map(([id, ct]) => ({ id: +id, n: ct, pct: +(100 * ct / cand.length).toFixed(1), col: palette[+id] }));
       return { sampled: cand.length, uniformPct: +(100 * uniform / cand.length).toFixed(1), mixed, topUniformIds: rank,
         live: poolUsed - poolFreeN, slots: POOL_SLOTS, occPct: +(100 * (poolUsed - poolFreeN) / POOL_SLOTS).toFixed(1) };
+    },
+    // ══ HOW SPARSE ARE THE CANOPY PAGES? ══ poolByHist says 70% of every REAL page sits at or above
+    // y 192, where sealing reaches nothing (sealed is 0 from y 208 up) — that band is pure canopy and it
+    // is paying a full 512-byte page per brick. A leaf brick is mostly AIR, so the number that decides
+    // whether a compact encoding is worth building is how many non-air voxels a page up there actually
+    // holds. The buckets are the SLOT SIZES a slab allocator could offer: a 64-byte occupancy mask plus
+    // one id per set voxel fits 64 voxels in 128 bytes and 192 in 256, so a page with <= 64 non-air
+    // voxels could be held in a QUARTER of what it takes now. Samples REAL pages only, exactly as
+    // poolCensus counts them — the sealed and uniform-shared ones are already free and are not the problem.
+    async poolSparse(sample = 4096, minY = 192) {
+      const by0 = Math.max(0, (minY / 8) | 0), cand = [];
+      for (let t = 0; t < sample * 60 && cand.length < sample; t++) {
+        const by = by0 + ((Math.random() * Math.max(1, GBY - by0)) | 0);
+        const bx = (Math.random() * GBX) | 0, bz = (Math.random() * GBZ) | 0;
+        const d = bdesc[by * GBX + bz * GBX * GBY + bx];
+        if (!d || descIsDense(d) || d - 1 === SEALED_SLOT || uniShared.has(d - 1)) continue;
+        cand.push([by * 8, d - 1]);
+      }
+      if (!cand.length) return { sampled: 0, note: 'no real pages at or above y ' + minY };
+      const stg = device.createBuffer({ size: Math.max(512, cand.length * 512), usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const e = device.createCommandEncoder();
+      cand.forEach((c, i) => e.copyBufferToBuffer(poolBuf, c[1] * PAGE_B, stg, i * 512, PAGE_B));
+      device.queue.submit([e.finish()]);
+      await stg.mapAsync(GPUMapMode.READ);
+      const raw = new Uint8Array(stg.getMappedRange().slice(0)); stg.unmap(); stg.destroy();
+      const raw32 = new Uint32Array(raw.buffer), pg = new Uint8Array(cand.length * 512), dec1 = new Uint8Array(512);
+      for (let i = 0; i < cand.length; i++) pg.set(decodePage(raw32, i * 128, dec1), i * 512);
+      const BK = [0, 1, 4, 8, 16, 32, 64, 96, 128, 192, 256, 384, 512];
+      const hist = new Array(BK.length).fill(0);
+      let sum = 0, fit128 = 0, fit256 = 0, full = 0, maxIds = 0, sumIds = 0;
+      const idh = new Array(33).fill(0);               // distinct ids per page — decides whether a per-page PALETTE can replace the byte, which is the cheap encoding (one load + a nibble) against the mask+popcount one
+      for (let i = 0; i < cand.length; i++) {
+        const o = i * 512, ids = new Set(); let n = 0;
+        for (let j = 0; j < 512; j++) { const v = pg[o + j]; if (v) { n++; ids.add(v); } }
+        sum += n; sumIds += ids.size; if (ids.size > maxIds) maxIds = ids.size;
+        idh[Math.min(32, ids.size)]++;
+        let b = 0; while (b + 1 < BK.length && n > BK[b + 1]) b++;
+        hist[b]++;
+        if (n <= 64) fit128++; else if (n <= 192) fit256++; else full++;
+      }
+      const N = cand.length, curB = N * 512, newB = fit128 * 128 + fit256 * 256 + full * 512;
+      return { sampled: N, minY, meanNonAir: +(sum / N).toFixed(1), meanIdsPerPage: +(sumIds / N).toFixed(1), maxIdsPerPage: maxIds,
+        buckets: BK.map((b, i) => ({ upTo: b, n: hist[i], pct: +(100 * hist[i] / N).toFixed(1) })).filter((q) => q.n),
+        idsPerPage: idh.map((n, i) => ({ ids: i, n, pct: +(100 * n / N).toFixed(1) })).filter((q) => q.n),
+        pctIdsLE4: +(100 * idh.slice(0, 5).reduce((a, b) => a + b, 0) / N).toFixed(1),
+        pctIdsLE16: +(100 * idh.slice(0, 17).reduce((a, b) => a + b, 0) / N).toFixed(1),
+        fit128: +(100 * fit128 / N).toFixed(1), fit256: +(100 * fit256 / N).toFixed(1), needFull: +(100 * full / N).toFixed(1),
+        slabSaving: +(curB / newB).toFixed(2) };
     },
     async gpudiff(sample = 2048) {                    // read the POOL back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
       // The dense GPU world is gone, so "does the GPU agree with W" is now two questions. Every brick's
@@ -2408,7 +2458,7 @@
         const page = new Uint8Array(512);
         for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++)
           page.set(W.subarray(bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY, bx * 8 + 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY), ly * 8 + lz * 64);
-        want.push({ b, slot: cpuDesc[gb] - 1, page });
+        want.push({ b, slot: descIdx(cpuDesc[gb]), dense: descIsDense(cpuDesc[gb]), page });
         if (want.length >= 512) break;                 // one staging buffer, one submit — see below
       }
       // ONE encoder, submitted BEFORE the first await, for every sampled page. Copying them inside the
@@ -2416,7 +2466,8 @@
       // of this check came back with 22-74 byte diffs that were all perched birds stamping and unstamping.
       const pageStg = device.createBuffer({ size: Math.max(512, want.length * 512), usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       const e1 = device.createCommandEncoder();
-      want.forEach((w, i) => e1.copyBufferToBuffer(poolBuf, w.slot * 512, pageStg, i * 512, 512));
+      // a page is 272 bytes now unless it is a dense one; the staging keeps a 512 stride so one buffer serves both
+      want.forEach((w, i) => e1.copyBufferToBuffer(poolBuf, w.dense ? DBASE_U32 * 4 + w.slot * 512 : w.slot * PAGE_B, pageStg, i * 512, w.dense ? 512 : PAGE_B));
       device.queue.submit([e1.finish()]);
       let descBad = 0, voxBad = 0;
       await bdescRead.mapAsync(GPUMapMode.READ);
@@ -2432,8 +2483,11 @@
       await pageStg.mapAsync(GPUMapMode.READ);
       const gp = new Uint8Array(pageStg.getMappedRange().slice(0));
       pageStg.unmap(); pageStg.destroy();
-      want.forEach((w, i) => { for (let k = 0; k < 512; k++) if (gp[i * 512 + k] !== w.page[k]) {
-        voxBad++; if (spots.length < 20) spots.push({ b: w.b, slot: w.slot, k, gpu: gp[i * 512 + k], cpu: w.page[k], kind: 'page' }); } });
+      const gp32 = new Uint32Array(gp.buffer), dec = new Uint8Array(512);
+      want.forEach((w, i) => {
+        const got = w.dense ? gp.subarray(i * 512, i * 512 + 512) : decodePage(gp32, i * 128, dec);
+        for (let k = 0; k < 512; k++) if (got[k] !== w.page[k]) {
+          voxBad++; if (spots.length < 20) spots.push({ b: w.b, slot: w.slot, dense: w.dense, k, gpu: got[k], cpu: w.page[k], kind: 'page' }); } });
       return { diffs: descBad + voxBad, descBad, voxBad, bricksChecked: want.length, spots };
     },
     bdiff() { return 'superseded by __vb.gpudiff() — the L1/L2/water tables the GPU reads are bdesc/gb2/gwb, and gpudiff checks bdesc exhaustively against W'; },
@@ -2638,8 +2692,14 @@
       const hh0 = H(xx, zz), dxq = pwrap(xx - SPWX);
       let est = -1;                                    // …the SAME field-gradient estimate oakBank uses, so coverage can actually be counted
       if (d >= OAKBANKR && hh0 - WL < 92) {
-        const bmq = (dxq < BIRCHFAR && dxq > BIRCHWFAR) ? birchM(xx, zz) : 0;
-        const g = 4, fld = bmq > 0 ? birchH : (dxq >= OAKFAR || dxq <= OAKWFAR ? pineH : oakH);
+        // ── ONE FIELD, BECAUSE THERE IS ONLY ONE (fixed 2026-09-03) ── this picked between birchH, pineH and
+        // oakH, and TWO OF THE THREE HAVE NEVER EXISTED: the birch band stopped having a field of its own on
+        // 2026-09-02 (world/window.js says so in as many words, "There is no birchH") and pineH was never a
+        // name at all. So every call that reached this branch threw ReferenceError and __vb.bankAt has been
+        // dead since. pineBase is the answer to all three now — it is the shared scalar H, makeHRow and
+        // makeHCol agree through, and it already carries the birch's halved relief and the oak's rounded
+        // hills internally, so asking it is asking whichever field this column actually stands on.
+        const g = 4, fld = pineBase;
         const gx = (fld(xx + g, zz) - hh0) / g, gz = (fld(xx, zz + g) - hh0) / g;
         const gr = Math.sqrt(gx * gx + gz * gz);
         if (gr > 0.02) { const df = (hh0 - WL) / gr; if (df >= 0) est = df; }

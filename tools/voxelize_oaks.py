@@ -64,6 +64,23 @@ VOX = 0.1          # metres per voxel - THE 10 cm grid every other asset in this
 # this number. First bake was 18 m: 789k voxels, a 313k-voxel single tree, and a crown that cleared
 # the cap.
 TALLEST = 11.5
+# -- GROW: EVERY TREE 50% BIGGER, THE BUSH LEFT ALONE (user 2026-09-03) -- TALLEST fixes the whole set
+# against one number, so raising it scales the UNDERBRUSH with the canopy and the 2.4 m bush becomes a
+# 3.6 m one. That is not what was asked for ("keep the bushes the same though"), and it would also break
+# what the bush IS: oakAt spends tiers 0 and 1 on it as walk-past ground cover, and stamped.js refuses to
+# perch a bird in it precisely because it is short. So the scale is applied PER GROUP and the shortest
+# group -- which is the bush, by a factor of two against the next tree up -- keeps the original SCALE.
+#
+# IT FITS UNDER THE WORLD CEILING, AND THAT WAS CHECKED RATHER THAN ASSUMED. The header warns that a model
+# over ~120 voxels pokes through the sky cap; both numbers it names have since moved and the real ones are
+# CANOPY = 265 (world/window.js, used by BOTH brick-occupancy copies) and the TREE RESERVE that pins
+# HMAX = WY - 158. At GROW 1.5 the tallest oak goes 114 -> ~171 voxels, which is under CANOPY with room.
+# The reserve is the tighter test and it is about the ground the tree stands on: it is sized for a
+# 152-voxel PINE on the highest terrain in the world (HMAX 226, WY 384). Oaks do not stand there -- the
+# oak band's own field tops out at OAKY + OAKHILL = 162 -- so a 171-voxel oak on the highest oak ground
+# reaches 333 against WY 384. Nothing about HMAX or the reserve has to move for this.
+GROW = 1.0        # scale applied to every group EXCEPT the shortest; 1.0 = the original bake
+PIN_PAL = None    # path to an existing oak_trees.json whose palette should be reused verbatim
 # -- THE PALETTE BUDGET IS THE REAL CONSTRAINT ON THESE TWO NUMBERS, AND IT WAS MEASURED, NOT GUESSED --
 # the game shares ONE 256-entry table across every material in the world, and booting with ?nooaks reports
 # 250/256 with SIX free. A first bake at 3 + 5 asked for eight, and the two it could not have came out of
@@ -91,6 +108,10 @@ for _a in sys.argv[1:]:
         NLEAF = int(_a[8:])
     if _a.startswith('--alpha='):
         ALPHA_MIN = int(_a[8:])
+    if _a.startswith('--grow='):
+        GROW = float(_a[7:])
+    if _a.startswith('--pin-pal='):
+        PIN_PAL = _a[10:]
 
 d = open(GLB, 'rb').read()
 clen = struct.unpack_from('<I', d, 12)[0]
@@ -195,18 +216,26 @@ for ni, n in enumerate(js['nodes']):
 tall = max(max(p['wp'][:, 1].max() for p in parts) - min(p['wp'][:, 1].min() for p in parts)
            for parts in groups.values())
 SCALE = TALLEST / tall
+# the shortest group is the BUSH and it is the one GROW does not touch -- see the note over GROW
+GHEIGHT = {k: max(p['wp'][:, 1].max() for p in parts) - min(p['wp'][:, 1].min() for p in parts)
+           for k, parts in groups.items()}
+BUSH_KEY = min(GHEIGHT, key=GHEIGHT.get)
 print('%d trees; tallest is %.1f source units -> %.1f m (scale %.5f), %.0f cm voxels'
       % (len(groups), tall, TALLEST, SCALE, VOX * 100))
+if GROW != 1.0:
+    print('grow x%.2f on every group except %r (the bush, %.1f source units tall)'
+          % (GROW, BUSH_KEY, GHEIGHT[BUSH_KEY]))
 
 
-def raster(parts, kinds, org):
+def raster(parts, kinds, org, scl):
     """Every triangle in `parts` whose kind is in `kinds`, sampled at half-voxel spacing.
     Returns (voxel coords, RGB) with one entry per SAMPLE - duplicates are resolved by dedupe()."""
     P, C = [], []
     for p in parts:
         if p['kind'] not in kinds:
             continue
-        wp = (p['wp'] * SCALE - org) / VOX      # straight into voxel space, so the edge lengths below are in voxels
+        wp = (p['wp'] * scl - org) / VOX        # `scl` is the GROUP's scale, not the global SCALE: the bush keeps the original one (see GROW)
+                                                # straight into voxel space, so the edge lengths below are in voxels
         tri = p['idx'].reshape(-1, 3)
         A, B, Cc = wp[tri[:, 0]], wp[tri[:, 1]], wp[tri[:, 2]]
         e = np.maximum(np.maximum(np.linalg.norm(B - A, axis=1), np.linalg.norm(Cc - A, axis=1)),
@@ -257,11 +286,12 @@ models = []
 bark_cols, leaf_cols = [], []
 for key in sorted(groups):
     parts = groups[key]
-    allp = np.concatenate([p['wp'] for p in parts]) * SCALE
+    gs = SCALE if key == BUSH_KEY else SCALE * GROW   # the bush keeps the original scale
+    allp = np.concatenate([p['wp'] for p in parts]) * gs
     org = allp.min(0)
     dims = np.maximum(1, np.ceil((allp.max(0) - org) / VOX).astype(int) + 1)
-    bvx, bcol = raster(parts, ('branches',), org)
-    lvx, lcol = raster(parts, ('leaves',), org)
+    bvx, bcol = raster(parts, ('branches',), org, gs)
+    lvx, lcol = raster(parts, ('leaves',), org, gs)
     bvx = np.clip(bvx, 0, dims - 1)
     lvx = np.clip(lvx, 0, dims - 1)
     if len(bvx):
@@ -396,8 +426,22 @@ def cut(cols, n, what):
     return median_cut(u, n)
 
 
-pal_bark = cut(bark_cols, NBARK, 'bark')
-pal_leaf = cut(leaf_cols, NLEAF, 'leaf')
+# -- PINNED, SO A RE-BAKE CANNOT REPAINT THE FOREST (user 2026-09-03: "also keep the current colors") --
+# median_cut is a POPULATION-weighted split (see the note over cut), so it is a function of how many voxels
+# each shade covers -- and changing the scale changes exactly that. A re-bake at GROW 1.5 rasterizes ~3.4x
+# the voxels and the cut lands on different means, which would repaint every oak in the game as a side
+# effect of resizing it. --pin-pal reads the shades out of the existing bake and reuses them verbatim; the
+# nearest() snap below then resolves this bake's colours onto them, so the models change shape and NOT hue.
+if PIN_PAL:
+    _pin = json.load(open(PIN_PAL))
+    _pp = np.array(_pin['pal'], float)
+    pal_bark, pal_leaf = _pp[:_pin['nbark']], _pp[_pin['nbark']:]
+    assert len(pal_bark) == NBARK and len(pal_leaf) == NLEAF, (
+        'pinned palette is %d+%d, this bake wants %d+%d' % (len(pal_bark), len(pal_leaf), NBARK, NLEAF))
+    print('palette PINNED from %s: %d bark + %d leaf, unchanged' % (PIN_PAL, NBARK, NLEAF))
+else:
+    pal_bark = cut(bark_cols, NBARK, 'bark')
+    pal_leaf = cut(leaf_cols, NLEAF, 'leaf')
 pal = np.concatenate([pal_bark, pal_leaf])
 print('bark:', [[int(round(c)) for c in p] for p in pal_bark])
 print('leaf:', [[int(round(c)) for c in p] for p in pal_leaf])

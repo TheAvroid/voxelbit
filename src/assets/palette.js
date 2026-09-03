@@ -55,7 +55,24 @@
   // ORDER-INDEPENDENT ON PURPOSE: whichever member of a pair is minted first becomes the id and the second
   // resolves to it, so this does not depend on which loader happens to run first — which is exactly the kind
   // of load-order assumption ?palmint exists to chase down.
-  const PAL_MERGE = [[[102, 73, 47], [100, 72, 46]], [[61, 59, 56], [62, 61, 57]]];
+  // ── THREE MORE PAIRS, AND THEY ARE WHAT PAYS FOR THE FRUIT (user 2026-09-03: "audit the game for the
+  // magenta color and restore") ── the table was at 256/256 with 0 free, FRUITC wants three ids, and every
+  // DEADC ramp holds none to give back (a retired ramp points AT DEADC, it does not reserve anything). So
+  // the three come from here, through the mechanism this block already exists to be, chosen the way the
+  // two above were: __vb.palAudit().near['2'] reports exactly three reclaimable pairs and these are them.
+  // The safety argument is the one stated below and it is unchanged — the audit only ever buckets ids that
+  // ALREADY AGREE on every material flag and every pickup set, and skips palOwn outright.
+  //   (31,31,31)/(33,33,33)      two near-blacks
+  //   (246,246,246)/(248,248,248) two near-whites
+  //   (121,89,57)/(123,90,58)     two browns
+  // Each differs by 2 of 255 on every channel, which is below what a player can see and far below the
+  // PAL_TOL 12 the model loaders already collapse within.
+  // NET ZERO, AND IT NEVER TRANSIENTLY OVERFLOWS: FRUITC mints its three inside palette.js (id ~78), and
+  // all three merges land in the MODEL-LOADER range that follows (~99, ~165, ~189), so the table runs at
+  // most +3 over its old count through a stretch where it is only ~190 deep, and is back to net 0 well
+  // before the tail. Final length 256, palOver 0.
+  const PAL_MERGE = [[[102, 73, 47], [100, 72, 46]], [[61, 59, 56], [62, 61, 57]],
+                     [[31, 31, 31], [33, 33, 33]], [[246, 246, 246], [248, 248, 248]], [[121, 89, 57], [123, 90, 58]]];
   const palMergeId = (r, g, b) => {
     if (!palIdx) return -1;
     for (const pair of PAL_MERGE) {
@@ -165,7 +182,8 @@
 
   // ══ THE NINE PINES ══════════════════════════════════════════════════════════════════════════
   // game/assets/foilage/pine9/pine_1..9.vox, baked by tools/voxelize_pine9.py out of the nine trees
-  // in EuropeanPine.obj at the engine's 10 cm voxel, each 152 voxels - 50 feet - tall. MagicaVoxel
+  // in EuropeanPine.obj at the engine's 10 cm voxel, each 228 voxels - 75 feet - tall (was 152 / 50 ft;
+  // the nine land at 225..228 because each is scaled on its own source height). MagicaVoxel
   // is Z-up and that is already the game's convention for a model (model z -> world y), so there is
   // no axis work here.
   // ONE SHARED BAKE PALETTE, WHICH IS WHY THERE IS STILL ONE remap: the voxelizer clusters all nine
@@ -206,7 +224,16 @@
   // width heuristic and the nav perches were all written when the forest was ONE model and still
   // read MSX/MSY/MSZ/M. They keep working by pointing at the first tree, which is a real pine of the
   // right species and size; only the terrain stamp picks among all nine.
-  const MSX = PINE9[0].sx, MSY = PINE9[0].sy, MSZ = PINE9[0].sz, M = PINE9[0].M;
+  // MSZ IS THE TALLEST OF THE NINE, NOT PINE9[0]'s HEIGHT. The nine do not bake to exactly one number -
+  // each is scaled to TALL_VOX on its OWN height and lands at 225..228 - and MSZ is what stampTree loops to
+  // (world/terrain.js), what a fell shape sizes itself by (`S.hMax || MSZ`, and hMax is never assigned for a
+  // pine, so it is ALWAYS MSZ), and what the floater audit's lid clears. Read as PINE9[0].sz it was the
+  // SHORTEST tree in the stand, so every taller model lost its crown tip: stamped, chopped and audited 3
+  // voxels short, silently. It was 1 voxel at 152 and nobody saw it; the 75 ft re-bake made it 3.
+  // The loop bound going one row past a shorter model's array is safe by construction - the read is
+  // out of bounds, returns undefined, and the `if (!v) continue` that guards every empty voxel skips it.
+  const MSX = PINE9[0].sx, MSY = PINE9[0].sy, M = PINE9[0].M;
+  const MSZ = Math.max.apply(null, PINE9.map((m) => m.sz));
   const remap = new Uint8Array(256);
   const foliageIds = [];                               // needles get NO hitbox — you walk through a canopy
   const woodIds = [];                                  // …and the bark: the axe cuts any of it, tree or stump
@@ -385,7 +412,10 @@
   // colour changes. Duplicate colours on separate ids, deliberately, exactly as BROCK repeats ROCK's greys.
   // THREE, NOT FOUR. The darkest oak leaf (82,115,47) is already within 7/255 of a GRASS shade, so it would buy
   // nothing; the three that matter are the ones a canopy actually reads as. The table has 5 free.
-  const OAKMOSS = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
+  // UN-RETIRED 2026-09-03 with its biome. The declaration itself now sits at the FOOT of this file, beside
+  // BIRCHGRASS and for the identical reason: addCol appends, ids are positional in call order, and the decor
+  // .json files store RESOLVED ids — so a ramp minted here would shift every id below it and repaint the
+  // game. Everything the paragraphs above say about it is still true; only where it is minted moved.
   // ── THE BIRCH FOREST FLOOR (user: "make the terrain a light green ... as well as the moss on top of the
   // rocks") ── a four-step GROUND ramp in the oak canopy's greens, and it costs ZERO ids because every one of
   // them already exists. It CLIMBS OFF the ramp beside it, the same trick the light oak variety uses: the
@@ -402,7 +432,7 @@
   // entirely the light greens, and it still costs zero ids.
   // (BIRCHMOSS is declared after BIRCHGRASS at the foot of this file — it cannot be built here because the
   //  ramp it reads is minted last, for the id-ordering reason given there.)
-  for (const i of OAKMOSS) palOwn.add(i);   // reserved: mossCap keys on these, and a tolerance reuse would scatter somebody else's model over the boulders
+  // (OAKMOSS's palOwn reservation moved to the foot of the file with the ramp — mossCap keys on these ids.)
   // ── THE SECOND OAK, AND IT COSTS TWO IDS (user 2026-08-19: "make the oak trees have 2 shades of green. a
   // lighter green and a darker green. similar to whats done with the cherry trees") ── the cherry forest ships
   // two VARIETIES of one tree by remapping the oak's leaf ids onto another ramp (assets/bow.js blosRemap), and
@@ -433,8 +463,7 @@
   // tell these ids they are CANOPY — walk-through, DRAPE support, snow-catching, see-through when the eye is
   // inside them, and a bird perch — and a later tolerance share would hand all of that to whatever model next
   // asked for a bright green.
-  const OAKLITE = [DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
-  for (const i of OAKLITE) palOwn.add(i);
+  // UN-RETIRED 2026-09-03 with its biome; minted at the FOOT of this file, for the reason OAKMOSS gives above.
   const BLOSCHERRY = addCol(132, 12, 12);
   palOwn.add(BLOSCHERRY);   // reserved: the scatter is keyed on this id, so a tolerance reuse handing it to a model would sprinkle that model through every crown   // reserved HERE and not up with SHRUBF's: this const is declared 100 lines below that one, and reading it there is the const-before-declaration black screen (a bare `for` in a module body is not hoisted past a TDZ)
   // ── SMALL ROCK (rock.vox) — right-click to pick up ── THREE NEUTRAL greys, matching what the model is
@@ -573,7 +602,17 @@
   // These sit above DECOR_MIN, so the blanket `i < DECOR_MIN` solidity sweep below cannot reach them and a
   // berry never gets a hitbox; material-tabs.js then says what they positively ARE. __vbOak.ids() (world/gen-pool.js)
   // prints all three with every material table's verdict, and __vb.palAudit() over/snaps must both still read 0.
-  const FRUITC = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.                      // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh (0 and 2 are tools/voxelize_fruit.py's own means — keep them in step with fruit.json's `pal`)
+  // ── UN-RETIRED 2026-09-03 (user: "I see apples and cherries as magenta, check the oranges too") ── the
+  // 2026-08-31 reclaim gave these three away with the oak forest, and the oak forest came back on
+  // 2026-09-03 without them, so every apple, orange, cherry and blueberry in the game has been
+  // rendering DEADC magenta. Measured before the fix: 538 magenta voxels in one 221x221 window of the
+  // oak band, all 4-14 voxels above ground, which is bush-berry and low-canopy fruit height. The pine
+  // and birch bands scanned 0 and 0 — this ramp is the ONLY retired one with a live reader again, the
+  // other eight all belong to biomes (desert, cherry, arctic) that are still wiped.
+  // Original values restored exactly, not re-picked: [0] and [2] are tools/voxelize_fruit.py's own
+  // voxel-weighted means and have to stay in step with fruit.json, so re-choosing them by eye would
+  // put the flesh colour out of step with the model it was derived from.
+  const FRUITC = [addCol(209, 75, 70), addCol(86, 110, 192), addCol(244, 152, 61)];   // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh
   // ── THE BEEHIVE, IN TWO SHADES OF ONE HONEY YELLOW (user 2026-08-17: "implement the beehive.vox on some of
   // the oak trees") ── beehive.vox paints 54 voxels in an EIGHT-step ramp that never leaves one hue: red is 255
   // on every step and the whole ramp moves 12/255 in green and 52 in blue. Two ids is not a sacrifice of that,
@@ -604,6 +643,33 @@
   // palShare, which is exactly the arrangement the oaks' own leaf ids use.
   for (const i of FRUITC) palOwn.add(i);
   for (const i of HIVEC) palOwn.add(i);
+  // ══ THE OAK FOREST'S OWN TWO RAMPS (user 2026-09-03: "add in the oak forest ... make sure to use the
+  // correct colors") ══ both were RECLAIMED to DEADC on 2026-08-31 when the biome went, and both come back at
+  // their original values, byte for byte, rather than being re-picked: OAKMOSS was measured against the oak
+  // canopy it has to match and OAKLITE against the lily greens it has to avoid, and neither measurement has
+  // changed. The notes that justify each colour are still up at their old declaration sites.
+  // MINTED HERE, AT THE TAIL, for the reason BIRCHGRASS gives: addCol appends, so minting five lines earlier
+  // would renumber every id below and repaint every decoration in the game.
+  //
+  // ── THE BUDGET, AND WHY THE TOP MOSS STEP IS BORROWED ── the table stood at 252/256 before this block, so
+  // there are FOUR ids to spend and the two ramps want five. The saving is taken where it costs nothing that
+  // can be seen: OAKMOSS's brightest step is (134,167,89) and BIRCHSTRAND's is (133,166,89) — ONE part in 255
+  // on two channels — and the two are already the same MATERIAL, surface scatter on floatTab, which is the
+  // test that actually matters here. (It is the reason OAKMOSS cannot simply borrow OAKLEAF's ids instead,
+  // though the colours there are exact: leaves are foliaTab — see-through, snow-catching, DRAPE support — and
+  // moss on a boulder you can see through is not moss.) So the top step IS BIRCHSTRAND[2] and only the two
+  // lower shades mint. Net 4, table exactly full at 256/256, 0 overflow.
+  // WHAT THE SHARE HANDS THE BIRCH, STATED PLAINLY: id 71 now also carries stepGrassTab and mossTab, because
+  // assets/material-tabs.js and sim/support-rules.js list OAKMOSS in both. Neither is a regression and both
+  // are arguably corrections — GRASS's strand ids are deliberately in stepGrassTab already ("walking through
+  // those is walking on grass by any reading of it") and deliberately in mossTab already (a strand rides the
+  // chunk when the soil under it is taken). One of the birch's four strand shades simply stops being the
+  // exception. The other two are left alone rather than added, because that would be a second change hiding
+  // inside this one.
+  const OAKMOSS = [addCol(105, 143, 51), addCol(107, 141, 77), BIRCHSTRAND[2]];
+  for (const i of OAKMOSS) palOwn.add(i);   // reserved: mossCap keys on these, and a tolerance reuse would scatter somebody else's model over the boulders
+  const OAKLITE = [addCol(160, 192, 100), addCol(186, 216, 124)];   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
+  for (const i of OAKLITE) palOwn.add(i);   // reserved for the reason OAKLEAF is: material-tabs.js is about to call these CANOPY, and a later tolerance share would hand that to any bright green
   const solidTab = new Uint8Array(256);                // per-id collision: terrain/trunks/logs solid; decor + FOLIAGE walk-through
   for (let i = 1; i < DECOR_MIN; i++) solidTab[i] = 1;
   for (const f of foliageIds) solidTab[f] = 0;

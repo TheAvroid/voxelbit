@@ -50,7 +50,16 @@
     // instead. NOT dithered against the mask — an exposed face has to be ONE material or the seam just
     // becomes a speckled seam, which is the note the arctic arm already makes.
     const bSoil = bm > 0.5;
-    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : bSoil ? BIRCHMOSS[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
+    // ── AND THE OAK FOREST HAS NO SOIL EITHER (user 2026-09-03: "set it up exactly like the birch forest") ──
+    // the third band takes the same fix for the third time, and it takes it in ITS OWN floor colour: the oak
+    // surface arm below lays MOSS, so the band under it is MOSS, and a cliff or a dug hole shows one material
+    // from the turf to the rock. Undithered like the two above it, for the reason they give.
+    // AND THIS ONE CANNOT PUT A HOLE IN THE FLOOR, which is worth stating because the birch's did. That bug
+    // was BIRCHGRASS being minted past DECOR_MIN and so missing the blanket solidTab sweep, turning a
+    // 17-voxel band into something the player fell through. MOSS is ids 5-8 — far BELOW DECOR_MIN, solid
+    // since the day it was minted, and already in digOnlyTab and decorTab. There is no tab to add.
+    const oSoil = om > 0.5;
+    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : bSoil ? BIRCHMOSS[(ihash(wx, y * 131 + wz) * 4) | 0] : oSoil ? MOSS[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
       const shore = h <= WL + 6;                       // the band sand may occupy AT ALL — solid to WL+4, then two levels of soft edge above it
@@ -1349,7 +1358,15 @@
     // size, rot's to its facing, and the fruit roll's would make every light oak an apple tree. Keyed on the
     // CELL like every other per-tree draw, so a tree keeps its shade across regeneration and across the
     // worker/main-thread split.
-    const lite = !blos && OAKLITEV.length > 0 && ihash(cx * 97 + 13, cz * 101 + 59) < 0.3746;   // 0.5 -> 0.25 -> 0.3746 (user 2026-08-19): a quarter of ALL oaks wear the LIGHT ramp (assets/bow.js OAKLITER), which over a population that is 33.262% blossom is 0.25 / (1 - 0.33262) of the GREEN ones — see the arithmetic above. Not a taste value: change the blossom share and this must be divided again
+    // ── 0.3746 -> 0.25 (2026-09-03) ── and this is the re-division the note above DEMANDS rather than a
+    // nudge: "Re-cut the bands and this constant is wrong: re-measure and re-divide it, do not nudge it."
+    // The whole compensation is p = 0.25 / (1 - blossomShare), and blossomShare is now exactly ZERO —
+    // cherryM was wiped to `return 0` on 2026-09-01 and the oak forest came back on 2026-09-03 without it,
+    // so `blos` is false at every candidate and the roll can no longer be diluted by a band it has to
+    // share the population with. p = 0.25 / 1 = 0.25. Left at 0.3746 the light variety would have been
+    // 37.5% of every oak in the world against the 25% that was asked for — the compensation still running
+    // with nothing left to compensate for.
+    const lite = !blos && OAKLITEV.length > 0 && ihash(cx * 97 + 13, cz * 101 + 59) < 0.25;   // 0.5 -> 0.25 -> 0.3746 (user 2026-08-19): a quarter of ALL oaks wear the LIGHT ramp (assets/bow.js OAKLITER), which over a population that is 33.262% blossom is 0.25 / (1 - 0.33262) of the GREEN ones — see the arithmetic above. Not a taste value: change the blossom share and this must be divided again
     const t = { wx, wz, k: Math.min(OAKV.length - 1, k2), blos, wht, lite, rot: (ihash(cx + 137, cz + 89) * 3.99) | 0,
                 sink: 1 + ((ihash(cx * 19, cz * 23) * 3) | 0) };   // sink 1-3, and it means something DIFFERENT here than it does for a pine: stampOak writes in mode 1, so every course below the local ground is refused rather than punched into the hill. The sink only decides how many base courses are hidden.
     // ── FRUIT (user 2026-08-17: "pick trees at random and place apples and oranges in the trees ... make 10% of

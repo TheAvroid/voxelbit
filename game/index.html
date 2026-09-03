@@ -798,9 +798,27 @@
   let SAFE = 0;
   try { SAFE = Math.max(0, Math.min(3, +localStorage.getItem('vb_safe') | 0)); } catch (e) {}
   if (SAFE >= 2) lim = Math.min(lim, SAFE >= 3 ? 402653184 : 905969664);   // 1024 and 1536 windows — the rungs of the WXZ ladder below, named as the byte caps it tests
-  const WYpick = lim >= SIZE384 ? 384 : (lim >= SIZE256 ? 256 : 192);
+  let WYpick = lim >= SIZE384 ? 384 : (lim >= SIZE256 ? 256 : 192);
   let WXZ = 768;                                       // widest window the adapter can bind: 2048 (1.5 GB) → a TRUE 100 m view radius
   if (WYpick === 384) for (const c of [2048, 1536, 1280, 1024]) if (lim >= c * c * 384) { WXZ = c; break; }
+  // ══ AND THEN THE CEILING GOES UP, BUT ONLY WITH WHATEVER IS LEFT OVER (user 2026-09-03: the pine tips are
+  // cut off) ══ the nine pines were re-baked from 151-152 voxels to 225-228, and the TREE RESERVE that pins
+  // HMAX (world/window.js) was sized for the old ones: a trunk standing above WY - 228 has its crown written
+  // straight past the top of the world array and comes out flat. Measured before this: 20.4% of pine columns
+  // clipped, worst case 32 voxels off the tip.
+  // WHY THE ORDER MATTERS, AND WHY THIS LOOP IS AFTER THE WXZ ONE. The obvious fix is a 512 rung in WYpick
+  // above, and it is a trap: WYpick is chosen FIRST, so a taller world makes every rung of the WXZ ladder
+  // harder and the window silently falls 2048 -> 1536. That is the view radius, 200 m -> 150 m, paid to fix
+  // a treetop. Choosing WXZ first and spending only the REMAINDER on height means the window can never
+  // regress -- a machine that cannot afford a taller world simply keeps the one it has.
+  // WHY 480 AND NOT 512, WHICH IS THE NUMBER ANYONE WOULD REACH FOR: 2048*2048*512 is 2,147,483,648 bytes and
+  // maxStorageBufferBindingSize on the measured adapter is 2,147,483,644. It misses by FOUR BYTES, and the
+  // 2 GB cap is a common WebGPU ceiling rather than one machine's quirk. 480 fits at 1920 MB with headroom.
+  // WHAT IT BUYS: at WY 480 the reserve can be the 234 the new pines need AND HMAX still lands at 246, so the
+  // hills go 118 -> 138 voxels above water. This is not a trade against terrain height, it is more of both.
+  // The rungs step by 32 (a multiple of the 8-voxel brick) so a machine that cannot carry 480 can still take
+  // 448 or 416 and clip less rather than nothing.
+  if (WYpick === 384) for (const y of [480, 448, 416]) if (lim >= WXZ * WXZ * y) { WYpick = y; break; }
   // ── HOW MUCH WIDER THE GPU WINDOW IS THAN THE CPU ONE ── the full argument is at TWO WINDOWS in
   // world/window.js. Chosen HERE because it is an adapter question, alongside WXZ and WYpick, and because
   // world/window.js sizes its arrays off it and runs after this fragment.
@@ -815,7 +833,12 @@
   // its own reasons and must not then be handed four times the memory for a longer view it cannot afford.
   // A LADDER, NOT A CONSTANT: capable machines get 200 m, everything else keeps the 100 m it has today, the
   // same way WXZ already walks 2048/1536/1280/1024/768. ?gmul=1 forces it off, ?gmul=2 forces it on.
-  const GPOOL2 = Math.ceil((WXZ * 2 >> 3) * (WYpick >> 3) * (WXZ * 2 >> 3) * 0.17) * 512;   // the GMUL-2 pool, in bytes - must match POOL_FRAC_RING in render/buffers.js
+  // ── 0.17 * 512 -> 0.30 * 272 (2026-09-03) ── a page is a 16-entry palette and 512 four-bit indices now,
+  // so the same bytes hold 1.76x the bricks; see the PAGE FORMAT note in render/buffers.js. Both numbers
+  // move together and BOTH must match it — the fraction AND the stride — or this asks the adapter for a
+  // binding of the wrong size and the pool silently allocates short.
+  const GPOOL2S = Math.ceil((WXZ * 2 >> 3) * (WYpick >> 3) * (WXZ * 2 >> 3) * 0.30);
+  const GPOOL2 = GPOOL2S * 272 + Math.ceil(GPOOL2S * 0.025) * 512;   // the GMUL-2 pool, in bytes - must match POOL_FRAC_RING + PAGE_B + DENSE_PAGES in render/buffers.js
   // ── AND IT IS BACK ON, ADAPTER-GATED (2026-08-30) ── the far ring was switched off earlier the same day
   // because it collapsed under movement. Three bugs, all now fixed and re-measured under sustained flight:
   // the ring re-fetched every tile the near window had covered instead of ADOPTING its still-valid pages;
@@ -824,7 +847,16 @@
   // made the resulting stale sealed-page slab bright pink.
   // Measured after: the filled radius HOLDS at 1920 through sprint-speed flight (it used to fall to ~1050 and
   // oscillate), zero overflow, and the far terrain renders real ground all the way out.
-  let GMUL_PICK = (WXZ === 2048 && WYpick === 384 && lim >= GPOOL2 * 1.15) ? 2 : 1;
+  // ── `WYpick === 384` -> `>= 384` (2026-09-03) ── that clause was shorthand for "this machine is carrying
+  // the full window", written when 384 was the only tall rung there was. The moment the ceiling could go to
+  // 480 it started meaning the opposite: a machine that had MORE memory, not less, failed the test and had
+  // its far ring switched off — GMUL fell 2 -> 1 and the view distance halved as a side effect of a fix that
+  // was specifically trying to protect it. The real test is the one standing next to it, `lim >= GPOOL2*1.15`,
+  // and it needs no help: GPOOL2 is sized off `WYpick >> 3`, so a taller world already asks for a
+  // proportionally bigger ring pool (1281 MB at 480 against 1026 at 384) and a device that cannot bind it
+  // still steps down on its own. WXZ === 2048 stays — a machine that fell down the WIDTH ladder has its own
+  // reasons, and that is the case the original note is really about.
+  let GMUL_PICK = (WXZ === 2048 && WYpick >= 384 && lim >= GPOOL2 * 1.15) ? 2 : 1;
   if (SAFE >= 1) GMUL_PICK = 1;                        // BEFORE the ?gmul override, so an explicit flag still wins for testing on a safe-moded profile
   { const m = /[?&]gmul=(\d+)/.exec(location.search); if (m) GMUL_PICK = Math.max(1, Math.min(2, +m[1] | 0)); }
   if (GMUL_PICK > 1) console.log('[vb] view distance x' + GMUL_PICK + ' - far ring pool', (GPOOL2 / 1048576) | 0, 'MB of', (lim / 1048576) | 0, 'MB bindable');
@@ -866,7 +898,8 @@
   // at 1.04 GB - half a gigabyte of limit nothing was ever going to use, on the machines least able to spare it.
   // GPOOL1 mirrors POOL_FRAC in render/buffers.js exactly as GPOOL2 above mirrors POOL_FRAC_RING, and for the
   // same reason: the pool has to be SIZED before the fragment that sizes it runs. Both are noted there too.
-  const GPOOL1 = Math.ceil((WXZ >> 3) * (WYpick >> 3) * (WXZ >> 3) * 0.25) * 512;
+  const GPOOL1S = Math.ceil((WXZ >> 3) * (WYpick >> 3) * (WXZ >> 3) * 0.44);
+  const GPOOL1 = GPOOL1S * 272 + Math.ceil(GPOOL1S * 0.025) * 512;   // mirrors POOL_FRAC + PAGE_B, as GPOOL2 does
   const BIGBUF = Math.max(GMUL_PICK > 1 ? GPOOL2 : GPOOL1, 268435456);   // 256 MB floor: the default maxBufferSize, so this never asks for LESS than a device already gives
   const device = await adapter.requestDevice({
     requiredLimits: { maxStorageBufferBindingSize: BIGBUF, maxBufferSize: BIGBUF },
@@ -1165,7 +1198,18 @@
   // The three things this drives are the flake CULL in the shader (a flake is a GPU lattice voxel, so the CPU
   // cannot reach it), the ACCUMULATION gate in tick-snow, and the FREEZE gate in tick-body - because a lake
   // skinning over with ice in a biome where no snow is falling is the same wrongness as rain freezing one.
-  const OAK_SNOW = false;
+  // ── false -> true (user 2026-09-03: "set it up exactly like the birch forest") ── the row this now sits on
+  // is the table's second: "snow, exactly like the pine forest and the desert rim", which is also exactly
+  // what the BIRCH band gets (render/wgsl/trace.js: "THE BIRCH FOREST TAKES SNOW", 2026-08-24).
+  // THE 2026-08-17 REQUEST THIS REVERSES was "turn off the snow in the oak forest", and it is worth being
+  // clear that it is being reversed rather than quietly re-read. It was made when the oak was the world's
+  // one broadleaf band with a whole pine strip either side of it, so the dry band sat far from anything to
+  // compare it against. The three bands are CONTIGUOUS now and the oak's neighbours both snow, with only a
+  // ~500-voxel strait between them: at false/false a storm would stop dead on the water line, the oak side
+  // staying clear and unblanketed while flakes fall on both shores of the same lake. That reads as a broken
+  // cull rather than as a climate. One line back to false if the dry band is wanted again — nothing else
+  // in the rain/snow work was touched, and the four-state table above is still exhaustive.
+  const OAK_SNOW = true;
   // ── EVERY WATER TERM ON ITS OWN SWITCH (user 2026-08-30: "give me every single water setting to toggle
   // off and on") ── the first six live in u.lgt.x bits 18-23 and are the group the panel has always carried;
   // the last four are NEW and live in u.lgt.z (LG2), because lgt.x is FULL at 24 bits (an f32 is exact only
@@ -1281,7 +1325,23 @@
     const c01 = h3(ix, iy, iz + 1) * (1 - fx) + h3(ix + 1, iy, iz + 1) * fx, c11 = h3(ix, iy + 1, iz + 1) * (1 - fx) + h3(ix + 1, iy + 1, iz + 1) * fx;
     return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
   };
-  const HMAX = Math.min(176 + LIFT, WY - 158);         // terrain ceiling — 105 -> 176 so the first term stops binding at the lower LIFT and the TREE RESERVE is what sets the top, which is the point of it
+  // ── 158 -> 234, AND ONLY WHERE THE CEILING WENT UP (user 2026-09-03: the pine tips are cut off) ── the
+  // reserve is the tallest TREE plus a little, and the note below still states the rule exactly; what changed
+  // is the trees. The nine pines were re-baked 151-152 -> 225-228 voxels and this number was left behind, so
+  // a pine standing above WY - 228 had its crown written past the top of the world and came out flat-topped.
+  // That is the failure the note below predicts in as many words, and it is what shipped: measured at 20.4%
+  // of pine columns clipped, worst case 32 voxels off the tip.
+  // CONDITIONAL, BECAUSE THE RESERVE IS NOT FREE ON A WORLD THAT DID NOT GROW. At WY 480 (see core/gpu.js)
+  // 234 costs nothing at all -- HMAX comes out 246 against today's 226, so the hills GAIN 20 voxels while the
+  // pines stop being cut. At WY 384 the same 234 would drive HMAX to 150 and take the range above water from
+  // 118 down to 42, which is a flatter world traded for a treetop -- a much worse deal than the clipping it
+  // fixes. So a machine that could not afford the taller world keeps exactly the world it has today, clipped
+  // tips included; the only real fix for THAT tier is a shorter pine bake, and it is deliberately not hidden
+  // behind this line.
+  // 448 IS THE THRESHOLD, not 480: 448 - 234 = 214 still clears the 108 waterline by 106, so the two lower
+  // rungs core/gpu.js can pick are worth taking too.
+  const TREE_RESERVE = WY >= 448 ? 234 : 158;          // the nine pines are 225-228 (assets/palette.js MSZ); 158 was their old 151-152
+  const HMAX = Math.min(176 + LIFT, WY - TREE_RESERVE);         // terrain ceiling — 105 -> 176 so the first term stops binding at the lower LIFT and the TREE RESERVE is what sets the top, which is the point of it
   // ── TERRAIN HEIGHT AND TREE HEIGHT SPEND ONE BUDGET ── the second term is the TREE RESERVE, not an
   // arbitrary margin: a trunk standing on HMAX must still fit under WY or its crown is cut off flat. It
   // read WY - 122 for pine5.vox's own 116 voxels plus a little; the nine pines are 151-152, so the reserve
@@ -1451,7 +1511,37 @@
     // way the mask measures it and the two can never drift apart. A cosine bump rather than a smoothstep
     // pair: it is flat-topped in the middle (open water, not a V) and its tails reach zero with zero slope,
     // so neither shore gets a crease where the pull stops.
-    const sd0 = Math.abs(Math.abs(pwrap(x - (SPWX + BIRCHC + desWob(z) - desWob(SPWZ)))) - BIRCHH);
+    // ── AND THE OAK FOREST GETS ROUNDED HILLS, WHICH IS A DIFFERENT FIELD RATHER THAN A SCALED ONE (user
+    // 2026-09-03: "make sure to use rounded hills") ── the birch above is the pine field with its relief
+    // halved, so it keeps the pine's SHAPE: the same massif ridges and the same sharp shoulders, lower. The
+    // oak forest never wanted that. Its landform is oakH — two octaves at a ~420-voxel wavelength, double
+    // smoothstepped — and the double sstep is the whole point: it flattens both ends of the curve, so the
+    // field spends its time on hilltops and in valley floors and crosses between them on a long even grade
+    // instead of the pine's cusped ridgelines. That is what "rounded" measured as when this shipped the
+    // first time: 2.1x lower mean curvature than the field beside it.
+    // A REPLACEMENT, NOT A BLEND OF SHAPES, and lerped on the mask only across OAKB's 450-voxel rim so the
+    // two forests meet on a slope rather than a step — the same shape the birch arm above uses, and the
+    // same one the old oakRoll used before the terrain was rebuilt under it.
+    // IT LANDS AT THE BIRCH'S OWN SCALE WITHOUT BEING TOLD TO, which is what makes the two bands read as
+    // siblings: OAKY is 20 + LIFT, exactly PINE_FLOOR, and OAKHILL is 78, so the oak crests 74 above the
+    // waterline against the birch's 71 and the pine's ~152. "Exactly like the birch forest" and "rounded
+    // hills" turn out to be the same height and a different curve, which is the only reason both fit.
+    // BEFORE THE STRAIT, deliberately: the trough below is a min(), so it cuts through oakH exactly as it
+    // cuts through the pine field. Putting the replacement after it would fill the channel back in.
+    const om = oakM(x, z);
+    if (om > 0) { const oh = oakH(x, z); h = om >= 1 ? oh : h * (1 - om) + oh * om; }
+    // ── AND IT IS THE NEAREST BAND EDGE OF EITHER FOREST (user 2026-09-03: "make sure to put it across the
+    // river divide") ── with three bands there are three boundaries per period, not two, and the oak owns
+    // one that the birch's argument cannot see: the pine|oak line at +1800. min() over the two masks' own
+    // edge distances puts exactly one trough on each.
+    // IT CANNOT DOUBLE THE SHARED ONE. The oak|birch boundary is a single line reached from both sides
+    // (+6840 from the oak, -8280 from the birch, and they differ by exactly BIOP), so both terms are ZERO
+    // there and min() of two zeros is one zero — the trough below is computed once, from one sd, whatever
+    // number of edges produced it. This is the reason oakM was moved onto desWob: on independent meanders
+    // the two would be zero at slightly different x and the min would carve a channel half again as wide.
+    const sdB = Math.abs(Math.abs(pwrap(x - (SPWX + BIRCHC + desWob(z) - desWob(SPWZ)))) - BIRCHH);
+    const sdO = Math.abs(Math.abs(pwrap(x - (SPWX + OAKC + desWob(z) - desWob(SPWZ)))) - OAKH);
+    const sd0 = Math.min(sdB, sdO);
     const sd = sd0 + (fbm(x * 0.0021 + 148.3, z * 0.0021 + 96.7) - 0.5) * BIRCH_GAPWOB;   // …the wobble, on a ~480-voxel wavelength: long enough to read as a bay rather than as roughness, and it moves the WHOLE profile together so the bed stays as smooth as the rest of the world's
     const gm = sd <= 0 ? 1 : (sd < BIRCH_GAPW ? 0.5 * (1 + Math.cos(Math.PI * sd / BIRCH_GAPW)) : 0);   // sd <= 0 is the centre line, which the wobble can push past — without that arm those columns lose the trough and a bar of dry land appears down the middle of the strait
     if (sd < BIRCH_BANKW) { const bk = BIRCH_BANKK * 0.5 * (1 + Math.cos(Math.PI * Math.max(sd, 0) / BIRCH_BANKW));
@@ -1789,7 +1879,18 @@
   // SPYAW is UNCHANGED at +pi/2 (east): the player now looks down 1080 of pine to the oak line rather than
   // standing on it, so the note above SPYAW that says "at the blossom with the pine treeline at your back"
   // describes the arrangement this slide replaced.
-  const OAKOFF = -1080, OAKB = 450, OAKW = 540;         // where the oak/pine line sits (the line is at -OAKOFF, so a NEGATIVE value puts it EAST of spawn — 1080 east, since the 2026-08-21 pine slide above); blend width; the INDEPENDENT half of the meander. 1220 -> 2300 = the blossom's east midpoint (spawn+140) plus one full strip W, so the PURE oak between the pink and the pines is 2160 like everything else. Spawn is still 2300 WEST of this line, so oakM(SPWX,SPWZ) is still exactly 1 and "spawn is in the oak forest by construction" still holds — the cherry band simply sits inside it
+  // ── THREE EQUAL BANDS (user 2026-09-03: "add in the oak forest ... set it up exactly like the birch
+  // forest") ── OAKOFF/OAKWOFF are the band's two boundaries as signed distances from spawn, and both
+  // move so the period divides into THREE equal shares instead of two. BIOP is 15120, so each band is
+  // BIOP/3 = 5040 wide and each half-width is BIOP/6 = 2520 — the same arithmetic 2026-09-02 used to make
+  // birch and pine equal (BIRCHH = BIOP/4 for two bands), extended by one band. Solved from the pair the
+  // derivation below already wants:  OAKOFF - OAKWOFF = 5040  and  (OAKOFF + OAKWOFF)/2 = -4320,  which
+  // puts OAKC at +4320 and the band at [1800, 6840] east of spawn. Walking EAST out of spawn the cycle is
+  // pine -> oak -> birch and then pine again, with 5040 of each and open water on every boundary.
+  // SPAWN STAYS IN PINE BY CONSTRUCTION, which is the invariant every clearing in world/terrain.js rests
+  // on: pine now runs [-3240, 1800] and the player stands at SPOX = -2160, so they are 1080 inside the
+  // pine's west end and 3960 from the oak's edge — the same 1080 margin the birch line has always had.
+  const OAKOFF = -1800, OAKB = 450, OAKW = 540;         // where the oak/pine line sits (the line is at -OAKOFF, so a NEGATIVE value puts it EAST of spawn — 1080 east, since the 2026-08-21 pine slide above); blend width; the INDEPENDENT half of the meander. 1220 -> 2300 = the blossom's east midpoint (spawn+140) plus one full strip W, so the PURE oak between the pink and the pines is 2160 like everything else. Spawn is still 2300 WEST of this line, so oakM(SPWX,SPWZ) is still exactly 1 and "spawn is in the oak forest by construction" still holds — the cherry band simply sits inside it
   const oakWob = (z) => desWob(z) * 0.6 + (vnoise(z * WOB_OAK + 143.7, 61.3) - 0.5) * OAKW;
   // ── THE WEST EDGE, AND WHY IT SITS WHERE IT DOES ── it is the OTHER oak strip, and as of 2026-08-19 it is
   // set the same way the east one is: the blossom's west midpoint (spawn - 2020) less one full strip W, i.e.
@@ -1821,7 +1922,7 @@
   // (Those three numbers are pre-2026-08-21: the 340 slide above makes them centre +1880, blossom 1880..4040, and
   // spawn 280 from the pine line. The RELATION each states — outer strip, equal halves — is what the slide preserves,
   // and it preserves it exactly, because all four offsets moved together.)
-  const OAKWOFF = -5400;                               // the WEST boundary, as a signed distance from spawn: the blossom's west midpoint less one strip W, carried 1360 east with everything else by the pine slide (was -4040). OAKC/OAKH are derived from this and OAKOFF, and OAKFAR/OAKNEAR/OAKWFAR/OAKWNEAR from those, so the whole oak geometry follows these two numbers and nothing else has to move
+  const OAKWOFF = -6840;                               // the WEST boundary, as a signed distance from spawn: the blossom's west midpoint less one strip W, carried 1360 east with everything else by the pine slide (was -4040). OAKC/OAKH are derived from this and OAKOFF, and OAKFAR/OAKNEAR/OAKWFAR/OAKWNEAR from those, so the whole oak geometry follows these two numbers and nothing else has to move
   // ── THE BANDS ARE MIRRORED ABOUT SPAWN (user 2026-08-20: "can you flip the map? I want to be running into
   // the sun while running in the direction of the cherry forest. I want the sun to stay east though") ──
   // the SUN is untouched: tick-camera derives it from tday alone, and at dawn (tday 0.25) its vector is
@@ -1835,8 +1936,21 @@
   // strip changes size and spawn keeps its position inside the oak — only which way round the world runs.
   const BAND_MIRROR = -1;                              // +1 restores the original arrangement (blossom west, pines east)
   const OAKC = BAND_MIRROR * ((OAKWOFF + OAKOFF) / 2), OAKH = (OAKOFF - OAKWOFF) / 2;   // -940 and 3240: centre + half-width. OAKC ± OAKH reproduce OAKWOFF and OAKOFF exactly, and OAKC is now EXACTLY the blossom's own centre (SPWX - CHOFF) — that equality IS "the two oak strips are the same width"
-  const oakM = (x, z) => { return 0;   /* WIPED 2026-09-01 (user: "the only thing that should exist is the pine forest biome") — identically zero, so every branch this gated is dead. Kept as a stub, not deleted: terrain.js, both worker registries and debug-api.js all still name it. */                             // 1 = deep oak forest, 0 = pine forest either side of it — a BAND now, not a half-plane, so the forest ends in both directions and the cycle can close
-    const c = SPWX + OAKC + oakWob(z) - oakWob(SPWZ);   // pinned at the spawn's own z, for the reason desertM pins its own: otherwise how far the player starts from the border is a per-session lottery
+  // ══ THE OAK FOREST IS BACK (user 2026-09-03: "add in the oak forest. set it up exactly like the birch
+  // forest, except, instead of birch trees, add oak trees") ══ un-wiped, and the band is the one it always
+  // had — OAKC/OAKH on OAKB's rim — only rescaled to a third of the period by OAKOFF/OAKWOFF above.
+  // ── AND IT MEANDERS ON desWob, NOT oakWob (changed here) ── the mask used to carry its own independent
+  // OAKW octave so the oak and desert borders would stay "broadly parallel" while a whole pine strip lay
+  // between them. With three CONTIGUOUS bands that is no longer good enough: the oak's east edge and the
+  // birch's west edge are THE SAME LINE (1800 + 5040 = 6840, and 6840 - BIOP = -8280 is birch's west edge),
+  // so if the two masks meandered on different noise the shared boundary would be in two places at once —
+  // a sliver of pine opening and closing along it, and the strait below cutting two troughs instead of one.
+  // Sharing desWob makes every band edge in the world the same curve translated, so the bands are exactly
+  // 5040 wide everywhere and the shared edge is provably a single line. oakWob survives for OAKWMAX, whose
+  // value is unchanged: DESW*0.675*0.6 + OAKW*0.5 = 675 is also exactly |desWob|'s own ceiling, DESW*0.675,
+  // so every cheap-out bound derived from it (OAKFAR/OAKNEAR/OAKWFAR/OAKWNEAR) stays true as written.
+  const oakM = (x, z) => {                             // 1 = deep oak forest, 0 = pine forest either side of it — a BAND now, not a half-plane, so the forest ends in both directions and the cycle can close
+    const c = SPWX + OAKC + desWob(z) - desWob(SPWZ);   // pinned at the spawn's own z, for the reason desertM pins its own: otherwise how far the player starts from the border is a per-session lottery
     const t = 0.5 + (OAKH - Math.abs(pwrap(x - c))) / OAKB;   // a DISTANCE from the centre line, the same shape cherryM has always had
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
@@ -2006,7 +2120,19 @@
   // 17% step one voxel and 0.01% step two, and NOTHING steps further — against 28% one-voxel steps and an
   // 8-voxel worst case in the untouched pine forest, so the border is smoother than the biome it joins.
   // Relief is BIGGER, not higher: sd 12.5 -> 17.7, which is what "large hills" means when the mean cannot move.
-  const OAKY = 20 + LIFT, OAKHILL = 78;                // the valley floor, and crest-above-floor
+  // ── OAKHILL 78 -> 58 (user 2026-09-03: "set it up exactly like the birch forest") ── the crest is the one
+  // number that decides whether this band reads as the birch's sibling or as a plateau beside it, and 78
+  // was set when the oak had a whole pine strip either side and nothing adjacent to be measured against.
+  // MATCHED ON THE RELIEF ENVELOPE, which is the comparison a player actually makes standing on the shore:
+  // the oak's dry ground now tops out 51 voxels over the waterline against the birch's 57 (p95: 46 against
+  // 41), where at 78 it reached 73 and stood half again as high as the band across the water.
+  // AND IT IS WHAT BOUGHT THE WATER BACK. Lowering the whole field puts more of it under the waterline
+  // without touching how far the deepest point sits below: wet area went 12.0% -> 16.5% against the pine's
+  // 21.4% and the birch's 21.3%, while median lake depth stayed at 12 against their 13 and 11. That parity
+  // is deliberate and is the reason the BOWL is only 10 — depth is the thing this world has been asked
+  // about twice ("make the water have more depth", "birch lakes as deep as the pine's") and a bowl big
+  // enough to close the area gap on its own took the oak to 18 against their 11.
+  const OAKY = 20 + LIFT, OAKHILL = 58;                // the valley floor, and crest-above-floor
   // OAKY sits 4 under WL on purpose, and the number was measured rather than picked. Above WL + 7 the oak
   // forest has no still water in it at all — no lake, no shoreline, nothing for the ducks and the lilies —
   // because the double smoothstep gives it broad FLAT valley floors and they would all be dry. Far below it,
@@ -2037,10 +2163,42 @@
   // Same construction as the two above, mirrored about the band's other boundary.
   const OAKWFAR = OAKC - OAKH - 2 * OAKWMAX - OAKB * 0.5;  // no column west of this can be in the oak forest at all
   const OAKWNEAR = OAKC - OAKH + 2 * OAKWMAX + OAKB * 0.5; // every column east of this (and west of OAKNEAR) is DEEP oak
+  // ── AND THE LOW COUNTRY IS PULLED UNDER THE WATERLINE (user 2026-09-03: "set it up exactly like the birch
+  // forest") ── PINE_BOWL's twin, and the oak field needed one for exactly the reason the pine field does.
+  // WHAT WAS WRONG WITHOUT IT, MEASURED: 3090 columns of deep oak against 3091 of deep birch, same run, same
+  // six z anchors. The oak came out 4.9% WET against the birch's 23.9% — a fifth of the water — with a median
+  // column standing 32 voxels over the waterline against the birch's 9. The DEPTH was already right (median
+  // 11 against 13); it was the AREA that was missing, so the band read as a lakeless upland you reached by
+  // crossing water, which is not what "exactly like the birch forest" describes.
+  // WHY THE FIELD DOES THAT, and why no amount of tuning OAKHILL fixes it: sstep(sstep(w)) is symmetric about
+  // 0.5, so oakH's median sits at OAKY + OAKHILL/2 = 39 over the waterline. The pine field is bottom-heavy
+  // instead — it shapes on k = m*m, whose median is 0.25 — and that bias is most of why the pine floods. The
+  // bowl is the other half of it, and it is the half that can be added without touching the hills at all.
+  // (1 - u)^2 SO IT ONLY REACHES THE VALLEYS: at a hilltop the weight is 0 and the crest is bit-identical to
+  // what it was, which is what keeps "rounded hills" true. It moves the wet threshold from u <= 0.05 to
+  // u <= 0.22 and leaves everything above that alone.
+  // ── AND THE HILLS ARE ROUNDED BY WAVELENGTH, WHICH IS THE ONLY THING THAT MAKES THEM ROUND (user 2026-09-03:
+  // "make sure to use rounded hills") ── these two frequencies were 0.0024 and 0.0057, and they are the reason
+  // the oak forest was ever CALLED the rounded one: against the pine field OF 2026-08-17 it measured 2.1x lower
+  // mean curvature. That claim is now stale and was measured stale — the pine field was REBUILT on 2026-09-01
+  // (pineBase, "One pine forest: the terrain generation rebuilt") on octaves of 0.0018 and 0.0037, which are
+  // LOWER than these, and its elevation was doubled. So the field that used to be the smooth one had quietly
+  // become the cuspiest band in the world: measured over 823 dry oak columns against 736 birch and 742 pine,
+  // mean |d2H| per unit relief came out 13.92 for the oak against 11.02 birch and 11.73 pine at a 60-voxel
+  // baseline, and the oak was worse at every baseline from 20 up. Shipping oakH untouched would have shipped
+  // the OPPOSITE of what was asked for, and nothing but a measurement would have caught it — the band still
+  // LOOKS like gentle country next to a 110-voxel pine ridge, because it is 53 voxels lower.
+  // SET AS A FRACTION OF THE PINE'S OWN OCTAVES, not as free numbers, so the relationship is the thing being
+  // stated and it survives the pine field being retuned again: 0.85x on both, i.e. hills ~18% broader than the
+  // pine's at the same relief. Amplitude is untouched — OAKHILL still says how high, these say how WIDE, and
+  // widening at constant height is exactly what rounding is.
+  const OAKF1 = 0.0018 * 0.85, OAKF2 = 0.0037 * 0.85;   // the two octaves' frequencies — the pine's, stretched
+  const OAK_BOWL = 10;                                 // how far under OAKY the lowest country is pulled — a lake wants a RIM, not a flat pan, which is the same note PINE_BOWL carries
   const oakH = (x, z) => {                             // the oak forest's OWN base height — long wavelength, double-smoothstepped, positive-only like duneH
-    const a = fbm(x * 0.0024 + 91.7, z * 0.0024 + 33.1);
-    const b = fbm(x * 0.0057 + 47.3, z * 0.0057 + 8.9);
-    return OAKY + OAKHILL * sstep(sstep(a * 0.82 + b * 0.18));   // OAKY .. OAKY + OAKHILL, never negative
+    const a = fbm(x * OAKF1 + 91.7, z * OAKF1 + 33.1);
+    const b = fbm(x * OAKF2 + 47.3, z * OAKF2 + 8.9);
+    const u = sstep(sstep(a * 0.82 + b * 0.18));
+    return OAKY + OAKHILL * u - OAK_BOWL * (1 - u) * (1 - u);   // OAKY - OAK_BOWL .. OAKY + OAKHILL
   };
   // ══ THE ARCTIC'S OWN GROUND ══ and it is the BIRCH FOREST'S, exactly (user 2026-08-30: "make the terrain
   // generation match the birch forest"). The birch band wears oakH — see the note under BIRCHOFF — so the
@@ -2113,12 +2271,22 @@
   // time: "the tops of the trees are cut off, but I can walk on the canopy". Everything that reads W - the
   // audits, collision, chopping - says the world is perfect, because it IS; only the renderer disagrees.
   // It was a literal 122 in TWO places and 118 in a third, all meaning "the tallest PINE", written when pines
-  // were the tallest thing there was. The birches are 168. So it is one named constant now, read by
+  // were the tallest thing there was. So it is one named constant now, read by
   // terrain.js rebuildBricks, the worker's copy of it in gen-pool.js (a string - __vb.gtest diffs the two and
   // they must stay identical), and the editor's stage carve.
-  // 192 clears the tallest model with 24 to spare, and it is a COST: those rows are scanned per tile.
+  // ── 192 -> 265 (user 2026-09-03: the pines re-baked from 50 ft to 75 ft) ── the pines are now 228 voxels
+  // and the tallest birch is 241, so 265 clears the tallest model with 24 to spare, which is the margin 192
+  // was chosen on. It is a COST: those rows are scanned per tile, and this adds 9 brick rows to every one.
+  // ── AND IT CHANGES THE BIRCH FOREST, WHICH IS THE POINT ── this constant is not only a render cap: birchAt
+  // refuses any model taller than `avail = min(CANOPY, WY - 2 - H)` (terrain.js), so at 192 ELEVEN of the
+  // sixteen baked birches - every one from 214 up - could never be planted and the forest was quietly built
+  // from the five short models alone, 144 to 166. Nothing reported this, because a refusal to plant looks
+  // exactly like a cell that rolled no tree. Raising the cap admits the other eleven for the first time, so
+  // the birch forest gains trees up to 241 (79 ft). Kept deliberately (user 2026-09-03, asked): they are
+  // scaled to the real height in each source filename x 0.91, so they are the life-sized set the bake meant.
+  // The birch's OWN ceiling is now WY, not this - which is what the fits-under-the-sky prefix walk is for.
   // RAISE IT BEFORE BAKING ANYTHING TALLER.
-  const CANOPY = 192;
+  const CANOPY = 265;
   // ══ THE ARCTIC (user 2026-08-29) ══ a seventh strip, BETWEEN the spawn pine and the birch forest.
   // Placed on the WEST side of the spawn pine rather than the east for one reason: spawn sits in that pine
   // strip, and every spawn guarantee in this file (the view down the strip, the distance to the treeline,
@@ -2216,7 +2384,12 @@
   // how often you cross a biome is unchanged — only the share of land each one takes.
   // BIRCHOFF still means what it says. BIRCHC is BIRCHOFF + BIRCHH, so the band's INNER edge stays pinned at
   // 3240 east of spawn however wide the band grows, and the spawn stays in pine by construction.
-  const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = BIOP / 4;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
+  // ── BIOP/4 -> BIOP/6 (user 2026-09-03: the oak forest joins pine and birch) ── the 2026-09-02 note below
+  // is still exactly right about WHY this is a fraction of the period rather than a measured width; only
+  // the divisor changes. Two bands wanted half the period each (BIOP/4 as a half-width), three want a
+  // third each (BIOP/6 = 2520). BIRCHOFF is untouched, so the birch's inner edge stays pinned 3240 west of
+  // spawn and the band simply stops 5040 short of where it used to instead of running to the oak's line.
+  const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = BIOP / 6;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
   const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
   // ── THE BIRCH FOREST IS BACK (user 2026-09-02: "I want you to pull in the birch forest now. use the exact
   // same terrain generation as the pine forest") ── one band, and it is the ONLY other biome: oak, cherry,
@@ -2314,7 +2487,15 @@
   // The cone is unaffected, and if anything gentler: it now runs from 24 to OAKBANKR instead of from 60,
   // so the same 82-voxel rise is spread over 256 voxels rather than 220.
   const OAKBEACH = 24, OAKBEACHY = WL + 4;             // flat shore width in voxels (2.4 m), and its height
-  const oakBank = (h, x, z) => { return h;   /* WIPED 2026-09-01 — the oak/birch/arctic bands are gone, so this is the identity. Kept in the pass order of all three copies of H so removing it stays a separate, visible change. */                       // ONE shared scalar helper again, for the reason oakRoll is one: three copies of H and no room for drift
+  // ── UN-WIPED WITH THE BAND IT SERVES (user 2026-09-03) ── and it is not optional decoration: oakH lifts
+  // land near water ~42 voxels over WL, and the river/lake lerp turns that into a cliff — a wall of grey
+  // stone along every bank. Oak terrain with pine banks is exactly the combination the note below warns
+  // about, so reviving the rounded hills without reviving this would ship that wall.
+  // THE BIRCH AND ARCTIC ARMS ARE GONE, not stubbed: the birch is the PINE field halved now (see pineBase),
+  // not oakH, so it stands no higher over the water than the pine does and needs no skirt — it never had
+  // one after 2026-09-02 and giving it one here would plane down shores that are already correct. The
+  // arctic is still identically zero. Only the oak band reaches the profile below.
+  const oakBank = (h, x, z) => {                       // ONE shared scalar helper again, for the reason oakRoll is one: three copies of H and no room for drift
     const dx = pwrap(x - SPWX);                        // wrapped, for the reason oakRoll's is
     // THE BIRCH FOREST GETS THE SHALLOW BANKS TOO, because it got the rounded hills that make them necessary:
     // the whole reason this helper exists is that oakH lifts land near water ~42 voxels over WL and the river
@@ -2324,10 +2505,8 @@
     // over WL, and the river lerp turns that into the same cliff — a grey stone wall along the bank, which is
     // what the screenshot shows. It had oak terrain and pine banks, the exact combination this note warns
     // about. Adding it here is one term, and it is the same term the birch needed for the same reason.
-    const bm = (dx < BIRCHFAR && dx > BIRCHWFAR) ? birchM(x, z)
-             : (dx < ARCTFAR && dx > ARCTWFAR) ? arcticM(x, z) : 0;
-    if (bm <= 0 && (dx >= OAKFAR || dx <= OAKWFAR)) return h;   // pine forest and desert - one subtraction and a compare, before the river scan
-    if (h <= OAKBEACHY) return h;                      // …and any ground already at or under the BEACH, in either forest
+    if (dx >= OAKFAR || dx <= OAKWFAR) return h;       // pine forest and birch - one subtraction and a compare, before the river scan
+    if (h <= OAKBEACHY) return h;                      // …and any ground already at or under the BEACH
     const d = bankDist(x, z);
     if (d >= OAKBANKR) return h;                       // no water within the skirt
     // ONE continuous profile from the beach to the hilltop: flat for OAKBEACH, then the same sstep cone to
@@ -2337,8 +2516,6 @@
     const c = OAKBEACHY + (OAKBANKY + OAKBRISE - OAKBEACHY)
               * sstep(Math.max(0, d - OAKBEACH) / (OAKBANKR - OAKBEACH));
     if (c >= h) return h;
-    if (bm > 0) return bm >= 1 ? c : h * (1 - bm) + c * bm;   // the birch band, faded on its own mask for the same reason the oak rim is
-    if (dx >= OAKFAR || dx <= OAKWFAR) return h;       // outside the oak band entirely — only reachable when the birch cheap-out above let us through
     if (dx > OAKNEAR || dx < OAKWNEAR) { const om = oakM(x, z); return om <= 0 ? h : h * (1 - om) + c * om; }   // the rim: faded in on the same mask oakRoll uses, so a river crossing the biome border changes width gradually instead of stepping
     return c;
   };
@@ -2751,7 +2928,7 @@
     // come out of. Anything from world/terrain.js (23) or world/gen-pool.js (25) is still in its temporal dead
     // zone on this line, and reading it would throw INSIDE this try — which swallows it and falls back, the same
     // invisible failure the missing names caused. Check 9 enforces the ordering as well as the completeness.
-    const consts = { DEEP_SPAN, BASIN_RAMP, BASIN_BED, BIRCH_GAPWOB, BIRCH_ELEV, BIRCH_GAPBED, BIRCH_BANKW, BIRCH_BANKY, BIRCH_BANKK, BIRCH_GAPW, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
+    const consts = { OAKF1, OAKF2, OAK_BOWL, DEEP_SPAN, BASIN_RAMP, BASIN_BED, BIRCH_GAPWOB, BIRCH_ELEV, BIRCH_GAPBED, BIRCH_BANKW, BIRCH_BANKY, BIRCH_BANKK, BIRCH_GAPW, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE };   // the BIRCH band: oakRoll/oakBank read its mask and reach, and this worker calls both
     const fns = { deepen, bedH, ihash, sstep, pwrap, vnoise, fbm, pineBase, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctH, oakWob, oakM, oakH, oakRoll, oakBank, duneH, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol };
     let wsrc = '';
     for (const k in consts) wsrc += 'const ' + k + ' = ' + consts[k] + ';\n';
@@ -3017,7 +3194,24 @@
   // ORDER-INDEPENDENT ON PURPOSE: whichever member of a pair is minted first becomes the id and the second
   // resolves to it, so this does not depend on which loader happens to run first — which is exactly the kind
   // of load-order assumption ?palmint exists to chase down.
-  const PAL_MERGE = [[[102, 73, 47], [100, 72, 46]], [[61, 59, 56], [62, 61, 57]]];
+  // ── THREE MORE PAIRS, AND THEY ARE WHAT PAYS FOR THE FRUIT (user 2026-09-03: "audit the game for the
+  // magenta color and restore") ── the table was at 256/256 with 0 free, FRUITC wants three ids, and every
+  // DEADC ramp holds none to give back (a retired ramp points AT DEADC, it does not reserve anything). So
+  // the three come from here, through the mechanism this block already exists to be, chosen the way the
+  // two above were: __vb.palAudit().near['2'] reports exactly three reclaimable pairs and these are them.
+  // The safety argument is the one stated below and it is unchanged — the audit only ever buckets ids that
+  // ALREADY AGREE on every material flag and every pickup set, and skips palOwn outright.
+  //   (31,31,31)/(33,33,33)      two near-blacks
+  //   (246,246,246)/(248,248,248) two near-whites
+  //   (121,89,57)/(123,90,58)     two browns
+  // Each differs by 2 of 255 on every channel, which is below what a player can see and far below the
+  // PAL_TOL 12 the model loaders already collapse within.
+  // NET ZERO, AND IT NEVER TRANSIENTLY OVERFLOWS: FRUITC mints its three inside palette.js (id ~78), and
+  // all three merges land in the MODEL-LOADER range that follows (~99, ~165, ~189), so the table runs at
+  // most +3 over its old count through a stretch where it is only ~190 deep, and is back to net 0 well
+  // before the tail. Final length 256, palOver 0.
+  const PAL_MERGE = [[[102, 73, 47], [100, 72, 46]], [[61, 59, 56], [62, 61, 57]],
+                     [[31, 31, 31], [33, 33, 33]], [[246, 246, 246], [248, 248, 248]], [[121, 89, 57], [123, 90, 58]]];
   const palMergeId = (r, g, b) => {
     if (!palIdx) return -1;
     for (const pair of PAL_MERGE) {
@@ -3127,7 +3321,8 @@
 
   // ══ THE NINE PINES ══════════════════════════════════════════════════════════════════════════
   // game/assets/foilage/pine9/pine_1..9.vox, baked by tools/voxelize_pine9.py out of the nine trees
-  // in EuropeanPine.obj at the engine's 10 cm voxel, each 152 voxels - 50 feet - tall. MagicaVoxel
+  // in EuropeanPine.obj at the engine's 10 cm voxel, each 228 voxels - 75 feet - tall (was 152 / 50 ft;
+  // the nine land at 225..228 because each is scaled on its own source height). MagicaVoxel
   // is Z-up and that is already the game's convention for a model (model z -> world y), so there is
   // no axis work here.
   // ONE SHARED BAKE PALETTE, WHICH IS WHY THERE IS STILL ONE remap: the voxelizer clusters all nine
@@ -3168,7 +3363,16 @@
   // width heuristic and the nav perches were all written when the forest was ONE model and still
   // read MSX/MSY/MSZ/M. They keep working by pointing at the first tree, which is a real pine of the
   // right species and size; only the terrain stamp picks among all nine.
-  const MSX = PINE9[0].sx, MSY = PINE9[0].sy, MSZ = PINE9[0].sz, M = PINE9[0].M;
+  // MSZ IS THE TALLEST OF THE NINE, NOT PINE9[0]'s HEIGHT. The nine do not bake to exactly one number -
+  // each is scaled to TALL_VOX on its OWN height and lands at 225..228 - and MSZ is what stampTree loops to
+  // (world/terrain.js), what a fell shape sizes itself by (`S.hMax || MSZ`, and hMax is never assigned for a
+  // pine, so it is ALWAYS MSZ), and what the floater audit's lid clears. Read as PINE9[0].sz it was the
+  // SHORTEST tree in the stand, so every taller model lost its crown tip: stamped, chopped and audited 3
+  // voxels short, silently. It was 1 voxel at 152 and nobody saw it; the 75 ft re-bake made it 3.
+  // The loop bound going one row past a shorter model's array is safe by construction - the read is
+  // out of bounds, returns undefined, and the `if (!v) continue` that guards every empty voxel skips it.
+  const MSX = PINE9[0].sx, MSY = PINE9[0].sy, M = PINE9[0].M;
+  const MSZ = Math.max.apply(null, PINE9.map((m) => m.sz));
   const remap = new Uint8Array(256);
   const foliageIds = [];                               // needles get NO hitbox — you walk through a canopy
   const woodIds = [];                                  // …and the bark: the axe cuts any of it, tree or stump
@@ -3347,7 +3551,10 @@
   // colour changes. Duplicate colours on separate ids, deliberately, exactly as BROCK repeats ROCK's greys.
   // THREE, NOT FOUR. The darkest oak leaf (82,115,47) is already within 7/255 of a GRASS shade, so it would buy
   // nothing; the three that matter are the ones a canopy actually reads as. The table has 5 free.
-  const OAKMOSS = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
+  // UN-RETIRED 2026-09-03 with its biome. The declaration itself now sits at the FOOT of this file, beside
+  // BIRCHGRASS and for the identical reason: addCol appends, ids are positional in call order, and the decor
+  // .json files store RESOLVED ids — so a ramp minted here would shift every id below it and repaint the
+  // game. Everything the paragraphs above say about it is still true; only where it is minted moved.
   // ── THE BIRCH FOREST FLOOR (user: "make the terrain a light green ... as well as the moss on top of the
   // rocks") ── a four-step GROUND ramp in the oak canopy's greens, and it costs ZERO ids because every one of
   // them already exists. It CLIMBS OFF the ramp beside it, the same trick the light oak variety uses: the
@@ -3364,7 +3571,7 @@
   // entirely the light greens, and it still costs zero ids.
   // (BIRCHMOSS is declared after BIRCHGRASS at the foot of this file — it cannot be built here because the
   //  ramp it reads is minted last, for the id-ordering reason given there.)
-  for (const i of OAKMOSS) palOwn.add(i);   // reserved: mossCap keys on these, and a tolerance reuse would scatter somebody else's model over the boulders
+  // (OAKMOSS's palOwn reservation moved to the foot of the file with the ramp — mossCap keys on these ids.)
   // ── THE SECOND OAK, AND IT COSTS TWO IDS (user 2026-08-19: "make the oak trees have 2 shades of green. a
   // lighter green and a darker green. similar to whats done with the cherry trees") ── the cherry forest ships
   // two VARIETIES of one tree by remapping the oak's leaf ids onto another ramp (assets/bow.js blosRemap), and
@@ -3395,8 +3602,7 @@
   // tell these ids they are CANOPY — walk-through, DRAPE support, snow-catching, see-through when the eye is
   // inside them, and a bird perch — and a later tolerance share would hand all of that to whatever model next
   // asked for a bright green.
-  const OAKLITE = [DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
-  for (const i of OAKLITE) palOwn.add(i);
+  // UN-RETIRED 2026-09-03 with its biome; minted at the FOOT of this file, for the reason OAKMOSS gives above.
   const BLOSCHERRY = addCol(132, 12, 12);
   palOwn.add(BLOSCHERRY);   // reserved: the scatter is keyed on this id, so a tolerance reuse handing it to a model would sprinkle that model through every crown   // reserved HERE and not up with SHRUBF's: this const is declared 100 lines below that one, and reading it there is the const-before-declaration black screen (a bare `for` in a module body is not hoisted past a TDZ)
   // ── SMALL ROCK (rock.vox) — right-click to pick up ── THREE NEUTRAL greys, matching what the model is
@@ -3535,7 +3741,17 @@
   // These sit above DECOR_MIN, so the blanket `i < DECOR_MIN` solidity sweep below cannot reach them and a
   // berry never gets a hitbox; material-tabs.js then says what they positively ARE. __vbOak.ids() (world/gen-pool.js)
   // prints all three with every material table's verdict, and __vb.palAudit() over/snaps must both still read 0.
-  const FRUITC = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.                      // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh (0 and 2 are tools/voxelize_fruit.py's own means — keep them in step with fruit.json's `pal`)
+  // ── UN-RETIRED 2026-09-03 (user: "I see apples and cherries as magenta, check the oranges too") ── the
+  // 2026-08-31 reclaim gave these three away with the oak forest, and the oak forest came back on
+  // 2026-09-03 without them, so every apple, orange, cherry and blueberry in the game has been
+  // rendering DEADC magenta. Measured before the fix: 538 magenta voxels in one 221x221 window of the
+  // oak band, all 4-14 voxels above ground, which is bush-berry and low-canopy fruit height. The pine
+  // and birch bands scanned 0 and 0 — this ramp is the ONLY retired one with a live reader again, the
+  // other eight all belong to biomes (desert, cherry, arctic) that are still wiped.
+  // Original values restored exactly, not re-picked: [0] and [2] are tools/voxelize_fruit.py's own
+  // voxel-weighted means and have to stay in step with fruit.json, so re-choosing them by eye would
+  // put the flesh colour out of step with the model it was derived from.
+  const FRUITC = [addCol(209, 75, 70), addCol(86, 110, 192), addCol(244, 152, 61)];   // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh
   // ── THE BEEHIVE, IN TWO SHADES OF ONE HONEY YELLOW (user 2026-08-17: "implement the beehive.vox on some of
   // the oak trees") ── beehive.vox paints 54 voxels in an EIGHT-step ramp that never leaves one hue: red is 255
   // on every step and the whole ramp moves 12/255 in green and 52 in blue. Two ids is not a sacrifice of that,
@@ -3566,6 +3782,33 @@
   // palShare, which is exactly the arrangement the oaks' own leaf ids use.
   for (const i of FRUITC) palOwn.add(i);
   for (const i of HIVEC) palOwn.add(i);
+  // ══ THE OAK FOREST'S OWN TWO RAMPS (user 2026-09-03: "add in the oak forest ... make sure to use the
+  // correct colors") ══ both were RECLAIMED to DEADC on 2026-08-31 when the biome went, and both come back at
+  // their original values, byte for byte, rather than being re-picked: OAKMOSS was measured against the oak
+  // canopy it has to match and OAKLITE against the lily greens it has to avoid, and neither measurement has
+  // changed. The notes that justify each colour are still up at their old declaration sites.
+  // MINTED HERE, AT THE TAIL, for the reason BIRCHGRASS gives: addCol appends, so minting five lines earlier
+  // would renumber every id below and repaint every decoration in the game.
+  //
+  // ── THE BUDGET, AND WHY THE TOP MOSS STEP IS BORROWED ── the table stood at 252/256 before this block, so
+  // there are FOUR ids to spend and the two ramps want five. The saving is taken where it costs nothing that
+  // can be seen: OAKMOSS's brightest step is (134,167,89) and BIRCHSTRAND's is (133,166,89) — ONE part in 255
+  // on two channels — and the two are already the same MATERIAL, surface scatter on floatTab, which is the
+  // test that actually matters here. (It is the reason OAKMOSS cannot simply borrow OAKLEAF's ids instead,
+  // though the colours there are exact: leaves are foliaTab — see-through, snow-catching, DRAPE support — and
+  // moss on a boulder you can see through is not moss.) So the top step IS BIRCHSTRAND[2] and only the two
+  // lower shades mint. Net 4, table exactly full at 256/256, 0 overflow.
+  // WHAT THE SHARE HANDS THE BIRCH, STATED PLAINLY: id 71 now also carries stepGrassTab and mossTab, because
+  // assets/material-tabs.js and sim/support-rules.js list OAKMOSS in both. Neither is a regression and both
+  // are arguably corrections — GRASS's strand ids are deliberately in stepGrassTab already ("walking through
+  // those is walking on grass by any reading of it") and deliberately in mossTab already (a strand rides the
+  // chunk when the soil under it is taken). One of the birch's four strand shades simply stops being the
+  // exception. The other two are left alone rather than added, because that would be a second change hiding
+  // inside this one.
+  const OAKMOSS = [addCol(105, 143, 51), addCol(107, 141, 77), BIRCHSTRAND[2]];
+  for (const i of OAKMOSS) palOwn.add(i);   // reserved: mossCap keys on these, and a tolerance reuse would scatter somebody else's model over the boulders
+  const OAKLITE = [addCol(160, 192, 100), addCol(186, 216, 124)];   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
+  for (const i of OAKLITE) palOwn.add(i);   // reserved for the reason OAKLEAF is: material-tabs.js is about to call these CANOPY, and a later tolerance share would hand that to any bright green
   const solidTab = new Uint8Array(256);                // per-id collision: terrain/trunks/logs solid; decor + FOLIAGE walk-through
   for (let i = 1; i < DECOR_MIN; i++) solidTab[i] = 1;
   for (const f of foliageIds) solidTab[f] = 0;
@@ -5884,7 +6127,16 @@
     // cell it touches, and every leaf on a standing tree is a few hops from its own branch, so the full
     // 77k walk only ever happens for a crown that really is severed - which is exactly the case that has
     // to be decided rather than deferred.
-    drapeCap: 1 << 17,
+    // ── 1<<17 -> 1<<19, BECAUSE THE OAKS GREW 50% (user 2026-09-03) ── the seven crowns measured above
+    // (2,468 / 5,874 / 1,372 / 17,314 / 26,478 / 60,303 / 77,505) are now 2,468 / 16,785 / 7,909 /
+    // 48,965 / 80,598 / 143,652 / 212,041 — the bush is untouched by design and every tree is 3.375x
+    // the volume. TWO of the seven now clear 1<<17 = 131,072, so the exact failure this cap was raised
+    // to 1<<17 to fix would have come straight back: a capped DRAPE flood returns undecided, supFlush
+    // re-queues the seed, and it walks the cap again next frame forever, for every disturbed leaf.
+    // 1<<19 = 524,288 is 2.5x the largest crown rather than 1.24x, which is the headroom 1<<18 would
+    // NOT have given: the number that matters is the largest 26-connected component the bake can
+    // produce, and it moves with any re-bake. Sized so the next resize does not silently re-break it.
+    drapeCap: 1 << 19,
     msBudget: 2.0,                                     // ms/frame, checked BETWEEN components — never mid-flood, so a component is always resolved as a whole
     maxPasses: 4,                                      // cascade rounds per frame: a lift appends its vacated cells to the same queue
     qMax: 400000,
@@ -7651,7 +7903,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // instead. NOT dithered against the mask — an exposed face has to be ONE material or the seam just
     // becomes a speckled seam, which is the note the arctic arm already makes.
     const bSoil = bm > 0.5;
-    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : bSoil ? BIRCHMOSS[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
+    // ── AND THE OAK FOREST HAS NO SOIL EITHER (user 2026-09-03: "set it up exactly like the birch forest") ──
+    // the third band takes the same fix for the third time, and it takes it in ITS OWN floor colour: the oak
+    // surface arm below lays MOSS, so the band under it is MOSS, and a cliff or a dug hole shows one material
+    // from the turf to the rock. Undithered like the two above it, for the reason they give.
+    // AND THIS ONE CANNOT PUT A HOLE IN THE FLOOR, which is worth stating because the birch's did. That bug
+    // was BIRCHGRASS being minted past DECOR_MIN and so missing the blanket solidTab sweep, turning a
+    // 17-voxel band into something the player fell through. MOSS is ids 5-8 — far BELOW DECOR_MIN, solid
+    // since the day it was minted, and already in digOnlyTab and decorTab. There is no tab to add.
+    const oSoil = om > 0.5;
+    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : bSoil ? BIRCHMOSS[(ihash(wx, y * 131 + wz) * 4) | 0] : oSoil ? MOSS[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
       const shore = h <= WL + 6;                       // the band sand may occupy AT ALL — solid to WL+4, then two levels of soft edge above it
@@ -8950,7 +9211,15 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // size, rot's to its facing, and the fruit roll's would make every light oak an apple tree. Keyed on the
     // CELL like every other per-tree draw, so a tree keeps its shade across regeneration and across the
     // worker/main-thread split.
-    const lite = !blos && OAKLITEV.length > 0 && ihash(cx * 97 + 13, cz * 101 + 59) < 0.3746;   // 0.5 -> 0.25 -> 0.3746 (user 2026-08-19): a quarter of ALL oaks wear the LIGHT ramp (assets/bow.js OAKLITER), which over a population that is 33.262% blossom is 0.25 / (1 - 0.33262) of the GREEN ones — see the arithmetic above. Not a taste value: change the blossom share and this must be divided again
+    // ── 0.3746 -> 0.25 (2026-09-03) ── and this is the re-division the note above DEMANDS rather than a
+    // nudge: "Re-cut the bands and this constant is wrong: re-measure and re-divide it, do not nudge it."
+    // The whole compensation is p = 0.25 / (1 - blossomShare), and blossomShare is now exactly ZERO —
+    // cherryM was wiped to `return 0` on 2026-09-01 and the oak forest came back on 2026-09-03 without it,
+    // so `blos` is false at every candidate and the roll can no longer be diluted by a band it has to
+    // share the population with. p = 0.25 / 1 = 0.25. Left at 0.3746 the light variety would have been
+    // 37.5% of every oak in the world against the 25% that was asked for — the compensation still running
+    // with nothing left to compensate for.
+    const lite = !blos && OAKLITEV.length > 0 && ihash(cx * 97 + 13, cz * 101 + 59) < 0.25;   // 0.5 -> 0.25 -> 0.3746 (user 2026-08-19): a quarter of ALL oaks wear the LIGHT ramp (assets/bow.js OAKLITER), which over a population that is 33.262% blossom is 0.25 / (1 - 0.33262) of the GREEN ones — see the arithmetic above. Not a taste value: change the blossom share and this must be divided again
     const t = { wx, wz, k: Math.min(OAKV.length - 1, k2), blos, wht, lite, rot: (ihash(cx + 137, cz + 89) * 3.99) | 0,
                 sink: 1 + ((ihash(cx * 19, cz * 23) * 3) | 0) };   // sink 1-3, and it means something DIFFERENT here than it does for a pine: stampOak writes in mode 1, so every course below the local ground is refused rather than punched into the hill. The sink only decides how many base courses are hidden.
     // ── FRUIT (user 2026-08-17: "pick trees at random and place apples and oranges in the trees ... make 10% of
@@ -9678,7 +9947,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { DEEP_SPAN, BASIN_RAMP, BASIN_BED, BIRCH_GAPWOB, BIRCH_ELEV, BIRCH_GAPBED, BIRCH_BANKW, BIRCH_BANKY, BIRCH_BANKK, BIRCH_GAPW, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { OAKF1, OAKF2, OAK_BOWL, DEEP_SPAN, BASIN_RAMP, BASIN_BED, BIRCH_GAPWOB, BIRCH_ELEV, BIRCH_GAPBED, BIRCH_BANKW, BIRCH_BANKY, BIRCH_BANKK, BIRCH_GAPW, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const OPAQTAB = []; for (let i = 0; i < 256; i++) OPAQTAB.push(i && i !== WATER_T && i !== WATER_B && !foliaTab[i] ? 1 : 0);   // must stay bit-identical to opaqueTab in render/buffers.js — the pool trusts this verdict and never re-derives it
     const tables = { OPAQTAB, ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHSTRAND, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, PINE_ANCH9, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
     const fns = { deepen, bedH, ihash, sstep, pwrap, vnoise, vnoise3, fbm, pineBase, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctSnow, arctH, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
@@ -9981,7 +10250,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // enough to verify the read path is bit-identical and to measure what it costs.
   // NOTHING here is allocated unless the probe is on. Sized for players it would be ~1 GB of JS heap and
   // ~1 GB of GPU buffer that no frame ever reads - a far bigger regression than the feature is a win.
-  const POOL_FRAC = 0.25;                              // slots as a fraction of all bricks. With sealed rock sharing one page the real figure is ~12%; this is 2x headroom for the transient before sealing settles. MIRRORED as GPOOL1 in core/gpu.js, which needs the pool's size before this fragment runs to ask the device for a big enough binding - change one and change both
+  const POOL_FRAC = 0.44;                              // slots as a fraction of all bricks. With sealed rock sharing one page the real figure is ~12%; this is 2x headroom for the transient before sealing settles. MIRRORED as GPOOL1 in core/gpu.js, which needs the pool's size before this fragment runs to ask the device for a big enough binding - change one and change both
   // ── AND THE RING IS SIZED OFF THE GPU GRID, NOT THE CPU ONE ── a storage buffer cannot grow, so the pool
   // has to be allocated for the widest window it will ever hold. At GMUL 2 that is four times the bricks, and
   // the fraction comes down because the measured steady state is ~13%: the 2x headroom POOL_FRAC carries is
@@ -9989,8 +10258,60 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // slab in hand), so it never needs that headroom.
   // THE ALLOCATION IS WHAT DECIDES WHETHER A MACHINE CAN RUN THIS, not the fraction of it that ends up
   // occupied: ~1.03 GB at GMUL 2 against 402 MB at GMUL 1. That is the whole reason GMUL rides the adapter.
-  const POOL_FRAC_RING = 0.17;                         // MIRRORED as GPOOL2 in core/gpu.js - see POOL_FRAC above
+  const POOL_FRAC_RING = 0.30;                         // MIRRORED as GPOOL2 in core/gpu.js - see POOL_FRAC above
   const POOL_SLOTS = GMUL > 1 ? Math.ceil(GBX * GBY * GBZ * POOL_FRAC_RING) : Math.ceil(BX * BY * BZ * POOL_FRAC);
+  // ══ A PAGE IS A 16-ENTRY PALETTE AND 512 FOUR-BIT INDICES, NOT 512 BYTES ══ measured with
+  // __vb.poolSparse: 70% of every REAL page sits at or above y 192, where sealing reaches nothing, and a
+  // page up there holds a mean of 60 non-air voxels out of 512 (88% AIR) drawn from a mean of 7.0 distinct
+  // ids. 99.7% of them use 16 ids or fewer. So the byte per voxel was paying for a range nothing in a brick
+  // ever spans: 272 bytes hold the same content exactly, and the pool holds 1.76x the bricks in 6% LESS
+  // memory. That is what buys the far ring its reach back — see the note over ringSquash.
+  // ONE BUFFER, AND IT HAS TO BE: trace is at exactly 8 storage buffers, the WebGPU default cap (see the
+  // note on bdesc in render/wgsl/trace.js), so a palette buffer or a dense-page buffer of its own is not
+  // available at any price. The palette lives in the page's own last 16 bytes.
+  // THE MARCH STEP STILL COSTS ONE LOAD, which is the whole reason this encoding was chosen over a sparse
+  // occupancy mask that packs better (2.8x on the canopy): the palette word is read ONLY when the nibble is
+  // non-zero, i.e. on the step that terminates the ray, never on the 88% of steps that pass through air.
+  // A mask would have wanted a popcount and a prefix load on EVERY step, inside the loop that is 63% of the
+  // frame's GPU time.
+  const PAGE_U32 = 68;                                 // 64 words of nibbles (512 * 4 bits) + 4 words of palette (16 * 8 bits)
+  const PAGE_B = PAGE_U32 * 4;                         // 272
+  const NIB_MAX = 15;                                  // palette entry 0 is AIR, so fifteen REAL ids fit; a brick wanting more takes a dense page
+  // ── AND THE 0.3% THAT WANT MORE THAN FIFTEEN GET A DENSE PAGE ── a byte per voxel, exactly the old
+  // format, in a region reserved at the END of the same buffer so it needs neither a second binding nor a
+  // pair allocator inside the nibble region. bdesc bit 31 says which kind a descriptor names.
+  // 1% -> 2.5%: measured at 28,561 dense pages against 2.04M live, i.e. 1.4%. The 0.3-0.5% the canopy
+  // sample suggested is the CANOPY's rate — ground bricks carry more ids, and poolSparse was pointed at
+  // y >= 192. Running the dense region out is not a crash but it is a hole: the brick keeps its old page.
+  const DENSE_PAGES = Math.ceil(POOL_SLOTS * 0.025);
+  const DBASE_U32 = POOL_SLOTS * PAGE_U32;             // where the dense region starts, in WORDS — mirrored into the shader
+  const DENSE_FLAG = 0x80000000;                       // bdesc bit 31: this descriptor names a dense page, not a nibble slot
+  // The encoder. One pass to collect the palette (air is free — it is entry 0 and never enters the table),
+  // one pass to pack eight voxels per word. `encSeen` is cleared by walking the ids it actually set, so it
+  // never costs a 256-entry wipe per brick.
+  const encSeen = new Int32Array(256), encPal = new Int32Array(16);
+  const encodePage = (src, so, dst, wo) => {           // src[so..so+512) -> dst[wo..wo+68). false = needs a dense page, and nothing was written
+    let np = 0, over = false;
+    for (let i = 0; i < 512; i++) { const v = src[so + i];
+      if (v !== 0 && encSeen[v] === 0) { if (np === NIB_MAX) { over = true; break; } encSeen[v] = ++np; encPal[np] = v; } }
+    if (over) { for (let k = 1; k <= np; k++) encSeen[encPal[k]] = 0; return false; }
+    for (let w = 0; w < 64; w++) { const o = so + w * 8;
+      dst[wo + w] = (encSeen[src[o]] | (encSeen[src[o + 1]] << 4) | (encSeen[src[o + 2]] << 8) | (encSeen[src[o + 3]] << 12)
+                   | (encSeen[src[o + 4]] << 16) | (encSeen[src[o + 5]] << 20) | (encSeen[src[o + 6]] << 24) | (encSeen[src[o + 7]] << 28)) >>> 0; }
+    for (let k = 0; k < 4; k++) { const q = k * 4;
+      dst[wo + 64 + k] = ((encPal[q] | 0) | ((encPal[q + 1] | 0) << 8) | ((encPal[q + 2] | 0) << 16) | ((encPal[q + 3] | 0) << 24)) >>> 0; }
+    for (let k = 1; k <= np; k++) { encSeen[encPal[k]] = 0; encPal[k] = 0; }
+    return true;
+  };
+  // A UNIFORM page — one id everywhere — written straight, without a scan: entry 1 is the id and every
+  // nibble is 1. Used by the shared per-id pages and by the sealed stone page, which are both uniform by
+  // construction and would otherwise pay a 512-voxel palette walk to discover it.
+  const uniPageInto = (u32, wo, id) => { u32.fill(0x11111111, wo, wo + 64);
+    u32[wo + 64] = (id << 8) >>> 0; u32[wo + 65] = 0; u32[wo + 66] = 0; u32[wo + 67] = 0; };
+  // …and the decode, for the audits that read a page back and have to compare it against W (__vb.gpudiff).
+  const decodePage = (u32, wo, out) => { for (let i = 0; i < 512; i++) {
+    const ni = (u32[wo + (i >> 3)] >>> ((i & 7) * 4)) & 15;
+    out[i] = ni === 0 ? 0 : (u32[wo + 64 + (ni >> 2)] >>> ((ni & 3) * 8)) & 255; } return out; };
   // bdesc, the water bits and the L2 bits are all on the GPU GRID (see TWO WINDOWS in world/window.js):
   // they cover the far ring as well, and the shader indexes nothing else. airFree stays on the CPU grid,
   // because deciding it means reading W, and W only exists for the near window.
@@ -10011,7 +10332,10 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // touched only by poolBuild. Slots are handed out sequentially there, so a fixed CHUNK of them can be filled
   // and flushed instead: same number of bytes uploaded, 8 MB of heap rather than 400.
   const POOL_CHUNK = 16384;                            // slots per staged upload (8 MB)
-  const poolCPU = new Uint8Array(POOL_CHUNK * 512);
+  const poolCPU = new Uint8Array(POOL_CHUNK * PAGE_B);   // …a PAGE stride now, not 512: the gather still builds 512 raw voxels in `encSrc`, and only the encoded page reaches the staging
+  const poolCPU32 = new Uint32Array(poolCPU.buffer);
+  const encSrc = new Uint8Array(512);                  // one brick, gathered raw, before it is encoded — the row moves below still want a flat 512
+  const encSrc64 = new Float64Array(encSrc.buffer);
   // ── THE ALLOCATION THAT DECIDES WHETHER THIS MACHINE CAN RUN THE GAME ── the pool is ~1.04 GB at a 2048
   // window (see POOL_FRAC_RING above) and it is by far the largest thing the game asks any driver for. WebGPU
   // does not throw when a buffer will not fit: createBuffer hands back an INVALID buffer and the first frame
@@ -10028,7 +10352,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const bdescBuf = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC for __vb.gpudiff()
   const gwbBuf = device.createBuffer({ size: gwb.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const gb2Buf = device.createBuffer({ size: gb2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  const poolBuf = device.createBuffer({ size: POOL_SLOTS * 512, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the pool back to verify it still matches W
+  const poolBuf = device.createBuffer({ size: POOL_SLOTS * PAGE_B + DENSE_PAGES * 512, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the pool back to verify it still matches W
   // ── ALLOCATED ONLY IF SOMETHING ASKS FOR IT ── the staging buffer __vb.gpudiff() reads the descriptors back
   // through, and its ONLY caller is that one debug command. At a 2048 window it is 50 MB, and MAP_READ means
   // 50 MB of HOST-VISIBLE memory - the scarcest kind there is on a laptop whose GPU shares system RAM, handed
@@ -10036,7 +10360,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   let bdescRead = null;
   const bdescReadBuf = () => bdescRead || (bdescRead = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }));
   { const oom = await device.popErrorScope();
-    if (oom && safeStepDown('brick pool (' + (((POOL_SLOTS * 512) / 1048576) | 0) + ' MB) would not allocate')) await new Promise(() => {}); }   // never resolves: the reload is already scheduled, and letting boot carry on would bind the invalid buffer and lose the device before it lands
+    if (oom && safeStepDown('brick pool (' + (((POOL_SLOTS * PAGE_B + DENSE_PAGES * 512) / 1048576) | 0) + ' MB) would not allocate')) await new Promise(() => {}); }   // never resolves: the reload is already scheduled, and letting boot carry on would bind the invalid buffer and lose the device before it lands
   let poolUsed = 0, poolOverflow = 0, poolSealed = 0;
   // ── WHAT A SEALED BRICK READS AS, AND IT MUST BE ROCK ── every sealed brick in the window shares ONE page,
   // so whatever fills that page is what shows anywhere a ray does reach one. This was the literal 71, chosen
@@ -10117,6 +10441,20 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     if (slot < 0 || slot === SEALED_SLOT || uniShared.has(slot)) return;   // shared pages (stone, and the per-id uniform ones): never freed, never reused
     if (poolFreeN < POOL_SLOTS) poolFree32[poolFreeN++] = slot;
   };
+  // ── THE DENSE REGION, AND ITS OWN TINY ALLOCATOR ── a page for the 0.3% of bricks that want more than
+  // fifteen ids. It lives past the nibble slots in the SAME buffer, so it costs no binding, and it has its
+  // own free list because its pages are 512 bytes and the nibble ones are 272 — the two can never mix.
+  let densUsed = 0; const densFree = [];
+  const denseAlloc = () => (densFree.length ? densFree.pop() : (densUsed < DENSE_PAGES ? densUsed++ : -1));
+  const denseByteOff = (dp) => DBASE_U32 * 4 + dp * 512;
+  // A DESCRIPTOR IS NOT A SLOT ANY MORE, so every release goes through this rather than doing its own
+  // `had - 1`: bit 31 decides which allocator the page goes back to, and getting that wrong hands a dense
+  // page to the nibble free list, where the next brick to take it writes 272 bytes over a 512-byte page.
+  const descOf = (i, dense) => (dense ? ((i + 1) | DENSE_FLAG) >>> 0 : i + 1);
+  const descIsDense = (d) => (d & DENSE_FLAG) !== 0;
+  const descIdx = (d) => (d & 0x7fffffff) - 1;
+  const descRelease = (d) => { if (!d) return; if (descIsDense(d)) densFree.push(descIdx(d)); else poolRelease(d - 1); };
+  const slotRelease = (sl) => { if (sl < 0) densFree.push(-sl - 1); else poolRelease(sl); };   // the ring's arrays hold SLOTS, and a dense one is stored negated (see ringUpload)
   // ── SEALED ROCK ── 40-41% of every brick in the window (measured) is rock with no air in it whose six
   // neighbours are also airless. A ray cannot reach one: to enter it, it must first cross a neighbour, and
   // the neighbour is solid, so it stops there. Those bricks all point at ONE shared slot of stone instead
@@ -10137,15 +10475,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // rebuild resets the allocator underneath them.
   const uniSlotOf = new Int32Array(256).fill(-1);
   const uniShared = new Set();
-  const uniPage = new Uint8Array(512);
+  const uniPage = new Uint8Array(PAGE_B), uniPage32 = new Uint32Array(uniPage.buffer);
   const uniformSlot = (id) => {
     let us = uniSlotOf[id];
     if (us >= 0) return us;
     if (poolFreeN > 0) us = poolFree32[--poolFreeN];
     else if (poolUsed < POOL_SLOTS) us = poolUsed++;
     else return -1;                                    // pool full: the caller falls through to the real-page path and its own pressure handling
-    uniPage.fill(id);
-    device.queue.writeBuffer(poolBuf, us * 512, uniPage);
+    uniPage32.fill(0x11111111, 0, 64);                 // every voxel = palette entry 1
+    uniPage32[64] = (id << 8) >>> 0; uniPage32[65] = 0; uniPage32[66] = 0; uniPage32[67] = 0;   // entry 0 = air, entry 1 = the id
+    device.queue.writeBuffer(poolBuf, us * PAGE_B, uniPage, 0, PAGE_B);
     uniSlotOf[id] = us; uniShared.add(us);
     return us;
   };
@@ -10232,19 +10571,28 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     for (let i = 0; i < pfN; i++) ord[i] = i;
     ord.sort((a, b2) => pfS[a] - pfS[b2]);
     let runS = -1, runN = 0;
-    const runFlush = () => { if (runN) { device.queue.writeBuffer(poolBuf, runS * 512, ringRun, 0, runN * 512); runN = 0; runS = -1; } };
+    const runFlush = () => { if (runN) { device.queue.writeBuffer(poolBuf, runS * PAGE_B, ringRun, 0, runN * PAGE_B); runN = 0; runS = -1; } };
     for (let i = 0; i < pfN; i++) {
       const q = ord[i], slot = pfS[q], b = pfB[q];
       if (runN && (slot !== runS + runN || runN >= RING_RUN)) runFlush();
       if (!runN) runS = slot;
       // Row-at-a-time f64 moves, for the reason the ring's gather gives: a brick row is 8 voxels, both ends
       // are 8-aligned, and `set(subarray(...))` for eight bytes allocates and calls sixty-four times per brick.
-      const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0, ro8 = runN * 64;
+      // The gather lands in encSrc RAW and the encoder packs it into the run — the rows are still f64 moves.
+      const bx = b % BX, by = ((b / BX) | 0) % BY, bz = (b / (BX * BY)) | 0;
       for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
         const src = bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY;
-        ringRun64[ro8 + ly + lz * 8] = W64p[src >> 3];
+        encSrc64[ly + lz * 8] = W64p[src >> 3];
       }
-      runN++;
+      if (encodePage(encSrc, 0, ringRun32, runN * PAGE_U32)) { runN++; continue; }
+      // …more than fifteen ids: this brick wants a dense page, and the descriptor that was published for it
+      // when the slot was handed out has to be re-pointed at it. The nibble slot goes straight back.
+      runFlush();
+      const dp = denseAlloc(), gb = cpu2gpu(b);
+      if (dp < 0) { poolOverflow++; poolDirty.add(b); continue; }   // dense region full: leave it queued, exactly as a slotless brick is
+      device.queue.writeBuffer(poolBuf, denseByteOff(dp), encSrc, 0, 512);
+      poolRelease(slot);
+      bdesc[gb] = descOf(dp, true); descDirtyW.add(gb);
     }
     runFlush();
     pfN = 0;
@@ -10344,7 +10692,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // NEVER return SEALED_SLOT to the free list. It is SHARED by every sealed brick, so freeing it once
       // hands it out as an ordinary page and every sealed brick in the window instantly aliases whatever
       // gets written there. That is a double-free, and it shows up as corruption far from its cause.
-      if (!occ) { if (had) { poolRelease(had - 1); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); } n++; continue; }
+      if (!occ) { if (had) { descRelease(had); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); } n++; continue; }
       const wasAF = airFree[b], af = afGet(b);        // afGet recomputes only if poolTouch invalidated it, and it is what isSealed reads below
       // A neighbour whose turn has ALREADY passed this drain is not re-queued by add() -- a Set add of a
       // present entry does not move it back into line -- so it would keep a verdict computed from this
@@ -10355,8 +10703,8 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       if (af !== wasAF) { for (const q of nbrOf(b)) if (q >= 0) poolDirty.add(q); }   // my airlessness changed => my neighbours' sealed-ness may have too (theirs has not, so do NOT clear their afDone)
       const sealed = isSealed(b);
       if (sealed) {                                    // costs no payload at all - just point at the shared stone page
-        if (had) { poolRelease(had - 1); }
-        if (had - 1 !== SEALED_SLOT) { bdesc[gb] = SEALED_SLOT + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
+        if (had) { descRelease(had); }
+        if (descIsDense(had) || had - 1 !== SEALED_SLOT) { bdesc[gb] = SEALED_SLOT + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
         n++; continue;
       }
       // …not sealed: if the whole brick is ONE id, point it at that id's shared page instead of paying for a
@@ -10366,13 +10714,19 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         const uid = uniformIdOfW(b);
         if (uid) { const us = uniformSlot(uid);
           if (us >= 0) {
-            if (had && had - 1 !== us) poolRelease(had - 1);
-            if (had - 1 !== us) { bdesc[gb] = us + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
+            if (had && (descIsDense(had) || had - 1 !== us)) descRelease(had);
+            if (descIsDense(had) || had - 1 !== us) { bdesc[gb] = us + 1; descDirtyW.add(gb); if (!had) gb2Dirty.add(gSuper(gb)); }
             n++; continue;
           } }
       }
-      let slot = had - 1;
-      if (!had || slot === SEALED_SLOT || uniShared.has(slot)) {   // air->occupied, a sealed brick just exposed, or an EDITED uniform brick: it needs a real page now — poolFill must NEVER write into a shared page, every brick in the window aliases it
+      // ── A DENSE DESCRIPTOR IS NOT A SLOT, AND SUBTRACTING ONE FROM IT IS A CATASTROPHE ── bit 31 is set,
+      // so `had - 1` is ~2.1 billion, and pfS is an Int32Array: it wraps NEGATIVE and the batched upload
+      // asks writeBuffer for a negative offset. An edited dense brick therefore hands its page back and
+      // takes a fresh nibble slot — the re-encode decides the format again from the voxels it now holds,
+      // which is right anyway, since the edit is usually what changed the id count.
+      let slot = descIsDense(had) ? -1 : had - 1;
+      if (!had || descIsDense(had) || slot === SEALED_SLOT || uniShared.has(slot)) {   // air->occupied, a sealed brick just exposed, an edited uniform brick, or one leaving the dense region: it needs a real page now — poolFill must NEVER write into a shared page, every brick in the window aliases it
+        if (descIsDense(had)) descRelease(had);
         if (poolFreeN > 0) slot = poolFree32[--poolFreeN];
         else if (poolUsed < POOL_SLOTS) slot = poolUsed++;
         else { poolOverflow++; poolRetry.push(b); continue; }   // pool full FOR NOW: keep it queued (see poolRetry) — dropping it is what made an overflow permanent
@@ -10414,16 +10768,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // the tiles regenerate, which is the only correct answer after the world underneath them was replaced.
     ringTiles.clear(); ringHanded.clear();   // …and nothing may be adopted across a rebuild: poolBuild zeroed every descriptor those tiles were relying on
     bdesc.fill(0); gwb.fill(0); gb2.fill(0); poolUsed = 0; poolOverflow = 0; poolFreeN = 0; poolDirty.clear(); gb2Dirty.clear(); descDirtyW.clear(); gwbDirtyW.clear();
-    uniSlotOf.fill(-1); uniShared.clear(); W32P = null;   // the allocator under the shared pages was just reset, and W may be a fresh buffer
+    uniSlotOf.fill(-1); uniShared.clear(); W32P = null; densUsed = 0; densFree.length = 0;   // the allocator under the shared pages was just reset, and W may be a fresh buffer
     const nB = BX * BY * BZ;
     for (let b = 0; b < nB; b++) airFree[b] = ((bricks[b >> 5] >>> (b & 31)) & 1) ? isAirFree(b) : 0;
     afDone.fill(1);                                    // a full build decides every brick, so afGet has nothing left to recompute until something is written again
     // Slots are handed out in order here, so the staging chunk covers slots [chunk0, poolUsed) and is flushed
     // whenever it fills. The shared stone page is slot 0, which is why the chunk is seeded with it.
     let chunk0 = 0;
-    const flush = () => { if (poolUsed > chunk0) device.queue.writeBuffer(poolBuf, chunk0 * 512, poolCPU.buffer, 0, (poolUsed - chunk0) * 512); chunk0 = poolUsed; };
+    const flush = () => { if (poolUsed > chunk0) device.queue.writeBuffer(poolBuf, chunk0 * PAGE_B, poolCPU.buffer, 0, (poolUsed - chunk0) * PAGE_B); chunk0 = poolUsed; };
     SEALED_SLOT = poolUsed++;                          // slot 0 is the shared stone page every sealed brick points at
-    poolCPU.fill(STONE_ID, 0, 512);
+    uniPageInto(poolCPU32, 0, STONE_ID);
     let sealedN = 0;
     for (let bz = 0; bz < BZ; bz++) for (let by = 0; by < BY; by++) for (let bx = 0; bx < BX; bx++) {
       const b = bx + by * BX + bz * BX * BY;
@@ -10435,14 +10789,17 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       if (poolUsed - chunk0 >= POOL_CHUNK) flush();
       { const uid = uniformIdOfW(b);                   // single-id brick: share the id's page. STAGED as well as written — the bulk flush below covers [chunk0, poolUsed) from poolCPU, so a slot allocated here must have its bytes in the staging too or the flush overwrites the page with garbage
         if (uid) { const us = uniformSlot(uid);
-          if (us >= 0) { if (us >= chunk0) poolCPU.fill(uid, (us - chunk0) * 512, (us - chunk0) * 512 + 512); bdesc[gb] = us + 1; continue; } } }
+          if (us >= 0) { if (us >= chunk0) uniPageInto(poolCPU32, (us - chunk0) * PAGE_U32, uid); bdesc[gb] = us + 1; continue; } } }
       const slot = poolUsed++;
-      bdesc[gb] = slot + 1;
-      let o = (slot - chunk0) * 512;
       for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {   // local order is x + y*8 + z*64, matching the shader
         const src = bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY;
-        poolCPU.set(W.subarray(src, src + 8), o + ly * 8 + lz * 64);
+        encSrc.set(W.subarray(src, src + 8), ly * 8 + lz * 64);
       }
+      if (encodePage(encSrc, 0, poolCPU32, (slot - chunk0) * PAGE_U32)) { bdesc[gb] = slot + 1; continue; }
+      const dp = denseAlloc();                         // more than fifteen ids: a dense page, and the nibble slot is handed straight back
+      if (dp < 0) { poolUsed--; poolOverflow++; continue; }
+      device.queue.writeBuffer(poolBuf, denseByteOff(dp), encSrc, 0, 512);
+      poolUsed--; bdesc[gb] = descOf(dp, true);
     }
     flush();
     poolSealed = sealedN;
@@ -10460,8 +10817,8 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     device.queue.writeBuffer(gb2Buf, 0, gb2);
     return { slots: POOL_SLOTS, used: poolUsed, sealed: poolSealed, overflow: poolOverflow,
       denseMB: +(WX * WY * WZ / 1048576).toFixed(1),
-      pooledMB: +((bdesc.byteLength + gwb.byteLength + gb2.byteLength + poolUsed * 512) / 1048576).toFixed(1),
-      saving: +((WX * WY * WZ) / (bdesc.byteLength + poolUsed * 512)).toFixed(2),
+      pooledMB: +((bdesc.byteLength + gwb.byteLength + gb2.byteLength + poolUsed * PAGE_B + densUsed * 512) / 1048576).toFixed(1),
+      saving: +((WX * WY * WZ) / (bdesc.byteLength + poolUsed * PAGE_B + densUsed * 512)).toFixed(2),
       ms: Math.round(performance.now() - t0) };
   };
   // ── NOR DO THE CPU-GRID L2 AND WATER TABLES ── the shader reads gb2/gwb, which are on the GPU grid and
@@ -10631,8 +10988,8 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const RING_M = 1;                                    // slab margin in bricks, so every paged brick has six real neighbours to seal against
   const ringStage = new Uint8Array(512);
   const RING_RUN = 512;                                // slots per batched upload (256 KB)
-  const ringRun = new Uint8Array(RING_RUN * 512);
-  const ringRun64 = new Float64Array(ringRun.buffer);   // the same staging buffer, moved a row at a time
+  const ringRun = new Uint8Array(RING_RUN * PAGE_B);
+  const ringRun32 = new Uint32Array(ringRun.buffer);    // …the encoded pages go in as WORDS; the raw row moves land in encSrc64 first
   function ringPageTile(T, m, x0, z0) {                 // x0/z0 are the TILE's origin; the slab starts RING_M bricks before it
     const t0 = performance.now();
     const SW = m.stride, sx = m.nbx * 8, sz = m.nbz * 8, SB = m.W, bb = m.bb, wb = m.wb;
@@ -10751,7 +11108,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // pool has room, which the squash below arranges.
     if (ovfN) {
       ringAbandon++;                                   // …counted APART from ringOverflow, which fires per refused brick at the allocation site and therefore still climbs even when this path is working perfectly. overflow says "the pool was tight"; this says "a tile was dropped whole rather than published half-empty", and the two answer different questions
-      for (let i = 0; i < n; i++) poolRelease(slA[i]);
+      for (let i = 0; i < n; i++) slotRelease(slA[i]);
       // …and it is REQUESTED, not applied. A quarter tile per overflowing TILE still stacks: measured, three
       // tiles were abandoned inside a six-frame burst and the far plane moved 59 voxels in one frame — better
       // than the 127 a whole-tile step gave, but still nearly two increments at once, because a burst of
@@ -10794,31 +11151,37 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     const u = T.up, oa = u.oa, SB64 = u.SB64, SW = u.SW, nbx = u.nbx, nby = u.nby;
     const gbA = T.gb, slA = T.sl, bA = T.bA, n = T.n;
     let runS = -1, runN = 0;
-    const runFlush = () => { if (runN) { ringRuns++; device.queue.writeBuffer(poolBuf, runS * 512, ringRun, 0, runN * 512); runN = 0; runS = -1; } };
+    const runFlush = () => { if (runN) { ringRuns++; device.queue.writeBuffer(poolBuf, runS * PAGE_B, ringRun, 0, runN * PAGE_B); runN = 0; runS = -1; } };
     const i0 = u.i, end = Math.min(n, i0 + ringBudget);
     for (let i = i0; i < end; i++) {
       const q = oa[i], slot = slA[q], b = bA[q];
       const bx = b % nbx, by = ((b / nbx) | 0) % nby, bz = (b / (nbx * nby)) | 0;
       if (runN && (slot !== runS + runN || runN >= RING_RUN)) runFlush();   // a slot that does not continue the run ends it
       if (!runN) runS = slot;
-      const ro8 = runN * 64;                           // …in f64 words: 512 bytes is 64 of them
-      for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {
+      for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++) {   // …in f64 words: a 512-byte brick is 64 of them
         const src = bx * 8 + (by * 8 + ly) * SW + (bz * 8 + lz) * SW * WY;
-        ringRun64[ro8 + ly + lz * 8] = SB64[src >> 3];
+        encSrc64[ly + lz * 8] = SB64[src >> 3];
       }
-      runN++;
+      if (encodePage(encSrc, 0, ringRun32, runN * PAGE_U32)) { runN++; continue; }
+      // …a dense brick. The tile publishes its descriptors in one step at the end, so the dense page is
+      // recorded by NEGATING the slot: the publish loop reads that back rather than guessing the format.
+      runFlush();
+      const dp = denseAlloc();
+      if (dp < 0) { ringOverflow++; continue; }         // dense region full: the tile publishes this brick as it was
+      device.queue.writeBuffer(poolBuf, denseByteOff(dp), encSrc, 0, 512);
+      poolRelease(slot); slA[q] = -(dp + 1);
     }
     runFlush();
     u.i = end; ringPaged += end - i0; ringBudget -= end - i0;
     if (end >= n) {                                    // …every page is on the GPU: publish the whole tile in one step
       for (let i = 0; i < n; i++) {
-        const gb = gbA[i], slot = slA[i], had0 = bdesc[gb];
-        if (had0 && had0 - 1 !== slot) poolRelease(had0 - 1);
-        bdesc[gb] = slot + 1; descDirtyW.add(gb); if (!had0) gb2Dirty.add(gSuper(gb));
+        const gb = gbA[i], slot = slA[i], had0 = bdesc[gb], d = slot < 0 ? descOf(-slot - 1, true) : slot + 1;
+        if (had0 && had0 !== d) descRelease(had0);
+        bdesc[gb] = d; descDirtyW.add(gb); if (!had0) gb2Dirty.add(gSuper(gb));
       }
       for (let i = 0; i < u.sgb.length; i++) {         // …and the air/sealed ones in the SAME step, or they lead
         const gb = u.sgb[i], v = u.sval[i], had0 = bdesc[gb];
-        if (had0 && had0 - 1 !== v) poolRelease(had0 - 1);
+        if (had0 && (descIsDense(had0) || had0 - 1 !== v)) descRelease(had0);
         bdesc[gb] = v + 1; descDirtyW.add(gb);
         if (!had0 !== !(v + 1)) gb2Dirty.add(gSuper(gb));   // only a 0 <-> non-zero transition moves the L2 bit
       }
@@ -10864,7 +11227,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // ALL of them, not just the ones past the cursor: a tile mid-upload has published NOTHING (the descriptors
     // go live in one step at the end, see ringUpload), so every slot it holds is named by nothing in bdesc and
     // the descriptor test below would skip the lot.
-    if (T.up) { for (let j = 0; j < T.n; j++) poolRelease(T.sl[j]); T.up = null; if (T.job) { poolRingDrop(T.job); T.job = null; } }
+    if (T.up) { for (let j = 0; j < T.n; j++) slotRelease(T.sl[j]); T.up = null; if (T.job) { poolRingDrop(T.job); T.job = null; } }
     // ══ AN ADOPTED TILE OWNS DESCRIPTORS AND NO LIST, AND LEAVING THEM LIVE IS THE FLICKER ══ a tile adopted
     // back from the near window is recorded as done with n = 0 and an EMPTY gb array, because its pages were
     // written by poolFlush and the ring never allocated them. The loop below is therefore a no-op for it: on
@@ -10897,7 +11260,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
           for (let by = 0; by < GBY; by++) {
             const gb = wx + by * GBX + wz * GBX * GBY, d = bdesc[gb];
             if (!d) continue;
-            poolRelease(d - 1); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); ringAdoptClear++;
+            descRelease(d); bdesc[gb] = 0; descDirtyW.add(gb); gb2Dirty.add(gSuper(gb)); ringAdoptClear++;
           } } }
     }
     for (let i = 0; i < T.n; i++) {                     // ONLY where the descriptor still names this tile's own slot — see the note above
@@ -11181,11 +11544,14 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       if (!T.done || !T.n) continue;
       tiles++; let bad = 0;
       for (let i = 0; i < T.n; i++) {
-        const gb = T.gb[i], want = T.sl[i] + 1, got = bdesc[gb];
+        // T.sl holds SLOTS, and a dense page is stored negated (see ringUpload) — reconstructing the
+        // descriptor the same way the publish loop does. Comparing `sl + 1` reported every dense brick in
+        // the ring as stale: 18,271 of them on the first run of the new page format, against a gpudiff of 0.
+        const gb = T.gb[i], sl = T.sl[i], want = sl < 0 ? descOf(-sl - 1, true) : sl + 1, got = bdesc[gb];
         checked++;
         if (got === want) continue;
         bad++; if (got === 0) zero++; else stale++;
-        if (ex.length < 6) ex.push({ tx: T.tx, tz: T.tz, gb, want: want - 1, got: got - 1 });
+        if (ex.length < 6) ex.push({ tx: T.tx, tz: T.tz, gb, want, got, wantDense: sl < 0, gotDense: descIsDense(got) });
       }
       if (bad) badTiles++;
     }
@@ -12343,7 +12709,14 @@ ${!POOL ? `      let i = u32(x + c.y * WX + z * WX * WY);
       let d = bdesc[b];
       if (d == 0u) { return 0u; }
       let l = u32((x & 7) + (c.y & 7) * 8 + (z & 7) * 64);
-      return (pool[(d - 1u) * 128u + (l >> 2u)] >> ((l & 3u) * 8u)) & 255u;`}
+      // ── A PAGE IS A PALETTE AND 512 NIBBLES ── see the PAGE FORMAT note in render/buffers.js. Bit 31 of
+      // the descriptor says DENSE (a byte per voxel, the old layout) for the 0.3% of bricks that hold more
+      // than fifteen ids; everything else is 64 words of 4-bit indices followed by 4 words of palette.
+      if ((d & 0x80000000u) != 0u) { return (pool[${DBASE_U32}u + ((d & 0x7fffffffu) - 1u) * 128u + (l >> 2u)] >> ((l & 3u) * 8u)) & 255u; }
+      let pb = (d - 1u) * ${PAGE_U32}u;
+      let ni = (pool[pb + (l >> 3u)] >> ((l & 7u) * 4u)) & 15u;
+      if (ni == 0u) { return 0u; }                     // entry 0 is AIR, and it costs no palette read
+      return (pool[pb + 64u + (ni >> 2u)] >> ((ni & 3u) * 8u)) & 255u;`}
     }
     fn brickOcc(c : vec3<i32>) -> bool {
       var x = c.x + (i32(u.off.x) >> 3); if (x >= BX) { x -= BX; }
@@ -12401,12 +12774,16 @@ ${!POOL ? `      return ((bricks[i >> 5u] >> (i & 31u)) & 1u) != 0u;`
               var vc = clamp(vec3<i32>(floor(pv)), bmin, bmin + 7);
               var vNext = (vec3<f32>(vc + max(istep, vec3<i32>(0))) - ro) * inv;
               var vax = bax;
-${POOL ? `              let pbase = (bd - 1u) * 128u;
+${POOL ? `              let dns = (bd & 0x80000000u) != 0u;   // hoisted: the format is a property of the BRICK, so the march below branches on a value that is constant for all 32 steps
+              let pbase = select((bd - 1u) * ${PAGE_U32}u, ${DBASE_U32}u + ((bd & 0x7fffffffu) - 1u) * 128u, dns);
               var vIdx = (vc.x - bmin.x) + (vc.y - bmin.y) * 8 + (vc.z - bmin.z) * 64;`
         : `              var vIdx = ((bxw + (bc.x - bmin2.x)) << 3) + (vc.x - bmin.x) + vc.y * WX + (((bzw + (bc.z - bmin2.z)) << 3) + (vc.z - bmin.z)) * WX * WY;`}
               for (var j = 0; j < 32; j++) {
                 let ii = u32(vIdx);
-${POOL ? `                var v = (pool[pbase + (ii >> 2u)] >> ((ii & 3u) * 8u)) & 255u;`
+${POOL ? `                var v = 0u;
+                if (dns) { v = (pool[pbase + (ii >> 2u)] >> ((ii & 3u) * 8u)) & 255u; }
+                else { let ni = (pool[pbase + (ii >> 3u)] >> ((ii & 7u) * 4u)) & 15u;   // ONE load for a step through air, which is 88% of them — the palette word is read only on the step that ends the ray
+                  if (ni != 0u) { v = (pool[pbase + 64u + (ni >> 2u)] >> ((ni & 3u) * 8u)) & 255u; } }`
         : `                var v = (world[ii >> 2u] >> ((ii & 3u) * 8u)) & 255u;`}
                 if (skipW && (v == WTv || v == WBv)) { v = 0u; }      // water: invisible to an underwater camera
                 if (FOLSKIP && folSkipD > 0.0 && tv < folSkipD && isFol(v)) { v = 0u; }   // near foliage: transparent to the clipped-in primary ray (dead-coded out of the non-FOLSKIP variant)
@@ -12648,14 +13025,21 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // It carries the whole of "it snows in the pines and rains in the oaks AT THE SAME TIME": the snow march
     // culls a flake where this says oak, the rain march culls a drop where it says pine, and both dither on
     // it, so the two weathers cross-fade across the border exactly as the canopies and the ground cover do.
-    fn oakWobG(z : f32) -> f32 {                       // = the JS oakWob(z), which is deliberately part-shared with desWob so the two borders stay broadly parallel
-      return ((dVnoise(z * ${WOB_DES1} + 27.9, 83.1) - 0.5) * ${DESW}.0
-            + (dVnoise(z * ${WOB_DES2} + 11.2, 51.7) - 0.5) * ${DESW * 0.35}) * 0.6
-           + (dVnoise(z * ${WOB_OAK} + 143.7, 61.3) - 0.5) * ${OAKW}.0;
+    // ── THIS IS desWob NOW, NOT oakWob (2026-09-03) ── and it has to be, because the JS oakM it mirrors
+    // changed with it. The old body was oakWob: 0.6 of the desert meander plus an independent OAKW octave,
+    // which was right while a whole pine strip separated the oak from every other band and "broadly parallel"
+    // was all the arrangement needed. The three contiguous bands share EDGES, so both masks now meander on
+    // desWob alone and every boundary in the world is the same curve translated — see the note over oakM in
+    // world/window.js. A shader still carrying the old two-term wobble would drift up to ~675 voxels away from
+    // the JS mask at some z, and the weather would rain on the wrong side of a line the ground draws elsewhere.
+    // Two octaves, the same constants and the same seeds as the JS desWob, so the two are bit-comparable.
+    fn oakWobG(z : f32) -> f32 {                       // = the JS desWob(z), which world/window.js oakM and birchM both meander on
+      return (dVnoise(z * ${WOB_DES1} + 27.9, 83.1) - 0.5) * ${DESW}.0
+           + (dVnoise(z * ${WOB_DES2} + 11.2, 51.7) - 0.5) * ${DESW * 0.35};
     }
     // the band's CENTRE LINE at this z — its own function because the oakNear gate below has to measure the
     // camera's distance to the band, and a second copy of this expression is a second thing to keep in step.
-    fn oakCentreG(z : f32) -> f32 { return f32(${SPWX + OAKC - oakWob(SPWZ)}) + oakWobG(z); }   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
+    fn oakCentreG(z : f32) -> f32 { return f32(${SPWX + OAKC - desWob(SPWZ)}) + oakWobG(z); }   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
     fn oakMask(x : f32, z : f32) -> f32 {              // 1 = deep oak forest, 0 = pine forest — the mirror of desertMask
       let c = oakCentreG(z);
       let t = 0.5 + (f32(${OAKH}) - abs(pwrapG(x - c))) / ${OAKB}.0;   // a BAND, like the JS oakM: a half-plane has no west edge for the cycle to close against
@@ -33675,7 +34059,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       return { made: made.length, dist: D, ex: made.slice(0, 5) };
     },
     poolStats() { return { used: poolUsed, free: poolFreeN, slots: POOL_SLOTS, sealed: poolSealed, overflow: poolOverflow, dirty: poolDirty.size,
-      poolMB: +((bdesc.byteLength + poolUsed * 512) / 1048576).toFixed(1), denseWouldBeMB: +(WX * WY * WZ / 1048576).toFixed(1) }; },   // OVERFLOW IS THE ONE TO WATCH: a brick that cannot get a slot renders as AIR, so a nonzero count here is a hole in the world, not a statistic
+      poolMB: +((bdesc.byteLength + poolUsed * PAGE_B + densUsed * 512) / 1048576).toFixed(1), densePages: densUsed, denseWouldBeMB: +(WX * WY * WZ / 1048576).toFixed(1) }; },   // OVERFLOW IS THE ONE TO WATCH: a brick that cannot get a slot renders as AIR, so a nonzero count here is a hole in the world, not a statistic
     setRD(v) { RD_DBG = Math.max(0, Math.min(v | 0, GHALF - 24)); return { RD_DBG, gHalf: GHALF, uniform: UF[64] }; },   // GHALF, not HALF: the view is bounded by the GPU window now (see TWO WINDOWS in world/window.js), and clamping a sweep to the CPU half silently capped every measurement at 1000 — which then reads as the far ring refusing to fill past 1096   // dev: sweep view distance to measure how trace cost scales with it (0 = back to RD_FIXED)
     lifedbg(m) { lifeDbg = m === undefined ? 0 : m | 0; return { mode: lifeDbg, traceInjected: LIFE_TRACE }; },   // debug views: 0 off / 1 slot ids / 2 history confidence / 3 motion / 4 denoised AO / 5 RAW sun visibility / 6 DENOISED sun visibility
     birdCensus(r, wx, wz) {                          // tally the songbird colours around any centre, straight from the placement rule
@@ -33809,7 +34193,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     mem() { const m = performance.memory || {};        // CPU heap + the static GPU allocation the world costs
       return { jsHeapMB: +((m.usedJSHeapSize || 0) / 1048576).toFixed(1), jsHeapTotalMB: +((m.totalJSHeapSize || 0) / 1048576).toFixed(1),
         worldMB: +(W.byteLength / 1048576).toFixed(1), bricksMB: +((bricks.byteLength + bricks2.byteLength + wbricks.byteLength) / 1048576).toFixed(2),
-        hmapMB: +(hmap.byteLength / 1048576).toFixed(2), poolMB: +((bdesc.byteLength + poolUsed * 512) / 1048576).toFixed(1), RW, RH, CW, CH, renderScale }; },   // worldMB is the CPU array; poolMB is what the GPU actually holds for the same world
+        hmapMB: +(hmap.byteLength / 1048576).toFixed(2), poolMB: +((bdesc.byteLength + poolUsed * PAGE_B + densUsed * 512) / 1048576).toFixed(1), RW, RH, CW, CH, renderScale }; },   // worldMB is the CPU array; poolMB is what the GPU actually holds for the same world
     res(v) { if (v !== undefined) { renderScale = Math.max(0.375, Math.min(1, v)); makeTargets(true); resSync(); } return { renderScale, RW, RH }; },   // A/B the resolution scale from a test (does NOT persist — a test must not rewrite the player's vb_scale)
     // ══ WHAT IS THE POOL ACTUALLY HOLDING? ══ the player's flight recorder shows occupancy pinned at
     // 95.5-100.0% in the arctic, and a cache at its ceiling drops a tile for every insert — that churn is
@@ -33839,15 +34223,17 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       const cand = [];
       for (let t = 0; t < sample * 30 && cand.length < sample; t++) {
         const gb = (Math.random() * NG) | 0, d = bdesc[gb];
-        if (!d || d - 1 === SEALED_SLOT || uniShared.has(d - 1)) continue;   // census counts REAL pages; the shared ones are the fix, not the problem
+        if (!d || descIsDense(d) || d - 1 === SEALED_SLOT || uniShared.has(d - 1)) continue;   // census counts REAL nibble pages; the shared ones are the fix, not the problem, and a dense page is by definition not uniform
         cand.push([gb, d - 1]);
       }
       const stg = device.createBuffer({ size: Math.max(512, cand.length * 512), usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       const e = device.createCommandEncoder();
-      cand.forEach((c, i) => e.copyBufferToBuffer(poolBuf, c[1] * 512, stg, i * 512, 512));
+      cand.forEach((c, i) => e.copyBufferToBuffer(poolBuf, c[1] * PAGE_B, stg, i * 512, PAGE_B));
       device.queue.submit([e.finish()]);
       await stg.mapAsync(GPUMapMode.READ);
-      const pg = new Uint8Array(stg.getMappedRange().slice(0)); stg.unmap(); stg.destroy();
+      const raw = new Uint8Array(stg.getMappedRange().slice(0)); stg.unmap(); stg.destroy();
+      const raw32 = new Uint32Array(raw.buffer), pg = new Uint8Array(cand.length * 512), dec1 = new Uint8Array(512);
+      for (let i = 0; i < cand.length; i++) pg.set(decodePage(raw32, i * 128, dec1), i * 512);
       let uniform = 0, mixed = 0; const byId = {};
       for (let i = 0; i < cand.length; i++) {
         const o = i * 512, v0 = pg[o];
@@ -33859,6 +34245,54 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         .map(([id, ct]) => ({ id: +id, n: ct, pct: +(100 * ct / cand.length).toFixed(1), col: palette[+id] }));
       return { sampled: cand.length, uniformPct: +(100 * uniform / cand.length).toFixed(1), mixed, topUniformIds: rank,
         live: poolUsed - poolFreeN, slots: POOL_SLOTS, occPct: +(100 * (poolUsed - poolFreeN) / POOL_SLOTS).toFixed(1) };
+    },
+    // ══ HOW SPARSE ARE THE CANOPY PAGES? ══ poolByHist says 70% of every REAL page sits at or above
+    // y 192, where sealing reaches nothing (sealed is 0 from y 208 up) — that band is pure canopy and it
+    // is paying a full 512-byte page per brick. A leaf brick is mostly AIR, so the number that decides
+    // whether a compact encoding is worth building is how many non-air voxels a page up there actually
+    // holds. The buckets are the SLOT SIZES a slab allocator could offer: a 64-byte occupancy mask plus
+    // one id per set voxel fits 64 voxels in 128 bytes and 192 in 256, so a page with <= 64 non-air
+    // voxels could be held in a QUARTER of what it takes now. Samples REAL pages only, exactly as
+    // poolCensus counts them — the sealed and uniform-shared ones are already free and are not the problem.
+    async poolSparse(sample = 4096, minY = 192) {
+      const by0 = Math.max(0, (minY / 8) | 0), cand = [];
+      for (let t = 0; t < sample * 60 && cand.length < sample; t++) {
+        const by = by0 + ((Math.random() * Math.max(1, GBY - by0)) | 0);
+        const bx = (Math.random() * GBX) | 0, bz = (Math.random() * GBZ) | 0;
+        const d = bdesc[by * GBX + bz * GBX * GBY + bx];
+        if (!d || descIsDense(d) || d - 1 === SEALED_SLOT || uniShared.has(d - 1)) continue;
+        cand.push([by * 8, d - 1]);
+      }
+      if (!cand.length) return { sampled: 0, note: 'no real pages at or above y ' + minY };
+      const stg = device.createBuffer({ size: Math.max(512, cand.length * 512), usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const e = device.createCommandEncoder();
+      cand.forEach((c, i) => e.copyBufferToBuffer(poolBuf, c[1] * PAGE_B, stg, i * 512, PAGE_B));
+      device.queue.submit([e.finish()]);
+      await stg.mapAsync(GPUMapMode.READ);
+      const raw = new Uint8Array(stg.getMappedRange().slice(0)); stg.unmap(); stg.destroy();
+      const raw32 = new Uint32Array(raw.buffer), pg = new Uint8Array(cand.length * 512), dec1 = new Uint8Array(512);
+      for (let i = 0; i < cand.length; i++) pg.set(decodePage(raw32, i * 128, dec1), i * 512);
+      const BK = [0, 1, 4, 8, 16, 32, 64, 96, 128, 192, 256, 384, 512];
+      const hist = new Array(BK.length).fill(0);
+      let sum = 0, fit128 = 0, fit256 = 0, full = 0, maxIds = 0, sumIds = 0;
+      const idh = new Array(33).fill(0);               // distinct ids per page — decides whether a per-page PALETTE can replace the byte, which is the cheap encoding (one load + a nibble) against the mask+popcount one
+      for (let i = 0; i < cand.length; i++) {
+        const o = i * 512, ids = new Set(); let n = 0;
+        for (let j = 0; j < 512; j++) { const v = pg[o + j]; if (v) { n++; ids.add(v); } }
+        sum += n; sumIds += ids.size; if (ids.size > maxIds) maxIds = ids.size;
+        idh[Math.min(32, ids.size)]++;
+        let b = 0; while (b + 1 < BK.length && n > BK[b + 1]) b++;
+        hist[b]++;
+        if (n <= 64) fit128++; else if (n <= 192) fit256++; else full++;
+      }
+      const N = cand.length, curB = N * 512, newB = fit128 * 128 + fit256 * 256 + full * 512;
+      return { sampled: N, minY, meanNonAir: +(sum / N).toFixed(1), meanIdsPerPage: +(sumIds / N).toFixed(1), maxIdsPerPage: maxIds,
+        buckets: BK.map((b, i) => ({ upTo: b, n: hist[i], pct: +(100 * hist[i] / N).toFixed(1) })).filter((q) => q.n),
+        idsPerPage: idh.map((n, i) => ({ ids: i, n, pct: +(100 * n / N).toFixed(1) })).filter((q) => q.n),
+        pctIdsLE4: +(100 * idh.slice(0, 5).reduce((a, b) => a + b, 0) / N).toFixed(1),
+        pctIdsLE16: +(100 * idh.slice(0, 17).reduce((a, b) => a + b, 0) / N).toFixed(1),
+        fit128: +(100 * fit128 / N).toFixed(1), fit256: +(100 * fit256 / N).toFixed(1), needFull: +(100 * full / N).toFixed(1),
+        slabSaving: +(curB / newB).toFixed(2) };
     },
     async gpudiff(sample = 2048) {                    // read the POOL back and diff vs CPU W — INSIDE rect only (outside is stale by design). 0 = in sync.
       // The dense GPU world is gone, so "does the GPU agree with W" is now two questions. Every brick's
@@ -33888,7 +34322,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         const page = new Uint8Array(512);
         for (let lz = 0; lz < 8; lz++) for (let ly = 0; ly < 8; ly++)
           page.set(W.subarray(bx * 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY, bx * 8 + 8 + (by * 8 + ly) * WX + (bz * 8 + lz) * WX * WY), ly * 8 + lz * 64);
-        want.push({ b, slot: cpuDesc[gb] - 1, page });
+        want.push({ b, slot: descIdx(cpuDesc[gb]), dense: descIsDense(cpuDesc[gb]), page });
         if (want.length >= 512) break;                 // one staging buffer, one submit — see below
       }
       // ONE encoder, submitted BEFORE the first await, for every sampled page. Copying them inside the
@@ -33896,7 +34330,8 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       // of this check came back with 22-74 byte diffs that were all perched birds stamping and unstamping.
       const pageStg = device.createBuffer({ size: Math.max(512, want.length * 512), usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       const e1 = device.createCommandEncoder();
-      want.forEach((w, i) => e1.copyBufferToBuffer(poolBuf, w.slot * 512, pageStg, i * 512, 512));
+      // a page is 272 bytes now unless it is a dense one; the staging keeps a 512 stride so one buffer serves both
+      want.forEach((w, i) => e1.copyBufferToBuffer(poolBuf, w.dense ? DBASE_U32 * 4 + w.slot * 512 : w.slot * PAGE_B, pageStg, i * 512, w.dense ? 512 : PAGE_B));
       device.queue.submit([e1.finish()]);
       let descBad = 0, voxBad = 0;
       await bdescRead.mapAsync(GPUMapMode.READ);
@@ -33912,8 +34347,11 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       await pageStg.mapAsync(GPUMapMode.READ);
       const gp = new Uint8Array(pageStg.getMappedRange().slice(0));
       pageStg.unmap(); pageStg.destroy();
-      want.forEach((w, i) => { for (let k = 0; k < 512; k++) if (gp[i * 512 + k] !== w.page[k]) {
-        voxBad++; if (spots.length < 20) spots.push({ b: w.b, slot: w.slot, k, gpu: gp[i * 512 + k], cpu: w.page[k], kind: 'page' }); } });
+      const gp32 = new Uint32Array(gp.buffer), dec = new Uint8Array(512);
+      want.forEach((w, i) => {
+        const got = w.dense ? gp.subarray(i * 512, i * 512 + 512) : decodePage(gp32, i * 128, dec);
+        for (let k = 0; k < 512; k++) if (got[k] !== w.page[k]) {
+          voxBad++; if (spots.length < 20) spots.push({ b: w.b, slot: w.slot, dense: w.dense, k, gpu: got[k], cpu: w.page[k], kind: 'page' }); } });
       return { diffs: descBad + voxBad, descBad, voxBad, bricksChecked: want.length, spots };
     },
     bdiff() { return 'superseded by __vb.gpudiff() — the L1/L2/water tables the GPU reads are bdesc/gb2/gwb, and gpudiff checks bdesc exhaustively against W'; },
@@ -34118,8 +34556,14 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       const hh0 = H(xx, zz), dxq = pwrap(xx - SPWX);
       let est = -1;                                    // …the SAME field-gradient estimate oakBank uses, so coverage can actually be counted
       if (d >= OAKBANKR && hh0 - WL < 92) {
-        const bmq = (dxq < BIRCHFAR && dxq > BIRCHWFAR) ? birchM(xx, zz) : 0;
-        const g = 4, fld = bmq > 0 ? birchH : (dxq >= OAKFAR || dxq <= OAKWFAR ? pineH : oakH);
+        // ── ONE FIELD, BECAUSE THERE IS ONLY ONE (fixed 2026-09-03) ── this picked between birchH, pineH and
+        // oakH, and TWO OF THE THREE HAVE NEVER EXISTED: the birch band stopped having a field of its own on
+        // 2026-09-02 (world/window.js says so in as many words, "There is no birchH") and pineH was never a
+        // name at all. So every call that reached this branch threw ReferenceError and __vb.bankAt has been
+        // dead since. pineBase is the answer to all three now — it is the shared scalar H, makeHRow and
+        // makeHCol agree through, and it already carries the birch's halved relief and the oak's rounded
+        // hills internally, so asking it is asking whichever field this column actually stands on.
+        const g = 4, fld = pineBase;
         const gx = (fld(xx + g, zz) - hh0) / g, gz = (fld(xx, zz + g) - hh0) / g;
         const gr = Math.sqrt(gx * gx + gz * gz);
         if (gr > 0.02) { const df = (hh0 - WL) / gr; if (df >= 0) est = df; }

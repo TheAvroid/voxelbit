@@ -50,7 +50,16 @@
     // cell it touches, and every leaf on a standing tree is a few hops from its own branch, so the full
     // 77k walk only ever happens for a crown that really is severed - which is exactly the case that has
     // to be decided rather than deferred.
-    drapeCap: 1 << 17,
+    // ── 1<<17 -> 1<<19, BECAUSE THE OAKS GREW 50% (user 2026-09-03) ── the seven crowns measured above
+    // (2,468 / 5,874 / 1,372 / 17,314 / 26,478 / 60,303 / 77,505) are now 2,468 / 16,785 / 7,909 /
+    // 48,965 / 80,598 / 143,652 / 212,041 — the bush is untouched by design and every tree is 3.375x
+    // the volume. TWO of the seven now clear 1<<17 = 131,072, so the exact failure this cap was raised
+    // to 1<<17 to fix would have come straight back: a capped DRAPE flood returns undecided, supFlush
+    // re-queues the seed, and it walks the cap again next frame forever, for every disturbed leaf.
+    // 1<<19 = 524,288 is 2.5x the largest crown rather than 1.24x, which is the headroom 1<<18 would
+    // NOT have given: the number that matters is the largest 26-connected component the bake can
+    // produce, and it moves with any re-bake. Sized so the next resize does not silently re-break it.
+    drapeCap: 1 << 19,
     msBudget: 2.0,                                     // ms/frame, checked BETWEEN components — never mid-flood, so a component is always resolved as a whole
     maxPasses: 4,                                      // cascade rounds per frame: a lift appends its vacated cells to the same queue
     qMax: 400000,

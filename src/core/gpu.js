@@ -31,9 +31,27 @@
   let SAFE = 0;
   try { SAFE = Math.max(0, Math.min(3, +localStorage.getItem('vb_safe') | 0)); } catch (e) {}
   if (SAFE >= 2) lim = Math.min(lim, SAFE >= 3 ? 402653184 : 905969664);   // 1024 and 1536 windows — the rungs of the WXZ ladder below, named as the byte caps it tests
-  const WYpick = lim >= SIZE384 ? 384 : (lim >= SIZE256 ? 256 : 192);
+  let WYpick = lim >= SIZE384 ? 384 : (lim >= SIZE256 ? 256 : 192);
   let WXZ = 768;                                       // widest window the adapter can bind: 2048 (1.5 GB) → a TRUE 100 m view radius
   if (WYpick === 384) for (const c of [2048, 1536, 1280, 1024]) if (lim >= c * c * 384) { WXZ = c; break; }
+  // ══ AND THEN THE CEILING GOES UP, BUT ONLY WITH WHATEVER IS LEFT OVER (user 2026-09-03: the pine tips are
+  // cut off) ══ the nine pines were re-baked from 151-152 voxels to 225-228, and the TREE RESERVE that pins
+  // HMAX (world/window.js) was sized for the old ones: a trunk standing above WY - 228 has its crown written
+  // straight past the top of the world array and comes out flat. Measured before this: 20.4% of pine columns
+  // clipped, worst case 32 voxels off the tip.
+  // WHY THE ORDER MATTERS, AND WHY THIS LOOP IS AFTER THE WXZ ONE. The obvious fix is a 512 rung in WYpick
+  // above, and it is a trap: WYpick is chosen FIRST, so a taller world makes every rung of the WXZ ladder
+  // harder and the window silently falls 2048 -> 1536. That is the view radius, 200 m -> 150 m, paid to fix
+  // a treetop. Choosing WXZ first and spending only the REMAINDER on height means the window can never
+  // regress -- a machine that cannot afford a taller world simply keeps the one it has.
+  // WHY 480 AND NOT 512, WHICH IS THE NUMBER ANYONE WOULD REACH FOR: 2048*2048*512 is 2,147,483,648 bytes and
+  // maxStorageBufferBindingSize on the measured adapter is 2,147,483,644. It misses by FOUR BYTES, and the
+  // 2 GB cap is a common WebGPU ceiling rather than one machine's quirk. 480 fits at 1920 MB with headroom.
+  // WHAT IT BUYS: at WY 480 the reserve can be the 234 the new pines need AND HMAX still lands at 246, so the
+  // hills go 118 -> 138 voxels above water. This is not a trade against terrain height, it is more of both.
+  // The rungs step by 32 (a multiple of the 8-voxel brick) so a machine that cannot carry 480 can still take
+  // 448 or 416 and clip less rather than nothing.
+  if (WYpick === 384) for (const y of [480, 448, 416]) if (lim >= WXZ * WXZ * y) { WYpick = y; break; }
   // ── HOW MUCH WIDER THE GPU WINDOW IS THAN THE CPU ONE ── the full argument is at TWO WINDOWS in
   // world/window.js. Chosen HERE because it is an adapter question, alongside WXZ and WYpick, and because
   // world/window.js sizes its arrays off it and runs after this fragment.
@@ -48,7 +66,12 @@
   // its own reasons and must not then be handed four times the memory for a longer view it cannot afford.
   // A LADDER, NOT A CONSTANT: capable machines get 200 m, everything else keeps the 100 m it has today, the
   // same way WXZ already walks 2048/1536/1280/1024/768. ?gmul=1 forces it off, ?gmul=2 forces it on.
-  const GPOOL2 = Math.ceil((WXZ * 2 >> 3) * (WYpick >> 3) * (WXZ * 2 >> 3) * 0.17) * 512;   // the GMUL-2 pool, in bytes - must match POOL_FRAC_RING in render/buffers.js
+  // ── 0.17 * 512 -> 0.30 * 272 (2026-09-03) ── a page is a 16-entry palette and 512 four-bit indices now,
+  // so the same bytes hold 1.76x the bricks; see the PAGE FORMAT note in render/buffers.js. Both numbers
+  // move together and BOTH must match it — the fraction AND the stride — or this asks the adapter for a
+  // binding of the wrong size and the pool silently allocates short.
+  const GPOOL2S = Math.ceil((WXZ * 2 >> 3) * (WYpick >> 3) * (WXZ * 2 >> 3) * 0.30);
+  const GPOOL2 = GPOOL2S * 272 + Math.ceil(GPOOL2S * 0.025) * 512;   // the GMUL-2 pool, in bytes - must match POOL_FRAC_RING + PAGE_B + DENSE_PAGES in render/buffers.js
   // ── AND IT IS BACK ON, ADAPTER-GATED (2026-08-30) ── the far ring was switched off earlier the same day
   // because it collapsed under movement. Three bugs, all now fixed and re-measured under sustained flight:
   // the ring re-fetched every tile the near window had covered instead of ADOPTING its still-valid pages;
@@ -57,7 +80,16 @@
   // made the resulting stale sealed-page slab bright pink.
   // Measured after: the filled radius HOLDS at 1920 through sprint-speed flight (it used to fall to ~1050 and
   // oscillate), zero overflow, and the far terrain renders real ground all the way out.
-  let GMUL_PICK = (WXZ === 2048 && WYpick === 384 && lim >= GPOOL2 * 1.15) ? 2 : 1;
+  // ── `WYpick === 384` -> `>= 384` (2026-09-03) ── that clause was shorthand for "this machine is carrying
+  // the full window", written when 384 was the only tall rung there was. The moment the ceiling could go to
+  // 480 it started meaning the opposite: a machine that had MORE memory, not less, failed the test and had
+  // its far ring switched off — GMUL fell 2 -> 1 and the view distance halved as a side effect of a fix that
+  // was specifically trying to protect it. The real test is the one standing next to it, `lim >= GPOOL2*1.15`,
+  // and it needs no help: GPOOL2 is sized off `WYpick >> 3`, so a taller world already asks for a
+  // proportionally bigger ring pool (1281 MB at 480 against 1026 at 384) and a device that cannot bind it
+  // still steps down on its own. WXZ === 2048 stays — a machine that fell down the WIDTH ladder has its own
+  // reasons, and that is the case the original note is really about.
+  let GMUL_PICK = (WXZ === 2048 && WYpick >= 384 && lim >= GPOOL2 * 1.15) ? 2 : 1;
   if (SAFE >= 1) GMUL_PICK = 1;                        // BEFORE the ?gmul override, so an explicit flag still wins for testing on a safe-moded profile
   { const m = /[?&]gmul=(\d+)/.exec(location.search); if (m) GMUL_PICK = Math.max(1, Math.min(2, +m[1] | 0)); }
   if (GMUL_PICK > 1) console.log('[vb] view distance x' + GMUL_PICK + ' - far ring pool', (GPOOL2 / 1048576) | 0, 'MB of', (lim / 1048576) | 0, 'MB bindable');
@@ -99,7 +131,8 @@
   // at 1.04 GB - half a gigabyte of limit nothing was ever going to use, on the machines least able to spare it.
   // GPOOL1 mirrors POOL_FRAC in render/buffers.js exactly as GPOOL2 above mirrors POOL_FRAC_RING, and for the
   // same reason: the pool has to be SIZED before the fragment that sizes it runs. Both are noted there too.
-  const GPOOL1 = Math.ceil((WXZ >> 3) * (WYpick >> 3) * (WXZ >> 3) * 0.25) * 512;
+  const GPOOL1S = Math.ceil((WXZ >> 3) * (WYpick >> 3) * (WXZ >> 3) * 0.44);
+  const GPOOL1 = GPOOL1S * 272 + Math.ceil(GPOOL1S * 0.025) * 512;   // mirrors POOL_FRAC + PAGE_B, as GPOOL2 does
   const BIGBUF = Math.max(GMUL_PICK > 1 ? GPOOL2 : GPOOL1, 268435456);   // 256 MB floor: the default maxBufferSize, so this never asks for LESS than a device already gives
   const device = await adapter.requestDevice({
     requiredLimits: { maxStorageBufferBindingSize: BIGBUF, maxBufferSize: BIGBUF },
