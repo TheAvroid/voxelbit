@@ -385,6 +385,53 @@
   // ── LAKE DISTRICTS (see the note inside pineBase) ── the constants, and the one formula both the field and the
   // debug tap read. lakeZoneOf takes the octave VALUE so pineBase, which already has it, does not pay for it twice;
   // lakeZone(x, z) is the standalone form for taps and tests and computes the same octave the same way.
+  // ══ THE OCEAN (user 2026-09-02: "make the world 71% water … separate these biomes into continents/puzzle
+  // pieces vs just bands") ══ one more low-frequency field, and the sea is where it is low. contC is a 3-octave fbm
+  // at a 14 km top wavelength; CONT_T is its 68.8% quantile, MEASURED over a 400x400 km square at stride 400
+  // (1M samples): the ocean alone is then 68.8% of the plane and the lake districts on the remaining land bring
+  // the water to 71%. At that scale the land comes as ~270 masses per 160,000 km², median 14 km², the largest
+  // ~6,000 km² — continents and islands rather than the archipelago a 9 km wavelength gave (675 masses, median 5).
+  // The sea is made by the SAME machinery as the lakes: pineRaw's water weight is the lakes' OR the ocean's, the
+  // pull toward a bed is the same lerp, only the bed is deeper past the shelf (OCEAN_BED), and the beach marches
+  // toward whichever water is nearer. No second water mechanic — the user's standing rule.
+  const CONT_S = 1 / 14000;
+  const CONT_T = 0.582;                              // the 68.8% quantile is 0.5697, and that measured 68.2% water once the coast ramp and the dry biomes were in (the census in the report): the field's density here is ~2.4% of the plane per 0.01, so +0.012
+  const CONT_RAMP = 0.02;                              // the coast, in field units: the ocean weight goes 0 -> 1 across it (~100-200 columns at this field's gradient)
+  const CONT_APRON = 0.004;                            // …and how far inland of the coast the beach may still reach (~30 columns), the ocean's SAND_APRON
+  const OCEAN_BED = WL - 40;                           // the open sea's raw bed; deepen() takes it to ~78 under the surface. The shelf keeps LAKE_BED, so islands can still stand on it
+  const OCEAN_SHELF = 0.03, OCEAN_DEEPRAMP = 0.04;     // how far past the coast, in field units, the bed starts down, and over how much
+  const contC = (x, z) => fbm(x * CONT_S + 400.1, z * CONT_S + 900.7);
+  const oceanOf = (c) => (c >= CONT_T ? 0 : c <= CONT_T - CONT_RAMP ? 1 : sstep((CONT_T - c) / CONT_RAMP));
+  const oceanDeepOf = (c) => { const t = (CONT_T - OCEAN_SHELF - c) / OCEAN_DEEPRAMP; return t <= 0 ? 0 : t >= 1 ? 1 : sstep(t); };
+  const oceanM = (x, z) => oceanOf(contC(x, z));       // 1 = open sea, 0 = land; the standalone form for taps and tests
+  // ══ THE PUZZLE PIECES ══ the biomes were x-bands on a wrapped period (BIOP), pinned to the spawn. They are now a
+  // partition of the plane: a jittered grid of cell centres, PIECE apart, the plane WARPED by a value noise before
+  // it looks the centres up so the borders wander instead of running straight, and each cell owning one biome by
+  // hash — pine, birch, oak, cherry, desert and arctic, in the shares PIECE_* set (user, later the same day: "also add the
+  // cherry forest, desert, and arctic from earlier commits" — all four wiped on 2026-09-01 came back as pieces). A column belongs to its nearest centre, blended
+  // with the second-nearest over PIECE_BORDER where the two are equally close, which is the Voronoi border. Pure
+  // (x, z), so nothing is anchored to the spawn any more and gotoBiome/bandScan simply find pieces along x.
+  // biomeAt writes its three masks onto itself (function properties, which survive the workers' fn.toString()
+  // rebuild) and remembers the last column, because fillColumn, pineRaw and the placers each ask for two or three
+  // masks of the same column in a row.
+  const PIECE = 6000, PIECE_JIT = 0.4, PIECE_WARP = 900, PIECE_WS = 1 / 2500, PIECE_BORDER = 500;
+  const PIECE_PINE = 0.30, PIECE_BIRCH = 0.45, PIECE_OAK = 0.65, PIECE_CHERRY = 0.72, PIECE_DESERT = 0.86;   // the hash thresholds, cumulative: pine 30% of the pieces, birch 15, oak 20, cherry 7, desert 14, arctic the rest (14)
+  const biomeAt = (x, z) => {
+    if (biomeAt.mx === x && biomeAt.mz === z) return;
+    const wx = x + (vnoise(x * PIECE_WS + 77.7, z * PIECE_WS + 31.1) - 0.5) * 2 * PIECE_WARP, wz = z + (vnoise(x * PIECE_WS + 191.3, z * PIECE_WS + 57.9) - 0.5) * 2 * PIECE_WARP;
+    const cx = Math.floor(wx / PIECE), cz = Math.floor(wz / PIECE); let d1 = 1e18, d2 = 1e18, id1 = 0, id2 = 0;
+    for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) { const gx = cx + i, gz = cz + j;
+      const px = (gx + 0.5 + (ihash(gx * 3 + 1, gz * 5 + 2) - 0.5) * 2 * PIECE_JIT) * PIECE, pz = (gz + 0.5 + (ihash(gx * 7 + 3, gz * 11 + 5) - 0.5) * 2 * PIECE_JIT) * PIECE;
+      const d = (wx - px) * (wx - px) + (wz - pz) * (wz - pz); const r = ihash(gx * 13 + 7, gz * 17 + 9); const id = r < PIECE_PINE ? 0 : r < PIECE_BIRCH ? 1 : r < PIECE_OAK ? 2 : r < PIECE_CHERRY ? 3 : r < PIECE_DESERT ? 4 : 5;
+      if (d < d1) { d2 = d1; id2 = id1; d1 = d; id1 = id; } else if (d < d2) { d2 = d; id2 = id; } }
+    const m1 = sstep(Math.min(1, 0.5 + (Math.sqrt(d2) - Math.sqrt(d1)) / (2 * PIECE_BORDER))), m2 = 1 - m1;
+    biomeAt.mx = x; biomeAt.mz = z;
+    const sh = (id) => (id1 === id ? m1 : 0) + (id2 === id ? m2 : 0);
+    biomeAt.b = sh(1); biomeAt.c = sh(3); biomeAt.o = sh(2) + biomeAt.c; biomeAt.d = sh(4); biomeAt.a = sh(5);   // the blossom counts as oak too — see cherryM
+  };
+  const OAK_ELEV = 1;                                  // the oak forest's relief over the waterline, as a share of the pine's: 1, the pine's own (user 2026-09-02: "make sure all the terrain uses the same hilly terrain as the birch and pine forest"). 0.65 was tried first, after the old oakH's gentle rolling country; the birch alone keeps its halving (BIRCH_ELEV), asked for by name earlier the same day
+  const DESERT_TERRAIN = 0;                            // the desert's own dune field in H(): OFF (user 2026-09-02: "make sure all the terrain uses the same hilly terrain as the birch and pine forest", then "keep the dunes", then "I retract that, make the desert match the pines"). A desert piece is the pine field with sand on it; the dune lerp and the WL+2 flat are kept in all three copies of H behind this switch
+  const STRAIT_ON = 0;                                 // the strait between the birch band and the pine band: OFF, the sea separates the pieces now. Kept, not deleted, in the pass order below
   const LAKE_T = 0.28;                                 // the district threshold on a1 (~18% of the plane sits under it; the water ends up ~9%)
   const LAKE_RAMP = 0.24;                              // …and the ramp under it, in a1 units. WIDE: this is the bank — see the note in pineBase
   const LAKE_PULL = 0.85, LAKE_BED = WL - 14;          // the core's pull toward its bed. 0.85 rather than 0.75 because the ridges between the old pockets have to go under, or the district is still several lakes (0.75 left 2, 0.8 left 1)
@@ -409,8 +456,8 @@
     const k = m * m;
     let h = PINE_FLOOR + PINE_RELIEF * k - PINE_BOWL * (1 - m) * (1 - m)
          + 9 * (fbm(x * 0.030 + 3.7, z * 0.030 + 9.1) - 0.5) * k * k;
-    const bm = birchM(x, z);
-    if (bm > 0) { h = WL + (h - WL) * (1 - bm * (1 - BIRCH_ELEV)); }   // blended on the mask, so the two forests meet on a slope rather than a step — and the blend happens across the strait below, where it is under water and invisible
+    const bm = birchM(x, z), om = oakM(x, z);
+    { const rel = 1 - bm * (1 - BIRCH_ELEV) - om * (1 - OAK_ELEV); if (rel < 1) h = WL + (h - WL) * rel; }   // the birch's and the oak's relief over the waterline, blended on the masks so the forests meet on a slope rather than a step (the masks sum to at most 1 at a border)   // blended on the mask, so the two forests meet on a slope rather than a step — and the blend happens across the strait below, where it is under water and invisible
     // ── LAKE DISTRICTS: WATER ONLY WHERE THE MASSIF FIELD IS LOW, AND ALL OF IT THERE (user 2026-09-02: "prevent
     // small lakes from forming … apply it to the terrain … instead of tiny multiple shallow lakes, try to make one
     // bigger body of water, instead of fragments") ── the field above dips under WL wherever m is small, and m is
@@ -437,17 +484,19 @@
     // 17% -> 11% of the water; sand per shore cell 6.8 -> 10.8 (the beaches got wider, not narrower). Applied AFTER
     // the birch halving so both forests share one lake system at one depth and only the hills differ; the strait
     // below still min()s through it. Every copy of the height field goes through this function, so gtest holds.
-    const L = lakeZoneOf(a1);
+    const cC = contC(x, z), Lo = oceanOf(cC);
+    const L = 1 - (1 - lakeZoneOf(a1)) * (1 - Lo);   // the water weight: a lake district OR the sea — the smooth OR, so the two never meet on a crease
     {
       const hd = h - LAKE_FLOOR > 12 * LAKE_SOFT ? h : LAKE_FLOOR + LAKE_SOFT * Math.log(1 + Math.exp((h - LAKE_FLOOR) / LAKE_SOFT));   // dry: the soft clamp (identity high up, where exp would underflow to nothing anyway). The pans' relief is added in pineBase, AFTER the beach, so it neither bumps the beach nor puts noise into the slope and the march the beach measures with
       if (L <= 0) h = hd;
-      else { const hw = Math.min(h, h - LAKE_PULL * (h - LAKE_BED));   // wet: the pull, lower-only like the strait's, so a pocket already under the bed keeps its depth
+      else { const bed = LAKE_BED + (OCEAN_BED - LAKE_BED) * oceanDeepOf(cC);   // a lake's bed on land and on the shelf, the sea's past it
+        const hw = Math.min(h, h - LAKE_PULL * (h - bed));   // wet: the pull, lower-only like the strait's, so a pocket already under the bed keeps its depth
         h = L >= 1 ? hw : hd + L * (hw - hd); } }
     return h;
   };
   const pineBase = (x, z) => {
     let h = pineRaw(x, z);
-    const a1 = vnoise(x * 0.0018 + 61.3, z * 0.0018 + 77.9), L = lakeZoneOf(a1);   // the octave again (4 hashes) rather than an allocation per column to hand it back from pineRaw
+    const a1 = vnoise(x * 0.0018 + 61.3, z * 0.0018 + 77.9), cC = contC(x, z), L = 1 - (1 - lakeZoneOf(a1)) * (1 - oceanOf(cC));   // the octave and the continent field again rather than an allocation per column to hand them back from pineRaw
     // ── THE BEACH IS ONE WIDTH EVERYWHERE (user 2026-09-02: "double the sand bank surface area … keeping the surface
     // area of the water", then "make the banks consistent in width. this bank for example is too narrow") ── the sand
     // is a HEIGHT band (fillColumn, WL+1..WL+6), so on the ground it is as wide as the shore is gentle, and the shore's
@@ -471,24 +520,35 @@
     // cannot reach the fixed stretch's total sand, because that doubling came from a long tail of very wide beaches
     // — at 96 the sand is x1.5-1.8 the pre-beach amount (about 80% of the doubling); at 128 it would be the full
     // doubling, with every beach 13 m wide.
-    { const w = a1 <= LAKE_T ? 1 : (a1 >= LAKE_T + SAND_APRON ? 0 : 1 - sstep((a1 - LAKE_T) / SAND_APRON));
+    { const w = Math.max(a1 <= LAKE_T ? 1 : (a1 >= LAKE_T + SAND_APRON ? 0 : 1 - sstep((a1 - LAKE_T) / SAND_APRON)),
+                         cC <= CONT_T ? 1 : (cC >= CONT_T + CONT_APRON ? 0 : 1 - sstep((cC - CONT_T) / CONT_APRON)));   // a lake's apron or the coast's, whichever reaches
       if (w > 0 && h > WL + 1) {
         // the direction TOWARD THE LAKE is down the district's own field, not downhill: the lake mask has one smooth
         // gradient that is defined on flat ground too. Marching downhill instead (the first version) skipped the
         // flat drained beds and left every bed's edge as a 2-4 voxel wall against the compressed beach beside it,
         // and two neighbours' downhill lines could find different shores — measured on 400x400 blocks: seams on
         // 0.01-0.16% of dry columns and 2-voxel steps on up to 3%; this way both are 0.00% (the fixed stretch's level)
-        const gx = (vnoise((x + 4) * 0.0018 + 61.3, z * 0.0018 + 77.9) - vnoise((x - 4) * 0.0018 + 61.3, z * 0.0018 + 77.9)) / 8,
-              gz = (vnoise(x * 0.0018 + 61.3, (z + 4) * 0.0018 + 77.9) - vnoise(x * 0.0018 + 61.3, (z - 4) * 0.0018 + 77.9)) / 8;
-        const G = Math.hypot(gx, gz);
-        if (G > 1e-7) {
-          const ux = -gx / G, uz = -gz / G, B = SAND_SPAN - 1, d = h - WL, maxD = SAND_W + SAND_R;
-          let D = -1, prevH = h, prevD = 0, n = 0; const smp = [h];   // heights along the march, SAND_STEP apart, for the rejoin below
-          while (n * SAND_STEP < maxD) { n++; const hv = pineRaw(x + ux * n * SAND_STEP, z + uz * n * SAND_STEP); smp.push(hv);
+        // TWO marches, and the shorter wins: one toward the lake district (down the massif octave a1) and one toward
+        // the sea (down the continent field). Each direction is smooth and defined on flat ground; the minimum of
+        // two continuous distances is continuous, so the coast and a lake can meet without a seam — one direction
+        // switched by a rule would put a crease wherever the rule flips
+        const B = SAND_SPAN - 1, d = h - WL, maxD = SAND_W + SAND_R;
+        let D = -1, smp = null;
+        for (let pass = 0; pass < 2; pass++) {
+          let gx, gz;
+          if (pass === 0) { gx = (vnoise((x + 4) * 0.0018 + 61.3, z * 0.0018 + 77.9) - vnoise((x - 4) * 0.0018 + 61.3, z * 0.0018 + 77.9)) / 8;
+                            gz = (vnoise(x * 0.0018 + 61.3, (z + 4) * 0.0018 + 77.9) - vnoise(x * 0.0018 + 61.3, (z - 4) * 0.0018 + 77.9)) / 8; }
+          else { gx = (contC(x + 64, z) - contC(x - 64, z)) / 128; gz = (contC(x, z + 64) - contC(x, z - 64)) / 128; }   // the continent field is 25x slower, so its stencil is wider
+          const G = Math.hypot(gx, gz); if (G <= 1e-9) continue;
+          const ux = -gx / G, uz = -gz / G;
+          let Df = -1, prevH = h, prevD = 0, n = 0; const sm = [h];   // heights along this march, SAND_STEP apart
+          while (n * SAND_STEP < maxD) { n++; const hv = pineRaw(x + ux * n * SAND_STEP, z + uz * n * SAND_STEP); sm.push(hv);
             if (hv <= WL + 1) { let lo = prevD, hi = n * SAND_STEP, hlo = prevH, hhi = hv;   // crossed WL + 1 in this stride: bisect, then interpolate the crossing
               for (let b = 0; b < SAND_BIS; b++) { const mid = (lo + hi) / 2, hm = pineRaw(x + ux * mid, z + uz * mid); if (hm <= WL + 1) { hi = mid; hhi = hm; } else { lo = mid; hlo = hm; } }
-              D = lo + (hi - lo) * (hlo - (WL + 1)) / Math.max(1e-6, hlo - hhi); break; }
+              Df = lo + (hi - lo) * (hlo - (WL + 1)) / Math.max(1e-6, hlo - hhi); break; }
             prevH = hv; prevD = n * SAND_STEP; }
+          if (Df >= 0 && (D < 0 || Df < D)) { D = Df; smp = sm; } }
+        {
           if (D >= 0) {                                // no water within the beach and its rejoin: not a beach column, untouched
             const hAt = (Dq) => { const back = Math.max(0, (D - Dq) / SAND_STEP), i0 = Math.floor(back), f = back - i0; return smp[Math.min(i0, smp.length - 1)] * (1 - f) + smp[Math.min(i0 + 1, smp.length - 1)] * f - WL; };   // the raw height Dq columns from the water, off the march's samples
             let Wq = SAND_W;                           // …shortened on a shore so steep that the full beach would cut more than SAND_CUT into it
@@ -510,6 +570,7 @@
     // way the mask measures it and the two can never drift apart. A cosine bump rather than a smoothstep
     // pair: it is flat-topped in the middle (open water, not a V) and its tails reach zero with zero slope,
     // so neither shore gets a crease where the pull stops.
+    if (STRAIT_ON) {
     const sd0 = Math.abs(Math.abs(pwrap(x - (SPWX + BIRCHC + desWob(z) - desWob(SPWZ)))) - BIRCHH);
     const sd = sd0 + (fbm(x * 0.0021 + 148.3, z * 0.0021 + 96.7) - 0.5) * BIRCH_GAPWOB;   // …the wobble, on a ~480-voxel wavelength: long enough to read as a bay rather than as roughness, and it moves the WHOLE profile together so the bed stays as smooth as the rest of the world's
     const gm = sd <= 0 ? 1 : (sd < BIRCH_GAPW ? 0.5 * (1 + Math.cos(Math.PI * sd / BIRCH_GAPW)) : 0);   // sd <= 0 is the centre line, which the wobble can push past — without that arm those columns lose the trough and a bar of dry land appears down the middle of the strait
@@ -523,6 +584,7 @@
     // what it says: hills approaching the water are planed down toward beach height and low ground is left
     // alone, so the shore keeps a continuous gradient all the way in.
     if (gm > 0) { const bed = WL - BIRCH_GAPBED; h = Math.min(h, h - gm * (h - bed)); }   // …min() so the pull can only ever LOWER ground: where a natural basin has already dug below the strait's bed, the lerp would otherwise fill it back in
+    }
     return h;
     // ── AND THE RIDGE DETAIL FADES ON k*k, NOT k ── this term rides at a ~33-voxel wavelength, the only thing
     // in the field fast enough to terrace a shoreline by itself. Faded on k it still carries a couple of
@@ -914,11 +976,7 @@
   // strip changes size and spawn keeps its position inside the oak — only which way round the world runs.
   const BAND_MIRROR = -1;                              // +1 restores the original arrangement (blossom west, pines east)
   const OAKC = BAND_MIRROR * ((OAKWOFF + OAKOFF) / 2), OAKH = (OAKOFF - OAKWOFF) / 2;   // -940 and 3240: centre + half-width. OAKC ± OAKH reproduce OAKWOFF and OAKOFF exactly, and OAKC is now EXACTLY the blossom's own centre (SPWX - CHOFF) — that equality IS "the two oak strips are the same width"
-  const oakM = (x, z) => { return 0;   /* WIPED 2026-09-01 (user: "the only thing that should exist is the pine forest biome") — identically zero, so every branch this gated is dead. Kept as a stub, not deleted: terrain.js, both worker registries and debug-api.js all still name it. */                             // 1 = deep oak forest, 0 = pine forest either side of it — a BAND now, not a half-plane, so the forest ends in both directions and the cycle can close
-    const c = SPWX + OAKC + oakWob(z) - oakWob(SPWZ);   // pinned at the spawn's own z, for the reason desertM pins its own: otherwise how far the player starts from the border is a per-session lottery
-    const t = 0.5 + (OAKH - Math.abs(pwrap(x - c))) / OAKB;   // a DISTANCE from the centre line, the same shape cherryM has always had
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const oakM = (x, z) => { biomeAt(x, z); return biomeAt.o; };   // 1 = deep oak forest — a PUZZLE PIECE now (see biomeAt), not the band this used to be; WIPED 2026-09-01, back 2026-09-02 (user: "import the oak forest")
   // ══ THE CHERRY FOREST (user 2026-08-18) ══ a fourth band, WEST of the oak forest, and deliberately carved out
   // of oak's own region rather than given a height field of its own.
   //
@@ -976,11 +1034,7 @@
   // both sides. BIOP is unchanged, the six strips are unchanged, and only the PHASE of the pattern moved.
   const CHOFF = BAND_MIRROR * 4320, CHHALF = 980, CHB = 200, CHW = 260;   // ── UNCHANGED BY THE EQUAL-STRIP PASS (user 2026-08-19: "make all of the biomes the exact same size... double the size of the bands") ── this band was doubled on 2026-08-18 (1080 -> 2160 measured between mask midpoints, 2 * (CHHALF + CHB/2)) and 2160 is precisely the width every OTHER strip has now grown to, so nothing here moves: spawn still sits 140 inside the EAST edge with the whole 2020 of blossom ahead in the facing direction, bit for bit   // band centre, west of spawn; half-width of PURE blossom; blend width; its own meander   // CHOFF is MIRRORED (see BAND_MIRROR): the blossom's centre is SPWX - CHOFF, so a negative CHOFF puts it EAST of spawn, in the sunrise. Magnitude unchanged.
   const chWob = (z) => oakWob(z) * 0.6 + (vnoise(z * WOB_CH + 211.3, 97.7) - 0.5) * CHW;   // carries 0.6 of the OAK meander for the reason oakWob carries 0.6 of the desert's: two free meanders converge and let bands touch. Its own half is small because this band has the least room of the three
-  const cherryM = (x, z) => { return 0;   /* WIPED 2026-09-01 (user: "the only thing that should exist is the pine forest biome") — identically zero, so every branch this gated is dead. Kept as a stub, not deleted: terrain.js, both worker registries and debug-api.js all still name it. */                          // 1 = inside the blossom band, 0 = the oak forest either side of it
-    const b = SPWX - CHOFF + chWob(z) - chWob(SPWZ);   // pinned at the spawn's own z, so the wobble cancels there and spawn's position in the band is not a per-session lottery
-    const t = (CHHALF + CHB - Math.abs(pwrap(x - b))) / CHB;  // …and it is a DISTANCE from the centre line, not a side of it — that one change is what makes it a band. pwrap is what makes it RECUR: without it the band exists once and the world either side of it does not repeat
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const cherryM = (x, z) => { biomeAt(x, z); return biomeAt.c; };   // 1 = the blossom forest, a PUZZLE PIECE that also counts as oak (biomeAt.o includes it, as the band was a strip inside the oak's): the oak trees, floor and life are gated on oakM, the blossom on this. WIPED 2026-09-01, back 2026-09-02 (user: "also add the cherry forest, desert, and arctic")
   // ── AND desWob IS IN THIS SUM (audit 2026-08-18) ── chWob = oakWob*0.6 + noise*CHW, and oakWob is itself
   // desWob*0.6 + noise*OAKW, so chWob carries desWob*0.36. The first version of this counted only the OAKW and
   // CHW terms and therefore UNDER-covered by ~155 voxels each side — meaning chNear could answer "not blossom"
@@ -1020,7 +1074,7 @@
   // in worldgen. This is the same shape OAKFAR/OAKNEAR give oakRoll: one subtract and a compare that answers
   // "this column cannot be in the band" without evaluating the band. chWob's swing is already inside CHREACH,
   // so the bound is exact rather than conservative — a column it rejects has cherryM 0 by construction.
-  const chNear = (x) => Math.abs(pwrap(x - (SPWX - CHOFF))) <= CHREACH;   // …on the wrapped distance, or this cheap bound would answer 'not blossom' for every band but the first and cull the cherry forest out of every later cycle
+  const chNear = (x) => true;   /* the blossom is a puzzle piece now (biomeAt), not a strip inside the oak band, so there is no cheap x-bound left; cherryM itself is memoised per column, which is what this bound was saving */   // …on the wrapped distance, or this cheap bound would answer 'not blossom' for every band but the first and cull the cherry forest out of every later cycle
   // ── AND THE WEATHER ASKS A DIFFERENT QUESTION THAN THE WORLDGEN DOES (user 2026-08-18: "in the cherry biome
   // make it snow like the pine forest") ── cherryM is a SUB-REGION of oakM (see the long note above), which is
   // exactly what lets the blossom band inherit every oak REFUSAL for free. Weather is the one place that
@@ -1215,11 +1269,7 @@
   // in at once. 900 voxels is 90 m of thinning, which is about the distance the fog starts softening anyway.
   const ARCTOFF = 1080, ARCTB = 900, ARCTH = 1080;     // inner edge from spawn; blend width; half-width to the mask midpoint
   const ARCTC = BAND_MIRROR * (ARCTOFF + ARCTH);       // -2160: the band centre, mirrored like DESC/BIRCHC/OAKC/CHOFF
-  const arcticM = (x, z) => { return 0;   /* WIPED 2026-09-01 (user: "the only thing that should exist is the pine forest biome") — identically zero, so every branch this gated is dead. Kept as a stub, not deleted: terrain.js, both worker registries and debug-api.js all still name it. */                          // 1 = deep arctic, 0 = the pine and the birch either side
-    const c = SPWX + ARCTC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
-    const t = 0.5 + (ARCTH - Math.abs(pwrap(x - c))) / ARCTB;
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const arcticM = (x, z) => { biomeAt(x, z); return biomeAt.a; };   // 1 = deep arctic, a PUZZLE PIECE now; the snow ground, floes, wider rivers and deeper basins all key on this as before. WIPED 2026-09-01, back 2026-09-02 (user: "also add the cherry forest, desert, and arctic")
   // ══ WHERE THE SNOW LIES, WHICH IS NOT WHERE THE BIOME IS ══════════════════════════════════════════════
   // (user 2026-08-30: "make the edge of the arctic meet up much closer to the pine forest. but then also make
   // the transition much smoother instead of a straight line. dont do anything to the tree placements.")
@@ -1301,11 +1351,7 @@
   // same terrain generation as the pine forest") ── one band, and it is the ONLY other biome: oak, cherry,
   // arctic and desert stay identically zero. The mask is the one this band always had (BIRCHOFF/BIRCHH/BIRCHB
   // on desWob's meander), unchanged — what is new is what the HEIGHT FIELD does with it, in pineBase below.
-  const birchM = (x, z) => {                            // 1 = deep birch forest, 0 = pine forest either side of it
-    const c = SPWX + BIRCHC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
-    const t = 0.5 + (BIRCHH - Math.abs(pwrap(x - c))) / BIRCHB;
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const birchM = (x, z) => { biomeAt(x, z); return biomeAt.b; };   // 1 = deep birch forest — a PUZZLE PIECE now (see biomeAt), not the spawn-pinned band this used to be (BIRCHOFF/BIRCHC/BIRCHH stay for the strait code below, which is off)
   // The band's absolute reach, for the cheap-out in oakRoll/oakBank. |desWob| <= DESW * 0.675, and the rim is
   // BIRCHB/2 either side of the line. NOTE there is deliberately no "deep birch" short-circuit to match oak's
   // OAKNEAR/OAKWNEAR: 2 * BIRCHWMAX + BIRCHB/2 = 1575 is WIDER than BIRCHH = 1080, so no column is guaranteed
@@ -1432,18 +1478,7 @@
   // derived from the strip width (DESH = W/2) and never from BIOP: the leftover between the sand's east
   // midpoint and the next period's oak is not slack to be absorbed, it is the SECOND PINE STRIP.
   const DESH = 1080, DESC = BAND_MIRROR * (DESOFF + DESH);             // half-width to the mask MIDPOINT, and the band centre: DESC ± DESH = 4460 and 6620
-  const desertM = (x, z) => { return 0;   /* WIPED 2026-09-01 (user: "the only thing that should exist is the pine forest biome") — identically zero, so every branch this gated is dead. Kept as a stub, not deleted: terrain.js, both worker registries and debug-api.js all still name it. */                          // 0 = pine forest, 1 = open desert — a BAND now (see BIOP), with pine on BOTH sides of the sand
-    // The wobble is subtracted AT THE SPAWN'S OWN z. Without that it swings +-216 voxels either way, so how
-    // far the player starts from the sand was a lottery: measured 380 voxels one session where the constant
-    // of the day (80) implied 305, and a big enough swing would have spawned them PAST the boundary, in the
-    // desert. That specific hazard is gone now DESOFF is 1500, but the reason to pin it is not - oakM pins
-    // its own wobble the same way, and there the offset is OAKOFF (2300) against the same +-216.
-    // Pinning it costs nothing — the border still meanders exactly as before, it just passes DESOFF from
-    // spawn at the spawn's own latitude, so "how far to the desert" is the same every session.
-    const c = SPWX + DESC + desWob(z) - desWob(SPWZ);
-    const t = 0.5 + (DESH - Math.abs(pwrap(x - c))) / DESB;   // a band, not a half-plane: one band centred at DESC covers the sand at the east end of a period AND the sand at the west end of the next, because the distance wraps
-    return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
-  };
+  const desertM = (x, z) => { biomeAt(x, z); return biomeAt.d; };   // 1 = open desert, a PUZZLE PIECE now; the dune field in H() is gated to LAND there, or a desert piece under the sea would rise to a sand flat. WIPED 2026-09-01, back 2026-09-02 (user: "also add the cherry forest, desert, and arctic")
   const H = (x, z) => {
     let h = bedH(x, z);            // …BEFORE the basin and river carves, so those still measure from the real bed
     const bm = basinM(x, z);
@@ -1476,9 +1511,12 @@
     // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
     // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
     // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-    const dm = desertM(x, z); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.
+    // ── THE DESERT IS ON LAND ONLY (2026-09-02) ── dm is the piece's share times (1 - ocean): the dune lerp and the WL+2 lift
+    // below would otherwise raise a desert piece's sea floor to a sand flat. The same gate is in both worker copies.
+    const dm0 = DESERT_TERRAIN * desertM(x, z), dm = dm0 > 0 ? dm0 * (1 - oceanM(x, z)) : 0; if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(x, z) + (fbm(x * 0.012 + 5.1, z * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── LAST on purpose: it runs after the basin and river passes so the sand overrides a lake bed or a channel instead of being carved by one. Relief is DESREL voxels peak-to-peak (see the scale above) against the forest's +-44.
     return h;
   };
+  const RIV_P = 0.05, RIV_LANDMARGIN = 0.02, RIV_JITTER = 1.0;   // see the note inside riverAt
   const RIVCELL = 768, RIVINF = 6200;                  // WATERSHEDS — one candidate per ~77 m cell, rare roll; each hit is a whole dendritic system (influence radius must cover the longest possible chain)
   const rivCache = new Map();
   function riverAt(cx, cz) {                           // builds a WATERSHED: 1-3 tributaries join a main stem at confluences, the stem widens downstream
@@ -1499,12 +1537,19 @@
     // answer (the roll below only fired on 3.5% of cells), so every one of those callers already handles it
     // and none of them need to change. Everything under this line is dead and kept only so the shape of the
     // system is still legible if it ever comes back.
-    rivCache.set(key, R);
-    return R;
-    if (ihash(cx * 83 + 19, cz * 89 + 7) <= 0.035) {   // rarer than the old isolated segments — water stays scarce, but every occurrence is a connected system
+    // ── BACK, AND RUNNING TO THE SEA (user 2026-09-02: "run rivers through the biome continents. add lakes into the
+    // system as well") ── the early return above is gone. Two things changed in the builder and nothing else: a
+    // watershed only rises where its headwater is on land, a little in from the coast (RIV_LANDMARGIN in field
+    // units), and its main stem runs DOWN the continent field — toward the sea — with the old random angle kept
+    // as a jitter about that heading (RIV_JITTER). The reservoir, the tributaries, the headwater ponds, the outlet
+    // and the tail lake are the system it always was: those are the lakes the request names, alongside the
+    // districts. RIV_P is the old 0.035 raised, because only land cells roll now.
+    if (ihash(cx * 83 + 19, cz * 89 + 7) <= RIV_P) {
       const hx = cx * RIVCELL + 100 + ihash(cx * 3 + 61, cz * 7 + 23) * (RIVCELL - 200);   // headwater of the main stem
       const hz = cz * RIVCELL + 100 + ihash(cx * 9 + 47, cz * 5 + 83) * (RIVCELL - 200);
-      const ang = ihash(cx + 15, cz + 92) * Math.PI;
+      if (contC(hx, hz) <= CONT_T + RIV_LANDMARGIN) { rivCache.set(key, R); return R; }   // headwaters on land only
+      const gcx = contC(hx + 64, hz) - contC(hx - 64, hz), gcz = contC(hx, hz + 64) - contC(hx, hz - 64);
+      const ang = Math.atan2(-gcz, -gcx) + (ihash(cx + 15, cz + 92) - 0.5) * RIV_JITTER;   // seaward, jittered
       const dxr = Math.cos(ang), dzr = Math.sin(ang);
       const Lm = 1800 + ihash(cx * 11 + 6, cz * 13 + 31) * 800;    // main stem 180-260 m
       const wbM = 58 + ihash(cx * 17 + 8, cz * 19 + 2) * 42;
