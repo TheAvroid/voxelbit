@@ -1,4 +1,4 @@
-"""Voxelize game/assets/foilage/pine_trees/EuropeanPine.obj into NINE pine trees, 50 feet tall.
+"""Voxelize game/assets/foilage/pine_trees/EuropeanPine.obj into NINE pine trees, 75 feet tall.
 
 RUN IT WITH THE WINDOWS PYTHON, not the msys2 one on PATH - numpy and Pillow live there:
   "$LOCALAPPDATA/Programs/Python/Python313/python.exe" tools/voxelize_pine9.py
@@ -18,11 +18,12 @@ by which trunk centre they sit nearest in X, which is what makes nine trees out 
 x = width, y = depth, z = height, which voxelize_rocks.py and gen_birch.py also write, so the
 axis swap here is game(x, y, z) = model(x, z, y). Getting this wrong lays the forest on its side.
 
-── 50 FEET ── the engine's voxel is 10 cm (see voxelize_fir.py), so 50 ft = 15.24 m = 152
+── 75 FEET ── the engine's voxel is 10 cm (see voxelize_fir.py), so 75 ft = 22.86 m = 228
 voxels. The nine source trees are NOT the same height (24.0 to 35.6 model units), and each is
-scaled to 152 on its OWN height rather than by one shared factor, because the request was nine
-trees of 50 feet and a shared factor would deliver one 50-foot tree and eight shorter ones.
+scaled to 228 on its OWN height rather than by one shared factor, because the request was nine
+trees of 75 feet and a shared factor would deliver one 75-foot tree and eight shorter ones.
 Proportions are kept: the same scalar drives all three axes.
+(Was 152 = 50 ft. See the TALL_VOX note for why it moved.)
 
 ── WHY SAMPLES AND NOT CORNERS ── a leaf card is a quad with a cutout alpha, and most of its
 area is transparent. Testing the alpha at triangle CORNERS throws the whole canopy away
@@ -40,13 +41,43 @@ TEX  = os.path.join(ROOT, 'source/pine9/tex')
 OUT  = os.path.join(ROOT, 'game/assets/foilage/pine9')
 BAKE = os.path.join(ROOT, 'source/pine9/pine9.json')
 
-TALL_VOX   = 152          # 50 ft at the engine's 10 cm voxel
+TALL_VOX   = 228          # 75 ft at the engine's 10 cm voxel
+                          # ── WAS 152 / 50 FT (user 2026-09-03: "increase the height of the pines trees
+                          # porportionally by 50% to reach 75 feet") ── the 50 ft was never a measurement: the
+                          # nine source trees run 24.0 to 35.6 model units and every one of them is normalised
+                          # to this constant, so it is a target the stand is forced to and nothing else. 75 ft
+                          # = 22.9 m puts them mid-range for mature Scots pine (20-35 m) instead of at the
+                          # young end, and above the five short birches while staying under the tall eleven,
+                          # which is the right way round for the species pair - a mature pine out-tops a birch.
+                          # THE BIRCHES ARE DELIBERATELY NOT TOUCHED: voxelize_birch_forest.py scales each tree
+                          # to the real height in its own filename (12.1 m .. 26.4 m) x TALL_SCALE 0.91, so
+                          # that set is already life-size and raising it would make it LESS accurate.
+                          # 228 still clears the .vox 255-per-axis limit (the assert in main), so the nine
+                          # stay single-part files and need none of the stacked-part scene graph the tall
+                          # birches once did. Width follows the same scalar: the widest tree goes 67 -> ~100.
+                          # THE VOXEL COUNT GOES AS THE AREA, NOT THE VOLUME: measured 112,879 -> 245,591
+                          # over the nine, 2.18x, against the 2.25x a pure x1.5 surface scaling predicts. This
+                          # is a SURFACE voxelizer - sample_tree walks triangles and keeps the voxels the mesh
+                          # passes through - so a hollow shell grows with its area. Reasoning from the volume
+                          # gives ~3.4x and overstates the cost of this change by half.
 ALPHA_MIN  = 128          # leaf-card cutout
 SAMPLE_DEN = 14.0         # samples per square voxel of triangle area. At 2.2 the trees came out
                           # 1.2% full against pine5.vox's 5.8% - a surface the sampler kept MISSING,
                           # not a sparse tree, so the canopy read as scattered needles.
 K_BARK     = 5            # shared shades, all nine trees
 K_NEEDLE   = 5
+LOCK_RAMP  = True         # ── KEEP THE SHIPPED COLOURS ACROSS A RE-BAKE (user 2026-09-03: "I want you to
+                          # keep the current color schemes") ── the ten shades are k-means centroids over the
+                          # voxels the sampler happened to draw, and sample_tree draws them from the UNSEEDED
+                          # global numpy RNG. So the ramp is a function of the sampling, and ANY re-bake moves
+                          # it a little even at the same height; at a new height it moves more, because 3.4x
+                          # the voxels re-weights every cluster. With this set, the ramps are read back from
+                          # the previous bake in source/pine9/pine9.json and reused verbatim, and only the
+                          # GEOMETRY is rebuilt. That matters beyond the .vox: palette.js flattens the bark
+                          # ramp toward its own computed mean (BARK_FLAT) and mints ids through addCol, whose
+                          # PAL_TOL dedups within 6 - so a couple of units of drift here can silently merge two
+                          # shades and cost the ramp a step, against a palette already standing at 256/256.
+                          # Set False to re-cluster from scratch (a new species, or new source textures).
 
 # material -> (texture file, class).  'n' = needle/foliage, 'w' = wood.
 MAT = {
@@ -245,38 +276,55 @@ def main():
     # needle ramp and the canopy came out brown. A voxel joins the needle ramp only if the leaf
     # material won it AND the colour it actually sampled is green; the card's woody texels fall
     # through to the bark ramp, which is what they are.
-    wood, need = [], []
-    for acc in trees:
-        for a in acc.values():
-            c = (a[0] / a[3], a[1] / a[3], a[2] / a[3])
-            (need if (a[4] * 2 >= a[3] and is_green(c)) else wood).append(c)
-    wood = np.asarray(wood, dtype=np.float32); need = np.asarray(need, dtype=np.float32)
-    rs = np.random.RandomState(3)
-    Cw, _ = kmeans(wood[rs.choice(len(wood), min(40000, len(wood)), replace=False)], K_BARK)
-    Cn, _ = kmeans(need[rs.choice(len(need), min(40000, len(need)), replace=False)], K_NEEDLE)
-    Cw = np.clip(np.round(Cw), 0, 255).astype(int)
-    Cn = np.clip(np.round(Cn), 0, 255).astype(int)
-    Cw = Cw[np.argsort(Cw.sum(axis=1))]                 # dark -> light, so a ramp reads as one
-    Cn = Cn[np.argsort(Cn.sum(axis=1))]
+    # ── THE RAMPS ── locked to the previous bake by default; see LOCK_RAMP at the top of the file.
+    # Read BEFORE anything is written, because source/pine9/pine9.json is the file this run overwrites.
+    if LOCK_RAMP:
+        if not os.path.exists(BAKE):
+            sys.exit('LOCK_RAMP is set but %s does not exist - there is no ramp to reuse. Set it False '
+                     'to cluster a fresh one.' % os.path.relpath(BAKE, ROOT))
+        prev = json.load(open(BAKE))
+        Cw = np.asarray(prev['bark'], dtype=int)
+        Cn = np.asarray(prev['needle'], dtype=int)
+        # A SHAPE CHECK, NOT A COURTESY: a short ramp would not raise here, it would quietly hand every
+        # voxel of the missing step its neighbour's shade through the nearest-colour assignment below.
+        if Cw.shape != (K_BARK, 3) or Cn.shape != (K_NEEDLE, 3):
+            sys.exit('%s carries a %s bark / %s needle ramp, not %d / %d'
+                     % (os.path.relpath(BAKE, ROOT), Cw.shape, Cn.shape, K_BARK, K_NEEDLE))
+        print('  ramps LOCKED to the previous bake (%s), geometry rebuilt at TALL_VOX = %d'
+              % (os.path.relpath(BAKE, ROOT), TALL_VOX))
+    else:
+        wood, need = [], []
+        for acc in trees:
+            for a in acc.values():
+                c = (a[0] / a[3], a[1] / a[3], a[2] / a[3])
+                (need if (a[4] * 2 >= a[3] and is_green(c)) else wood).append(c)
+        wood = np.asarray(wood, dtype=np.float32); need = np.asarray(need, dtype=np.float32)
+        rs = np.random.RandomState(3)
+        Cw, _ = kmeans(wood[rs.choice(len(wood), min(40000, len(wood)), replace=False)], K_BARK)
+        Cn, _ = kmeans(need[rs.choice(len(need), min(40000, len(need)), replace=False)], K_NEEDLE)
+        Cw = np.clip(np.round(Cw), 0, 255).astype(int)
+        Cn = np.clip(np.round(Cn), 0, 255).astype(int)
+        Cw = Cw[np.argsort(Cw.sum(axis=1))]                 # dark -> light, so a ramp reads as one
+        Cn = Cn[np.argsort(Cn.sum(axis=1))]
 
-    # ── THE BARK RAMP IS FORCED ONTO ONE BROWN HUE (user 2026-08-31: "theres seems to be green along
-    # with the browns. remove that green in the wood") ── k-means was doing its job here: real Scots
-    # pine bark carries lichen, and both bark sheets have olive in them, so two of the five centroids
-    # came back khaki - (92,81,40) and (111,106,43), the second with red and green equal and almost no
-    # blue, which is the definition of olive. On a trunk beside three true browns they read as green
-    # patches rather than as bark.
-    # Averaging cannot fix it and neither can dropping the olive texels: the light/dark STRUCTURE the
-    # albedo gives is the thing worth keeping, and it is carried by luminance, not by hue. So the ramp
-    # keeps its measured luminance SPAN and gets rebuilt on the hue the good centroids already had -
-    # (122,94,68), (141,107,78), (164,125,95) are all within a shade of 1.00 : 0.77 : 0.56.
-    # Evenly spaced rather than luminance-preserving, because the olive shades sit at almost the same
-    # luminance as the browns (100.3 against 99.4) and mapping each to its own brightness would collapse
-    # two steps of a five-step ramp into one colour.
-    BARK_HUE = np.array([1.00, 0.77, 0.56], dtype=np.float32)
-    LUM = np.array([0.299, 0.587, 0.114], dtype=np.float32)
-    lums = Cw.astype(np.float32) @ LUM
-    span = np.linspace(lums.min(), lums.max(), K_BARK)
-    Cw = np.clip(np.round(np.outer(span / float(BARK_HUE @ LUM), BARK_HUE)), 0, 255).astype(int)
+        # ── THE BARK RAMP IS FORCED ONTO ONE BROWN HUE (user 2026-08-31: "theres seems to be green along
+        # with the browns. remove that green in the wood") ── k-means was doing its job here: real Scots
+        # pine bark carries lichen, and both bark sheets have olive in them, so two of the five centroids
+        # came back khaki - (92,81,40) and (111,106,43), the second with red and green equal and almost no
+        # blue, which is the definition of olive. On a trunk beside three true browns they read as green
+        # patches rather than as bark.
+        # Averaging cannot fix it and neither can dropping the olive texels: the light/dark STRUCTURE the
+        # albedo gives is the thing worth keeping, and it is carried by luminance, not by hue. So the ramp
+        # keeps its measured luminance SPAN and gets rebuilt on the hue the good centroids already had -
+        # (122,94,68), (141,107,78), (164,125,95) are all within a shade of 1.00 : 0.77 : 0.56.
+        # Evenly spaced rather than luminance-preserving, because the olive shades sit at almost the same
+        # luminance as the browns (100.3 against 99.4) and mapping each to its own brightness would collapse
+        # two steps of a five-step ramp into one colour.
+        BARK_HUE = np.array([1.00, 0.77, 0.56], dtype=np.float32)
+        LUM = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+        lums = Cw.astype(np.float32) @ LUM
+        span = np.linspace(lums.min(), lums.max(), K_BARK)
+        Cw = np.clip(np.round(np.outer(span / float(BARK_HUE @ LUM), BARK_HUE)), 0, 255).astype(int)
     pal = [[0, 0, 0]] + [list(map(int, c)) for c in Cw] + [list(map(int, c)) for c in Cn]
     print('  bark ramp  ', [list(c) for c in Cw])
     print('  needle ramp', [list(c) for c in Cn])

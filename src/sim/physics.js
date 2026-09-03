@@ -459,13 +459,28 @@
   };
   const treeShapeAt = (wx, wz) => {                  // which pine covers this world column, and its exact local frame
     const c0x = Math.floor(wx / TCELL), c0z = Math.floor(wz / TCELL);
-    const r = Math.ceil(Math.max(MSX, MSY) / TCELL) + 1;   // a crown can overhang several cells
+    const r = Math.ceil(Math.max(MSX, MSY) / TCELL) + 2;   // a crown can overhang several cells — +2 not +1 since scR can widen a crown past the model and a lean shifts it further
+    // ── THE NEAREST TREE, NOT THE FIRST ONE THE SCAN REACHES ── crowns overlap, so several boxes cover the
+    // same column and this used to return whichever the loop hit first. Measured: asking at a trunk returned
+    // a NEIGHBOUR — root 6 against that tree's own sink of 3 — so a swing carved a tree the player was not
+    // pointing at, which is the reported "voxels disappear out of the trunk". Scanning for the nearest trunk
+    // axis costs one compare per candidate and no bake, and trees are TCELL apart so the nearest is the one
+    // under the crosshair in every case that is not a genuine tie.
+    let bestTr = null, bestD = Infinity;
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
       const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
-      const R = MROT9[tr.ti | 0][tr.rot], bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);   // per-model rotation set — a chop must read the SAME array the stamp wrote
-      if (wx < bx || wx >= bx + R.sx || wz < bz || wz >= bz + R.sz) continue;
-      return { tr, R, bx, bz, gy: groundMin(tr.tx, tr.tz, 2) - tr.sink, rm: remap, g: null, cells: null,
-               root: tr.sink, oak: 0, hMax: MSZ };   // …the same key set in the same order as the oak's, so both kinds of shape share one hidden class at every site that reads them
+      const ex = wx - tr.tx, ez = wz - tr.tz, d2 = ex * ex + ez * ez;
+      if (d2 >= bestD) continue;
+      bestTr = tr; bestD = d2;
+    }
+    if (bestTr) {
+      // ── THE BAKED FRAME, NOT THE RAW MODEL ── a pine is scaled and leaned when it is stamped, so the
+      // model's own dimensions describe a tree that is not there. pineFrame (world/terrain.js) replays the
+      // STAMP into a local array, so R.sx/R.sz/R.A and bx/bz/hMax all describe what is actually standing.
+      const R = pineFrame(bestTr), bx = R.bx, bz = R.bz;
+      if (wx >= bx && wx < bx + R.sx && wz >= bz && wz < bz + R.sz)
+        return { tr: bestTr, R, bx, bz, gy: R.gy, rm: remap, g: null, cells: null,
+                 root: bestTr.sink, oak: 0, hMax: R.sy };   // …the same key set in the same order as the oak's, so both kinds of shape share one hidden class at every site that reads them
     }
     // ── AND OTHERWISE, AN OAK ── extending this rather than adding a second entry point is deliberate: every
     // caller of treeShapeAt (chopSwing, the arrow's carve in sim/projectiles.js, __vb.physChopFull) is asking

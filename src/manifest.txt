@@ -33,8 +33,10 @@ render/wgsl/cloudgen.js
 render/wgsl/composite.js
 render/wgsl/taa.js
 render/wgsl/blit.js
+render/wgsl/pathtrace.js
 render/wgsl/vis.js
 render/targets.js
+render/pathtrace.js
 world/stream.js
 sim/player.js
 sim/hands.js

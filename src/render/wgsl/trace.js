@@ -78,14 +78,21 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // It carries the whole of "it snows in the pines and rains in the oaks AT THE SAME TIME": the snow march
     // culls a flake where this says oak, the rain march culls a drop where it says pine, and both dither on
     // it, so the two weathers cross-fade across the border exactly as the canopies and the ground cover do.
-    fn oakWobG(z : f32) -> f32 {                       // = the JS oakWob(z), which is deliberately part-shared with desWob so the two borders stay broadly parallel
-      return ((dVnoise(z * ${WOB_DES1} + 27.9, 83.1) - 0.5) * ${DESW}.0
-            + (dVnoise(z * ${WOB_DES2} + 11.2, 51.7) - 0.5) * ${DESW * 0.35}) * 0.6
-           + (dVnoise(z * ${WOB_OAK} + 143.7, 61.3) - 0.5) * ${OAKW}.0;
+    // ── THIS IS desWob NOW, NOT oakWob (2026-09-03) ── and it has to be, because the JS oakM it mirrors
+    // changed with it. The old body was oakWob: 0.6 of the desert meander plus an independent OAKW octave,
+    // which was right while a whole pine strip separated the oak from every other band and "broadly parallel"
+    // was all the arrangement needed. The three contiguous bands share EDGES, so both masks now meander on
+    // desWob alone and every boundary in the world is the same curve translated — see the note over oakM in
+    // world/window.js. A shader still carrying the old two-term wobble would drift up to ~675 voxels away from
+    // the JS mask at some z, and the weather would rain on the wrong side of a line the ground draws elsewhere.
+    // Two octaves, the same constants and the same seeds as the JS desWob, so the two are bit-comparable.
+    fn oakWobG(z : f32) -> f32 {                       // = the JS desWob(z), which world/window.js oakM and birchM both meander on
+      return (dVnoise(z * ${WOB_DES1} + 27.9, 83.1) - 0.5) * ${DESW}.0
+           + (dVnoise(z * ${WOB_DES2} + 11.2, 51.7) - 0.5) * ${DESW * 0.35};
     }
     // the band's CENTRE LINE at this z — its own function because the oakNear gate below has to measure the
     // camera's distance to the band, and a second copy of this expression is a second thing to keep in step.
-    fn oakCentreG(z : f32) -> f32 { return f32(${SPWX + OAKC - oakWob(SPWZ)}) + oakWobG(z); }   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
+    fn oakCentreG(z : f32) -> f32 { return f32(${SPWX + OAKC - desWob(SPWZ)}) + oakWobG(z); }   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
     fn oakMask(x : f32, z : f32) -> f32 {              // 1 = deep oak forest, 0 = pine forest — the mirror of desertMask
       let c = oakCentreG(z);
       let t = 0.5 + (f32(${OAKH}) - abs(pwrapG(x - c))) / ${OAKB}.0;   // a BAND, like the JS oakM: a half-plane has no west edge for the cycle to close against

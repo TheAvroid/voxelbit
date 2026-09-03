@@ -53,7 +53,14 @@ ${!POOL ? `      let i = u32(x + c.y * WX + z * WX * WY);
       let d = bdesc[b];
       if (d == 0u) { return 0u; }
       let l = u32((x & 7) + (c.y & 7) * 8 + (z & 7) * 64);
-      return (pool[(d - 1u) * 128u + (l >> 2u)] >> ((l & 3u) * 8u)) & 255u;`}
+      // ── A PAGE IS A PALETTE AND 512 NIBBLES ── see the PAGE FORMAT note in render/buffers.js. Bit 31 of
+      // the descriptor says DENSE (a byte per voxel, the old layout) for the 0.3% of bricks that hold more
+      // than fifteen ids; everything else is 64 words of 4-bit indices followed by 4 words of palette.
+      if ((d & 0x80000000u) != 0u) { return (pool[${DBASE_U32}u + ((d & 0x7fffffffu) - 1u) * 128u + (l >> 2u)] >> ((l & 3u) * 8u)) & 255u; }
+      let pb = (d - 1u) * ${PAGE_U32}u;
+      let ni = (pool[pb + (l >> 3u)] >> ((l & 7u) * 4u)) & 15u;
+      if (ni == 0u) { return 0u; }                     // entry 0 is AIR, and it costs no palette read
+      return (pool[pb + 64u + (ni >> 2u)] >> ((ni & 3u) * 8u)) & 255u;`}
     }
     fn brickOcc(c : vec3<i32>) -> bool {
       var x = c.x + (i32(u.off.x) >> 3); if (x >= BX) { x -= BX; }
@@ -111,12 +118,16 @@ ${!POOL ? `      return ((bricks[i >> 5u] >> (i & 31u)) & 1u) != 0u;`
               var vc = clamp(vec3<i32>(floor(pv)), bmin, bmin + 7);
               var vNext = (vec3<f32>(vc + max(istep, vec3<i32>(0))) - ro) * inv;
               var vax = bax;
-${POOL ? `              let pbase = (bd - 1u) * 128u;
+${POOL ? `              let dns = (bd & 0x80000000u) != 0u;   // hoisted: the format is a property of the BRICK, so the march below branches on a value that is constant for all 32 steps
+              let pbase = select((bd - 1u) * ${PAGE_U32}u, ${DBASE_U32}u + ((bd & 0x7fffffffu) - 1u) * 128u, dns);
               var vIdx = (vc.x - bmin.x) + (vc.y - bmin.y) * 8 + (vc.z - bmin.z) * 64;`
         : `              var vIdx = ((bxw + (bc.x - bmin2.x)) << 3) + (vc.x - bmin.x) + vc.y * WX + (((bzw + (bc.z - bmin2.z)) << 3) + (vc.z - bmin.z)) * WX * WY;`}
               for (var j = 0; j < 32; j++) {
                 let ii = u32(vIdx);
-${POOL ? `                var v = (pool[pbase + (ii >> 2u)] >> ((ii & 3u) * 8u)) & 255u;`
+${POOL ? `                var v = 0u;
+                if (dns) { v = (pool[pbase + (ii >> 2u)] >> ((ii & 3u) * 8u)) & 255u; }
+                else { let ni = (pool[pbase + (ii >> 3u)] >> ((ii & 7u) * 4u)) & 15u;   // ONE load for a step through air, which is 88% of them — the palette word is read only on the step that ends the ray
+                  if (ni != 0u) { v = (pool[pbase + 64u + (ni >> 2u)] >> ((ni & 3u) * 8u)) & 255u; } }`
         : `                var v = (world[ii >> 2u] >> ((ii & 3u) * 8u)) & 255u;`}
                 if (skipW && (v == WTv || v == WBv)) { v = 0u; }      // water: invisible to an underwater camera
                 if (FOLSKIP && folSkipD > 0.0 && tv < folSkipD && isFol(v)) { v = 0u; }   // near foliage: transparent to the clipped-in primary ray (dead-coded out of the non-FOLSKIP variant)

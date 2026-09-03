@@ -15,9 +15,9 @@
   { const r = $('snowWrap'); if (r && !SNOW_UI) r.style.display = 'none'; }
   { const r = $('dofStrWrap'); if (r && !DOF_UI) r.style.display = 'none'; }   // shown again; this line stays because the gate is the point — the row is hidden rather than cut, so the wiring below always has dofStrSlider/dofStrLabel to read whichever way the flag goes
   const SET_SLIDERS = ['volSlider', 'sfxSlider', 'musSlider', 'ambSlider', 'todSlider', 'resSlider', 'dofStrSlider', 'sensSlider'].filter((id) => (TOD_UI || id !== 'todSlider') && (DOF_UI || id !== 'dofStrSlider'));
-  const SET_TOGGLES = ['snowBtn', 'vigBtn', 'crdBtn', 'fpsBtn', 'timeBtn', 'resHudBtn'].filter((id) => SNOW_UI || id !== 'snowBtn');   // the on/off text buttons; the compass is icon-only and is handled by its own flag
+  const SET_TOGGLES = ['snowBtn', 'vigBtn', 'crdBtn', 'fpsBtn', 'timeBtn', 'resHudBtn', 'gfxBtn'].filter((id) => SNOW_UI || id !== 'snowBtn');   // the on/off text buttons; the compass is icon-only and is handled by its own flag
   const SET_KEYS = ['vb_vol', 'vb_sfx', 'vb_mus', 'vb_amb', 'vb_sens', 'vb_sens2', 'vb_scale', 'vb_lgt', 'vb_vig', 'vb_wrefl',
-                    'vb_binds', 'vb_coords', 'vb_fps', 'vb_time', 'vb_res', 'vb_cmp', 'vb_dofstr2'];
+                    'vb_binds', 'vb_coords', 'vb_fps', 'vb_time', 'vb_res', 'vb_cmp', 'vb_dofstr2', 'vb_gfx'];
   const CMP_DEF = false;                               // the compass is the one toggle with no on/off text to snapshot (it is an icon), so its default is written here and must match ui/input.js's cmpOn
   const SET_DEF = {};
   for (const id of SET_SLIDERS.concat(SET_TOGGLES)) { const el = $(id); if (el) SET_DEF[id] = el.tagName === 'INPUT' ? el.value : el.textContent.trim(); }
@@ -333,6 +333,27 @@
     mkToggle('fpsBtn', () => showFps, (v) => showFps = v, 'vb_fps');            // FPS on/off
     mkToggle('timeBtn', () => showTime, (v) => showTime = v, 'vb_time');        // TIME on/off
     mkToggle('resHudBtn', () => showRes, (v) => showRes = v, 'vb_res');         // RESOLUTION readout on/off
+    // ── GRAPHICS QUALITY: low / high (user 2026-09-03) ── the two renderers, under the names a player has a
+    // use for. LOW is the shipping deferred tracer — the one that draws creatures, dropped items, the held
+    // viewmodel, falling snow and clouds. HIGH is the progressive path tracer in render/pathtrace.js, which
+    // draws none of those (see the list at the top of that file) and is noisy until you hold still, but takes
+    // the whole scene's light from the same rays that find the geometry.
+    // IT CALLS ptToggle, IT DOES NOT WRITE PT.on. The swap has to zero the accumulator and flush the shipping
+    // renderer's temporal + TAA histories, and that lives in ptToggle; setting the flag from here would leave
+    // the first second after every switch reprojecting onto a history belonging to a different image.
+    // AND THE LABEL IS PAINTED FROM ptBtnSync, NOT FROM THIS CLICK HANDLER, because [Y] and __vbPT.on() throw
+    // the same switch: a row that only tracked its own button would read 'low' with the path tracer on screen.
+    const gfxBtn = $('gfxBtn');
+    const gfxShow = () => { gfxBtn.textContent = PT.on ? 'high' : 'low'; gfxBtn.classList.toggle('on', PT.on); };
+    gfxBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    gfxBtn.addEventListener('click', (e) => { e.stopPropagation(); ptToggle(!PT.on); });
+    // ── THE SAVED CHOICE IS APPLIED BEFORE ptBtnSync IS ASSIGNED ── so restoring what the player already chose
+    // does not write the key straight back, and a profile that has never touched this row never grows one.
+    // DEFAULT LOW: PT.on ships false, so a fresh profile keeps exactly the renderer it has always booted with.
+    { let hi = false; try { hi = localStorage.getItem('vb_gfx') === '1'; } catch (e2) {}
+      if (hi) ptToggle(true); }
+    ptBtnSync = () => { gfxShow(); try { localStorage.setItem('vb_gfx', PT.on ? '1' : '0'); } catch (e2) {} };
+    gfxShow();
     // ── BACK-LIT FOLIAGE ── L is the only control, so the readout is the only feedback: it flashes the new
     // state and fades. One timer, restarted on every press, so holding L cannot stack fades.
     const vigBtn = $('vigBtn');

@@ -809,6 +809,14 @@
     //     52.9% of frames moved the view distance at all
     //     13 jumps >= 16 voxels, 11 >= 32, max 74      ~2 large snaps EVERY SECOND
     // and composite.js fades the far edge out with smoothstep(rdist - 72, rdist - 6, dist), a band just 66
+    // ── THAT FADE IS NO LONGER 66 WIDE, AND THIS PARAGRAPH IS KEPT ONLY FOR THE HISTORY (audit 2026-09-03) ──
+    // composite.js now reads smoothstep(rdist * 0.62, rdist - 6, dist): PROPORTIONAL, so at the shipped 1920 it
+    // is ~724 voxels wide, eleven times the band this argument was written against. Re-measured by flying a
+    // straight line and sampling every frame, rdSmooth moves between 1892 and 1920 — at most ~32 voxels, or
+    // 4% of the band — so the screen-wide brightness step described below can no longer be produced by this
+    // mechanism, and the slew limiter is now belt to the fade's braces rather than the thing holding it up.
+    // The ring's own jumps are undiminished (|dFilled| still reaches 88 at sprint, 112 at double it); they are
+    // simply hidden now. Anything that NARROWS that fade brings the flashing straight back.
     // voxels WIDE. A 74-voxel jump therefore moves the fade band FURTHER THAN ITS OWN WIDTH in a single
     // frame: a strip of distant terrain goes from fully visible to fully fogged, or back, with nothing in
     // between. That is a screen-wide brightness step in the distance, it reverts a frame or two later when the
