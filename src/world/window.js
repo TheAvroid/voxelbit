@@ -382,8 +382,20 @@
   //     the BAND edge, one octave lower and applied to the water rather than to the biome.
   const BIRCH_GAPW = 500;                              // …and the half-width it is pulled over, in voxels. CAPPED BY BIRCHH (1080): the trough is centred on each band EDGE, so a half-width past that reaches over the band's own centre line and the two troughs start flooding the birch forest between them
   const BIRCH_GAPWOB = 150;                            // how far the strait's shoreline wanders off the band edge, peak to peak — SCALED WITH GAPW (300 -> 150): the wobble is a fraction of the channel, and at the old amplitude a half-width strait would have been pinched shut in places and bulged to its old size in others
+  // ── LAKE DISTRICTS (see the note inside pineBase) ── the constants, and the one formula both the field and the
+  // debug tap read. lakeZoneOf takes the octave VALUE so pineBase, which already has it, does not pay for it twice;
+  // lakeZone(x, z) is the standalone form for taps and tests and computes the same octave the same way.
+  const LAKE_T = 0.28;                                 // the district threshold on a1 (~18% of the plane sits under it; the water ends up ~9%)
+  const LAKE_RAMP = 0.24;                              // …and the ramp under it, in a1 units. WIDE: this is the bank — see the note in pineBase
+  const LAKE_PULL = 0.85, LAKE_BED = WL - 14;          // the core's pull toward its bed. 0.85 rather than 0.75 because the ridges between the old pockets have to go under, or the district is still several lakes (0.75 left 2, 0.8 left 1)
+  const LAKE_FLOOR = WL + 7, LAKE_SOFT = 2;            // the dry floor, a voxel over the sand band's top (WL + 6) so no drained bed reads as beach; and the clamp's softness — STIFF, see pineBase
+  const LAKE_REL = 4;                                  // peak relief on the drained pans, in voxels (fbm's spread is about +-0.2, so the typical swing is +-1.6)
+  const lakeZoneOf = (a1) => (a1 >= LAKE_T ? 0 : sstep(Math.min(1, (LAKE_T - a1) / LAKE_RAMP)));
+  const lakeZone = (x, z) => lakeZoneOf(vnoise(x * 0.0018 + 61.3, z * 0.0018 + 77.9));
   const pineBase = (x, z) => {                         // ONE shared scalar helper: H, makeHRow and makeHCol all call THIS, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
-    const a = fbm(x * 0.0018 + 61.3, z * 0.0018 + 77.9);   // the massifs, ~550 voxels across
+    const ax = x * 0.0018 + 61.3, az = z * 0.0018 + 77.9;   // the massifs, ~550 voxels across — fbm's three octaves written out, because the FIRST one is also the lake-district field (lakeZoneOf below) and it is paid for once. Term for term this is fbm(ax, az), so the sum is bit-identical to what it was
+    const a1 = vnoise(ax, az);
+    const a = a1 * 0.55 + vnoise(ax * 2.13 + 11.7, az * 2.13 + 5.3) * 0.27 + vnoise(ax * 4.41 + 41.2, az * 4.41 + 23.8) * 0.18;
     const sh = fbm(x * 0.0037 + 25.1, z * 0.0037 + 13.7);  // and the shoulders riding on them
     const m = sstep(sstep(a * 0.75 + sh * 0.25));
     const k = m * m;
@@ -391,6 +403,39 @@
          + 9 * (fbm(x * 0.030 + 3.7, z * 0.030 + 9.1) - 0.5) * k * k;
     const bm = birchM(x, z);
     if (bm > 0) { h = WL + (h - WL) * (1 - bm * (1 - BIRCH_ELEV)); }   // blended on the mask, so the two forests meet on a slope rather than a step — and the blend happens across the strait below, where it is under water and invisible
+    // ── LAKE DISTRICTS: WATER ONLY WHERE THE MASSIF FIELD IS LOW, AND ALL OF IT THERE (user 2026-09-02: "prevent
+    // small lakes from forming … apply it to the terrain … instead of tiny multiple shallow lakes, try to make one
+    // bigger body of water, instead of fragments") ── the field above dips under WL wherever m is small, and m is
+    // small in every pocket of a three-octave sum, so the water came out as pockets: measured on a 4480x8000 pine
+    // window, 15.0% of the ground was wet and it was split into 62 bodies, 33 of them under 500 cells at stride 8,
+    // and 17% of the wet columns were 1-3 voxels deep. This gate keys the water on `a1` alone — the massif noise's
+    // FIRST octave, one smooth 555-voxel lattice with one minimum per cell — so a lake is the low country between
+    // massifs by construction and can neither fragment on the finer octaves nor perch on a hillside (a district
+    // field independent of the terrain was tried: it put shelf lakes on massif flanks and still split on ridges).
+    //   L = 1  the district core: the ground is LERPED TOWARD A BED (LAKE_PULL, LAKE_BED) — the same weighted pull
+    //          every lake in the world is made of (see basinM and the strait) — hard enough that the ridges between
+    //          the old pockets go under too, so the district is ONE body with its bays where the pull runs out
+    //   L = 0  everywhere else: the field is SOFT-CLAMPED to LAKE_FLOOR, a voxel over the top of the sand band, so
+    //          the old pockets are ground and no puddle can form (the freed area is terrain, as asked)
+    //   0<L<1  the ramp is the shore, and its two constants were set by measurement, not taste:
+    //          · the clamp is STIFF (LAKE_SOFT 2) on purpose. A pocket whose floor is already wet while its rim is
+    //            still dry is an isolated pond, and that band of L exists for every pocket that keeps relief on the
+    //            dry side. With the clamp flat below the floor the band closes for every pocket shallower than the
+    //            floor: softness 6 left 2-3 ponds per window, 2 leaves none.
+    //          · the ramp is WIDE (LAKE_RAMP 0.24) because it is the bank. Mean step from a wet cell to its dry
+    //            neighbour: 0.19 voxels/column before, 0.19 after; at 0.14 it was 0.28 and the user has refused
+    //            steeper banks twice today.
+    // Result on the same window: 14 districts, 14 bodies, none under 500 cells; wet 15.0% -> 8.8%; columns 1-3 deep
+    // 17% -> 11% of the water; sand per shore cell 6.8 -> 10.8 (the beaches got wider, not narrower). Applied AFTER
+    // the birch halving so both forests share one lake system at one depth and only the hills differ; the strait
+    // below still min()s through it. Every copy of the height field goes through this function, so gtest holds.
+    { const L = lakeZoneOf(a1);
+      let hd = h - LAKE_FLOOR > 12 * LAKE_SOFT ? h : LAKE_FLOOR + LAKE_SOFT * Math.log(1 + Math.exp((h - LAKE_FLOOR) / LAKE_SOFT));   // dry: the soft clamp (identity high up, where exp would underflow to nothing anyway)
+      if (L < 0.25 && h < LAKE_FLOOR + 4)              // …with a little coherent relief on the pans it makes, so a drained bed reads as ground, not a floor. Faded out well BEFORE the pond band (L 0.36..0.53) so it cannot reopen it
+        hd += LAKE_REL * (fbm(x * 0.02 + 7.7, z * 0.02 + 3.3) - 0.5) * 2 * (1 - sstep(L / 0.25)) * sstep(Math.min(1, (LAKE_FLOOR + 4 - h) / 8));
+      if (L <= 0) h = hd;
+      else { const hw = Math.min(h, h - LAKE_PULL * (h - LAKE_BED));   // wet: the pull, lower-only like the strait's, so a pocket already under the bed keeps its depth
+        h = L >= 1 ? hw : hd + L * (hw - hd); } }
     // ── THE STRAIT ── the band edge is where birchM's own argument crosses zero, so it is measured the same
     // way the mask measures it and the two can never drift apart. A cosine bump rather than a smoothstep
     // pair: it is flat-topped in the middle (open water, not a V) and its tails reach zero with zero slope,
@@ -471,6 +516,26 @@
   // the note over PINE_FLOOR records what widening it does and why it is not free.
   const BASIN_RAMP = 0.06;   // ── AND IT MUST STAY UNDER BASIN_T, WHICH IS WHY WIDENING IT BACKFIRES ── the mask is sstep(min(1, (t - b) / BASIN_RAMP)), so m only reaches 1 where the field falls a FULL RAMP below the threshold. BASIN_T is 0.065; at a ramp of 0.09 the strongest pull any basin can manage is 0.065/0.09 = 0.72, and the lakes came out SHALLOWER for being given a gentler rim — measured, max depth 67 -> 32. The rim and the depth cannot be separated through this constant alone; raising T with it is the only way, and that moves the lake AREA hard because it is a CDF.
   const BASIN_BED = 6;
+  // ── AND THE LAKE INTERIOR GETS A GAIN, WHICH THE BANKS DO NOT FEEL (user 2026-09-02: "restore the deeper
+  // water") ── measured before this: 47,325 wet cells, median depth 11 and p99, p999 and max ALL exactly 32.
+  // A ceiling, not a distribution. The cause is that a basin's depth is purely m * (h - BASIN_BED) and m is
+  // sstep(min(1, (t - b) / BASIN_RAMP)), which needs b a full BASIN_RAMP under BASIN_T to reach 1 — in practice
+  // it peaks near 0.28, so the deepest water in the world was 32 against 44-67 before LIFT went 50 -> 84.
+  // The three obvious levers are all wrong here, and each was measured:
+  //   · BASIN_T 0.065 -> 0.090 moved SIXTEEN cells of 47,345 and left every quantile identical.
+  //   · BASIN_LOW 66 -> 100 changed literally nothing: basinLow is already 1 wherever lakes form.
+  //   · BASIN_RAMP is the rim slope itself (m' scales as 1/RAMP), so narrowing it deepens by steepening the
+  //     banks — exactly what the user has twice refused.
+  // deepen() cannot be reused either: it lives inside bedH and, above the waterline, t goes negative and the
+  // cubic AMPLIFIES height rather than passing it through, so it is not idempotent and cannot simply be re-run
+  // on the carve result.
+  // A QUADRATIC gain can do it, and it is the only shape that can: m * (1 + G*m) is m to first order, so at the
+  // shoreline — where m -> 0 and the rim slope m' * (h - BASIN_BED) is set — it is the identity and the banks
+  // cannot move. The boost is second order, so it appears only where m is already large, i.e. the middle of a
+  // lake. Clamped at 1 because m is a lerp weight and 1 is the bed.
+  const BASIN_GAIN = 3;
+  const basinGain = (m) => (m > 0 ? Math.min(1, m * (1 + BASIN_GAIN * m)) : m);
+
   const BASIN_T = 0.065;                               // the AREA knob: how much of the low-frequency basin field drops under the waterline. Separate from BASIN_BED (depth) and BASIN_RAMP (rim slope) — see the note over PINE_FLOOR for what happens when all three are pushed at once                               // base: how much of the low-frequency basin field drops under the waterline
   // ── AND THE ARCTIC GETS TWICE THE WATER (user 2026-08-30: "double the rate of water in the arctic") ──
   // added on top of the base rather than replacing it, and scaled by the biome mask so the extra lakes fade in
@@ -1312,8 +1377,8 @@
   const H = (x, z) => {
     let h = bedH(x, z);            // …BEFORE the basin and river carves, so those still measure from the real bed
     const bm = basinM(x, z);
-    const m = bm * basinLow(h, x, z);                   // basins only form in low country — and the arctic's ceiling is higher, see basinLow
-    if (m > 0) h = h - m * (h - BASIN_BED);   // ── AND THE BASIN CARVE IS CONTINUOUS AND UNDITHERED, FOR THE SAME REASON ── it used to round here and add a +-0.4 ihash jitter to break "terrace banding". The banding was the double round, not the carve: with the bed continuous the rim already falls one voxel at a time, and a +-0.4 jitter on top of it is what turns a 1.0 drop into a 1.8 and rounds it to 2. Measured on the basin at 74300,-152800 — rounded+dithered 1032 steps of 2 or more, dither alone 423, double round alone 284, neither 0.   // gently dithered — no terrace banding
+    const m = bm * basinLow(h, x, z) * (bm > 0 ? lakeZone(x, z) : 0);   // basins only form in low country — and the arctic's ceiling is higher, see basinLow. ── AND ONLY INSIDE A LAKE DISTRICT (2026-09-02) ── a basin outside one is a crater in dry ground: on the verification window one made a 25k-voxel lake 21 deep by itself, the isolated small lake the districts exist to remove. Weighted by the district mask rather than cut at its edge, so a basin on the ramp shallows out with the ramp; and lakeZone is only evaluated when bm > 0, which is rare
+    if (m > 0) h = h - basinGain(m) * (h - BASIN_BED);   // ── AND THE BASIN CARVE IS CONTINUOUS AND UNDITHERED, FOR THE SAME REASON ── it used to round here and add a +-0.4 ihash jitter to break "terrace banding". The banding was the double round, not the carve: with the bed continuous the rim already falls one voxel at a time, and a +-0.4 jitter on top of it is what turns a 1.0 drop into a 1.8 and rounds it to 2. Measured on the basin at 74300,-152800 — rounded+dithered 1032 steps of 2 or more, dither alone 423, double round alone 284, neither 0.   // gently dithered — no terrace banding
     const rs = riverS(x, z);
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
     h = Math.round(oakBank(h, x, z));                  // ── AND THIS IS THE ONE PLACE THE FIELD IS ROUNDED ── the bed and the basin carve above are both continuous now (see bedH), so this line is no longer a no-op on an integer: it is the single quantisation of the whole height field, and it is here because oakBank has to run BEFORE the river carve so the lerp starts from the shelf rather than from a hilltop. Every copy of H rounds in this line and nowhere else; see oakBank
